@@ -108,15 +108,22 @@ env -u RUSTUP_TOOLCHAIN bun --cwd=packages/parapper-asr run test
 ### CI と PR
 
 PR #1 の旧 head では root Biome がフォークを整形対象にして `quality` が失敗しました。
-`e299808` を head にした実行ではフォークは除外できていますが、Ubuntu CI の Biome が
-`packages/inference-server-core/src/index.ts` の type export と value export の順序を
-再整形しようとして `quality` が失敗しています。ローカルの Biome 2.5.5 では
-`bun run lint` が成功しており、この差は未解決です。
+その後の `e299808` では `packages/inference-server-core/src/index.ts` の export 順序で
+失敗しましたが、原因は OS 差ではありません。作業 Mac の `.git/info/exclude` にある
+`packages/` を Biome が読んで、ローカルだけ packages 全体を検査から外していました。
 
-次の環境では、CI の実行ログを完全に取得した上で、Bun lockfile の Biome 2.5.5 を
-Linux の fresh install で明示的に再現してください。必要なら CI 上で求められる順序に
-`packages/inference-server-core/src/index.ts` を整形し、ローカル・Linux の両方で
-`bun run lint` を確認してから修正を push してください。
+この状態を解消するため、`biome.json` は Git のローカル ignore ファイルを読まず、
+`node_modules`、ビルド生成物、Tauri の `src-tauri/gen`、ローカルの `.tools` / `models`、
+および独立管理の Parapper fork だけを明示的に除外します。`inference-server-core` は
+root Biome で再整形済みです。次の環境では fresh clone 後に下記を実行し、PR の新しい
+`quality` 実行も確認してください。
+
+```sh
+bun install --frozen-lockfile
+bun run lint
+bun run format:check
+bun run typecheck
+```
 
 ```bash
 gh pr checks 1 --repo kkkaoru/transcription-and-translation-app --watch

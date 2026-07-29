@@ -175,16 +175,23 @@ const zenzRequest = (payload: Json): Json => ({
 
 const zenzResponse = (status: number, model: string, body: string): Response => {
   if (status < 200 || status >= 300) {
-    return new Response(body, { status, headers: { "content-type": "application/json; charset=utf-8" } });
+    return new Response(body, {
+      status,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
   }
   let content: unknown;
   try {
     content = (JSON.parse(body) as Record<string, unknown>)["content"];
   } catch {
-    return json(502, { error: { code: "invalid_model_response", message: "Zenz returned invalid JSON" } });
+    return json(502, {
+      error: { code: "invalid_model_response", message: "Zenz returned invalid JSON" },
+    });
   }
   if (typeof content !== "string") {
-    return json(502, { error: { code: "invalid_model_response", message: "Zenz response has no content" } });
+    return json(502, {
+      error: { code: "invalid_model_response", message: "Zenz response has no content" },
+    });
   }
   return json(200, {
     choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content } }],
@@ -200,22 +207,26 @@ const forwardChat = async (
   fetcher: typeof fetch,
 ): Promise<Response> => {
   const zenz = isZenzModel(model);
-  const response = await fetcher(zenz ? completionEndpoint(route.baseUrl) : modelEndpoint(route.baseUrl), {
+  const response = await fetcher(
+    zenz ? completionEndpoint(route.baseUrl) : modelEndpoint(route.baseUrl),
+    {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(zenz ? zenzRequest(payload) : modelRequest(model, payload, route)),
-    })
-    .catch((error: unknown) => {
-      const detail = error instanceof Error ? error.message : "connection failed";
-      return fail(502, "model_connection_failed", detail);
-    });
+    },
+  ).catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : "connection failed";
+    return fail(502, "model_connection_failed", detail);
+  });
   const body = await response.text();
   if (zenz) {
     return zenzResponse(response.status, model, body);
   }
   return new Response(body, {
     status: response.status,
-    headers: { "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8" },
+    headers: {
+      "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
+    },
   });
 };
 
@@ -260,7 +271,10 @@ export const createGatewayFetchHandler = (
           fail(400, "invalid_audio", detail);
         }
         const text = await asrGate.run(() => requiredTranscriber(transcribe)(pcm));
-        return json(200, { text, ...(transcription.language ? { language: transcription.language } : {}) });
+        return json(200, {
+          text,
+          ...(transcription.language ? { language: transcription.language } : {}),
+        });
       }
       if (request.method === "POST" && path === "/v1/chat/completions") {
         const payload = await readJson(request);

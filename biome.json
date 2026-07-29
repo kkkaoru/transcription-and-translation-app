@@ -3,11 +3,21 @@
   "vcs": {
     "enabled": true,
     "clientKind": "git",
-    "useIgnoreFile": true
+    "useIgnoreFile": false
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!**/target", "!**/coverage", "!**/dist", "!packages/parapper-asr"]
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/target",
+      "!**/coverage",
+      "!**/dist",
+      "!.tools",
+      "!apps/desktop/src-tauri/gen",
+      "!models",
+      "!packages/parapper-asr"
+    ]
   },
   "formatter": {
     "enabled": true,

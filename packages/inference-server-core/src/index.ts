@@ -5,8 +5,9 @@ export {
   pcm16ToWav,
   splitParapperFrames,
 } from "./audio.js";
-export { validateGatewayConfig } from "./config.js";
 export type { GatewayConfig, TextModelRoute } from "./config.js";
+export { validateGatewayConfig } from "./config.js";
+export type { GatewayDependencies } from "./http.js";
 export {
   createGatewayFetchHandler,
   GatewayError,
@@ -14,4 +15,3 @@ export {
   MAX_JSON_BYTES,
   SerialGate,
 } from "./http.js";
-export type { GatewayDependencies } from "./http.js";
