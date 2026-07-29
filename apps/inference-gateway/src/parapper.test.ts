@@ -35,17 +35,20 @@ describe("Parapper WebSocket adapter", () => {
     const received: {
       authorization: string | undefined;
       binaryFrames: number[];
+      frameSentAt: number[];
       start?: unknown;
       stop?: unknown;
     } = {
       authorization: undefined,
       binaryFrames: [],
+      frameSentAt: [],
     };
     const fixture = await startParapper((socket, request) => {
       received.authorization = request.headers.authorization;
       socket.on("message", (data: RawData, binary: boolean) => {
         if (binary) {
           received.binaryFrames.push(Buffer.isBuffer(data) ? data.length : 0);
+          received.frameSentAt.push(Date.now());
           return;
         }
         const message = JSON.parse(data.toString()) as { session_id: string; type: string };
@@ -94,6 +97,12 @@ describe("Parapper WebSocket adapter", () => {
       expect(received.start).toMatchObject({ type: "session.start", session_id: "caption-1" });
       expect(received.stop).toMatchObject({ type: "session.stop", session_id: "caption-1" });
       expect(received.binaryFrames).toEqual([3200, 3200, 2]);
+      const [firstFrame, secondFrame, thirdFrame] = received.frameSentAt;
+      if (firstFrame === undefined || secondFrame === undefined || thirdFrame === undefined) {
+        throw new Error("expected timestamps for all PCM frames");
+      }
+      expect(secondFrame - firstFrame).toBeGreaterThanOrEqual(75);
+      expect(thirdFrame - secondFrame).toBeGreaterThanOrEqual(75);
     } finally {
       await fixture.close();
     }
@@ -169,6 +178,54 @@ describe("Parapper WebSocket adapter", () => {
       });
     } finally {
       await Promise.all([failing.close(), empty.close(), timeout.close()]);
+    }
+  });
+
+  it("paces audio and stops queued frames when Parapper rejects a session", async () => {
+    const receivedFrames: number[] = [];
+    const rejecting = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          receivedFrames.push(Buffer.isBuffer(data) ? data.length : 0);
+          socket.send(JSON.stringify({ version: 1, type: "error", session_id: "paced-session" }));
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    const malformed = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(6402), {
+          url: rejecting.url,
+          timeoutMs: 1_000,
+          sessionId: () => "paced-session",
+        }),
+      ).rejects.toMatchObject({ code: "parapper_protocol_error", status: 502 });
+      await new Promise((resolve) => setTimeout(resolve, 125));
+      expect(receivedFrames).toEqual([3200]);
+      await expect(
+        transcribeWithParapper(new Uint8Array(3), { url: malformed.url, timeoutMs: 1_000 }),
+      ).rejects.toMatchObject({ code: "parapper_send_failed", status: 502 });
+    } finally {
+      await Promise.all([rejecting.close(), malformed.close()]);
     }
   });
 

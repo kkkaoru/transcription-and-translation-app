@@ -218,7 +218,10 @@ describe("inference gateway HTTP contract", () => {
     const offline = await fetch(`${connection.origin}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "zenz-v3.2-small-gguf" }),
+      body: JSON.stringify({
+        model: "zenz-v3.2-small-gguf",
+        messages: [{ role: "user", content: "\u{EE00}セイドガタカイ\u{EE01}" }],
+      }),
     });
     expect(offline.status).toBe(502);
     await expect(offline.json()).resolves.toMatchObject({
@@ -234,19 +237,27 @@ describe("inference gateway HTTP contract", () => {
     const fallback = await fetch(`${stringFailure.origin}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "zenz-v3.2-small-gguf" }),
+      body: JSON.stringify({
+        model: "zenz-v3.2-small-gguf",
+        messages: [{ role: "user", content: "\u{EE00}セイドガタカイ\u{EE01}" }],
+      }),
     });
     await expect(fallback.json()).resolves.toMatchObject({
       error: { code: "model_connection_failed", message: "connection failed" },
     });
   });
 
-  it("passes non-Hy model requests and upstream statuses through without model-path escape hatches", async () => {
+  it("uses Zenz's completion protocol and returns an OpenAI-compatible response", async () => {
     const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) =>
       Promise.resolve().then(() => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        expect(body).toEqual({ model: "zenz-v3.2-small-gguf", messages: [] });
-        return new Response("model warming up", { status: 503 });
+        expect(body).toEqual({
+          prompt: "\u{EE00}セイドガタカイ\u{EE01}",
+          n_predict: 128,
+          temperature: 0,
+          stream: false,
+        });
+        return new Response(JSON.stringify({ content: "精度が高い" }), { status: 200 });
       }),
     );
     const connection = await open(
@@ -256,11 +267,19 @@ describe("inference gateway HTTP contract", () => {
     const response = await fetch(`${connection.origin}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "zenz-v3.2-small-gguf", messages: [], model_path: "ignored" }),
+      body: JSON.stringify({
+        model: "zenz-v3.2-small-gguf",
+        messages: [{ role: "user", content: "\u{EE00}セイドガタカイ\u{EE01}" }],
+        model_path: "ignored",
+        max_tokens: 512,
+      }),
     });
-    expect(response.status).toBe(503);
-    expect(response.headers.get("content-type")).toContain("text/plain");
-    await expect(response.text()).resolves.toBe("model warming up");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      model: "zenz-v3.2-small-gguf",
+      choices: [{ message: { content: "精度が高い" } }],
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe("http://models.test:8081/completion");
   });
 
   it("uses a JSON content type fallback when an upstream server omits the header", async () => {
@@ -279,7 +298,10 @@ describe("inference gateway HTTP contract", () => {
     const response = await fetch(`${connection.origin}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "zenz-v3.2-small-gguf" }),
+      body: JSON.stringify({
+        model: "zenz-v3.2-small-gguf",
+        messages: [{ role: "user", content: "\u{EE00}セイドガタカイ\u{EE01}" }],
+      }),
     });
     expect(response.headers.get("content-type")).toContain("application/json");
   });
@@ -311,5 +333,41 @@ describe("inference gateway HTTP contract", () => {
     });
     expect(unexpected.status).toBe(500);
     await expect(unexpected.json()).resolves.toMatchObject({ error: { code: "internal_error" } });
+  });
+
+  it("caps adapter request bodies and uses the configured Parapper connection by default", async () => {
+    const connection = await open(
+      createGatewayServer({
+        ...config,
+        parapper: { ...config.parapper, timeoutMs: 100, url: "ws://127.0.0.1:1/ws/recognition" },
+      }),
+    );
+    closers.push(connection.close);
+
+    const oversized = await fetch(`${connection.origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "x", padding: "a".repeat(2 * 1024 * 1024) }),
+    });
+    expect(oversized.status).toBe(413);
+    await expect(oversized.json()).resolves.toMatchObject({
+      error: { code: "request_too_large" },
+    });
+
+    const asr = new FormData();
+    asr.set("model", "parapper-ja");
+    asr.set("file", wav(), "caption.wav");
+    const unavailable = await fetch(`${connection.origin}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: asr,
+    });
+    expect(unavailable.status).toBe(502);
+    await expect(unavailable.json()).resolves.toMatchObject({
+      error: { code: "parapper_connection_failed" },
+    });
+
+    await expect(fetch(`${connection.origin}/health`, { method: "HEAD" })).resolves.toMatchObject({
+      status: 404,
+    });
   });
 });

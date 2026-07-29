@@ -1,17 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { GatewayError, SerialGate } from "@caption-bridge/inference-server-core";
 import WebSocket from "ws";
-import { splitParapperFrames } from "./audio.js";
+import { PARAPPER_SAMPLE_RATE, splitParapperFrames } from "./audio.js";
 
-export class GatewayError extends Error {
-  public constructor(
-    public readonly status: number,
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "GatewayError";
-  }
-}
+const PCM16_BYTES_PER_MILLISECOND = (PARAPPER_SAMPLE_RATE * 2) / 1_000;
+
+const wait = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export { GatewayError, SerialGate } from "@caption-bridge/inference-server-core";
 
 export interface ParapperOptions {
   apiKey?: string;
@@ -30,9 +27,6 @@ interface ParapperMessage {
 }
 
 const parseMessage = (data: WebSocket.RawData): ParapperMessage | null => {
-  if (typeof data !== "string" && !Buffer.isBuffer(data)) {
-    return null;
-  }
   try {
     return JSON.parse(data.toString()) as ParapperMessage;
   } catch {
@@ -58,10 +52,7 @@ export const transcribeWithParapper = (
     });
     let finished = false;
     let finalText: string | null = null;
-    const settle = (result: { error: Error } | { text: string }) => {
-      if (finished) {
-        return;
-      }
+    function settle(result: { error: Error } | { text: string }): void {
       finished = true;
       clearTimeout(timer);
       socket.close();
@@ -69,6 +60,21 @@ export const transcribeWithParapper = (
         reject(result.error);
       } else {
         resolve(result.text);
+      }
+    }
+    const sendPacedFrames = async (): Promise<void> => {
+      const frames = splitParapperFrames(pcm);
+      for (const [index, frame] of frames.entries()) {
+        if (finished) {
+          return;
+        }
+        socket.send(frame);
+        if (index + 1 < frames.length) {
+          await wait(Math.ceil(frame.length / PCM16_BYTES_PER_MILLISECOND));
+        }
+      }
+      if (!finished) {
+        socket.send(JSON.stringify({ version: 1, type: "session.stop", session_id: sessionId }));
       }
     };
     const timer = setTimeout(() => {
@@ -91,10 +97,10 @@ export const transcribeWithParapper = (
       if (message.type === "error") {
         settle({ error: protocolError(message) });
       } else if (message.type === "session.ready") {
-        for (const frame of splitParapperFrames(pcm)) {
-          socket.send(frame);
-        }
-        socket.send(JSON.stringify({ version: 1, type: "session.stop", session_id: sessionId }));
+        void sendPacedFrames().catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : "could not send PCM audio";
+          settle({ error: new GatewayError(502, "parapper_send_failed", detail) });
+        });
       } else if (message.type === "turn.final") {
         finalText = message.text?.trim() || null;
       } else if (message.type === "session.done") {
@@ -122,16 +128,3 @@ export const transcribeWithParapper = (
       );
     });
   });
-
-export class SerialGate {
-  private tail: Promise<void> = Promise.resolve();
-
-  public run<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(work, work);
-    this.tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-}

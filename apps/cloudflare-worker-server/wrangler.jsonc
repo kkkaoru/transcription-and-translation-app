@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kotoba-beacon-inference",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "CORS_ORIGIN": "https://example.invalid",
+    "MODEL_ROUTES": "{}"
+  }
+}

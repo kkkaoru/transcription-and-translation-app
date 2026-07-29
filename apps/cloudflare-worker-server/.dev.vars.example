@@ -1,0 +1,9 @@
+# Never commit .dev.vars. Store production values with `wrangler secret put`.
+# MODEL_ROUTES must be a JSON object with the same model IDs as the desktop app.
+MODEL_ROUTES={"hy-mt2-1.8b-gguf":{"baseUrl":"https://models.example.com","servedModel":"hy-mt2-1.8b-gguf"}}
+CORS_ORIGIN=https://captions.example.com
+# Optional: enables remote ASR proxying. The upstream must implement
+# POST /v1/audio/transcriptions with the same OpenAI-shaped contract.
+ASR_UPSTREAM_URL=https://asr.example.com/v1/audio/transcriptions
+# Optional bearer token for that upstream. Use `wrangler secret put` in production.
+ASR_API_TOKEN=replace-me

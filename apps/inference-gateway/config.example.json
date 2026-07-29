@@ -16,6 +16,10 @@
       "baseUrl": "http://127.0.0.1:8082",
       "servedModel": "zenz-v3.2-small-gguf"
     },
+    "zenz-v2-q5-k-m-gguf": {
+      "baseUrl": "http://127.0.0.1:8087",
+      "servedModel": "zenz-v2-q5-k-m-gguf"
+    },
     "hy-mt2-1.8b-gguf": {
       "baseUrl": "http://127.0.0.1:8083",
       "servedModel": "hy-mt2-1.8b-gguf"

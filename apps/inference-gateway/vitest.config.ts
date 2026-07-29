@@ -7,7 +7,10 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: ["src/**/*.test.ts", "src/main.ts"],
+      // HTTP routing and input validation live in the portable core package and
+      // are exercised through this adapter's contract tests. Keep this metric
+      // focused on the Node/Parapper implementation that remains here.
+      exclude: ["src/**/*.test.ts", "src/main.ts", "src/server.ts"],
       thresholds: {
         statements: 95,
         branches: 95,

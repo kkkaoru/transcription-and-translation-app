@@ -1,0 +1,21 @@
+{
+  "name": "@caption-bridge/inference-server-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portable HTTP contract and routing for Caption Bridge inference servers",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --pretty false --project tsconfig.json",
+    "typecheck": "tsc --pretty false --noEmit --project tsconfig.json",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^3.2.4",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
