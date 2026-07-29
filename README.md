@@ -69,8 +69,8 @@ bun run check:all
 
 ## 起動とOBSへの追加
 
-1. Kotoba Beacon を起動します。アプリ内蔵の Bun サイドカーが自動で `http://127.0.0.1:8765` を起動します。
-2. ローカル ASR とモデルサーバーを設定します。開発時は Parapper を `bun run parapper:install` 後に `bun run parapper:tauri` で起動できます。
+1. Kotoba Beacon を起動します。アプリ内蔵の Gateway、Parapper、選択済みの zenz / Hy-MT2 model server が自動で loopback に起動します。
+2. 初回だけ、選択済みの ASR / GGUF モデルを取得します。Hy-MT2 1.8B標準モデルは約1.13 GBで、取得中はログに進捗が出ます。手動で複数のサーバーを起動する必要はありません。
 3. 「設定」で音声入力デバイス、言語コード、モデル、推論ゲートウェイURLを設定して保存します。
 4. 「マイク一覧を再取得」でデバイス権限後のマイク名を更新します。
 5. 「オーバーレイを開く」を押し、OBSのWindow Captureで`Kotoba Beacon Overlay`を追加します。
@@ -84,7 +84,7 @@ bun run check:all
 - 日本語変換: Rustで再実装したAzooKey LOUDS辞書/接続コスト/Viterbi、または Zenzai `v2` / `v3.2 xsmall` / `v3.2 small` GGUF
 - 翻訳: 日本語→英語に限定したHy-MT2 1.8B系GGUF、または7B GGUF
 
-GGUFをアプリ本体に同梱せず、信頼済みのモデルルートだけをゲートウェイに設定します。アプリから任意のサーバーファイルをロードすることはありません。Zenzai は専用の AzooKey llama.cpp フォークで実行し、U+EE00/U+EE01 の変換プロトコルをゲートウェイが OpenAI 互換レスポンスへ変換します。AzooKeyを選んだ場合だけ、辞書本体・ユーザー辞書・学習メモリの場所を設定できます。
+GGUFをアプリ本体に同梱せず、選択された固定 revision のモデルだけを初回に app-data へ取得します。アプリから任意のサーバーファイルをロードすることはありません。Zenzai は専用の AzooKey llama.cpp フォークで実行し、U+EE00/U+EE01 の変換プロトコルをゲートウェイが OpenAI 互換レスポンスへ変換します。Hy-MT2 は STQ 対応の上流 llama.cpp で実行します。AzooKeyを選んだ場合だけ、辞書本体・ユーザー辞書・学習メモリの場所を設定できます。モデル容量、固定 revision、ライセンスは [docs/llama-runtime.md](docs/llama-runtime.md) を参照してください。
 
 UI は [Simple Light Blue palette](https://www.schemecolor.com/simple-light-blue-color-palette.php) の `#AFDCEB`, `#CAE9F5`, `#F0F8FF`, `#ADD8E6`, `#86C5D8` を基調にしています。
 

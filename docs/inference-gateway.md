@@ -1,8 +1,9 @@
 # Inference gateway
 
 `apps/inference-gateway/` is the executable boundary between the Tauri application and model
-runtimes. It gives the app one HTTP endpoint while keeping Parapper and the
-GGUF servers local or on another PC.
+runtimes. It gives the app one HTTP endpoint while keeping the bundled
+Parapper and GGUF servers on loopback. The same executable can also be used
+against explicitly configured remote services during development.
 
 ```text
 Caption Bridge (Tauri)
@@ -72,41 +73,24 @@ JSON configuration); the gateway sends it as a Bearer token.
 The implementation follows Parapper's `session.start` → `session.ready` →
 binary PCM frames → `session.stop` → `turn.final`/`session.done` protocol.
 
-The gateway's GGUF routes are still external llama.cpp services. Bundling and
-starting those model servers remains a separate, unfinished distribution task.
+## Bundled zenz and Hy-MT2 servers
 
-## zenz and Hy-MT2 with llama.cpp
+The desktop app packages two pinned `llama-server` builds and creates its
+gateway route table on every launch. On local mode it downloads each selected
+GGUF to app-data, checks the expected file size, starts the correct server on
+loopback, and waits for `/health` before capture begins. The app never accepts
+an arbitrary GGUF path from its UI or HTTP callers.
 
-Install a recent `ggml-org/llama.cpp` build that supports the GGUF architecture
-of the selected model:
+- zenz uses `kotoba-zenz-server`, built from the AzooKey llama.cpp fork because
+  it recognizes zenz's Japanese character tokenizer.
+- Hy-MT2 uses `kotoba-llama-server`, built from upstream llama.cpp with STQ
+  support.
 
-```bash
-git clone https://github.com/ggml-org/llama.cpp.git
-cmake -B llama.cpp/build -S llama.cpp -DCMAKE_BUILD_TYPE=Release
-cmake --build llama.cpp/build --config Release
-
-# zenz example
-./llama.cpp/build/bin/llama-server \
-  --model /absolute/path/zenz-v3.2-small.gguf \
-  --alias zenz-v3.2-small-gguf --port 8082 --jinja
-
-# Hy-MT2 1.8B example
-./llama.cpp/build/bin/llama-server \
-  --model /absolute/path/Hy-MT2-1.8B-GGUF.gguf \
-  --alias hy-mt2-1.8b-gguf --port 8083 --jinja
-```
-
-Hy-MT2's GGUF guidance requires a llama.cpp version with its STQ kernel
-support. If an upstream llama.cpp build rejects the selected Hy-MT2 GGUF, use
-the official Hy-MT2 inference environment instead and place an
-OpenAI-compatible adapter in front of it; no Caption Bridge source change is
-needed because the gateway only requires `POST /v1/chat/completions`.
-
-Each selectable GGUF model needs either its own running server/port or a model
-server that can safely switch models. The example config assigns a route for
-every model ID; only map a route to a running server with the matching alias.
-This makes model switching in the Caption Bridge UI a real server selection,
-not an unverified local-path switch.
+The seven fixed model IDs are mapped to ports `8081` through `8087`, but only
+selected local models are downloaded and started. Model revisions, byte sizes,
+licenses, source revisions, and the app-data layout are documented in
+[llama-runtime.md](llama-runtime.md). `scripts/build-sidecar.ts` rebuilds both
+server binaries after fetching their pinned source commits.
 
 ## Gateway HTTP contract
 

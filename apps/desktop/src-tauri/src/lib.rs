@@ -4,6 +4,7 @@ mod audio;
 mod commands;
 mod config;
 mod gateway;
+mod model_runtime;
 mod models;
 mod native_output;
 mod output;
@@ -34,9 +35,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let config = load_config(app.handle()).unwrap_or_default();
-            app.manage(AppState::new(config, output::runtime_output()));
+            app.manage(AppState::new(config.clone(), output::runtime_output()));
             app.manage(gateway::RuntimeServices::default());
-            gateway::start(app.handle())?;
+            gateway::start(app.handle(), &config)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

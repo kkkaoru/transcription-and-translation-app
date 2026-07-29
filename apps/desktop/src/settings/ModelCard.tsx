@@ -65,8 +65,6 @@ export const ModelCard = ({
   const localized = selected ? modelCopy[selected.id] : undefined;
   const selectedDescription =
     localized?.description && selected ? t(localized.description) : selected?.description;
-  const selectedArtifact =
-    localized?.artifact && selected ? t(localized.artifact) : selected?.localArtifact;
 
   return (
     <div className="model-card">
@@ -90,15 +88,6 @@ export const ModelCard = ({
         })}
       </select>
       <p>{selectedDescription}</p>
-      {family !== "asr" ? (
-        <Field label={t("settings.modelPath")} wide hint={selectedArtifact}>
-          <input
-            placeholder={t("settings.modelPathPlaceholder")}
-            value={config.models.paths[config.models[family]] ?? ""}
-            onChange={(event) => onPathChange(config.models[family], event.target.value)}
-          />
-        </Field>
-      ) : null}
       {family === "normalizer" && config.models.normalizer === "azookey-rust" ? (
         <>
           <Field

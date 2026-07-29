@@ -32,8 +32,9 @@ bun run worker:test
 ## 現在の構成
 
 - `apps/desktop` — Kotoba Beacon の Tauri デスクトップアプリ。起動時に Bun で
-  コンパイルした `kotoba-parapper` headless sidecar を先に、続いて
-  `kotoba-inference-gateway` sidecar を起動します。終了時には両方を停止します。
+  コンパイルした `kotoba-parapper` と `kotoba-inference-gateway`、選択済みの
+  `kotoba-zenz-server` / `kotoba-llama-server` sidecar を loopback で起動し、
+  終了時にはすべてを停止します。
 - `apps/inference-gateway` — ローカル OpenAI 互換 HTTP ゲートウェイ。
 - `apps/cloudflare-worker-server` — Cloudflare Workers 上の同じ HTTP 契約のアダプタ。
 - `packages/inference-server-core` — Gateway / Worker で共有するルーティング、HTTP、
@@ -44,7 +45,7 @@ bun run worker:test
   [`CAPTION_BRIDGE_FORK.md`](../packages/parapper-asr/CAPTION_BRIDGE_FORK.md) を参照。
 
 詳細は [architecture.md](architecture.md)、[inference-gateway.md](inference-gateway.md)、
-[native-development.md](native-development.md) を参照してください。
+[native-development.md](native-development.md)、[llama-runtime.md](llama-runtime.md) を参照してください。
 
 ## この時点で完了・確認済みのこと
 
@@ -57,7 +58,13 @@ bun run worker:test
   UniDic、日本語 ASR モデルを取得し、実際に WebSocket listener が起動することを確認済み。
 - `scripts/build-sidecar.ts` は Gateway と Parapper release binary をビルドし、macOS の
   Sherpa-ONNX dylib / Windows の DLL、Parapper のライセンス JSON を Tauri resource として
-  配置する実装になっている。
+  配置する。また、固定 commit の upstream llama.cpp と AzooKey fork から zenz / Hy-MT2
+  用の `llama-server` をビルドし、各 runtime library を Tauri resource として配置する。
+- ローカル GGUF は固定 Hugging Face revision から `<app-data>/models/<model-id>/` に
+  ダウンロードする。終端の byte size を確認し、完了前ファイルを次回起動時に破棄する。
+  `gateway.config.json` は内部生成物で、アプリ起動ごとに固定の全7 route で更新する。
+- macOS arm64 で配布予定の `kotoba-zenz-server` を実際の zenz v3.2 small GGUF と起動し、
+  `/health`、`/v1/models`、`/v1/chat/completions` が応答することを確認済み。
 - Zenzai 系は `zenz-v3.2-xsmall-gguf`、`zenz-v3.2-small-gguf`、
   `zenz-v2-q5-k-m-gguf` を選択できる。
 - AzooKey と Zenzai のリクエスト経路を実機の llama.cpp server で確認済み。
@@ -90,27 +97,24 @@ bun run worker:test
 
 ### 単体アプリ配布の完全性
 
-Kotoba Beacon は Parapper と Gateway を app bundle から自動起動しますが、デフォルト
-Gateway 設定が参照する llama.cpp の各モデル server (`127.0.0.1:8081` など) はまだ
-sidecar 化していません。従って、非エンジニア向けの「アプリ単体で全機能」要件は**未完了**です。
+GGUF server の sidecar 化と初回ダウンロードは実装済みですが、署名済み release bundle と
+Windows runtime はまだ検証が必要です。次の担当者は下記を優先してください。
 
-Parapper の release binary と実アプリからの自動起動は macOS arm64 で確認しました。
-ただし、新しい Parapper runtime を含む署名済み macOS release bundle と Windows bundle は
-未検証です。以下を次の担当者が優先してください。
-
-1. `bun run sidecar:build` は `cargo-about` を必要とします。この Mac では実行可能な
-   `cargo-about` が見つからず、完全な bundle build までは通していません。次の環境では
-   `cargo install cargo-about --locked` を行ってから実行してください。CI desktop job にも
-   同じインストール工程を追加済みです。
-2. `bun run tauri:build` を macOS と Windows で実行し、Parapper release binary、dylib/DLL、
-   `third-party/parapper-rust-licenses.json` が最終 bundle にあること、初回モデル取得後に
-   音声 API が成功することを確認してください。
-3. llama.cpp / Zenzai / Hy-MT2 のモデル server は未着手です。対象 OS ごとの実行バイナリ、
-   初回ダウンロード、モデル再配布条件、GPU / CPU fallback を設計して sidecar 化してください。
-
-モデル本体はサイズのため初回ダウンロードまたは任意のモデル保存先選択にする必要が
-あります。実装前に macOS / Windows のコード署名、モデルの再配布条件、GPU/CPU の
-target ごとの挙動を確認してください。
+1. `bun run sidecar:build` は `cargo-about` を必要とします。`cargo-about 0.9` は CLI feature を
+   明示する必要があるため、未導入環境では
+   `cargo install cargo-about --locked --features cli` を先に実行してください。CI desktop job は
+   同じ feature 指定に更新済みです。
+2. `bun run tauri:build` を macOS と Windows で実行し、Gateway、Parapper、zenz、Hy-MT2 の
+   4 binary、各 dylib/DLL、`third-party/parapper-rust-licenses.json`、llama.cpp の MIT notice が
+   最終 bundle にあることを確認してください。
+3. クリーンな app-data で、xsmall zenz と標準 Hy-MT2 をそれぞれ選び、初回ダウンロード、
+   `POST /v1/chat/completions`、アプリ終了時の sidecar 停止を確認してください。Hy-MT2標準は
+   約1.13 GB必要です。ネットワークを使う個別確認には
+   `cargo +1.88.0-aarch64-apple-darwin test --manifest-path apps/desktop/src-tauri/Cargo.toml downloads_the_pinned_xsmall_model_into_app_data_layout -- --ignored`
+   を実行します。このテストは一時ディレクトリへ約21 MBを取得して削除するため、通常の CI では
+   意図的に ignore されています。
+4. Windows の llama.cpp build は MSVC と CPU fallback、DLL探索パスを検証してください。
+   macOS arm64 は Metal を有効にします。モデル本体は installer には含めません。
 
 ### Parapper フォークの検証
 
@@ -119,7 +123,7 @@ Parapper は Rust 1.90.0 を要求します。現在のシェルが `RUSTUP_TOOL
 
 ```bash
 rustup component add --toolchain 1.90.0-aarch64-apple-darwin rustfmt clippy
-env -u RUSTUP_TOOLCHAIN cargo install cargo-about --locked
+env -u RUSTUP_TOOLCHAIN cargo install cargo-about --locked --features cli
 env -u RUSTUP_TOOLCHAIN bun --cwd=packages/parapper-asr run test
 ```
 

@@ -1,5 +1,6 @@
 use crate::audio::{pcm_base64_to_wav, AudioChunk};
 use crate::config::AppConfig;
+use crate::gateway;
 use crate::models::{catalog, ModelCatalog};
 use crate::native_output::{NativeOutputHandle, OverlayFrame};
 use crate::pipeline::CaptionPayload;
@@ -25,12 +26,13 @@ pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
-pub fn save_config(
+pub async fn save_config(
     app: AppHandle,
     state: State<'_, AppState>,
     config: AppConfig,
 ) -> Result<(), String> {
     config.validate()?;
+    gateway::reconcile_models(&app, &config).await?;
     if let Some(window) = app.get_webview_window("overlay") {
         window
             .set_size(LogicalSize::new(config.overlay.width as f64, config.overlay.height as f64))
@@ -74,7 +76,9 @@ pub fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, S
 }
 
 #[tauri::command]
-pub fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    gateway::reconcile_models(&app, &config).await?;
     set_status(&app, &state, "capturing", None)
 }
 

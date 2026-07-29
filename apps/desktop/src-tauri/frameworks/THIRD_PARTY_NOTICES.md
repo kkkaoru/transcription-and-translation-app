@@ -16,3 +16,11 @@ license, fork notice, and generated Rust dependency license inventory are
 installed in the app resources under `third-party/` at bundle time. Model
 artifacts are downloaded at first use and are not redistributed by this
 repository; their separate license terms remain applicable.
+
+## llama.cpp model servers
+
+Kotoba Beacon bundles an AzooKey `llama.cpp` fork for zenz tokenizer support
+and current upstream `ggml-org/llama.cpp` for Hy-MT2 STQ support. Both server
+sources are MIT licensed. The bundle includes the verbatim MIT license and a
+runtime/model notice under `third-party/`; [docs/llama-runtime.md](../../../docs/llama-runtime.md)
+records the exact source and model revisions.
