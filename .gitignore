@@ -2,9 +2,9 @@ node_modules
 dist
 .vite
 coverage
-src-tauri/target
-azookey-rust/target
-src-tauri/gen
+apps/desktop/src-tauri/target
+packages/azookey-rust/target
+apps/desktop/src-tauri/gen
 .tools
 *.log
 .DS_Store
