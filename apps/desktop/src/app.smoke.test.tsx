@@ -35,7 +35,7 @@ describe("App routes", () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector(".brand-name")?.textContent).toBe("Caption Bridge");
+    expect(container.querySelector(".brand-name")?.textContent).toBe("Kotoba Beacon");
     const settingsButton = Array.from(container.querySelectorAll(".nav-tabs button")).find(
       (button) => button.textContent?.includes("設定"),
     );

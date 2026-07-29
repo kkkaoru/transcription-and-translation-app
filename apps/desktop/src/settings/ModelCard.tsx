@@ -28,6 +28,9 @@ const modelCopy: Partial<
   "zenz-v3.2-small-gguf": {
     description: "model.zenzSmall.description",
   },
+  "zenz-v2-q5-k-m-gguf": {
+    description: "model.zenzV2.description",
+  },
   "hy-mt2-1.8b-gguf": {
     description: "model.hy18.description",
   },

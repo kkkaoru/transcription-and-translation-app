@@ -143,6 +143,14 @@ export const DEFAULT_MODEL_CATALOG: ModelCatalog = {
       "ggml-model-Q5_K_M.gguf",
       ["ja"],
     ),
+    model(
+      "normalizer",
+      "zenz-v2-q5-k-m-gguf",
+      "Zenzai v2 Q5_K_M",
+      "低メモリ環境向けのZenzai v2互換GGUFモデルです。",
+      "zenz-v2-Q5_K_M.gguf",
+      ["ja"],
+    ),
   ],
   translator: [
     model(

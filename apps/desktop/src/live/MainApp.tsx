@@ -281,10 +281,10 @@ export const MainApp = () => {
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark">
-            <span>CB</span>
+            <span>KB</span>
           </div>
           <div>
-            <div className="brand-name">Caption Bridge</div>
+            <div className="brand-name">Kotoba Beacon</div>
             <div className="brand-caption">{t("brand.caption")}</div>
           </div>
         </div>
