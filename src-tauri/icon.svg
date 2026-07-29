@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>Caption Bridge</title>
+  <defs>
+    <linearGradient id="background" x1="80" y1="40" x2="944" y2="984">
+      <stop offset="0" stop-color="#172838"/>
+      <stop offset="1" stop-color="#090e14"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="210" y1="164" x2="822" y2="860">
+      <stop offset="0" stop-color="#91eee3"/>
+      <stop offset="1" stop-color="#45b9ad"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#background)"/>
+  <rect
+    x="112"
+    y="112"
+    width="800"
+    height="800"
+    rx="184"
+    fill="none"
+    stroke="url(#accent)"
+    stroke-width="34"
+  />
+  <path
+    d="M271 360c0-56 45-101 101-101h94v73h-79c-22 0-40 18-40 40v280c0 22 18 40 40 40h79v73h-94c-56 0-101-45-101-101V360Z"
+    fill="#f2f7fb"
+  />
+  <path
+    d="M517 259h119c70 0 117 43 117 107 0 39-18 70-47 88 42 17 67 53 67 101 0 76-51 120-136 120H517V259Zm78 69v99h37c27 0 43-18 43-50s-16-49-43-49h-37Zm0 166v112h43c36 0 55-19 55-56 0-38-19-56-55-56h-43Z"
+    fill="url(#accent)"
+  />
+  <circle cx="795" cy="795" r="54" fill="#68d5c8"/>
+</svg>

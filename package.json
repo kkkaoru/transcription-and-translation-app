@@ -1,0 +1,51 @@
+{
+  "name": "caption-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local bilingual captions for OBS",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "gateway:dev": "pnpm --dir gateway dev",
+    "gateway:start": "pnpm --dir gateway start",
+    "gateway:build": "pnpm --dir gateway build",
+    "gateway:test": "pnpm --dir gateway test",
+    "gateway:test:coverage": "pnpm --dir gateway test:coverage",
+    "rust:azookey:test": "cargo test --manifest-path azookey-rust/Cargo.toml",
+    "rust:azookey:lint": "cargo clippy --manifest-path azookey-rust/Cargo.toml --all-targets -- -D warnings",
+    "rust:azookey:fmt": "cargo fmt --manifest-path azookey-rust/Cargo.toml -- --check",
+    "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
+    "rust:lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
+    "check:all": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test:coverage && pnpm gateway:build && pnpm gateway:test:coverage && pnpm rust:azookey:fmt && pnpm rust:azookey:lint && pnpm rust:azookey:test && pnpm rust:fmt",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@fontsource-variable/noto-sans-jp": "^5.3.0",
+    "@tauri-apps/api": "^2.5.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.6",
+    "@tauri-apps/cli": "^2.5.0",
+    "@types/node": "^22.15.21",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^4.6.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "jsdom": "^26.1.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.6",
+    "vitest": "^3.2.4"
+  }
+}

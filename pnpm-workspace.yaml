@@ -1,0 +1,5 @@
+packages:
+  - "."
+  - "gateway"
+allowBuilds:
+  esbuild: true

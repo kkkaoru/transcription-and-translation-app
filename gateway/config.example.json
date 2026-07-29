@@ -1,0 +1,36 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "parapper": {
+    "url": "ws://127.0.0.1:18082/ws/recognition",
+    "timeoutMs": 18000
+  },
+  "models": {
+    "zenz-v3.2-xsmall-gguf": {
+      "baseUrl": "http://127.0.0.1:8081",
+      "servedModel": "zenz-v3.2-xsmall-gguf"
+    },
+    "zenz-v3.2-small-gguf": {
+      "baseUrl": "http://127.0.0.1:8082",
+      "servedModel": "zenz-v3.2-small-gguf"
+    },
+    "hy-mt2-1.8b-gguf": {
+      "baseUrl": "http://127.0.0.1:8083",
+      "servedModel": "hy-mt2-1.8b-gguf"
+    },
+    "hy-mt2-1.8b-2bit-gguf": {
+      "baseUrl": "http://127.0.0.1:8084",
+      "servedModel": "hy-mt2-1.8b-2bit-gguf"
+    },
+    "hy-mt2-1.8b-1.25bit-gguf": {
+      "baseUrl": "http://127.0.0.1:8085",
+      "servedModel": "hy-mt2-1.8b-1.25bit-gguf"
+    },
+    "hy-mt2-7b-gguf": {
+      "baseUrl": "http://127.0.0.1:8086",
+      "servedModel": "hy-mt2-7b-gguf"
+    }
+  }
+}
