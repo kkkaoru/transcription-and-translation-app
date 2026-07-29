@@ -111,8 +111,7 @@ impl<T> RecognitionSessionSlot<T> {
 
 impl AppState {
     pub fn build(handle: &AppHandle) -> Result<Self> {
-        let app_config_dir =
-            handle.path().app_config_dir().context("Failed to resolve app config dir")?;
+        let app_config_dir = crate::model::runtime_data_dir(handle)?;
         let config_path = app_config_dir.join("config.json");
         let config_presets_path = app_config_dir.join("config-presets.json");
         let models_root = models_root(handle)?;

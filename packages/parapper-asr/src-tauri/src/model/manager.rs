@@ -92,8 +92,22 @@ const STALE_EXTRACTION_MARKER_AGE: Duration = Duration::from_secs(60 * 60 * 6);
 const CAT_TRANSLATE_0_8B_Q4_K_QUANT_LOCAL_SOURCE_DIR_NAME: &str =
     "cat-translate-0.8b-onnx-q4-k-quant-diagnostic";
 
+/// Returns Parapper's writable runtime directory. The headless Kotoba Beacon
+/// sidecar supplies this override so it never shares mutable state with a
+/// separately installed interactive Parapper application.
+pub fn runtime_data_dir(handle: &AppHandle) -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("PARAPPER_RUNTIME_DIR") {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            anyhow::bail!("PARAPPER_RUNTIME_DIR must be an absolute path")
+        }
+        return Ok(path);
+    }
+    Ok(handle.path().app_data_dir()?)
+}
+
 pub fn models_root(handle: &AppHandle) -> Result<PathBuf> {
-    Ok(handle.path().app_data_dir()?.join("models"))
+    Ok(runtime_data_dir(handle)?.join("models"))
 }
 
 pub fn vad_model_path_from_root(root: &Path) -> PathBuf {

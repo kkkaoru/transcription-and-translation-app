@@ -7,6 +7,41 @@ use tauri::{Manager, generate_handler};
 #[cfg(not(test))]
 use tauri_plugin_log::{Target, TargetKind};
 
+const HEADLESS_RUNTIME_DIR_ENV: &str = "PARAPPER_RUNTIME_DIR";
+const DEFAULT_HEADLESS_PORT: u16 = 18_082;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeadlessOptions {
+    port: u16,
+}
+
+impl HeadlessOptions {
+    fn parse(arguments: &[String]) -> Result<Self, String> {
+        let mut port = DEFAULT_HEADLESS_PORT;
+        let mut index = 0;
+        while index < arguments.len() {
+            match arguments[index].as_str() {
+                "--headless" => {}
+                "--port" => {
+                    index += 1;
+                    let value = arguments
+                        .get(index)
+                        .ok_or_else(|| "--port requires a value".to_string())?;
+                    port = value.parse::<u16>().map_err(|_| {
+                        format!("--port must be an integer between 1 and 65535, got {value:?}")
+                    })?;
+                    if port == 0 {
+                        return Err("--port must be an integer between 1 and 65535".to_string());
+                    }
+                }
+                option => return Err(format!("unsupported headless option: {option}")),
+            }
+            index += 1;
+        }
+        Ok(Self { port })
+    }
+}
+
 #[cfg(test)]
 macro_rules! parapper_config {
     ($($field:ident : $value:expr,)* ..$base:expr $(,)?) => {{
@@ -258,4 +293,108 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
+}
+
+/// Starts the Parapper WebSocket recognition service without exposing its own
+/// desktop window. This mode is intended for a trusted parent application such
+/// as Kotoba Beacon, which supplies a separate runtime data directory through
+/// `PARAPPER_RUNTIME_DIR` so it cannot overwrite an interactive Parapper
+/// installation's settings or model cache.
+#[cfg(not(test))]
+pub fn run_headless(arguments: &[String]) -> Result<(), String> {
+    let options = HeadlessOptions::parse(arguments)?;
+    if std::env::var_os(HEADLESS_RUNTIME_DIR_ENV).is_none() {
+        return Err(format!(
+            "{HEADLESS_RUNTIME_DIR_ENV} is required when starting Parapper with --headless"
+        ));
+    }
+    tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("kotoba-beacon-parapper".to_string()),
+                    }),
+                ])
+                .level(LevelFilter::Info)
+                .build(),
+        )
+        .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                window.hide()?;
+            }
+            let state = state::AppState::build(app.handle())?;
+            app.manage(state);
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = start_headless_recognition(handle, options).await {
+                    log::error!("Kotoba Beacon headless recognition startup failed: {error}");
+                }
+            });
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .map_err(|error| format!("error while building headless Parapper service: {error}"))
+}
+
+#[cfg(not(test))]
+async fn start_headless_recognition(
+    handle: tauri::AppHandle,
+    options: HeadlessOptions,
+) -> anyhow::Result<()> {
+    use crate::{
+        config::{DeveloperConnectionMode, InputSourceKind, StreamingRecognitionOutputMode},
+        model::ensure_models_downloaded,
+    };
+
+    let state = handle.state::<state::AppState>();
+    let mut config = state.get_config().await;
+    config.input.source_kind = InputSourceKind::WebSocket;
+    config.streaming_recognition.enabled = true;
+    config.streaming_recognition.mode = DeveloperConnectionMode::WebSocket;
+    config.streaming_recognition.bind_address = "127.0.0.1".to_string();
+    config.streaming_recognition.port = options.port;
+    config.streaming_recognition.api_key = None;
+    config.streaming_recognition.output_mode = StreamingRecognitionOutputMode::WebSocketOnly;
+    let config = state.set_config(config).await?;
+
+    log::info!("Preparing Kotoba Beacon ASR models before listening on 127.0.0.1:{}", options.port);
+    ensure_models_downloaded(&handle, &config).await?;
+    state.start_audio_input(handle.clone()).await?;
+    log::info!(
+        "Kotoba Beacon ASR service is listening on ws://127.0.0.1:{}/ws/recognition",
+        options.port
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod headless_tests {
+    use super::{DEFAULT_HEADLESS_PORT, HeadlessOptions};
+
+    #[test]
+    fn headless_options_use_the_loopback_service_default_port() {
+        assert_eq!(
+            HeadlessOptions::parse(&["--headless".to_string()]).unwrap().port,
+            DEFAULT_HEADLESS_PORT
+        );
+    }
+
+    #[test]
+    fn headless_options_accept_an_explicit_nonzero_port() {
+        let args = vec!["--headless".to_string(), "--port".to_string(), "19001".to_string()];
+        assert_eq!(HeadlessOptions::parse(&args).unwrap().port, 19_001);
+    }
+
+    #[test]
+    fn headless_options_reject_missing_zero_and_unknown_values() {
+        for args in [
+            vec!["--headless".to_string(), "--port".to_string()],
+            vec!["--headless".to_string(), "--port".to_string(), "0".to_string()],
+            vec!["--headless".to_string(), "--mystery".to_string()],
+        ] {
+            assert!(HeadlessOptions::parse(&args).is_err(), "{args:?} should be rejected");
+        }
+    }
 }

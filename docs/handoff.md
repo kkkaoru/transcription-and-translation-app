@@ -1,14 +1,16 @@
 # Kotoba Beacon: 作業引き継ぎ
 
-最終更新: 2026-07-29。作業ブランチは `agent/kotoba-beacon`、下書きPRは
-[#1](https://github.com/kkkaoru/transcription-and-translation-app/pull/1) です。
+最終更新: 2026-07-29。作業は `main` に線形で統合済みです。`main` と
+`origin/main` は同じ commit を指し、以前の `agent/kotoba-beacon` ブランチと下書き PR は
+削除済みです。
 
 ## 次の環境で始める手順
 
 ```bash
 git clone ssh://git@github.com/kkkaoru/transcription-and-translation-app.git
 cd transcription-and-translation-app
-git switch --track origin/agent/kotoba-beacon
+git switch main
+git pull --ff-only origin main
 bun install --frozen-lockfile
 ```
 
@@ -58,7 +60,7 @@ bun run worker:test
 - `bun run gateway:build`、`bun run gateway:test:coverage` は成功（20 tests）。
 - `bun run worker:typecheck`、`bun run worker:test` は成功（3 tests）。
 
-## 今回コミットする途中作業
+## `main` に含まれる途中作業
 
 1. root Biome から `packages/parapper-asr` を除外する。フォークは upstream の
    ESLint / Prettier / Rust 設定を維持するため、root formatter で書き換えない。
@@ -67,6 +69,10 @@ bun run worker:test
 4. `array-includes@3.1.9` が存在しない `es-abstract/2025/*` を要求する upstream
    不整合を回避するため、root `package.json` の `overrides` で `3.1.8` を固定する。
 5. Parapper の import 漏れと小さな Clippy 指摘を修正する。
+6. Parapper に `--headless [--port PORT]` の起動経路を追加する。このモードは
+   `PARAPPER_RUNTIME_DIR` が必須で、Kotoba Beacon 専用の設定・モデル領域を使う。
+   必要な VAD / 日本語辞書 / ASR モデルを既存の Parapper ダウンローダーで準備してから
+   loopback WebSocket listener を開始する。
 
 ## 未解決事項（次の担当者が優先して確認すること）
 
@@ -77,8 +83,25 @@ Parapper WebSocket (`127.0.0.1:18082`) と llama.cpp の各モデル server
 (`127.0.0.1:8081` など) を参照します。これらは現時点で app bundle から自動起動
 されません。従って、非エンジニア向けの「アプリ単体で全機能」要件は**未完了**です。
 
-次の実装候補は、Parapper の headless recognition server と llama.cpp runner を
-target ごとの sidecar としてバンドルし、Tauri からライフサイクル管理することです。
+Parapper 側には headless recognition server の**ソース実装だけ**が追加済みです。
+`parapper --headless --port 18082` は専用の絶対パス `PARAPPER_RUNTIME_DIR` を要求し、
+既存の対話型 Parapper の設定・モデルキャッシュを共有しません。引数の Rust テスト3件と
+`cargo +1.90.0-aarch64-apple-darwin check -p parapper` は成功しています。しかし、以下は
+未実装または未検証です。
+
+1. root の `scripts/build-sidecar.ts` はまだ Gateway しかコンパイルしない。Parapper
+   headless binary、macOS の `macos-runtime/*.dylib`、Windows の DLL を Tauri bundle へ
+   配置する build step が必要です。
+2. `apps/desktop/src-tauri/src/gateway.rs` はまだ Parapper sidecar を起動していない。
+   `PARAPPER_RUNTIME_DIR=<Kotoba Beacon の app data dir>/parapper` を渡して Parapper を
+   Gateway より先に起動し、終了時も子プロセスを停止する実装が必要です。
+3. `bun --cwd=packages/parapper-asr run build` はこの Mac で `cargo-about` 未導入のため
+   license JSON 生成で停止しました。次の環境では `cargo install cargo-about` を行うか、
+   ビルド工程でライセンス生成をどう再現するかを決め、生成物・第三者表記を bundle に
+   含めてください。
+4. llama.cpp / Zenzai / Hy-MT2 のモデル server は未着手です。対象 OS ごとの実行バイナリ、
+   初回ダウンロード、モデル再配布条件、GPU / CPU fallback を設計して sidecar 化してください。
+
 モデル本体はサイズのため初回ダウンロードまたは任意のモデル保存先選択にする必要が
 あります。実装前に macOS / Windows のコード署名、モデルの再配布条件、GPU/CPU の
 target ごとの挙動を確認してください。
@@ -105,11 +128,11 @@ env -u RUSTUP_TOOLCHAIN bun --cwd=packages/parapper-asr run test
   指摘が上流コードに75件あり失敗します。大量の上流形式変更を避けるため未解決のまま
   です。root CI はこのフォークを root Biome 対象にはしていません。
 
-### CI と PR
+### CI
 
-PR #1 の旧 head では root Biome がフォークを整形対象にして `quality` が失敗しました。
-その後の `e299808` では `packages/inference-server-core/src/index.ts` の export 順序で
-失敗しましたが、原因は OS 差ではありません。作業 Mac の `.git/info/exclude` にある
+以前の CI では root Biome がフォークを整形対象にして `quality` が失敗しました。
+その後 `packages/inference-server-core/src/index.ts` の export 順序でも失敗しましたが、
+原因は OS 差ではありません。作業 Mac の `.git/info/exclude` にある
 `packages/` を Biome が読んで、ローカルだけ packages 全体を検査から外していました。
 
 この状態を解消するため、`biome.json` は Git のローカル ignore ファイルを読まず、
@@ -125,12 +148,9 @@ bun run format:check
 bun run typecheck
 ```
 
-```bash
-gh pr checks 1 --repo kkkaoru/transcription-and-translation-app --watch
-```
-
 macOS / Windows bundle job が失敗した場合は、各 job のログを保存し、OS 固有の
-sidecar名、Syphon framework、Spout2 / MSVC を分けて調査してください。
+sidecar名、Syphon framework、Spout2 / MSVC、今回追加した Parapper runtime を分けて
+調査してください。
 
 ### Cloudflare Worker
 
