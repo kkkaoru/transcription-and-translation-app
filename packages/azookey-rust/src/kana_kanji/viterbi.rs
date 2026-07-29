@@ -161,7 +161,7 @@ fn push_state(states: &mut Vec<PathState>, candidate: PathState, width: usize) {
 #[cfg(test)]
 mod tests {
     use super::{convert_kana_to_kanji, convert_with_dictionary, ConversionOptions};
-    use crate::kana_kanji::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
+    use crate::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
     use std::fs;
 
     #[test]

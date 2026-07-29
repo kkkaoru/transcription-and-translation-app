@@ -175,10 +175,10 @@ impl Pipeline {
                     convert_kana_to_kanji_with_paths(text, paths).map_err(PipelineError::Model)
                 }
             }
-            "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf" => {
-                let prompt = format!(
-                    "音声認識結果を自然な日本語の漢字かな交じり文に変換してください。意味を変えず、変換後の本文だけを出力してください。\n入力: {text}"
-                );
+            "zenz-v2-q5-k-m-gguf" | "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf" => {
+                // Zenz is a dedicated kana-kanji converter, not an instruction-tuned chat model.
+                // Its model contract uses U+EE00 / U+EE01 delimiters around the phonetic input.
+                let prompt = format!("\u{EE00}{text}\u{EE01}");
                 self.chat(config, &config.models.normalizer, prompt).await
             }
             other => Err(PipelineError::UnsupportedModel(other.to_string())),

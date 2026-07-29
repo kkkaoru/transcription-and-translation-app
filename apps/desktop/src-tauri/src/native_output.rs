@@ -1,13 +1,8 @@
-#[cfg(any(
-    all(windows, feature = "native-output"),
-    all(target_os = "macos", feature = "native-output")
-))]
-use std::sync::mpsc;
-use std::sync::mpsc::Sender;
-#[cfg(any(
-    all(windows, feature = "native-output"),
-    all(target_os = "macos", feature = "native-output")
-))]
+#[cfg(any(windows, target_os = "macos"))]
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+#[cfg(not(any(windows, target_os = "macos")))]
+use std::sync::mpsc::SyncSender;
+#[cfg(any(windows, target_os = "macos"))]
 use std::time::Duration;
 
 pub struct OverlayFrame {
@@ -17,21 +12,21 @@ pub struct OverlayFrame {
 }
 
 pub struct NativeOutputHandle {
-    sender: Option<Sender<OverlayFrame>>,
+    sender: Option<SyncSender<OverlayFrame>>,
     kind: String,
 }
 
 impl NativeOutputHandle {
     pub fn new(width: u32, height: u32) -> Self {
         let _ = (width, height);
-        #[cfg(all(windows, feature = "native-output"))]
+        #[cfg(windows)]
         {
             if let Some(sender) = start_spout(width, height) {
                 return Self { sender: Some(sender), kind: "spout2".to_string() };
             }
         }
 
-        #[cfg(all(target_os = "macos", feature = "native-output"))]
+        #[cfg(target_os = "macos")]
         {
             if let Some(sender) = start_syphon(width, height) {
                 return Self { sender: Some(sender), kind: "syphon".to_string() };
@@ -58,21 +53,32 @@ impl NativeOutputHandle {
         }
         match &self.sender {
             Some(sender) => {
-                sender.send(frame).map_err(|_| "native output worker stopped".to_string())
+                #[cfg(any(windows, target_os = "macos"))]
+                match sender.try_send(frame) {
+                    Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
+                    Err(TrySendError::Disconnected(_)) => {
+                        Err("native output worker stopped".to_string())
+                    }
+                }
+                #[cfg(not(any(windows, target_os = "macos")))]
+                {
+                    let _ = sender;
+                    Ok(())
+                }
             }
             None => Ok(()),
         }
     }
 }
 
-#[cfg(all(windows, feature = "native-output"))]
-fn start_spout(width: u32, height: u32) -> Option<Sender<OverlayFrame>> {
-    let (frame_sender, frame_receiver) = mpsc::channel::<OverlayFrame>();
+#[cfg(windows)]
+fn start_spout(width: u32, height: u32) -> Option<SyncSender<OverlayFrame>> {
+    let (frame_sender, frame_receiver) = mpsc::sync_channel::<OverlayFrame>(2);
     let (ready_sender, ready_receiver) = mpsc::channel::<bool>();
     std::thread::spawn(move || {
         // The DirectX path owns its D3D11 device and accepts CPU RGBA pixels,
         // so the Tauri WebView does not need to expose or share a GL context.
-        let mut sender = match spout2::dx::Sender::new("Caption Bridge") {
+        let mut sender = match spout2::dx::Sender::new("Kotoba Beacon") {
             Ok(sender) => sender,
             Err(_) => {
                 let _ = ready_sender.send(false);
@@ -93,12 +99,12 @@ fn start_spout(width: u32, height: u32) -> Option<Sender<OverlayFrame>> {
         .map(|_| frame_sender)
 }
 
-#[cfg(all(target_os = "macos", feature = "native-output"))]
-fn start_syphon(width: u32, height: u32) -> Option<Sender<OverlayFrame>> {
-    let (frame_sender, frame_receiver) = mpsc::channel::<OverlayFrame>();
+#[cfg(target_os = "macos")]
+fn start_syphon(width: u32, height: u32) -> Option<SyncSender<OverlayFrame>> {
+    let (frame_sender, frame_receiver) = mpsc::sync_channel::<OverlayFrame>(2);
     let (ready_sender, ready_receiver) = mpsc::channel::<bool>();
     std::thread::spawn(move || {
-        let mut server = match syphon_rs::Server::new("Caption Bridge", width, height) {
+        let mut server = match syphon_rs::Server::new("Kotoba Beacon", width, height) {
             Ok(server) => server,
             Err(_) => {
                 let _ = ready_sender.send(false);

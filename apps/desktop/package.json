@@ -1,5 +1,5 @@
 {
-  "name": "caption-bridge",
+  "name": "@caption-bridge/desktop",
   "version": "0.1.0",
   "private": true,
   "description": "Local bilingual captions for OBS",
@@ -14,20 +14,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "gateway:dev": "pnpm --dir gateway dev",
-    "gateway:start": "pnpm --dir gateway start",
-    "gateway:build": "pnpm --dir gateway build",
-    "gateway:test": "pnpm --dir gateway test",
-    "gateway:test:coverage": "pnpm --dir gateway test:coverage",
-    "rust:azookey:test": "cargo test --manifest-path azookey-rust/Cargo.toml",
-    "rust:azookey:lint": "cargo clippy --manifest-path azookey-rust/Cargo.toml --all-targets -- -D warnings",
-    "rust:azookey:fmt": "cargo fmt --manifest-path azookey-rust/Cargo.toml -- --check",
-    "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
-    "rust:lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
-    "check:all": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test:coverage && pnpm gateway:build && pnpm gateway:test:coverage && pnpm rust:azookey:fmt && pnpm rust:azookey:lint && pnpm rust:azookey:test && pnpm rust:fmt",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri": "env -u RUSTUP_TOOLCHAIN tauri",
+    "tauri:dev": "env -u RUSTUP_TOOLCHAIN tauri dev",
+    "tauri:build": "env -u RUSTUP_TOOLCHAIN tauri build"
   },
   "dependencies": {
     "@fontsource-variable/noto-sans-jp": "^5.3.0",

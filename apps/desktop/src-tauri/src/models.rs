@@ -78,6 +78,15 @@ pub fn catalog() -> ModelCatalog {
                 &["ja"],
                 false,
             ),
+            model(
+                "normalizer",
+                "zenz-v2-q5-k-m-gguf",
+                "Zenzai v2 Q5_K_M",
+                "低メモリ環境向けのZenzai v2互換GGUFモデルです。",
+                "zenz-v2-Q5_K_M.gguf",
+                &["ja"],
+                false,
+            ),
         ],
         translator: vec![
             model(

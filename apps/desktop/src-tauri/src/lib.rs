@@ -3,12 +3,14 @@
 mod audio;
 mod commands;
 mod config;
-mod kana_kanji;
+mod gateway;
 mod models;
 mod native_output;
 mod output;
 mod pipeline;
 mod state;
+
+pub use caption_bridge_azookey_rust as kana_kanji;
 
 use config::AppConfig;
 use state::AppState;
@@ -16,9 +18,26 @@ use tauri::Manager;
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .clear_targets()
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("kotoba-beacon".to_string()),
+                    },
+                ))
+                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
+                .level(log::LevelFilter::Info)
+                .max_file_size(10 * 1024 * 1024)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(7))
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .build(),
+        )
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let config = load_config(app.handle()).unwrap_or_default();
             app.manage(AppState::new(config, output::runtime_output()));
+            gateway::start(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -34,7 +53,7 @@ pub fn run() {
             commands::publish_overlay_frame,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Caption Bridge");
+        .expect("error while running Kotoba Beacon");
 }
 
 fn load_config(app: &tauri::AppHandle) -> Result<AppConfig, String> {

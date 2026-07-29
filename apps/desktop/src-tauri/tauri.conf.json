@@ -1,15 +1,16 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Caption Bridge",
+  "productName": "Kotoba Beacon",
   "version": "0.1.0",
-  "identifier": "com.captionbridge.desktop",
+  "identifier": "com.kotobabeacon.desktop",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "bun run dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "withGlobalTauri": false,
     "security": {
       "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; script-src 'self'"
@@ -17,7 +18,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Caption Bridge",
+        "title": "Kotoba Beacon",
         "width": 1180,
         "height": 820,
         "minWidth": 960,
@@ -31,9 +32,15 @@
     "active": true,
     "targets": "all",
     "category": "Utility",
-    "shortDescription": "Local bilingual live captions for OBS",
+    "shortDescription": "Local bilingual live captions for OBS by Kotoba Beacon",
+    "externalBin": ["binaries/kotoba-inference-gateway"],
     "resources": {
-      "infoplist/**": "./"
+      "infoplist/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
+      "infoplist/ja.lproj/InfoPlist.strings": "ja.lproj/InfoPlist.strings"
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "frameworks": ["./frameworks/Syphon.framework"]
     }
   }
 }

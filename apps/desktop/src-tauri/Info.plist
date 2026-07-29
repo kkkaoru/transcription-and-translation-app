@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Caption Bridge needs microphone access to generate Japanese and English live captions.</string>
+  <string>Kotoba Beacon needs microphone access to generate Japanese and English live captions.</string>
 </dict>
 </plist>

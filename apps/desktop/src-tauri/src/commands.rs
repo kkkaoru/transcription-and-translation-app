@@ -118,7 +118,7 @@ pub fn open_overlay(app: AppHandle, state: State<'_, AppState>) -> Result<(), St
     }
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     WebviewWindowBuilder::new(&app, "overlay", WebviewUrl::App("index.html?overlay=1".into()))
-        .title("Caption Bridge Overlay")
+        .title("Kotoba Beacon Overlay")
         .inner_size(config.overlay.width as f64, config.overlay.height as f64)
         .position(config.overlay.x as f64, config.overlay.y as f64)
         .decorations(false)

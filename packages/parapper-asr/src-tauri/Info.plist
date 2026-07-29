@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Parapper uses the microphone to transcribe speech from the selected input device.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Parapper captures system audio to transcribe speech playing through the selected speaker (loopback) device.</string>
+</dict>
+</plist>
