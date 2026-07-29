@@ -65,6 +65,10 @@ bun run worker:test
   `gateway.config.json` は内部生成物で、アプリ起動ごとに固定の全7 route で更新する。
 - macOS arm64 で配布予定の `kotoba-zenz-server` を実際の zenz v3.2 small GGUF と起動し、
   `/health`、`/v1/models`、`/v1/chat/completions` が応答することを確認済み。
+- 2026-07-29 に `bun --filter=@caption-bridge/desktop run tauri:build` を macOS arm64 で
+  完走し、`Kotoba Beacon.app` と `Kotoba Beacon_0.1.0_aarch64.dmg` の生成を確認した。
+  これらと sidecar binary、dylib、`target/`、`.tools/` は再生成可能なGit管理外の出力であり、
+  リポジトリにも引き継ぎ対象にも含めない。
 - Zenzai 系は `zenz-v3.2-xsmall-gguf`、`zenz-v3.2-small-gguf`、
   `zenz-v2-q5-k-m-gguf` を選択できる。
 - AzooKey と Zenzai のリクエスト経路を実機の llama.cpp server で確認済み。
@@ -104,9 +108,10 @@ Windows runtime はまだ検証が必要です。次の担当者は下記を優�
    明示する必要があるため、未導入環境では
    `cargo install cargo-about --locked --features cli` を先に実行してください。CI desktop job は
    同じ feature 指定に更新済みです。
-2. `bun run tauri:build` を macOS と Windows で実行し、Gateway、Parapper、zenz、Hy-MT2 の
-   4 binary、各 dylib/DLL、`third-party/parapper-rust-licenses.json`、llama.cpp の MIT notice が
-   最終 bundle にあることを確認してください。
+2. macOS arm64 の非署名 build は上記のとおり成功済みです。コード署名後の最終 `.app` と
+   Windows build では、Gateway、Parapper、zenz、Hy-MT2 の4 binary、各 dylib/DLL、
+   `third-party/parapper-rust-licenses.json`、llama.cpp の MIT notice が最終 bundle にあることを
+   確認してください。
 3. クリーンな app-data で、xsmall zenz と標準 Hy-MT2 をそれぞれ選び、初回ダウンロード、
    `POST /v1/chat/completions`、アプリ終了時の sidecar 停止を確認してください。Hy-MT2標準は
    約1.13 GB必要です。ネットワークを使う個別確認には
