@@ -11,8 +11,8 @@ Parapper の開発手順、再現テスト、モック、lint、配布、モデ�
 
 ```powershell
 proto use
-pnpm i
-pnpm build
+bun install
+bun run build
 cargo test -p parapper
 cargo check -p parapper
 ```
@@ -20,7 +20,7 @@ cargo check -p parapper
 開発起動は以下を実行します。
 
 ```powershell
-pnpm tauri dev
+bun run tauri dev
 ```
 
 ## 再現テストと診断
@@ -89,16 +89,16 @@ TypeScript 側と Rust 側でそれぞれ用意してあります。CI でも fo
 TypeScript / フロントエンド:
 
 ```powershell
-pnpm format     # Prettier で src 配下と root の JSON を整形
-pnpm lint       # ESLint (typescript-eslint, import, unused-imports)
-pnpm spell      # cspell によるスペルチェック
+bun run format     # Prettier で src 配下と root の JSON を整形
+bun run lint       # ESLint (typescript-eslint, import, unused-imports)
+bun run spell      # cspell によるスペルチェック
 ```
 
 Rust:
 
 ```powershell
-pnpm rust:fmt   # cargo fmt -p parapper -- --check
-pnpm rust:lint  # cargo clippy --all-targets --all-features -p parapper -- -D warnings
+bun run rust:fmt   # cargo fmt -p parapper -- --check
+bun run rust:lint  # cargo clippy --all-targets --all-features -p parapper -- -D warnings
 ```
 
 workspace の `[lints.clippy]` で `pedantic = "warn"` を有効化しているため、pedantic 系の指摘も `-D warnings` によりエラーになります。
@@ -115,7 +115,7 @@ workspace の `[lints.clippy]` で `pedantic = "warn"` を有効化している�
 ローカルで MSI を作る場合は以下を実行します。
 
 ```powershell
-pnpm build:msi
+bun run build:msi
 ```
 
 GitHub Actions の `Build` workflow は Windows MSI を作成します。`main` への push、pull request、手動実行では MSI を Actions artifact として保存します。`v*` タグを push した場合は GitHub Releases を作成し、生成した MSI を添付します。
@@ -143,4 +143,4 @@ Turn Detector は `simple`, `morph`, `namo` から選択できます。`simple` 
 
 ## ライセンス生成
 
-Rust 依存クレートのライセンス一覧は `pnpm generate-license` で `licenses/rust.json` に生成します。
+Rust 依存クレートのライセンス一覧は `bun run generate-license` で `licenses/rust.json` に生成します。

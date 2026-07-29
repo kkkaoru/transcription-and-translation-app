@@ -129,7 +129,7 @@ fn run_delivery_queue(receiver: mpsc::Receiver<DeveloperHttpRequest>) {
                 request.url
             ),
             Err(error) => {
-                log::warn!("Failed to send developer HTTP event to {}: {error}", request.url)
+                log::warn!("Failed to send developer HTTP event to {}: {error}", request.url);
             }
         }
     }

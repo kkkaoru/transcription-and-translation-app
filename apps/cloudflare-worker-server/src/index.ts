@@ -1,10 +1,10 @@
+import type { GatewayConfig } from "@caption-bridge/inference-server-core";
 import {
   createGatewayFetchHandler,
   GatewayError,
   pcm16ToWav,
   validateGatewayConfig,
 } from "@caption-bridge/inference-server-core";
-import type { GatewayConfig } from "@caption-bridge/inference-server-core";
 
 export interface Env {
   ASR_API_TOKEN?: string;
@@ -68,9 +68,7 @@ const upstreamTranscriber = (
       response = await fetcher(upstreamUrl, {
         method: "POST",
         body: form,
-        ...(env.ASR_API_TOKEN
-          ? { headers: { authorization: `Bearer ${env.ASR_API_TOKEN}` } }
-          : {}),
+        ...(env.ASR_API_TOKEN ? { headers: { authorization: `Bearer ${env.ASR_API_TOKEN}` } } : {}),
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "connection failed";
@@ -84,8 +82,16 @@ const upstreamTranscriber = (
       );
     }
     const payload: unknown = await response.json();
-    if (!payload || typeof payload !== "object" || typeof (payload as { text?: unknown }).text !== "string") {
-      throw new GatewayError(502, "asr_invalid_response", "ASR upstream response has no text field");
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      typeof (payload as { text?: unknown }).text !== "string"
+    ) {
+      throw new GatewayError(
+        502,
+        "asr_invalid_response",
+        "ASR upstream response has no text field",
+      );
     }
     return (payload as { text: string }).text;
   };
@@ -101,7 +107,10 @@ export const createWorker = (fetcher: typeof fetch = fetch): WorkerHandler => ({
       config = workerConfig(env);
     } catch (error) {
       const detail = error instanceof Error ? error.message : "invalid Worker configuration";
-      return cors(json(500, { error: { code: "invalid_configuration", message: detail } }), env.CORS_ORIGIN);
+      return cors(
+        json(500, { error: { code: "invalid_configuration", message: detail } }),
+        env.CORS_ORIGIN,
+      );
     }
     const transcribe = upstreamTranscriber(env, fetcher);
     const handler = createGatewayFetchHandler(config, {

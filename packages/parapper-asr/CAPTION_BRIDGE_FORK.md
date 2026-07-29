@@ -3,10 +3,11 @@
 This directory vendors [Parakeet-Inc/Parapper-ASR](https://github.com/Parakeet-Inc/Parapper-ASR)
 at `a01922f0383214e01a3875ec673fa1c316cdeb36` (`v0.4.0-beta`, 2026-07-11).
 
-It remains a self-contained Node and Rust workspace. Its `package.json`,
-`pnpm-lock.yaml`, `Cargo.toml`, and `Cargo.lock` deliberately do not join the
-root Caption Bridge workspace. Install and run it through the root
-`parapper:*` commands or directly from this directory.
+It remains a self-contained Node and Rust package. Its `package.json`,
+`Cargo.toml`, and `Cargo.lock` retain their upstream package boundaries, while
+the root Bun workspace resolves its JavaScript dependencies in `bun.lock`.
+Install and run it through the root `parapper:*` commands or directly from this
+directory with Bun.
 
 ## Caption Bridge changes
 

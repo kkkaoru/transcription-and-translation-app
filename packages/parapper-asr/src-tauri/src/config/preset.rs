@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{
     AsrLanguage, AsrModel, AsrPrecision, LocalTranslationModel, LocalTtsVoice,
     NoiseCancellationModel, ParapperConfig, SpeechBackend, SpeechMapping, SpeechSourceKind,
-    TranslationLanguage, TranslationMapping, TurnDetector,
+    TranslationBackend, TranslationLanguage, TranslationMapping, TurnDetector,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,7 +172,7 @@ fn japanese_to_english_translation_mapping() -> TranslationMapping {
     TranslationMapping {
         id: "translate-ja-en".to_string(),
         source_asr_model: Some(AsrModel::ReazonSpeechK2V2),
-        backend: Default::default(),
+        backend: TranslationBackend::default(),
         local_model: LocalTranslationModel::default(),
         source_lang: TranslationLanguage::Ja,
         target_lang: TranslationLanguage::En,
@@ -189,7 +189,7 @@ fn japanese_english_bidirectional_translation_speech_config() -> ParapperConfig 
         TranslationMapping {
             id: "translate-ja-en".to_string(),
             source_asr_model: Some(AsrModel::ReazonSpeechK2V2),
-            backend: Default::default(),
+            backend: TranslationBackend::default(),
             local_model: LocalTranslationModel::default(),
             source_lang: TranslationLanguage::Ja,
             target_lang: TranslationLanguage::En,
@@ -197,7 +197,7 @@ fn japanese_english_bidirectional_translation_speech_config() -> ParapperConfig 
         TranslationMapping {
             id: "translate-en-ja".to_string(),
             source_asr_model: Some(AsrModel::NemoParakeetTdt0_6BV2Int8),
-            backend: Default::default(),
+            backend: TranslationBackend::default(),
             local_model: LocalTranslationModel::default(),
             source_lang: TranslationLanguage::En,
             target_lang: TranslationLanguage::Ja,

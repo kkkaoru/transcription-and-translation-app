@@ -6,8 +6,6 @@
     "dist/**",
     "licenses/**",
     "node_modules/**",
-    "pnpm-lock.yaml",
-    "pnpm-workspace.yaml",
     "scripts/prepare-macos-runtime.sh",
     "scripts/sign-macos-local.sh",
     "src-tauri/gen/**",

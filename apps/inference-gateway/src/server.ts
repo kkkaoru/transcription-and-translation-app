@@ -14,7 +14,11 @@ export interface GatewayDependencies {
 
 const MAX_PROXY_REQUEST_BYTES = MAX_AUDIO_BYTES + 64 * 1024;
 
-const writeJson = (response: ServerResponse, status: number, body: Record<string, unknown>): void => {
+const writeJson = (
+  response: ServerResponse,
+  status: number,
+  body: Record<string, unknown>,
+): void => {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
 };
@@ -57,7 +61,10 @@ const handleAdapterError = (response: ServerResponse, error: unknown): void => {
     return;
   }
   writeJson(response, 500, {
-    error: { code: "internal_error", message: "The inference gateway encountered an internal error" },
+    error: {
+      code: "internal_error",
+      message: "The inference gateway encountered an internal error",
+    },
   });
 };
 

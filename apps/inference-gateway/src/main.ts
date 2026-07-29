@@ -2,13 +2,15 @@ import { resolve } from "node:path";
 import { loadGatewayConfig } from "./config.js";
 import { createGatewayServer } from "./server.js";
 
-const configArgument = process.argv.findIndex((argument) => argument === "--config");
+const configArgument = process.argv.indexOf("--config");
 if (configArgument >= 0 && !process.argv[configArgument + 1]) {
   throw new Error("--config requires an absolute or relative JSON file path");
 }
 const explicitConfig = configArgument >= 0 ? process.argv[configArgument + 1] : undefined;
 const configPath =
-  explicitConfig ?? process.env["CAPTION_BRIDGE_GATEWAY_CONFIG"] ?? resolve(process.cwd(), "gateway.config.json");
+  explicitConfig ??
+  process.env["CAPTION_BRIDGE_GATEWAY_CONFIG"] ??
+  resolve(process.cwd(), "gateway.config.json");
 const config = loadGatewayConfig(configPath);
 const server = createGatewayServer(config);
 

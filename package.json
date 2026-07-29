@@ -3,11 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Caption Bridge workspace commands",
-  "workspaces": [
-    ".",
-    "apps/*",
-    "packages/*"
-  ],
+  "workspaces": [".", "apps/*", "packages/*"],
+  "overrides": {
+    "array-includes": "3.1.8"
+  },
   "scripts": {
     "sidecar:build": "bun run scripts/build-sidecar.ts",
     "dev": "bun --filter=@caption-bridge/desktop run dev",
@@ -24,10 +23,10 @@
     "gateway:build": "bun --filter=@caption-bridge/inference-gateway run build",
     "gateway:test": "bun --filter=@caption-bridge/inference-gateway run test",
     "gateway:test:coverage": "bun --filter=@caption-bridge/inference-gateway run test:coverage",
-    "parapper:install": "bun --cwd packages/parapper-asr install --frozen-lockfile",
-    "parapper:dev": "bun --cwd packages/parapper-asr run dev",
-    "parapper:tauri": "bun --cwd packages/parapper-asr run tauri",
-    "parapper:check": "bun --cwd packages/parapper-asr run check",
+    "parapper:install": "bun --cwd=packages/parapper-asr install --frozen-lockfile",
+    "parapper:dev": "bun --cwd=packages/parapper-asr run dev",
+    "parapper:tauri": "bun --cwd=packages/parapper-asr run tauri",
+    "parapper:check": "bun --cwd=packages/parapper-asr run check",
     "worker:dev": "bun --filter=@caption-bridge/cloudflare-worker-server run dev",
     "worker:typecheck": "bun --filter=@caption-bridge/cloudflare-worker-server run typecheck",
     "worker:test": "bun --filter=@caption-bridge/cloudflare-worker-server run test",

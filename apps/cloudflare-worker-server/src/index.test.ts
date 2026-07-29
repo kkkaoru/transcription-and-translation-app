@@ -10,10 +10,12 @@ const env = {
 
 describe("Cloudflare Worker inference adapter", () => {
   it("proxies only configured chat models with CORS protection", async () => {
-    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+    const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
       expect(init?.headers).toEqual({ "content-type": "application/json" });
       expect(JSON.parse(String(init?.body))).toMatchObject({ model: "hy-live", top_k: 20 });
-      return new Response(JSON.stringify({ choices: [{ message: { content: "hello" } }] }));
+      return Promise.resolve(
+        new Response(JSON.stringify({ choices: [{ message: { content: "hello" } }] })),
+      );
     });
     const response = await createWorker(fetcher).fetch(
       new Request("https://worker.example/v1/chat/completions", {
@@ -24,7 +26,9 @@ describe("Cloudflare Worker inference adapter", () => {
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe(env.CORS_ORIGIN);
-    await expect(response.json()).resolves.toEqual({ choices: [{ message: { content: "hello" } }] });
+    await expect(response.json()).resolves.toEqual({
+      choices: [{ message: { content: "hello" } }],
+    });
   });
 
   it("keeps ASR unavailable until an explicit HTTPS upstream is configured", async () => {
@@ -41,12 +45,14 @@ describe("Cloudflare Worker inference adapter", () => {
 
   it("rejects malformed model route configuration and handles preflight", async () => {
     const worker = createWorker();
-    const invalid = await worker.fetch(
-      new Request("https://worker.example/health"),
-      { ...env, MODEL_ROUTES: "not-json" },
-    );
+    const invalid = await worker.fetch(new Request("https://worker.example/health"), {
+      ...env,
+      MODEL_ROUTES: "not-json",
+    });
     expect(invalid.status).toBe(500);
-    await expect(invalid.json()).resolves.toMatchObject({ error: { code: "invalid_configuration" } });
+    await expect(invalid.json()).resolves.toMatchObject({
+      error: { code: "invalid_configuration" },
+    });
     const preflight = await worker.fetch(
       new Request("https://worker.example/v1/chat/completions", { method: "OPTIONS" }),
       env,

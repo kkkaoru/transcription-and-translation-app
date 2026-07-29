@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { GatewayError, SerialGate } from "@caption-bridge/inference-server-core";
+import { GatewayError } from "@caption-bridge/inference-server-core";
 import WebSocket from "ws";
 import { PARAPPER_SAMPLE_RATE, splitParapperFrames } from "./audio.js";
 

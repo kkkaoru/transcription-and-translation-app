@@ -330,6 +330,7 @@ mod tests {
     use crate::{
         config::AsrModel,
         recognition::{
+            control::tests::tauri_test_handle,
             segmentation::{segment::builder::SegmentCloseReason, vad::engine::VadResult},
             transcription::{
                 asr::task::{

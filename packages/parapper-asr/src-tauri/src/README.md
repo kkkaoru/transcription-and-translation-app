@@ -160,7 +160,7 @@ YNC plugin の port discovery は `HKCU\Software\YukarinetteConnectorNeo\TransSe
 | YNC request/response payload | mock HTTP server を使う `connect/ync/tests.rs` |
 | 読み上げキュー / 順序 / local TTS | `synthesis/queue.rs`, `synthesis/local/queue.rs` tests |
 | delivery -> translation -> synthesis の横断 | `pipeline_tests.rs` |
-| UI type/build regression | `pnpm build` |
+| UI type/build regression | `bun run build` |
 
 runtime bug を直すときは、望ましい挙動から mock または unit test を先に書き、その後に実装を変えます。
 
