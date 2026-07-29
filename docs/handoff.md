@@ -108,7 +108,15 @@ env -u RUSTUP_TOOLCHAIN bun --cwd=packages/parapper-asr run test
 ### CI と PR
 
 PR #1 の旧 head では root Biome がフォークを整形対象にして `quality` が失敗しました。
-このコミットを push した後、新しい workflow を確認してください。
+`e299808` を head にした実行ではフォークは除外できていますが、Ubuntu CI の Biome が
+`packages/inference-server-core/src/index.ts` の type export と value export の順序を
+再整形しようとして `quality` が失敗しています。ローカルの Biome 2.5.5 では
+`bun run lint` が成功しており、この差は未解決です。
+
+次の環境では、CI の実行ログを完全に取得した上で、Bun lockfile の Biome 2.5.5 を
+Linux の fresh install で明示的に再現してください。必要なら CI 上で求められる順序に
+`packages/inference-server-core/src/index.ts` を整形し、ローカル・Linux の両方で
+`bun run lint` を確認してから修正を push してください。
 
 ```bash
 gh pr checks 1 --repo kkkaoru/transcription-and-translation-app --watch
