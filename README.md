@@ -1,4 +1,4 @@
-# Caption Bridge
+# Kotoba Beacon
 
 OBS配信向けのローカル字幕補助ツールです。マイク入力を日本語音声として認識し、かな漢字変換を行った後、日本語と英語の字幕を常に同時に透明オーバーレイへ表示します。
 
@@ -19,41 +19,46 @@ Transparent Tauri overlay → OBS Window Capture
 
 UIと推論処理はRustコマンドとHTTPプロトコルの境界で分離しています。`endpoint.baseUrl`を別PCのゲートウェイへ変更すれば、推論だけを別マシンに移せます。
 
-フロントエンドは責務ごとに分割しています。
+リポジトリはワークスペースとして、実行可能なアプリケーションと共有 Rust
+パッケージを分離しています。
 
 ```text
-src/
-  components/  共通フォーム部品
-  core/        音声・設定・Tauriブリッジ・型
-  i18n/        日英辞書とUI言語Provider
-  live/        メイン画面と録音制御
-  overlay/     透明字幕・ネイティブRGBAフレーム
-  settings/    設定画面と文字スタイル編集
+.github/workflows/       CI
+apps/
+  desktop/               Tauri + React デスクトップアプリ
+    src/                 UI（components, core, i18n, live, overlay, settings）
+    src-tauri/           Rust アプリケーション境界
+  inference-gateway/     Tauri サイドカーになる HTTP・WebSocket ゲートウェイ
+  cloudflare-worker-server/ Cloudflare Worker 用の同じ HTTP 契約
+packages/
+  inference-server-core/  ローカル/Worker 共通の HTTP 契約・ルーティング
+  azookey-rust/          かな漢字変換の共有 Rust crate
+  parapper-asr/          Parapper-ASR フォーク（LICENSE と upstream 帰属を保持）
+docs/                    設計・運用・引き継ぎ資料
 ```
 
 ## 開発環境
 
-- Node.js 20+
-- pnpm 10+
+- Bun 1.3.14
 - Rust 1.88（`rust-toolchain.toml`で固定）
 - Tauri 2
 - macOS / Windows（Linuxはブラウザプレビューとデバッグ対象）
 
 ```bash
-pnpm install
-pnpm dev
-pnpm typecheck
-pnpm lint
-pnpm format:check
-pnpm test:coverage
-pnpm build
-pnpm tauri:dev
+bun install --frozen-lockfile
+bun run dev
+bun run typecheck
+bun run lint
+bun run format:check
+bun run test:coverage
+bun run build
+bun run tauri:dev
 
 # Rustも含めたCI相当の検査
-pnpm check:all
+bun run check:all
 ```
 
-`pnpm test:coverage`と`pnpm gateway:test:coverage`は、それぞれの対象にstatements / branches / functions / lines 95%以上を強制します。純粋なAzooKey Rustポートも、GTK/WebKit不要の`pnpm rust:azookey:test`とClippyで検査します。
+`bun run test:coverage`と`bun run gateway:test:coverage`は、それぞれの対象にstatements / branches / functions / lines 95%以上を強制します。純粋なAzooKey Rustポートも、GTK/WebKit不要の`bun run rust:azookey:test`とClippyで検査します。
 
 字幕フォントは`@fontsource-variable/noto-sans-jp`を同梱し、Noto Sans JP Variableを既定にしています。
 デスクトップ用アイコンと配布バンドル設定も含みます。macOSのマイク利用説明はOS言語に合わせて日本語・英語を表示します。
@@ -64,11 +69,11 @@ pnpm check:all
 
 ## 起動とOBSへの追加
 
-1. Parapperと、テキストモデルのOpenAI互換エンドポイントを起動します。MVPの既定ゲートウェイは`http://127.0.0.1:8765`です。
-2. Caption Bridgeを起動します。
+1. Kotoba Beacon を起動します。アプリ内蔵の Bun サイドカーが自動で `http://127.0.0.1:8765` を起動します。
+2. ローカル ASR とモデルサーバーを設定します。開発時は Parapper を `bun run parapper:install` 後に `bun run parapper:tauri` で起動できます。
 3. 「設定」で音声入力デバイス、言語コード、モデル、推論ゲートウェイURLを設定して保存します。
 4. 「マイク一覧を再取得」でデバイス権限後のマイク名を更新します。
-5. 「オーバーレイを開く」を押し、OBSのWindow Captureで`Caption Bridge Overlay`を追加します。
+5. 「オーバーレイを開く」を押し、OBSのWindow Captureで`Kotoba Beacon Overlay`を追加します。
 6. OBS側のキャプチャは透明度を維持し、Caption Bridge側では背景を設定しません。
 
 標準経路は透明ウィンドウのため、OBS側のWindow Captureだけで利用できます。WindowsのSpout2、macOSのSyphonを使う場合は、対応するOBSプラグインと下記のネイティブ出力ビルドを用います。これらの設定項目はUIには表示していません。Spout2/Syphonへ送るのは`?overlay=1`の透明字幕キャンバスだけであり、設定画面・プレビュー・ウィンドウ装飾は送信されません。
@@ -76,10 +81,12 @@ pnpm check:all
 ## モデル
 
 - ASR: [Parapper-ASR](https://github.com/Parakeet-Inc/Parapper-ASR) の日本語モデルID `parapper-ja`
-- 日本語変換: Rustで再実装したAzooKey LOUDS辞書/接続コスト/Viterbi、または`zenz-v3.2-xsmall-gguf` / `zenz-v3.2-small-gguf`
+- 日本語変換: Rustで再実装したAzooKey LOUDS辞書/接続コスト/Viterbi、または Zenzai `v2` / `v3.2 xsmall` / `v3.2 small` GGUF
 - 翻訳: 日本語→英語に限定したHy-MT2 1.8B系GGUF、または7B GGUF
 
-GGUFをCaption Bridge本体に同梱せず、推論ゲートウェイ側でモデルをロードします。これによりアプリの更新と数GBのモデル更新を分離できます。モデル選択はゲートウェイ設定の信頼済みモデルルートに対応しており、アプリから任意のサーバーファイルをロードすることはありません。AzooKeyを選んだ場合だけ、辞書本体・ユーザー辞書・学習メモリの場所を設定できます。
+GGUFをアプリ本体に同梱せず、信頼済みのモデルルートだけをゲートウェイに設定します。アプリから任意のサーバーファイルをロードすることはありません。Zenzai は専用の AzooKey llama.cpp フォークで実行し、U+EE00/U+EE01 の変換プロトコルをゲートウェイが OpenAI 互換レスポンスへ変換します。AzooKeyを選んだ場合だけ、辞書本体・ユーザー辞書・学習メモリの場所を設定できます。
+
+UI は [Simple Light Blue palette](https://www.schemecolor.com/simple-light-blue-color-palette.php) の `#AFDCEB`, `#CAE9F5`, `#F0F8FF`, `#ADD8E6`, `#86C5D8` を基調にしています。
 
 推論ゲートウェイの契約は[docs/inference-gateway.md](docs/inference-gateway.md)、出力分離の根拠は[docs/architecture.md](docs/architecture.md)、ネイティブ開発環境は[docs/native-development.md](docs/native-development.md)を参照してください。
 
@@ -89,17 +96,17 @@ GGUFをCaption Bridge本体に同梱せず、推論ゲートウェイ側でモ�
 
 ```powershell
 # Windows PowerShell
-pnpm tauri build -- --features native-output
+bun run tauri:build
 ```
 
 ```bash
 # macOS
-pnpm tauri build -- --features native-output
+bun run tauri:build
 ```
 
-`native-output`を付けない通常ビルドは、OBSのWindow Captureで透明オーバーレイを読み込みます。Spout2/Syphonを使う場合は、対応するOBS側プラグインも別途インストールしてください。ネイティブcrateの初期化に失敗した場合も透明ウィンドウへフォールバックします。
+すべてのデスクトップビルドでネイティブ出力を有効にします。Spout2/Syphonを使う場合は、対応するOBS側プラグインも別途インストールしてください。ネイティブcrateの初期化に失敗した場合も透明ウィンドウへフォールバックします。
 
-Spout2のネイティブビルドはWindows x86_64 + MSVCが対象です。Syphonは`Syphon.framework`を`/Library/Frameworks`または`~/Library/Frameworks`へ用意してからビルドしてください。
+Spout2のネイティブビルドはWindows x86_64 + MSVCが対象です。Syphon.framework 5 は macOS バンドルに同梱します。
 
 ## 設計上の注意
 

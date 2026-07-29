@@ -1,6 +1,6 @@
 # Inference gateway
 
-`gateway/` is the executable boundary between the Tauri application and model
+`apps/inference-gateway/` is the executable boundary between the Tauri application and model
 runtimes. It gives the app one HTTP endpoint while keeping Parapper and the
 GGUF servers local or on another PC.
 
@@ -27,25 +27,30 @@ arbitrary local file. Hy-MT2 receives its documented `top_k=20` and
 ## Start the gateway
 
 ```bash
-cp gateway/config.example.json gateway/gateway.config.json
-pnpm gateway:build
-pnpm gateway:start
+cp apps/inference-gateway/config.example.json apps/inference-gateway/gateway.config.json
+bun run gateway:build
+bun run gateway:start
 
 # separate terminal
 curl http://127.0.0.1:8765/health
 ```
 
-Use `pnpm gateway:dev` while editing. Set
+Use `bun run gateway:dev` while editing. Set
 `CAPTION_BRIDGE_GATEWAY_CONFIG` to an absolute JSON path when the configuration
-lives outside `gateway/`. Bind the gateway to `127.0.0.1` by default; when
+lives outside `apps/inference-gateway/`. Bind the gateway to `127.0.0.1` by default; when
 putting it on another PC, bind to the LAN interface, use a private network or a
 reverse proxy with TLS/authentication, and set Caption Bridge's inference URL
 to that PC's HTTPS/HTTP URL.
 
 ## Parapper
 
-Run the Parapper-ASR runtime using its upstream installation instructions and
-configure its streaming endpoint in `parapper.url`. The default is
+Caption Bridge vendors its compatible Parapper-ASR fork in
+`packages/parapper-asr/`. Install its dependencies separately with
+`bun run parapper:install`, then run it with `bun run parapper:tauri`.
+The fork defaults its Japanese streaming `text` to a hiragana reading and
+keeps the original ASR text in optional `source_text`; the existing gateway
+continues to consume `text`. Configure its streaming endpoint in
+`parapper.url`. The default is
 `ws://127.0.0.1:18082/ws/recognition`. If the runtime needs authorization, set
 `apiKeyEnv` to the name of an environment variable (never put a token in the
 JSON configuration); the gateway sends it as a Bearer token.

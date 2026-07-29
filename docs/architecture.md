@@ -31,14 +31,15 @@ overlay dimensions atomically.
 
 ## Layer ownership
 
-- `src/live`, `src/settings`, `src/components`: operator UI only
-- `src/overlay`: transparent rendering and RGBA frame generation only
-- `src/core`: browser audio capture, configuration, and Tauri bridge
-- `src-tauri`: persistence, validation, pipeline, native window, and native
+- `apps/desktop/src/live`, `apps/desktop/src/settings`, `apps/desktop/src/components`:
+  operator UI only
+- `apps/desktop/src/overlay`: transparent rendering and RGBA frame generation only
+- `apps/desktop/src/core`: browser audio capture, configuration, and Tauri bridge
+- `apps/desktop/src-tauri`: persistence, validation, pipeline, native window, and native
   sender enforcement
-- `gateway`: HTTP/WS model boundary, usable locally or remotely
-- `src-tauri/src/kana_kanji` / `azookey-rust`: dependency-free AzooKey binary
-  dictionary reader and Viterbi converter, separately testable without GTK
+- `apps/inference-gateway`: HTTP/WS model boundary, usable locally or remotely
+- `packages/azookey-rust`: dependency-free AzooKey binary dictionary reader and
+  Viterbi converter, separately testable without GTK
 
 ## AzooKey input scope
 
