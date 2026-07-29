@@ -291,8 +291,13 @@ pub fn run() {
             commands::start_recognition,
             commands::stop_recognition,
         ])
-        .run(tauri::generate_context!())
+        .run(app_context())
         .expect("error while building tauri application");
+}
+
+#[cfg(not(test))]
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
 }
 
 /// Starts the Parapper WebSocket recognition service without exposing its own
@@ -334,7 +339,7 @@ pub fn run_headless(arguments: &[String]) -> Result<(), String> {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(app_context())
         .map_err(|error| format!("error while building headless Parapper service: {error}"))
 }
 

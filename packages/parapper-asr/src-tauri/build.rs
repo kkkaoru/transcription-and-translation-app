@@ -155,6 +155,10 @@ fn copy_macos_sherpa_runtime_libraries() {}
 
 #[cfg(target_os = "macos")]
 fn configure_macos_runtime_library_path() {
+    // Tauri copies external sidecar resources beside the executable in debug
+    // builds, while an installed macOS app keeps them in Contents/Resources.
+    // Keep both lookup locations so the same headless binary works in each.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/macos-runtime");
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Resources/macos-runtime");
 }
 

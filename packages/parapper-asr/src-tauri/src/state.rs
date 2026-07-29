@@ -3,9 +3,9 @@ use std::{
     sync::{Arc, Mutex as StdMutex, mpsc::Sender},
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::{

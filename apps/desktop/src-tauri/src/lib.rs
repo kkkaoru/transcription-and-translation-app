@@ -17,15 +17,13 @@ use state::AppState;
 use tauri::Manager;
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
                 .clear_targets()
-                .target(tauri_plugin_log::Target::new(
-                    tauri_plugin_log::TargetKind::LogDir {
-                        file_name: Some("kotoba-beacon".to_string()),
-                    },
-                ))
+                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                    file_name: Some("kotoba-beacon".to_string()),
+                }))
                 .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
                 .level(log::LevelFilter::Info)
                 .max_file_size(10 * 1024 * 1024)
@@ -37,6 +35,7 @@ pub fn run() {
         .setup(|app| {
             let config = load_config(app.handle()).unwrap_or_default();
             app.manage(AppState::new(config, output::runtime_output()));
+            app.manage(gateway::RuntimeServices::default());
             gateway::start(app.handle())?;
             Ok(())
         })
@@ -52,8 +51,13 @@ pub fn run() {
             commands::close_overlay,
             commands::publish_overlay_frame,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Kotoba Beacon");
+        .build(tauri::generate_context!())
+        .expect("error while building Kotoba Beacon");
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            gateway::shutdown(app_handle);
+        }
+    });
 }
 
 fn load_config(app: &tauri::AppHandle) -> Result<AppConfig, String> {

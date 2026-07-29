@@ -33,10 +33,15 @@
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Local bilingual live captions for OBS by Kotoba Beacon",
-    "externalBin": ["binaries/kotoba-inference-gateway"],
+    "externalBin": ["binaries/kotoba-inference-gateway", "binaries/kotoba-parapper"],
     "resources": {
       "infoplist/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
-      "infoplist/ja.lproj/InfoPlist.strings": "ja.lproj/InfoPlist.strings"
+      "infoplist/ja.lproj/InfoPlist.strings": "ja.lproj/InfoPlist.strings",
+      "resources/macos-runtime": "macos-runtime",
+      "resources/parapper-runtime": "parapper-runtime",
+      "../../../packages/parapper-asr/LICENSE": "third-party/Parapper-ASR-LICENSE",
+      "../../../packages/parapper-asr/CAPTION_BRIDGE_FORK.md": "third-party/Parapper-ASR-NOTICE.md",
+      "../../../packages/parapper-asr/public/licenses/rust.json": "third-party/parapper-rust-licenses.json"
     },
     "macOS": {
       "minimumSystemVersion": "12.0",

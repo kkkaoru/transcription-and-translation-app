@@ -1,8 +1,8 @@
 # Kotoba Beacon: 作業引き継ぎ
 
-最終更新: 2026-07-29。作業は `main` に線形で統合済みです。`main` と
-`origin/main` は同じ commit を指し、以前の `agent/kotoba-beacon` ブランチと下書き PR は
-削除済みです。
+最終更新: 2026-07-29。作業は `main` に線形で統合します。以前の
+`agent/kotoba-beacon` ブランチと下書き PR は削除済みです。次の環境では、まず
+`git status -sb` と `git log --oneline origin/main..HEAD` で push 状態を確認してください。
 
 ## 次の環境で始める手順
 
@@ -32,7 +32,8 @@ bun run worker:test
 ## 現在の構成
 
 - `apps/desktop` — Kotoba Beacon の Tauri デスクトップアプリ。起動時に Bun で
-  コンパイルした `kotoba-inference-gateway` sidecar を起動します。
+  コンパイルした `kotoba-parapper` headless sidecar を先に、続いて
+  `kotoba-inference-gateway` sidecar を起動します。終了時には両方を停止します。
 - `apps/inference-gateway` — ローカル OpenAI 互換 HTTP ゲートウェイ。
 - `apps/cloudflare-worker-server` — Cloudflare Workers 上の同じ HTTP 契約のアダプタ。
 - `packages/inference-server-core` — Gateway / Worker で共有するルーティング、HTTP、
@@ -49,7 +50,14 @@ bun run worker:test
 
 - Bun workspace と `bun.lock` を使用している。root および Parapper の起動コマンドは
   Bun に統一済み。
-- Tauri が Gateway sidecar を起動し、ローカル health check を確認済み。
+- Tauri が Parapper と Gateway の sidecar を順に起動し、ローカル health check と
+  `127.0.0.1:18082` の Parapper listener を確認済み。アプリ終了後に両 listener が
+  残らないことも確認済み。
+- Parapper headless は Kotoba Beacon の app-data 下の専用領域を使用する。初回に VAD、
+  UniDic、日本語 ASR モデルを取得し、実際に WebSocket listener が起動することを確認済み。
+- `scripts/build-sidecar.ts` は Gateway と Parapper release binary をビルドし、macOS の
+  Sherpa-ONNX dylib / Windows の DLL、Parapper のライセンス JSON を Tauri resource として
+  配置する実装になっている。
 - Zenzai 系は `zenz-v3.2-xsmall-gguf`、`zenz-v3.2-small-gguf`、
   `zenz-v2-q5-k-m-gguf` を選択できる。
 - AzooKey と Zenzai のリクエスト経路を実機の llama.cpp server で確認済み。
@@ -73,33 +81,31 @@ bun run worker:test
    `PARAPPER_RUNTIME_DIR` が必須で、Kotoba Beacon 専用の設定・モデル領域を使う。
    必要な VAD / 日本語辞書 / ASR モデルを既存の Parapper ダウンローダーで準備してから
    loopback WebSocket listener を開始する。
+7. Tauri は上記 headless binary を Gateway より先に起動する。macOS は両方の rpath
+   （debug sidecar と app bundle resource）を、Windows は runtime DLL 用の `PATH` を使う。
+8. Parapper の Vite typecheck で React 18 / 19 の型が混ざる Bun cache の問題を、fork 側の
+   `tsconfig.app.json` に React 18 型の明示的な解決を加えて回避した。
 
 ## 未解決事項（次の担当者が優先して確認すること）
 
 ### 単体アプリ配布の完全性
 
-Kotoba Beacon は Gateway sidecar 自体は起動しますが、デフォルト Gateway 設定は
-Parapper WebSocket (`127.0.0.1:18082`) と llama.cpp の各モデル server
-(`127.0.0.1:8081` など) を参照します。これらは現時点で app bundle から自動起動
-されません。従って、非エンジニア向けの「アプリ単体で全機能」要件は**未完了**です。
+Kotoba Beacon は Parapper と Gateway を app bundle から自動起動しますが、デフォルト
+Gateway 設定が参照する llama.cpp の各モデル server (`127.0.0.1:8081` など) はまだ
+sidecar 化していません。従って、非エンジニア向けの「アプリ単体で全機能」要件は**未完了**です。
 
-Parapper 側には headless recognition server の**ソース実装だけ**が追加済みです。
-`parapper --headless --port 18082` は専用の絶対パス `PARAPPER_RUNTIME_DIR` を要求し、
-既存の対話型 Parapper の設定・モデルキャッシュを共有しません。引数の Rust テスト3件と
-`cargo +1.90.0-aarch64-apple-darwin check -p parapper` は成功しています。しかし、以下は
-未実装または未検証です。
+Parapper の release binary と実アプリからの自動起動は macOS arm64 で確認しました。
+ただし、新しい Parapper runtime を含む署名済み macOS release bundle と Windows bundle は
+未検証です。以下を次の担当者が優先してください。
 
-1. root の `scripts/build-sidecar.ts` はまだ Gateway しかコンパイルしない。Parapper
-   headless binary、macOS の `macos-runtime/*.dylib`、Windows の DLL を Tauri bundle へ
-   配置する build step が必要です。
-2. `apps/desktop/src-tauri/src/gateway.rs` はまだ Parapper sidecar を起動していない。
-   `PARAPPER_RUNTIME_DIR=<Kotoba Beacon の app data dir>/parapper` を渡して Parapper を
-   Gateway より先に起動し、終了時も子プロセスを停止する実装が必要です。
-3. `bun --cwd=packages/parapper-asr run build` はこの Mac で `cargo-about` 未導入のため
-   license JSON 生成で停止しました。次の環境では `cargo install cargo-about` を行うか、
-   ビルド工程でライセンス生成をどう再現するかを決め、生成物・第三者表記を bundle に
-   含めてください。
-4. llama.cpp / Zenzai / Hy-MT2 のモデル server は未着手です。対象 OS ごとの実行バイナリ、
+1. `bun run sidecar:build` は `cargo-about` を必要とします。この Mac では実行可能な
+   `cargo-about` が見つからず、完全な bundle build までは通していません。次の環境では
+   `cargo install cargo-about --locked` を行ってから実行してください。CI desktop job にも
+   同じインストール工程を追加済みです。
+2. `bun run tauri:build` を macOS と Windows で実行し、Parapper release binary、dylib/DLL、
+   `third-party/parapper-rust-licenses.json` が最終 bundle にあること、初回モデル取得後に
+   音声 API が成功することを確認してください。
+3. llama.cpp / Zenzai / Hy-MT2 のモデル server は未着手です。対象 OS ごとの実行バイナリ、
    初回ダウンロード、モデル再配布条件、GPU / CPU fallback を設計して sidecar 化してください。
 
 モデル本体はサイズのため初回ダウンロードまたは任意のモデル保存先選択にする必要が
@@ -113,6 +119,7 @@ Parapper は Rust 1.90.0 を要求します。現在のシェルが `RUSTUP_TOOL
 
 ```bash
 rustup component add --toolchain 1.90.0-aarch64-apple-darwin rustfmt clippy
+env -u RUSTUP_TOOLCHAIN cargo install cargo-about --locked
 env -u RUSTUP_TOOLCHAIN bun --cwd=packages/parapper-asr run test
 ```
 

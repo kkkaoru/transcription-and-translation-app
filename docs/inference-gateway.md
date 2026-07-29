@@ -44,9 +44,23 @@ to that PC's HTTPS/HTTP URL.
 
 ## Parapper
 
-Caption Bridge vendors its compatible Parapper-ASR fork in
-`packages/parapper-asr/`. Install its dependencies separately with
-`bun run parapper:install`, then run it with `bun run parapper:tauri`.
+Kotoba Beacon bundles a headless build of its compatible Parapper-ASR fork and
+starts it before the gateway. The headless service listens only on
+`127.0.0.1:18082`, receives `PARAPPER_RUNTIME_DIR=<app data>/parapper`, and
+keeps its configuration and downloaded ASR assets separate from a user's
+interactive Parapper installation. The first launch downloads the selected
+VAD, Japanese dictionary, and ASR model, so an Internet connection and several
+hundred MiB of free disk space are required before transcription is ready.
+
+For standalone development, install the fork dependencies with
+`bun run parapper:install`, then run its UI with `bun run parapper:tauri` or
+the service directly with an explicit absolute runtime directory:
+
+```bash
+PARAPPER_RUNTIME_DIR="/absolute/path/to/kotoba-parapper" \
+  packages/parapper-asr/target/release/parapper --headless --port 18082
+```
+
 The fork defaults its Japanese streaming `text` to a hiragana reading and
 keeps the original ASR text in optional `source_text`; the existing gateway
 continues to consume `text`. Configure its streaming endpoint in
@@ -57,6 +71,9 @@ JSON configuration); the gateway sends it as a Bearer token.
 
 The implementation follows Parapper's `session.start` → `session.ready` →
 binary PCM frames → `session.stop` → `turn.final`/`session.done` protocol.
+
+The gateway's GGUF routes are still external llama.cpp services. Bundling and
+starting those model servers remains a separate, unfinished distribution task.
 
 ## zenz and Hy-MT2 with llama.cpp
 

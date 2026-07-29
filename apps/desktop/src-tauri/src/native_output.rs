@@ -1,7 +1,7 @@
-#[cfg(any(windows, target_os = "macos"))]
-use std::sync::mpsc::{self, SyncSender, TrySendError};
 #[cfg(not(any(windows, target_os = "macos")))]
 use std::sync::mpsc::SyncSender;
+#[cfg(any(windows, target_os = "macos"))]
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 #[cfg(any(windows, target_os = "macos"))]
 use std::time::Duration;
 

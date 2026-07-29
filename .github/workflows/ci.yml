@@ -44,6 +44,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      - uses: dtolnay/rust-toolchain@1.88.0
+      # Parapper's pinned toolchain is 1.90.0. It also builds the desktop crate.
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - run: cargo install cargo-about --locked
       - run: bun install --frozen-lockfile
       - run: ${{ matrix.command }}
