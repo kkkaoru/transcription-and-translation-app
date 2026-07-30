@@ -1,3 +1,4 @@
+import { DEFAULT_AUDIO_CHUNK_MS, DEFAULT_SILENCE_GATE_DB } from "./defaults";
 import type { AudioChunk, AudioInputDevice } from "./types";
 
 const TARGET_SAMPLE_RATE = 16_000;
@@ -25,7 +26,16 @@ export const resampleLinear = (
   fromRate: number,
   toRate: number,
 ): Float32Array => {
-  if (samples.length === 0 || fromRate === toRate) {
+  if (samples.length === 0) {
+    return samples.slice();
+  }
+  // Invalid rates must not yield Infinity/NaN buffer sizes (WKWebView throws on huge allocs).
+  if (!Number.isFinite(fromRate) || fromRate <= 0 || !Number.isFinite(toRate) || toRate <= 0) {
+    throw new Error(
+      `invalid sample rate for resample: from=${String(fromRate)} to=${String(toRate)}`,
+    );
+  }
+  if (fromRate === toRate) {
     return samples.slice();
   }
   const outputLength = Math.max(1, Math.round((samples.length * toRate) / fromRate));
@@ -53,10 +63,17 @@ export const float32ToPcm16 = (samples: Float32Array): Int16Array => {
 };
 
 export const bytesToBase64 = (bytes: Uint8Array): string => {
+  // Keep chunks modest: WKWebView / JSC rejects very large apply/spread arg lists.
+  // Copy into a plain number[] so apply() never depends on TypedArray array-like support.
+  const step = 0x2000;
   let binary = "";
-  const step = 0x8000;
   for (let offset = 0; offset < bytes.length; offset += step) {
-    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + step, bytes.length)));
+    const slice = bytes.subarray(offset, Math.min(offset + step, bytes.length));
+    const codes: number[] = new Array(slice.length);
+    for (let index = 0; index < slice.length; index += 1) {
+      codes[index] = slice[index] ?? 0;
+    }
+    binary += String.fromCharCode.apply(null, codes);
   }
   if (typeof btoa === "function") {
     return btoa(binary);
@@ -67,19 +84,31 @@ export const bytesToBase64 = (bytes: Uint8Array): string => {
 export const pcm16ToBase64 = (samples: Int16Array): string =>
   bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
 
+const clampDurationMs = (samplesLength: number, durationMs: number): number => {
+  if (samplesLength === 0) {
+    return 0;
+  }
+  const nominal = Number.isFinite(durationMs) ? durationMs : 1;
+  // Rust pcm_base64_to_wav rejects duration_ms outside 1..=10_000.
+  return Math.max(1, Math.min(10_000, Math.round(nominal)));
+};
+
 export const makeAudioChunk = (
   samples: Float32Array,
   inputSampleRate: number,
-  durationMs = Math.round((samples.length / inputSampleRate) * 1000),
-): AudioChunk => ({
-  pcmBase64: pcm16ToBase64(
-    float32ToPcm16(resampleLinear(samples, inputSampleRate, TARGET_SAMPLE_RATE)),
-  ),
-  sampleRate: TARGET_SAMPLE_RATE,
-  channels: 1,
-  // Rust rejects duration_ms == 0; keep non-empty PCM chunks in the supported range.
-  durationMs: samples.length === 0 ? 0 : Math.max(1, Math.min(10_000, durationMs)),
-});
+  durationMs = Math.round((samples.length / Math.max(inputSampleRate, 1)) * 1000),
+): AudioChunk => {
+  const safeRate =
+    Number.isFinite(inputSampleRate) && inputSampleRate > 0 ? inputSampleRate : TARGET_SAMPLE_RATE;
+  return {
+    pcmBase64: pcm16ToBase64(
+      float32ToPcm16(resampleLinear(samples, safeRate, TARGET_SAMPLE_RATE)),
+    ),
+    sampleRate: TARGET_SAMPLE_RATE,
+    channels: 1,
+    durationMs: clampDurationMs(samples.length, durationMs),
+  };
+};
 
 export const calculateRmsDb = (samples: Float32Array): number => {
   if (samples.length === 0) {
@@ -168,6 +197,7 @@ const isConstraintFailure = (error: unknown): boolean => {
     return (
       error.name === "OverconstrainedError" ||
       error.name === "NotFoundError" ||
+      error.name === "NotReadableError" ||
       error.name === "TypeError"
     );
   }
@@ -347,12 +377,36 @@ const createAudioContext = (): AudioContext => {
   if (typeof AudioContextCtor !== "function") {
     throw new AudioCaptureError("audio-context-failed");
   }
-  return new AudioContextCtor();
+
+  try {
+    return new AudioContextCtor({ sampleRate: TARGET_SAMPLE_RATE });
+  } catch {
+    return new AudioContextCtor();
+  }
 };
 
 type ChunkHandler = (chunk: AudioChunk) => void | Promise<void>;
 type CaptureErrorHandler = (error: AudioCaptureError) => void;
 type LevelHandler = (rmsDb: number) => void;
+
+const toCaptureError = (error: unknown): AudioCaptureError => {
+  if (error instanceof AudioCaptureError) {
+    return error;
+  }
+  const micFailure =
+    typeof DOMException !== "undefined" &&
+    error instanceof DOMException &&
+    (error.name === "NotAllowedError" ||
+      error.name === "SecurityError" ||
+      error.name === "NotFoundError" ||
+      error.name === "NotReadableError" ||
+      error.name === "OverconstrainedError" ||
+      error.name === "AbortError");
+  return new AudioCaptureError(
+    micFailure ? "microphone-unavailable" : "audio-context-failed",
+    error,
+  );
+};
 
 /* c8 ignore start -- browser/Tauri media graph; pure PCM functions are covered below. */
 export class MicrophoneCapture {
@@ -366,8 +420,8 @@ export class MicrophoneCapture {
   private handler: ChunkHandler | null = null;
   private errorHandler: CaptureErrorHandler | null = null;
   private levelHandler: LevelHandler | null = null;
-  private chunkMs = 1_200;
-  private silenceGateDb = -55;
+  private chunkMs = DEFAULT_AUDIO_CHUNK_MS;
+  private silenceGateDb = DEFAULT_SILENCE_GATE_DB;
   private captureMode: AudioCaptureMode = "none";
   private constraintMode: MicrophoneConstraintMode | null = null;
   private deviceIdRequested: string | null = null;
@@ -377,6 +431,8 @@ export class MicrophoneCapture {
   private chunksAccepted = 0;
   private chunksDroppedSilent = 0;
   private levelEmitAt = 0;
+  /** True once getUserMedia + AudioContext are held and ready for graph wiring. */
+  private hardwareReady = false;
 
   public getDiagnostics(): AudioCaptureDiagnostics {
     const track = this.stream?.getAudioTracks()[0] ?? null;
@@ -399,6 +455,89 @@ export class MicrophoneCapture {
     };
   }
 
+  /**
+   * Create (and kick off resume of) an AudioContext under a user gesture.
+   * Call this synchronously from a click handler before long backend awaits —
+   * WKWebView often leaves contexts suspended when resume() runs only after
+   * multi-second sidecar/model startup.
+   */
+  public primeAudioContext(): void {
+    this.disposed = false;
+    if (this.context && this.context.state !== "closed") {
+      if (this.context.state === "suspended") {
+        void this.context.resume().catch(() => undefined);
+      }
+      return;
+    }
+    this.context = createAudioContext();
+    if (this.context.state === "suspended") {
+      void this.context.resume().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Open the microphone and ensure AudioContext is running. Safe to call after
+   * releasing a previous capture session; may be overlapped with backend prep.
+   */
+  public async prepareInput(deviceId: string): Promise<void> {
+    this.disposed = false;
+    const previousDeviceId = this.deviceIdRequested;
+    this.deviceIdRequested = deviceId;
+
+    try {
+      this.primeAudioContext();
+      await this.ensureContextRunning();
+
+      const liveTrack = this.stream?.getAudioTracks()[0];
+      const reusable =
+        this.hardwareReady &&
+        this.stream !== null &&
+        liveTrack?.readyState === "live" &&
+        previousDeviceId === deviceId;
+      if (!reusable) {
+        // Drop any stale stream before requesting a new one.
+        this.unbindTrackEnded();
+        for (const track of this.stream?.getTracks() ?? []) {
+          try {
+            track.stop();
+          } catch {
+            // ignore
+          }
+        }
+        this.stream = null;
+        this.hardwareReady = false;
+
+        const opened = await openMicrophoneStream(deviceId);
+        if (this.disposed) {
+          for (const track of opened.stream.getTracks()) {
+            try {
+              track.stop();
+            } catch {
+              // ignore
+            }
+          }
+          throw new AudioCaptureError(
+            "microphone-unavailable",
+            "capture was cancelled while opening the microphone",
+          );
+        }
+        this.stream = opened.stream;
+        this.constraintMode = opened.mode;
+        this.bindTrackEnded(this.stream);
+        this.hardwareReady = true;
+      }
+
+      // getUserMedia is async — re-assert running after the gap.
+      await this.ensureContextRunning();
+      this.publishDiagnostics(null);
+    } catch (error) {
+      const captureError = toCaptureError(error);
+      this.publishDiagnostics(captureError);
+      await this.stop().catch(() => undefined);
+      throw error;
+    }
+  }
+
   public async start(
     deviceId: string,
     chunkMs: number,
@@ -407,26 +546,44 @@ export class MicrophoneCapture {
     onError?: CaptureErrorHandler,
     onLevel?: LevelHandler,
   ): Promise<void> {
-    await this.stop();
     this.disposed = false;
     this.handler = handler;
     this.errorHandler = onError ?? null;
     this.levelHandler = onLevel ?? null;
     this.chunkMs = chunkMs;
     this.silenceGateDb = silenceGateDb;
-    this.deviceIdRequested = deviceId;
     this.lastRmsDb = null;
     this.chunksAccepted = 0;
     this.chunksDroppedSilent = 0;
     this.levelEmitAt = 0;
+    this.pending = new Float32Array(0);
 
     try {
-      const opened = await openMicrophoneStream(deviceId);
-      this.stream = opened.stream;
-      this.constraintMode = opened.mode;
-      this.bindTrackEnded(this.stream);
+      const liveTrack = this.stream?.getAudioTracks()[0];
+      const prepared =
+        this.hardwareReady &&
+        this.stream !== null &&
+        this.context !== null &&
+        this.context.state !== "closed" &&
+        liveTrack?.readyState === "live" &&
+        this.deviceIdRequested === deviceId;
 
-      this.context = createAudioContext();
+      if (!prepared) {
+        // Standalone start() path (tests / callers that skip prepareInput).
+        this.teardownGraphNodes();
+        this.source = null;
+        await this.prepareInput(deviceId);
+      } else {
+        // Reuse hardware from prepareInput; clear any half-wired graph.
+        this.teardownGraphNodes();
+        this.source = null;
+        this.deviceIdRequested = deviceId;
+      }
+
+      if (!this.context || !this.stream) {
+        throw new AudioCaptureError("microphone-unavailable");
+      }
+
       this.source = this.context.createMediaStreamSource(this.stream);
 
       // Prefer AudioWorklet, but CSP / WebView restrictions on blob: modules are common
@@ -439,6 +596,7 @@ export class MicrophoneCapture {
           started = true;
         } catch {
           this.teardownGraphNodes();
+          this.source = this.context.createMediaStreamSource(this.stream);
         }
       }
       if (!started) {
@@ -446,41 +604,13 @@ export class MicrophoneCapture {
         this.captureMode = "script-processor";
       }
 
-      if (this.context.state === "suspended") {
-        try {
-          await this.context.resume();
-        } catch (error) {
-          throw new AudioCaptureError("audio-context-suspended", error);
-        }
-      }
-      if (this.context.state === "suspended") {
-        throw new AudioCaptureError(
-          "audio-context-suspended",
-          "AudioContext remained suspended after resume()",
-        );
-      }
-
+      await this.ensureContextRunning();
       this.publishDiagnostics(null);
     } catch (error) {
       // Keep the original rejection (DOMException names, etc.) so the UI can map
       // NotAllowedError / NotFoundError. Only synthesize AudioCaptureError when
       // the failure has no browser-native type.
-      const captureError =
-        error instanceof AudioCaptureError
-          ? error
-          : new AudioCaptureError(
-              typeof DOMException !== "undefined" &&
-                error instanceof DOMException &&
-                (error.name === "NotAllowedError" ||
-                  error.name === "SecurityError" ||
-                  error.name === "NotFoundError" ||
-                  error.name === "NotReadableError" ||
-                  error.name === "OverconstrainedError")
-                ? "microphone-unavailable"
-                : "audio-context-failed",
-              error,
-            );
-      this.publishDiagnostics(captureError);
+      this.publishDiagnostics(toCaptureError(error));
       await this.stop().catch(() => undefined);
       throw error;
     }
@@ -491,6 +621,7 @@ export class MicrophoneCapture {
     this.handler = null;
     this.errorHandler = null;
     this.levelHandler = null;
+    this.hardwareReady = false;
     this.unbindTrackEnded();
     this.teardownGraphNodes();
 
@@ -523,6 +654,25 @@ export class MicrophoneCapture {
     }
 
     this.publishDiagnostics(lastCaptureDiagnostics.lastErrorCode ? undefined : null);
+  }
+
+  private async ensureContextRunning(): Promise<void> {
+    if (!this.context || this.context.state === "closed") {
+      throw new AudioCaptureError("audio-context-failed", "AudioContext is missing or closed");
+    }
+    if (this.context.state === "suspended") {
+      try {
+        await this.context.resume();
+      } catch (error) {
+        throw new AudioCaptureError("audio-context-suspended", error);
+      }
+    }
+    if (this.context.state === "suspended") {
+      throw new AudioCaptureError(
+        "audio-context-suspended",
+        "AudioContext remained suspended after resume()",
+      );
+    }
   }
 
   private teardownGraphNodes(): void {

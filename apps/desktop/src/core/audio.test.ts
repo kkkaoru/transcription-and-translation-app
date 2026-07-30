@@ -23,6 +23,16 @@ describe("audio conversion", () => {
     expect([...output]).toEqual([0, 0]);
     expect(resampleLinear(new Float32Array([0, 1]), 2, 2)).toEqual(new Float32Array([0, 1]));
     expect(resampleLinear(new Float32Array(), 4, 2)).toEqual(new Float32Array());
+    // 48 kHz hardware rate → 16 kHz mono for Rust pcm_base64_to_wav.
+    const oneSecond48k = new Float32Array(48_000).map((_, index) =>
+      Math.sin((2 * Math.PI * 440 * index) / 48_000),
+    );
+    const down = resampleLinear(oneSecond48k, 48_000, 16_000);
+    expect(down.length).toBe(16_000);
+    expect(() => resampleLinear(new Float32Array([1]), 0, 16_000)).toThrow(/invalid sample rate/);
+    expect(() => resampleLinear(new Float32Array([1]), 48_000, Number.NaN)).toThrow(
+      /invalid sample rate/,
+    );
   });
 
   it("converts float samples to signed PCM16", () => {
@@ -81,6 +91,13 @@ describe("audio conversion", () => {
     const pcm = float32ToPcm16(new Float32Array([0, 0.5, -0.5]));
     expect(pcm16ToBase64(pcm)).toBe("AAD/PwDA");
     expect(bytesToBase64(new Uint8Array([0, 1, 255]))).toBe("AAH/");
+    // Multi-chunk encode path (buffers larger than the 8 KiB apply step).
+    const large = new Uint8Array(20_000);
+    for (let index = 0; index < large.length; index += 1) {
+      large[index] = index % 256;
+    }
+    expect(bytesToBase64(large).length).toBeGreaterThan(0);
+    expect(atob(bytesToBase64(large)).length).toBe(large.length);
     const chunk = makeAudioChunk(new Float32Array([0, 1, 0, -1]), 4, 1000);
     expect(chunk.sampleRate).toBe(16_000);
     expect(chunk.channels).toBe(1);
@@ -89,6 +106,29 @@ describe("audio conversion", () => {
     // Sub-millisecond non-empty chunks must still satisfy the Rust duration floor.
     expect(makeAudioChunk(new Float32Array([0, 0]), 16_000).durationMs).toBe(1);
     expect(makeAudioChunk(new Float32Array(), 16_000).durationMs).toBe(0);
+    // A realistic 1.2 s mono 16 kHz caption chunk must encode to non-empty base64.
+    const captionSamples = new Float32Array(16_000 * 1.2).map((_, index) =>
+      Math.sin((2 * Math.PI * 440 * index) / 16_000),
+    );
+    const captionChunk = makeAudioChunk(captionSamples, 16_000, 1_200);
+    expect(captionChunk.durationMs).toBe(1_200);
+    expect(captionChunk.sampleRate).toBe(16_000);
+    expect(captionChunk.pcmBase64.length).toBeGreaterThan(1_000);
+    // Decode must be even-length PCM16 — Rust rejects odd byte lengths.
+    const decoded = atob(captionChunk.pcmBase64);
+    expect(decoded.length % 2).toBe(0);
+    expect(decoded.length).toBe(16_000 * 1.2 * 2);
+    // 48 kHz capture path: resample + encode still targets 16 kHz mono.
+    const from48k = makeAudioChunk(new Float32Array(48_000 * 1.2), 48_000, 1_200);
+    expect(from48k.sampleRate).toBe(16_000);
+    expect(from48k.channels).toBe(1);
+    expect(from48k.durationMs).toBe(1_200);
+    expect(atob(from48k.pcmBase64).length).toBe(16_000 * 1.2 * 2);
+    // Duration clamp + invalid rate fallback for Rust validation window.
+    expect(makeAudioChunk(new Float32Array([0.1]), 16_000, 0).durationMs).toBe(1);
+    expect(makeAudioChunk(new Float32Array([0.1]), 16_000, 50_000).durationMs).toBe(10_000);
+    expect(makeAudioChunk(new Float32Array([0.1]), 16_000, Number.NaN).durationMs).toBe(1);
+    expect(makeAudioChunk(new Float32Array([0.1]), 0, 100).sampleRate).toBe(16_000);
     vi.stubGlobal("btoa", undefined);
     expect(() => pcm16ToBase64(pcm)).toThrow("base64 encoding is unavailable");
     vi.unstubAllGlobals();
@@ -146,6 +186,26 @@ describe("audio conversion", () => {
     });
 
     await expect(openMicrophoneStream("stale-device")).resolves.toEqual({
+      stream,
+      mode: "default-raw",
+    });
+    expect(getUserMedia).toHaveBeenCalledTimes(3);
+    vi.unstubAllGlobals();
+  });
+
+  it("retries microphone capture on NotReadableError with relaxed defaults", async () => {
+    const stream = { id: "stream-2" } as unknown as MediaStream;
+    const getUserMedia = vi
+      .fn()
+      .mockRejectedValueOnce(new DOMException("busy", "NotReadableError"))
+      .mockRejectedValueOnce(new DOMException("still busy", "NotReadableError"))
+      .mockResolvedValueOnce(stream);
+
+    vi.stubGlobal("navigator", {
+      mediaDevices: { getUserMedia },
+    });
+
+    await expect(openMicrophoneStream("mic-1")).resolves.toEqual({
       stream,
       mode: "default-raw",
     });
