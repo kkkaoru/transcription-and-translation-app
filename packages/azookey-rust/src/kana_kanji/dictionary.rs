@@ -39,8 +39,8 @@ impl DictionaryEntry {
 
 #[derive(Debug, Clone, Default)]
 pub struct DictionaryPaths {
-    /// Root of `azooKey_dictionary_storage`, containing `louds`, `mm.binary`,
-    /// and `cb`.
+    /// Root of `azooKey_dictionary_storage` (or its `Dictionary` subdirectory),
+    /// containing `louds`, `mm.binary`, and `cb`. May also be a portable TSV.
     pub system: Option<PathBuf>,
     /// Upstream-compatible user dictionary directory (`user.louds` and
     /// `user<N>.loudstxt3`) or a TSV fixture.
@@ -48,6 +48,56 @@ pub struct DictionaryPaths {
     /// Upstream-compatible learning-memory directory (`memory.louds` and
     /// `memory<N>.loudstxt3`) or a TSV fixture.
     pub memory: Option<PathBuf>,
+}
+
+impl DictionaryPaths {
+    /// Build paths from explicit roots, filling a missing system root from the
+    /// process environment (`AZOOKEY_DICTIONARY_ROOT`) when available.
+    pub fn with_defaults(mut self) -> Self {
+        if self.system.is_none() {
+            self.system = default_system_dictionary_path();
+        } else if let Some(system) = self.system.take() {
+            self.system = Some(resolve_system_dictionary_root(&system));
+        }
+        self
+    }
+}
+
+/// Resolve `AZOOKEY_DICTIONARY_ROOT` (or empty) into a usable system dictionary
+/// root. Accepts either the storage repo root or its `Dictionary` subdirectory.
+pub fn default_system_dictionary_path() -> Option<PathBuf> {
+    let raw = std::env::var("AZOOKEY_DICTIONARY_ROOT").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let resolved = resolve_system_dictionary_root(Path::new(trimmed));
+    if system_dictionary_present(&resolved) || resolved.is_file() {
+        Some(resolved)
+    } else {
+        None
+    }
+}
+
+/// Map a user-supplied path onto the LOUDS dictionary root when possible.
+///
+/// Accepts:
+/// - a TSV file
+/// - `.../Dictionary` (contains `louds/charID.chid`)
+/// - `.../azooKey_dictionary_storage` (auto-selects `Dictionary/`)
+pub fn resolve_system_dictionary_root(path: &Path) -> PathBuf {
+    if path.is_file() || system_dictionary_present(path) {
+        return path.to_path_buf();
+    }
+    let nested = path.join("Dictionary");
+    if system_dictionary_present(&nested) {
+        return nested;
+    }
+    path.to_path_buf()
+}
+
+fn system_dictionary_present(path: &Path) -> bool {
+    path.join("louds").join("charID.chid").is_file() && path.join("mm.binary").is_file()
 }
 
 #[derive(Debug, Clone)]
@@ -66,22 +116,32 @@ impl Default for AzooKeyDictionary {
 
 impl AzooKeyDictionary {
     pub fn from_paths(paths: &DictionaryPaths) -> Result<Self, String> {
+        let paths = paths.clone().with_defaults();
         let mut dictionary = Self::default();
         if let Some(path) = paths.system.as_deref() {
             if path.is_file() {
+                // Explicit TSV must parse; a missing file is soft-skipped below.
                 dictionary.static_entries.extend(parse_tsv(path)?);
-            } else {
+            } else if system_dictionary_present(path) {
                 dictionary.system = Some(SystemDictionary::load(path)?);
             }
+            // Missing/incomplete system path: keep the built-in lexicon instead
+            // of failing the whole conversion (which previously looked like a
+            // no-op when callers swallowed the error, or broke captions hard).
         }
         let shared_char_ids =
             dictionary.system.as_ref().map(|system| system.char_ids.clone()).unwrap_or_default();
         if let Some(path) = paths.user.as_deref() {
-            dictionary.user = Some(ExternalTrieDictionary::load(path, "user", &shared_char_ids)?);
+            if path_exists_for_dictionary(path) {
+                dictionary.user =
+                    Some(ExternalTrieDictionary::load(path, "user", &shared_char_ids)?);
+            }
         }
         if let Some(path) = paths.memory.as_deref() {
-            dictionary.memory =
-                Some(ExternalTrieDictionary::load(path, "memory", &shared_char_ids)?);
+            if path_exists_for_dictionary(path) {
+                dictionary.memory =
+                    Some(ExternalTrieDictionary::load(path, "memory", &shared_char_ids)?);
+            }
         }
         Ok(dictionary)
     }
@@ -94,14 +154,22 @@ impl AzooKeyDictionary {
             .filter(|entry| entry.reading == normalized)
             .cloned()
             .collect();
+        // Optional dictionaries must not poison built-in hits. Unknown characters
+        // or a partial LOUDS install previously returned Err and erased matches.
         if let Some(system) = &self.system {
-            entries.extend(system.lookup_exact(&normalized)?);
+            if let Ok(system_entries) = system.lookup_exact(&normalized) {
+                entries.extend(system_entries);
+            }
         }
         if let Some(user) = &self.user {
-            entries.extend(user.lookup_exact(&normalized)?);
+            if let Ok(user_entries) = user.lookup_exact(&normalized) {
+                entries.extend(user_entries);
+            }
         }
         if let Some(memory) = &self.memory {
-            entries.extend(memory.lookup_exact(&normalized)?);
+            if let Ok(memory_entries) = memory.lookup_exact(&normalized) {
+                entries.extend(memory_entries);
+            }
         }
         Ok(entries)
     }
@@ -116,7 +184,10 @@ impl AzooKeyDictionary {
         let mut entries = Vec::new();
         for finish in (start + 1)..=end {
             let reading: String = chars[start..finish].iter().collect();
-            entries.extend(self.lookup_exact(&reading)?);
+            // Never abort the whole span on a single failed optional lookup.
+            if let Ok(matched) = self.lookup_exact(&reading) {
+                entries.extend(matched);
+            }
         }
         Ok(entries)
     }
@@ -124,6 +195,10 @@ impl AzooKeyDictionary {
     pub fn connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
         self.system.as_ref().map(|system| system.connection_cost(former, latter)).unwrap_or(0.0)
     }
+}
+
+fn path_exists_for_dictionary(path: &Path) -> bool {
+    path.is_file() || path.is_dir()
 }
 
 #[derive(Debug, Clone)]
@@ -160,20 +235,22 @@ impl SystemDictionary {
 
     fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
         let dictionary_reading = to_katakana(reading);
-        let first = dictionary_reading
+        let Some(first) = dictionary_reading.chars().next() else {
+            return Ok(Vec::new());
+        };
+        // Characters outside charID (latin, punctuation, kanji spans) are not
+        // dictionary hits — return empty instead of failing the whole convert.
+        let Some(ids) = dictionary_reading
             .chars()
-            .next()
-            .ok_or_else(|| "empty dictionary query".to_string())?;
-        let louds = Louds::load(&self.root, &escaped_identifier(&first.to_string()))?;
-        let ids = dictionary_reading
-            .chars()
-            .map(|character| {
-                self.char_ids
-                    .get(&character)
-                    .copied()
-                    .ok_or_else(|| format!("character {character:?} is not present in charID.chid"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|character| self.char_ids.get(&character).copied())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(Vec::new());
+        };
+        let louds = match Louds::load(&self.root, &escaped_identifier(&first.to_string())) {
+            Ok(louds) => louds,
+            Err(_) => return Ok(Vec::new()),
+        };
         let Some(node_index) = louds.search_node_index(&ids) else {
             return Ok(Vec::new());
         };
@@ -181,7 +258,10 @@ impl SystemDictionary {
         let local_index = node_index & LOCAL_MASK;
         let file_name = format!("{}{}.loudstxt3", escaped_identifier(&first.to_string()), shard);
         let path = self.root.join("louds").join(file_name);
-        read_loudstxt3_entry(&path, local_index)
+        match read_loudstxt3_entry(&path, local_index) {
+            Ok(entries) => Ok(entries),
+            Err(_) => Ok(Vec::new()),
+        }
     }
 
     fn connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
@@ -527,25 +607,153 @@ fn escaped_identifier(input: &str) -> String {
 }
 
 fn builtin_entries() -> Vec<DictionaryEntry> {
+    // Compact high-frequency caption lexicon so azookey-rust is useful without
+    // shipping the multi-hundred-MB upstream LOUDS dictionary. Values are
+    // AzooKey-style costs (more negative is preferred).
     [
-        ("きょう", "今日"),
-        ("あした", "明日"),
-        ("きのう", "昨日"),
-        ("はいしん", "配信"),
-        ("おんせい", "音声"),
-        ("にほんご", "日本語"),
-        ("えいご", "英語"),
-        ("ほんじつ", "本日"),
-        ("じかん", "時間"),
-        ("じょうほう", "情報"),
-        ("かいし", "開始"),
-        ("しゅうりょう", "終了"),
-        ("せつめい", "説明"),
-        ("ほんとう", "本当"),
-        ("だいじょうぶ", "大丈夫"),
+        // Greetings / set phrases
         ("ありがとう", "ありがとう"),
+        ("ありがとうございます", "ありがとうございます"),
         ("こんにちは", "こんにちは"),
         ("こんばんは", "こんばんは"),
+        ("おはよう", "おはよう"),
+        ("おはようございます", "おはようございます"),
+        ("さようなら", "さようなら"),
+        ("すみません", "すみません"),
+        ("お願い", "お願い"),
+        ("おねがい", "お願い"),
+        ("おねがいします", "お願いします"),
+        ("だいじょうぶ", "大丈夫"),
+        ("ほんとう", "本当"),
+        ("ほんと", "本当"),
+        // Time / calendar
+        ("きょう", "今日"),
+        ("あした", "明日"),
+        ("あす", "明日"),
+        ("きのう", "昨日"),
+        ("ほんじつ", "本日"),
+        ("いま", "今"),
+        ("じかん", "時間"),
+        ("じこく", "時刻"),
+        ("ふん", "分"),
+        ("びょう", "秒"),
+        ("しゅう", "週"),
+        ("げつよう", "月曜"),
+        ("かよう", "火曜"),
+        ("すいよう", "水曜"),
+        ("もくよう", "木曜"),
+        ("きんよう", "金曜"),
+        ("どよう", "土曜"),
+        ("にちよう", "日曜"),
+        // Speech / streaming domain
+        ("はいしん", "配信"),
+        ("おんせい", "音声"),
+        ("おんがく", "音楽"),
+        ("どうが", "動画"),
+        ("がぞう", "画像"),
+        ("じまく", "字幕"),
+        ("ほんやく", "翻訳"),
+        ("へんかん", "変換"),
+        ("にんしき", "認識"),
+        ("にゅうりょく", "入力"),
+        ("しゅつりょく", "出力"),
+        ("せってい", "設定"),
+        ("ひょうじ", "表示"),
+        ("かいし", "開始"),
+        ("しゅうりょう", "終了"),
+        ("ていし", "停止"),
+        ("さいかい", "再開"),
+        ("かくにん", "確認"),
+        ("へんこう", "変更"),
+        ("せつめい", "説明"),
+        ("じょうほう", "情報"),
+        ("ないよう", "内容"),
+        ("もんだい", "問題"),
+        ("しつもん", "質問"),
+        ("かいとう", "回答"),
+        ("かいぎ", "会議"),
+        ("しごと", "仕事"),
+        ("かいしゃ", "会社"),
+        ("がっこう", "学校"),
+        ("がくせい", "学生"),
+        ("せんせい", "先生"),
+        // Language / locale
+        ("にほん", "日本"),
+        ("にほんご", "日本語"),
+        ("えいご", "英語"),
+        ("ちゅうごくご", "中国語"),
+        ("かんこくご", "韓国語"),
+        ("せかい", "世界"),
+        ("とうきょう", "東京"),
+        ("おおさか", "大阪"),
+        // Pronouns / deixis
+        ("わたし", "私"),
+        ("わたし達", "私たち"),
+        ("わたしたち", "私たち"),
+        ("ぼく", "僕"),
+        ("かれ", "彼"),
+        ("かのじょ", "彼女"),
+        ("みんな", "みんな"),
+        ("これ", "これ"),
+        ("それ", "それ"),
+        ("あれ", "あれ"),
+        ("この", "この"),
+        ("その", "その"),
+        ("あの", "あの"),
+        // Common predicates / adjectives (caption glue)
+        ("です", "です"),
+        ("ます", "ます"),
+        ("でした", "でした"),
+        ("ました", "ました"),
+        ("します", "します"),
+        ("する", "する"),
+        ("した", "した"),
+        ("なる", "なる"),
+        ("ある", "ある"),
+        ("いる", "いる"),
+        ("できる", "できる"),
+        ("わかる", "分かる"),
+        ("わからない", "分からない"),
+        ("おもう", "思う"),
+        ("かんがえる", "考える"),
+        ("はなす", "話す"),
+        ("きく", "聞く"),
+        ("みる", "見る"),
+        ("いく", "行く"),
+        ("くる", "来る"),
+        ("つかう", "使う"),
+        ("つくる", "作る"),
+        ("よい", "良い"),
+        ("いい", "いい"),
+        ("わるい", "悪い"),
+        ("おおきい", "大きい"),
+        ("ちいさい", "小さい"),
+        ("あたらしい", "新しい"),
+        ("たいせつ", "大切"),
+        ("じゅうよう", "重要"),
+        ("ひつよう", "必要"),
+        ("かのう", "可能"),
+        ("さいきん", "最近"),
+        ("はじめて", "初めて"),
+        ("つぎ", "次"),
+        ("まえ", "前"),
+        ("あと", "後"),
+        ("さいご", "最後"),
+        ("さいしょ", "最初"),
+        // Weather / everyday
+        ("てんき", "天気"),
+        ("あめ", "雨"),
+        ("はれ", "晴れ"),
+        ("くもり", "曇り"),
+        // Loanwords common in ASR captions
+        ("てすと", "テスト"),
+        ("しすてむ", "システム"),
+        ("もでる", "モデル"),
+        ("あぷり", "アプリ"),
+        ("さーばー", "サーバー"),
+        ("ねっとわーく", "ネットワーク"),
+        ("えらー", "エラー"),
+        ("ろぐ", "ログ"),
     ]
     .into_iter()
     .map(|(reading, surface)| DictionaryEntry::plain(reading, surface, -10.0))
