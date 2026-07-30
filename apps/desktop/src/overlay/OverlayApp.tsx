@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { bridge } from "../core/bridge";
 import { createDefaultConfig } from "../core/defaults";
+import { mergeCaptionPayload } from "../core/caption-updates";
 import type { AppConfig, CaptionPayload } from "../core/types";
 import { OverlayView } from "./CaptionOverlay";
 import { createPreviewCaption } from "./captions";
@@ -31,7 +32,15 @@ export const OverlayApp = () => {
       })
       .catch(() => undefined);
     void bridge
-      .listenCaptions(setCaption)
+      .listenCaptions((nextCaption) => {
+        setCaption((current) => {
+          const merged = mergeCaptionPayload(current, nextCaption);
+          if (merged === null) {
+            return current;
+          }
+          return merged;
+        });
+      })
       .then((dispose) => {
         if (mounted) {
           disposers.push(dispose);

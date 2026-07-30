@@ -1,9 +1,10 @@
-import type { ChangeEventHandler } from "react";
-import { useMemo } from "react";
+import type { ChangeEventHandler, CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioDeviceSelect } from "../components/AudioDeviceSelect";
 import { Field } from "../components/Field";
 import { rmsDbToMeterLevel } from "../core/audio";
 import { bridge } from "../core/bridge";
+import { computePreviewFitScale } from "../core/style";
 import type { AppConfig, AudioInputDevice, CaptionPayload, RuntimeStatus } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 import { OverlayView } from "../overlay/CaptionOverlay";
@@ -56,12 +57,44 @@ export const LiveView = ({
   onCloseMessage: () => void;
 }) => {
   const { locale, t } = useI18n();
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const overlayWidth = Math.max(1, config.overlay.width);
+  const overlayHeight = Math.max(1, config.overlay.height);
   const previewStyle = useMemo(
-    () => ({
-      aspectRatio: `${config.overlay.width} / ${config.overlay.height}`,
-    }),
-    [config.overlay.height, config.overlay.width],
+    () =>
+      ({
+        aspectRatio: `${overlayWidth} / ${overlayHeight}`,
+        ["--overlay-width" as string]: `${overlayWidth}px`,
+        ["--overlay-height" as string]: `${overlayHeight}px`,
+      }) satisfies CSSProperties,
+    [overlayHeight, overlayWidth],
   );
+  const measured = stageSize.width > 1 && stageSize.height > 1;
+  const previewScale = measured
+    ? computePreviewFitScale(stageSize.width, stageSize.height, overlayWidth, overlayHeight)
+    : 1;
+  const scaleHostStyle = useMemo((): CSSProperties => {
+    if (!measured) {
+      // Fill the stage until ResizeObserver reports a size (jsdom / first paint).
+      return {
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        transform: "none",
+      };
+    }
+    return {
+      position: "absolute",
+      left: "50%",
+      top: "50%",
+      width: overlayWidth,
+      height: overlayHeight,
+      transform: `translate(-50%, -50%) scale(${previewScale})`,
+      transformOrigin: "center center",
+    };
+  }, [measured, overlayHeight, overlayWidth, previewScale]);
   const captionTime = caption.receivedAt
     ? new Intl.DateTimeFormat(locale === "ja" ? "ja-JP" : "en-US", {
         hour: "2-digit",
@@ -78,6 +111,30 @@ export const LiveView = ({
       : capturing
         ? t("live.inputWaiting")
         : t("live.disconnected");
+
+  useEffect(() => {
+    const node = stageRef.current;
+    if (!node || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const applySize = (width: number, height: number) => {
+      setStageSize((previous) =>
+        previous.width === width && previous.height === height ? previous : { width, height },
+      );
+    };
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      applySize(entry.contentRect.width, entry.contentRect.height);
+    });
+    observer.observe(node);
+    const rect = node.getBoundingClientRect();
+    applySize(rect.width, rect.height);
+    return () => observer.disconnect();
+    // Re-bind when overlay design size changes so aspect-ratio restyle is measured.
+  }, [overlayHeight, overlayWidth]);
 
   return (
     <>
@@ -120,19 +177,33 @@ export const LiveView = ({
               {bridge.isDesktop() ? t("live.tauriWindow") : t("live.browserPreview")}
             </span>
           </div>
-          <div className="preview-stage" style={previewStyle} data-testid="live-preview-stage">
+          <div
+            className="preview-stage"
+            style={previewStyle}
+            data-testid="live-preview-stage"
+            data-preview-measured={measured ? "true" : "false"}
+            data-preview-scale={previewScale.toFixed(4)}
+            ref={stageRef}
+          >
             <div className="stage-grid" />
             <div className="stage-label">
-              {t("live.transparentBadge")} / {config.overlay.width} × {config.overlay.height}
+              {t("live.transparentBadge")} / {overlayWidth} × {overlayHeight}
+              {measured ? ` · ${Math.round(previewScale * 100)}%` : ""}
             </div>
-            {/* placeholder=false: show live caption payload in-app without OBS */}
-            <OverlayView config={config} caption={caption} preview placeholder={false} />
+            {/* Live caption payload, scaled to stage — no OBS / Virtual Camera required. */}
+            <div
+              className={`preview-scale-host${measured ? " is-scaled" : " is-fill"}`}
+              style={scaleHostStyle}
+              data-testid="preview-scale-host"
+            >
+              <OverlayView config={config} caption={caption} preview placeholder={false} />
+            </div>
           </div>
           <div className="preview-footer">
             <span>
               <i className="green-dot" /> {t("live.previewWithoutObs")}
             </span>
-            <span>{captionTime}</span>
+            <span data-testid="preview-caption-time">{captionTime}</span>
           </div>
         </section>
         <div className="live-side">

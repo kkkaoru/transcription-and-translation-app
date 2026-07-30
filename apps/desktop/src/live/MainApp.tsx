@@ -10,6 +10,13 @@ import {
   MicrophoneCapture,
 } from "../core/audio";
 import { bridge, formatBridgeError } from "../core/bridge";
+import { mergeCaptionPayload } from "../core/caption-updates";
+import {
+  clearChunkTimingStats,
+  createLatestWinsProcessor,
+  type LatestWinsProcessor,
+  setChunkTimingStats,
+} from "../core/chunkQueue";
 import {
   createDefaultConfig,
   DEFAULT_MODEL_CATALOG,
@@ -18,6 +25,7 @@ import {
 import { pushDiagnosticEvent } from "../core/diagnostics";
 import type {
   AppConfig,
+  AudioChunk,
   AudioInputDevice,
   CaptionPayload,
   ModelCatalog,
@@ -101,7 +109,8 @@ export const MainApp = () => {
   const [inputLevelDb, setInputLevelDb] = useState<number | null>(null);
   const capture = useRef(new MicrophoneCapture());
   const captureAttempt = useRef(0);
-  const chunkQueue = useRef(Promise.resolve());
+  /** Latest-wins ASR queue: 1 in-flight + 1 pending (drop older pending). */
+  const chunkProcessor = useRef<LatestWinsProcessor<AudioChunk> | null>(null);
 
   const refreshDevices = useCallback(async (options?: { primePermission?: boolean }) => {
     try {
@@ -167,14 +176,38 @@ export const MainApp = () => {
     let lastCaptionId: string | null = null;
     void bridge
       .listenCaptions((nextCaption) => {
-        setCaption(nextCaption);
-        // Avoid flooding the ring buffer with every partial/identical payload.
-        if (nextCaption.id !== lastCaptionId) {
+        // Progressive TTFS: only the source-stage emit of the in-flight chunk.
+        // Do not mark on late translation events (they can arrive while a newer
+        // ASR job is already running and would skew first-caption timing).
+        const isSourceStage =
+          nextCaption.stage === "source" ||
+          (nextCaption.sequence === 0 && !nextCaption.isFinal);
+        if (isSourceStage && nextCaption.sourceText.trim()) {
+          chunkProcessor.current?.markFirstCaption();
+          if (chunkProcessor.current) {
+            setChunkTimingStats(chunkProcessor.current.getStats());
+          }
+        }
+        setCaption((current) => {
+          const merged = mergeCaptionPayload(current, nextCaption);
+          if (merged === null) {
+            return current;
+          }
+          return merged;
+        });
+        const stage =
+          nextCaption.stage ??
+          (nextCaption.translationText.trim() ? "translation" : "source");
+        // Log new utterances and translation completions (not every identical source paint).
+        if (nextCaption.id !== lastCaptionId || stage === "translation") {
           lastCaptionId = nextCaption.id;
+          const stats = chunkProcessor.current?.getStats();
+          const latency =
+            stats?.lastFirstCaptionMs != null ? ` · first=${stats.lastFirstCaptionMs}ms` : "";
           pushDiagnosticEvent(
             "caption",
-            "Caption update",
-            `${nextCaption.id} · src=${nextCaption.sourceText.slice(0, 48)}`,
+            stage === "translation" ? "Caption translated" : "Caption source ready",
+            `${nextCaption.id} · src=${nextCaption.sourceText.slice(0, 48)}${latency}`,
           );
         }
       })
@@ -212,6 +245,32 @@ export const MainApp = () => {
         if (mounted) {
           const notice = noticeFromError(error, "message.initializeFailed");
           pushDiagnosticEvent("error", "Runtime listen failed", notice.detail ?? notice.key);
+          setNotice(notice);
+        }
+      });
+    // Quick-start may rewrite backend model selection (missing translator → minimal pack).
+    void bridge
+      .listenConfig((nextConfig) => {
+        if (mounted) {
+          setConfig(nextConfig);
+          pushDiagnosticEvent(
+            "config",
+            "Config updated",
+            `translator=${nextConfig.models.translator}`,
+          );
+        }
+      })
+      .then((dispose) => {
+        if (mounted) {
+          disposers.push(dispose);
+        } else {
+          dispose();
+        }
+      })
+      .catch((error: unknown) => {
+        if (mounted) {
+          const notice = noticeFromError(error, "message.initializeFailed");
+          pushDiagnosticEvent("error", "Config listen failed", notice.detail ?? notice.key);
           setNotice(notice);
         }
       });
@@ -255,58 +314,109 @@ export const MainApp = () => {
       "Capture starting",
       `device=${captureConfig.audio.inputDeviceId} · chunk=${captureConfig.audio.chunkMs}ms`,
     );
+    // Kick AudioContext construction / resume while the click gesture is still
+    // warm. bridge.startCapture() may wait many seconds for sidecars; doing
+    // resume() only after that wait leaves WKWebView contexts suspended.
+    microphone.primeAudioContext();
     try {
-      // Stop any previous capture, then prepare backend (models / sidecars)
-      // before opening the microphone so the first audio chunks are not rejected
-      // while the translator or Parapper services are still starting.
+      // Free the previous mic device before opening a new stream (NotReadableError
+      // if two sessions pin the same input).
       await previousMicrophone.stop();
       if (attempt !== captureAttempt.current) {
+        await microphone.stop().catch(() => undefined);
         return;
       }
       await bridge.stopCapture().catch(() => undefined);
       if (attempt !== captureAttempt.current) {
+        await microphone.stop().catch(() => undefined);
         return;
       }
-      await bridge.startCapture();
+
+      // Overlap mic open with backend readiness so the first chunk is not rejected
+      // for a cold gateway, without delaying getUserMedia past the user gesture.
+      const preparePromise = microphone.prepareInput(captureConfig.audio.inputDeviceId);
+      const backendPromise = bridge.startCapture();
+      const [prepareResult, backendResult] = await Promise.allSettled([
+        preparePromise,
+        backendPromise,
+      ]);
       if (attempt !== captureAttempt.current) {
-        await bridge.stopCapture().catch(() => undefined);
+        await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
         return;
       }
+      if (backendResult.status === "rejected") {
+        await microphone.stop().catch(() => undefined);
+        throw backendResult.reason;
+      }
+      if (prepareResult.status === "rejected") {
+        await bridge.stopCapture().catch(() => undefined);
+        throw prepareResult.reason;
+      }
+
+      // Bound backlog: at most 1 ASR in-flight + 1 newest pending chunk.
+      // Progressive backend already returns after ASR; this still prevents
+      // serial queues of slow recognition from delaying live captions.
+      chunkProcessor.current?.reset();
+      clearChunkTimingStats();
+      const processor = createLatestWinsProcessor<AudioChunk>({
+        isActive: () => attempt === captureAttempt.current,
+        onStatsChange: (stats) => {
+          setChunkTimingStats(stats);
+        },
+        process: async (chunk) => {
+          try {
+            const nextCaption = await bridge.transcribeAudioChunk(chunk);
+            if (attempt !== captureAttempt.current) {
+              return;
+            }
+            // Soft-skip silence / no-speech chunks (empty sourceText) so ambient
+            // noise that passes the RMS gate does not clear the live caption.
+            if (!nextCaption.sourceText.trim()) {
+              setStatus((current) =>
+                current.lastError ? { ...current, lastError: null } : current,
+              );
+              return;
+            }
+            // Caption events usually arrive first (progressive emit); still merge
+            // the invoke result for browser-preview and event-loss fallbacks.
+            setCaption((current) => {
+              const merged = mergeCaptionPayload(current, nextCaption);
+              if (merged === null) {
+                return current;
+              }
+              return merged;
+            });
+            setStatus((current) =>
+              current.lastError ? { ...current, lastError: null } : current,
+            );
+          } catch (error: unknown) {
+            if (attempt !== captureAttempt.current) {
+              return;
+            }
+            const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
+            pushDiagnosticEvent(
+              "error",
+              "Audio processing failed",
+              nextNotice.detail ?? t(nextNotice.key),
+            );
+            setNotice(nextNotice);
+            setStatus((current) => ({
+              ...current,
+              // Keep capturing so the Stop button remains available; only
+              // surface the last backend/transcription error.
+              lastError: nextNotice.detail ?? t(nextNotice.key),
+            }));
+          }
+        },
+      });
+      chunkProcessor.current = processor;
+
       await microphone.start(
         captureConfig.audio.inputDeviceId,
         captureConfig.audio.chunkMs,
         captureConfig.audio.silenceGateDb,
         (chunk) => {
-          chunkQueue.current = chunkQueue.current
-            .then(async () => {
-              if (attempt !== captureAttempt.current) {
-                return;
-              }
-              const nextCaption = await bridge.transcribeAudioChunk(chunk);
-              if (attempt === captureAttempt.current) {
-                setCaption(nextCaption);
-                setStatus((current) =>
-                  current.lastError ? { ...current, lastError: null } : current,
-                );
-              }
-            })
-            .catch((error: unknown) => {
-              if (attempt === captureAttempt.current) {
-                const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
-                pushDiagnosticEvent(
-                  "error",
-                  "Audio processing failed",
-                  nextNotice.detail ?? t(nextNotice.key),
-                );
-                setNotice(nextNotice);
-                setStatus((current) => ({
-                  ...current,
-                  // Keep capturing so the Stop button remains available; only
-                  // surface the last backend/transcription error.
-                  lastError: nextNotice.detail ?? t(nextNotice.key),
-                }));
-              }
-            });
+          processor.enqueue(chunk);
         },
         (captureError) => {
           // Track ended / mid-session mic loss: stop cleanly and surface diagnostics.
@@ -374,6 +484,9 @@ export const MainApp = () => {
 
   const stopCapture = async () => {
     captureAttempt.current += 1;
+    chunkProcessor.current?.reset();
+    chunkProcessor.current = null;
+    clearChunkTimingStats();
     const microphone = capture.current;
     capture.current = new MicrophoneCapture();
     setInputLevelDb(null);
