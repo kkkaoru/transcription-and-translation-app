@@ -91,7 +91,7 @@ export const LiveView = ({
       </div>
       {message ? (
         <div className="notice" role="status">
-          {message}
+          <span className="notice-text">{message}</span>
           <button type="button" onClick={onCloseMessage} aria-label={t("common.close")}>
             ×
           </button>

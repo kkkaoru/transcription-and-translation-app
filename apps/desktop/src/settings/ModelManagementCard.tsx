@@ -187,8 +187,8 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
 
       {error ? (
         <div className="download-message error notice" role="alert">
-          <span>{error}</span>
-          <button className="text-button" type="button" onClick={() => setError(null)}>
+          <span className="notice-text">{error}</span>
+          <button className="notice-dismiss" type="button" onClick={() => setError(null)}>
             {t("common.close")}
           </button>
         </div>

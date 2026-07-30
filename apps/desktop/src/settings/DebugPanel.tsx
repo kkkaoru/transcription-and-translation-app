@@ -46,7 +46,7 @@ export function DebugPanel() {
             <button
               className="secondary-button"
               type="button"
-              onClick={fetchInfo}
+              onClick={() => void fetchInfo()}
               disabled={loading}
             >
               {loading ? t("debug.loading") : t("debug.refresh")}
@@ -54,19 +54,24 @@ export function DebugPanel() {
             <button
               className="secondary-button"
               type="button"
-              onClick={copyToClipboard}
+              onClick={() => void copyToClipboard()}
               disabled={!debugInfo}
             >
               {copied ? t("debug.copied") : t("debug.copy")}
             </button>
           </div>
           {error ? (
-            <p className="download-message error" role="alert">
-              {error}
-            </p>
+            <div className="download-message error notice" role="alert">
+              <span className="notice-text">{error}</span>
+              <button className="notice-dismiss" type="button" onClick={() => setError(null)}>
+                {t("common.close")}
+              </button>
+            </div>
           ) : null}
           {debugInfo ? (
-            <pre className="debug-output">{JSON.stringify(debugInfo, null, 2)}</pre>
+            <pre className="debug-output" tabIndex={0}>
+              {JSON.stringify(debugInfo, null, 2)}
+            </pre>
           ) : (
             <p className="download-empty">{t("debug.empty")}</p>
           )}
