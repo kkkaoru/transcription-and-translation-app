@@ -165,7 +165,9 @@ impl Default for AppConfig {
             audio: AudioConfig {
                 input_device_id: "default".to_string(),
                 sample_rate: 16_000,
-                chunk_ms: 1_200,
+                // Keep in sync with apps/desktop/src/core/defaults.ts DEFAULT_AUDIO_CHUNK_MS.
+                // ~900ms reduces time-to-first-subtitle while staying long enough for Parapper.
+                chunk_ms: 900,
                 silence_gate_db: -55.0,
             },
             overlay: OverlayConfig {

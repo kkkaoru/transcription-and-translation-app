@@ -98,28 +98,67 @@ pub async fn transcribe_audio_chunk(
 ) -> Result<CaptionPayload, String> {
     let wav = pcm_base64_to_wav(&chunk)?;
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
-    match state.pipeline.process(&config, wav).await {
-        Ok(caption) => {
-            let next_status = {
-                if let Ok(mut status) = state.status.lock() {
-                    status.backend_reachable = true;
-                    status.last_error = None;
-                    // A successful chunk must not flip a transient processing
-                    // failure into a hard "error" session state — stay capturing.
-                    if status.status == "error" {
-                        status.status = "capturing".to_string();
-                    }
-                    Some(status.clone())
-                } else {
-                    None
-                }
-            };
-            if let Some(status) = next_status {
-                let _ = app.emit("runtime:status", &status);
-            }
-            app.emit("caption:update", &caption)
+    // Stage 1: ASR + normalize only. Return as soon as source text is ready so
+    // the frontend chunkQueue is not blocked on translation latency.
+    match state.pipeline.recognize_source(&config, wav).await {
+        Ok(Some(partial)) => {
+            mark_backend_healthy(&app, &state);
+            app.emit("caption:update", &partial)
                 .map_err(|error| format!("could not emit caption: {error}"))?;
-            Ok(caption)
+
+            // Stage 2: translate in the background with the same caption id.
+            // UI already shows source_text; a second caption:update fills translation.
+            let pipeline = state.pipeline.clone();
+            let app_for_translate = app.clone();
+            let config_for_translate = config.clone();
+            let partial_for_translate = partial.clone();
+            tauri::async_runtime::spawn(async move {
+                match pipeline
+                    .complete_translation(&config_for_translate, partial_for_translate)
+                    .await
+                {
+                    Ok(final_caption) => {
+                        let _ = app_for_translate.emit("caption:update", &final_caption);
+                    }
+                    Err(error) => {
+                        // Keep the already-shown source caption; only surface last_error.
+                        log::warn!("translation failed for progressive caption: {error}");
+                        let detail = error.to_string();
+                        if let Some(app_state) = app_for_translate.try_state::<AppState>() {
+                            if let Ok(mut status) = app_state.status.lock() {
+                                if status.status != "idle" && status.status != "starting" {
+                                    status.status = "capturing".to_string();
+                                }
+                                // Source ASR already succeeded; do not mark the whole
+                                // backend unreachable solely because translation failed.
+                                status.last_error = Some(detail);
+                                let next = status.clone();
+                                drop(status);
+                                let _ = app_for_translate.emit("runtime:status", &next);
+                            }
+                        }
+                    }
+                }
+            });
+
+            Ok(partial)
+        }
+        Ok(None) => {
+            // No speech in this chunk — keep capture healthy and do not toast.
+            mark_backend_healthy(&app, &state);
+            Ok(CaptionPayload {
+                id: format!("silence-{}", chrono_like_millis()),
+                source_text: String::new(),
+                translation_text: String::new(),
+                source_language: config.language.source,
+                target_language: config.language.target,
+                started_at: 0,
+                received_at: 0,
+                stage: "source",
+                sequence: 0,
+                is_final: false,
+                confidence: None,
+            })
         }
         Err(error) => {
             let detail = error.to_string();
@@ -143,6 +182,28 @@ pub async fn transcribe_audio_chunk(
             Err(detail)
         }
     }
+}
+
+fn mark_backend_healthy(app: &AppHandle, state: &State<'_, AppState>) {
+    if let Ok(mut status) = state.status.lock() {
+        status.backend_reachable = true;
+        status.last_error = None;
+        // A successful chunk must not flip a transient processing
+        // failure into a hard "error" session state — stay capturing.
+        if status.status == "error" {
+            status.status = "capturing".to_string();
+        }
+        let next = status.clone();
+        drop(status);
+        let _ = app.emit("runtime:status", &next);
+    }
+}
+
+fn chrono_like_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 #[tauri::command]
