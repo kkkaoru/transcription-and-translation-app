@@ -1,16 +1,17 @@
-use crate::model_runtime::{download_url, model_path, spec, ModelRuntimeSpec};
+use crate::model_runtime::{download_url, model_path, spec, ModelRuntimeSpec, ModelServer};
+use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncWriteExt;
 
 /// Minimal GGUF set for smoke / operation verification.
-/// Zenzai XSmall (~21 MiB) exercises the normalizer server; Hy-MT2 1.8B (~1.1 GiB)
-/// matches the default translator selection.
-pub const QUICK_START_MODEL_IDS: &[&str] = &["zenz-v3.2-xsmall-gguf", "hy-mt2-1.8b-gguf"];
+/// Zenzai XSmall (~21 MiB) exercises the normalizer server; Hy-MT2 1.25bit (~461 MiB)
+/// is the smallest bundled translator.
+pub const QUICK_START_MODEL_IDS: &[&str] = &["zenz-v3.2-xsmall-gguf", "hy-mt2-1.8b-1.25bit-gguf"];
 
 fn active_downloads() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     static ACTIVE: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
@@ -18,9 +19,8 @@ fn active_downloads() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 }
 
 fn register_download(model_id: &str) -> Result<Arc<AtomicBool>, String> {
-    let mut guard = active_downloads()
-        .lock()
-        .map_err(|_| "download registry lock poisoned".to_string())?;
+    let mut guard =
+        active_downloads().lock().map_err(|_| "download registry lock poisoned".to_string())?;
     if guard.contains_key(model_id) {
         return Err(format!("download already in progress for {model_id}"));
     }
@@ -38,9 +38,8 @@ fn unregister_download(model_id: &str) {
 /// Request cancellation of an in-flight download for `model_id`.
 #[tauri::command]
 pub async fn cancel_model_download(model_id: String) -> Result<(), String> {
-    let guard = active_downloads()
-        .lock()
-        .map_err(|_| "download registry lock poisoned".to_string())?;
+    let guard =
+        active_downloads().lock().map_err(|_| "download registry lock poisoned".to_string())?;
     match guard.get(&model_id) {
         Some(flag) => {
             flag.store(true, Ordering::SeqCst);
@@ -165,7 +164,8 @@ pub async fn download_model_with_progress_cb(
     }
 
     let cancel = register_download(runtime.id)?;
-    let result = download_model_with_progress_cb_inner(runtime, models_dir, &cancel, &mut on_progress).await;
+    let result =
+        download_model_with_progress_cb_inner(runtime, models_dir, &cancel, &mut on_progress).await;
     unregister_download(runtime.id);
     result
 }
@@ -346,13 +346,91 @@ pub async fn download_model(app: AppHandle, model_id: String) -> Result<String, 
     Ok(model_id)
 }
 
+/// Translator id from the quick-start pack (Llama / Hy-MT2 GGUF).
+pub fn quick_start_translator_id() -> Option<&'static str> {
+    QUICK_START_MODEL_IDS
+        .iter()
+        .copied()
+        .find(|id| matches!(spec(id).map(|runtime| runtime.server), Some(ModelServer::Llama)))
+}
+
+/// After a minimal pack install, prefer the downloaded translator when the
+/// currently selected translator is not ready on disk. Keeps an already-ready
+/// full-size translator selection so power users are not downgraded.
+pub fn preferred_translator_after_quick_start(
+    current_translator: &str,
+    models_dir: &Path,
+) -> Option<&'static str> {
+    let qs_translator = quick_start_translator_id()?;
+    if current_translator == qs_translator {
+        return None;
+    }
+    let current_ready = spec(current_translator)
+        .map(|runtime| classify_model_status(models_dir, runtime).status == "ready")
+        .unwrap_or(false);
+    if current_ready {
+        return None;
+    }
+    Some(qs_translator)
+}
+
+fn app_user_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("could not resolve app config directory: {error}"))?
+        .join("config.json"))
+}
+
+fn align_selection_after_quick_start(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    models_dir: &Path,
+) -> Result<(), String> {
+    let mut config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    let Some(translator_id) =
+        preferred_translator_after_quick_start(&config.models.translator, models_dir)
+    else {
+        return Ok(());
+    };
+
+    log::info!(
+        target: "kotoba_model_download",
+        "quick-start aligned translator selection {} → {}",
+        config.models.translator,
+        translator_id
+    );
+    config.models.translator = translator_id.to_string();
+
+    let config_path = app_user_config_path(app)?;
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create config directory: {error}"))?;
+    }
+    let payload = serde_json::to_vec_pretty(&config)
+        .map_err(|error| format!("could not serialize config: {error}"))?;
+    std::fs::write(&config_path, payload)
+        .map_err(|error| format!("could not write config: {error}"))?;
+
+    *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
+    let _ = app.emit("config:update", &config);
+    Ok(())
+}
+
 #[tauri::command]
-pub async fn download_quick_start(app: AppHandle) -> Result<Vec<String>, String> {
+pub async fn download_quick_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
     let models_dir = crate::model_runtime::model_runtime_dir(&app)?;
-    download_models_with_progress_cb(QUICK_START_MODEL_IDS, &models_dir, |progress| {
+    let ids = download_models_with_progress_cb(QUICK_START_MODEL_IDS, &models_dir, |progress| {
         let _ = app.emit("model:download:progress", progress);
     })
-    .await
+    .await?;
+    // Start Capture reads backend config — without this, the default full-size
+    // translator stays selected and the "minimal" pack does not make capture operable.
+    align_selection_after_quick_start(&app, &state, &models_dir)?;
+    Ok(ids)
 }
 
 #[tauri::command]
@@ -368,7 +446,8 @@ pub async fn list_model_status(app: AppHandle) -> Result<Vec<ModelStatusEntry>, 
 mod tests {
     use super::{
         cancel_model_download, classify_model_status, download_model_with_progress_cb,
-        download_models_with_progress_cb, progress_snapshot, register_download, unregister_download,
+        download_models_with_progress_cb, preferred_translator_after_quick_start,
+        progress_snapshot, quick_start_translator_id, register_download, unregister_download,
         QUICK_START_MODEL_IDS,
     };
     use crate::model_runtime::{model_path, spec};
@@ -556,7 +635,7 @@ mod tests {
     #[ignore = "downloads ~21 MiB from Hugging Face for the missing quick-start model; run explicitly"]
     async fn batch_quick_start_downloads_missing_xsmall_and_skips_ready_hy() {
         let runtime_xsmall = spec("zenz-v3.2-xsmall-gguf").expect("xsmall");
-        let runtime_hy = spec("hy-mt2-1.8b-gguf").expect("hy");
+        let runtime_hy = spec("hy-mt2-1.8b-1.25bit-gguf").expect("hy");
         let root = std::env::temp_dir().join(format!(
             "kotoba-model-batch-mixed-{}-{}",
             std::process::id(),
@@ -573,7 +652,10 @@ mod tests {
             if progress.model_id == runtime_xsmall.id && progress.percent < 100 {
                 eprintln!(
                     "batch progress {} {}% {}/{}",
-                    progress.model_id, progress.percent, progress.downloaded_bytes, progress.total_bytes
+                    progress.model_id,
+                    progress.percent,
+                    progress.downloaded_bytes,
+                    progress.total_bytes
                 );
             }
         })
@@ -589,6 +671,152 @@ mod tests {
             runtime_xsmall.expected_bytes
         );
         eprintln!("batch download complete: {:?}", ids);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quick_start_uses_minimal_model_ids() {
+        assert_eq!(
+            QUICK_START_MODEL_IDS.len(),
+            2,
+            "quick-start must target exactly 2 models (normalizer + translator)"
+        );
+        let xsmall = spec("zenz-v3.2-xsmall-gguf").expect("xsmall spec");
+        let hy_125bit = spec("hy-mt2-1.8b-1.25bit-gguf").expect("hy 1.25bit spec");
+        let all = crate::model_runtime::all_specs();
+        let smallest_zenz = all
+            .iter()
+            .filter(|s| matches!(s.server, crate::model_runtime::ModelServer::Zenz))
+            .min_by_key(|s| s.expected_bytes)
+            .expect("at least one zenz model");
+        let smallest_llama = all
+            .iter()
+            .filter(|s| matches!(s.server, crate::model_runtime::ModelServer::Llama))
+            .min_by_key(|s| s.expected_bytes)
+            .expect("at least one llama model");
+        assert_eq!(
+            xsmall.expected_bytes, smallest_zenz.expected_bytes,
+            "quick-start must use the smallest normalizer model"
+        );
+        assert_eq!(
+            hy_125bit.expected_bytes, smallest_llama.expected_bytes,
+            "quick-start must use the smallest translator model"
+        );
+        assert!(
+            hy_125bit.expected_bytes < 700_000_000,
+            "quick-start translator must stay well below 700 MiB"
+        );
+        assert_eq!(quick_start_translator_id(), Some("hy-mt2-1.8b-1.25bit-gguf"));
+    }
+
+    #[test]
+    fn quick_start_prefers_minimal_translator_when_selected_is_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-qs-align-missing-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert_eq!(
+            preferred_translator_after_quick_start("hy-mt2-1.8b-gguf", &root),
+            Some("hy-mt2-1.8b-1.25bit-gguf"),
+            "default full translator is missing → align to minimal pack"
+        );
+        assert_eq!(
+            preferred_translator_after_quick_start("hy-mt2-1.8b-1.25bit-gguf", &root),
+            None,
+            "already on quick-start translator → no change"
+        );
+
+        // Seed the full-size translator as ready: keep the user's quality choice.
+        let full = spec("hy-mt2-1.8b-gguf").expect("full hy");
+        write_expected_size_file(&model_path(&root, full), full.expected_bytes);
+        assert_eq!(
+            preferred_translator_after_quick_start("hy-mt2-1.8b-gguf", &root),
+            None,
+            "ready full translator must not be downgraded"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn list_model_status_covers_every_catalogued_spec() {
+        let specs = crate::model_runtime::all_specs();
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-model-status-all-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut statuses = Vec::new();
+        for spec in specs {
+            let entry = classify_model_status(&root, spec);
+            statuses.push(entry);
+        }
+        assert_eq!(statuses.len(), 7);
+        for entry in &statuses {
+            assert_eq!(entry.status, "missing");
+            assert!(entry.installed_bytes.is_none());
+            assert!(entry.last_error.is_none());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    #[ignore = "starts a real HF download then cancels; run explicitly"]
+    async fn cancel_aborts_in_flight_xsmall_download() {
+        let runtime = spec("zenz-v3.2-xsmall-gguf").expect("xsmall");
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-model-cancel-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let model_id = runtime.id.to_string();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<u8>();
+
+        let download_root = root.clone();
+        let download = tokio::spawn(async move {
+            download_model_with_progress_cb(runtime, &download_root, |progress| {
+                let _ = progress_tx.send(progress.percent);
+            })
+            .await
+        });
+
+        // Wait until the download has registered and emitted at least one progress tick,
+        // or until the whole request finishes (very fast networks / cached CDN).
+        let saw_progress =
+            tokio::time::timeout(std::time::Duration::from_secs(30), progress_rx.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+
+        if saw_progress {
+            cancel_model_download(model_id.clone())
+                .await
+                .expect("cancel should find the active download");
+            let err = download
+                .await
+                .expect("join download task")
+                .expect_err("cancelled download must fail");
+            assert!(err.contains("cancelled"), "expected cancellation error, got: {err}");
+            eprintln!("cancel path ok for {model_id}: {err}");
+        } else {
+            // Finished before we could cancel — still prove the success path ran.
+            let path = download
+                .await
+                .expect("join download task")
+                .expect("download completed before cancel");
+            assert_eq!(path, model_path(&root, runtime));
+            eprintln!("download finished before cancel could run (still success path): {path:?}");
+        }
+
+        let destination = model_path(&root, runtime);
+        let partial = std::path::PathBuf::from(format!("{}.partial", destination.display()));
+        assert!(!partial.exists(), "partial file should be cleaned up after cancel or completion");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
