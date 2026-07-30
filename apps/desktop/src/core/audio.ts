@@ -8,10 +8,13 @@ export const enumerateAudioInputDevices = async (): Promise<AudioInputDevice[]> 
   }
 
   const devices = await navigator.mediaDevices.enumerateDevices();
+  // Only surface real browser deviceIds. Fabricated IDs (e.g. "audio-input-1")
+  // break getUserMedia when used with { exact: deviceId }. The UI always offers
+  // an explicit "default" option for the system microphone.
   return devices
-    .filter((device) => device.kind === "audioinput")
-    .map((device, index) => ({
-      deviceId: device.deviceId || (index === 0 ? "default" : `audio-input-${index}`),
+    .filter((device) => device.kind === "audioinput" && device.deviceId)
+    .map((device) => ({
+      deviceId: device.deviceId,
       label: device.label,
       groupId: device.groupId,
     }));
@@ -143,9 +146,22 @@ export class MicrophoneCapture {
     this.stream = await navigator.mediaDevices.getUserMedia(createMicrophoneConstraints(deviceId));
     this.context = new AudioContext();
     this.source = this.context.createMediaStreamSource(this.stream);
+    // Prefer AudioWorklet, but CSP / WebView restrictions on blob: modules are common
+    // in Tauri. Fall back to ScriptProcessor so capture still works.
+    let started = false;
     if (this.context.audioWorklet) {
-      await this.startWorklet();
-    } else {
+      try {
+        await this.startWorklet();
+        started = true;
+      } catch (error) {
+        console.warn("AudioWorklet capture failed; falling back to ScriptProcessor", error);
+        this.worklet?.disconnect();
+        this.worklet = null;
+        this.sink?.disconnect();
+        this.sink = null;
+      }
+    }
+    if (!started) {
       this.startScriptProcessor();
     }
     await this.context.resume();

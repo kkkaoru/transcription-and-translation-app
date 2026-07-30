@@ -2,7 +2,7 @@ import type { ChangeEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocaleSwitcher } from "../components/LocaleSwitcher";
 import { AudioCaptureError, enumerateAudioInputDevices, MicrophoneCapture } from "../core/audio";
-import { bridge } from "../core/bridge";
+import { bridge, formatBridgeError } from "../core/bridge";
 import {
   createDefaultConfig,
   DEFAULT_MODEL_CATALOG,
@@ -58,9 +58,8 @@ const noticeFromError = (error: unknown, fallback: MessageKey): Notice => {
     const key = keys[error.name];
     return key ? { key } : { key: fallback, detail: error.message };
   }
-  return error instanceof Error && error.message
-    ? { key: fallback, detail: error.message }
-    : { key: fallback };
+  const detail = formatBridgeError(error);
+  return detail ? { key: fallback, detail } : { key: fallback };
 };
 
 export const MainApp = () => {
@@ -170,10 +169,18 @@ export const MainApp = () => {
     const previousMicrophone = capture.current;
     capture.current = microphone;
     setNotice(null);
-    setStatus((current) => ({ ...current, status: "starting" }));
+    setStatus((current) => ({ ...current, status: "starting", lastError: null }));
     try {
+      // Stop any previous capture, then prepare backend (models / sidecars)
+      // before opening the microphone so the first audio chunks are not rejected
+      // while the translator or Parapper services are still starting.
       await previousMicrophone.stop();
       if (attempt !== captureAttempt.current) {
+        return;
+      }
+      await bridge.startCapture();
+      if (attempt !== captureAttempt.current) {
+        await bridge.stopCapture().catch(() => undefined);
         return;
       }
       await microphone.start(
@@ -189,22 +196,27 @@ export const MainApp = () => {
               const nextCaption = await bridge.transcribeAudioChunk(chunk);
               if (attempt === captureAttempt.current) {
                 setCaption(nextCaption);
+                setStatus((current) =>
+                  current.lastError ? { ...current, lastError: null } : current,
+                );
               }
             })
             .catch((error: unknown) => {
               if (attempt === captureAttempt.current) {
-                setNotice(noticeFromError(error, "message.audioProcessingFailed"));
+                const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
+                setNotice(nextNotice);
+                setStatus((current) => ({
+                  ...current,
+                  // Keep capturing so the Stop button remains available; only
+                  // surface the last backend/transcription error.
+                  lastError: nextNotice.detail ?? t(nextNotice.key),
+                }));
               }
             });
         },
       );
       if (attempt !== captureAttempt.current) {
-        await microphone.stop();
-        return;
-      }
-      await bridge.startCapture();
-      if (attempt !== captureAttempt.current) {
-        await bridge.stopCapture();
+        await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
         return;
       }
       await refreshDevices();
@@ -216,12 +228,14 @@ export const MainApp = () => {
       if (attempt !== captureAttempt.current) {
         return;
       }
-      const nextNotice = noticeFromError(error, "message.microphoneStartFailed");
+      // Prefer a backend-prep message when the mic never started; formatBridgeError
+      // still carries the concrete Rust/sidecar detail.
+      const nextNotice = noticeFromError(error, "message.captureStartFailed");
       setNotice(nextNotice);
       setStatus((current) => ({
         ...current,
         status: "error",
-        lastError: nextNotice.detail ?? nextNotice.key,
+        lastError: nextNotice.detail ?? t(nextNotice.key),
       }));
     }
   };
@@ -274,7 +288,7 @@ export const MainApp = () => {
 
   const noticeText = notice
     ? [t(notice.key), notice.detail].filter((part) => part).join(" ")
-    : null;
+    : (status.lastError ?? null);
 
   return (
     <div className="app-shell">

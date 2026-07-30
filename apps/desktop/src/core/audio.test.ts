@@ -56,7 +56,7 @@ describe("audio conversion", () => {
     vi.unstubAllGlobals();
   });
 
-  it("lists audio input devices after permission is available", async () => {
+  it("lists only real audio input device IDs after permission is available", async () => {
     vi.stubGlobal("navigator", {
       mediaDevices: {
         enumerateDevices: vi.fn(async () => [
@@ -64,13 +64,20 @@ describe("audio conversion", () => {
           { kind: "audioinput", deviceId: "mic-1", label: "USB Mic", groupId: "group-1" },
           { kind: "videoinput", deviceId: "camera-1", label: "Camera", groupId: "group-2" },
           { kind: "audioinput", deviceId: "", label: "", groupId: "" },
+          {
+            kind: "audioinput",
+            deviceId: "built-in",
+            label: "Built-in Mic",
+            groupId: "group-3",
+          },
         ]),
       },
     });
+    // Empty deviceIds (pre-permission placeholders) are omitted so the UI cannot
+    // select fabricated IDs that break getUserMedia({ deviceId: { exact } }).
     await expect(enumerateAudioInputDevices()).resolves.toEqual([
-      { deviceId: "default", label: "", groupId: "group-0" },
       { deviceId: "mic-1", label: "USB Mic", groupId: "group-1" },
-      { deviceId: "audio-input-2", label: "", groupId: "" },
+      { deviceId: "built-in", label: "Built-in Mic", groupId: "group-3" },
     ]);
     vi.unstubAllGlobals();
     vi.stubGlobal("navigator", {});

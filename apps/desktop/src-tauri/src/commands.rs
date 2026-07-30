@@ -78,6 +78,9 @@ pub fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, S
 #[tauri::command]
 pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    // Ensure gateway / Parapper are accepting traffic before the frontend opens
+    // the microphone, then bring up the selected local GGUF servers.
+    gateway::ensure_services_ready(&config).await?;
     gateway::reconcile_models(&app, &config).await?;
     set_status(&app, &state, "capturing", None)
 }
@@ -97,9 +100,22 @@ pub async fn transcribe_audio_chunk(
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     match state.pipeline.process(&config, wav).await {
         Ok(caption) => {
-            if let Ok(mut status) = state.status.lock() {
-                status.backend_reachable = true;
-                status.last_error = None;
+            let next_status = {
+                if let Ok(mut status) = state.status.lock() {
+                    status.backend_reachable = true;
+                    status.last_error = None;
+                    // A successful chunk must not flip a transient processing
+                    // failure into a hard "error" session state — stay capturing.
+                    if status.status == "error" {
+                        status.status = "capturing".to_string();
+                    }
+                    Some(status.clone())
+                } else {
+                    None
+                }
+            };
+            if let Some(status) = next_status {
+                let _ = app.emit("runtime:status", &status);
             }
             app.emit("caption:update", &caption)
                 .map_err(|error| format!("could not emit caption: {error}"))?;
@@ -107,7 +123,23 @@ pub async fn transcribe_audio_chunk(
         }
         Err(error) => {
             let detail = error.to_string();
-            let _ = set_status(&app, &state, "error", Some(detail.clone()));
+            // Keep the session in "capturing" so the frontend Stop control remains
+            // available. Surface the concrete failure through last_error only.
+            let next_status = {
+                if let Ok(mut status) = state.status.lock() {
+                    if status.status != "idle" && status.status != "starting" {
+                        status.status = "capturing".to_string();
+                    }
+                    status.backend_reachable = false;
+                    status.last_error = Some(detail.clone());
+                    Some(status.clone())
+                } else {
+                    None
+                }
+            };
+            if let Some(status) = next_status {
+                let _ = app.emit("runtime:status", &status);
+            }
             Err(detail)
         }
     }
@@ -219,7 +251,7 @@ fn set_status(
 }
 
 #[tauri::command]
-pub fn get_debug_info(
+pub async fn get_debug_info(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
@@ -247,9 +279,11 @@ pub fn get_debug_info(
             })
         })
         .collect();
+    let services = gateway::probe_service_health(&config).await;
     Ok(serde_json::json!({
         "config": serde_json::to_value(&config).unwrap_or_default(),
         "runtimeStatus": serde_json::to_value(&status).unwrap_or_default(),
+        "services": services,
         "modelsDir": models_dir.display().to_string(),
         "configDir": config_dir.display().to_string(),
         "appDataDir": app_data.display().to_string(),

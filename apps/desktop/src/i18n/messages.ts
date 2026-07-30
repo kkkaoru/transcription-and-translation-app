@@ -168,6 +168,8 @@ const ja = {
   "message.saved": "設定を保存しました。",
   "message.saveFailed": "設定の保存に失敗しました。",
   "message.audioProcessingFailed": "音声処理に失敗しました。",
+  "message.captureStartFailed":
+    "字幕生成を開始できませんでした。モデルの準備や推論サービスの起動状態を確認してください。",
   "message.microphoneStartFailed": "マイクを開始できませんでした。",
   "message.microphoneStopFailed": "マイクを停止できませんでした。",
   "message.overlayOpenFailed": "オーバーレイを開けませんでした。",
@@ -214,7 +216,8 @@ const ja = {
   "model.statusDownloading": "ダウンロード中",
   "debug.title": "デバッグ情報",
   "debug.eyebrow": "DEVELOPER TOOLS",
-  "debug.lead": "設定・ランタイム状態・モデル配置パスを JSON で確認できます。",
+  "debug.lead":
+    "設定・ランタイム状態・ゲートウェイ/Parapper 到達性・モデル配置パスを JSON で確認できます。",
   "debug.refresh": "更新",
   "debug.loading": "読み込み中…",
   "debug.copy": "JSON をコピー",
@@ -391,6 +394,8 @@ const en: Record<MessageKey, string> = {
   "message.saved": "Settings saved.",
   "message.saveFailed": "Could not save settings.",
   "message.audioProcessingFailed": "Audio processing failed.",
+  "message.captureStartFailed":
+    "Could not start live captions. Check model preparation and inference service readiness.",
   "message.microphoneStartFailed": "Could not start the microphone.",
   "message.microphoneStopFailed": "Could not stop the microphone.",
   "message.overlayOpenFailed": "Could not open the overlay.",
@@ -437,7 +442,8 @@ const en: Record<MessageKey, string> = {
   "model.statusDownloading": "Downloading",
   "debug.title": "Debug info",
   "debug.eyebrow": "DEVELOPER TOOLS",
-  "debug.lead": "Inspect config, runtime status, and model paths as JSON.",
+  "debug.lead":
+    "Inspect config, runtime status, gateway/Parapper reachability, and model paths as JSON.",
   "debug.refresh": "Refresh",
   "debug.loading": "Loading…",
   "debug.copy": "Copy JSON",

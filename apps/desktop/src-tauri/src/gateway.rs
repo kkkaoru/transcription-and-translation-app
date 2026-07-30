@@ -6,6 +6,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Mutex,
+    time::Duration,
 };
 
 #[cfg(windows)]
@@ -19,6 +20,36 @@ use tauri_plugin_shell::{
 
 const GATEWAY_PORT: u16 = 8765;
 const PARAPPER_PORT: u16 = 18082;
+const SERVICE_READY_ATTEMPTS: u32 = 90;
+const PARAPPER_READY_ATTEMPTS: u32 = 300;
+
+/// Best-effort cleanup of orphaned sidecars from a previous crash. Only used on
+/// Unix where `lsof` is typically available; failures are ignored.
+#[cfg(unix)]
+fn kill_port(port: u16) {
+    let output = std::process::Command::new("lsof").args(["-ti", &format!(":{port}")]).output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid in pids.split_whitespace() {
+                log::warn!(target: "kotoba_runtime", "clearing stale listener on port {port} (pid {pid})");
+                let _ = std::process::Command::new("kill").args(["-9", pid]).output();
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn clear_sidecar_ports() {
+    kill_port(GATEWAY_PORT);
+    kill_port(PARAPPER_PORT);
+    for port in 8081..=8087_u16 {
+        kill_port(port);
+    }
+}
+
+#[cfg(not(unix))]
+fn clear_sidecar_ports() {}
 
 pub struct RuntimeServices {
     gateway: Mutex<Option<CommandChild>>,
@@ -196,6 +227,7 @@ fn resource_runtime_path(app: &AppHandle, runtime_name: &str) -> Result<OsString
 }
 
 pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
+    clear_sidecar_ports();
     let config_path = config_path(app)?;
     let services = app.state::<RuntimeServices>();
     let runtime_dir = parapper_runtime_dir(app)?;
@@ -264,6 +296,100 @@ pub async fn reconcile_models(app: &AppHandle, config: &AppConfig) -> Result<(),
     }
     services.stop_models_except(&active_ids);
     Ok(())
+}
+
+/// Blocks until the inference gateway (and local Parapper, when configured) accept
+/// traffic. Call this before opening the microphone so the first audio chunk is not
+/// lost to connection-refused errors during sidecar startup / first-run model fetch.
+pub async fn ensure_services_ready(config: &AppConfig) -> Result<(), String> {
+    let base = config.endpoint.base_url.trim_end_matches('/');
+    let health_url = format!("{base}/health");
+    wait_for_http_ok(&health_url, "inference gateway", SERVICE_READY_ATTEMPTS).await?;
+    if config.endpoint.mode == "local" {
+        wait_for_tcp("127.0.0.1", PARAPPER_PORT, "Parapper recognition", PARAPPER_READY_ATTEMPTS)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Lightweight readiness snapshot for the Debug panel.
+pub async fn probe_service_health(config: &AppConfig) -> serde_json::Value {
+    let base = config.endpoint.base_url.trim_end_matches('/');
+    let gateway = probe_http(&format!("{base}/health")).await;
+    let parapper = probe_tcp("127.0.0.1", PARAPPER_PORT).await;
+    serde_json::json!({
+        "gateway": gateway,
+        "parapper": parapper,
+        "gatewayPort": GATEWAY_PORT,
+        "parapperPort": PARAPPER_PORT,
+    })
+}
+
+async fn wait_for_http_ok(url: &str, label: &str, attempts: u32) -> Result<(), String> {
+    for attempt in 1..=attempts {
+        if let Ok(response) = reqwest::Client::new()
+            .get(url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        {
+            if response.status().is_success() {
+                return Ok(());
+            }
+        }
+        if attempt == attempts {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err(format!(
+        "{label} did not become ready at {url} within {attempts}s. \
+         Check that the embedded inference gateway sidecar is running."
+    ))
+}
+
+async fn wait_for_tcp(host: &str, port: u16, label: &str, attempts: u32) -> Result<(), String> {
+    for attempt in 1..=attempts {
+        if tokio::net::TcpStream::connect((host, port)).await.is_ok() {
+            return Ok(());
+        }
+        if attempt == attempts {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err(format!(
+        "{label} did not become ready on {host}:{port} within {attempts}s. \
+         On first launch Parapper downloads ASR models into app data; wait and retry, \
+         or inspect the kotoba-beacon-parapper log."
+    ))
+}
+
+async fn probe_http(url: &str) -> serde_json::Value {
+    match reqwest::Client::new().get(url).timeout(Duration::from_secs(2)).send().await {
+        Ok(response) => serde_json::json!({
+            "ok": response.status().is_success(),
+            "status": response.status().as_u16(),
+            "url": url,
+        }),
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "error": error.to_string(),
+            "url": url,
+        }),
+    }
+}
+
+async fn probe_tcp(host: &str, port: u16) -> serde_json::Value {
+    match tokio::net::TcpStream::connect((host, port)).await {
+        Ok(_) => serde_json::json!({ "ok": true, "host": host, "port": port }),
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "error": error.to_string(),
+            "host": host,
+            "port": port,
+        }),
+    }
 }
 
 fn schedule_model_reconciliation(app: AppHandle, config: AppConfig) {
