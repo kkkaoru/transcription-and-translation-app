@@ -10,6 +10,14 @@ apps/desktop/src-tauri/gen
 .DS_Store
 *.tsbuildinfo
 
+# Bun incremental/build artifacts (often large)
+.*.bun-build
+*.bun-build
+.??*-*.bun-build
+
+# Local UI screenshots (not app icons under src-tauri/icons)
+/kotoba-*-ui.png
+
 # Local model files can be several gigabytes.
 models
 *.gguf

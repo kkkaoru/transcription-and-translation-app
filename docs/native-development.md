@@ -1,6 +1,6 @@
 # Native development and verification
 
-The repository fixes Rust at 1.88 through `rust-toolchain.toml`. Bun 1.3.14 is
+The repository fixes Rust at 1.97.1 through `rust-toolchain.toml`. Bun 1.3.x is
 required for the TypeScript workspace.
 
 ## macOS
