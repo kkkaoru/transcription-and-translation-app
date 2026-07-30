@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { bridge } from "../core/bridge";
+import { bridge, formatBridgeError } from "../core/bridge";
+import { pushDiagnosticEvent } from "../core/diagnostics";
 import type { DownloadProgress, ModelStatusEntry } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 
@@ -37,14 +38,21 @@ const statusLabel = (status: string, t: ReturnType<typeof useI18n>["t"]): string
       return t("model.statusReady");
     case "missing":
       return t("model.statusMissing");
+    case "partial":
+      return t("model.statusPartial");
     case "corrupt":
       return t("model.statusCorrupt");
     case "downloading":
       return t("model.statusDownloading");
+    case "error":
+      return t("model.statusError");
     default:
       return status;
   }
 };
+
+const toErrorMessage = (error: unknown): string =>
+  formatBridgeError(error) ?? (error instanceof Error ? error.message : String(error));
 
 export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?: () => void }) => {
   const { t } = useI18n();
@@ -63,7 +71,7 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
     bridge
       .listModelStatus()
       .then(setModels)
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(toErrorMessage(e)));
   }, [desktop]);
 
   useEffect(() => {
@@ -72,7 +80,19 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
     const disposers: Array<() => void> = [];
     bridge
       .listenDownloadProgress((progress) => {
-        setDownloading((prev) => ({ ...prev, [progress.modelId]: progress }));
+        setDownloading((prev) => {
+          const wasTracking = Boolean(prev[progress.modelId]);
+          if (!wasTracking || progress.percent >= 100) {
+            pushDiagnosticEvent(
+              "download",
+              progress.percent >= 100
+                ? `Download complete: ${progress.modelId}`
+                : `Download progress: ${progress.modelId}`,
+              `${Math.round(progress.percent)}% · ${progress.downloadedBytes}/${progress.totalBytes} B`,
+            );
+          }
+          return { ...prev, [progress.modelId]: progress };
+        });
         if (progress.percent >= 100) {
           setTimeout(() => {
             setDownloading((prev) => {
@@ -113,12 +133,15 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
           elapsedMs: 0,
         },
       }));
+      pushDiagnosticEvent("download", `Download requested: ${modelId}`);
       await bridge.downloadModel(modelId);
       setMessage(t("model.downloadComplete", { id: MODEL_NAMES[modelId] ?? modelId }));
       refresh();
       onModelDownloaded?.();
     } catch (e) {
-      setError(String(e));
+      const detail = toErrorMessage(e);
+      pushDiagnosticEvent("error", `Download failed: ${modelId}`, detail);
+      setError(detail);
       setDownloading((prev) => {
         const next = { ...prev };
         delete next[modelId];
@@ -131,15 +154,30 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
     setError(null);
     setMessage(null);
     setBatchDownloading(true);
+    pushDiagnosticEvent("download", "Quick-start pack requested");
     try {
       const ids = await bridge.downloadQuickStart();
+      pushDiagnosticEvent("download", "Quick-start pack complete", ids.join(", "));
       setMessage(t("model.quickStartComplete", { count: String(ids.length) }));
       refresh();
       onModelDownloaded?.();
     } catch (e) {
-      setError(String(e));
+      const detail = toErrorMessage(e);
+      pushDiagnosticEvent("error", "Quick-start pack failed", detail);
+      setError(detail);
+      setDownloading({});
     } finally {
       setBatchDownloading(false);
+    }
+  };
+
+  const handleCancel = async (modelId: string) => {
+    setError(null);
+    try {
+      await bridge.cancelModelDownload(modelId);
+      setMessage(t("model.cancelRequested", { id: MODEL_NAMES[modelId] ?? modelId }));
+    } catch (e) {
+      setError(toErrorMessage(e));
     }
   };
 
@@ -247,18 +285,30 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
                   </div>
                 ) : null}
               </div>
-              <button
-                className="secondary-button download-one-button"
-                type="button"
-                disabled={busy || model.status === "ready" || model.status === "downloading"}
-                onClick={() => handleDownload(model.modelId)}
-              >
-                {model.status === "ready"
-                  ? t("model.installed")
-                  : model.status === "corrupt"
-                    ? t("model.redownload")
-                    : t("model.download")}
-              </button>
+              <div className="download-row-actions">
+                {dp ? (
+                  <button
+                    className="secondary-button download-one-button"
+                    type="button"
+                    onClick={() => handleCancel(model.modelId)}
+                  >
+                    {t("model.cancel")}
+                  </button>
+                ) : (
+                  <button
+                    className="secondary-button download-one-button"
+                    type="button"
+                    disabled={busy || model.status === "ready" || model.status === "downloading"}
+                    onClick={() => handleDownload(model.modelId)}
+                  >
+                    {model.status === "ready"
+                      ? t("model.installed")
+                      : model.status === "corrupt" || model.status === "partial"
+                        ? t("model.redownload")
+                        : t("model.download")}
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}

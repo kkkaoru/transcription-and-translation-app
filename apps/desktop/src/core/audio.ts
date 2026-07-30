@@ -77,7 +77,8 @@ export const makeAudioChunk = (
   ),
   sampleRate: TARGET_SAMPLE_RATE,
   channels: 1,
-  durationMs,
+  // Rust rejects duration_ms == 0; keep non-empty PCM chunks in the supported range.
+  durationMs: samples.length === 0 ? 0 : Math.max(1, Math.min(10_000, durationMs)),
 });
 
 export const calculateRmsDb = (samples: Float32Array): number => {
@@ -92,30 +93,266 @@ export const calculateRmsDb = (samples: Float32Array): number => {
   return rms <= Number.EPSILON ? Number.NEGATIVE_INFINITY : 20 * Math.log10(rms);
 };
 
-export const createMicrophoneConstraints = (deviceId: string): MediaStreamConstraints => ({
-  audio: {
-    deviceId: deviceId && deviceId !== "default" ? { exact: deviceId } : undefined,
-    channelCount: 1,
-    echoCancellation: false,
-    noiseSuppression: false,
-    autoGainControl: false,
-  },
-  video: false,
-});
+export type MicrophoneConstraintMode =
+  | "exact-device-raw"
+  | "ideal-device-raw"
+  | "default-raw"
+  | "default-relaxed";
 
-type ChunkHandler = (chunk: AudioChunk) => void | Promise<void>;
+export type CreateMicrophoneConstraintsOptions = {
+  /** Prefer { ideal } over { exact } for the selected deviceId. */
+  idealDevice?: boolean;
+  /** Omit echoCancellation/noiseSuppression/autoGainControl overrides. */
+  relaxProcessing?: boolean;
+};
 
-export type AudioCaptureErrorCode = "audio-context-failed" | "microphone-unavailable";
+/**
+ * Build getUserMedia constraints. Prefer raw mono capture when the platform allows it;
+ * callers should progressively fall back via {@link openMicrophoneStream}.
+ */
+export const createMicrophoneConstraints = (
+  deviceId: string,
+  options: CreateMicrophoneConstraintsOptions = {},
+): MediaStreamConstraints => {
+  const audio: MediaTrackConstraints = {
+    channelCount: { ideal: 1 },
+  };
+
+  if (deviceId && deviceId !== "default") {
+    audio.deviceId = options.idealDevice ? { ideal: deviceId } : { exact: deviceId };
+  }
+
+  if (!options.relaxProcessing) {
+    // Prefer unprocessed PCM for ASR. Some WebViews reject these flags — callers
+    // must fall back with relaxProcessing: true on OverconstrainedError.
+    audio.echoCancellation = false;
+    audio.noiseSuppression = false;
+    audio.autoGainControl = false;
+  }
+
+  return {
+    audio,
+    video: false,
+  };
+};
+
+/** Ordered constraint strategies used when opening a microphone. */
+export const microphoneConstraintStrategies = (
+  deviceId: string,
+): Array<{ mode: MicrophoneConstraintMode; constraints: MediaStreamConstraints }> => {
+  const strategies: Array<{ mode: MicrophoneConstraintMode; constraints: MediaStreamConstraints }> =
+    [];
+  if (deviceId && deviceId !== "default") {
+    strategies.push({
+      mode: "exact-device-raw",
+      constraints: createMicrophoneConstraints(deviceId),
+    });
+    strategies.push({
+      mode: "ideal-device-raw",
+      constraints: createMicrophoneConstraints(deviceId, { idealDevice: true }),
+    });
+  }
+  strategies.push({
+    mode: "default-raw",
+    constraints: createMicrophoneConstraints("default"),
+  });
+  strategies.push({
+    mode: "default-relaxed",
+    constraints: createMicrophoneConstraints("default", { relaxProcessing: true }),
+  });
+  return strategies;
+};
+
+const isConstraintFailure = (error: unknown): boolean => {
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    return (
+      error.name === "OverconstrainedError" ||
+      error.name === "NotFoundError" ||
+      error.name === "TypeError"
+    );
+  }
+  return error instanceof TypeError;
+};
+
+/**
+ * Open a microphone with progressive constraint relaxation so stale deviceIds and
+ * unsupported raw-audio flags do not hard-fail capture on Tauri/WKWebView.
+ */
+export const openMicrophoneStream = async (
+  deviceId: string,
+): Promise<{ stream: MediaStream; mode: MicrophoneConstraintMode }> => {
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+    throw new AudioCaptureError("microphone-unavailable");
+  }
+
+  const strategies = microphoneConstraintStrategies(deviceId);
+  let lastError: unknown;
+
+  for (let index = 0; index < strategies.length; index += 1) {
+    const strategy = strategies[index];
+    if (!strategy) {
+      continue;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(strategy.constraints);
+      return { stream, mode: strategy.mode };
+    } catch (error) {
+      lastError = error;
+      const hasMore = index < strategies.length - 1;
+      // Permission / busy failures must surface immediately — further strategies
+      // will not help and may re-prompt or hang.
+      if (!hasMore || !isConstraintFailure(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new AudioCaptureError("microphone-unavailable", lastError);
+};
+
+export type AudioCaptureErrorCode =
+  | "audio-context-failed"
+  | "microphone-unavailable"
+  | "microphone-track-ended"
+  | "audio-context-suspended";
 
 export class AudioCaptureError extends Error {
   public readonly code: AudioCaptureErrorCode;
+  public readonly causeError?: unknown;
 
-  public constructor(code: AudioCaptureErrorCode) {
-    super(code);
+  public constructor(code: AudioCaptureErrorCode, cause?: unknown) {
+    const detail =
+      cause instanceof Error && cause.message
+        ? `${code}: ${cause.message}`
+        : typeof cause === "string" && cause.trim()
+          ? `${code}: ${cause.trim()}`
+          : code;
+    super(detail);
     this.name = "AudioCaptureError";
     this.code = code;
+    this.causeError = cause;
   }
 }
+
+export type AudioCaptureMode = "worklet" | "script-processor" | "none";
+
+export type AudioCaptureDiagnostics = {
+  active: boolean;
+  captureMode: AudioCaptureMode;
+  constraintMode: MicrophoneConstraintMode | null;
+  contextState: string | null;
+  sampleRate: number | null;
+  trackReadyState: string | null;
+  trackLabel: string | null;
+  trackMuted: boolean | null;
+  deviceIdRequested: string | null;
+  /** Most recent RMS level in dBFS while capturing; null when idle. */
+  lastRmsDb: number | null;
+  chunksAccepted: number;
+  chunksDroppedSilent: number;
+  lastError: string | null;
+  lastErrorCode: AudioCaptureErrorCode | string | null;
+  lastErrorAt: string | null;
+};
+
+const emptyDiagnostics = (): AudioCaptureDiagnostics => ({
+  active: false,
+  captureMode: "none",
+  constraintMode: null,
+  contextState: null,
+  sampleRate: null,
+  trackReadyState: null,
+  trackLabel: null,
+  trackMuted: null,
+  deviceIdRequested: null,
+  lastRmsDb: null,
+  chunksAccepted: 0,
+  chunksDroppedSilent: 0,
+  lastError: null,
+  lastErrorCode: null,
+  lastErrorAt: null,
+});
+
+/** Module-level snapshot for the Debug panel (survives component remounts). */
+let lastCaptureDiagnostics: AudioCaptureDiagnostics = emptyDiagnostics();
+
+export const getLastAudioCaptureDiagnostics = (): AudioCaptureDiagnostics => ({
+  ...lastCaptureDiagnostics,
+});
+
+export const formatAudioCaptureDiagnostics = (
+  diagnostics: AudioCaptureDiagnostics = lastCaptureDiagnostics,
+): string => {
+  const parts = [
+    diagnostics.lastError ? `error=${diagnostics.lastError}` : null,
+    diagnostics.captureMode !== "none" ? `mode=${diagnostics.captureMode}` : null,
+    diagnostics.constraintMode ? `constraints=${diagnostics.constraintMode}` : null,
+    diagnostics.contextState ? `context=${diagnostics.contextState}` : null,
+    diagnostics.sampleRate ? `sr=${diagnostics.sampleRate}` : null,
+    diagnostics.trackReadyState ? `track=${diagnostics.trackReadyState}` : null,
+    diagnostics.trackMuted === true ? "muted" : null,
+    diagnostics.lastRmsDb !== null && Number.isFinite(diagnostics.lastRmsDb)
+      ? `rms=${diagnostics.lastRmsDb.toFixed(1)}dB`
+      : null,
+    diagnostics.chunksAccepted > 0 ? `chunks=${diagnostics.chunksAccepted}` : null,
+    diagnostics.chunksDroppedSilent > 0 ? `silent=${diagnostics.chunksDroppedSilent}` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+};
+
+/**
+ * Briefly open the default microphone so the OS grants permission and
+ * `enumerateDevices` can return stable deviceIds + labels. The temporary
+ * stream is stopped immediately.
+ */
+export const ensureMicrophoneAccess = async (): Promise<MicrophoneConstraintMode> => {
+  const { stream, mode } = await openMicrophoneStream("default");
+  for (const track of stream.getTracks()) {
+    try {
+      track.stop();
+    } catch {
+      // ignore
+    }
+  }
+  return mode;
+};
+
+/** Map dBFS (-80…0) to a 0–1 UI level meter fill. */
+export const rmsDbToMeterLevel = (db: number | null | undefined): number => {
+  if (db === null || db === undefined || !Number.isFinite(db)) {
+    return 0;
+  }
+  const floor = -60;
+  const ceiling = -6;
+  if (db <= floor) {
+    return 0;
+  }
+  if (db >= ceiling) {
+    return 1;
+  }
+  return (db - floor) / (ceiling - floor);
+};
+
+const createAudioContext = (): AudioContext => {
+  const AudioContextCtor =
+    typeof AudioContext === "function"
+      ? AudioContext
+      : (
+          globalThis as typeof globalThis & {
+            webkitAudioContext?: typeof AudioContext;
+          }
+        ).webkitAudioContext;
+  if (typeof AudioContextCtor !== "function") {
+    throw new AudioCaptureError("audio-context-failed");
+  }
+  return new AudioContextCtor();
+};
+
+type ChunkHandler = (chunk: AudioChunk) => void | Promise<void>;
+type CaptureErrorHandler = (error: AudioCaptureError) => void;
+type LevelHandler = (rmsDb: number) => void;
 
 /* c8 ignore start -- browser/Tauri media graph; pure PCM functions are covered below. */
 export class MicrophoneCapture {
@@ -127,81 +364,249 @@ export class MicrophoneCapture {
   private worklet: AudioWorkletNode | null = null;
   private pending = new Float32Array(0);
   private handler: ChunkHandler | null = null;
+  private errorHandler: CaptureErrorHandler | null = null;
+  private levelHandler: LevelHandler | null = null;
   private chunkMs = 1_200;
   private silenceGateDb = -55;
+  private captureMode: AudioCaptureMode = "none";
+  private constraintMode: MicrophoneConstraintMode | null = null;
+  private deviceIdRequested: string | null = null;
+  private trackEndedListener: (() => void) | null = null;
+  private disposed = false;
+  private lastRmsDb: number | null = null;
+  private chunksAccepted = 0;
+  private chunksDroppedSilent = 0;
+  private levelEmitAt = 0;
+
+  public getDiagnostics(): AudioCaptureDiagnostics {
+    const track = this.stream?.getAudioTracks()[0] ?? null;
+    return {
+      active: this.stream !== null && this.context !== null && !this.disposed,
+      captureMode: this.captureMode,
+      constraintMode: this.constraintMode,
+      contextState: this.context?.state ?? null,
+      sampleRate: this.context?.sampleRate ?? null,
+      trackReadyState: track?.readyState ?? null,
+      trackLabel: track?.label || null,
+      trackMuted: track ? track.muted : null,
+      deviceIdRequested: this.deviceIdRequested,
+      lastRmsDb: this.lastRmsDb,
+      chunksAccepted: this.chunksAccepted,
+      chunksDroppedSilent: this.chunksDroppedSilent,
+      lastError: lastCaptureDiagnostics.lastError,
+      lastErrorCode: lastCaptureDiagnostics.lastErrorCode,
+      lastErrorAt: lastCaptureDiagnostics.lastErrorAt,
+    };
+  }
 
   public async start(
     deviceId: string,
     chunkMs: number,
     silenceGateDb: number,
     handler: ChunkHandler,
+    onError?: CaptureErrorHandler,
+    onLevel?: LevelHandler,
   ): Promise<void> {
     await this.stop();
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      throw new AudioCaptureError("microphone-unavailable");
-    }
+    this.disposed = false;
     this.handler = handler;
+    this.errorHandler = onError ?? null;
+    this.levelHandler = onLevel ?? null;
     this.chunkMs = chunkMs;
     this.silenceGateDb = silenceGateDb;
+    this.deviceIdRequested = deviceId;
+    this.lastRmsDb = null;
+    this.chunksAccepted = 0;
+    this.chunksDroppedSilent = 0;
+    this.levelEmitAt = 0;
+
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia(
-        createMicrophoneConstraints(deviceId),
-      );
+      const opened = await openMicrophoneStream(deviceId);
+      this.stream = opened.stream;
+      this.constraintMode = opened.mode;
+      this.bindTrackEnded(this.stream);
+
+      this.context = createAudioContext();
+      this.source = this.context.createMediaStreamSource(this.stream);
+
+      // Prefer AudioWorklet, but CSP / WebView restrictions on blob: modules are common
+      // in Tauri. Fall back to ScriptProcessor so capture still works.
+      let started = false;
+      if (this.context.audioWorklet) {
+        try {
+          await this.startWorklet();
+          this.captureMode = "worklet";
+          started = true;
+        } catch {
+          this.teardownGraphNodes();
+        }
+      }
+      if (!started) {
+        this.startScriptProcessor();
+        this.captureMode = "script-processor";
+      }
+
+      if (this.context.state === "suspended") {
+        try {
+          await this.context.resume();
+        } catch (error) {
+          throw new AudioCaptureError("audio-context-suspended", error);
+        }
+      }
+      if (this.context.state === "suspended") {
+        throw new AudioCaptureError(
+          "audio-context-suspended",
+          "AudioContext remained suspended after resume()",
+        );
+      }
+
+      this.publishDiagnostics(null);
     } catch (error) {
-      // Stale or fabricated device IDs (from older builds / pre-permission lists)
-      // surface as OverconstrainedError. Fall back to the system default mic.
-      const isOverconstrained =
-        typeof DOMException !== "undefined" &&
-        error instanceof DOMException &&
-        error.name === "OverconstrainedError";
-      if (!isOverconstrained || !deviceId || deviceId === "default") {
-        throw error;
-      }
-      this.stream = await navigator.mediaDevices.getUserMedia(
-        createMicrophoneConstraints("default"),
-      );
+      // Keep the original rejection (DOMException names, etc.) so the UI can map
+      // NotAllowedError / NotFoundError. Only synthesize AudioCaptureError when
+      // the failure has no browser-native type.
+      const captureError =
+        error instanceof AudioCaptureError
+          ? error
+          : new AudioCaptureError(
+              typeof DOMException !== "undefined" &&
+                error instanceof DOMException &&
+                (error.name === "NotAllowedError" ||
+                  error.name === "SecurityError" ||
+                  error.name === "NotFoundError" ||
+                  error.name === "NotReadableError" ||
+                  error.name === "OverconstrainedError")
+                ? "microphone-unavailable"
+                : "audio-context-failed",
+              error,
+            );
+      this.publishDiagnostics(captureError);
+      await this.stop().catch(() => undefined);
+      throw error;
     }
-    this.context = new AudioContext();
-    this.source = this.context.createMediaStreamSource(this.stream);
-    // Prefer AudioWorklet, but CSP / WebView restrictions on blob: modules are common
-    // in Tauri. Fall back to ScriptProcessor so capture still works.
-    let started = false;
-    if (this.context.audioWorklet) {
-      try {
-        await this.startWorklet();
-        started = true;
-      } catch {
-        this.worklet?.disconnect();
-        this.worklet = null;
-        this.sink?.disconnect();
-        this.sink = null;
-      }
-    }
-    if (!started) {
-      this.startScriptProcessor();
-    }
-    await this.context.resume();
   }
 
   public async stop(): Promise<void> {
-    this.worklet?.disconnect();
-    this.processor?.disconnect();
-    this.sink?.disconnect();
-    this.source?.disconnect();
+    this.disposed = true;
+    this.handler = null;
+    this.errorHandler = null;
+    this.levelHandler = null;
+    this.unbindTrackEnded();
+    this.teardownGraphNodes();
+
     for (const track of this.stream?.getTracks() ?? []) {
-      track.stop();
+      try {
+        track.stop();
+      } catch {
+        // Ignore double-stop / already-ended tracks.
+      }
     }
-    if (this.context) {
-      await this.context.close();
-    }
+
+    const context = this.context;
     this.context = null;
     this.stream = null;
     this.source = null;
-    this.sink = null;
-    this.processor = null;
-    this.worklet = null;
-    this.handler = null;
+    this.captureMode = "none";
+    this.constraintMode = null;
+    this.deviceIdRequested = null;
     this.pending = new Float32Array(0);
+    this.lastRmsDb = null;
+
+    if (context) {
+      try {
+        if (context.state !== "closed") {
+          await context.close();
+        }
+      } catch {
+        // Closing a partially torn-down context must not block stop().
+      }
+    }
+
+    this.publishDiagnostics(lastCaptureDiagnostics.lastErrorCode ? undefined : null);
+  }
+
+  private teardownGraphNodes(): void {
+    try {
+      if (this.worklet?.port) {
+        this.worklet.port.onmessage = null;
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      this.worklet?.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
+      if (this.processor) {
+        this.processor.onaudioprocess = null;
+      }
+      this.processor?.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
+      this.sink?.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
+      this.source?.disconnect();
+    } catch {
+      // ignore
+    }
+    this.worklet = null;
+    this.processor = null;
+    this.sink = null;
+  }
+
+  private bindTrackEnded(stream: MediaStream): void {
+    this.unbindTrackEnded();
+    const track = stream.getAudioTracks()[0];
+    if (!track) {
+      return;
+    }
+    const onEnded = () => {
+      if (this.disposed) {
+        return;
+      }
+      const error = new AudioCaptureError(
+        "microphone-track-ended",
+        track.label ? `track ended: ${track.label}` : "microphone track ended",
+      );
+      this.publishDiagnostics(error);
+      this.errorHandler?.(error);
+    };
+    track.addEventListener("ended", onEnded);
+    this.trackEndedListener = () => {
+      track.removeEventListener("ended", onEnded);
+    };
+  }
+
+  private unbindTrackEnded(): void {
+    this.trackEndedListener?.();
+    this.trackEndedListener = null;
+  }
+
+  private publishDiagnostics(error: AudioCaptureError | null | undefined): void {
+    const snapshot = this.getDiagnostics();
+    if (error === null) {
+      snapshot.lastError = null;
+      snapshot.lastErrorCode = null;
+      snapshot.lastErrorAt = null;
+    } else if (error instanceof AudioCaptureError) {
+      snapshot.lastError = error.message;
+      snapshot.lastErrorCode = error.code;
+      snapshot.lastErrorAt = new Date().toISOString();
+    }
+    // error === undefined keeps the previous lastError while refreshing live fields.
+    if (error === undefined) {
+      snapshot.lastError = lastCaptureDiagnostics.lastError;
+      snapshot.lastErrorCode = lastCaptureDiagnostics.lastErrorCode;
+      snapshot.lastErrorAt = lastCaptureDiagnostics.lastErrorAt;
+    }
+    lastCaptureDiagnostics = snapshot;
   }
 
   private async startWorklet(): Promise<void> {
@@ -246,7 +651,8 @@ export class MicrophoneCapture {
     }
     this.processor = this.context.createScriptProcessor(4_096, 1, 1);
     this.processor.onaudioprocess = (event) => {
-      this.acceptSamples(event.inputBuffer.getChannelData(0));
+      // Copy: the AudioBuffer channel view is reused across callbacks.
+      this.acceptSamples(event.inputBuffer.getChannelData(0).slice());
     };
     this.sink = this.context.createGain();
     this.sink.gain.value = 0;
@@ -256,6 +662,26 @@ export class MicrophoneCapture {
   }
 
   private acceptSamples(samples: Float32Array): void {
+    if (this.disposed || !this.handler || samples.length === 0) {
+      return;
+    }
+
+    // Live level meter: throttle UI callbacks so React is not flooded every audio quantum.
+    const instantDb = calculateRmsDb(samples);
+    this.lastRmsDb = instantDb;
+    const now =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    if (this.levelHandler && now - this.levelEmitAt >= 80) {
+      this.levelEmitAt = now;
+      try {
+        this.levelHandler(instantDb);
+      } catch {
+        // Level UI must never break capture.
+      }
+    }
+
     const next = new Float32Array(this.pending.length + samples.length);
     next.set(this.pending);
     next.set(samples, this.pending.length);
@@ -265,8 +691,16 @@ export class MicrophoneCapture {
     while (this.pending.length >= chunkSize) {
       const chunk = this.pending.slice(0, chunkSize);
       this.pending = this.pending.slice(chunkSize);
-      if (calculateRmsDb(chunk) >= this.silenceGateDb) {
+      const chunkDb = calculateRmsDb(chunk);
+      if (chunkDb >= this.silenceGateDb) {
+        this.chunksAccepted += 1;
         void this.handler?.(makeAudioChunk(chunk, sampleRate, this.chunkMs));
+      } else {
+        this.chunksDroppedSilent += 1;
+      }
+      // Keep chunk counters visible on the debug snapshot without forcing a full re-render path.
+      if ((this.chunksAccepted + this.chunksDroppedSilent) % 4 === 0) {
+        this.publishDiagnostics(undefined);
       }
     }
   }

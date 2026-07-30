@@ -36,6 +36,16 @@ describe("App routes", () => {
     });
 
     expect(container.querySelector(".brand-name")?.textContent).toBe("Kotoba Beacon");
+    // Live OBS stage should show the live caption payload, not static design placeholders.
+    expect(container.querySelector(".preview-stage")?.textContent).toContain(
+      "これはプレビュー用の字幕です。",
+    );
+    expect(container.querySelector(".preview-stage")?.textContent).toContain(
+      "This is a preview caption.",
+    );
+    expect(container.querySelector(".preview-stage")?.textContent).not.toContain(
+      "English translation will appear here",
+    );
     const settingsButton = Array.from(container.querySelectorAll(".nav-tabs button")).find(
       (button) => button.textContent?.includes("設定"),
     );

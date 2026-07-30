@@ -39,8 +39,8 @@ docs/                    設計・運用・引き継ぎ資料
 
 ## 開発環境
 
-- Bun 1.3.14
-- Rust 1.88（`rust-toolchain.toml`で固定）
+- Bun 1.3.x
+- Rust 1.97.1（`rust-toolchain.toml`で固定）
 - Tauri 2
 - macOS / Windows（Linuxはブラウザプレビューとデバッグ対象）
 

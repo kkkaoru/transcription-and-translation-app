@@ -191,6 +191,13 @@ export const bridge = {
     return invoke<string[]>("download_quick_start");
   },
 
+  cancelModelDownload(modelId: string): Promise<void> {
+    if (!isTauriRuntime()) {
+      return Promise.reject(new Error("Model download is only available in the desktop app."));
+    }
+    return invoke<void>("cancel_model_download", { modelId });
+  },
+
   listModelStatus(): Promise<ModelStatusEntry[]> {
     if (!isTauriRuntime()) {
       return Promise.resolve([]);

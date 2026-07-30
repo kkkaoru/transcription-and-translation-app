@@ -12,16 +12,25 @@ export const AudioDeviceSelect = ({
   onChange: ChangeEventHandler<HTMLSelectElement>;
 }) => {
   const { t } = useI18n();
+  const inputs = devices.filter((device) => device.deviceId && device.deviceId !== "default");
+  // Keep a stale saved deviceId selectable until the user picks another entry.
+  // Without this, React warns and the control may snap to the first option.
+  const orphanSelected =
+    Boolean(value) && value !== "default" && !inputs.some((device) => device.deviceId === value);
+
   return (
-    <select value={value} onChange={onChange}>
+    <select value={value || "default"} onChange={onChange}>
       <option value="default">{t("audio.defaultDevice")}</option>
-      {devices
-        .filter((device) => device.deviceId !== "default")
-        .map((device, index) => (
-          <option key={device.deviceId} value={device.deviceId}>
-            {device.label || t("audio.fallbackDevice", { number: index + 1 })}
-          </option>
-        ))}
+      {orphanSelected ? (
+        <option value={value}>
+          {t("audio.fallbackDevice", { number: "…" })} ({value.slice(0, 12)})
+        </option>
+      ) : null}
+      {inputs.map((device, index) => (
+        <option key={device.deviceId} value={device.deviceId}>
+          {device.label || t("audio.fallbackDevice", { number: index + 1 })}
+        </option>
+      ))}
     </select>
   );
 };

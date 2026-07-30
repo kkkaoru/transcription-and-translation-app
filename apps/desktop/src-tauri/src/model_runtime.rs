@@ -146,6 +146,9 @@ pub fn download_url(spec: &ModelRuntimeSpec) -> String {
 }
 
 pub fn sidecar_arguments(spec: &ModelRuntimeSpec, model_path: &Path) -> Vec<String> {
+    // Live captions only need short prompts. Cap context so llama-server does not
+    // allocate multi-hundred-k KV from the model's train context (which delayed
+    // /health readiness on this machine with n_ctx_slot ≈ 262144).
     vec![
         "--model".to_string(),
         model_path.to_string_lossy().into_owned(),
@@ -156,6 +159,10 @@ pub fn sidecar_arguments(spec: &ModelRuntimeSpec, model_path: &Path) -> Vec<Stri
         "--alias".to_string(),
         spec.id.to_string(),
         "--jinja".to_string(),
+        "--ctx-size".to_string(),
+        "4096".to_string(),
+        "--parallel".to_string(),
+        "1".to_string(),
     ]
 }
 
@@ -324,6 +331,8 @@ mod tests {
             ["--model", "/tmp/kotoba-models/zenz-v3.2-xsmall-gguf/ggml-model-Q5_K_M.gguf"]
         );
         assert!(!arguments.iter().any(|argument| argument == "--hf-repo"));
+        assert!(arguments.windows(2).any(|pair| pair == ["--ctx-size", "4096"]));
+        assert!(arguments.windows(2).any(|pair| pair == ["--parallel", "1"]));
     }
 
     #[test]

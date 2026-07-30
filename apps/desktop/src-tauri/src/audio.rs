@@ -29,7 +29,11 @@ pub fn pcm_base64_to_wav(chunk: &AudioChunk) -> Result<Vec<u8>, String> {
     if pcm.len() % 2 != 0 {
         return Err("PCM16 payload has an odd byte length".to_string());
     }
-    let byte_rate = chunk.sample_rate * 2;
+    let byte_rate = chunk
+        .sample_rate
+        .checked_mul(u32::from(chunk.channels))
+        .and_then(|v| v.checked_mul(2))
+        .ok_or_else(|| "audio byte-rate overflow".to_string())?;
     let data_length =
         u32::try_from(pcm.len()).map_err(|_| "audio chunk is too large".to_string())?;
     let riff_length =
@@ -44,7 +48,10 @@ pub fn pcm_base64_to_wav(chunk: &AudioChunk) -> Result<Vec<u8>, String> {
     wav.extend_from_slice(&1_u16.to_le_bytes());
     wav.extend_from_slice(&chunk.sample_rate.to_le_bytes());
     wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&2_u16.to_le_bytes());
+    let block_align = u16::from(chunk.channels)
+        .checked_mul(2)
+        .ok_or_else(|| "audio block-align overflow".to_string())?;
+    wav.extend_from_slice(&block_align.to_le_bytes());
     wav.extend_from_slice(&16_u16.to_le_bytes());
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_length.to_le_bytes());

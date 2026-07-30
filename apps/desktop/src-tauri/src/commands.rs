@@ -280,6 +280,10 @@ pub async fn get_debug_info(
         })
         .collect();
     let services = gateway::probe_service_health(&config).await;
+    let ready_models =
+        models.iter().filter(|m| m.get("ready").and_then(|v| v.as_bool()) == Some(true)).count();
+    let total_models = models.len();
+    let last_error = status.last_error.clone();
     Ok(serde_json::json!({
         "config": serde_json::to_value(&config).unwrap_or_default(),
         "runtimeStatus": serde_json::to_value(&status).unwrap_or_default(),
@@ -288,9 +292,26 @@ pub async fn get_debug_info(
         "configDir": config_dir.display().to_string(),
         "appDataDir": app_data.display().to_string(),
         "models": models,
+        "modelSummary": {
+            "ready": ready_models,
+            "total": total_models,
+            "allReady": ready_models == total_models && total_models > 0,
+        },
+        "env": {
+            "platform": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "family": std::env::consts::FAMILY,
+            "pkgVersion": env!("CARGO_PKG_VERSION"),
+            "rustcVersion": option_env!("RUSTC_VERSION").unwrap_or("unknown"),
+            "tauriVersion": tauri::VERSION,
+            "debugAssertions": cfg!(debug_assertions),
+            "nativeOutputFeature": cfg!(feature = "native-output"),
+        },
+        // Flat convenience fields kept for older UI scrapers / support paste.
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "version": env!("CARGO_PKG_VERSION"),
+        "lastError": last_error,
     }))
 }
 

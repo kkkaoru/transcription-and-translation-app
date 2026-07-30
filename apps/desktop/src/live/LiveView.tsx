@@ -2,6 +2,7 @@ import type { ChangeEventHandler } from "react";
 import { useMemo } from "react";
 import { AudioDeviceSelect } from "../components/AudioDeviceSelect";
 import { Field } from "../components/Field";
+import { rmsDbToMeterLevel } from "../core/audio";
 import { bridge } from "../core/bridge";
 import type { AppConfig, AudioInputDevice, CaptionPayload, RuntimeStatus } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
@@ -34,6 +35,7 @@ export const LiveView = ({
   caption,
   devices,
   message,
+  inputLevelDb = null,
   onToggleCapture,
   onOpenOverlay,
   onDeviceChange,
@@ -45,6 +47,8 @@ export const LiveView = ({
   caption: CaptionPayload;
   devices: AudioInputDevice[];
   message: string | null;
+  /** Live microphone RMS in dBFS for the local level meter (no OBS required). */
+  inputLevelDb?: number | null;
   onToggleCapture: () => void;
   onOpenOverlay: () => void;
   onDeviceChange: ChangeEventHandler<HTMLSelectElement>;
@@ -66,6 +70,14 @@ export const LiveView = ({
       }).format(caption.receivedAt)
     : "--:--:--";
   const capturing = status.status === "capturing";
+  const starting = status.status === "starting";
+  const meterLevel = capturing ? rmsDbToMeterLevel(inputLevelDb) : 0;
+  const meterLabel =
+    capturing && inputLevelDb !== null && Number.isFinite(inputLevelDb)
+      ? `${inputLevelDb.toFixed(0)} dB`
+      : capturing
+        ? t("live.inputWaiting")
+        : t("live.disconnected");
 
   return (
     <>
@@ -82,10 +94,10 @@ export const LiveView = ({
             className={`primary-button ${capturing ? "danger" : ""}`}
             type="button"
             onClick={onToggleCapture}
-            disabled={status.status === "starting"}
+            disabled={starting}
           >
             <span className="record-dot" />
-            {capturing ? t("live.stop") : t("live.start")}
+            {capturing || starting ? t("live.stop") : t("live.start")}
           </button>
         </div>
       </div>
@@ -108,16 +120,17 @@ export const LiveView = ({
               {bridge.isDesktop() ? t("live.tauriWindow") : t("live.browserPreview")}
             </span>
           </div>
-          <div className="preview-stage" style={previewStyle}>
+          <div className="preview-stage" style={previewStyle} data-testid="live-preview-stage">
             <div className="stage-grid" />
             <div className="stage-label">
               {t("live.transparentBadge")} / {config.overlay.width} × {config.overlay.height}
             </div>
-            <OverlayView config={config} caption={caption} preview />
+            {/* placeholder=false: show live caption payload in-app without OBS */}
+            <OverlayView config={config} caption={caption} preview placeholder={false} />
           </div>
           <div className="preview-footer">
             <span>
-              <i className="green-dot" /> {t("live.transparentBackground")}
+              <i className="green-dot" /> {t("live.previewWithoutObs")}
             </span>
             <span>{captionTime}</span>
           </div>
@@ -130,7 +143,11 @@ export const LiveView = ({
                 <h3>{t("live.microphone")}</h3>
               </div>
               <span className="input-status">
-                {capturing ? t("live.inputActive") : t("live.disconnected")}
+                {capturing
+                  ? t("live.inputActive")
+                  : starting
+                    ? t("status.starting")
+                    : t("live.disconnected")}
               </span>
             </div>
             <Field label={t("audio.inputDevice")} wide hint={t("audio.inputHint")}>
@@ -140,6 +157,22 @@ export const LiveView = ({
                 onChange={onDeviceChange}
               />
             </Field>
+            <div
+              className={`input-level${capturing ? " active" : ""}`}
+              data-testid="input-level-meter"
+            >
+              <meter
+                className="input-level-meter"
+                min={0}
+                max={1}
+                low={0.25}
+                high={0.85}
+                optimum={0.55}
+                value={meterLevel}
+                aria-label={t("live.inputLevel")}
+              />
+              <span className="input-level-label">{meterLabel}</span>
+            </div>
             <button className="text-button" type="button" onClick={onRefreshDevices}>
               {t("audio.refresh")}
             </button>

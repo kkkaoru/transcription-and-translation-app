@@ -28,12 +28,19 @@ export const OverlayView = ({
   config,
   caption,
   preview = false,
+  placeholder = false,
 }: {
   config: AppConfig;
   caption: CaptionPayload;
+  /** CSS chrome for the in-app OBS preview stage (checkerboard host). */
   preview?: boolean;
+  /**
+   * When true, render static sample copy instead of `caption`.
+   * Keep false on the live stage so recognized text appears in the preview.
+   */
+  placeholder?: boolean;
 }) => (
   <main className={`overlay-root${preview ? " overlay-preview" : ""}`}>
-    <CaptionLines config={config} caption={caption} placeholder={preview} />
+    <CaptionLines config={config} caption={caption} placeholder={placeholder} />
   </main>
 );

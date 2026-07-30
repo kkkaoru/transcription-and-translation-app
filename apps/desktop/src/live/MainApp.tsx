@@ -1,13 +1,21 @@
 import type { ChangeEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocaleSwitcher } from "../components/LocaleSwitcher";
-import { AudioCaptureError, enumerateAudioInputDevices, MicrophoneCapture } from "../core/audio";
+import {
+  AudioCaptureError,
+  ensureMicrophoneAccess,
+  enumerateAudioInputDevices,
+  formatAudioCaptureDiagnostics,
+  getLastAudioCaptureDiagnostics,
+  MicrophoneCapture,
+} from "../core/audio";
 import { bridge, formatBridgeError } from "../core/bridge";
 import {
   createDefaultConfig,
   DEFAULT_MODEL_CATALOG,
   DEFAULT_RUNTIME_STATUS,
 } from "../core/defaults";
+import { pushDiagnosticEvent } from "../core/diagnostics";
 import type {
   AppConfig,
   AudioInputDevice,
@@ -41,25 +49,43 @@ const statusKeys: Record<RuntimeStatus["status"], MessageKey> = {
 
 const noticeFromError = (error: unknown, fallback: MessageKey): Notice => {
   if (error instanceof AudioCaptureError) {
-    return {
-      key:
-        error.code === "microphone-unavailable"
-          ? "message.microphoneUnavailable"
-          : "message.audioContextFailed",
+    const keys: Record<AudioCaptureError["code"], MessageKey> = {
+      "microphone-unavailable": "message.microphoneUnavailable",
+      "audio-context-failed": "message.audioContextFailed",
+      "audio-context-suspended": "message.audioContextFailed",
+      "microphone-track-ended": "message.microphoneTrackEnded",
     };
+    const detail =
+      error.causeError instanceof DOMException
+        ? error.causeError.message
+        : error.message !== error.code
+          ? error.message
+          : formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics()) || undefined;
+    return { key: keys[error.code], detail: detail || undefined };
   }
   if (typeof DOMException !== "undefined" && error instanceof DOMException) {
     const keys: Partial<Record<string, MessageKey>> = {
       NotAllowedError: "message.microphonePermissionDenied",
+      SecurityError: "message.microphonePermissionDenied",
       NotFoundError: "message.microphoneNotFound",
       NotReadableError: "message.microphoneBusy",
       OverconstrainedError: "message.microphoneConstraint",
+      AbortError: "message.microphoneStartFailed",
     };
     const key = keys[error.name];
-    return key ? { key } : { key: fallback, detail: error.message };
+    const diag = formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
+    if (key) {
+      return diag ? { key, detail: diag } : { key };
+    }
+    return {
+      key: fallback,
+      detail: [error.message, diag].filter(Boolean).join(" · ") || undefined,
+    };
   }
   const detail = formatBridgeError(error);
-  return detail ? { key: fallback, detail } : { key: fallback };
+  const diag = formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
+  const combined = [detail, diag].filter(Boolean).join(" · ");
+  return combined ? { key: fallback, detail: combined } : { key: fallback };
 };
 
 export const MainApp = () => {
@@ -72,15 +98,35 @@ export const MainApp = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [inputLevelDb, setInputLevelDb] = useState<number | null>(null);
   const capture = useRef(new MicrophoneCapture());
   const captureAttempt = useRef(0);
   const chunkQueue = useRef(Promise.resolve());
 
-  const refreshDevices = useCallback(async () => {
+  const refreshDevices = useCallback(async (options?: { primePermission?: boolean }) => {
     try {
-      setDevices(await enumerateAudioInputDevices());
+      if (options?.primePermission) {
+        try {
+          const mode = await ensureMicrophoneAccess();
+          pushDiagnosticEvent("audio", "Microphone permission primed", `mode=${mode}`);
+        } catch (error) {
+          // Still attempt enumeration; surface a permission-oriented notice if it fails.
+          const notice = noticeFromError(error, "message.microphonePermissionDenied");
+          pushDiagnosticEvent(
+            "error",
+            "Microphone permission probe failed",
+            notice.detail ?? notice.key,
+          );
+          setNotice(notice);
+        }
+      }
+      const next = await enumerateAudioInputDevices();
+      setDevices(next);
+      pushDiagnosticEvent("audio", "Device list refreshed", `${next.length} input(s)`);
     } catch (error) {
-      setNotice(noticeFromError(error, "message.devicesFailed"));
+      const notice = noticeFromError(error, "message.devicesFailed");
+      pushDiagnosticEvent("error", "Device enumeration failed", notice.detail ?? notice.key);
+      setNotice(notice);
     }
   }, []);
 
@@ -94,10 +140,17 @@ export const MainApp = () => {
         setConfig(nextConfig);
         setModels(nextModels);
         setStatus(nextStatus);
+        pushDiagnosticEvent(
+          "runtime",
+          "App initialized",
+          `status=${nextStatus.status} · platform=${nextStatus.platform}`,
+        );
       })
       .catch((error: unknown) => {
         if (mounted) {
-          setNotice(noticeFromError(error, "message.initializeFailed"));
+          const notice = noticeFromError(error, "message.initializeFailed");
+          pushDiagnosticEvent("error", "Initialize failed", notice.detail ?? notice.key);
+          setNotice(notice);
         }
       });
     void refreshDevices();
@@ -111,8 +164,20 @@ export const MainApp = () => {
   useEffect(() => {
     let mounted = true;
     const disposers: Array<() => void> = [];
+    let lastCaptionId: string | null = null;
     void bridge
-      .listenCaptions(setCaption)
+      .listenCaptions((nextCaption) => {
+        setCaption(nextCaption);
+        // Avoid flooding the ring buffer with every partial/identical payload.
+        if (nextCaption.id !== lastCaptionId) {
+          lastCaptionId = nextCaption.id;
+          pushDiagnosticEvent(
+            "caption",
+            "Caption update",
+            `${nextCaption.id} · src=${nextCaption.sourceText.slice(0, 48)}`,
+          );
+        }
+      })
       .then((dispose) => {
         if (mounted) {
           disposers.push(dispose);
@@ -122,11 +187,20 @@ export const MainApp = () => {
       })
       .catch((error: unknown) => {
         if (mounted) {
-          setNotice(noticeFromError(error, "message.initializeFailed"));
+          const notice = noticeFromError(error, "message.initializeFailed");
+          pushDiagnosticEvent("error", "Caption listen failed", notice.detail ?? notice.key);
+          setNotice(notice);
         }
       });
     void bridge
-      .listenRuntime(setStatus)
+      .listenRuntime((nextStatus) => {
+        setStatus(nextStatus);
+        pushDiagnosticEvent(
+          "runtime",
+          `Runtime → ${nextStatus.status}`,
+          nextStatus.lastError ?? `backend=${String(nextStatus.backendReachable)}`,
+        );
+      })
       .then((dispose) => {
         if (mounted) {
           disposers.push(dispose);
@@ -136,7 +210,9 @@ export const MainApp = () => {
       })
       .catch((error: unknown) => {
         if (mounted) {
-          setNotice(noticeFromError(error, "message.initializeFailed"));
+          const notice = noticeFromError(error, "message.initializeFailed");
+          pushDiagnosticEvent("error", "Runtime listen failed", notice.detail ?? notice.key);
+          setNotice(notice);
         }
       });
     return () => {
@@ -155,9 +231,12 @@ export const MainApp = () => {
     setSaving(true);
     try {
       await bridge.saveConfig(config);
+      pushDiagnosticEvent("config", "Settings saved");
       setNotice({ key: "message.saved" });
     } catch (error) {
-      setNotice(noticeFromError(error, "message.saveFailed"));
+      const notice = noticeFromError(error, "message.saveFailed");
+      pushDiagnosticEvent("error", "Save failed", notice.detail ?? notice.key);
+      setNotice(notice);
     } finally {
       setSaving(false);
     }
@@ -169,12 +248,22 @@ export const MainApp = () => {
     const previousMicrophone = capture.current;
     capture.current = microphone;
     setNotice(null);
+    setInputLevelDb(null);
     setStatus((current) => ({ ...current, status: "starting", lastError: null }));
+    pushDiagnosticEvent(
+      "audio",
+      "Capture starting",
+      `device=${captureConfig.audio.inputDeviceId} · chunk=${captureConfig.audio.chunkMs}ms`,
+    );
     try {
       // Stop any previous capture, then prepare backend (models / sidecars)
       // before opening the microphone so the first audio chunks are not rejected
       // while the translator or Parapper services are still starting.
       await previousMicrophone.stop();
+      if (attempt !== captureAttempt.current) {
+        return;
+      }
+      await bridge.stopCapture().catch(() => undefined);
       if (attempt !== captureAttempt.current) {
         return;
       }
@@ -204,6 +293,11 @@ export const MainApp = () => {
             .catch((error: unknown) => {
               if (attempt === captureAttempt.current) {
                 const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
+                pushDiagnosticEvent(
+                  "error",
+                  "Audio processing failed",
+                  nextNotice.detail ?? t(nextNotice.key),
+                );
                 setNotice(nextNotice);
                 setStatus((current) => ({
                   ...current,
@@ -214,6 +308,36 @@ export const MainApp = () => {
               }
             });
         },
+        (captureError) => {
+          // Track ended / mid-session mic loss: stop cleanly and surface diagnostics.
+          if (attempt !== captureAttempt.current) {
+            return;
+          }
+          const nextNotice = noticeFromError(captureError, "message.microphoneStartFailed");
+          pushDiagnosticEvent(
+            "error",
+            "Microphone track error",
+            nextNotice.detail ?? nextNotice.key,
+          );
+          void stopCapture().then(() => {
+            // stopCapture() increments captureAttempt by 1. Skip if the user already
+            // started a newer session (attempt advanced by more than that).
+            if (captureAttempt.current > attempt + 1) {
+              return;
+            }
+            setNotice(nextNotice);
+            setStatus((current) => ({
+              ...current,
+              status: "error",
+              lastError: nextNotice.detail ?? t(nextNotice.key),
+            }));
+          });
+        },
+        (rmsDb) => {
+          if (attempt === captureAttempt.current) {
+            setInputLevelDb(rmsDb);
+          }
+        },
       );
       if (attempt !== captureAttempt.current) {
         await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
@@ -221,6 +345,12 @@ export const MainApp = () => {
       }
       await refreshDevices();
       if (attempt === captureAttempt.current) {
+        const diag = microphone.getDiagnostics();
+        pushDiagnosticEvent(
+          "audio",
+          "Capture started",
+          formatAudioCaptureDiagnostics(diag) || `mode=${diag.captureMode}`,
+        );
         setStatus((current) => ({ ...current, status: "capturing", lastError: null }));
       }
     } catch (error) {
@@ -229,8 +359,10 @@ export const MainApp = () => {
         return;
       }
       // Prefer a backend-prep message when the mic never started; formatBridgeError
-      // still carries the concrete Rust/sidecar detail.
+      // still carries the concrete Rust/sidecar detail. When the failure is a
+      // browser mic error, noticeFromError maps DOMException names first.
       const nextNotice = noticeFromError(error, "message.captureStartFailed");
+      pushDiagnosticEvent("error", "Capture start failed", nextNotice.detail ?? nextNotice.key);
       setNotice(nextNotice);
       setStatus((current) => ({
         ...current,
@@ -244,17 +376,21 @@ export const MainApp = () => {
     captureAttempt.current += 1;
     const microphone = capture.current;
     capture.current = new MicrophoneCapture();
+    setInputLevelDb(null);
+    pushDiagnosticEvent("audio", "Capture stopping");
     const results = await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
     const failure = results.find((result) => result.status === "rejected");
     if (!failure) {
+      pushDiagnosticEvent("audio", "Capture stopped");
       setStatus((current) => ({ ...current, status: "idle", lastError: null }));
     } else {
       const nextNotice = noticeFromError(failure.reason, "message.microphoneStopFailed");
+      pushDiagnosticEvent("error", "Capture stop failed", nextNotice.detail ?? nextNotice.key);
       setNotice(nextNotice);
       setStatus((current) => ({
         ...current,
         status: "error",
-        lastError: nextNotice.detail ?? nextNotice.key,
+        lastError: nextNotice.detail ?? t(nextNotice.key),
       }));
     }
   };
@@ -262,8 +398,15 @@ export const MainApp = () => {
   const openOverlay = async () => {
     try {
       await bridge.openOverlay();
+      pushDiagnosticEvent(
+        "overlay",
+        "Overlay opened",
+        `${config.overlay.width}×${config.overlay.height}`,
+      );
     } catch (error) {
-      setNotice(noticeFromError(error, "message.overlayOpenFailed"));
+      const notice = noticeFromError(error, "message.overlayOpenFailed");
+      pushDiagnosticEvent("error", "Overlay open failed", notice.detail ?? notice.key);
+      setNotice(notice);
     }
   };
 
@@ -294,8 +437,8 @@ export const MainApp = () => {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-lockup">
-          <div className="brand-mark">
-            <span>KB</span>
+          <div className="brand-mark" aria-hidden="true">
+            <img className="brand-mark-image" src="/app-icon.png" alt="" width={39} height={39} />
           </div>
           <div>
             <div className="brand-name">Kotoba Beacon</div>
@@ -355,10 +498,11 @@ export const MainApp = () => {
               caption={caption}
               devices={devices}
               message={noticeText}
+              inputLevelDb={inputLevelDb}
               onToggleCapture={toggleCapture}
               onOpenOverlay={() => void openOverlay()}
               onDeviceChange={handleDeviceChange}
-              onRefreshDevices={() => void refreshDevices()}
+              onRefreshDevices={() => void refreshDevices({ primePermission: true })}
               onCloseMessage={() => setNotice(null)}
             />
           ) : (
@@ -370,7 +514,7 @@ export const MainApp = () => {
               onConfigChange={setConfig}
               onModelChange={setModel}
               onDeviceChange={handleDeviceChange}
-              onRefreshDevices={() => void refreshDevices()}
+              onRefreshDevices={() => void refreshDevices({ primePermission: true })}
               onSave={() => void save()}
             />
           )}

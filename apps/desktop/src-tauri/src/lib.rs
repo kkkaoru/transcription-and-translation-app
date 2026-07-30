@@ -55,6 +55,7 @@ pub fn run() {
             commands::get_debug_info,
             model_download::download_model,
             model_download::download_quick_start,
+            model_download::cancel_model_download,
             model_download::list_model_status,
         ])
         .build(tauri::generate_context!())

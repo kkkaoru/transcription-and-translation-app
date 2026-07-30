@@ -115,8 +115,8 @@ Windows runtime はまだ検証が必要です。次の担当者は下記を優�
 3. クリーンな app-data で、xsmall zenz と標準 Hy-MT2 をそれぞれ選び、初回ダウンロード、
    `POST /v1/chat/completions`、アプリ終了時の sidecar 停止を確認してください。Hy-MT2標準は
    約1.13 GB必要です。ネットワークを使う個別確認には
-   `cargo +1.88.0-aarch64-apple-darwin test --manifest-path apps/desktop/src-tauri/Cargo.toml downloads_the_pinned_xsmall_model_into_app_data_layout -- --ignored`
-   を実行します。このテストは一時ディレクトリへ約21 MBを取得して削除するため、通常の CI では
+   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml downloads_the_pinned_xsmall_model_into_app_data_layout -- --ignored`
+   を実行します（`rust-toolchain.toml` の 1.97.1 が使われます）。このテストは一時ディレクトリへ約21 MBを取得して削除するため、通常の CI では
    意図的に ignore されています。
 4. Windows の llama.cpp build は MSVC と CPU fallback、DLL探索パスを検証してください。
    macOS arm64 は Metal を有効にします。モデル本体は installer には含めません。
