@@ -51,3 +51,40 @@ pub fn pcm_base64_to_wav(chunk: &AudioChunk) -> Result<Vec<u8>, String> {
     wav.extend_from_slice(&pcm);
     Ok(wav)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{pcm_base64_to_wav, AudioChunk};
+    use base64::Engine;
+
+    fn sample_chunk(duration_ms: u32) -> AudioChunk {
+        // Two PCM16 samples of silence.
+        let pcm = [0_u8, 0, 0, 0];
+        AudioChunk {
+            pcm_base64: base64::engine::general_purpose::STANDARD.encode(pcm),
+            sample_rate: 16_000,
+            channels: 1,
+            duration_ms,
+        }
+    }
+
+    #[test]
+    fn rejects_zero_duration_and_empty_payload() {
+        assert!(pcm_base64_to_wav(&sample_chunk(0)).is_err());
+        let empty = AudioChunk {
+            pcm_base64: String::new(),
+            sample_rate: 16_000,
+            channels: 1,
+            duration_ms: 1_200,
+        };
+        assert!(pcm_base64_to_wav(&empty).is_err());
+    }
+
+    #[test]
+    fn builds_a_minimal_wav_header() {
+        let wav = pcm_base64_to_wav(&sample_chunk(1_200)).expect("valid chunk");
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[44..], &[0, 0, 0, 0]);
+    }
+}

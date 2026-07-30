@@ -327,11 +327,8 @@ pub async fn probe_service_health(config: &AppConfig) -> serde_json::Value {
 
 async fn wait_for_http_ok(url: &str, label: &str, attempts: u32) -> Result<(), String> {
     for attempt in 1..=attempts {
-        if let Ok(response) = reqwest::Client::new()
-            .get(url)
-            .timeout(Duration::from_secs(2))
-            .send()
-            .await
+        if let Ok(response) =
+            reqwest::Client::new().get(url).timeout(Duration::from_secs(2)).send().await
         {
             if response.status().is_success() {
                 return Ok(());

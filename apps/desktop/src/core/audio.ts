@@ -143,7 +143,24 @@ export class MicrophoneCapture {
     this.handler = handler;
     this.chunkMs = chunkMs;
     this.silenceGateDb = silenceGateDb;
-    this.stream = await navigator.mediaDevices.getUserMedia(createMicrophoneConstraints(deviceId));
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia(
+        createMicrophoneConstraints(deviceId),
+      );
+    } catch (error) {
+      // Stale or fabricated device IDs (from older builds / pre-permission lists)
+      // surface as OverconstrainedError. Fall back to the system default mic.
+      const isOverconstrained =
+        typeof DOMException !== "undefined" &&
+        error instanceof DOMException &&
+        error.name === "OverconstrainedError";
+      if (!isOverconstrained || !deviceId || deviceId === "default") {
+        throw error;
+      }
+      this.stream = await navigator.mediaDevices.getUserMedia(
+        createMicrophoneConstraints("default"),
+      );
+    }
     this.context = new AudioContext();
     this.source = this.context.createMediaStreamSource(this.stream);
     // Prefer AudioWorklet, but CSP / WebView restrictions on blob: modules are common
@@ -153,8 +170,7 @@ export class MicrophoneCapture {
       try {
         await this.startWorklet();
         started = true;
-      } catch (error) {
-        console.warn("AudioWorklet capture failed; falling back to ScriptProcessor", error);
+      } catch {
         this.worklet?.disconnect();
         this.worklet = null;
         this.sink?.disconnect();
