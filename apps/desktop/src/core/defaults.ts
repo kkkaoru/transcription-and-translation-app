@@ -73,10 +73,10 @@ export const createDefaultConfig = (): AppConfig => ({
     x: 0,
     y: 0,
     order: "source-first",
-    gapPx: 8,
+    gapPx: 14,
     safeAreaPx: 42,
     captionXPercent: 50,
-    captionYPercent: 86,
+    captionYPercent: 88,
     source: createTextStyle({ fontSizePx: 36, fontWeight: 750 }),
     translation: createTextStyle({
       fontSizePx: 29,

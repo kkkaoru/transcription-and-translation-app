@@ -21,9 +21,12 @@ describe("caption styles", () => {
 
   it("generates a layout style and validates colors", () => {
     const layout = overlayCaptionCss(createDefaultConfig().overlay);
-    expect(layout.gap).toBe("8px");
+    expect(layout.gap).toBe("14px");
     expect(layout.left).toBe("50%");
-    expect(layout.top).toBe("86%");
+    expect(layout.top).toBe("88%");
+    expect(layout.display).toBe("flex");
+    expect(layout.flexDirection).toBe("column");
+    expect(layout.transform).toBe("translate(-50%, -100%)");
     expect(normalizeHexColor("#123456", "#ffffff")).toBe("#123456");
     expect(normalizeHexColor("red", "#ffffff")).toBe("#ffffff");
   });

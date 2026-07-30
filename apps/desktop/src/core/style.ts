@@ -35,15 +35,27 @@ export const toCaptionCss = (style: CaptionTextStyle): CSSProperties => {
   };
 };
 
-export const overlayCaptionCss = (overlay: OverlayConfig): CSSProperties => ({
-  position: "absolute",
-  left: `${clampNumber(overlay.captionXPercent, 0, 100)}%`,
-  top: `${clampNumber(overlay.captionYPercent, 0, 100)}%`,
-  width: `calc(100% - ${Math.max(0, overlay.safeAreaPx) * 2}px)`,
-  transform: "translate(-50%, -50%)",
-  gap: `${Math.max(0, overlay.gapPx)}px`,
-  flexDirection: "column",
-});
+export const overlayCaptionCss = (overlay: OverlayConfig): CSSProperties => {
+  const safe = Math.max(0, overlay.safeAreaPx);
+  const x = clampNumber(overlay.captionXPercent, 0, 100);
+  const y = clampNumber(overlay.captionYPercent, 0, 100);
+  return {
+    position: "absolute",
+    left: `${x}%`,
+    top: `${y}%`,
+    width: `calc(100% - ${safe * 2}px)`,
+    maxWidth: `calc(100% - ${safe * 2}px)`,
+    transform: "translate(-50%, -100%)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: `${Math.max(10, overlay.gapPx)}px`,
+    boxSizing: "border-box",
+    overflow: "visible",
+    pointerEvents: "none",
+  };
+};
 
 export const normalizeHexColor = (value: string, fallback: string): string =>
   /^#[\da-f]{6}$/i.test(value) ? value : fallback;
