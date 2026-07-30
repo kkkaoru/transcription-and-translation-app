@@ -14,6 +14,16 @@ export interface PartialAppConfig {
 
 export const DEFAULT_FONT_FAMILY = '"Noto Sans JP Variable", "Noto Sans JP", sans-serif';
 
+/**
+ * Default live-caption audio slice length.
+ * ~900ms balances time-to-first-subtitle against Parapper needing enough speech
+ * signal (sub-800ms often yields empty/noise-only transcripts).
+ */
+export const DEFAULT_AUDIO_CHUNK_MS = 900;
+
+/** Default RMS silence gate (dBFS). Speech typically sits well above this. */
+export const DEFAULT_SILENCE_GATE_DB = -55;
+
 export const createTextStyle = (overrides: Partial<CaptionTextStyle> = {}): CaptionTextStyle => ({
   fontFamily: DEFAULT_FONT_FAMILY,
   fontSizePx: 34,
@@ -64,8 +74,8 @@ export const createDefaultConfig = (): AppConfig => ({
   audio: {
     inputDeviceId: "default",
     sampleRate: 16_000,
-    chunkMs: 1_200,
-    silenceGateDb: -55,
+    chunkMs: DEFAULT_AUDIO_CHUNK_MS,
+    silenceGateDb: DEFAULT_SILENCE_GATE_DB,
   },
   overlay: {
     width: 1_280,

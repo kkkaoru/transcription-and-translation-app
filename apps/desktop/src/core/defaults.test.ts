@@ -7,6 +7,9 @@ describe("default configuration", () => {
     expect(config.language).toEqual({ source: "ja", target: "en" });
     expect(config.models.asr).toBe("parapper-ja");
     expect(config.overlay.source.fontFamily).toContain("Noto Sans JP Variable");
+    // ~900ms default: lower TTFS than 1.2s while still enough speech for Parapper.
+    expect(config.audio.chunkMs).toBe(900);
+    expect(config.audio.silenceGateDb).toBe(-55);
   });
 
   it("keeps nested defaults when loading a partial config", () => {

@@ -59,3 +59,29 @@ export const overlayCaptionCss = (overlay: OverlayConfig): CSSProperties => {
 
 export const normalizeHexColor = (value: string, fallback: string): string =>
   /^#[\da-f]{6}$/i.test(value) ? value : fallback;
+
+/**
+ * Fit an overlay canvas into a smaller in-app preview stage without OBS.
+ * Returns 1 when the stage size is unknown so callers can fall back to fill layout.
+ * Scale is clamped to (0, 1] so the preview never enlarges past the designed overlay size.
+ */
+export const computePreviewFitScale = (
+  stageWidth: number,
+  stageHeight: number,
+  overlayWidth: number,
+  overlayHeight: number,
+): number => {
+  const stageW = Number.isFinite(stageWidth) ? stageWidth : 0;
+  const stageH = Number.isFinite(stageHeight) ? stageHeight : 0;
+  const overlayW = Math.max(1, Number.isFinite(overlayWidth) ? overlayWidth : 1);
+  const overlayH = Math.max(1, Number.isFinite(overlayHeight) ? overlayHeight : 1);
+  if (stageW <= 1 || stageH <= 1) {
+    return 1;
+  }
+  const fit = Math.min(stageW / overlayW, stageH / overlayH);
+  if (!Number.isFinite(fit) || fit <= 0) {
+    return 1;
+  }
+  // Keep a tiny lower bound so extremely small stages still paint something visible.
+  return Math.min(1, Math.max(0.05, fit));
+};

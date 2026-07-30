@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "./defaults";
-import { clampNumber, normalizeHexColor, overlayCaptionCss, toCaptionCss } from "./style";
+import {
+  clampNumber,
+  computePreviewFitScale,
+  normalizeHexColor,
+  overlayCaptionCss,
+  toCaptionCss,
+} from "./style";
 
 describe("caption styles", () => {
   it("clamps invalid numeric values", () => {
@@ -49,5 +55,19 @@ describe("caption styles", () => {
     expect(css.opacity).toBe(1);
     expect(css.fontSize).toBe("1px");
     expect(css.maxWidth).toBe("1%");
+  });
+
+  it("fits the overlay canvas into the in-app preview stage without OBS", () => {
+    expect(computePreviewFitScale(640, 360, 1_280, 720)).toBeCloseTo(0.5, 5);
+    expect(computePreviewFitScale(1_280, 360, 1_280, 720)).toBeCloseTo(0.5, 5);
+    expect(computePreviewFitScale(640, 720, 1_280, 720)).toBeCloseTo(0.5, 5);
+    expect(computePreviewFitScale(1_280, 720, 1_280, 720)).toBe(1);
+    // Do not upscale past the designed overlay canvas size.
+    expect(computePreviewFitScale(2_560, 1_440, 1_280, 720)).toBe(1);
+    // Unknown / zero stage → fill-mode fallback scale.
+    expect(computePreviewFitScale(0, 0, 1_280, 720)).toBe(1);
+    expect(computePreviewFitScale(Number.NaN, 100, 1_280, 720)).toBe(1);
+    // Tiny stage still returns a positive floor so captions remain paintable.
+    expect(computePreviewFitScale(2, 2, 1_280, 720)).toBe(0.05);
   });
 });
