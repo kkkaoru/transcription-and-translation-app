@@ -69,9 +69,7 @@ export function DebugPanel() {
             </div>
           ) : null}
           {debugInfo ? (
-            <pre className="debug-output" tabIndex={0}>
-              {JSON.stringify(debugInfo, null, 2)}
-            </pre>
+            <pre className="debug-output">{JSON.stringify(debugInfo, null, 2)}</pre>
           ) : (
             <p className="download-empty">{t("debug.empty")}</p>
           )}
