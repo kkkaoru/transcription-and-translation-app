@@ -94,7 +94,8 @@ const ja = {
   "settings.audioTitle": "音声入力",
   "settings.deviceHint": "マイクの権限許可後にデバイス名が表示されます。",
   "settings.chunk": "字幕チャンク（ms）",
-  "settings.chunkHint": "短いほど低遅延、長いほど認識が安定します。",
+  "settings.chunkHint":
+    "既定 900ms。短いほど低遅延、長いほど認識が安定します（800ms未満は空認識が増えやすい）。",
   "settings.silenceGate": "無音ゲート（dB）",
   "settings.overlayEyebrow": "OVERLAY LAYOUT",
   "settings.overlayTitle": "字幕レイアウト",
@@ -179,10 +180,11 @@ const ja = {
   "model.managementEyebrow": "MODEL INSTALL",
   "model.managementTitle": "モデル管理",
   "model.managementLead":
-    "個別ダウンロード、または最小構成（Zenzai XSmall + Hy-MT2 1.8B）の一括ダウンロードができます。",
+    "個別ダウンロード、または最小構成（Zenzai XSmall + Hy-MT2 1.25bit）の一括ダウンロードができます。完了後、未インストールの翻訳モデル選択は最小構成へ自動切替されます。",
   "model.quickStart": "最小モデルを一括DL",
   "model.quickStartRunning": "ダウンロード中…",
-  "model.quickStartComplete": "{count} 件のモデルをダウンロードしました",
+  "model.quickStartComplete":
+    "{count} 件のモデルをダウンロードしました（必要なら翻訳モデルを最小構成に切替）",
   "model.downloadComplete": "{id} をダウンロードしました",
   "model.install": "ダウンロード",
   "model.installed": "インストール済み",
@@ -249,6 +251,17 @@ const ja = {
   "debug.chunkMs": "チャンク",
   "debug.silenceGate": "無音ゲート",
   "debug.defaultDevice": "システム既定",
+  "debug.downloadTitle": "モデルダウンロード",
+  "debug.downloadEmpty": "モデル状態を取得できませんでした（ブラウザプレビューでは空です）。",
+  "debug.modelPartial": "途中 / 不完全",
+  "debug.modelDownloading": "ダウンロード中",
+  "debug.modelError": "エラー",
+  "debug.modelStatusUnknown": "不明",
+  "debug.recentErrorsTitle": "直近エラー一覧",
+  "debug.noRecentErrors": "直近のエラーはありません。",
+  "debug.previewMode": "プレビュー",
+  "debug.previewLive": "ライブ字幕（OBS 不要）",
+  "debug.previewPlaceholder": "プレースホルダ",
 } as const;
 
 export type MessageKey = keyof typeof ja;
@@ -430,10 +443,11 @@ const en: Record<MessageKey, string> = {
   "model.managementEyebrow": "MODEL INSTALL",
   "model.managementTitle": "Model management",
   "model.managementLead":
-    "Download models individually, or install the minimal set (Zenzai XSmall + Hy-MT2 1.8B) in one step.",
+    "Download models individually, or install the minimal set (Zenzai XSmall + Hy-MT2 1.25-bit) in one step. If the selected translator is not installed, it switches to the minimal pack after download.",
   "model.quickStart": "Download minimal set",
   "model.quickStartRunning": "Downloading…",
-  "model.quickStartComplete": "Downloaded {count} models",
+  "model.quickStartComplete":
+    "Downloaded {count} models (translator selection aligned when needed)",
   "model.downloadComplete": "Downloaded {id}",
   "model.install": "Download",
   "model.installed": "Installed",
@@ -500,6 +514,17 @@ const en: Record<MessageKey, string> = {
   "debug.chunkMs": "Chunk",
   "debug.silenceGate": "Silence gate",
   "debug.defaultDevice": "System default",
+  "debug.downloadTitle": "Model downloads",
+  "debug.downloadEmpty": "No model status available (empty in browser preview).",
+  "debug.modelPartial": "partial / incomplete",
+  "debug.modelDownloading": "downloading",
+  "debug.modelError": "error",
+  "debug.modelStatusUnknown": "unknown",
+  "debug.recentErrorsTitle": "Recent errors",
+  "debug.noRecentErrors": "No recent errors.",
+  "debug.previewMode": "Preview",
+  "debug.previewLive": "Live captions (no OBS)",
+  "debug.previewPlaceholder": "Placeholder",
 };
 
 export const messages: Record<Locale, Record<MessageKey, string>> = { ja, en };

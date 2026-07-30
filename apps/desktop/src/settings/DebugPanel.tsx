@@ -6,7 +6,7 @@ import {
 } from "../core/audio";
 import { bridge } from "../core/bridge";
 import { type DiagnosticEvent, getDiagnosticEvents } from "../core/diagnostics";
-import type { AudioInputDevice } from "../core/types";
+import type { AudioInputDevice, ModelStatusEntry } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 
 type JsonObject = Record<string, unknown>;
@@ -84,6 +84,41 @@ const deviceLabel = (
   return t("audio.fallbackDevice", { number: index + 1 });
 };
 
+const formatBytes = (bytes: number | null | undefined): string => {
+  if (bytes == null || !Number.isFinite(bytes)) {
+    return "—";
+  }
+  if (bytes >= 1_073_741_824) {
+    return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+  }
+  if (bytes >= 1_048_576) {
+    return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(0)} KB`;
+  }
+  return `${bytes} B`;
+};
+
+const modelInstallLabel = (status: string, t: ReturnType<typeof useI18n>["t"]): string => {
+  switch (status) {
+    case "ready":
+      return t("debug.modelReady");
+    case "missing":
+      return t("debug.modelMissing");
+    case "partial":
+      return t("debug.modelPartial");
+    case "corrupt":
+      return t("debug.modelCorrupt");
+    case "downloading":
+      return t("debug.modelDownloading");
+    case "error":
+      return t("debug.modelError");
+    default:
+      return status || t("debug.modelStatusUnknown");
+  }
+};
+
 export function DebugPanel() {
   const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -91,6 +126,7 @@ export function DebugPanel() {
   const [frontendInfo, setFrontendInfo] = useState<JsonObject | null>(null);
   const [captureInfo, setCaptureInfo] = useState<AudioCaptureDiagnostics | null>(null);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
+  const [modelStatus, setModelStatus] = useState<ModelStatusEntry[]>([]);
   const [events, setEvents] = useState<DiagnosticEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -102,6 +138,7 @@ export function DebugPanel() {
       !frontendInfo &&
       !captureInfo &&
       devices.length === 0 &&
+      modelStatus.length === 0 &&
       events.length === 0
     ) {
       return null;
@@ -115,9 +152,10 @@ export function DebugPanel() {
         label: device.label,
         groupId: device.groupId,
       })),
+      modelDownloads: modelStatus,
       recentEvents: events,
     };
-  }, [backendInfo, frontendInfo, captureInfo, devices, events]);
+  }, [backendInfo, frontendInfo, captureInfo, devices, modelStatus, events]);
 
   const fetchInfo = useCallback(async () => {
     setLoading(true);
@@ -129,12 +167,14 @@ export function DebugPanel() {
     setCaptureInfo(nextCapture);
     setEvents(nextEvents);
     try {
-      const [info, nextDevices] = await Promise.all([
+      const [info, nextDevices, nextModelStatus] = await Promise.all([
         bridge.getDebugInfo(),
         enumerateAudioInputDevices().catch(() => [] as AudioInputDevice[]),
+        bridge.listModelStatus().catch(() => [] as ModelStatusEntry[]),
       ]);
       setBackendInfo(isRecord(info) ? info : { value: info });
       setDevices(nextDevices);
+      setModelStatus(nextModelStatus);
     } catch (e) {
       setBackendInfo(null);
       setError(String(e));
@@ -177,11 +217,27 @@ export function DebugPanel() {
   const overlayConfig = isRecord(overlayConfigValue) ? overlayConfigValue : null;
   const selectedDeviceId = asString(pick(audioConfig, "inputDeviceId"), "default");
 
-  const lastError =
-    asString(pick(backendInfo, "lastError"), "") ||
-    asString(pick(runtimeStatus, "lastError"), "") ||
-    (captureInfo?.lastError ?? "") ||
-    "";
+  const modelDownloadErrors = modelStatus
+    .map((entry) => entry.lastError?.trim())
+    .filter((value): value is string => Boolean(value));
+
+  const eventErrors = events
+    .filter((event) => event.kind === "error")
+    .slice(0, 6)
+    .map((event) => [event.message, event.detail].filter(Boolean).join(" — "));
+
+  const lastErrorCandidates = [
+    asString(pick(backendInfo, "lastError"), ""),
+    asString(pick(runtimeStatus, "lastError"), ""),
+    captureInfo?.lastError ?? "",
+    ...modelDownloadErrors,
+    ...eventErrors,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  const lastError = lastErrorCandidates[0] ?? "";
+  const recentErrors = [...new Set(lastErrorCandidates)].slice(0, 8);
 
   const serviceRows = services
     ? Object.entries(services).map(([name, value]) => {
@@ -218,6 +274,9 @@ export function DebugPanel() {
             : asString(pick(model, "expectedBytes")),
       }))
     : [];
+
+  const downloadReady = modelStatus.filter((entry) => entry.status === "ready").length;
+  const downloadBusy = modelStatus.filter((entry) => entry.status === "downloading").length;
 
   const frontendAudioValue = pick(frontendInfo, "audio");
   const frontendAudio = isRecord(frontendAudioValue) ? frontendAudioValue : null;
@@ -302,10 +361,17 @@ export function DebugPanel() {
                 <div className="debug-stat-card">
                   <span className="debug-stat-label">{t("debug.modelsTitle")}</span>
                   <strong>
-                    {asString(pick(modelSummary, "ready"), "0")} /{" "}
-                    {asString(pick(modelSummary, "total"), "0")} {t("debug.modelsReady")}
+                    {modelStatus.length > 0
+                      ? `${downloadReady} / ${modelStatus.length}`
+                      : `${asString(pick(modelSummary, "ready"), "0")} / ${asString(pick(modelSummary, "total"), "0")}`}{" "}
+                    {t("debug.modelsReady")}
                   </strong>
                   <small className="debug-path">{asString(pick(backendInfo, "modelsDir"))}</small>
+                  {downloadBusy > 0 ? (
+                    <small>
+                      {t("debug.modelDownloading")}: {downloadBusy}
+                    </small>
+                  ) : null}
                 </div>
                 <div className="debug-stat-card">
                   <span className="debug-stat-label">{t("debug.audioTitle")}</span>
@@ -322,6 +388,19 @@ export function DebugPanel() {
                   </small>
                 </div>
               </section>
+
+              <div className="debug-section">
+                <h4 className="debug-section-title">{t("debug.recentErrorsTitle")}</h4>
+                {recentErrors.length === 0 ? (
+                  <p className="download-empty">{t("debug.noRecentErrors")}</p>
+                ) : (
+                  <ul className="debug-error-list">
+                    {recentErrors.map((entry) => (
+                      <li key={entry}>{entry}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
 
               {captureInfo ? (
                 <div className="debug-section">
@@ -417,15 +496,40 @@ export function DebugPanel() {
                   </li>
                   <li>
                     <span>
-                      {t("debug.chunkMs")}: {asString(pick(audioConfig, "chunkMs"))} ms ·{" "}
-                      {t("debug.silenceGate")}: {asString(pick(audioConfig, "silenceGateDb"))} dB
+                      {t("debug.previewMode")}: {t("debug.previewLive")}
                     </span>
                     <code>
+                      {t("debug.chunkMs")}: {asString(pick(audioConfig, "chunkMs"))} ms ·{" "}
+                      {t("debug.silenceGate")}: {asString(pick(audioConfig, "silenceGateDb"))} dB ·
                       sampleRate={asString(pick(audioConfig, "sampleRate"))} · device=
                       {selectedDeviceId}
                     </code>
                   </li>
                 </ul>
+              </div>
+
+              <div className="debug-section">
+                <h4 className="debug-section-title">{t("debug.downloadTitle")}</h4>
+                {modelStatus.length === 0 ? (
+                  <p className="download-empty">{t("debug.downloadEmpty")}</p>
+                ) : (
+                  <ul className="debug-kv-list">
+                    {modelStatus.map((entry) => (
+                      <li key={entry.modelId}>
+                        <span>
+                          {entry.modelId}{" "}
+                          <span className={`debug-download-chip status-${entry.status}`}>
+                            {modelInstallLabel(String(entry.status), t)}
+                          </span>
+                        </span>
+                        <code className="debug-path">
+                          {formatBytes(entry.installedBytes)} / {formatBytes(entry.expectedBytes)}
+                          {entry.lastError ? ` · ${entry.lastError}` : ""}
+                        </code>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
               {serviceRows.length > 0 ? (

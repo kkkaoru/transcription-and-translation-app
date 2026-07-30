@@ -36,15 +36,28 @@ describe("App routes", () => {
     });
 
     expect(container.querySelector(".brand-name")?.textContent).toBe("Kotoba Beacon");
-    // Live OBS stage should show the live caption payload, not static design placeholders.
-    expect(container.querySelector(".preview-stage")?.textContent).toContain(
+    // In-app preview must render live caption payload without OBS / without forced placeholders.
+    expect(container.querySelector('[data-testid="live-preview-stage"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="preview-scale-host"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="input-level-meter"]')).not.toBeNull();
+    expect(container.textContent).toContain("これはプレビュー用の字幕です。");
+    expect(container.textContent).toContain("This is a preview caption.");
+    expect(container.textContent).toMatch(/OBS\s*不要/);
+    expect(container.textContent).not.toContain("日本語の音声認識結果がここに表示されます");
+    // Live stage shows the live caption payload, not static design placeholders.
+    const stage = container.querySelector(".preview-stage");
+    expect(stage?.textContent).toContain("これはプレビュー用の字幕です。");
+    expect(stage?.textContent).toContain("This is a preview caption.");
+    expect(stage?.textContent).not.toContain("English translation will appear here");
+    expect(stage?.querySelector(".overlay-preview .caption-line-source")?.textContent).toBe(
       "これはプレビュー用の字幕です。",
     );
-    expect(container.querySelector(".preview-stage")?.textContent).toContain(
+    expect(stage?.querySelector(".overlay-preview .caption-line-translation")?.textContent).toBe(
       "This is a preview caption.",
     );
-    expect(container.querySelector(".preview-stage")?.textContent).not.toContain(
-      "English translation will appear here",
+    // placeholder must stay false so recognition updates appear in-app without OBS.
+    expect(container.querySelector(".overlay-preview")?.classList.contains("overlay-preview")).toBe(
+      true,
     );
     const settingsButton = Array.from(container.querySelectorAll(".nav-tabs button")).find(
       (button) => button.textContent?.includes("設定"),
