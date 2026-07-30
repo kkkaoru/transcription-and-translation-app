@@ -107,6 +107,9 @@ export interface CaptionPayload {
   targetLanguage: string;
   startedAt: number;
   receivedAt: number;
+  stage?: "source" | "translation";
+  sequence?: number;
+  isFinal?: boolean;
   confidence?: number;
 }
 
