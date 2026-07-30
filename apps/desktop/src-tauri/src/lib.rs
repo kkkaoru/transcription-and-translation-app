@@ -4,6 +4,7 @@ mod audio;
 mod commands;
 mod config;
 mod gateway;
+mod model_download;
 mod model_runtime;
 mod models;
 mod native_output;
@@ -51,6 +52,10 @@ pub fn run() {
             commands::open_overlay,
             commands::close_overlay,
             commands::publish_overlay_frame,
+            commands::get_debug_info,
+            model_download::download_model,
+            model_download::download_quick_start,
+            model_download::list_model_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Kotoba Beacon");

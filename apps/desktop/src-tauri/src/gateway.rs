@@ -157,11 +157,7 @@ fn parapper_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn model_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("could not resolve app data directory: {error}"))?
-        .join("models");
+    let dir = model_runtime::model_runtime_dir(app)?;
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("could not create model runtime directory: {error}"))?;
     Ok(dir)

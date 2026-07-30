@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Local bilingual caption overlay for OBS"
 authors = ["Kotoba Beacon"]
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.97"
 
 [lib]
 name = "caption_bridge_lib"

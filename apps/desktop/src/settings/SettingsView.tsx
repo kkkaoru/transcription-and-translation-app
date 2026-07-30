@@ -3,7 +3,9 @@ import { AudioDeviceSelect } from "../components/AudioDeviceSelect";
 import { Field } from "../components/Field";
 import type { AppConfig, AudioInputDevice, ModelCatalog, ModelFamily } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
+import { DebugPanel } from "./DebugPanel";
 import { ModelCard } from "./ModelCard";
+import { ModelManagementCard } from "./ModelManagementCard";
 import { TextStyleEditor } from "./TextStyleEditor";
 
 const SectionHeading = ({
@@ -180,6 +182,8 @@ export const SettingsView = ({
         <p className="section-note">{t("settings.modelsNote")}</p>
       </section>
 
+      <ModelManagementCard />
+
       <section className="panel settings-section">
         <SectionHeading
           eyebrow={t("settings.audioEyebrow")}
@@ -331,6 +335,8 @@ export const SettingsView = ({
           <span className="auto-chip">{t("settings.autoOutput")}</span>
         </div>
       </section>
+
+      <DebugPanel />
     </>
   );
 };

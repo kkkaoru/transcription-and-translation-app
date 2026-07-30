@@ -45,8 +45,11 @@ describe("App routes", () => {
 
     expect(container.querySelector(".content-heading h2")?.textContent).toBe("設定");
     expect(container.textContent).toContain("言語と推論先");
+    expect(container.textContent).toContain("モデル管理");
+    expect(container.textContent).toContain("最小モデルを一括DL");
     expect(container.textContent).toContain("AzooKey ユーザー辞書（任意）");
     expect(container.textContent).toContain("AzooKey 学習メモリ（任意）");
+    expect(container.querySelector(".debug-panel")).not.toBeNull();
   });
 
   it("renders only the transparent caption route for overlay windows", async () => {

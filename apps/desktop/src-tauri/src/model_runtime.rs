@@ -32,7 +32,7 @@ pub struct ModelRuntimeSpec {
     pub port: u16,
 }
 
-const MODEL_RUNTIME_SPECS: &[ModelRuntimeSpec] = &[
+pub const MODEL_RUNTIME_SPECS: &[ModelRuntimeSpec] = &[
     ModelRuntimeSpec {
         id: "zenz-v3.2-xsmall-gguf",
         server: ModelServer::Zenz,
@@ -100,6 +100,18 @@ const MODEL_RUNTIME_SPECS: &[ModelRuntimeSpec] = &[
 
 pub fn spec(id: &str) -> Option<&'static ModelRuntimeSpec> {
     MODEL_RUNTIME_SPECS.iter().find(|spec| spec.id == id)
+}
+
+pub fn all_specs() -> &'static [ModelRuntimeSpec] {
+    MODEL_RUNTIME_SPECS
+}
+
+pub fn model_runtime_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("could not resolve app data directory: {e}"))
+        .map(|p| p.join("models"))
 }
 
 pub fn selected_specs(config: &AppConfig) -> Result<Vec<&'static ModelRuntimeSpec>, String> {

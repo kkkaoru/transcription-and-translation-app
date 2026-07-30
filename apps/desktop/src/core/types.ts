@@ -132,3 +132,22 @@ export interface AudioInputDevice {
 }
 
 export type UnlistenFn = () => void;
+
+export type ModelInstallStatus = "ready" | "missing" | "corrupt" | "downloading" | "error";
+
+export interface ModelStatusEntry {
+  modelId: string;
+  status: ModelInstallStatus | string;
+  installedBytes: number | null;
+  expectedBytes: number;
+  lastError: string | null;
+}
+
+export interface DownloadProgress {
+  modelId: string;
+  downloadedBytes: number;
+  totalBytes: number;
+  percent: number;
+  speedBps: number;
+  elapsedMs: number;
+}

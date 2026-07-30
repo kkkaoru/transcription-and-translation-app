@@ -218,6 +218,48 @@ fn set_status(
         .map_err(|emit_error| format!("could not emit status: {emit_error}"))
 }
 
+#[tauri::command]
+pub fn get_debug_info(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    let status = state.status.lock().map_err(|_| "status lock poisoned".to_string())?.clone();
+    let app_data = app.path().app_data_dir().unwrap_or_default();
+    let config_dir = app.path().app_config_dir().unwrap_or_default();
+    let models_dir = app_data.join("models");
+    let models: Vec<_> = crate::model_runtime::MODEL_RUNTIME_SPECS
+        .iter()
+        .map(|s| {
+            let path = crate::model_runtime::model_path(&models_dir, s);
+            let metadata = std::fs::metadata(&path).ok();
+            let installed_bytes = metadata.as_ref().map(|m| m.len());
+            let ready = installed_bytes == Some(s.expected_bytes);
+            serde_json::json!({
+                "id": s.id,
+                "path": path.display().to_string(),
+                "installed": path.exists(),
+                "ready": ready,
+                "installedBytes": installed_bytes,
+                "expectedBytes": s.expected_bytes,
+                "server": format!("{:?}", s.server),
+                "port": s.port,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "config": serde_json::to_value(&config).unwrap_or_default(),
+        "runtimeStatus": serde_json::to_value(&status).unwrap_or_default(),
+        "modelsDir": models_dir.display().to_string(),
+        "configDir": config_dir.display().to_string(),
+        "appDataDir": app_data.display().to_string(),
+        "models": models,
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
 fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()

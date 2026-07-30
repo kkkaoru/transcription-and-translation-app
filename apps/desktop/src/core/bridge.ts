@@ -11,7 +11,9 @@ import type {
   AppConfig,
   AudioChunk,
   CaptionPayload,
+  DownloadProgress,
   ModelCatalog,
+  ModelStatusEntry,
   RuntimeStatus,
   UnlistenFn,
 } from "./types";
@@ -138,9 +140,49 @@ export const bridge = {
     return Promise.resolve(() => undefined);
   },
 
+  getDebugInfo(): Promise<Record<string, unknown>> {
+    if (isTauriRuntime()) {
+      return invoke<Record<string, unknown>>("get_debug_info");
+    }
+    return Promise.resolve({
+      platform: "browser",
+      note: "Debug info is only available in the desktop app.",
+    });
+  },
+
   listenRuntime(callback: (status: RuntimeStatus) => void): Promise<UnlistenFn> {
     if (isTauriRuntime()) {
       return listen<RuntimeStatus>("runtime:status", (event) => callback(event.payload));
+    }
+    return Promise.resolve(() => undefined);
+  },
+
+  downloadModel(modelId: string): Promise<string> {
+    if (!isTauriRuntime()) {
+      return Promise.reject(new Error("Model download is only available in the desktop app."));
+    }
+    return invoke<string>("download_model", { modelId });
+  },
+
+  downloadQuickStart(): Promise<string[]> {
+    if (!isTauriRuntime()) {
+      return Promise.reject(new Error("Model download is only available in the desktop app."));
+    }
+    return invoke<string[]>("download_quick_start");
+  },
+
+  listModelStatus(): Promise<ModelStatusEntry[]> {
+    if (!isTauriRuntime()) {
+      return Promise.resolve([]);
+    }
+    return invoke<ModelStatusEntry[]>("list_model_status");
+  },
+
+  listenDownloadProgress(callback: (progress: DownloadProgress) => void): Promise<UnlistenFn> {
+    if (isTauriRuntime()) {
+      return listen<DownloadProgress>("model:download:progress", (event) =>
+        callback(event.payload),
+      );
     }
     return Promise.resolve(() => undefined);
   },

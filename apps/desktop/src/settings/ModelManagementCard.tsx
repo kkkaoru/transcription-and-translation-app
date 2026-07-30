@@ -1,0 +1,268 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { bridge } from "../core/bridge";
+import type { DownloadProgress, ModelStatusEntry } from "../core/types";
+import { useI18n } from "../i18n/I18nProvider";
+
+const formatBytes = (bytes: number): string => {
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  return `${(bytes / 1024).toFixed(0)} KB`;
+};
+
+const formatDuration = (ms: number): string => {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+};
+
+const formatSpeed = (bps: number): string => {
+  if (bps <= 0) return "—";
+  if (bps >= 1_048_576) return `${(bps / 1_048_576).toFixed(1)} MB/s`;
+  return `${(bps / 1024).toFixed(0)} KB/s`;
+};
+
+const MODEL_NAMES: Record<string, string> = {
+  "zenz-v3.2-xsmall-gguf": "Zenzai v3.2 XSmall",
+  "zenz-v3.2-small-gguf": "Zenzai v3.2 Small",
+  "zenz-v2-q5-k-m-gguf": "Zenzai v2 Q5_K_M",
+  "hy-mt2-1.8b-gguf": "Hy-MT2 1.8B",
+  "hy-mt2-1.8b-2bit-gguf": "Hy-MT2 1.8B 2-bit",
+  "hy-mt2-1.8b-1.25bit-gguf": "Hy-MT2 1.8B 1.25-bit",
+  "hy-mt2-7b-gguf": "Hy-MT2 7B",
+};
+
+const statusLabel = (status: string, t: ReturnType<typeof useI18n>["t"]): string => {
+  switch (status) {
+    case "ready":
+      return t("model.statusReady");
+    case "missing":
+      return t("model.statusMissing");
+    case "corrupt":
+      return t("model.statusCorrupt");
+    case "downloading":
+      return t("model.statusDownloading");
+    default:
+      return status;
+  }
+};
+
+export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?: () => void }) => {
+  const { t } = useI18n();
+  const [models, setModels] = useState<ModelStatusEntry[]>([]);
+  const [downloading, setDownloading] = useState<Record<string, DownloadProgress>>({});
+  const [batchDownloading, setBatchDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const desktop = bridge.isDesktop();
+
+  const refresh = useCallback(() => {
+    if (!desktop) {
+      setModels([]);
+      return;
+    }
+    bridge
+      .listModelStatus()
+      .then(setModels)
+      .catch((e) => setError(String(e)));
+  }, [desktop]);
+
+  useEffect(() => {
+    refresh();
+    if (!desktop) return;
+    const disposers: Array<() => void> = [];
+    bridge
+      .listenDownloadProgress((progress) => {
+        setDownloading((prev) => ({ ...prev, [progress.modelId]: progress }));
+        if (progress.percent >= 100) {
+          setTimeout(() => {
+            setDownloading((prev) => {
+              const next = { ...prev };
+              delete next[progress.modelId];
+              return next;
+            });
+            refresh();
+            onModelDownloaded?.();
+          }, 400);
+        }
+      })
+      .then((d) => disposers.push(d));
+    return () => {
+      for (const d of disposers) {
+        d();
+      }
+    };
+  }, [refresh, onModelDownloaded, desktop]);
+
+  const summary = useMemo(() => {
+    const ready = models.filter((m) => m.status === "ready").length;
+    return { ready, total: models.length };
+  }, [models]);
+
+  const handleDownload = async (modelId: string) => {
+    setError(null);
+    setMessage(null);
+    try {
+      setDownloading((prev) => ({
+        ...prev,
+        [modelId]: {
+          modelId,
+          downloadedBytes: 0,
+          totalBytes: 0,
+          percent: 0,
+          speedBps: 0,
+          elapsedMs: 0,
+        },
+      }));
+      await bridge.downloadModel(modelId);
+      setMessage(t("model.downloadComplete", { id: MODEL_NAMES[modelId] ?? modelId }));
+      refresh();
+      onModelDownloaded?.();
+    } catch (e) {
+      setError(String(e));
+      setDownloading((prev) => {
+        const next = { ...prev };
+        delete next[modelId];
+        return next;
+      });
+    }
+  };
+
+  const handleQuickStart = async () => {
+    setError(null);
+    setMessage(null);
+    setBatchDownloading(true);
+    try {
+      const ids = await bridge.downloadQuickStart();
+      setMessage(t("model.quickStartComplete", { count: String(ids.length) }));
+      refresh();
+      onModelDownloaded?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBatchDownloading(false);
+    }
+  };
+
+  return (
+    <section className="panel settings-section model-download-panel">
+      <div className="download-toolbar">
+        <div className="download-summary">
+          <span className="eyebrow">{t("model.managementEyebrow")}</span>
+          <h3>{t("model.managementTitle")}</h3>
+          <p className="download-lead">{t("model.managementLead")}</p>
+          {desktop ? (
+            <p className="download-meta">
+              {t("model.readyCount", {
+                ready: String(summary.ready),
+                total: String(summary.total),
+              })}
+            </p>
+          ) : null}
+        </div>
+        <div className="download-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={refresh}
+            disabled={!desktop || batchDownloading}
+          >
+            {t("model.refreshStatus")}
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={handleQuickStart}
+            disabled={!desktop || batchDownloading}
+          >
+            {batchDownloading ? t("model.quickStartRunning") : t("model.quickStart")}
+          </button>
+        </div>
+      </div>
+
+      {!desktop ? (
+        <p className="download-browser-note" role="status">
+          {t("model.desktopOnly")}
+        </p>
+      ) : null}
+
+      {error ? (
+        <div className="download-message error notice" role="alert">
+          <span>{error}</span>
+          <button className="text-button" type="button" onClick={() => setError(null)}>
+            {t("common.close")}
+          </button>
+        </div>
+      ) : null}
+
+      {message ? (
+        <p className="download-message success" role="status">
+          {message}
+        </p>
+      ) : null}
+
+      {desktop && models.length === 0 ? (
+        <p className="download-empty">{t("model.emptyStatus")}</p>
+      ) : null}
+
+      <div className="download-list">
+        {models.map((model) => {
+          const dp = downloading[model.modelId];
+          const status = dp ? "downloading" : model.status;
+          const busy = Boolean(dp) || batchDownloading;
+          return (
+            <div key={model.modelId} className="download-row">
+              <div className="download-row-main">
+                <div className="download-row-title">
+                  <span className="download-model-id">
+                    {MODEL_NAMES[model.modelId] ?? model.modelId}
+                  </span>
+                  <span className={`download-status-chip status-${status}`}>
+                    {statusLabel(status, t)}
+                  </span>
+                </div>
+                <div className="download-row-meta">
+                  <span>{model.modelId}</span>
+                  <span>
+                    {model.installedBytes != null
+                      ? `${formatBytes(model.installedBytes)} / ${formatBytes(model.expectedBytes)}`
+                      : formatBytes(model.expectedBytes)}
+                  </span>
+                  {dp ? (
+                    <>
+                      <span>{dp.percent}%</span>
+                      <span>{formatSpeed(dp.speedBps)}</span>
+                      <span>{formatDuration(dp.elapsedMs)}</span>
+                    </>
+                  ) : null}
+                </div>
+                {dp ? (
+                  <div
+                    className="download-progress"
+                    role="progressbar"
+                    aria-valuenow={dp.percent}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
+                    <div className="download-progress-bar" style={{ width: `${dp.percent}%` }} />
+                  </div>
+                ) : null}
+              </div>
+              <button
+                className="secondary-button download-one-button"
+                type="button"
+                disabled={busy || model.status === "ready" || model.status === "downloading"}
+                onClick={() => handleDownload(model.modelId)}
+              >
+                {model.status === "ready"
+                  ? t("model.installed")
+                  : model.status === "corrupt"
+                    ? t("model.redownload")
+                    : t("model.download")}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+};
