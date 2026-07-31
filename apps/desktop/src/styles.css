@@ -14,7 +14,8 @@
   --line: #86c5d8;
   --line-bright: #add8e6;
   --muted: #3d6b80;
-  --muted-2: #4a7c93;
+  /* Dark enough for WCAG AA normal text on --bg/#f0f8ff and white panels. */
+  --muted-2: #356278;
   --text: #173f5f;
   --teal: #4d96ad;
   --teal-deep: #2d7088;
@@ -27,18 +28,41 @@
   box-sizing: border-box;
 }
 
+/* Main shell uses a viewport-locked flex layout so only `.content` scrolls.
+   Overlay route opts out via `.overlay-document` (transparent full-window). */
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   min-width: 960px;
-  min-height: 100vh;
+  height: 100%;
   margin: 0;
+  overflow: hidden;
   background: var(--bg);
+}
+
+#root {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 html.overlay-document,
 body.overlay-document {
   min-width: 0;
   min-height: 0;
+  height: auto;
+  overflow: visible;
   background: transparent;
+}
+
+html.overlay-document #root,
+body.overlay-document #root {
+  height: auto;
+  max-height: none;
+  overflow: visible;
 }
 
 button,
@@ -59,23 +83,30 @@ button:disabled {
 }
 
 .app-shell {
-  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  /* #root is height-locked to the viewport; percentage keeps biome happy (no dual vh/dvh). */
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
   background:
     radial-gradient(circle at 75% -10%, rgba(134, 197, 216, 0.36), transparent 34rem), var(--bg);
 }
 
 .topbar {
   display: flex;
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 40;
-  height: 76px;
+  flex: 0 0 auto;
+  min-height: 76px;
+  height: auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 0 34px;
+  padding: 10px 34px;
   border-bottom: 1px solid var(--line);
-  background: rgba(240, 248, 255, 0.92);
+  /* Opaque chrome: translucent glass let scrolled content bleed under the bar. */
+  background: #f0f8ff;
 }
 
 .brand-lockup,
@@ -140,8 +171,9 @@ button:disabled {
 .auto-chip,
 .section-number,
 .platform-label {
-  color: var(--muted-2);
-  font-size: 12.5px;
+  /* Muted tokens meet AA on --bg/#f0f8ff; never drop below 13px. */
+  color: var(--muted);
+  font-size: 13px;
   font-weight: 750;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -149,13 +181,13 @@ button:disabled {
 
 .brand-caption {
   margin-top: 3px;
-  color: #527990;
-  font-size: 12.5px;
+  color: var(--muted-2);
+  font-size: 13px;
   letter-spacing: 0.08em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: min(36ch, 42vw);
+  max-width: min(42ch, 48vw);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .topbar-meta {
@@ -202,9 +234,9 @@ button:disabled {
   color: var(--muted);
   font-size: 13.5px;
   font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .runtime-pill i,
@@ -245,20 +277,25 @@ button:disabled {
   display: grid;
   position: relative;
   z-index: 1;
-  min-height: calc(100vh - 76px);
+  flex: 1 1 auto;
+  min-height: 0;
   grid-template-columns: 250px minmax(0, 1fr);
   align-items: stretch;
+  overflow: hidden;
 }
 
 .sidebar {
   display: flex;
   position: relative;
   z-index: 2;
-  min-height: calc(100vh - 76px);
+  min-height: 0;
+  height: 100%;
   min-width: 0;
   flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
   border-right: 1px solid var(--line);
-  background: rgba(202, 233, 245, 0.76);
+  background: rgba(202, 233, 245, 0.92);
 }
 
 .sidebar-intro {
@@ -301,7 +338,9 @@ button:disabled {
   font-size: 14.5px;
   text-align: left;
   background: transparent;
-  overflow: hidden;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .nav-tabs button:hover,
@@ -369,7 +408,7 @@ button:disabled {
 
 .version {
   margin: 17px 2px 0;
-  color: #527990;
+  color: var(--muted-2);
   font-size: 13px;
   letter-spacing: 0.1em;
 }
@@ -379,38 +418,52 @@ button:disabled {
 }
 
 .content {
+  --content-pad-x: 43px;
+  --content-pad-top: 0px;
+  --content-pad-bottom: 70px;
   position: relative;
   z-index: 1;
   width: min(1400px, 100%);
   min-width: 0;
   max-width: 100%;
-  padding: 37px 43px 70px;
+  min-height: 0;
+  height: 100%;
+  padding: var(--content-pad-top) var(--content-pad-x) var(--content-pad-bottom);
   isolation: isolate;
   overflow-x: clip;
+  overflow-y: auto;
+  /* Match chrome so any residual sticky gap is invisible. */
+  background: #f0f8ff;
 }
 
 .content-heading {
   display: flex;
   position: sticky;
-  /* Sit just under sticky topbar so Start/Save never hide under chrome. */
-  top: 76px;
-  z-index: 12;
+  /* Scroll container is `.content`; full-bleed sticky bar blocks under-scroll text. */
+  top: 0;
+  z-index: 20;
   flex-wrap: wrap;
   gap: 14px 18px;
   min-height: 55px;
   align-items: flex-start;
   justify-content: space-between;
-  margin: -8px -12px 25px;
-  padding: 10px 12px 12px;
-  border-radius: 12px;
-  background: linear-gradient(
-    180deg,
-    rgba(240, 248, 255, 0.97) 0%,
-    rgba(240, 248, 255, 0.92) 70%,
-    rgba(240, 248, 255, 0.78) 100%
-  );
-  backdrop-filter: blur(10px) saturate(140%);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  margin: 0 calc(var(--content-pad-x) * -1) 25px;
+  padding: 20px var(--content-pad-x) 16px;
+  border-radius: 0;
+  background: #f0f8ff;
+  box-shadow: 0 16px 20px #f0f8ff;
+}
+
+/* Extra seal above the sticky bar (subpixel / compositor gaps). */
+.content-heading::before {
+  position: absolute;
+  top: -32px;
+  right: 0;
+  left: 0;
+  height: 32px;
+  background: #f0f8ff;
+  content: "";
+  pointer-events: none;
 }
 
 .content-heading > div:first-child {
@@ -448,7 +501,7 @@ button:disabled {
   transition:
     border-color 150ms ease,
     background 150ms ease,
-    transform 150ms ease;
+    box-shadow 150ms ease;
 }
 
 .primary-button,
@@ -463,14 +516,14 @@ button:disabled {
   background: var(--teal);
 }
 
-.primary-button:hover,
-.secondary-button:hover,
-.text-button:hover {
-  transform: translateY(-1px);
-}
-
 .primary-button:hover {
   background: #86c5d8;
+}
+
+.secondary-button:hover,
+.text-button:hover {
+  border-color: rgba(77, 150, 173, 0.55);
+  background: rgba(134, 197, 216, 0.22);
 }
 
 .primary-button.danger {
@@ -538,7 +591,7 @@ button:disabled {
   z-index: 0;
   min-width: 0;
   max-width: 100%;
-  /* Clip horizontal bleed without eating elevated hover shadows. */
+  /* Clip horizontal bleed; keep stacking stable (no hover lift/overlap). */
   overflow-x: clip;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -580,10 +633,10 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 4px;
   color: var(--muted-2);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 750;
   letter-spacing: 0.08em;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
 .input-status {
@@ -595,9 +648,9 @@ button:disabled {
 .panel-heading .latency-label,
 .panel-heading .caption-id {
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .preview-panel {
@@ -645,16 +698,15 @@ button:disabled {
   left: 10px;
   z-index: 3;
   max-width: calc(100% - 20px);
-  padding: 4px 10px;
+  padding: 5px 10px;
   border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 999px;
   color: #e8f4fa;
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0.04em;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
   pointer-events: none;
   background: rgba(12, 22, 28, 0.72);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
@@ -838,12 +890,14 @@ button:disabled {
 .input-level-label {
   min-width: 5rem;
   color: var(--muted-2);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+  line-height: 1.35;
   text-align: right;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .text-button {
@@ -895,12 +949,12 @@ button:disabled {
 }
 
 .pipeline-copy strong {
-  overflow: hidden;
   color: #2d7088;
   font-size: 14.5px;
   font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .pipeline-copy small {
@@ -920,7 +974,7 @@ button:disabled {
 }
 
 .caption-id {
-  color: #527990;
+  color: var(--muted-2);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 13px;
   letter-spacing: 0;
@@ -995,7 +1049,7 @@ button:disabled {
 }
 
 .section-number {
-  color: #527990;
+  color: var(--muted-2);
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -1050,11 +1104,11 @@ button:disabled {
 }
 
 .model-chip {
-  max-width: min(100%, 11.5rem);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 100%;
   flex: 0 1 auto;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .model-card h3 {
@@ -1068,12 +1122,29 @@ button:disabled {
 
 .model-card select {
   width: 100%;
-  padding: 9px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 9px 28px 9px 9px;
   border: 1px solid var(--line);
   border-radius: 5px;
   color: var(--text);
-  font-size: 14px;
+  font-size: 13.5px;
+  line-height: 1.35;
   background: var(--panel-muted);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+/* Higher specificity than `.model-card p` so no !important is needed. */
+.model-card p.model-recommended-hint {
+  min-height: 0;
+  margin: 8px 0 0;
+  color: var(--teal-deep);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .model-card p {
@@ -1081,13 +1152,20 @@ button:disabled {
   margin: 11px 0 13px;
 }
 
+.model-card p.model-recommended-hint + p {
+  margin-top: 6px;
+}
+
 .model-card .field {
   gap: 5px;
 }
 
 .model-card .field input {
+  min-width: 0;
+  max-width: 100%;
   padding: 8px;
   font-size: 13px;
+  text-overflow: ellipsis;
 }
 
 .model-card .field small {
@@ -1210,9 +1288,9 @@ button:disabled {
   border-color: rgba(77, 150, 173, 0.32);
   flex: 0 1 auto;
   max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .caption-lines {
@@ -1277,8 +1355,7 @@ button:disabled {
 
 @media (max-width: 1150px) {
   .content {
-    padding-right: 26px;
-    padding-left: 26px;
+    --content-pad-x: 26px;
   }
 
   .live-grid {
@@ -1325,19 +1402,27 @@ button:disabled {
     gap: 12px;
   }
 
-  /* Auto-height sticky topbar: pin actions under a safe approximate height. */
+  /* Narrow stack: sidebar above content; both share workspace scroll. */
   .content-heading {
-    top: 88px;
+    top: 0;
   }
 
   .workspace {
     grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
   }
 
   .sidebar {
     min-height: 0;
+    height: auto;
+    overflow: visible;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  .content {
+    height: auto;
+    overflow: visible;
   }
 
   .sidebar-foot {
@@ -1355,7 +1440,8 @@ button:disabled {
   font-optical-sizing: auto;
   font-variation-settings: "wght" 450;
   --ink: #183e5a;
-  --ink-soft: #527990;
+  /* AA contrast vs --cloud/#f0f8ff and white glass panels. */
+  --ink-soft: #356278;
   --cloud: #f0f8ff;
   --mist: #cae9f5;
   --sky: #afdceb;
@@ -1403,8 +1489,7 @@ summary:focus-visible {
 .app-shell {
   position: relative;
   isolation: isolate;
-  overflow-x: clip;
-  overflow-y: visible;
+  overflow: hidden;
   background:
     radial-gradient(circle at 92% 12%, rgba(252, 228, 241, 0.48), transparent 20rem),
     radial-gradient(circle at 54% -8%, rgba(202, 233, 245, 0.82), transparent 35rem), transparent;
@@ -1435,23 +1520,19 @@ summary:focus-visible {
 }
 
 .topbar {
-  height: 78px;
-  padding: 0 36px;
+  min-height: 78px;
+  height: auto;
+  padding: 10px 36px;
   border-color: var(--edge-light);
-  background: rgba(240, 248, 255, 0.86);
+  /* Solid bar — window scroll no longer carries panels under chrome. */
+  background: #f0f8ff;
   box-shadow: 0 10px 28px rgba(77, 150, 173, 0.08);
-  backdrop-filter: blur(22px) saturate(150%);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
 }
 
 .content-heading {
-  top: 78px;
-  background: linear-gradient(
-    180deg,
-    rgba(240, 248, 255, 0.98) 0%,
-    rgba(240, 248, 255, 0.94) 72%,
-    rgba(240, 248, 255, 0.8) 100%
-  );
+  top: 0;
+  background: #f0f8ff;
+  box-shadow: 0 14px 18px #f0f8ff;
 }
 
 .brand-lockup {
@@ -1534,16 +1615,14 @@ summary:focus-visible {
 }
 
 .workspace {
-  min-height: calc(100vh - 78px);
+  min-height: 0;
   grid-template-columns: 264px minmax(0, 1fr);
 }
 
 .sidebar {
-  min-height: calc(100vh - 78px);
+  min-height: 0;
   border-color: rgba(255, 255, 255, 0.86);
-  background: rgba(202, 233, 245, 0.43);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  background: rgba(202, 233, 245, 0.88);
 }
 
 .sidebar-intro {
@@ -1574,8 +1653,8 @@ summary:focus-visible {
   color: var(--ink-soft);
   font-weight: 600;
   transition:
-    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
     background 180ms ease,
+    border-color 180ms ease,
     box-shadow 180ms ease;
 }
 
@@ -1598,14 +1677,6 @@ summary:focus-visible {
     inset 0 1px rgba(255, 255, 255, 0.8);
 }
 
-.nav-tabs button:active,
-.primary-button:active,
-.secondary-button:active,
-.text-button:active {
-  transform: scale(0.975);
-  transition-duration: 100ms;
-}
-
 .nav-tabs button.active .nav-icon,
 .nav-icon {
   color: #4d96ad;
@@ -1624,7 +1695,9 @@ summary:focus-visible {
 }
 
 .content {
-  padding: 41px 45px 78px;
+  --content-pad-x: 45px;
+  --content-pad-top: 0px;
+  --content-pad-bottom: 78px;
 }
 
 .content-heading h2 {
@@ -1638,7 +1711,6 @@ summary:focus-visible {
   border-radius: 999px;
   font-weight: 690;
   transition:
-    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
     box-shadow 180ms ease,
     background 180ms ease,
     border-color 180ms ease;
@@ -1663,7 +1735,6 @@ summary:focus-visible {
   box-shadow:
     0 12px 26px rgba(77, 150, 173, 0.25),
     inset 0 1px rgba(255, 255, 255, 0.82);
-  transform: translateY(-1px);
 }
 
 .primary-button.danger {
@@ -1698,8 +1769,7 @@ summary:focus-visible {
 }
 
 .panel:hover {
-  /* Lift shadow only — avoid translate that can cover neighboring controls. */
-  z-index: 1;
+  /* Static shadow feedback only — no translate/z-index that covers neighbors. */
   box-shadow:
     var(--shadow-lift),
     inset 0 1px rgba(255, 255, 255, 0.92);
@@ -1790,13 +1860,11 @@ summary:focus-visible {
 }
 
 .model-card {
-  transition:
-    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    box-shadow 180ms ease;
+  transition: box-shadow 180ms ease;
 }
 
 .model-card:hover {
-  /* Keep cards in flow; slight shadow lift only to avoid covering adjacent selects. */
+  /* Static shadow only — stay in flow, no transform motion. */
   box-shadow:
     0 10px 22px rgba(77, 150, 173, 0.12),
     inset 0 1px rgba(255, 255, 255, 0.85);
@@ -1831,18 +1899,9 @@ summary:focus-visible {
   .field input:not([type="color"]),
   .field select,
   .field textarea,
-  .model-card select {
-    transition-duration: 120ms;
-  }
-
-  .nav-tabs button:active,
-  .primary-button:active,
-  .secondary-button:active,
-  .text-button:active,
-  .model-card:hover,
-  .panel:hover {
-    transform: none;
-    z-index: 0;
+  .model-card select,
+  .debug-summary {
+    transition-duration: 0.01ms;
   }
 }
 
@@ -2030,10 +2089,13 @@ summary:focus-visible {
   border: 1px solid rgba(255, 255, 255, 0.7);
   border-radius: 999px;
   color: var(--muted-2);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 750;
   letter-spacing: 0.06em;
+  line-height: 1.35;
   text-transform: uppercase;
+  overflow-wrap: anywhere;
+  white-space: normal;
   background: rgba(175, 220, 235, 0.85);
 }
 
@@ -2103,7 +2165,9 @@ summary:focus-visible {
 .download-one-button {
   min-width: 112px;
   padding: 10px 14px;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .debug-panel details {
@@ -2136,6 +2200,7 @@ summary:focus-visible {
 }
 
 .debug-summary::after {
+  /* Static chevron placement only — no animated transform motion. */
   position: absolute;
   top: 50%;
   right: 22px;
@@ -2143,13 +2208,13 @@ summary:focus-visible {
   font-size: 14px;
   font-weight: 700;
   line-height: 1;
-  content: "▾";
-  transform: translateY(-50%) rotate(-90deg);
-  transition: transform 150ms ease;
+  content: "▸";
+  transform: translateY(-50%);
 }
 
 .debug-panel details[open] .debug-summary::after {
-  transform: translateY(-50%) rotate(0deg);
+  content: "▾";
+  transform: translateY(-50%);
 }
 
 .debug-summary-title {
@@ -2213,10 +2278,12 @@ summary:focus-visible {
 
 .debug-stat-label {
   color: var(--muted-2);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 750;
   letter-spacing: 0.08em;
+  line-height: 1.35;
   text-transform: uppercase;
+  overflow-wrap: anywhere;
 }
 
 .debug-stat-card strong {
@@ -2231,8 +2298,8 @@ summary:focus-visible {
 .debug-path {
   min-width: 0;
   color: var(--muted);
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -2280,8 +2347,8 @@ summary:focus-visible {
   min-width: 0;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
   word-break: break-word;
   white-space: pre-wrap;
@@ -2331,9 +2398,11 @@ summary:focus-visible {
   justify-content: space-between;
   gap: 6px 10px;
   color: var(--muted-2);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.04em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .debug-event-kind {
@@ -2365,14 +2434,17 @@ summary:focus-visible {
   align-items: center;
   gap: 6px;
   max-width: 100%;
-  padding: 3px 8px;
+  padding: 4px 8px;
   border: 1px solid rgba(134, 197, 216, 0.42);
   border-radius: 999px;
   color: var(--muted-2);
-  font-size: 11.5px;
+  font-size: 13px;
   font-weight: 750;
   letter-spacing: 0.05em;
+  line-height: 1.35;
   text-transform: uppercase;
+  overflow-wrap: anywhere;
+  white-space: normal;
   background: rgba(255, 255, 255, 0.6);
 }
 
@@ -2410,6 +2482,91 @@ summary:focus-visible {
   list-style: none;
 }
 
+.debug-verbose-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 4px;
+  color: var(--ink, #173f5f);
+  font-size: 13.5px;
+  font-weight: 650;
+  cursor: pointer;
+  user-select: none;
+}
+
+.debug-verbose-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--teal-deep, #2f7f97);
+}
+
+.debug-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.debug-stage-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(134, 197, 216, 0.4);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.debug-stage-card.is-error {
+  border-color: rgba(178, 72, 93, 0.42);
+  background: rgba(178, 72, 93, 0.06);
+}
+
+.debug-stage-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 10px;
+  margin-bottom: 8px;
+}
+
+.debug-stage-card-head strong {
+  color: var(--ink, #173f5f);
+  font-size: 13.5px;
+  font-weight: 720;
+}
+
+.debug-stage-ms {
+  color: var(--teal-deep, #2f7f97);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.debug-stage-card .debug-kv-list {
+  margin: 0;
+}
+
+.debug-stage-card .download-empty {
+  margin: 0;
+}
+
+.debug-subsection-title {
+  margin: 4px 0 8px;
+  color: var(--muted-2, #356278);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+.debug-event-stage {
+  border-left-color: rgba(47, 127, 151, 0.8);
+}
+
 .debug-error-list li {
   min-width: 0;
   padding: 10px 12px;
@@ -2423,6 +2580,10 @@ summary:focus-visible {
 }
 
 @media (max-width: 1100px) {
+  .debug-stage-grid {
+    grid-template-columns: 1fr;
+  }
+
   .download-row {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2467,4 +2628,102 @@ summary:focus-visible {
   .heading-actions .secondary-button {
     flex: 1 1 auto;
   }
+}
+
+/* ==========================================================================
+   Per-stage debug mode (utterance rows) — append-only block
+   Owned by per-stage-debug-mode worker. Do not reformat body CSS above.
+   ========================================================================== */
+
+.debug-utterance-list {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.debug-utterance {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(47, 127, 151, 0.22);
+  border-radius: 14px;
+  background: rgba(47, 127, 151, 0.06);
+}
+
+.debug-utterance.is-error {
+  border-color: rgba(178, 72, 93, 0.32);
+  background: rgba(178, 72, 93, 0.06);
+}
+
+.debug-utterance-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.debug-utterance-head strong {
+  font-size: 12.5px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.debug-stage-row-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.debug-stage-row {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(15, 54, 72, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.debug-stage-row.is-error {
+  border-color: rgba(178, 72, 93, 0.28);
+  background: rgba(178, 72, 93, 0.08);
+}
+
+.debug-stage-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.debug-stage-row-main .debug-event-kind {
+  font-weight: 750;
+}
+
+.debug-stage-status {
+  color: var(--muted-2, #356278);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.debug-stage-row-output {
+  display: block;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.debug-stage-row-meta {
+  display: block;
+  opacity: 0.85;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
