@@ -65,6 +65,14 @@ export const ModelCard = ({
   const localized = selected ? modelCopy[selected.id] : undefined;
   const selectedDescription =
     localized?.description && selected ? t(localized.description) : selected?.description;
+  const selectedLabel = selected
+    ? localized?.label
+      ? t(localized.label)
+      : selected.label
+    : undefined;
+  const selectedTitle = selectedLabel
+    ? `${selectedLabel}${selected?.recommended ? ` · ${t("common.recommended")}` : ""}`
+    : undefined;
 
   return (
     <div className="model-card">
@@ -75,18 +83,27 @@ export const ModelCard = ({
         </div>
         <span className="model-chip">{selected?.id ?? t("common.notSelected")}</span>
       </div>
-      <select value={config.models[family]} onChange={(event) => onChange(event.target.value)}>
+      <select
+        value={config.models[family]}
+        title={selectedTitle}
+        onChange={(event) => onChange(event.target.value)}
+      >
         {models[family].map((entry) => {
           const copy = modelCopy[entry.id];
           const label = copy?.label ? t(copy.label) : entry.label;
+          // Keep the closed <select> readable in 3-column cards: full "· Recommended"
+          // truncates mid-word ("Recommende") at ~340px. Star marks recommended models.
           return (
-            <option value={entry.id} key={entry.id}>
+            <option value={entry.id} key={entry.id} title={label}>
               {label}
-              {entry.recommended ? ` · ${t("common.recommended")}` : ""}
+              {entry.recommended ? " ★" : ""}
             </option>
           );
         })}
       </select>
+      {selected?.recommended ? (
+        <p className="model-recommended-hint">{t("common.recommended")}</p>
+      ) : null}
       <p>{selectedDescription}</p>
       {family === "normalizer" && config.models.normalizer === "azookey-rust" ? (
         <>
@@ -97,6 +114,7 @@ export const ModelCard = ({
           >
             <input
               placeholder={t("settings.azooPathPlaceholder")}
+              title={t("settings.azooPathPlaceholder")}
               value={config.models.paths["azookey-user-dictionary"] ?? ""}
               onChange={(event) => onPathChange("azookey-user-dictionary", event.target.value)}
             />
@@ -108,6 +126,7 @@ export const ModelCard = ({
           >
             <input
               placeholder={t("settings.azooPathPlaceholder")}
+              title={t("settings.azooPathPlaceholder")}
               value={config.models.paths["azookey-learning-memory"] ?? ""}
               onChange={(event) => onPathChange("azookey-learning-memory", event.target.value)}
             />

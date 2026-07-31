@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { bridge } from "../core/bridge";
-import { createDefaultConfig } from "../core/defaults";
 import { mergeCaptionPayload } from "../core/caption-updates";
+import { createDefaultConfig } from "../core/defaults";
 import type { AppConfig, CaptionPayload } from "../core/types";
 import { OverlayView } from "./CaptionOverlay";
 import { createPreviewCaption } from "./captions";

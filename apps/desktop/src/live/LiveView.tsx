@@ -112,6 +112,8 @@ export const LiveView = ({
         ? t("live.inputWaiting")
         : t("live.disconnected");
 
+  // Re-bind when overlay design size changes so aspect-ratio restyle is measured.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: design size is a re-measure trigger, not read in the body
   useEffect(() => {
     const node = stageRef.current;
     if (!node || typeof ResizeObserver === "undefined") {
@@ -133,7 +135,6 @@ export const LiveView = ({
     const rect = node.getBoundingClientRect();
     applySize(rect.width, rect.height);
     return () => observer.disconnect();
-    // Re-bind when overlay design size changes so aspect-ratio restyle is measured.
   }, [overlayHeight, overlayWidth]);
 
   return (
