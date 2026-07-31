@@ -3,7 +3,7 @@ use crate::config::AppConfig;
 use crate::gateway;
 use crate::models::{catalog, ModelCatalog};
 use crate::native_output::{NativeOutputHandle, OverlayFrame};
-use crate::pipeline::CaptionPayload;
+use crate::pipeline::{CaptionPayload, PipelineStageEvent};
 use crate::state::{AppState, RuntimeStatus};
 use base64::Engine;
 use serde::Deserialize;
@@ -100,7 +100,14 @@ pub async fn transcribe_audio_chunk(
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     // Stage 1: ASR + normalize only. Return as soon as source text is ready so
     // the frontend chunkQueue is not blocked on translation latency.
-    match state.pipeline.recognize_source(&config, wav).await {
+    // Each stage is emitted immediately via on_stage (do not wait for full pipeline).
+    let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(3);
+    let app_for_stages = app.clone();
+    let config_for_stages = config.clone();
+    let mut on_stage = move |stage: &PipelineStageEvent| {
+        emit_pipeline_stage(&app_for_stages, &config_for_stages, stage);
+    };
+    match state.pipeline.recognize_source(&config, wav, &mut stages, &mut on_stage).await {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state);
             app.emit("caption:update", &partial)
@@ -113,8 +120,19 @@ pub async fn transcribe_audio_chunk(
             let config_for_translate = config.clone();
             let partial_for_translate = partial.clone();
             tauri::async_runtime::spawn(async move {
+                let mut translate_stages: Vec<PipelineStageEvent> = Vec::with_capacity(1);
+                let app_for_stage = app_for_translate.clone();
+                let config_for_stage = config_for_translate.clone();
+                let mut on_translate_stage = move |stage: &PipelineStageEvent| {
+                    emit_pipeline_stage(&app_for_stage, &config_for_stage, stage);
+                };
                 match pipeline
-                    .complete_translation(&config_for_translate, partial_for_translate)
+                    .complete_translation(
+                        &config_for_translate,
+                        partial_for_translate,
+                        &mut translate_stages,
+                        &mut on_translate_stage,
+                    )
                     .await
                 {
                     Ok(final_caption) => {
@@ -122,6 +140,7 @@ pub async fn transcribe_audio_chunk(
                     }
                     Err(error) => {
                         // Keep the already-shown source caption; only surface last_error.
+                        // translate stage event was already emitted via on_stage.
                         log::warn!("translation failed for progressive caption: {error}");
                         let detail = error.to_string();
                         if let Some(app_state) = app_for_translate.try_state::<AppState>() {
@@ -145,6 +164,7 @@ pub async fn transcribe_audio_chunk(
         }
         Ok(None) => {
             // No speech in this chunk — keep capture healthy and do not toast.
+            // ASR (and maybe normalize) stage events were already emitted.
             mark_backend_healthy(&app, &state);
             Ok(CaptionPayload {
                 id: format!("silence-{}", chrono_like_millis()),
@@ -162,6 +182,7 @@ pub async fn transcribe_audio_chunk(
         }
         Err(error) => {
             let detail = error.to_string();
+            // Failed stage event was already emitted via on_stage.
             // Keep the session in "capturing" so the frontend Stop control remains
             // available. Surface the concrete failure through last_error only.
             let next_status = {
@@ -181,6 +202,38 @@ pub async fn transcribe_audio_chunk(
             }
             Err(detail)
         }
+    }
+}
+
+/// Emit one stage immediately for DebugPanel progressive rows.
+/// Always emits `pipeline:stage`; raises log detail when `debug.verboseLogging`.
+fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStageEvent) {
+    if config.debug.verbose_logging {
+        log::info!(
+            target: "pipeline_stage",
+            "stage={} model={} ok={} duration_ms={} utterance={} in={} out={} err={:?}",
+            stage.stage,
+            stage.model_id,
+            stage.ok,
+            stage.duration_ms,
+            stage.utterance_id,
+            stage.input_snippet,
+            stage.output_text,
+            stage.error
+        );
+    } else {
+        log::info!(
+            target: "pipeline_stage",
+            "stage={} model={} ok={} duration_ms={} utterance={}",
+            stage.stage,
+            stage.model_id,
+            stage.ok,
+            stage.duration_ms,
+            stage.utterance_id
+        );
+    }
+    if let Err(error) = app.emit("pipeline:stage", stage) {
+        log::warn!("could not emit pipeline:stage: {error}");
     }
 }
 
@@ -320,6 +373,7 @@ pub async fn get_debug_info(
     let status = state.status.lock().map_err(|_| "status lock poisoned".to_string())?.clone();
     let app_data = app.path().app_data_dir().unwrap_or_default();
     let config_dir = app.path().app_config_dir().unwrap_or_default();
+    let log_dir = app.path().app_log_dir().unwrap_or_default();
     let models_dir = app_data.join("models");
     let models: Vec<_> = crate::model_runtime::MODEL_RUNTIME_SPECS
         .iter()
@@ -352,11 +406,17 @@ pub async fn get_debug_info(
         "modelsDir": models_dir.display().to_string(),
         "configDir": config_dir.display().to_string(),
         "appDataDir": app_data.display().to_string(),
+        "logDir": log_dir.display().to_string(),
         "models": models,
         "modelSummary": {
             "ready": ready_models,
             "total": total_models,
             "allReady": ready_models == total_models && total_models > 0,
+        },
+        "debug": {
+            "verboseLogging": config.debug.verbose_logging,
+            "logDir": log_dir.display().to_string(),
+            "logFilePrefix": "kotoba-beacon",
         },
         "env": {
             "platform": std::env::consts::OS,

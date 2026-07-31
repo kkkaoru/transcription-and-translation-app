@@ -133,6 +133,14 @@ fn default_caption_y_percent() -> f32 {
     86.0
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugConfig {
+    /// When true, backend stage logs include truncated input/output samples.
+    #[serde(default)]
+    pub verbose_logging: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -142,6 +150,8 @@ pub struct AppConfig {
     pub models: ModelSelection,
     pub audio: AudioConfig,
     pub overlay: OverlayConfig,
+    #[serde(default)]
+    pub debug: DebugConfig,
 }
 
 impl Default for AppConfig {
@@ -168,7 +178,9 @@ impl Default for AppConfig {
                 // Keep in sync with apps/desktop/src/core/defaults.ts DEFAULT_AUDIO_CHUNK_MS.
                 // ~900ms reduces time-to-first-subtitle while staying long enough for Parapper.
                 chunk_ms: 900,
-                silence_gate_db: -55.0,
+                // Match frontend DEFAULT_SILENCE_GATE_DB: drop ambient ~-54 dBFS
+                // so quiet raw-capture noise never hits Parapper.
+                silence_gate_db: -50.0,
             },
             overlay: OverlayConfig {
                 width: 1_280,
@@ -183,6 +195,7 @@ impl Default for AppConfig {
                 source: CaptionTextStyle::default_source(),
                 translation: CaptionTextStyle::default_translation(),
             },
+            debug: DebugConfig::default(),
         }
     }
 }
@@ -325,7 +338,105 @@ mod tests {
 
     #[test]
     fn default_config_is_valid() {
-        assert!(AppConfig::default().validate().is_ok());
+        let config = AppConfig::default();
+        assert!(config.validate().is_ok());
+        assert!(!config.debug.verbose_logging);
+    }
+
+    #[test]
+    fn debug_config_defaults_when_missing_from_json() {
+        // Use r## so JSON color values like "#ffffff" do not terminate the raw string.
+        let raw = r##"{
+            "schemaVersion": 1,
+            "language": { "source": "ja", "target": "en" },
+            "endpoint": {
+                "mode": "local",
+                "baseUrl": "http://127.0.0.1:8765",
+                "transcriptionPath": "/v1/audio/transcriptions",
+                "chatPath": "/v1/chat/completions",
+                "timeoutMs": 18000
+            },
+            "models": {
+                "asr": "parapper-ja",
+                "normalizer": "azookey-rust",
+                "translator": "hy-mt2-1.8b-gguf",
+                "paths": {}
+            },
+            "audio": {
+                "inputDeviceId": "default",
+                "sampleRate": 16000,
+                "chunkMs": 900,
+                "silenceGateDb": -55.0
+            },
+            "overlay": {
+                "width": 1280,
+                "height": 720,
+                "x": 0,
+                "y": 0,
+                "order": "source-first",
+                "gapPx": 8.0,
+                "safeAreaPx": 42.0,
+                "captionXPercent": 50.0,
+                "captionYPercent": 86.0,
+                "source": {
+                    "fontFamily": "Noto Sans JP",
+                    "fontSizePx": 36.0,
+                    "fontWeight": 700,
+                    "color": "#ffffff",
+                    "opacity": 1.0,
+                    "letterSpacingPx": 0.2,
+                    "lineHeight": 1.3,
+                    "textAlign": "center",
+                    "maxWidthPercent": 86.0,
+                    "cullingEnabled": true,
+                    "cullingColor": "#061018",
+                    "cullingWidthPx": 3.0,
+                    "cullingOpacity": 0.92,
+                    "shadowEnabled": true,
+                    "shadowColor": "#000000",
+                    "shadowBlurPx": 8.0,
+                    "shadowOffsetX": 0.0,
+                    "shadowOffsetY": 3.0,
+                    "backgroundEnabled": false,
+                    "backgroundColor": "#061018",
+                    "backgroundOpacity": 0.72,
+                    "paddingX": 14.0,
+                    "paddingY": 7.0,
+                    "borderRadius": 9.0
+                },
+                "translation": {
+                    "fontFamily": "Noto Sans JP",
+                    "fontSizePx": 29.0,
+                    "fontWeight": 650,
+                    "color": "#bfe8ff",
+                    "opacity": 1.0,
+                    "letterSpacingPx": 0.2,
+                    "lineHeight": 1.3,
+                    "textAlign": "center",
+                    "maxWidthPercent": 86.0,
+                    "cullingEnabled": true,
+                    "cullingColor": "#07121d",
+                    "cullingWidthPx": 3.0,
+                    "cullingOpacity": 0.92,
+                    "shadowEnabled": true,
+                    "shadowColor": "#000000",
+                    "shadowBlurPx": 8.0,
+                    "shadowOffsetX": 0.0,
+                    "shadowOffsetY": 3.0,
+                    "backgroundEnabled": false,
+                    "backgroundColor": "#061018",
+                    "backgroundOpacity": 0.72,
+                    "paddingX": 14.0,
+                    "paddingY": 7.0,
+                    "borderRadius": 9.0
+                }
+            }
+        }"##;
+        let config: AppConfig = serde_json::from_str(raw).expect("parse config without debug");
+        assert!(!config.debug.verbose_logging);
+        let with_debug = r#"{ "verboseLogging": true }"#;
+        let debug: super::DebugConfig = serde_json::from_str(with_debug).expect("parse debug");
+        assert!(debug.verbose_logging);
     }
 
     #[test]

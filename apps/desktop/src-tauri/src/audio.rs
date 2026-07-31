@@ -94,4 +94,33 @@ mod tests {
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(&wav[44..], &[0, 0, 0, 0]);
     }
+
+    #[test]
+    fn wav_header_advertises_mono_16khz_pcm16() {
+        // Frontend makeAudioChunk always resamples to 16 kHz mono even when the
+        // AudioContext reports sr=48000 in diagnostics.
+        let wav = pcm_base64_to_wav(&sample_chunk(900)).expect("valid chunk");
+        let channels = u16::from_le_bytes([wav[22], wav[23]]);
+        let sample_rate = u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]);
+        let bits_per_sample = u16::from_le_bytes([wav[34], wav[35]]);
+        assert_eq!(channels, 1);
+        assert_eq!(sample_rate, 16_000);
+        assert_eq!(bits_per_sample, 16);
+    }
+
+    #[test]
+    fn silent_pcm_chunk_still_builds_valid_wav() {
+        // Near-silent / all-zero PCM must not fail WAV construction — the
+        // pipeline soft-skips empty ASR (transcript_missing → Ok(None)).
+        let pcm = [0_u8; 3200]; // 100 ms mono 16 kHz PCM16 silence
+        let chunk = AudioChunk {
+            pcm_base64: base64::engine::general_purpose::STANDARD.encode(pcm),
+            sample_rate: 16_000,
+            channels: 1,
+            duration_ms: 100,
+        };
+        let wav = pcm_base64_to_wav(&chunk).expect("silent chunk is valid");
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(wav.len(), 44 + pcm.len());
+    }
 }

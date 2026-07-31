@@ -4,7 +4,7 @@ use reqwest::multipart;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -43,6 +43,28 @@ pub struct CaptionPayload {
     pub is_final: bool,
     pub confidence: Option<f32>,
 }
+
+/// Fine-grained per-stage timing + I/O sample for debug mode / latency diagnosis.
+/// Stages are independent: `asr` (parapper), `normalize` (azookey/zenz), `translate` (HY-MT2).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineStageEvent {
+    /// `asr` | `normalize` | `translate`
+    pub stage: &'static str,
+    pub utterance_id: String,
+    /// Selected model id for this stage (e.g. `parapper-ja`, `azookey-rust`, `hy-mt2-1.8b-gguf`).
+    pub model_id: String,
+    /// Short input sample (text, or audio size meta for ASR).
+    pub input_snippet: String,
+    /// Short output sample when the stage produced text.
+    pub output_text: String,
+    pub duration_ms: u64,
+    pub ok: bool,
+    pub error: Option<String>,
+    pub at: u64,
+}
+
+const STAGE_SNIPPET_CHARS: usize = 160;
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
@@ -101,55 +123,214 @@ impl Pipeline {
     /// Returns `Ok(None)` when the chunk contained no usable speech (silence,
     /// noise-only, or Parapper `transcript_missing`). Callers must treat that as
     /// a soft skip — not a capture/session failure.
+    ///
+    /// `stages` is filled with independent ASR / normalizer events (including
+    /// soft skips and failures) so debug mode can show per-stage latency.
+    ///
+    /// `on_stage` is invoked as soon as each stage completes so the UI can render
+    /// progressive latency rows without waiting for the rest of the pipeline.
     pub async fn recognize_source(
         &self,
         config: &AppConfig,
         wav: Vec<u8>,
+        stages: &mut Vec<PipelineStageEvent>,
+        on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
     ) -> Result<Option<CaptionPayload>, PipelineError> {
         let started_at = now_millis();
+        let utterance_id = Uuid::new_v4().to_string();
+        let audio_snippet = format!("wavBytes={}", wav.len());
+        let asr_model = config.models.asr.as_str();
+        let normalize_model = config.models.normalizer.as_str();
+
+        let asr_started = Instant::now();
         let recognized = match self.transcribe(config, wav).await {
-            Ok(text) if text.trim().is_empty() => return Ok(None),
-            Ok(text) => text,
-            Err(PipelineError::MissingText) => return Ok(None),
-            Err(error) => return Err(error),
+            Ok(text) if text.trim().is_empty() => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "asr",
+                        &utterance_id,
+                        asr_model,
+                        &audio_snippet,
+                        "",
+                        elapsed_ms(asr_started),
+                        true,
+                        None,
+                    ),
+                );
+                return Ok(None);
+            }
+            Ok(text) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "asr",
+                        &utterance_id,
+                        asr_model,
+                        &audio_snippet,
+                        &text,
+                        elapsed_ms(asr_started),
+                        true,
+                        None,
+                    ),
+                );
+                text
+            }
+            Err(PipelineError::MissingText) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "asr",
+                        &utterance_id,
+                        asr_model,
+                        &audio_snippet,
+                        "",
+                        elapsed_ms(asr_started),
+                        true,
+                        None,
+                    ),
+                );
+                return Ok(None);
+            }
+            Err(error) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "asr",
+                        &utterance_id,
+                        asr_model,
+                        &audio_snippet,
+                        "",
+                        elapsed_ms(asr_started),
+                        false,
+                        Some(error.to_string()),
+                    ),
+                );
+                return Err(error);
+            }
         };
+
         // AzooKey is sync/local and fast; zenz is still required before display so
         // source_text is readable. Never wait for translation here.
-        let normalized = self.normalize(config, &recognized).await?;
+        let normalize_started = Instant::now();
+        let normalized = match self.normalize(config, &recognized).await {
+            Ok(text) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "normalize",
+                        &utterance_id,
+                        normalize_model,
+                        &recognized,
+                        &text,
+                        elapsed_ms(normalize_started),
+                        true,
+                        None,
+                    ),
+                );
+                text
+            }
+            Err(error) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "normalize",
+                        &utterance_id,
+                        normalize_model,
+                        &recognized,
+                        "",
+                        elapsed_ms(normalize_started),
+                        false,
+                        Some(error.to_string()),
+                    ),
+                );
+                return Err(error);
+            }
+        };
         if normalized.trim().is_empty() {
             return Ok(None);
         }
-        Ok(Some(source_ready_caption(config, normalized, started_at)))
+        Ok(Some(source_ready_caption(config, normalized, started_at, utterance_id)))
     }
 
     /// Fill `translation_text` for an existing caption, preserving the same `id`
     /// so progressive UI updates stay correlated with one audio chunk.
+    ///
+    /// Appends a `translate` stage event to `stages` (success or failure) and
+    /// invokes `on_stage` immediately when the translator finishes.
     pub async fn complete_translation(
         &self,
         config: &AppConfig,
-        mut caption: CaptionPayload,
+        caption: CaptionPayload,
+        stages: &mut Vec<PipelineStageEvent>,
+        on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
     ) -> Result<CaptionPayload, PipelineError> {
-        let translation = self.translate(config, &caption.source_text).await?;
-        caption.translation_text = clean_model_text(&translation);
-        caption.received_at = now_millis();
-        caption.stage = "translation";
-        caption.sequence = 1;
-        caption.is_final = true;
-        Ok(caption)
+        let translate_started = Instant::now();
+        let source = caption.source_text.clone();
+        let utterance_id = caption.id.clone();
+        let translate_model = config.models.translator.as_str();
+        match self.translate(config, &source).await {
+            Ok(translation) => {
+                let finished = with_translation(caption, &translation, now_millis());
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "translate",
+                        &utterance_id,
+                        translate_model,
+                        &source,
+                        &finished.translation_text,
+                        elapsed_ms(translate_started),
+                        true,
+                        None,
+                    ),
+                );
+                Ok(finished)
+            }
+            Err(error) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "translate",
+                        &utterance_id,
+                        translate_model,
+                        &source,
+                        "",
+                        elapsed_ms(translate_started),
+                        false,
+                        Some(error.to_string()),
+                    ),
+                );
+                Err(error)
+            }
+        }
     }
 
     /// Full pipeline (ASR → normalize → translate). Prefer staged
     /// `recognize_source` + `complete_translation` for live capture so source
     /// display is not blocked by translation latency.
+    ///
+    /// Kept for non-live / batch callers; live capture must not use this path.
+    #[allow(dead_code)]
     pub async fn process(
         &self,
         config: &AppConfig,
         wav: Vec<u8>,
+        stages: &mut Vec<PipelineStageEvent>,
+        on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
     ) -> Result<Option<CaptionPayload>, PipelineError> {
-        let Some(partial) = self.recognize_source(config, wav).await? else {
+        let Some(partial) = self.recognize_source(config, wav, stages, on_stage).await? else {
             return Ok(None);
         };
-        Ok(Some(self.complete_translation(config, partial).await?))
+        Ok(Some(self.complete_translation(config, partial, stages, on_stage).await?))
     }
 
     async fn transcribe(&self, config: &AppConfig, wav: Vec<u8>) -> Result<String, PipelineError> {
@@ -288,13 +469,15 @@ impl Pipeline {
 
 /// Build the intermediate caption emitted as soon as normalized ASR is ready.
 /// `translation_text` is intentionally empty until `complete_translation`.
+/// `id` must be stable across progressive stages (ASR/normalize → translate).
 pub fn source_ready_caption(
     config: &AppConfig,
     source_text: String,
     started_at: u64,
+    id: String,
 ) -> CaptionPayload {
     CaptionPayload {
-        id: Uuid::new_v4().to_string(),
+        id,
         source_text,
         translation_text: String::new(),
         source_language: config.language.source.clone(),
@@ -306,6 +489,60 @@ pub fn source_ready_caption(
         is_final: false,
         confidence: None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_event(
+    stage: &'static str,
+    utterance_id: &str,
+    model_id: &str,
+    input: &str,
+    output: &str,
+    duration_ms: u64,
+    ok: bool,
+    error: Option<String>,
+) -> PipelineStageEvent {
+    PipelineStageEvent {
+        stage,
+        utterance_id: utterance_id.to_string(),
+        model_id: model_id.to_string(),
+        input_snippet: snippet(input),
+        output_text: snippet(output),
+        duration_ms,
+        ok,
+        error,
+        at: now_millis(),
+    }
+}
+
+/// Emit + retain a stage event as soon as the stage finishes.
+fn record_stage(
+    stages: &mut Vec<PipelineStageEvent>,
+    on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
+    event: PipelineStageEvent,
+) {
+    on_stage(&event);
+    stages.push(event);
+}
+
+fn snippet(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= STAGE_SNIPPET_CHARS {
+        return trimmed.to_string();
+    }
+    let mut out = String::new();
+    for (index, ch) in trimmed.chars().enumerate() {
+        if index >= STAGE_SNIPPET_CHARS {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Apply a finished translation onto an existing progressive caption (same id).
@@ -350,9 +587,14 @@ fn is_no_speech_response(status: u16, body: &str) -> bool {
     }
     let lower = body.to_ascii_lowercase();
     lower.contains("transcript_missing")
+        || lower.contains("without a final transcript")
+        || lower.contains("no final transcript")
         || lower.contains("no transcript")
         || lower.contains("empty transcript")
         || lower.contains("\"text\":\"\"")
+        || lower.contains("\"text\": \"\"")
+        || lower.contains("\"transcript\":\"\"")
+        || lower.contains("\"transcript\": \"\"")
 }
 
 fn now_millis() -> u64 {
@@ -365,37 +607,73 @@ fn now_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_model_text, is_no_speech_response, source_ready_caption, with_translation,
-        CaptionPayload,
+        clean_model_text, is_no_speech_response, record_stage, snippet, source_ready_caption,
+        stage_event, with_translation, CaptionPayload, PipelineStageEvent, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
 
     #[test]
     fn detects_parapper_no_speech_payloads() {
-        assert!(is_no_speech_response(
-            422,
-            r#"{"error":{"code":"transcript_missing","message":"Parapper completed without a final transcript"}}"#
-        ));
+        // Exact user toast payload body from live capture:
+        // inference returned HTTP 422: {"error":{"code":"transcript_missing",...}}
+        let exact = r#"{"error":{"code":"transcript_missing","message":"Parapper completed without a final transcript"}}"#;
+        assert!(is_no_speech_response(422, exact));
+        // Message-only variants (code field missing / differently shaped bodies).
+        assert!(is_no_speech_response(422, "Parapper completed without a final transcript"));
+        assert!(is_no_speech_response(404, r#"{"error":{"message":"no transcript"}}"#));
+        assert!(is_no_speech_response(204, r#"{"text":""}"#));
+        assert!(is_no_speech_response(422, r#"{"text": ""}"#));
+        // Real faults must still fail the pipeline.
+        assert!(!is_no_speech_response(500, exact));
         assert!(!is_no_speech_response(500, r#"{"error":{"code":"boom"}}"#));
         assert!(!is_no_speech_response(422, r#"{"error":{"code":"invalid_audio"}}"#));
+        assert!(!is_no_speech_response(422, r#"{"error":{"code":"parapper_timeout"}}"#));
+    }
+
+    #[test]
+    fn empty_transcript_from_no_speech_is_soft_skip_signal() {
+        // transcribe() maps transcript_missing → Ok("") and recognize_source
+        // turns empty ASR text into Ok(None). Keep the classification pure so
+        // the command layer can return a silence caption without last_error.
+        let body = r#"{"error":{"code":"transcript_missing","message":"Parapper completed without a final transcript"}}"#;
+        assert!(is_no_speech_response(422, body));
+        // Successful empty JSON must also soft-skip (not a hard HTTP error path).
+        assert!(is_no_speech_response(422, r#"{"text":""}"#));
+        assert!(is_no_speech_response(204, r#"{"transcript":""}"#));
+    }
+
+    #[test]
+    fn pipeline_error_http_display_includes_body_for_frontend_matching() {
+        // Frontend defense-in-depth matches this Display form when a no-speech
+        // response somehow leaks past recognize_source as Err.
+        let error = super::PipelineError::Http {
+            status: 422,
+            body: r#"{"error":{"code":"transcript_missing","message":"Parapper completed without a final transcript"}}"#
+                .into(),
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("inference returned HTTP 422"));
+        assert!(rendered.contains("transcript_missing"));
+        assert!(rendered.contains("Parapper completed without a final transcript"));
     }
 
     #[test]
     fn source_ready_caption_has_empty_translation_and_stable_identity_fields() {
         let config = AppConfig::default();
-        let partial = source_ready_caption(&config, "こんにちは".into(), 1_700_000_000_000);
+        let partial =
+            source_ready_caption(&config, "こんにちは".into(), 1_700_000_000_000, "utt-1".into());
         assert_eq!(partial.source_text, "こんにちは");
         assert!(partial.translation_text.is_empty(), "translation must not block source emit");
         assert_eq!(partial.source_language, config.language.source);
         assert_eq!(partial.target_language, config.language.target);
         assert_eq!(partial.started_at, 1_700_000_000_000);
-        assert!(!partial.id.is_empty());
+        assert_eq!(partial.id, "utt-1");
     }
 
     #[test]
     fn progressive_translation_keeps_the_same_caption_id() {
         let config = AppConfig::default();
-        let partial = source_ready_caption(&config, "こんにちは".into(), 42);
+        let partial = source_ready_caption(&config, "こんにちは".into(), 42, "utt-42".into());
         assert_eq!(partial.stage, "source");
         assert_eq!(partial.sequence, 0);
         assert!(!partial.is_final);
@@ -438,5 +716,73 @@ mod tests {
         assert_eq!(value["isFinal"], true);
         assert_eq!(value["startedAt"], 1);
         assert_eq!(value["receivedAt"], 2);
+    }
+
+    #[test]
+    fn pipeline_stage_event_serializes_camel_case_for_frontend() {
+        let event = PipelineStageEvent {
+            stage: "asr",
+            utterance_id: "u1".into(),
+            model_id: "parapper-ja".into(),
+            input_snippet: "wavBytes=12".into(),
+            output_text: "こんにちは".into(),
+            duration_ms: 42,
+            ok: true,
+            error: None,
+            at: 99,
+        };
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["stage"], "asr");
+        assert_eq!(value["utteranceId"], "u1");
+        assert_eq!(value["modelId"], "parapper-ja");
+        assert_eq!(value["inputSnippet"], "wavBytes=12");
+        assert_eq!(value["outputText"], "こんにちは");
+        assert_eq!(value["durationMs"], 42);
+        assert_eq!(value["ok"], true);
+        assert!(value["error"].is_null());
+        assert_eq!(value["at"], 99);
+    }
+
+    #[test]
+    fn stage_event_helper_truncates_snippets_and_records_failures() {
+        let long = "あ".repeat(STAGE_SNIPPET_CHARS + 20);
+        let event = stage_event(
+            "normalize",
+            "utt",
+            "azookey-rust",
+            &long,
+            "out",
+            7,
+            false,
+            Some("boom".into()),
+        );
+        assert_eq!(event.stage, "normalize");
+        assert_eq!(event.model_id, "azookey-rust");
+        assert_eq!(event.duration_ms, 7);
+        assert!(!event.ok);
+        assert_eq!(event.error.as_deref(), Some("boom"));
+        assert!(event.input_snippet.ends_with('…'));
+        assert_eq!(snippet(" short "), "short");
+        assert_eq!(event.output_text, "out");
+    }
+
+    #[test]
+    fn record_stage_notifies_callback_before_storing() {
+        let mut stages = Vec::new();
+        let mut seen = Vec::new();
+        let event =
+            stage_event("translate", "u2", "hy-mt2-1.8b-gguf", "源", "Hello", 11, true, None);
+        record_stage(
+            &mut stages,
+            &mut |stage| {
+                seen.push(stage.stage);
+                assert_eq!(stage.model_id, "hy-mt2-1.8b-gguf");
+                assert_eq!(stage.duration_ms, 11);
+            },
+            event,
+        );
+        assert_eq!(seen, vec!["translate"]);
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].output_text, "Hello");
     }
 }
