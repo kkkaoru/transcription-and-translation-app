@@ -2,14 +2,13 @@ import type { ChangeEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocaleSwitcher } from "../components/LocaleSwitcher";
 import {
-  AudioCaptureError,
   ensureMicrophoneAccess,
   enumerateAudioInputDevices,
   formatAudioCaptureDiagnostics,
   getLastAudioCaptureDiagnostics,
   MicrophoneCapture,
 } from "../core/audio";
-import { bridge, formatBridgeError } from "../core/bridge";
+import { bridge, formatBridgeError, isNoSpeechBridgeError } from "../core/bridge";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import {
   clearChunkTimingStats,
@@ -23,6 +22,14 @@ import {
   DEFAULT_RUNTIME_STATUS,
 } from "../core/defaults";
 import { pushDiagnosticEvent } from "../core/diagnostics";
+import {
+  isTransientAudioNotice,
+  type Notice,
+  noticeForNoSpeech,
+  noticeFromError,
+  shouldToastAudioProcessingFailure,
+} from "../core/notices";
+import { pushPipelineStageEvent } from "../core/pipelineStages";
 import type {
   AppConfig,
   AudioChunk,
@@ -39,7 +46,6 @@ import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
 
 type ActiveTab = "live" | "settings";
-type Notice = { detail?: string; key: MessageKey };
 
 const platformKeys: Record<RuntimeStatus["platform"], MessageKey> = {
   macos: "platform.macos",
@@ -53,47 +59,6 @@ const statusKeys: Record<RuntimeStatus["status"], MessageKey> = {
   starting: "status.starting",
   capturing: "status.capturing",
   error: "status.error",
-};
-
-const noticeFromError = (error: unknown, fallback: MessageKey): Notice => {
-  if (error instanceof AudioCaptureError) {
-    const keys: Record<AudioCaptureError["code"], MessageKey> = {
-      "microphone-unavailable": "message.microphoneUnavailable",
-      "audio-context-failed": "message.audioContextFailed",
-      "audio-context-suspended": "message.audioContextFailed",
-      "microphone-track-ended": "message.microphoneTrackEnded",
-    };
-    const detail =
-      error.causeError instanceof DOMException
-        ? error.causeError.message
-        : error.message !== error.code
-          ? error.message
-          : formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics()) || undefined;
-    return { key: keys[error.code], detail: detail || undefined };
-  }
-  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
-    const keys: Partial<Record<string, MessageKey>> = {
-      NotAllowedError: "message.microphonePermissionDenied",
-      SecurityError: "message.microphonePermissionDenied",
-      NotFoundError: "message.microphoneNotFound",
-      NotReadableError: "message.microphoneBusy",
-      OverconstrainedError: "message.microphoneConstraint",
-      AbortError: "message.microphoneStartFailed",
-    };
-    const key = keys[error.name];
-    const diag = formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
-    if (key) {
-      return diag ? { key, detail: diag } : { key };
-    }
-    return {
-      key: fallback,
-      detail: [error.message, diag].filter(Boolean).join(" · ") || undefined,
-    };
-  }
-  const detail = formatBridgeError(error);
-  const diag = formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
-  const combined = [detail, diag].filter(Boolean).join(" · ");
-  return combined ? { key: fallback, detail: combined } : { key: fallback };
 };
 
 export const MainApp = () => {
@@ -180,8 +145,7 @@ export const MainApp = () => {
         // Do not mark on late translation events (they can arrive while a newer
         // ASR job is already running and would skew first-caption timing).
         const isSourceStage =
-          nextCaption.stage === "source" ||
-          (nextCaption.sequence === 0 && !nextCaption.isFinal);
+          nextCaption.stage === "source" || (nextCaption.sequence === 0 && !nextCaption.isFinal);
         if (isSourceStage && nextCaption.sourceText.trim()) {
           chunkProcessor.current?.markFirstCaption();
           if (chunkProcessor.current) {
@@ -196,8 +160,7 @@ export const MainApp = () => {
           return merged;
         });
         const stage =
-          nextCaption.stage ??
-          (nextCaption.translationText.trim() ? "translation" : "source");
+          nextCaption.stage ?? (nextCaption.translationText.trim() ? "translation" : "source");
         // Log new utterances and translation completions (not every identical source paint).
         if (nextCaption.id !== lastCaptionId || stage === "translation") {
           lastCaptionId = nextCaption.id;
@@ -225,8 +188,37 @@ export const MainApp = () => {
           setNotice(notice);
         }
       });
+    // Fine-grained ASR / normalize / translate events for Debug mode.
+    // Keep the subscription app-wide so the panel can stay open for continuous inspection.
+    void bridge
+      .listenPipelineStages((stageEvent) => {
+        pushPipelineStageEvent(stageEvent);
+      })
+      .then((dispose) => {
+        if (mounted) {
+          disposers.push(dispose);
+        } else {
+          dispose();
+        }
+      })
+      .catch((error: unknown) => {
+        if (mounted) {
+          pushDiagnosticEvent(
+            "error",
+            "Pipeline stage listen failed",
+            formatBridgeError(error) ?? String(error),
+          );
+        }
+      });
     void bridge
       .listenRuntime((nextStatus) => {
+        // Ambient / no-speech chunks must never pin a fatal lastError in the UI.
+        // Keep the detail in the debug event log only.
+        if (nextStatus.lastError && isNoSpeechBridgeError(nextStatus.lastError)) {
+          pushDiagnosticEvent("audio", "No speech (soft-skip)", nextStatus.lastError);
+          setStatus({ ...nextStatus, lastError: null });
+          return;
+        }
         setStatus(nextStatus);
         pushDiagnosticEvent(
           "runtime",
@@ -372,9 +364,14 @@ export const MainApp = () => {
             // Soft-skip silence / no-speech chunks (empty sourceText) so ambient
             // noise that passes the RMS gate does not clear the live caption.
             if (!nextCaption.sourceText.trim()) {
+              const detail =
+                formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics()) || nextCaption.id;
+              pushDiagnosticEvent("audio", "No speech (soft-skip)", detail);
               setStatus((current) =>
                 current.lastError ? { ...current, lastError: null } : current,
               );
+              // Non-fatal guidance — never "音声処理に失敗しました".
+              setNotice(noticeForNoSpeech(detail));
               return;
             }
             // Caption events usually arrive first (progressive emit); still merge
@@ -386,11 +383,23 @@ export const MainApp = () => {
               }
               return merged;
             });
-            setStatus((current) =>
-              current.lastError ? { ...current, lastError: null } : current,
-            );
+            setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
+            setNotice((current) => (isTransientAudioNotice(current) ? null : current));
           } catch (error: unknown) {
             if (attempt !== captureAttempt.current) {
+              return;
+            }
+            // Defense in depth: if transcript_missing still arrives as Err
+            // (older backend, gateway shape drift), soft-skip instead of toasting.
+            if (!shouldToastAudioProcessingFailure(error)) {
+              const detail =
+                formatBridgeError(error) ??
+                formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
+              pushDiagnosticEvent("audio", "No speech (soft-skip)", detail || undefined);
+              setStatus((current) =>
+                current.lastError ? { ...current, lastError: null } : current,
+              );
+              setNotice(noticeForNoSpeech(detail || undefined));
               return;
             }
             const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
@@ -544,7 +553,9 @@ export const MainApp = () => {
 
   const noticeText = notice
     ? [t(notice.key), notice.detail].filter((part) => part).join(" ")
-    : (status.lastError ?? null);
+    : status.lastError && !isNoSpeechBridgeError(status.lastError)
+      ? status.lastError
+      : null;
 
   return (
     <div className="app-shell">

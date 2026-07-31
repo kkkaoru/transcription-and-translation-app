@@ -4,9 +4,21 @@ const trim = (value: string): string => value.trim();
 
 const hasText = (value: string): boolean => trim(value).length > 0;
 
+const sequenceOf = (caption: CaptionPayload): number => {
+  if (typeof caption.sequence === "number" && Number.isFinite(caption.sequence)) {
+    return caption.sequence;
+  }
+  // Fall back for older payloads without stage/sequence fields.
+  if (caption.stage === "translation" || caption.isFinal || hasText(caption.translationText)) {
+    return 1;
+  }
+  return 0;
+};
+
 const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean => {
   if (current.id === next.id) {
-    return false;
+    // Same utterance: a late source-stage invoke/event must not regress past translation.
+    return sequenceOf(next) < sequenceOf(current);
   }
 
   if (current.startedAt > 0 && next.startedAt > 0) {
@@ -26,6 +38,7 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
  * - source-ready (empty translation) paints immediately
  * - same-id translation fills in without blocking source
  * - late updates for older chunks are dropped
+ * - late same-id source-stage results after translation are dropped (no stage regression)
  * - silence / empty soft-skips never clear the live caption
  */
 export const mergeCaptionPayload = (

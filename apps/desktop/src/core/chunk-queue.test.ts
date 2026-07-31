@@ -12,9 +12,10 @@ describe("latest-wins chunk processor", () => {
     const processed: number[] = [];
     const processor = createLatestWinsProcessor<number>({
       now: () => clock,
-      process: async (item) => {
+      process: (item) => {
         processed.push(item);
         clock += 40;
+        return Promise.resolve();
       },
     });
 

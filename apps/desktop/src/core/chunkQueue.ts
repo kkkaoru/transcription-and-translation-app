@@ -7,7 +7,10 @@
  */
 
 export type ChunkTimingStats = {
-  /** Wall time of the last completed pipeline invoke (ASR+normalize+translate). */
+  /**
+   * Wall time of the last completed live invoke (ASR + normalize only).
+   * Translation runs off-path after the invoke returns and is not included.
+   */
   lastPipelineMs: number | null;
   /** Wall time until the first caption event for the last in-flight chunk (progressive). */
   lastFirstCaptionMs: number | null;

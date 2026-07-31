@@ -87,7 +87,7 @@ const ja = {
   "settings.azooLearningMemory": "AzooKey 学習メモリ（任意）",
   "settings.azooLearningMemoryHint":
     "上流形式の memory.louds / memory<N>.loudstxt3 を含むディレクトリ、またはTSV。",
-  "settings.azooPathPlaceholder": "例: /models/azookey-user-dictionary",
+  "settings.azooPathPlaceholder": "例: /models/azookey-dict",
   "settings.modelsNote":
     "初期構成は Parapper → Rust版AzooKey/zenz → Hy-MT2 です。モデルは推論ゲートウェイ側でロードし、ここではルーティングだけを切り替えます。",
   "settings.audioEyebrow": "AUDIO",
@@ -149,6 +149,8 @@ const ja = {
   "message.saved": "設定を保存しました。",
   "message.saveFailed": "設定の保存に失敗しました。",
   "message.audioProcessingFailed": "音声処理に失敗しました。",
+  "message.noSpeechDetected":
+    "音声が検出されませんでした。マイク入力レベルを確認するか、もう少し大きな声で話してください。",
   "message.captureStartFailed":
     "字幕生成を開始できませんでした。モデルの準備や推論サービスの起動状態を確認してください。",
   "message.microphoneStartFailed": "マイクを開始できませんでした。",
@@ -232,6 +234,7 @@ const ja = {
   "debug.audioOk": "利用可能",
   "debug.audioMissing": "未対応",
   "debug.frontendRuntime": "フロントエンド",
+  "debug.frontendOnlyNote": "デスクトップ native 情報はブラウザプレビューでは利用できません。",
   "debug.unknown": "不明",
   "debug.audioCaptureTitle": "音声キャプチャ",
   "debug.audioCaptureMode": "キャプチャ方式",
@@ -262,6 +265,35 @@ const ja = {
   "debug.previewMode": "プレビュー",
   "debug.previewLive": "ライブ字幕（OBS 不要）",
   "debug.previewPlaceholder": "プレースホルダ",
+  "debug.pipelineStagesTitle": "パイプライン段階",
+  "debug.pipelineStagesLead":
+    "ASR（parapper）・正規化（azookey）・翻訳（HY-MT2）を段階ごとに独立表示します。キャプチャ中はリアルタイム更新されます。",
+  "debug.pipelineFeedTitle": "段階イベント（新しい順）",
+  "debug.noStageEvents": "まだ段階イベントはありません。キャプチャを開始すると記録されます。",
+  "debug.stageEmpty": "まだこの段階の出力はありません。",
+  "debug.stageStatus": "結果",
+  "debug.stageOk": "成功",
+  "debug.stageFailed": "失敗",
+  "debug.stageUtterance": "発話 ID",
+  "debug.stageModel": "モデル",
+  "debug.stageInput": "入力",
+  "debug.stageOutput": "出力",
+  "debug.stageAt": "時刻",
+  "debug.chunkTimingTitle": "チャンク処理タイミング",
+  "debug.chunkLastPipeline": "直近パイプライン",
+  "debug.chunkFirstCaption": "初回字幕まで",
+  "debug.chunkProcessed": "処理済み",
+  "debug.chunkDropped": "ドロップ",
+  "debug.chunkInFlight": "処理中",
+  "debug.chunkPending": "待機あり",
+  "debug.yes": "はい",
+  "debug.no": "いいえ",
+  "debug.verboseLogging": "詳細ログ",
+  "debug.verboseLoggingHelp":
+    "詳細ログをオンにすると、各段階の入出力と所要時間をコンソール・バックエンドログ・直近イベントへ記録します。設定は config.debug.verboseLogging として保存され、パネルを開いたまま継続監視できます。",
+  "debug.clearStages": "段階ログをクリア",
+  "debug.utterancesTitle": "発話ごとの段階行",
+  "debug.logDir": "ログディレクトリ",
 } as const;
 
 export type MessageKey = keyof typeof ja;
@@ -351,7 +383,7 @@ const en: Record<MessageKey, string> = {
   "settings.azooLearningMemory": "AzooKey learning memory (optional)",
   "settings.azooLearningMemoryHint":
     "A directory with upstream memory.louds/memory<N>.loudstxt3 files, or a TSV file.",
-  "settings.azooPathPlaceholder": "Example: /models/azookey-user-dictionary",
+  "settings.azooPathPlaceholder": "Example: /models/azookey-dict",
   "settings.modelsNote":
     "The default pipeline is Parapper → Rust AzooKey/zenz → Hy-MT2. Models are loaded by the inference gateway; this screen controls routing.",
   "settings.audioEyebrow": "AUDIO",
@@ -413,6 +445,8 @@ const en: Record<MessageKey, string> = {
   "message.saved": "Settings saved.",
   "message.saveFailed": "Could not save settings.",
   "message.audioProcessingFailed": "Audio processing failed.",
+  "message.noSpeechDetected":
+    "No speech detected. Check the mic input level or speak a little louder.",
   "message.captureStartFailed":
     "Could not start live captions. Check model preparation and inference service readiness.",
   "message.microphoneStartFailed": "Could not start the microphone.",
@@ -495,6 +529,7 @@ const en: Record<MessageKey, string> = {
   "debug.audioOk": "Available",
   "debug.audioMissing": "Unavailable",
   "debug.frontendRuntime": "Frontend",
+  "debug.frontendOnlyNote": "Desktop native details are unavailable in browser preview.",
   "debug.unknown": "unknown",
   "debug.audioCaptureTitle": "Audio capture",
   "debug.audioCaptureMode": "Capture mode",
@@ -525,6 +560,35 @@ const en: Record<MessageKey, string> = {
   "debug.previewMode": "Preview",
   "debug.previewLive": "Live captions (no OBS)",
   "debug.previewPlaceholder": "Placeholder",
+  "debug.pipelineStagesTitle": "Pipeline stages",
+  "debug.pipelineStagesLead":
+    "Independent outputs for ASR (parapper), normalizer (azookey), and translator (HY-MT2). Updates live while capturing.",
+  "debug.pipelineFeedTitle": "Stage feed (newest first)",
+  "debug.noStageEvents": "No stage events yet. Start capture to record per-stage timings.",
+  "debug.stageEmpty": "No output for this stage yet.",
+  "debug.stageStatus": "Result",
+  "debug.stageOk": "ok",
+  "debug.stageFailed": "failed",
+  "debug.stageUtterance": "Utterance id",
+  "debug.stageModel": "Model",
+  "debug.stageInput": "Input",
+  "debug.stageOutput": "Output",
+  "debug.stageAt": "At",
+  "debug.chunkTimingTitle": "Chunk timing",
+  "debug.chunkLastPipeline": "Last pipeline",
+  "debug.chunkFirstCaption": "Time to first caption",
+  "debug.chunkProcessed": "Processed",
+  "debug.chunkDropped": "Dropped",
+  "debug.chunkInFlight": "In flight",
+  "debug.chunkPending": "pending",
+  "debug.yes": "yes",
+  "debug.no": "no",
+  "debug.verboseLogging": "Verbose stage logging",
+  "debug.verboseLoggingHelp":
+    "When enabled, each stage logs input/output and duration_ms to the console, backend log files, and recent events. Preference is saved as config.debug.verboseLogging so you can leave debug mode open for continuous inspection.",
+  "debug.clearStages": "Clear stage log",
+  "debug.utterancesTitle": "Utterance stage rows",
+  "debug.logDir": "Log directory",
 };
 
 export const messages: Record<Locale, Record<MessageKey, string>> = { ja, en };

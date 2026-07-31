@@ -14,6 +14,7 @@ import type {
   DownloadProgress,
   ModelCatalog,
   ModelStatusEntry,
+  PipelineStageEvent,
   RuntimeStatus,
   UnlistenFn,
 } from "./types";
@@ -39,6 +40,29 @@ export const formatBridgeError = (error: unknown): string | undefined => {
     }
   }
   return undefined;
+};
+
+/**
+ * Parapper / gateway "no usable speech" outcomes that must never surface as
+ * fatal audio-processing toasts during continuous capture.
+ *
+ * Matches both the structured gateway body (`transcript_missing`) and the
+ * Rust pipeline error string (`inference returned HTTP 422: ...`).
+ */
+export const isNoSpeechBridgeError = (error: unknown): boolean => {
+  const detail = (
+    typeof error === "string" ? error : (formatBridgeError(error) ?? "")
+  ).toLowerCase();
+  if (!detail) {
+    return false;
+  }
+  return (
+    detail.includes("transcript_missing") ||
+    detail.includes("without a final transcript") ||
+    detail.includes("no final transcript") ||
+    detail.includes("no transcript") ||
+    detail.includes("empty transcript")
+  );
 };
 
 const demoCaption = (): CaptionPayload => {
@@ -149,6 +173,14 @@ export const bridge = {
   listenCaptions(callback: (caption: CaptionPayload) => void): Promise<UnlistenFn> {
     if (isTauriRuntime()) {
       return listen<CaptionPayload>("caption:update", (event) => callback(event.payload));
+    }
+    return Promise.resolve(() => undefined);
+  },
+
+  /** Per-stage ASR / normalize / translate timings + text samples for debug mode. */
+  listenPipelineStages(callback: (stage: PipelineStageEvent) => void): Promise<UnlistenFn> {
+    if (isTauriRuntime()) {
+      return listen<PipelineStageEvent>("pipeline:stage", (event) => callback(event.payload));
     }
     return Promise.resolve(() => undefined);
   },

@@ -72,6 +72,11 @@ export interface OverlayConfig {
   translation: CaptionTextStyle;
 }
 
+export interface DebugConfig {
+  /** When true, pipeline stage logs include truncated input/output samples. */
+  verboseLogging: boolean;
+}
+
 export interface AppConfig {
   schemaVersion: 1;
   language: LanguageConfig;
@@ -79,6 +84,7 @@ export interface AppConfig {
   models: ModelSelection;
   audio: AudioConfig;
   overlay: OverlayConfig;
+  debug: DebugConfig;
 }
 
 export type ModelFamily = "asr" | "normalizer" | "translator";
@@ -111,6 +117,31 @@ export interface CaptionPayload {
   sequence?: number;
   isFinal?: boolean;
   confidence?: number;
+}
+
+/** Independent pipeline stage for debug mode (parapper / azookey / HY-MT2). */
+export type PipelineStageName = "asr" | "normalize" | "translate";
+
+export interface PipelineStageEvent {
+  stage: PipelineStageName | string;
+  utteranceId: string;
+  /** Selected model id for this stage (e.g. parapper-ja / azookey-rust / hy-mt2-…). */
+  modelId: string;
+  inputSnippet: string;
+  outputText: string;
+  durationMs: number;
+  ok: boolean;
+  error?: string | null;
+  at: number;
+}
+
+/** One live utterance with ordered stage rows for DebugPanel. */
+export interface UtteranceStageGroup {
+  utteranceId: string;
+  at: number;
+  stages: PipelineStageEvent[];
+  totalDurationMs: number;
+  ok: boolean;
 }
 
 export interface RuntimeStatus {

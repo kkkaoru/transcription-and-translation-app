@@ -10,6 +10,7 @@ export interface PartialAppConfig {
     source?: Partial<CaptionTextStyle>;
     translation?: Partial<CaptionTextStyle>;
   };
+  debug?: Partial<AppConfig["debug"]>;
 }
 
 export const DEFAULT_FONT_FAMILY = '"Noto Sans JP Variable", "Noto Sans JP", sans-serif';
@@ -21,8 +22,12 @@ export const DEFAULT_FONT_FAMILY = '"Noto Sans JP Variable", "Noto Sans JP", san
  */
 export const DEFAULT_AUDIO_CHUNK_MS = 900;
 
-/** Default RMS silence gate (dBFS). Speech typically sits well above this. */
-export const DEFAULT_SILENCE_GATE_DB = -55;
+/**
+ * Default RMS silence gate (dBFS). Chunks quieter than this never leave the
+ * capture graph. Ambient noise with AGC-off raw capture often sits around
+ * -54 dBFS and must not be sent to Parapper (yields transcript_missing).
+ */
+export const DEFAULT_SILENCE_GATE_DB = -50;
 
 export const createTextStyle = (overrides: Partial<CaptionTextStyle> = {}): CaptionTextStyle => ({
   fontFamily: DEFAULT_FONT_FAMILY,
@@ -94,6 +99,9 @@ export const createDefaultConfig = (): AppConfig => ({
       color: "#bfe8ff",
       cullingColor: "#07121d",
     }),
+  },
+  debug: {
+    verboseLogging: false,
   },
 });
 
@@ -227,5 +235,6 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
       source: { ...base.overlay.source, ...input.overlay?.source },
       translation: { ...base.overlay.translation, ...input.overlay?.translation },
     },
+    debug: { ...base.debug, ...input.debug },
   };
 };

@@ -120,4 +120,57 @@ describe("mergeCaptionPayload", () => {
 
     expect(mergeCaptionPayload(current, nextSource)).toEqual(nextSource);
   });
+
+  it("drops a late same-id source-stage result after translation already landed", () => {
+    // Event path may deliver translation before the invoke Promise resolves with the
+    // original source-stage payload. That late result must not regress stage/sequence
+    // or clear the translated text.
+    const translated = caption({
+      id: "u-1",
+      sourceText: "こんにちは",
+      translationText: "Hello",
+      startedAt: 1,
+      receivedAt: 20,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+    const lateSourceInvoke = caption({
+      id: "u-1",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(translated, lateSourceInvoke)).toBeNull();
+  });
+
+  it("still accepts same-id translation after source when sequence advances", () => {
+    const source = caption({
+      id: "u-1",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const translated = caption({
+      id: "u-1",
+      sourceText: "こんにちは",
+      translationText: "Hello",
+      startedAt: 1,
+      receivedAt: 20,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(source, translated)).toEqual(translated);
+  });
 });

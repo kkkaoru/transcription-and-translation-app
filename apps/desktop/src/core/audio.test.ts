@@ -12,10 +12,13 @@ import {
   makeAudioChunk,
   microphoneConstraintStrategies,
   openMicrophoneStream,
+  passesSilenceGate,
   pcm16ToBase64,
   resampleLinear,
   rmsDbToMeterLevel,
+  TARGET_SAMPLE_RATE,
 } from "./audio";
+import { DEFAULT_SILENCE_GATE_DB } from "./defaults";
 
 describe("audio conversion", () => {
   it("resamples a signal with linear interpolation", () => {
@@ -46,12 +49,24 @@ describe("audio conversion", () => {
     expect(calculateRmsDb(new Float32Array([1, -1]))).toBe(0);
   });
 
+  it("filters ambient -54 dB chunks that previously reached Parapper", () => {
+    // Exact user-facing pathology: rms≈-54.2 dB with default-raw + old -55 gate
+    // sent noise-only WAV → HTTP 422 transcript_missing.
+    expect(DEFAULT_SILENCE_GATE_DB).toBe(-50);
+    expect(passesSilenceGate(-54.2, DEFAULT_SILENCE_GATE_DB)).toBe(false);
+    expect(passesSilenceGate(-54.2, -55)).toBe(true);
+    expect(passesSilenceGate(-40, DEFAULT_SILENCE_GATE_DB)).toBe(true);
+    expect(passesSilenceGate(Number.NEGATIVE_INFINITY)).toBe(false);
+    expect(passesSilenceGate(Number.NaN)).toBe(false);
+  });
+
   it("builds progressive microphone constraints for device selection", () => {
     expect(createMicrophoneConstraints("default").audio).toMatchObject({
       channelCount: { ideal: 1 },
       echoCancellation: false,
       noiseSuppression: false,
-      autoGainControl: false,
+      // AGC on so quiet mics are not stuck near the silence floor.
+      autoGainControl: true,
     });
     expect(
       (createMicrophoneConstraints("default").audio as MediaTrackConstraints).deviceId,
@@ -99,7 +114,7 @@ describe("audio conversion", () => {
     expect(bytesToBase64(large).length).toBeGreaterThan(0);
     expect(atob(bytesToBase64(large)).length).toBe(large.length);
     const chunk = makeAudioChunk(new Float32Array([0, 1, 0, -1]), 4, 1000);
-    expect(chunk.sampleRate).toBe(16_000);
+    expect(chunk.sampleRate).toBe(TARGET_SAMPLE_RATE);
     expect(chunk.channels).toBe(1);
     expect(chunk.durationMs).toBe(1000);
     expect(chunk.pcmBase64.length).toBeGreaterThan(0);
@@ -112,23 +127,27 @@ describe("audio conversion", () => {
     );
     const captionChunk = makeAudioChunk(captionSamples, 16_000, 1_200);
     expect(captionChunk.durationMs).toBe(1_200);
-    expect(captionChunk.sampleRate).toBe(16_000);
+    expect(captionChunk.sampleRate).toBe(TARGET_SAMPLE_RATE);
     expect(captionChunk.pcmBase64.length).toBeGreaterThan(1_000);
     // Decode must be even-length PCM16 — Rust rejects odd byte lengths.
     const decoded = atob(captionChunk.pcmBase64);
     expect(decoded.length % 2).toBe(0);
     expect(decoded.length).toBe(16_000 * 1.2 * 2);
-    // 48 kHz capture path: resample + encode still targets 16 kHz mono.
+    // 48 kHz capture path (diagnostics may show sr=48000): WAV PCM is still 16 kHz mono.
     const from48k = makeAudioChunk(new Float32Array(48_000 * 1.2), 48_000, 1_200);
-    expect(from48k.sampleRate).toBe(16_000);
+    expect(from48k.sampleRate).toBe(TARGET_SAMPLE_RATE);
     expect(from48k.channels).toBe(1);
     expect(from48k.durationMs).toBe(1_200);
-    expect(atob(from48k.pcmBase64).length).toBe(16_000 * 1.2 * 2);
+    expect(atob(from48k.pcmBase64).length).toBe(TARGET_SAMPLE_RATE * 1.2 * 2);
+    // Silent float buffer still encodes as mono 16 kHz (backend soft-skips empty ASR).
+    const silent48k = makeAudioChunk(new Float32Array(48_000), 48_000, 1_000);
+    expect(silent48k.sampleRate).toBe(TARGET_SAMPLE_RATE);
+    expect(atob(silent48k.pcmBase64).length).toBe(TARGET_SAMPLE_RATE * 2);
     // Duration clamp + invalid rate fallback for Rust validation window.
     expect(makeAudioChunk(new Float32Array([0.1]), 16_000, 0).durationMs).toBe(1);
     expect(makeAudioChunk(new Float32Array([0.1]), 16_000, 50_000).durationMs).toBe(10_000);
     expect(makeAudioChunk(new Float32Array([0.1]), 16_000, Number.NaN).durationMs).toBe(1);
-    expect(makeAudioChunk(new Float32Array([0.1]), 0, 100).sampleRate).toBe(16_000);
+    expect(makeAudioChunk(new Float32Array([0.1]), 0, 100).sampleRate).toBe(TARGET_SAMPLE_RATE);
     vi.stubGlobal("btoa", undefined);
     expect(() => pcm16ToBase64(pcm)).toThrow("base64 encoding is unavailable");
     vi.unstubAllGlobals();
@@ -237,6 +256,7 @@ describe("audio conversion", () => {
     expect(
       formatAudioCaptureDiagnostics({
         ...snapshot,
+        active: true,
         captureMode: "worklet",
         constraintMode: "default-relaxed",
         contextState: "running",
@@ -246,6 +266,17 @@ describe("audio conversion", () => {
         lastError: "boom",
       }),
     ).toContain("error=boom");
+    // Hardware may report 48 kHz; diagnostics must still advertise encode target 16 kHz.
+    expect(
+      formatAudioCaptureDiagnostics({
+        ...snapshot,
+        active: true,
+        captureMode: "worklet",
+        sampleRate: 48_000,
+        lastRmsDb: -54.2,
+        chunksAccepted: 8,
+      }),
+    ).toMatch(/sr=48000.*encodeSr=16000|encodeSr=16000.*sr=48000/);
     expect(
       formatAudioCaptureDiagnostics({
         ...snapshot,

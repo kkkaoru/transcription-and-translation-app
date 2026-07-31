@@ -1,12 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   type AudioCaptureDiagnostics,
   enumerateAudioInputDevices,
   getLastAudioCaptureDiagnostics,
 } from "../core/audio";
 import { bridge } from "../core/bridge";
+import { type ChunkTimingStats, getChunkTimingStats } from "../core/chunkQueue";
+import { mergeConfig } from "../core/defaults";
 import { type DiagnosticEvent, getDiagnosticEvents } from "../core/diagnostics";
-import type { AudioInputDevice, ModelStatusEntry } from "../core/types";
+import {
+  clearPipelineStageEvents,
+  getLatestPipelineStageByName,
+  getPipelineStageEvents,
+  getPipelineStageStoreRevision,
+  getUtteranceStageGroups,
+  isVerbosePipelineLogging,
+  setVerbosePipelineLogging,
+  stageDisplayLabel,
+  subscribePipelineStages,
+} from "../core/pipelineStages";
+import type { AudioInputDevice, ModelStatusEntry, PipelineStageName } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 
 type JsonObject = Record<string, unknown>;
@@ -119,6 +132,24 @@ const modelInstallLabel = (status: string, t: ReturnType<typeof useI18n>["t"]): 
   }
 };
 
+const STAGE_NAMES: PipelineStageName[] = ["asr", "normalize", "translate"];
+
+const formatMs = (value: number | null | undefined): string => {
+  if (value == null || !Number.isFinite(value)) {
+    return "—";
+  }
+  return `${Math.round(value)} ms`;
+};
+
+const formatStageAt = (at: number, locale: string): string => {
+  if (!Number.isFinite(at) || at <= 0) {
+    return "—";
+  }
+  // Backend emits epoch millis; accept seconds as a fallback.
+  const ms = at < 1_000_000_000_000 ? at * 1000 : at;
+  return formatEventTime(new Date(ms).toISOString(), locale);
+};
+
 export function DebugPanel() {
   const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -128,9 +159,31 @@ export function DebugPanel() {
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [modelStatus, setModelStatus] = useState<ModelStatusEntry[]>([]);
   const [events, setEvents] = useState<DiagnosticEvent[]>([]);
+  // External store — always subscribed so live stage pushes re-render without open-effect races.
+  // Snapshot is a scalar revision; derived arrays are memoized from it (stable getSnapshot).
+  const stageStoreRevision = useSyncExternalStore(
+    subscribePipelineStages,
+    getPipelineStageStoreRevision,
+    getPipelineStageStoreRevision,
+  );
+  // stageStoreRevision is the external-store snapshot; re-read on each change.
+  const stageEvents = useMemo(() => {
+    void stageStoreRevision;
+    return getPipelineStageEvents();
+  }, [stageStoreRevision]);
+  const utteranceGroups = useMemo(() => {
+    void stageStoreRevision;
+    return getUtteranceStageGroups();
+  }, [stageStoreRevision]);
+  const verboseLogging = useMemo(() => {
+    void stageStoreRevision;
+    return isVerbosePipelineLogging();
+  }, [stageStoreRevision]);
+  const [chunkTiming, setChunkTiming] = useState<ChunkTimingStats>(() => getChunkTimingStats());
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [savingVerbose, setSavingVerbose] = useState(false);
 
   const combined = useMemo(() => {
     if (
@@ -139,7 +192,8 @@ export function DebugPanel() {
       !captureInfo &&
       devices.length === 0 &&
       modelStatus.length === 0 &&
-      events.length === 0
+      events.length === 0 &&
+      stageEvents.length === 0
     ) {
       return null;
     }
@@ -154,8 +208,23 @@ export function DebugPanel() {
       })),
       modelDownloads: modelStatus,
       recentEvents: events,
+      pipelineStages: stageEvents,
+      utteranceGroups,
+      chunkTiming,
+      verbosePipelineLogging: verboseLogging,
     };
-  }, [backendInfo, frontendInfo, captureInfo, devices, modelStatus, events]);
+  }, [
+    backendInfo,
+    frontendInfo,
+    captureInfo,
+    devices,
+    modelStatus,
+    events,
+    stageEvents,
+    utteranceGroups,
+    chunkTiming,
+    verboseLogging,
+  ]);
 
   const fetchInfo = useCallback(async () => {
     setLoading(true);
@@ -166,15 +235,29 @@ export function DebugPanel() {
     setFrontendInfo(nextFrontend);
     setCaptureInfo(nextCapture);
     setEvents(nextEvents);
+    setChunkTiming(getChunkTimingStats());
     try {
       const [info, nextDevices, nextModelStatus] = await Promise.all([
         bridge.getDebugInfo(),
         enumerateAudioInputDevices().catch(() => [] as AudioInputDevice[]),
         bridge.listModelStatus().catch(() => [] as ModelStatusEntry[]),
       ]);
-      setBackendInfo(isRecord(info) ? info : { value: info });
+      const backend = isRecord(info) ? info : { value: info };
+      setBackendInfo(backend);
       setDevices(nextDevices);
       setModelStatus(nextModelStatus);
+      // Desktop: prefer persisted Rust config so verbose matches backend logs.
+      // Browser preview has no writable backend config — keep localStorage preference.
+      if (bridge.isDesktop()) {
+        const configValue = isRecord(backend) ? pick(backend, "config") : null;
+        const config = isRecord(configValue) ? configValue : null;
+        const debugValue = pick(config, "debug") ?? pick(backend, "debug");
+        const debug = isRecord(debugValue) ? debugValue : null;
+        const verboseFromBackend = pick(debug, "verboseLogging");
+        if (typeof verboseFromBackend === "boolean") {
+          setVerbosePipelineLogging(verboseFromBackend);
+        }
+      }
     } catch (e) {
       setBackendInfo(null);
       setError(String(e));
@@ -187,6 +270,40 @@ export function DebugPanel() {
       void fetchInfo();
     }
   }, [open, backendInfo, loading, fetchInfo]);
+
+  // Chunk timing is published from the live capture path; poll snapshot while open.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setChunkTiming(getChunkTimingStats());
+    const timer = window.setInterval(() => {
+      setChunkTiming(getChunkTimingStats());
+    }, 500);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [open]);
+
+  const toggleVerboseLogging = useCallback(async (enabled: boolean) => {
+    setVerbosePipelineLogging(enabled);
+    if (!bridge.isDesktop()) {
+      return;
+    }
+    setSavingVerbose(true);
+    try {
+      const current = await bridge.getConfig();
+      const next = mergeConfig({
+        ...current,
+        debug: { ...current.debug, verboseLogging: enabled },
+      });
+      await bridge.saveConfig(next);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingVerbose(false);
+    }
+  }, []);
 
   const copyToClipboard = async () => {
     if (!combined) {
@@ -312,7 +429,30 @@ export function DebugPanel() {
             >
               {copied ? t("debug.copied") : t("debug.copy")}
             </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                clearPipelineStageEvents();
+                setChunkTiming(getChunkTimingStats());
+              }}
+              disabled={stageEvents.length === 0}
+            >
+              {t("debug.clearStages")}
+            </button>
+            <label className="debug-verbose-toggle">
+              <input
+                type="checkbox"
+                checked={verboseLogging}
+                disabled={savingVerbose}
+                onChange={(event) => {
+                  void toggleVerboseLogging(event.target.checked);
+                }}
+              />
+              <span>{t("debug.verboseLogging")}</span>
+            </label>
           </div>
+          <p className="debug-inline-meta">{t("debug.verboseLoggingHelp")}</p>
           {error ? (
             <div className="download-message error notice" role="alert">
               <span className="notice-text">{error}</span>
@@ -335,14 +475,18 @@ export function DebugPanel() {
                 <div className="debug-stat-card">
                   <span className="debug-stat-label">{t("debug.envTitle")}</span>
                   <strong>
-                    {asString(pick(env, "pkgVersion") ?? pick(backendInfo, "version"))} ·{" "}
-                    {asString(pick(env, "platform") ?? pick(backendInfo, "platform"))}/
-                    {asString(pick(env, "arch") ?? pick(backendInfo, "arch"))}
+                    {bridge.isDesktop()
+                      ? `${asString(pick(env, "pkgVersion") ?? pick(backendInfo, "version"))} · ${asString(pick(env, "platform") ?? pick(backendInfo, "platform"))}/${asString(pick(env, "arch") ?? pick(backendInfo, "arch"))}`
+                      : asString(pick(frontendInfo, "runtime"), t("live.browserPreview"))}
                   </strong>
-                  <small>
-                    Rust {asString(pick(env, "rustcVersion"))} · Tauri{" "}
-                    {asString(pick(env, "tauriVersion"))}
-                  </small>
+                  {bridge.isDesktop() ? (
+                    <small>
+                      Rust {asString(pick(env, "rustcVersion"))} · Tauri{" "}
+                      {asString(pick(env, "tauriVersion"))}
+                    </small>
+                  ) : (
+                    <small>{t("debug.frontendOnlyNote")}</small>
+                  )}
                   <small>
                     {t("debug.frontendRuntime")}: {asString(pick(frontendInfo, "runtime"))}
                   </small>
@@ -367,6 +511,19 @@ export function DebugPanel() {
                     {t("debug.modelsReady")}
                   </strong>
                   <small className="debug-path">{asString(pick(backendInfo, "modelsDir"))}</small>
+                  <small className="debug-path">
+                    {t("debug.logDir")}:{" "}
+                    {asString(
+                      (() => {
+                        const direct = pick(backendInfo, "logDir");
+                        if (direct !== undefined && direct !== null && direct !== "") {
+                          return direct;
+                        }
+                        const debug = pick(backendInfo, "debug");
+                        return isRecord(debug) ? debug["logDir"] : undefined;
+                      })(),
+                    )}
+                  </small>
                   {downloadBusy > 0 ? (
                     <small>
                       {t("debug.modelDownloading")}: {downloadBusy}
@@ -400,6 +557,146 @@ export function DebugPanel() {
                     ))}
                   </ul>
                 )}
+              </div>
+
+              <div className="debug-section" data-testid="debug-pipeline-stages">
+                <h4 className="debug-section-title">{t("debug.pipelineStagesTitle")}</h4>
+                <p className="debug-inline-meta">{t("debug.pipelineStagesLead")}</p>
+                <div className="debug-stage-grid">
+                  {STAGE_NAMES.map((name) => {
+                    // Prefer React state (newest-first stageEvents) so open-panel
+                    // subscription updates re-render cards without a store reread race.
+                    const latest =
+                      stageEvents.find((event) => event.stage === name) ??
+                      getLatestPipelineStageByName(name);
+                    return (
+                      <article
+                        key={name}
+                        className={`debug-stage-card debug-stage-${name}${latest && !latest.ok ? " is-error" : ""}`}
+                        data-testid={`debug-stage-${name}`}
+                      >
+                        <header className="debug-stage-card-head">
+                          <strong>{stageDisplayLabel(name)}</strong>
+                          <span className="debug-stage-ms">
+                            {latest ? formatMs(latest.durationMs) : "—"}
+                          </span>
+                        </header>
+                        {latest ? (
+                          <ul className="debug-kv-list">
+                            <li>
+                              <span>{t("debug.stageStatus")}</span>
+                              <code>
+                                {latest.ok ? t("debug.stageOk") : t("debug.stageFailed")}
+                                {latest.error ? ` · ${latest.error}` : ""}
+                              </code>
+                            </li>
+                            <li>
+                              <span>{t("debug.stageUtterance")}</span>
+                              <code className="debug-path">{latest.utteranceId || "—"}</code>
+                            </li>
+                            <li>
+                              <span>{t("debug.stageModel")}</span>
+                              <code className="debug-path">{latest.modelId || "—"}</code>
+                            </li>
+                            <li>
+                              <span>{t("debug.stageInput")}</span>
+                              <code className="debug-path">{latest.inputSnippet || "—"}</code>
+                            </li>
+                            <li>
+                              <span>{t("debug.stageOutput")}</span>
+                              <code className="debug-path">{latest.outputText || "—"}</code>
+                            </li>
+                            <li>
+                              <span>{t("debug.stageAt")}</span>
+                              <code>{formatStageAt(latest.at, locale)}</code>
+                            </li>
+                          </ul>
+                        ) : (
+                          <p className="download-empty">{t("debug.stageEmpty")}</p>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+
+                <h5 className="debug-subsection-title">{t("debug.utterancesTitle")}</h5>
+                {utteranceGroups.length === 0 ? (
+                  <p className="download-empty">{t("debug.noStageEvents")}</p>
+                ) : (
+                  <ul className="debug-utterance-list" data-testid="debug-utterance-list">
+                    {utteranceGroups.map((group) => (
+                      <li
+                        key={group.utteranceId}
+                        className={`debug-utterance${group.ok ? "" : " is-error"}`}
+                        data-testid="debug-utterance-row"
+                        data-utterance-id={group.utteranceId}
+                      >
+                        <header className="debug-utterance-head">
+                          <strong className="debug-path">{group.utteranceId}</strong>
+                          <span className="debug-stage-ms">
+                            {formatMs(group.totalDurationMs)} · {formatStageAt(group.at, locale)}
+                          </span>
+                        </header>
+                        <ul className="debug-stage-row-list" data-testid="debug-stage-feed">
+                          {group.stages.map((event) => (
+                            <li
+                              key={`${group.utteranceId}-${event.stage}-${event.at}-${event.durationMs}-${event.outputText}`}
+                              className={`debug-stage-row${event.ok ? "" : " is-error"}`}
+                              data-testid={`debug-stage-row-${event.stage}`}
+                            >
+                              <div className="debug-stage-row-main">
+                                <span className="debug-event-kind">
+                                  {stageDisplayLabel(String(event.stage))}
+                                </span>
+                                <span className="debug-stage-ms">{formatMs(event.durationMs)}</span>
+                                <span className="debug-stage-status">
+                                  {event.ok ? t("debug.stageOk") : t("debug.stageFailed")}
+                                </span>
+                              </div>
+                              <code className="debug-path debug-stage-row-output">
+                                {event.outputText || "—"}
+                              </code>
+                              <code className="debug-path debug-stage-row-meta">
+                                {event.modelId ? `model=${event.modelId}` : "model=—"}
+                                {event.inputSnippet ? ` · in=${event.inputSnippet}` : ""}
+                                {event.error ? ` · err=${event.error}` : ""}
+                              </code>
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="debug-section" data-testid="debug-chunk-timing">
+                <h4 className="debug-section-title">{t("debug.chunkTimingTitle")}</h4>
+                <ul className="debug-kv-list">
+                  <li>
+                    <span>{t("debug.chunkLastPipeline")}</span>
+                    <code>{formatMs(chunkTiming.lastPipelineMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.chunkFirstCaption")}</span>
+                    <code>{formatMs(chunkTiming.lastFirstCaptionMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.chunkProcessed")}</span>
+                    <code>{chunkTiming.chunksProcessed}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.chunkDropped")}</span>
+                    <code>{chunkTiming.chunksDropped}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.chunkInFlight")}</span>
+                    <code>
+                      {chunkTiming.inFlight ? t("debug.yes") : t("debug.no")}
+                      {chunkTiming.hasPending ? ` · ${t("debug.chunkPending")}` : ""}
+                    </code>
+                  </li>
+                </ul>
               </div>
 
               {captureInfo ? (

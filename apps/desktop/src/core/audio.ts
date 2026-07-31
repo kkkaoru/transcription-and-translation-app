@@ -1,7 +1,8 @@
 import { DEFAULT_AUDIO_CHUNK_MS, DEFAULT_SILENCE_GATE_DB } from "./defaults";
 import type { AudioChunk, AudioInputDevice } from "./types";
 
-const TARGET_SAMPLE_RATE = 16_000;
+/** Parapper / Rust pipeline expects mono PCM at this rate regardless of hardware. */
+export const TARGET_SAMPLE_RATE = 16_000;
 
 export const enumerateAudioInputDevices = async (): Promise<AudioInputDevice[]> => {
   if (typeof navigator === "undefined" || !navigator.mediaDevices?.enumerateDevices) {
@@ -93,6 +94,11 @@ const clampDurationMs = (samplesLength: number, durationMs: number): number => {
   return Math.max(1, Math.min(10_000, Math.round(nominal)));
 };
 
+/**
+ * Encode a float mono buffer as a mono 16 kHz PCM16 base64 chunk for the
+ * Tauri pipeline. Hardware rates (e.g. 48 kHz AudioContext) are always
+ * resampled — the `sampleRate` field on the chunk is never the hardware rate.
+ */
 export const makeAudioChunk = (
   samples: Float32Array,
   inputSampleRate: number,
@@ -101,9 +107,7 @@ export const makeAudioChunk = (
   const safeRate =
     Number.isFinite(inputSampleRate) && inputSampleRate > 0 ? inputSampleRate : TARGET_SAMPLE_RATE;
   return {
-    pcmBase64: pcm16ToBase64(
-      float32ToPcm16(resampleLinear(samples, safeRate, TARGET_SAMPLE_RATE)),
-    ),
+    pcmBase64: pcm16ToBase64(float32ToPcm16(resampleLinear(samples, safeRate, TARGET_SAMPLE_RATE))),
     sampleRate: TARGET_SAMPLE_RATE,
     channels: 1,
     durationMs: clampDurationMs(samples.length, durationMs),
@@ -121,6 +125,12 @@ export const calculateRmsDb = (samples: Float32Array): number => {
   const rms = Math.sqrt(sum / samples.length);
   return rms <= Number.EPSILON ? Number.NEGATIVE_INFINITY : 20 * Math.log10(rms);
 };
+
+/** True when RMS is loud enough to enqueue (not ambient / digital silence). */
+export const passesSilenceGate = (
+  rmsDb: number,
+  gateDb: number = DEFAULT_SILENCE_GATE_DB,
+): boolean => Number.isFinite(rmsDb) && rmsDb >= gateDb;
 
 export type MicrophoneConstraintMode =
   | "exact-device-raw"
@@ -152,11 +162,13 @@ export const createMicrophoneConstraints = (
   }
 
   if (!options.relaxProcessing) {
-    // Prefer unprocessed PCM for ASR. Some WebViews reject these flags — callers
-    // must fall back with relaxProcessing: true on OverconstrainedError.
+    // Prefer unprocessed PCM for ASR (no AEC/NS coloring), but keep browser AGC
+    // so quiet mics are not stuck at ~-54 dBFS ambient (Parapper transcript_missing).
+    // Some WebViews reject these flags — callers must fall back with
+    // relaxProcessing: true on OverconstrainedError.
     audio.echoCancellation = false;
     audio.noiseSuppression = false;
-    audio.autoGainControl = false;
+    audio.autoGainControl = true;
   }
 
   return {
@@ -321,6 +333,8 @@ export const formatAudioCaptureDiagnostics = (
     diagnostics.constraintMode ? `constraints=${diagnostics.constraintMode}` : null,
     diagnostics.contextState ? `context=${diagnostics.contextState}` : null,
     diagnostics.sampleRate ? `sr=${diagnostics.sampleRate}` : null,
+    // Encode target is always TARGET_SAMPLE_RATE; hardware sr may differ (e.g. 48k).
+    diagnostics.active ? `encodeSr=${TARGET_SAMPLE_RATE}` : null,
     diagnostics.trackReadyState ? `track=${diagnostics.trackReadyState}` : null,
     diagnostics.trackMuted === true ? "muted" : null,
     diagnostics.lastRmsDb !== null && Number.isFinite(diagnostics.lastRmsDb)
@@ -842,7 +856,8 @@ export class MicrophoneCapture {
       const chunk = this.pending.slice(0, chunkSize);
       this.pending = this.pending.slice(chunkSize);
       const chunkDb = calculateRmsDb(chunk);
-      if (chunkDb >= this.silenceGateDb) {
+      // Gate on hardware-rate RMS before encode; makeAudioChunk always emits 16 kHz mono.
+      if (passesSilenceGate(chunkDb, this.silenceGateDb)) {
         this.chunksAccepted += 1;
         void this.handler?.(makeAudioChunk(chunk, sampleRate, this.chunkMs));
       } else {
