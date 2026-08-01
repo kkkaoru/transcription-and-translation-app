@@ -94,8 +94,14 @@ describe("coverage lock", () => {
   it("holds the lock until the interrupted child exits, then releases it", async () => {
     // The wrapper must not release on the signal itself: vitest keeps writing
     // coverage/.tmp until it actually exits, so an early release would let a
-    // second run start against the same directory. Releasing in the exit path
-    // instead risks stranding the lock, which is what this guards.
+    // second run start against the same directory. The stub child below
+    // mirrors that shutdown window by delaying its own exit after SIGTERM,
+    // and publishes its PID so the lock-lifetime assertion is held against
+    // the child's real lifetime rather than the wrapper's exit, which races
+    // the release.
+    const root = await mkdtemp(join(tmpdir(), "kotoba-coverage-lock-signal-"));
+    temporaryRoots.push(root);
+    const stubPidFile = join(root, "stub.pid");
     const scriptPath = fileURLToPath(new URL("./run-coverage-locked.mjs", import.meta.url));
     // A filter of its own keeps this test off every real package's lock and
     // coverage directory, so it stays hermetic even while a full gate runs.
@@ -105,40 +111,49 @@ describe("coverage lock", () => {
 
     const wrapper = spawn(process.execPath, [scriptPath, packageFilter], {
       stdio: "ignore",
-      // vitest takes a moment to shut down after a signal, and keeps writing
-      // coverage output while it does. This stub reproduces that: it delays
-      // its own exit so the window in which the lock must stay held is
-      // long enough to observe deterministically.
       env: {
         ...process.env,
-        COVERAGE_LOCK_CHILD_COMMAND:
-          "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 300)); setInterval(() => {}, 60_000)",
+        COVERAGE_LOCK_CHILD_COMMAND: [
+          `require("node:fs").writeFileSync(${JSON.stringify(stubPidFile)}, String(process.pid));`,
+          "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 300));",
+          "setInterval(() => {}, 60_000);",
+        ].join(" "),
       },
     });
     await once(wrapper, "spawn");
 
-    // Give the wrapper time to acquire the lock and spawn its child.
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 400));
-    assert.equal(existsSync(lockFilePath), true, "expected the lock to be held while running");
+    // Give the wrapper time to acquire the lock and spawn its child, which
+    // publishes its PID.
+    const spawnDeadline = Date.now() + 5_000;
+    while (!existsSync(lockFilePath) || !existsSync(stubPidFile)) {
+      assert.ok(Date.now() < spawnDeadline, "wrapper never acquired the lock or spawned its child");
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    const childPid = Number.parseInt(await readFile(stubPidFile, "utf8"), 10);
+    assert.ok(Number.isSafeInteger(childPid) && childPid > 0, "stub child did not publish a PID");
 
+    const exitPromise = once(wrapper, "exit");
     wrapper.kill("SIGTERM");
 
-    // While the wrapper is still alive its child may still be writing coverage
-    // output, so the lock must stay held for every observation until exit.
-    let exited = false;
-    const exitPromise = once(wrapper, "exit").then(() => {
-      exited = true;
-    });
-    while (!exited) {
-      assert.equal(
-        existsSync(lockFilePath),
-        true,
-        "lock was released while the interrupted run was still alive",
-      );
+    // The wrapper forwards the signal to its child, which delays its own exit
+    // to reproduce vitest's shutdown window. The lock must stay held for the
+    // whole lifetime of that child. The release may legitimately land in the
+    // instant the child dies, so a missing lock only fails this test when the
+    // child is confirmed still alive.
+    const childDeadline = Date.now() + 5_000;
+    while (isProcessAlive(childPid)) {
+      assert.ok(Date.now() < childDeadline, "stub child never exited after the signal");
+      if (!existsSync(lockFilePath)) {
+        assert.equal(
+          isProcessAlive(childPid),
+          false,
+          "lock was released while the interrupted child was still running",
+        );
+      }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
     }
-    await exitPromise;
 
+    await exitPromise;
     assert.equal(existsSync(lockFilePath), false, "expected the lock to be released on exit");
   });
 });
