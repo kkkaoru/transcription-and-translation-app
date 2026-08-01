@@ -13,11 +13,7 @@ import {
   comparisonModeOptions,
   DEFAULT_COMPARISON_CONFIG,
 } from "../lib/contract";
-import {
-  attemptedPathLabel,
-  type ConversionStage,
-  comparisonPathSummary,
-} from "../lib/path-labels";
+import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import {
   type SpeechRecognitionState,
   type SpeechTranscriptUpdate,
@@ -620,7 +616,7 @@ export default function ComparePage() {
               <p className="interim-text">
                 {latestWorker?.error ??
                   (latestWorker
-                    ? attemptedPathLabel(latestWorker.mode, latestWorker.failedStage)
+                    ? rowPathLabel(latestWorker.mode, latestWorker.state, latestWorker.failedStage)
                     : "")}
               </p>
               <div className="live-card-footer">
@@ -668,7 +664,7 @@ export default function ComparePage() {
                       </span>
                       <p>{row.convertedText ?? row.error ?? "—"}</p>
                       <span className="row-meta">
-                        {attemptedPathLabel(row.mode, row.failedStage)}
+                        {rowPathLabel(row.mode, row.state, row.failedStage)}
                         {row.wasmElapsedMs !== undefined
                           ? ` · WASM ${formatMilliseconds(row.wasmElapsedMs)}`
                           : ""}

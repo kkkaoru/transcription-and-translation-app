@@ -52,6 +52,25 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
     : "Browser WASM pre-pass → Worker AzooKey WASM（失敗）";
 };
 
+/** Row states that describe work still in flight. */
+type PendingRowState = "queued" | "wasm" | "sending";
+
+/**
+ * Path label for one timeline row.
+ *
+ * A row only knows which stage failed once it has settled, so until then the
+ * route is a plan rather than a path that was reached. Marking it keeps an
+ * in-flight row from advertising a Worker conversion that has not run yet.
+ */
+export const rowPathLabel = (
+  mode: ComparisonMode,
+  state: PendingRowState | "done" | "error",
+  failedStage?: ConversionStage,
+): string =>
+  state === "done" || state === "error"
+    ? attemptedPathLabel(mode, failedStage)
+    : `${conversionPathLabel(mode)}（予定）`;
+
 /**
  * Live path chip for the comparison surface.
  * Browser mode marks the pre-pass as unconfigured when neither module URL nor

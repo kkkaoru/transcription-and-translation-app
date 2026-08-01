@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { attemptedPathLabel, comparisonPathSummary, conversionPathLabel } from "./path-labels";
+import {
+  attemptedPathLabel,
+  comparisonPathSummary,
+  conversionPathLabel,
+  rowPathLabel,
+} from "./path-labels";
 
 describe("comparison path labels", () => {
   it("describes Worker-side AzooKey WASM without marketing Vibrato", () => {
@@ -68,6 +73,22 @@ describe("comparison path labels", () => {
     expect(label).not.toContain("pre-pass（失敗）");
     expect(attemptedPathLabel("worker-vibrato", "worker-connect")).toBe(
       "Worker AzooKey WASM 未実行",
+    );
+  });
+
+  it("marks an in-flight row's route as planned rather than reached", () => {
+    // A row has no failedStage until it settles, so labelling it with the full
+    // route would claim a Worker conversion that has not run yet.
+    for (const state of ["queued", "wasm", "sending"] as const) {
+      expect(rowPathLabel("worker-vibrato", state)).toBe("Worker AzooKey WASM（予定）");
+      expect(rowPathLabel("browser-vibrato", state)).toBe(
+        "Browser WASM pre-pass → Worker AzooKey WASM（予定）",
+      );
+    }
+    // Settled rows keep describing what actually happened.
+    expect(rowPathLabel("worker-vibrato", "done")).toBe("Worker AzooKey WASM");
+    expect(rowPathLabel("browser-vibrato", "error", "browser-wasm")).toBe(
+      "Browser WASM pre-pass（失敗） / Worker AzooKey WASM 未実行",
     );
   });
 });
