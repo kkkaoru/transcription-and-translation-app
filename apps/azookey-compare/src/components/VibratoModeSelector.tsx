@@ -14,8 +14,9 @@ export interface VibratoModeSelectorProps {
 /**
  * Small controlled selector shared by the comparison page and future embeds.
  * The option descriptions intentionally remain visible below the select so a
- * mode change explains the optional browser pre-pass path and the always-Worker
- * AzooKey WASM conversion. Component/file names keep the historical "Vibrato"
+ * mode change explains the browser pre-pass path, which is required once that
+ * mode is selected, and the always-Worker AzooKey WASM conversion.
+ * Component/file names keep the historical "Vibrato"
  * identifier; user-visible copy must not claim Vibrato runs.
  */
 export const VibratoModeSelector = ({

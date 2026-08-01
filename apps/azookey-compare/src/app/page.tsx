@@ -12,6 +12,7 @@ import {
   type ComparisonMode,
   comparisonModeOptions,
   DEFAULT_COMPARISON_CONFIG,
+  hasBrowserWasmConfiguration,
 } from "../lib/contract";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import {
@@ -303,8 +304,7 @@ export default function ComparePage() {
     );
   };
 
-  const browserWasmConfigured =
-    Boolean(config.browserWasmModuleUrl?.trim()) || Boolean(config.browserWasmGlobalName?.trim());
+  const browserWasmConfigured = hasBrowserWasmConfiguration(config);
 
   const pathSummary = useMemo(
     () => comparisonPathSummary(config.mode, browserWasmConfigured),
