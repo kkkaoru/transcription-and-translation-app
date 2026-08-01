@@ -1,5 +1,6 @@
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { cleanBuildArtifacts } from "./clean-build-artifacts.mjs";
 
 interface HostTarget {
   readonly bunTarget: string;
@@ -328,6 +329,10 @@ const buildParapperSidecar = (target: HostTarget): void => {
 const target = targetForHost();
 const gatewayOutput = join(binariesDir, `kotoba-inference-gateway-${target.suffix}`);
 
+// Keep each sidecar/Tauri build bounded to the current generated outputs. The
+// cleanup intentionally preserves Rust/CMake incremental caches and only
+// removes exact frontend/bundle outputs plus Bun compile leftovers.
+await cleanBuildArtifacts();
 mkdirSync(dirname(gatewayOutput), { recursive: true });
 run("Kotoba Beacon inference gateway", [
   process.execPath,
@@ -340,6 +345,11 @@ run("Kotoba Beacon inference gateway", [
 buildParapperSidecar(target);
 buildZenzSidecar(target);
 buildLlamaSidecar(target);
+// `bun build --compile` leaves a temporary `.bun-build` Mach-O next to the
+// output even after the compiled binary has been copied. Remove only that
+// temporary file after a successful sidecar build; fresh `dist` output is
+// retained for the subsequent Tauri step.
+await cleanBuildArtifacts({ temporaryOnly: true });
 
 process.stdout.write(
   `Bundled sidecars: ${basename(gatewayOutput)}, kotoba-parapper-${target.suffix}, kotoba-zenz-server-${target.suffix}, and kotoba-llama-server-${target.suffix}\n`,

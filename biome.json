@@ -16,7 +16,8 @@
       "!.tools",
       "!apps/desktop/src-tauri/gen",
       "!models",
-      "!packages/parapper-asr"
+      "!packages/parapper-asr",
+      "!docs/evidence"
     ]
   },
   "formatter": {
@@ -76,6 +77,18 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["scripts/*.mjs"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",

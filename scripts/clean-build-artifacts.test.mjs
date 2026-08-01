@@ -1,0 +1,123 @@
+import { strict as assert } from "node:assert";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import { cleanBuildArtifacts } from "./clean-build-artifacts.mjs";
+
+const temporaryRoots = [];
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+
+const createRoot = async () => {
+  const root = await mkdtemp(join(tmpdir(), "kotoba-build-cleanup-"));
+  temporaryRoots.push(root);
+  return root;
+};
+
+const createFile = async (root, relativePath) => {
+  const file = join(root, relativePath);
+  await mkdir(join(file, ".."), { recursive: true });
+  await writeFile(file, "generated");
+  return file;
+};
+
+afterEach(async () => {
+  while (temporaryRoots.length > 0) {
+    const root = temporaryRoots.pop();
+    if (root) await rm(root, { recursive: true, force: true });
+  }
+});
+
+describe("cleanBuildArtifacts", () => {
+  it("removes stale Bun compile files and explicit build output while preserving caches", async () => {
+    const root = await createRoot();
+    const staleBunBuild = await createFile(root, ".deadbeefdeadbeef-00000000.bun-build");
+    const malformedBunBuild = await createFile(root, ".abc-00000000.bun-build");
+    const unrelatedHiddenFile = await createFile(root, ".keep-me");
+    const nestedBunBuild = await createFile(root, "nested/.deadbeef-00000000.bun-build");
+    const frontendOutput = await createFile(root, "apps/desktop/dist/assets/index.js");
+    const gatewayOutput = await createFile(root, "apps/inference-gateway/dist/index.js");
+    const tauriBundle = await createFile(
+      root,
+      "apps/desktop/src-tauri/target/release/bundle/macos/Kotoba Beacon.app/Contents/Info.plist",
+    );
+    const targetCache = await createFile(
+      root,
+      "apps/desktop/src-tauri/target/release/cache/keep.o",
+    );
+    const releaseBinary = await createFile(
+      root,
+      "apps/desktop/src-tauri/target/release/kotoba-beacon",
+    );
+
+    await cleanBuildArtifacts({ root });
+
+    for (const removed of [staleBunBuild, frontendOutput, gatewayOutput, tauriBundle]) {
+      assert.equal(existsSync(removed), false, `stale output remains: ${removed}`);
+    }
+    for (const preserved of [
+      malformedBunBuild,
+      unrelatedHiddenFile,
+      nestedBunBuild,
+      targetCache,
+      releaseBinary,
+    ]) {
+      assert.equal(existsSync(preserved), true, `unrelated file was removed: ${preserved}`);
+    }
+  });
+
+  it("supports a dry run without deleting any output", async () => {
+    const root = await createRoot();
+    const staleBunBuild = await createFile(root, ".deadbeefdeadbeef-00000000.bun-build");
+    const frontendOutput = await createFile(root, "apps/desktop/dist/assets/index.js");
+    const targetCache = await createFile(
+      root,
+      "apps/desktop/src-tauri/target/release/cache/keep.o",
+    );
+
+    await cleanBuildArtifacts({ root, dryRun: true });
+
+    for (const preserved of [staleBunBuild, frontendOutput, targetCache]) {
+      assert.equal(existsSync(preserved), true, `dry run removed: ${preserved}`);
+    }
+  });
+
+  it("supports temporary-only cleanup without touching generated directories", async () => {
+    const root = await createRoot();
+    const staleBunBuild = await createFile(root, ".deadbeefdeadbeef-00000000.bun-build");
+    const frontendOutput = await createFile(root, "apps/desktop/dist/assets/index.js");
+
+    await cleanBuildArtifacts({ root, temporaryOnly: true });
+
+    assert.equal(existsSync(staleBunBuild), false);
+    assert.equal(existsSync(frontendOutput), true);
+  });
+
+  it("rejects broad or symlinked roots before removing anything", async () => {
+    const root = await createRoot();
+    const symlinkRoot = join(root, "link");
+    await symlink(root, symlinkRoot, "dir");
+
+    await assert.rejects(() => cleanBuildArtifacts({ root: tmpdir() }), /temporary test directory/);
+    await assert.rejects(() => cleanBuildArtifacts({ root: "/" }), /filesystem root/);
+    await assert.rejects(() => cleanBuildArtifacts({ root: symlinkRoot }), /real directory/);
+  });
+
+  it("is wired into every build entrypoint", async () => {
+    const workspace = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
+    const desktop = JSON.parse(
+      await readFile(join(repositoryRoot, "apps/desktop/package.json"), "utf8"),
+    );
+    const cleanup = "clean-build-artifacts";
+
+    for (const scriptName of ["build", "sidecar:build", "gateway:build", "clean:build"]) {
+      assert.match(workspace.scripts[scriptName], new RegExp(cleanup));
+    }
+    for (const scriptName of ["build", "tauri:build", "tauri:build:release"]) {
+      assert.match(desktop.scripts[scriptName], new RegExp(cleanup));
+    }
+    assert.match(workspace.scripts["test:build-cleanup"], /node --test/);
+  });
+});
