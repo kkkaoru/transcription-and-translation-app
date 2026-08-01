@@ -116,8 +116,11 @@ const renderFrame = (
   if (!context) {
     return null;
   }
-  canvas.width = width;
-  canvas.height = height;
+  // Caller may already size the canvas; only resize when dimensions change.
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
   context.clearRect(0, 0, width, height);
 
   const blockWidth = Math.max(
@@ -192,6 +195,41 @@ const renderFrame = (
   };
 };
 
+/** Cache fonts.ready so caption updates do not re-await every paint. */
+let fontsReady: Promise<void> | null = null;
+const ensureFontsReady = (): Promise<void> => {
+  if (typeof document === "undefined" || !document.fonts?.ready) {
+    return Promise.resolve();
+  }
+  if (!fontsReady) {
+    fontsReady = document.fonts.ready.then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+  return fontsReady;
+};
+
+/** Stable key for display-relevant native frame inputs (skip identical republish). */
+const framePaintKey = (config: AppConfig, caption: CaptionPayload): string =>
+  [
+    caption.id,
+    caption.sourceText,
+    caption.translationText,
+    caption.stage ?? "",
+    config.overlay.width,
+    config.overlay.height,
+    config.overlay.order,
+    config.overlay.gapPx,
+    config.overlay.safeAreaPx,
+    config.overlay.captionXPercent,
+    config.overlay.captionYPercent,
+    config.overlay.source.fontSizePx,
+    config.overlay.source.color,
+    config.overlay.translation.fontSizePx,
+    config.overlay.translation.color,
+  ].join("\u0001");
+
 export const NativeFramePublisher = ({
   config,
   caption,
@@ -200,27 +238,61 @@ export const NativeFramePublisher = ({
   caption: CaptionPayload;
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const lastPaintKeyRef = useRef<string>("");
+  const lastSizeRef = useRef({ width: 0, height: 0 });
 
   useEffect(() => {
     if (!bridge.isDesktop()) {
       return;
     }
+    const paintKey = framePaintKey(config, caption);
+    if (paintKey === lastPaintKeyRef.current) {
+      return;
+    }
+
     let cancelled = false;
-    void document.fonts.ready.then(() => {
-      const canvas = canvasRef.current;
-      if (!canvas || cancelled) {
-        return;
-      }
-      const frame = renderFrame(canvas, config, caption);
-      if (!frame) {
-        return;
-      }
-      void bridge
-        .publishOverlayFrame(bytesToBase64(frame.pixels), frame.width, frame.height)
-        .catch(() => undefined);
-    });
+    let raf = 0;
+    const schedule = (): void => {
+      // Coalesce burst progressive updates (ASR → normalize → translate) into one frame.
+      raf = requestAnimationFrame(() => {
+        void ensureFontsReady().then(() => {
+          const canvas = canvasRef.current;
+          if (!canvas || cancelled) {
+            return;
+          }
+          // Re-check after rAF: a newer effect may have cancelled this paint.
+          if (cancelled) {
+            return;
+          }
+          const nextKey = framePaintKey(config, caption);
+          if (nextKey === lastPaintKeyRef.current) {
+            return;
+          }
+          const width = Math.max(1, Math.round(config.overlay.width));
+          const height = Math.max(1, Math.round(config.overlay.height));
+          // Avoid resetting the bitmap when only text changes (cheaper clearRect path).
+          if (lastSizeRef.current.width !== width || lastSizeRef.current.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+            lastSizeRef.current = { width, height };
+          }
+          const frame = renderFrame(canvas, config, caption);
+          if (!frame || cancelled) {
+            return;
+          }
+          lastPaintKeyRef.current = nextKey;
+          void bridge
+            .publishOverlayFrame(bytesToBase64(frame.pixels), frame.width, frame.height)
+            .catch(() => undefined);
+        });
+      });
+    };
+    schedule();
     return () => {
       cancelled = true;
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
     };
   }, [caption, config]);
 

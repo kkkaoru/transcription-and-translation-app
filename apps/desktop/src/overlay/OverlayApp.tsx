@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { bridge } from "../core/bridge";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
+import { markCaptionDisplay } from "../core/display-timing";
 import type { AppConfig, CaptionPayload } from "../core/types";
 import { OverlayView } from "./CaptionOverlay";
 import { createPreviewCaption } from "./captions";
@@ -35,9 +36,10 @@ export const OverlayApp = () => {
       .listenCaptions((nextCaption) => {
         setCaption((current) => {
           const merged = mergeCaptionPayload(current, nextCaption);
-          if (merged === null) {
+          if (merged === null || merged === current) {
             return current;
           }
+          markCaptionDisplay(merged);
           return merged;
         });
       })

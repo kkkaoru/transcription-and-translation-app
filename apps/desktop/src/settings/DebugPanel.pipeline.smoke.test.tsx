@@ -120,6 +120,7 @@ describe("DebugPanel pipeline stages", () => {
   };
 
   it("shows independent ASR / normalizer / translator sections and utterance stage rows", async () => {
+    const base = Date.now();
     pushPipelineStageEvent({
       stage: "asr",
       utteranceId: "utt-1",
@@ -128,7 +129,8 @@ describe("DebugPanel pipeline stages", () => {
       outputText: "こんにちは",
       durationMs: 120,
       ok: true,
-      at: Date.now(),
+      startedAt: base,
+      at: base + 120,
     });
     pushPipelineStageEvent({
       stage: "normalize",
@@ -138,7 +140,8 @@ describe("DebugPanel pipeline stages", () => {
       outputText: "こんにちは",
       durationMs: 3,
       ok: true,
-      at: Date.now(),
+      startedAt: base + 120,
+      at: base + 123,
     });
     pushPipelineStageEvent({
       stage: "translate",
@@ -148,7 +151,8 @@ describe("DebugPanel pipeline stages", () => {
       outputText: "Hello",
       durationMs: 90,
       ok: true,
-      at: Date.now(),
+      startedAt: base + 123,
+      at: base + 213,
     });
 
     await act(async () => {
@@ -170,6 +174,8 @@ describe("DebugPanel pipeline stages", () => {
     expect(container.querySelector('[data-testid="debug-stage-asr"]')?.textContent).toMatch(
       /120\s*ms/,
     );
+    expect(container.querySelector('[data-testid="debug-stage-asr-start"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="debug-stage-asr-end"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="debug-stage-normalize"]')?.textContent).toMatch(
       /3\s*ms/,
     );
@@ -183,17 +189,26 @@ describe("DebugPanel pipeline stages", () => {
       /120\s*ms/,
     );
     expect(container.querySelector('[data-testid="debug-stage-row-asr"]')?.textContent).toContain(
+      "t+0 ms",
+    );
+    expect(container.querySelector('[data-testid="debug-stage-row-asr"]')?.textContent).toContain(
       "こんにちは",
     );
     expect(
       container.querySelector('[data-testid="debug-stage-row-translate"]')?.textContent,
     ).toContain("Hello");
+    expect(
+      container.querySelector('[data-testid="debug-stage-row-translate"]')?.textContent,
+    ).toMatch(/t\+123\s*ms/);
     expect(container.querySelector('[data-testid="debug-stage-feed"]')?.textContent).toContain(
       "parapper-ja",
     );
     expect(container.querySelector('[data-testid="debug-chunk-timing"]')).not.toBeNull();
     expect(container.textContent).toContain("詳細ログ");
     expect(container.textContent).toContain("発話ごとの段階行");
+    expect(container.querySelector('[data-testid="debug-enable-hint"]')?.textContent).toContain(
+      "デバッグ情報",
+    );
     expect(container.querySelector(".debug-verbose-toggle input")).not.toBeNull();
   });
 
@@ -270,6 +285,8 @@ describe("DebugPanel pipeline stages", () => {
     expect(toggle).not.toBeNull();
     expect(toggle?.checked).toBe(false);
     expect(localStorage.getItem("kotoba-beacon.debug.verbosePipeline")).toBeNull();
+    // Open state is persisted so debug mode can remain on across reloads.
+    expect(localStorage.getItem("kotoba-beacon.debug.panelOpen")).toBe("1");
 
     // Panel subscribes to pipeline stage store while open; enabling verbose updates the checkbox.
     await act(async () => {
@@ -282,5 +299,37 @@ describe("DebugPanel pipeline stages", () => {
     expect(
       (container.querySelector(".debug-verbose-toggle input") as HTMLInputElement | null)?.checked,
     ).toBe(true);
+  });
+
+  it("restores previously open debug panel without requiring a re-toggle", async () => {
+    localStorage.setItem("kotoba-beacon.debug.panelOpen", "1");
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "utt-restore",
+      modelId: "parapper-ja",
+      inputSnippet: "wav",
+      outputText: "復元",
+      durationMs: 10,
+      ok: true,
+      startedAt: Date.now() - 10,
+      at: Date.now(),
+    });
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <DebugPanel />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const details = container.querySelector("details");
+    expect(details?.open).toBe(true);
+    expect(container.querySelector('[data-testid="debug-stage-asr"]')?.textContent).toContain(
+      "復元",
+    );
   });
 });

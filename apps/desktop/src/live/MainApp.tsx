@@ -22,6 +22,8 @@ import {
   DEFAULT_RUNTIME_STATUS,
 } from "../core/defaults";
 import { pushDiagnosticEvent } from "../core/diagnostics";
+import { clearCaptionDisplayTiming, markCaptionDisplay } from "../core/display-timing";
+import { clearInputLevelDb, setInputLevelDb } from "../core/input-level";
 import {
   isTransientAudioNotice,
   type Notice,
@@ -71,11 +73,12 @@ export const MainApp = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [inputLevelDb, setInputLevelDb] = useState<number | null>(null);
   const capture = useRef(new MicrophoneCapture());
   const captureAttempt = useRef(0);
   /** Latest-wins ASR queue: 1 in-flight + 1 pending (drop older pending). */
   const chunkProcessor = useRef<LatestWinsProcessor<AudioChunk> | null>(null);
+  /** Avoid runtime:status re-renders when the backend re-emits an identical snapshot. */
+  const lastRuntimeStatusKey = useRef<string>("");
 
   const refreshDevices = useCallback(async (options?: { primePermission?: boolean }) => {
     try {
@@ -154,9 +157,10 @@ export const MainApp = () => {
         }
         setCaption((current) => {
           const merged = mergeCaptionPayload(current, nextCaption);
-          if (merged === null) {
+          if (merged === null || merged === current) {
             return current;
           }
+          markCaptionDisplay(merged);
           return merged;
         });
         const stage =
@@ -214,17 +218,32 @@ export const MainApp = () => {
       .listenRuntime((nextStatus) => {
         // Ambient / no-speech chunks must never pin a fatal lastError in the UI.
         // Keep the detail in the debug event log only.
+        const sanitized =
+          nextStatus.lastError && isNoSpeechBridgeError(nextStatus.lastError)
+            ? { ...nextStatus, lastError: null }
+            : nextStatus;
         if (nextStatus.lastError && isNoSpeechBridgeError(nextStatus.lastError)) {
           pushDiagnosticEvent("audio", "No speech (soft-skip)", nextStatus.lastError);
-          setStatus({ ...nextStatus, lastError: null });
+        }
+        const statusKey = [
+          sanitized.status,
+          sanitized.platform,
+          sanitized.backendReachable,
+          sanitized.nativeOutput ?? "",
+          sanitized.lastError ?? "",
+        ].join("|");
+        if (statusKey === lastRuntimeStatusKey.current) {
           return;
         }
-        setStatus(nextStatus);
-        pushDiagnosticEvent(
-          "runtime",
-          `Runtime → ${nextStatus.status}`,
-          nextStatus.lastError ?? `backend=${String(nextStatus.backendReachable)}`,
-        );
+        lastRuntimeStatusKey.current = statusKey;
+        setStatus(sanitized);
+        if (!(nextStatus.lastError && isNoSpeechBridgeError(nextStatus.lastError))) {
+          pushDiagnosticEvent(
+            "runtime",
+            `Runtime → ${sanitized.status}`,
+            sanitized.lastError ?? `backend=${String(sanitized.backendReachable)}`,
+          );
+        }
       })
       .then((dispose) => {
         if (mounted) {
@@ -299,7 +318,8 @@ export const MainApp = () => {
     const previousMicrophone = capture.current;
     capture.current = microphone;
     setNotice(null);
-    setInputLevelDb(null);
+    clearInputLevelDb();
+    clearCaptionDisplayTiming();
     setStatus((current) => ({ ...current, status: "starting", lastError: null }));
     pushDiagnosticEvent(
       "audio",
@@ -356,17 +376,33 @@ export const MainApp = () => {
           setChunkTimingStats(stats);
         },
         process: async (chunk) => {
+          const invokeStarted =
+            typeof performance !== "undefined" && typeof performance.now === "function"
+              ? performance.now()
+              : Date.now();
           try {
             const nextCaption = await bridge.transcribeAudioChunk(chunk);
             if (attempt !== captureAttempt.current) {
               return;
             }
+            const invokeMs = Math.max(
+              0,
+              Math.round(
+                (typeof performance !== "undefined" && typeof performance.now === "function"
+                  ? performance.now()
+                  : Date.now()) - invokeStarted,
+              ),
+            );
             // Soft-skip silence / no-speech chunks (empty sourceText) so ambient
             // noise that passes the RMS gate does not clear the live caption.
             if (!nextCaption.sourceText.trim()) {
               const detail =
                 formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics()) || nextCaption.id;
-              pushDiagnosticEvent("audio", "No speech (soft-skip)", detail);
+              pushDiagnosticEvent(
+                "audio",
+                "No speech (soft-skip)",
+                `${detail} · invoke=${invokeMs}ms`,
+              );
               setStatus((current) =>
                 current.lastError ? { ...current, lastError: null } : current,
               );
@@ -374,13 +410,19 @@ export const MainApp = () => {
               setNotice(noticeForNoSpeech(detail));
               return;
             }
+            pushDiagnosticEvent(
+              "audio",
+              "ASR source ready",
+              `id=${nextCaption.id} · invoke=${invokeMs}ms · src=${nextCaption.sourceText.slice(0, 48)}`,
+            );
             // Caption events usually arrive first (progressive emit); still merge
             // the invoke result for browser-preview and event-loss fallbacks.
             setCaption((current) => {
               const merged = mergeCaptionPayload(current, nextCaption);
-              if (merged === null) {
+              if (merged === null || merged === current) {
                 return current;
               }
+              markCaptionDisplay(merged);
               return merged;
             });
             setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
@@ -392,14 +434,18 @@ export const MainApp = () => {
             // Defense in depth: if transcript_missing still arrives as Err
             // (older backend, gateway shape drift), soft-skip instead of toasting.
             if (!shouldToastAudioProcessingFailure(error)) {
-              const detail =
-                formatBridgeError(error) ??
-                formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
-              pushDiagnosticEvent("audio", "No speech (soft-skip)", detail || undefined);
+              const diag = formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
+              const detail = [formatBridgeError(error), diag].filter(Boolean).join(" · ");
+              const invokeMs = Math.round(performance.now() - invokeStarted);
+              pushDiagnosticEvent(
+                "audio",
+                "No speech (soft-skip)",
+                `${detail || "transcript_missing"} · invoke=${invokeMs}ms`,
+              );
               setStatus((current) =>
                 current.lastError ? { ...current, lastError: null } : current,
               );
-              setNotice(noticeForNoSpeech(detail || undefined));
+              setNotice(noticeForNoSpeech(detail || diag || undefined));
               return;
             }
             const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
@@ -454,6 +500,7 @@ export const MainApp = () => {
         },
         (rmsDb) => {
           if (attempt === captureAttempt.current) {
+            // External store: does not re-render MainApp / caption preview.
             setInputLevelDb(rmsDb);
           }
         },
@@ -496,9 +543,10 @@ export const MainApp = () => {
     chunkProcessor.current?.reset();
     chunkProcessor.current = null;
     clearChunkTimingStats();
+    clearCaptionDisplayTiming();
     const microphone = capture.current;
     capture.current = new MicrophoneCapture();
-    setInputLevelDb(null);
+    clearInputLevelDb();
     pushDiagnosticEvent("audio", "Capture stopping");
     const results = await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
     const failure = results.find((result) => result.status === "rejected");
@@ -622,7 +670,6 @@ export const MainApp = () => {
               caption={caption}
               devices={devices}
               message={noticeText}
-              inputLevelDb={inputLevelDb}
               onToggleCapture={toggleCapture}
               onOpenOverlay={() => void openOverlay()}
               onDeviceChange={handleDeviceChange}

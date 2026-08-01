@@ -15,11 +15,19 @@ import {
   getPipelineStageStoreRevision,
   getUtteranceStageGroups,
   isVerbosePipelineLogging,
+  readDebugPanelOpenPreference,
+  relativeStageOffsetMs,
   setVerbosePipelineLogging,
   stageDisplayLabel,
   subscribePipelineStages,
+  writeDebugPanelOpenPreference,
 } from "../core/pipelineStages";
-import type { AudioInputDevice, ModelStatusEntry, PipelineStageName } from "../core/types";
+import type {
+  AudioInputDevice,
+  ModelStatusEntry,
+  PipelineStageEvent,
+  PipelineStageName,
+} from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 
 type JsonObject = Record<string, unknown>;
@@ -147,12 +155,38 @@ const formatStageAt = (at: number, locale: string): string => {
   }
   // Backend emits epoch millis; accept seconds as a fallback.
   const ms = at < 1_000_000_000_000 ? at * 1000 : at;
-  return formatEventTime(new Date(ms).toISOString(), locale);
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return String(at);
+  }
+  // Include milliseconds so short stages still show distinct start/end.
+  const clock = new Intl.DateTimeFormat(locale === "ja" ? "ja-JP" : "en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+  const millis = String(date.getMilliseconds()).padStart(3, "0");
+  return `${clock}.${millis}`;
+};
+
+const formatRelativeOffset = (offsetMs: number): string => {
+  if (!Number.isFinite(offsetMs) || offsetMs <= 0) {
+    return "t+0 ms";
+  }
+  return `t+${Math.round(offsetMs)} ms`;
+};
+
+const stageTimingSummary = (event: PipelineStageEvent, locale: string): string => {
+  const start = formatStageAt(event.startedAt, locale);
+  const end = formatStageAt(event.at, locale);
+  return `${start} → ${end} · ${formatMs(event.durationMs)}`;
 };
 
 export function DebugPanel() {
   const { locale, t } = useI18n();
-  const [open, setOpen] = useState(false);
+  // Persist open so developers can leave debug mode expanded across reloads.
+  const [open, setOpen] = useState(() => readDebugPanelOpenPreference());
   const [backendInfo, setBackendInfo] = useState<JsonObject | null>(null);
   const [frontendInfo, setFrontendInfo] = useState<JsonObject | null>(null);
   const [captureInfo, setCaptureInfo] = useState<AudioCaptureDiagnostics | null>(null);
@@ -400,11 +434,16 @@ export function DebugPanel() {
   const frontendViewportValue = pick(frontendInfo, "viewport");
   const frontendViewport = isRecord(frontendViewportValue) ? frontendViewportValue : null;
 
+  const setPanelOpen = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    writeDebugPanelOpenPreference(nextOpen);
+  }, []);
+
   return (
-    <section className="panel settings-section debug-panel">
+    <section className="panel settings-section debug-panel" data-testid="debug-panel">
       <details
         open={open}
-        onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}
+        onToggle={(event) => setPanelOpen((event.currentTarget as HTMLDetailsElement).open)}
       >
         <summary className="debug-summary">
           <span className="eyebrow">{t("debug.eyebrow")}</span>
@@ -412,6 +451,9 @@ export function DebugPanel() {
         </summary>
         <div className="debug-content">
           <p className="download-lead">{t("debug.lead")}</p>
+          <p className="debug-inline-meta" data-testid="debug-enable-hint">
+            {t("debug.enableHint")}
+          </p>
           <div className="debug-actions">
             <button
               className="secondary-button"
@@ -577,7 +619,7 @@ export function DebugPanel() {
                       >
                         <header className="debug-stage-card-head">
                           <strong>{stageDisplayLabel(name)}</strong>
-                          <span className="debug-stage-ms">
+                          <span className="debug-stage-ms" data-testid={`debug-stage-${name}-ms`}>
                             {latest ? formatMs(latest.durationMs) : "—"}
                           </span>
                         </header>
@@ -600,15 +642,31 @@ export function DebugPanel() {
                             </li>
                             <li>
                               <span>{t("debug.stageInput")}</span>
-                              <code className="debug-path">{latest.inputSnippet || "—"}</code>
+                              <code className="debug-path debug-stage-text">
+                                {latest.inputSnippet || "—"}
+                              </code>
                             </li>
                             <li>
                               <span>{t("debug.stageOutput")}</span>
-                              <code className="debug-path">{latest.outputText || "—"}</code>
+                              <code className="debug-path debug-stage-text">
+                                {latest.outputText || "—"}
+                              </code>
                             </li>
                             <li>
-                              <span>{t("debug.stageAt")}</span>
-                              <code>{formatStageAt(latest.at, locale)}</code>
+                              <span>{t("debug.stageStart")}</span>
+                              <code data-testid={`debug-stage-${name}-start`}>
+                                {formatStageAt(latest.startedAt, locale)}
+                              </code>
+                            </li>
+                            <li>
+                              <span>{t("debug.stageEnd")}</span>
+                              <code data-testid={`debug-stage-${name}-end`}>
+                                {formatStageAt(latest.at, locale)}
+                              </code>
+                            </li>
+                            <li>
+                              <span>{t("debug.stageDuration")}</span>
+                              <code>{formatMs(latest.durationMs)}</code>
                             </li>
                           </ul>
                         ) : (
@@ -641,7 +699,7 @@ export function DebugPanel() {
                           {group.stages.map((event) => (
                             <li
                               key={`${group.utteranceId}-${event.stage}-${event.at}-${event.durationMs}-${event.outputText}`}
-                              className={`debug-stage-row${event.ok ? "" : " is-error"}`}
+                              className={`debug-stage-row debug-stage-row-${event.stage}${event.ok ? "" : " is-error"}`}
                               data-testid={`debug-stage-row-${event.stage}`}
                             >
                               <div className="debug-stage-row-main">
@@ -649,12 +707,18 @@ export function DebugPanel() {
                                   {stageDisplayLabel(String(event.stage))}
                                 </span>
                                 <span className="debug-stage-ms">{formatMs(event.durationMs)}</span>
+                                <span className="debug-stage-relative">
+                                  {formatRelativeOffset(relativeStageOffsetMs(event, group))}
+                                </span>
                                 <span className="debug-stage-status">
                                   {event.ok ? t("debug.stageOk") : t("debug.stageFailed")}
                                 </span>
                               </div>
-                              <code className="debug-path debug-stage-row-output">
+                              <code className="debug-path debug-stage-row-output debug-stage-text">
                                 {event.outputText || "—"}
+                              </code>
+                              <code className="debug-path debug-stage-row-timing">
+                                {stageTimingSummary(event, locale)}
                               </code>
                               <code className="debug-path debug-stage-row-meta">
                                 {event.modelId ? `model=${event.modelId}` : "model=—"}

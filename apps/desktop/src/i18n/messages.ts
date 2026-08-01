@@ -208,6 +208,8 @@ const ja = {
   "debug.eyebrow": "DEVELOPER TOOLS",
   "debug.lead":
     "音声キャプチャ・デバイス一覧・プレビュー設定・モデル配置・サービス到達性・直近イベントを確認し、サポート用にコピーできます。",
+  "debug.enableHint":
+    "設定タブ下部の「デバッグ情報」を開くとパイプライン段階（ASR / 正規化 / 翻訳）がライブ表示されます。開閉状態と詳細ログはローカルに保存され、開発中は開いたまま検証できます。",
   "debug.refresh": "更新",
   "debug.loading": "読み込み中…",
   "debug.copy": "診断 JSON をコピー",
@@ -278,7 +280,10 @@ const ja = {
   "debug.stageModel": "モデル",
   "debug.stageInput": "入力",
   "debug.stageOutput": "出力",
-  "debug.stageAt": "時刻",
+  "debug.stageAt": "終了時刻",
+  "debug.stageStart": "開始",
+  "debug.stageEnd": "終了",
+  "debug.stageDuration": "所要時間",
   "debug.chunkTimingTitle": "チャンク処理タイミング",
   "debug.chunkLastPipeline": "直近パイプライン",
   "debug.chunkFirstCaption": "初回字幕まで",
@@ -503,6 +508,8 @@ const en: Record<MessageKey, string> = {
   "debug.eyebrow": "DEVELOPER TOOLS",
   "debug.lead":
     "Inspect audio capture, device list, preview settings, model layout, service reachability, and recent events. Copy diagnostics for support.",
+  "debug.enableHint":
+    "Open Debug info at the bottom of Settings to watch ASR / normalizer / translator stages live. Open state and verbose logging are saved locally so you can leave debug mode on during development.",
   "debug.refresh": "Refresh",
   "debug.loading": "Loading…",
   "debug.copy": "Copy diagnostics JSON",
@@ -573,7 +580,10 @@ const en: Record<MessageKey, string> = {
   "debug.stageModel": "Model",
   "debug.stageInput": "Input",
   "debug.stageOutput": "Output",
-  "debug.stageAt": "At",
+  "debug.stageAt": "Ended at",
+  "debug.stageStart": "Start",
+  "debug.stageEnd": "End",
+  "debug.stageDuration": "Duration",
   "debug.chunkTimingTitle": "Chunk timing",
   "debug.chunkLastPipeline": "Last pipeline",
   "debug.chunkFirstCaption": "Time to first caption",

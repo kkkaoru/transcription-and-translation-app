@@ -1,9 +1,10 @@
 import type { ChangeEventHandler, CSSProperties } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AudioDeviceSelect } from "../components/AudioDeviceSelect";
 import { Field } from "../components/Field";
 import { rmsDbToMeterLevel } from "../core/audio";
 import { bridge } from "../core/bridge";
+import { getInputLevelDb, subscribeInputLevel } from "../core/input-level";
 import { computePreviewFitScale } from "../core/style";
 import type { AppConfig, AudioInputDevice, CaptionPayload, RuntimeStatus } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
@@ -30,13 +31,67 @@ const PipelineRow = ({
   </div>
 );
 
+/**
+ * Level meter only — subscribes to the input-level store so ~12 Hz RMS ticks
+ * never re-render the caption preview or transcript panel.
+ */
+const InputLevelMeter = memo(
+  ({
+    capturing,
+    waitingLabel,
+    disconnectedLabel,
+    ariaLabel,
+  }: {
+    capturing: boolean;
+    waitingLabel: string;
+    disconnectedLabel: string;
+    ariaLabel: string;
+  }) => {
+    const inputLevelDb = useSyncExternalStore(
+      subscribeInputLevel,
+      getInputLevelDb,
+      getInputLevelDb,
+    );
+    const meterLevel = capturing ? rmsDbToMeterLevel(inputLevelDb) : 0;
+    const meterLabel =
+      capturing && inputLevelDb !== null && Number.isFinite(inputLevelDb)
+        ? `${inputLevelDb.toFixed(0)} dB`
+        : capturing
+          ? waitingLabel
+          : disconnectedLabel;
+    return (
+      <div className={`input-level${capturing ? " active" : ""}`} data-testid="input-level-meter">
+        <meter
+          className="input-level-meter"
+          min={0}
+          max={1}
+          low={0.25}
+          high={0.85}
+          optimum={0.55}
+          value={meterLevel}
+          aria-label={ariaLabel}
+        />
+        <span className="input-level-label">{meterLabel}</span>
+      </div>
+    );
+  },
+);
+InputLevelMeter.displayName = "InputLevelMeter";
+
+/** Caption preview is isolated so sibling panel updates do not re-layout the stage. */
+const LiveCaptionPreview = memo(
+  ({ config, caption }: { config: AppConfig; caption: CaptionPayload }) => (
+    <OverlayView config={config} caption={caption} preview placeholder={false} />
+  ),
+);
+LiveCaptionPreview.displayName = "LiveCaptionPreview";
+
 export const LiveView = ({
   config,
   status,
   caption,
   devices,
   message,
-  inputLevelDb = null,
   onToggleCapture,
   onOpenOverlay,
   onDeviceChange,
@@ -48,8 +103,6 @@ export const LiveView = ({
   caption: CaptionPayload;
   devices: AudioInputDevice[];
   message: string | null;
-  /** Live microphone RMS in dBFS for the local level meter (no OBS required). */
-  inputLevelDb?: number | null;
   onToggleCapture: () => void;
   onOpenOverlay: () => void;
   onDeviceChange: ChangeEventHandler<HTMLSelectElement>;
@@ -95,22 +148,18 @@ export const LiveView = ({
       transformOrigin: "center center",
     };
   }, [measured, overlayHeight, overlayWidth, previewScale]);
-  const captionTime = caption.receivedAt
-    ? new Intl.DateTimeFormat(locale === "ja" ? "ja-JP" : "en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }).format(caption.receivedAt)
-    : "--:--:--";
+  const captionTime = useMemo(() => {
+    if (!caption.receivedAt) {
+      return "--:--:--";
+    }
+    return new Intl.DateTimeFormat(locale === "ja" ? "ja-JP" : "en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(caption.receivedAt);
+  }, [caption.receivedAt, locale]);
   const capturing = status.status === "capturing";
   const starting = status.status === "starting";
-  const meterLevel = capturing ? rmsDbToMeterLevel(inputLevelDb) : 0;
-  const meterLabel =
-    capturing && inputLevelDb !== null && Number.isFinite(inputLevelDb)
-      ? `${inputLevelDb.toFixed(0)} dB`
-      : capturing
-        ? t("live.inputWaiting")
-        : t("live.disconnected");
 
   // Re-bind when overlay design size changes so aspect-ratio restyle is measured.
   // biome-ignore lint/correctness/useExhaustiveDependencies: design size is a re-measure trigger, not read in the body
@@ -197,7 +246,7 @@ export const LiveView = ({
               style={scaleHostStyle}
               data-testid="preview-scale-host"
             >
-              <OverlayView config={config} caption={caption} preview placeholder={false} />
+              <LiveCaptionPreview config={config} caption={caption} />
             </div>
           </div>
           <div className="preview-footer">
@@ -229,22 +278,12 @@ export const LiveView = ({
                 onChange={onDeviceChange}
               />
             </Field>
-            <div
-              className={`input-level${capturing ? " active" : ""}`}
-              data-testid="input-level-meter"
-            >
-              <meter
-                className="input-level-meter"
-                min={0}
-                max={1}
-                low={0.25}
-                high={0.85}
-                optimum={0.55}
-                value={meterLevel}
-                aria-label={t("live.inputLevel")}
-              />
-              <span className="input-level-label">{meterLabel}</span>
-            </div>
+            <InputLevelMeter
+              capturing={capturing}
+              waitingLabel={t("live.inputWaiting")}
+              disconnectedLabel={t("live.disconnected")}
+              ariaLabel={t("live.inputLevel")}
+            />
             <button className="text-button" type="button" onClick={onRefreshDevices}>
               {t("audio.refresh")}
             </button>

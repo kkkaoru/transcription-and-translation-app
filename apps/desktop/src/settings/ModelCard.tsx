@@ -91,10 +91,11 @@ export const ModelCard = ({
         {models[family].map((entry) => {
           const copy = modelCopy[entry.id];
           const label = copy?.label ? t(copy.label) : entry.label;
-          // Keep the closed <select> readable in 3-column cards: full "· Recommended"
+          // Keep the closed <select> readable in multi-column cards: full "· Recommended"
           // truncates mid-word ("Recommende") at ~340px. Star marks recommended models.
+          const optionTitle = entry.recommended ? `${label} · ${t("common.recommended")}` : label;
           return (
-            <option value={entry.id} key={entry.id} title={label}>
+            <option value={entry.id} key={entry.id} title={optionTitle}>
               {label}
               {entry.recommended ? " ★" : ""}
             </option>
@@ -114,7 +115,10 @@ export const ModelCard = ({
           >
             <input
               placeholder={t("settings.azooPathPlaceholder")}
-              title={t("settings.azooPathPlaceholder")}
+              title={
+                config.models.paths["azookey-user-dictionary"]?.trim() ||
+                t("settings.azooPathPlaceholder")
+              }
               value={config.models.paths["azookey-user-dictionary"] ?? ""}
               onChange={(event) => onPathChange("azookey-user-dictionary", event.target.value)}
             />
@@ -126,7 +130,10 @@ export const ModelCard = ({
           >
             <input
               placeholder={t("settings.azooPathPlaceholder")}
-              title={t("settings.azooPathPlaceholder")}
+              title={
+                config.models.paths["azookey-learning-memory"]?.trim() ||
+                t("settings.azooPathPlaceholder")
+              }
               value={config.models.paths["azookey-learning-memory"] ?? ""}
               onChange={(event) => onPathChange("azookey-learning-memory", event.target.value)}
             />
