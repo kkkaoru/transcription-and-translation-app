@@ -46,17 +46,37 @@ docs/                    設計・運用・引き継ぎ資料
 
 ```bash
 bun install --frozen-lockfile
+
+# アプリ本体の起動はこれ一本（フロントエンド + Tauri + 内蔵サイドカーを一括起動）
 bun run dev
+
 bun run typecheck
 bun run lint
 bun run format:check
 bun run test:coverage
-bun run build
-bun run tauri:dev
+bun run build                 # フロントエンドの本番出力（dist）
+bun run check:single-app      # 起動経路と単一アプリ構成の静的検査
+bun run check:macos-autoswitch # macOS .app / Dock / graceful quit 検証（macOSのみ）
+bun run verify:tauri:build    # macOS: bundleを構築して実アプリ/native smoke
+bun run verify:tauri:ui       # macOS: Accessibility UI smoke（TCC許可時）
+bun run verify:tauri:build:ui # macOS: build→起動→UI smokeを一括実行
+bun run verify:ui             # Vite画面/AzooKey/VAD/Debug/復旧のブラウザ検証
+bun run rust:lint              # Tauri Rust Clippy（-D warnings、nesting=3）
 
 # Rustも含めたCI相当の検査
 bun run check:all
 ```
+
+`bun run dev` がアプリケーション起動の唯一のエントリポイントです。Vite フロントエンド・Tauri ウィンドウ・内蔵の Gateway / Parapper / model server サイドカーをすべて一括で起動し、単一のアプリ（単一の Dock アイコン）として立ち上がります。従来の `bun run tauri:dev` は `bun run dev` のエイリアスとして残しています。
+
+ブラウザだけでUIの外観を確認したいデバッグ用途には `bun run dev:web`（Vite プレビュー、`http://127.0.0.1:1420`）を使います。これはアプリ本体ではなく、Tauri コマンド・マイク取得・ネイティブオーバーレイが動作しない縮退モードです。通常の起動には `bun run dev` を使い、`dev:web` をアプリ本体の代わりに起動しないでください。
+
+配布用の本番アプリは `bun run build:app` で生成します。これは sidecar のビルドと
+Tauri の `.app` release bundle を一つの経路で実行します。DMGまで作る場合は
+`bun run build:app:dmg` を使えます。既存の CI / 手動手順向けに
+`bun run tauri:build` も同じコマンドの別名として利用できます。
+
+署名付き自動更新成果物（`.app.tar.gz` / `.sig` と `latest.json` 用のアーティファクト）は、秘密鍵を環境変数へ注入したリリース環境でだけ `bun run build:app:release` を実行します。`TAURI_SIGNING_PRIVATE_KEY` がない場合は安全に停止し、秘密鍵をリポジトリや `.env` に保存しません。通常の `build:app` は開発・実機確認用の署名なしbundleです。更新時はTauri bundle全体が置換されるため、Gateway / Parapper / model server / frontend は常に同じrevisionへ切り替わり、macOSではsidecarを停止して同じ`.app`を再起動します。更新feedの署名検証・進捗・失敗理由は設定→デバッグ情報で確認できます。
 
 `bun run test:coverage`と`bun run gateway:test:coverage`は、それぞれの対象にstatements / branches / functions / lines 95%以上を強制します。純粋なAzooKey Rustポートも、GTK/WebKit不要の`bun run rust:azookey:test`とClippyで検査します。
 
@@ -71,16 +91,22 @@ bun run check:all
 
 各段階（ASR / 正規化 / 翻訳）の出力と所要時間を個別に確認できます。
 
-1. アプリで **設定** タブを開く。
-2. 画面下部の **デバッグ情報** を展開する（開閉状態はローカルに保存され、再起動後も維持されます）。
+1. アプリのライブ画面または **設定** タブで **デバッグ情報** を開く（ライブ画面では初期表示、開閉状態はローカルに保存されます）。
 3. キャプチャを開始すると、`ASR (parapper)` / `Normalizer (azookey/zenz)` / `Translator (HY-MT2)` のカードと発話ごとの段階行がライブ更新されます。各行に開始・終了・所要時間と相対オフセット（`t+N ms`）が出ます。
-4. **詳細ログ** をオンにすると、入出力サンプルがコンソール・バックエンドログ・直近イベントにも流れます（`config.debug.verboseLogging` として保存）。
+4. **詳細ログ** をオンにすると、入出力サンプルがパネルの構造化ログへ流れます。ネイティブの継続ログには秘密を避けるため入出力サイズのみを残します（`config.debug.verboseLogging` として保存）。
+5. **ログレベル**（error / warn / info / debug / trace）を切り替えると、構造化ログの表示とコンソール出力がフィルタされます（`config.debug.logLevel`）。
+6. 構造化ログは JSONL / JSON でダウンロードでき、デスクトップでは **ログディレクトリへ保存** もできます。バックエンドの継続ログは `logDir` 配下の `kotoba-beacon*.log` です。
+7. 更新確認・インストールの状態と、Gateway / Parapper / model server sidecar の version・health・切替結果も同じパネルで確認できます。更新イベントと失敗は秘密情報をマスクした構造化ログへ記録します。詳細は [docs/update-runtime-debug.md](docs/update-runtime-debug.md) を参照してください。
 
-ブラウザプレビュー（`bun run dev`）でもパネル自体は開けます。ネイティブの段階イベントは `bun run tauri:dev` でのキャプチャ時に更新されます。
+ブラウザプレビュー（`bun run dev:web`）でもパネル自体は開けます。ネイティブの段階イベントはアプリ本体（`bun run dev`）でのキャプチャ時に更新されます。
+
+### 字幕を一度に表示する量
+
+音声区間の既定値は `640 ms`（設定で `320〜2000 ms`、`32 ms`刻み）です。短くすると初回字幕が速く、長くすると一発話をまとめやすくなります。字幕本文は表示時に日本語を最大28文字、英語を最大48文字ごとの読みやすい行へ分割し、長文でも文字を省略せず、DOM・透明オーバーレイ・native出力で同じ折返しを使います。幅が足りない場合も全文を複数行へ折返すため、極端な縮小や重なりは起きません。
 
 ## 起動とOBSへの追加
 
-1. Kotoba Beacon を起動します。アプリ内蔵の Gateway、Parapper、選択済みの zenz / Hy-MT2 model server が自動で loopback に起動します。
+1. `bun run dev` で Kotoba Beacon を起動します（起動コマンドはこれ一本です）。アプリ内蔵の Gateway、Parapper、選択済みの zenz / Hy-MT2 model server が自動で loopback に起動します。
 2. 初回だけ、選択済みの ASR / GGUF モデルを取得します。Hy-MT2 1.8B標準モデルは約1.13 GBで、取得中はログに進捗が出ます。手動で複数のサーバーを起動する必要はありません。
 3. 「設定」で音声入力デバイス、言語コード、モデル、推論ゲートウェイURLを設定して保存します。
 4. 「マイク一覧を再取得」でデバイス権限後のマイク名を更新します。
@@ -107,12 +133,12 @@ UI は [Simple Light Blue palette](https://www.schemecolor.com/simple-light-blue
 
 ```powershell
 # Windows PowerShell
-bun run tauri:build
+bun run build:app
 ```
 
 ```bash
 # macOS
-bun run tauri:build
+bun run build:app
 ```
 
 すべてのデスクトップビルドでネイティブ出力を有効にします。Spout2/Syphonを使う場合は、対応するOBS側プラグインも別途インストールしてください。ネイティブcrateの初期化に失敗した場合も透明ウィンドウへフォールバックします。

@@ -1,6 +1,6 @@
 # Kotoba Beacon: 作業引き継ぎ
 
-最終更新: 2026-07-29。作業は `main` に線形で統合します。以前の
+最終更新: 2026-08-01。作業は `main` に線形で統合します。以前の
 `agent/kotoba-beacon` ブランチと下書き PR は削除済みです。次の環境では、まず
 `git status -sb` と `git log --oneline origin/main..HEAD` で push 状態を確認してください。
 
@@ -24,6 +24,10 @@ bun run gateway:test:coverage
 bun run worker:typecheck
 bun run worker:test
 ```
+
+デスクトップアプリの起動経路は `bun run dev` に統一しています。ブラウザだけの
+外観確認は `bun run dev:web`、sidecar を含む配布用 Tauri bundle は
+`bun run build:app` を使います（従来の `tauri:dev` / `tauri:build` は互換 alias）。
 
 ダウンロード済みの GGUF / ONNX / BIN モデル、`gateway.config.json`、APIキー、
 `node_modules`、`.tools`、`target` は Git 管理しません。必要なモデルは安全な方法で
@@ -78,6 +82,12 @@ bun run worker:test
 - `bun run lint`、`bun run format:check` は成功。
 - `bun run gateway:build`、`bun run gateway:test:coverage` は成功（20 tests）。
 - `bun run worker:typecheck`、`bun run worker:test` は成功（3 tests）。
+- macOS arm64 で `bun run build:app` を再実行し、Parapper / Gateway / Zenz / Hy-MT2 の
+  sidecar を含む `Kotoba Beacon.app` を生成した。`scripts/tauri-smoke.mjs --keep-alive`
+  で同じ bundle を起動し、VAD 32ms / 0.5、gateway 415→200 復旧、無音 WAV の
+  `200 {"text":""}`、sidecar の同梱バイナリ起動を確認した。短い日本語音声では実際に
+  `{"text":"こんにちはおんせいにんしきのてすとです。"}` が返り、Parapper の
+  Vibrato→ひらがな出力経路も実機で確認済み。
 
 ## `main` に含まれる途中作業
 
@@ -132,14 +142,10 @@ env -u RUSTUP_TOOLCHAIN cargo install cargo-about --locked --features cli
 env -u RUSTUP_TOOLCHAIN bun --cwd=packages/parapper-asr run test
 ```
 
-この Mac での結果は **403 passed / 5 failed / 12 ignored** でした。
-
-- 4件は macOS 上で Tauri/tao の `EventLoop` を main thread 以外で作ったテストが
-  panic する問題。テスト fixture を main-thread 対応にするか、macOS 固有のテスト
-  実行方法を用意してください。
-- 1件は `unsupported_neo_http_platform_disables_text_input_translation_and_vrc_flags` の
-  期待値と `normalized_for_platform` の実装が不一致です。macOS で translation を無効化
-  すべきかを仕様として確定し、テストと実装を揃えてください。
+この Mac での結果は **419 passed / 0 failed / 12 ignored** です。macOS の main-thread
+  制約を避けるため、入力レベル集計、音声 processor、VAD 初期化のモデルパスを副作用の
+  ない核へ分離して同じ失敗条件を検証するようにした。macOS では Neo HTTP と VRC のみ
+  無効化し、ローカル翻訳と YNC plugin 連携は維持する期待値に揃えている。
 - `cargo clippy --all-targets --all-features -D warnings` は Rust 1.90 の新規・厳格な
   指摘が上流コードに75件あり失敗します。大量の上流形式変更を避けるため未解決のまま
   です。root CI はこのフォークを root Biome 対象にはしていません。
