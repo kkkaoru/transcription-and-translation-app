@@ -114,13 +114,17 @@ export const browserWasmConfigurationStatus = (
 ): string => {
   const moduleUrl = config.browserWasmModuleUrl?.trim() ?? "";
   const globalName = config.browserWasmGlobalName?.trim() ?? "";
+  const effectiveGlobalName = globalName || DEFAULT_BROWSER_WASM_GLOBAL_NAME;
+  if (moduleUrl && globalName) {
+    return `ブラウザ WASM プリパス: globalThis.${effectiveGlobalName} が注入されている場合はそちらが優先され、未注入ならモジュール URL（${moduleUrl}）を読み込みます。`;
+  }
   if (moduleUrl) {
-    return `ブラウザ WASM プリパス: モジュール URL を読み込みます（${moduleUrl}）。ただし globalThis.${DEFAULT_BROWSER_WASM_GLOBAL_NAME} が注入されている場合はそちらが優先されます。`;
+    return `ブラウザ WASM プリパス: モジュール URL を読み込みます（${moduleUrl}）。ただし globalThis.${effectiveGlobalName} が注入されている場合はそちらが優先されます。`;
   }
   if (globalName) {
-    return `ブラウザ WASM プリパス: globalThis.${globalName} が注入されている場合のみ実行します。未注入なら変換は失敗します（Worker のみにはなりません）。`;
+    return `ブラウザ WASM プリパス: globalThis.${effectiveGlobalName} が注入されている場合のみ実行します。未注入なら変換は失敗します（Worker のみにはなりません）。`;
   }
-  return `ブラウザ WASM プリパス: モジュール URL も global 名も未設定です。globalThis.${DEFAULT_BROWSER_WASM_GLOBAL_NAME} が注入されていればそれを使い、なければ変換は失敗します（Worker のみにはなりません）。`;
+  return `ブラウザ WASM プリパス: モジュール URL も global 名も未設定です。globalThis.${effectiveGlobalName} が注入されていればそれを使い、なければ変換は失敗します（Worker のみにはなりません）。`;
 };
 
 /** JSON Schema for persisted/transported comparison configuration. */

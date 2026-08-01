@@ -37,6 +37,21 @@ describe("browser Vibrato bridge", () => {
     ).resolves.toMatchObject({ text: "global:入力" });
   });
 
+  it("probes the configured global name, not the historical default, before the module URL", async () => {
+    // With a custom name set, the loader probes that name and never looks at
+    // the historical default. Injecting both proves which one the settings
+    // panel has to name: the default is present and still loses.
+    vi.stubGlobal("__AZOOKEY_VIBRATO_WASM__", (text: string) => `default:${text}`);
+    vi.stubGlobal("__CUSTOM__", (text: string) => `custom:${text}`);
+    clearConverter();
+    await expect(
+      runBrowserVibrato("入力", {
+        moduleUrl: "data:text/javascript,export const convert = (t) => `module:${t}`",
+        globalName: "__CUSTOM__",
+      }),
+    ).resolves.toMatchObject({ text: "custom:入力" });
+  });
+
   it("discovers object converter aliases and custom global names", async () => {
     vi.stubGlobal("__AZOOKEY_VIBRATO_WASM__", { convert: (text: string) => `convert:${text}` });
     await expect(runBrowserVibrato("入力", { moduleUrl: "" })).resolves.toMatchObject({

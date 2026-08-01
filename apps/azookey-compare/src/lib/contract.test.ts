@@ -89,6 +89,31 @@ describe("comparison configuration contract", () => {
     );
   });
 
+  it("reports the explicit global name winning over a configured module URL", () => {
+    // The loader probes the configured global name before the module URL, so
+    // the status must say the global is tried first instead of promising the
+    // module URL is what runs whenever it is set.
+    const configuredGlobalName = "__CUSTOM__";
+    const text = browserWasmConfigurationStatus({
+      browserWasmModuleUrl: "/wasm/mod.js",
+      browserWasmGlobalName: `  ${configuredGlobalName}  `,
+    });
+    expect(text).toContain(`globalThis.${configuredGlobalName}`);
+    expect(text).not.toContain(`globalThis.${DEFAULT_BROWSER_WASM_GLOBAL_NAME}`);
+    expect(text).toContain("/wasm/mod.js");
+    expect(text.indexOf(`globalThis.${configuredGlobalName}`)).toBeLessThan(text.indexOf("/wasm/mod.js"));
+    expect(text).toContain("優先");
+  });
+
+  it("does not assert certain failure when nothing is configured", () => {
+    // The runtime still probes the historical default global with no settings,
+    // so the status may describe the conditional outcome but must not claim
+    // the pre-pass is guaranteed to fail.
+    const text = browserWasmConfigurationStatus({});
+    expect(text).toContain("未設定");
+    expect(text).toContain("注入されていれば");
+  });
+
   it("recognizes modes and WebSocket URLs without accepting malformed values", () => {
     expect(isComparisonMode("worker-vibrato")).toBe(true);
     expect(isComparisonMode("browser-vibrato")).toBe(true);
