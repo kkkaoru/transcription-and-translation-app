@@ -176,9 +176,11 @@ sidecar名、Syphon framework、Spout2 / MSVC、今回追加した Parapper runt
 
 ### Cloudflare Worker
 
-Worker のローカル typecheck/test は通っていますが、production deploy は未実施です。
-対象 Cloudflare account にログインした上で、secret と `MODEL_ROUTES` を設定してから
-`bun run worker:deploy` を実行してください。Cloudflare agent setup は
+Worker は production へ deploy 済みで、`https://kotoba-beacon-inference.kaoru.workers.dev`
+で応答します。`wss://kotoba-beacon-inference.kaoru.workers.dev/ws/azookey` へ
+`あしたははれです` を送ると `明日は晴れです` が返ることを確認しています。更新は
+`bun run worker:deploy` です。secret や `MODEL_ROUTES` は AzooKey 変換には不要で、
+HTTP 側の chat/ASR ルートを使う場合にだけ設定してください。Cloudflare agent setup は
 `https://developers.cloudflare.com/agent-setup/prompt.md` を基準にしています。
 
 ## push 前の最終確認

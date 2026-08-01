@@ -27,8 +27,9 @@ Without any env override, the page defaults to the local wrangler endpoint:
 `ws://127.0.0.1:8787/ws/azookey`
 
 Set `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` to point at a deployed Worker instead.
-There is no checked-in production hostname; the Worker is not deployed by
-default.
+The deployed Worker answers at
+`wss://kotoba-beacon-inference.kaoru.workers.dev/ws/azookey`; the default stays
+local so the app never talks to production unless you ask it to.
 
 ### Conversion modes (UI labels vs wire values)
 
