@@ -8,6 +8,7 @@ import {
   comparisonConfigSchema,
   comparisonModeOptions,
   DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL,
+  DEFAULT_BROWSER_WASM_GLOBAL_NAME,
   DEFAULT_COMPARISON_CONFIG,
   DEFAULT_COMPARISON_LANGUAGE,
   DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
@@ -70,6 +71,21 @@ describe("comparison configuration contract", () => {
     );
     expect(browserWasmConfigurationStatus({ browserWasmGlobalName: "__CUSTOM__" })).toContain(
       "Worker のみにはなりません",
+    );
+  });
+
+  it("states the precedence and default global the loader actually applies", () => {
+    // The loader reads globalThis before importing a module URL, and probes the
+    // default global even with nothing configured. The status text must not
+    // contradict either behaviour.
+    expect(browserWasmConfigurationStatus({ browserWasmModuleUrl: "/wasm/mod.js" })).toContain(
+      `globalThis.${DEFAULT_BROWSER_WASM_GLOBAL_NAME}`,
+    );
+    expect(browserWasmConfigurationStatus({ browserWasmModuleUrl: "/wasm/mod.js" })).toContain(
+      "優先",
+    );
+    expect(browserWasmConfigurationStatus({})).toContain(
+      `globalThis.${DEFAULT_BROWSER_WASM_GLOBAL_NAME}`,
     );
   });
 

@@ -26,6 +26,17 @@ describe("browser Vibrato bridge", () => {
     });
   });
 
+  it("prefers an injected global over a configured module URL", async () => {
+    // The loader checks globalThis first, so the configuration status text must
+    // say so rather than promising the module URL is what runs.
+    vi.stubGlobal("__AZOOKEY_VIBRATO_WASM__", (text: string) => `global:${text}`);
+    await expect(
+      runBrowserVibrato("入力", {
+        moduleUrl: "data:text/javascript,export const convert = (t) => `module:${t}`",
+      }),
+    ).resolves.toMatchObject({ text: "global:入力" });
+  });
+
   it("discovers object converter aliases and custom global names", async () => {
     vi.stubGlobal("__AZOOKEY_VIBRATO_WASM__", { convert: (text: string) => `convert:${text}` });
     await expect(runBrowserVibrato("入力", { moduleUrl: "" })).resolves.toMatchObject({

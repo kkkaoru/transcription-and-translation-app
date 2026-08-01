@@ -11,6 +11,14 @@
 
 export const COMPARISON_CONFIG_SCHEMA_VERSION = 1 as const;
 
+/**
+ * Global the browser pre-pass probes when no explicit name is configured.
+ *
+ * Shared with the runtime loader so the configuration status text cannot drift
+ * from the global the loader actually reads.
+ */
+export const DEFAULT_BROWSER_WASM_GLOBAL_NAME = "__AZOOKEY_VIBRATO_WASM__";
+
 export type ComparisonMode = "worker-vibrato" | "browser-vibrato";
 
 export const COMPARISON_MODES = [
@@ -107,12 +115,12 @@ export const browserWasmConfigurationStatus = (
   const moduleUrl = config.browserWasmModuleUrl?.trim() ?? "";
   const globalName = config.browserWasmGlobalName?.trim() ?? "";
   if (moduleUrl) {
-    return `ブラウザ WASM プリパス: モジュール URL を使用します（${moduleUrl}）。`;
+    return `ブラウザ WASM プリパス: モジュール URL を読み込みます（${moduleUrl}）。ただし globalThis.${DEFAULT_BROWSER_WASM_GLOBAL_NAME} が注入されている場合はそちらが優先されます。`;
   }
   if (globalName) {
     return `ブラウザ WASM プリパス: globalThis.${globalName} が注入されている場合のみ実行します。未注入なら変換は失敗します（Worker のみにはなりません）。`;
   }
-  return "ブラウザ WASM プリパス: モジュール URL も global 名も未設定です。このモードではプリパスを実行できず失敗します。";
+  return `ブラウザ WASM プリパス: モジュール URL も global 名も未設定です。globalThis.${DEFAULT_BROWSER_WASM_GLOBAL_NAME} が注入されていればそれを使い、なければ変換は失敗します（Worker のみにはなりません）。`;
 };
 
 /** JSON Schema for persisted/transported comparison configuration. */

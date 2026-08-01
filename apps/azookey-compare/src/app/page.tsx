@@ -12,7 +12,11 @@ import {
   comparisonModeOptions,
   DEFAULT_COMPARISON_CONFIG,
 } from "../lib/contract";
-import { comparisonPathSummary, conversionPathLabel } from "../lib/path-labels";
+import {
+  attemptedPathLabel,
+  type ConversionStage,
+  comparisonPathSummary,
+} from "../lib/path-labels";
 import {
   type SpeechRecognitionState,
   type SpeechTranscriptUpdate,
@@ -36,6 +40,7 @@ interface ComparisonRow {
   wasmElapsedMs?: number;
   workerElapsedMs?: number;
   error?: string;
+  failedStage?: ConversionStage;
   createdAt: number;
 }
 
@@ -211,6 +216,9 @@ export default function ComparePage() {
 
       let vibratoInput = normalizedSource;
       let wasmElapsedMs: number | undefined;
+      // Tracks the stage in flight so a failure is attributed to the stage that
+      // actually failed, rather than to whichever stage happened to run last.
+      let stage: ConversionStage = "setup";
       try {
         if (auth.scheme === "bearer" && !auth.token?.trim()) {
           throw new Error("Bearer token を入力してください");
@@ -218,18 +226,26 @@ export default function ComparePage() {
         if (mode === "browser-vibrato") {
           setBrowserWasmState("loading");
           patchRow({ state: "wasm" });
-          const wasmResult = await runBrowserVibrato(normalizedSource, {
-            moduleUrl: wasmModuleUrl,
-            globalName: wasmGlobalName,
-          });
-          vibratoInput = wasmResult.text;
-          wasmElapsedMs = wasmResult.elapsedMs;
-          setBrowserWasmState("ready");
+          stage = "browser-wasm";
+          try {
+            const wasmResult = await runBrowserVibrato(normalizedSource, {
+              moduleUrl: wasmModuleUrl,
+              globalName: wasmGlobalName,
+            });
+            vibratoInput = wasmResult.text;
+            wasmElapsedMs = wasmResult.elapsedMs;
+            setBrowserWasmState("ready");
+          } catch (caught) {
+            // Only the browser stage may mark the browser WASM status failed.
+            setBrowserWasmState("error");
+            throw caught;
+          }
           patchRow({ state: "sending", vibratoInput, wasmElapsedMs });
         } else {
           patchRow({ state: "sending", vibratoInput });
         }
 
+        stage = "worker";
         const client = workerRef.current;
         if (!client) {
           throw new Error("Worker WebSocket クライアントを初期化できません");
@@ -251,11 +267,10 @@ export default function ComparePage() {
           ...(wasmElapsedMs !== undefined ? { wasmElapsedMs } : {}),
         });
       } catch (caught) {
+        // The browser WASM status is owned by the browser stage above; a Worker
+        // or setup failure must not report a pre-pass that succeeded as failed.
         const message = errorMessage(caught);
-        if (mode === "browser-vibrato") {
-          setBrowserWasmState("error");
-        }
-        patchRow({ state: "error", error: message, vibratoInput });
+        patchRow({ state: "error", error: message, vibratoInput, failedStage: stage });
         setError(message);
       }
     },
@@ -587,7 +602,9 @@ export default function ComparePage() {
               </p>
               <p className="interim-text">
                 {latestWorker?.error ??
-                  (latestWorker ? conversionPathLabel(latestWorker.mode) : "")}
+                  (latestWorker
+                    ? attemptedPathLabel(latestWorker.mode, latestWorker.failedStage)
+                    : "")}
               </p>
               <div className="live-card-footer">
                 <span>最新レイテンシ</span>
@@ -634,7 +651,7 @@ export default function ComparePage() {
                       </span>
                       <p>{row.convertedText ?? row.error ?? "—"}</p>
                       <span className="row-meta">
-                        {conversionPathLabel(row.mode)}
+                        {attemptedPathLabel(row.mode, row.failedStage)}
                         {row.wasmElapsedMs !== undefined
                           ? ` · WASM ${formatMilliseconds(row.wasmElapsedMs)}`
                           : ""}

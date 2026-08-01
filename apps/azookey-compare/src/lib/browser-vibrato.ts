@@ -10,6 +10,8 @@
  * of silently falling back to Worker-only conversion.
  */
 
+import { DEFAULT_BROWSER_WASM_GLOBAL_NAME } from "./contract";
+
 export interface BrowserVibratoConfig {
   moduleUrl: string;
   globalName?: string;
@@ -28,7 +30,6 @@ interface UnknownRecord {
 
 const loadedConverters = new Map<string, Promise<VibratoConvertFunction>>();
 const MIN_ELAPSED_MS = 0;
-const DEFAULT_VIBRATO_GLOBAL_NAME = "__AZOOKEY_VIBRATO_WASM__";
 
 const isRecord = (value: unknown): value is UnknownRecord =>
   typeof value === "object" && value !== null;
@@ -51,7 +52,7 @@ const asConverter = (value: unknown): VibratoConvertFunction | null => {
 };
 
 const loadConverter = (config: BrowserVibratoConfig): Promise<VibratoConvertFunction> => {
-  const globalName = config.globalName?.trim() || DEFAULT_VIBRATO_GLOBAL_NAME;
+  const globalName = config.globalName?.trim() || DEFAULT_BROWSER_WASM_GLOBAL_NAME;
   const root = globalThis as unknown as UnknownRecord;
   const globalConverter = asConverter(root[globalName]);
   if (globalConverter) {
