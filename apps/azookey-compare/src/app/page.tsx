@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
 import { runBrowserVibrato } from "../lib/browser-vibrato";
 import {
+  browserWasmConfigurationStatus,
   buildVibratoWebSocketUrl,
   type ComparisonAuth,
   type ComparisonConfig,
   type ComparisonMode,
+  comparisonModeOptions,
   DEFAULT_COMPARISON_CONFIG,
 } from "../lib/contract";
 import {
@@ -82,15 +84,20 @@ const rowStateLabel = (state: ComparisonRowState): string => {
     case "queued":
       return "送信待ち";
     case "wasm":
-      return "ブラウザWASM処理中";
+      return "ブラウザ WASM プリパス中";
     case "sending":
-      return "Worker処理中";
+      return "Worker AzooKey WASM 処理中";
     case "done":
       return "完了";
     default:
       return "失敗";
   }
 };
+
+const conversionPathLabel = (mode: ComparisonMode): string =>
+  mode === "browser-vibrato"
+    ? "Browser WASM pre-pass → Worker AzooKey WASM"
+    : "Worker AzooKey WASM";
 
 const formatMilliseconds = (value: number | undefined): string =>
   value === undefined ? "—" : `${Math.round(value)} ms`;
@@ -112,8 +119,9 @@ export default function ComparePage() {
     ...(process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL
       ? { browserWasmModuleUrl: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL }
       : {}),
-    browserWasmGlobalName:
-      process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL ?? "__AZOOKEY_VIBRATO_WASM__",
+    ...(process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL
+      ? { browserWasmGlobalName: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL }
+      : {}),
   }));
   const [speechSupported, setSpeechSupported] = useState(false);
   const [speechState, setSpeechState] = useState<SpeechRecognitionState>("idle");
@@ -271,12 +279,33 @@ export default function ComparePage() {
     );
   };
 
+  const browserWasmConfigured =
+    Boolean(config.browserWasmModuleUrl?.trim()) || Boolean(config.browserWasmGlobalName?.trim());
+
   const pathSummary = useMemo(
     () =>
       config.mode === "worker-vibrato"
-        ? "Web Speech → Worker Vibrato → AzooKey"
-        : "Web Speech → Browser WASM Vibrato → Worker AzooKey",
+        ? "Web Speech → Worker AzooKey WASM"
+        : `Web Speech → Browser WASM pre-pass${
+            browserWasmConfigured ? "" : "（未設定）"
+          } → Worker AzooKey WASM`,
+    [config.mode, browserWasmConfigured],
+  );
+
+  const selectedModeOption = useMemo(
+    () => comparisonModeOptions.find((option) => option.value === config.mode),
     [config.mode],
+  );
+
+  const browserWasmStatus = useMemo(
+    () =>
+      config.mode === "browser-vibrato"
+        ? browserWasmConfigurationStatus({
+            browserWasmModuleUrl: config.browserWasmModuleUrl,
+            browserWasmGlobalName: config.browserWasmGlobalName,
+          })
+        : "",
+    [config.mode, config.browserWasmModuleUrl, config.browserWasmGlobalName],
   );
 
   const toggleListening = (): void => {
@@ -373,12 +402,8 @@ export default function ComparePage() {
                 updateConfig("mode", mode);
                 setBrowserWasmState("idle");
               }}
-              label="Vibrato 変換方式"
-              description={
-                config.mode === "worker-vibrato"
-                  ? "Worker側で Vibrato と AzooKey を連続処理します。"
-                  : "ブラウザWASMで Vibrato を先に実行し、その入力を Worker に渡します。"
-              }
+              label="前処理の実行場所"
+              description={selectedModeOption?.description}
             />
 
             <label className="field-label" htmlFor="worker-url">
@@ -389,14 +414,21 @@ export default function ComparePage() {
                 inputMode="url"
                 value={config.websocketUrl}
                 onChange={(event) => updateConfig("websocketUrl", event.target.value)}
-                placeholder="wss://worker.example/ws/azookey"
+                placeholder="ws://127.0.0.1:8787/ws/azookey"
                 spellCheck={false}
               />
             </label>
+            <p className="field-help">
+              既定はローカル wrangler（`ws://127.0.0.1:8787/ws/azookey`）。デプロイ先は
+              `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` で上書きできます。
+            </p>
 
             {config.mode === "browser-vibrato" ? (
               <div className="subsection browser-wasm-settings">
-                <p className="subsection-title">Browser WASM</p>
+                <p className="subsection-title">Browser WASM プリパス（任意）</p>
+                <p className="field-help" data-testid="browser-wasm-config-status">
+                  {browserWasmStatus}
+                </p>
                 <label className="field-label" htmlFor="wasm-module-url">
                   JS glue module URL（任意）
                   <input
@@ -405,7 +437,7 @@ export default function ComparePage() {
                     inputMode="url"
                     value={config.browserWasmModuleUrl ?? ""}
                     onChange={(event) => updateConfig("browserWasmModuleUrl", event.target.value)}
-                    placeholder="https://localhost:3000/vibrato.js"
+                    placeholder="https://localhost:3000/azookey-browser.js"
                     spellCheck={false}
                   />
                 </label>
@@ -421,8 +453,12 @@ export default function ComparePage() {
                   />
                 </label>
                 <p className="field-help">
-                  `convert(text)` または `transform(text)` を export する wasm-bindgen 等の wrapper
-                  を指定します。
+                  このアプリはブラウザ WASM を同梱していません。`convert(text)` または
+                  `transform(text)` を export する wrapper の URL、または注入済み global
+                  を指定します。 どちらもない場合はブラウザ WASM
+                  が未設定のためプリパスを実行できず失敗します （Worker
+                  のみへはサイレントフォールバックしません）。AzooKey のかな→漢字変換は 常に Worker
+                  側の WASM で実行します。
                 </p>
                 <div className={`mini-status wasm-${browserWasmState}`}>
                   <span className="status-dot" aria-hidden="true" />
@@ -558,9 +594,7 @@ export default function ComparePage() {
               </p>
               <p className="interim-text">
                 {latestWorker?.error ??
-                  (latestWorker
-                    ? `${latestWorker.mode === "browser-vibrato" ? "Browser WASM → " : ""}Worker`
-                    : "")}
+                  (latestWorker ? conversionPathLabel(latestWorker.mode) : "")}
               </p>
               <div className="live-card-footer">
                 <span>最新レイテンシ</span>
@@ -607,9 +641,7 @@ export default function ComparePage() {
                       </span>
                       <p>{row.convertedText ?? row.error ?? "—"}</p>
                       <span className="row-meta">
-                        {row.mode === "browser-vibrato"
-                          ? "Browser WASM → Worker"
-                          : "Worker Vibrato"}
+                        {conversionPathLabel(row.mode)}
                         {row.wasmElapsedMs !== undefined
                           ? ` · WASM ${formatMilliseconds(row.wasmElapsedMs)}`
                           : ""}

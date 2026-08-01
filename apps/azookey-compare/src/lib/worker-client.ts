@@ -281,9 +281,9 @@ export class AzooKeyWorkerClient {
       type: "azookey.convert" as const,
       requestId,
       ...request,
-      // The deployed Worker accepts only its AzooKey conversion mode. Browser
-      // Vibrato remains a comparison concern and is carried as metadata while
-      // `vibratoInput` contains the already-tokenized/prepared text.
+      // The Worker accepts only wire mode `worker-vibrato` (AzooKey WASM only).
+      // Browser pre-pass selection stays a comparison concern and is carried as
+      // metadata while `vibratoInput` holds the prepared text (historical name).
       mode: "worker-vibrato" as const,
       ...(request.mode === "browser-vibrato"
         ? { comparisonMode: "browser-vibrato" as const, vibratoExecution: "browser-wasm" as const }

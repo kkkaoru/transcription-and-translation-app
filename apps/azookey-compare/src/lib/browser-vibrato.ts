@@ -1,12 +1,13 @@
 /**
- * Browser-side Vibrato bridge.
+ * Optional browser-side convert/transform pre-pass for the comparison app.
  *
- * A WASM build normally ships with a small JavaScript glue module (wasm-bindgen,
- * wasm-pack, or an equivalent wrapper). The comparison app deliberately does
- * not bundle a dictionary: point `moduleUrl` at that glue module, or expose the
+ * This is not Vibrato and does not load UniDic. A WASM build normally ships
+ * with a small JavaScript glue module (wasm-bindgen, wasm-pack, or an
+ * equivalent wrapper). Point `moduleUrl` at that glue module, or expose the
  * same object as `globalThis.__AZOOKEY_VIBRATO_WASM__`. The module must export a
  * `convert(text)` or `transform(text)` function returning a string (sync or
- * async). This keeps the app independent from a particular Rust/WASM build.
+ * async). Without a module URL or injected global, the pre-pass fails instead
+ * of silently falling back to Worker-only conversion.
  */
 
 export interface BrowserVibratoConfig {

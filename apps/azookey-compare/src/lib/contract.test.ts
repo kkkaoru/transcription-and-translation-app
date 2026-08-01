@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  browserWasmConfigurationStatus,
   buildVibratoWebSocketUrl,
   COMPARISON_CONFIG_SCHEMA_VERSION,
   COMPARISON_MODES,
@@ -10,6 +11,7 @@ import {
   DEFAULT_COMPARISON_CONFIG,
   DEFAULT_COMPARISON_LANGUAGE,
   DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
+  hasBrowserWasmConfiguration,
   isComparisonMode,
   isVibratoWebSocketUrl,
   mergeComparisonConfig,
@@ -22,8 +24,27 @@ describe("comparison configuration contract", () => {
     expect(COMPARISON_CONFIG_SCHEMA_VERSION).toBe(1);
     expect(COMPARISON_MODES).toEqual(["worker-vibrato", "browser-vibrato"]);
     expect(comparisonModeOptions).toHaveLength(2);
+    expect(comparisonModeOptions.map((option) => option.value)).toEqual([
+      "worker-vibrato",
+      "browser-vibrato",
+    ]);
+    for (const option of comparisonModeOptions) {
+      expect(option.label.toLowerCase()).not.toContain("vibrato");
+      expect(option.description.toLowerCase()).toContain("azookey");
+      expect(option.description.toLowerCase()).toMatch(/vibrato|unidic/);
+      expect(option.description).toMatch(/使いません/);
+    }
+    expect(comparisonModeOptions[0]?.description).toContain("AzooKey WASM");
+    expect(comparisonModeOptions[1]?.description).toContain("プリパス");
+    expect(comparisonModeOptions[1]?.description).toContain("サイレント");
+    expect(comparisonConfigFieldDescriptions.mode.toLowerCase()).not.toMatch(
+      /vibrato runs|run vibrato/i,
+    );
+    expect(comparisonConfigFieldDescriptions.websocketUrl).toContain("8787");
     expect(comparisonConfigFieldDescriptions.language).toContain("BCP-47");
     expect(comparisonConfigSchema.required).toEqual(["mode", "websocketUrl", "auth", "language"]);
+    expect(DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL).toBe("ws://127.0.0.1:8787/ws/azookey");
+    expect(DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL).toBe(DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL);
     expect(DEFAULT_COMPARISON_CONFIG).toEqual({
       schemaVersion: 1,
       mode: "worker-vibrato",
@@ -32,6 +53,24 @@ describe("comparison configuration contract", () => {
       language: DEFAULT_COMPARISON_LANGUAGE,
     });
     expect(DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL).toMatch(/^ws:/);
+  });
+
+  it("describes browser WASM pre-pass configuration without implying silent worker-only fallback", () => {
+    expect(hasBrowserWasmConfiguration({})).toBe(false);
+    expect(hasBrowserWasmConfiguration({ browserWasmModuleUrl: "  " })).toBe(false);
+    expect(hasBrowserWasmConfiguration({ browserWasmModuleUrl: "/wasm/mod.js" })).toBe(true);
+    expect(hasBrowserWasmConfiguration({ browserWasmGlobalName: "__CUSTOM__" })).toBe(true);
+    expect(browserWasmConfigurationStatus({})).toContain("未設定");
+    expect(browserWasmConfigurationStatus({})).toContain("失敗");
+    expect(browserWasmConfigurationStatus({ browserWasmModuleUrl: "  /wasm/mod.js  " })).toContain(
+      "/wasm/mod.js",
+    );
+    expect(browserWasmConfigurationStatus({ browserWasmGlobalName: "  __CUSTOM__  " })).toContain(
+      "globalThis.__CUSTOM__",
+    );
+    expect(browserWasmConfigurationStatus({ browserWasmGlobalName: "__CUSTOM__" })).toContain(
+      "Worker のみにはなりません",
+    );
   });
 
   it("recognizes modes and WebSocket URLs without accepting malformed values", () => {

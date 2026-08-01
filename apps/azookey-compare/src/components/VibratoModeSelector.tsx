@@ -14,7 +14,8 @@ export interface VibratoModeSelectorProps {
 /**
  * Small controlled selector shared by the comparison page and future embeds.
  * The option descriptions intentionally remain visible below the select so a
- * mode change explains which side of the Worker/browser boundary is active.
+ * mode change explains the optional browser pre-pass and the always-Worker
+ * AzooKey conversion.
  */
 export const VibratoModeSelector = ({
   mode,
@@ -22,12 +23,15 @@ export const VibratoModeSelector = ({
   disabled = false,
   id = "vibrato-mode",
   name = "mode",
-  label = "Recognition mode",
+  label = "前処理の実行場所",
   description,
   className,
 }: VibratoModeSelectorProps) => {
   const selectedOption = comparisonModeOptions.find((option) => option.value === mode);
-  const helpText = description ?? selectedOption?.description ?? "Choose a Vibrato endpoint.";
+  const helpText =
+    description ??
+    selectedOption?.description ??
+    "AzooKey のかな→漢字変換は常に Worker 上で実行します。任意のブラウザ WASM プリパスを使うか選びます（未設定なら実行できません）。";
 
   return (
     <div className={className} data-testid="vibrato-mode-control">

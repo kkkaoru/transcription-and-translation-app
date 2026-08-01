@@ -1,9 +1,12 @@
 /**
- * Configuration shared by the comparison UI and the Vibrato WebSocket client.
+ * Configuration shared by the comparison UI and the AzooKey Worker WebSocket client.
  *
  * This contract deliberately lives under the comparison app instead of the
  * desktop app's `AppConfig`.  The desktop app has a different pipeline and
  * adding these fields there would make persisted desktop settings ambiguous.
+ *
+ * Historical wire labels (`worker-vibrato`, `vibratoInput`) are preserved for
+ * Worker compatibility; neither comparison mode runs Vibrato/UniDic.
  */
 
 export const COMPARISON_CONFIG_SCHEMA_VERSION = 1 as const;
@@ -33,11 +36,11 @@ export interface ComparisonConfig {
   mode: ComparisonMode;
   websocketUrl: string;
   auth: ComparisonAuth;
-  /** BCP-47 language tag sent in the Vibrato session.start payload. */
+  /** BCP-47 language tag for Web Speech and the convert payload. */
   language: string;
   /** Optional browser-side WASM module specifier; empty means use the global fallback. */
   browserWasmModuleUrl?: string;
-  /** Optional global converter name used by browser-vibrato when no module URL is set. */
+  /** Optional global converter name used by the browser pre-pass when no module URL is set. */
   browserWasmGlobalName?: string;
 }
 
@@ -60,13 +63,15 @@ export interface ComparisonModeOption {
 export const comparisonModeOptions: readonly ComparisonModeOption[] = [
   {
     value: "worker-vibrato",
-    label: "Worker側",
-    description: "Worker側で Vibrato → AzooKey を連続処理します。",
+    label: "Worker 上の AzooKey WASM",
+    description:
+      "Worker 上で AzooKey WASM のかな→漢字変換だけを実行します（Vibrato / UniDic は使いません）。",
   },
   {
     value: "browser-vibrato",
-    label: "ブラウザWASM → Worker",
-    description: "ブラウザWASMで Vibrato を先に実行し、結果を Worker に渡します。",
+    label: "ブラウザ WASM プリパス → Worker",
+    description:
+      "任意のブラウザ側 WASM（convert/transform）を先に通し、その結果を Worker の AzooKey WASM に渡します。Vibrato / UniDic は使いません。モジュールも global も未設定ならプリパスは実行できず失敗します（Worker のみへはサイレントに落ちません）。",
   },
 ] as const;
 
@@ -75,15 +80,40 @@ export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 
 /** Short, user-facing explanations for the fields in the settings panel. */
 export const comparisonConfigFieldDescriptions = {
-  mode: "Choose whether Vibrato runs on the Worker or in browser WASM before the Worker.",
-  websocketUrl: "A ws:// or wss:// URL for the selected Vibrato endpoint.",
+  mode: "Choose where the optional browser WASM pre-pass runs; AzooKey kana→kanji always runs on the Worker.",
+  websocketUrl:
+    "A ws:// or wss:// URL for the AzooKey Worker endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
   auth: "Optional Bearer credentials for the Worker. Keep tokens out of URLs and logs.",
   language: "BCP-47 language tag sent to the recognizer (for example, ja or en-US).",
   browserWasmModuleUrl:
-    "Optional browser WASM module URL. Leave empty to use the named global converter fallback.",
+    "Optional browser WASM glue module URL for the pre-pass. Leave empty only when a named global converter is injected.",
   browserWasmGlobalName:
-    "Optional global converter name for browser-vibrato (defaults to the built-in global name).",
+    "Optional global converter name for the browser pre-pass (defaults to the built-in global name).",
 } as const;
+
+/**
+ * True when browser-mode has either a module URL or an explicit global name
+ * that could supply the optional convert/transform pre-pass.
+ * Presence of a name alone does not guarantee the global is injected at runtime.
+ */
+export const hasBrowserWasmConfiguration = (
+  config: Pick<ComparisonConfig, "browserWasmModuleUrl" | "browserWasmGlobalName">,
+): boolean => Boolean(config.browserWasmModuleUrl?.trim() || config.browserWasmGlobalName?.trim());
+
+/** Plain-language status for the browser pre-pass configuration panel. */
+export const browserWasmConfigurationStatus = (
+  config: Pick<ComparisonConfig, "browserWasmModuleUrl" | "browserWasmGlobalName">,
+): string => {
+  const moduleUrl = config.browserWasmModuleUrl?.trim() ?? "";
+  const globalName = config.browserWasmGlobalName?.trim() ?? "";
+  if (moduleUrl) {
+    return `ブラウザ WASM プリパス: モジュール URL を使用します（${moduleUrl}）。`;
+  }
+  if (globalName) {
+    return `ブラウザ WASM プリパス: globalThis.${globalName} が注入されている場合のみ実行します。未注入なら変換は失敗します（Worker のみにはなりません）。`;
+  }
+  return "ブラウザ WASM プリパス: モジュール URL も global 名も未設定です。このモードではプリパスを実行できず失敗します。";
+};
 
 /** JSON Schema for persisted/transported comparison configuration. */
 export const comparisonConfigSchema = {
@@ -122,11 +152,17 @@ export const comparisonConfigSchema = {
   },
 } as const;
 
-export const DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL = "wss://vibrato-worker.example.invalid/ws";
-const DEFAULT_BROWSER_VIBRATO_HOST = "127.0.0.1";
-const DEFAULT_BROWSER_VIBRATO_PORT = 18_082;
-const DEFAULT_BROWSER_VIBRATO_PATH = "/ws/recognition";
-export const DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL = `ws://${DEFAULT_BROWSER_VIBRATO_HOST}:${DEFAULT_BROWSER_VIBRATO_PORT}${DEFAULT_BROWSER_VIBRATO_PATH}`;
+/**
+ * Local wrangler default (`bun run --cwd apps/cloudflare-worker-server dev`).
+ * Override with `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` for a deployed Worker.
+ * Wire mode values remain `worker-vibrato` / `browser-vibrato` for the Worker contract.
+ */
+export const DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL = "ws://127.0.0.1:8787/ws/azookey";
+/**
+ * Browser comparison mode still uses the same AzooKey Worker for kana→kanji.
+ * The optional browser WASM step is only a pre-pass before this endpoint.
+ */
+export const DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL = DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL;
 export const DEFAULT_COMPARISON_LANGUAGE = "ja";
 export const DEFAULT_COMPARISON_MODE: ComparisonMode = "worker-vibrato";
 
