@@ -1,6 +1,7 @@
 node_modules
 dist
 .next
+.wrangler
 .vite
 coverage
 apps/desktop/src-tauri/target
