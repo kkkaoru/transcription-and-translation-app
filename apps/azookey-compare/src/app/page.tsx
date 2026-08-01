@@ -12,6 +12,7 @@ import {
   comparisonModeOptions,
   DEFAULT_COMPARISON_CONFIG,
 } from "../lib/contract";
+import { comparisonPathSummary, conversionPathLabel } from "../lib/path-labels";
 import {
   type SpeechRecognitionState,
   type SpeechTranscriptUpdate,
@@ -93,11 +94,6 @@ const rowStateLabel = (state: ComparisonRowState): string => {
       return "失敗";
   }
 };
-
-const conversionPathLabel = (mode: ComparisonMode): string =>
-  mode === "browser-vibrato"
-    ? "Browser WASM pre-pass → Worker AzooKey WASM"
-    : "Worker AzooKey WASM";
 
 const formatMilliseconds = (value: number | undefined): string =>
   value === undefined ? "—" : `${Math.round(value)} ms`;
@@ -273,7 +269,7 @@ export default function ComparePage() {
       text,
       config.mode,
       config.browserWasmModuleUrl ?? "",
-      config.browserWasmGlobalName ?? "__AZOOKEY_VIBRATO_WASM__",
+      config.browserWasmGlobalName ?? "",
       config.language,
       config.auth,
     );
@@ -283,12 +279,7 @@ export default function ComparePage() {
     Boolean(config.browserWasmModuleUrl?.trim()) || Boolean(config.browserWasmGlobalName?.trim());
 
   const pathSummary = useMemo(
-    () =>
-      config.mode === "worker-vibrato"
-        ? "Web Speech → Worker AzooKey WASM"
-        : `Web Speech → Browser WASM pre-pass${
-            browserWasmConfigured ? "" : "（未設定）"
-          } → Worker AzooKey WASM`,
+    () => comparisonPathSummary(config.mode, browserWasmConfigured),
     [config.mode, browserWasmConfigured],
   );
 
@@ -425,12 +416,12 @@ export default function ComparePage() {
 
             {config.mode === "browser-vibrato" ? (
               <div className="subsection browser-wasm-settings">
-                <p className="subsection-title">Browser WASM プリパス（任意）</p>
+                <p className="subsection-title">Browser WASM プリパス設定（このモードでは必須）</p>
                 <p className="field-help" data-testid="browser-wasm-config-status">
                   {browserWasmStatus}
                 </p>
                 <label className="field-label" htmlFor="wasm-module-url">
-                  JS glue module URL（任意）
+                  JS glue module URL（global 未指定時は必須）
                   <input
                     id="wasm-module-url"
                     type="url"
@@ -442,27 +433,29 @@ export default function ComparePage() {
                   />
                 </label>
                 <label className="field-label" htmlFor="wasm-global-name">
-                  global runtime 名
+                  global runtime 名（module URL 未指定時は必須）
                   <input
                     id="wasm-global-name"
                     type="text"
                     value={config.browserWasmGlobalName ?? ""}
                     onChange={(event) => updateConfig("browserWasmGlobalName", event.target.value)}
-                    placeholder="__AZOOKEY_VIBRATO_WASM__"
+                    placeholder="__AZOOKEY_BROWSER_PREPASS__"
                     spellCheck={false}
                   />
                 </label>
                 <p className="field-help">
                   このアプリはブラウザ WASM を同梱していません。`convert(text)` または
                   `transform(text)` を export する wrapper の URL、または注入済み global
-                  を指定します。 どちらもない場合はブラウザ WASM
-                  が未設定のためプリパスを実行できず失敗します （Worker
-                  のみへはサイレントフォールバックしません）。AzooKey のかな→漢字変換は 常に Worker
-                  側の WASM で実行します。
+                  を指定します。モジュール URL も global 名も空のときはブラウザ WASM
+                  が未設定のためプリパスを実行できず失敗します（Worker
+                  のみへはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
+                  実行時フォールバックとして歴史的な既定名 `__AZOOKEY_VIBRATO_WASM__`（Vibrato
+                  本体ではない convert 用 global）を試します。 AzooKey のかな→漢字変換は常に Worker
+                  側の AzooKey WASM で実行します。
                 </p>
                 <div className={`mini-status wasm-${browserWasmState}`}>
                   <span className="status-dot" aria-hidden="true" />
-                  WASM: {browserWasmState === "idle" ? "未実行" : browserWasmState}
+                  ブラウザ WASM: {browserWasmState === "idle" ? "未実行" : browserWasmState}
                 </div>
               </div>
             ) : null}
