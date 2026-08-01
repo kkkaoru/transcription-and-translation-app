@@ -12,6 +12,9 @@ const SHARD_SHIFT: usize = 11;
 const LOCAL_MASK: usize = (1 << SHARD_SHIFT) - 1;
 const DEFAULT_CID: u16 = 1285;
 const DEFAULT_MID: u16 = 501;
+/// AzooKey keeps BOS/EOS in the neutral meaning class.
+const BOS_EOS_MID: u16 = 500;
+const EOS_CID: u16 = 1316;
 // AzooKey's `DicdataStore` drops low-quality system entries before building
 // the lattice. Keeping those placeholder rows (often around -30) lets a
 // short, unrelated surface beat a correct longer word in our Viterbi pass.
@@ -200,7 +203,28 @@ impl AzooKeyDictionary {
     }
 
     pub fn connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
-        self.system.as_ref().map(|system| system.connection_cost(former, latter)).unwrap_or(0.0)
+        self.class_connection_cost(former, latter)
+            + self.meaning_connection_cost(former.mid, latter.mid)
+    }
+
+    /// Return the morphological class transition cost.  AzooKey applies this
+    /// to every lattice edge; the content-word meaning cost is added later at
+    /// clause boundaries.
+    pub fn class_connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
+        self.system
+            .as_ref()
+            .map(|system| system.class_connection_cost(former, latter))
+            .unwrap_or(0.0)
+    }
+
+    /// Return the content-word bigram cost used by AzooKey's clause scorer.
+    /// Keeping this separate from CID transitions prevents a frequent
+    /// homophone from winning merely because it was split into extra words.
+    pub fn meaning_connection_cost(&self, former_mid: u16, latter_mid: u16) -> f32 {
+        self.system
+            .as_ref()
+            .map(|system| system.meaning_connection_cost(former_mid, latter_mid))
+            .unwrap_or(0.0)
     }
 
     /// Return the connection cost from AzooKey's virtual beginning-of-sentence
@@ -214,6 +238,22 @@ impl AzooKeyDictionary {
             .as_ref()
             .and_then(|system| system.cid_connection_cost(0, entry.lcid).ok())
             .unwrap_or(0.0)
+    }
+
+    /// Whether a transition starts a new AzooKey clause.  This mirrors the
+    /// upstream `DicdataStore.isClause` word-type table instead of embedding
+    /// any reading→surface exceptions.
+    pub fn is_clause_boundary(&self, former_rcid: u16, latter_lcid: u16) -> bool {
+        if !self.has_system_dictionary() {
+            return false;
+        }
+        is_clause_boundary(former_rcid, latter_lcid)
+    }
+
+    /// Whether this dictionary row contributes its MID to clause-level
+    /// meaning-bigram scoring, matching AzooKey's `includeMMValueCalculation`.
+    pub fn include_meaning_cost(&self, entry: &DictionaryEntry) -> bool {
+        self.has_system_dictionary() && include_meaning_cost(entry)
     }
 
     pub(crate) fn has_system_dictionary(&self) -> bool {
@@ -306,10 +346,16 @@ impl SystemDictionary {
         }
     }
 
-    fn connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
-        let mid_index = usize::from(former.mid) * MID_COUNT + usize::from(latter.mid);
+    fn class_connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
+        self.cid_connection_cost(former.rcid, latter.lcid).unwrap_or(-25.0)
+    }
+
+    fn meaning_connection_cost(&self, former_mid: u16, latter_mid: u16) -> f32 {
+        if former_mid == BOS_EOS_MID || latter_mid == BOS_EOS_MID {
+            return 0.0;
+        }
+        let mid_index = usize::from(former_mid) * MID_COUNT + usize::from(latter_mid);
         self.mm.get(mid_index).copied().unwrap_or(0.0)
-            + self.cid_connection_cost(former.rcid, latter.lcid).unwrap_or(-25.0)
     }
 
     fn cid_connection_cost(&self, former: u16, latter: u16) -> Result<f32, String> {
@@ -325,6 +371,54 @@ impl SystemDictionary {
             .copied()
             .unwrap_or(-25.0))
     }
+}
+
+/// AzooKey's compact word-type classification used by `isClause` and
+/// `includeMMValueCalculation`.  The ranges are the stable CID groups from
+/// the upstream converter; they describe morphology, not specific words.
+fn word_type(cid: u16) -> u8 {
+    let cid = usize::from(cid);
+    if cid == 0 || cid == usize::from(EOS_CID) {
+        return 3; // BOS/EOS
+    }
+    if matches!(cid, 5 | 6 | 557..=560 | 1315) {
+        return 0; // preposition / 前置機能語
+    }
+    if matches!(
+        cid,
+        1..=5
+            | 9
+            | 11
+            | 1281..=1282
+            | 1283..=1296
+            | 1306..=1309
+            | 1314
+            | 561..=867
+    ) {
+        return 1; // content word / 内容語
+    }
+    2 // postposition / 後置機能語
+}
+
+fn is_clause_boundary(former_rcid: u16, latter_lcid: u16) -> bool {
+    let latter_type = word_type(latter_lcid);
+    if latter_type == 3 {
+        return false;
+    }
+    let former_type = word_type(former_rcid);
+    if former_type == 3 {
+        return false;
+    }
+    matches!(latter_type, 0 | 1) && former_type != 0
+}
+
+fn include_meaning_cost(entry: &DictionaryEntry) -> bool {
+    (895..=1280).contains(&entry.lcid)
+        || (895..=1280).contains(&entry.rcid)
+        || (1297..=1305).contains(&entry.lcid)
+        || (1297..=1305).contains(&entry.rcid)
+        || word_type(entry.lcid) == 1
+        || word_type(entry.rcid) == 1
 }
 
 fn system_entry_is_usable(entry: &DictionaryEntry) -> bool {

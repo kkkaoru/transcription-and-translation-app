@@ -30,13 +30,20 @@ pub struct ConversionCandidate {
 // entry (system rows below the -17 quality floor are filtered separately).
 // Keeping this as an explicit lattice penalty also prevents an all-kana
 // unknown span from outranking a known multi-character word.
-const UNKNOWN_CHARACTER_PENALTY: f32 = -20.0;
+const UNKNOWN_CHARACTER_PENALTY: f32 = -30.0;
+// Keep the unknown continuation bounded.  A full remaining utterance is not
+// a useful token: it can hide dictionary words that begin a few characters
+// later (for example the `く` before `くう` in a long caption).
+const MAX_UNKNOWN_KANA_SPAN_CHARS: usize = 4;
 
 #[derive(Debug, Clone)]
 struct PathState {
     text: String,
     score: f32,
     last: Option<DictionaryEntry>,
+    /// Latest content-word MID in the current AzooKey clause.
+    clause_mid: u16,
+    clause_has_word: bool,
 }
 
 pub fn convert_kana_to_kanji(input: &str) -> String {
@@ -94,7 +101,13 @@ pub fn convert_with_dictionary(
     debug_assert_eq!(source_chars.len(), chars.len());
     let width = options.n_best.clamp(1, 32);
     let mut states = vec![Vec::<PathState>::new(); chars.len() + 1];
-    states[0].push(PathState { text: String::new(), score: 0.0, last: None });
+    states[0].push(PathState {
+        text: String::new(),
+        score: 0.0,
+        last: None,
+        clause_mid: 500,
+        clause_has_word: false,
+    });
 
     for start in 0..chars.len() {
         let current = states[start].clone();
@@ -141,6 +154,8 @@ pub fn convert_with_dictionary(
                             text: format!("{}{}", state.text, surface),
                             score: state.score + numeric_score,
                             last: None,
+                            clause_mid: 500,
+                            clause_has_word: false,
                         },
                         width,
                     );
@@ -157,6 +172,8 @@ pub fn convert_with_dictionary(
                                 text: format!("{}{}{}", state.text, surface, counter_surface),
                                 score: state.score + numeric_score - 0.25,
                                 last: None,
+                                clause_mid: 500,
+                                clause_has_word: false,
                             },
                             width,
                         );
@@ -177,9 +194,55 @@ pub fn convert_with_dictionary(
                     // negative penalty and cannot beat a known word.
                     score: state.score + UNKNOWN_CHARACTER_PENALTY,
                     last: None,
+                    clause_mid: 500,
+                    clause_has_word: false,
                 },
                 width,
             );
+            // The compact fallback is useful for an unknown *continuation*
+            // (for example a suffix that the public dictionary cannot spell),
+            // but it must not become a single all-kana path from the start of
+            // a sentence.  At position zero the ordinary per-character edges
+            // keep unknown words available while known dictionary entries can
+            // still win on their lexical score.
+            let has_multi_char_entry =
+                entries.iter().any(|entry| entry.reading.chars().count() >= 2);
+            let has_multi_char_prior_entry =
+                state.last.as_ref().is_some_and(|entry| entry.reading.chars().count() >= 2);
+            let particle_followed_by_adjective = following_has_lexical_adjective(
+                dictionary,
+                &chars,
+                start,
+                options.max_dictionary_word_chars.clamp(1, 128),
+            );
+            if start > 0
+                && state.last.is_some()
+                && has_multi_char_prior_entry
+                && !has_multi_char_entry
+                && !particle_followed_by_adjective
+                && dictionary.has_system_dictionary()
+            {
+                if let Some(end) = unknown_kana_span_end(&chars, start) {
+                    let length = end - start;
+                    if length > 1 {
+                        let surface: String = source_chars[start..end].iter().collect();
+                        push_state(
+                            &mut states[end],
+                            PathState {
+                                text: format!("{}{}", state.text, surface),
+                                // Match AzooKey's all-hiragana fallback without
+                                // allowing a long unknown span to outrank known
+                                // dictionary words.
+                                score: state.score + unknown_kana_span_penalty(length),
+                                last: None,
+                                clause_mid: 500,
+                                clause_has_word: false,
+                            },
+                            width,
+                        );
+                    }
+                }
+            }
             if is_boundary(chars[start]) {
                 push_state(
                     &mut states[start + 1],
@@ -187,6 +250,8 @@ pub fn convert_with_dictionary(
                         text: format!("{}{}", state.text, source_chars[start]),
                         score: state.score,
                         last: None,
+                        clause_mid: 500,
+                        clause_has_word: false,
                     },
                     width,
                 );
@@ -222,11 +287,8 @@ pub fn convert_with_dictionary(
                 if prolonged_mark_adjacent_to_span(&source_chars, &chars, start, end) {
                     continue;
                 }
-                let connection = state
-                    .last
-                    .as_ref()
-                    .map(|former| dictionary.connection_cost(former, entry))
-                    .unwrap_or_else(|| dictionary.beginning_connection_cost(entry));
+                let (connection, clause_mid, clause_has_word) =
+                    transition_score(dictionary, &state, entry);
                 let surface = dictionary_surface_for_source(entry, &source_chars[start..end]);
                 push_state(
                     &mut states[end],
@@ -236,6 +298,7 @@ pub fn convert_with_dictionary(
                             + entry.value
                             + connection
                             + dictionary.builtin_surface_bonus(entry)
+                            + inflectional_surface_penalty(entry)
                             + contextual_entry_bonus(
                                 dictionary,
                                 &chars,
@@ -245,6 +308,8 @@ pub fn convert_with_dictionary(
                                 options.max_dictionary_word_chars.clamp(1, 128),
                             ),
                         last: Some(entry.clone()),
+                        clause_mid,
+                        clause_has_word,
                     },
                     width,
                 );
@@ -252,13 +317,16 @@ pub fn convert_with_dictionary(
                     if let Some(identity) =
                         identity_fallback_entry(dictionary, former, entry, &chars[start..end])
                     {
-                        let identity_connection = dictionary.connection_cost(former, &identity);
+                        let (identity_connection, clause_mid, clause_has_word) =
+                            transition_score(dictionary, &state, &identity);
                         push_state(
                             &mut states[end],
                             PathState {
                                 text: format!("{}{}", state.text, identity.surface),
                                 score: state.score + identity.value + identity_connection,
                                 last: Some(identity),
+                                clause_mid,
+                                clause_has_word,
                             },
                             width,
                         );
@@ -275,6 +343,102 @@ pub fn convert_with_dictionary(
         results.push(ConversionCandidate { text: trimmed.to_string(), score: 0.0 });
     }
     results
+}
+
+/// Some public-dictionary rows expose an inflected surface for a stem reading
+/// (for example `から -> 辛い`).  That row is useful inside a larger lattice,
+/// but should not outrank the kana/particle continuation when the reading
+/// does not include the inflectional ending.  Keep this as a generic
+/// morphology prior rather than a reading-specific replacement.
+fn inflectional_surface_penalty(entry: &DictionaryEntry) -> f32 {
+    if contains_kanji(&entry.surface)
+        && entry.surface.ends_with('い')
+        && !entry.reading.ends_with('い')
+    {
+        -10.0
+    } else {
+        0.0
+    }
+}
+
+fn transition_score(
+    dictionary: &AzooKeyDictionary,
+    state: &PathState,
+    entry: &DictionaryEntry,
+) -> (f32, u16, bool) {
+    let Some(former) = state.last.as_ref() else {
+        let clause_mid = if entry.mid != 500 { entry.mid } else { 500 };
+        return (dictionary.beginning_connection_cost(entry), clause_mid, true);
+    };
+
+    let mut score = dictionary.class_connection_cost(former, entry);
+    let starts_clause = dictionary.is_clause_boundary(former.rcid, entry.lcid);
+    if starts_clause {
+        let next_clause_mid = if dictionary.include_meaning_cost(entry) { entry.mid } else { 500 };
+        score += dictionary.meaning_connection_cost(state.clause_mid, next_clause_mid);
+        return (score, next_clause_mid, true);
+    }
+
+    let clause_mid =
+        if dictionary.include_meaning_cost(entry) || (!state.clause_has_word && entry.mid != 500) {
+            entry.mid
+        } else {
+            state.clause_mid
+        };
+    (score, clause_mid, true)
+}
+
+fn unknown_kana_span_end(chars: &[char], start: usize) -> Option<usize> {
+    let first = *chars.get(start)?;
+    // Small kana are orthographic continuations of the preceding syllable;
+    // treating `ゃく` as an independent unknown token would let a short
+    // high-frequency entry such as `気` beat the full `きゃく` dictionary row.
+    if (!is_hiragana(first) && first != 'ー') || is_small_hiragana(first) {
+        return None;
+    }
+    let mut end = start + 1;
+    while end < chars.len()
+        && end - start < MAX_UNKNOWN_KANA_SPAN_CHARS
+        && (is_hiragana(chars[end]) || chars[end] == 'ー')
+    {
+        end += 1;
+    }
+    Some(end)
+}
+
+fn is_small_hiragana(character: char) -> bool {
+    matches!(character, 'ぁ' | 'ぃ' | 'ぅ' | 'ぇ' | 'ぉ' | 'っ' | 'ゃ' | 'ゅ' | 'ょ')
+}
+
+fn unknown_kana_span_penalty(_length: usize) -> f32 {
+    // AzooKey's additional whole-hiragana candidate uses -14.5 regardless of
+    // the span length.  Keep that upstream prior rather than making a
+    // dictionary-missing suffix look much less plausible than a chain of
+    // unrelated one-character homonyms.
+    -14.5
+}
+
+fn following_has_lexical_adjective(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    max_dictionary_word_chars: usize,
+) -> bool {
+    if !chars.get(start).is_some_and(|character| is_particle(*character)) {
+        return false;
+    }
+    let Some(following) = chars.get(start + 1..) else {
+        return false;
+    };
+    dictionary
+        .entries_starting_at(following, 0, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .iter()
+        .any(|entry| {
+            entry.reading.chars().count() >= 2
+                && entry.surface.ends_with('い')
+                && contains_kanji(&entry.surface)
+        })
 }
 
 fn dictionary_surface_for_source(entry: &DictionaryEntry, source: &[char]) -> String {
@@ -416,9 +580,16 @@ fn identity_fallback_entry(
         return None;
     }
     let value = if inflectional_continuation {
-        -4.0
+        // Preserve a readable kana auxiliary after a verb/adjective stem;
+        // this is a general conjugation rule, not a word-pair exception.
+        -3.0
     } else {
-        -7.5 - (reading.len().saturating_sub(2) as f32 * 1.5)
+        // A kana identity edge is an escape hatch for an incomplete clause,
+        // not a competing lexical interpretation.  Keep it below a real
+        // system-dictionary surface so a contextual Kanji candidate wins when
+        // the reading is fully covered (while still retaining the edge for
+        // genuinely unfinished speech).
+        -12.0 - (reading.len().saturating_sub(2) as f32 * 1.5)
     };
     Some(DictionaryEntry {
         reading: reading.iter().collect(),
@@ -517,9 +688,7 @@ fn push_state(states: &mut Vec<PathState>, candidate: PathState, width: usize) {
     // can interleave equal contexts, so scan the small beam explicitly.
     let mut unique = Vec::with_capacity(states.len());
     for state in states.drain(..) {
-        if unique.iter().any(|kept: &PathState| {
-            kept.text == state.text && same_context(&kept.last, &state.last)
-        }) {
+        if unique.iter().any(|kept: &PathState| same_path_context(kept, &state)) {
             continue;
         }
         unique.push(state);
@@ -528,8 +697,11 @@ fn push_state(states: &mut Vec<PathState>, candidate: PathState, width: usize) {
     states.truncate(width);
 }
 
-fn same_context(left: &Option<DictionaryEntry>, right: &Option<DictionaryEntry>) -> bool {
-    match (left, right) {
+fn same_path_context(left: &PathState, right: &PathState) -> bool {
+    if left.clause_mid != right.clause_mid || left.clause_has_word != right.clause_has_word {
+        return false;
+    }
+    match (&left.last, &right.last) {
         (None, None) => true,
         (Some(left), Some(right)) => {
             left.lcid == right.lcid && left.rcid == right.rcid && left.mid == right.mid
@@ -781,6 +953,22 @@ mod tests {
                     .expect("public conversion should produce a candidate");
             assert_eq!(candidate.text, expected, "input: {input}");
         }
+    }
+
+    #[test]
+    fn keeps_an_unknown_hiragana_suffix_readable_after_a_dictionary_clause() {
+        let Ok(root) = std::env::var("AZOOKEY_DICTIONARY_ROOT") else {
+            return;
+        };
+        let converted = convert_kana_to_kanji_with_paths(
+            "あしたははれるでしょう",
+            DictionaryPaths { system: Some(root.into()), ..DictionaryPaths::default() },
+        )
+        .expect("configured public dictionary should convert");
+        // The implementation uses AzooKey's generic whole-hiragana fallback
+        // for a suffix absent from the dictionary; no `でしょう` replacement
+        // is embedded in the converter.
+        assert_eq!(converted, "明日は晴れるでしょう");
     }
 
     #[test]
