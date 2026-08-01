@@ -385,5 +385,10 @@ describe("AzooKey Worker client connection lifecycle", () => {
     );
     expect(workerErrorReachedConverter(new AzooKeyWorkerError("no code"))).toBe(true);
     expect(workerErrorReachedConverter(new Error("socket died"))).toBe(true);
+    // A code a later Worker version introduces is not a refusal this client
+    // recognises, so it must not be reported as a request that never arrived.
+    expect(workerErrorReachedConverter(new AzooKeyWorkerError("future", "some_future_code"))).toBe(
+      true,
+    );
   });
 });

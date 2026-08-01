@@ -128,18 +128,38 @@ export class AzooKeyWorkerError extends Error {
 }
 
 /**
+ * Codes the Worker answers with before it ever invokes the converter: contract
+ * violations, auth, back-pressure, and an unusable converter.
+ */
+const PRE_CONVERTER_ERROR_CODES: ReadonlySet<string> = new Set([
+  "invalid_message",
+  "invalid_json",
+  "unsupported_message",
+  "binary_message_not_supported",
+  "message_too_large",
+  "text_too_large",
+  "empty_text",
+  "invalid_request_id",
+  "invalid_contract",
+  "unsupported_mode",
+  "unauthorized",
+  "busy",
+  "converter_unavailable",
+]);
+
+/**
  * Whether a rejection means the AzooKey converter actually ran.
  *
- * The Worker refuses a request before invoking the converter for contract,
- * auth, and back-pressure errors (`busy`, `unauthorized`, `invalid_*`, ...);
- * only `conversion_*` codes are raised once conversion is under way. An
- * unrecognised or code-less rejection stays on the conversion stage rather than
- * claiming the request never got there.
+ * Only a code this client recognises as a refusal proves the request never
+ * reached the converter. Anything else — a code-less rejection, a transport
+ * error, or a code a later Worker version introduces — stays on the conversion
+ * stage, because claiming a request never got there is the assertion we cannot
+ * take back if it is wrong.
  */
 export const workerErrorReachedConverter = (error: unknown): boolean =>
   !(error instanceof AzooKeyWorkerError) ||
   error.code === undefined ||
-  error.code.startsWith("conversion_");
+  !PRE_CONVERTER_ERROR_CODES.has(error.code);
 
 interface ParsedWorkerMessage {
   requestId?: string;
