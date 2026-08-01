@@ -218,16 +218,13 @@ fn create_noise_cancellation_engine(
         return Ok(None);
     }
 
-    let model_dir = match model_root {
-        Some(root) => noise_cancellation_model_dir_from_root(root, config.noise_cancellation.model),
-        None => {
-            let handle = handle.ok_or_else(|| {
-                anyhow!(
-                    "an AppHandle is required to resolve the noise cancellation model directory"
-                )
-            })?;
-            noise_cancellation_model_dir(handle, config.noise_cancellation.model)?
-        }
+    let model_dir = if let Some(root) = model_root {
+        noise_cancellation_model_dir_from_root(root, config.noise_cancellation.model)
+    } else {
+        let handle = handle.ok_or_else(|| {
+            anyhow!("an AppHandle is required to resolve the noise cancellation model directory")
+        })?;
+        noise_cancellation_model_dir(handle, config.noise_cancellation.model)?
     };
     create_noise_cancellation_engine_at(&model_dir, config)
 }

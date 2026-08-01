@@ -222,6 +222,7 @@ mod tests {
             model_id: "parapper-ja".to_string(),
             input_snippet: format!("input-{index}"),
             output_text: format!("output-{index}"),
+            surface_text: None,
             started_at: index as u64,
             at: index as u64 + 1,
             duration_ms: 1,

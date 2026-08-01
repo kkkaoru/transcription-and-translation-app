@@ -40,6 +40,10 @@ pub struct RunningRecognitionInput {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "output events stay owned to avoid an extra allocation per recognition chunk"
+)]
 pub(crate) enum RecognitionStreamEvent {
     SpeechStarted,
     Output(RecognitionStreamOutput),
@@ -51,12 +55,18 @@ pub(crate) struct RecognitionStreamOutput {
     /// Original ASR surface text when the streaming protocol transformed
     /// `output.text` into a reading.
     pub(crate) source_text: Option<String>,
+    /// Canonical phonetic input for a kana-kanji normalizer such as `AzooKey`.
+    ///
+    /// This is deliberately separate from both the protocol `text` field and
+    /// `source_text`: the former follows the configured streaming format and
+    /// the latter is the original ASR surface retained for compatibility.
+    pub(crate) azookey_input_text: Option<String>,
 }
 
 impl RecognitionStreamOutput {
     #[cfg(any(test, feature = "smoke-server"))]
     pub(crate) fn surface(output: RecognizedTextOutput) -> Self {
-        Self { output, source_text: None }
+        Self { output, source_text: None, azookey_input_text: None }
     }
 }
 

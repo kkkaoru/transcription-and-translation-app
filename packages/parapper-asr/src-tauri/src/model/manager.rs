@@ -1137,7 +1137,7 @@ fn install_downloaded_archive(
     file_index: usize,
     total_files: usize,
 ) -> Result<()> {
-    let downloaded_bytes = temporary_path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let downloaded_bytes = temporary_path.metadata().map_or(0, |metadata| metadata.len());
     emit_download_progress(
         handle,
         &target.file_name,

@@ -83,4 +83,72 @@ describe("Parapper output coalescing queue", () => {
     expect(process).toHaveBeenCalledTimes(2);
     expect(queue.getStats()).toMatchObject({ pending: 0, inFlight: false });
   });
+
+  it("drops a late partial after the same-turn final, even when both share a revision", async () => {
+    const processed: string[] = [];
+    const queue = createParapperOutputQueue<Item>((next) => {
+      processed.push(next.id);
+    });
+    const base = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+      revision: 2,
+      segmentId: 11,
+    };
+
+    queue.enqueue({ id: "partial", isFinal: false, outputSequence: 10, ...base });
+    queue.enqueue({ id: "final", isFinal: true, outputSequence: 11, ...base });
+    queue.enqueue({ id: "late-partial", isFinal: false, outputSequence: 10, ...base });
+    await queue.whenIdle();
+
+    expect(processed).toEqual(["partial", "final"]);
+    expect(queue.getStats()).toMatchObject({ droppedPartials: 1, droppedFinals: 0 });
+  });
+
+  it("does not let an older final remove a newer turn's pending partial", async () => {
+    const started: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item>((next) => {
+      started.push(next.id);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    queue.enqueue({
+      id: "turn-1-partial",
+      isFinal: false,
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 1,
+      revision: 1,
+      outputSequence: 1,
+    });
+    await flush();
+    queue.enqueue({
+      id: "turn-2-partial",
+      isFinal: false,
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 2,
+      revision: 0,
+      outputSequence: 2,
+    });
+    queue.enqueue({
+      id: "turn-1-final",
+      isFinal: true,
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 1,
+      revision: 1,
+      outputSequence: 3,
+    });
+    release.shift()?.();
+    await flush();
+
+    expect(started).toEqual(["turn-1-partial", "turn-2-partial"]);
+    release.shift()?.();
+    await flush();
+    expect(started).toEqual(["turn-1-partial", "turn-2-partial", "turn-1-final"]);
+    release.shift()?.();
+    await queue.whenIdle();
+  });
 });

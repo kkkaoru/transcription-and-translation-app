@@ -5,6 +5,7 @@
   "turn_session_id": 7,
   "turn_id": 3,
   "revision": 2,
+  "output_sequence": 2,
   "segment_id": 8,
   "previous_segment_id": 7,
   "text": "こんにちは。",

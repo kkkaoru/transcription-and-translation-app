@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, path::PathBuf};
+use std::{borrow::Cow, collections::HashMap, path::Path};
 
 use anyhow::{Context, Result, anyhow};
 use ort::{
@@ -43,12 +43,12 @@ struct DecoderStep {
 }
 
 impl LocalTranslationEngine {
-    pub(super) fn load(model_dir: PathBuf, local_model: LocalTranslationModel) -> Result<Self> {
+    pub(super) fn load(model_dir: &Path, local_model: LocalTranslationModel) -> Result<Self> {
         Self::load_with_intra_threads(model_dir, local_model, 4)
     }
 
     fn load_with_intra_threads(
-        model_dir: PathBuf,
+        model_dir: &Path,
         local_model: LocalTranslationModel,
         intra_threads: usize,
     ) -> Result<Self> {
@@ -187,11 +187,15 @@ fn build_input_value<'a>(
         "input_ids" => {
             let ids =
                 input_token_ids.iter().map(|token_id| i64::from(*token_id)).collect::<Vec<_>>();
-            Ok(Tensor::from_array((vec![1_i64, input_token_ids.len() as i64], ids))?.into())
+            let input_len = i64::try_from(input_token_ids.len())
+                .context("local translation input token count exceeds i64")?;
+            Ok(Tensor::from_array((vec![1_i64, input_len], ids))?.into())
         }
         "attention_mask" => {
             let mask = vec![1_i64; total_sequence_len];
-            Ok(Tensor::from_array((vec![1_i64, total_sequence_len as i64], mask))?.into())
+            let sequence_len = i64::try_from(total_sequence_len)
+                .context("local translation sequence length exceeds i64")?;
+            Ok(Tensor::from_array((vec![1_i64, sequence_len], mask))?.into())
         }
         name if name.starts_with("past_conv.") => {
             if let Some(state) = decoder_state {
@@ -221,16 +225,14 @@ fn decoder_input_tokens<'a>(
     prompt_token_ids: &'a [u32],
     generated_token_ids: &'a [u32],
 ) -> &'a [u32] {
-    generated_token_ids.last().map(std::slice::from_ref).unwrap_or(prompt_token_ids)
+    generated_token_ids.last().map_or(prompt_token_ids, std::slice::from_ref)
 }
 
 fn decoder_total_sequence_len(
     input_token_count: usize,
     decoder_state: Option<&DecoderState>,
 ) -> usize {
-    decoder_state
-        .map(|state| state.total_sequence_len + input_token_count)
-        .unwrap_or(input_token_count)
+    decoder_state.map_or(input_token_count, |state| state.total_sequence_len + input_token_count)
 }
 
 fn decoder_state_from_outputs(
@@ -285,7 +287,7 @@ fn concrete_past_shape(template: &[i64], seq_len: usize, empty_sequence_dim: boo
             } else if !empty_sequence_dim && index == 2 {
                 3
             } else {
-                seq_len as i64
+                i64::try_from(seq_len).expect("local translation sequence length must fit i64")
             }
         })
         .collect()
@@ -299,7 +301,7 @@ fn build_zero_tensor(
         TensorElementType::Float16 | TensorElementType::Float32 => {
             Ok(DynTensor::new(&Allocator::default(), element_type, shape)?.into())
         }
-        _ => anyhow::bail!("Unsupported local translation past tensor type: {}", element_type),
+        _ => anyhow::bail!("Unsupported local translation past tensor type: {element_type}"),
     }
 }
 
@@ -399,18 +401,20 @@ fn greedy_next_token(shape: &[i64], values: &[f32]) -> Result<u32> {
     let logits = values
         .get(start..start + vocab_size)
         .ok_or_else(|| anyhow!("Local translation logits buffer is shorter than its shape"))?;
-    logits
+    let (token_id, _) = logits
         .iter()
         .enumerate()
         .max_by(|(_, left), (_, right)| {
             left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
         })
-        .map(|(token_id, _)| token_id as u32)
-        .ok_or_else(|| anyhow!("Local translation logits were empty"))
+        .ok_or_else(|| anyhow!("Local translation logits were empty"))?;
+    u32::try_from(token_id).context("local translation vocabulary index exceeds u32")
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+
     use super::*;
     use std::{
         env, fs,
@@ -542,14 +546,13 @@ mod tests {
         for intra_threads in [1_usize, 4_usize] {
             for local_model in [LocalTranslationModel::Lfm2Q4] {
                 let mut engine = LocalTranslationEngine::load_with_intra_threads(
-                    model_dir.clone(),
+                    &model_dir,
                     local_model,
                     intra_threads,
                 )
                 .unwrap_or_else(|err| {
                     panic!(
-                        "failed to load local translation model {:?} with {} threads: {err:#}",
-                        local_model, intra_threads
+                        "failed to load local translation model {local_model:?} with {intra_threads} threads: {err:#}"
                     )
                 });
 
@@ -559,8 +562,7 @@ mod tests {
                     .translate(TranslationLanguage::Ja, TranslationLanguage::En, &warmup.text)
                     .unwrap_or_else(|err| {
                         panic!(
-                            "warmup failed for {:?} with {} threads: {err:#}",
-                            local_model, intra_threads
+                            "warmup failed for {local_model:?} with {intra_threads} threads: {err:#}"
                         )
                     });
                 println!(
@@ -644,7 +646,7 @@ mod tests {
 
         for intra_threads in [1_usize, 4_usize] {
             let mut engine = LocalTranslationEngine::load_with_intra_threads(
-                model_dir.clone(),
+                &model_dir,
                 LocalTranslationModel::Lfm2Q4,
                 intra_threads,
             )
@@ -874,14 +876,13 @@ mod tests {
             [(LocalTranslationModel::Lfm2Q4, local_translation_model_dir_from_env_or_default())];
 
         for (model, model_dir) in variants {
-            let mut engine =
-                LocalTranslationEngine::load_with_intra_threads(model_dir.clone(), model, 4)
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "failed to load LFM2 {model:?} model from {}: {err:#}",
-                            model_dir.display()
-                        )
-                    });
+            let mut engine = LocalTranslationEngine::load_with_intra_threads(&model_dir, model, 4)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "failed to load LFM2 {model:?} model from {}: {err:#}",
+                        model_dir.display()
+                    )
+                });
             let output = engine
                 .translate(
                     TranslationLanguage::Ja,
@@ -915,7 +916,7 @@ mod tests {
         );
 
         let mut engine = LocalTranslationEngine::load(
-            model_dir,
+            &model_dir,
             LocalTranslationModel::CatTranslate0_8BQ4KQuant,
         )
         .expect("Cat local translation engine should load copied model files");
@@ -945,7 +946,7 @@ mod tests {
         );
 
         let mut engine = LocalTranslationEngine::load(
-            model_dir,
+            &model_dir,
             LocalTranslationModel::CatTranslate0_8BQ4KQuant,
         )
         .expect("Cat local translation engine should load copied model files");
@@ -1034,7 +1035,7 @@ mod tests {
     }
 
     fn local_translation_model_dir_from_env_or_default() -> PathBuf {
-        env::var_os("PARAPPER_LOCAL_TRANSLATION_MODEL_DIR").map(PathBuf::from).unwrap_or_else(
+        env::var_os("PARAPPER_LOCAL_TRANSLATION_MODEL_DIR").map_or_else(
             || {
                 let appdata = env::var_os("APPDATA")
                     .map(PathBuf::from)
@@ -1044,25 +1045,30 @@ mod tests {
                     .join("models")
                     .join("lfm2-350m-enjp-mt-onnx-q4")
             },
+            PathBuf::from,
         )
     }
 
     fn cat_translation_model_dir_from_env_or_appdata() -> PathBuf {
-        env::var_os("PARAPPER_CAT_TRANSLATION_MODEL_DIR").map(PathBuf::from).unwrap_or_else(|| {
-            let appdata = env::var_os("APPDATA")
-                .map(PathBuf::from)
-                .expect("APPDATA must be set or PARAPPER_CAT_TRANSLATION_MODEL_DIR supplied");
-            appdata
-                .join("com.parakeet-inc.parapper")
-                .join("models")
-                .join("cat-translate-0.8b-onnx-q4-k-quant")
-        })
+        env::var_os("PARAPPER_CAT_TRANSLATION_MODEL_DIR").map_or_else(
+            || {
+                let appdata = env::var_os("APPDATA")
+                    .map(PathBuf::from)
+                    .expect("APPDATA must be set or PARAPPER_CAT_TRANSLATION_MODEL_DIR supplied");
+                appdata
+                    .join("com.parakeet-inc.parapper")
+                    .join("models")
+                    .join("cat-translate-0.8b-onnx-q4-k-quant")
+            },
+            PathBuf::from,
+        )
     }
 
     fn jvs_bench_utterances() -> Vec<JvsBenchUtterance> {
-        let jvs_root = env::var_os("JVS_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| jvs_root_from_dotenv().expect("set JVS_ROOT or define it in .env"));
+        let jvs_root = env::var_os("JVS_ROOT").map_or_else(
+            || jvs_root_from_dotenv().expect("set JVS_ROOT or define it in .env"),
+            PathBuf::from,
+        );
         let speaker = env::var("PARAPPER_LOCAL_TRANSLATION_BENCH_JVS_SPEAKER")
             .unwrap_or_else(|_| "jvs001".to_string());
         let subset = env::var("PARAPPER_LOCAL_TRANSLATION_BENCH_JVS_SUBSET")
@@ -1111,7 +1117,7 @@ mod tests {
     }
 
     fn median(values: &mut [f64]) -> f64 {
-        values.sort_by(|left, right| left.total_cmp(right));
+        values.sort_by(f64::total_cmp);
         values[values.len() / 2]
     }
 }

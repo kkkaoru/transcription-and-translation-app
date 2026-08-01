@@ -571,6 +571,8 @@ fn nemotron_35_multilingual_language_option() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cast_precision_loss, clippy::map_unwrap_or, clippy::too_many_lines)]
+
     use super::{
         AsrEngine, AsrTranscript, SherpaOnnxAsrEngine, SherpaOnnxNemoCtcModelFiles,
         SherpaOnnxTransducerModelFiles,

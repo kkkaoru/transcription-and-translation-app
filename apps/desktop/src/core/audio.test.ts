@@ -38,7 +38,10 @@ import {
   TARGET_SAMPLE_RATE,
   updateAdaptiveSilenceGate,
 } from "./audio";
-import { DEFAULT_SILENCE_GATE_DB } from "./defaults";
+import { DEFAULT_AUDIO_CHUNK_MS, DEFAULT_SILENCE_GATE_DB } from "./defaults";
+import type { AudioChunk } from "./types";
+
+const FULL_CAPTURE_CHUNK_SAMPLES = (TARGET_SAMPLE_RATE * DEFAULT_AUDIO_CHUNK_MS) / 1_000;
 
 describe("audio conversion", () => {
   it("keeps a speech-aware partial tail only when it reaches the minimum duration", () => {
@@ -845,5 +848,114 @@ describe("audio conversion", () => {
     expect(new Set(frames[0])).toEqual(new Set([0]));
     expect(new Set(frames[1])).not.toEqual(new Set([0]));
     expect(new Set(frames[1]).size).toBeGreaterThan(1);
+  });
+
+  it("falls back to monotonic utterance ID when crypto.randomUUID fails", () => {
+    // Save the original crypto
+    const originalCrypto = globalThis.crypto;
+
+    try {
+      // Mock crypto.randomUUID to throw
+      Object.defineProperty(globalThis, "crypto", {
+        value: {
+          randomUUID: vi.fn(() => {
+            throw new Error("Crypto unavailable");
+          }),
+        },
+        configurable: true,
+      });
+
+      const capture = new MicrophoneCapture();
+      const handler = vi.fn();
+      const internals = capture as unknown as {
+        context: { sampleRate: number };
+        handler: (chunk: AudioChunk) => void;
+        acceptSamples: (samples: Float32Array) => void;
+      };
+      internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+      internals.handler = handler;
+
+      internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1));
+      expect(handler).toHaveBeenCalled();
+      const utteranceId = handler.mock.calls[0]?.[0].utteranceId;
+      expect(utteranceId).toMatch(/^utterance-/);
+      expect(utteranceId).not.toMatch(/^[a-f0-9-]{36}$/); // Not a UUID
+    } finally {
+      // Restore original crypto
+      Object.defineProperty(globalThis, "crypto", {
+        value: originalCrypto,
+        configurable: true,
+      });
+    }
+  });
+
+  it("falls back to monotonic utterance ID when crypto is unavailable", () => {
+    // Save the original crypto
+    const originalCrypto = globalThis.crypto;
+
+    try {
+      // Mock crypto as undefined
+      Object.defineProperty(globalThis, "crypto", {
+        value: undefined,
+        configurable: true,
+      });
+
+      const capture = new MicrophoneCapture();
+      const handler = vi.fn();
+      const internals = capture as unknown as {
+        context: { sampleRate: number };
+        handler: (chunk: AudioChunk) => void;
+        acceptSamples: (samples: Float32Array) => void;
+      };
+      internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+      internals.handler = handler;
+
+      internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1));
+      expect(handler).toHaveBeenCalled();
+      const utteranceId = handler.mock.calls[0]?.[0].utteranceId;
+      expect(utteranceId).toMatch(/^utterance-/);
+    } finally {
+      // Restore original crypto
+      Object.defineProperty(globalThis, "crypto", {
+        value: originalCrypto,
+        configurable: true,
+      });
+    }
+  });
+
+  it("falls back to monotonic utterance ID when randomUUID is not a function", () => {
+    // Save the original crypto
+    const originalCrypto = globalThis.crypto;
+
+    try {
+      // Mock crypto.randomUUID as not a function
+      Object.defineProperty(globalThis, "crypto", {
+        value: {
+          randomUUID: null,
+        },
+        configurable: true,
+      });
+
+      const capture = new MicrophoneCapture();
+      const handler = vi.fn();
+      const internals = capture as unknown as {
+        context: { sampleRate: number };
+        handler: (chunk: AudioChunk) => void;
+        acceptSamples: (samples: Float32Array) => void;
+      };
+      internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+      internals.handler = handler;
+
+      internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1));
+      expect(handler).toHaveBeenCalled();
+      const utteranceId = handler.mock.calls[0]?.[0].utteranceId;
+      expect(utteranceId).toMatch(/^utterance-/);
+    } finally {
+      // Restore original crypto
+      Object.defineProperty(globalThis, "crypto", {
+        value: originalCrypto,
+        configurable: true,
+      });
+    }
   });
 });

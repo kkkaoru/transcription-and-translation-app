@@ -172,10 +172,7 @@ impl AsrRequestSegmentPlan {
 pub(in crate::recognition) fn drop_front_interim_segments_covered_by_completion(
     pending: &mut VecDeque<PendingAsrSegment>,
 ) {
-    loop {
-        let Some(front) = pending.front() else {
-            break;
-        };
+    while let Some(front) = pending.front() {
         if front.kind() != AsrTaskKind::InterimDisplay {
             break;
         }
@@ -231,10 +228,7 @@ fn take_following_interim_segments(
     pending: &mut VecDeque<PendingAsrSegment>,
     segments: &mut Vec<PendingAsrSegment>,
 ) {
-    loop {
-        let Some(next) = pending.front() else {
-            break;
-        };
+    while let Some(next) = pending.front() {
         let Some(last) = segments.last() else {
             break;
         };

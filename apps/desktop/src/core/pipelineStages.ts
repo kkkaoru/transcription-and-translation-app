@@ -9,6 +9,10 @@ import type { PipelineStageEvent, PipelineStageName, UtteranceStageGroup } from 
 
 const MAX_STAGE_EVENTS = 96;
 const MAX_UTTERANCES = 24;
+const ASR_STAGE_ORDER = 0;
+const NORMALIZE_STAGE_ORDER = 1;
+const TRANSLATE_STAGE_ORDER = 2;
+const UNKNOWN_STAGE_ORDER = 9;
 const VERBOSE_STORAGE_KEY = "kotoba-beacon.debug.verbosePipeline";
 /** Keep the settings Debug panel open across reloads during development. */
 export const DEBUG_PANEL_OPEN_STORAGE_KEY = "kotoba-beacon.debug.panelOpen";
@@ -167,12 +171,16 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
       : typeof record["output_text"] === "string"
         ? record["output_text"]
         : "";
+  const surfaceTextRaw = record["surfaceText"] ?? record["surface_text"];
+  const surfaceText =
+    typeof surfaceTextRaw === "string" && surfaceTextRaw.trim() ? surfaceTextRaw : undefined;
   return {
     stage,
     utteranceId: utteranceId || `stage-${Date.now()}-${sequence}`,
     modelId,
     inputSnippet,
     outputText,
+    ...(surfaceText ? { surfaceText } : {}),
     startedAt,
     at,
     durationMs,
@@ -230,6 +238,7 @@ export const hydratePipelineStageEvents = (raw: unknown): PipelineStageEvent[] =
       event.ok ? "ok" : "error",
       event.error ?? "",
       event.outputText,
+      event.surfaceText ?? "",
     ].join("\u001f");
 
   const existing = new Set(stages.map(identity));
@@ -313,13 +322,13 @@ export const groupStagesByUtterance = (
   const stageOrder = (name: string): number => {
     switch (name) {
       case "asr":
-        return 0;
+        return ASR_STAGE_ORDER;
       case "normalize":
-        return 1;
+        return NORMALIZE_STAGE_ORDER;
       case "translate":
-        return 2;
+        return TRANSLATE_STAGE_ORDER;
       default:
-        return 9;
+        return UNKNOWN_STAGE_ORDER;
     }
   };
 

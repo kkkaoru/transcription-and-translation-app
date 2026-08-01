@@ -280,7 +280,6 @@ pub fn start_translation_http_listener(
 }
 
 #[tauri::command]
-#[expect(clippy::needless_pass_by_value, reason = "tauri::command requires State<'_, T> by value")]
 pub async fn stop_translation_http_listener(
     state: State<'_, AppState>,
 ) -> CommandResult<TranslationHttpListenerStatus> {

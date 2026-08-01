@@ -848,6 +848,61 @@ describe("Parapper WebSocket adapter", () => {
     }
   });
 
+  it("keeps standard surface text separate from a sidecar AzooKey reading", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.partial",
+              session_id: message.session_id,
+              turn_session_id: 2,
+              turn_id: 4,
+              revision: 0,
+              output_sequence: 1,
+              segment_id: 7,
+              text: "きょうは",
+              source_text: "今日は",
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              turn_session_id: 2,
+              turn_id: 4,
+              revision: 0,
+              output_sequence: 2,
+              segment_id: 7,
+              text: "きょうは晴れです。",
+              source_text: "今日は晴れです。",
+            }),
+          );
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), { url: fixture.url, timeoutMs: 1_000 }),
+      ).resolves.toBe("今日は晴れです。");
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("soft-returns an unsolicited session.done without sending audio", async () => {
     const fixture = await startParapper((socket) => {
       socket.on("message", (data: RawData, binary: boolean) => {

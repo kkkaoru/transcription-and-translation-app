@@ -200,10 +200,14 @@ export interface ParapperRecognitionOutput {
   text: string;
   /** Original ASR surface retained by Parapper's Vibrato→Hiragana sink. */
   sourceText?: string | null;
+  /** Explicit phonetic input for the native AzooKey normalizer. */
+  azookeyInputText?: string | null;
   sessionId: string;
   turnSessionId: number;
   turnId: number;
   revision: number;
+  /** Monotonic sidecar output cursor within a recognition session. */
+  outputSequence?: number;
   segmentId: number;
   previousSegmentId?: number | null;
   sourceAsrModel: string;
@@ -224,6 +228,8 @@ export interface PipelineStageEvent {
   modelId: string;
   inputSnippet: string;
   outputText: string;
+  /** Original Vibrato surface when an ASR stage also exposes a Hiragana reading. */
+  surfaceText?: string;
   /** Stage wall-clock start (epoch millis). */
   startedAt: number;
   /** Stage wall-clock end (epoch millis). Historical field name is `at`. */

@@ -1,13 +1,24 @@
+#![allow(clippy::float_cmp, clippy::useless_conversion)]
+
 use super::*;
 use tauri::Manager as _;
 
 fn production_app_data_dir() -> std::path::PathBuf {
-    let builder = tauri::Builder::default();
-    #[cfg(any(windows, target_os = "linux"))]
-    let builder = builder.any_thread();
-    let app =
-        builder.build(tauri::generate_context!()).expect("Tauri production context should build");
-    app.handle().path().app_data_dir().expect("Tauri app data directory should resolve")
+    #[cfg(feature = "real-asr-tests")]
+    {
+        tauri_test_handle().path().app_data_dir().expect("test app data directory should resolve")
+    }
+
+    #[cfg(not(feature = "real-asr-tests"))]
+    {
+        let builder = tauri::Builder::default();
+        #[cfg(any(windows, target_os = "linux"))]
+        let builder = builder.any_thread();
+        let app = builder
+            .build(tauri::generate_context!())
+            .expect("Tauri production context should build");
+        app.handle().path().app_data_dir().expect("Tauri app data directory should resolve")
+    }
 }
 
 #[test]

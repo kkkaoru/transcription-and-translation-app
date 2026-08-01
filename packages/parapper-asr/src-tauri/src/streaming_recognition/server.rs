@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc,
@@ -79,7 +80,7 @@ impl StreamingRecognitionServer {
         let worker_shutdown = shutdown.clone();
         let join_handle = thread::Builder::new()
             .name("parapper-streaming-recognition-server".to_string())
-            .spawn(move || run_accept_loop(listener, config, backend, worker_shutdown))
+            .spawn(move || run_accept_loop(&listener, &config, &backend, &worker_shutdown))
             .context("failed to spawn streaming recognition listener")?;
         Ok(Self { local_addr, shutdown, join_handle: Some(join_handle) })
     }
@@ -109,10 +110,10 @@ impl Drop for StreamingRecognitionServer {
 }
 
 fn run_accept_loop(
-    listener: TcpListener,
-    config: StreamingRecognitionServerConfig,
-    backend: Arc<dyn RecognitionBackend>,
-    shutdown: Arc<AtomicBool>,
+    listener: &TcpListener,
+    config: &StreamingRecognitionServerConfig,
+    backend: &Arc<dyn RecognitionBackend>,
+    shutdown: &Arc<AtomicBool>,
 ) {
     let mut connections = Vec::new();
     while !shutdown.load(Ordering::Acquire) {
@@ -128,7 +129,7 @@ fn run_accept_loop(
                         handle_connection(
                             stream,
                             &connection_config,
-                            connection_backend,
+                            &connection_backend,
                             &connection_shutdown,
                         );
                     }) {
@@ -170,7 +171,7 @@ fn join_connection(connection: JoinHandle<()>) {
 fn handle_connection(
     stream: TcpStream,
     config: &StreamingRecognitionServerConfig,
-    backend: Arc<dyn RecognitionBackend>,
+    backend: &Arc<dyn RecognitionBackend>,
     shutdown: &AtomicBool,
 ) {
     if stream.set_nonblocking(false).is_err()
@@ -222,6 +223,10 @@ fn finish_close_handshake(websocket: &mut WebSocket<TcpStream>) {
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "tungstenite callback requires this response error type"
+)]
 fn validate_upgrade(
     request: &Request,
     response: Response,
@@ -256,12 +261,75 @@ struct ActiveConnectionSession {
     recognition: StartedRecognitionSession,
     drain_receiver: Option<Receiver<RecognitionShutdownResult>>,
     drain_join: Option<JoinHandle<()>>,
+    /// Last protocol cursor emitted for each logical turn.  Recognition work
+    /// is asynchronous, so a stale interim can otherwise arrive after the
+    /// final and make clients regress their caption.
+    emitted_outputs: HashMap<(u64, u64), EmittedOutputCursor>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EmittedOutputCursor {
+    revision: u64,
+    output_sequence: u64,
+    segment_id: u64,
+    is_final: bool,
+}
+
+fn output_cursor(
+    output: &crate::recognition::control::input::RecognitionStreamOutput,
+) -> ((u64, u64), EmittedOutputCursor) {
+    let source = &output.output.meta.source;
+    (
+        (source.turn_session_id, source.turn_id),
+        EmittedOutputCursor {
+            revision: source.turn_revision,
+            output_sequence: source.output_sequence,
+            segment_id: source.segment_id,
+            is_final: output.output.meta.is_final,
+        },
+    )
+}
+
+fn compare_output_cursor(
+    candidate: EmittedOutputCursor,
+    current: EmittedOutputCursor,
+) -> std::cmp::Ordering {
+    candidate
+        .revision
+        .cmp(&current.revision)
+        .then_with(|| candidate.output_sequence.cmp(&current.output_sequence))
+        .then_with(|| candidate.segment_id.cmp(&current.segment_id))
+}
+
+/// Return whether an output should be sent to the protocol client and record
+/// it when accepted.  A final at the same turn cursor upgrades a partial, but
+/// an older/equal partial can never reopen a finalized turn.
+fn accept_output(
+    emitted: &mut HashMap<(u64, u64), EmittedOutputCursor>,
+    output: &crate::recognition::control::input::RecognitionStreamOutput,
+) -> bool {
+    let (key, candidate) = output_cursor(output);
+    let Some(current) = emitted.get(&key).copied() else {
+        emitted.insert(key, candidate);
+        return true;
+    };
+    if current.is_final && !candidate.is_final {
+        return false;
+    }
+    let ordering = compare_output_cursor(candidate, current);
+    let accepted =
+        ordering.is_gt() || (ordering.is_eq() && candidate.is_final && !current.is_final);
+    if accepted {
+        emitted.insert(key, candidate);
+    }
+    accepted
+}
+
+#[expect(clippy::too_many_lines, reason = "protocol event loop keeps state transitions together")]
 fn run_session(
     websocket: &mut WebSocket<TcpStream>,
     output_mode: NetworkOutputMode,
-    backend: Arc<dyn RecognitionBackend>,
+    backend: &Arc<dyn RecognitionBackend>,
     shutdown: &AtomicBool,
 ) {
     let mut protocol = SessionProtocol::new();
@@ -360,6 +428,7 @@ fn run_session(
                                     recognition,
                                     drain_receiver: None,
                                     drain_join: None,
+                                    emitted_outputs: HashMap::new(),
                                 });
                                 if send_message(websocket, &ServerMessage::ready(&session_id))
                                     .is_err()
@@ -454,7 +523,8 @@ fn run_session(
                     }
                 }
             }
-            Ok(Message::Close(_)) => {
+            Ok(Message::Close(_))
+            | Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
                 cancel_active(&mut active);
                 return;
             }
@@ -464,10 +534,6 @@ fn run_session(
                     error.kind(),
                     std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                 ) => {}
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
-                cancel_active(&mut active);
-                return;
-            }
             Err(_) => {
                 cancel_active(&mut active);
                 return;
@@ -558,6 +624,13 @@ fn send_pending_events(
                 },
             )?,
             RecognitionStreamEvent::Output(output) => {
+                if !accept_output(&mut session.emitted_outputs, &output) {
+                    log::debug!(
+                        "ignored stale recognition output for session {}",
+                        session.session_id
+                    );
+                    continue;
+                }
                 send_message(websocket, &message_from_output(&session.session_id, output))?;
             }
         }
@@ -569,8 +642,11 @@ fn message_from_output(
     session_id: &str,
     stream_output: crate::recognition::control::input::RecognitionStreamOutput,
 ) -> ServerMessage {
-    let crate::recognition::control::input::RecognitionStreamOutput { output, source_text } =
-        stream_output;
+    let crate::recognition::control::input::RecognitionStreamOutput {
+        output,
+        source_text,
+        azookey_input_text,
+    } = stream_output;
     let source = &output.meta.source;
     let source_asr_model = serde_json::to_value(output.source_asr_model)
         .ok()
@@ -588,10 +664,12 @@ fn message_from_output(
             turn_session_id: source.turn_session_id,
             turn_id: source.turn_id,
             revision: source.turn_revision,
+            output_sequence: source.output_sequence,
             segment_id: source.segment_id,
             previous_segment_id: source.previous_segment_id,
             text: output.text,
             source_text,
+            azookey_input_text,
             source_asr_model,
             source_language,
             detected_language: output.detected_language,
@@ -605,10 +683,12 @@ fn message_from_output(
             turn_session_id: source.turn_session_id,
             turn_id: source.turn_id,
             revision: source.turn_revision,
+            output_sequence: source.output_sequence,
             segment_id: source.segment_id,
             previous_segment_id: source.previous_segment_id,
             text: output.text,
             source_text,
+            azookey_input_text,
             source_asr_model,
             source_language,
             detected_language: output.detected_language,
@@ -854,6 +934,7 @@ mod tests {
     use tungstenite::{Error, client::IntoClientRequest, connect, http::HeaderValue};
 
     use super::*;
+    use crate::recognition::control::input::RecognitionStreamOutput;
     use crate::streaming_recognition::backend::ActiveRecognitionSession;
     use crate::streaming_recognition::protocol::MAX_AUDIO_FRAME_BYTES;
 
@@ -889,6 +970,44 @@ mod tests {
         socket: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>,
     ) -> Value {
         serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn protocol_cursor_keeps_same_turn_final_and_rejects_late_partial() {
+        let mut emitted = HashMap::new();
+        let partial = RecognitionStreamOutput {
+            output: recognized_output(false),
+            source_text: None,
+            azookey_input_text: None,
+        };
+        let final_output = RecognitionStreamOutput {
+            output: recognized_output(true),
+            source_text: None,
+            azookey_input_text: None,
+        };
+
+        assert!(accept_output(&mut emitted, &partial));
+        assert!(accept_output(&mut emitted, &final_output));
+        assert!(!accept_output(&mut emitted, &partial));
+        assert!(!accept_output(&mut emitted, &final_output));
+    }
+
+    #[test]
+    fn protocol_cursor_orders_revision_before_sequence_and_segment() {
+        let mut emitted = HashMap::new();
+        let make_output = |is_final: bool, revision: u64, output_sequence: u64| {
+            let mut output = recognized_output(is_final);
+            output.meta.source.turn_revision = revision;
+            output.meta.source.output_sequence = output_sequence;
+            RecognitionStreamOutput { output, source_text: None, azookey_input_text: None }
+        };
+
+        assert!(accept_output(&mut emitted, &make_output(false, 1, 5)));
+        // A numerically larger sequence from an older revision is stale.
+        assert!(!accept_output(&mut emitted, &make_output(false, 0, 99)));
+        assert!(accept_output(&mut emitted, &make_output(false, 2, 1)));
+        assert!(accept_output(&mut emitted, &make_output(true, 2, 2)));
+        assert!(!accept_output(&mut emitted, &make_output(false, 2, 1)));
     }
 
     #[test]

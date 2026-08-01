@@ -4,6 +4,14 @@ import WebSocket from "ws";
 import { PARAPPER_SAMPLE_RATE, splitParapperFrames } from "./audio.js";
 
 const PCM16_BYTES_PER_MILLISECOND = (PARAPPER_SAMPLE_RATE * 2) / 1_000;
+const PARAPPER_PROTOCOL_VERSION = 1;
+const MONO_CHANNEL_COUNT = 1;
+const HTTP_CLIENT_CLOSED_REQUEST = 499;
+const HTTP_BAD_GATEWAY = 502;
+const HTTP_GATEWAY_TIMEOUT = 504;
+const ORDER_BEFORE = -1;
+const ORDER_EQUAL = 0;
+const ORDER_AFTER = 1;
 
 const wait = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -25,8 +33,10 @@ interface ParapperMessage {
   code?: string;
   message?: string;
   revision?: number;
+  output_sequence?: number;
   segment_id?: number;
   session_id?: string;
+  source_text?: string;
   text?: string;
   turn_id?: number;
   turn_session_id?: number;
@@ -41,6 +51,7 @@ interface ParapperMessage {
  */
 interface PartialTranscript {
   revision: number | null;
+  outputSequence: number | null;
   segmentId: number | null;
   text: string;
   turnId: number | null;
@@ -59,8 +70,9 @@ const comparePartialCursor = (candidate: PartialTranscript, current: PartialTran
   const fields: Array<keyof PartialTranscript> = [
     "turnSessionId",
     "turnId",
-    "segmentId",
     "revision",
+    "outputSequence",
+    "segmentId",
   ];
   for (const field of fields) {
     const next = candidate[field];
@@ -68,9 +80,23 @@ const comparePartialCursor = (candidate: PartialTranscript, current: PartialTran
     if (typeof next !== "number" || typeof previous !== "number" || next === previous) {
       continue;
     }
-    return next > previous ? 1 : -1;
+    return next > previous ? ORDER_AFTER : ORDER_BEFORE;
   }
-  return 0;
+  return ORDER_EQUAL;
+};
+
+/**
+ * The sidecar's optional reading transform is not the HTTP gateway's public
+ * transcript format. Prefer its retained ASR surface for standard Parapper
+ * callers, while accepting older/Surface producers that only send `text`.
+ */
+const standardParapperText = (message: ParapperMessage): string | null => {
+  const source = typeof message.source_text === "string" ? message.source_text.trim() : "";
+  if (source) {
+    return source;
+  }
+  const text = typeof message.text === "string" ? message.text.trim() : "";
+  return text || null;
 };
 
 /**
@@ -102,12 +128,12 @@ const protocolError = (message: ParapperMessage): GatewayError => {
     typeof message.message === "string" && message.message.trim()
       ? message.message
       : "Parapper rejected the recognition session";
-  return new GatewayError(502, code, detail);
+  return new GatewayError(HTTP_BAD_GATEWAY, code, detail);
 };
 
 const sendFailure = (error: unknown, fallback: string): GatewayError =>
   new GatewayError(
-    502,
+    HTTP_BAD_GATEWAY,
     "parapper_send_failed",
     error instanceof Error && error.message.trim() ? error.message : fallback,
   );
@@ -135,7 +161,13 @@ export const transcribeWithParapper = (
 ): Promise<string> =>
   new Promise((resolve, reject) => {
     if (options.signal?.aborted) {
-      reject(new GatewayError(499, "parapper_cancelled", "Parapper recognition was cancelled"));
+      reject(
+        new GatewayError(
+          HTTP_CLIENT_CLOSED_REQUEST,
+          "parapper_cancelled",
+          "Parapper recognition was cancelled",
+        ),
+      );
       return;
     }
     const sessionId = (options.sessionId ?? randomUUID)();
@@ -148,7 +180,11 @@ export const transcribeWithParapper = (
       });
     } catch (error) {
       reject(
-        new GatewayError(502, "parapper_connection_failed", formatParapperConnectionError(error)),
+        new GatewayError(
+          HTTP_BAD_GATEWAY,
+          "parapper_connection_failed",
+          formatParapperConnectionError(error),
+        ),
       );
       return;
     }
@@ -182,7 +218,11 @@ export const transcribeWithParapper = (
 
     const onAbort = (): void => {
       settle({
-        error: new GatewayError(499, "parapper_cancelled", "Parapper recognition was cancelled"),
+        error: new GatewayError(
+          HTTP_CLIENT_CLOSED_REQUEST,
+          "parapper_cancelled",
+          "Parapper recognition was cancelled",
+        ),
       });
     };
 
@@ -194,7 +234,13 @@ export const transcribeWithParapper = (
         // The protocol distinguishes an explicit cancellation from an
         // unexpected transport close. Do not wait for the acknowledgement:
         // the caller is already leaving this chunk/session.
-        socket.send(JSON.stringify({ version: 1, type: "session.cancel", session_id: sessionId }));
+        socket.send(
+          JSON.stringify({
+            version: PARAPPER_PROTOCOL_VERSION,
+            type: "session.cancel",
+            session_id: sessionId,
+          }),
+        );
       } catch {
         // Cancellation is best effort. The close below still guarantees that
         // the Promise settles and that the next chunk is not blocked.
@@ -274,7 +320,13 @@ export const transcribeWithParapper = (
       if (!finished) {
         stopAt = Date.now();
         try {
-          socket.send(JSON.stringify({ version: 1, type: "session.stop", session_id: sessionId }));
+          socket.send(
+            JSON.stringify({
+              version: PARAPPER_PROTOCOL_VERSION,
+              type: "session.stop",
+              session_id: sessionId,
+            }),
+          );
         } catch (error) {
           throw sendFailure(error, "could not send session.stop");
         }
@@ -283,14 +335,18 @@ export const transcribeWithParapper = (
 
     timer = setTimeout(() => {
       settle({
-        error: new GatewayError(504, "parapper_timeout", "Parapper did not finish in time"),
+        error: new GatewayError(
+          HTTP_GATEWAY_TIMEOUT,
+          "parapper_timeout",
+          "Parapper did not finish in time",
+        ),
       });
     }, options.timeoutMs);
 
     socket.once("error", (error: Error) => {
       settle({
         error: new GatewayError(
-          502,
+          HTTP_BAD_GATEWAY,
           "parapper_connection_failed",
           formatParapperConnectionError(error),
         ),
@@ -303,7 +359,7 @@ export const transcribeWithParapper = (
       const detail = reason?.toString().trim();
       settle({
         error: new GatewayError(
-          502,
+          HTTP_BAD_GATEWAY,
           "parapper_connection_closed",
           detail
             ? `Parapper sidecar closed the session (${code}): ${detail}`
@@ -316,7 +372,7 @@ export const transcribeWithParapper = (
         return;
       }
       const message = parseMessage(data);
-      if (message?.version !== 1 || message.session_id !== sessionId) {
+      if (message?.version !== PARAPPER_PROTOCOL_VERSION || message.session_id !== sessionId) {
         return;
       }
       if (message.type === "error") {
@@ -362,12 +418,13 @@ export const transcribeWithParapper = (
         });
       } else if (message.type === "turn.partial") {
         partialCount += 1;
-        const partial = typeof message.text === "string" ? message.text.trim() || null : null;
+        const partial = standardParapperText(message);
         if (partial === null) {
           return;
         }
         const candidate: PartialTranscript = {
           revision: numericCursor(message.revision),
+          outputSequence: numericCursor(message.output_sequence),
           segmentId: numericCursor(message.segment_id),
           text: partial,
           turnId: numericCursor(message.turn_id),
@@ -389,7 +446,28 @@ export const transcribeWithParapper = (
         finalAt = Date.now();
         // Empty/whitespace finals are not usable speech — keep null so session.done
         // can soft-return "" (same as no turn.final at all).
-        finalText = typeof message.text === "string" ? message.text.trim() || null : null;
+        const candidateText = standardParapperText(message);
+        if (candidateText === null) {
+          finalText = null;
+          return;
+        }
+        const candidate: PartialTranscript = {
+          revision: numericCursor(message.revision),
+          outputSequence: numericCursor(message.output_sequence),
+          segmentId: numericCursor(message.segment_id),
+          text: candidateText,
+          turnId: numericCursor(message.turn_id),
+          turnSessionId: numericCursor(message.turn_session_id),
+        };
+        if (lastPartial === null || comparePartialCursor(candidate, lastPartial) >= 0) {
+          finalText = candidateText;
+        } else {
+          emitLog("stale final transcript ignored", {
+            sessionId,
+            finalRevision: candidate.revision,
+            latestRevision: lastPartial.revision,
+          });
+        }
       } else if (message.type === "session.done") {
         // A short window may have a usable interim result but no final because
         // stop raced the sidecar's finalization. Prefer that result over an
@@ -434,10 +512,14 @@ export const transcribeWithParapper = (
       try {
         socket.send(
           JSON.stringify({
-            version: 1,
+            version: PARAPPER_PROTOCOL_VERSION,
             type: "session.start",
             session_id: sessionId,
-            audio: { encoding: "pcm_s16le", sample_rate: 16000, channels: 1 },
+            audio: {
+              encoding: "pcm_s16le",
+              sample_rate: PARAPPER_SAMPLE_RATE,
+              channels: MONO_CHANNEL_COUNT,
+            },
           }),
         );
       } catch (error) {

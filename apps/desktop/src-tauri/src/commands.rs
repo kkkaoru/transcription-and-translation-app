@@ -341,8 +341,9 @@ pub async fn transcribe_audio_chunk(
 
 /// Continue the live Parapper path after its persistent WebSocket has emitted
 /// an interim/final output. Parapper already performed VAD, segmentation and
-/// ASR; this command deliberately starts at its Hiragana text and reuses the
-/// same cached AzooKey normalizer and translation stages as HTTP callers.
+/// ASR; this command uses the sidecar's explicit AzooKey input when present and
+/// otherwise falls back to the protocol text, then reuses the same cached
+/// normalizer and translation stages as HTTP callers.
 #[tauri::command]
 pub async fn normalize_parapper_output(
     app: AppHandle,

@@ -2,21 +2,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{AsrLanguage, AsrModel, SpeechSourceKind};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RecognitionStatus {
+    #[default]
     Idle,
     WaitingForClient,
     Listening,
     Draining,
     Stopped,
     Error,
-}
-
-impl Default for RecognitionStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

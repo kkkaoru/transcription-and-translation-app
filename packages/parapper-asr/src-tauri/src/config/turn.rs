@@ -1,17 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnDetector {
+    #[default]
     Simple,
     Morph,
     Namo,
-}
-
-impl Default for TurnDetector {
-    fn default() -> Self {
-        Self::Simple
-    }
 }
 
 #[cfg(test)]

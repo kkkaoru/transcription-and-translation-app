@@ -72,7 +72,9 @@ binary frameはsigned 16-bit little-endian PCMです。空frameと奇数byte長�
 {"version":1,"type":"pong","request_id":"ping-1"}
 ```
 
-`turn.partial`は`turn.final`と同じidentity、`source_asr_model`、言語fieldを持ちますが、`audio_duration_ms`は持ちません。`session_id`はnetwork sessionを識別し、`turn_session_id`はParapper内部の構造化された認識sessionを識別します。同じTurnのrevisionは単調増加します。clientは古いpartialを新しいrevisionで置き換え、`turn.final`を変更不能な確定結果として扱います。
+`turn.partial`は`turn.final`と同じidentity、`source_asr_model`、言語fieldを持ちますが、`audio_duration_ms`は持ちません。`session_id`はnetwork sessionを識別し、`turn_session_id`はParapper内部の構造化された認識sessionを識別します。同じTurnのrevisionは単調増加し、`output_sequence`は同一revision内のpartial/finalを含む出力順を一意にします。clientは古いpartialを新しいrevision（同一revisionでは`output_sequence`）で置き換え、`turn.final`を変更不能な確定結果として扱います。
+
+`text`は設定されたストリーミング表示形式です。日本語の`hiragana`形式では、元のASR surfaceを`source_text`に保持し、AzooKey入力に使うひらがなを`azookey_input_text`として明示します。したがって、標準Parapperのsurface表示、raw字幕、かな漢字変換はそれぞれ適切なfieldを選択でき、fieldの内容から推測する必要がありません。`source_text`と`azookey_input_text`は旧client向けにoptionalです。
 
 errorは機械処理できる形式で返し、内部Rust error文字列をcodeとして公開しません。
 

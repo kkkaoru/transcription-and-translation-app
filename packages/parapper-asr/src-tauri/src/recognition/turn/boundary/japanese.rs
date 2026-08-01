@@ -53,7 +53,7 @@ impl JapaneseMorphAnalyzer {
     }
 }
 
-/// UniDic CWJ's `kana` field (F[20]) is the reading of the surface form, not
+/// `UniDic` CWJ's `kana` field (F[20]) is the reading of the surface form, not
 /// the lemma. That distinction keeps inflected words such as `行った` as
 /// `いった`, rather than incorrectly reverting them to `いく`.
 pub(crate) fn hiragana_text_from_morph_tokens(

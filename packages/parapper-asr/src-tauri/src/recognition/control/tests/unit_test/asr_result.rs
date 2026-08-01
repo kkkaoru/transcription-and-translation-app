@@ -1,3 +1,5 @@
+#![allow(clippy::cast_precision_loss)]
+
 use super::super::*;
 
 #[test]

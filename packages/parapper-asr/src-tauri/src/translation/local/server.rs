@@ -87,6 +87,7 @@ struct OpenAiResponseMessage {
 }
 
 #[derive(Debug, Serialize)]
+#[expect(clippy::struct_field_names, reason = "OpenAI response schema uses these exact wire names")]
 struct OpenAiUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -191,7 +192,7 @@ impl TranslationHttpListener {
         let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("parapper-local-translation-server".to_string())
-            .spawn(move || run_server(server, state, &worker_shutdown))
+            .spawn(move || run_server(&server, &state, &worker_shutdown))
             .context("Failed to spawn local translation server thread")?;
         log::info!("Local translation server listening on {local_addr}");
         Ok(Self { local_addr, shutdown, worker: Some(worker) })
@@ -247,10 +248,10 @@ impl Drop for TranslationHttpListener {
     }
 }
 
-fn run_server(server: Server, state: LocalTranslationServerState, shutdown: &AtomicBool) {
+fn run_server(server: &Server, state: &LocalTranslationServerState, shutdown: &AtomicBool) {
     while !shutdown.load(Ordering::Acquire) {
         match server.recv_timeout(Duration::from_millis(50)) {
-            Ok(Some(request)) => handle_http_request(request, &state),
+            Ok(Some(request)) => handle_http_request(request, state),
             Ok(None) => {}
             Err(err) => {
                 log::warn!("Translation HTTP listener receive failed: {err}");
@@ -265,20 +266,8 @@ fn handle_http_request(mut request: Request, state: &LocalTranslationServerState
     let path = request.url().to_string();
     let remote = request
         .remote_addr()
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| "unknown".to_string());
-    let response = if !accepts_local_translation_request(&method, &path) {
-        log::warn!(
-            "Local translation server rejected request remote={} method={} path={}",
-            remote,
-            method.as_str(),
-            path
-        );
-        openai_error_response(
-            StatusCode(404),
-            "local translation server only accepts POST / or POST /v1/chat/completions".to_string(),
-        )
-    } else {
+        .map_or_else(|| "unknown".to_string(), std::string::ToString::to_string);
+    let response = if accepts_local_translation_request(&method, &path) {
         let mut body = String::new();
         match request.as_reader().read_to_string(&mut body) {
             Ok(_) => translation_response_for_path(&path, &body, state, &remote),
@@ -296,6 +285,17 @@ fn handle_http_request(mut request: Request, state: &LocalTranslationServerState
                 )
             }
         }
+    } else {
+        log::warn!(
+            "Local translation server rejected request remote={} method={} path={}",
+            remote,
+            method.as_str(),
+            path
+        );
+        openai_error_response(
+            StatusCode(404),
+            "local translation server only accepts POST / or POST /v1/chat/completions".to_string(),
+        )
     };
     if let Err(err) = request.respond(response) {
         log::warn!("Failed to send local translation server response: {err}");
@@ -448,7 +448,7 @@ fn neo_json_request_log(body: &str) -> String {
         "format=neo_json target={} source={} text_chars={}",
         target,
         source,
-        text_chars.map(|count| count.to_string()).unwrap_or_else(|| "-".to_string())
+        text_chars.map_or_else(|| "-".to_string(), |count| count.to_string())
     )
 }
 
@@ -477,8 +477,7 @@ fn handle_openai_chat_completion_body(
         object: "chat.completion",
         created: SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0),
+            .map_or(0, |duration| duration.as_secs()),
         model: request.model.unwrap_or_else(|| "parapper-local-translation".to_string()),
         choices: vec![OpenAiChoice {
             index: 0,
@@ -552,10 +551,7 @@ fn strip_translation_prompt_text(text: &str) -> &str {
 }
 
 fn strip_code_fence(text: &str) -> &str {
-    text.strip_prefix("```")
-        .and_then(|text| text.strip_suffix("```"))
-        .map(str::trim)
-        .unwrap_or(text)
+    text.strip_prefix("```").and_then(|text| text.strip_suffix("```")).map_or(text, str::trim)
 }
 
 fn contains_japanese_text(text: &str) -> bool {
@@ -576,8 +572,7 @@ fn openai_request_log(body: &str) -> String {
     let stream = value
         .get("stream")
         .and_then(Value::as_bool)
-        .map(|stream| stream.to_string())
-        .unwrap_or_else(|| "-".to_string());
+        .map_or_else(|| "-".to_string(), |stream| stream.to_string());
     let text_chars = value
         .get("messages")
         .and_then(Value::as_array)
@@ -589,13 +584,13 @@ fn openai_request_log(body: &str) -> String {
         "format=openai_chat_completion operation=chat.completions model={} stream={} text_chars={}",
         model,
         stream,
-        text_chars.map(|count| count.to_string()).unwrap_or_else(|| "-".to_string())
+        text_chars.map_or_else(|| "-".to_string(), |count| count.to_string())
     )
 }
 
 fn openai_response_log(response: &OpenAiChatCompletionResponse) -> String {
     let text_chars =
-        response.choices.first().map(|choice| choice.message.content.chars().count()).unwrap_or(0);
+        response.choices.first().map_or(0, |choice| choice.message.content.chars().count());
     format!(
         "operation=openai_chat_completion status=success id={} text_chars={} error=-",
         response.id, text_chars
@@ -761,7 +756,7 @@ mod tests {
             &state,
         );
 
-        assert!(error.to_string().contains("empty"));
+        assert!(error.contains("empty"));
         assert!(translator.calls().is_empty());
     }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mergeCaptionPayload } from "./caption-updates";
 import {
+  type ChunkProcessContext,
   clearChunkTimingStats,
   createLatestWinsProcessor,
   getChunkTimingStats,
@@ -437,6 +438,116 @@ describe("latest-wins chunk processor", () => {
     clearChunkTimingStats();
     expect(getChunkTimingStats().chunksProcessed).toBe(0);
   });
+
+  it("enqueue ignores items when isActive returns false", async () => {
+    let active = false;
+    const processed: number[] = [];
+    const processor = createLatestWinsProcessor<number>({
+      isActive: () => active,
+      process: (item) => {
+        processed.push(item);
+        return Promise.resolve();
+      },
+    });
+
+    processor.enqueue(1);
+    await Promise.resolve();
+    expect(processed).toHaveLength(0);
+    expect(processor.getStats().hasPending).toBe(false);
+
+    active = true;
+    processor.enqueue(2);
+    await vi.waitFor(() => expect(processed).toEqual([2]));
+  });
+
+  it("markFirstCaption ignores calls when not in flight", () => {
+    const processor = createLatestWinsProcessor<number>({
+      process: () => Promise.resolve(),
+    });
+
+    processor.markFirstCaption();
+    expect(processor.getStats().lastFirstCaptionMs).toBeNull();
+  });
+
+  it("markFirstCaption ignores subsequent calls on the same flight", async () => {
+    let clock = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const processor = createLatestWinsProcessor<number>({
+      now: () => clock,
+      process: async () => {
+        await gate;
+        clock += 30;
+      },
+    });
+
+    processor.enqueue(1);
+    await vi.waitFor(() => expect(processor.getStats().inFlight).toBe(true));
+    clock = 10;
+    processor.markFirstCaption();
+    const firstCall = processor.getStats().lastFirstCaptionMs;
+    expect(firstCall).toBe(10);
+
+    clock = 20;
+    processor.markFirstCaption();
+    expect(processor.getStats().lastFirstCaptionMs).toBe(firstCall);
+
+    release();
+    await vi.waitFor(() => expect(processor.getStats().inFlight).toBe(false));
+    expect(processor.getStats().lastFirstCaptionMs).toBe(firstCall);
+  });
+
+  it("handles whenFirstCaption when no longer current due to reset", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let capturedContext!: ChunkProcessContext;
+
+    const processor = createLatestWinsProcessor<number>({
+      process: async (_item, context) => {
+        capturedContext = context;
+        await gate;
+      },
+    });
+
+    processor.enqueue(1);
+    await vi.waitFor(() => expect(processor.getStats().inFlight).toBe(true));
+
+    processor.reset();
+    release();
+
+    const promise = capturedContext.whenFirstCaption();
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("resolveFirstCaptionWaiters clears pending waiters on concurrent reset", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waitCalls: boolean[] = [];
+
+    const processor = createLatestWinsProcessor<number>({
+      process: async (_item, { whenFirstCaption }) => {
+        const promise = whenFirstCaption();
+        void promise.then(() => waitCalls.push(true));
+        await gate;
+      },
+    });
+
+    processor.enqueue(1);
+    await vi.waitFor(() => expect(processor.getStats().inFlight).toBe(true));
+
+    processor.reset();
+    release();
+
+    await vi.waitFor(() => expect(processor.getStats().inFlight).toBe(false));
+    expect(waitCalls).toHaveLength(1);
+  });
 });
 
 /**
@@ -765,5 +876,115 @@ describe("progressive caption paint (critical path: enqueue → source paint →
     await Promise.resolve();
     expect(painted.id).toBe("u-2");
     expect(paints).toHaveLength(2); // No additional paint
+  });
+
+  it("skips enqueue when isActive returns false", async () => {
+    let isActive = false;
+    const processed: number[] = [];
+    const processor = createLatestWinsProcessor<number>({
+      isActive: () => isActive,
+      process: (item) => {
+        processed.push(item);
+        return Promise.resolve();
+      },
+    });
+
+    processor.enqueue(1);
+    expect(processed).toHaveLength(0);
+    expect(processor.getStats().hasPending).toBe(false);
+
+    isActive = true;
+    processor.enqueue(2);
+    await vi.waitFor(() => {
+      expect(processed).toEqual([2]);
+    });
+  });
+
+  it("markFirstCaption is a no-op when not in flight", () => {
+    const processor = createLatestWinsProcessor<number>({
+      process: () => Promise.resolve(),
+    });
+
+    const stats1 = processor.getStats();
+    expect(stats1.inFlight).toBe(false);
+
+    processor.markFirstCaption();
+
+    const stats2 = processor.getStats();
+    expect(stats2.lastFirstCaptionMs).toBeNull();
+  });
+
+  it("markFirstCaption is a no-op when already called", async () => {
+    let releaseProcess!: () => void;
+    const processGate = new Promise<void>((resolve) => {
+      releaseProcess = resolve;
+    });
+
+    const processor = createLatestWinsProcessor<number>({
+      process: async () => {
+        await processGate;
+      },
+    });
+
+    processor.enqueue(1);
+    await vi.waitFor(() => {
+      expect(processor.getStats().inFlight).toBe(true);
+    });
+
+    processor.markFirstCaption();
+    const stats1 = processor.getStats();
+    expect(stats1.lastFirstCaptionMs).not.toBeNull();
+    const firstCaptionMs = stats1.lastFirstCaptionMs;
+
+    processor.markFirstCaption();
+    const stats2 = processor.getStats();
+    expect(stats2.lastFirstCaptionMs).toBe(firstCaptionMs);
+
+    releaseProcess();
+    await vi.waitFor(() => {
+      expect(processor.getStats().inFlight).toBe(false);
+    });
+  });
+
+  it("recovers when onStatsChange throws", async () => {
+    const processed: number[] = [];
+    const processor = createLatestWinsProcessor<number>({
+      process: (item) => {
+        processed.push(item);
+        return Promise.resolve();
+      },
+      onStatsChange: () => {
+        throw new Error("Stats callback error");
+      },
+    });
+
+    processor.enqueue(1);
+    await vi.waitFor(() => {
+      expect(processed).toEqual([1]);
+    });
+    await vi.waitFor(() => {
+      expect(processor.getStats().inFlight).toBe(false);
+    });
+    expect(processor.getStats().chunksProcessed).toBe(1);
+  });
+
+  it("recovers when onStatsChange returns a rejected promise", async () => {
+    const processed: number[] = [];
+    const processor = createLatestWinsProcessor<number>({
+      process: (item) => {
+        processed.push(item);
+        return Promise.resolve();
+      },
+      onStatsChange: () => Promise.reject(new Error("Async error")),
+    });
+
+    processor.enqueue(1);
+    await vi.waitFor(() => {
+      expect(processed).toEqual([1]);
+    });
+    await vi.waitFor(() => {
+      expect(processor.getStats().inFlight).toBe(false);
+    });
+    expect(processor.getStats().chunksProcessed).toBe(1);
   });
 });

@@ -331,11 +331,18 @@ pub(crate) enum ServerMessage {
         turn_session_id: u64,
         turn_id: u64,
         revision: u64,
+        /// Monotonic output cursor within the network session.  Older v1
+        /// clients may ignore this field; newer clients use it to distinguish
+        /// a final from a partial emitted at the same turn revision.
+        #[serde(default)]
+        output_sequence: u64,
         segment_id: u64,
         previous_segment_id: Option<u64>,
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         source_text: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        azookey_input_text: Option<String>,
         source_asr_model: String,
         source_language: String,
         detected_language: Option<String>,
@@ -348,11 +355,15 @@ pub(crate) enum ServerMessage {
         turn_session_id: u64,
         turn_id: u64,
         revision: u64,
+        #[serde(default)]
+        output_sequence: u64,
         segment_id: u64,
         previous_segment_id: Option<u64>,
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         source_text: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        azookey_input_text: Option<String>,
         source_asr_model: String,
         source_language: String,
         detected_language: Option<String>,
@@ -640,10 +651,12 @@ mod tests {
             turn_session_id: 7,
             turn_id: 3,
             revision: 2,
+            output_sequence: 2,
             segment_id: 8,
             previous_segment_id: Some(7),
             text: "こんにちは。".to_string(),
             source_text: None,
+            azookey_input_text: None,
             source_asr_model: "reazonspeech_k2_v2".to_string(),
             source_language: "ja".to_string(),
             detected_language: None,
@@ -662,10 +675,12 @@ mod tests {
             turn_session_id: 7,
             turn_id: 3,
             revision: 2,
+            output_sequence: 2,
             segment_id: 8,
             previous_segment_id: Some(7),
             text: "おんせい".to_string(),
             source_text: Some("音声".to_string()),
+            azookey_input_text: Some("おんせい".to_string()),
             source_asr_model: "reazonspeech_k2_v2".to_string(),
             source_language: "ja".to_string(),
             detected_language: None,
@@ -681,10 +696,12 @@ mod tests {
                 "turn_session_id": 7,
                 "turn_id": 3,
                 "revision": 2,
+                "output_sequence": 2,
                 "segment_id": 8,
                 "previous_segment_id": 7,
                 "text": "おんせい",
                 "source_text": "音声",
+                "azookey_input_text": "おんせい",
                 "source_asr_model": "reazonspeech_k2_v2",
                 "source_language": "ja",
                 "detected_language": null,

@@ -150,20 +150,12 @@ impl RecognitionSession {
         {
             return None;
         }
-        let Some(streaming_range) = self.turn_store.streaming_interim_ranges.get(&turn_id).copied()
-        else {
-            return None;
-        };
+        let streaming_range = self.turn_store.streaming_interim_ranges.get(&turn_id).copied()?;
         if request.target.range.start_sample >= streaming_range.end_sample {
             return None;
         }
-        let Some(draft) = self.turn_store.turns.get(&turn_id).map(Turn::draft) else {
-            return None;
-        };
-        let Some(first_segment_id) = request.target.first_segment_id.map(|segment_id| segment_id.0)
-        else {
-            return None;
-        };
+        let draft = self.turn_store.turns.get(&turn_id).map(Turn::draft)?;
+        let first_segment_id = request.target.first_segment_id.map(|segment_id| segment_id.0)?;
         if request.target.last_segment_id == request.target.first_segment_id {
             return None;
         }

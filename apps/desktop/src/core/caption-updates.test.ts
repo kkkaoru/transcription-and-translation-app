@@ -888,6 +888,154 @@ describe("mergeCaptionPayload", () => {
     expect(merged?.sourceText).toBe("こんにちは、元気ですか");
   });
 
+  it("replaces a same-id provisional source caption with normalized source when no overlap exists", () => {
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "あしたは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_100,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const normalized = caption({
+      id: "u-1",
+      sourceText: "明日は",
+      translationText: "",
+      startedAt: 1_300,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(provisional, normalized)?.sourceText).toBe("明日は");
+  });
+
+  it("drops a late provisional kana revision after normalized source arrives", () => {
+    const normalized = caption({
+      id: "u-1",
+      sourceText: "明日は",
+      translationText: "",
+      startedAt: 1_300,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "あしたは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(normalized, provisional)).toBeNull();
+  });
+
+  it("drops a late provisional kana context revision after canonical expansion", () => {
+    const normalized = caption({
+      id: "u-1",
+      sourceText: "明日は晴れです",
+      translationText: "",
+      startedAt: 1_300,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "あしたははれです",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(normalized, provisional)).toBeNull();
+  });
+
+  it("keeps a translated canonical source when a provisional event arrives late", () => {
+    const translated = caption({
+      id: "u-1",
+      sourceText: "明日は晴れです",
+      translationText: "Tomorrow will be sunny",
+      startedAt: 1_300,
+      receivedAt: 1_500,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "あしたははれです",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_600,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(translated, provisional)).toBeNull();
+  });
+
+  it("coalesces same-id kana-to-surface revision and translation into one caption", () => {
+    const provisional = caption({
+      id: "overlay-utterance",
+      sourceText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_100,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const normalized = caption({
+      id: "overlay-utterance",
+      sourceText: "明日は",
+      startedAt: 1_300,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const translated = caption({
+      id: "overlay-utterance",
+      sourceText: "明日は",
+      translationText: "Tomorrow",
+      startedAt: 1_300,
+      receivedAt: 1_400,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    const normalizedCaption = mergeCaptionPayload(provisional, normalized);
+    const merged = normalizedCaption && mergeCaptionPayload(normalizedCaption, translated);
+
+    expect(normalizedCaption?.sourceText).toBe("明日は");
+    expect(merged).toMatchObject({
+      id: "overlay-utterance",
+      sourceText: "明日は",
+      translationText: "Tomorrow",
+      stage: "translation",
+      sequence: 1,
+    });
+  });
+
   it("returns the current reference when event and invoke paint the same caption", () => {
     const live = caption({
       id: "u-1",

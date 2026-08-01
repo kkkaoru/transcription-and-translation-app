@@ -1,5 +1,11 @@
 import type { CaptionPayload } from "./types";
 
+const NO_TIME_MS = 0;
+const SOURCE_SEQUENCE = 0;
+const TRANSLATION_SEQUENCE = 1;
+const MIN_OVERLAP_CHARS = 2;
+const INDEX_STEP = 1;
+
 const trim = (value: string): string => value.trim();
 
 const hasText = (value: string): boolean => trim(value).length > 0;
@@ -7,18 +13,22 @@ const hasText = (value: string): boolean => trim(value).length > 0;
 const receivedAtOf = (caption: CaptionPayload): number =>
   typeof caption.receivedAt === "number" && Number.isFinite(caption.receivedAt)
     ? caption.receivedAt
-    : 0;
+    : NO_TIME_MS;
 
 const startedAtOf = (caption: CaptionPayload): number =>
   typeof caption.startedAt === "number" && Number.isFinite(caption.startedAt)
     ? caption.startedAt
-    : 0;
+    : NO_TIME_MS;
 
 /** Compare two revisions for one utterance (audio start before event receipt). */
 const isOlderSameIdRevision = (current: CaptionPayload, next: CaptionPayload): boolean => {
   const currentStartedAt = startedAtOf(current);
   const nextStartedAt = startedAtOf(next);
-  if (currentStartedAt > 0 && nextStartedAt > 0 && nextStartedAt !== currentStartedAt) {
+  if (
+    currentStartedAt > NO_TIME_MS &&
+    nextStartedAt > NO_TIME_MS &&
+    nextStartedAt !== currentStartedAt
+  ) {
     return nextStartedAt < currentStartedAt;
   }
   return receivedAtOf(next) < receivedAtOf(current);
@@ -30,9 +40,9 @@ const sequenceOf = (caption: CaptionPayload): number => {
   }
   // Fall back for older payloads without stage/sequence fields.
   if (caption.stage === "translation" || caption.isFinal || hasText(caption.translationText)) {
-    return 1;
+    return TRANSLATION_SEQUENCE;
   }
-  return 0;
+  return SOURCE_SEQUENCE;
 };
 
 /** Max wall-clock gap for chunks that may share rolling ASR context. */
@@ -63,8 +73,8 @@ const isShortJapaneseContinuation = (current: CaptionPayload, next: CaptionPaylo
     sourceBoundary.test(currentText) ||
     sourceBoundary.test(nextText) ||
     [...currentText].length > SHORT_SOURCE_CONTINUATION_MAX_CHARS ||
-    [...currentText].length === 0 ||
-    [...nextText].length === 0
+    [...currentText].length === NO_TIME_MS ||
+    [...nextText].length === NO_TIME_MS
   ) {
     return false;
   }
@@ -91,16 +101,18 @@ const isAdvancingSameIdSource = (current: CaptionPayload, next: CaptionPayload):
 
 const isSourceStagePayload = (caption: CaptionPayload): boolean =>
   caption.stage === "source" ||
-  (caption.stage === undefined && sequenceOf(caption) === 0 && !hasText(caption.translationText));
+  (caption.stage === undefined &&
+    sequenceOf(caption) === SOURCE_SEQUENCE &&
+    !hasText(caption.translationText));
 
 const sourceOverlapLength = (current: string, next: string): number => {
   const max = Math.min(current.length, next.length);
-  for (let length = max; length >= 2; length -= 1) {
+  for (let length = max; length >= MIN_OVERLAP_CHARS; length -= INDEX_STEP) {
     if (current.endsWith(next.slice(0, length))) {
       return length;
     }
   }
-  return 0;
+  return NO_TIME_MS;
 };
 
 const hasLexicalSourceContinuation = (current: CaptionPayload, next: CaptionPayload): boolean => {
@@ -112,7 +124,7 @@ const hasLexicalSourceContinuation = (current: CaptionPayload, next: CaptionPayl
   return (
     nextText.startsWith(currentText) ||
     currentText.startsWith(nextText) ||
-    sourceOverlapLength(currentText, nextText) > 0
+    sourceOverlapLength(currentText, nextText) > NO_TIME_MS
   );
 };
 
@@ -120,10 +132,16 @@ const hasCloseSourceTiming = (current: CaptionPayload, next: CaptionPayload): bo
   const currentStartedAt =
     typeof current.startedAt === "number" && Number.isFinite(current.startedAt)
       ? current.startedAt
-      : 0;
+      : NO_TIME_MS;
   const nextStartedAt =
-    typeof next.startedAt === "number" && Number.isFinite(next.startedAt) ? next.startedAt : 0;
-  if (currentStartedAt <= 0 || nextStartedAt <= 0 || nextStartedAt < currentStartedAt) {
+    typeof next.startedAt === "number" && Number.isFinite(next.startedAt)
+      ? next.startedAt
+      : NO_TIME_MS;
+  if (
+    currentStartedAt <= NO_TIME_MS ||
+    nextStartedAt <= NO_TIME_MS ||
+    nextStartedAt < currentStartedAt
+  ) {
     return false;
   }
   return nextStartedAt - currentStartedAt <= SOURCE_CONTINUATION_GAP_MS;
@@ -156,7 +174,7 @@ const mergeSourceText = (
     return currentText;
   }
   const overlap = sourceOverlapLength(currentText, nextText);
-  if (overlap > 0) {
+  if (overlap > NO_TIME_MS) {
     return `${currentText}${nextText.slice(overlap)}`;
   }
   // A completed prior chunk starts a new caption when there is no lexical
@@ -183,6 +201,16 @@ const mergeCrossIdSourceText = (current: CaptionPayload, next: CaptionPayload): 
   mergeSourceText(current, next, true);
 
 const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {
+  if (
+    current.id === next.id &&
+    current.provisional === true &&
+    next.provisional !== true &&
+    isSourceStagePayload(current) &&
+    isSourceStagePayload(next)
+  ) {
+    return next.sourceText;
+  }
+
   const currentStartedAt = startedAtOf(current);
   const nextStartedAt = startedAtOf(next);
   const gap = nextStartedAt - currentStartedAt;
@@ -222,6 +250,20 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     if (current.provisional === true && next.provisional !== true && isSourceStagePayload(next)) {
       return false;
     }
+    // The Tauri event channel and the invoke that resolves the normalized
+    // caption are independent deliveries.  A pipeline:stage ASR event can
+    // therefore arrive after the real normalized source even though the
+    // backend emitted it first.  Once a non-provisional source is on screen,
+    // never append that late raw-kana revision as a rolling suffix (for
+    // example `明日は` + `あしたは`); keep the canonical source instead.
+    if (
+      current.provisional !== true &&
+      next.provisional === true &&
+      hasText(current.sourceText) &&
+      isSourceStagePayload(next)
+    ) {
+      return true;
+    }
 
     const nextSequence = sequenceOf(next);
     const currentSequence = sequenceOf(current);
@@ -234,7 +276,7 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
       // but reject a changed source that arrived before the one on screen.
       // Identical source payloads remain no-ops (and preserve React identity).
       const sourceChanged =
-        nextSequence === 0 &&
+        nextSequence === SOURCE_SEQUENCE &&
         hasText(current.sourceText) &&
         hasText(next.sourceText) &&
         trim(current.sourceText) !== trim(next.sourceText);
@@ -244,7 +286,7 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
       // Translation revisions are also ordered by utterance start/receipt. This prevents
       // a late same-id translation for an older source from rolling back a
       // newer translated payload while keeping same-timestamp duplicates safe.
-      return nextSequence > 0 && isOlderSameIdRevision(current, next);
+      return nextSequence >= TRANSLATION_SEQUENCE && isOlderSameIdRevision(current, next);
     }
 
     // Sequence 0 normally must not regress past a translated sequence 1
@@ -255,7 +297,7 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     return !isNewerSourceRevision(current, next);
   }
 
-  if (current.startedAt > 0 && next.startedAt > 0) {
+  if (current.startedAt > NO_TIME_MS && next.startedAt > NO_TIME_MS) {
     if (next.startedAt < current.startedAt) {
       return true;
     }

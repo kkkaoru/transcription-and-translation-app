@@ -15,6 +15,7 @@ pub struct SmokeServerHandle {
 }
 
 impl SmokeServerHandle {
+    #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.server.local_addr()
     }
@@ -24,6 +25,11 @@ impl SmokeServerHandle {
 /// recognition backend: the first audio chunk in a session produces
 /// `speech.started` plus one fixed `turn.partial`, and a graceful
 /// `session.stop` produces one fixed `turn.final`.
+///
+/// # Errors
+///
+/// Returns an error when the listener cannot be bound or the smoke server
+/// worker cannot be started.
 pub fn start(bind_addr: SocketAddr, api_key: Option<String>) -> anyhow::Result<SmokeServerHandle> {
     let server = StreamingRecognitionServer::start_smoke(bind_addr, api_key)?;
     Ok(SmokeServerHandle { server })

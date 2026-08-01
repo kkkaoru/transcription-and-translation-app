@@ -1,22 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AsrPrecision {
     Int8,
+    #[default]
     Int8Float32,
     Float32,
 }
 
-impl Default for AsrPrecision {
-    fn default() -> Self {
-        Self::Int8Float32
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum AsrModel {
     #[serde(rename = "reazonspeech_k2_v2")]
+    #[default]
     ReazonSpeechK2V2,
     #[serde(rename = "nemo_parakeet_tdt_ctc_0_6b_ja_35000_int8")]
     NemoParakeetTdtCtc0_6BJa35000Int8,
@@ -211,25 +207,14 @@ impl AsrModel {
     }
 }
 
-impl Default for AsrModel {
-    fn default() -> Self {
-        Self::ReazonSpeechK2V2
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AsrLanguage {
+    #[default]
     Japanese,
     English,
     EuropeanMultilingual,
     Multilingual,
-}
-
-impl Default for AsrLanguage {
-    fn default() -> Self {
-        Self::Japanese
-    }
 }
 
 const PARAKEET_TDT_0_6B_V3_LANGUAGE_CODES: &[&str] = &[

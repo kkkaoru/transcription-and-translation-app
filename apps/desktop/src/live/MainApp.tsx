@@ -38,6 +38,7 @@ import {
   DEFAULT_PARAPPER_STREAM_URL,
   ParapperRecognitionStream,
   type ParapperStreamEvent,
+  selectParapperSurfaceText,
 } from "../core/parapperStream";
 import { hydratePipelineStageEvents, pushPipelineStageEvent } from "../core/pipelineStages";
 import type {
@@ -52,6 +53,8 @@ import type {
   RuntimeStatus,
 } from "../core/types";
 import {
+  getWebSpeechRecognitionDiagnostics,
+  queryWebSpeechRecognitionPermission,
   type WebSpeechRecognitionResult,
   WebSpeechRecognitionStream,
   type WebSpeechRecognitionStreamEvent,
@@ -302,12 +305,17 @@ export const MainApp = () => {
           !captionIdleGuard.current &&
           stageEvent.stage === "asr" &&
           stageEvent.ok &&
-          stageEvent.outputText.trim()
+          (stageEvent.surfaceText?.trim() || stageEvent.outputText.trim())
         ) {
           setCaption((current) => {
+            // Parapper's Vibrato sink retains the surface form alongside its
+            // Hiragana reading. Prefer that surface for the provisional paint
+            // so the same-id revision does not look like a suffix when the
+            // normalized caption arrives through the other event channel.
+            const provisionalText = stageEvent.surfaceText?.trim() || stageEvent.outputText.trim();
             const provisional: CaptionPayload = {
               id: stageEvent.utteranceId,
-              sourceText: stageEvent.outputText,
+              sourceText: provisionalText,
               translationText: "",
               sourceLanguage: current.sourceLanguage,
               targetLanguage: current.targetLanguage,
@@ -466,6 +474,28 @@ export const MainApp = () => {
       : DEFAULT_RECOGNITION_MODE;
     const webSpeechMode = recognitionMode === "web-speech";
     const parapperRawMode = recognitionMode === "parapper-raw";
+    const webSpeechDiagnostics = webSpeechMode ? getWebSpeechRecognitionDiagnostics() : null;
+    if (webSpeechMode && !webSpeechDiagnostics?.supported) {
+      pushDiagnosticEvent(
+        "audio",
+        "Web Speech unsupported in this runtime",
+        [
+          `runtime=${webSpeechDiagnostics?.runtime ?? "unknown"}`,
+          `constructor=${webSpeechDiagnostics?.constructorName ?? "missing"}`,
+          `reason=${webSpeechDiagnostics?.reason ?? "constructor-missing"}`,
+          `secure=${webSpeechDiagnostics?.secureContext == null ? "unknown" : webSpeechDiagnostics.secureContext}`,
+        ].join(" · "),
+      );
+      setNotice({ key: "message.webSpeechUnsupported" });
+      return;
+    }
+    if (webSpeechMode) {
+      // Permission queries never prompt and must not be awaited here: the
+      // recognition start below has to stay in the button's transient gesture.
+      void queryWebSpeechRecognitionPermission().then((permission) => {
+        pushDiagnosticEvent("audio", "Web Speech microphone permission", permission);
+      });
+    }
     captionIdleGuard.current = false;
     captionFailureMessage.current = null;
     const microphone = new MicrophoneCapture();
@@ -591,7 +621,14 @@ export const MainApp = () => {
           `${event.error.code} · ${event.error.message}`,
         );
         if (event.error.fatal) {
-          const nextNotice = noticeFromError(event.error, "message.audioProcessingFailed");
+          const fallback =
+            event.error.code === "not-allowed"
+              ? "message.microphonePermissionDenied"
+              : event.error.code === "service-not-allowed" ||
+                  event.error.code === "language-not-supported"
+                ? "message.webSpeechUnsupported"
+                : "message.audioProcessingFailed";
+          const nextNotice = noticeFromError(event.error, fallback);
           setNotice(nextNotice);
           captionFailureMessage.current = nextNotice.detail ?? t(nextNotice.key);
           setStatus((current) => ({
@@ -685,7 +722,7 @@ export const MainApp = () => {
             return;
           }
           if (parapperRawMode) {
-            const rawText = output.text.trim();
+            const rawText = selectParapperSurfaceText(output);
             if (!rawText) {
               return;
             }
@@ -707,7 +744,7 @@ export const MainApp = () => {
               stage: "asr",
               utteranceId: rawCaption.id,
               modelId: output.sourceAsrModel || captureConfig.models.asr,
-              inputSnippet: output.sourceText ?? rawText,
+              inputSnippet: rawText,
               outputText: rawText,
               startedAt,
               at: receivedAt,
@@ -815,10 +852,12 @@ export const MainApp = () => {
           const output: ParapperRecognitionOutput = {
             text: event.text,
             sourceText: event.sourceText,
+            azookeyInputText: event.azookeyInputText,
             sessionId: event.sessionId,
             turnSessionId: event.turnSessionId,
             turnId: event.turnId,
             revision: event.revision,
+            outputSequence: event.outputSequence,
             segmentId: event.segmentId,
             previousSegmentId: event.previousSegmentId,
             sourceAsrModel: event.sourceAsrModel,

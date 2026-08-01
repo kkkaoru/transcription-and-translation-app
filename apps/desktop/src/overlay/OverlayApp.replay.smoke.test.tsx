@@ -165,6 +165,84 @@ describe("OverlayApp caption replay", () => {
     container.remove();
   });
 
+  it("coalesces same-id source and translation updates into one overlay", async () => {
+    const source = {
+      ...sourceCaption(),
+      id: "overlay-utterance",
+      sourceText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_100,
+      provisional: true,
+    };
+    mocks.getLatestCaption.mockResolvedValue(source);
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    await act(async () => {
+      captionListener?.({
+        ...source,
+        sourceText: "明日は",
+        provisional: undefined,
+        receivedAt: 1_200,
+      });
+      captionListener?.({
+        ...source,
+        sourceText: "明日は",
+        provisional: undefined,
+        translationText: "Tomorrow",
+        receivedAt: 1_300,
+        stage: "translation",
+        sequence: 1,
+        isFinal: true,
+      });
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(container.querySelectorAll(".caption-line-source")).toHaveLength(1);
+    expect(container.querySelectorAll(".caption-line-translation")).toHaveLength(1);
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("明日は");
+    expect(container.querySelector(".caption-line-translation")?.textContent).toBe("Tomorrow");
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+
+  it("renders a raw source-mode caption directly on the standard source line", async () => {
+    mocks.getLatestCaption.mockResolvedValue({
+      ...sourceCaption(),
+      id: "raw-utterance",
+      sourceText: "漢字とひらがな",
+      translationText: "",
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(container.querySelectorAll(".caption-line-source")).toHaveLength(1);
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("漢字とひらがな");
+    expect(container.querySelector(".caption-line-translation")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+
   it("clears on successful idle and ignores caption events that arrive afterward", async () => {
     await act(async () => {
       root.render(<OverlayApp />);

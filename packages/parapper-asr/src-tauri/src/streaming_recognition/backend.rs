@@ -95,7 +95,7 @@ impl RecognitionBackend for AppRecognitionBackend {
             output_sink,
             event_sender,
         );
-        tauri::async_runtime::block_on(start).map_err(map_start_error)?;
+        tauri::async_runtime::block_on(start).map_err(|error| map_start_error(&error))?;
         let _ =
             self.handle.emit("parapper://status", crate::recognition::RecognitionStatus::Listening);
 
@@ -110,7 +110,7 @@ impl RecognitionBackend for AppRecognitionBackend {
     }
 }
 
-fn map_start_error(error: RecognitionStartError) -> BackendStartError {
+fn map_start_error(error: &RecognitionStartError) -> BackendStartError {
     match error {
         RecognitionStartError::Busy => BackendStartError::Busy,
         RecognitionStartError::AudioInput(_) | RecognitionStartError::Asr(_) => {

@@ -64,6 +64,11 @@ pub struct PipelineStageEvent {
     pub input_snippet: String,
     /// Short output sample when the stage produced text.
     pub output_text: String,
+    /// Optional original surface text retained by the Vibrato→Hiragana ASR
+    /// sink.  This is metadata for the progressive source paint; the selected
+    /// normalizer still receives the configured ASR text (`output_text`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface_text: Option<String>,
     /// Stage wall-clock start (epoch millis).
     pub started_at: u64,
     /// Stage wall-clock end (epoch millis). Same as historical `at`.
@@ -102,19 +107,31 @@ struct TranscriptResponse {
 
 /// Structured output received from the persistent Parapper WebSocket session.
 ///
-/// `text` is the sidecar's configured Hiragana output. `source_text` retains
-/// the original ASR surface selected by Vibrato; it is kept as stage metadata
-/// even though AzooKey's canonical input remains the Hiragana string.
+/// `text` is the sidecar's configured streaming representation. `source_text`
+/// retains the original ASR surface selected by Vibrato, while
+/// `azookey_input_text` explicitly carries the phonetic input expected by the
+/// kana-kanji normalizer. Keeping these fields separate prevents a standard
+/// Parapper surface payload from being mistaken for normalizer input (and
+/// vice versa).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParapperRecognitionInput {
     pub text: String,
     #[serde(default)]
     pub source_text: Option<String>,
+    /// Optional phonetic text supplied by the sidecar for AzooKey.  This is
+    /// separate from the protocol's configured `text` representation so the
+    /// normalizer never has to infer whether a payload is surface or reading.
+    #[serde(default)]
+    pub azookey_input_text: Option<String>,
     pub session_id: String,
     pub turn_session_id: u64,
     pub turn_id: u64,
     pub revision: u64,
+    /// Monotonic sidecar output cursor; distinguishes partial/final events
+    /// emitted at the same turn revision.
+    #[serde(default)]
+    pub output_sequence: u64,
     pub segment_id: u64,
     #[serde(default)]
     pub previous_segment_id: Option<u64>,
@@ -418,9 +435,9 @@ impl Pipeline {
     ///
     /// This is the live desktop path: Parapper owns VAD/Segment/Turn state and
     /// emits interim/final text over one WebSocket. The native pipeline starts
-    /// at the already-recognized Hiragana text, records the original Vibrato
-    /// surface in the ASR stage input, and then runs the same cached AzooKey
-    /// normalizer used by the legacy HTTP path.
+    /// at the explicit AzooKey phonetic input when the sidecar provides it,
+    /// records the original Vibrato surface in the ASR stage input, and then
+    /// runs the same cached AzooKey normalizer used by the legacy HTTP path.
     pub async fn normalize_parapper_output(
         &self,
         config: &AppConfig,
@@ -431,19 +448,23 @@ impl Pipeline {
     ) -> Result<Option<CaptionPayload>, PipelineError> {
         let utterance_id =
             format!("parapper:{}:{}:{}", output.session_id, output.turn_session_id, output.turn_id);
-        let recognized = output.text.trim().to_string();
-        let source_surface = output
-            .source_text
+        let recognized = output
+            .azookey_input_text
             .as_deref()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .unwrap_or(recognized.as_str());
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or(output.text.as_str())
+            .trim()
+            .to_string();
+        let vibrato_surface =
+            output.source_text.as_deref().map(str::trim).filter(|text| !text.is_empty());
+        let source_surface = vibrato_surface.unwrap_or(recognized.as_str());
         log::trace!(
             target: "pipeline_asr",
-            "Parapper turn session={} turn={} revision={} segment={} previous_segment={:?} language={} detected_language={:?}",
+            "Parapper turn session={} turn={} revision={} output_sequence={} segment={} previous_segment={:?} language={} detected_language={:?}",
             output.session_id,
             output.turn_id,
             output.revision,
+            output.output_sequence,
             output.segment_id,
             output.previous_segment_id,
             output.source_language,
@@ -459,7 +480,7 @@ impl Pipeline {
             record_stage(
                 stages,
                 on_stage,
-                stage_event(
+                stage_event_with_surface(
                     "asr",
                     &utterance_id,
                     asr_model,
@@ -468,6 +489,7 @@ impl Pipeline {
                     elapsed_ms(asr_started),
                     true,
                     None,
+                    None,
                 ),
             );
             return Ok(None);
@@ -475,7 +497,7 @@ impl Pipeline {
         record_stage(
             stages,
             on_stage,
-            stage_event(
+            stage_event_with_surface(
                 "asr",
                 &utterance_id,
                 asr_model,
@@ -484,6 +506,7 @@ impl Pipeline {
                 output.elapsed_ms,
                 true,
                 None,
+                vibrato_surface,
             ),
         );
 
@@ -981,6 +1004,31 @@ fn stage_event(
     ok: bool,
     error: Option<String>,
 ) -> PipelineStageEvent {
+    stage_event_with_surface(
+        stage,
+        utterance_id,
+        model_id,
+        input,
+        output,
+        duration_ms,
+        ok,
+        error,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_event_with_surface(
+    stage: &'static str,
+    utterance_id: &str,
+    model_id: &str,
+    input: &str,
+    output: &str,
+    duration_ms: u64,
+    ok: bool,
+    error: Option<String>,
+    surface: Option<&str>,
+) -> PipelineStageEvent {
     let ended_at = now_millis();
     let started_at = ended_at.saturating_sub(duration_ms);
     PipelineStageEvent {
@@ -989,6 +1037,7 @@ fn stage_event(
         model_id: model_id.to_string(),
         input_snippet: snippet(input),
         output_text: snippet(output),
+        surface_text: surface.map(snippet),
         started_at,
         at: ended_at,
         duration_ms,
@@ -1160,12 +1209,14 @@ mod tests {
         let config = AppConfig::default();
         let pipeline = Pipeline::default();
         let output = ParapperRecognitionInput {
-            text: "きょうははいしんです".into(),
+            text: "標準Parapper表示".into(),
             source_text: Some("今日は配信です".into()),
+            azookey_input_text: Some("きょうははいしんです".into()),
             session_id: "socket-session".into(),
             turn_session_id: 7,
             turn_id: 3,
             revision: 0,
+            output_sequence: 1,
             segment_id: 11,
             previous_segment_id: None,
             source_asr_model: "reazonspeech-k2-v2".into(),
@@ -1187,7 +1238,7 @@ mod tests {
             )
             .await
             .expect("Parapper output should normalize")
-            .expect("non-empty Hiragana should produce a caption");
+            .expect("explicit AzooKey input should produce a caption");
 
         assert_eq!(partial.id, "parapper:socket-session:7:3");
         assert_eq!(partial.source_text, "今日は配信です");
@@ -1196,6 +1247,7 @@ mod tests {
         assert_eq!(stages[0].stage, "asr");
         assert_eq!(stages[0].input_snippet, "今日は配信です");
         assert_eq!(stages[0].output_text, "きょうははいしんです");
+        assert_eq!(stages[0].surface_text.as_deref(), Some("今日は配信です"));
         assert_eq!(stages[1].stage, "normalize");
         assert_eq!(stages[1].output_text, "今日は配信です");
 
@@ -1216,6 +1268,52 @@ mod tests {
             .expect("final output should produce a caption");
         assert_eq!(final_caption.id, partial.id);
         assert!(final_caption.is_final);
+    }
+
+    #[tokio::test]
+    async fn persistent_parapper_prefers_explicit_azookey_input_over_surface_text() {
+        let config = AppConfig::default();
+        let pipeline = Pipeline::default();
+        // A surface-form sidecar may still populate `text` for compatibility
+        // while carrying the exact Hiragana reading separately.  The
+        // normalizer must consume only that phonetic field; otherwise a later
+        // Vibrato/normalizer boundary can be mistaken for a suffix revision.
+        let output = ParapperRecognitionInput {
+            text: "明日は".into(),
+            source_text: Some("明日は".into()),
+            azookey_input_text: Some("あしたは".into()),
+            session_id: "surface-session".into(),
+            turn_session_id: 2,
+            turn_id: 4,
+            revision: 1,
+            output_sequence: 1,
+            segment_id: 9,
+            previous_segment_id: None,
+            source_asr_model: "reazonspeech-k2-v2".into(),
+            source_language: "ja".into(),
+            detected_language: None,
+            elapsed_ms: 8,
+            audio_duration_ms: None,
+            is_final: false,
+        };
+        let mut stages = Vec::new();
+        let caption = pipeline
+            .normalize_parapper_output(
+                &config,
+                output,
+                &mut stages,
+                &mut ignore_pipeline_stage,
+                &mut ignore_caption,
+            )
+            .await
+            .expect("surface payload should normalize")
+            .expect("non-empty explicit reading should produce a caption");
+
+        assert_eq!(caption.source_text, "明日は");
+        assert_eq!(stages[0].output_text, "あしたは");
+        assert_eq!(stages[0].surface_text.as_deref(), Some("明日は"));
+        assert_eq!(stages[1].input_snippet, "あしたは");
+        assert_eq!(stages[1].output_text, "明日は");
     }
 
     #[test]
@@ -1495,6 +1593,7 @@ mod tests {
             model_id: "parapper-ja".into(),
             input_snippet: "wavBytes=12".into(),
             output_text: "こんにちは".into(),
+            surface_text: Some("今日は".into()),
             started_at: 57,
             at: 99,
             duration_ms: 42,
@@ -1507,6 +1606,7 @@ mod tests {
         assert_eq!(value["modelId"], "parapper-ja");
         assert_eq!(value["inputSnippet"], "wavBytes=12");
         assert_eq!(value["outputText"], "こんにちは");
+        assert_eq!(value["surfaceText"], "今日は");
         assert_eq!(value["startedAt"], 57);
         assert_eq!(value["at"], 99);
         assert_eq!(value["durationMs"], 42);

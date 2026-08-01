@@ -705,6 +705,8 @@ fn normalize_asr_languages(languages: &mut Vec<AsrLanguage>) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::float_cmp)]
+
     use std::{
         fs,
         path::PathBuf,

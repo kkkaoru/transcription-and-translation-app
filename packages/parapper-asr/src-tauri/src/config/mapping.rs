@@ -64,20 +64,15 @@ impl<'de> Deserialize<'de> for TranslationMapping {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TranslationBackend {
+    #[default]
     Ync,
     Local,
 }
 
-impl Default for TranslationBackend {
-    fn default() -> Self {
-        Self::Ync
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum LocalTranslationModel {
     #[serde(
         rename = "lfm2_q4",
@@ -92,6 +87,7 @@ pub enum LocalTranslationModel {
         alias = "q4_k_quant",
         alias = "lfm2_q4_k_quant"
     )]
+    #[default]
     Lfm2Q4,
     // CAT-Translate is kept only to migrate existing config. It is not exposed
     // as an available model while its distribution is disabled.
@@ -101,12 +97,6 @@ pub enum LocalTranslationModel {
         alias = "cat-translate-0.8b-onnx-q4"
     )]
     CatTranslate0_8BQ4KQuant,
-}
-
-impl Default for LocalTranslationModel {
-    fn default() -> Self {
-        Self::Lfm2Q4
-    }
 }
 
 impl LocalTranslationModel {
@@ -189,9 +179,10 @@ pub enum SpeechSourceKind {
     Translation,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechBackend {
+    #[default]
     Ync,
     LocalTts,
 }
@@ -211,19 +202,14 @@ impl<'de> Deserialize<'de> for SpeechBackend {
     }
 }
 
-impl Default for SpeechBackend {
-    fn default() -> Self {
-        Self::Ync
-    }
-}
-
 fn is_legacy_ync_backend_value(value: &str) -> bool {
     value.len() == 12 && value.starts_with("yuka") && value.ends_with("kone_neo")
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum LocalTtsVoice {
     #[serde(rename = "vits_piper_en_US_kristin_medium")]
+    #[default]
     Kristin,
     #[serde(rename = "vits_piper_en_US_john_medium")]
     John,
@@ -233,12 +219,6 @@ pub enum LocalTtsVoice {
     Supertonic2Onnx,
     #[serde(rename = "supertonic_3_onnx")]
     Supertonic3Onnx,
-}
-
-impl Default for LocalTtsVoice {
-    fn default() -> Self {
-        Self::Kristin
-    }
 }
 
 impl LocalTtsVoice {

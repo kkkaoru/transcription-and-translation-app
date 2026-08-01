@@ -12,6 +12,8 @@ export const PARAPPER_STREAM_PROTOCOL_VERSION = 1;
 export const PARAPPER_MAX_AUDIO_FRAME_BYTES = 3_200;
 export const DEFAULT_PARAPPER_STREAM_TIMEOUT_MS = 8_000;
 export const DEFAULT_PARAPPER_STREAM_URL = "ws://127.0.0.1:18082/ws/recognition";
+export const PARAPPER_STREAM_SAMPLE_RATE = 16_000;
+export const PARAPPER_STREAM_CHANNELS = 1;
 
 export type ParapperTurnEventType = "turn.partial" | "turn.final";
 
@@ -22,10 +24,12 @@ export type ParapperTurnEvent = {
   turnSessionId: number;
   turnId: number;
   revision: number;
+  outputSequence: number;
   segmentId: number;
   previousSegmentId: number | null;
   text: string;
   sourceText: string | null;
+  azookeyInputText: string | null;
   sourceAsrModel: string;
   sourceLanguage: string;
   detectedLanguage: string | null;
@@ -37,6 +41,20 @@ export type ParapperStreamEvent =
   | { type: "speech.started"; version: number; sessionId: string }
   | ParapperTurnEvent;
 
+/**
+ * Choose the surface text for a raw Parapper caption.
+ *
+ * The bundled sidecar defaults its streaming `text` field to Hiragana.
+ * `source_text` retains the recognizer's surface output, while
+ * `azookey_input_text` is the explicit phonetic input for the native
+ * normalizer. A sidecar configured with the standard Surface format may omit
+ * both optional fields, so raw captions use `text` as a compatibility fallback.
+ */
+export const selectParapperSurfaceText = (output: {
+  text: string;
+  sourceText?: string | null;
+}): string => output.sourceText?.trim() || output.text.trim();
+
 type ServerMessage = {
   type?: unknown;
   version?: unknown;
@@ -44,10 +62,12 @@ type ServerMessage = {
   turn_session_id?: unknown;
   turn_id?: unknown;
   revision?: unknown;
+  output_sequence?: unknown;
   segment_id?: unknown;
   previous_segment_id?: unknown;
   text?: unknown;
   source_text?: unknown;
+  azookey_input_text?: unknown;
   source_asr_model?: unknown;
   source_language?: unknown;
   detected_language?: unknown;
@@ -82,10 +102,15 @@ export type ParapperStreamOptions = {
   webSocketConstructor?: WebSocketConstructor;
 };
 
-const OPEN = 1;
+const SOCKET_CONNECTING = 0;
+const SOCKET_OPEN = 1;
 const DEFAULT_TIMEOUT = DEFAULT_PARAPPER_STREAM_TIMEOUT_MS;
+const MIN_STREAM_TIMEOUT_MS = 500;
+const DEFAULT_NUMERIC_FALLBACK = 0;
+const UNKNOWN_PROTOCOL_VERSION = -1;
+const PCM16_BYTES_PER_SAMPLE = 2;
 
-const finiteNumber = (value: unknown, fallback = 0): number =>
+const finiteNumber = (value: unknown, fallback = DEFAULT_NUMERIC_FALLBACK): number =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
 const optionalFiniteNumber = (value: unknown): number | null =>
@@ -126,7 +151,7 @@ const parseMessage = (data: unknown): ServerMessage | null => {
 
 const toEvent = (message: ServerMessage, sessionId: string): ParapperStreamEvent | null => {
   if (message.type === "speech.started") {
-    return { type: "speech.started", version: 1, sessionId };
+    return { type: "speech.started", version: PARAPPER_STREAM_PROTOCOL_VERSION, sessionId };
   }
   if (message.type !== "turn.partial" && message.type !== "turn.final") {
     return null;
@@ -137,15 +162,17 @@ const toEvent = (message: ServerMessage, sessionId: string): ParapperStreamEvent
   }
   return {
     type: message.type,
-    version: 1,
+    version: PARAPPER_STREAM_PROTOCOL_VERSION,
     sessionId,
     turnSessionId: finiteNumber(message.turn_session_id),
     turnId: finiteNumber(message.turn_id),
     revision: finiteNumber(message.revision),
+    outputSequence: finiteNumber(message.output_sequence),
     segmentId: finiteNumber(message.segment_id),
     previousSegmentId: optionalFiniteNumber(message.previous_segment_id),
     text,
     sourceText: nonEmptyString(message.source_text),
+    azookeyInputText: nonEmptyString(message.azookey_input_text),
     sourceAsrModel: nonEmptyString(message.source_asr_model) ?? "unknown",
     sourceLanguage: nonEmptyString(message.source_language) ?? "ja",
     detectedLanguage: nonEmptyString(message.detected_language),
@@ -181,7 +208,7 @@ export class ParapperRecognitionStream {
       throw new Error("Parapper WebSocket URL is required");
     }
     this.url = options.url;
-    this.timeoutMs = Math.max(500, options.timeoutMs ?? DEFAULT_TIMEOUT);
+    this.timeoutMs = Math.max(MIN_STREAM_TIMEOUT_MS, options.timeoutMs ?? DEFAULT_TIMEOUT);
     this.sessionId = options.sessionId?.trim() || createSessionId();
     this.onEvent = options.onEvent ?? (() => undefined);
     this.onError = options.onError ?? (() => undefined);
@@ -250,7 +277,11 @@ export class ParapperRecognitionStream {
               version: PARAPPER_STREAM_PROTOCOL_VERSION,
               type: "session.start",
               session_id: this.sessionId,
-              audio: { encoding: "pcm_s16le", sample_rate: 16_000, channels: 1 },
+              audio: {
+                encoding: "pcm_s16le",
+                sample_rate: PARAPPER_STREAM_SAMPLE_RATE,
+                channels: PARAPPER_STREAM_CHANNELS,
+              },
             }),
           );
         } catch (error) {
@@ -259,7 +290,11 @@ export class ParapperRecognitionStream {
       };
       socket.onmessage = (event) => {
         const message = parseMessage(event.data);
-        if (!message || finiteNumber(message.version, -1) !== 1) {
+        if (
+          !message ||
+          finiteNumber(message.version, UNKNOWN_PROTOCOL_VERSION) !==
+            PARAPPER_STREAM_PROTOCOL_VERSION
+        ) {
           return;
         }
         if (message.type === "session.ready") {
@@ -323,11 +358,11 @@ export class ParapperRecognitionStream {
     if (frame.byteLength === 0) {
       return;
     }
-    if (frame.byteLength % 2 !== 0) {
+    if (frame.byteLength % PCM16_BYTES_PER_SAMPLE !== 0) {
       throw new Error("Parapper PCM16 frame must contain an even number of bytes");
     }
     const socket = this.socket;
-    if (!this.started || !socket || socket.readyState !== OPEN || this.settled) {
+    if (!this.started || !socket || socket.readyState !== SOCKET_OPEN || this.settled) {
       throw new Error("Parapper recognition session is not ready");
     }
     for (let offset = 0; offset < frame.byteLength; offset += PARAPPER_MAX_AUDIO_FRAME_BYTES) {
@@ -415,7 +450,7 @@ export class ParapperRecognitionStream {
 
   public cancel(): void {
     const socket = this.socket;
-    if (!socket || socket.readyState !== OPEN || this.settled) {
+    if (!socket || socket.readyState !== SOCKET_OPEN || this.settled) {
       this.closeSocket();
       return;
     }
@@ -445,7 +480,7 @@ export class ParapperRecognitionStream {
     socket.onerror = null;
     socket.onclose = null;
     try {
-      if (socket.readyState === OPEN || socket.readyState === 0) {
+      if (socket.readyState === SOCKET_OPEN || socket.readyState === SOCKET_CONNECTING) {
         socket.close();
       }
     } catch {

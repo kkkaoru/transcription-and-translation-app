@@ -35,18 +35,29 @@ impl WebSocketTurnOutputSink {
 
 impl TurnOutputSink for WebSocketTurnOutputSink {
     fn emit(&mut self, mut output: RecognizedTextOutput) {
-        let source_text = (self.text_format == StreamingRecognitionTextFormat::Hiragana
-            && output.source_language == AsrLanguage::Japanese)
-            .then(|| {
-                let source_text = output.text.clone();
-                if let Some(analyzer) = &self.japanese_morph {
-                    output.text = analyzer.hiragana_text(&source_text);
-                }
-                source_text
-            });
+        let mut source_text = None;
+        let mut azookey_input_text = None;
+        if self.text_format == StreamingRecognitionTextFormat::Hiragana
+            && output.source_language == AsrLanguage::Japanese
+        {
+            let surface = output.text.clone();
+            if let Some(analyzer) = &self.japanese_morph {
+                let reading = analyzer.hiragana_text(&surface);
+                output.text.clone_from(&reading);
+                azookey_input_text = Some(reading);
+            }
+            // Keep the pre-transform surface in a separately named field so
+            // standard Parapper clients and the raw-caption path do not have
+            // to treat the configured `text` representation as AzooKey input.
+            source_text = Some(surface);
+        }
         if self
             .sender
-            .send(RecognitionStreamEvent::Output(RecognitionStreamOutput { output, source_text }))
+            .send(RecognitionStreamEvent::Output(RecognitionStreamOutput {
+                output,
+                source_text,
+                azookey_input_text,
+            }))
             .is_err()
         {
             log::debug!("WebSocket recognition output receiver is gone");

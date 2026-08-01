@@ -554,6 +554,8 @@ async fn start_headless_recognition(
 
 #[cfg(test)]
 mod headless_tests {
+    #![allow(clippy::float_cmp)]
+
     use super::{
         DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS, DEFAULT_HEADLESS_NOISE_CANCELLATION_ENABLED,
         DEFAULT_HEADLESS_PORT, DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS, DEFAULT_VAD_INTERVAL_MS,

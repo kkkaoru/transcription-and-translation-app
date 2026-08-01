@@ -39,6 +39,7 @@ describe("pipeline stage events", () => {
       modelId: "parapper-ja",
       inputSnippet: "wavBytes=12",
       outputText: "こんにちは",
+      surfaceText: "今日は",
       durationMs: 42.6,
       ok: true,
       error: null,
@@ -51,6 +52,7 @@ describe("pipeline stage events", () => {
       modelId: "parapper-ja",
       inputSnippet: "wavBytes=12",
       outputText: "こんにちは",
+      surfaceText: "今日は",
       durationMs: 43,
       ok: true,
       error: null,
@@ -64,6 +66,7 @@ describe("pipeline stage events", () => {
       model_id: "azookey-rust",
       input_snippet: "raw",
       output_text: "正規化",
+      surface_text: "表面",
       duration_ms: 5,
       ok: true,
       started_at: 195,
@@ -75,6 +78,7 @@ describe("pipeline stage events", () => {
       modelId: "azookey-rust",
       inputSnippet: "raw",
       outputText: "正規化",
+      surfaceText: "表面",
       durationMs: 5,
       startedAt: 195,
       ok: true,
@@ -394,5 +398,404 @@ describe("pipeline stage events", () => {
     // Translator row details.
     const translateLog = successLogs.find((l) => l.stage === "translate");
     expect(translateLog?.durationMs).toBe(90);
+  });
+
+  it("handles invalid payloads gracefully", () => {
+    expect(normalizePipelineStageEvent(null)).toBeNull();
+    expect(normalizePipelineStageEvent(undefined)).toBeNull();
+    expect(normalizePipelineStageEvent("string")).toBeNull();
+    expect(normalizePipelineStageEvent(42)).toBeNull();
+    expect(normalizePipelineStageEvent({})).toBeNull();
+    expect(normalizePipelineStageEvent({ stage: null })).toBeNull();
+    expect(normalizePipelineStageEvent({ stage: 123 })).toBeNull();
+  });
+
+  it("synthesizes stage IDs when utteranceId is missing", () => {
+    const event1 = normalizePipelineStageEvent({
+      stage: "asr",
+      at: 100,
+      ok: true,
+    });
+    expect(event1?.utteranceId).toMatch(/^stage-\d+-\d+$/);
+  });
+
+  it("handles non-finite and invalid durationMs", () => {
+    const nonFinite = normalizePipelineStageEvent({
+      stage: "translate",
+      utteranceId: "u1",
+      durationMs: NaN,
+      at: 100,
+      ok: true,
+    });
+    expect(nonFinite?.durationMs).toBe(0);
+
+    const invalid = normalizePipelineStageEvent({
+      stage: "translate",
+      utteranceId: "u2",
+      durationMs: "not-a-number",
+      at: 100,
+      ok: true,
+    });
+    expect(invalid?.durationMs).toBe(0);
+  });
+
+  it("rejects pushes and returns null when normalization fails", () => {
+    const result1 = pushPipelineStageEvent(null);
+    expect(result1).toBeNull();
+
+    const result2 = pushPipelineStageEvent({ stage: null });
+    expect(result2).toBeNull();
+
+    expect(getPipelineStageEvents()).toHaveLength(0);
+  });
+
+  it("caps ring buffer at MAX_STAGE_EVENTS (96)", () => {
+    // Push 97 events; the ring should keep only the last 96.
+    for (let i = 0; i < 97; i++) {
+      pushPipelineStageEvent({
+        stage: "asr",
+        utteranceId: `u-${i}`,
+        inputSnippet: "wav",
+        outputText: `text-${i}`,
+        durationMs: 10,
+        ok: true,
+        at: i,
+      });
+    }
+
+    const events = getPipelineStageEvents();
+    expect(events).toHaveLength(96);
+    // Oldest (newest-first) should be utterance 1, not 0.
+    expect(events[events.length - 1]?.utteranceId).toBe("u-1");
+    expect(events[0]?.utteranceId).toBe("u-96");
+  });
+
+  it("notifies listeners when an event is added", () => {
+    const listener1 = vi.fn();
+    const listener2 = vi.fn();
+    const unsubscribe1 = subscribePipelineStages(listener1);
+    const unsubscribe2 = subscribePipelineStages(listener2);
+
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "u1",
+      inputSnippet: "wav",
+      outputText: "text",
+      durationMs: 10,
+      ok: true,
+      at: 100,
+    });
+
+    expect(listener1).toHaveBeenCalledTimes(1);
+    expect(listener2).toHaveBeenCalledTimes(1);
+
+    unsubscribe1();
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "u2",
+      inputSnippet: "wav",
+      outputText: "text2",
+      durationMs: 10,
+      ok: true,
+      at: 101,
+    });
+
+    expect(listener1).toHaveBeenCalledTimes(1); // No additional call.
+    expect(listener2).toHaveBeenCalledTimes(2); // Called again.
+    unsubscribe2();
+  });
+
+  it("recovers gracefully when a listener throws", () => {
+    const throwingListener = vi.fn(() => {
+      throw new Error("Listener error");
+    });
+    const goodListener = vi.fn();
+    subscribePipelineStages(throwingListener);
+    subscribePipelineStages(goodListener);
+
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "u1",
+      inputSnippet: "wav",
+      outputText: "text",
+      durationMs: 10,
+      ok: true,
+      at: 100,
+    });
+
+    // Both should be called despite the throw.
+    expect(throwingListener).toHaveBeenCalled();
+    expect(goodListener).toHaveBeenCalled();
+  });
+
+  it("hydrates from invalid inputs safely", () => {
+    expect(hydratePipelineStageEvents(null)).toEqual([]);
+    expect(hydratePipelineStageEvents("not-array")).toEqual([]);
+    expect(hydratePipelineStageEvents(123)).toEqual([]);
+    expect(hydratePipelineStageEvents([])).toEqual([]);
+    expect(hydratePipelineStageEvents([null, {}, undefined])).toEqual([]);
+  });
+
+  it("sorts hydrated events chronologically by at/startedAt and respects tiebreakers", () => {
+    // Two events with same `at` but different `startedAt`.
+    hydratePipelineStageEvents([
+      {
+        stage: "normalize",
+        utteranceId: "u1",
+        startedAt: 100,
+        at: 200,
+        durationMs: 100,
+        ok: true,
+      },
+      {
+        stage: "asr",
+        utteranceId: "u1",
+        startedAt: 50,
+        at: 200,
+        durationMs: 150,
+        ok: true,
+      },
+    ]);
+
+    const events = getPipelineStageEvents();
+    // After sort: asr (started 50) comes before normalize (started 100).
+    expect(events[1]?.stage).toBe("asr");
+    expect(events[0]?.stage).toBe("normalize");
+  });
+
+  it("deduplicates hydrated events by their identity signature", () => {
+    const event = {
+      stage: "asr",
+      utteranceId: "u1",
+      startedAt: 100,
+      at: 200,
+      durationMs: 100,
+      modelId: "parapper-ja",
+      inputSnippet: "wav",
+      outputText: "text",
+      ok: true,
+    };
+
+    hydratePipelineStageEvents([event]);
+    expect(getPipelineStageEvents()).toHaveLength(1);
+
+    // Hydrating the same event again should not create a duplicate.
+    hydratePipelineStageEvents([event]);
+    expect(getPipelineStageEvents()).toHaveLength(1);
+  });
+
+  it("caps hydrated buffer at MAX_STAGE_EVENTS", () => {
+    // Create 97 distinct events for hydration.
+    const events = Array.from({ length: 97 }, (_, i) => ({
+      stage: "asr",
+      utteranceId: `u-${i}`,
+      startedAt: i * 100,
+      at: i * 100 + 50,
+      durationMs: 50,
+      ok: true,
+    }));
+
+    hydratePipelineStageEvents(events);
+    expect(getPipelineStageEvents()).toHaveLength(96);
+  });
+
+  it("groups stages by utterance with event sorting within groups", () => {
+    // Create events with out-of-order arrival but should be sorted within groups.
+    pushPipelineStageEvent({
+      stage: "translate",
+      utteranceId: "utt-mixed",
+      modelId: "hy-mt2",
+      inputSnippet: "text",
+      outputText: "translation",
+      durationMs: 20,
+      ok: true,
+      startedAt: 1012,
+      at: 1032,
+    });
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "utt-mixed",
+      modelId: "parapper-ja",
+      inputSnippet: "wav",
+      outputText: "text",
+      durationMs: 10,
+      ok: true,
+      startedAt: 1000,
+      at: 1010,
+    });
+
+    const groups = getUtteranceStageGroups();
+    expect(groups).toHaveLength(1);
+    const group = groups[0];
+    expect(group?.stages).toHaveLength(2);
+    // Should be sorted: asr (started 1000) before translate (started 1012).
+    expect(group?.stages[0]?.stage).toBe("asr");
+    expect(group?.stages[1]?.stage).toBe("translate");
+  });
+
+  it("handles unknown stage names in groupStagesByUtterance with default ordering", () => {
+    pushPipelineStageEvent({
+      stage: "unknown-future-stage",
+      utteranceId: "utt-future",
+      inputSnippet: "data",
+      outputText: "processed",
+      durationMs: 5,
+      ok: true,
+      at: 3000,
+    });
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "utt-future",
+      inputSnippet: "wav",
+      outputText: "text",
+      durationMs: 10,
+      ok: true,
+      at: 2000,
+    });
+
+    const groups = getUtteranceStageGroups();
+    const group = groups[0];
+    expect(group?.stages).toHaveLength(2);
+    // asr (order=0) should come before unknown (order=9).
+    expect(group?.stages[0]?.stage).toBe("asr");
+    expect(group?.stages[1]?.stage).toBe("unknown-future-stage");
+  });
+
+  it("handles tie-breaking in groupStagesByUtterance for events with identical at/startedAt", () => {
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "utt-tie",
+      inputSnippet: "wav",
+      outputText: "text",
+      durationMs: 10,
+      ok: true,
+      startedAt: 1000,
+      at: 1000,
+    });
+    pushPipelineStageEvent({
+      stage: "normalize",
+      utteranceId: "utt-tie",
+      inputSnippet: "text",
+      outputText: "normalized",
+      durationMs: 2,
+      ok: true,
+      startedAt: 1000,
+      at: 1000,
+    });
+
+    const groups = getUtteranceStageGroups();
+    const group = groups[0];
+    // asr (order=0) before normalize (order=1) even with identical timing.
+    expect(group?.stages[0]?.stage).toBe("asr");
+    expect(group?.stages[1]?.stage).toBe("normalize");
+  });
+
+  it("returns correct display labels for known and unknown stages", () => {
+    expect(stageDisplayLabel("asr")).toBe("ASR (parapper)");
+    expect(stageDisplayLabel("normalize")).toBe("Normalizer (azookey/zenz)");
+    expect(stageDisplayLabel("translate")).toBe("Translator (HY-MT2)");
+    expect(stageDisplayLabel("custom-stage")).toBe("custom-stage");
+    expect(stageDisplayLabel("")).toBe("");
+  });
+
+  it("computes relative stage offset within an utterance group", () => {
+    const event1 = {
+      stage: "asr" as const,
+      utteranceId: "utt",
+      modelId: "parapper",
+      inputSnippet: "wav",
+      outputText: "text",
+      startedAt: 1000,
+      at: 1010,
+      durationMs: 10,
+      ok: true,
+    };
+    const event2 = {
+      ...event1,
+      stage: "normalize" as const,
+      startedAt: 1010,
+      at: 1012,
+      durationMs: 2,
+    };
+    const group = {
+      utteranceId: "utt",
+      at: 1012,
+      stages: [event1, event2],
+      totalDurationMs: 12,
+      ok: true,
+    };
+
+    expect(relativeStageOffsetMs(event1, group)).toBe(0);
+    expect(relativeStageOffsetMs(event2, group)).toBe(10);
+  });
+
+  it("handles non-finite and zero origins in relativeStageOffsetMs", () => {
+    const event = {
+      stage: "asr" as const,
+      utteranceId: "utt",
+      modelId: "parapper",
+      inputSnippet: "wav",
+      outputText: "text",
+      startedAt: 0,
+      at: 10,
+      durationMs: 10,
+      ok: true,
+    };
+    const group = {
+      utteranceId: "utt",
+      at: 10,
+      stages: [event],
+      totalDurationMs: 10,
+      ok: true,
+    };
+
+    expect(relativeStageOffsetMs(event, group)).toBe(0);
+  });
+
+  it("reads and writes debug panel open preference with localStorage", () => {
+    expect(readDebugPanelOpenPreference()).toBe(true);
+    writeDebugPanelOpenPreference(false);
+    expect(readDebugPanelOpenPreference()).toBe(false);
+    writeDebugPanelOpenPreference(true);
+    expect(readDebugPanelOpenPreference()).toBe(true);
+  });
+
+  it("defaults to open when localStorage is unavailable", async () => {
+    // Reset modules with stubbed localStorage.
+    vi.stubGlobal("localStorage", undefined);
+    const { readDebugPanelOpenPreference: readPref } = await import("./pipelineStages");
+    expect(readPref()).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("catches localStorage errors gracefully during reads", () => {
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("Access denied");
+    });
+    expect(readDebugPanelOpenPreference()).toBe(true);
+    getItemSpy.mockRestore();
+  });
+
+  it("catches localStorage errors gracefully during writes", () => {
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Quota exceeded");
+    });
+    // Should not throw.
+    writeDebugPanelOpenPreference(false);
+    expect(isVerbosePipelineLogging()).toBe(false);
+    setItemSpy.mockRestore();
+  });
+
+  it("verbose logging persists to localStorage and survives errors", () => {
+    setVerbosePipelineLogging(true);
+    expect(localStorage.getItem("kotoba-beacon.debug.verbosePipeline")).toBe("1");
+
+    const removeItemSpy = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("Read-only");
+    });
+    setVerbosePipelineLogging(false);
+    // In-memory flag should still be false despite the error.
+    expect(isVerbosePipelineLogging()).toBe(false);
+    removeItemSpy.mockRestore();
   });
 });

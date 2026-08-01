@@ -60,7 +60,7 @@ impl LocalTranslationService {
 
     fn new() -> Self {
         Self::with_engine_loader(Box::new(|model_dir, local_model| {
-            Ok(Box::new(LocalTranslationEngine::load(model_dir, local_model)?))
+            Ok(Box::new(LocalTranslationEngine::load(&model_dir, local_model)?))
         }))
     }
 
