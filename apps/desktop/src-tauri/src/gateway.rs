@@ -31,6 +31,12 @@ const PARAPPER_INTERIM_RESULT_SILENCE_MS: u32 = 192;
 // together across an ordinary breath, with a bounded finalization delay for
 // genuinely short utterances.
 const PARAPPER_TURN_CHECK_SILENCE_MS: u32 = 960;
+/// Quality settings from Parapper's built-in rich Japanese preset. These are
+/// passed explicitly so a stale sidecar config cannot fall back to Simple turns
+/// or skip the final full-turn re-recognition.
+const PARAPPER_TURN_DETECTOR: &str = "namo";
+const PARAPPER_INTERIM_RESULT_ENABLED: bool = true;
+const PARAPPER_RERECOGNIZE_FULL_ON_COMPLETE: bool = true;
 const SERVICE_READY_ATTEMPTS: u32 = 90;
 const PARAPPER_READY_ATTEMPTS: u32 = 300;
 
@@ -301,12 +307,16 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     monitor_sidecar(parapper_events, "kotoba_parapper");
     log::info!(
         target: "kotoba_parapper",
-        "started headless recognition service with runtime data {} (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={})",
+        "started headless recognition service with runtime data {} (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={} turn_detector={} interim_result_enabled={} rerecognize_full_on_complete={} noise_cancellation_enabled={})",
         runtime_dir.display(),
         config.audio.vad_interval_ms,
         config.audio.vad_threshold,
         PARAPPER_INTERIM_RESULT_SILENCE_MS,
         PARAPPER_TURN_CHECK_SILENCE_MS,
+        PARAPPER_TURN_DETECTOR,
+        PARAPPER_INTERIM_RESULT_ENABLED,
+        PARAPPER_RERECOGNIZE_FULL_ON_COMPLETE,
+        config.audio.noise_suppression,
     );
 
     let (gateway_events, gateway_child) = app
@@ -337,6 +347,13 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
 /// sidecar. Keeping this as a pure helper makes it possible to test that the
 /// desktop settings are not silently dropped when the process is restarted.
 fn parapper_headless_args(config: &AppConfig) -> Vec<String> {
+    parapper_headless_args_with_noise_cancellation(config, config.audio.noise_suppression)
+}
+
+fn parapper_headless_args_with_noise_cancellation(
+    config: &AppConfig,
+    noise_cancellation_enabled: bool,
+) -> Vec<String> {
     vec![
         "--headless".to_string(),
         "--port".to_string(),
@@ -349,6 +366,8 @@ fn parapper_headless_args(config: &AppConfig) -> Vec<String> {
         PARAPPER_INTERIM_RESULT_SILENCE_MS.to_string(),
         "--turn-check-silence-ms".to_string(),
         PARAPPER_TURN_CHECK_SILENCE_MS.to_string(),
+        "--noise-cancellation-enabled".to_string(),
+        noise_cancellation_enabled.to_string(),
     ]
 }
 
@@ -510,6 +529,19 @@ fn add_parapper_vad_diagnostics(value: &mut serde_json::Value, config: &AppConfi
         object.insert(
             "turnCheckSilenceMs".to_string(),
             serde_json::json!(PARAPPER_TURN_CHECK_SILENCE_MS),
+        );
+        object.insert("turnDetector".to_string(), serde_json::json!(PARAPPER_TURN_DETECTOR));
+        object.insert(
+            "interimResultEnabled".to_string(),
+            serde_json::json!(PARAPPER_INTERIM_RESULT_ENABLED),
+        );
+        object.insert(
+            "rerecognizeFullOnComplete".to_string(),
+            serde_json::json!(PARAPPER_RERECOGNIZE_FULL_ON_COMPLETE),
+        );
+        object.insert(
+            "noiseCancellationEnabled".to_string(),
+            serde_json::json!(config.audio.noise_suppression),
         );
     }
 }
@@ -904,7 +936,8 @@ mod tests {
 
     use super::{
         add_parapper_vad_diagnostics, default_gateway_config, parapper_headless_args,
-        redact_runtime_error, safe_health_url, safe_sidecar_event, AppConfig, PARAPPER_PORT,
+        parapper_headless_args_with_noise_cancellation, redact_runtime_error, safe_health_url,
+        safe_sidecar_event, AppConfig, PARAPPER_PORT,
     };
 
     #[test]
@@ -940,8 +973,18 @@ mod tests {
                 "192",
                 "--turn-check-silence-ms",
                 "960",
+                "--noise-cancellation-enabled",
+                "true",
             ],
         );
+    }
+
+    #[test]
+    fn embedded_parapper_can_disable_noise_cancellation_for_parent_diagnostics() {
+        let config = AppConfig::default();
+        let args = parapper_headless_args_with_noise_cancellation(&config, false);
+
+        assert!(args.ends_with(&["--noise-cancellation-enabled".to_string(), "false".to_string(),]));
     }
 
     #[test]
@@ -957,6 +1000,10 @@ mod tests {
         assert_eq!(health["vadThreshold"], 1.0);
         assert_eq!(health["interimResultSilenceMs"], 192);
         assert_eq!(health["turnCheckSilenceMs"], 960);
+        assert_eq!(health["turnDetector"], "namo");
+        assert_eq!(health["interimResultEnabled"], true);
+        assert_eq!(health["rerecognizeFullOnComplete"], true);
+        assert_eq!(health["noiseCancellationEnabled"], true);
     }
 
     #[test]

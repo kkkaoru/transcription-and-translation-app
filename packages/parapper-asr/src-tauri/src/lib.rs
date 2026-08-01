@@ -9,7 +9,7 @@ use tauri_plugin_log::{Target, TargetKind};
 
 use crate::config::{
     DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD, MAX_VAD_INTERVAL_MS, MIN_VAD_INTERVAL_MS,
-    VAD_INTERVAL_STEP_MS,
+    ParapperConfig, TurnDetector, VAD_INTERVAL_STEP_MS,
 };
 
 const HEADLESS_RUNTIME_DIR_ENV: &str = "PARAPPER_RUNTIME_DIR";
@@ -24,6 +24,10 @@ const DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS: u32 = 192;
 // would reduce false turn splits further, but would make short utterances feel
 // slower before the final event is emitted.
 const DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS: u32 = 960;
+/// Match the built-in rich Japanese preset. The headless runtime has its own
+/// config directory, so it must opt into the quality-oriented defaults instead
+/// of inheriting a stale interactive profile from a previous run.
+const DEFAULT_HEADLESS_NOISE_CANCELLATION_ENABLED: bool = true;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct HeadlessOptions {
@@ -32,6 +36,7 @@ struct HeadlessOptions {
     vad_threshold: f32,
     interim_result_silence_ms: u32,
     turn_check_silence_ms: u32,
+    noise_cancellation_enabled: bool,
 }
 
 impl Default for HeadlessOptions {
@@ -42,7 +47,22 @@ impl Default for HeadlessOptions {
             vad_threshold: DEFAULT_VAD_THRESHOLD,
             interim_result_silence_ms: DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS,
             turn_check_silence_ms: DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS,
+            noise_cancellation_enabled: DEFAULT_HEADLESS_NOISE_CANCELLATION_ENABLED,
         }
+    }
+}
+
+fn parse_headless_bool_option(
+    arguments: &[String],
+    index: &mut usize,
+    option: &str,
+) -> Result<bool, String> {
+    *index += 1;
+    let value = arguments.get(*index).ok_or_else(|| format!("{option} requires a value"))?;
+    match value.as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("{option} must be true or false, got {value:?}")),
     }
 }
 
@@ -131,12 +151,41 @@ impl HeadlessOptions {
                         "--turn-check-silence-ms",
                     )?;
                 }
+                "--noise-cancellation-enabled" => {
+                    options.noise_cancellation_enabled = parse_headless_bool_option(
+                        arguments,
+                        &mut index,
+                        "--noise-cancellation-enabled",
+                    )?;
+                }
+                "--noise-cancellation" => {
+                    // A valueless alias is convenient for manually launched
+                    // sidecars while the explicit option above remains the
+                    // parent application's stable command-line contract.
+                    options.noise_cancellation_enabled = true;
+                }
+                "--no-noise-cancellation" => {
+                    options.noise_cancellation_enabled = false;
+                }
                 option => return Err(format!("unsupported headless option: {option}")),
             }
             index += 1;
         }
         Ok(options)
     }
+}
+
+/// Apply the quality-oriented settings from the built-in rich Japanese preset
+/// to a headless runtime config. VAD cadence and silence timings stay under
+/// the explicit headless command-line contract, while these settings ensure a
+/// persisted interactive profile cannot silently disable contextual turn
+/// detection or full-turn recognition.
+fn apply_headless_quality_defaults(config: &mut ParapperConfig, noise_cancellation_enabled: bool) {
+    config.turn.detector = TurnDetector::Namo;
+    config.turn.interim_result_enabled = true;
+    config.turn.rerecognize_full_on_complete = true;
+    config.asr.normalize_input_audio = true;
+    config.noise_cancellation.enabled = noise_cancellation_enabled;
 }
 
 #[cfg(test)]
@@ -403,8 +452,9 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 /// `PARAPPER_RUNTIME_DIR` so it cannot overwrite an interactive Parapper
 /// installation's settings or model cache.
 /// The sidecar accepts `--vad-interval-ms`, `--vad-threshold`,
-/// `--interim-result-silence-ms`, and `--turn-check-silence-ms` so the parent
-/// application can keep speech segmentation consistent across restarts.
+/// `--interim-result-silence-ms`, `--turn-check-silence-ms`, and
+/// `--noise-cancellation-enabled` so the parent application can keep speech
+/// segmentation and audio quality consistent across restarts.
 ///
 /// # Errors
 ///
@@ -481,18 +531,23 @@ async fn start_headless_recognition(
     config.segmentation.vad_threshold = options.vad_threshold;
     config.turn.interim_result_silence_ms = options.interim_result_silence_ms;
     config.turn.check_silence_ms = options.turn_check_silence_ms;
+    apply_headless_quality_defaults(&mut config, options.noise_cancellation_enabled);
     let config = state.set_config(config).await?;
 
     log::info!("Preparing Kotoba Beacon ASR models before listening on 127.0.0.1:{}", options.port);
     ensure_models_downloaded(&handle, &config).await?;
     state.start_audio_input(handle.clone()).await?;
     log::info!(
-        "Kotoba Beacon ASR service is listening on ws://127.0.0.1:{}/ws/recognition (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={})",
+        "Kotoba Beacon ASR service is listening on ws://127.0.0.1:{}/ws/recognition (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={} turn_detector={:?} interim_result_enabled={} rerecognize_full_on_complete={} noise_cancellation_enabled={})",
         options.port,
         config.segmentation.vad_interval_ms,
         config.segmentation.vad_threshold,
         config.turn.interim_result_silence_ms,
         config.turn.check_silence_ms,
+        config.turn.detector,
+        config.turn.interim_result_enabled,
+        config.turn.rerecognize_full_on_complete,
+        config.noise_cancellation.enabled,
     );
     Ok(())
 }
@@ -500,10 +555,11 @@ async fn start_headless_recognition(
 #[cfg(test)]
 mod headless_tests {
     use super::{
-        DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS, DEFAULT_HEADLESS_PORT,
-        DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS, DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD,
-        HeadlessOptions,
+        DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS, DEFAULT_HEADLESS_NOISE_CANCELLATION_ENABLED,
+        DEFAULT_HEADLESS_PORT, DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS, DEFAULT_VAD_INTERVAL_MS,
+        DEFAULT_VAD_THRESHOLD, HeadlessOptions, apply_headless_quality_defaults,
     };
+    use crate::config::{ParapperConfig, TurnDetector};
 
     #[test]
     fn headless_options_use_the_loopback_service_default_port() {
@@ -513,6 +569,7 @@ mod headless_tests {
         assert_eq!(options.vad_threshold, DEFAULT_VAD_THRESHOLD);
         assert_eq!(options.interim_result_silence_ms, DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS);
         assert_eq!(options.turn_check_silence_ms, DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS);
+        assert_eq!(options.noise_cancellation_enabled, DEFAULT_HEADLESS_NOISE_CANCELLATION_ENABLED);
     }
 
     #[test]
@@ -549,6 +606,51 @@ mod headless_tests {
 
         assert_eq!(options.interim_result_silence_ms, 256);
         assert_eq!(options.turn_check_silence_ms, 768);
+    }
+
+    #[test]
+    fn headless_options_accept_noise_cancellation_override() {
+        let args = vec![
+            "--headless".to_string(),
+            "--noise-cancellation-enabled".to_string(),
+            "false".to_string(),
+        ];
+        assert!(!HeadlessOptions::parse(&args).unwrap().noise_cancellation_enabled);
+
+        let alias = vec!["--headless".to_string(), "--noise-cancellation".to_string()];
+        assert!(HeadlessOptions::parse(&alias).unwrap().noise_cancellation_enabled);
+
+        let disable_alias = vec!["--headless".to_string(), "--no-noise-cancellation".to_string()];
+        assert!(!HeadlessOptions::parse(&disable_alias).unwrap().noise_cancellation_enabled);
+    }
+
+    #[test]
+    fn headless_quality_defaults_enable_rich_japanese_recognition_without_changing_vad_timing() {
+        let mut config = ParapperConfig::default();
+        config.segmentation.vad_interval_ms = 64;
+        config.segmentation.vad_threshold = 0.25;
+        config.turn.interim_result_silence_ms = 192;
+        config.turn.check_silence_ms = 960;
+        config.turn.detector = TurnDetector::Simple;
+        config.turn.interim_result_enabled = false;
+        config.turn.rerecognize_full_on_complete = false;
+        config.asr.normalize_input_audio = false;
+        config.noise_cancellation.enabled = false;
+
+        apply_headless_quality_defaults(&mut config, true);
+
+        assert_eq!(config.turn.detector, TurnDetector::Namo);
+        assert!(config.turn.interim_result_enabled);
+        assert!(config.turn.rerecognize_full_on_complete);
+        assert!(config.asr.normalize_input_audio);
+        assert!(config.noise_cancellation.enabled);
+        assert_eq!(config.segmentation.vad_interval_ms, 64);
+        assert!((config.segmentation.vad_threshold - 0.25).abs() < f32::EPSILON);
+        assert_eq!(config.turn.interim_result_silence_ms, 192);
+        assert_eq!(config.turn.check_silence_ms, 960);
+
+        apply_headless_quality_defaults(&mut config, false);
+        assert!(!config.noise_cancellation.enabled);
     }
 
     #[test]
@@ -589,6 +691,12 @@ mod headless_tests {
                 "--headless".to_string(),
                 "--turn-check-silence-ms".to_string(),
                 "not-a-number".to_string(),
+            ],
+            vec!["--headless".to_string(), "--noise-cancellation-enabled".to_string()],
+            vec![
+                "--headless".to_string(),
+                "--noise-cancellation-enabled".to_string(),
+                "maybe".to_string(),
             ],
             vec!["--headless".to_string(), "--mystery".to_string()],
         ] {

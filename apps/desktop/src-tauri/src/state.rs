@@ -44,6 +44,13 @@ fn caption_sequence(caption: &CaptionPayload) -> u16 {
     if caption.sequence > 0 {
         return caption.sequence;
     }
+    // Explicit source-stage payloads (including raw/Web Speech final text)
+    // remain sequence 0. `is_final` describes recognition completion, not a
+    // translation revision; treating it as sequence 1 could hide a later
+    // progressive source update in native replay.
+    if caption.stage == "source" {
+        return 0;
+    }
     if caption.stage == "translation"
         || caption.is_final
         || !caption.translation_text.trim().is_empty()
