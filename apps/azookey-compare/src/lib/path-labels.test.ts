@@ -61,10 +61,10 @@ describe("comparison path labels", () => {
       "Worker がリクエストを拒否（AzooKey WASM 未実行）",
     );
     expect(attemptedPathLabel("browser-vibrato", "worker-transport")).toBe(
-      "Browser WASM pre-pass 完了 / Worker 応答不明（AzooKey WASM 実行不明）",
+      "Browser WASM pre-pass 完了 / Worker 処理結果不明（AzooKey WASM 実行不明）",
     );
     expect(attemptedPathLabel("worker-vibrato", "worker-transport")).toBe(
-      "Worker 応答不明（AzooKey WASM 実行不明）",
+      "Worker 処理結果不明（AzooKey WASM 実行不明）",
     );
     // A genuine conversion failure must stay specific rather than collapsing
     // into the refusal or transport wording.

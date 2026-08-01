@@ -104,6 +104,7 @@ describe("AzooKey Worker client connection lifecycle", () => {
     vi.stubGlobal("WebSocket", undefined);
     const unsupported = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
     await expect(unsupported.connect()).rejects.toThrow("WebSocket");
+    await expect(unsupported.convert(request())).rejects.toThrow("WebSocket");
     expect(unsupported.connectionState).toBe("error");
 
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -282,6 +283,15 @@ describe("AzooKey Worker client connection lifecycle", () => {
     await expect(constructorFallback.connect()).rejects.toThrow("constructor failed");
     FakeWebSocket.constructionFailure = null;
 
+    const constructorRetry = constructorError.connect();
+    const constructorRetrySocket = FakeWebSocket.instances.at(-1);
+    if (!constructorRetrySocket) {
+      throw new Error("fake socket was not constructed");
+    }
+    constructorRetrySocket.open();
+    await constructorRetry;
+    expect(constructorError.connectionState).toBe("open");
+
     const { client, socket } = await openClient({ requestTimeoutMs: 1_000 });
     socket.sendFailure = new Error("send failed");
     await expect(client.convert(request())).rejects.toThrow("send failed");
@@ -291,11 +301,11 @@ describe("AzooKey Worker client connection lifecycle", () => {
     await expect(client.convert(request())).rejects.toThrow("送信できません");
 
     socket.sendFailure = null;
-    const timed = client.convert(request());
-    await Promise.resolve();
     vi.useFakeTimers();
+    const timed = client.convert(request());
+    const timedRejection = expect(timed).rejects.toThrow("タイムアウト");
     await vi.advanceTimersByTimeAsync(1_001);
-    await expect(timed).rejects.toThrow("タイムアウト");
+    await timedRejection;
 
     const pending = client.convert(request());
     await Promise.resolve();
@@ -333,6 +343,44 @@ describe("AzooKey Worker client connection lifecycle", () => {
     reconnectSocket.error();
     await expect(connecting).rejects.toThrow("接続エラー");
     expect(reconnect.connectionState).toBe("error");
+  });
+
+  it("rejects a pending connect when close() is called", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const pending = client.connect();
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+
+    client.close();
+
+    await expect(pending).rejects.toThrow("閉じました");
+    expect(client.connectionState).toBe("closed");
+    expect(socket.closeCalls).toEqual([{ code: 1000, reason: "comparison page closed" }]);
+  });
+
+  it("rejects pending conversions and reconnects after an open socket error", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient();
+    const pending = client.convert(request());
+    await Promise.resolve();
+
+    socket.error();
+
+    await expect(pending).rejects.toThrow("接続エラー");
+    expect(client.connectionState).toBe("error");
+
+    const retry = client.connect();
+    const replacement = FakeWebSocket.instances.at(-1);
+    if (!replacement) {
+      throw new Error("fake socket was not constructed");
+    }
+    expect(replacement).not.toBe(socket);
+    replacement.open();
+    await retry;
+    expect(client.connectionState).toBe("open");
   });
 
   it("recovers from a connection error that is never followed by close", async () => {

@@ -49,8 +49,8 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
   }
   if (failedStage === "worker-transport") {
     return mode === "browser-vibrato"
-      ? "Browser WASM pre-pass 完了 / Worker 応答不明（AzooKey WASM 実行不明）"
-      : "Worker 応答不明（AzooKey WASM 実行不明）";
+      ? "Browser WASM pre-pass 完了 / Worker 処理結果不明（AzooKey WASM 実行不明）"
+      : "Worker 処理結果不明（AzooKey WASM 実行不明）";
   }
   if (mode !== "browser-vibrato") {
     return "Worker AzooKey WASM（失敗）";

@@ -269,71 +269,82 @@ export class AzooKeyWorkerClient {
     }
 
     this.setState("connecting");
-    this.connectPromise = new Promise<void>((resolve, reject) => {
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(this.endpoint);
+    } catch (error) {
+      this.setState("error");
+      return Promise.reject(asError(error, "Worker WebSocket を作成できません"));
+    }
+
+    this.socket = socket;
+    const connectPromise = new Promise<void>((resolve, reject) => {
       this.resolveConnect = resolve;
       this.rejectConnect = reject;
-      let socket: WebSocket;
-      try {
-        socket = new WebSocket(this.endpoint);
-      } catch (error) {
-        this.connectPromise = null;
-        this.resolveConnect = null;
-        this.rejectConnect = null;
-        this.setState("error");
-        reject(asError(error, "Worker WebSocket を作成できません"));
+    });
+    this.connectPromise = connectPromise;
+
+    socket.onopen = () => {
+      if (this.socket !== socket) {
         return;
       }
-      this.socket = socket;
-      socket.onopen = () => {
-        if (this.socket !== socket) {
-          return;
-        }
-        this.setState("open");
-        this.resolveConnect?.();
-        this.resolveConnect = null;
-        this.rejectConnect = null;
-      };
-      socket.onmessage = (event) => {
-        if (this.socket !== socket) {
-          return;
-        }
-        void this.handleMessage(event.data);
-      };
-      socket.onerror = () => {
-        if (this.socket !== socket) {
-          return;
-        }
-        const error = new Error("Worker WebSocket で接続エラーが発生しました");
-        this.setState("error");
-        this.rejectConnect?.(error);
-        this.resolveConnect = null;
-        this.rejectConnect = null;
-        this.connectPromise = null;
-      };
-      socket.onclose = (event) => {
-        if (this.socket !== socket) {
-          return;
-        }
-        this.socket = null;
-        this.setState("closed");
-        const error = new Error(
-          event.reason?.trim() || `Worker WebSocket が切断されました (${event.code})`,
-        );
-        this.rejectConnect?.(error);
-        this.resolveConnect = null;
-        this.rejectConnect = null;
-        this.connectPromise = null;
-        this.rejectPending(error);
-      };
-    });
-    return this.connectPromise;
+      const resolveConnect = this.resolveConnect;
+      this.connectPromise = null;
+      this.resolveConnect = null;
+      this.rejectConnect = null;
+      this.setState("open");
+      resolveConnect?.();
+    };
+    socket.onmessage = (event) => {
+      if (this.socket !== socket) {
+        return;
+      }
+      void this.handleMessage(event.data);
+    };
+    socket.onerror = () => {
+      if (this.socket !== socket) {
+        return;
+      }
+      const error = new Error("Worker WebSocket で接続エラーが発生しました");
+      const rejectConnect = this.rejectConnect;
+      this.socket = null;
+      this.connectPromise = null;
+      this.resolveConnect = null;
+      this.rejectConnect = null;
+      this.setState("error");
+      rejectConnect?.(error);
+      this.rejectPending(error);
+      try {
+        socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "connection error");
+      } catch {
+        // The socket is already closing or closed.
+      }
+    };
+    socket.onclose = (event) => {
+      if (this.socket !== socket) {
+        return;
+      }
+      const error = new Error(
+        event.reason?.trim() || `Worker WebSocket が切断されました (${event.code})`,
+      );
+      const rejectConnect = this.rejectConnect;
+      this.socket = null;
+      this.connectPromise = null;
+      this.resolveConnect = null;
+      this.rejectConnect = null;
+      this.setState("closed");
+      rejectConnect?.(error);
+      this.rejectPending(error);
+    };
+
+    return connectPromise;
   }
 
   convert(
     request: Omit<AzooKeyConvertRequest, "type" | "requestId">,
   ): Promise<AzooKeyConvertResult> {
     const openSocket = this.socket;
-    if (openSocket?.readyState === WebSocket.OPEN) {
+    if (typeof WebSocket !== "undefined" && openSocket?.readyState === WebSocket.OPEN) {
       return this.enqueueConversion(openSocket, request);
     }
     return this.connect().then(() => {
@@ -379,15 +390,23 @@ export class AzooKeyWorkerClient {
   }
 
   close(): void {
+    const error = new Error("Worker WebSocket を閉じました");
+    const socket = this.socket;
+    const rejectConnect = this.rejectConnect;
+    this.socket = null;
     this.connectPromise = null;
     this.resolveConnect = null;
     this.rejectConnect = null;
-    if (this.socket) {
-      this.socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "comparison page closed");
-      this.socket = null;
+    if (socket) {
+      try {
+        socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "comparison page closed");
+      } catch {
+        // The socket is already closing or closed.
+      }
     }
     this.setState("closed");
-    this.rejectPending(new Error("Worker WebSocket を閉じました"));
+    rejectConnect?.(error);
+    this.rejectPending(error);
   }
 
   private async handleMessage(data: unknown): Promise<void> {
