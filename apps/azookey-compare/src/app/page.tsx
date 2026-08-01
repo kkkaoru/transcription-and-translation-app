@@ -89,9 +89,10 @@ const rowStateLabel = (state: ComparisonRowState): string => {
     case "wasm":
       return "ブラウザ WASM プリパス中";
     // This state spans connecting, sending, and awaiting the response, so it
-    // must not claim the AzooKey WASM conversion is already running.
+    // must not claim the AzooKey WASM conversion is already running, nor that
+    // the request is still being sent.
     case "sending":
-      return "Worker へ送信中";
+      return "Worker 通信中";
     case "done":
       return "完了";
     default:
@@ -361,6 +362,12 @@ export default function ComparePage() {
 
   const updateConfig = <K extends keyof ComparisonConfig>(key: K, value: ComparisonConfig[K]) => {
     setConfig((current) => ({ ...current, [key]: value }));
+    // The browser WASM status describes the previous settings. A changed mode
+    // or pre-pass configuration must not keep claiming ready/error until the
+    // new configuration has actually been exercised.
+    if (key === "mode" || key === "browserWasmModuleUrl" || key === "browserWasmGlobalName") {
+      setBrowserWasmState("idle");
+    }
   };
 
   const clearComparison = (): void => {
@@ -425,7 +432,6 @@ export default function ComparePage() {
               mode={config.mode}
               onModeChange={(mode) => {
                 updateConfig("mode", mode);
-                setBrowserWasmState("idle");
               }}
               label="前処理の実行場所"
               description={selectedModeOption?.description}
