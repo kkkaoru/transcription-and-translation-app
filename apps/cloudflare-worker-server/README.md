@@ -8,7 +8,12 @@ AzooKey text conversion endpoint:
 
 ## WebSocket contract (`azookey.text.v1`)
 
-The comparison app sends one text frame per conversion:
+The comparison app sends one text frame per conversion.
+
+Wire labels `worker-vibrato` and `vibratoInput` are historical names only.
+For AzooKey comparison, both UI modes always convert with AzooKey WASM on this
+Worker using `vibratoInput` as the conversion input. Neither mode runs Vibrato
+or UniDic on the Worker.
 
 ```json
 {
@@ -22,6 +27,9 @@ The comparison app sends one text frame per conversion:
   "auth": { "scheme": "bearer", "token": "..." }
 }
 ```
+
+`vibratoInput` is the conversion input (historical name). Comparison worker-mode
+sets it equal to `sourceText`; browser pre-pass mode sets it to the pre-pass string.
 
 The Worker sends an `azookey.ready` frame after upgrade and returns:
 
@@ -37,12 +45,15 @@ The Worker sends an `azookey.ready` frame after upgrade and returns:
 }
 ```
 
-`browser-vibrato` is a client-only comparison mode label. Sending it to this
-Worker returns `unsupported_mode`. The comparison app therefore always sends the
-wire value `worker-vibrato` for conversion; when the UI selected a browser
-pre-pass it also attaches `comparisonMode: "browser-vibrato"` and
-`vibratoExecution: "browser-wasm"` as metadata. That pre-pass is an optional
-browser-side `convert`/`transform` module — not Vibrato or UniDic.
+Wire `mode` must be `worker-vibrato`. The comparison UI value `browser-vibrato`
+is client-only: if sent as wire `mode`, the Worker returns `unsupported_mode`.
+The comparison app therefore always sends wire `mode: "worker-vibrato"`.
+
+In browser pre-pass UI mode it may also attach observability-only fields
+`comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"`.
+The Worker ignores those fields and always runs AzooKey WASM on `vibratoInput`.
+The optional browser pre-pass is a client-side `convert`/`transform` step that
+may rewrite `vibratoInput` before send — not Vibrato and not UniDic.
 
 Errors stay on the socket and use a stable shape:
 
@@ -85,5 +96,6 @@ Vibrato stage and no UniDic dictionary in the Worker. The desktop's
 UniDic resource (~684 MB), which cannot fit a Cloudflare isolate. Existing
 third-party `vibrato-wasm` builds are useful tokenizers but do not provide
 AzooKey kana→kanji conversion. Wire field names such as `vibratoInput` and mode
-value `worker-vibrato` are historical protocol labels only; the runtime still
-calls the compact AzooKey converter alone.
+value `worker-vibrato` are historical protocol labels only. The runtime always
+converts `vibratoInput` with the compact AzooKey converter alone (it does not
+convert `sourceText`, and it never runs Vibrato).

@@ -12,75 +12,198 @@
  */
 
 import { spawn } from "node:child_process";
-import { unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const defaultMaxWaitMs = 30_000;
+const defaultRetryDelayMs = 100;
 
-const args = process.argv.slice(2);
-if (args.length === 0) {
-  console.error("Usage: node run-coverage-locked.mjs <package> [extra-args...]");
-  process.exit(1);
-}
+export const lockPathForPackage = (packageFilter) =>
+  join(tmpdir(), `coverage-lock-${packageFilter.replace(/[^a-z0-9]/gi, "-")}.lock`);
 
-const packageFilter = args[0];
-const extraArgs = args.slice(1);
+const delay = (milliseconds) =>
+  new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 
-// Create a unique lock file path based on the package filter
-const lockDir = tmpdir();
-const lockFile = join(lockDir, `coverage-lock-${packageFilter.replace(/[^a-z0-9]/gi, "-")}.lock`);
+const readLockSnapshot = (lockFilePath) => {
+  try {
+    return readFileSync(lockFilePath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+};
+
+const parseOwnerPid = (lockContent) => {
+  const pid = Number.parseInt(lockContent.split("\n", 1)[0], 10);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+};
 
 /**
- * Acquire a lock by creating a lock file. Wait if it exists.
- * @returns {Promise<void>}
+ * Check whether a process is still running.
+ *
+ * EPERM means the process exists but this process is not allowed to signal it,
+ * which still means that the lock is live. Every other failure is treated as
+ * a dead or invalid owner.
  */
-async function acquireLock() {
-  const startTime = Date.now();
-  const maxWaitMs = 300_000; // 5 minutes max wait
+export const isProcessAlive = (pid) => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "EPERM") return true;
+    return false;
+  }
+};
+
+const reclaimStaleLock = (lockFilePath, expectedSnapshot) => {
+  const currentSnapshot = readLockSnapshot(lockFilePath);
+  if (currentSnapshot === null) return true;
+  if (currentSnapshot !== expectedSnapshot) return false;
+
+  try {
+    unlinkSync(lockFilePath);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return true;
+    throw error;
+  }
+};
+
+/**
+ * Acquire the per-package coverage lock.
+ *
+ * The lock contains the owner's PID on its first line and a unique token on
+ * the second line. A dead owner is reclaimed; a live owner is never bypassed.
+ *
+ * @returns {Promise<{lockFilePath: string, ownerContent: string, pid: number}>}
+ */
+export async function acquireLock({
+  lockFilePath,
+  pid = process.pid,
+  maxWaitMs = defaultMaxWaitMs,
+  retryDelayMs = defaultRetryDelayMs,
+  isOwnerAlive = isProcessAlive,
+  now = Date.now,
+  sleep = delay,
+  signal,
+} = {}) {
+  if (!lockFilePath) throw new Error("lockFilePath is required");
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error(`Invalid lock owner PID: ${pid}`);
+  }
+
+  const ownerContent = `${pid}\n${randomUUID()}\n`;
+  const startedAt = now();
 
   while (true) {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error("Coverage lock acquisition interrupted");
+    }
+
     try {
-      // Try to write atomically - if file exists, this will fail
-      const pidContent = `${process.pid}\n`;
-      writeFileSync(lockFile, pidContent, { flag: "wx" });
-      return; // Lock acquired
+      writeFileSync(lockFilePath, ownerContent, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      return { lockFilePath, ownerContent, pid };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
-
-      // Lock exists; check if it's stale
-      const elapsed = Date.now() - startTime;
-      if (elapsed > maxWaitMs) {
-        console.warn(`Lock timeout after ${elapsed}ms; proceeding anyway`);
-        return;
-      }
-
-      // Wait a bit before retrying
-      await new Promise((resolve) => setTimeout(resolve, 100));
     }
+
+    const existingSnapshot = readLockSnapshot(lockFilePath);
+    if (existingSnapshot === null) continue;
+
+    const ownerPid = parseOwnerPid(existingSnapshot);
+    const stale = ownerPid === null || !isOwnerAlive(ownerPid);
+    if (stale && reclaimStaleLock(lockFilePath, existingSnapshot)) {
+      continue;
+    }
+
+    const elapsed = now() - startedAt;
+    if (elapsed >= maxWaitMs) {
+      const ownerDescription = ownerPid === null ? "an unknown owner" : `owner PID ${ownerPid}`;
+      throw new Error(
+        `Coverage lock timeout after ${elapsed}ms waiting for ${lockFilePath}; ${ownerDescription} is still holding it. Refusing to run without the lock.`,
+      );
+    }
+
+    await sleep(Math.max(0, Math.min(retryDelayMs, maxWaitMs - elapsed)));
   }
 }
 
 /**
- * Release the lock by deleting the lock file.
+ * Release a lock only when the lock file still contains this acquisition's
+ * exact owner record. Re-reading immediately before unlinking prevents a
+ * finished process from deleting a lock acquired by another process.
  */
-function releaseLock() {
+export function releaseLock(lock) {
+  if (!lock?.lockFilePath || typeof lock.ownerContent !== "string") return false;
+
+  const currentSnapshot = readLockSnapshot(lock.lockFilePath);
+  if (currentSnapshot === null || currentSnapshot !== lock.ownerContent) return false;
+
   try {
-    unlinkSync(lockFile);
+    unlinkSync(lock.lockFilePath);
+    return true;
   } catch (error) {
-    if (error.code !== "ENOENT") {
-      console.error(`Failed to release lock: ${error.message}`);
-    }
+    if (error.code === "ENOENT") return false;
+    throw error;
   }
 }
 
+const workspaceRoots = ["apps", "packages"];
+
 /**
- * Run the vitest command with the given filter.
- * @returns {Promise<number>} exit code
+ * Resolve a package filter to its directory.
+ *
+ * A scoped name says nothing about which workspace root holds the package
+ * (`@caption-bridge/desktop` lives in `apps/`, `@caption-bridge/inference-server-core`
+ * in `packages/`), so the bare name is looked up under every workspace root
+ * rather than assumed. Returns null when nothing matches, which keeps a
+ * mismatch visible instead of silently cleaning a path that does not exist.
  */
-function runVitest() {
-  return new Promise((resolve) => {
+export const getPackageDir = (packageFilter) => {
+  const parts = packageFilter.split("/").filter(Boolean);
+
+  if (parts.length >= 2 && workspaceRoots.includes(parts[0])) {
+    return join(repositoryRoot, parts[0], parts[1]);
+  }
+
+  const bareName = parts.length === 2 && parts[0].startsWith("@") ? parts[1] : parts[0];
+  for (const workspaceRoot of workspaceRoots) {
+    const candidate = join(repositoryRoot, workspaceRoot, bareName);
+    if (existsSync(join(candidate, "package.json"))) return candidate;
+  }
+
+  return null;
+};
+
+const cleanCoverageDir = async (packageFilter) => {
+  const packageDir = getPackageDir(packageFilter);
+  if (packageDir === null) {
+    console.warn(`Warning: no workspace directory found for ${packageFilter}; skipping cleanup`);
+    return;
+  }
+  const coverageDir = join(packageDir, "coverage");
+
+  try {
+    await rm(coverageDir, { recursive: true, force: true });
+  } catch (error) {
+    // Not fatal if cleanup fails; vitest should handle it
+    if (error.code !== "ENOENT") {
+      console.warn(`Warning: Failed to clean ${coverageDir}: ${error.message}`);
+    }
+  }
+};
+
+const runVitest = (packageFilter, extraArgs, onChild) =>
+  new Promise((resolvePromise) => {
     const cmd = "bun";
     const cmdArgs = [`--filter=${packageFilter}`, "run", "test:coverage", "--", ...extraArgs];
 
@@ -90,25 +213,79 @@ function runVitest() {
       cwd: repositoryRoot,
       stdio: "inherit",
     });
+    onChild(child);
 
     child.on("exit", (code) => {
-      resolve(code ?? 1);
+      onChild(null);
+      resolvePromise(code ?? 1);
     });
 
     child.on("error", (error) => {
+      onChild(null);
       console.error(`Failed to spawn vitest: ${error.message}`);
-      resolve(1);
+      resolvePromise(1);
     });
   });
+
+const signalExitCode = (signal) => (signal === "SIGINT" ? 130 : 143);
+
+/**
+ * Run the package coverage command while holding its lock.
+ *
+ * @returns {Promise<number>} the child exit code, or a signal exit code.
+ */
+export async function main(argv = process.argv.slice(2)) {
+  if (argv.length === 0) {
+    console.error("Usage: node run-coverage-locked.mjs <package> [extra-args...]");
+    return 1;
+  }
+
+  const [packageFilter, ...extraArgs] = argv;
+  const lockFilePath = lockPathForPackage(packageFilter);
+  const abortController = new AbortController();
+  let lock = null;
+  let child = null;
+  let interruptedBy = null;
+
+  const handleSignal = (signal) => {
+    interruptedBy = signal;
+    abortController.abort(new Error(`Coverage run interrupted by ${signal}`));
+    if (lock) releaseLock(lock);
+    if (child && !child.killed) child.kill(signal);
+  };
+
+  process.once("SIGINT", handleSignal);
+  process.once("SIGTERM", handleSignal);
+
+  try {
+    lock = await acquireLock({ lockFilePath, signal: abortController.signal });
+    if (interruptedBy) return signalExitCode(interruptedBy);
+
+    // Clean coverage directory to ensure a fresh baseline before running vitest.
+    // This is critical when the lock times out or a prior run is killed,
+    // leaving behind stale v8 JSON that would corrupt the next run's coverage numbers.
+    await cleanCoverageDir(packageFilter);
+    if (interruptedBy) return signalExitCode(interruptedBy);
+
+    const exitCode = await runVitest(packageFilter, extraArgs, (runningChild) => {
+      child = runningChild;
+    });
+    return interruptedBy ? signalExitCode(interruptedBy) : exitCode;
+  } catch (error) {
+    if (!interruptedBy) {
+      console.error(`Coverage lock error: ${error.message}`);
+    }
+    return interruptedBy ? signalExitCode(interruptedBy) : 1;
+  } finally {
+    if (lock) releaseLock(lock);
+    process.removeListener("SIGINT", handleSignal);
+    process.removeListener("SIGTERM", handleSignal);
+  }
 }
 
-try {
-  await acquireLock();
-  const exitCode = await runVitest();
-  releaseLock();
-  process.exit(exitCode);
-} catch (error) {
-  console.error(`Coverage lock error: ${error.message}`);
-  releaseLock();
-  process.exit(1);
+const isMainModule =
+  process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (isMainModule) {
+  process.exitCode = await main();
 }
