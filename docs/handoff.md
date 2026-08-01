@@ -81,7 +81,7 @@ bun run worker:test
 - Tauri ログは 10 MiB/ファイル、7ファイル保持で設定済み。
 - `bun run lint`、`bun run format:check` は成功。
 - `bun run gateway:build`、`bun run gateway:test:coverage` は成功（20 tests）。
-- `bun run worker:typecheck`、`bun run worker:test` は成功（3 tests）。
+- `bun run worker:typecheck`、`bun run worker:test` は成功（24 tests）。
 - macOS arm64 で `bun run build:app` を再実行し、Parapper / Gateway / Zenz / Hy-MT2 の
   sidecar を含む `Kotoba Beacon.app` を生成した。`scripts/tauri-smoke.mjs --keep-alive`
   で同じ bundle を起動し、VAD 32ms / 0.5、gateway 415→200 復旧、無音 WAV の

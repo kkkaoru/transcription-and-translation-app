@@ -248,15 +248,17 @@ export default function ComparePage() {
           patchRow({ state: "sending", vibratoInput });
         }
 
-        // A client we could not initialize means the Worker was never reached.
-        // This is its own stage: staying on browser-wasm would blame a pre-pass
-        // that already succeeded, and entering worker would report a failure for
-        // a call that never happened.
+        // Reaching the Worker is its own stage: staying on browser-wasm would
+        // blame a pre-pass that already succeeded, and entering the worker stage
+        // would report a conversion failure for a call that never happened.
+        // `convert` connects on demand, so the connection is awaited here to keep
+        // a connect failure out of the conversion stage.
         stage = "worker-connect";
         const client = workerRef.current;
         if (!client) {
           throw new Error("Worker WebSocket クライアントを初期化できません");
         }
+        await client.connect();
         stage = "worker";
         const result: AzooKeyConvertResult = await client.convert({
           source: "web-speech",
