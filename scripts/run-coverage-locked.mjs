@@ -16,15 +16,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultMaxWaitMs = 30_000;
 const defaultRetryDelayMs = 100;
-
-export const lockPathForPackage = (packageFilter) =>
-  join(tmpdir(), `coverage-lock-${packageFilter.replace(/[^a-z0-9]/gi, "-")}.lock`);
 
 const delay = (milliseconds) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
@@ -182,6 +179,18 @@ export const getPackageDir = (packageFilter) => {
   }
 
   return null;
+};
+
+/**
+ * Lock path keyed on the resolved package directory, so every spelling of a
+ * filter (scoped name or workspace path) shares one lock for the coverage
+ * directory it protects. A filter that resolves to nothing falls back to its
+ * raw spelling, keeping unknown packages off the real locks.
+ */
+export const lockPathForPackage = (packageFilter) => {
+  const packageDir = getPackageDir(packageFilter);
+  const lockKey = packageDir ? relative(repositoryRoot, packageDir) : packageFilter;
+  return join(tmpdir(), `coverage-lock-${lockKey.replace(/[^a-z0-9.-]/gi, "-")}.lock`);
 };
 
 const cleanCoverageDir = async (packageFilter) => {

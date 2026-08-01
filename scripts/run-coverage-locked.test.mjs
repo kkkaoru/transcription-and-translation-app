@@ -185,4 +185,12 @@ describe("coverage package resolution", () => {
   it("returns null for an unknown package instead of a fabricated path", () => {
     assert.equal(getPackageDir("@caption-bridge/does-not-exist"), null);
   });
+
+  it("shares one lock across every spelling of a package filter", () => {
+    assert.equal(
+      lockPathForPackage("@caption-bridge/inference-server-core"),
+      lockPathForPackage("packages/inference-server-core"),
+    );
+    assert.equal(lockPathForPackage("@caption-bridge/desktop"), lockPathForPackage("apps/desktop"));
+  });
 });
