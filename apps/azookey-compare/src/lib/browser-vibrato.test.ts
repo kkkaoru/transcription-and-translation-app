@@ -41,9 +41,11 @@ describe("browser Vibrato bridge", () => {
     // With a custom name set, the loader probes that name and never looks at
     // the historical default. Injecting both proves which one the settings
     // panel has to name: the default is present and still loses.
+    // Both globals stay injected for the whole call: clearing the default here
+    // would leave only one candidate and the assertion would hold no matter
+    // which name the loader prefers.
     vi.stubGlobal("__AZOOKEY_VIBRATO_WASM__", (text: string) => `default:${text}`);
     vi.stubGlobal("__CUSTOM__", (text: string) => `custom:${text}`);
-    clearConverter();
     await expect(
       runBrowserVibrato("入力", {
         moduleUrl: "data:text/javascript,export const convert = (t) => 'module:' + t",
