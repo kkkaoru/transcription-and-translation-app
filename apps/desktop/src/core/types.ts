@@ -7,10 +7,11 @@ export type CaptionOrder = "source-first" | "translation-first";
 /**
  * Selects the recognition path used by the live/debug pipeline.
  *
- * `parapper-azookey` is the historical/default path (Parapper ASR followed
- * by the local AzooKey kana-kanji normalizer).  The other two values are
- * intentionally explicit so a future runtime can switch paths without
- * changing the persisted config shape.
+ * `parapper-azookey` is the historical migration-safe fallback path (Parapper ASR followed
+ * by the local AzooKey kana-kanji normalizer), used when Web Speech API is not
+ * usable in the current runtime.  The other two values are intentionally explicit
+ * so a future runtime can switch paths without changing the persisted config
+ * shape.
  */
 export type RecognitionMode = "parapper-raw" | "web-speech" | "parapper-azookey";
 

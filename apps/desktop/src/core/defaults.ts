@@ -6,6 +6,7 @@ import type {
   RecognitionMode,
   RuntimeStatus,
 } from "./types";
+import { isWebSpeechRecognitionSupported } from "./webSpeechRecognition";
 
 /** Persisted recognition paths exposed by the debug controls. */
 export const RECOGNITION_MODES = [
@@ -14,8 +15,26 @@ export const RECOGNITION_MODES = [
   "parapper-azookey",
 ] as const satisfies readonly RecognitionMode[];
 
-/** Keep the existing Parapper + AzooKey path as the migration-safe default. */
+/**
+ * Historical migration-safe fallback.
+ *
+ * We resolve the default mode at runtime so desktop environments without a usable
+ * Web Speech implementation keep the safe Parapper + AzooKey path.
+ */
 export const DEFAULT_RECOGNITION_MODE: RecognitionMode = "parapper-azookey";
+
+/**
+ * Resolve the default recognition mode for the current runtime.
+ *
+ * `webSpeechAvailable` lets tests and callers validate both branches without
+ * mutating globals.
+ */
+export const getDefaultRecognitionMode = (
+  params: { webSpeechAvailable?: boolean } = {},
+): RecognitionMode =>
+  (params.webSpeechAvailable ?? isWebSpeechRecognitionSupported())
+    ? "web-speech"
+    : DEFAULT_RECOGNITION_MODE;
 
 export const isRecognitionMode = (value: unknown): value is RecognitionMode =>
   typeof value === "string" && (RECOGNITION_MODES as readonly string[]).includes(value);
@@ -141,7 +160,7 @@ export const createTextStyle = (overrides: Partial<CaptionTextStyle> = {}): Capt
 
 export const createDefaultConfig = (): AppConfig => ({
   schemaVersion: 1,
-  recognitionMode: DEFAULT_RECOGNITION_MODE,
+  recognitionMode: getDefaultRecognitionMode(),
   language: {
     source: "ja",
     target: "en",
@@ -328,11 +347,11 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   const base = createDefaultConfig();
   const input = candidate;
   // Recognition mode was added after the original config schema. Treat a
-  // missing, malformed, or future value as the safe historical pipeline so
-  // old localStorage/config.json files continue to load.
+  // missing, malformed, or future value as the runtime-aware default so desktop
+  // still opens safely while browsers can enable Web Speech by default.
   const recognitionMode = isRecognitionMode(input.recognitionMode)
     ? input.recognitionMode
-    : DEFAULT_RECOGNITION_MODE;
+    : getDefaultRecognitionMode();
   const audio = { ...base.audio, ...input.audio };
   audio.silenceGateDb = migrateSilenceGateDb(audio.silenceGateDb);
   audio.vadIntervalMs = normalizeVadIntervalMs(audio.vadIntervalMs);

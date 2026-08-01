@@ -1,14 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AUDIO_CHUNK_MAX_MS,
   AUDIO_CHUNK_MIN_MS,
   AUDIO_CHUNK_STEP_MS,
   createDefaultConfig,
+  createTextStyle,
   DEFAULT_AUDIO_CHUNK_MS,
   DEFAULT_MODEL_CATALOG,
   DEFAULT_RECOGNITION_MODE,
   DEFAULT_VAD_INTERVAL_MS,
   DEFAULT_VAD_THRESHOLD,
+  getDefaultRecognitionMode,
+  isRecognitionMode,
   mergeConfig,
   migrateSilenceGateDb,
   normalizeVadIntervalMs,
@@ -17,6 +20,14 @@ import {
 } from "./defaults";
 
 describe("default configuration", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("defaults to Japanese-to-English local processing", () => {
     const config = createDefaultConfig();
     expect(config.language).toEqual({ source: "ja", target: "en" });
@@ -40,11 +51,28 @@ describe("default configuration", () => {
     expect(config.debug.logLevel).toBe("info");
   });
 
+  it("resolves runtime-aware default when Web Speech is available", () => {
+    vi.stubGlobal("SpeechRecognition", class {});
+    expect(getDefaultRecognitionMode()).toBe("web-speech");
+    expect(createDefaultConfig().recognitionMode).toBe("web-speech");
+  });
+
+  it("falls back to historical default when Web Speech is unavailable", () => {
+    expect(getDefaultRecognitionMode({ webSpeechAvailable: false })).toBe("parapper-azookey");
+    vi.stubGlobal("SpeechRecognition", undefined);
+    expect(createDefaultConfig().recognitionMode).toBe("parapper-azookey");
+  });
+
   it("keeps recognition mode values compatible with legacy and future configs", () => {
     expect(RECOGNITION_MODES).toEqual(["parapper-raw", "web-speech", "parapper-azookey"]);
     expect(mergeConfig({}).recognitionMode).toBe(DEFAULT_RECOGNITION_MODE);
     expect(mergeConfig({ recognitionMode: "web-speech" }).recognitionMode).toBe("web-speech");
     expect(mergeConfig({ recognitionMode: "parapper-raw" }).recognitionMode).toBe("parapper-raw");
+    vi.stubGlobal("SpeechRecognition", class {});
+    expect(mergeConfig({ recognitionMode: "future-mode" as never }).recognitionMode).toBe(
+      "web-speech",
+    );
+    vi.stubGlobal("SpeechRecognition", undefined);
     expect(mergeConfig({ recognitionMode: "future-mode" as never }).recognitionMode).toBe(
       DEFAULT_RECOGNITION_MODE,
     );
@@ -112,5 +140,135 @@ describe("default configuration", () => {
     expect(DEFAULT_MODEL_CATALOG.translator.every((entry) => entry.languages.includes("ja"))).toBe(
       true,
     );
+  });
+
+  it("getDefaultRecognitionMode respects webSpeechAvailable parameter", () => {
+    // When explicitly true, should return web-speech
+    expect(getDefaultRecognitionMode({ webSpeechAvailable: true })).toBe("web-speech");
+    // When explicitly false, should return parapper-azookey
+    expect(getDefaultRecognitionMode({ webSpeechAvailable: false })).toBe("parapper-azookey");
+  });
+
+  it("createDefaultConfig uses runtime-aware default", () => {
+    // Without stub, uses actual global detection
+    const configDefault = createDefaultConfig();
+    expect(["web-speech", "parapper-azookey"]).toContain(configDefault.recognitionMode);
+
+    // With stubs, should respect availability
+    vi.stubGlobal("SpeechRecognition", class {});
+    const configWithWeb = createDefaultConfig();
+    expect(configWithWeb.recognitionMode).toBe("web-speech");
+
+    vi.stubGlobal("SpeechRecognition", undefined);
+    const configWithoutWeb = createDefaultConfig();
+    expect(configWithoutWeb.recognitionMode).toBe("parapper-azookey");
+  });
+
+  it("mergeConfig preserves explicit recognitionMode over runtime default", () => {
+    vi.stubGlobal("SpeechRecognition", class {});
+    // Explicit mode should override runtime detection
+    const preserved = mergeConfig({ recognitionMode: "parapper-azookey" });
+    expect(preserved.recognitionMode).toBe("parapper-azookey");
+
+    vi.stubGlobal("SpeechRecognition", undefined);
+    // Invalid/unknown modes should fall back to runtime default
+    const invalid = mergeConfig({ recognitionMode: "invalid-mode" as never });
+    expect(invalid.recognitionMode).toBe("parapper-azookey");
+  });
+
+  it("normalizeVadIntervalMs handles undefined and finite values", () => {
+    expect(normalizeVadIntervalMs(undefined)).toBe(DEFAULT_VAD_INTERVAL_MS);
+    expect(normalizeVadIntervalMs(null as never)).toBe(DEFAULT_VAD_INTERVAL_MS);
+    expect(normalizeVadIntervalMs(Number.NaN)).toBe(DEFAULT_VAD_INTERVAL_MS);
+    expect(normalizeVadIntervalMs(Number.POSITIVE_INFINITY)).toBe(DEFAULT_VAD_INTERVAL_MS);
+    // Clamps to range
+    expect(normalizeVadIntervalMs(8)).toBe(16); // rounded up to step
+    expect(normalizeVadIntervalMs(200)).toBe(128); // clamped to max
+  });
+
+  it("normalizeVadThreshold handles undefined and finite values", () => {
+    expect(normalizeVadThreshold(undefined)).toBe(DEFAULT_VAD_THRESHOLD);
+    expect(normalizeVadThreshold(null as never)).toBe(DEFAULT_VAD_THRESHOLD);
+    expect(normalizeVadThreshold(Number.NaN)).toBe(DEFAULT_VAD_THRESHOLD);
+    expect(normalizeVadThreshold(Number.NEGATIVE_INFINITY)).toBe(DEFAULT_VAD_THRESHOLD);
+    // Clamps to range
+    expect(normalizeVadThreshold(0.02)).toBe(0.1); // clamped to min
+    expect(normalizeVadThreshold(1.0)).toBe(0.9); // clamped to max
+  });
+
+  it("mergeConfig preserves null and false values correctly", () => {
+    // Test that falsy non-defaults are preserved
+    const allFalsy = mergeConfig({
+      audio: {
+        noiseSuppression: false,
+        adaptiveNoiseFloor: false,
+        silenceGateDb: 0,
+      },
+    });
+    expect(allFalsy.audio.noiseSuppression).toBe(false);
+    expect(allFalsy.audio.adaptiveNoiseFloor).toBe(false);
+    expect(allFalsy.audio.silenceGateDb).toBe(0);
+  });
+
+  it("createTextStyle merges overrides correctly", () => {
+    const defaults = createTextStyle();
+    expect(defaults.fontFamily).toContain("Noto Sans JP");
+    expect(defaults.fontSizePx).toBe(34);
+    expect(defaults.opacity).toBe(1);
+
+    const customized = createTextStyle({
+      fontSizePx: 48,
+      color: "#ff0000",
+    });
+    expect(customized.fontSizePx).toBe(48);
+    expect(customized.color).toBe("#ff0000");
+    expect(customized.fontFamily).toContain("Noto Sans JP"); // unchanged
+    expect(customized.opacity).toBe(1); // unchanged
+  });
+
+  it("createDefaultConfig includes complete model catalog", () => {
+    const config = createDefaultConfig();
+    expect(config.models.asr).toBe("parapper-ja");
+    expect(config.models.normalizer).toBe("azookey-rust");
+    expect(config.models.translator).toBe("hy-mt2-1.8b-gguf");
+    expect(config.models.paths).toEqual({});
+  });
+
+  it("createDefaultConfig sets correct audio defaults", () => {
+    const config = createDefaultConfig();
+    expect(config.audio.inputDeviceId).toBe("default");
+    expect(config.audio.sampleRate).toBe(16_000);
+    expect(config.audio.chunkMs).toBe(640);
+    expect(config.audio.silenceGateDb).toBe(-50);
+    expect(config.audio.vadIntervalMs).toBe(32);
+    expect(config.audio.vadThreshold).toBe(0.5);
+    expect(config.audio.noiseSuppression).toBe(true);
+    expect(config.audio.adaptiveNoiseFloor).toBe(true);
+  });
+
+  it("mergeConfig deep-merges nested overlay styles", () => {
+    const merged = mergeConfig({
+      overlay: {
+        width: 1920,
+        source: { fontSizePx: 72, color: "#ff0000" },
+        translation: { opacity: 0.5 },
+      },
+    });
+    expect(merged.overlay.width).toBe(1920);
+    expect(merged.overlay.source.fontSizePx).toBe(72);
+    expect(merged.overlay.source.color).toBe("#ff0000");
+    expect(merged.overlay.source.fontFamily).toContain("Noto Sans JP"); // default preserved
+    expect(merged.overlay.translation.opacity).toBe(0.5);
+    expect(merged.overlay.translation.fontSizePx).toBe(29); // default preserved
+  });
+
+  it("isRecognitionMode validates mode values", () => {
+    expect(isRecognitionMode("parapper-raw")).toBe(true);
+    expect(isRecognitionMode("web-speech")).toBe(true);
+    expect(isRecognitionMode("parapper-azookey")).toBe(true);
+    expect(isRecognitionMode("invalid")).toBe(false);
+    expect(isRecognitionMode(null)).toBe(false);
+    expect(isRecognitionMode(123)).toBe(false);
+    expect(isRecognitionMode(undefined)).toBe(false);
   });
 });
