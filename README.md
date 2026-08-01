@@ -29,7 +29,8 @@ apps/
     src/                 UI（components, core, i18n, live, overlay, settings）
     src-tauri/           Rust アプリケーション境界
   inference-gateway/     Tauri サイドカーになる HTTP・WebSocket ゲートウェイ
-  cloudflare-worker-server/ Cloudflare Worker 用の同じ HTTP 契約
+  cloudflare-worker-server/ Cloudflare Worker 用の同じ HTTP 契約と AzooKey WebSocket
+  azookey-compare/       Web Speech と Worker 変換を比較する Next.js アプリ（独立起動）
 packages/
   inference-server-core/  ローカル/Worker 共通の HTTP 契約・ルーティング
   azookey-rust/          かな漢字変換の共有 Rust crate

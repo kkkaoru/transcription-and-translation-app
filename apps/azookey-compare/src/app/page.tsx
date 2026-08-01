@@ -91,8 +91,10 @@ const rowStateLabel = (state: ComparisonRowState): string => {
       return "送信待ち";
     case "wasm":
       return "ブラウザ WASM プリパス中";
+    // This state spans connecting, sending, and awaiting the response, so it
+    // must not claim the AzooKey WASM conversion is already running.
     case "sending":
-      return "Worker AzooKey WASM 処理中";
+      return "Worker へ送信中";
     case "done":
       return "完了";
     default:
