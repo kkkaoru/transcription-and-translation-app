@@ -248,11 +248,14 @@ export default function ComparePage() {
           patchRow({ state: "sending", vibratoInput });
         }
 
-        stage = "worker";
+        // A client we could not initialize means the Worker was never reached,
+        // so this stays a setup failure. Entering the worker stage first would
+        // report a Worker failure for a call that never happened.
         const client = workerRef.current;
         if (!client) {
           throw new Error("Worker WebSocket クライアントを初期化できません");
         }
+        stage = "worker";
         const result: AzooKeyConvertResult = await client.convert({
           source: "web-speech",
           language,
