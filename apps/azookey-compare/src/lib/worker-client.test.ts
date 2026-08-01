@@ -5,6 +5,7 @@ import {
   AzooKeyWorkerError,
   type WorkerConnectionState,
   workerErrorReachedConverter,
+  workerErrorStage,
 } from "./worker-client";
 
 type MessageHandler = ((event: { data: unknown }) => void) | null;
@@ -369,26 +370,32 @@ describe("AzooKey Worker client connection lifecycle", () => {
     expect(workerErrorReachedConverter(rejection)).toBe(false);
   });
 
-  it("treats conversion-phase and unclassifiable rejections as reaching the converter", () => {
-    // Only `conversion_*` is raised once conversion is under way; anything the
-    // Worker refuses up front is not. A rejection we cannot classify keeps the
-    // conversion stage rather than claiming the request never arrived.
+  it("separates conversion, refusal, and uncertain Worker failures", () => {
     expect(workerErrorReachedConverter(new AzooKeyWorkerError("failed", "conversion_failed"))).toBe(
       true,
     );
     expect(
       workerErrorReachedConverter(new AzooKeyWorkerError("timeout", "conversion_timeout")),
     ).toBe(true);
+    expect(workerErrorStage(new AzooKeyWorkerError("failed", "conversion_failed"))).toBe("worker");
+    expect(workerErrorStage(new AzooKeyWorkerError("timeout", "conversion_timeout"))).toBe(
+      "worker",
+    );
     expect(workerErrorReachedConverter(new AzooKeyWorkerError("nope", "unauthorized"))).toBe(false);
     expect(workerErrorReachedConverter(new AzooKeyWorkerError("nope", "invalid_contract"))).toBe(
       false,
     );
-    expect(workerErrorReachedConverter(new AzooKeyWorkerError("no code"))).toBe(true);
-    expect(workerErrorReachedConverter(new Error("socket died"))).toBe(true);
-    // A code a later Worker version introduces is not a refusal this client
-    // recognises, so it must not be reported as a request that never arrived.
-    expect(workerErrorReachedConverter(new AzooKeyWorkerError("future", "some_future_code"))).toBe(
-      true,
+    expect(workerErrorStage(new AzooKeyWorkerError("nope", "unauthorized"))).toBe("worker-request");
+    expect(workerErrorStage(new AzooKeyWorkerError("nope", "invalid_contract"))).toBe(
+      "worker-request",
+    );
+    expect(workerErrorReachedConverter(new AzooKeyWorkerError("no code"))).toBe(false);
+    expect(workerErrorReachedConverter(new Error("socket died"))).toBe(false);
+    expect(workerErrorStage(new AzooKeyWorkerError("no code"))).toBe("worker-transport");
+    expect(workerErrorStage(new Error("socket died"))).toBe("worker-transport");
+    // An unknown code is not enough evidence to claim either conversion or refusal.
+    expect(workerErrorStage(new AzooKeyWorkerError("future", "some_future_code"))).toBe(
+      "worker-transport",
     );
   });
 });

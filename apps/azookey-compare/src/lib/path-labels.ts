@@ -13,13 +13,16 @@ export const conversionPathLabel = (mode: ComparisonMode): string =>
  * already finished, but the Worker was never reached. Folding it into either
  * neighbour would blame a stage that did not fail. `worker-request` is the same
  * idea one step later: the Worker answered, but refused the request (auth,
- * back-pressure, contract) without ever invoking the converter.
+ * back-pressure, contract) without ever invoking the converter. A
+ * `worker-transport` outcome means the client cannot tell whether the Worker
+ * received or converted the request (timeout, socket close, or an unknown error).
  */
 export type ConversionStage =
   | "setup"
   | "browser-wasm"
   | "worker-connect"
   | "worker-request"
+  | "worker-transport"
   | "worker";
 
 /**
@@ -43,6 +46,11 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
     return mode === "browser-vibrato"
       ? "Browser WASM pre-pass 完了 / Worker がリクエストを拒否（AzooKey WASM 未実行）"
       : "Worker がリクエストを拒否（AzooKey WASM 未実行）";
+  }
+  if (failedStage === "worker-transport") {
+    return mode === "browser-vibrato"
+      ? "Browser WASM pre-pass 完了 / Worker 応答不明（AzooKey WASM 実行不明）"
+      : "Worker 応答不明（AzooKey WASM 実行不明）";
   }
   if (mode !== "browser-vibrato") {
     return "Worker AzooKey WASM（失敗）";

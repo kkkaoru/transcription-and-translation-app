@@ -147,19 +147,31 @@ const PRE_CONVERTER_ERROR_CODES: ReadonlySet<string> = new Set([
   "converter_unavailable",
 ]);
 
+export type WorkerErrorStage = "worker-request" | "worker-transport" | "worker";
+
 /**
- * Whether a rejection means the AzooKey converter actually ran.
+ * Classify a Worker rejection without claiming that an uncertain request ran.
  *
- * Only a code this client recognises as a refusal proves the request never
- * reached the converter. Anything else — a code-less rejection, a transport
- * error, or a code a later Worker version introduces — stays on the conversion
- * stage, because claiming a request never got there is the assertion we cannot
- * take back if it is wrong.
+ * The Worker emits `conversion_*` only from the converter path. Known protocol
+ * refusal codes are returned before conversion. A plain transport error or an
+ * unknown protocol code cannot prove either outcome, so it gets its own stage.
  */
+export const workerErrorStage = (error: unknown): WorkerErrorStage => {
+  if (!(error instanceof AzooKeyWorkerError)) {
+    return "worker-transport";
+  }
+  if (error.code?.startsWith("conversion_")) {
+    return "worker";
+  }
+  if (error.code !== undefined && PRE_CONVERTER_ERROR_CODES.has(error.code)) {
+    return "worker-request";
+  }
+  return "worker-transport";
+};
+
+/** Whether a rejection proves the AzooKey converter actually ran. */
 export const workerErrorReachedConverter = (error: unknown): boolean =>
-  !(error instanceof AzooKeyWorkerError) ||
-  error.code === undefined ||
-  !PRE_CONVERTER_ERROR_CODES.has(error.code);
+  workerErrorStage(error) === "worker";
 
 interface ParsedWorkerMessage {
   requestId?: string;

@@ -24,7 +24,7 @@ import {
   type AzooKeyConvertResult,
   AzooKeyWorkerClient,
   type WorkerConnectionState,
-  workerErrorReachedConverter,
+  workerErrorStage,
 } from "../lib/worker-client";
 
 type ComparisonRowState = "queued" | "wasm" | "sending" | "done" | "error";
@@ -280,10 +280,9 @@ export default function ComparePage() {
         // The browser WASM status is owned by the browser stage above; a Worker
         // or setup failure must not report a pre-pass that succeeded as failed.
         const message = errorMessage(caught);
-        // The Worker turns away a request it never converts (busy, bad token,
-        // contract errors), so those keep the conversion stage unclaimed.
-        const failedStage =
-          stage === "worker" && !workerErrorReachedConverter(caught) ? "worker-request" : stage;
+        // A protocol refusal, transport failure, and converter failure are
+        // different outcomes; only the Worker can prove which one occurred.
+        const failedStage = stage === "worker" ? workerErrorStage(caught) : stage;
         patchRow({ state: "error", error: message, vibratoInput, failedStage });
         setError(message);
       }
