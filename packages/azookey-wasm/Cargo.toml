@@ -1,0 +1,13 @@
+[package]
+name = "caption-bridge-azookey-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Small raw WebAssembly ABI around the built-in AzooKey converter for Workers"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+caption-bridge-azookey-rust = { path = "../azookey-rust" }

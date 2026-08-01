@@ -5,3 +5,9 @@
 [submodule "submodules/AzooKeyKanaKanjiConverter"]
 	path = submodules/AzooKeyKanaKanjiConverter
 	url = https://github.com/azooKey/AzooKeyKanaKanjiConverter.git
+[submodule "submodules/azooKey-Desktop"]
+	path = submodules/azooKey-Desktop
+	url = https://github.com/azooKey/azooKey-Desktop.git
+[submodule "submodules/azooKey_dictionary_storage"]
+	path = submodules/azooKey_dictionary_storage
+	url = https://github.com/azooKey/azooKey_dictionary_storage.git

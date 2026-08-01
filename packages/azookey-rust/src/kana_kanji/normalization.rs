@@ -1,12 +1,21 @@
+const KATAKANA_START: u32 = 0x30a1;
+const KATAKANA_END: u32 = 0x30f6;
+const HIRAGANA_START: u32 = 0x3041;
+const HIRAGANA_END: u32 = 0x3096;
+const FULLWIDTH_ASCII_START: u32 = 0xff01;
+const FULLWIDTH_ASCII_END: u32 = 0xff5e;
+const FULLWIDTH_ASCII_OFFSET: u32 = 0xfee0;
+const KANA_SCRIPT_OFFSET: u32 = 0x60;
+
 pub(crate) fn to_hiragana(input: &str) -> String {
     input
         .chars()
         .map(|character| {
             let code = character as u32;
-            if (0x30a1..=0x30f6).contains(&code) {
-                char::from_u32(code - 0x60).unwrap_or(character)
-            } else if (0xff01..=0xff5e).contains(&code) {
-                char::from_u32(code - 0xfee0).unwrap_or(character)
+            if (KATAKANA_START..=KATAKANA_END).contains(&code) {
+                char::from_u32(code - KANA_SCRIPT_OFFSET).unwrap_or(character)
+            } else if (FULLWIDTH_ASCII_START..=FULLWIDTH_ASCII_END).contains(&code) {
+                char::from_u32(code - FULLWIDTH_ASCII_OFFSET).unwrap_or(character)
             } else {
                 character
             }
@@ -19,8 +28,8 @@ pub(crate) fn to_katakana(input: &str) -> String {
         .chars()
         .map(|character| {
             let code = character as u32;
-            if (0x3041..=0x3096).contains(&code) {
-                char::from_u32(code + 0x60).unwrap_or(character)
+            if (HIRAGANA_START..=HIRAGANA_END).contains(&code) {
+                char::from_u32(code + KANA_SCRIPT_OFFSET).unwrap_or(character)
             } else {
                 character
             }
@@ -104,10 +113,20 @@ pub(crate) fn numeric_surface_prefix(reading: &[char]) -> Option<(usize, String)
 
 pub(crate) fn numeric_surface(reading: &str) -> Option<String> {
     let normalized = to_hiragana(reading);
+    // `ぜん` is the rendaku form used after a preceding digit (`さんぜん`,
+    // `はっせん`), not a standalone numeral in ordinary Japanese.  Treating
+    // it as an implicit 1,000 lets a word such as `かいぜん` split into
+    // `かい` + `1000`; requiring the preceding numeric token keeps the
+    // conversion generic without embedding a phrase-specific exception.
+    if normalized == "ぜん" {
+        return None;
+    }
     let digits: String = normalized
         .chars()
         .map(|character| match character {
-            '０'..='９' => char::from_u32(character as u32 - 0xfee0).unwrap_or(character),
+            '０'..='９' => {
+                char::from_u32(character as u32 - FULLWIDTH_ASCII_OFFSET).unwrap_or(character)
+            }
             _ => character,
         })
         .collect();

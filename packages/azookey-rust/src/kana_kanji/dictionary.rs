@@ -10,11 +10,29 @@ use std::path::{Path, PathBuf};
 const MID_COUNT: usize = 502;
 const SHARD_SHIFT: usize = 11;
 const LOCAL_MASK: usize = (1 << SHARD_SHIFT) - 1;
-const DEFAULT_CID: u16 = 1285;
-const DEFAULT_MID: u16 = 501;
+pub(crate) const DEFAULT_CID: u16 = 1285;
+const BOS_CID: u16 = 0;
+pub(crate) const DEFAULT_MID: u16 = 501;
 /// AzooKey keeps BOS/EOS in the neutral meaning class.
-const BOS_EOS_MID: u16 = 500;
+pub(crate) const BOS_EOS_MID: u16 = 500;
 const EOS_CID: u16 = 1316;
+const CID_COUNT: usize = 1319;
+const DEFAULT_CONNECTION_COST: f32 = -25.0;
+const NEUTRAL_CONNECTION_COST: f32 = 0.0;
+const BUILTIN_SURFACE_SCORE_BONUS: f32 = 1.5;
+const DEFAULT_TSV_ENTRY_VALUE: f32 = -10.0;
+const BUILTIN_HIGH_FREQUENCY_VALUE: f32 = -5.0;
+const BUILTIN_DEFAULT_VALUE: f32 = -10.0;
+const CID_DEFAULT_RECORD: i32 = -1;
+const CID_RECORD_BYTES: usize = 8;
+const FLOAT32_BYTES: usize = 4;
+const U16_BYTES: usize = 2;
+const U32_BYTES: usize = 4;
+const LOUDSTXT3_COUNT_BYTES: usize = U16_BYTES;
+const LOUDSTXT3_OFFSET_BYTES: usize = U32_BYTES;
+const LOUDSTXT3_ENTRY_BYTES: usize = 10;
+const LOUDSTXT3_VALUE_OFFSET: usize = 6;
+const SYSTEM_DICTIONARY_LENGTH_MARGIN: f32 = 2.0;
 // AzooKey's `DicdataStore` drops low-quality system entries before building
 // the lattice. Keeping those placeholder rows (often around -30) lets a
 // short, unrelated surface beat a correct longer word in our Viterbi pass.
@@ -214,7 +232,7 @@ impl AzooKeyDictionary {
         self.system
             .as_ref()
             .map(|system| system.class_connection_cost(former, latter))
-            .unwrap_or(0.0)
+            .unwrap_or(NEUTRAL_CONNECTION_COST)
     }
 
     /// Return the content-word bigram cost used by AzooKey's clause scorer.
@@ -224,7 +242,7 @@ impl AzooKeyDictionary {
         self.system
             .as_ref()
             .map(|system| system.meaning_connection_cost(former_mid, latter_mid))
-            .unwrap_or(0.0)
+            .unwrap_or(NEUTRAL_CONNECTION_COST)
     }
 
     /// Return the connection cost from AzooKey's virtual beginning-of-sentence
@@ -236,8 +254,19 @@ impl AzooKeyDictionary {
     pub fn beginning_connection_cost(&self, entry: &DictionaryEntry) -> f32 {
         self.system
             .as_ref()
-            .and_then(|system| system.cid_connection_cost(0, entry.lcid).ok())
-            .unwrap_or(0.0)
+            .and_then(|system| system.cid_connection_cost(BOS_CID, entry.lcid).ok())
+            .unwrap_or(NEUTRAL_CONNECTION_COST)
+    }
+
+    /// Return the connection cost from a given left-side CID to a candidate.
+    /// This is used when carrying context across multiple conversion calls,
+    /// allowing the system to maintain grammatical state during partial
+    /// recognition updates. Fails open: invalid CID returns 0.0.
+    pub fn context_connection_cost(&self, former_rcid: u16, entry: &DictionaryEntry) -> f32 {
+        self.system
+            .as_ref()
+            .and_then(|system| system.cid_connection_cost(former_rcid, entry.lcid).ok())
+            .unwrap_or(NEUTRAL_CONNECTION_COST)
     }
 
     /// Whether a transition starts a new AzooKey clause.  This mirrors the
@@ -265,16 +294,16 @@ impl AzooKeyDictionary {
     /// near ties; CID/MID costs and system probabilities remain dominant.
     pub(crate) fn builtin_surface_bonus(&self, entry: &DictionaryEntry) -> f32 {
         if !self.has_system_dictionary() {
-            return 0.0;
+            return NEUTRAL_CONNECTION_COST;
         }
         if self
             .static_entries
             .iter()
             .any(|builtin| builtin.reading == entry.reading && builtin.surface == entry.surface)
         {
-            1.5
+            BUILTIN_SURFACE_SCORE_BONUS
         } else {
-            0.0
+            NEUTRAL_CONNECTION_COST
         }
     }
 }
@@ -347,15 +376,15 @@ impl SystemDictionary {
     }
 
     fn class_connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
-        self.cid_connection_cost(former.rcid, latter.lcid).unwrap_or(-25.0)
+        self.cid_connection_cost(former.rcid, latter.lcid).unwrap_or(DEFAULT_CONNECTION_COST)
     }
 
     fn meaning_connection_cost(&self, former_mid: u16, latter_mid: u16) -> f32 {
         if former_mid == BOS_EOS_MID || latter_mid == BOS_EOS_MID {
-            return 0.0;
+            return NEUTRAL_CONNECTION_COST;
         }
         let mid_index = usize::from(former_mid) * MID_COUNT + usize::from(latter_mid);
-        self.mm.get(mid_index).copied().unwrap_or(0.0)
+        self.mm.get(mid_index).copied().unwrap_or(NEUTRAL_CONNECTION_COST)
     }
 
     fn cid_connection_cost(&self, former: u16, latter: u16) -> Result<f32, String> {
@@ -369,88 +398,289 @@ impl SystemDictionary {
             .get(&former)
             .and_then(|line| line.get(usize::from(latter)))
             .copied()
-            .unwrap_or(-25.0))
+            .unwrap_or(DEFAULT_CONNECTION_COST))
     }
 }
 
 /// AzooKey's compact word-type classification used by `isClause` and
 /// `includeMMValueCalculation`.  The ranges are the stable CID groups from
 /// the upstream converter; they describe morphology, not specific words.
-fn word_type(cid: u16) -> u8 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordType {
+    Boundary,
+    Preposition,
+    ContentWord,
+    Postposition,
+}
+
+fn word_type(cid: u16) -> WordType {
     let cid = usize::from(cid);
-    if cid == 0 || cid == usize::from(EOS_CID) {
-        return 3; // BOS/EOS
+    if cid == usize::from(BOS_CID) || cid == usize::from(EOS_CID) {
+        return WordType::Boundary;
     }
-    if matches!(cid, 5 | 6 | 557..=560 | 1315) {
-        return 0; // preposition / 前置機能語
+    if matches!(cid, 6 | 557..=560 | 1315) {
+        return WordType::Preposition; // 前置機能語
     }
     if matches!(
         cid,
         1..=5
             | 9
-            | 11
+            | 11..=52
+            | 555..=556
             | 1281..=1282
             | 1283..=1296
             | 1306..=1309
             | 1314
             | 561..=867
     ) {
-        return 1; // content word / 内容語
+        return WordType::ContentWord; // 内容語
     }
-    2 // postposition / 後置機能語
+    WordType::Postposition // 後置機能語
 }
 
 fn is_clause_boundary(former_rcid: u16, latter_lcid: u16) -> bool {
     let latter_type = word_type(latter_lcid);
-    if latter_type == 3 {
+    if latter_type == WordType::Boundary {
         return false;
     }
     let former_type = word_type(former_rcid);
-    if former_type == 3 {
+    if former_type == WordType::Boundary {
         return false;
     }
-    matches!(latter_type, 0 | 1) && former_type != 0
+    matches!(latter_type, WordType::Preposition | WordType::ContentWord)
+        && former_type != WordType::Preposition
 }
 
+const MEANING_CID_START: u16 = 895;
+const MEANING_CID_END: u16 = 1280;
+const MEANING_SPECIAL_CID_START: u16 = 1297;
+const MEANING_SPECIAL_CID_END: u16 = 1305;
+
 fn include_meaning_cost(entry: &DictionaryEntry) -> bool {
-    (895..=1280).contains(&entry.lcid)
-        || (895..=1280).contains(&entry.rcid)
-        || (1297..=1305).contains(&entry.lcid)
-        || (1297..=1305).contains(&entry.rcid)
-        || word_type(entry.lcid) == 1
-        || word_type(entry.rcid) == 1
+    (MEANING_CID_START..=MEANING_CID_END).contains(&entry.lcid)
+        || (MEANING_CID_START..=MEANING_CID_END).contains(&entry.rcid)
+        || (MEANING_SPECIAL_CID_START..=MEANING_SPECIAL_CID_END).contains(&entry.lcid)
+        || (MEANING_SPECIAL_CID_START..=MEANING_SPECIAL_CID_END).contains(&entry.rcid)
+        || word_type(entry.lcid) == WordType::ContentWord
+        || word_type(entry.rcid) == WordType::ContentWord
+}
+
+/// Return whether an entry may terminate a conversion candidate.
+///
+/// AzooKey keeps this table separate from `wordTypes`: many inflectional
+/// forms are valid in the middle of a clause but cannot be emitted as its
+/// final row.  The table is copied from the upstream `predictionUsable`
+/// metadata (CID data), so it remains dictionary/model driven and does not
+/// encode any reading or phrase.
+fn prediction_usable_rcid(rcid: u16) -> bool {
+    !matches!(
+        rcid,
+        13..=18
+            | 25..=28
+            | 33..=34
+            | 40..=42
+            | 46..=47
+            | 50
+            | 56..=64
+            | 74..=79
+            | 86..=88
+            | 93..=95
+            | 99..=100
+            | 103
+            | 107..=112
+            | 119..=122
+            | 127..=128
+            | 134..=136
+            | 140..=141
+            | 144
+            | 369
+            | 372..=373
+            | 377..=382
+            | 389..=392
+            | 397..=398
+            | 401..=402
+            | 404..=406
+            | 408
+            | 410..=413
+            | 416..=421
+            | 426..=427
+            | 431
+            | 433..=434
+            | 437..=438
+            | 441..=443
+            | 447..=448
+            | 450
+            | 452
+            | 455
+            | 457
+            | 462..=464
+            | 470..=472
+            | 476..=477
+            | 480
+            | 483
+            | 489..=490
+            | 493..=496
+            | 504
+            | 527..=528
+            | 533..=534
+            | 537
+            | 540
+            | 542
+            | 548
+            | 551
+            | 553
+            | 561..=562
+            | 564..=567
+            | 569
+            | 571..=572
+            | 574..=577
+            | 579
+            | 581..=582
+            | 585
+            | 587
+            | 589..=591
+            | 594..=598
+            | 600..=601
+            | 603..=604
+            | 606
+            | 609
+            | 611
+            | 614
+            | 617..=618
+            | 620..=622
+            | 624
+            | 626..=627
+            | 629..=631
+            | 634
+            | 636
+            | 638
+            | 641..=642
+            | 644
+            | 647..=648
+            | 650
+            | 653..=654
+            | 656
+            | 659..=660
+            | 662
+            | 665..=666
+            | 668
+            | 671..=673
+            | 675..=678
+            | 681..=684
+            | 687..=688
+            | 691..=694
+            | 697..=700
+            | 703..=704
+            | 707..=710
+            | 713..=716
+            | 721..=722
+            | 724..=725
+            | 727
+            | 729..=730
+            | 732..=733
+            | 736..=737
+            | 739..=740
+            | 742
+            | 744..=745
+            | 747..=748
+            | 750
+            | 752..=753
+            | 755..=756
+            | 758
+            | 760..=761
+            | 763..=764
+            | 766
+            | 768..=771
+            | 774..=783
+            | 786..=787
+            | 790..=791
+            | 793..=795
+            | 798
+            | 800..=801
+            | 804..=807
+            | 810..=811
+            | 814..=816
+            | 820..=825
+            | 829..=831
+            | 835
+            | 837
+            | 840
+            | 842
+            | 845
+            | 847
+            | 850
+            | 852
+            | 855
+            | 859..=860
+            | 862
+            | 865..=866
+            | 868..=869
+            | 871..=873
+            | 875
+            | 877..=878
+            | 880..=881
+            | 884..=885
+            | 887..=891
+            | 893
+            | 895..=896
+            | 898..=901
+            | 903
+            | 905..=906
+            | 908..=911
+            | 913
+            | 915..=918
+            | 921..=925
+            | 928..=929
+            | 931..=932
+            | 934..=936
+            | 939
+            | 941
+            | 943..=952
+            | 958..=967
+            | 973..=977
+            | 983..=990
+            | 995..=1002
+            | 1007..=1010
+            | 1015..=1018
+            | 1021..=1024
+            | 1029..=1036
+            | 1041..=1048
+            | 1057..=1058
+            | 1060..=1061
+            | 1063
+            | 1065..=1090
+            | 1104..=1168
+            | 1182..=1194
+            | 1208..=1215
+            | 1220..=1231
+            | 1240..=1243
+            | 1248..=1251
+            | 1256..=1263
+            | 1268..=1271
+            | 1276
+            | 1278
+    )
 }
 
 fn system_entry_is_usable(entry: &DictionaryEntry) -> bool {
     if !entry.value.is_finite() {
         return false;
     }
-    // AzooKey's prediction lattice excludes non-terminal inflection rows.
-    // The complete upstream list is large; these compact ranges cover the
-    // high-impact rows that otherwise leak into full-caption conversion here:
-    // conditional contractions (15–18) and the two common inflection tails
-    // observed in `ねん` candidates (774/782).
-    if matches!(entry.rcid, 15..=18 | 774 | 782) {
+    if !prediction_usable_rcid(entry.rcid) {
         return false;
     }
-    let is_hiragana_identity = entry.surface == entry.reading;
-    // The full dictionary contains high-scoring identity rows for ordinary
-    // hiragana (for example `てすと -> てすと`). In this bridge those rows can
-    // outrank the compact lexicon's useful kana-to-kanji/katakana surface and
-    // suppress conversion. Keep true orthographic entries (such as
-    // `かたかな -> カタカナ`), but discard only multi-kana identities.
     let ruby_count = entry.reading.chars().count();
-    if ruby_count >= 2 && is_hiragana_identity {
+    let is_hiragana_identity = entry.surface == entry.reading;
+    // Full conversion still needs one-kana identity rows for particles and
+    // inflectional continuations (for example `は` in `天気は`), but ordinary
+    // multi-kana identities suppress useful compact-lexicon conversions. A
+    // non-identity one-kana row is generally a name/placeholder and should
+    // not enter the prediction lattice.
+    if (ruby_count >= 2 && is_hiragana_identity) || (ruby_count < 2 && !is_hiragana_identity) {
         return false;
     }
-    // Single-kana system rows are mostly POS fragments, but identity rows for
-    // particles (`は`, `の`, etc.) are needed to carry CID context into the
-    // following word. Retain those grammar identities and drop non-identity
-    // one-character rows (`と` -> `土`, names, and placeholders).
-    if ruby_count < 2 && !is_hiragana_identity {
-        return false;
-    }
-    let minimum = SYSTEM_DICTIONARY_VALUE_THRESHOLD + 2.0 / ruby_count as f32;
+    let minimum =
+        SYSTEM_DICTIONARY_VALUE_THRESHOLD + SYSTEM_DICTIONARY_LENGTH_MARGIN / ruby_count as f32;
     entry.value >= minimum
 }
 
@@ -644,7 +874,10 @@ fn parse_tsv(path: &Path) -> Result<Vec<DictionaryEntry>, String> {
             (!reading.is_empty() && !surface.is_empty()).then(|| DictionaryEntry {
                 reading: to_hiragana(reading),
                 surface: surface.to_string(),
-                value: columns.get(2).and_then(|value| value.parse().ok()).unwrap_or(-10.0),
+                value: columns
+                    .get(2)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(DEFAULT_TSV_ENTRY_VALUE),
                 lcid: columns.get(3).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_CID),
                 rcid: columns.get(4).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_CID),
                 mid: columns.get(5).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_MID),
@@ -664,11 +897,11 @@ fn read_loudstxt3_entry(path: &Path, index: usize) -> Result<Vec<DictionaryEntry
     if index >= record_count {
         return Ok(Vec::new());
     }
-    let start = read_u32(&bytes, 2 + index * 4)? as usize;
+    let start = read_u32(&bytes, LOUDSTXT3_COUNT_BYTES + index * LOUDSTXT3_OFFSET_BYTES)? as usize;
     let end = if index + 1 == record_count {
         bytes.len()
     } else {
-        read_u32(&bytes, 2 + (index + 1) * 4)? as usize
+        read_u32(&bytes, LOUDSTXT3_COUNT_BYTES + (index + 1) * LOUDSTXT3_OFFSET_BYTES)? as usize
     };
     if start > end || end > bytes.len() {
         return Err(format!("{} contains an invalid loudstxt3 offset", path.display()));
@@ -678,7 +911,7 @@ fn read_loudstxt3_entry(path: &Path, index: usize) -> Result<Vec<DictionaryEntry
 
 fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> {
     let count = read_u16(bytes, 0)? as usize;
-    let header_end = 2 + count * 10;
+    let header_end = LOUDSTXT3_COUNT_BYTES + count * LOUDSTXT3_ENTRY_BYTES;
     if bytes.len() < header_end {
         return Err("loudstxt3 record is shorter than its fixed entry header".to_string());
     }
@@ -689,7 +922,7 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
     let reading = to_hiragana(&fields.first().cloned().unwrap_or_default());
     let mut entries = Vec::with_capacity(count);
     for index in 0..count {
-        let base = 2 + index * 10;
+        let base = LOUDSTXT3_COUNT_BYTES + index * LOUDSTXT3_ENTRY_BYTES;
         let surface = fields
             .get(index + 1)
             .filter(|surface| !surface.is_empty())
@@ -699,9 +932,9 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
             reading: reading.clone(),
             surface,
             lcid: read_u16(bytes, base)?,
-            rcid: read_u16(bytes, base + 2)?,
-            mid: read_u16(bytes, base + 4)?,
-            value: read_f32(bytes, base + 6)?,
+            rcid: read_u16(bytes, base + U16_BYTES)?,
+            mid: read_u16(bytes, base + U16_BYTES * 2)?,
+            value: read_f32(bytes, base + LOUDSTXT3_VALUE_OFFSET)?,
         });
     }
     Ok(entries)
@@ -710,17 +943,21 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
 fn read_cc_line(path: &Path) -> Result<Vec<f32>, String> {
     let bytes =
         fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    if bytes.len() % 8 != 0 || bytes.is_empty() {
+    if bytes.len() % CID_RECORD_BYTES != 0 || bytes.is_empty() {
         return Err(format!("{} is not an AzooKey CID connection-cost file", path.display()));
     }
-    let mut line = vec![-25.0; 1319];
-    for (index, pair) in bytes.chunks_exact(8).enumerate() {
-        let cid = i32::from_le_bytes(pair[..4].try_into().expect("CID record prefix is 4 bytes"));
-        let value = f32::from_le_bytes(pair[4..].try_into().expect("CID record suffix is 4 bytes"));
-        if index == 0 && cid != -1 {
+    let mut line = vec![DEFAULT_CONNECTION_COST; CID_COUNT];
+    for (index, pair) in bytes.chunks_exact(CID_RECORD_BYTES).enumerate() {
+        let cid = i32::from_le_bytes(
+            pair[..FLOAT32_BYTES].try_into().expect("CID record prefix is 4 bytes"),
+        );
+        let value = f32::from_le_bytes(
+            pair[FLOAT32_BYTES..].try_into().expect("CID record suffix is 4 bytes"),
+        );
+        if index == 0 && cid != CID_DEFAULT_RECORD {
             return Err(format!("{} has no CID default record", path.display()));
         }
-        if cid == -1 {
+        if cid == CID_DEFAULT_RECORD {
             line.fill(value);
         } else if let Some(slot) = line.get_mut(cid as usize) {
             *slot = value;
@@ -732,18 +969,18 @@ fn read_cc_line(path: &Path) -> Result<Vec<f32>, String> {
 fn read_f32_le(path: &Path) -> Result<Vec<f32>, String> {
     let bytes =
         fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    if bytes.len() % 4 != 0 {
+    if bytes.len() % FLOAT32_BYTES != 0 {
         return Err(format!("{} is not a Float32 file", path.display()));
     }
     Ok(bytes
-        .chunks_exact(4)
+        .chunks_exact(FLOAT32_BYTES)
         .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk is exactly 4 bytes")))
         .collect())
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
     bytes
-        .get(offset..offset + 2)
+        .get(offset..offset + U16_BYTES)
         .and_then(|chunk| chunk.try_into().ok())
         .map(u16::from_le_bytes)
         .ok_or_else(|| "unexpected end of an AzooKey binary dictionary file".to_string())
@@ -751,7 +988,7 @@ fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
     bytes
-        .get(offset..offset + 4)
+        .get(offset..offset + U32_BYTES)
         .and_then(|chunk| chunk.try_into().ok())
         .map(u32::from_le_bytes)
         .ok_or_else(|| "unexpected end of an AzooKey binary dictionary file".to_string())
@@ -759,7 +996,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
 
 fn read_f32(bytes: &[u8], offset: usize) -> Result<f32, String> {
     bytes
-        .get(offset..offset + 4)
+        .get(offset..offset + FLOAT32_BYTES)
         .and_then(|chunk| chunk.try_into().ok())
         .map(f32::from_le_bytes)
         .ok_or_else(|| "unexpected end of an AzooKey binary dictionary file".to_string())
@@ -1080,8 +1317,8 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
             | ("いく", _)
             | ("いきます", _)
             | ("ねん", _)
-            | ("おつかれさまでした", _) => -5.0,
-            _ => -10.0,
+            | ("おつかれさまでした", _) => BUILTIN_HIGH_FREQUENCY_VALUE,
+            _ => BUILTIN_DEFAULT_VALUE,
         };
         DictionaryEntry::plain(reading, surface, value)
     })
@@ -1091,8 +1328,8 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
 #[cfg(test)]
 mod tests {
     use super::{
-        escaped_identifier, parse_loudstxt3_record, system_entry_is_usable, AzooKeyDictionary,
-        DictionaryEntry, DictionaryPaths,
+        escaped_identifier, parse_loudstxt3_record, prediction_usable_rcid, system_entry_is_usable,
+        word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths, WordType, BOS_CID, EOS_CID,
     };
 
     #[test]
@@ -1162,6 +1399,27 @@ mod tests {
         assert!(system_entry_is_usable(&katakana_surface));
         assert!(!system_entry_is_usable(&contraction));
         assert!(!system_entry_is_usable(&inflection_tail));
+    }
+
+    #[test]
+    fn keeps_upstream_cid_metadata_classes_stable() {
+        // These are morphology/model classes, not readings or surface words.
+        // Keeping the boundaries explicit protects clause and MM scoring when
+        // the dictionary format is refreshed.
+        assert_eq!(word_type(BOS_CID), WordType::Boundary);
+        assert_eq!(word_type(6), WordType::Preposition);
+        assert_eq!(word_type(54), WordType::Postposition);
+        assert_eq!(word_type(555), WordType::ContentWord);
+        assert_eq!(word_type(1315), WordType::Preposition);
+        assert_eq!(word_type(EOS_CID), WordType::Boundary);
+
+        // A few interior values exercise both ends of the upstream
+        // prediction-usable table without depending on a particular word.
+        assert!(!prediction_usable_rcid(13));
+        assert!(!prediction_usable_rcid(561));
+        assert!(!prediction_usable_rcid(1278));
+        assert!(prediction_usable_rcid(619));
+        assert!(prediction_usable_rcid(1285));
     }
 
     #[test]
