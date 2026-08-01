@@ -17,6 +17,7 @@
       "!apps/desktop/src-tauri/gen",
       "!models",
       "!packages/parapper-asr",
+      "!submodules",
       "!docs/evidence"
     ]
   },
