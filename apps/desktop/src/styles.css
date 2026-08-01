@@ -1018,6 +1018,14 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* Raw ASR paints arrive before AzooKey normalization. Keep that low-latency
+ * preview visible, but make the eventual normalized source the clear primary
+ * result while the revision is still provisional. */
+.caption-text-provisional {
+  opacity: 0.72;
+  font-style: italic;
+}
+
 .caption-stage-label {
   flex: 0 0 auto;
   margin-top: 2px;

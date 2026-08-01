@@ -6,7 +6,7 @@ import {
 } from "../core/audio";
 import { bridge, formatBridgeError } from "../core/bridge";
 import { type ChunkTimingStats, getChunkTimingStats } from "../core/chunkQueue";
-import { mergeConfig } from "../core/defaults";
+import { DEFAULT_RECOGNITION_MODE, isRecognitionMode, mergeConfig } from "../core/defaults";
 import {
   getDiagnosticEvents,
   getDiagnosticStoreRevision,
@@ -52,6 +52,7 @@ import type {
   ModelStatusEntry,
   PipelineStageEvent,
   PipelineStageName,
+  RecognitionMode,
   SidecarStatus,
   UpdateStatus,
 } from "../core/types";
@@ -167,7 +168,37 @@ const modelInstallLabel = (status: string, t: ReturnType<typeof useI18n>["t"]): 
   }
 };
 
+const recognitionModeLabel = (
+  mode: RecognitionMode,
+  t: ReturnType<typeof useI18n>["t"],
+): string => {
+  switch (mode) {
+    case "parapper-raw":
+      return t("debug.recognitionModeParapperRaw");
+    case "web-speech":
+      return t("debug.recognitionModeWebSpeech");
+    case "parapper-azookey":
+      return t("debug.recognitionModeParapperAzookey");
+  }
+};
+
+const recognitionModeDescription = (
+  mode: RecognitionMode,
+  t: ReturnType<typeof useI18n>["t"],
+): string => {
+  switch (mode) {
+    case "parapper-raw":
+      return t("debug.recognitionModeParapperRawDescription");
+    case "web-speech":
+      return t("debug.recognitionModeWebSpeechDescription");
+    case "parapper-azookey":
+      return t("debug.recognitionModeParapperAzookeyDescription");
+  }
+};
+
 const STAGE_NAMES: PipelineStageName[] = ["asr", "normalize", "translate"];
+
+const DEFAULT_TEST_CAPTION = "これはデバッグ用のテスト字幕です。";
 
 const formatMs = (value: number | null | undefined): string => {
   if (value == null || !Number.isFinite(value)) {
@@ -429,6 +460,11 @@ export function DebugPanel() {
   const [captureInfo, setCaptureInfo] = useState<AudioCaptureDiagnostics | null>(null);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [modelStatus, setModelStatus] = useState<ModelStatusEntry[]>([]);
+  const [recognitionMode, setRecognitionMode] = useState<RecognitionMode>(DEFAULT_RECOGNITION_MODE);
+  const [testCaptionText, setTestCaptionText] = useState(DEFAULT_TEST_CAPTION);
+  const [testCaptionRunning, setTestCaptionRunning] = useState(false);
+  const [testCaptionNotice, setTestCaptionNotice] = useState<string | null>(null);
+  const [testCaptionError, setTestCaptionError] = useState<string | null>(null);
   // The panel is mounted in both Live and Settings routes. Avoid rerendering
   // its large diagnostics tree for every caption while collapsed; opening the
   // panel resubscribes and useSyncExternalStore reconciles the latest snapshot.
@@ -578,6 +614,7 @@ export function DebugPanel() {
       frontend: frontendInfo,
       backend: backendInfo,
       audioCapture: captureInfo,
+      recognitionMode,
       devices: devices.map((device) => ({
         deviceId: device.deviceId,
         label: device.label,
@@ -602,6 +639,7 @@ export function DebugPanel() {
     backendInfo,
     frontendInfo,
     captureInfo,
+    recognitionMode,
     devices,
     modelStatus,
     events,
@@ -627,16 +665,16 @@ export function DebugPanel() {
       setFrontendInfo(nextFrontend);
       setCaptureInfo(nextCapture);
       setChunkTiming(getChunkTimingStats());
-      const [infoResult, devicesResult, modelStatusResult, updateResult] = await Promise.allSettled(
-        [
+      const [infoResult, devicesResult, modelStatusResult, updateResult, configResult] =
+        await Promise.allSettled([
           bridge.getDebugInfo(),
           enumerateAudioInputDevices(),
           bridge.listModelStatus(),
           typeof bridge.getUpdateStatus === "function"
             ? bridge.getUpdateStatus()
             : Promise.resolve(null),
-        ],
-      );
+          typeof bridge.getConfig === "function" ? bridge.getConfig() : Promise.resolve(null),
+        ]);
       if (!mountedRef.current) {
         return;
       }
@@ -662,6 +700,24 @@ export function DebugPanel() {
       } else {
         setBackendInfo(null);
         setError(recordDebugOperationError("refresh", infoResult.reason));
+      }
+
+      const configResultValue =
+        configResult.status === "fulfilled" && isRecord(configResult.value)
+          ? configResult.value
+          : null;
+      const backendConfigValue = backend ? pick(backend, "config") : undefined;
+      const backendConfig = isRecord(backendConfigValue) ? backendConfigValue : null;
+      const modeCandidates = [
+        pick(configResultValue, "recognitionMode"),
+        pick(backendConfig, "recognitionMode"),
+        pick(backend, "recognitionMode"),
+      ];
+      for (const candidate of modeCandidates) {
+        if (isRecognitionMode(candidate)) {
+          setRecognitionMode(candidate);
+          break;
+        }
       }
 
       if (devicesResult.status === "fulfilled") {
@@ -708,8 +764,7 @@ export function DebugPanel() {
       // Desktop: prefer persisted Rust config so verbose matches backend logs.
       // Browser preview has no writable backend config — keep localStorage preference.
       if (bridge.isDesktop() && backend) {
-        const configValue = pick(backend, "config");
-        const config = isRecord(configValue) ? configValue : null;
+        const config = backendConfig;
         const debugValue = pick(config, "debug") ?? pick(backend, "debug");
         const debug = isRecord(debugValue) ? debugValue : null;
         const verboseFromBackend = pick(debug, "verboseLogging");
@@ -739,6 +794,60 @@ export function DebugPanel() {
       void fetchInfo();
     }
   }, [open, initialFetchAttempted, loading, fetchInfo]);
+
+  const publishTestCaption = useCallback(async () => {
+    const sourceText = testCaptionText.trim();
+    if (!sourceText) {
+      setTestCaptionNotice(null);
+      setTestCaptionError(t("debug.testCaptionRequired"));
+      return;
+    }
+    setTestCaptionRunning(true);
+    setTestCaptionNotice(null);
+    setTestCaptionError(null);
+    const now = Date.now();
+    const id = `debug-test-${now}`;
+    try {
+      if (typeof bridge.publishSourceCaption !== "function") {
+        throw new Error("publish_source_caption is unavailable in this app build");
+      }
+      await bridge.publishSourceCaption({
+        id,
+        sourceText,
+        translationText: "",
+        sourceLanguage: "ja",
+        targetLanguage: "en",
+        startedAt: now,
+        receivedAt: now,
+        stage: "source",
+        sequence: 0,
+        isFinal: true,
+      });
+      if (!mountedRef.current) {
+        return;
+      }
+      appendStructuredLog({
+        level: "info",
+        source: "frontend",
+        stage: "source",
+        chunkId: id,
+        message: "debug test caption published",
+        fields: {
+          recognitionMode,
+          sourceChars: sourceText.length,
+        },
+      });
+      setTestCaptionNotice(t("debug.testCaptionSent"));
+    } catch (reason) {
+      if (mountedRef.current) {
+        setTestCaptionError(recordDebugOperationError("publish test caption", reason));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setTestCaptionRunning(false);
+      }
+    }
+  }, [recognitionMode, t, testCaptionText]);
 
   // Chunk timing is published from the live capture path; poll snapshot while open.
   useEffect(() => {
@@ -1311,6 +1420,84 @@ export function DebugPanel() {
           </div>
           <p className="debug-inline-meta">{t("debug.verboseLoggingHelp")}</p>
           <p className="debug-inline-meta">{t("debug.logLevelHelp")}</p>
+          <section className="debug-section" data-testid="debug-recognition">
+            <h4 className="debug-section-title">{t("debug.recognitionMode")}</h4>
+            <p className="debug-inline-meta">{t("debug.recognitionModeHint")}</p>
+            <div className="debug-kv-list">
+              <div>
+                <span>{recognitionModeLabel(recognitionMode, t)}</span>
+                <code data-testid="debug-recognition-mode">{recognitionMode}</code>
+              </div>
+            </div>
+            <p className="debug-inline-meta">{recognitionModeDescription(recognitionMode, t)}</p>
+            <div className="debug-test-caption" data-testid="debug-test-caption">
+              <p className="debug-inline-meta">{t("debug.testCaptionHint")}</p>
+              <label className="field" htmlFor="debug-test-caption-input">
+                <span>{t("debug.testCaptionTitle")}</span>
+                <textarea
+                  id="debug-test-caption-input"
+                  rows={2}
+                  value={testCaptionText}
+                  placeholder={t("debug.testCaptionPlaceholder")}
+                  aria-label={t("debug.testCaptionPlaceholder")}
+                  data-testid="debug-test-caption-input"
+                  onChange={(event) => {
+                    setTestCaptionText(event.currentTarget.value);
+                    setTestCaptionNotice(null);
+                    setTestCaptionError(null);
+                  }}
+                  disabled={testCaptionRunning}
+                />
+              </label>
+              <div className="debug-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  data-testid="debug-test-caption-publish"
+                  onClick={() => void publishTestCaption()}
+                  disabled={testCaptionRunning}
+                >
+                  {testCaptionRunning ? t("debug.testCaptionSending") : t("debug.testCaptionSend")}
+                </button>
+                <span
+                  className="debug-inline-meta"
+                  data-testid="debug-test-caption-state"
+                  data-status={
+                    testCaptionRunning
+                      ? "running"
+                      : testCaptionError
+                        ? "error"
+                        : testCaptionNotice
+                          ? "success"
+                          : "ready"
+                  }
+                  role="status"
+                >
+                  {testCaptionRunning
+                    ? t("debug.testCaptionSending")
+                    : (testCaptionError ?? testCaptionNotice ?? t("debug.testCaptionReady"))}
+                </span>
+              </div>
+              {testCaptionNotice ? (
+                <p
+                  className="debug-inline-meta"
+                  role="status"
+                  data-testid="debug-test-caption-notice"
+                >
+                  {testCaptionNotice}
+                </p>
+              ) : null}
+              {testCaptionError ? (
+                <p
+                  className="debug-inline-meta is-error"
+                  role="alert"
+                  data-testid="debug-test-caption-error"
+                >
+                  {testCaptionError}
+                </p>
+              ) : null}
+            </div>
+          </section>
           {exportNotice ? (
             <p className="debug-inline-meta" data-testid="debug-export-notice" role="status">
               {exportNotice}
