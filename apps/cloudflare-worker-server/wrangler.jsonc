@@ -8,6 +8,14 @@
   },
   "vars": {
     "CORS_ORIGIN": "https://example.invalid",
-    "MODEL_ROUTES": "{}"
-  }
+    "MODEL_ROUTES": "{}",
+    "AZOOKEY_TIMEOUT_MS": "250"
+  },
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["wasm/*.wasm"],
+      "fallthrough": true
+    }
+  ]
 }

@@ -10,8 +10,8 @@
   "scripts": {
     "build": "tsc --pretty false --project tsconfig.json",
     "typecheck": "tsc --pretty false --noEmit --project tsconfig.json",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test": "vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --coverage --config vitest.config.ts"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^3.2.4",

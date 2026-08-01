@@ -63,8 +63,10 @@ PARAPPER_RUNTIME_DIR="/absolute/path/to/kotoba-parapper" \
 ```
 
 The fork defaults its Japanese streaming `text` to a hiragana reading and
-keeps the original ASR text in optional `source_text`; the existing gateway
-continues to consume `text`. Configure its streaming endpoint in
+keeps the original ASR surface in optional `source_text`; the desktop bridge
+uses the separate `azookey_input_text` field for kana-kanji normalization, while
+the HTTP gateway prefers `source_text` for standard Parapper transcript output
+and falls back to `text` for older/Surface sidecars. Configure its streaming endpoint in
 `parapper.url`. The default is
 `ws://127.0.0.1:18082/ws/recognition`. If the runtime needs authorization, set
 `apiKeyEnv` to the name of an environment variable (never put a token in the

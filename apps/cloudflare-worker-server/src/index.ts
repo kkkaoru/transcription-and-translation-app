@@ -5,16 +5,54 @@ import {
   pcm16ToWav,
   validateGatewayConfig,
 } from "@caption-bridge/inference-server-core";
+import {
+  AZOOKEY_MAX_TEXT_BYTES,
+  AZOOKEY_MODE,
+  AZOOKEY_MODEL,
+  AZOOKEY_PROTOCOL,
+  AZOOKEY_WS_PATH,
+  type AzookeyRequestDependencies,
+  azookeyTimeoutMs,
+  BROWSER_VIBRATO_MODE,
+  HTTP_METHOD_NOT_ALLOWED,
+  HTTP_SWITCHING_PROTOCOLS,
+  openAzookeySocket,
+} from "./azookey.js";
+import azookeyWasm from "./azookey-wasm.js";
 
 export interface Env {
   ASR_API_TOKEN?: string;
   ASR_UPSTREAM_URL?: string;
+  AZOOKEY_API_TOKEN?: string;
+  AZOOKEY_TIMEOUT_MS?: string;
   CORS_ORIGIN?: string;
   MODEL_ROUTES: string;
 }
 
 export interface WorkerHandler {
   fetch(request: Request, env: Env): Promise<Response>;
+}
+
+const HTTP_OK = 200;
+const HTTP_NO_CONTENT = 204;
+const HTTP_BAD_GATEWAY = 502;
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+const LOCAL_GATEWAY_HOST = "127.0.0.1";
+const LOCAL_GATEWAY_PORT = 8765;
+const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
+
+/**
+ * The Worker adapter accepts the native fetch function as well as a small
+ * synchronous test double.  The gateway core always receives an async fetch
+ * function; createWorker normalizes this union at the boundary.
+ */
+export type WorkerFetcher = (
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+) => Response | Promise<Response>;
+
+export interface WorkerDependencies extends AzookeyRequestDependencies {
+  fetch?: typeof fetch;
 }
 
 const json = (status: number, body: Record<string, unknown>): Response =>
@@ -27,14 +65,17 @@ const workerConfig = (env: Env): GatewayConfig => {
   let models: unknown;
   try {
     models = JSON.parse(env.MODEL_ROUTES);
-  } catch {
-    throw new Error("MODEL_ROUTES must be valid JSON");
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error("MODEL_ROUTES must be valid JSON");
+    }
+    throw error;
   }
   return validateGatewayConfig({
-    listen: { host: "127.0.0.1", port: 8765 },
+    listen: { host: LOCAL_GATEWAY_HOST, port: LOCAL_GATEWAY_PORT },
     parapper: {
       url: env.ASR_UPSTREAM_URL ?? "https://asr.unavailable.invalid/v1/audio/transcriptions",
-      timeoutMs: 18_000,
+      timeoutMs: DEFAULT_PARAPPER_TIMEOUT_MS,
     },
     models,
   });
@@ -53,7 +94,7 @@ const cors = (response: Response, origin: string | undefined): Response => {
 
 const upstreamTranscriber = (
   env: Env,
-  fetcher: typeof fetch,
+  fetcher: WorkerFetcher,
 ): ((pcm: Uint8Array) => Promise<string>) | undefined => {
   const upstreamUrl = env.ASR_UPSTREAM_URL;
   if (!upstreamUrl) {
@@ -72,11 +113,11 @@ const upstreamTranscriber = (
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "connection failed";
-      throw new GatewayError(502, "asr_connection_failed", detail);
+      throw new GatewayError(HTTP_BAD_GATEWAY, "asr_connection_failed", detail);
     }
     if (!response.ok) {
       throw new GatewayError(
-        502,
+        HTTP_BAD_GATEWAY,
         "asr_upstream_failed",
         `ASR upstream returned ${response.status}`,
       );
@@ -88,7 +129,7 @@ const upstreamTranscriber = (
       typeof (payload as { text?: unknown }).text !== "string"
     ) {
       throw new GatewayError(
-        502,
+        HTTP_BAD_GATEWAY,
         "asr_invalid_response",
         "ASR upstream response has no text field",
       );
@@ -97,10 +138,58 @@ const upstreamTranscriber = (
   };
 };
 
-export const createWorker = (fetcher: typeof fetch = fetch): WorkerHandler => ({
+export const createWorker = (
+  fetcher: WorkerFetcher = fetch,
+  dependencies: WorkerDependencies = {},
+): WorkerHandler => ({
   async fetch(request, env): Promise<Response> {
     if (request.method === "OPTIONS") {
-      return cors(new Response(null, { status: 204 }), env.CORS_ORIGIN);
+      return cors(new Response(null, { status: HTTP_NO_CONTENT }), env.CORS_ORIGIN);
+    }
+    const url = new URL(request.url);
+    if (url.pathname === "/v1/azookey") {
+      if (request.method !== "GET") {
+        return cors(
+          json(HTTP_METHOD_NOT_ALLOWED, {
+            error: { code: "method_not_allowed", message: "GET is required" },
+          }),
+          env.CORS_ORIGIN,
+        );
+      }
+      return cors(
+        json(HTTP_OK, {
+          ok: true,
+          service: "azookey",
+          protocol: AZOOKEY_PROTOCOL,
+          model: AZOOKEY_MODEL,
+          websocketPath: AZOOKEY_WS_PATH,
+          maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
+          timeoutMs: azookeyTimeoutMs(env),
+          auth: {
+            scheme: "bearer",
+            configured: Boolean(env.AZOOKEY_API_TOKEN?.trim()),
+            transport: "authorization-header-or-first-frame",
+          },
+          modes: {
+            worker: AZOOKEY_MODE,
+            browser: BROWSER_VIBRATO_MODE,
+          },
+        }),
+        env.CORS_ORIGIN,
+      );
+    }
+    if (url.pathname === AZOOKEY_WS_PATH) {
+      const response = await openAzookeySocket(request, env, {
+        wasmModule: dependencies.wasmModule ?? azookeyWasm,
+        ...(dependencies.socketPair ? { socketPair: dependencies.socketPair } : {}),
+        ...(dependencies.converter ? { converter: dependencies.converter } : {}),
+      });
+      // Reconstructing a Response drops the non-standard `webSocket` slot
+      // required by the Workers runtime for a 101 upgrade. CORS is relevant
+      // to the pre-upgrade HTTP errors, not to the upgraded socket itself.
+      return response.status === HTTP_SWITCHING_PROTOCOLS
+        ? response
+        : cors(response, env.CORS_ORIGIN);
     }
     let config: GatewayConfig;
     try {
@@ -108,13 +197,18 @@ export const createWorker = (fetcher: typeof fetch = fetch): WorkerHandler => ({
     } catch (error) {
       const detail = error instanceof Error ? error.message : "invalid Worker configuration";
       return cors(
-        json(500, { error: { code: "invalid_configuration", message: detail } }),
+        json(HTTP_INTERNAL_SERVER_ERROR, {
+          error: { code: "invalid_configuration", message: detail },
+        }),
         env.CORS_ORIGIN,
       );
     }
     const transcribe = upstreamTranscriber(env, fetcher);
     const handler = createGatewayFetchHandler(config, {
-      fetch: fetcher,
+      // The shared gateway core deliberately models the platform fetch as
+      // async.  Awaiting here also makes synchronous test doubles conform to
+      // that contract without changing production behavior.
+      fetch: (input, init) => Promise.resolve(fetcher(input, init)),
       ...(transcribe ? { transcribe } : {}),
     });
     return cors(await handler(request), env.CORS_ORIGIN);
