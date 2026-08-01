@@ -202,10 +202,20 @@ const cleanCoverageDir = async (packageFilter) => {
   }
 };
 
+/**
+ * Command override used only by the lock tests, so they can exercise the
+ * signal and release paths against a stub child instead of a real coverage
+ * run. A real run would contend for this package's lock and coverage
+ * directory, which is exactly what the lock is meant to serialize.
+ */
+const commandOverride = process.env.COVERAGE_LOCK_CHILD_COMMAND;
+
 const runVitest = (packageFilter, extraArgs, onChild) =>
   new Promise((resolvePromise) => {
-    const cmd = "bun";
-    const cmdArgs = [`--filter=${packageFilter}`, "run", "test:coverage", "--", ...extraArgs];
+    const cmd = commandOverride ? process.execPath : "bun";
+    const cmdArgs = commandOverride
+      ? ["-e", commandOverride]
+      : [`--filter=${packageFilter}`, "run", "test:coverage", "--", ...extraArgs];
 
     console.log(`Running: ${cmd} ${cmdArgs.join(" ")}`);
 
@@ -247,10 +257,14 @@ export async function main(argv = process.argv.slice(2)) {
   let child = null;
   let interruptedBy = null;
 
+  // The lock is deliberately NOT released here. vitest is still alive at this
+  // point and keeps writing coverage/.tmp until it actually exits, so releasing
+  // now would let a second wrapper start against the same directory -- exactly
+  // the overlap this lock exists to prevent. The `finally` below releases once
+  // the child has exited.
   const handleSignal = (signal) => {
     interruptedBy = signal;
     abortController.abort(new Error(`Coverage run interrupted by ${signal}`));
-    if (lock) releaseLock(lock);
     if (child && !child.killed) child.kill(signal);
   };
 

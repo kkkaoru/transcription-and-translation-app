@@ -6,9 +6,17 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { acquireLock, getPackageDir, isProcessAlive, releaseLock } from "./run-coverage-locked.mjs";
+import { fileURLToPath } from "node:url";
+import {
+  acquireLock,
+  getPackageDir,
+  isProcessAlive,
+  lockPathForPackage,
+  releaseLock,
+} from "./run-coverage-locked.mjs";
 
 const temporaryRoots = [];
+const temporaryLockPaths = [];
 
 const createLockPath = async () => {
   const root = await mkdtemp(join(tmpdir(), "kotoba-coverage-lock-"));
@@ -20,6 +28,10 @@ afterEach(async () => {
   while (temporaryRoots.length > 0) {
     const root = temporaryRoots.pop();
     if (root) await rm(root, { recursive: true, force: true });
+  }
+  while (temporaryLockPaths.length > 0) {
+    const lockFilePath = temporaryLockPaths.pop();
+    if (lockFilePath) await rm(lockFilePath, { force: true });
   }
 });
 
@@ -77,6 +89,57 @@ describe("coverage lock", () => {
       /Refusing to run without the lock/,
     );
     assert.equal(await readFile(lockFilePath, "utf8"), `${process.pid}\nlive-owner-token\n`);
+  });
+
+  it("holds the lock until the interrupted child exits, then releases it", async () => {
+    // The wrapper must not release on the signal itself: vitest keeps writing
+    // coverage/.tmp until it actually exits, so an early release would let a
+    // second run start against the same directory. Releasing in the exit path
+    // instead risks stranding the lock, which is what this guards.
+    const scriptPath = fileURLToPath(new URL("./run-coverage-locked.mjs", import.meta.url));
+    // A filter of its own keeps this test off every real package's lock and
+    // coverage directory, so it stays hermetic even while a full gate runs.
+    const packageFilter = `@caption-bridge/lock-signal-fixture-${process.pid}`;
+    const lockFilePath = lockPathForPackage(packageFilter);
+    temporaryLockPaths.push(lockFilePath);
+
+    const wrapper = spawn(process.execPath, [scriptPath, packageFilter], {
+      stdio: "ignore",
+      // vitest takes a moment to shut down after a signal, and keeps writing
+      // coverage output while it does. This stub reproduces that: it delays
+      // its own exit so the window in which the lock must stay held is
+      // long enough to observe deterministically.
+      env: {
+        ...process.env,
+        COVERAGE_LOCK_CHILD_COMMAND:
+          "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 300)); setInterval(() => {}, 60_000)",
+      },
+    });
+    await once(wrapper, "spawn");
+
+    // Give the wrapper time to acquire the lock and spawn its child.
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 400));
+    assert.equal(existsSync(lockFilePath), true, "expected the lock to be held while running");
+
+    wrapper.kill("SIGTERM");
+
+    // While the wrapper is still alive its child may still be writing coverage
+    // output, so the lock must stay held for every observation until exit.
+    let exited = false;
+    const exitPromise = once(wrapper, "exit").then(() => {
+      exited = true;
+    });
+    while (!exited) {
+      assert.equal(
+        existsSync(lockFilePath),
+        true,
+        "lock was released while the interrupted run was still alive",
+      );
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    }
+    await exitPromise;
+
+    assert.equal(existsSync(lockFilePath), false, "expected the lock to be released on exit");
   });
 });
 
