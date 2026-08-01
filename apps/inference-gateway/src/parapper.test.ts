@@ -108,7 +108,7 @@ describe("Parapper WebSocket adapter", () => {
     }
   });
 
-  it("turns Parapper errors, empty sessions, and timeouts into useful gateway errors", async () => {
+  it("turns Parapper errors and timeouts into useful gateway errors", async () => {
     const failing = await startParapper((socket) => {
       socket.on("message", (data: RawData, binary: boolean) => {
         if (binary) {
@@ -122,31 +122,6 @@ describe("Parapper WebSocket adapter", () => {
         }
       });
     });
-    const empty = await startParapper((socket) => {
-      socket.on("message", (data: RawData, binary: boolean) => {
-        if (binary) {
-          return;
-        }
-        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
-        if (message.type === "session.start") {
-          socket.send(
-            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
-          );
-        } else if (message.type === "session.stop") {
-          socket.send(
-            JSON.stringify({
-              version: 1,
-              type: "turn.final",
-              session_id: message.session_id,
-              text: " ",
-            }),
-          );
-          socket.send(
-            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
-          );
-        }
-      });
-    });
     const timeout = await startParapper(() => undefined);
     try {
       await expect(
@@ -154,12 +129,6 @@ describe("Parapper WebSocket adapter", () => {
       ).rejects.toMatchObject({
         code: "parapper_protocol_error",
         status: 502,
-      });
-      await expect(
-        transcribeWithParapper(new Uint8Array(2), { url: empty.url, timeoutMs: 1000 }),
-      ).rejects.toMatchObject({
-        code: "transcript_missing",
-        status: 422,
       });
       await expect(
         transcribeWithParapper(new Uint8Array(2), { url: timeout.url, timeoutMs: 20 }),
@@ -177,7 +146,79 @@ describe("Parapper WebSocket adapter", () => {
         status: 502,
       });
     } finally {
-      await Promise.all([failing.close(), empty.close(), timeout.close()]);
+      await Promise.all([failing.close(), timeout.close()]);
+    }
+  });
+
+  it("soft-returns empty text when Parapper finishes without a usable final", async () => {
+    const noFinal = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          // Partials only (or whitespace final) + session.done — typical silent window.
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.partial",
+              session_id: message.session_id,
+              text: "  ",
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              text: " ",
+            }),
+          );
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    const missingFinal = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), {
+          url: noFinal.url,
+          timeoutMs: 1000,
+          log: () => undefined,
+        }),
+      ).resolves.toBe("");
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), {
+          url: missingFinal.url,
+          timeoutMs: 1000,
+          log: () => undefined,
+        }),
+      ).resolves.toBe("");
+    } finally {
+      await Promise.all([noFinal.close(), missingFinal.close()]);
     }
   });
 

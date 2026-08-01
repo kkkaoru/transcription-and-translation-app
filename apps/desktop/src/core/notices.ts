@@ -16,13 +16,43 @@ export const shouldToastAudioProcessingFailure = (error: unknown): boolean =>
   !isNoSpeechBridgeError(error);
 
 /**
+ * Strip raw gateway JSON / HTTP wrappers from no-speech details so the toast
+ * stays actionable (mic level / diagnostics) instead of looking like a crash.
+ */
+export const sanitizeNoSpeechDetail = (detail?: string): string | undefined => {
+  const trimmed = detail?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  // Prefer capture diagnostics over raw HTTP bodies when both are present.
+  if (trimmed.includes("mode=") || trimmed.includes("rms=") || trimmed.includes("chunks=")) {
+    // Drop a leading "inference returned HTTP …" prefix if diagnostics follow.
+    const diagStart = trimmed.search(/(?:^| · )mode=/);
+    if (diagStart >= 0) {
+      return trimmed.slice(diagStart).replace(/^ · /, "").trim() || undefined;
+    }
+    return trimmed;
+  }
+  if (
+    trimmed.includes("transcript_missing") ||
+    trimmed.includes("without a final transcript") ||
+    trimmed.includes("inference returned HTTP")
+  ) {
+    // Fall back to live capture diagnostics rather than the opaque 422 body.
+    const diag = formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
+    return diag || undefined;
+  }
+  return trimmed;
+};
+
+/**
  * Non-fatal notice for silence / Parapper transcript_missing soft-skips.
  * Never uses message.audioProcessingFailed ("音声処理に失敗しました").
  */
 export const noticeForNoSpeech = (detail?: string): Notice => {
-  const explicit = detail?.trim();
-  if (explicit) {
-    return { key: "message.noSpeechDetected", detail: explicit };
+  const clean = sanitizeNoSpeechDetail(detail);
+  if (clean) {
+    return { key: "message.noSpeechDetected", detail: clean };
   }
   const diag = formatAudioCaptureDiagnostics(getLastAudioCaptureDiagnostics());
   return diag

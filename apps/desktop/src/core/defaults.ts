@@ -215,9 +215,27 @@ export const DEFAULT_RUNTIME_STATUS: RuntimeStatus = {
   lastError: null,
 };
 
+/**
+ * Legacy installs used silenceGateDb=-55, which lets ambient ~-54 dBFS through
+ * to Parapper (transcript_missing). Bump only that old default; intentional
+ * lower gates set by the user are left alone.
+ */
+export const migrateSilenceGateDb = (gateDb: number | undefined): number => {
+  if (gateDb === undefined || !Number.isFinite(gateDb)) {
+    return DEFAULT_SILENCE_GATE_DB;
+  }
+  // Exact legacy default (float JSON may be -55 or -55.0).
+  if (Math.abs(gateDb - -55) < 1e-6) {
+    return DEFAULT_SILENCE_GATE_DB;
+  }
+  return gateDb;
+};
+
 export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   const base = createDefaultConfig();
   const input = candidate;
+  const audio = { ...base.audio, ...input.audio };
+  audio.silenceGateDb = migrateSilenceGateDb(audio.silenceGateDb);
   return {
     ...base,
     ...input,
@@ -228,7 +246,7 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
       ...input.models,
       paths: { ...base.models.paths, ...input.models?.paths },
     },
-    audio: { ...base.audio, ...input.audio },
+    audio,
     overlay: {
       ...base.overlay,
       ...input.overlay,

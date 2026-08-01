@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { clearDiagnosticEvents, getDiagnosticEvents } from "./diagnostics";
 import {
   clearPipelineStageEvents,
+  DEBUG_PANEL_OPEN_STORAGE_KEY,
   getLatestPipelineStageByName,
   getPipelineStageEvents,
   getUtteranceStageGroups,
@@ -11,9 +12,12 @@ import {
   isVerbosePipelineLogging,
   normalizePipelineStageEvent,
   pushPipelineStageEvent,
+  readDebugPanelOpenPreference,
+  relativeStageOffsetMs,
   setVerbosePipelineLogging,
   stageDisplayLabel,
   subscribePipelineStages,
+  writeDebugPanelOpenPreference,
 } from "./pipelineStages";
 
 afterEach(() => {
@@ -35,6 +39,7 @@ describe("pipeline stage events", () => {
       durationMs: 42.6,
       ok: true,
       error: null,
+      startedAt: 57,
       at: 100,
     });
     expect(camel).toMatchObject({
@@ -46,6 +51,7 @@ describe("pipeline stage events", () => {
       durationMs: 43,
       ok: true,
       error: null,
+      startedAt: 57,
       at: 100,
     });
 
@@ -57,6 +63,7 @@ describe("pipeline stage events", () => {
       output_text: "正規化",
       duration_ms: 5,
       ok: true,
+      started_at: 195,
       at: 200,
     });
     expect(snake).toMatchObject({
@@ -66,8 +73,19 @@ describe("pipeline stage events", () => {
       inputSnippet: "raw",
       outputText: "正規化",
       durationMs: 5,
+      startedAt: 195,
       ok: true,
     });
+
+    // Missing startedAt is derived from end - duration.
+    const derived = normalizePipelineStageEvent({
+      stage: "translate",
+      utteranceId: "u3",
+      durationMs: 20,
+      at: 500,
+      ok: true,
+    });
+    expect(derived?.startedAt).toBe(480);
   });
 
   it("treats error fields as failed stages", () => {
@@ -134,13 +152,19 @@ describe("pipeline stage events", () => {
     pushPipelineStageEvent({
       stage: "translate",
       utteranceId: "u",
+      modelId: "hy-mt2-1.8b-gguf",
       inputSnippet: "こんにちは",
       outputText: "Hello",
       durationMs: 80,
       ok: true,
-      at: 9,
+      at: 1_000,
     });
-    expect(info).toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      "[pipeline:translate] ok 80ms",
+      expect.stringContaining("model=hy-mt2-1.8b-gguf"),
+    );
+    expect(info).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("startedAt=920"));
+    expect(info).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("endedAt=1000"));
     expect(getDiagnosticEvents()[0]?.message).toContain("translate");
 
     setVerbosePipelineLogging(false);
@@ -166,7 +190,8 @@ describe("pipeline stage events", () => {
       outputText: "あ",
       durationMs: 10,
       ok: true,
-      at: 1,
+      startedAt: 1000,
+      at: 1010,
     });
     pushPipelineStageEvent({
       stage: "normalize",
@@ -176,7 +201,8 @@ describe("pipeline stage events", () => {
       outputText: "あ",
       durationMs: 2,
       ok: true,
-      at: 2,
+      startedAt: 1010,
+      at: 1012,
     });
     pushPipelineStageEvent({
       stage: "translate",
@@ -186,7 +212,8 @@ describe("pipeline stage events", () => {
       outputText: "A",
       durationMs: 20,
       ok: true,
-      at: 3,
+      startedAt: 1012,
+      at: 1032,
     });
     pushPipelineStageEvent({
       stage: "asr",
@@ -196,7 +223,8 @@ describe("pipeline stage events", () => {
       outputText: "い",
       durationMs: 11,
       ok: true,
-      at: 4,
+      startedAt: 2000,
+      at: 2011,
     });
 
     const groups = getUtteranceStageGroups();
@@ -208,5 +236,30 @@ describe("pipeline stage events", () => {
       "normalize",
       "translate",
     ]);
+    const groupA = groups[1];
+    expect(groupA).toBeDefined();
+    if (!groupA) {
+      return;
+    }
+    const [asrStage, normalizeStage, translateStage] = groupA.stages;
+    expect(asrStage).toBeDefined();
+    expect(normalizeStage).toBeDefined();
+    expect(translateStage).toBeDefined();
+    if (!asrStage || !normalizeStage || !translateStage) {
+      return;
+    }
+    expect(relativeStageOffsetMs(asrStage, groupA)).toBe(0);
+    expect(relativeStageOffsetMs(normalizeStage, groupA)).toBe(10);
+    expect(relativeStageOffsetMs(translateStage, groupA)).toBe(12);
+  });
+
+  it("persists debug panel open preference for development", () => {
+    expect(readDebugPanelOpenPreference()).toBe(false);
+    writeDebugPanelOpenPreference(true);
+    expect(localStorage.getItem(DEBUG_PANEL_OPEN_STORAGE_KEY)).toBe("1");
+    expect(readDebugPanelOpenPreference()).toBe(true);
+    writeDebugPanelOpenPreference(false);
+    expect(localStorage.getItem(DEBUG_PANEL_OPEN_STORAGE_KEY)).toBeNull();
+    expect(readDebugPanelOpenPreference()).toBe(false);
   });
 });

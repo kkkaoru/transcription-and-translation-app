@@ -74,7 +74,31 @@ fn load_config(app: &tauri::AppHandle) -> Result<AppConfig, String> {
         .map_err(|error| format!("could not resolve app config directory: {error}"))?
         .join("config.json");
     let body = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let config: AppConfig = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let mut config: AppConfig = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    // Legacy default silenceGateDb=-55 let ambient ~-54 dBFS through to Parapper.
+    config.audio.silence_gate_db = migrate_silence_gate_db(config.audio.silence_gate_db);
     config.validate()?;
     Ok(config)
+}
+
+/// Bump only the historical default (-55) to the current floor (-50).
+fn migrate_silence_gate_db(gate_db: f32) -> f32 {
+    if (gate_db - -55.0).abs() < f32::EPSILON * 8.0 {
+        -50.0
+    } else {
+        gate_db
+    }
+}
+
+#[cfg(test)]
+mod load_config_tests {
+    use super::migrate_silence_gate_db;
+
+    #[test]
+    fn migrates_legacy_silence_gate_default() {
+        assert!((migrate_silence_gate_db(-55.0) - -50.0).abs() < f32::EPSILON);
+        // Intentional lower gates must not be rewritten.
+        assert!((migrate_silence_gate_db(-60.0) - -60.0).abs() < f32::EPSILON);
+        assert!((migrate_silence_gate_db(-45.0) - -45.0).abs() < f32::EPSILON);
+    }
 }

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyPeakNormalize,
   AudioCaptureError,
   bytesToBase64,
+  calculatePeak,
   calculateRmsDb,
   createMicrophoneConstraints,
   ensureMicrophoneAccess,
@@ -58,6 +60,23 @@ describe("audio conversion", () => {
     expect(passesSilenceGate(-40, DEFAULT_SILENCE_GATE_DB)).toBe(true);
     expect(passesSilenceGate(Number.NEGATIVE_INFINITY)).toBe(false);
     expect(passesSilenceGate(Number.NaN)).toBe(false);
+  });
+
+  it("soft peak-normalizes quiet speech that already passed the silence gate", () => {
+    // Quiet speech peak ~0.05 → gain up toward ~0.35 (capped).
+    const quiet = new Float32Array(64).fill(0.05);
+    expect(calculatePeak(quiet)).toBeCloseTo(0.05, 5);
+    const lifted = applyPeakNormalize(quiet);
+    expect(lifted.gain).toBeGreaterThan(1.05);
+    expect(calculatePeak(lifted.samples)).toBeCloseTo(0.35, 2);
+    // Already-loud speech is left alone.
+    const loud = new Float32Array(16).fill(0.6);
+    const unchanged = applyPeakNormalize(loud);
+    expect(unchanged.gain).toBe(1);
+    expect(unchanged.samples).toBe(loud);
+    // Silence stays silent (no Infinity gain).
+    const silent = new Float32Array(8);
+    expect(applyPeakNormalize(silent).gain).toBe(1);
   });
 
   it("builds progressive microphone constraints for device selection", () => {
@@ -274,9 +293,19 @@ describe("audio conversion", () => {
         captureMode: "worklet",
         sampleRate: 48_000,
         lastRmsDb: -54.2,
+        lastAcceptedRmsDb: -48.1,
+        lastAcceptedGain: 4.2,
         chunksAccepted: 8,
       }),
     ).toMatch(/sr=48000.*encodeSr=16000|encodeSr=16000.*sr=48000/);
+    expect(
+      formatAudioCaptureDiagnostics({
+        ...snapshot,
+        lastAcceptedRmsDb: -48.1,
+        lastAcceptedGain: 4.2,
+        chunksAccepted: 1,
+      }),
+    ).toMatch(/acceptedRms=-48\.1dB.*gain=4\.20x|gain=4\.20x.*acceptedRms=-48\.1dB/);
     expect(
       formatAudioCaptureDiagnostics({
         ...snapshot,

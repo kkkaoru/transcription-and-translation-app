@@ -34,8 +34,22 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
 };
 
 /**
+ * True when two captions would paint the same visible subtitle content.
+ * Used to skip React state updates / native frame republish on no-op merges
+ * (e.g. invoke result repeating an already-emitted progressive event).
+ */
+export const captionsDisplayEqual = (a: CaptionPayload, b: CaptionPayload): boolean =>
+  a.id === b.id &&
+  a.sourceText === b.sourceText &&
+  a.translationText === b.translationText &&
+  a.stage === b.stage &&
+  a.sequence === b.sequence &&
+  a.isFinal === b.isFinal;
+
+/**
  * Merge progressive caption events:
  * - source-ready (empty translation) paints immediately
+ * - same-id progressive ASR → normalize upgrades sourceText without clearing UI
  * - same-id translation fills in without blocking source
  * - late updates for older chunks are dropped
  * - late same-id source-stage results after translation are dropped (no stage regression)
@@ -64,7 +78,7 @@ export const mergeCaptionPayload = (
     return current;
   }
 
-  return {
+  const merged: CaptionPayload = {
     ...current,
     ...incoming,
     sourceText: hasIncomingSource ? incoming.sourceText : current.sourceText,
@@ -76,4 +90,11 @@ export const mergeCaptionPayload = (
         ? incoming.translationText
         : "",
   };
+
+  // Preserve React identity when event + invoke deliver the same paint payload.
+  if (captionsDisplayEqual(current, merged)) {
+    return current;
+  }
+
+  return merged;
 };

@@ -126,6 +126,49 @@ export const calculateRmsDb = (samples: Float32Array): number => {
   return rms <= Number.EPSILON ? Number.NEGATIVE_INFINITY : 20 * Math.log10(rms);
 };
 
+/** Peak absolute amplitude in a mono float buffer (0…1). */
+export const calculatePeak = (samples: Float32Array): number => {
+  let peak = 0;
+  for (const sample of samples) {
+    const magnitude = Math.abs(sample);
+    if (magnitude > peak) {
+      peak = magnitude;
+    }
+  }
+  return peak;
+};
+
+/**
+ * Soft peak normalize for quiet-but-audible speech that already passed the
+ * silence gate. Ambient noise is filtered before this runs; here we only lift
+ * low speech peaks toward a modest target so Parapper is less likely to drop
+ * short/quiet utterances as no-speech.
+ *
+ * Does not amplify when already near target peak, and caps gain to avoid
+ * turning residual noise into harsh clipping.
+ */
+export const applyPeakNormalize = (
+  samples: Float32Array,
+  targetPeak = 0.35,
+  maxGain = 8,
+): { samples: Float32Array; gain: number; peak: number } => {
+  const peak = calculatePeak(samples);
+  if (!(peak > 1e-6) || !(targetPeak > 0) || peak >= targetPeak) {
+    return { samples, gain: 1, peak };
+  }
+  const gain = Math.min(maxGain, targetPeak / peak);
+  if (!(gain > 1.05)) {
+    return { samples, gain: 1, peak };
+  }
+  const output = new Float32Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) {
+    /* c8 ignore next -- loop bounds guarantee a valid typed-array position. */
+    const value = (samples[index] ?? 0) * gain;
+    output[index] = Math.max(-1, Math.min(1, value));
+  }
+  return { samples: output, gain, peak };
+};
+
 /** True when RMS is loud enough to enqueue (not ambient / digital silence). */
 export const passesSilenceGate = (
   rmsDb: number,
@@ -292,6 +335,10 @@ export type AudioCaptureDiagnostics = {
   deviceIdRequested: string | null;
   /** Most recent RMS level in dBFS while capturing; null when idle. */
   lastRmsDb: number | null;
+  /** RMS of the last chunk that passed the silence gate (pre-normalize). */
+  lastAcceptedRmsDb: number | null;
+  /** Soft peak-normalize gain applied to the last accepted chunk (1 = none). */
+  lastAcceptedGain: number | null;
   chunksAccepted: number;
   chunksDroppedSilent: number;
   lastError: string | null;
@@ -310,6 +357,8 @@ const emptyDiagnostics = (): AudioCaptureDiagnostics => ({
   trackMuted: null,
   deviceIdRequested: null,
   lastRmsDb: null,
+  lastAcceptedRmsDb: null,
+  lastAcceptedGain: null,
   chunksAccepted: 0,
   chunksDroppedSilent: 0,
   lastError: null,
@@ -339,6 +388,14 @@ export const formatAudioCaptureDiagnostics = (
     diagnostics.trackMuted === true ? "muted" : null,
     diagnostics.lastRmsDb !== null && Number.isFinite(diagnostics.lastRmsDb)
       ? `rms=${diagnostics.lastRmsDb.toFixed(1)}dB`
+      : null,
+    diagnostics.lastAcceptedRmsDb !== null && Number.isFinite(diagnostics.lastAcceptedRmsDb)
+      ? `acceptedRms=${diagnostics.lastAcceptedRmsDb.toFixed(1)}dB`
+      : null,
+    diagnostics.lastAcceptedGain !== null &&
+    Number.isFinite(diagnostics.lastAcceptedGain) &&
+    diagnostics.lastAcceptedGain > 1.05
+      ? `gain=${diagnostics.lastAcceptedGain.toFixed(2)}x`
       : null,
     diagnostics.chunksAccepted > 0 ? `chunks=${diagnostics.chunksAccepted}` : null,
     diagnostics.chunksDroppedSilent > 0 ? `silent=${diagnostics.chunksDroppedSilent}` : null,
@@ -442,6 +499,8 @@ export class MicrophoneCapture {
   private trackEndedListener: (() => void) | null = null;
   private disposed = false;
   private lastRmsDb: number | null = null;
+  private lastAcceptedRmsDb: number | null = null;
+  private lastAcceptedGain: number | null = null;
   private chunksAccepted = 0;
   private chunksDroppedSilent = 0;
   private levelEmitAt = 0;
@@ -461,6 +520,8 @@ export class MicrophoneCapture {
       trackMuted: track ? track.muted : null,
       deviceIdRequested: this.deviceIdRequested,
       lastRmsDb: this.lastRmsDb,
+      lastAcceptedRmsDb: this.lastAcceptedRmsDb,
+      lastAcceptedGain: this.lastAcceptedGain,
       chunksAccepted: this.chunksAccepted,
       chunksDroppedSilent: this.chunksDroppedSilent,
       lastError: lastCaptureDiagnostics.lastError,
@@ -567,6 +628,8 @@ export class MicrophoneCapture {
     this.chunkMs = chunkMs;
     this.silenceGateDb = silenceGateDb;
     this.lastRmsDb = null;
+    this.lastAcceptedRmsDb = null;
+    this.lastAcceptedGain = null;
     this.chunksAccepted = 0;
     this.chunksDroppedSilent = 0;
     this.levelEmitAt = 0;
@@ -656,6 +719,8 @@ export class MicrophoneCapture {
     this.deviceIdRequested = null;
     this.pending = new Float32Array(0);
     this.lastRmsDb = null;
+    this.lastAcceptedRmsDb = null;
+    this.lastAcceptedGain = null;
 
     if (context) {
       try {
@@ -858,10 +923,39 @@ export class MicrophoneCapture {
       const chunkDb = calculateRmsDb(chunk);
       // Gate on hardware-rate RMS before encode; makeAudioChunk always emits 16 kHz mono.
       if (passesSilenceGate(chunkDb, this.silenceGateDb)) {
+        // Quiet speech that cleared the gate still benefits from modest peak lift
+        // before 16 kHz encode (ambient ~-54 dB never reaches here with gate -50).
+        const normalized = applyPeakNormalize(chunk);
         this.chunksAccepted += 1;
-        void this.handler?.(makeAudioChunk(chunk, sampleRate, this.chunkMs));
+        this.lastAcceptedRmsDb = chunkDb;
+        this.lastAcceptedGain = normalized.gain;
+        if (typeof console !== "undefined" && typeof console.debug === "function") {
+          // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
+          // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
+          console.debug("[audio] chunk accepted", {
+            rmsDb: Number(chunkDb.toFixed(1)),
+            peak: Number(normalized.peak.toFixed(4)),
+            gain: Number(normalized.gain.toFixed(2)),
+            chunkMs: this.chunkMs,
+            sampleRate,
+            accepted: this.chunksAccepted,
+            silentDrops: this.chunksDroppedSilent,
+          });
+        }
+        void this.handler?.(makeAudioChunk(normalized.samples, sampleRate, this.chunkMs));
       } else {
         this.chunksDroppedSilent += 1;
+        if (this.chunksDroppedSilent <= 3 || this.chunksDroppedSilent % 20 === 0) {
+          if (typeof console !== "undefined" && typeof console.debug === "function") {
+            // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
+            // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
+            console.debug("[audio] chunk dropped (silence gate)", {
+              rmsDb: Number.isFinite(chunkDb) ? Number(chunkDb.toFixed(1)) : chunkDb,
+              gateDb: this.silenceGateDb,
+              silentDrops: this.chunksDroppedSilent,
+            });
+          }
+        }
       }
       // Keep chunk counters visible on the debug snapshot without forcing a full re-render path.
       if ((this.chunksAccepted + this.chunksDroppedSilent) % 4 === 0) {

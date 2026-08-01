@@ -173,4 +173,55 @@ describe("mergeCaptionPayload", () => {
 
     expect(mergeCaptionPayload(source, translated)).toEqual(translated);
   });
+
+  it("upgrades progressive ASR text to normalized source on the same utterance id", () => {
+    const rawAsr = caption({
+      id: "u-1",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const normalized = caption({
+      id: "u-1",
+      sourceText: "今日は",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 15,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(rawAsr, normalized)).toEqual(normalized);
+  });
+
+  it("returns the current reference when event and invoke paint the same caption", () => {
+    const live = caption({
+      id: "u-1",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const duplicate = caption({
+      id: "u-1",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 12,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    // receivedAt differs but display fields match → preserve React identity.
+    expect(mergeCaptionPayload(live, duplicate)).toBe(live);
+  });
 });

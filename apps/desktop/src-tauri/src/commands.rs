@@ -101,20 +101,34 @@ pub async fn transcribe_audio_chunk(
     // Stage 1: ASR + normalize only. Return as soon as source text is ready so
     // the frontend chunkQueue is not blocked on translation latency.
     // Each stage is emitted immediately via on_stage (do not wait for full pipeline).
+    // Progressive captions: raw ASR paints first, then normalized source if it changes.
     let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(3);
     let app_for_stages = app.clone();
     let config_for_stages = config.clone();
     let mut on_stage = move |stage: &PipelineStageEvent| {
         emit_pipeline_stage(&app_for_stages, &config_for_stages, stage);
     };
-    match state.pipeline.recognize_source(&config, wav, &mut stages, &mut on_stage).await {
+    let app_for_captions = app.clone();
+    let mut on_caption = move |caption: &CaptionPayload| {
+        if let Err(error) = app_for_captions.emit("caption:update", caption) {
+            log::warn!("could not emit progressive caption: {error}");
+        }
+    };
+    match state
+        .pipeline
+        .recognize_source(&config, wav, &mut stages, &mut on_stage, &mut on_caption)
+        .await
+    {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state);
-            app.emit("caption:update", &partial)
-                .map_err(|error| format!("could not emit caption: {error}"))?;
+            // Final normalized source was already emitted via on_caption when it
+            // differed from raw ASR. Re-emit once so late subscribers / invoke
+            // fallback always see the post-normalize string (no-op on the UI if
+            // display fields are identical).
+            let _ = app.emit("caption:update", &partial);
 
             // Stage 2: translate in the background with the same caption id.
-            // UI already shows source_text; a second caption:update fills translation.
+            // UI already shows source_text; a later caption:update fills translation.
             let pipeline = state.pipeline.clone();
             let app_for_translate = app.clone();
             let config_for_translate = config.clone();
@@ -145,15 +159,25 @@ pub async fn transcribe_audio_chunk(
                         let detail = error.to_string();
                         if let Some(app_state) = app_for_translate.try_state::<AppState>() {
                             if let Ok(mut status) = app_state.status.lock() {
-                                if status.status != "idle" && status.status != "starting" {
+                                let mut dirty = false;
+                                if status.status != "idle"
+                                    && status.status != "starting"
+                                    && status.status != "capturing"
+                                {
                                     status.status = "capturing".to_string();
+                                    dirty = true;
                                 }
                                 // Source ASR already succeeded; do not mark the whole
                                 // backend unreachable solely because translation failed.
-                                status.last_error = Some(detail);
-                                let next = status.clone();
-                                drop(status);
-                                let _ = app_for_translate.emit("runtime:status", &next);
+                                if status.last_error.as_deref() != Some(detail.as_str()) {
+                                    status.last_error = Some(detail);
+                                    dirty = true;
+                                }
+                                if dirty {
+                                    let next = status.clone();
+                                    drop(status);
+                                    let _ = app_for_translate.emit("runtime:status", &next);
+                                }
                             }
                         }
                     }
@@ -211,11 +235,13 @@ fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStag
     if config.debug.verbose_logging {
         log::info!(
             target: "pipeline_stage",
-            "stage={} model={} ok={} duration_ms={} utterance={} in={} out={} err={:?}",
+            "stage={} model={} ok={} duration_ms={} started_at={} ended_at={} utterance={} in={} out={} err={:?}",
             stage.stage,
             stage.model_id,
             stage.ok,
             stage.duration_ms,
+            stage.started_at,
+            stage.at,
             stage.utterance_id,
             stage.input_snippet,
             stage.output_text,
@@ -224,11 +250,13 @@ fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStag
     } else {
         log::info!(
             target: "pipeline_stage",
-            "stage={} model={} ok={} duration_ms={} utterance={}",
+            "stage={} model={} ok={} duration_ms={} started_at={} ended_at={} utterance={}",
             stage.stage,
             stage.model_id,
             stage.ok,
             stage.duration_ms,
+            stage.started_at,
+            stage.at,
             stage.utterance_id
         );
     }
@@ -239,12 +267,25 @@ fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStag
 
 fn mark_backend_healthy(app: &AppHandle, state: &State<'_, AppState>) {
     if let Ok(mut status) = state.status.lock() {
-        status.backend_reachable = true;
-        status.last_error = None;
+        let mut dirty = false;
+        if !status.backend_reachable {
+            status.backend_reachable = true;
+            dirty = true;
+        }
+        if status.last_error.is_some() {
+            status.last_error = None;
+            dirty = true;
+        }
         // A successful chunk must not flip a transient processing
         // failure into a hard "error" session state — stay capturing.
         if status.status == "error" {
             status.status = "capturing".to_string();
+            dirty = true;
+        }
+        // Avoid flooding the UI with identical runtime:status events on every
+        // silent/success chunk — each emit used to re-render the live shell.
+        if !dirty {
+            return;
         }
         let next = status.clone();
         drop(status);

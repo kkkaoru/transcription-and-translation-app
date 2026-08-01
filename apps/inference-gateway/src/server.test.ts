@@ -92,6 +92,24 @@ describe("inference gateway HTTP contract", () => {
     ).resolves.toEqual({ text: "こんにちは" });
   });
 
+  it("returns HTTP 200 for a Parapper no-speech window without a final transcript", async () => {
+    const transcribe = vi.fn(async () => "");
+    const connection = await open(createGatewayServer(config, { transcribe }));
+    closers.push(connection.close);
+    const form = new FormData();
+    form.set("model", "parapper-ja");
+    form.set("file", wav(), "silent-caption.wav");
+
+    const response = await fetch(`${connection.origin}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: form,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ text: "" });
+    expect(transcribe).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects invalid routes, model IDs, and malformed transcription requests", async () => {
     const connection = await open(
       createGatewayServer(config, { transcribe: async () => "unused" }),

@@ -129,10 +129,13 @@ export interface PipelineStageEvent {
   modelId: string;
   inputSnippet: string;
   outputText: string;
+  /** Stage wall-clock start (epoch millis). */
+  startedAt: number;
+  /** Stage wall-clock end (epoch millis). Historical field name is `at`. */
+  at: number;
   durationMs: number;
   ok: boolean;
   error?: string | null;
-  at: number;
 }
 
 /** One live utterance with ordered stage rows for DebugPanel. */

@@ -58,10 +58,13 @@ pub struct PipelineStageEvent {
     pub input_snippet: String,
     /// Short output sample when the stage produced text.
     pub output_text: String,
+    /// Stage wall-clock start (epoch millis).
+    pub started_at: u64,
+    /// Stage wall-clock end (epoch millis). Same as historical `at`.
+    pub at: u64,
     pub duration_ms: u64,
     pub ok: bool,
     pub error: Option<String>,
-    pub at: u64,
 }
 
 const STAGE_SNIPPET_CHARS: usize = 160;
@@ -129,12 +132,17 @@ impl Pipeline {
     ///
     /// `on_stage` is invoked as soon as each stage completes so the UI can render
     /// progressive latency rows without waiting for the rest of the pipeline.
+    ///
+    /// `on_caption` is invoked for progressive UI paint:
+    /// 1. immediately after ASR with raw recognition text (do not wait for zenz/azookey)
+    /// 2. again after normalize when the display string changes
     pub async fn recognize_source(
         &self,
         config: &AppConfig,
         wav: Vec<u8>,
         stages: &mut Vec<PipelineStageEvent>,
         on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
+        on_caption: &mut (dyn FnMut(&CaptionPayload) + Send),
     ) -> Result<Option<CaptionPayload>, PipelineError> {
         let started_at = now_millis();
         let utterance_id = Uuid::new_v4().to_string();
@@ -214,8 +222,13 @@ impl Pipeline {
             }
         };
 
-        // AzooKey is sync/local and fast; zenz is still required before display so
-        // source_text is readable. Never wait for translation here.
+        // Paint raw ASR immediately — do not block the first visible subtitle on
+        // kana-kanji conversion (local AzooKey is fast; remote zenz can be slow).
+        let provisional =
+            source_ready_caption(config, recognized.clone(), started_at, utterance_id.clone());
+        on_caption(&provisional);
+
+        // AzooKey is sync/local and fast; zenz is remote. Never wait for translation here.
         let normalize_started = Instant::now();
         let normalized = match self.normalize(config, &recognized).await {
             Ok(text) => {
@@ -250,13 +263,22 @@ impl Pipeline {
                         Some(error.to_string()),
                     ),
                 );
-                return Err(error);
+                // Keep the already-shown ASR provisional caption rather than
+                // failing the whole chunk when only the normalizer is down.
+                return Ok(Some(provisional));
             }
         };
         if normalized.trim().is_empty() {
+            // Soft-skip after a provisional paint: UI merge keeps last non-empty
+            // when a silence-shaped update arrives; return None for the invoke path.
             return Ok(None);
         }
-        Ok(Some(source_ready_caption(config, normalized, started_at, utterance_id)))
+        let ready = source_ready_caption(config, normalized, started_at, utterance_id);
+        // Second paint when kana→kanji (or zenz) changed the display string.
+        if ready.source_text.trim() != provisional.source_text.trim() {
+            on_caption(&ready);
+        }
+        Ok(Some(ready))
     }
 
     /// Fill `translation_text` for an existing caption, preserving the same `id`
@@ -326,8 +348,11 @@ impl Pipeline {
         wav: Vec<u8>,
         stages: &mut Vec<PipelineStageEvent>,
         on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
+        on_caption: &mut (dyn FnMut(&CaptionPayload) + Send),
     ) -> Result<Option<CaptionPayload>, PipelineError> {
-        let Some(partial) = self.recognize_source(config, wav, stages, on_stage).await? else {
+        let Some(partial) =
+            self.recognize_source(config, wav, stages, on_stage, on_caption).await?
+        else {
             return Ok(None);
         };
         Ok(Some(self.complete_translation(config, partial, stages, on_stage).await?))
@@ -354,10 +379,18 @@ impl Pipeline {
         let status = response.status();
         let body = response.text().await?;
         if !status.is_success() {
-            // Live mic chunks often contain only ambient noise. Parapper finishes
-            // without a final transcript (HTTP 422 transcript_missing) — that is
-            // not a pipeline fault for continuous capture.
+            // Live mic chunks often contain only ambient noise. Older gateways
+            // returned HTTP 422 transcript_missing when Parapper finished without
+            // a final — treat as empty ASR, not a pipeline fault. Current gateway
+            // soft-returns 200 with empty text instead.
             if is_no_speech_response(status.as_u16(), &body) {
+                log::info!(
+                    target: "pipeline_asr",
+                    "no-speech soft-skip status={} body_chars={} body_prefix={}",
+                    status.as_u16(),
+                    body.len(),
+                    body.chars().take(120).collect::<String>()
+                );
                 return Ok(String::new());
             }
             return Err(PipelineError::Http { status: status.as_u16(), body });
@@ -502,16 +535,19 @@ fn stage_event(
     ok: bool,
     error: Option<String>,
 ) -> PipelineStageEvent {
+    let ended_at = now_millis();
+    let started_at = ended_at.saturating_sub(duration_ms);
     PipelineStageEvent {
         stage,
         utterance_id: utterance_id.to_string(),
         model_id: model_id.to_string(),
         input_snippet: snippet(input),
         output_text: snippet(output),
+        started_at,
+        at: ended_at,
         duration_ms,
         ok,
         error,
-        at: now_millis(),
     }
 }
 
@@ -726,10 +762,11 @@ mod tests {
             model_id: "parapper-ja".into(),
             input_snippet: "wavBytes=12".into(),
             output_text: "こんにちは".into(),
+            started_at: 57,
+            at: 99,
             duration_ms: 42,
             ok: true,
             error: None,
-            at: 99,
         };
         let value = serde_json::to_value(&event).expect("serialize");
         assert_eq!(value["stage"], "asr");
@@ -737,10 +774,11 @@ mod tests {
         assert_eq!(value["modelId"], "parapper-ja");
         assert_eq!(value["inputSnippet"], "wavBytes=12");
         assert_eq!(value["outputText"], "こんにちは");
+        assert_eq!(value["startedAt"], 57);
+        assert_eq!(value["at"], 99);
         assert_eq!(value["durationMs"], 42);
         assert_eq!(value["ok"], true);
         assert!(value["error"].is_null());
-        assert_eq!(value["at"], 99);
     }
 
     #[test]
@@ -759,6 +797,8 @@ mod tests {
         assert_eq!(event.stage, "normalize");
         assert_eq!(event.model_id, "azookey-rust");
         assert_eq!(event.duration_ms, 7);
+        assert!(event.at >= event.started_at);
+        assert_eq!(event.at - event.started_at, 7);
         assert!(!event.ok);
         assert_eq!(event.error.as_deref(), Some("boom"));
         assert!(event.input_snippet.ends_with('…'));
@@ -784,5 +824,22 @@ mod tests {
         assert_eq!(seen, vec!["translate"]);
         assert_eq!(stages.len(), 1);
         assert_eq!(stages[0].output_text, "Hello");
+    }
+
+    #[test]
+    fn progressive_source_captions_share_id_across_asr_and_normalize() {
+        // Contract for the live path: provisional ASR and post-normalize source
+        // keep the same utterance id so the UI can upgrade text without flicker.
+        let config = AppConfig::default();
+        let provisional =
+            source_ready_caption(&config, "こんにちわ".into(), 10, "utt-progressive".into());
+        let normalized =
+            source_ready_caption(&config, "こんにちは".into(), 10, "utt-progressive".into());
+        assert_eq!(provisional.id, normalized.id);
+        assert_eq!(provisional.stage, "source");
+        assert_eq!(normalized.stage, "source");
+        assert!(provisional.translation_text.is_empty());
+        assert!(normalized.translation_text.is_empty());
+        assert_ne!(provisional.source_text, normalized.source_text);
     }
 }

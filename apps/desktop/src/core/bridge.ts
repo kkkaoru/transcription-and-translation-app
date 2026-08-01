@@ -22,6 +22,45 @@ import type {
 const isTauriRuntime = (): boolean =>
   typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined;
 
+/** Flatten nested Tauri/JSON rejection payloads into a single search string. */
+const collectErrorText = (error: unknown, depth = 0): string => {
+  if (depth > 4 || error == null) {
+    return "";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error === "number" || typeof error === "boolean") {
+    return String(error);
+  }
+  if (error instanceof Error) {
+    return [error.name, error.message, collectErrorText(error.cause, depth + 1)]
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const parts: string[] = [];
+    for (const key of ["message", "error", "detail", "data", "body", "code"] as const) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) {
+        parts.push(value);
+      } else if (value && typeof value === "object") {
+        parts.push(collectErrorText(value, depth + 1));
+      }
+    }
+    if (parts.length > 0) {
+      return parts.join(" ");
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+};
+
 /** Normalize Tauri / browser rejection values into a user-visible detail string. */
 export const formatBridgeError = (error: unknown): string | undefined => {
   if (typeof error === "string" && error.trim()) {
@@ -32,12 +71,21 @@ export const formatBridgeError = (error: unknown): string | undefined => {
   }
   if (error && typeof error === "object") {
     const record = error as Record<string, unknown>;
-    for (const key of ["message", "error", "detail"] as const) {
+    for (const key of ["message", "error", "detail", "data", "body"] as const) {
       const value = record[key];
       if (typeof value === "string" && value.trim()) {
         return value.trim();
       }
+      if (value && typeof value === "object") {
+        const nested = formatBridgeError(value);
+        if (nested) {
+          return nested;
+        }
+      }
     }
+    // Last resort for opaque IPC envelopes (avoid stringifying bare numbers/bools).
+    const collected = collectErrorText(error).trim();
+    return collected || undefined;
   }
   return undefined;
 };
@@ -50,9 +98,7 @@ export const formatBridgeError = (error: unknown): string | undefined => {
  * Rust pipeline error string (`inference returned HTTP 422: ...`).
  */
 export const isNoSpeechBridgeError = (error: unknown): boolean => {
-  const detail = (
-    typeof error === "string" ? error : (formatBridgeError(error) ?? "")
-  ).toLowerCase();
+  const detail = collectErrorText(error).toLowerCase();
   if (!detail) {
     return false;
   }
@@ -61,7 +107,10 @@ export const isNoSpeechBridgeError = (error: unknown): boolean => {
     detail.includes("without a final transcript") ||
     detail.includes("no final transcript") ||
     detail.includes("no transcript") ||
-    detail.includes("empty transcript")
+    detail.includes("empty transcript") ||
+    // Soft empty success paths (defense if a wrapper rephrases).
+    detail.includes("no speech") ||
+    detail.includes("no usable speech")
   );
 };
 

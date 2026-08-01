@@ -44,4 +44,20 @@ describe("isNoSpeechBridgeError", () => {
     expect(isNoSpeechBridgeError(undefined)).toBe(false);
     expect(isNoSpeechBridgeError("")).toBe(false);
   });
+
+  it("matches nested Tauri IPC error envelopes", () => {
+    expect(
+      isNoSpeechBridgeError({
+        data: {
+          message:
+            'inference returned HTTP 422: {"error":{"code":"transcript_missing","message":"Parapper completed without a final transcript"}}',
+        },
+      }),
+    ).toBe(true);
+    expect(
+      formatBridgeError({
+        data: { message: "nested failure" },
+      }),
+    ).toBe("nested failure");
+  });
 });

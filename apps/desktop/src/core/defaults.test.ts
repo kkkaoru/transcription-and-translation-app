@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createDefaultConfig, DEFAULT_MODEL_CATALOG, mergeConfig } from "./defaults";
+import {
+  createDefaultConfig,
+  DEFAULT_MODEL_CATALOG,
+  mergeConfig,
+  migrateSilenceGateDb,
+} from "./defaults";
 
 describe("default configuration", () => {
   it("defaults to Japanese-to-English local processing", () => {
@@ -10,6 +15,18 @@ describe("default configuration", () => {
     // ~900ms default: lower TTFS than 1.2s while still enough speech for Parapper.
     expect(config.audio.chunkMs).toBe(900);
     expect(config.audio.silenceGateDb).toBe(-50);
+  });
+
+  it("migrates the legacy -55 silence gate that let ambient -54.2 dB through", () => {
+    expect(migrateSilenceGateDb(-55)).toBe(-50);
+    expect(migrateSilenceGateDb(-55.0)).toBe(-50);
+    // Intentional custom values must not be rewritten.
+    expect(migrateSilenceGateDb(-60)).toBe(-60);
+    expect(migrateSilenceGateDb(-45)).toBe(-45);
+    const migrated = mergeConfig({ audio: { silenceGateDb: -55 } });
+    expect(migrated.audio.silenceGateDb).toBe(-50);
+    const custom = mergeConfig({ audio: { silenceGateDb: -48 } });
+    expect(custom.audio.silenceGateDb).toBe(-48);
   });
 
   it("keeps nested defaults when loading a partial config", () => {

@@ -9,6 +9,8 @@ import type { PipelineStageEvent, PipelineStageName, UtteranceStageGroup } from 
 const MAX_STAGE_EVENTS = 96;
 const MAX_UTTERANCES = 24;
 const VERBOSE_STORAGE_KEY = "kotoba-beacon.debug.verbosePipeline";
+/** Keep the settings Debug panel open across reloads during development. */
+export const DEBUG_PANEL_OPEN_STORAGE_KEY = "kotoba-beacon.debug.panelOpen";
 
 const stages: PipelineStageEvent[] = [];
 const listeners = new Set<() => void>();
@@ -24,6 +26,32 @@ const readVerbosePreference = (): boolean => {
     return localStorage.getItem(VERBOSE_STORAGE_KEY) === "1";
   } catch {
     return false;
+  }
+};
+
+export const readDebugPanelOpenPreference = (): boolean => {
+  if (typeof localStorage === "undefined") {
+    return false;
+  }
+  try {
+    return localStorage.getItem(DEBUG_PANEL_OPEN_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
+export const writeDebugPanelOpenPreference = (open: boolean): void => {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+  try {
+    if (open) {
+      localStorage.setItem(DEBUG_PANEL_OPEN_STORAGE_KEY, "1");
+    } else {
+      localStorage.removeItem(DEBUG_PANEL_OPEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore quota / private mode failures.
   }
 };
 
@@ -68,6 +96,8 @@ const logStage = (event: PipelineStageEvent): void => {
   const detail = [
     `id=${event.utteranceId}`,
     event.modelId ? `model=${event.modelId}` : null,
+    `startedAt=${event.startedAt}`,
+    `endedAt=${event.at}`,
     event.inputSnippet ? `in=${event.inputSnippet}` : null,
     event.outputText ? `out=${event.outputText}` : null,
     event.error ? `error=${event.error}` : null,
@@ -113,8 +143,13 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
     typeof durationMsRaw === "number" && Number.isFinite(durationMsRaw)
       ? Math.max(0, Math.round(durationMsRaw))
       : 0;
-  const atRaw = record["at"];
+  const atRaw = record["at"] ?? record["endedAt"] ?? record["ended_at"];
   const at = typeof atRaw === "number" && Number.isFinite(atRaw) ? atRaw : Date.now();
+  const startedRaw = record["startedAt"] ?? record["started_at"];
+  const startedAt =
+    typeof startedRaw === "number" && Number.isFinite(startedRaw)
+      ? Math.max(0, Math.round(startedRaw))
+      : Math.max(0, Math.round(at - durationMs));
   const errorValue = record["error"];
   const error = typeof errorValue === "string" && errorValue.trim() ? errorValue.trim() : null;
   const ok = record["ok"] !== false && error == null;
@@ -136,10 +171,11 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
     modelId,
     inputSnippet,
     outputText,
+    startedAt,
+    at,
     durationMs,
     ok: Boolean(ok) && !error,
     error,
-    at,
   };
 };
 
@@ -268,4 +304,21 @@ export const stageDisplayLabel = (stage: string): string => {
     default:
       return stage;
   }
+};
+
+/** Relative offset from the earliest stage start within an utterance (ms). */
+export const relativeStageOffsetMs = (
+  event: PipelineStageEvent,
+  group: UtteranceStageGroup,
+): number => {
+  let origin = event.startedAt;
+  for (const stage of group.stages) {
+    if (stage.startedAt > 0 && stage.startedAt < origin) {
+      origin = stage.startedAt;
+    }
+  }
+  if (!Number.isFinite(origin) || origin <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.round(event.startedAt - origin));
 };
