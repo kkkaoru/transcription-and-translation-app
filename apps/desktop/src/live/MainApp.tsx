@@ -31,6 +31,7 @@ import {
   noticeFromError,
   shouldToastAudioProcessingFailure,
 } from "../core/notices";
+import { createParapperOutputQueue, type ParapperOutputQueue } from "../core/parapper-output-queue";
 import {
   DEFAULT_PARAPPER_STREAM_URL,
   ParapperRecognitionStream,
@@ -86,8 +87,12 @@ export const MainApp = () => {
   const chunkProcessor = useRef<LatestWinsProcessor<AudioChunk> | null>(null);
   /** One continuous Parapper VAD/Segment/Turn session for desktop capture. */
   const parapperStream = useRef<ParapperRecognitionStream | null>(null);
-  /** Preserve Parapper output order while native AzooKey normalizes revisions. */
-  const parapperOutputChain = useRef<Promise<void>>(Promise.resolve());
+  /**
+   * Preserve final turn order while coalescing high-frequency partials. A
+   * Promise chain would queue every interim revision and delay the final
+   * caption behind stale AzooKey normalizations.
+   */
+  const parapperOutputQueue = useRef<ParapperOutputQueue<ParapperRecognitionOutput> | null>(null);
   /** Avoid runtime:status re-renders when the backend re-emits an identical snapshot. */
   const lastRuntimeStatusKey = useRef<string>("");
   /** Ignore caption events that arrive after a stop/idle transition. */
@@ -477,9 +482,79 @@ export const MainApp = () => {
       const desktopStreaming = bridge.isDesktop();
       chunkProcessor.current?.reset();
       clearChunkTimingStats();
-      parapperOutputChain.current = Promise.resolve();
+      parapperOutputQueue.current?.close();
+      parapperOutputQueue.current = null;
 
       if (desktopStreaming) {
+        const processOutput = async (output: ParapperRecognitionOutput): Promise<void> => {
+          if (attempt !== captureAttempt.current) {
+            return;
+          }
+          const startedAt =
+            typeof performance !== "undefined" && typeof performance.now === "function"
+              ? performance.now()
+              : Date.now();
+          try {
+            const nextCaption = await bridge.normalizeParapperOutput(output);
+            if (attempt !== captureAttempt.current) {
+              return;
+            }
+            const elapsed = Math.max(
+              0,
+              Math.round(
+                (typeof performance !== "undefined" && typeof performance.now === "function"
+                  ? performance.now()
+                  : Date.now()) - startedAt,
+              ),
+            );
+            if (!nextCaption.sourceText.trim()) {
+              pushDiagnosticEvent(
+                "audio",
+                "No speech (soft-skip)",
+                `${output.sessionId} · ${elapsed}ms`,
+              );
+              setNotice(noticeForNoSpeech(output.sessionId));
+              return;
+            }
+            pushDiagnosticEvent(
+              "audio",
+              output.isFinal ? "Parapper final normalized" : "Parapper interim normalized",
+              `id=${nextCaption.id} · ${elapsed}ms · src=${nextCaption.sourceText.slice(0, 48)}`,
+            );
+            setCaption((current) => {
+              const merged = mergeCaptionPayload(current, nextCaption);
+              if (merged === null || merged === current) {
+                return current;
+              }
+              markCaptionDisplay(merged);
+              return merged;
+            });
+            setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
+            setNotice((current) => (isTransientAudioNotice(current) ? null : current));
+          } catch (error: unknown) {
+            if (attempt !== captureAttempt.current) {
+              return;
+            }
+            if (!shouldToastAudioProcessingFailure(error)) {
+              const detail = formatBridgeError(error) ?? output.sessionId;
+              pushDiagnosticEvent("audio", "No speech (soft-skip)", detail);
+              setNotice(noticeForNoSpeech(detail));
+              return;
+            }
+            const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
+            pushDiagnosticEvent(
+              "error",
+              "Audio processing failed",
+              nextNotice.detail ?? t(nextNotice.key),
+            );
+            setNotice(nextNotice);
+            captionFailureMessage.current = nextNotice.detail ?? t(nextNotice.key);
+            setStatus((current) => ({
+              ...current,
+              lastError: nextNotice.detail ?? t(nextNotice.key),
+            }));
+          }
+        };
         const handleParapperEvent = (event: ParapperStreamEvent): void => {
           if (attempt !== captureAttempt.current || event.type === "speech.started") {
             if (event.type === "speech.started" && attempt === captureAttempt.current) {
@@ -503,83 +578,10 @@ export const MainApp = () => {
             audioDurationMs: event.audioDurationMs,
             isFinal: event.type === "turn.final",
           };
-          const processOutput = async (): Promise<void> => {
-            if (attempt !== captureAttempt.current) {
-              return;
-            }
-            const startedAt =
-              typeof performance !== "undefined" && typeof performance.now === "function"
-                ? performance.now()
-                : Date.now();
-            try {
-              const nextCaption = await bridge.normalizeParapperOutput(output);
-              if (attempt !== captureAttempt.current) {
-                return;
-              }
-              const elapsed = Math.max(
-                0,
-                Math.round(
-                  (typeof performance !== "undefined" && typeof performance.now === "function"
-                    ? performance.now()
-                    : Date.now()) - startedAt,
-                ),
-              );
-              if (!nextCaption.sourceText.trim()) {
-                pushDiagnosticEvent(
-                  "audio",
-                  "No speech (soft-skip)",
-                  `${output.sessionId} · ${elapsed}ms`,
-                );
-                setNotice(noticeForNoSpeech(output.sessionId));
-                return;
-              }
-              pushDiagnosticEvent(
-                "audio",
-                output.isFinal ? "Parapper final normalized" : "Parapper interim normalized",
-                `id=${nextCaption.id} · ${elapsed}ms · src=${nextCaption.sourceText.slice(0, 48)}`,
-              );
-              setCaption((current) => {
-                const merged = mergeCaptionPayload(current, nextCaption);
-                if (merged === null || merged === current) {
-                  return current;
-                }
-                markCaptionDisplay(merged);
-                return merged;
-              });
-              setStatus((current) =>
-                current.lastError ? { ...current, lastError: null } : current,
-              );
-              setNotice((current) => (isTransientAudioNotice(current) ? null : current));
-            } catch (error: unknown) {
-              if (attempt !== captureAttempt.current) {
-                return;
-              }
-              if (!shouldToastAudioProcessingFailure(error)) {
-                const detail = formatBridgeError(error) ?? output.sessionId;
-                pushDiagnosticEvent("audio", "No speech (soft-skip)", detail);
-                setNotice(noticeForNoSpeech(detail));
-                return;
-              }
-              const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
-              pushDiagnosticEvent(
-                "error",
-                "Audio processing failed",
-                nextNotice.detail ?? t(nextNotice.key),
-              );
-              setNotice(nextNotice);
-              captionFailureMessage.current = nextNotice.detail ?? t(nextNotice.key);
-              setStatus((current) => ({
-                ...current,
-                lastError: nextNotice.detail ?? t(nextNotice.key),
-              }));
-            }
-          };
-          // Parapper's output order is significant: a later final must not be
-          // normalized before an earlier interim revision has been observed.
-          parapperOutputChain.current = parapperOutputChain.current
-            .then(processOutput)
-            .catch(() => undefined);
+          parapperOutputQueue.current?.enqueue(output);
         };
+        const outputQueue = createParapperOutputQueue<ParapperRecognitionOutput>(processOutput);
+        parapperOutputQueue.current = outputQueue;
         streamForAttempt = new ParapperRecognitionStream({
           url: DEFAULT_PARAPPER_STREAM_URL,
           onEvent: handleParapperEvent,
@@ -745,6 +747,7 @@ export const MainApp = () => {
     const microphone = capture.current;
     const processor = chunkProcessor.current;
     const stream = parapperStream.current;
+    const outputQueue = parapperOutputQueue.current;
     clearInputLevelDb();
     pushDiagnosticEvent("audio", "Capture stopping");
     let microphoneFailure: unknown = null;
@@ -785,10 +788,17 @@ export const MainApp = () => {
         captionFailureMessage.current = formatBridgeError(error) ?? "Parapper stream stop failed";
       }
       try {
-        await parapperOutputChain.current;
+        // Capture the queue belonging to this attempt. A replacement capture
+        // may install a new queue while the old socket is draining; waiting on
+        // the ref in that case would stall the new session's stop path.
+        await outputQueue?.whenIdle();
       } catch (error) {
         microphoneFailure ??= error;
         captionFailureMessage.current = formatBridgeError(error) ?? "Parapper output drain failed";
+      }
+      outputQueue?.close();
+      if (parapperOutputQueue.current === outputQueue) {
+        parapperOutputQueue.current = null;
       }
       if (parapperStream.current === stream) {
         parapperStream.current = null;
