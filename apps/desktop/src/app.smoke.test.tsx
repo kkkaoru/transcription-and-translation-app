@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { App } from "./app";
+import { BUILD_INFO } from "./core/buildInfo";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -36,10 +37,25 @@ describe("App routes", () => {
     });
 
     expect(container.querySelector(".brand-name")?.textContent).toBe("Kotoba Beacon");
+    const buildInfo = container.querySelector('[data-testid="build-info"]');
+    expect(buildInfo).not.toBeNull();
+
+    const buildVersion = container.querySelector('[data-testid="build-version"]');
+    expect(buildVersion?.textContent).toBe(`v${BUILD_INFO.appVersion}`);
+    expect(BUILD_INFO.appVersion.trim()).not.toBe("");
+
+    const buildId = container.querySelector('[data-testid="build-id"]');
+    expect(buildId?.textContent).toBe(`build ${BUILD_INFO.buildId}`);
+    expect(BUILD_INFO.buildId.trim()).not.toBe("");
+    expect(buildInfo?.textContent).toMatch(/v\S+\s*·\s*build\s+\S+/);
+
     // In-app preview must render live caption payload without OBS / without forced placeholders.
     expect(container.querySelector('[data-testid="live-preview-stage"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="preview-scale-host"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="input-level-meter"]')).not.toBeNull();
+    // Pipeline timing/debug output is reachable from the live workspace too;
+    // users do not need to switch tabs before they can inspect each stage.
+    expect(container.querySelector(".debug-panel")).not.toBeNull();
     expect(container.textContent).toContain("これはプレビュー用の字幕です。");
     expect(container.textContent).toContain("This is a preview caption.");
     expect(container.textContent).toMatch(/OBS\s*不要/);
@@ -73,6 +89,9 @@ describe("App routes", () => {
     expect(container.textContent).toContain("AzooKey ユーザー辞書（任意）");
     expect(container.textContent).toContain("AzooKey 学習メモリ（任意）");
     expect(container.querySelector(".debug-panel")).not.toBeNull();
+    // Structured log level selector is part of the always-present debug panel markup.
+    expect(container.querySelector('[data-testid="debug-log-level"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="debug-structured-logs"]')).not.toBeNull();
   });
 
   it("renders only the transparent caption route for overlay windows", async () => {

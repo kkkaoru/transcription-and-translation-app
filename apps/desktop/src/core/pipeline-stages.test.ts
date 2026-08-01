@@ -8,6 +8,7 @@ import {
   getLatestPipelineStageByName,
   getPipelineStageEvents,
   getUtteranceStageGroups,
+  hydratePipelineStageEvents,
   isPipelineStageName,
   isVerbosePipelineLogging,
   normalizePipelineStageEvent,
@@ -19,11 +20,13 @@ import {
   subscribePipelineStages,
   writeDebugPanelOpenPreference,
 } from "./pipelineStages";
+import { __resetStructuredLogForTests, getStructuredLogs, setLogLevel } from "./structuredLog";
 
 afterEach(() => {
   clearPipelineStageEvents();
   clearDiagnosticEvents();
   setVerbosePipelineLogging(false);
+  __resetStructuredLogForTests();
   localStorage.clear();
   vi.restoreAllMocks();
 });
@@ -139,11 +142,64 @@ describe("pipeline stage events", () => {
     expect(getLatestPipelineStageByName("translate")).toBeNull();
   });
 
-  it("notifies subscribers and supports verbose console + diagnostic logging", () => {
+  it("hydrates backend stage history without duplicating live events", () => {
+    const live = {
+      stage: "normalize",
+      utteranceId: "history-1",
+      modelId: "azookey-rust",
+      inputSnippet: "かな",
+      outputText: "仮名",
+      durationMs: 3,
+      startedAt: 100,
+      at: 103,
+      ok: true,
+    };
+    pushPipelineStageEvent(live);
+
+    const hydrated = hydratePipelineStageEvents([
+      live,
+      {
+        stage: "asr",
+        utterance_id: "history-1",
+        model_id: "parapper-ja",
+        input_snippet: "wavBytes=64",
+        output_text: "かな",
+        duration_ms: 14,
+        started_at: 86,
+        at: 100,
+        ok: true,
+      },
+    ]);
+
+    expect(hydrated).toHaveLength(2);
+    expect(getPipelineStageEvents()).toHaveLength(2);
+    expect(getPipelineStageEvents()[0]?.stage).toBe("normalize");
+    expect(getPipelineStageEvents()[1]?.stage).toBe("asr");
+
+    // Re-reading the same native snapshot is idempotent and does not append a
+    // second copy of the normalize row.
+    hydratePipelineStageEvents([live]);
+    expect(getPipelineStageEvents()).toHaveLength(2);
+
+    // A stale native snapshot must not make an older normalize row appear as
+    // the latest card after a newer live event has already arrived.
+    pushPipelineStageEvent({
+      ...live,
+      outputText: "仮名更新",
+      startedAt: 200,
+      at: 203,
+    });
+    hydratePipelineStageEvents([{ ...live, outputText: "仮名古い", at: 103 }]);
+    expect(getLatestPipelineStageByName("normalize")?.outputText).toBe("仮名更新");
+  });
+
+  it("notifies subscribers and supports verbose structured + diagnostic logging", () => {
     const listener = vi.fn();
+    // Successes are always logged at info level. Verbose flag controls payload detail (I/O samples).
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const unsubscribe = subscribePipelineStages(listener);
 
+    setLogLevel("trace");
     setVerbosePipelineLogging(true);
     expect(isVerbosePipelineLogging()).toBe(true);
     expect(listener).toHaveBeenCalled();
@@ -159,12 +215,13 @@ describe("pipeline stage events", () => {
       ok: true,
       at: 1_000,
     });
-    expect(info).toHaveBeenCalledWith(
-      "[pipeline:translate] ok 80ms",
-      expect.stringContaining("model=hy-mt2-1.8b-gguf"),
-    );
-    expect(info).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("startedAt=920"));
-    expect(info).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("endedAt=1000"));
+    expect(info).toHaveBeenCalled();
+    const structured = getStructuredLogs({ maxLevel: "trace" });
+    expect(structured[0]?.stage).toBe("translate");
+    expect(structured[0]?.level).toBe("info");
+    expect(structured[0]?.fields["modelId"]).toBe("hy-mt2-1.8b-gguf");
+    expect(structured[0]?.fields["outputText"]).toBe("Hello");
+    expect(structured[0]?.durationMs).toBe(80);
     expect(getDiagnosticEvents()[0]?.message).toContain("translate");
 
     setVerbosePipelineLogging(false);
@@ -254,12 +311,88 @@ describe("pipeline stage events", () => {
   });
 
   it("persists debug panel open preference for development", () => {
-    expect(readDebugPanelOpenPreference()).toBe(false);
+    expect(readDebugPanelOpenPreference()).toBe(true);
     writeDebugPanelOpenPreference(true);
     expect(localStorage.getItem(DEBUG_PANEL_OPEN_STORAGE_KEY)).toBe("1");
     expect(readDebugPanelOpenPreference()).toBe(true);
     writeDebugPanelOpenPreference(false);
-    expect(localStorage.getItem(DEBUG_PANEL_OPEN_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(DEBUG_PANEL_OPEN_STORAGE_KEY)).toBe("0");
     expect(readDebugPanelOpenPreference()).toBe(false);
+  });
+
+  it("shows successful stage completions in structured log at default info level (no verbose toggle needed)", () => {
+    // Regression test: user opens debug panel with default settings (no level change, verbose=false)
+    // and should see real per-stage activity in the structured log, not an empty feed.
+    // Related to: 「デバッグモードで常に確認してください」 constraint.
+
+    const base = Date.now();
+    // Push a full asr→normalizer→translator sequence (all successful).
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "regression-seq-1",
+      modelId: "parapper-ja",
+      inputSnippet: "wavBytes=2048",
+      outputText: "こんにちは",
+      durationMs: 120,
+      ok: true,
+      startedAt: base,
+      at: base + 120,
+    });
+    pushPipelineStageEvent({
+      stage: "normalize",
+      utteranceId: "regression-seq-1",
+      modelId: "azookey-rust",
+      inputSnippet: "こんにちは",
+      outputText: "こんにちは",
+      durationMs: 2,
+      ok: true,
+      startedAt: base + 120,
+      at: base + 122,
+    });
+    pushPipelineStageEvent({
+      stage: "translate",
+      utteranceId: "regression-seq-1",
+      modelId: "hy-mt2-1.8b-gguf",
+      inputSnippet: "こんにちは",
+      outputText: "Hello",
+      durationMs: 90,
+      ok: true,
+      startedAt: base + 122,
+      at: base + 212,
+    });
+
+    // Default settings: info level, no verbose toggle.
+    expect(isVerbosePipelineLogging()).toBe(false);
+
+    // With default info level, successful stages must be visible (not hidden at debug level).
+    const logs = getStructuredLogs({ maxLevel: "info" });
+    const successLogs = logs.filter(
+      (l) => l.stage && ["asr", "normalize", "translate"].includes(l.stage) && l.level !== "error",
+    );
+
+    expect(successLogs).toHaveLength(3);
+    expect(successLogs.map((l) => l.stage)).toEqual(
+      expect.arrayContaining(["asr", "normalize", "translate"]),
+    );
+
+    // Each row must include elapsed ms.
+    for (const log of successLogs) {
+      expect(log.durationMs).toBeGreaterThan(0);
+    }
+
+    // ASR row details.
+    const asrLog = successLogs.find((l) => l.stage === "asr");
+    expect(asrLog).toBeDefined();
+    expect(asrLog?.durationMs).toBe(120);
+    expect(asrLog?.message).toContain("asr");
+    expect(asrLog?.message).toContain("ok");
+
+    // Normalizer row details.
+    const normalizeLog = successLogs.find((l) => l.stage === "normalize");
+    expect(normalizeLog?.durationMs).toBe(2);
+
+    // Translator row details.
+    const translateLog = successLogs.find((l) => l.stage === "translate");
+    expect(translateLog?.durationMs).toBe(90);
   });
 });

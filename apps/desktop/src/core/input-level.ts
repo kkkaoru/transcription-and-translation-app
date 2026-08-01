@@ -12,8 +12,12 @@ let revision = 0;
 
 const notify = (): void => {
   revision += 1;
-  for (const listener of listeners) {
-    listener();
+  for (const listener of [...listeners]) {
+    try {
+      listener();
+    } catch {
+      // Meter subscribers are UI-only; never block the capture callback.
+    }
   }
 };
 

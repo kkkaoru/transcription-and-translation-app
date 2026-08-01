@@ -3,12 +3,22 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearCaptionDisplayTiming, markCaptionDisplay } from "../core/display-timing";
 import {
   clearPipelineStageEvents,
   isVerbosePipelineLogging,
   pushPipelineStageEvent,
   setVerbosePipelineLogging,
 } from "../core/pipelineStages";
+import {
+  __resetStructuredLogForTests,
+  appendStructuredLog,
+  formatLogsAsJson,
+  formatLogsAsJsonl,
+  getLogLevel,
+  getStructuredLogs,
+  setLogLevel,
+} from "../core/structuredLog";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { DebugPanel } from "./DebugPanel";
 
@@ -42,9 +52,10 @@ vi.mock("../core/bridge", () => ({
         captionYPercent: 88,
         gapPx: 8,
       },
-      debug: { verboseLogging: false },
+      debug: { verboseLogging: false, logLevel: "info" },
     }),
     saveConfig: async () => undefined,
+    exportDebugLogs: async () => "/tmp/kotoba-logs/export.jsonl",
     getDebugInfo: async () => ({
       platform: "browser",
       version: "test",
@@ -52,7 +63,7 @@ vi.mock("../core/bridge", () => ({
       env: { pkgVersion: "0.0.0", platform: "browser", arch: "test" },
       runtimeStatus: { status: "idle", nativeOutput: "unsupported", backendReachable: false },
       modelSummary: { ready: 0, total: 0 },
-      debug: { verboseLogging: false, logDir: "/tmp/kotoba-logs" },
+      debug: { verboseLogging: false, logLevel: "info", logDir: "/tmp/kotoba-logs" },
       config: {
         audio: { chunkMs: 1200, silenceGateDb: -45, sampleRate: 16000, inputDeviceId: "default" },
         overlay: {
@@ -63,7 +74,7 @@ vi.mock("../core/bridge", () => ({
           captionYPercent: 88,
           gapPx: 8,
         },
-        debug: { verboseLogging: false },
+        debug: { verboseLogging: false, logLevel: "info" },
       },
     }),
     listModelStatus: async () => [],
@@ -84,7 +95,10 @@ describe("DebugPanel pipeline stages", () => {
     // Match other smoke tests: UI copy assertions use Japanese strings.
     localStorage.setItem("caption-bridge.ui-locale.v1", "ja");
     clearPipelineStageEvents();
+    clearCaptionDisplayTiming();
     setVerbosePipelineLogging(false);
+    __resetStructuredLogForTests();
+    setLogLevel("info");
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -97,7 +111,9 @@ describe("DebugPanel pipeline stages", () => {
     });
     container.remove();
     clearPipelineStageEvents();
+    clearCaptionDisplayTiming();
     setVerbosePipelineLogging(false);
+    __resetStructuredLogForTests();
     localStorage.clear();
   });
 
@@ -331,5 +347,294 @@ describe("DebugPanel pipeline stages", () => {
     expect(container.querySelector('[data-testid="debug-stage-asr"]')?.textContent).toContain(
       "復元",
     );
+  });
+
+  it("shows structured log rows and log-level control", async () => {
+    appendStructuredLog({
+      level: "info",
+      source: "frontend",
+      message: "capture started",
+      chunkId: "chunk-1",
+      durationMs: 12,
+      inputBytes: 4096,
+    });
+    appendStructuredLog({
+      level: "error",
+      source: "backend",
+      stage: "asr",
+      message: "stage asr failed",
+      chunkId: "chunk-2",
+      error: "HTTP 422",
+      durationMs: 33,
+    });
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <DebugPanel />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+    await openPanel();
+
+    expect(container.querySelector('[data-testid="debug-log-level"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="debug-structured-logs"]')).not.toBeNull();
+    const rows = container.querySelectorAll('[data-testid="debug-structured-log-row"]');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    expect(container.textContent).toContain("capture started");
+    expect(container.textContent).toContain("HTTP 422");
+    expect(container.querySelector('[data-testid="debug-export-jsonl"]')).not.toBeNull();
+  });
+
+  it("filters structured log rows when the log level select changes", async () => {
+    appendStructuredLog({
+      level: "error",
+      source: "backend",
+      stage: "asr",
+      message: "only-error-row",
+      error: "boom",
+      durationMs: 9,
+    });
+    appendStructuredLog({
+      level: "info",
+      source: "frontend",
+      message: "only-info-row",
+      durationMs: 4,
+    });
+    appendStructuredLog({
+      level: "debug",
+      source: "frontend",
+      stage: "normalize",
+      message: "only-debug-row",
+      durationMs: 2,
+    });
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <DebugPanel />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+    await openPanel();
+
+    // Default threshold is info → error + info, not debug.
+    expect(container.textContent).toContain("only-error-row");
+    expect(container.textContent).toContain("only-info-row");
+    expect(container.textContent).not.toContain("only-debug-row");
+
+    const select = container.querySelector(
+      '[data-testid="debug-log-level"]',
+    ) as HTMLSelectElement | null;
+    expect(select).not.toBeNull();
+    if (!select) {
+      throw new Error("log level select missing");
+    }
+
+    await act(async () => {
+      select.value = "error";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(getLogLevel()).toBe("error");
+    expect(container.textContent).toContain("only-error-row");
+    expect(container.textContent).not.toContain("only-info-row");
+    expect(container.textContent).not.toContain("only-debug-row");
+    const errorRows = container.querySelectorAll(
+      '[data-testid="debug-structured-log-row"][data-log-level="error"]',
+    );
+    expect(errorRows.length).toBeGreaterThanOrEqual(1);
+
+    await act(async () => {
+      select.value = "debug";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(getLogLevel()).toBe("debug");
+    expect(container.textContent).toContain("only-error-row");
+    expect(container.textContent).toContain("only-info-row");
+    expect(container.textContent).toContain("only-debug-row");
+  });
+
+  it("exports parseable JSON and JSONL from the current structured log buffer", async () => {
+    appendStructuredLog({
+      level: "info",
+      source: "frontend",
+      message: "export-json-row",
+      chunkId: "c-export",
+      durationMs: 11,
+      inputBytes: 128,
+      epochMs: 1_700_000_000_000,
+    });
+    appendStructuredLog({
+      level: "warn",
+      source: "backend",
+      stage: "translate",
+      message: "export-jsonl-row",
+      error: "slow",
+      durationMs: 220,
+      epochMs: 1_700_000_000_200,
+    });
+
+    const json = formatLogsAsJson(getStructuredLogs());
+    const parsed = JSON.parse(json) as Array<{ message: string; durationMs: number | null }>;
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed.some((row) => row.message === "export-json-row")).toBe(true);
+    expect(parsed.some((row) => row.message === "export-jsonl-row" && row.durationMs === 220)).toBe(
+      true,
+    );
+
+    const jsonl = formatLogsAsJsonl(getStructuredLogs());
+    const lines = jsonl.split("\n").filter(Boolean);
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    for (const line of lines) {
+      const row = JSON.parse(line) as { message: string };
+      expect(typeof row.message).toBe("string");
+    }
+    // JSONL is chronological (oldest first).
+    expect(JSON.parse(lines[0] ?? "{}").message).toBe("export-json-row");
+    expect(JSON.parse(lines[lines.length - 1] ?? "{}").message).toBe("export-jsonl-row");
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <DebugPanel />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+    await openPanel();
+
+    expect(container.querySelector('[data-testid="debug-export-json"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="debug-export-jsonl"]')).not.toBeNull();
+    expect(
+      (container.querySelector('[data-testid="debug-export-jsonl"]') as HTMLButtonElement | null)
+        ?.disabled,
+    ).toBe(false);
+  });
+
+  it("renders per-stage start/end/error fields with elapsed ms for latency diagnosis", async () => {
+    const base = 1_700_000_111_000;
+    pushPipelineStageEvent({
+      stage: "asr",
+      utteranceId: "utt-latency",
+      modelId: "parapper-ja",
+      inputSnippet: "wavBytes=8192",
+      outputText: "レイテンシ検証",
+      durationMs: 180,
+      ok: true,
+      startedAt: base,
+      at: base + 180,
+    });
+    pushPipelineStageEvent({
+      stage: "normalize",
+      utteranceId: "utt-latency",
+      modelId: "azookey-rust",
+      inputSnippet: "レイテンシ検証",
+      outputText: "レイテンシ検証",
+      durationMs: 4,
+      ok: true,
+      startedAt: base + 180,
+      at: base + 184,
+    });
+    pushPipelineStageEvent({
+      stage: "translate",
+      utteranceId: "utt-latency",
+      modelId: "hy-mt2-1.8b-gguf",
+      inputSnippet: "レイテンシ検証",
+      outputText: "",
+      durationMs: 450,
+      ok: false,
+      error: "gateway timeout",
+      startedAt: base + 184,
+      at: base + 634,
+    });
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <DebugPanel />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+    await openPanel();
+
+    expect(container.querySelector('[data-testid="debug-stage-asr-ms"]')?.textContent).toMatch(
+      /180\s*ms/,
+    );
+    expect(
+      container.querySelector('[data-testid="debug-stage-normalize-ms"]')?.textContent,
+    ).toMatch(/4\s*ms/);
+    expect(
+      container.querySelector('[data-testid="debug-stage-translate-ms"]')?.textContent,
+    ).toMatch(/450\s*ms/);
+    expect(container.querySelector('[data-testid="debug-stage-asr-start"]')?.textContent).not.toBe(
+      "—",
+    );
+    expect(container.querySelector('[data-testid="debug-stage-asr-end"]')?.textContent).not.toBe(
+      "—",
+    );
+    expect(container.querySelector('[data-testid="debug-stage-translate"]')?.textContent).toContain(
+      "gateway timeout",
+    );
+    expect(container.querySelector('[data-testid="debug-stage-translate"]')?.className).toContain(
+      "is-error",
+    );
+    expect(
+      container.querySelector('[data-testid="debug-stage-row-translate"]')?.textContent,
+    ).toContain("gateway timeout");
+  });
+
+  it("shows normalized-source and translation display delay in the timing panel", async () => {
+    setVerbosePipelineLogging(true);
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValueOnce(2_000).mockReturnValueOnce(2_350).mockReturnValue(2_350);
+    markCaptionDisplay({
+      id: "utt-display",
+      sourceText: "正規化結果",
+      translationText: "",
+      sourceLanguage: "ja",
+      targetLanguage: "en",
+      startedAt: 1_400,
+      receivedAt: 1_900,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    markCaptionDisplay({
+      id: "utt-display",
+      sourceText: "正規化結果",
+      translationText: "Normalized result",
+      sourceLanguage: "ja",
+      targetLanguage: "en",
+      startedAt: 1_400,
+      receivedAt: 2_300,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <DebugPanel />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+    await openPanel();
+
+    const timing = container.querySelector('[data-testid="debug-chunk-timing"]');
+    expect(timing?.textContent).toContain("正規化結果→表示");
+    expect(timing?.textContent).toContain("600 ms");
+    expect(timing?.textContent).toContain("翻訳イベント→表示");
+    expect(timing?.textContent).toContain("50 ms");
+    expect(timing?.textContent).toContain("原文表示→翻訳表示");
+    expect(timing?.textContent).toContain("350 ms");
   });
 });

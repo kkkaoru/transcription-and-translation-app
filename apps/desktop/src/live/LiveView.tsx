@@ -329,7 +329,20 @@ export const LiveView = ({
         </div>
         <div className="transcript-row">
           <span className="language-tag">JA</span>
-          <p>{caption.sourceText}</p>
+          <span
+            className="caption-stage-label"
+            data-testid="normalized-caption-stage"
+            title="AzooKey normalizer output"
+          >
+            {config.models.normalizer === "azookey-rust" ? "AzooKey" : config.models.normalizer}
+          </span>
+          <p
+            className={caption.provisional ? "caption-text-provisional" : undefined}
+            data-testid="transcript-source-text"
+            data-caption-provisional={caption.provisional ? "true" : "false"}
+          >
+            {caption.sourceText}
+          </p>
         </div>
         <div className="transcript-row translation">
           <span className="language-tag blue">EN</span>

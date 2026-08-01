@@ -44,6 +44,137 @@ const drawRoundedRect = (
   context.closePath();
 };
 
+/**
+ * Measure canvas text using the same letter-spacing approximation as the DOM
+ * caption renderer. Canvas does not implement CSS `letter-spacing` for
+ * `fillText`, so native output advances one grapheme at a time below.
+ */
+const measureNativeTextWidth = (
+  context: CanvasRenderingContext2D,
+  text: string,
+  letterSpacing: number,
+): number => {
+  const characters = Array.from(text);
+  if (characters.length === 0) {
+    return 0;
+  }
+  return Math.max(
+    0,
+    context.measureText(text).width +
+      Math.max(0, characters.length - 1) * finiteNumber(letterSpacing, 0),
+  );
+};
+
+/**
+ * Wrap native caption text without dropping any characters.
+ *
+ * A previous implementation measured the whole caption and scaled it down to
+ * `maxWidth`, making a long Japanese/English sentence unreadably tiny. This
+ * greedy wrapper keeps every grapheme, prefers whitespace boundaries for Latin
+ * text, and falls back to grapheme boundaries for Japanese or unbroken tokens.
+ * Explicit newlines are retained as line breaks. The measurement callback is
+ * injected so this algorithm can be covered without a real browser canvas.
+ */
+export const wrapNativeText = (
+  text: string,
+  maxWidth: number,
+  measure: (value: string) => number,
+  letterSpacing = 0,
+): string[] => {
+  const boundedWidth = Math.max(1, finiteNumber(maxWidth, 1));
+  const spacing = finiteNumber(letterSpacing, 0);
+  const widthOf = (value: string): number => {
+    const characters = Array.from(value);
+    if (characters.length === 0) {
+      return 0;
+    }
+    return Math.max(
+      0,
+      finiteNumber(measure(value), 0) + Math.max(0, characters.length - 1) * spacing,
+    );
+  };
+  const isBreakable = (value: string): boolean => /\s/u.test(value);
+  const lines: string[] = [];
+  let current: string[] = [];
+  // Treat CRLF/CR as the same logical line break as the DOM caption path.
+  const normalizedText = text.replace(/\r\n?/gu, "\n");
+
+  const flush = (): void => {
+    lines.push(current.join(""));
+    current = [];
+  };
+
+  for (const character of Array.from(normalizedText)) {
+    if (character === "\n") {
+      flush();
+      continue;
+    }
+    const candidate = [...current, character];
+    if (current.length === 0 || widthOf(candidate.join("")) <= boundedWidth) {
+      current = candidate;
+      continue;
+    }
+
+    // Keep the whitespace on the preceding line so joining wrapped lines
+    // reconstructs the original caption exactly (including spaces).
+    let breakIndex = -1;
+    for (let index = current.length - 1; index >= 0; index -= 1) {
+      if (isBreakable(current[index] ?? "")) {
+        breakIndex = index;
+        break;
+      }
+    }
+    if (breakIndex >= 0) {
+      lines.push(current.slice(0, breakIndex + 1).join(""));
+      current = [...current.slice(breakIndex + 1), character];
+    } else {
+      lines.push(current.join(""));
+      current = [character];
+    }
+  }
+  // Always flush the final logical line. This keeps leading/trailing and
+  // repeated explicit newlines representable as empty line entries.
+  flush();
+  return lines;
+};
+
+interface NativeCaptionLayout {
+  lineHeight: number;
+  lines: string[];
+  maxLineWidth: number;
+}
+
+const captionFont = (style: CaptionTextStyle): string =>
+  `${Math.round(boundedNumber(style.fontWeight, 100, 900, 700))} ${Math.max(1, finiteNumber(style.fontSizePx, 34))}px ${style.fontFamily}`;
+
+const measureNativeCaption = (
+  context: CanvasRenderingContext2D,
+  text: string,
+  style: CaptionTextStyle,
+  maxWidth: number,
+): NativeCaptionLayout => {
+  const letterSpacing = finiteNumber(style.letterSpacingPx, 0);
+  context.font = captionFont(style);
+  const lines = wrapNativeText(
+    text,
+    maxWidth,
+    (value) => context.measureText(value).width,
+    letterSpacing,
+  );
+  const maxLineWidth = lines.reduce(
+    (maximum, line) => Math.max(maximum, measureNativeTextWidth(context, line, letterSpacing)),
+    0,
+  );
+  return {
+    lineHeight: Math.max(
+      1,
+      finiteNumber(style.fontSizePx, 34) * Math.max(0.1, finiteNumber(style.lineHeight, 1.3)),
+    ),
+    lines,
+    maxLineWidth,
+  };
+};
+
 const drawNativeCaption = (
   context: CanvasRenderingContext2D,
   text: string,
@@ -52,32 +183,32 @@ const drawNativeCaption = (
   y: number,
   maxWidth: number,
 ) => {
-  const fontSize = Math.max(1, finiteNumber(style.fontSizePx, 34));
+  const layout = measureNativeCaption(context, text, style, maxWidth);
   const letterSpacing = finiteNumber(style.letterSpacingPx, 0);
-  const characters = Array.from(text);
-  context.font = `${Math.round(boundedNumber(style.fontWeight, 100, 900, 700))} ${fontSize}px ${style.fontFamily}`;
   context.textBaseline = "middle";
   context.lineJoin = "round";
-  const characterWidths = characters.map((character) => context.measureText(character).width);
-  const rawWidth =
-    characterWidths.reduce((total, characterWidth) => total + characterWidth, 0) +
-    Math.max(0, characters.length - 1) * letterSpacing;
-  const scale = rawWidth > maxWidth && maxWidth > 0 ? maxWidth / rawWidth : 1;
-  const drawWidth = rawWidth * scale;
-  const startX =
-    style.textAlign === "left"
-      ? x
-      : style.textAlign === "right"
-        ? x - drawWidth
-        : x - drawWidth / 2;
 
-  const drawCharacters = (operation: "fill" | "stroke") => {
+  const drawLine = (textLine: string, lineY: number, operation: "fill" | "stroke"): void => {
+    const characters = Array.from(textLine);
+    const characterWidths = characters.map((character) => context.measureText(character).width);
+    const rawWidth = measureNativeTextWidth(context, textLine, letterSpacing);
+    // A single glyph can still exceed a very narrow configured width. Scale
+    // only that individual line; never scale a whole multi-line caption.
+    const scale =
+      characters.length === 1 && rawWidth > maxWidth && maxWidth > 0 ? maxWidth / rawWidth : 1;
+    const drawWidth = rawWidth * scale;
+    const startX =
+      style.textAlign === "left"
+        ? x
+        : style.textAlign === "right"
+          ? x - drawWidth
+          : x - drawWidth / 2;
     let cursor = startX;
     for (const [index, character] of characters.entries()) {
       if (operation === "stroke") {
-        context.strokeText(character, cursor, y);
+        context.strokeText(character, cursor, lineY);
       } else {
-        context.fillText(character, cursor, y);
+        context.fillText(character, cursor, lineY);
       }
       cursor += ((characterWidths[index] ?? 0) + letterSpacing) * scale;
     }
@@ -98,14 +229,26 @@ const drawNativeCaption = (
       style.cullingColor,
       boundedNumber(style.cullingOpacity, 0, 1, 1),
     );
-    drawCharacters("stroke");
+    for (const [index, line] of layout.lines.entries()) {
+      drawLine(
+        line,
+        y - ((layout.lines.length - 1) * layout.lineHeight) / 2 + index * layout.lineHeight,
+        "stroke",
+      );
+    }
   }
   context.fillStyle = style.color;
-  drawCharacters("fill");
+  for (const [index, line] of layout.lines.entries()) {
+    drawLine(
+      line,
+      y - ((layout.lines.length - 1) * layout.lineHeight) / 2 + index * layout.lineHeight,
+      "fill",
+    );
+  }
   context.restore();
 };
 
-const renderFrame = (
+export const renderNativeFrame = (
   canvas: HTMLCanvasElement,
   config: AppConfig,
   caption: CaptionPayload,
@@ -129,15 +272,27 @@ const renderFrame = (
   );
   const blockX = (width * boundedNumber(config.overlay.captionXPercent, 0, 100, 50)) / 100;
   const blockY = (height * boundedNumber(config.overlay.captionYPercent, 0, 100, 86)) / 100;
-  const rows = captionItems(config, caption).map(({ text, style }) => ({
-    text,
-    style,
-    height: Math.max(
-      1,
-      finiteNumber(style.fontSizePx, 34) * finiteNumber(style.lineHeight, 1.3) +
-        Math.max(0, finiteNumber(style.paddingY, 0)) * 2,
-    ),
-  }));
+  const rows = captionItems(config, caption)
+    .filter((item) => item.text.trim().length > 0)
+    .map((item) => {
+      const style = item.style;
+      const paddingX = Math.max(0, finiteNumber(style.paddingX, 0));
+      const lineWidth = Math.min(
+        blockWidth * (boundedNumber(style.maxWidthPercent, 1, 100, 86) / 100),
+        Math.max(1, blockWidth - paddingX * 2),
+      );
+      const layout = measureNativeCaption(context, item.text, style, lineWidth);
+      return {
+        layout,
+        lineWidth,
+        style,
+        height: Math.max(
+          1,
+          layout.lineHeight * layout.lines.length +
+            Math.max(0, finiteNumber(style.paddingY, 0)) * 2,
+        ),
+      };
+    });
   const gap = Math.max(0, finiteNumber(config.overlay.gapPx, 8));
   const totalHeight =
     rows.reduce((total, row) => total + row.height, 0) + gap * Math.max(0, rows.length - 1);
@@ -145,10 +300,6 @@ const renderFrame = (
 
   for (const row of rows) {
     const style = row.style;
-    const lineWidth = Math.min(
-      blockWidth * (boundedNumber(style.maxWidthPercent, 1, 100, 86) / 100),
-      blockWidth,
-    );
     const paddingX = Math.max(0, finiteNumber(style.paddingX, 0));
     const textX =
       style.textAlign === "left"
@@ -156,9 +307,7 @@ const renderFrame = (
         : style.textAlign === "right"
           ? (width + blockWidth) / 2 - paddingX
           : blockX;
-    const textY = rowY + row.height / 2;
-    context.font = `${Math.round(boundedNumber(style.fontWeight, 100, 900, 700))} ${Math.max(1, finiteNumber(style.fontSizePx, 34))}px ${style.fontFamily}`;
-    const textWidth = Math.min(lineWidth, context.measureText(row.text).width);
+    const textWidth = Math.min(row.lineWidth, row.layout.maxLineWidth);
     const plateWidth = Math.min(blockWidth, textWidth + paddingX * 2);
     const plateLeft =
       style.textAlign === "left"
@@ -184,7 +333,8 @@ const renderFrame = (
       context.fill();
       context.restore();
     }
-    drawNativeCaption(context, row.text, style, textX, textY, lineWidth);
+    const textY = rowY + row.height / 2;
+    drawNativeCaption(context, row.layout.lines.join("\n"), style, textX, textY, row.lineWidth);
     rowY += row.height + gap;
   }
 
@@ -224,10 +374,8 @@ const framePaintKey = (config: AppConfig, caption: CaptionPayload): string =>
     config.overlay.safeAreaPx,
     config.overlay.captionXPercent,
     config.overlay.captionYPercent,
-    config.overlay.source.fontSizePx,
-    config.overlay.source.color,
-    config.overlay.translation.fontSizePx,
-    config.overlay.translation.color,
+    JSON.stringify(config.overlay.source),
+    JSON.stringify(config.overlay.translation),
   ].join("\u0001");
 
 export const NativeFramePublisher = ({
@@ -276,7 +424,7 @@ export const NativeFramePublisher = ({
             canvas.height = height;
             lastSizeRef.current = { width, height };
           }
-          const frame = renderFrame(canvas, config, caption);
+          const frame = renderNativeFrame(canvas, config, caption);
           if (!frame || cancelled) {
             return;
           }

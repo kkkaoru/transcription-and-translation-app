@@ -1,19 +1,29 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   type AudioCaptureDiagnostics,
   enumerateAudioInputDevices,
   getLastAudioCaptureDiagnostics,
 } from "../core/audio";
-import { bridge } from "../core/bridge";
+import { bridge, formatBridgeError } from "../core/bridge";
 import { type ChunkTimingStats, getChunkTimingStats } from "../core/chunkQueue";
 import { mergeConfig } from "../core/defaults";
-import { type DiagnosticEvent, getDiagnosticEvents } from "../core/diagnostics";
+import {
+  getDiagnosticEvents,
+  getDiagnosticStoreRevision,
+  subscribeDiagnosticEvents,
+} from "../core/diagnostics";
+import {
+  getCaptionDisplayTimingRevision,
+  getCaptionDisplayTimingStats,
+  subscribeCaptionDisplayTiming,
+} from "../core/display-timing";
 import {
   clearPipelineStageEvents,
   getLatestPipelineStageByName,
   getPipelineStageEvents,
   getPipelineStageStoreRevision,
   getUtteranceStageGroups,
+  hydratePipelineStageEvents,
   isVerbosePipelineLogging,
   readDebugPanelOpenPreference,
   relativeStageOffsetMs,
@@ -22,11 +32,28 @@ import {
   subscribePipelineStages,
   writeDebugPanelOpenPreference,
 } from "../core/pipelineStages";
+import {
+  appendStructuredLog,
+  clearStructuredLogs,
+  downloadStructuredLogs,
+  formatLogsAsJsonl,
+  getLogLevel,
+  getStructuredLogRevision,
+  getStructuredLogs,
+  LOG_LEVELS,
+  redactSensitiveText,
+  type StructuredLogRecord,
+  setLogLevel,
+  subscribeStructuredLogs,
+} from "../core/structuredLog";
 import type {
   AudioInputDevice,
+  LogLevel,
   ModelStatusEntry,
   PipelineStageEvent,
   PipelineStageName,
+  SidecarStatus,
+  UpdateStatus,
 } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 
@@ -183,20 +210,248 @@ const stageTimingSummary = (event: PipelineStageEvent, locale: string): string =
   return `${start} → ${end} · ${formatMs(event.durationMs)}`;
 };
 
+const formatStructuredLogLine = (entry: StructuredLogRecord): string => {
+  const parts = [
+    entry.at,
+    entry.level.toUpperCase(),
+    entry.source,
+    entry.stage ? `stage=${entry.stage}` : null,
+    entry.chunkId ? `chunk=${entry.chunkId}` : null,
+    entry.message,
+    entry.durationMs != null ? `durationMs=${entry.durationMs}` : null,
+    entry.inputBytes != null ? `inBytes=${entry.inputBytes}` : null,
+    entry.outputBytes != null ? `outBytes=${entry.outputBytes}` : null,
+    entry.error ? `error=${entry.error}` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+};
+
+const DEFAULT_UPDATE_STATUS: UpdateStatus = {
+  status: "unsupported",
+  currentVersion: null,
+  availableVersion: null,
+  checkedAt: null,
+  downloadedBytes: null,
+  totalBytes: null,
+  error: null,
+  source: null,
+  channel: null,
+  metadata: null,
+};
+
+const toNullableString = (value: unknown): string | null => {
+  if (value == null || value === "") {
+    return null;
+  }
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+    ? String(value)
+    : null;
+};
+
+const toNullableNumber = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
+
+const normalizeUpdateStatus = (value: unknown): UpdateStatus => {
+  if (!isRecord(value)) {
+    return { ...DEFAULT_UPDATE_STATUS };
+  }
+  const metadataValue = pick(value, "metadata");
+  const metadata = isRecord(metadataValue)
+    ? {
+        version: asString(pick(metadataValue, "version"), "—"),
+        date: toNullableString(pick(metadataValue, "date")),
+        body: toNullableString(pick(metadataValue, "body")),
+        target: toNullableString(pick(metadataValue, "target")),
+        source: toNullableString(pick(metadataValue, "source")),
+        channel: toNullableString(pick(metadataValue, "channel")),
+      }
+    : null;
+  return {
+    status: asString(pick(value, "status"), "unknown"),
+    currentVersion: toNullableString(pick(value, "currentVersion")),
+    availableVersion: toNullableString(pick(value, "availableVersion")),
+    checkedAt: toNullableString(pick(value, "checkedAt")),
+    downloadedBytes: toNullableNumber(pick(value, "downloadedBytes")),
+    totalBytes: toNullableNumber(pick(value, "totalBytes")),
+    error: redactSensitiveText(toNullableString(pick(value, "error"))),
+    source: (() => {
+      const source = toNullableString(pick(value, "source"));
+      return source ? safeEndpointLabel(source) : null;
+    })(),
+    channel: toNullableString(pick(value, "channel")),
+    switchResult: toNullableString(pick(value, "switchResult") ?? pick(value, "relaunchResult")),
+    relaunchDeferred: pick(value, "relaunchDeferred") === true,
+    metadata,
+  };
+};
+
+const normalizeSidecars = (value: unknown): SidecarStatus[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isRecord).map((entry) => ({
+    id: asString(pick(entry, "id"), "sidecar"),
+    kind: asString(pick(entry, "kind"), "runtime"),
+    version: toNullableString(pick(entry, "version")),
+    versionSource: toNullableString(pick(entry, "versionSource")),
+    health: asString(pick(entry, "health") ?? pick(entry, "status"), "unknown"),
+    healthUrl: (() => {
+      const healthUrl = toNullableString(pick(entry, "healthUrl") ?? pick(entry, "url"));
+      return healthUrl ? safeEndpointLabel(healthUrl) : null;
+    })(),
+    port: toNullableNumber(pick(entry, "port")),
+    active: pick(entry, "active") === true,
+    lastError: redactSensitiveText(
+      toNullableString(pick(entry, "lastError") ?? pick(entry, "error")),
+    ),
+    startedAt: toNullableString(pick(entry, "startedAt")),
+    switchResult: toNullableString(pick(entry, "switchResult") ?? pick(entry, "switch")),
+  }));
+};
+
+/** Normalize fulfilled IPC arrays before they reach render-time `.map()` calls. */
+const normalizeAudioDevices = (value: unknown): AudioInputDevice[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isRecord).map((entry, index) => ({
+    deviceId: toNullableString(pick(entry, "deviceId")) ?? `device-${index + 1}`,
+    label: toNullableString(pick(entry, "label")) ?? "",
+    groupId: toNullableString(pick(entry, "groupId")) ?? "",
+  }));
+};
+
+const normalizeModelStatus = (value: unknown): ModelStatusEntry[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isRecord).map((entry, index) => ({
+    modelId: toNullableString(pick(entry, "modelId")) ?? `model-${index + 1}`,
+    status: toNullableString(pick(entry, "status")) ?? "unknown",
+    installedBytes: toNullableNumber(pick(entry, "installedBytes")),
+    expectedBytes: toNullableNumber(pick(entry, "expectedBytes")) ?? 0,
+    lastError: redactSensitiveText(
+      toNullableString(pick(entry, "lastError") ?? pick(entry, "error")),
+    ),
+  }));
+};
+
+const formatUpdateBytes = (status: UpdateStatus): string | null => {
+  if (status.downloadedBytes == null && status.totalBytes == null) {
+    return null;
+  }
+  return `${formatBytes(status.downloadedBytes)} / ${formatBytes(status.totalBytes)}`;
+};
+
+const safeEndpointLabel = (value: string | null): string => {
+  if (!value) {
+    return "—";
+  }
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return value.split(/[?#]/, 1)[0] || "—";
+  }
+};
+
+const SENSITIVE_DIAGNOSTIC_KEY =
+  /(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|id[-_]?token|authorization|password|passwd|secret|private[-_]?key|client[-_]?secret|cookie|session[-_]?token|signature|^sig$)/i;
+
+const sanitizeDiagnosticValue = (value: unknown, key = ""): unknown => {
+  if (SENSITIVE_DIAGNOSTIC_KEY.test(key)) {
+    return value == null ? null : "[REDACTED]";
+  }
+  if (typeof value === "string") {
+    return redactSensitiveText(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeDiagnosticValue(entry, key));
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, childValue]) => [
+        childKey,
+        sanitizeDiagnosticValue(childValue, childKey),
+      ]),
+    );
+  }
+  return value;
+};
+
+/** Keep refresh/action failures visible without allowing malformed IPC errors
+ * to break the panel render or leak credential-shaped text. */
+const recordDebugOperationError = (operation: string, reason: unknown): string => {
+  let formatted: string | undefined;
+  try {
+    formatted =
+      typeof formatBridgeError === "function"
+        ? formatBridgeError(reason)
+        : (toNullableString(reason) ?? undefined);
+  } catch {
+    formatted = undefined;
+  }
+  let detail: string;
+  try {
+    detail = redactSensitiveText(formatted) ?? `Unable to ${operation}.`;
+  } catch {
+    detail = `Unable to ${operation}.`;
+  }
+  try {
+    appendStructuredLog({
+      level: "error",
+      source: "frontend",
+      message: `debug ${operation} failed`,
+      error: detail,
+      fields: { operation },
+    });
+  } catch {
+    // Error reporting is best-effort; the panel must still render the fallback.
+  }
+  return detail;
+};
+
 export function DebugPanel() {
   const { locale, t } = useI18n();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   // Persist open so developers can leave debug mode expanded across reloads.
   const [open, setOpen] = useState(() => readDebugPanelOpenPreference());
   const [backendInfo, setBackendInfo] = useState<JsonObject | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [switchResult, setSwitchResult] = useState<string | null>(null);
+  const [sidecars, setSidecars] = useState<SidecarStatus[]>([]);
   const [frontendInfo, setFrontendInfo] = useState<JsonObject | null>(null);
   const [captureInfo, setCaptureInfo] = useState<AudioCaptureDiagnostics | null>(null);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [modelStatus, setModelStatus] = useState<ModelStatusEntry[]>([]);
-  const [events, setEvents] = useState<DiagnosticEvent[]>([]);
-  // External store — always subscribed so live stage pushes re-render without open-effect races.
-  // Snapshot is a scalar revision; derived arrays are memoized from it (stable getSnapshot).
+  // The panel is mounted in both Live and Settings routes. Avoid rerendering
+  // its large diagnostics tree for every caption while collapsed; opening the
+  // panel resubscribes and useSyncExternalStore reconciles the latest snapshot.
+  const subscribeDiagnosticsWhenOpen = useCallback(
+    (listener: () => void) => (open ? subscribeDiagnosticEvents(listener) : () => undefined),
+    [open],
+  );
+  const diagnosticStoreRevision = useSyncExternalStore(
+    subscribeDiagnosticsWhenOpen,
+    getDiagnosticStoreRevision,
+    getDiagnosticStoreRevision,
+  );
+  const events = useMemo(() => {
+    void diagnosticStoreRevision;
+    return getDiagnosticEvents();
+  }, [diagnosticStoreRevision]);
+  const subscribeStagesWhenOpen = useCallback(
+    (listener: () => void) => (open ? subscribePipelineStages(listener) : () => undefined),
+    [open],
+  );
+  // Snapshot is a scalar revision; derived arrays are memoized from it.
   const stageStoreRevision = useSyncExternalStore(
-    subscribePipelineStages,
+    subscribeStagesWhenOpen,
     getPipelineStageStoreRevision,
     getPipelineStageStoreRevision,
   );
@@ -205,6 +460,19 @@ export function DebugPanel() {
     void stageStoreRevision;
     return getPipelineStageEvents();
   }, [stageStoreRevision]);
+  const subscribeDisplayTimingWhenOpen = useCallback(
+    (listener: () => void) => (open ? subscribeCaptionDisplayTiming(listener) : () => undefined),
+    [open],
+  );
+  const displayTimingRevision = useSyncExternalStore(
+    subscribeDisplayTimingWhenOpen,
+    getCaptionDisplayTimingRevision,
+    getCaptionDisplayTimingRevision,
+  );
+  const displayTiming = useMemo(() => {
+    void displayTimingRevision;
+    return getCaptionDisplayTimingStats();
+  }, [displayTimingRevision]);
   const utteranceGroups = useMemo(() => {
     void stageStoreRevision;
     return getUtteranceStageGroups();
@@ -213,11 +481,83 @@ export function DebugPanel() {
     void stageStoreRevision;
     return isVerbosePipelineLogging();
   }, [stageStoreRevision]);
+  const subscribeStructuredLogsWhenOpen = useCallback(
+    (listener: () => void) => (open ? subscribeStructuredLogs(listener) : () => undefined),
+    [open],
+  );
+  const structuredLogRevision = useSyncExternalStore(
+    subscribeStructuredLogsWhenOpen,
+    getStructuredLogRevision,
+    getStructuredLogRevision,
+  );
+  const logLevel = useMemo(() => {
+    void structuredLogRevision;
+    return getLogLevel();
+  }, [structuredLogRevision]);
+  const structuredLogs = useMemo(() => {
+    void structuredLogRevision;
+    return getStructuredLogs({ maxLevel: getLogLevel(), limit: 80 });
+  }, [structuredLogRevision]);
   const [chunkTiming, setChunkTiming] = useState<ChunkTimingStats>(() => getChunkTimingStats());
   const [loading, setLoading] = useState(false);
+  // Distinguish the initial open fetch from the panel's data availability.
+  // A failed native call leaves backendInfo null; using that as the only
+  // sentinel would make the open effect retry forever and starve the panel.
+  const [initialFetchAttempted, setInitialFetchAttempted] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savingVerbose, setSavingVerbose] = useState(false);
+  const [savingLogLevel, setSavingLogLevel] = useState(false);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [updateAction, setUpdateAction] = useState<"check" | "install" | "relaunch" | null>(null);
+
+  // Convert optional updater fields to flat rows once. Keeping the conditional
+  // logic here makes the rendered panel a shallow list and prevents status
+  // details from becoming a deeply nested block of JSX.
+  const updateRows: Array<{
+    label: string;
+    value: string;
+    testId?: string;
+    error?: boolean;
+  }> = [];
+  if (updateStatus) {
+    updateRows.push(
+      { label: t("debug.updateState"), value: updateStatus.status, testId: "debug-update-state" },
+      {
+        label: t("debug.updateVersion"),
+        value: `${asString(updateStatus.currentVersion, "—")} → ${asString(updateStatus.availableVersion, "—")}`,
+      },
+      { label: t("debug.updateSource"), value: safeEndpointLabel(updateStatus.source) },
+    );
+    if (updateStatus.checkedAt) {
+      updateRows.push({ label: t("debug.updateCheckedAt"), value: updateStatus.checkedAt });
+    }
+    const progress = formatUpdateBytes(updateStatus);
+    if (progress) {
+      updateRows.push({ label: t("debug.updateProgress"), value: progress });
+    }
+    if (updateStatus.error) {
+      updateRows.push({ label: t("debug.updateError"), value: updateStatus.error, error: true });
+    }
+    const effectiveSwitchResult = switchResult ?? updateStatus.switchResult;
+    if (effectiveSwitchResult) {
+      updateRows.push({ label: t("debug.switchResult"), value: effectiveSwitchResult });
+    }
+  }
+
+  const sidecarRows = sidecars.map((sidecar) => ({
+    id: sidecar.id,
+    label: `${sidecar.id} · ${sidecar.health}${sidecar.active ? ` · ${t("debug.sidecarActive")}` : ""}`,
+    detail: [
+      `${t("debug.sidecarVersion")}: ${asString(sidecar.version, "—")}`,
+      sidecar.port != null ? `port=${sidecar.port}` : null,
+      sidecar.healthUrl ? safeEndpointLabel(sidecar.healthUrl) : null,
+      sidecar.switchResult ? `${t("debug.switchResult")}: ${sidecar.switchResult}` : null,
+      sidecar.lastError ? `${t("debug.lastError")}: ${sidecar.lastError}` : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(" · "),
+  }));
 
   const combined = useMemo(() => {
     if (
@@ -227,7 +567,10 @@ export function DebugPanel() {
       devices.length === 0 &&
       modelStatus.length === 0 &&
       events.length === 0 &&
-      stageEvents.length === 0
+      stageEvents.length === 0 &&
+      structuredLogs.length === 0 &&
+      !updateStatus &&
+      sidecars.length === 0
     ) {
       return null;
     }
@@ -244,8 +587,16 @@ export function DebugPanel() {
       recentEvents: events,
       pipelineStages: stageEvents,
       utteranceGroups,
+      displayTiming,
       chunkTiming,
       verbosePipelineLogging: verboseLogging,
+      logLevel,
+      structuredLogs,
+      runtimeDiagnostics: {
+        update: updateStatus,
+        sidecars,
+        switchResult,
+      },
     };
   }, [
     backendInfo,
@@ -256,34 +607,108 @@ export function DebugPanel() {
     events,
     stageEvents,
     utteranceGroups,
+    displayTiming,
     chunkTiming,
     verboseLogging,
+    logLevel,
+    structuredLogs,
+    updateStatus,
+    sidecars,
+    switchResult,
   ]);
 
   const fetchInfo = useCallback(async () => {
+    setInitialFetchAttempted(true);
     setLoading(true);
     setError(null);
-    const nextFrontend = collectFrontendDiagnostics();
-    const nextCapture = getLastAudioCaptureDiagnostics();
-    const nextEvents = getDiagnosticEvents();
-    setFrontendInfo(nextFrontend);
-    setCaptureInfo(nextCapture);
-    setEvents(nextEvents);
-    setChunkTiming(getChunkTimingStats());
     try {
-      const [info, nextDevices, nextModelStatus] = await Promise.all([
-        bridge.getDebugInfo(),
-        enumerateAudioInputDevices().catch(() => [] as AudioInputDevice[]),
-        bridge.listModelStatus().catch(() => [] as ModelStatusEntry[]),
-      ]);
-      const backend = isRecord(info) ? info : { value: info };
-      setBackendInfo(backend);
-      setDevices(nextDevices);
-      setModelStatus(nextModelStatus);
+      const nextFrontend = collectFrontendDiagnostics();
+      const nextCapture = getLastAudioCaptureDiagnostics();
+      setFrontendInfo(nextFrontend);
+      setCaptureInfo(nextCapture);
+      setChunkTiming(getChunkTimingStats());
+      const [infoResult, devicesResult, modelStatusResult, updateResult] = await Promise.allSettled(
+        [
+          bridge.getDebugInfo(),
+          enumerateAudioInputDevices(),
+          bridge.listModelStatus(),
+          typeof bridge.getUpdateStatus === "function"
+            ? bridge.getUpdateStatus()
+            : Promise.resolve(null),
+        ],
+      );
+      if (!mountedRef.current) {
+        return;
+      }
+      let backend: JsonObject | null = null;
+      if (infoResult.status === "fulfilled") {
+        const rawBackend = isRecord(infoResult.value)
+          ? infoResult.value
+          : { value: infoResult.value };
+        const backendValue = sanitizeDiagnosticValue(rawBackend);
+        backend = isRecord(backendValue) ? backendValue : { value: backendValue };
+        setBackendInfo(backend);
+
+        // Recover stage rows emitted before the app-wide event listener or
+        // DebugPanel mounted. Hydration is deduplicated and does not replay
+        // historical diagnostics into the live feed.
+        const stageHistory =
+          pick(backend, "pipelineStages") ??
+          pick(backend, "pipelineStageHistory") ??
+          pick(backend, "stageHistory");
+        if (Array.isArray(stageHistory)) {
+          hydratePipelineStageEvents(stageHistory);
+        }
+      } else {
+        setBackendInfo(null);
+        setError(recordDebugOperationError("refresh", infoResult.reason));
+      }
+
+      if (devicesResult.status === "fulfilled") {
+        setDevices(normalizeAudioDevices(devicesResult.value));
+      } else {
+        setDevices([]);
+        setError(recordDebugOperationError("audio devices", devicesResult.reason));
+      }
+      if (modelStatusResult.status === "fulfilled") {
+        setModelStatus(normalizeModelStatus(modelStatusResult.value));
+      } else {
+        setModelStatus([]);
+        setError(recordDebugOperationError("model status", modelStatusResult.reason));
+      }
+
+      const nativeUpdate = updateResult.status === "fulfilled" ? updateResult.value : null;
+      if (updateResult.status === "rejected") {
+        setError(recordDebugOperationError("update status", updateResult.reason));
+      }
+      const backendUpdate = backend
+        ? (pick(backend, "update") ?? pick(backend, "updateStatus"))
+        : undefined;
+      setUpdateStatus(
+        nativeUpdate
+          ? normalizeUpdateStatus(nativeUpdate)
+          : isRecord(backendUpdate)
+            ? normalizeUpdateStatus(backendUpdate)
+            : null,
+      );
+      const backendSwitch = backend
+        ? (pick(backend, "switchResult") ??
+          pick(backend, "relaunchResult") ??
+          pick(backend, "runtimeSwitch"))
+        : undefined;
+      setSwitchResult(
+        toNullableString(
+          isRecord(backendSwitch)
+            ? (pick(backendSwitch, "reason") ?? pick(backendSwitch, "result"))
+            : backendSwitch,
+        ),
+      );
+      setSidecars(normalizeSidecars(backend ? pick(backend, "sidecars") : null));
+
       // Desktop: prefer persisted Rust config so verbose matches backend logs.
       // Browser preview has no writable backend config — keep localStorage preference.
-      if (bridge.isDesktop()) {
-        const configValue = isRecord(backend) ? pick(backend, "config") : null;
+      if (bridge.isDesktop() && backend) {
+        const configValue = pick(backend, "config");
         const config = isRecord(configValue) ? configValue : null;
         const debugValue = pick(config, "debug") ?? pick(backend, "debug");
         const debug = isRecord(debugValue) ? debugValue : null;
@@ -291,19 +716,29 @@ export function DebugPanel() {
         if (typeof verboseFromBackend === "boolean") {
           setVerbosePipelineLogging(verboseFromBackend);
         }
+        const levelFromBackend = pick(debug, "logLevel");
+        if (typeof levelFromBackend === "string") {
+          setLogLevel(levelFromBackend);
+        }
       }
     } catch (e) {
-      setBackendInfo(null);
-      setError(String(e));
+      // Keep already-collected frontend/stage data visible even when a
+      // malformed native payload throws during normalization.
+      if (mountedRef.current) {
+        setError(recordDebugOperationError("refresh", e));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false);
+      }
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => {
-    if (open && !backendInfo && !loading) {
+    if (open && !initialFetchAttempted && !loading) {
       void fetchInfo();
     }
-  }, [open, backendInfo, loading, fetchInfo]);
+  }, [open, initialFetchAttempted, loading, fetchInfo]);
 
   // Chunk timing is published from the live capture path; poll snapshot while open.
   useEffect(() => {
@@ -319,6 +754,95 @@ export function DebugPanel() {
     };
   }, [open]);
 
+  // Native updater transitions are pushed independently of refreshes. Keep a
+  // local snapshot for the panel and mirror only safe, metadata-only fields to
+  // the frontend structured log ring buffer.
+  useEffect(() => {
+    if (!open || typeof bridge.listenUpdateStatus !== "function") {
+      return;
+    }
+    let disposed = false;
+    let pending: ReturnType<typeof bridge.listenUpdateStatus>;
+    try {
+      pending = Promise.resolve(
+        bridge.listenUpdateStatus((next) => {
+          if (disposed) {
+            return;
+          }
+          const status = normalizeUpdateStatus(next);
+          setUpdateStatus(status);
+          if (status.switchResult) {
+            setSwitchResult(status.switchResult);
+          }
+          appendStructuredLog({
+            level: status.status === "failed" ? "error" : "info",
+            source: "backend",
+            message: `updater status: ${status.status}`,
+            error: status.error,
+            fields: {
+              currentVersion: status.currentVersion,
+              availableVersion: status.availableVersion,
+              source: status.source,
+              channel: status.channel,
+              downloadedBytes: status.downloadedBytes,
+              totalBytes: status.totalBytes,
+              switchResult: status.switchResult ?? null,
+            },
+          });
+        }),
+      ) as ReturnType<typeof bridge.listenUpdateStatus>;
+    } catch (reason) {
+      setError(recordDebugOperationError("subscribe updater status", reason));
+      return;
+    }
+    void pending.catch((reason) => {
+      if (!disposed) {
+        setError(recordDebugOperationError("subscribe updater status", reason));
+      }
+    });
+    return () => {
+      disposed = true;
+      void pending.then((unlisten) => unlisten?.()).catch(() => undefined);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || typeof bridge.listenUpdateRelaunchDeferred !== "function") {
+      return;
+    }
+    let disposed = false;
+    let pending: ReturnType<typeof bridge.listenUpdateRelaunchDeferred>;
+    try {
+      pending = Promise.resolve(
+        bridge.listenUpdateRelaunchDeferred((reason) => {
+          if (disposed) {
+            return;
+          }
+          const safeReason = toNullableString(reason) ?? "unknown";
+          setSwitchResult(safeReason);
+          appendStructuredLog({
+            level: "info",
+            source: "backend",
+            message: "updated app switch deferred",
+            fields: { reason: safeReason },
+          });
+        }),
+      ) as ReturnType<typeof bridge.listenUpdateRelaunchDeferred>;
+    } catch (reason) {
+      setError(recordDebugOperationError("subscribe update switch", reason));
+      return;
+    }
+    void pending.catch((reason) => {
+      if (!disposed) {
+        setError(recordDebugOperationError("subscribe update switch", reason));
+      }
+    });
+    return () => {
+      disposed = true;
+      void pending.then((unlisten) => unlisten?.()).catch(() => undefined);
+    };
+  }, [open]);
+
   const toggleVerboseLogging = useCallback(async (enabled: boolean) => {
     setVerbosePipelineLogging(enabled);
     if (!bridge.isDesktop()) {
@@ -329,15 +853,212 @@ export function DebugPanel() {
       const current = await bridge.getConfig();
       const next = mergeConfig({
         ...current,
-        debug: { ...current.debug, verboseLogging: enabled },
+        debug: { ...current.debug, verboseLogging: enabled, logLevel: getLogLevel() },
       });
       await bridge.saveConfig(next);
     } catch (e) {
-      setError(String(e));
+      if (mountedRef.current) {
+        setError(recordDebugOperationError("save verbose logging", e));
+      }
     } finally {
-      setSavingVerbose(false);
+      if (mountedRef.current) {
+        setSavingVerbose(false);
+      }
     }
   }, []);
+
+  const changeLogLevel = useCallback(async (level: LogLevel) => {
+    setLogLevel(level);
+    if (!bridge.isDesktop()) {
+      return;
+    }
+    setSavingLogLevel(true);
+    try {
+      const current = await bridge.getConfig();
+      const next = mergeConfig({
+        ...current,
+        debug: {
+          ...current.debug,
+          verboseLogging: isVerbosePipelineLogging(),
+          logLevel: level,
+        },
+      });
+      await bridge.saveConfig(next);
+    } catch (e) {
+      if (mountedRef.current) {
+        setError(recordDebugOperationError("save log level", e));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setSavingLogLevel(false);
+      }
+    }
+  }, []);
+
+  const checkForUpdate = useCallback(async () => {
+    if (typeof bridge.checkForUpdate !== "function") {
+      return;
+    }
+    setUpdateAction("check");
+    setError(null);
+    try {
+      const metadata = await bridge.checkForUpdate();
+      if (!mountedRef.current) {
+        return;
+      }
+      const next =
+        typeof bridge.getUpdateStatus === "function"
+          ? await bridge.getUpdateStatus()
+          : metadata
+            ? {
+                ...DEFAULT_UPDATE_STATUS,
+                status: "available",
+                availableVersion: metadata.version,
+                metadata,
+              }
+            : { ...DEFAULT_UPDATE_STATUS, status: "idle" };
+      const normalized = normalizeUpdateStatus(next);
+      setUpdateStatus(normalized);
+      if (normalized.switchResult) {
+        setSwitchResult(normalized.switchResult);
+      }
+    } catch (e) {
+      if (!mountedRef.current) {
+        return;
+      }
+      const detail = recordDebugOperationError("updater check", e);
+      setUpdateStatus((previous) => ({
+        ...(previous ?? DEFAULT_UPDATE_STATUS),
+        status: "failed",
+        error: detail,
+      }));
+      setError(detail);
+    } finally {
+      if (mountedRef.current) {
+        setUpdateAction(null);
+      }
+    }
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    if (typeof bridge.installUpdate !== "function") {
+      return;
+    }
+    setUpdateAction("install");
+    setError(null);
+    try {
+      await bridge.installUpdate();
+      if (!mountedRef.current) {
+        return;
+      }
+      const next =
+        typeof bridge.getUpdateStatus === "function" ? await bridge.getUpdateStatus() : null;
+      if (next) {
+        const normalized = normalizeUpdateStatus(next);
+        setUpdateStatus(normalized);
+        if (normalized.switchResult) {
+          setSwitchResult(normalized.switchResult);
+        }
+      }
+    } catch (e) {
+      if (!mountedRef.current) {
+        return;
+      }
+      const detail = recordDebugOperationError("updater install", e);
+      setUpdateStatus((previous) => ({
+        ...(previous ?? DEFAULT_UPDATE_STATUS),
+        status: "failed",
+        error: detail,
+      }));
+      setError(detail);
+    } finally {
+      if (mountedRef.current) {
+        setUpdateAction(null);
+      }
+    }
+  }, []);
+
+  const relaunchUpdatedApp = useCallback(async () => {
+    if (typeof bridge.relaunchToUpdatedApp !== "function") {
+      return;
+    }
+    setUpdateAction("relaunch");
+    setError(null);
+    try {
+      const result = await bridge.relaunchToUpdatedApp();
+      if (!mountedRef.current) {
+        return;
+      }
+      const safeReason = isRecord(result)
+        ? (toNullableString(pick(result, "reason")) ?? "unknown")
+        : "unknown";
+      const deferred = isRecord(result) && pick(result, "deferred") === true;
+      setSwitchResult(safeReason);
+      appendStructuredLog({
+        level: "info",
+        source: "backend",
+        message: "updated app switch requested",
+        fields: { deferred, reason: safeReason },
+      });
+      if (deferred) {
+        setUpdateStatus((previous) => ({
+          ...(previous ?? DEFAULT_UPDATE_STATUS),
+          switchResult: safeReason,
+          relaunchDeferred: true,
+        }));
+      }
+    } catch (e) {
+      if (!mountedRef.current) {
+        return;
+      }
+      const detail = recordDebugOperationError("updated app switch", e);
+      setSwitchResult("failed");
+      setError(detail);
+    } finally {
+      if (mountedRef.current) {
+        setUpdateAction(null);
+      }
+    }
+  }, []);
+
+  const exportLogsDownload = useCallback(
+    (format: "json" | "jsonl") => {
+      try {
+        const name = downloadStructuredLogs(format, { maxLevel: getLogLevel() });
+        setExportNotice(name ? `${t("debug.exportSaved")}: ${name}` : t("debug.exportSaved"));
+        window.setTimeout(() => {
+          if (mountedRef.current) {
+            setExportNotice(null);
+          }
+        }, 4000);
+      } catch (e) {
+        setError(recordDebugOperationError(`export ${format}`, e));
+      }
+    },
+    [t],
+  );
+
+  const exportLogsToDir = useCallback(async () => {
+    try {
+      const body = formatLogsAsJsonl(getStructuredLogs({ maxLevel: getLogLevel() }));
+      const path = await bridge.exportDebugLogs(body, "jsonl");
+      if (!mountedRef.current) {
+        return;
+      }
+      // Also trigger a browser download so the user has a local copy in preview.
+      downloadStructuredLogs("jsonl", { maxLevel: getLogLevel() });
+      setExportNotice(`${t("debug.exportSaved")}: ${path}`);
+      window.setTimeout(() => {
+        if (mountedRef.current) {
+          setExportNotice(null);
+        }
+      }, 5000);
+    } catch (e) {
+      if (mountedRef.current) {
+        setError(recordDebugOperationError("export logs", e));
+      }
+    }
+  }, [t]);
 
   const copyToClipboard = async () => {
     if (!combined) {
@@ -345,10 +1066,19 @@ export function DebugPanel() {
     }
     try {
       await navigator.clipboard.writeText(JSON.stringify(combined, null, 2));
+      if (!mountedRef.current) {
+        return;
+      }
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => {
+        if (mountedRef.current) {
+          setCopied(false);
+        }
+      }, 2000);
     } catch (e) {
-      setError(String(e));
+      if (mountedRef.current) {
+        setError(recordDebugOperationError("copy diagnostics", e));
+      }
     }
   };
 
@@ -380,7 +1110,7 @@ export function DebugPanel() {
   const lastErrorCandidates = [
     asString(pick(backendInfo, "lastError"), ""),
     asString(pick(runtimeStatus, "lastError"), ""),
-    captureInfo?.lastError ?? "",
+    asString(captureInfo?.lastError, ""),
     ...modelDownloadErrors,
     ...eventErrors,
   ]
@@ -466,6 +1196,38 @@ export function DebugPanel() {
             <button
               className="secondary-button"
               type="button"
+              data-testid="debug-check-update"
+              onClick={() => void checkForUpdate()}
+              disabled={updateAction !== null || !bridge.isDesktop()}
+            >
+              {updateAction === "check" ? t("debug.updateChecking") : t("debug.updateCheck")}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              data-testid="debug-install-update"
+              onClick={() => void installUpdate()}
+              disabled={
+                updateAction !== null ||
+                !bridge.isDesktop() ||
+                !updateStatus ||
+                !["available", "ready"].includes(updateStatus.status)
+              }
+            >
+              {updateAction === "install" ? t("debug.updateInstalling") : t("debug.updateInstall")}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              data-testid="debug-relaunch-update"
+              onClick={() => void relaunchUpdatedApp()}
+              disabled={updateAction !== null || !bridge.isDesktop() || !updateStatus}
+            >
+              {updateAction === "relaunch" ? t("debug.updateSwitching") : t("debug.updateSwitch")}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
               onClick={() => void copyToClipboard()}
               disabled={!combined}
             >
@@ -493,8 +1255,67 @@ export function DebugPanel() {
               />
               <span>{t("debug.verboseLogging")}</span>
             </label>
+            <label className="debug-log-level">
+              <span>{t("debug.logLevel")}</span>
+              <select
+                data-testid="debug-log-level"
+                value={logLevel}
+                disabled={savingLogLevel}
+                onChange={(event) => {
+                  void changeLogLevel(event.target.value as LogLevel);
+                }}
+              >
+                {LOG_LEVELS.map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="secondary-button"
+              type="button"
+              data-testid="debug-export-jsonl"
+              onClick={() => exportLogsDownload("jsonl")}
+              disabled={structuredLogs.length === 0}
+            >
+              {t("debug.exportJsonl")}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              data-testid="debug-export-json"
+              onClick={() => exportLogsDownload("json")}
+              disabled={structuredLogs.length === 0}
+            >
+              {t("debug.exportJson")}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              data-testid="debug-export-log-dir"
+              onClick={() => void exportLogsToDir()}
+              disabled={structuredLogs.length === 0}
+            >
+              {t("debug.exportToLogDir")}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              data-testid="debug-clear-logs"
+              onClick={() => clearStructuredLogs()}
+              disabled={structuredLogs.length === 0}
+            >
+              {t("debug.clearLogs")}
+            </button>
           </div>
           <p className="debug-inline-meta">{t("debug.verboseLoggingHelp")}</p>
+          <p className="debug-inline-meta">{t("debug.logLevelHelp")}</p>
+          {exportNotice ? (
+            <p className="debug-inline-meta" data-testid="debug-export-notice" role="status">
+              {exportNotice}
+            </p>
+          ) : null}
           {error ? (
             <div className="download-message error notice" role="alert">
               <span className="notice-text">{error}</span>
@@ -588,6 +1409,34 @@ export function DebugPanel() {
                 </div>
               </section>
 
+              {updateStatus ? (
+                <div className="debug-section" data-testid="debug-update-status">
+                  <h4 className="debug-section-title">{t("debug.updateTitle")}</h4>
+                  <ul className="debug-kv-list">
+                    {updateRows.map((row) => (
+                      <li className={row.error ? "is-error" : undefined} key={row.label}>
+                        <span>{row.label}</span>
+                        <code data-testid={row.testId}>{row.value}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {sidecars.length > 0 ? (
+                <div className="debug-section" data-testid="debug-sidecars">
+                  <h4 className="debug-section-title">{t("debug.sidecarsTitle")}</h4>
+                  <ul className="debug-kv-list">
+                    {sidecarRows.map((row) => (
+                      <li key={row.id} data-testid="debug-sidecar-row">
+                        <span>{row.label}</span>
+                        <code>{row.detail}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
               <div className="debug-section">
                 <h4 className="debug-section-title">{t("debug.recentErrorsTitle")}</h4>
                 {recentErrors.length === 0 ? (
@@ -596,6 +1445,47 @@ export function DebugPanel() {
                   <ul className="debug-error-list">
                     {recentErrors.map((entry) => (
                       <li key={entry}>{entry}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="debug-section" data-testid="debug-structured-logs">
+                <h4 className="debug-section-title">{t("debug.structuredLogsTitle")}</h4>
+                <p className="debug-inline-meta">{t("debug.structuredLogsLead")}</p>
+                <p className="debug-inline-meta">
+                  {t("debug.logLevelLabel")}: <code>{logLevel}</code> · {structuredLogs.length} rows
+                </p>
+                {structuredLogs.length === 0 ? (
+                  <p className="download-empty">{t("debug.noStructuredLogs")}</p>
+                ) : (
+                  <ul className="debug-structured-log-list" data-testid="debug-structured-log-list">
+                    {structuredLogs.map((entry) => (
+                      <li
+                        key={entry.id}
+                        className={`debug-structured-log-row debug-log-${entry.level}${
+                          entry.error ? " is-error" : ""
+                        }`}
+                        data-testid="debug-structured-log-row"
+                        data-log-level={entry.level}
+                        data-log-source={entry.source}
+                      >
+                        <div className="debug-structured-log-main">
+                          <span className="debug-event-kind">{entry.level}</span>
+                          <span className="debug-log-source">
+                            {t("debug.logSource")}: {entry.source}
+                          </span>
+                          {entry.stage ? (
+                            <span className="debug-stage-status">{entry.stage}</span>
+                          ) : null}
+                          {entry.durationMs != null ? (
+                            <span className="debug-stage-ms">{formatMs(entry.durationMs)}</span>
+                          ) : null}
+                        </div>
+                        <code className="debug-path debug-stage-text">
+                          {formatStructuredLogLine(entry)}
+                        </code>
+                      </li>
                     ))}
                   </ul>
                 )}
@@ -746,6 +1636,26 @@ export function DebugPanel() {
                     <code>{formatMs(chunkTiming.lastFirstCaptionMs)}</code>
                   </li>
                   <li>
+                    <span>{t("debug.displaySourcePipeline")}</span>
+                    <code>{formatMs(displayTiming.sourceSincePipelineStartMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.displaySourceEvent")}</span>
+                    <code>{formatMs(displayTiming.sourceEventToPaintMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.displayTranslationPipeline")}</span>
+                    <code>{formatMs(displayTiming.translationSincePipelineStartMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.displayTranslationEvent")}</span>
+                    <code>{formatMs(displayTiming.translationEventToPaintMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.displayTranslationLag")}</span>
+                    <code>{formatMs(displayTiming.translationSinceSourcePaintMs)}</code>
+                  </li>
+                  <li>
                     <span>{t("debug.chunkProcessed")}</span>
                     <code>{chunkTiming.chunksProcessed}</code>
                   </li>
@@ -861,8 +1771,12 @@ export function DebugPanel() {
                     </span>
                     <code>
                       {t("debug.chunkMs")}: {asString(pick(audioConfig, "chunkMs"))} ms ·{" "}
-                      {t("debug.silenceGate")}: {asString(pick(audioConfig, "silenceGateDb"))} dB ·
-                      sampleRate={asString(pick(audioConfig, "sampleRate"))} · device=
+                      {t("debug.silenceGate")}: {asString(pick(audioConfig, "silenceGateDb"))} dB ·{" "}
+                      {t("debug.noiseSuppression")}:{" "}
+                      {pick(audioConfig, "noiseSuppression") === false
+                        ? t("debug.off")
+                        : t("debug.on")}{" "}
+                      · sampleRate={asString(pick(audioConfig, "sampleRate"))} · device=
                       {selectedDeviceId}
                     </code>
                   </li>

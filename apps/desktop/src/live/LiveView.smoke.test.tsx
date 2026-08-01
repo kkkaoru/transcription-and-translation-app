@@ -190,5 +190,8 @@ describe("LiveView in-app preview scaling", () => {
     expect(stage?.textContent).not.toContain("これはプレビュー用の字幕です。");
     expect(stage?.textContent).not.toContain("日本語の音声認識結果がここに表示されます");
     expect(container.querySelector(".caption-id")?.textContent).toBe("live-42");
+    expect(container.querySelector('[data-testid="normalized-caption-stage"]')?.textContent).toBe(
+      "AzooKey",
+    );
   });
 });

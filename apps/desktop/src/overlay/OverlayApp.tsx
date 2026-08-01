@@ -5,8 +5,37 @@ import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
 import type { AppConfig, CaptionPayload } from "../core/types";
 import { OverlayView } from "./CaptionOverlay";
-import { createPreviewCaption } from "./captions";
+import { createEmptyCaption, createPreviewCaption } from "./captions";
 import { NativeFramePublisher } from "./NativeFramePublisher";
+
+/**
+ * The overlay receives only the standard user-facing caption surface. Raw ASR
+ * rows are emitted on `pipeline:stage` for diagnostics and must never replace
+ * the normalized AzooKey/source or translator result in OBS.
+ */
+export const isOverlayCaption = (caption: CaptionPayload): boolean => {
+  const stage = caption.stage;
+  if (stage !== undefined && stage !== "source" && stage !== "translation") {
+    return false;
+  }
+  return Boolean(
+    (typeof caption.sourceText === "string" && caption.sourceText.trim()) ||
+      (typeof caption.translationText === "string" && caption.translationText.trim()),
+  );
+};
+
+/** Tauri's runtime unlisten can be async despite the public `UnlistenFn` type. */
+const disposeSafely = (dispose: () => void): void => {
+  try {
+    const result = (dispose as unknown as () => unknown)();
+    if (result && typeof result === "object" && "then" in result) {
+      const pending = result as PromiseLike<unknown>;
+      void pending.then(undefined, () => undefined);
+    }
+  } catch {
+    // A disconnected webview may reject cleanup. It is safe to ignore here.
+  }
+};
 
 export const OverlayApp = () => {
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
@@ -23,7 +52,45 @@ export const OverlayApp = () => {
 
   useEffect(() => {
     let mounted = true;
+    let idle = false;
     const disposers: Array<() => void> = [];
+    const applyCaption = (nextCaption: CaptionPayload): void => {
+      if (!mounted || idle || !isOverlayCaption(nextCaption)) {
+        return;
+      }
+      setCaption((current) => {
+        // The preview is generated when the overlay mounts. A real caption
+        // may legitimately have an older `startedAt` (for example when OBS
+        // opens after capture already began), so do not let the generic
+        // out-of-order guard reject the first native replay.
+        const merged =
+          current.id === "preview" ? nextCaption : mergeCaptionPayload(current, nextCaption);
+        if (merged === null || merged === current) {
+          return current;
+        }
+        markCaptionDisplay(merged);
+        return merged;
+      });
+    };
+    const replayLatestCaption = (): void => {
+      // Do not await replay in the effect. A missing command in an older
+      // bundle, a disconnected webview, or a rejected IPC call must not leave
+      // the transparent overlay waiting forever.
+      let replay: Promise<CaptionPayload | null>;
+      try {
+        replay = bridge.getLatestCaption();
+      } catch {
+        return;
+      }
+      void replay
+        .then((latest) => {
+          if (latest) {
+            applyCaption(latest);
+          }
+        })
+        .catch(() => undefined);
+    };
+
     void bridge
       .getConfig()
       .then((next) => {
@@ -32,39 +99,74 @@ export const OverlayApp = () => {
         }
       })
       .catch(() => undefined);
-    void bridge
-      .listenCaptions((nextCaption) => {
-        setCaption((current) => {
-          const merged = mergeCaptionPayload(current, nextCaption);
-          if (merged === null || merged === current) {
-            return current;
-          }
-          markCaptionDisplay(merged);
-          return merged;
-        });
-      })
+
+    // `listen` resolves only after native registration. Replay once
+    // immediately (renderer cache), then again after registration (native
+    // history) to close the event-before-listener race without ever blocking
+    // the overlay mount on a subscription Promise.
+    let listenPromise: Promise<() => void>;
+    try {
+      listenPromise = Promise.resolve(bridge.listenCaptions(applyCaption));
+    } catch {
+      listenPromise = Promise.reject(new Error("caption listener unavailable"));
+    }
+    replayLatestCaption();
+    void listenPromise
       .then((dispose) => {
-        if (mounted) {
+        if (mounted && typeof dispose === "function") {
           disposers.push(dispose);
-        } else {
-          dispose();
+        } else if (typeof dispose === "function") {
+          disposeSafely(dispose);
+        }
+        return bridge.getLatestCaption();
+      })
+      .then((latest) => {
+        if (latest) {
+          applyCaption(latest);
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        // Registration can fail when the overlay webview is closing. A final
+        // best-effort history read still recovers a caption when available.
+        replayLatestCaption();
+      });
     void bridge
       .listenConfig(setConfig)
       .then((dispose) => {
         if (mounted) {
           disposers.push(dispose);
         } else {
-          dispose();
+          disposeSafely(dispose);
         }
       })
       .catch(() => undefined);
+    // Runtime events are available in the native overlay webview as well as
+    // the main window. Clear only a successful idle transition; an error must
+    // leave the last caption visible for diagnosis per the README contract.
+    if (typeof bridge.listenRuntime === "function") {
+      void bridge
+        .listenRuntime((status) => {
+          idle = status.status === "idle";
+          if (status.status === "starting" || status.status === "capturing") {
+            idle = false;
+          }
+          if (idle && !status.lastError) {
+            setCaption(createEmptyCaption());
+          }
+        })
+        .then((dispose) => {
+          if (mounted) {
+            disposers.push(dispose);
+          } else {
+            disposeSafely(dispose);
+          }
+        })
+        .catch(() => undefined);
+    }
     return () => {
       mounted = false;
       for (const dispose of disposers) {
-        dispose();
+        disposeSafely(dispose);
       }
     };
   }, []);

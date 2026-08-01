@@ -190,6 +190,21 @@ button:disabled {
   white-space: normal;
 }
 
+.build-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-width: min(54ch, 58vw);
+  margin-top: 4px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .topbar-meta {
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -517,11 +532,14 @@ button:disabled {
 }
 
 .primary-button:hover {
+  /* Color only — never translate/scale/lift. */
+  transform: none;
   background: #86c5d8;
 }
 
 .secondary-button:hover,
 .text-button:hover {
+  transform: none;
   border-color: rgba(77, 150, 173, 0.55);
   background: rgba(134, 197, 216, 0.22);
 }
@@ -721,28 +739,6 @@ button:disabled {
   box-sizing: border-box;
 }
 
-/*
- * Kill the full-window overlay box model (100vw / 100vh on .overlay-root) inside the
- * in-app stage. The host is sized to the designed overlay resolution and CSS-scaled.
- */
-.preview-scale-host .overlay-root,
-.preview-scale-host .overlay-root.overlay-preview,
-.preview-scale-host .overlay-preview {
-  position: relative;
-  inset: auto;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  max-width: none;
-  max-height: none;
-  overflow: hidden;
-  background: transparent;
-  pointer-events: none;
-  box-sizing: border-box;
-}
-
 .preview-footer {
   display: flex;
   flex-wrap: wrap;
@@ -813,6 +809,29 @@ button:disabled {
 .field textarea:focus {
   border-color: rgba(77, 150, 173, 0.7);
   box-shadow: 0 0 0 2px rgba(134, 197, 216, 0.32);
+}
+
+.checkbox-field {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: #3d7f99;
+  cursor: pointer;
 }
 
 .field input[type="color"] {
@@ -999,6 +1018,21 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.caption-stage-label {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 3px 7px;
+  border: 1px solid rgba(61, 129, 150, 0.45);
+  border-radius: 999px;
+  color: #245a72;
+  background: rgba(220, 248, 250, 0.78);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
 .transcript-row.translation p {
   /* Darker aqua for WCAG-friendly contrast on light panels (not --blue sky). */
   color: #245a72;
@@ -1063,6 +1097,75 @@ button:disabled {
 
 .settings-grid.three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-section-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 22px 0;
+  color: var(--muted-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.settings-section-actions span {
+  min-width: 0;
+}
+
+.range-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+}
+
+.field input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  outline: none;
+  background: transparent;
+  accent-color: #3d7f99;
+  cursor: pointer;
+}
+
+.field input[type="range"]:focus {
+  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+.range-value {
+  min-width: 70px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.range-reset {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  color: var(--muted-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.range-reset:hover,
+.range-reset:focus-visible {
+  color: var(--text);
 }
 
 .button-field {
@@ -1147,8 +1250,14 @@ button:disabled {
 }
 
 .model-card p {
-  min-height: 51px;
+  /* Prefer natural wrap height over a fixed min that can look cramped mid-layout. */
+  min-height: 0;
   margin: 11px 0 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  text-overflow: clip;
 }
 
 .model-card p.model-recommended-hint + p {
@@ -1229,13 +1338,20 @@ button:disabled {
 
 .toggle-field {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .toggle-field input {
+  flex: 0 0 auto;
   accent-color: var(--teal);
 }
 
@@ -1299,7 +1415,8 @@ button:disabled {
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  /* Extra gap so multi-line JA + EN blocks never visually collide. */
+  gap: 14px;
   max-width: 100%;
   /* Avoid clipping multi-line JA/EN blocks in the scaled in-app preview. */
   overflow: visible;
@@ -1312,7 +1429,9 @@ button:disabled {
   flex: 0 0 auto;
   max-width: 100%;
   overflow-wrap: anywhere;
+  word-break: break-word;
   white-space: pre-wrap;
+  text-overflow: clip;
   isolation: isolate;
 }
 
@@ -1352,6 +1471,29 @@ button:disabled {
   min-height: 0;
   max-height: 100%;
   overflow: hidden;
+}
+
+/*
+ * Kill the full-window overlay box model (100vw / 100vh on .overlay-root) inside the
+ * in-app stage. The host is sized to the designed overlay resolution and CSS-scaled.
+ * Declared after the base .overlay-root rules so specificity ascends down the file.
+ */
+.preview-scale-host .overlay-root,
+.preview-scale-host .overlay-root.overlay-preview,
+.preview-scale-host .overlay-preview {
+  position: relative;
+  inset: auto;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+  box-sizing: border-box;
 }
 
 /* Prefer full model labels over 3-column mid-word clip on mid-width desktops. */
@@ -1665,6 +1807,8 @@ summary:focus-visible {
 }
 
 .nav-tabs button:hover {
+  /* Color/background only — no lift, scale, or stacking change. */
+  transform: none;
   border-color: rgba(134, 197, 216, 0.35);
   background: rgba(255, 255, 255, 0.48);
 }
@@ -1737,6 +1881,7 @@ summary:focus-visible {
 
 .primary-button:hover {
   /* Color shift only — keep resting shadow so hover does not “lift”. */
+  transform: none;
   background: linear-gradient(110deg, #86c5d8, #afdceb 44%, #eae4ff);
 }
 
@@ -1754,6 +1899,7 @@ summary:focus-visible {
 
 .secondary-button:hover,
 .text-button:hover {
+  transform: none;
   border-color: rgba(134, 197, 216, 0.62);
   background: rgba(234, 228, 255, 0.42);
 }
@@ -2223,8 +2369,11 @@ summary:focus-visible {
 .debug-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  gap: 8px 10px;
   margin-bottom: 12px;
+  /* Keep controls fully visible — wrap instead of truncating labels. */
+  min-width: 0;
 }
 
 .debug-output {
@@ -2342,10 +2491,13 @@ summary:focus-visible {
 
 .debug-inline-meta {
   margin: 0 0 10px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.45;
+  color: var(--muted-2, #356278);
+  font-size: 13.5px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  text-overflow: clip;
 }
 
 .debug-event-list {
@@ -2489,7 +2641,8 @@ summary:focus-visible {
 
 .debug-stage-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* Prefer readable cards over a cramped 3-up row on mid-width desktops. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: 10px;
   margin: 0 0 14px;
 }
@@ -2517,17 +2670,25 @@ summary:focus-visible {
 }
 
 .debug-stage-card-head strong {
+  min-width: 0;
   color: var(--ink, #173f5f);
   font-size: 13.5px;
   font-weight: 720;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .debug-stage-ms {
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--teal-deep, #2f7f97);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 13px;
   font-weight: 700;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .debug-stage-card .debug-kv-list {
@@ -2540,13 +2701,14 @@ summary:focus-visible {
 
 .debug-subsection-title {
   margin: 4px 0 8px;
-  color: var(--muted-2, #356278);
-  font-size: 13px;
+  color: var(--ink, #173f5f);
+  font-size: 13.5px;
   font-weight: 750;
-  letter-spacing: 0.04em;
-  line-height: 1.35;
+  letter-spacing: 0.03em;
+  line-height: 1.4;
   text-transform: uppercase;
   overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .debug-event-stage {
@@ -2596,6 +2758,15 @@ summary:focus-visible {
 @media (max-width: 720px) {
   .transparent-note .auto-chip {
     margin-left: 0;
+  }
+
+  .settings-section-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-section-actions .secondary-button {
+    align-self: flex-start;
   }
 
   .content-heading,
@@ -2781,17 +2952,281 @@ summary:focus-visible {
   white-space: pre-wrap;
 }
 
-/* Static color only — never translate/scale on hover in debug mode. */
+/* Static color only — never translate/scale/shadow-lift on hover in debug mode. */
 .debug-panel .secondary-button:hover,
 .debug-panel .text-button:hover {
   transform: none;
-  box-shadow: none;
+  /* Keep resting inset shadow so hover does not “pop” the control. */
   border-color: rgba(77, 150, 173, 0.55);
   background: rgba(134, 197, 216, 0.28);
 }
 
 .debug-panel .debug-stage-card:hover,
 .debug-panel .debug-utterance:hover,
-.debug-panel .debug-stage-row:hover {
+.debug-panel .debug-stage-row:hover,
+.debug-panel .debug-structured-log-row:hover,
+.debug-panel .debug-stat-card:hover {
   transform: none;
+}
+
+/* Structured log foundation (level select + feed + export).
+   Visibility-first: wrap everything, no ellipsis, no hover motion. */
+.debug-log-level {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink, #173f5f);
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.debug-log-level > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.debug-log-level select {
+  min-width: 7.5rem;
+  max-width: 100%;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid rgba(47, 127, 151, 0.4);
+  border-radius: 10px;
+  color: var(--ink, #173f5f);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  background: rgba(255, 255, 255, 0.85);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.debug-log-level select:hover {
+  transform: none;
+  border-color: rgba(47, 127, 151, 0.62);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.debug-actions .secondary-button,
+.debug-actions .text-button,
+.debug-actions .debug-log-level,
+.debug-actions .debug-verbose-toggle {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
+
+.debug-actions .secondary-button,
+.debug-actions .text-button {
+  /* Dense toolbar: slightly tighter padding, still legible full labels. */
+  padding: 8px 12px;
+  font-size: 13.5px;
+}
+
+.debug-structured-log-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+  max-height: 28rem;
+  overflow: auto;
+  overflow-x: clip;
+}
+
+.debug-structured-log-row {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(15, 54, 72, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
+  /* Static surface — color states only, never lift on hover. */
+  transition: none;
+}
+
+.debug-structured-log-row.is-error,
+.debug-structured-log-row.debug-log-error {
+  border-color: rgba(178, 72, 93, 0.32);
+  background: rgba(178, 72, 93, 0.07);
+}
+
+.debug-structured-log-row.debug-log-warn {
+  border-color: rgba(176, 120, 40, 0.35);
+  background: rgba(255, 214, 150, 0.18);
+}
+
+.debug-structured-log-row.debug-log-info {
+  border-color: rgba(47, 127, 151, 0.28);
+  background: rgba(202, 233, 245, 0.28);
+}
+
+.debug-structured-log-row.debug-log-debug,
+.debug-structured-log-row.debug-log-trace {
+  border-color: rgba(15, 54, 72, 0.16);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.debug-structured-log-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.debug-structured-log-main .debug-event-kind,
+.debug-structured-log-main .debug-stage-status,
+.debug-structured-log-main .debug-stage-ms {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.debug-log-source {
+  min-width: 0;
+  color: var(--muted-2, #356278);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.debug-structured-log-row .debug-stage-text,
+.debug-structured-log-row .debug-path {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-overflow: clip;
+}
+
+/*
+ * Keep the compact desktop breakpoint effective after the theme layer above it.
+ * Without this final override, the later base `.workspace` rule restores the
+ * two-column grid at the 960px minimum window size and the content column can
+ * become too narrow for long labels. Stack the navigation and content so every
+ * control remains in-flow and reachable instead of clipping at the right edge.
+ */
+@media (max-width: 980px) {
+  body {
+    min-width: 0;
+  }
+
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .sidebar {
+    height: auto;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sidebar-foot {
+    display: none;
+  }
+
+  .content {
+    width: 100%;
+    max-width: none;
+    height: auto;
+    overflow: visible;
+  }
+}
+
+/* ==========================================================================
+   Global no-hover-motion guard (shell + settings + debug).
+   Color / border / background affordance is fine; transform/layout motion is not.
+   ========================================================================== */
+.app-shell
+:is(
+  button,
+  a,
+  summary,
+  select,
+  label,
+  .panel,
+  .model-card,
+  .style-editor,
+  .transparent-note,
+  .debug-stage-card,
+  .debug-utterance,
+  .debug-stage-row,
+  .debug-structured-log-row,
+  .debug-stat-card,
+  .download-row,
+  .download-one-button,
+  .debug-verbose-toggle,
+  .toggle-field,
+  .nav-tabs button
+):hover {
+  transform: none;
+}
+
+/* Range controls are intentionally borderless; keep the thumb/track affordance
+ * visible after the theme's generic text-input rules above. */
+.field input[type="range"] {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.field input[type="range"]:focus {
+  border: 0;
+  background: transparent;
+  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+.field input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(77, 150, 173, 0.28);
+}
+
+.field input[type="range"]::-webkit-slider-thumb {
+  width: 18px;
+  height: 18px;
+  margin-top: -6px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #3d7f99;
+  box-shadow: 0 1px 3px rgba(24, 65, 79, 0.32);
+  appearance: none;
+}
+
+.field input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(77, 150, 173, 0.28);
+}
+
+.field input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #3d7f99;
+  box-shadow: 0 1px 3px rgba(24, 65, 79, 0.32);
 }

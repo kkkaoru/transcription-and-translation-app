@@ -1,6 +1,22 @@
 import type { ChangeEvent } from "react";
 import { AudioDeviceSelect } from "../components/AudioDeviceSelect";
 import { Field } from "../components/Field";
+import {
+  AUDIO_CHUNK_MAX_MS,
+  AUDIO_CHUNK_MIN_MS,
+  AUDIO_CHUNK_STEP_MS,
+  DEFAULT_ADAPTIVE_NOISE_FLOOR,
+  DEFAULT_AUDIO_CHUNK_MS,
+  DEFAULT_SILENCE_GATE_DB,
+  DEFAULT_VAD_INTERVAL_MS,
+  DEFAULT_VAD_THRESHOLD,
+  VAD_INTERVAL_MAX_MS,
+  VAD_INTERVAL_MIN_MS,
+  VAD_INTERVAL_STEP_MS,
+  VAD_THRESHOLD_MAX,
+  VAD_THRESHOLD_MIN,
+  VAD_THRESHOLD_STEP,
+} from "../core/defaults";
 import type { AppConfig, AudioInputDevice, ModelCatalog, ModelFamily } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 import { DebugPanel } from "./DebugPanel";
@@ -50,6 +66,22 @@ export const SettingsView = ({
   const { t } = useI18n();
   const setOverlay = (patch: Partial<AppConfig["overlay"]>) =>
     onConfigChange({ ...config, overlay: { ...config.overlay, ...patch } });
+  const setAudio = (patch: Partial<AppConfig["audio"]>) =>
+    onConfigChange({ ...config, audio: { ...config.audio, ...patch } });
+  const vadIntervalMs = Number.isFinite(config.audio.vadIntervalMs)
+    ? config.audio.vadIntervalMs
+    : DEFAULT_VAD_INTERVAL_MS;
+  const vadThreshold = Number.isFinite(config.audio.vadThreshold)
+    ? config.audio.vadThreshold
+    : DEFAULT_VAD_THRESHOLD;
+  const resetAudioTuning = () =>
+    setAudio({
+      chunkMs: DEFAULT_AUDIO_CHUNK_MS,
+      vadIntervalMs: DEFAULT_VAD_INTERVAL_MS,
+      vadThreshold: DEFAULT_VAD_THRESHOLD,
+      silenceGateDb: DEFAULT_SILENCE_GATE_DB,
+      adaptiveNoiseFloor: DEFAULT_ADAPTIVE_NOISE_FLOOR,
+    });
   const setModelPath = (key: string, value: string) => {
     const paths = { ...config.models.paths };
     if (value.trim()) {
@@ -190,6 +222,17 @@ export const SettingsView = ({
           title={t("settings.audioTitle")}
           number="03"
         />
+        <div className="settings-section-actions">
+          <span>{t("settings.audioPipelineHint")}</span>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={resetAudioTuning}
+            data-testid="audio-tuning-reset"
+          >
+            {t("settings.audioReset")}
+          </button>
+        </div>
         <div className="settings-grid two">
           <Field label={t("audio.inputDevice")} wide hint={t("settings.deviceHint")}>
             <AudioDeviceSelect
@@ -205,34 +248,136 @@ export const SettingsView = ({
             </button>
           </div>
           <Field label={t("settings.chunk")} hint={t("settings.chunkHint")}>
-            <input
-              type="number"
-              min="400"
-              max="4000"
-              step="100"
-              value={config.audio.chunkMs}
-              onChange={(event) =>
-                onConfigChange({
-                  ...config,
-                  audio: { ...config.audio, chunkMs: Number(event.target.value) },
-                })
-              }
-            />
+            <div className="range-field">
+              <input
+                id="audio-chunk-ms"
+                type="range"
+                min={AUDIO_CHUNK_MIN_MS}
+                max={AUDIO_CHUNK_MAX_MS}
+                step={AUDIO_CHUNK_STEP_MS}
+                value={config.audio.chunkMs}
+                onChange={(event) => setAudio({ chunkMs: event.currentTarget.valueAsNumber })}
+                aria-label={t("settings.chunk")}
+                aria-valuetext={`${config.audio.chunkMs} ${t("settings.milliseconds")}`}
+              />
+              <output className="range-value" htmlFor="audio-chunk-ms">
+                {config.audio.chunkMs} {t("settings.milliseconds")}
+              </output>
+            </div>
+            <button
+              className="range-reset"
+              type="button"
+              onClick={() => setAudio({ chunkMs: DEFAULT_AUDIO_CHUNK_MS })}
+              aria-label={`${t("settings.resetValue")}: ${t("settings.chunk")}`}
+            >
+              {t("settings.resetValue")}
+            </button>
           </Field>
-          <Field label={t("settings.silenceGate")}>
-            <input
-              type="number"
-              min="-90"
-              max="0"
-              step="1"
-              value={config.audio.silenceGateDb}
-              onChange={(event) =>
-                onConfigChange({
-                  ...config,
-                  audio: { ...config.audio, silenceGateDb: Number(event.target.value) },
-                })
-              }
-            />
+          <Field label={t("settings.silenceGate")} hint={t("settings.silenceGateHint")}>
+            <div className="range-field">
+              <input
+                id="audio-silence-gate-db"
+                type="range"
+                min="-90"
+                max="0"
+                step="1"
+                value={config.audio.silenceGateDb}
+                onChange={(event) => setAudio({ silenceGateDb: event.currentTarget.valueAsNumber })}
+                aria-label={t("settings.silenceGate")}
+                aria-valuetext={`${config.audio.silenceGateDb} ${t("settings.decibels")}`}
+              />
+              <output className="range-value" htmlFor="audio-silence-gate-db">
+                {config.audio.silenceGateDb} {t("settings.decibels")}
+              </output>
+            </div>
+            <button
+              className="range-reset"
+              type="button"
+              onClick={() => setAudio({ silenceGateDb: DEFAULT_SILENCE_GATE_DB })}
+              aria-label={`${t("settings.resetValue")}: ${t("settings.silenceGate")}`}
+            >
+              {t("settings.resetValue")}
+            </button>
+          </Field>
+          <Field label={t("settings.vadInterval")} hint={t("settings.vadIntervalHint")}>
+            <div className="range-field">
+              <input
+                id="audio-vad-interval-ms"
+                type="range"
+                min={VAD_INTERVAL_MIN_MS}
+                max={VAD_INTERVAL_MAX_MS}
+                step={VAD_INTERVAL_STEP_MS}
+                value={vadIntervalMs}
+                onChange={(event) => setAudio({ vadIntervalMs: event.currentTarget.valueAsNumber })}
+                aria-label={t("settings.vadInterval")}
+                aria-valuetext={`${vadIntervalMs} ${t("settings.milliseconds")}`}
+              />
+              <output className="range-value" htmlFor="audio-vad-interval-ms">
+                {vadIntervalMs} {t("settings.milliseconds")}
+              </output>
+            </div>
+            <button
+              className="range-reset"
+              type="button"
+              onClick={() => setAudio({ vadIntervalMs: DEFAULT_VAD_INTERVAL_MS })}
+              aria-label={`${t("settings.resetValue")}: ${t("settings.vadInterval")}`}
+            >
+              {t("settings.resetValue")}
+            </button>
+          </Field>
+          <Field label={t("settings.vadThreshold")} hint={t("settings.vadThresholdHint")}>
+            <div className="range-field">
+              <input
+                id="audio-vad-threshold"
+                type="range"
+                min={VAD_THRESHOLD_MIN}
+                max={VAD_THRESHOLD_MAX}
+                step={VAD_THRESHOLD_STEP}
+                value={vadThreshold}
+                onChange={(event) => setAudio({ vadThreshold: event.currentTarget.valueAsNumber })}
+                aria-label={t("settings.vadThreshold")}
+                aria-valuetext={vadThreshold.toFixed(2)}
+              />
+              <output className="range-value" htmlFor="audio-vad-threshold">
+                {vadThreshold.toFixed(2)}
+              </output>
+            </div>
+            <button
+              className="range-reset"
+              type="button"
+              onClick={() => setAudio({ vadThreshold: DEFAULT_VAD_THRESHOLD })}
+              aria-label={`${t("settings.resetValue")}: ${t("settings.vadThreshold")}`}
+            >
+              {t("settings.resetValue")}
+            </button>
+          </Field>
+          <Field
+            label={t("settings.adaptiveNoiseFloor")}
+            hint={t("settings.adaptiveNoiseFloorHint")}
+          >
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={config.audio.adaptiveNoiseFloor !== false}
+                onChange={(event) => setAudio({ adaptiveNoiseFloor: event.currentTarget.checked })}
+              />
+              <span>{t("settings.adaptiveNoiseFloorOn")}</span>
+            </label>
+          </Field>
+          <Field label={t("settings.noiseSuppression")} hint={t("settings.noiseSuppressionHint")}>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={config.audio.noiseSuppression !== false}
+                onChange={(event) =>
+                  onConfigChange({
+                    ...config,
+                    audio: { ...config.audio, noiseSuppression: event.target.checked },
+                  })
+                }
+              />
+              <span>{t("settings.noiseSuppressionOn")}</span>
+            </label>
           </Field>
         </div>
       </section>

@@ -4,6 +4,7 @@
  */
 
 import { pushDiagnosticEvent } from "./diagnostics";
+import { logPipelineStageEvent } from "./structuredLog";
 import type { PipelineStageEvent, PipelineStageName, UtteranceStageGroup } from "./types";
 
 const MAX_STAGE_EVENTS = 96;
@@ -19,10 +20,10 @@ let sequence = 0;
 let storeRevision = 0;
 
 const readVerbosePreference = (): boolean => {
-  if (typeof localStorage === "undefined") {
-    return false;
-  }
   try {
+    if (typeof localStorage === "undefined") {
+      return false;
+    }
     return localStorage.getItem(VERBOSE_STORAGE_KEY) === "1";
   } catch {
     return false;
@@ -30,26 +31,27 @@ const readVerbosePreference = (): boolean => {
 };
 
 export const readDebugPanelOpenPreference = (): boolean => {
-  if (typeof localStorage === "undefined") {
-    return false;
-  }
   try {
-    return localStorage.getItem(DEBUG_PANEL_OPEN_STORAGE_KEY) === "1";
+    if (typeof localStorage === "undefined") {
+      // The live route mounts the panel for every session. Keep it expanded by
+      // default so stage timing is immediately visible even before a preference
+      // has been written (or when the webview has no storage access).
+      return true;
+    }
+    // "0" is the only explicit opt-out; missing/legacy values keep debug
+    // mode visible so a fresh install can be inspected without extra clicks.
+    return localStorage.getItem(DEBUG_PANEL_OPEN_STORAGE_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 };
 
 export const writeDebugPanelOpenPreference = (open: boolean): void => {
-  if (typeof localStorage === "undefined") {
-    return;
-  }
   try {
-    if (open) {
-      localStorage.setItem(DEBUG_PANEL_OPEN_STORAGE_KEY, "1");
-    } else {
-      localStorage.removeItem(DEBUG_PANEL_OPEN_STORAGE_KEY);
+    if (typeof localStorage === "undefined") {
+      return;
     }
+    localStorage.setItem(DEBUG_PANEL_OPEN_STORAGE_KEY, open ? "1" : "0");
   } catch {
     // Ignore quota / private mode failures.
   }
@@ -59,8 +61,12 @@ let verboseLogging = readVerbosePreference();
 
 const notify = (): void => {
   storeRevision += 1;
-  for (const listener of listeners) {
-    listener();
+  for (const listener of [...listeners]) {
+    try {
+      listener();
+    } catch {
+      // A stale DebugPanel subscriber must not stop stage capture/logging.
+    }
   }
 };
 
@@ -74,25 +80,27 @@ export const isVerbosePipelineLogging = (): boolean => verboseLogging;
 
 export const setVerbosePipelineLogging = (enabled: boolean): void => {
   verboseLogging = enabled;
-  if (typeof localStorage !== "undefined") {
-    try {
+  try {
+    if (typeof localStorage !== "undefined") {
       if (enabled) {
         localStorage.setItem(VERBOSE_STORAGE_KEY, "1");
       } else {
         localStorage.removeItem(VERBOSE_STORAGE_KEY);
       }
-    } catch {
-      // Ignore quota / private mode failures; in-memory flag still works.
     }
+  } catch {
+    // Ignore quota / private mode failures; in-memory flag still works.
   }
   notify();
 };
 
 const logStage = (event: PipelineStageEvent): void => {
-  if (!verboseLogging) {
+  // Always record a structured row (level-filtered in the log viewer / console).
+  logPipelineStageEvent(event, { verbose: verboseLogging, source: "backend" });
+  if (!verboseLogging && event.ok) {
+    // Quiet mode: keep the diagnostic feed free of high-volume success rows.
     return;
   }
-  const label = `[pipeline:${event.stage}] ${event.ok ? "ok" : "ERR"} ${event.durationMs}ms`;
   const detail = [
     `id=${event.utteranceId}`,
     event.modelId ? `model=${event.modelId}` : null,
@@ -104,18 +112,12 @@ const logStage = (event: PipelineStageEvent): void => {
   ]
     .filter(Boolean)
     .join(" · ");
-  if (event.ok) {
-    // Intentional developer-facing verbose pipeline diagnostics.
-    // biome-ignore lint/suspicious/noConsole: verbose debug mode writes stage samples to the console
-    console.info(label, detail);
-  } else {
-    // biome-ignore lint/suspicious/noConsole: verbose debug mode writes stage samples to the console
-    console.warn(label, detail);
-  }
+  // Stage already wrote a structured log row; only keep the lightweight diagnostic feed.
   pushDiagnosticEvent(
     event.ok ? "caption" : "error",
     `${event.stage} ${event.ok ? "ok" : "failed"} (${event.durationMs}ms)`,
     detail,
+    { mirrorStructured: false },
   );
 };
 
@@ -192,6 +194,97 @@ export const pushPipelineStageEvent = (raw: unknown): PipelineStageEvent | null 
   logStage(event);
   notify();
   return event;
+};
+
+/**
+ * Merge a backend stage-history snapshot into the live ring buffer.
+ *
+ * The live `pipeline:stage` subscription is intentionally app-wide, but a
+ * DebugPanel can still be mounted after stages have already completed (or the
+ * native event may have been emitted while the webview was reconnecting).
+ * Hydration makes the panel resilient to that gap without replaying every
+ * historical row into the diagnostic feed.  Rows are deduplicated by their
+ * stable utterance/stage/timing identity, while preserving the normal
+ * chronological ordering used by `getUtteranceStageGroups`.
+ */
+export const hydratePipelineStageEvents = (raw: unknown): PipelineStageEvent[] => {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const normalized = raw
+    .map((entry) => normalizePipelineStageEvent(entry))
+    .filter((entry): entry is PipelineStageEvent => entry !== null);
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  const identity = (event: PipelineStageEvent): string =>
+    [
+      event.utteranceId,
+      event.stage,
+      event.startedAt,
+      event.at,
+      event.durationMs,
+      event.modelId,
+      event.ok ? "ok" : "error",
+      event.error ?? "",
+      event.outputText,
+    ].join("\u001f");
+
+  const existing = new Set(stages.map(identity));
+  let changed = false;
+  let added = 0;
+  // Native snapshots are newest-first while the mutable ring is oldest-first.
+  // Insert by timestamp so getPipelineStageEvents() remains newest-first after
+  // its reverse operation and latest-by-stage never regresses to an old row.
+  const chronological = normalized
+    .map((event, index) => ({ event, index }))
+    .sort((left, right) => {
+      if (left.event.at !== right.event.at) {
+        return left.event.at - right.event.at;
+      }
+      if (left.event.startedAt !== right.event.startedAt) {
+        return left.event.startedAt - right.event.startedAt;
+      }
+      return left.index - right.index;
+    })
+    .map(({ event }) => event);
+  for (const event of chronological) {
+    const key = identity(event);
+    if (existing.has(key)) {
+      continue;
+    }
+    existing.add(key);
+    stages.push(event);
+    changed = true;
+    added += 1;
+  }
+
+  if (changed) {
+    // A refresh can return a snapshot that lags a live event already in the
+    // browser. Keep the mutable ring globally chronological so an older
+    // hydrated row cannot become the "latest" card for its stage.
+    stages.sort((left, right) => {
+      if (left.at !== right.at) {
+        return left.at - right.at;
+      }
+      if (left.startedAt !== right.startedAt) {
+        return left.startedAt - right.startedAt;
+      }
+      return 0;
+    });
+  }
+
+  if (stages.length > MAX_STAGE_EVENTS) {
+    stages.splice(0, stages.length - MAX_STAGE_EVENTS);
+    changed = true;
+  }
+  if (changed) {
+    sequence += added;
+    notify();
+  }
+  return normalized;
 };
 
 /** Newest first. */

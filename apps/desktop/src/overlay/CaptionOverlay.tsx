@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { overlayCaptionCss, toCaptionCss } from "../core/style";
 import type { AppConfig, CaptionPayload } from "../core/types";
-import { captionItems } from "./captions";
+import { captionItems, captionTextLines } from "./captions";
 
 export const CaptionLines = memo(
   ({
@@ -14,15 +14,17 @@ export const CaptionLines = memo(
     placeholder?: boolean;
   }) => (
     <div className="caption-lines" style={overlayCaptionCss(config.overlay)}>
-      {captionItems(config, caption, placeholder).map((item) => (
-        <div
-          className={`caption-line caption-line-${item.key}`}
-          key={item.key}
-          style={toCaptionCss(item.style)}
-        >
-          {item.text}
-        </div>
-      ))}
+      {captionItems(config, caption, placeholder)
+        .filter((item) => item.text.trim().length > 0)
+        .map((item) => (
+          <div
+            className={`caption-line caption-line-${item.key}`}
+            key={item.key}
+            style={toCaptionCss(item.style)}
+          >
+            {captionTextLines(item).join("\n")}
+          </div>
+        ))}
     </div>
   ),
 );

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { MessageKey } from "../i18n/messages";
+import { AudioCaptureError } from "./audio";
 import { isNoSpeechBridgeError } from "./bridge";
 import {
   isTransientAudioNotice,
@@ -7,6 +9,8 @@ import {
   sanitizeNoSpeechDetail,
   shouldToastAudioProcessingFailure,
 } from "./notices";
+
+const FALLBACK: MessageKey = "message.audioProcessingFailed";
 
 /** Exact user-facing Parapper 422 payload (with/without bridge prefix). */
 const PARAPPER_422 =
@@ -77,5 +81,78 @@ describe("audio processing notice mapping", () => {
     expect(noticeFromError(denied, "message.audioProcessingFailed").key).toBe(
       "message.microphonePermissionDenied",
     );
+  });
+});
+
+describe("AudioCaptureError → notice mapping", () => {
+  it("maps every capture error code to its own message key", () => {
+    expect(noticeFromError(new AudioCaptureError("microphone-unavailable"), FALLBACK).key).toBe(
+      "message.microphoneUnavailable",
+    );
+    expect(noticeFromError(new AudioCaptureError("audio-context-failed"), FALLBACK).key).toBe(
+      "message.audioContextFailed",
+    );
+    expect(noticeFromError(new AudioCaptureError("audio-context-suspended"), FALLBACK).key).toBe(
+      "message.audioContextFailed",
+    );
+    expect(noticeFromError(new AudioCaptureError("microphone-track-ended"), FALLBACK).key).toBe(
+      "message.microphoneTrackEnded",
+    );
+  });
+
+  it("prefers a DOMException cause message as the detail", () => {
+    const cause = new DOMException("device in use by another app", "NotReadableError");
+    const notice = noticeFromError(
+      new AudioCaptureError("microphone-unavailable", cause),
+      FALLBACK,
+    );
+    expect(notice.key).toBe("message.microphoneUnavailable");
+    expect(notice.detail).toBe("device in use by another app");
+  });
+
+  it("falls back to the error message when it carries more than the bare code", () => {
+    const notice = noticeFromError(
+      new AudioCaptureError("audio-context-failed", "sample rate rejected"),
+      FALLBACK,
+    );
+    expect(notice.detail).toBe("audio-context-failed: sample rate rejected");
+  });
+
+  it("omits detail when the message is only the code and no diagnostics exist", () => {
+    const notice = noticeFromError(new AudioCaptureError("microphone-track-ended"), FALLBACK);
+    // Detail is either live capture diagnostics or absent — never the bare code.
+    expect(notice.detail).not.toBe("microphone-track-ended");
+  });
+
+  it("uses the fallback key for an unrecognised DOMException name", () => {
+    const notice = noticeFromError(
+      new DOMException("weird failure", "TypeMismatchError"),
+      FALLBACK,
+    );
+    expect(notice.key).toBe(FALLBACK);
+    expect(notice.detail).toContain("weird failure");
+  });
+});
+
+describe("notice helpers", () => {
+  it("treats only processing/no-speech notices as transient", () => {
+    expect(isTransientAudioNotice({ key: "message.audioProcessingFailed" })).toBe(true);
+    expect(isTransientAudioNotice({ key: "message.noSpeechDetected" })).toBe(true);
+    expect(isTransientAudioNotice({ key: "message.microphoneNotFound" })).toBe(false);
+    expect(isTransientAudioNotice(null)).toBe(false);
+    expect(isTransientAudioNotice(undefined)).toBe(false);
+  });
+
+  it("drops blank no-speech details", () => {
+    expect(sanitizeNoSpeechDetail(undefined)).toBeUndefined();
+    expect(sanitizeNoSpeechDetail("   ")).toBeUndefined();
+  });
+
+  it("passes through a detail that is neither diagnostics nor a 422 body", () => {
+    expect(sanitizeNoSpeechDetail("mic muted")).toBe("mic muted");
+  });
+
+  it("keeps diagnostics that already start at mode=", () => {
+    expect(sanitizeNoSpeechDetail("mode=worklet · rms=-54.2dB")).toBe("mode=worklet · rms=-54.2dB");
   });
 });

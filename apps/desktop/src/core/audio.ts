@@ -4,6 +4,45 @@ import type { AudioChunk, AudioInputDevice } from "./types";
 /** Parapper / Rust pipeline expects mono PCM at this rate regardless of hardware. */
 export const TARGET_SAMPLE_RATE = 16_000;
 
+/**
+ * Minimum tail duration worth sending when capture stops before a full window.
+ *
+ * Very short tails are usually click/noise fragments and are rejected by the
+ * backend anyway. Keeping the threshold at 160 ms preserves short utterances
+ * without turning every stop into a tiny request.
+ */
+export const PARTIAL_FLUSH_MIN_MS = 160;
+
+/**
+ * Number of hardware-rate samples batched into one AudioWorklet message.
+ * Rendering quanta are usually 128 samples; forwarding every quantum creates
+ * hundreds of structured-clone messages per second at 48 kHz. A ~21 ms batch
+ * keeps capture responsive while materially reducing main-thread wakeups.
+ */
+export const AUDIO_WORKLET_FRAME_SAMPLES = 1_024;
+export const SCRIPT_PROCESSOR_BUFFER_SIZE = 4_096;
+
+/**
+ * Seed the next ASR request with the preceding speech window. A 640 ms window
+ * is intentionally reused as context rather than making the first request
+ * longer: the first caption still arrives after one configured window while
+ * the following request can resolve words that straddle the boundary.
+ *
+ * Subsequent requests retain the complete accepted utterance (up to
+ * {@link AUDIO_CONTEXT_MAX_DURATION_MS}), not only this one-window seed. That
+ * makes a newest pending request self-contained when the latest-wins queue
+ * replaces one or more intermediate requests.
+ */
+export const AUDIO_CONTEXT_OVERLAP_MS = 640;
+/**
+ * A pause at least as long as one capture window starts a new utterance. Short
+ * pauses remain in the rolling context so natural word spacing does not split
+ * a phrase.
+ */
+export const AUDIO_CONTEXT_RESET_SILENCE_MS = 640;
+/** Hard bound for a contextual request (well below the 10 s WAV limit). */
+export const AUDIO_CONTEXT_MAX_DURATION_MS = 3_200;
+
 export const enumerateAudioInputDevices = async (): Promise<AudioInputDevice[]> => {
   if (typeof navigator === "undefined" || !navigator.mediaDevices?.enumerateDevices) {
     return [];
@@ -85,6 +124,8 @@ export const bytesToBase64 = (bytes: Uint8Array): string => {
 export const pcm16ToBase64 = (samples: Int16Array): string =>
   bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
 
+export type AudioChunkMetadata = Pick<AudioChunk, "utteranceId">;
+
 const clampDurationMs = (samplesLength: number, durationMs: number): number => {
   if (samplesLength === 0) {
     return 0;
@@ -103,14 +144,163 @@ export const makeAudioChunk = (
   samples: Float32Array,
   inputSampleRate: number,
   durationMs = Math.round((samples.length / Math.max(inputSampleRate, 1)) * 1000),
+  metadata: AudioChunkMetadata = {},
 ): AudioChunk => {
   const safeRate =
     Number.isFinite(inputSampleRate) && inputSampleRate > 0 ? inputSampleRate : TARGET_SAMPLE_RATE;
+  const utteranceId = metadata.utteranceId?.trim();
   return {
     pcmBase64: pcm16ToBase64(float32ToPcm16(resampleLinear(samples, safeRate, TARGET_SAMPLE_RATE))),
     sampleRate: TARGET_SAMPLE_RATE,
     channels: 1,
     durationMs: clampDurationMs(samples.length, durationMs),
+    ...(utteranceId ? { utteranceId } : {}),
+  };
+};
+
+/** Return the real wall-clock duration represented by a sample tail. */
+export const partialAudioDurationMs = (samplesLength: number, sampleRate: number): number => {
+  if (
+    !Number.isFinite(samplesLength) ||
+    samplesLength <= 0 ||
+    !Number.isFinite(sampleRate) ||
+    sampleRate <= 0
+  ) {
+    return 0;
+  }
+  return (samplesLength / sampleRate) * 1_000;
+};
+
+/** Whether a tail is long enough to be considered for a speech-aware flush. */
+export const shouldFlushPartialAudio = (
+  samplesLength: number,
+  sampleRate: number,
+  minimumDurationMs = PARTIAL_FLUSH_MIN_MS,
+): boolean => {
+  const durationMs = partialAudioDurationMs(samplesLength, sampleRate);
+  const minimum = Number.isFinite(minimumDurationMs)
+    ? Math.max(0, minimumDurationMs)
+    : PARTIAL_FLUSH_MIN_MS;
+  return durationMs > 0 && durationMs >= minimum;
+};
+
+export type RollingAudioContextOptions = {
+  /** Lower bound for contextual duration (kept for overlap tuning compatibility). */
+  overlapMs?: number;
+  /** Reset the preceding samples after this much gated silence. */
+  resetSilenceMs?: number;
+  /** Maximum duration of a contextual request, including the current window. */
+  maxDurationMs?: number;
+};
+
+export type RollingAudioContext = {
+  /**
+   * Append a speech-bearing window and return it with the preceding context.
+   * The returned array is always a fresh copy owned by the caller.
+   */
+  append: (samples: Float32Array, sampleRate: number) => Float32Array;
+  /** Record a gated-silent duration and clear context after the reset threshold. */
+  markSilence: (durationMs: number) => void;
+  /** Drop all context and silence state (capture/session boundary). */
+  reset: () => void;
+  /** Read-only snapshots used by diagnostics/tests without exposing mutable state. */
+  getContextSamples: () => Float32Array;
+  /** Avoid copying the context when callers only need to inspect presence. */
+  hasContext: () => boolean;
+  /** Hardware rate associated with the retained context, if any. */
+  getSampleRate: () => number | null;
+  getSilenceMs: () => number;
+};
+
+const safeAudioRate = (sampleRate: number): number =>
+  Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : TARGET_SAMPLE_RATE;
+
+const safeDurationOption = (value: number | undefined, fallback: number): number =>
+  value !== undefined && Number.isFinite(value) ? Math.max(0, value) : fallback;
+
+/**
+ * Build a bounded rolling PCM context for live ASR.
+ *
+ * Capture still emits one request every configured window. Every accepted
+ * request includes all preceding speech from the current utterance, bounded
+ * by `maxDurationMs`. Keeping the cumulative audio is important because the
+ * latest-wins queue may replace several pending requests; the newest request
+ * must still contain the samples that were present in the dropped requests.
+ * Gated silence advances a pause clock but is never copied into the context.
+ * A full-window pause (or sample-rate change) resets the context so a later
+ * utterance cannot inherit stale audio.
+ */
+export const createRollingAudioContext = (
+  options: RollingAudioContextOptions = {},
+): RollingAudioContext => {
+  const overlapMs = safeDurationOption(options.overlapMs, AUDIO_CONTEXT_OVERLAP_MS);
+  const resetSilenceMs = safeDurationOption(options.resetSilenceMs, AUDIO_CONTEXT_RESET_SILENCE_MS);
+  const maxDurationMs = Math.max(
+    overlapMs,
+    safeDurationOption(options.maxDurationMs, AUDIO_CONTEXT_MAX_DURATION_MS),
+  );
+  let context = new Float32Array(0);
+  let contextRate: number | null = null;
+  let silenceMs = 0;
+
+  const reset = (): void => {
+    context = new Float32Array(0);
+    contextRate = null;
+    silenceMs = 0;
+  };
+
+  return {
+    append: (samples, sampleRate) => {
+      if (samples.length === 0) {
+        return samples.slice();
+      }
+      const rate = safeAudioRate(sampleRate);
+      // A hardware-rate change means sample counts no longer represent the
+      // same wall-clock overlap. Do not splice the two rates together.
+      if (
+        (contextRate !== null && contextRate !== rate) ||
+        (resetSilenceMs > 0 && silenceMs >= resetSilenceMs)
+      ) {
+        context = new Float32Array(0);
+      }
+      contextRate = rate;
+      silenceMs = 0;
+
+      const maxSamples = Math.max(1, Math.round((rate * maxDurationMs) / 1_000));
+      // Keep the current window whenever it fits. If a caller supplies a
+      // window larger than the cap, retain its newest samples rather than
+      // returning an oversized request that the WAV encoder would reject.
+      const currentStart = Math.max(0, samples.length - maxSamples);
+      const current = currentStart > 0 ? samples.slice(currentStart) : samples.slice();
+      const roomForContext = Math.max(0, maxSamples - current.length);
+      const contextLength = Math.min(context.length, roomForContext);
+      const prefixStart = context.length - contextLength;
+      const combined = new Float32Array(contextLength + current.length);
+      if (contextLength > 0) {
+        combined.set(context.subarray(prefixStart), 0);
+      }
+      combined.set(current, contextLength);
+
+      // Store the complete bounded output, rather than only the current
+      // window's tail. The returned array is caller-owned, so retain a second
+      // copy to keep later normalization/encoding from mutating our history.
+      context = combined.slice();
+      return combined;
+    },
+    markSilence: (durationMs) => {
+      if (!Number.isFinite(durationMs) || durationMs <= 0) {
+        return;
+      }
+      silenceMs = Math.min(Number.MAX_SAFE_INTEGER, silenceMs + durationMs);
+      if (resetSilenceMs > 0 && silenceMs >= resetSilenceMs) {
+        context = new Float32Array(0);
+      }
+    },
+    reset,
+    getContextSamples: () => context.slice(),
+    hasContext: () => context.length > 0,
+    getSampleRate: () => contextRate,
+    getSilenceMs: () => silenceMs,
   };
 };
 
@@ -175,22 +365,148 @@ export const passesSilenceGate = (
   gateDb: number = DEFAULT_SILENCE_GATE_DB,
 ): boolean => Number.isFinite(rmsDb) && rmsDb >= gateDb;
 
+/**
+ * Adaptive noise-floor gate.
+ *
+ * A fixed threshold (e.g. -50 dB) is wrong in both directions: quiet speech at
+ * ~-54 dB in a normal ~-65 dB room is dropped by the old gate, and loud rooms
+ * leak ambient through. Instead, track a rolling estimate of the ambient floor
+ * from chunks that failed the gate and pass a chunk when it clears the floor
+ * by {@link ADAPTIVE_GATE_MARGIN_DB}, with an absolute hard floor for digital
+ * silence only.
+ *
+ * Floor update rules keep the estimate deterministic and speech-safe:
+ * - only chunks at or below {@link ADAPTIVE_GATE_AMBIENT_CEILING_DB} may define
+ *   ambient, so speech can never seed or raise the floor. While no such chunk
+ *   has been seen the floor stays null and the gate fails open;
+ * - warmup: floor = min of the first {@link ADAPTIVE_GATE_WARMUP_CHUNKS}
+ *   ambient-eligible dB values (all chunks ≥ absolute floor pass during warmup
+ *   so speech is never delayed at capture start);
+ * - steady state: only *failed* chunks update the floor, and only when they
+ *   are near the current floor (within {@link ADAPTIVE_GATE_FLOOR_ADMIT_DB}) —
+ *   a below-threshold chunk that is clearly louder than ambient is treated as
+ *   quiet speech and must not drag the floor upward. The floor drops instantly
+ *   to new ambient minima and rises slowly (20 % of the gap per chunk);
+ * - chunks at or below {@link ADAPTIVE_GATE_MIN_ABSOLUTE_DB} are digital
+ *   silence: never passed and never treated as ambient.
+ */
+export const ADAPTIVE_GATE_MIN_ABSOLUTE_DB = -70;
+/**
+ * Loudest chunk that may be treated as ambient. Speech is never this quiet, so
+ * capping floor learning here stops a user who talks from the first chunk from
+ * seeding the floor with their own voice (which would then gate that speech out
+ * until they paused). Until a genuinely quiet chunk is seen the floor stays
+ * null and the gate fails open — the backend soft-skips any noise-only window.
+ *
+ * The value is pinned by an invariant, not taste: the floor can never exceed
+ * this ceiling, so the strictest reachable threshold is
+ * `ceiling + ADAPTIVE_GATE_MARGIN_DB`. That must stay at or below the quietest
+ * speech we promise to transcribe (-54.2 dBFS, the reported user level), or
+ * quiet speech is silently dropped in moderately noisy rooms. -64 + 9 = -55.
+ * Rooms with ambient above the ceiling simply never learn a floor and stay
+ * fail-open, which is the safe side of the tradeoff.
+ */
+export const ADAPTIVE_GATE_AMBIENT_CEILING_DB = -64;
+export const ADAPTIVE_GATE_WARMUP_CHUNKS = 2;
+export const ADAPTIVE_GATE_MARGIN_DB = 9;
+export const ADAPTIVE_GATE_FLOOR_ADMIT_DB = 3;
+export const ADAPTIVE_GATE_RISE_RATIO = 0.2;
+
+export interface AdaptiveSilenceGateState {
+  /** Rolling ambient floor estimate in dBFS; null until warmup completes. */
+  floorDb: number | null;
+  /** Chunks fed so far (warmup phase when < ADAPTIVE_GATE_WARMUP_CHUNKS). */
+  fedChunks: number;
+}
+
+export const createAdaptiveSilenceGate = (): AdaptiveSilenceGateState => ({
+  floorDb: null,
+  fedChunks: 0,
+});
+
+/** Feed one chunk dBFS value; must be called once per chunk, in order. */
+export const updateAdaptiveSilenceGate = (
+  state: AdaptiveSilenceGateState,
+  chunkDb: number,
+  passed: boolean,
+): void => {
+  if (!Number.isFinite(chunkDb) || chunkDb < ADAPTIVE_GATE_MIN_ABSOLUTE_DB) {
+    return;
+  }
+  // Only genuinely quiet chunks may define ambient. A chunk louder than the
+  // ceiling is speech (or speech-like noise) and must never raise the floor,
+  // even during warmup — otherwise talking from the first chunk poisons the
+  // floor and silently gates out the whole first utterance.
+  if (chunkDb > ADAPTIVE_GATE_AMBIENT_CEILING_DB) {
+    state.fedChunks += 1;
+    return;
+  }
+  if (state.floorDb === null || state.fedChunks < ADAPTIVE_GATE_WARMUP_CHUNKS) {
+    // First ambient-eligible chunk always seeds the floor, even past warmup and
+    // even though it passed (the gate fails open until ambient is known).
+    state.floorDb = state.floorDb === null ? chunkDb : Math.min(state.floorDb, chunkDb);
+  } else if (!passed) {
+    const floor = state.floorDb;
+    if (floor === null || chunkDb < floor) {
+      state.floorDb = chunkDb;
+    } else if (chunkDb < floor + ADAPTIVE_GATE_FLOOR_ADMIT_DB) {
+      state.floorDb = floor + (chunkDb - floor) * ADAPTIVE_GATE_RISE_RATIO;
+    }
+  }
+  state.fedChunks += 1;
+};
+
+/** True when the chunk is loud enough relative to the learned ambient floor. */
+export const passesAdaptiveSilenceGate = (
+  state: AdaptiveSilenceGateState,
+  chunkDb: number,
+): boolean => {
+  if (!Number.isFinite(chunkDb) || chunkDb < ADAPTIVE_GATE_MIN_ABSOLUTE_DB) {
+    return false;
+  }
+  // Warmup: let chunks through so the floor can be established and speech at
+  // capture start is never delayed; the absolute floor still blocks digital
+  // silence. Backend soft-skips any noise-only windows that slip through.
+  if (state.fedChunks < ADAPTIVE_GATE_WARMUP_CHUNKS) {
+    return true;
+  }
+  const floor = state.floorDb;
+  // No ambient sample observed yet (e.g. the user talks continuously from the
+  // first chunk): fail open rather than guessing a floor from speech. The
+  // backend soft-skips genuine no-speech windows, so passing costs a request;
+  // gating here would silently drop the entire first utterance.
+  if (floor === null) {
+    return true;
+  }
+  return chunkDb >= floor + ADAPTIVE_GATE_MARGIN_DB;
+};
+
 export type MicrophoneConstraintMode =
+  | "exact-device"
+  | "ideal-device"
+  | "default"
+  | "default-relaxed"
+  // Legacy aliases kept for diagnostics from older builds / tests.
   | "exact-device-raw"
   | "ideal-device-raw"
-  | "default-raw"
-  | "default-relaxed";
+  | "default-raw";
 
 export type CreateMicrophoneConstraintsOptions = {
   /** Prefer { ideal } over { exact } for the selected deviceId. */
   idealDevice?: boolean;
   /** Omit echoCancellation/noiseSuppression/autoGainControl overrides. */
   relaxProcessing?: boolean;
+  /**
+   * When true (default), enable browser noiseSuppression + echoCancellation + AGC.
+   * When false, disable NS/AEC but keep AGC so quiet mics stay above the silence floor.
+   */
+  noiseSuppression?: boolean;
 };
 
 /**
- * Build getUserMedia constraints. Prefer raw mono capture when the platform allows it;
- * callers should progressively fall back via {@link openMicrophoneStream}.
+ * Build getUserMedia constraints. Prefer mono capture; apply browser processing when
+ * noiseSuppression is on. Callers should progressively fall back via
+ * {@link openMicrophoneStream}.
  */
 export const createMicrophoneConstraints = (
   deviceId: string,
@@ -205,12 +521,13 @@ export const createMicrophoneConstraints = (
   }
 
   if (!options.relaxProcessing) {
-    // Prefer unprocessed PCM for ASR (no AEC/NS coloring), but keep browser AGC
-    // so quiet mics are not stuck at ~-54 dBFS ambient (Parapper transcript_missing).
+    const noiseSuppression = options.noiseSuppression !== false;
     // Some WebViews reject these flags — callers must fall back with
     // relaxProcessing: true on OverconstrainedError.
-    audio.echoCancellation = false;
-    audio.noiseSuppression = false;
+    audio.echoCancellation = noiseSuppression;
+    audio.noiseSuppression = noiseSuppression;
+    // Always keep AGC so quiet mics are not stuck near the silence floor
+    // (~-54 dBFS ambient → Parapper transcript_missing).
     audio.autoGainControl = true;
   }
 
@@ -223,26 +540,31 @@ export const createMicrophoneConstraints = (
 /** Ordered constraint strategies used when opening a microphone. */
 export const microphoneConstraintStrategies = (
   deviceId: string,
+  noiseSuppression = true,
 ): Array<{ mode: MicrophoneConstraintMode; constraints: MediaStreamConstraints }> => {
   const strategies: Array<{ mode: MicrophoneConstraintMode; constraints: MediaStreamConstraints }> =
     [];
+  const processing = { noiseSuppression };
   if (deviceId && deviceId !== "default") {
     strategies.push({
-      mode: "exact-device-raw",
-      constraints: createMicrophoneConstraints(deviceId),
+      mode: "exact-device",
+      constraints: createMicrophoneConstraints(deviceId, processing),
     });
     strategies.push({
-      mode: "ideal-device-raw",
-      constraints: createMicrophoneConstraints(deviceId, { idealDevice: true }),
+      mode: "ideal-device",
+      constraints: createMicrophoneConstraints(deviceId, { idealDevice: true, ...processing }),
     });
   }
   strategies.push({
-    mode: "default-raw",
-    constraints: createMicrophoneConstraints("default"),
+    mode: "default",
+    constraints: createMicrophoneConstraints("default", processing),
   });
   strategies.push({
     mode: "default-relaxed",
-    constraints: createMicrophoneConstraints("default", { relaxProcessing: true }),
+    constraints: createMicrophoneConstraints("default", {
+      relaxProcessing: true,
+      noiseSuppression,
+    }),
   });
   return strategies;
 };
@@ -265,12 +587,13 @@ const isConstraintFailure = (error: unknown): boolean => {
  */
 export const openMicrophoneStream = async (
   deviceId: string,
+  noiseSuppression = true,
 ): Promise<{ stream: MediaStream; mode: MicrophoneConstraintMode }> => {
   if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
     throw new AudioCaptureError("microphone-unavailable");
   }
 
-  const strategies = microphoneConstraintStrategies(deviceId);
+  const strategies = microphoneConstraintStrategies(deviceId, noiseSuppression);
   let lastError: unknown;
 
   for (let index = 0; index < strategies.length; index += 1) {
@@ -323,6 +646,8 @@ export class AudioCaptureError extends Error {
 
 export type AudioCaptureMode = "worklet" | "script-processor" | "none";
 
+export type SilenceGateMode = "adaptive" | "fixed";
+
 export type AudioCaptureDiagnostics = {
   active: boolean;
   captureMode: AudioCaptureMode;
@@ -339,6 +664,12 @@ export type AudioCaptureDiagnostics = {
   lastAcceptedRmsDb: number | null;
   /** Soft peak-normalize gain applied to the last accepted chunk (1 = none). */
   lastAcceptedGain: number | null;
+  /** Which silence gate is active: adaptive floor (default) or fixed dB. */
+  gateMode: SilenceGateMode | null;
+  /** Learned ambient floor estimate for the adaptive gate, in dBFS. */
+  adaptiveFloorDb: number | null;
+  /** Fixed gate threshold in dBFS, populated when gateMode is "fixed". */
+  fixedGateDb: number | null;
   chunksAccepted: number;
   chunksDroppedSilent: number;
   lastError: string | null;
@@ -359,6 +690,9 @@ const emptyDiagnostics = (): AudioCaptureDiagnostics => ({
   lastRmsDb: null,
   lastAcceptedRmsDb: null,
   lastAcceptedGain: null,
+  gateMode: null,
+  adaptiveFloorDb: null,
+  fixedGateDb: null,
   chunksAccepted: 0,
   chunksDroppedSilent: 0,
   lastError: null,
@@ -391,6 +725,11 @@ export const formatAudioCaptureDiagnostics = (
       : null,
     diagnostics.lastAcceptedRmsDb !== null && Number.isFinite(diagnostics.lastAcceptedRmsDb)
       ? `acceptedRms=${diagnostics.lastAcceptedRmsDb.toFixed(1)}dB`
+      : null,
+    diagnostics.gateMode
+      ? diagnostics.gateMode === "adaptive"
+        ? `gate=adaptive${diagnostics.adaptiveFloorDb !== null ? `·floor=${diagnostics.adaptiveFloorDb.toFixed(1)}dB` : ""}`
+        : `gate=fixed(${diagnostics.fixedGateDb?.toFixed(1) ?? "?"}dB)`
       : null,
     diagnostics.lastAcceptedGain !== null &&
     Number.isFinite(diagnostics.lastAcceptedGain) &&
@@ -450,13 +789,23 @@ const createAudioContext = (): AudioContext => {
   }
 
   try {
-    return new AudioContextCtor({ sampleRate: TARGET_SAMPLE_RATE });
+    return new AudioContextCtor({
+      sampleRate: TARGET_SAMPLE_RATE,
+      latencyHint: "interactive",
+    });
   } catch {
-    return new AudioContextCtor();
+    try {
+      // Some WebViews reject a forced sample rate but still accept latencyHint.
+      return new AudioContextCtor({ latencyHint: "interactive" });
+    } catch {
+      return new AudioContextCtor();
+    }
   }
 };
 
 type ChunkHandler = (chunk: AudioChunk) => void | Promise<void>;
+/** Raw mono PCM16 frames for a continuous Parapper session. */
+export type PcmStreamHandler = (frame: Uint8Array) => void;
 type CaptureErrorHandler = (error: AudioCaptureError) => void;
 type LevelHandler = (rmsDb: number) => void;
 
@@ -479,7 +828,39 @@ const toCaptureError = (error: unknown): AudioCaptureError => {
   );
 };
 
+let fallbackUtteranceCounter = 0;
+
+/** Generate a per-capture-session key without requiring Web Crypto in tests. */
+const createUtteranceId = (): string => {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
+    try {
+      return cryptoApi.randomUUID();
+    } catch {
+      // Fall through to a monotonic local key in restricted WebViews.
+    }
+  }
+  fallbackUtteranceCounter += 1;
+  return `utterance-${Date.now().toString(36)}-${fallbackUtteranceCounter.toString(36)}`;
+};
+
 /* c8 ignore start -- browser/Tauri media graph; pure PCM functions are covered below. */
+/** Optional per-session capture tuning (not part of the persistent config). */
+export type StartCaptureOptions = {
+  /**
+   * When false, use the fixed `silenceGateDb` threshold. Defaults to true
+   * (adaptive noise-floor gate) when the option is omitted.
+   */
+  adaptiveGate?: boolean;
+  /**
+   * Optional continuous PCM path. When set, every captured frame (including
+   * silence) is resampled to 16 kHz PCM16 and delivered before the legacy
+   * speech gate. This is the path used by the persistent Parapper session;
+   * the legacy `handler` remains available for browser/HTTP callers.
+   */
+  streamPcmHandler?: PcmStreamHandler;
+};
+
 export class MicrophoneCapture {
   private context: AudioContext | null = null;
   private stream: MediaStream | null = null;
@@ -488,11 +869,19 @@ export class MicrophoneCapture {
   private processor: ScriptProcessorNode | null = null;
   private worklet: AudioWorkletNode | null = null;
   private pending = new Float32Array(0);
+  /** Cumulative accepted speech retained for the next request (not gated silence). */
+  private rollingContext: RollingAudioContext = createRollingAudioContext();
+  /** Stable key shared by overlapping requests in one spoken utterance. */
+  private utteranceId: string | null = null;
   private handler: ChunkHandler | null = null;
+  private streamPcmHandler: PcmStreamHandler | null = null;
   private errorHandler: CaptureErrorHandler | null = null;
   private levelHandler: LevelHandler | null = null;
   private chunkMs = DEFAULT_AUDIO_CHUNK_MS;
   private silenceGateDb = DEFAULT_SILENCE_GATE_DB;
+  private noiseSuppression = true;
+  private gateMode: SilenceGateMode = "adaptive";
+  private adaptiveGate: AdaptiveSilenceGateState = createAdaptiveSilenceGate();
   private captureMode: AudioCaptureMode = "none";
   private constraintMode: MicrophoneConstraintMode | null = null;
   private deviceIdRequested: string | null = null;
@@ -522,6 +911,9 @@ export class MicrophoneCapture {
       lastRmsDb: this.lastRmsDb,
       lastAcceptedRmsDb: this.lastAcceptedRmsDb,
       lastAcceptedGain: this.lastAcceptedGain,
+      gateMode: this.gateMode,
+      adaptiveFloorDb: this.adaptiveGate.floorDb,
+      fixedGateDb: this.gateMode === "fixed" ? this.silenceGateDb : null,
       chunksAccepted: this.chunksAccepted,
       chunksDroppedSilent: this.chunksDroppedSilent,
       lastError: lastCaptureDiagnostics.lastError,
@@ -554,10 +946,12 @@ export class MicrophoneCapture {
    * Open the microphone and ensure AudioContext is running. Safe to call after
    * releasing a previous capture session; may be overlapped with backend prep.
    */
-  public async prepareInput(deviceId: string): Promise<void> {
+  public async prepareInput(deviceId: string, noiseSuppression = true): Promise<void> {
     this.disposed = false;
     const previousDeviceId = this.deviceIdRequested;
+    const previousNoiseSuppression = this.noiseSuppression;
     this.deviceIdRequested = deviceId;
+    this.noiseSuppression = noiseSuppression;
 
     try {
       this.primeAudioContext();
@@ -568,7 +962,8 @@ export class MicrophoneCapture {
         this.hardwareReady &&
         this.stream !== null &&
         liveTrack?.readyState === "live" &&
-        previousDeviceId === deviceId;
+        previousDeviceId === deviceId &&
+        previousNoiseSuppression === noiseSuppression;
       if (!reusable) {
         // Drop any stale stream before requesting a new one.
         this.unbindTrackEnded();
@@ -582,7 +977,7 @@ export class MicrophoneCapture {
         this.stream = null;
         this.hardwareReady = false;
 
-        const opened = await openMicrophoneStream(deviceId);
+        const opened = await openMicrophoneStream(deviceId, noiseSuppression);
         if (this.disposed) {
           for (const track of opened.stream.getTracks()) {
             try {
@@ -617,16 +1012,25 @@ export class MicrophoneCapture {
     deviceId: string,
     chunkMs: number,
     silenceGateDb: number,
-    handler: ChunkHandler,
+    handler: ChunkHandler | null,
     onError?: CaptureErrorHandler,
     onLevel?: LevelHandler,
+    noiseSuppression = true,
+    options?: StartCaptureOptions,
   ): Promise<void> {
+    const previousNoiseSuppression = this.noiseSuppression;
     this.disposed = false;
     this.handler = handler;
+    this.streamPcmHandler = options?.streamPcmHandler ?? null;
     this.errorHandler = onError ?? null;
     this.levelHandler = onLevel ?? null;
     this.chunkMs = chunkMs;
     this.silenceGateDb = silenceGateDb;
+    this.noiseSuppression = noiseSuppression;
+    // Adaptive noise-floor gating is the default; silenceGateDb only applies
+    // when the caller explicitly opts into the fixed gate.
+    this.gateMode = options?.adaptiveGate === false ? "fixed" : "adaptive";
+    this.adaptiveGate = createAdaptiveSilenceGate();
     this.lastRmsDb = null;
     this.lastAcceptedRmsDb = null;
     this.lastAcceptedGain = null;
@@ -634,6 +1038,8 @@ export class MicrophoneCapture {
     this.chunksDroppedSilent = 0;
     this.levelEmitAt = 0;
     this.pending = new Float32Array(0);
+    this.rollingContext.reset();
+    this.utteranceId = null;
 
     try {
       const liveTrack = this.stream?.getAudioTracks()[0];
@@ -643,13 +1049,14 @@ export class MicrophoneCapture {
         this.context !== null &&
         this.context.state !== "closed" &&
         liveTrack?.readyState === "live" &&
-        this.deviceIdRequested === deviceId;
+        this.deviceIdRequested === deviceId &&
+        previousNoiseSuppression === noiseSuppression;
 
       if (!prepared) {
         // Standalone start() path (tests / callers that skip prepareInput).
         this.teardownGraphNodes();
         this.source = null;
-        await this.prepareInput(deviceId);
+        await this.prepareInput(deviceId, noiseSuppression);
       } else {
         // Reuse hardware from prepareInput; clear any half-wired graph.
         this.teardownGraphNodes();
@@ -695,7 +1102,13 @@ export class MicrophoneCapture {
 
   public async stop(): Promise<void> {
     this.disposed = true;
+    // Stop accepting new worklet/script-processor frames, but keep the
+    // current handler and context alive long enough to deliver a speech-aware
+    // tail. The helper takes ownership of `pending` synchronously so a
+    // concurrent stop() cannot flush the same samples twice.
+    await this.flushPendingPartial();
     this.handler = null;
+    this.streamPcmHandler = null;
     this.errorHandler = null;
     this.levelHandler = null;
     this.hardwareReady = false;
@@ -718,9 +1131,13 @@ export class MicrophoneCapture {
     this.constraintMode = null;
     this.deviceIdRequested = null;
     this.pending = new Float32Array(0);
+    this.rollingContext.reset();
+    this.utteranceId = null;
     this.lastRmsDb = null;
     this.lastAcceptedRmsDb = null;
     this.lastAcceptedGain = null;
+    this.gateMode = "adaptive";
+    this.adaptiveGate = createAdaptiveSilenceGate();
 
     if (context) {
       try {
@@ -733,6 +1150,81 @@ export class MicrophoneCapture {
     }
 
     this.publishDiagnostics(lastCaptureDiagnostics.lastErrorCode ? undefined : null);
+  }
+
+  /**
+   * Send the final sub-window when it contains enough real audio to plausibly
+   * contain speech. This intentionally reuses the active silence-gate policy;
+   * stopping after a pause must not turn ambient tail noise into an ASR request.
+   */
+  private async flushPendingPartial(): Promise<void> {
+    const pending = this.pending;
+    // Clear ownership before awaiting the handler. A re-entrant/concurrent
+    // stop() then observes an empty tail and cannot emit a duplicate chunk.
+    this.pending = new Float32Array(0);
+    const handler = this.handler;
+    const sampleRate = this.context?.sampleRate ?? TARGET_SAMPLE_RATE;
+    if (!handler || !shouldFlushPartialAudio(pending.length, sampleRate, PARTIAL_FLUSH_MIN_MS)) {
+      return;
+    }
+
+    const durationMs = partialAudioDurationMs(pending.length, sampleRate);
+    const chunkDb = calculateRmsDb(pending);
+    const passed =
+      this.gateMode === "adaptive"
+        ? passesAdaptiveSilenceGate(this.adaptiveGate, chunkDb)
+        : passesSilenceGate(chunkDb, this.silenceGateDb);
+    if (this.gateMode === "adaptive") {
+      updateAdaptiveSilenceGate(this.adaptiveGate, chunkDb, passed);
+    }
+    if (!passed) {
+      this.rollingContext.markSilence(durationMs);
+      if (!this.rollingContext.hasContext()) {
+        this.utteranceId = null;
+      }
+      this.chunksDroppedSilent += 1;
+      this.publishDiagnostics(undefined);
+      return;
+    }
+
+    const utteranceId = this.ensureUtteranceId(sampleRate);
+    const contextual = this.rollingContext.append(pending, sampleRate);
+    const contextualDurationMs = partialAudioDurationMs(contextual.length, sampleRate);
+    const normalized = applyPeakNormalize(contextual);
+    this.chunksAccepted += 1;
+    this.lastAcceptedRmsDb = chunkDb;
+    this.lastAcceptedGain = normalized.gain;
+    try {
+      // Await the final callback so stop() cannot tear down the capture before
+      // the short utterance reaches the processor. Use the contextual duration
+      // (rather than the configured full-window duration) in the encoded chunk.
+      await Promise.resolve(
+        handler(
+          makeAudioChunk(normalized.samples, sampleRate, contextualDurationMs, { utteranceId }),
+        ),
+      );
+    } catch {
+      // A consumer failure must not leave microphone resources open. Existing
+      // full-window callbacks are fire-and-forget; keep stop() equally safe.
+    }
+    this.publishDiagnostics(undefined);
+  }
+
+  /**
+   * Return the stable key for the next speech window, rotating it whenever the
+   * rolling context was cleared or the hardware sample rate changed.
+   */
+  private ensureUtteranceId(sampleRate: number): string {
+    const rate = safeAudioRate(sampleRate);
+    const contextRate = this.rollingContext.getSampleRate();
+    if (
+      this.utteranceId === null ||
+      !this.rollingContext.hasContext() ||
+      (contextRate !== null && contextRate !== rate)
+    ) {
+      this.utteranceId = createUtteranceId();
+    }
+    return this.utteranceId;
   }
 
   private async ensureContextRunning(): Promise<void> {
@@ -843,10 +1335,38 @@ export class MicrophoneCapture {
       throw new AudioCaptureError("audio-context-failed");
     }
     const processorSource = `
+      const FRAME_SIZE = ${AUDIO_WORKLET_FRAME_SAMPLES};
       class CaptionBridgeCaptureProcessor extends AudioWorkletProcessor {
+        constructor(options) {
+          super();
+          const configured = options && options.processorOptions
+            ? options.processorOptions.frameSize
+            : FRAME_SIZE;
+          this.frameSize = Number.isFinite(configured) && configured > 0
+            ? Math.floor(configured)
+            : FRAME_SIZE;
+          this.frame = new Float32Array(this.frameSize);
+          this.offset = 0;
+        }
         process(inputs) {
           const channel = inputs[0] && inputs[0][0];
-          if (channel) this.port.postMessage(channel.slice());
+          if (!channel) return true;
+          let sourceOffset = 0;
+          while (sourceOffset < channel.length) {
+            const remaining = this.frameSize - this.offset;
+            const available = channel.length - sourceOffset;
+            const count = Math.min(remaining, available);
+            this.frame.set(channel.subarray(sourceOffset, sourceOffset + count), this.offset);
+            this.offset += count;
+            sourceOffset += count;
+            if (this.offset === this.frameSize) {
+              const frame = this.frame;
+              // Transfer ownership instead of cloning each render quantum.
+              this.port.postMessage(frame.buffer, [frame.buffer]);
+              this.frame = new Float32Array(this.frameSize);
+              this.offset = 0;
+            }
+          }
           return true;
         }
       }
@@ -863,9 +1383,17 @@ export class MicrophoneCapture {
       numberOfInputs: 1,
       numberOfOutputs: 1,
       channelCount: 1,
+      channelCountMode: "explicit",
+      processorOptions: { frameSize: AUDIO_WORKLET_FRAME_SAMPLES },
     });
-    this.worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
-      this.acceptSamples(event.data);
+    this.worklet.port.onmessage = (event: MessageEvent<Float32Array | ArrayBuffer>) => {
+      // New worklet versions transfer an ArrayBuffer. Keep accepting a typed
+      // view for compatibility with cached/older modules in a running WebView.
+      if (event.data instanceof ArrayBuffer) {
+        this.acceptSamples(new Float32Array(event.data));
+      } else {
+        this.acceptSamples(event.data);
+      }
     };
     this.sink = this.context.createGain();
     this.sink.gain.value = 0;
@@ -878,7 +1406,7 @@ export class MicrophoneCapture {
     if (!this.context || !this.source) {
       throw new AudioCaptureError("audio-context-failed");
     }
-    this.processor = this.context.createScriptProcessor(4_096, 1, 1);
+    this.processor = this.context.createScriptProcessor(SCRIPT_PROCESSOR_BUFFER_SIZE, 1, 1);
     this.processor.onaudioprocess = (event) => {
       // Copy: the AudioBuffer channel view is reused across callbacks.
       this.acceptSamples(event.inputBuffer.getChannelData(0).slice());
@@ -890,13 +1418,14 @@ export class MicrophoneCapture {
     this.sink.connect(this.context.destination);
   }
 
-  private acceptSamples(samples: Float32Array): void {
-    if (this.disposed || !this.handler || samples.length === 0) {
+  private acceptSamples(samples: Float32Array | ArrayBuffer): void {
+    const frame = samples instanceof Float32Array ? samples : new Float32Array(samples);
+    if (this.disposed || (!this.handler && !this.streamPcmHandler) || frame.length === 0) {
       return;
     }
 
     // Live level meter: throttle UI callbacks so React is not flooded every audio quantum.
-    const instantDb = calculateRmsDb(samples);
+    const instantDb = calculateRmsDb(frame);
     this.lastRmsDb = instantDb;
     const now =
       typeof performance !== "undefined" && typeof performance.now === "function"
@@ -911,9 +1440,35 @@ export class MicrophoneCapture {
       }
     }
 
-    const next = new Float32Array(this.pending.length + samples.length);
+    // The continuous stream intentionally bypasses the renderer's RMS gate.
+    // Parapper must observe the silence frames itself so its VAD, segmenter and
+    // Turn detector can apply the configured timing and hysteresis. The
+    // existing gate below remains active for legacy chunk callers/diagnostics.
+    const streamPcmHandler = this.streamPcmHandler;
+    if (streamPcmHandler) {
+      try {
+        const sampleRate = this.context?.sampleRate ?? TARGET_SAMPLE_RATE;
+        const target = resampleLinear(frame, sampleRate, TARGET_SAMPLE_RATE);
+        const pcm = float32ToPcm16(target);
+        streamPcmHandler(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength).slice());
+      } catch (error) {
+        // A transport failure must not be retried on every audio quantum. Stop
+        // forwarding frames and let the owner tear down the capture/session.
+        this.streamPcmHandler = null;
+        this.errorHandler?.(new AudioCaptureError("audio-context-failed", error));
+      }
+    }
+
+    // In continuous mode the native Parapper VAD owns speech/silence
+    // decisions. Do not also run the legacy renderer gate or report its drops
+    // in diagnostics when there is no chunk handler.
+    if (!this.handler) {
+      return;
+    }
+
+    const next = new Float32Array(this.pending.length + frame.length);
     next.set(this.pending);
-    next.set(samples, this.pending.length);
+    next.set(frame, this.pending.length);
     this.pending = next;
     const sampleRate = this.context?.sampleRate ?? TARGET_SAMPLE_RATE;
     const chunkSize = Math.max(1, Math.round((sampleRate * this.chunkMs) / 1000));
@@ -921,37 +1476,71 @@ export class MicrophoneCapture {
       const chunk = this.pending.slice(0, chunkSize);
       this.pending = this.pending.slice(chunkSize);
       const chunkDb = calculateRmsDb(chunk);
-      // Gate on hardware-rate RMS before encode; makeAudioChunk always emits 16 kHz mono.
-      if (passesSilenceGate(chunkDb, this.silenceGateDb)) {
-        // Quiet speech that cleared the gate still benefits from modest peak lift
-        // before 16 kHz encode (ambient ~-54 dB never reaches here with gate -50).
-        const normalized = applyPeakNormalize(chunk);
+      // Adaptive floor gate by default: -54 dB speech over a -65 dB room floor
+      // passes while ambient is rejected; silenceGateDb is the fixed fallback.
+      const passed =
+        this.gateMode === "adaptive"
+          ? passesAdaptiveSilenceGate(this.adaptiveGate, chunkDb)
+          : passesSilenceGate(chunkDb, this.silenceGateDb);
+      // Do not learn an adaptive floor while the fixed gate is selected. This
+      // keeps diagnostics truthful and prevents a future mode toggle from
+      // inheriting stale samples from a different policy.
+      if (this.gateMode === "adaptive") {
+        updateAdaptiveSilenceGate(this.adaptiveGate, chunkDb, passed);
+      }
+      if (passed) {
+        // Quiet speech that cleared the gate still benefits from modest peak
+        // lift before 16 kHz encode (ambient ~-54 dB in a -65 dB room passes
+        // the adaptive gate, so Parapper gets a boosted signal, not silence).
+        const utteranceId = this.ensureUtteranceId(sampleRate);
+        const contextual = this.rollingContext.append(chunk, sampleRate);
+        const contextualDurationMs = partialAudioDurationMs(contextual.length, sampleRate);
+        const normalized = applyPeakNormalize(contextual);
         this.chunksAccepted += 1;
         this.lastAcceptedRmsDb = chunkDb;
         this.lastAcceptedGain = normalized.gain;
+        // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
         if (typeof console !== "undefined" && typeof console.debug === "function") {
-          // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
           // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
           console.debug("[audio] chunk accepted", {
             rmsDb: Number(chunkDb.toFixed(1)),
             peak: Number(normalized.peak.toFixed(4)),
             gain: Number(normalized.gain.toFixed(2)),
             chunkMs: this.chunkMs,
+            contextMs: Number(contextualDurationMs.toFixed(1)),
             sampleRate,
+            gateMode: this.gateMode,
+            adaptiveFloorDb:
+              this.adaptiveGate.floorDb === null
+                ? null
+                : Number(this.adaptiveGate.floorDb.toFixed(1)),
             accepted: this.chunksAccepted,
             silentDrops: this.chunksDroppedSilent,
           });
         }
-        void this.handler?.(makeAudioChunk(normalized.samples, sampleRate, this.chunkMs));
+        void this.handler?.(
+          makeAudioChunk(normalized.samples, sampleRate, contextualDurationMs, { utteranceId }),
+        );
       } else {
+        this.rollingContext.markSilence(partialAudioDurationMs(chunk.length, sampleRate));
+        if (!this.rollingContext.hasContext()) {
+          // The next accepted window starts a new utterance after a full gated
+          // pause; do not let it reuse the prior request's correlation key.
+          this.utteranceId = null;
+        }
         this.chunksDroppedSilent += 1;
         if (this.chunksDroppedSilent <= 3 || this.chunksDroppedSilent % 20 === 0) {
+          // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
           if (typeof console !== "undefined" && typeof console.debug === "function") {
-            // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
             // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
             console.debug("[audio] chunk dropped (silence gate)", {
               rmsDb: Number.isFinite(chunkDb) ? Number(chunkDb.toFixed(1)) : chunkDb,
-              gateDb: this.silenceGateDb,
+              gateMode: this.gateMode,
+              silenceGateDb: this.silenceGateDb,
+              adaptiveFloorDb:
+                this.adaptiveGate.floorDb === null
+                  ? null
+                  : Number(this.adaptiveGate.floorDb.toFixed(1)),
               silentDrops: this.chunksDroppedSilent,
             });
           }

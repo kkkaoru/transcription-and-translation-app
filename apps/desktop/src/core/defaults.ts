@@ -16,18 +16,60 @@ export interface PartialAppConfig {
 export const DEFAULT_FONT_FAMILY = '"Noto Sans JP Variable", "Noto Sans JP", sans-serif';
 
 /**
- * Default live-caption audio slice length.
- * ~900ms balances time-to-first-subtitle against Parapper needing enough speech
- * signal (sub-800ms often yields empty/noise-only transcripts).
+ * Frontend live-caption audio window (not Parapper's internal VAD interval).
+ *
+ * 640 ms is a useful middle ground for live captions: it is short enough to
+ * keep the first caption responsive, while still giving Parapper more than a
+ * handful of 32 ms VAD frames to recognise a Japanese mora/word.  The range
+ * exposed in SettingsView is intentionally aligned to 32 ms VAD frames.
  */
-export const DEFAULT_AUDIO_CHUNK_MS = 900;
+export const DEFAULT_AUDIO_CHUNK_MS = 640;
+export const AUDIO_CHUNK_MIN_MS = 320;
+export const AUDIO_CHUNK_MAX_MS = 2_000;
+export const AUDIO_CHUNK_STEP_MS = 32;
+
+/** Parapper headless sidecar's internal VAD interval (one frame cadence). */
+export const DEFAULT_VAD_INTERVAL_MS = 32;
+export const VAD_INTERVAL_MIN_MS = 16;
+export const VAD_INTERVAL_MAX_MS = 128;
+export const VAD_INTERVAL_STEP_MS = 16;
+
+/** Silero VAD speech-confidence threshold used by the headless sidecar. */
+export const DEFAULT_VAD_THRESHOLD = 0.5;
+export const VAD_THRESHOLD_MIN = 0.1;
+export const VAD_THRESHOLD_MAX = 0.9;
+export const VAD_THRESHOLD_STEP = 0.05;
+
+export const normalizeVadIntervalMs = (value: number | undefined): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_VAD_INTERVAL_MS;
+  }
+  const rounded = Math.round(value / VAD_INTERVAL_STEP_MS) * VAD_INTERVAL_STEP_MS;
+  return Math.min(VAD_INTERVAL_MAX_MS, Math.max(VAD_INTERVAL_MIN_MS, rounded));
+};
+
+export const normalizeVadThreshold = (value: number | undefined): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_VAD_THRESHOLD;
+  }
+  const rounded = Math.round(value / VAD_THRESHOLD_STEP) * VAD_THRESHOLD_STEP;
+  return Math.min(VAD_THRESHOLD_MAX, Math.max(VAD_THRESHOLD_MIN, rounded));
+};
 
 /**
- * Default RMS silence gate (dBFS). Chunks quieter than this never leave the
- * capture graph. Ambient noise with AGC-off raw capture often sits around
- * -54 dBFS and must not be sent to Parapper (yields transcript_missing).
+ * Default RMS silence gate (dBFS) used when adaptive noise-floor gating is
+ * disabled. Ambient noise with AGC-off raw capture often sits around -54 dBFS
+ * and must not be sent to Parapper (yields transcript_missing).
  */
 export const DEFAULT_SILENCE_GATE_DB = -50;
+
+/**
+ * Adaptive noise-floor gating is the default: each chunk is compared against a
+ * rolling ambient floor estimate instead of a fixed threshold, so quiet speech
+ * (~-54 dB) in a normal room (~-65 dB floor) passes while true ambient is
+ * rejected. Set false to fall back to the fixed {@link DEFAULT_SILENCE_GATE_DB}.
+ */
+export const DEFAULT_ADAPTIVE_NOISE_FLOOR = true;
 
 export const createTextStyle = (overrides: Partial<CaptionTextStyle> = {}): CaptionTextStyle => ({
   fontFamily: DEFAULT_FONT_FAMILY,
@@ -81,6 +123,13 @@ export const createDefaultConfig = (): AppConfig => ({
     sampleRate: 16_000,
     chunkMs: DEFAULT_AUDIO_CHUNK_MS,
     silenceGateDb: DEFAULT_SILENCE_GATE_DB,
+    // Parapper's true VAD settings are passed to the headless sidecar at launch.
+    vadIntervalMs: DEFAULT_VAD_INTERVAL_MS,
+    vadThreshold: DEFAULT_VAD_THRESHOLD,
+    // Browser NS/AEC on by default; user can disable for raw capture.
+    noiseSuppression: true,
+    // Adaptive floor gate on by default; silenceGateDb is the fixed fallback.
+    adaptiveNoiseFloor: DEFAULT_ADAPTIVE_NOISE_FLOOR,
   },
   overlay: {
     width: 1_280,
@@ -102,6 +151,7 @@ export const createDefaultConfig = (): AppConfig => ({
   },
   debug: {
     verboseLogging: false,
+    logLevel: "info",
   },
 });
 
@@ -217,8 +267,10 @@ export const DEFAULT_RUNTIME_STATUS: RuntimeStatus = {
 
 /**
  * Legacy installs used silenceGateDb=-55, which lets ambient ~-54 dBFS through
- * to Parapper (transcript_missing). Bump only that old default; intentional
- * lower gates set by the user are left alone.
+ * to Parapper (transcript_missing) whenever the fixed gate is active. Bump only
+ * that old default; intentional lower gates set by the user are left alone.
+ * (Adaptive noise-floor gating is now the default path; this migration keeps
+ * the fixed-gate fallback sane for users who disable it.)
  */
 export const migrateSilenceGateDb = (gateDb: number | undefined): number => {
   if (gateDb === undefined || !Number.isFinite(gateDb)) {
@@ -236,6 +288,15 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   const input = candidate;
   const audio = { ...base.audio, ...input.audio };
   audio.silenceGateDb = migrateSilenceGateDb(audio.silenceGateDb);
+  audio.vadIntervalMs = normalizeVadIntervalMs(audio.vadIntervalMs);
+  audio.vadThreshold = normalizeVadThreshold(audio.vadThreshold);
+  // Missing / non-boolean legacy values default to enabled.
+  if (typeof audio.noiseSuppression !== "boolean") {
+    audio.noiseSuppression = true;
+  }
+  if (typeof audio.adaptiveNoiseFloor !== "boolean") {
+    audio.adaptiveNoiseFloor = DEFAULT_ADAPTIVE_NOISE_FLOOR;
+  }
   return {
     ...base,
     ...input,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBridgeError, isNoSpeechBridgeError } from "./bridge";
+import { bridge, formatBridgeError, isNoSpeechBridgeError } from "./bridge";
 
 describe("formatBridgeError", () => {
   it("extracts details from strings, Errors, and Tauri-shaped objects", () => {
@@ -59,5 +59,29 @@ describe("isNoSpeechBridgeError", () => {
         data: { message: "nested failure" },
       }),
     ).toBe("nested failure");
+  });
+});
+
+describe("browser updater bridge", () => {
+  it("does not contact an updater feed outside Tauri", async () => {
+    const status = await bridge.getUpdateStatus();
+    expect(status.status).toBe("unsupported");
+    expect(await bridge.checkForUpdate()).toBeNull();
+    expect(await bridge.getRuntimeDiagnostics()).toBeNull();
+    await expect(bridge.installUpdate()).rejects.toThrow(/desktop app/i);
+    await expect(bridge.relaunchToUpdatedApp()).rejects.toThrow(/desktop app/i);
+  });
+});
+
+describe("caption replay bridge", () => {
+  it("keeps browser replay non-fatal when native history is unavailable", async () => {
+    expect(await bridge.getLatestCaption()).toBeNull();
+  });
+});
+
+describe("browser replay bridges", () => {
+  it("returns empty native history and no latest caption outside Tauri", async () => {
+    expect(await bridge.getPipelineStageHistory()).toEqual([]);
+    expect(await bridge.getLatestCaption()).toBeNull();
   });
 });

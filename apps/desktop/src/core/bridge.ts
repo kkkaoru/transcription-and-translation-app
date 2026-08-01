@@ -7,6 +7,7 @@ import {
   DEFAULT_RUNTIME_STATUS,
   mergeConfig,
 } from "./defaults";
+import { normalizePipelineStageEvent } from "./pipelineStages";
 import type {
   AppConfig,
   AudioChunk,
@@ -14,9 +15,14 @@ import type {
   DownloadProgress,
   ModelCatalog,
   ModelStatusEntry,
+  ParapperRecognitionOutput,
   PipelineStageEvent,
+  RelaunchResult,
+  RuntimeDiagnostics,
   RuntimeStatus,
   UnlistenFn,
+  UpdateMetadata,
+  UpdateStatus,
 } from "./types";
 
 const isTauriRuntime = (): boolean =>
@@ -143,6 +149,39 @@ const readBrowserConfig = (): AppConfig => {
 let browserConfig = readBrowserConfig();
 let browserStatus = { ...DEFAULT_RUNTIME_STATUS, platform: "unknown" as const };
 
+// Keep the most recent user-facing caption in the renderer as a second replay
+// path. Native history is authoritative in the desktop runtime, but this
+// cache also covers an event delivered just before a late subscriber mounts,
+// and keeps browser/test doubles deterministic without requiring Tauri IPC.
+let latestCaption: CaptionPayload | null = null;
+
+const rememberCaption = (caption: CaptionPayload): void => {
+  const stage = caption.stage;
+  const sourceText = typeof caption.sourceText === "string" ? caption.sourceText : "";
+  const translationText =
+    typeof caption.translationText === "string" ? caption.translationText : "";
+  if (
+    (stage !== undefined && stage !== "source" && stage !== "translation") ||
+    (!sourceText.trim() && !translationText.trim())
+  ) {
+    return;
+  }
+  latestCaption = caption;
+};
+
+const DEFAULT_UPDATE_STATUS: UpdateStatus = {
+  status: "unsupported",
+  currentVersion: null,
+  availableVersion: null,
+  checkedAt: null,
+  downloadedBytes: null,
+  totalBytes: null,
+  error: null,
+  source: null,
+  channel: null,
+  metadata: null,
+};
+
 export const bridge = {
   isDesktop: isTauriRuntime,
 
@@ -185,6 +224,32 @@ export const bridge = {
     return Promise.resolve(browserStatus);
   },
 
+  /**
+   * Replay the latest normalized source/translation caption for late UI
+   * consumers. Native history is best effort: older bundles, a disconnected
+   * webview, or a command failure should not prevent the overlay from
+   * mounting, so the last renderer-side event is returned as a fallback.
+   */
+  async getLatestCaption(): Promise<CaptionPayload | null> {
+    if (isTauriRuntime()) {
+      try {
+        const caption = await invoke<CaptionPayload | null>("get_latest_caption");
+        if (caption) {
+          rememberCaption(caption);
+          return caption;
+        }
+        // A successful native null means no native history is available. Keep
+        // the renderer fallback for older bundles or an event that arrived
+        // before native history was recorded; normal idle handling clears this
+        // cache so it cannot resurrect a stopped-session caption.
+      } catch {
+        // Fall through to the renderer cache. Replay is intentionally
+        // non-fatal when native history is unavailable.
+      }
+    }
+    return latestCaption;
+  },
+
   async startCapture(): Promise<void> {
     if (isTauriRuntime()) {
       await invoke("start_capture");
@@ -195,6 +260,9 @@ export const bridge = {
   async stopCapture(): Promise<void> {
     if (isTauriRuntime()) {
       await invoke("stop_capture");
+      latestCaption = null;
+    } else {
+      latestCaption = null;
     }
     browserStatus = { ...browserStatus, status: "idle" };
   },
@@ -202,6 +270,15 @@ export const bridge = {
   async transcribeAudioChunk(chunk: AudioChunk): Promise<CaptionPayload> {
     if (isTauriRuntime()) {
       return invoke<CaptionPayload>("transcribe_audio_chunk", { chunk });
+    }
+    await Promise.resolve();
+    return demoCaption();
+  },
+
+  /** Normalize one structured output from the persistent Parapper session. */
+  async normalizeParapperOutput(output: ParapperRecognitionOutput): Promise<CaptionPayload> {
+    if (isTauriRuntime()) {
+      return invoke<CaptionPayload>("normalize_parapper_output", { output });
     }
     await Promise.resolve();
     return demoCaption();
@@ -221,7 +298,10 @@ export const bridge = {
 
   listenCaptions(callback: (caption: CaptionPayload) => void): Promise<UnlistenFn> {
     if (isTauriRuntime()) {
-      return listen<CaptionPayload>("caption:update", (event) => callback(event.payload));
+      return listen<CaptionPayload>("caption:update", (event) => {
+        rememberCaption(event.payload);
+        callback(event.payload);
+      });
     }
     return Promise.resolve(() => undefined);
   },
@@ -251,9 +331,118 @@ export const bridge = {
     });
   },
 
+  /**
+   * Recover native pipeline rows that may have been emitted before the
+   * app-wide `pipeline:stage` listener or Debug panel mounted.
+   *
+   * The native command exposes these rows as `pipelineStages` inside the
+   * debug snapshot. Normalize through the same boundary used by live events
+   * so callers can safely merge the result into the UI stage store.
+   */
+  async getPipelineStageHistory(): Promise<PipelineStageEvent[]> {
+    const info = await this.getDebugInfo();
+    const raw = info["pipelineStages"] ?? info["pipelineStageHistory"] ?? info["stageHistory"];
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw
+      .map((entry) => normalizePipelineStageEvent(entry))
+      .filter((entry): entry is PipelineStageEvent => entry !== null);
+  },
+
+  /** Return the last native updater snapshot without triggering network I/O. */
+  getUpdateStatus(): Promise<UpdateStatus> {
+    if (isTauriRuntime()) {
+      return invoke<UpdateStatus>("get_update_status");
+    }
+    return Promise.resolve({ ...DEFAULT_UPDATE_STATUS });
+  },
+
+  /** Ask the native updater to check its configured feed. */
+  checkForUpdate(): Promise<UpdateMetadata | null> {
+    if (isTauriRuntime()) {
+      return invoke<UpdateMetadata | null>("check_for_update");
+    }
+    return Promise.resolve(null);
+  },
+
+  /** Download and install the update selected by the last check. */
+  installUpdate(): Promise<void> {
+    if (isTauriRuntime()) {
+      return invoke<void>("install_update");
+    }
+    return Promise.reject(new Error("Updates are only available in the desktop app."));
+  },
+
+  /** Request the native bundle switch after an update has been installed. */
+  relaunchToUpdatedApp(): Promise<RelaunchResult> {
+    if (isTauriRuntime()) {
+      return invoke<RelaunchResult>("relaunch_to_updated_app");
+    }
+    return Promise.reject(new Error("Relaunch is only available in the desktop app."));
+  },
+
+  /** Convenience command used by support tooling and smoke tests. */
+  checkAndInstallUpdate(): Promise<void> {
+    if (isTauriRuntime()) {
+      return invoke<void>("check_and_install_update");
+    }
+    return Promise.reject(new Error("Updates are only available in the desktop app."));
+  },
+
+  /** Runtime diagnostics are a typed view of the extra fields in get_debug_info. */
+  async getRuntimeDiagnostics(): Promise<RuntimeDiagnostics | null> {
+    const info = await this.getDebugInfo();
+    const update = info["update"];
+    const sidecars = info["sidecars"];
+    if (!update && !sidecars) {
+      return null;
+    }
+    return {
+      update: (update as UpdateStatus | undefined) ?? { ...DEFAULT_UPDATE_STATUS },
+      sidecars: Array.isArray(sidecars) ? (sidecars as RuntimeDiagnostics["sidecars"]) : [],
+      updateHistory: Array.isArray(info["updateHistory"])
+        ? (info["updateHistory"] as Array<Record<string, unknown>>)
+        : undefined,
+    };
+  },
+
+  /**
+   * Write a structured log export into the native app log directory.
+   * Browser preview falls back to a no-op path so callers can still download locally.
+   */
+  exportDebugLogs(body: string, format: "json" | "jsonl" = "jsonl"): Promise<string> {
+    if (isTauriRuntime()) {
+      return invoke<string>("export_debug_logs", { body, format });
+    }
+    return Promise.resolve(`browser-download-only.${format}`);
+  },
+
   listenRuntime(callback: (status: RuntimeStatus) => void): Promise<UnlistenFn> {
     if (isTauriRuntime()) {
-      return listen<RuntimeStatus>("runtime:status", (event) => callback(event.payload));
+      return listen<RuntimeStatus>("runtime:status", (event) => {
+        if (event.payload.status === "idle" && !event.payload.lastError) {
+          // Keep the renderer replay fallback in sync with the native slot.
+          // This matters when an older bundle lacks get_latest_caption: an
+          // idle event must not leave its pre-stop cache available for replay.
+          latestCaption = null;
+        }
+        callback(event.payload);
+      });
+    }
+    return Promise.resolve(() => undefined);
+  },
+
+  listenUpdateStatus(callback: (status: UpdateStatus) => void): Promise<UnlistenFn> {
+    if (isTauriRuntime()) {
+      return listen<UpdateStatus>("update:status", (event) => callback(event.payload));
+    }
+    return Promise.resolve(() => undefined);
+  },
+
+  listenUpdateRelaunchDeferred(callback: (reason: string) => void): Promise<UnlistenFn> {
+    if (isTauriRuntime()) {
+      return listen<string>("update:relaunch-deferred", (event) => callback(event.payload));
     }
     return Promise.resolve(() => undefined);
   },
