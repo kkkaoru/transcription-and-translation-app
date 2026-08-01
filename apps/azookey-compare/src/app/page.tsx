@@ -396,7 +396,9 @@ export default function ComparePage() {
             応答は到着順に独立して更新します。
           </p>
         </div>
-        <div className="path-chip" role="status" aria-label="現在の処理経路">
+        {/* Derived from the selected mode and the settings form, so it states the
+            chosen route rather than one a request has travelled. */}
+        <div className="path-chip" role="status" aria-label="選択中の処理経路">
           <span className="status-dot status-dot-live" aria-hidden="true" />
           {pathSummary}
         </div>
