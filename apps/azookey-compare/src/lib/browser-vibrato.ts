@@ -55,7 +55,10 @@ const asConverter = (value: unknown): VibratoConvertFunction | null => {
 const loadConverter = (config: BrowserVibratoConfig): Promise<VibratoConvertFunction> => {
   const globalName = config.globalName?.trim() || DEFAULT_BROWSER_WASM_GLOBAL_NAME;
   const root = globalThis as unknown as UnknownRecord;
-  const globalConverter = asConverter(root[globalName]);
+  // Only an injected global counts. Reading through the prototype chain would
+  // let an inherited name such as `toString` pose as a converter, so the module
+  // URL would be skipped for something nobody configured.
+  const globalConverter = Object.hasOwn(root, globalName) ? asConverter(root[globalName]) : null;
   if (globalConverter) {
     return Promise.resolve(globalConverter);
   }

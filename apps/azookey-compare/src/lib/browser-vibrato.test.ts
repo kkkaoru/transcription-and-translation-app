@@ -26,6 +26,17 @@ describe("browser Vibrato bridge", () => {
     });
   });
 
+  it("ignores an inherited name that was never injected as a global", async () => {
+    // `toString` resolves off Object.prototype and would satisfy a bare property
+    // read, so the module URL would be skipped for a converter nobody supplied.
+    await expect(
+      runBrowserVibrato("入力", {
+        moduleUrl: "data:text/javascript,export const convert = (t) => 'module:' + t",
+        globalName: "toString",
+      }),
+    ).resolves.toMatchObject({ text: "module:入力" });
+  });
+
   it("prefers an injected global over a configured module URL", async () => {
     // The loader checks globalThis first, so the configuration status text must
     // say so rather than promising the module URL is what runs.

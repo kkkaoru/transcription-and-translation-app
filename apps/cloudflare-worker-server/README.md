@@ -52,7 +52,7 @@ The comparison app therefore always sends wire `mode: "worker-vibrato"`.
 In browser pre-pass UI mode it may also attach observability-only fields
 `comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"`.
 The Worker ignores those fields and always runs AzooKey WASM on `vibratoInput`.
-The optional browser pre-pass is a client-side `convert`/`transform` step that
+The optional browser pre-pass is a client-side `convert`/`transform`/`tokenize` step that
 may rewrite `vibratoInput` before send — not Vibrato and not UniDic.
 
 Errors stay on the socket and use a stable shape:
