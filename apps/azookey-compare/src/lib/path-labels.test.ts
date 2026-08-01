@@ -42,4 +42,15 @@ describe("comparison path labels", () => {
       "Browser WASM pre-pass → Worker AzooKey WASM（失敗）",
     );
   });
+
+  it("keeps a succeeded pre-pass out of a failure to reach the Worker", () => {
+    // Losing the Worker client after the pre-pass finished must not report the
+    // pre-pass as failed, nor claim a Worker conversion that never ran.
+    const label = attemptedPathLabel("browser-vibrato", "worker-connect");
+    expect(label).toBe("Browser WASM pre-pass 完了 / Worker AzooKey WASM 未実行");
+    expect(label).not.toContain("pre-pass（失敗）");
+    expect(attemptedPathLabel("worker-vibrato", "worker-connect")).toBe(
+      "Worker AzooKey WASM 未実行",
+    );
+  });
 });

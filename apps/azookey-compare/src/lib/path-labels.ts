@@ -6,8 +6,14 @@ export const conversionPathLabel = (mode: ComparisonMode): string =>
     ? "Browser WASM pre-pass → Worker AzooKey WASM"
     : "Worker AzooKey WASM";
 
-/** Stage that was in flight when a conversion failed. */
-export type ConversionStage = "setup" | "browser-wasm" | "worker";
+/**
+ * Stage that was in flight when a conversion failed.
+ *
+ * `worker-connect` sits between the two real stages: the browser pre-pass has
+ * already finished, but the Worker was never reached. Folding it into either
+ * neighbour would blame a stage that did not fail.
+ */
+export type ConversionStage = "setup" | "browser-wasm" | "worker-connect" | "worker";
 
 /**
  * Path a row actually reached. A failed row must not advertise stages it never
@@ -20,6 +26,11 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
   }
   if (failedStage === "setup") {
     return "未実行";
+  }
+  if (failedStage === "worker-connect") {
+    return mode === "browser-vibrato"
+      ? "Browser WASM pre-pass 完了 / Worker AzooKey WASM 未実行"
+      : "Worker AzooKey WASM 未実行";
   }
   if (mode !== "browser-vibrato") {
     return "Worker AzooKey WASM（失敗）";
