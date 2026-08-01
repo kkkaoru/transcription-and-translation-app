@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Kotoba Beacon needs microphone access to generate Japanese and English live captions.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Kotoba Beacon uses speech recognition to generate live captions when Web Speech mode is selected.</string>
 </dict>
 </plist>

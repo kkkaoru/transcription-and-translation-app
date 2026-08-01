@@ -5,16 +5,34 @@ import {
   AUDIO_CHUNK_MAX_MS,
   AUDIO_CHUNK_MIN_MS,
   AUDIO_CHUNK_STEP_MS,
+  CAPTION_POSITION_MAX_PERCENT,
+  CAPTION_POSITION_MIN_PERCENT,
   DEFAULT_ADAPTIVE_NOISE_FLOOR,
   DEFAULT_AUDIO_CHUNK_MS,
   DEFAULT_RECOGNITION_MODE,
   DEFAULT_SILENCE_GATE_DB,
   DEFAULT_VAD_INTERVAL_MS,
   DEFAULT_VAD_THRESHOLD,
+  ENDPOINT_TIMEOUT_MAX_MS,
+  ENDPOINT_TIMEOUT_MIN_MS,
+  ENDPOINT_TIMEOUT_STEP_MS,
   isRecognitionMode,
+  OVERLAY_DIMENSION_STEP_PX,
+  OVERLAY_GAP_MAX_PX,
+  OVERLAY_GAP_MIN_PX,
+  OVERLAY_HEIGHT_MAX_PX,
+  OVERLAY_HEIGHT_MIN_PX,
+  OVERLAY_SAFE_AREA_MAX_PX,
+  OVERLAY_SAFE_AREA_MIN_PX,
+  OVERLAY_WIDTH_MAX_PX,
+  OVERLAY_WIDTH_MIN_PX,
+  SILENCE_GATE_MAX_DB,
+  SILENCE_GATE_MIN_DB,
+  SILENCE_GATE_STEP_DB,
   VAD_INTERVAL_MAX_MS,
   VAD_INTERVAL_MIN_MS,
   VAD_INTERVAL_STEP_MS,
+  VAD_THRESHOLD_DECIMAL_PLACES,
   VAD_THRESHOLD_MAX,
   VAD_THRESHOLD_MIN,
   VAD_THRESHOLD_STEP,
@@ -26,6 +44,7 @@ import type {
   ModelFamily,
   RecognitionMode,
 } from "../core/types";
+import { isWebSpeechRecognitionSupported } from "../core/webSpeechRecognition";
 import { useI18n } from "../i18n/I18nProvider";
 import { DebugPanel } from "./DebugPanel";
 import { ModelCard } from "./ModelCard";
@@ -60,6 +79,7 @@ export const SettingsView = ({
   onDeviceChange,
   onRefreshDevices,
   onSave,
+  webSpeechSupported = isWebSpeechRecognitionSupported(),
 }: {
   config: AppConfig;
   models: ModelCatalog;
@@ -70,6 +90,7 @@ export const SettingsView = ({
   onDeviceChange: (event: ChangeEvent<HTMLSelectElement>) => void;
   onRefreshDevices: () => void;
   onSave: () => void;
+  webSpeechSupported?: boolean;
 }) => {
   const { t } = useI18n();
   const setOverlay = (patch: Partial<AppConfig["overlay"]>) =>
@@ -194,7 +215,15 @@ export const SettingsView = ({
               >
                 {t("settings.recognitionModeParapperRaw")}
               </option>
-              <option value="web-speech" title={t("settings.recognitionModeWebSpeechDescription")}>
+              <option
+                value="web-speech"
+                title={
+                  webSpeechSupported
+                    ? t("settings.recognitionModeWebSpeechDescription")
+                    : t("settings.recognitionModeWebSpeechUnavailable")
+                }
+                disabled={!webSpeechSupported}
+              >
                 {t("settings.recognitionModeWebSpeech")}
               </option>
               <option
@@ -219,9 +248,9 @@ export const SettingsView = ({
           <Field label={t("settings.timeout")}>
             <input
               type="number"
-              min="1000"
-              max="120000"
-              step="1000"
+              min={ENDPOINT_TIMEOUT_MIN_MS}
+              max={ENDPOINT_TIMEOUT_MAX_MS}
+              step={ENDPOINT_TIMEOUT_STEP_MS}
               value={config.endpoint.timeoutMs}
               onChange={(event) =>
                 onConfigChange({
@@ -349,9 +378,9 @@ export const SettingsView = ({
               <input
                 id="audio-silence-gate-db"
                 type="range"
-                min="-90"
-                max="0"
-                step="1"
+                min={SILENCE_GATE_MIN_DB}
+                max={SILENCE_GATE_MAX_DB}
+                step={SILENCE_GATE_STEP_DB}
                 value={config.audio.silenceGateDb}
                 onChange={(event) => setAudio({ silenceGateDb: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.silenceGate")}
@@ -407,10 +436,10 @@ export const SettingsView = ({
                 value={vadThreshold}
                 onChange={(event) => setAudio({ vadThreshold: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.vadThreshold")}
-                aria-valuetext={vadThreshold.toFixed(2)}
+                aria-valuetext={vadThreshold.toFixed(VAD_THRESHOLD_DECIMAL_PLACES)}
               />
               <output className="range-value" htmlFor="audio-vad-threshold">
-                {vadThreshold.toFixed(2)}
+                {vadThreshold.toFixed(VAD_THRESHOLD_DECIMAL_PLACES)}
               </output>
             </div>
             <button
@@ -463,9 +492,9 @@ export const SettingsView = ({
           <Field label={t("settings.width")}>
             <input
               type="number"
-              min="320"
-              max="7680"
-              step="1"
+              min={OVERLAY_WIDTH_MIN_PX}
+              max={OVERLAY_WIDTH_MAX_PX}
+              step={OVERLAY_DIMENSION_STEP_PX}
               value={config.overlay.width}
               onChange={(event) => setOverlay({ width: Number(event.target.value) })}
             />
@@ -473,9 +502,9 @@ export const SettingsView = ({
           <Field label={t("settings.height")}>
             <input
               type="number"
-              min="180"
-              max="4320"
-              step="1"
+              min={OVERLAY_HEIGHT_MIN_PX}
+              max={OVERLAY_HEIGHT_MAX_PX}
+              step={OVERLAY_DIMENSION_STEP_PX}
               value={config.overlay.height}
               onChange={(event) => setOverlay({ height: Number(event.target.value) })}
             />
@@ -494,8 +523,8 @@ export const SettingsView = ({
           <Field label={t("settings.lineGap")}>
             <input
               type="number"
-              min="0"
-              max="160"
+              min={OVERLAY_GAP_MIN_PX}
+              max={OVERLAY_GAP_MAX_PX}
               value={config.overlay.gapPx}
               onChange={(event) => setOverlay({ gapPx: Number(event.target.value) })}
             />
@@ -503,8 +532,8 @@ export const SettingsView = ({
           <Field label={t("settings.safeArea")}>
             <input
               type="number"
-              min="0"
-              max="400"
+              min={OVERLAY_SAFE_AREA_MIN_PX}
+              max={OVERLAY_SAFE_AREA_MAX_PX}
               value={config.overlay.safeAreaPx}
               onChange={(event) => setOverlay({ safeAreaPx: Number(event.target.value) })}
             />
@@ -512,8 +541,8 @@ export const SettingsView = ({
           <Field label={t("settings.captionX")} hint={t("settings.captionXHint")}>
             <input
               type="number"
-              min="0"
-              max="100"
+              min={CAPTION_POSITION_MIN_PERCENT}
+              max={CAPTION_POSITION_MAX_PERCENT}
               value={config.overlay.captionXPercent}
               onChange={(event) => setOverlay({ captionXPercent: Number(event.target.value) })}
             />
@@ -521,8 +550,8 @@ export const SettingsView = ({
           <Field label={t("settings.captionY")} hint={t("settings.captionYHint")}>
             <input
               type="number"
-              min="0"
-              max="100"
+              min={CAPTION_POSITION_MIN_PERCENT}
+              max={CAPTION_POSITION_MAX_PERCENT}
               value={config.overlay.captionYPercent}
               onChange={(event) => setOverlay({ captionYPercent: Number(event.target.value) })}
             />

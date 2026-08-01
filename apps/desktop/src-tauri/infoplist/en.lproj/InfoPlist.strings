@@ -1,1 +1,2 @@
 NSMicrophoneUsageDescription = "Kotoba Beacon needs microphone access to generate Japanese and English live captions.";
+NSSpeechRecognitionUsageDescription = "Kotoba Beacon uses speech recognition to generate live captions when Web Speech mode is selected.";

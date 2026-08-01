@@ -48,6 +48,9 @@ export const DEFAULT_AUDIO_CHUNK_MS = 640;
 export const AUDIO_CHUNK_MIN_MS = 320;
 export const AUDIO_CHUNK_MAX_MS = 2_000;
 export const AUDIO_CHUNK_STEP_MS = 32;
+export const ENDPOINT_TIMEOUT_MIN_MS = 1_000;
+export const ENDPOINT_TIMEOUT_MAX_MS = 120_000;
+export const ENDPOINT_TIMEOUT_STEP_MS = 1_000;
 
 /** Parapper headless sidecar's internal VAD interval (one frame cadence). */
 export const DEFAULT_VAD_INTERVAL_MS = 32;
@@ -60,6 +63,7 @@ export const DEFAULT_VAD_THRESHOLD = 0.5;
 export const VAD_THRESHOLD_MIN = 0.1;
 export const VAD_THRESHOLD_MAX = 0.9;
 export const VAD_THRESHOLD_STEP = 0.05;
+export const VAD_THRESHOLD_DECIMAL_PLACES = 2;
 
 export const normalizeVadIntervalMs = (value: number | undefined): number => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -83,6 +87,9 @@ export const normalizeVadThreshold = (value: number | undefined): number => {
  * and must not be sent to Parapper (yields transcript_missing).
  */
 export const DEFAULT_SILENCE_GATE_DB = -50;
+export const SILENCE_GATE_MIN_DB = -90;
+export const SILENCE_GATE_MAX_DB = 0;
+export const SILENCE_GATE_STEP_DB = 1;
 
 /**
  * Adaptive noise-floor gating is the default: each chunk is compared against a
@@ -91,6 +98,18 @@ export const DEFAULT_SILENCE_GATE_DB = -50;
  * rejected. Set false to fall back to the fixed {@link DEFAULT_SILENCE_GATE_DB}.
  */
 export const DEFAULT_ADAPTIVE_NOISE_FLOOR = true;
+
+export const OVERLAY_WIDTH_MIN_PX = 320;
+export const OVERLAY_WIDTH_MAX_PX = 7_680;
+export const OVERLAY_DIMENSION_STEP_PX = 1;
+export const OVERLAY_HEIGHT_MIN_PX = 180;
+export const OVERLAY_HEIGHT_MAX_PX = 4_320;
+export const OVERLAY_GAP_MIN_PX = 0;
+export const OVERLAY_GAP_MAX_PX = 160;
+export const OVERLAY_SAFE_AREA_MIN_PX = 0;
+export const OVERLAY_SAFE_AREA_MAX_PX = 400;
+export const CAPTION_POSITION_MIN_PERCENT = 0;
+export const CAPTION_POSITION_MAX_PERCENT = 100;
 
 export const createTextStyle = (overrides: Partial<CaptionTextStyle> = {}): CaptionTextStyle => ({
   fontFamily: DEFAULT_FONT_FAMILY,

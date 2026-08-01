@@ -1,10 +1,13 @@
 /**
  * A small, browser-independent adapter for the Web Speech API.
  *
- * Chrome exposes the API as `SpeechRecognition`, while the WebKit builds used
- * by the desktop shell still expose it as `webkitSpeechRecognition`.  Keeping
- * the feature detection and event handling here means the rest of the app can
- * use the same stream contract in a browser, a Tauri webview, and unit tests.
+ * Chrome exposes the API as `SpeechRecognition`, and some WebKit builds expose
+ * it as `webkitSpeechRecognition`. A browser can expose the constructor while
+ * an embedded WKWebView disables the recognition service, so constructor
+ * detection is only a capability hint: the first `start()` and its error event
+ * remain authoritative. Keeping the detection and event handling here means
+ * the rest of the app can use the same stream contract in a browser, a Tauri
+ * webview, and unit tests.
  *
  * The native API is a session API rather than a truly long-lived stream: even
  * with `continuous = true` it eventually fires `onend`.  A stream requested by
@@ -17,6 +20,15 @@ export const DEFAULT_WEB_SPEECH_LANGUAGE = "ja-JP";
 export const DEFAULT_WEB_SPEECH_RESTART_DELAY_MS = 50;
 const MAX_TRACKED_RESULTS = 256;
 const MAX_RESTART_BACKOFF_MS = 2_000;
+const MIN_RESTART_DELAY_MS = 0;
+const MIN_ALTERNATIVES = 1;
+const INITIAL_RESTART_ATTEMPT = 0;
+const FIRST_RETRY_ATTEMPT = 1;
+const RESTART_BACKOFF_BASE_MS = 50;
+const MAX_RESTART_EXPONENT = 5;
+const MIN_RESULT_LENGTH = 0;
+const DEFAULT_RESULT_INDEX = 0;
+const RESULT_INDEX_STEP = 1;
 
 /** The small subset of SpeechRecognition used by this adapter. */
 export interface WebSpeechRecognitionLike {
@@ -66,10 +78,47 @@ export interface WebSpeechRecognitionErrorEventLike {
 
 export type WebSpeechRecognitionConstructor = new () => WebSpeechRecognitionLike;
 
+export type WebSpeechRecognitionPermissionState = "granted" | "denied" | "prompt" | "unknown";
+
+interface WebSpeechRecognitionPermissionStatusLike {
+  readonly state?: string;
+}
+
+interface WebSpeechRecognitionPermissionsLike {
+  query?: (descriptor: {
+    readonly name: string;
+  }) => Promise<WebSpeechRecognitionPermissionStatusLike>;
+}
+
+interface WebSpeechRecognitionNavigatorLike {
+  readonly permissions?: WebSpeechRecognitionPermissionsLike;
+  readonly userAgent?: string;
+}
+
 export type WebSpeechRecognitionScope = {
   SpeechRecognition?: unknown;
   webkitSpeechRecognition?: unknown;
+  /** Kept opaque so a real DOM `Window` remains assignable in consumers. */
+  navigator?: unknown;
+  isSecureContext?: boolean;
+  /** Tauri 2 exposes this marker in the renderer without enabling global APIs. */
+  __TAURI_INTERNALS__?: unknown;
 };
+
+export type WebSpeechRecognitionConstructorName =
+  | "SpeechRecognition"
+  | "webkitSpeechRecognition"
+  | null;
+
+export interface WebSpeechRecognitionDiagnostics {
+  readonly supported: boolean;
+  readonly constructorName: WebSpeechRecognitionConstructorName;
+  readonly reason: "constructor-missing" | "insecure-context" | "constructor-present";
+  /** `null` means that the host did not expose an `isSecureContext` signal. */
+  readonly secureContext: boolean | null;
+  readonly runtime: "browser" | "tauri" | "unknown";
+  readonly userAgent: string | null;
+}
 
 /** A normalized partial/final result emitted by this adapter. */
 export interface WebSpeechRecognitionResult {
@@ -170,17 +219,129 @@ const getGlobalScope = (): WebSpeechRecognitionScope => {
   return globalThis as unknown as WebSpeechRecognitionScope;
 };
 
+const readScopeValue = <K extends keyof WebSpeechRecognitionScope>(
+  scope: WebSpeechRecognitionScope,
+  key: K,
+): WebSpeechRecognitionScope[K] | undefined => {
+  try {
+    return scope[key];
+  } catch {
+    // A host object can expose a throwing getter while its web runtime is
+    // shutting down. Treat that the same as a missing optional API.
+    return undefined;
+  }
+};
+
+const readNavigator = (scope: WebSpeechRecognitionScope): WebSpeechRecognitionNavigatorLike => {
+  const value = readScopeValue(scope, "navigator");
+  return value && typeof value === "object" ? (value as WebSpeechRecognitionNavigatorLike) : {};
+};
+
+const readNavigatorValue = <K extends keyof WebSpeechRecognitionNavigatorLike>(
+  navigator: WebSpeechRecognitionNavigatorLike,
+  key: K,
+): WebSpeechRecognitionNavigatorLike[K] | undefined => {
+  try {
+    return navigator[key];
+  } catch {
+    return undefined;
+  }
+};
+
+const readNavigatorPermissionValue = <K extends keyof WebSpeechRecognitionPermissionsLike>(
+  permissions: WebSpeechRecognitionPermissionsLike,
+  key: K,
+): WebSpeechRecognitionPermissionsLike[K] | undefined => {
+  try {
+    return permissions[key];
+  } catch {
+    return undefined;
+  }
+};
+
 /** Resolve the standard or WebKit-prefixed constructor without instantiating it. */
 export const getWebSpeechRecognitionConstructor = (
   scope: WebSpeechRecognitionScope = getGlobalScope(),
 ): WebSpeechRecognitionConstructor | null => {
-  if (isConstructor(scope.SpeechRecognition)) {
-    return scope.SpeechRecognition;
+  const standard = readScopeValue(scope, "SpeechRecognition");
+  if (isConstructor(standard)) {
+    return standard;
   }
-  if (isConstructor(scope.webkitSpeechRecognition)) {
-    return scope.webkitSpeechRecognition;
+  const webkit = readScopeValue(scope, "webkitSpeechRecognition");
+  if (isConstructor(webkit)) {
+    return webkit;
   }
   return null;
+};
+
+/** Return which vendor API is actually exposed without constructing it. */
+export const getWebSpeechRecognitionConstructorName = (
+  scope: WebSpeechRecognitionScope = getGlobalScope(),
+): WebSpeechRecognitionConstructorName => {
+  const standard = readScopeValue(scope, "SpeechRecognition");
+  if (isConstructor(standard)) {
+    return "SpeechRecognition";
+  }
+  const webkit = readScopeValue(scope, "webkitSpeechRecognition");
+  return isConstructor(webkit) ? "webkitSpeechRecognition" : null;
+};
+
+/**
+ * Collect host facts for diagnostics. This deliberately does not call
+ * `start()` or request permission, so it is safe to run while rendering the
+ * settings page and cannot consume the user's transient gesture.
+ */
+export const getWebSpeechRecognitionDiagnostics = (
+  scope: WebSpeechRecognitionScope = getGlobalScope(),
+): WebSpeechRecognitionDiagnostics => {
+  const constructorName = getWebSpeechRecognitionConstructorName(scope);
+  const isSecureContext = readScopeValue(scope, "isSecureContext");
+  const navigatorValue = readScopeValue(scope, "navigator");
+  const navigator = readNavigator(scope);
+  const userAgent = readNavigatorValue(navigator, "userAgent");
+  return {
+    supported: constructorName !== null,
+    constructorName,
+    reason:
+      isSecureContext === false
+        ? "insecure-context"
+        : constructorName === null
+          ? "constructor-missing"
+          : "constructor-present",
+    secureContext: typeof isSecureContext === "boolean" ? isSecureContext : null,
+    runtime: readScopeValue(scope, "__TAURI_INTERNALS__")
+      ? "tauri"
+      : navigatorValue
+        ? "browser"
+        : "unknown",
+    userAgent: typeof userAgent === "string" && userAgent.trim() ? userAgent : null,
+  };
+};
+
+/**
+ * Read the microphone permission without prompting. Speech recognition has no
+ * interoperable `PermissionName`, so `microphone` is the only portable signal.
+ * A `prompt`/`unknown` result must not block `start()`: the browser may need the
+ * user's click to show its own speech-service permission sheet.
+ */
+export const queryWebSpeechRecognitionPermission = async (
+  scope: WebSpeechRecognitionScope = getGlobalScope(),
+): Promise<WebSpeechRecognitionPermissionState> => {
+  const navigator = readNavigator(scope);
+  const permissions = readNavigatorValue(navigator, "permissions");
+  const query = permissions && readNavigatorPermissionValue(permissions, "query");
+  if (typeof query !== "function") {
+    return "unknown";
+  }
+  try {
+    const status = await query.call(permissions, { name: "microphone" });
+    const state = status?.state;
+    return state === "granted" || state === "denied" || state === "prompt" ? state : "unknown";
+  } catch {
+    // Safari/WKWebView commonly throws for unsupported permission names or
+    // disabled embedding APIs. This is diagnostic-only and never fatal.
+    return "unknown";
+  }
 };
 
 /** Feature detection that is safe in a DOM-less runtime. */
@@ -192,7 +353,7 @@ const clampRestartDelay = (value: number | undefined): number => {
   if (value === undefined || !Number.isFinite(value)) {
     return DEFAULT_WEB_SPEECH_RESTART_DELAY_MS;
   }
-  return Math.max(0, Math.floor(value));
+  return Math.max(MIN_RESTART_DELAY_MS, Math.floor(value));
 };
 
 const normalizeLanguage = (value: string | undefined): string => {
@@ -202,9 +363,9 @@ const normalizeLanguage = (value: string | undefined): string => {
 
 const normalizeMaxAlternatives = (value: number | undefined): number => {
   if (value === undefined || !Number.isFinite(value)) {
-    return 1;
+    return MIN_ALTERNATIVES;
   }
-  return Math.max(1, Math.floor(value));
+  return Math.max(MIN_ALTERNATIVES, Math.floor(value));
 };
 
 const normalizeTranscript = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -223,6 +384,26 @@ const isFatalErrorCode = (code: string): boolean =>
   code === "language-not-supported" ||
   code === "phrases-not-supported" ||
   code === "bad-grammar";
+
+const isPermissionErrorCode = (code: string): boolean =>
+  code === "not-allowed" ||
+  code === "service-not-allowed" ||
+  code === "security-error" ||
+  code === "securityerror" ||
+  code === "notallowederror";
+
+const errorCodeFromCause = (cause: unknown): string | null => {
+  if (!cause || typeof cause !== "object") {
+    return null;
+  }
+  const record = cause as Record<string, unknown>;
+  const name = typeof record["name"] === "string" ? record["name"].trim().toLowerCase() : "";
+  const code = typeof record["code"] === "string" ? record["code"].trim().toLowerCase() : "";
+  if (isPermissionErrorCode(name) || isPermissionErrorCode(code)) {
+    return "not-allowed";
+  }
+  return null;
+};
 
 /**
  * A resilient Web Speech API stream.
@@ -245,6 +426,10 @@ export class WebSpeechRecognitionStream {
   private shouldRun = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private restartAttempt = 0;
+  /** True while an error recovery abort is waiting for the browser's `onend`. */
+  private recoveryAbortPending = false;
+  /** Number of late `onend` callbacks consumed after a forced recovery reset. */
+  private ignoredEndEvents = 0;
   private disposed = false;
 
   public constructor(options: WebSpeechRecognitionStreamOptions = {}) {
@@ -267,6 +452,13 @@ export class WebSpeechRecognitionStream {
       if (this.disposed) {
         return;
       }
+      // A forced recovery may have reserved one stale onend callback. If the
+      // replacement reaches onstart first, that callback either never arrives
+      // or belongs to the new session; never consume the new session's end as
+      // stale. Late old ends are still harmless because onend schedules the
+      // next replacement.
+      this.ignoredEndEvents = 0;
+      this.recoveryAbortPending = false;
       this.stateValue = "running";
       this.restartAttempt = 0;
       this.emitEvent({ type: "start" });
@@ -285,6 +477,12 @@ export class WebSpeechRecognitionStream {
       if (this.disposed) {
         return;
       }
+      if (this.ignoredEndEvents > 0) {
+        this.ignoredEndEvents -= 1;
+        this.recoveryAbortPending = false;
+        return;
+      }
+      this.recoveryAbortPending = false;
       this.stateValue = "idle";
       const willRestart = this.shouldRun;
       this.emitEvent({ type: "end", willRestart });
@@ -298,12 +496,32 @@ export class WebSpeechRecognitionStream {
     if (options.recognitionFactory) {
       return options.recognitionFactory();
     }
-    const recognitionCtor =
-      options.recognitionConstructor ?? getWebSpeechRecognitionConstructor(getGlobalScope());
-    if (!recognitionCtor) {
+    if (options.recognitionConstructor) {
+      return new options.recognitionConstructor();
+    }
+    const scope = getGlobalScope();
+    const constructors = [
+      readScopeValue(scope, "SpeechRecognition"),
+      readScopeValue(scope, "webkitSpeechRecognition"),
+    ].filter(isConstructor);
+    const uniqueConstructors = constructors.filter(
+      (candidate, index) => constructors.indexOf(candidate) === index,
+    );
+    if (uniqueConstructors.length === 0) {
       throw new Error("Web Speech Recognition is unavailable in this runtime");
     }
-    return new recognitionCtor();
+    let lastError: unknown = null;
+    for (const recognitionCtor of uniqueConstructors) {
+      try {
+        return new recognitionCtor();
+      } catch (error) {
+        // A stale standard constructor can remain exposed while only the
+        // WebKit implementation is usable (and vice versa). Try the other
+        // vendor before surfacing an initialization failure.
+        lastError = error;
+      }
+    }
+    throw lastError ?? new Error("Web Speech Recognition could not be initialized");
   }
 
   /** The exact language tag configured on the recognizer. */
@@ -344,6 +562,24 @@ export class WebSpeechRecognitionStream {
     if (this.stateValue === "starting" || this.stateValue === "running") {
       return;
     }
+    if (this.stateValue === "stopping") {
+      // `stop()` is graceful and normally resolves through onend. WebKit can
+      // omit that callback, though, leaving a same-instance restart stuck in
+      // the stopping state. Abort the old session and force an idle boundary;
+      // any delayed end is consumed so it cannot tear down the replacement.
+      this.recoveryAbortPending = true;
+      try {
+        this.recognition.abort();
+      } catch {
+        // The forced state transition below is the fallback for hosts that
+        // reject abort() while their speech service is already unwinding.
+      }
+      if (this.stateValue === "stopping") {
+        this.stateValue = "idle";
+        this.ignoredEndEvents += 1;
+      }
+      this.recoveryAbortPending = false;
+    }
     this.startRecognizer();
   }
 
@@ -354,7 +590,9 @@ export class WebSpeechRecognitionStream {
   public stop(): void {
     this.shouldRun = false;
     this.clearRestartTimer();
-    if (this.stateValue === "idle") {
+    this.recoveryAbortPending = false;
+    this.ignoredEndEvents = 0;
+    if (this.stateValue === "idle" || this.stateValue === "stopping") {
       return;
     }
     this.stateValue = "stopping";
@@ -370,7 +608,9 @@ export class WebSpeechRecognitionStream {
   public cancel(): void {
     this.shouldRun = false;
     this.clearRestartTimer();
-    if (this.stateValue === "idle") {
+    this.recoveryAbortPending = false;
+    this.ignoredEndEvents = 0;
+    if (this.stateValue === "idle" || this.stateValue === "stopping") {
       return;
     }
     this.stateValue = "stopping";
@@ -397,6 +637,16 @@ export class WebSpeechRecognitionStream {
   }
 
   private startRecognizer(): void {
+    if (this.disposed || !this.shouldRun) {
+      return;
+    }
+    // Never call start() while the previous WebKit session is still active.
+    // Safari reports InvalidStateError here and some WKWebView builds then
+    // stop dispatching events altogether. Error recovery aborts the old
+    // session first and reaches this method only after the guard is idle.
+    if (this.stateValue !== "idle") {
+      return;
+    }
     this.clearRestartTimer();
     this.resultSlots.clear();
     this.stateValue = "starting";
@@ -406,8 +656,13 @@ export class WebSpeechRecognitionStream {
       // Browsers can throw InvalidStateError when an `onend`/`onstart` race
       // occurs. Treat it as recoverable while the caller still wants a stream.
       this.stateValue = "idle";
+      const fatal = isFatalErrorCode(errorCodeFromCause(error) ?? "");
+      if (fatal) {
+        this.shouldRun = false;
+        this.clearRestartTimer();
+      }
       this.reportLifecycleError("start", error);
-      if (this.shouldRun) {
+      if (this.shouldRun && !fatal) {
         this.scheduleRestart();
       }
     }
@@ -419,15 +674,46 @@ export class WebSpeechRecognitionStream {
     }
     const backoff = Math.min(
       MAX_RESTART_BACKOFF_MS,
-      this.restartAttempt === 0 ? 0 : 50 * 2 ** Math.min(this.restartAttempt - 1, 5),
+      this.restartAttempt === INITIAL_RESTART_ATTEMPT
+        ? MIN_RESTART_DELAY_MS
+        : RESTART_BACKOFF_BASE_MS *
+            2 ** Math.min(this.restartAttempt - FIRST_RETRY_ATTEMPT, MAX_RESTART_EXPONENT),
     );
     const delay = Math.max(this.restartDelayMs, backoff);
     this.restartAttempt += 1;
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      if (this.shouldRun && !this.disposed) {
-        this.startRecognizer();
+      if (!this.shouldRun || this.disposed) {
+        return;
       }
+      if (this.stateValue !== "idle") {
+        // Recoverable errors can arrive before `onend`, and some WebKit
+        // versions never deliver that event. Force the old session to release
+        // its microphone before starting a replacement; a late `onend` is
+        // consumed by the guard in the event handler.
+        if (this.stateValue === "starting" || this.stateValue === "running") {
+          this.recoveryAbortPending = true;
+          try {
+            this.recognition.abort();
+          } catch {
+            // startRecognizer below still reports a useful lifecycle error if
+            // the browser refused to abort the stale session.
+          }
+          const stateAfterAbort = this.stateValue as WebSpeechRecognitionStreamState;
+          if (stateAfterAbort !== "idle") {
+            this.stateValue = "idle";
+            this.ignoredEndEvents += 1;
+          }
+        }
+        if (this.stateValue === "stopping") {
+          if (this.recoveryAbortPending) {
+            this.ignoredEndEvents += 1;
+          }
+          this.recoveryAbortPending = false;
+          this.stateValue = "idle";
+        }
+      }
+      this.startRecognizer();
     }, delay);
   }
 
@@ -440,14 +726,16 @@ export class WebSpeechRecognitionStream {
 
   private handleResult(event: WebSpeechRecognitionEventLike): void {
     const results = event.results;
-    if (!results || !Number.isFinite(results.length) || results.length <= 0) {
+    if (!results || !Number.isFinite(results.length) || results.length <= MIN_RESULT_LENGTH) {
       return;
     }
-    const rawStart = event.resultIndex ?? 0;
-    const start = Number.isFinite(rawStart) ? Math.max(0, Math.floor(rawStart)) : 0;
+    const rawStart = event.resultIndex ?? DEFAULT_RESULT_INDEX;
+    const start = Number.isFinite(rawStart)
+      ? Math.max(MIN_RESULT_LENGTH, Math.floor(rawStart))
+      : DEFAULT_RESULT_INDEX;
     const end = Math.max(start, Math.floor(results.length));
     this.pruneResultSlots(start);
-    for (let index = start; index < end; index += 1) {
+    for (let index = start; index < end; index += RESULT_INDEX_STEP) {
       const result = results[index];
       const alternative = result?.[0];
       if (!result || !alternative) {
@@ -550,7 +838,8 @@ export class WebSpeechRecognitionStream {
     if (error.fatal) {
       this.shouldRun = false;
       this.clearRestartTimer();
-      this.stateValue = "idle";
+      this.recoveryAbortPending = false;
+      this.stateValue = "stopping";
     }
     try {
       this.onError(error);
@@ -559,20 +848,41 @@ export class WebSpeechRecognitionStream {
       // browser's SpeechRecognition event dispatcher.
     }
     this.emitEvent({ type: "error", error });
-    // Some engines report recoverable `no-speech`/network errors without
-    // emitting an `onend` event. Keep the continuous stream alive; the timer
-    // is deduplicated against the normal onend restart path.
+    if (error.fatal) {
+      // A fatal error (most commonly permission denied) can leave a WebKit
+      // recognizer holding the input device unless it is explicitly aborted.
+      // Do not report a second lifecycle error if an older engine rejects the
+      // abort call; the original error is the actionable one.
+      try {
+        this.recognition.abort();
+      } catch {
+        this.stateValue = "idle";
+      }
+    }
+    // Some engines report recoverable `no-speech`/network errors before
+    // `onend`, and some omit `onend` entirely. Abort the current session first;
+    // scheduleRestart() then waits for a normal end or force-releases the
+    // stale session at the timer boundary before starting a replacement.
     if (!error.fatal && this.shouldRun) {
+      this.recoveryAbortPending = true;
+      this.stateValue = "stopping";
+      try {
+        this.recognition.abort();
+      } catch {
+        // The restart timer contains the fallback for engines that reject or
+        // silently ignore abort().
+      }
       this.scheduleRestart();
     }
   }
 
   private reportLifecycleError(operation: string, cause: unknown): void {
     const message = cause instanceof Error ? cause.message : `${cause}`;
+    const code = errorCodeFromCause(cause) ?? `lifecycle-${operation}`;
     const error = new WebSpeechRecognitionError({
-      code: `lifecycle-${operation}`,
+      code,
       message: `Web Speech Recognition ${operation} failed: ${message}`,
-      fatal: false,
+      fatal: isFatalErrorCode(code),
       originalEvent: cause,
     });
     try {

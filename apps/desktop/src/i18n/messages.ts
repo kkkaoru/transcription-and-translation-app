@@ -82,6 +82,8 @@ const ja = {
     "Parapperの認識結果を変換せず、そのまま字幕ソースにします。",
   "settings.recognitionModeWebSpeechDescription":
     "ブラウザのWeb Speech APIで音声認識します。デスクトップの検証用です。",
+  "settings.recognitionModeWebSpeechUnavailable":
+    "このデスクトップ環境ではWeb Speech APIは利用できません。",
   "settings.recognitionModeParapperAzookeyDescription":
     "Parapperの認識結果を内蔵AzooKeyでかな漢字変換します（現在の既定動作）。",
   "settings.gatewayUrl": "推論ゲートウェイURL",
@@ -202,6 +204,8 @@ const ja = {
     "選択したマイクを利用できません。別のデバイスを選択してください。",
   "message.microphoneTrackEnded":
     "マイクトラックが終了しました。デバイスが切断された可能性があります。",
+  "message.webSpeechUnsupported":
+    "このデスクトップ環境ではWeb Speech APIは利用できません。別の認識モードを選択してください。",
   "model.parapper.label": "Parapper ASR / 日本語",
   "model.parapper.description":
     "Parakeet-Inc Parapper-ASRを日本語のストリーミング認識に使用します。",
@@ -480,6 +484,8 @@ const en: Record<MessageKey, string> = {
     "Use Parapper's recognition result as the caption source without conversion.",
   "settings.recognitionModeWebSpeechDescription":
     "Use the browser Web Speech API for speech recognition. Intended for desktop debugging.",
+  "settings.recognitionModeWebSpeechUnavailable":
+    "Web Speech API is not available in this desktop environment.",
   "settings.recognitionModeParapperAzookeyDescription":
     "Convert Parapper recognition output with the built-in AzooKey normalizer (current default).",
   "settings.gatewayUrl": "Inference gateway URL",
@@ -598,6 +604,8 @@ const en: Record<MessageKey, string> = {
   "message.microphoneBusy": "The microphone is being used by another application.",
   "message.microphoneConstraint": "The selected microphone is unavailable. Select another device.",
   "message.microphoneTrackEnded": "Microphone track ended. The device may have been disconnected.",
+  "message.webSpeechUnsupported":
+    "Web Speech API is not available in this desktop environment. Please select a different recognition mode.",
   "model.parapper.label": "Parapper ASR / Japanese",
   "model.parapper.description":
     "Uses Parakeet-Inc Parapper-ASR for streaming Japanese speech recognition.",

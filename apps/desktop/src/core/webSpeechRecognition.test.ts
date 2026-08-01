@@ -4,7 +4,10 @@ import {
   DEFAULT_WEB_SPEECH_LANGUAGE,
   DEFAULT_WEB_SPEECH_RESTART_DELAY_MS,
   getWebSpeechRecognitionConstructor,
+  getWebSpeechRecognitionConstructorName,
+  getWebSpeechRecognitionDiagnostics,
   isWebSpeechRecognitionSupported,
+  queryWebSpeechRecognitionPermission,
   type WebSpeechRecognitionError,
   type WebSpeechRecognitionEventLike,
   type WebSpeechRecognitionLike,
@@ -108,6 +111,144 @@ describe("Web Speech feature detection", () => {
     expect(isWebSpeechRecognitionSupported({})).toBe(false);
   });
 
+  it("reports a WKWebView-like host without claiming the service is usable", async () => {
+    class WebKit extends FakeRecognition {}
+    const permissionQuery = vi.fn(async () => ({ state: "prompt" as const }));
+    const scope = {
+      webkitSpeechRecognition: WebKit,
+      __TAURI_INTERNALS__: {},
+      isSecureContext: true,
+      navigator: {
+        userAgent: "Mozilla/5.0 AppleWebKit/605.1.15 WKWebView",
+        permissions: { query: permissionQuery },
+      },
+    };
+
+    expect(getWebSpeechRecognitionConstructorName(scope)).toBe("webkitSpeechRecognition");
+    expect(getWebSpeechRecognitionDiagnostics(scope)).toEqual({
+      supported: true,
+      constructorName: "webkitSpeechRecognition",
+      reason: "constructor-present",
+      secureContext: true,
+      runtime: "tauri",
+      userAgent: "Mozilla/5.0 AppleWebKit/605.1.15 WKWebView",
+    });
+    // This query is deliberately non-prompting; start() remains the gesture
+    // boundary and the engine's onerror remains authoritative.
+    await expect(queryWebSpeechRecognitionPermission(scope)).resolves.toBe("prompt");
+    expect(permissionQuery).toHaveBeenCalledWith({ name: "microphone" });
+  });
+
+  it("keeps the unsupported WKWebView path explicit when WebKit omits the API", () => {
+    const diagnostics = getWebSpeechRecognitionDiagnostics({
+      __TAURI_INTERNALS__: {},
+      isSecureContext: true,
+      navigator: { userAgent: "AppleWebKit/605.1.15 WKWebView" },
+    });
+    expect(diagnostics).toMatchObject({
+      supported: false,
+      constructorName: null,
+      reason: "constructor-missing",
+      runtime: "tauri",
+      secureContext: true,
+    });
+  });
+
+  it("does not fail feature detection when host getters throw", () => {
+    const scope = Object.defineProperty({}, "webkitSpeechRecognition", {
+      configurable: true,
+      get: () => {
+        throw new Error("webview is closing");
+      },
+    });
+    expect(getWebSpeechRecognitionConstructor(scope)).toBeNull();
+    expect(getWebSpeechRecognitionDiagnostics(scope).supported).toBe(false);
+  });
+
+  it("reports an insecure browser context separately from a missing constructor", () => {
+    expect(
+      getWebSpeechRecognitionDiagnostics({
+        isSecureContext: false,
+        SpeechRecognition: FakeRecognition,
+      }),
+    ).toMatchObject({ supported: true, reason: "insecure-context", secureContext: false });
+  });
+
+  it("treats unsupported permission-query APIs as diagnostic-only", async () => {
+    await expect(queryWebSpeechRecognitionPermission({})).resolves.toBe("unknown");
+    await expect(
+      queryWebSpeechRecognitionPermission({
+        navigator: {
+          permissions: { query: vi.fn().mockRejectedValue(new TypeError("unsupported")) },
+        },
+      }),
+    ).resolves.toBe("unknown");
+    const throwingNavigator = Object.defineProperty({}, "permissions", {
+      configurable: true,
+      get: () => {
+        throw new Error("permission bridge unavailable");
+      },
+    });
+    await expect(
+      queryWebSpeechRecognitionPermission({ navigator: throwingNavigator }),
+    ).resolves.toBe("unknown");
+  });
+
+  it("contains host getter failures and reports browser diagnostics", async () => {
+    const throwingPermissions = Object.defineProperty({}, "query", {
+      configurable: true,
+      get: () => {
+        throw new Error("permissions bridge unavailable");
+      },
+    });
+    const throwingNavigator = Object.defineProperties(
+      {},
+      {
+        userAgent: {
+          configurable: true,
+          get: () => {
+            throw new Error("user agent bridge unavailable");
+          },
+        },
+        permissions: { value: throwingPermissions },
+      },
+    );
+    const browserScope = {
+      SpeechRecognition: FakeRecognition,
+      navigator: throwingNavigator,
+    };
+
+    expect(getWebSpeechRecognitionDiagnostics(browserScope)).toMatchObject({
+      supported: true,
+      runtime: "browser",
+      userAgent: null,
+    });
+    await expect(queryWebSpeechRecognitionPermission(browserScope)).resolves.toBe("unknown");
+
+    const throwingScope = Object.defineProperty(
+      { SpeechRecognition: FakeRecognition },
+      "navigator",
+      {
+        configurable: true,
+        get: () => {
+          throw new Error("navigator bridge unavailable");
+        },
+      },
+    );
+    expect(getWebSpeechRecognitionDiagnostics(throwingScope)).toMatchObject({
+      runtime: "unknown",
+      userAgent: null,
+    });
+    await expect(queryWebSpeechRecognitionPermission(throwingScope)).resolves.toBe("unknown");
+  });
+
+  it("normalizes permission states that the host does not recognize", async () => {
+    const query = vi.fn(async () => ({ state: "provisional" }));
+    await expect(
+      queryWebSpeechRecognitionPermission({ navigator: { permissions: { query } } }),
+    ).resolves.toBe("unknown");
+  });
+
   it("uses the standard Japanese defaults without touching a DOM", () => {
     expect(DEFAULT_WEB_SPEECH_LANGUAGE).toBe("ja-JP");
     expect(DEFAULT_WEB_SPEECH_RESTART_DELAY_MS).toBeGreaterThan(0);
@@ -133,6 +274,66 @@ describe("Web Speech feature detection", () => {
     expect(createWebSpeechRecognitionStream({ recognition: new FakeRecognition() })).toBeInstanceOf(
       WebSpeechRecognitionStream,
     );
+  });
+
+  it("runs through the browser's default webkit constructor path", () => {
+    class BrowserWebKitRecognition extends FakeRecognition {}
+    vi.stubGlobal("webkitSpeechRecognition", BrowserWebKitRecognition);
+    try {
+      const results: string[] = [];
+      const stream = new WebSpeechRecognitionStream({
+        language: "ja-JP",
+        onFinal: (text) => results.push(text),
+      });
+      stream.start();
+      const recognition = stream.recognizer as BrowserWebKitRecognition;
+      recognition.emitStart();
+      recognition.emitResult(resultEvent([{ transcript: "ブラウザ", isFinal: true }]));
+      expect(results).toEqual(["ブラウザ"]);
+      stream.cancel();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("falls back to WebKit when a stale standard constructor cannot initialize", () => {
+    class BrokenStandard extends FakeRecognition {
+      public constructor() {
+        super();
+        throw new Error("standard service disabled");
+      }
+    }
+    class WorkingWebKit extends FakeRecognition {}
+    vi.stubGlobal("SpeechRecognition", BrokenStandard);
+    vi.stubGlobal("webkitSpeechRecognition", WorkingWebKit);
+    try {
+      const stream = new WebSpeechRecognitionStream();
+      expect(stream.recognizer).toBeInstanceOf(WorkingWebKit);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("surfaces the final constructor error when every vendor constructor fails", () => {
+    class BrokenStandard extends FakeRecognition {
+      public constructor() {
+        super();
+        throw new Error("standard service disabled");
+      }
+    }
+    class BrokenWebKit extends FakeRecognition {
+      public constructor() {
+        super();
+        throw new Error("webkit service disabled");
+      }
+    }
+    vi.stubGlobal("SpeechRecognition", BrokenStandard);
+    vi.stubGlobal("webkitSpeechRecognition", BrokenWebKit);
+    try {
+      expect(() => new WebSpeechRecognitionStream()).toThrow("webkit service disabled");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -299,6 +500,53 @@ describe("WebSpeechRecognitionStream", () => {
     expect(recognition.startCalls).toBe(3);
   });
 
+  it("aborts a recoverable WebKit session before restarting and ignores its late onend", () => {
+    vi.useFakeTimers();
+    const recognition = new FakeRecognition();
+    const stream = new WebSpeechRecognitionStream({ recognition, restartDelayMs: 20 });
+    stream.start();
+    recognition.emitStart();
+    recognition.emitError("network");
+    expect(recognition.abortCalls).toBe(1);
+    expect(stream.state).toBe("stopping");
+
+    // This fake does not dispatch onend from abort(), matching WebKit builds
+    // that occasionally leave the session open after a network/no-speech error.
+    vi.advanceTimersByTime(20);
+    expect(recognition.startCalls).toBe(2);
+    expect(stream.state).toBe("starting");
+
+    // The old session's delayed onend must not tear down the replacement.
+    recognition.emitEnd();
+    expect(stream.state).toBe("starting");
+    recognition.emitStart();
+    recognition.emitEnd();
+    vi.advanceTimersByTime(20);
+    expect(recognition.startCalls).toBe(3);
+  });
+
+  it("can restart after stop when WebKit omits the old onend callback", () => {
+    const recognition = new FakeRecognition();
+    const stream = new WebSpeechRecognitionStream({ recognition });
+    stream.start();
+    recognition.emitStart();
+    stream.stop();
+    expect(stream.state).toBe("stopping");
+
+    stream.start();
+    expect(recognition.stopCalls).toBe(1);
+    expect(recognition.abortCalls).toBe(1);
+    expect(recognition.startCalls).toBe(2);
+    expect(stream.state).toBe("starting");
+
+    // The old stop's delayed onend must not transition the replacement back
+    // to idle. The replacement can still receive its own lifecycle callbacks.
+    recognition.emitEnd();
+    expect(stream.state).toBe("starting");
+    recognition.emitStart();
+    expect(stream.state).toBe("running");
+  });
+
   it("reports recoverable and fatal errors without leaking callback exceptions", () => {
     const recognition = new FakeRecognition();
     const errors: WebSpeechRecognitionError[] = [];
@@ -322,6 +570,7 @@ describe("WebSpeechRecognitionStream", () => {
       fatal: true,
       message: "permission denied",
     });
+    expect(recognition.abortCalls).toBeGreaterThan(0);
     expect(stream.isRunning).toBe(false);
     recognition.emitEnd();
     expect(recognition.startCalls).toBe(1);
@@ -393,6 +642,70 @@ describe("WebSpeechRecognitionStream", () => {
     expect(recognition.onresult).toBeNull();
     expect(() => stream.start()).toThrow(/disposed/i);
     stream.dispose();
+  });
+
+  it("keeps stop and cancel idempotent while idle", () => {
+    const recognition = new FakeRecognition();
+    const stream = new WebSpeechRecognitionStream({ recognition });
+    stream.stop();
+    stream.cancel();
+    expect(recognition.stopCalls).toBe(0);
+    expect(recognition.abortCalls).toBe(0);
+    expect(stream.state).toBe("idle");
+  });
+
+  it("recovers when abort fails for fatal and recoverable errors", () => {
+    vi.useFakeTimers();
+    const recognition = new FakeRecognition();
+    recognition.throwOnAbort = new Error("abort unavailable");
+    const errors: WebSpeechRecognitionError[] = [];
+    const stream = new WebSpeechRecognitionStream({
+      recognition,
+      restartDelayMs: 1,
+      onError: (error) => errors.push(error),
+    });
+
+    stream.start();
+    recognition.emitStart();
+    recognition.emitError("not-allowed");
+    expect(stream.state).toBe("idle");
+    expect(stream.isRunning).toBe(false);
+
+    stream.start();
+    recognition.emitStart();
+    recognition.emitError("network");
+    expect(stream.state).toBe("stopping");
+    vi.advanceTimersByTime(1);
+    expect(recognition.startCalls).toBe(3);
+    expect(errors.map((error) => error.code)).toEqual(["not-allowed", "network"]);
+  });
+
+  it("classifies permission-shaped lifecycle causes from a code property", () => {
+    const recognition = new FakeRecognition();
+    recognition.throwOnStart = { code: "SECURITYERROR", message: "microphone denied" };
+    const errors: WebSpeechRecognitionError[] = [];
+    const stream = new WebSpeechRecognitionStream({
+      recognition,
+      onError: (error) => errors.push(error),
+    });
+    stream.start();
+    expect(errors[0]).toMatchObject({ code: "not-allowed", fatal: true });
+    expect(stream.isRunning).toBe(false);
+  });
+
+  it("classifies a synchronous NotAllowedError from start as fatal", () => {
+    const recognition = new FakeRecognition();
+    recognition.throwOnStart = { name: "NotAllowedError", message: "microphone denied" };
+    const errors: WebSpeechRecognitionError[] = [];
+    const stream = new WebSpeechRecognitionStream({
+      recognition,
+      onError: (error) => errors.push(error),
+    });
+
+    stream.start();
+    expect(stream.isRunning).toBe(false);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: "not-allowed", fatal: true });
   });
 
   it("isolates result/event observers and handles unknown browser errors", () => {
