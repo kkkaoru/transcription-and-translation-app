@@ -30,6 +30,8 @@ export default defineConfig({
         lines: 95,
       },
       reporter: ["text", "json-summary"],
+      clean: true,
+      cleanOnRerun: true,
     },
   },
 });

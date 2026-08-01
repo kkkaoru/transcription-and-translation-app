@@ -21,6 +21,8 @@ export default defineConfig({
         lines: 95,
       },
       reporter: ["text", "html", "json-summary"],
+      clean: true,
+      cleanOnRerun: true,
     },
   },
 });
