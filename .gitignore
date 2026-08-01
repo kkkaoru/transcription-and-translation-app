@@ -1,9 +1,11 @@
 node_modules
 dist
+.next
 .vite
 coverage
 apps/desktop/src-tauri/target
 packages/azookey-rust/target
+packages/azookey-wasm/target
 apps/desktop/src-tauri/gen
 .tools
 *.log
