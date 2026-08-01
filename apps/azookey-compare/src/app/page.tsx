@@ -399,7 +399,12 @@ export default function ComparePage() {
         {/* Derived from the selected mode and the settings form, so it states the
             chosen route rather than one a request has travelled. */}
         <div className="path-chip" role="status" aria-label="選択中の処理経路">
-          <span className="status-dot status-dot-live" aria-hidden="true" />
+          <span
+            className={`status-dot ${
+              config.mode === "browser-vibrato" && !browserWasmConfigured ? "" : "status-dot-live"
+            }`}
+            aria-hidden="true"
+          />
           {pathSummary}
         </div>
       </section>
