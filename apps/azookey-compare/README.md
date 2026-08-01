@@ -43,7 +43,9 @@ For the browser pre-pass, set `NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL` to a
 browser-loadable JS/WASM glue module, or inject
 `globalThis.__AZOOKEY_VIBRATO_WASM__` (name overridable via
 `NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL`). The glue must export
-`convert(text)` or `transform(text)` and return a string (sync or async).
+`convert(text)`, `transform(text)`, or `tokenize(text)` and return a string
+(sync or async). A module whose default export is the function itself also
+works.
 If neither a module URL nor an injected global is available, browser mode
 fails explicitly — it does not silently fall back to Worker-only conversion.
 

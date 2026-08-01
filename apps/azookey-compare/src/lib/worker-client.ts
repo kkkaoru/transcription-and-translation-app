@@ -116,6 +116,31 @@ const nestedRecord = (record: UnknownRecord, ...keys: string[]): UnknownRecord |
   return undefined;
 };
 
+/** A rejection the Worker reported, carrying the protocol code it sent. */
+export class AzooKeyWorkerError extends Error {
+  readonly code: string | undefined;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "AzooKeyWorkerError";
+    this.code = code;
+  }
+}
+
+/**
+ * Whether a rejection means the AzooKey converter actually ran.
+ *
+ * The Worker refuses a request before invoking the converter for contract,
+ * auth, and back-pressure errors (`busy`, `unauthorized`, `invalid_*`, ...);
+ * only `conversion_*` codes are raised once conversion is under way. An
+ * unrecognised or code-less rejection stays on the conversion stage rather than
+ * claiming the request never got there.
+ */
+export const workerErrorReachedConverter = (error: unknown): boolean =>
+  !(error instanceof AzooKeyWorkerError) ||
+  error.code === undefined ||
+  error.code.startsWith("conversion_");
+
 interface ParsedWorkerMessage {
   requestId?: string;
   error?: Error;
@@ -141,9 +166,13 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
     const errorMessage = errorValue
       ? readString(errorValue, "message", "detail", "error")
       : readString(payload, "message", "detail", "error");
+    const errorCode = errorValue ? readString(errorValue, "code") : readString(payload, "code");
     return {
       requestId,
-      error: new Error(errorMessage ?? "AzooKey Worker rejected the conversion"),
+      error: new AzooKeyWorkerError(
+        errorMessage ?? "AzooKey Worker rejected the conversion",
+        errorCode,
+      ),
     };
   }
 

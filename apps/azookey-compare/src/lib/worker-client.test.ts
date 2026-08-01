@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AzooKeyConvertRequest,
   AzooKeyWorkerClient,
+  AzooKeyWorkerError,
   type WorkerConnectionState,
+  workerErrorReachedConverter,
 } from "./worker-client";
 
 type MessageHandler = ((event: { data: unknown }) => void) | null;
@@ -344,5 +346,44 @@ describe("AzooKey Worker client connection lifecycle", () => {
     expect(sent.requestId).toMatch(/^azookey-/);
     socket.message(JSON.stringify({ requestId: sent.requestId, text: "結果" }));
     await expect(pending).resolves.toMatchObject({ convertedText: "結果" });
+  });
+
+  it("keeps the Worker's error code so a refusal is not read as a conversion", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient();
+    const pending = client.convert(request());
+    await Promise.resolve();
+    const sent = JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string };
+    socket.message(
+      JSON.stringify({
+        type: "azookey.error",
+        requestId: sent.requestId,
+        error: { code: "busy", message: "another conversion is in progress" },
+      }),
+    );
+
+    const rejection = await pending.catch((error: unknown) => error);
+    expect(rejection).toBeInstanceOf(AzooKeyWorkerError);
+    expect((rejection as AzooKeyWorkerError).code).toBe("busy");
+    // The Worker answers busy before it ever invokes the converter.
+    expect(workerErrorReachedConverter(rejection)).toBe(false);
+  });
+
+  it("treats conversion-phase and unclassifiable rejections as reaching the converter", () => {
+    // Only `conversion_*` is raised once conversion is under way; anything the
+    // Worker refuses up front is not. A rejection we cannot classify keeps the
+    // conversion stage rather than claiming the request never arrived.
+    expect(workerErrorReachedConverter(new AzooKeyWorkerError("failed", "conversion_failed"))).toBe(
+      true,
+    );
+    expect(
+      workerErrorReachedConverter(new AzooKeyWorkerError("timeout", "conversion_timeout")),
+    ).toBe(true);
+    expect(workerErrorReachedConverter(new AzooKeyWorkerError("nope", "unauthorized"))).toBe(false);
+    expect(workerErrorReachedConverter(new AzooKeyWorkerError("nope", "invalid_contract"))).toBe(
+      false,
+    );
+    expect(workerErrorReachedConverter(new AzooKeyWorkerError("no code"))).toBe(true);
+    expect(workerErrorReachedConverter(new Error("socket died"))).toBe(true);
   });
 });

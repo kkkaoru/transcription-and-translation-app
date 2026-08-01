@@ -11,9 +11,16 @@ export const conversionPathLabel = (mode: ComparisonMode): string =>
  *
  * `worker-connect` sits between the two real stages: the browser pre-pass has
  * already finished, but the Worker was never reached. Folding it into either
- * neighbour would blame a stage that did not fail.
+ * neighbour would blame a stage that did not fail. `worker-request` is the same
+ * idea one step later: the Worker answered, but refused the request (auth,
+ * back-pressure, contract) without ever invoking the converter.
  */
-export type ConversionStage = "setup" | "browser-wasm" | "worker-connect" | "worker";
+export type ConversionStage =
+  | "setup"
+  | "browser-wasm"
+  | "worker-connect"
+  | "worker-request"
+  | "worker";
 
 /**
  * Path a row actually reached. A failed row must not advertise stages it never
@@ -31,6 +38,11 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
     return mode === "browser-vibrato"
       ? "Browser WASM pre-pass 完了 / Worker AzooKey WASM 未実行"
       : "Worker AzooKey WASM 未実行";
+  }
+  if (failedStage === "worker-request") {
+    return mode === "browser-vibrato"
+      ? "Browser WASM pre-pass 完了 / Worker がリクエストを拒否（AzooKey WASM 未実行）"
+      : "Worker がリクエストを拒否（AzooKey WASM 未実行）";
   }
   if (mode !== "browser-vibrato") {
     return "Worker AzooKey WASM（失敗）";

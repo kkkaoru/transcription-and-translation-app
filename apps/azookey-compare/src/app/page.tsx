@@ -27,6 +27,7 @@ import {
   type AzooKeyConvertResult,
   AzooKeyWorkerClient,
   type WorkerConnectionState,
+  workerErrorReachedConverter,
 } from "../lib/worker-client";
 
 type ComparisonRowState = "queued" | "wasm" | "sending" | "done" | "error";
@@ -280,7 +281,11 @@ export default function ComparePage() {
         // The browser WASM status is owned by the browser stage above; a Worker
         // or setup failure must not report a pre-pass that succeeded as failed.
         const message = errorMessage(caught);
-        patchRow({ state: "error", error: message, vibratoInput, failedStage: stage });
+        // The Worker turns away a request it never converts (busy, bad token,
+        // contract errors), so those keep the conversion stage unclaimed.
+        const failedStage =
+          stage === "worker" && !workerErrorReachedConverter(caught) ? "worker-request" : stage;
+        patchRow({ state: "error", error: message, vibratoInput, failedStage });
         setError(message);
       }
     },
@@ -469,10 +474,10 @@ export default function ComparePage() {
                   />
                 </label>
                 <p className="field-help">
-                  このアプリはブラウザ WASM を同梱していません。`convert(text)` または
-                  `transform(text)` を export する wrapper の URL、または注入済み global
-                  を指定します。モジュール URL も global 名も空のときはブラウザ WASM
-                  が未設定のためプリパスを実行できず失敗します（Worker
+                  このアプリはブラウザ WASM を同梱していません。`convert(text)`、
+                  `transform(text)`、`tokenize(text)` のいずれかを export する wrapper の
+                  URL、または注入済み global を指定します。モジュール URL も global
+                  名も空のときはブラウザ WASM が未設定のためプリパスを実行できず失敗します（Worker
                   のみへはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
                   実行時フォールバックとして歴史的な既定名 `__AZOOKEY_VIBRATO_WASM__`（Vibrato
                   本体ではない convert 用 global）を試します。 AzooKey のかな→漢字変換は常に Worker
