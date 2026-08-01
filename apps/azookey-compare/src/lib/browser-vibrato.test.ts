@@ -102,7 +102,7 @@ describe("browser Vibrato bridge", () => {
 
     const invalidModule = `data:text/javascript,${encodeURIComponent("export const value = 'not a converter'")}`;
     await expect(runBrowserVibrato("入力", { moduleUrl: invalidModule })).rejects.toThrow(
-      "convert/transform 関数がありません",
+      "convert/transform/tokenize 関数がありません",
     );
 
     const selfDefault = {} as { default?: unknown };
@@ -116,7 +116,7 @@ describe("browser Vibrato bridge", () => {
       "読み込めません",
     );
     await expect(runBrowserVibrato("入力", { moduleUrl: invalidModule })).rejects.toThrow(
-      "convert/transform 関数がありません",
+      "convert/transform/tokenize 関数がありません",
     );
   });
 

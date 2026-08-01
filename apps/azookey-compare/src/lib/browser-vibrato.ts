@@ -1,13 +1,14 @@
 /**
- * Optional browser-side convert/transform pre-pass for the comparison app.
+ * Optional browser-side convert/transform/tokenize pre-pass for the comparison app.
  *
  * This is not Vibrato and does not load UniDic. A WASM build normally ships
  * with a small JavaScript glue module (wasm-bindgen, wasm-pack, or an
  * equivalent wrapper). Point `moduleUrl` at that glue module, or expose the
  * same object as `globalThis.__AZOOKEY_VIBRATO_WASM__`. The module must export a
- * `convert(text)` or `transform(text)` function returning a string (sync or
- * async). Without a module URL or injected global, the pre-pass fails instead
- * of silently falling back to Worker-only conversion.
+ * `convert(text)`, `transform(text)`, or `tokenize(text)` function (or expose
+ * one as its default export) returning a string (sync or async). Without a
+ * module URL or injected global, the pre-pass fails instead of silently falling
+ * back to Worker-only conversion.
  */
 
 import { DEFAULT_BROWSER_WASM_GLOBAL_NAME } from "./contract";
@@ -77,7 +78,7 @@ const loadConverter = (config: BrowserVibratoConfig): Promise<VibratoConvertFunc
     .then((module: unknown) => {
       const converter = asConverter(module);
       if (!converter) {
-        throw new Error("WASMモジュールに convert/transform 関数がありません");
+        throw new Error("WASMモジュールに convert/transform/tokenize 関数がありません");
       }
       return converter;
     })

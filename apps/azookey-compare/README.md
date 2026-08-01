@@ -37,7 +37,7 @@ The UI toggle chooses **where** work runs. Neither mode runs Vibrato or UniDic:
 | UI label | What actually runs | Wire `mode` sent to Worker |
 | --- | --- | --- |
 | Worker 上の AzooKey WASM | Server-side AzooKey WASM kana→kanji only | `worker-vibrato` (kept for Worker compatibility) |
-| ブラウザ WASM プリパス → Worker | Required browser `convert`/`transform` pre-pass (this mode fails without a configured module or global), then Worker AzooKey WASM | still wire `worker-vibrato`, plus `comparisonMode: "browser-vibrato"` |
+| ブラウザ WASM プリパス → Worker | Required browser `convert`/`transform`/`tokenize` pre-pass (this mode fails without a configured module or global), then Worker AzooKey WASM | still wire `worker-vibrato`, plus `comparisonMode: "browser-vibrato"` |
 
 For the browser pre-pass, set `NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL` to a
 browser-loadable JS/WASM glue module, or inject

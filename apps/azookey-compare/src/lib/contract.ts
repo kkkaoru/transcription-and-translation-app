@@ -79,7 +79,7 @@ export const comparisonModeOptions: readonly ComparisonModeOption[] = [
     value: "browser-vibrato",
     label: "ブラウザ WASM プリパス → Worker",
     description:
-      "ブラウザ側 WASM（convert/transform）を先に通し、その結果を Worker の AzooKey WASM に渡します。Vibrato / UniDic は使いません。このモードではプリパスが必須で、モジュールも global も見つからなければ変換は失敗します（Worker のみへはサイレントに落ちません）。",
+      "ブラウザ側 WASM（convert/transform/tokenize）を先に通し、その結果を Worker の AzooKey WASM に渡します。Vibrato / UniDic は使いません。このモードではプリパスが必須で、モジュールも global も見つからなければ変換は失敗します（Worker のみへはサイレントに落ちません）。",
   },
 ] as const;
 
@@ -101,7 +101,7 @@ export const comparisonConfigFieldDescriptions = {
 
 /**
  * True when browser-mode has either a module URL or an explicit global name
- * that could supply the optional convert/transform pre-pass.
+ * that could supply the optional convert/transform/tokenize pre-pass.
  * Presence of a name alone does not guarantee the global is injected at runtime.
  */
 export const hasBrowserWasmConfiguration = (
