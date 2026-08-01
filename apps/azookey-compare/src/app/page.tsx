@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
 import { runBrowserVibrato } from "../lib/browser-vibrato";
+import { type BrowserWasmState, browserWasmStateAfterStage } from "../lib/browser-wasm-status";
 import {
   browserWasmConfigurationStatus,
   buildVibratoWebSocketUrl,
@@ -43,8 +44,6 @@ interface ComparisonRow {
   failedStage?: ConversionStage;
   createdAt: number;
 }
-
-type BrowserWasmState = "idle" | "loading" | "ready" | "error";
 
 const MAX_ROWS = 24;
 
@@ -234,10 +233,14 @@ export default function ComparePage() {
             });
             vibratoInput = wasmResult.text;
             wasmElapsedMs = wasmResult.elapsedMs;
-            setBrowserWasmState("ready");
+            setBrowserWasmState((current) =>
+              browserWasmStateAfterStage(current, "browser-wasm", true),
+            );
           } catch (caught) {
             // Only the browser stage may mark the browser WASM status failed.
-            setBrowserWasmState("error");
+            setBrowserWasmState((current) =>
+              browserWasmStateAfterStage(current, "browser-wasm", false),
+            );
             throw caught;
           }
           patchRow({ state: "sending", vibratoInput, wasmElapsedMs });

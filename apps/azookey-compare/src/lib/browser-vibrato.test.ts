@@ -32,7 +32,7 @@ describe("browser Vibrato bridge", () => {
     vi.stubGlobal("__AZOOKEY_VIBRATO_WASM__", (text: string) => `global:${text}`);
     await expect(
       runBrowserVibrato("入力", {
-        moduleUrl: "data:text/javascript,export const convert = (t) => `module:${t}`",
+        moduleUrl: "data:text/javascript,export const convert = (t) => 'module:' + t",
       }),
     ).resolves.toMatchObject({ text: "global:入力" });
   });
@@ -46,7 +46,7 @@ describe("browser Vibrato bridge", () => {
     clearConverter();
     await expect(
       runBrowserVibrato("入力", {
-        moduleUrl: "data:text/javascript,export const convert = (t) => `module:${t}`",
+        moduleUrl: "data:text/javascript,export const convert = (t) => 'module:' + t",
         globalName: "__CUSTOM__",
       }),
     ).resolves.toMatchObject({ text: "custom:入力" });

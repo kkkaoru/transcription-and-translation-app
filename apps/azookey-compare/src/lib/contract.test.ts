@@ -61,8 +61,14 @@ describe("comparison configuration contract", () => {
     expect(hasBrowserWasmConfiguration({ browserWasmModuleUrl: "  " })).toBe(false);
     expect(hasBrowserWasmConfiguration({ browserWasmModuleUrl: "/wasm/mod.js" })).toBe(true);
     expect(hasBrowserWasmConfiguration({ browserWasmGlobalName: "__CUSTOM__" })).toBe(true);
-    expect(browserWasmConfigurationStatus({})).toContain("未設定");
-    expect(browserWasmConfigurationStatus({})).toContain("失敗");
+    expect(comparisonModeOptions[1]?.description).toContain("必須");
+    expect(comparisonModeOptions[1]?.description).not.toMatch(/任意|optional/i);
+    expect(comparisonConfigFieldDescriptions.mode).toContain("required");
+    expect(comparisonConfigFieldDescriptions.mode).not.toMatch(/optional|任意/i);
+    const unconfiguredStatus = browserWasmConfigurationStatus({});
+    expect(unconfiguredStatus).toContain("未設定");
+    expect(unconfiguredStatus).toContain("なければ変換は失敗");
+    expect(unconfiguredStatus).not.toContain("未設定です。変換は失敗します");
     expect(browserWasmConfigurationStatus({ browserWasmModuleUrl: "  /wasm/mod.js  " })).toContain(
       "/wasm/mod.js",
     );
@@ -101,7 +107,9 @@ describe("comparison configuration contract", () => {
     expect(text).toContain(`globalThis.${configuredGlobalName}`);
     expect(text).not.toContain(`globalThis.${DEFAULT_BROWSER_WASM_GLOBAL_NAME}`);
     expect(text).toContain("/wasm/mod.js");
-    expect(text.indexOf(`globalThis.${configuredGlobalName}`)).toBeLessThan(text.indexOf("/wasm/mod.js"));
+    expect(text.indexOf(`globalThis.${configuredGlobalName}`)).toBeLessThan(
+      text.indexOf("/wasm/mod.js"),
+    );
     expect(text).toContain("優先");
   });
 

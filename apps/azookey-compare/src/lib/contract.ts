@@ -79,7 +79,7 @@ export const comparisonModeOptions: readonly ComparisonModeOption[] = [
     value: "browser-vibrato",
     label: "ブラウザ WASM プリパス → Worker",
     description:
-      "任意のブラウザ側 WASM（convert/transform）を先に通し、その結果を Worker の AzooKey WASM に渡します。Vibrato / UniDic は使いません。モジュールも global も未設定ならプリパスは実行できず失敗します（Worker のみへはサイレントに落ちません）。",
+      "ブラウザ側 WASM（convert/transform）を先に通し、その結果を Worker の AzooKey WASM に渡します。Vibrato / UniDic は使いません。このモードではプリパスが必須で、モジュールも global も見つからなければ変換は失敗します（Worker のみへはサイレントに落ちません）。",
   },
 ] as const;
 
@@ -88,7 +88,7 @@ export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 
 /** Short, user-facing explanations for the fields in the settings panel. */
 export const comparisonConfigFieldDescriptions = {
-  mode: "Choose where the optional browser WASM pre-pass runs; AzooKey kana→kanji always runs on the Worker.",
+  mode: "Choose where the required browser WASM pre-pass runs when browser mode is selected; AzooKey kana→kanji always runs on the Worker.",
   websocketUrl:
     "A ws:// or wss:// URL for the AzooKey Worker endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
   auth: "Optional Bearer credentials for the Worker. Keep tokens out of URLs and logs.",
