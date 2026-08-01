@@ -12,6 +12,12 @@ const SHARD_SHIFT: usize = 11;
 const LOCAL_MASK: usize = (1 << SHARD_SHIFT) - 1;
 const DEFAULT_CID: u16 = 1285;
 const DEFAULT_MID: u16 = 501;
+// AzooKey's `DicdataStore` drops low-quality system entries before building
+// the lattice. Keeping those placeholder rows (often around -30) lets a
+// short, unrelated surface beat a correct longer word in our Viterbi pass.
+// The extra length-dependent margin mirrors upstream `shouldBeRemoved`:
+// value must be at least `threshold + 2 / ruby_count`.
+const SYSTEM_DICTIONARY_VALUE_THRESHOLD: f32 = -17.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictionaryEntry {
@@ -20,7 +26,8 @@ pub struct DictionaryEntry {
     pub lcid: u16,
     pub rcid: u16,
     pub mid: u16,
-    /// AzooKey stores log-like costs where a more negative value is preferred.
+    /// AzooKey stores log-probability-like scores where a higher value is
+    /// preferred (for example, -5 beats -15).
     pub value: f32,
 }
 
@@ -195,6 +202,41 @@ impl AzooKeyDictionary {
     pub fn connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
         self.system.as_ref().map(|system| system.connection_cost(former, latter)).unwrap_or(0.0)
     }
+
+    /// Return the connection cost from AzooKey's virtual beginning-of-sentence
+    /// node to a candidate. The upstream converter applies this CID transition
+    /// to the first lattice edge; omitting it makes otherwise less likely
+    /// homophones (for example `感じ` over `漢字`) win at the start of a
+    /// caption. Built-in/TSV dictionaries have no CID matrix, so their neutral
+    /// zero cost preserves the compact-lexicon scoring behavior.
+    pub fn beginning_connection_cost(&self, entry: &DictionaryEntry) -> f32 {
+        self.system
+            .as_ref()
+            .and_then(|system| system.cid_connection_cost(0, entry.lcid).ok())
+            .unwrap_or(0.0)
+    }
+
+    pub(crate) fn has_system_dictionary(&self) -> bool {
+        self.system.is_some()
+    }
+
+    /// Give a small, bounded prior to a surface known by the compact fallback
+    /// lexicon when a full system dictionary is also loaded. This only breaks
+    /// near ties; CID/MID costs and system probabilities remain dominant.
+    pub(crate) fn builtin_surface_bonus(&self, entry: &DictionaryEntry) -> f32 {
+        if !self.has_system_dictionary() {
+            return 0.0;
+        }
+        if self
+            .static_entries
+            .iter()
+            .any(|builtin| builtin.reading == entry.reading && builtin.surface == entry.surface)
+        {
+            1.5
+        } else {
+            0.0
+        }
+    }
 }
 
 fn path_exists_for_dictionary(path: &Path) -> bool {
@@ -259,7 +301,7 @@ impl SystemDictionary {
         let file_name = format!("{}{}.loudstxt3", escaped_identifier(&first.to_string()), shard);
         let path = self.root.join("louds").join(file_name);
         match read_loudstxt3_entry(&path, local_index) {
-            Ok(entries) => Ok(entries),
+            Ok(entries) => Ok(entries.into_iter().filter(system_entry_is_usable).collect()),
             Err(_) => Ok(Vec::new()),
         }
     }
@@ -283,6 +325,39 @@ impl SystemDictionary {
             .copied()
             .unwrap_or(-25.0))
     }
+}
+
+fn system_entry_is_usable(entry: &DictionaryEntry) -> bool {
+    if !entry.value.is_finite() {
+        return false;
+    }
+    // AzooKey's prediction lattice excludes non-terminal inflection rows.
+    // The complete upstream list is large; these compact ranges cover the
+    // high-impact rows that otherwise leak into full-caption conversion here:
+    // conditional contractions (15–18) and the two common inflection tails
+    // observed in `ねん` candidates (774/782).
+    if matches!(entry.rcid, 15..=18 | 774 | 782) {
+        return false;
+    }
+    let is_hiragana_identity = entry.surface == entry.reading;
+    // The full dictionary contains high-scoring identity rows for ordinary
+    // hiragana (for example `てすと -> てすと`). In this bridge those rows can
+    // outrank the compact lexicon's useful kana-to-kanji/katakana surface and
+    // suppress conversion. Keep true orthographic entries (such as
+    // `かたかな -> カタカナ`), but discard only multi-kana identities.
+    let ruby_count = entry.reading.chars().count();
+    if ruby_count >= 2 && is_hiragana_identity {
+        return false;
+    }
+    // Single-kana system rows are mostly POS fragments, but identity rows for
+    // particles (`は`, `の`, etc.) are needed to carry CID context into the
+    // following word. Retain those grammar identities and drop non-identity
+    // one-character rows (`と` -> `土`, names, and placeholders).
+    if ruby_count < 2 && !is_hiragana_identity {
+        return false;
+    }
+    let minimum = SYSTEM_DICTIONARY_VALUE_THRESHOLD + 2.0 / ruby_count as f32;
+    entry.value >= minimum
 }
 
 #[derive(Debug, Clone)]
@@ -608,8 +683,8 @@ fn escaped_identifier(input: &str) -> String {
 
 fn builtin_entries() -> Vec<DictionaryEntry> {
     // Compact high-frequency caption lexicon so azookey-rust is useful without
-    // shipping the multi-hundred-MB upstream LOUDS dictionary. Values are
-    // AzooKey-style costs (more negative is preferred).
+    // shipping the multi-hundred-MB upstream LOUDS dictionary. Values follow
+    // AzooKey's log-probability convention (higher / less negative wins).
     [
         // Greetings / set phrases
         ("ありがとう", "ありがとう"),
@@ -620,21 +695,42 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
         ("おはようございます", "おはようございます"),
         ("さようなら", "さようなら"),
         ("すみません", "すみません"),
-        ("お願い", "お願い"),
         ("おねがい", "お願い"),
         ("おねがいします", "お願いします"),
+        ("よろしくおねがいします", "よろしくお願いします"),
+        ("おつかれさま", "お疲れ様"),
+        ("おつかれさまです", "お疲れ様です"),
+        ("おめでとう", "おめでとう"),
+        ("おだいじに", "お大事に"),
         ("だいじょうぶ", "大丈夫"),
         ("ほんとう", "本当"),
         ("ほんと", "本当"),
+        ("ほんとうに", "本当に"),
+        ("たしかに", "確かに"),
+        ("たぶん", "多分"),
+        ("ぜんぜん", "全然"),
+        ("たいへん", "大変"),
+        ("だいじ", "大事"),
         // Time / calendar
         ("きょう", "今日"),
         ("あした", "明日"),
         ("あす", "明日"),
         ("きのう", "昨日"),
         ("ほんじつ", "本日"),
+        ("こんしゅう", "今週"),
+        ("せんしゅう", "先週"),
+        ("らいしゅう", "来週"),
+        ("こんげつ", "今月"),
+        ("せんげつ", "先月"),
+        ("らいげつ", "来月"),
+        ("ことし", "今年"),
+        ("きょねん", "去年"),
+        ("らいねん", "来年"),
         ("いま", "今"),
         ("じかん", "時間"),
         ("じこく", "時刻"),
+        ("よてい", "予定"),
+        ("やくそく", "約束"),
         ("ふん", "分"),
         ("びょう", "秒"),
         ("しゅう", "週"),
@@ -671,6 +767,39 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
         ("もんだい", "問題"),
         ("しつもん", "質問"),
         ("かいとう", "回答"),
+        ("こたえ", "答え"),
+        ("いく", "行く"),
+        ("いきます", "行きます"),
+        ("ねん", "年"),
+        ("おつかれさまでした", "お疲れ様でした"),
+        ("りゆう", "理由"),
+        ("ほうほう", "方法"),
+        ("けっか", "結果"),
+        ("げんいん", "原因"),
+        ("かいけつ", "解決"),
+        ("かいぜん", "改善"),
+        ("たいおう", "対応"),
+        ("せいこう", "成功"),
+        ("しっぱい", "失敗"),
+        ("けんしょう", "検証"),
+        ("じょうたい", "状態"),
+        ("しょり", "処理"),
+        ("どうさ", "動作"),
+        ("じっこう", "実行"),
+        ("じどう", "自動"),
+        ("きどう", "起動"),
+        ("さいきどう", "再起動"),
+        ("せつぞく", "接続"),
+        ("せいじょう", "正常"),
+        ("いじょう", "異常"),
+        ("しんちょく", "進捗"),
+        ("じゅんび", "準備"),
+        ("かんり", "管理"),
+        ("ほうこく", "報告"),
+        ("しゅうせい", "修正"),
+        ("かんりょう", "完了"),
+        ("きろく", "記録"),
+        ("りよう", "利用"),
         ("かいぎ", "会議"),
         ("しごと", "仕事"),
         ("かいしゃ", "会社"),
@@ -680,6 +809,7 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
         // Language / locale
         ("にほん", "日本"),
         ("にほんご", "日本語"),
+        ("かんじ", "漢字"),
         ("えいご", "英語"),
         ("ちゅうごくご", "中国語"),
         ("かんこくご", "韓国語"),
@@ -688,12 +818,19 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
         ("おおさか", "大阪"),
         // Pronouns / deixis
         ("わたし", "私"),
-        ("わたし達", "私たち"),
         ("わたしたち", "私たち"),
         ("ぼく", "僕"),
         ("かれ", "彼"),
         ("かのじょ", "彼女"),
         ("みんな", "みんな"),
+        ("みなさん", "皆さん"),
+        ("じぶん", "自分"),
+        ("あいて", "相手"),
+        ("ともだち", "友達"),
+        ("かぞく", "家族"),
+        ("こども", "子供"),
+        ("おとな", "大人"),
+        ("ひとびと", "人々"),
         ("これ", "これ"),
         ("それ", "それ"),
         ("あれ", "あれ"),
@@ -716,6 +853,19 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
         ("わからない", "分からない"),
         ("おもう", "思う"),
         ("かんがえる", "考える"),
+        ("おしえる", "教える"),
+        ("おぼえる", "覚える"),
+        ("わすれる", "忘れる"),
+        ("しらべる", "調べる"),
+        ("はじめる", "始める"),
+        ("おわる", "終わる"),
+        ("つづける", "続ける"),
+        ("つづく", "続く"),
+        ("なおす", "直す"),
+        ("なおる", "直る"),
+        ("つたえる", "伝える"),
+        ("つながる", "繋がる"),
+        ("うごく", "動く"),
         ("はなす", "話す"),
         ("きく", "聞く"),
         ("みる", "見る"),
@@ -729,6 +879,26 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
         ("おおきい", "大きい"),
         ("ちいさい", "小さい"),
         ("あたらしい", "新しい"),
+        ("おもしろい", "面白い"),
+        ("むずかしい", "難しい"),
+        ("やさしい", "優しい"),
+        ("たのしい", "楽しい"),
+        ("うれしい", "嬉しい"),
+        ("かなしい", "悲しい"),
+        ("ただしい", "正しい"),
+        ("おなじ", "同じ"),
+        ("かんたん", "簡単"),
+        ("あんぜん", "安全"),
+        ("きけん", "危険"),
+        ("きもち", "気持ち"),
+        ("こころ", "心"),
+        ("ことば", "言葉"),
+        ("いみ", "意味"),
+        ("いけん", "意見"),
+        ("もじ", "文字"),
+        ("たんご", "単語"),
+        ("ぶんしょう", "文章"),
+        ("ぶんせき", "分析"),
         ("たいせつ", "大切"),
         ("じゅうよう", "重要"),
         ("ひつよう", "必要"),
@@ -745,6 +915,23 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
         ("あめ", "雨"),
         ("はれ", "晴れ"),
         ("くもり", "曇り"),
+        // Audio / display controls
+        ("おんりょう", "音量"),
+        ("ちょうせい", "調整"),
+        ("ろくおん", "録音"),
+        ("しゅうろく", "収録"),
+        ("さいせい", "再生"),
+        ("ざつおん", "雑音"),
+        ("がめん", "画面"),
+        ("せんたく", "選択"),
+        ("けってい", "決定"),
+        ("ほぞん", "保存"),
+        ("けんさく", "検索"),
+        ("いちらん", "一覧"),
+        ("がいよう", "概要"),
+        ("きのう", "機能"),
+        ("せいのう", "性能"),
+        ("せいげん", "制限"),
         // Loanwords common in ASR captions
         ("てすと", "テスト"),
         ("しすてむ", "システム"),
@@ -754,17 +941,64 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
         ("ねっとわーく", "ネットワーク"),
         ("えらー", "エラー"),
         ("ろぐ", "ログ"),
+        ("でーた", "データ"),
+        ("ぷろぐらむ", "プログラム"),
+        ("そふとうぇあ", "ソフトウェア"),
+        ("はーどうぇあ", "ハードウェア"),
+        ("あかうんと", "アカウント"),
+        ("ぱすわーど", "パスワード"),
+        ("ぶらうざ", "ブラウザ"),
+        ("うぇぶ", "ウェブ"),
+        ("すまーとふぉん", "スマートフォン"),
+        ("こーど", "コード"),
+        ("ぷろじぇくと", "プロジェクト"),
+        ("ふぁいる", "ファイル"),
+        ("ふぉるだ", "フォルダ"),
+        ("きーぼーど", "キーボード"),
+        ("りんく", "リンク"),
+        ("ぼたん", "ボタン"),
+        ("めにゅー", "メニュー"),
+        ("たぶ", "タブ"),
+        ("ういんどう", "ウィンドウ"),
+        ("えんじん", "エンジン"),
+        ("さーびす", "サービス"),
+        ("せきゅりてぃ", "セキュリティ"),
+        ("ぷらいばしー", "プライバシー"),
+        ("ばーじょん", "バージョン"),
+        ("あっぷでーと", "アップデート"),
+        ("いんすとーる", "インストール"),
+        ("だうんろーど", "ダウンロード"),
+        ("ろぐいん", "ログイン"),
+        ("ろぐあうと", "ログアウト"),
+        ("せっしょん", "セッション"),
+        ("りくえすと", "リクエスト"),
+        ("れすぽんす", "レスポンス"),
     ]
     .into_iter()
-    .map(|(reading, surface)| DictionaryEntry::plain(reading, surface, -10.0))
+    .map(|(reading, surface)| {
+        // A few high-frequency homophones are deliberately given a stronger
+        // compact-lexicon prior. The upstream LOUDS dictionary has several
+        // context-dependent entries for these readings; without its complete
+        // clause lattice they can otherwise win with an unrelated surface
+        // (`かんじ` -> `感じ`, `ねん` -> `煉ん`).
+        let value = match (reading, surface) {
+            ("かんじ", _)
+            | ("いく", _)
+            | ("いきます", _)
+            | ("ねん", _)
+            | ("おつかれさまでした", _) => -5.0,
+            _ => -10.0,
+        };
+        DictionaryEntry::plain(reading, surface, value)
+    })
     .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        escaped_identifier, parse_loudstxt3_record, AzooKeyDictionary, DictionaryEntry,
-        DictionaryPaths,
+        escaped_identifier, parse_loudstxt3_record, system_entry_is_usable, AzooKeyDictionary,
+        DictionaryEntry, DictionaryPaths,
     };
 
     #[test]
@@ -811,6 +1045,32 @@ mod tests {
     }
 
     #[test]
+    fn applies_upstream_quality_threshold_to_system_entries() {
+        let one_kana = DictionaryEntry::plain("あ", "亜", -15.0);
+        let short = DictionaryEntry::plain("とう", "当", -16.0);
+        let short_placeholder = DictionaryEntry::plain("とう", "沼", -16.34);
+        let long = DictionaryEntry::plain("とうきょう", "東京", -16.5);
+        let long_placeholder = DictionaryEntry::plain("とうきょう", "沼今日", -16.7);
+        let particle_identity = DictionaryEntry::plain("は", "は", -1.0);
+        let hiragana_identity = DictionaryEntry::plain("てすと", "てすと", -1.0);
+        let katakana_surface = DictionaryEntry::plain("てすと", "テスト", -1.0);
+        let mut contraction = DictionaryEntry::plain("へいき", "平気", -1.0);
+        contraction.rcid = 17;
+        let mut inflection_tail = DictionaryEntry::plain("ねん", "煉ん", -1.0);
+        inflection_tail.rcid = 782;
+        assert!(!system_entry_is_usable(&one_kana));
+        assert!(system_entry_is_usable(&particle_identity));
+        assert!(system_entry_is_usable(&short));
+        assert!(!system_entry_is_usable(&short_placeholder));
+        assert!(system_entry_is_usable(&long));
+        assert!(!system_entry_is_usable(&long_placeholder));
+        assert!(!system_entry_is_usable(&hiragana_identity));
+        assert!(system_entry_is_usable(&katakana_surface));
+        assert!(!system_entry_is_usable(&contraction));
+        assert!(!system_entry_is_usable(&inflection_tail));
+    }
+
+    #[test]
     fn reads_the_public_azookey_dictionary_when_configured() {
         let Ok(root) = std::env::var("AZOOKEY_DICTIONARY_ROOT") else {
             return;
@@ -825,6 +1085,18 @@ mod tests {
         assert!(entries.iter().any(|entry| entry.surface == "東京"));
         let first = entries.first().expect("public dictionary should return at least one entry");
         assert!(dictionary.connection_cost(first, first).is_finite());
+        assert!(dictionary.beginning_connection_cost(first).is_finite());
+    }
+
+    #[test]
+    fn compact_fallback_does_not_embed_context_specific_homonym_rows() {
+        let dictionary = AzooKeyDictionary::default();
+        for reading in ["あつい", "すーぷ", "たべたく", "そと"] {
+            assert!(
+                dictionary.lookup_exact(reading).expect("lookup should be non-fatal").is_empty(),
+                "context-specific row unexpectedly embedded for {reading}"
+            );
+        }
     }
 
     #[test]
@@ -839,8 +1111,8 @@ mod tests {
         );
         let user = std::env::temp_dir().join(format!("{suffix}-user.tsv"));
         let memory = std::env::temp_dir().join(format!("{suffix}-memory.tsv"));
-        std::fs::write(&user, "はいしん\t配信中\t-99\n").expect("user fixture should write");
-        std::fs::write(&memory, "はいしん\t配信メモリ\t-100\n")
+        std::fs::write(&user, "はいしん\t配信中\t-1\n").expect("user fixture should write");
+        std::fs::write(&memory, "はいしん\t配信メモリ\t-0.5\n")
             .expect("memory fixture should write");
 
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {

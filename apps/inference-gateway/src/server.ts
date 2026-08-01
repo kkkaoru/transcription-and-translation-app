@@ -19,8 +19,18 @@ const writeJson = (
   status: number,
   body: Record<string, unknown>,
 ): void => {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(body));
+  // A browser/desktop stop can close the HTTP stream while ASR is still
+  // settling. Do not attempt a second write (which would surface as an
+  // uncaught ERR_STREAM_WRITE_AFTER_END and obscure the original session error).
+  if (response.writableEnded || response.destroyed) {
+    return;
+  }
+  try {
+    response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(body));
+  } catch {
+    response.destroy();
+  }
 };
 
 const requestHeaders = (request: IncomingMessage): Headers =>
@@ -51,8 +61,23 @@ const toFetchRequest = async (request: IncomingMessage): Promise<Request> => {
 };
 
 const writeFetchResponse = async (response: ServerResponse, result: Response): Promise<void> => {
-  response.writeHead(result.status, Object.fromEntries(result.headers.entries()));
-  response.end(Buffer.from(await result.arrayBuffer()));
+  if (response.writableEnded || response.destroyed) {
+    return;
+  }
+  try {
+    const body = Buffer.from(await result.arrayBuffer());
+    if (response.writableEnded || response.destroyed) {
+      return;
+    }
+    response.writeHead(result.status, Object.fromEntries(result.headers.entries()));
+    response.end(body);
+  } catch {
+    // The peer may have cancelled the request while the upstream body was
+    // being read. There is no response left to recover; close quietly.
+    if (!response.destroyed) {
+      response.destroy();
+    }
+  }
 };
 
 const handleAdapterError = (response: ServerResponse, error: unknown): void => {
@@ -83,6 +108,15 @@ export const createGatewayServer = (
     ...(dependencies.fetch ? { fetch: dependencies.fetch } : {}),
   });
   return createServer((request, response) => {
+    // Request/response stream errors are expected when the UI cancels a
+    // capture or navigates away. Install no-op listeners so Node does not turn
+    // the transport race into an uncaught process-level error.
+    request.once("error", () => {
+      if (!response.writableEnded && !response.destroyed) {
+        response.destroy();
+      }
+    });
+    response.once("error", () => undefined);
     void toFetchRequest(request)
       .then(handler)
       .then(async (result) => writeFetchResponse(response, result))

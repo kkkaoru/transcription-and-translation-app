@@ -62,6 +62,30 @@ impl VadEngine for OnnxRuntimeSileroVadEngine {
             return Ok(VadResult { probability: 0.0, is_speech: false });
         }
 
+        // Silero's ONNX graph accepts one 512-sample (32 ms) window. A
+        // configured Parapper VAD interval may be larger than that window,
+        // so run each model window in sequence and expose one aggregate result
+        // to the segment builder. Using the maximum probability preserves a
+        // short speech burst inside a larger configured interval instead of
+        // silently discarding all samples after the first 32 ms.
+        let mut probability: f32 = 0.0;
+        let mut is_speech = false;
+        for chunk in samples.chunks(SILERO_CHUNK_SAMPLES) {
+            let chunk_probability = self.process_model_chunk(chunk)?;
+            probability = probability.max(chunk_probability);
+            is_speech |= chunk_probability > self.threshold;
+        }
+
+        Ok(VadResult { probability, is_speech })
+    }
+
+    fn set_threshold(&mut self, threshold: f32) {
+        self.threshold = threshold;
+    }
+}
+
+impl OnnxRuntimeSileroVadEngine {
+    fn process_model_chunk(&mut self, samples: &[f32]) -> Result<f32> {
         let mut chunk = [0.0; SILERO_CHUNK_SAMPLES];
         let copy_len = samples.len().min(SILERO_CHUNK_SAMPLES);
         chunk[..copy_len].copy_from_slice(&samples[..copy_len]);
@@ -89,14 +113,16 @@ impl VadEngine for OnnxRuntimeSileroVadEngine {
         if state_out.len() == self.state.len() {
             self.state.copy_from_slice(state_out);
         }
-        self.context.copy_from_slice(&chunk[SILERO_CHUNK_SAMPLES - SILERO_CONTEXT_SAMPLES..]);
+        // For a 16 ms configured interval the model window is zero-padded to
+        // 512 samples. Keep the context sourced from the real audio tail
+        // rather than carrying padded silence into the next model invocation.
+        self.context.fill(0.0);
+        let context_start = copy_len.saturating_sub(SILERO_CONTEXT_SAMPLES);
+        let context_len = copy_len - context_start;
+        self.context[SILERO_CONTEXT_SAMPLES - context_len..]
+            .copy_from_slice(&chunk[context_start..copy_len]);
 
-        let probability = out.first().copied().unwrap_or(0.0);
-        Ok(VadResult { probability, is_speech: probability > self.threshold })
-    }
-
-    fn set_threshold(&mut self, threshold: f32) {
-        self.threshold = threshold;
+        Ok(out.first().copied().unwrap_or(0.0))
     }
 }
 

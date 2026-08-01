@@ -36,6 +36,35 @@ export interface GatewayDependencies {
 
 const isGatewayError = (error: unknown): error is GatewayError => error instanceof GatewayError;
 
+/**
+ * Older Parapper adapters returned VAD no-speech as HTTP 422
+ * `transcript_missing`; newer adapters return `{text:""}`. Keep the HTTP
+ * boundary compatible with both so a stale sidecar cannot turn ambient chunks
+ * into fatal capture errors.
+ */
+const isNoSpeechFailure = (error: unknown): boolean => {
+  if (error instanceof GatewayError) {
+    const code = error.code.trim().toLowerCase();
+    if (["transcript_missing", "no_transcript", "empty_transcript", "no_speech"].includes(code)) {
+      return true;
+    }
+  }
+  const detail =
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : typeof error === "string"
+        ? error.toLowerCase()
+        : "";
+  return (
+    detail.includes("transcript_missing") ||
+    detail.includes("without a final transcript") ||
+    detail.includes("no final transcript") ||
+    detail.includes("no transcript") ||
+    detail.includes("empty transcript") ||
+    detail.includes("no speech")
+  );
+};
+
 const json = (status: number, body: Json): Response =>
   new Response(JSON.stringify(body), {
     status,
@@ -270,7 +299,14 @@ export const createGatewayFetchHandler = (
           const detail = error instanceof Error ? error.message : "WAV validation failed";
           fail(400, "invalid_audio", detail);
         }
-        const text = await asrGate.run(() => requiredTranscriber(transcribe)(pcm));
+        const text = await asrGate
+          .run(() => requiredTranscriber(transcribe)(pcm))
+          .catch((error: unknown) => {
+            if (isNoSpeechFailure(error)) {
+              return "";
+            }
+            throw error;
+          });
         return json(200, {
           text,
           ...(transcription.language ? { language: transcription.language } : {}),

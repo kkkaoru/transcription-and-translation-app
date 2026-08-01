@@ -199,6 +199,15 @@ pub struct SegmentationConfig {
     pub segment_start_speech_ms: u32,
 }
 
+/// Silero VAD consumes a 512-sample (32 ms at 16 kHz) model window. The
+/// recognition loop can aggregate model windows for larger intervals, while
+/// keeping the desktop/headless contract on a 16 ms grid.
+pub const DEFAULT_VAD_INTERVAL_MS: u32 = 32;
+pub const MIN_VAD_INTERVAL_MS: u32 = 16;
+pub const MAX_VAD_INTERVAL_MS: u32 = 128;
+pub const VAD_INTERVAL_STEP_MS: u32 = 16;
+pub const DEFAULT_VAD_THRESHOLD: f32 = 0.5;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct TurnConfig {
@@ -306,7 +315,11 @@ impl Default for TranslationConfig {
 
 impl Default for SegmentationConfig {
     fn default() -> Self {
-        Self { vad_threshold: 0.5, vad_interval_ms: 32, segment_start_speech_ms: 96 }
+        Self {
+            vad_threshold: DEFAULT_VAD_THRESHOLD,
+            vad_interval_ms: DEFAULT_VAD_INTERVAL_MS,
+            segment_start_speech_ms: 96,
+        }
     }
 }
 
@@ -482,7 +495,13 @@ impl ParapperConfig {
     }
 
     pub fn normalized(mut self) -> Self {
-        self.segmentation.vad_interval_ms = 32;
+        self.segmentation.vad_interval_ms =
+            normalize_vad_interval_ms(self.segmentation.vad_interval_ms);
+        self.segmentation.vad_threshold = if self.segmentation.vad_threshold.is_finite() {
+            self.segmentation.vad_threshold.clamp(0.0, 1.0)
+        } else {
+            DEFAULT_VAD_THRESHOLD
+        };
         self.segmentation.segment_start_speech_ms =
             self.segmentation.segment_start_speech_ms.max(self.segmentation.vad_interval_ms.max(1));
         self.turn.interim_result_silence_ms =
@@ -630,6 +649,16 @@ fn normalize_speech_volume(volume: f32) -> f32 {
     if volume.is_finite() { volume.clamp(-20.0, 20.0) } else { 0.0 }
 }
 
+fn normalize_vad_interval_ms(value: u32) -> u32 {
+    if (MIN_VAD_INTERVAL_MS..=MAX_VAD_INTERVAL_MS).contains(&value)
+        && (value - MIN_VAD_INTERVAL_MS).is_multiple_of(VAD_INTERVAL_STEP_MS)
+    {
+        value
+    } else {
+        DEFAULT_VAD_INTERVAL_MS
+    }
+}
+
 fn normalize_input_volume_db(volume_db: f32) -> f32 {
     if volume_db.is_finite() { volume_db.clamp(-30.0, 30.0) } else { 0.0 }
 }
@@ -684,10 +713,11 @@ mod tests {
 
     use super::{
         AsrLanguage, AsrModel, AsrModelCapability, AsrModelImplementation, AsrPrecision,
-        InputSourceKind, LocalTranslationModel, LocalTtsVoice, NeoSendTiming,
-        NoiseCancellationModel, ParapperConfig, SpeechBackend, SpeechMapping, SpeechSourceKind,
-        StreamingRecognitionTextFormat, TranslationBackend, TranslationLanguage,
-        TranslationMapping, TurnDetector, TurnDetectorClass, TurnDetectorModel,
+        DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD, InputSourceKind, LocalTranslationModel,
+        LocalTtsVoice, NeoSendTiming, NoiseCancellationModel, ParapperConfig, SpeechBackend,
+        SpeechMapping, SpeechSourceKind, StreamingRecognitionTextFormat, TranslationBackend,
+        TranslationLanguage, TranslationMapping, TurnDetector, TurnDetectorClass,
+        TurnDetectorModel,
     };
 
     #[test]
@@ -763,6 +793,8 @@ mod tests {
         config.translation.enabled = true;
         config.turn.detector = TurnDetector::Namo;
         config.noise_cancellation.enabled = true;
+        config.segmentation.vad_interval_ms = 64;
+        config.segmentation.vad_threshold = 0.25;
 
         config.save(&path).expect("flat config test should write config");
         let content = fs::read_to_string(&path).expect("flat config test should read config");
@@ -803,6 +835,11 @@ mod tests {
         assert_eq!(object["translation_local_server_model"], serde_json::json!("lfm2_q4"));
         assert_eq!(object["turn_detector"], serde_json::json!("namo"));
         assert_eq!(object["noise_cancellation_enabled"], serde_json::json!(true));
+        assert_eq!(object["vad_interval_ms"], serde_json::json!(64));
+        assert_eq!(object["vad_threshold"], serde_json::json!(0.25));
+        let reloaded = ParapperConfig::load(&path).expect("saved VAD settings should reload");
+        assert_eq!(reloaded.segmentation.vad_interval_ms, 64);
+        assert!((reloaded.segmentation.vad_threshold - 0.25).abs() < f32::EPSILON);
         let _ = fs::remove_file(path);
     }
 
@@ -1066,6 +1103,30 @@ mod tests {
 
         assert_eq!(config.segmentation.vad_interval_ms, 32);
         assert_eq!(config.segmentation.segment_start_speech_ms, 300);
+    }
+
+    #[test]
+    fn vad_interval_and_threshold_keep_headless_supported_values() {
+        let config = config_with(|config| {
+            config.segmentation.vad_interval_ms = 128;
+            config.segmentation.vad_threshold = 0.1;
+        });
+
+        assert_eq!(config.segmentation.vad_interval_ms, 128);
+        assert!((config.segmentation.vad_threshold - 0.1).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn invalid_vad_threshold_is_normalized_to_safe_default() {
+        let nan = config_with(|config| {
+            config.segmentation.vad_threshold = f32::NAN;
+        });
+        let out_of_range = config_with(|config| {
+            config.segmentation.vad_threshold = 2.0;
+        });
+
+        assert!((nan.segmentation.vad_threshold - DEFAULT_VAD_THRESHOLD).abs() < f32::EPSILON);
+        assert_eq!(out_of_range.segmentation.vad_threshold, 1.0);
     }
 
     #[test]
@@ -1369,7 +1430,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn unsupported_neo_http_platform_disables_text_input_translation_and_vrc_flags() {
+    fn unsupported_neo_http_platform_disables_only_unsupported_text_input_and_vrc_flags() {
         let config = config_with(|config| {
             config.neo.http_enabled = true;
             config.translation.enabled = true;
@@ -1377,7 +1438,10 @@ mod tests {
         });
 
         assert!(!config.neo.http_enabled);
-        assert!(!config.translation.enabled);
+        assert!(
+            config.translation.enabled,
+            "local translation and configured translation delivery must remain available on macOS"
+        );
         assert!(!config.vrc.osc_micmute);
     }
 

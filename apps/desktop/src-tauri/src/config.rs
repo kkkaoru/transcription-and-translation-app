@@ -28,6 +28,26 @@ pub struct ModelSelection {
     pub paths: HashMap<String, String>,
 }
 
+fn default_noise_suppression() -> bool {
+    true
+}
+
+fn default_adaptive_noise_floor() -> bool {
+    true
+}
+
+/// The Parapper headless sidecar evaluates VAD frames at this interval by
+/// default. Keep the desktop contract explicit so it can be passed to the
+/// sidecar command line rather than silently falling back to Parapper's
+/// interactive configuration.
+pub const DEFAULT_VAD_INTERVAL_MS: u32 = 32;
+pub const MIN_VAD_INTERVAL_MS: u32 = 16;
+pub const MAX_VAD_INTERVAL_MS: u32 = 128;
+pub const VAD_INTERVAL_STEP_MS: u32 = 16;
+pub const DEFAULT_VAD_THRESHOLD: f32 = 0.5;
+pub const MIN_VAD_THRESHOLD: f32 = 0.0;
+pub const MAX_VAD_THRESHOLD: f32 = 1.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioConfig {
@@ -35,6 +55,28 @@ pub struct AudioConfig {
     pub sample_rate: u32,
     pub chunk_ms: u32,
     pub silence_gate_db: f32,
+    /// Parapper's internal VAD frame interval. This is independent from the
+    /// frontend capture window (`chunk_ms`).
+    #[serde(default = "default_vad_interval_ms")]
+    pub vad_interval_ms: u32,
+    /// Silero VAD speech probability threshold passed to Parapper.
+    #[serde(default = "default_vad_threshold")]
+    pub vad_threshold: f32,
+    /// Browser getUserMedia noise suppression / echo cancellation (frontend applies).
+    #[serde(default = "default_noise_suppression")]
+    pub noise_suppression: bool,
+    /// Adaptive noise-floor gate (default). When false, the frontend falls back
+    /// to the fixed silence_gate_db threshold.
+    #[serde(default = "default_adaptive_noise_floor")]
+    pub adaptive_noise_floor: bool,
+}
+
+fn default_vad_interval_ms() -> u32 {
+    DEFAULT_VAD_INTERVAL_MS
+}
+
+fn default_vad_threshold() -> f32 {
+    DEFAULT_VAD_THRESHOLD
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,12 +175,25 @@ fn default_caption_y_percent() -> f32 {
     86.0
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugConfig {
     /// When true, backend stage logs include truncated input/output samples.
     #[serde(default)]
     pub verbose_logging: bool,
+    /// Structured log severity: error | warn | info | debug | trace.
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self { verbose_logging: false, log_level: default_log_level() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,11 +231,17 @@ impl Default for AppConfig {
                 input_device_id: "default".to_string(),
                 sample_rate: 16_000,
                 // Keep in sync with apps/desktop/src/core/defaults.ts DEFAULT_AUDIO_CHUNK_MS.
-                // ~900ms reduces time-to-first-subtitle while staying long enough for Parapper.
-                chunk_ms: 900,
+                // ~640ms reduces time-to-first-subtitle while staying long enough for Parapper.
+                chunk_ms: 640,
                 // Match frontend DEFAULT_SILENCE_GATE_DB: drop ambient ~-54 dBFS
                 // so quiet raw-capture noise never hits Parapper.
                 silence_gate_db: -50.0,
+                vad_interval_ms: DEFAULT_VAD_INTERVAL_MS,
+                vad_threshold: DEFAULT_VAD_THRESHOLD,
+                // Match frontend: noise cancelling on by default.
+                noise_suppression: true,
+                // Match frontend DEFAULT_ADAPTIVE_NOISE_FLOOR: adaptive floor gate on.
+                adaptive_noise_floor: true,
             },
             overlay: OverlayConfig {
                 width: 1_280,
@@ -215,6 +276,18 @@ impl AppConfig {
             return Err("audio chunk duration is outside the supported range".to_string());
         }
         validate_finite_range("audio silence gate", self.audio.silence_gate_db, -120.0, 0.0)?;
+        if !(MIN_VAD_INTERVAL_MS..=MAX_VAD_INTERVAL_MS).contains(&self.audio.vad_interval_ms)
+            || !(self.audio.vad_interval_ms - MIN_VAD_INTERVAL_MS)
+                .is_multiple_of(VAD_INTERVAL_STEP_MS)
+        {
+            return Err("audio VAD interval is outside the supported range".to_string());
+        }
+        validate_finite_range(
+            "audio VAD threshold",
+            self.audio.vad_threshold,
+            MIN_VAD_THRESHOLD,
+            MAX_VAD_THRESHOLD,
+        )?;
         if self.endpoint.mode != "local" && self.endpoint.mode != "remote" {
             return Err("endpoint mode must be local or remote".to_string());
         }
@@ -334,13 +407,274 @@ fn is_hex_color(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{AppConfig, AudioConfig, DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD};
 
     #[test]
     fn default_config_is_valid() {
         let config = AppConfig::default();
         assert!(config.validate().is_ok());
         assert!(!config.debug.verbose_logging);
+        assert_eq!(config.debug.log_level, "info");
+        assert!(config.audio.noise_suppression);
+        assert!(config.audio.adaptive_noise_floor);
+        assert_eq!(config.audio.vad_interval_ms, DEFAULT_VAD_INTERVAL_MS);
+        assert_eq!(config.audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
+    }
+
+    #[test]
+    fn legacy_audio_without_vad_fields_uses_safe_defaults() {
+        let audio: AudioConfig = serde_json::from_str(
+            r#"{
+                "inputDeviceId": "default",
+                "sampleRate": 16000,
+                "chunkMs": 640,
+                "silenceGateDb": -50
+            }"#,
+        )
+        .expect("legacy audio config should deserialize");
+
+        assert_eq!(audio.vad_interval_ms, DEFAULT_VAD_INTERVAL_MS);
+        assert_eq!(audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
+        assert!(audio.noise_suppression);
+        assert!(audio.adaptive_noise_floor);
+    }
+
+    #[test]
+    fn vad_fields_validate_range_and_alignment() {
+        let mut config = AppConfig::default();
+        for interval in [16, 32, 64, 128] {
+            config.audio.vad_interval_ms = interval;
+            assert!(config.validate().is_ok(), "{interval}ms should be accepted");
+        }
+        for interval in [0, 15, 17, 129] {
+            config.audio.vad_interval_ms = interval;
+            assert!(config.validate().is_err(), "{interval}ms should be rejected");
+        }
+
+        config.audio.vad_interval_ms = DEFAULT_VAD_INTERVAL_MS;
+        for threshold in [0.0, 0.5, 1.0] {
+            config.audio.vad_threshold = threshold;
+            assert!(config.validate().is_ok(), "threshold {threshold} should be accepted");
+        }
+        for threshold in [-0.01, 1.01, f32::NAN, f32::INFINITY] {
+            config.audio.vad_threshold = threshold;
+            assert!(config.validate().is_err(), "threshold {threshold:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn vad_fields_round_trip_with_camel_case_storage_names() {
+        let mut config = AppConfig::default();
+        config.audio.vad_interval_ms = 64;
+        config.audio.vad_threshold = 0.25;
+
+        let value = serde_json::to_value(&config).expect("desktop config should serialize");
+        assert_eq!(value["audio"]["vadIntervalMs"], 64);
+        assert_eq!(value["audio"]["vadThreshold"], 0.25);
+        assert!(!value["audio"].as_object().unwrap().contains_key("vad_interval_ms"));
+
+        let roundtrip: AppConfig =
+            serde_json::from_value(value).expect("desktop config should deserialize");
+        assert_eq!(roundtrip.audio.vad_interval_ms, 64);
+        assert!((roundtrip.audio.vad_threshold - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn noise_suppression_defaults_true_when_missing_from_json() {
+        let config: AppConfig = serde_json::from_str(
+            r##"{
+            "schemaVersion": 1,
+            "language": { "source": "ja", "target": "en" },
+            "endpoint": {
+                "mode": "local",
+                "baseUrl": "http://127.0.0.1:8765",
+                "transcriptionPath": "/v1/audio/transcriptions",
+                "chatPath": "/v1/chat/completions",
+                "timeoutMs": 18000
+            },
+            "models": {
+                "asr": "parapper-ja",
+                "normalizer": "azookey-rust",
+                "translator": "hy-mt2-1.8b-gguf",
+                "paths": {}
+            },
+            "audio": {
+                "inputDeviceId": "default",
+                "sampleRate": 16000,
+                "chunkMs": 900,
+                "silenceGateDb": -50.0
+            },
+            "overlay": {
+                "width": 1280,
+                "height": 720,
+                "x": 0,
+                "y": 0,
+                "order": "source-first",
+                "gapPx": 8.0,
+                "safeAreaPx": 42.0,
+                "captionXPercent": 50.0,
+                "captionYPercent": 86.0,
+                "source": {
+                    "fontFamily": "Noto Sans JP",
+                    "fontSizePx": 36.0,
+                    "fontWeight": 700,
+                    "color": "#ffffff",
+                    "opacity": 1.0,
+                    "letterSpacingPx": 0.2,
+                    "lineHeight": 1.3,
+                    "textAlign": "center",
+                    "maxWidthPercent": 86.0,
+                    "cullingEnabled": true,
+                    "cullingColor": "#061018",
+                    "cullingWidthPx": 3.0,
+                    "cullingOpacity": 0.92,
+                    "shadowEnabled": true,
+                    "shadowColor": "#000000",
+                    "shadowBlurPx": 8.0,
+                    "shadowOffsetX": 0.0,
+                    "shadowOffsetY": 3.0,
+                    "backgroundEnabled": false,
+                    "backgroundColor": "#061018",
+                    "backgroundOpacity": 0.72,
+                    "paddingX": 14.0,
+                    "paddingY": 7.0,
+                    "borderRadius": 9.0
+                },
+                "translation": {
+                    "fontFamily": "Noto Sans JP",
+                    "fontSizePx": 29.0,
+                    "fontWeight": 650,
+                    "color": "#bfe8ff",
+                    "opacity": 1.0,
+                    "letterSpacingPx": 0.2,
+                    "lineHeight": 1.3,
+                    "textAlign": "center",
+                    "maxWidthPercent": 86.0,
+                    "cullingEnabled": true,
+                    "cullingColor": "#07121d",
+                    "cullingWidthPx": 3.0,
+                    "cullingOpacity": 0.92,
+                    "shadowEnabled": true,
+                    "shadowColor": "#000000",
+                    "shadowBlurPx": 8.0,
+                    "shadowOffsetX": 0.0,
+                    "shadowOffsetY": 3.0,
+                    "backgroundEnabled": false,
+                    "backgroundColor": "#061018",
+                    "backgroundOpacity": 0.72,
+                    "paddingX": 14.0,
+                    "paddingY": 7.0,
+                    "borderRadius": 9.0
+                }
+            }
+        }"##,
+        )
+        .expect("legacy audio without noiseSuppression should deserialize");
+        assert!(config.audio.noise_suppression);
+        assert!(
+            config.audio.adaptive_noise_floor,
+            "legacy audio without adaptiveNoiseFloor should default to the adaptive gate"
+        );
+    }
+
+    #[test]
+    fn adaptive_noise_floor_respects_explicit_false() {
+        let config: AppConfig = serde_json::from_str(
+            r##"{
+            "schemaVersion": 1,
+            "language": { "source": "ja", "target": "en" },
+            "endpoint": {
+                "mode": "local",
+                "baseUrl": "http://127.0.0.1:8765",
+                "transcriptionPath": "/v1/audio/transcriptions",
+                "chatPath": "/v1/chat/completions",
+                "timeoutMs": 18000
+            },
+            "models": {
+                "asr": "parapper-ja",
+                "normalizer": "azookey-rust",
+                "translator": "hy-mt2-1.8b-gguf",
+                "paths": {}
+            },
+            "audio": {
+                "inputDeviceId": "default",
+                "sampleRate": 16000,
+                "chunkMs": 900,
+                "silenceGateDb": -48.0,
+                "noiseSuppression": true,
+                "adaptiveNoiseFloor": false
+            },
+            "overlay": {
+                "width": 1280,
+                "height": 720,
+                "x": 0,
+                "y": 0,
+                "order": "source-first",
+                "gapPx": 8.0,
+                "safeAreaPx": 42.0,
+                "captionXPercent": 50.0,
+                "captionYPercent": 86.0,
+                "source": {
+                    "fontFamily": "Noto Sans JP",
+                    "fontSizePx": 36.0,
+                    "fontWeight": 700,
+                    "color": "#ffffff",
+                    "opacity": 1.0,
+                    "letterSpacingPx": 0.2,
+                    "lineHeight": 1.3,
+                    "textAlign": "center",
+                    "maxWidthPercent": 86.0,
+                    "cullingEnabled": true,
+                    "cullingColor": "#061018",
+                    "cullingWidthPx": 3.0,
+                    "cullingOpacity": 0.92,
+                    "shadowEnabled": true,
+                    "shadowColor": "#000000",
+                    "shadowBlurPx": 8.0,
+                    "shadowOffsetX": 0.0,
+                    "shadowOffsetY": 3.0,
+                    "backgroundEnabled": false,
+                    "backgroundColor": "#061018",
+                    "backgroundOpacity": 0.72,
+                    "paddingX": 14.0,
+                    "paddingY": 7.0,
+                    "borderRadius": 9.0
+                },
+                "translation": {
+                    "fontFamily": "Noto Sans JP",
+                    "fontSizePx": 29.0,
+                    "fontWeight": 650,
+                    "color": "#bfe8ff",
+                    "opacity": 1.0,
+                    "letterSpacingPx": 0.2,
+                    "lineHeight": 1.3,
+                    "textAlign": "center",
+                    "maxWidthPercent": 86.0,
+                    "cullingEnabled": true,
+                    "cullingColor": "#07121d",
+                    "cullingWidthPx": 3.0,
+                    "cullingOpacity": 0.92,
+                    "shadowEnabled": true,
+                    "shadowColor": "#000000",
+                    "shadowBlurPx": 8.0,
+                    "shadowOffsetX": 0.0,
+                    "shadowOffsetY": 3.0,
+                    "backgroundEnabled": false,
+                    "backgroundColor": "#061018",
+                    "backgroundOpacity": 0.72,
+                    "paddingX": 14.0,
+                    "paddingY": 7.0,
+                    "borderRadius": 9.0
+                }
+            }
+        }"##,
+        )
+        .expect("explicit adaptiveNoiseFloor false should deserialize");
+        assert!(!config.audio.adaptive_noise_floor);
+        assert!(
+            config.validate().is_ok(),
+            "fixed gate mode with a custom silence gate must still validate"
+        );
     }
 
     #[test]
@@ -434,9 +768,11 @@ mod tests {
         }"##;
         let config: AppConfig = serde_json::from_str(raw).expect("parse config without debug");
         assert!(!config.debug.verbose_logging);
-        let with_debug = r#"{ "verboseLogging": true }"#;
+        assert_eq!(config.debug.log_level, "info");
+        let with_debug = r#"{ "verboseLogging": true, "logLevel": "trace" }"#;
         let debug: super::DebugConfig = serde_json::from_str(with_debug).expect("parse debug");
         assert!(debug.verbose_logging);
+        assert_eq!(debug.log_level, "trace");
     }
 
     #[test]

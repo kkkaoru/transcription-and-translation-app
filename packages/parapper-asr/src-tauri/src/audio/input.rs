@@ -1,6 +1,9 @@
-use std::sync::mpsc::{Receiver, channel};
+use std::{
+    path::Path,
+    sync::mpsc::{Receiver, channel},
+};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cpal::{Stream, traits::StreamTrait};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -8,7 +11,7 @@ use tauri::{AppHandle, Emitter};
 use crate::{
     config::ParapperConfig,
     error_event::{ErrorSeverity, ParapperErrorType, emit_parapper_error},
-    model::noise_cancellation_model_dir,
+    model::{noise_cancellation_model_dir, noise_cancellation_model_dir_from_root},
 };
 
 use super::{
@@ -77,7 +80,7 @@ impl Drop for RunningAudioInput {
 }
 
 pub(crate) struct AudioInputProcessor {
-    handle: AppHandle,
+    handle: Option<AppHandle>,
     resampler: MonoFastFixedInResampler,
     resampled_chunks: Vec<Vec<f32>>,
     noise_cancellation: Option<Box<dyn NoiseCancellationEngine>>,
@@ -91,6 +94,24 @@ impl AudioInputProcessor {
         config: &ParapperConfig,
         source_sample_rate: u32,
     ) -> Result<Self> {
+        Self::initialize_with_model_root(Some(handle), None, config, source_sample_rate)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initialize_without_handle_at_model_root(
+        config: &ParapperConfig,
+        source_sample_rate: u32,
+        model_root: &Path,
+    ) -> Result<Self> {
+        Self::initialize_with_model_root(None, Some(model_root), config, source_sample_rate)
+    }
+
+    fn initialize_with_model_root(
+        handle: Option<AppHandle>,
+        model_root: Option<&Path>,
+        config: &ParapperConfig,
+        source_sample_rate: u32,
+    ) -> Result<Self> {
         let vad_interval_ms = validated_vad_interval_ms(config.segmentation.vad_interval_ms);
         let resampler = match MonoFastFixedInResampler::new(
             source_sample_rate,
@@ -99,27 +120,28 @@ impl AudioInputProcessor {
         ) {
             Ok(resampler) => resampler,
             Err(err) => {
-                emit_parapper_error(
-                    &handle,
+                emit_audio_input_error(
+                    handle.as_ref(),
                     ParapperErrorType::Resampler,
                     ErrorSeverity::Fatal,
-                    Some(err.to_string()),
+                    &err,
                 );
                 return Err(err);
             }
         };
-        let noise_cancellation = match create_noise_cancellation_engine(&handle, config) {
-            Ok(noise_cancellation) => noise_cancellation,
-            Err(err) => {
-                emit_parapper_error(
-                    &handle,
-                    ParapperErrorType::AudioInput,
-                    ErrorSeverity::Fatal,
-                    Some(err.to_string()),
-                );
-                return Err(err);
-            }
-        };
+        let noise_cancellation =
+            match create_noise_cancellation_engine(handle.as_ref(), model_root, config) {
+                Ok(noise_cancellation) => noise_cancellation,
+                Err(err) => {
+                    emit_audio_input_error(
+                        handle.as_ref(),
+                        ParapperErrorType::AudioInput,
+                        ErrorSeverity::Fatal,
+                        &err,
+                    );
+                    return Err(err);
+                }
+            };
         Ok(Self {
             handle,
             resampler,
@@ -138,11 +160,11 @@ impl AudioInputProcessor {
     ) {
         let input_gain = input_volume_db_to_gain(config.input.volume_db);
         let Ok(()) = self.resampler.push_into(&chunk.samples, &mut self.resampled_chunks) else {
-            emit_parapper_error(
-                &self.handle,
+            emit_audio_input_error(
+                self.handle.as_ref(),
                 ParapperErrorType::Resampler,
                 ErrorSeverity::Warning,
-                Some("Failed to resample input audio".to_string()),
+                &anyhow!("Failed to resample input audio"),
             );
             return;
         };
@@ -154,18 +176,23 @@ impl AudioInputProcessor {
                 samples = match noise_cancellation.process(&samples) {
                     Ok(samples) => samples,
                     Err(err) => {
-                        emit_parapper_error(
-                            &self.handle,
+                        emit_audio_input_error(
+                            self.handle.as_ref(),
                             ParapperErrorType::AudioInput,
                             ErrorSeverity::Warning,
-                            Some(err.to_string()),
+                            &err,
                         );
                         continue;
                     }
                 };
             }
             let post_gain_level = peak_level(&samples);
-            self.input_level_emitter.push(&self.handle, pre_gain_level, post_gain_level);
+            let handle = self.handle.clone();
+            self.input_level_emitter.push(pre_gain_level, post_gain_level, |event| {
+                if let Some(handle) = handle.as_ref() {
+                    let _ = handle.emit("parapper://input-level", event);
+                }
+            });
             let event = AudioChunkEvent {
                 source_sample_rate: self.source_sample_rate,
                 sample_rate: ASR_SAMPLE_RATE,
@@ -173,7 +200,9 @@ impl AudioInputProcessor {
                 level: post_gain_level,
                 pre_gain_level,
             };
-            let _ = self.handle.emit("parapper://audio-chunk", event);
+            if let Some(handle) = self.handle.as_ref() {
+                let _ = handle.emit("parapper://audio-chunk", event);
+            }
             on_processed_chunk(samples);
         }
         self.resampled_chunks = resampled_chunks;
@@ -181,15 +210,48 @@ impl AudioInputProcessor {
 }
 
 fn create_noise_cancellation_engine(
-    handle: &AppHandle,
+    handle: Option<&AppHandle>,
+    model_root: Option<&Path>,
     config: &ParapperConfig,
 ) -> Result<Option<Box<dyn NoiseCancellationEngine>>> {
     if !config.noise_cancellation.enabled {
         return Ok(None);
     }
 
-    let model_dir = noise_cancellation_model_dir(handle, config.noise_cancellation.model)?;
-    Ok(Some(Box::new(UlUnasNoiseCancellationEngine::new(&model_dir)?)))
+    let model_dir = match model_root {
+        Some(root) => noise_cancellation_model_dir_from_root(root, config.noise_cancellation.model),
+        None => {
+            let handle = handle.ok_or_else(|| {
+                anyhow!(
+                    "an AppHandle is required to resolve the noise cancellation model directory"
+                )
+            })?;
+            noise_cancellation_model_dir(handle, config.noise_cancellation.model)?
+        }
+    };
+    create_noise_cancellation_engine_at(&model_dir, config)
+}
+
+fn create_noise_cancellation_engine_at(
+    model_dir: &Path,
+    config: &ParapperConfig,
+) -> Result<Option<Box<dyn NoiseCancellationEngine>>> {
+    if !config.noise_cancellation.enabled {
+        return Ok(None);
+    }
+
+    Ok(Some(Box::new(UlUnasNoiseCancellationEngine::new(model_dir)?)))
+}
+
+fn emit_audio_input_error(
+    handle: Option<&AppHandle>,
+    error_type: ParapperErrorType,
+    severity: ErrorSeverity,
+    error: &anyhow::Error,
+) {
+    if let Some(handle) = handle {
+        emit_parapper_error(handle, error_type, severity, Some(error.to_string()));
+    }
 }
 
 fn input_volume_db_to_gain(volume_db: f32) -> f32 {
@@ -212,7 +274,12 @@ struct InputLevelEmitter {
 }
 
 impl InputLevelEmitter {
-    fn push(&mut self, handle: &AppHandle, pre_gain_level: f32, post_gain_level: f32) {
+    fn push(
+        &mut self,
+        pre_gain_level: f32,
+        post_gain_level: f32,
+        mut emit: impl FnMut(InputLevelEvent),
+    ) {
         self.chunks_since_emit += 1;
         if pre_gain_level.is_finite() {
             self.pre_gain_peak_level = self.pre_gain_peak_level.max(pre_gain_level);
@@ -222,13 +289,10 @@ impl InputLevelEmitter {
         }
 
         if self.chunks_since_emit >= INPUT_LEVEL_EMIT_CHUNKS {
-            let _ = handle.emit(
-                "parapper://input-level",
-                InputLevelEvent {
-                    pre_gain_level: self.pre_gain_peak_level,
-                    post_gain_level: self.post_gain_peak_level,
-                },
-            );
+            emit(InputLevelEvent {
+                pre_gain_level: self.pre_gain_peak_level,
+                post_gain_level: self.post_gain_peak_level,
+            });
             self.chunks_since_emit = 0;
             self.pre_gain_peak_level = 0.0;
             self.post_gain_peak_level = 0.0;
@@ -238,15 +302,10 @@ impl InputLevelEmitter {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::mpsc,
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    };
-
-    use tauri::Listener;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        ASR_SAMPLE_RATE, AudioInputProcessor, InputLevelEmitter, InputLevelEvent, apply_input_gain,
+        ASR_SAMPLE_RATE, AudioInputProcessor, InputLevelEmitter, apply_input_gain,
         input_volume_db_to_gain,
     };
     use crate::audio::stream::peak_level;
@@ -280,7 +339,6 @@ mod tests {
 
     #[test]
     fn audio_input_processor_fails_when_noise_cancellation_model_is_missing() {
-        let handle = tauri_test_handle();
         let config = parapper_config! {
             noise_cancellation_enabled: true,
             noise_cancellation_model: NoiseCancellationModel::UlUnas,
@@ -288,9 +346,13 @@ mod tests {
             ..ParapperConfig::default()
         };
 
-        let err = AudioInputProcessor::initialize(handle, &config, ASR_SAMPLE_RATE)
-            .err()
-            .expect("missing noise cancellation model should fail audio input startup");
+        let err = AudioInputProcessor::initialize_without_handle_at_model_root(
+            &config,
+            ASR_SAMPLE_RATE,
+            std::path::Path::new(config.models.dir.as_deref().unwrap()),
+        )
+        .err()
+        .expect("missing noise cancellation model should fail audio input startup");
 
         assert!(
             err.to_string().contains("Noise cancellation model not found"),
@@ -300,34 +362,21 @@ mod tests {
 
     #[test]
     fn input_level_emitter_emits_every_three_chunks_and_resets_peaks() {
-        let handle = tauri_test_handle();
-        let (sender, receiver) = mpsc::channel::<InputLevelEvent>();
-        let _event_id = handle.listen("parapper://input-level", move |event| {
-            let payload = serde_json::from_str::<InputLevelEvent>(event.payload())
-                .expect("input level payload should decode");
-            sender.send(payload).expect("input level event should be recorded");
-        });
+        let mut events = Vec::new();
         let mut emitter = InputLevelEmitter::default();
 
-        emitter.push(&handle, 0.1, 0.2);
-        emitter.push(&handle, f32::NAN, f32::INFINITY);
-        assert!(
-            receiver.recv_timeout(Duration::from_millis(50)).is_err(),
-            "input level should not emit before three chunks"
-        );
-        emitter.push(&handle, 0.5, 0.6);
-        let first = receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("third chunk should emit input level");
+        emitter.push(0.1, 0.2, |event| events.push(event));
+        emitter.push(f32::NAN, f32::INFINITY, |event| events.push(event));
+        assert!(events.is_empty(), "input level should not emit before three chunks");
+        emitter.push(0.5, 0.6, |event| events.push(event));
+        let first = events.pop().expect("third chunk should emit input level");
         assert_f32_close(first.pre_gain_level, 0.5);
         assert_f32_close(first.post_gain_level, 0.6);
 
-        emitter.push(&handle, 0.1, 0.1);
-        emitter.push(&handle, 0.2, 0.2);
-        emitter.push(&handle, 0.3, 0.3);
-        let second = receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("sixth chunk should emit input level after reset");
+        emitter.push(0.1, 0.1, |event| events.push(event));
+        emitter.push(0.2, 0.2, |event| events.push(event));
+        emitter.push(0.3, 0.3, |event| events.push(event));
+        let second = events.pop().expect("sixth chunk should emit input level after reset");
         assert_f32_close(second.pre_gain_level, 0.3);
         assert_f32_close(second.post_gain_level, 0.3);
     }
@@ -358,15 +407,5 @@ mod tests {
             ))
             .to_string_lossy()
             .into_owned()
-    }
-
-    fn tauri_test_handle() -> tauri::AppHandle {
-        let builder = tauri::Builder::default();
-        #[cfg(any(windows, target_os = "linux"))]
-        let builder = builder.any_thread();
-        let app = builder
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("test app should build");
-        app.handle().clone()
     }
 }

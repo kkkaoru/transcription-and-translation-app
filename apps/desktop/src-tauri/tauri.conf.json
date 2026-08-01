@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.kotobabeacon.desktop",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "bun run dev:web",
     "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
@@ -30,6 +30,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": false,
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Local bilingual live captions for OBS by Kotoba Beacon",
@@ -64,6 +65,17 @@
     "macOS": {
       "minimumSystemVersion": "12.0",
       "frameworks": ["./frameworks/Syphon.framework"]
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFDMEM5MEI1QjU1MkE4MDAKUldRQXFGSzF0WkFNck1rc0FnRzlvZTBGVTRqOG44OFhJYzBGR0xhanVLc3g2WW5VMFlkeHg2YXEK",
+      "endpoints": [
+        "https://github.com/kkkaoru/transcription-and-translation-app/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

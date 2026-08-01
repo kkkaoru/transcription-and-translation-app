@@ -23,10 +23,11 @@ pub use preset::{ConfigPreset, delete_config_preset, load_config_presets, save_c
 pub use send_timing::NeoSendTiming;
 #[allow(unused_imports)]
 pub use settings::{
-    AsrConfig, DebugConfig, DeveloperConnectionMode, InputConfig, InputSourceKind,
-    ModelStorageConfig, NeoConfig, NoiseCancellationConfig, ParapperConfig, SegmentationConfig,
-    SpeechConfig, StreamingRecognitionConfig, StreamingRecognitionOutputMode, TranslationConfig,
-    TurnConfig, VrcConfig,
+    AsrConfig, DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD, DebugConfig,
+    DeveloperConnectionMode, InputConfig, InputSourceKind, MAX_VAD_INTERVAL_MS,
+    MIN_VAD_INTERVAL_MS, ModelStorageConfig, NeoConfig, NoiseCancellationConfig, ParapperConfig,
+    SegmentationConfig, SpeechConfig, StreamingRecognitionConfig, StreamingRecognitionOutputMode,
+    TranslationConfig, TurnConfig, VAD_INTERVAL_STEP_MS, VrcConfig,
 };
 pub use streaming_text::StreamingRecognitionTextFormat;
 pub use turn::TurnDetector;

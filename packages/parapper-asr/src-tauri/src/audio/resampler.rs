@@ -6,7 +6,9 @@ use rubato::{
     audioadapter::{Adapter, AdapterMut},
 };
 
-const DEFAULT_VAD_INTERVAL_MS: u32 = 32;
+use crate::config::{
+    DEFAULT_VAD_INTERVAL_MS, MAX_VAD_INTERVAL_MS, MIN_VAD_INTERVAL_MS, VAD_INTERVAL_STEP_MS,
+};
 
 pub(crate) struct MonoFastFixedInResampler {
     inner: MonoFastFixedInResamplerInner,
@@ -79,9 +81,12 @@ impl MonoFastFixedInResampler {
 }
 
 pub(crate) fn validated_vad_interval_ms(value: u32) -> u32 {
-    match value {
-        32 => value,
-        _ => DEFAULT_VAD_INTERVAL_MS,
+    if (MIN_VAD_INTERVAL_MS..=MAX_VAD_INTERVAL_MS).contains(&value)
+        && (value - MIN_VAD_INTERVAL_MS).is_multiple_of(VAD_INTERVAL_STEP_MS)
+    {
+        value
+    } else {
+        DEFAULT_VAD_INTERVAL_MS
     }
 }
 
@@ -157,7 +162,7 @@ impl<'a> AdapterMut<'a, f32> for SingleChannelOutputAdapter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MonoFastFixedInResampler, frames_for_millis};
+    use super::{MonoFastFixedInResampler, frames_for_millis, validated_vad_interval_ms};
     use crate::audio::ASR_SAMPLE_RATE;
 
     #[test]
@@ -185,5 +190,15 @@ mod tests {
 
         assert_eq!(chunks.len(), 1);
         assert!((1_590..=1_610).contains(&chunks[0].len()));
+    }
+
+    #[test]
+    fn validated_vad_interval_accepts_supported_16ms_steps() {
+        for interval in [16, 32, 64, 128] {
+            assert_eq!(validated_vad_interval_ms(interval), interval);
+        }
+        for interval in [0, 15, 17, 129] {
+            assert_eq!(validated_vad_interval_ms(interval), 32);
+        }
     }
 }

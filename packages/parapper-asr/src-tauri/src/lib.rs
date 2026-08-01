@@ -7,17 +7,64 @@ use tauri::{Manager, generate_handler};
 #[cfg(not(test))]
 use tauri_plugin_log::{Target, TargetKind};
 
+use crate::config::{
+    DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD, MAX_VAD_INTERVAL_MS, MIN_VAD_INTERVAL_MS,
+    VAD_INTERVAL_STEP_MS,
+};
+
 const HEADLESS_RUNTIME_DIR_ENV: &str = "PARAPPER_RUNTIME_DIR";
 const DEFAULT_HEADLESS_PORT: u16 = 18_082;
+/// Keep short pauses inside one headless turn so a Japanese phrase such as
+/// 「熱い料理はおいしい」 is not split after the first word.  These values
+/// are intentionally scoped to the sidecar entry point; the interactive
+/// Parapper configuration remains user-controlled.
+const DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS: u32 = 192;
+// 960ms keeps a normal Japanese clause together across an ordinary breath
+// while still finalizing promptly after a deliberate pause.  A larger value
+// would reduce false turn splits further, but would make short utterances feel
+// slower before the final event is emitted.
+const DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS: u32 = 960;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct HeadlessOptions {
     port: u16,
+    vad_interval_ms: u32,
+    vad_threshold: f32,
+    interim_result_silence_ms: u32,
+    turn_check_silence_ms: u32,
+}
+
+impl Default for HeadlessOptions {
+    fn default() -> Self {
+        Self {
+            port: DEFAULT_HEADLESS_PORT,
+            vad_interval_ms: DEFAULT_VAD_INTERVAL_MS,
+            vad_threshold: DEFAULT_VAD_THRESHOLD,
+            interim_result_silence_ms: DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS,
+            turn_check_silence_ms: DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS,
+        }
+    }
+}
+
+fn parse_headless_millis_option(
+    arguments: &[String],
+    index: &mut usize,
+    option: &str,
+) -> Result<u32, String> {
+    *index += 1;
+    let value = arguments.get(*index).ok_or_else(|| format!("{option} requires a value"))?;
+    let millis = value
+        .parse::<u32>()
+        .map_err(|_| format!("{option} must be a positive integer, got {value:?}"))?;
+    if millis == 0 {
+        return Err(format!("{option} must be a positive integer"));
+    }
+    Ok(millis)
 }
 
 impl HeadlessOptions {
     fn parse(arguments: &[String]) -> Result<Self, String> {
-        let mut port = DEFAULT_HEADLESS_PORT;
+        let mut options = Self::default();
         let mut index = 0;
         while index < arguments.len() {
             match arguments[index].as_str() {
@@ -27,18 +74,68 @@ impl HeadlessOptions {
                     let value = arguments
                         .get(index)
                         .ok_or_else(|| "--port requires a value".to_string())?;
-                    port = value.parse::<u16>().map_err(|_| {
+                    options.port = value.parse::<u16>().map_err(|_| {
                         format!("--port must be an integer between 1 and 65535, got {value:?}")
                     })?;
-                    if port == 0 {
+                    if options.port == 0 {
                         return Err("--port must be an integer between 1 and 65535".to_string());
                     }
+                }
+                "--vad-interval-ms" => {
+                    index += 1;
+                    let value = arguments
+                        .get(index)
+                        .ok_or_else(|| "--vad-interval-ms requires a value".to_string())?;
+                    let interval = value.parse::<u32>().map_err(|_| {
+                        format!(
+                            "--vad-interval-ms must be an integer between {MIN_VAD_INTERVAL_MS} and {MAX_VAD_INTERVAL_MS}, got {value:?}"
+                        )
+                    })?;
+                    if !(MIN_VAD_INTERVAL_MS..=MAX_VAD_INTERVAL_MS).contains(&interval)
+                        || !(interval - MIN_VAD_INTERVAL_MS).is_multiple_of(VAD_INTERVAL_STEP_MS)
+                    {
+                        return Err(format!(
+                            "--vad-interval-ms must be a {VAD_INTERVAL_STEP_MS}ms-aligned value between {MIN_VAD_INTERVAL_MS} and {MAX_VAD_INTERVAL_MS}"
+                        ));
+                    }
+                    options.vad_interval_ms = interval;
+                }
+                "--vad-threshold" => {
+                    index += 1;
+                    let value = arguments
+                        .get(index)
+                        .ok_or_else(|| "--vad-threshold requires a value".to_string())?;
+                    let threshold = value.parse::<f32>().map_err(|_| {
+                        format!(
+                            "--vad-threshold must be a finite number between 0 and 1, got {value:?}"
+                        )
+                    })?;
+                    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+                        return Err(
+                            "--vad-threshold must be a finite number between 0 and 1".to_string()
+                        );
+                    }
+                    options.vad_threshold = threshold;
+                }
+                "--interim-result-silence-ms" => {
+                    options.interim_result_silence_ms = parse_headless_millis_option(
+                        arguments,
+                        &mut index,
+                        "--interim-result-silence-ms",
+                    )?;
+                }
+                "--turn-check-silence-ms" => {
+                    options.turn_check_silence_ms = parse_headless_millis_option(
+                        arguments,
+                        &mut index,
+                        "--turn-check-silence-ms",
+                    )?;
                 }
                 option => return Err(format!("unsupported headless option: {option}")),
             }
             index += 1;
         }
-        Ok(Self { port })
+        Ok(options)
     }
 }
 
@@ -305,6 +402,14 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 /// as Kotoba Beacon, which supplies a separate runtime data directory through
 /// `PARAPPER_RUNTIME_DIR` so it cannot overwrite an interactive Parapper
 /// installation's settings or model cache.
+/// The sidecar accepts `--vad-interval-ms`, `--vad-threshold`,
+/// `--interim-result-silence-ms`, and `--turn-check-silence-ms` so the parent
+/// application can keep speech segmentation consistent across restarts.
+///
+/// # Errors
+///
+/// Returns an error when a headless option is invalid, the isolated runtime
+/// directory is missing, or the Tauri service cannot be started.
 #[cfg(not(test))]
 pub fn run_headless(arguments: &[String]) -> Result<(), String> {
     let options = HeadlessOptions::parse(arguments)?;
@@ -326,7 +431,17 @@ pub fn run_headless(arguments: &[String]) -> Result<(), String> {
                 .build(),
         )
         .setup(move |app| {
+            // Hiding the window is not enough on macOS: a regular activation
+            // policy still registers Parapper with Launch Services, so the
+            // sidecar shows a second Dock icon and steals focus from Kotoba
+            // Beacon. Accessory keeps it a background-only service.
+            #[cfg(target_os = "macos")]
+            app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
             if let Some(window) = app.get_webview_window("main") {
+                // A hidden Tauri window can still leave a taskbar button on
+                // Windows until it is explicitly marked as auxiliary.
+                #[cfg(target_os = "windows")]
+                window.set_skip_taskbar(true)?;
                 window.hide()?;
             }
             let state = state::AppState::build(app.handle())?;
@@ -362,28 +477,42 @@ async fn start_headless_recognition(
     config.streaming_recognition.port = options.port;
     config.streaming_recognition.api_key = None;
     config.streaming_recognition.output_mode = StreamingRecognitionOutputMode::WebSocketOnly;
+    config.segmentation.vad_interval_ms = options.vad_interval_ms;
+    config.segmentation.vad_threshold = options.vad_threshold;
+    config.turn.interim_result_silence_ms = options.interim_result_silence_ms;
+    config.turn.check_silence_ms = options.turn_check_silence_ms;
     let config = state.set_config(config).await?;
 
     log::info!("Preparing Kotoba Beacon ASR models before listening on 127.0.0.1:{}", options.port);
     ensure_models_downloaded(&handle, &config).await?;
     state.start_audio_input(handle.clone()).await?;
     log::info!(
-        "Kotoba Beacon ASR service is listening on ws://127.0.0.1:{}/ws/recognition",
-        options.port
+        "Kotoba Beacon ASR service is listening on ws://127.0.0.1:{}/ws/recognition (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={})",
+        options.port,
+        config.segmentation.vad_interval_ms,
+        config.segmentation.vad_threshold,
+        config.turn.interim_result_silence_ms,
+        config.turn.check_silence_ms,
     );
     Ok(())
 }
 
 #[cfg(test)]
 mod headless_tests {
-    use super::{DEFAULT_HEADLESS_PORT, HeadlessOptions};
+    use super::{
+        DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS, DEFAULT_HEADLESS_PORT,
+        DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS, DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD,
+        HeadlessOptions,
+    };
 
     #[test]
     fn headless_options_use_the_loopback_service_default_port() {
-        assert_eq!(
-            HeadlessOptions::parse(&["--headless".to_string()]).unwrap().port,
-            DEFAULT_HEADLESS_PORT
-        );
+        let options = HeadlessOptions::parse(&["--headless".to_string()]).unwrap();
+        assert_eq!(options.port, DEFAULT_HEADLESS_PORT);
+        assert_eq!(options.vad_interval_ms, DEFAULT_VAD_INTERVAL_MS);
+        assert_eq!(options.vad_threshold, DEFAULT_VAD_THRESHOLD);
+        assert_eq!(options.interim_result_silence_ms, DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS);
+        assert_eq!(options.turn_check_silence_ms, DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS);
     }
 
     #[test]
@@ -393,10 +522,74 @@ mod headless_tests {
     }
 
     #[test]
+    fn headless_options_accept_desktop_vad_overrides() {
+        let args = vec![
+            "--headless".to_string(),
+            "--vad-interval-ms".to_string(),
+            "64".to_string(),
+            "--vad-threshold".to_string(),
+            "0.25".to_string(),
+        ];
+        let options = HeadlessOptions::parse(&args).unwrap();
+
+        assert_eq!(options.vad_interval_ms, 64);
+        assert!((options.vad_threshold - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn headless_options_accept_short_pause_turn_overrides() {
+        let args = vec![
+            "--headless".to_string(),
+            "--interim-result-silence-ms".to_string(),
+            "256".to_string(),
+            "--turn-check-silence-ms".to_string(),
+            "768".to_string(),
+        ];
+        let options = HeadlessOptions::parse(&args).unwrap();
+
+        assert_eq!(options.interim_result_silence_ms, 256);
+        assert_eq!(options.turn_check_silence_ms, 768);
+    }
+
+    #[test]
+    fn headless_options_accept_vad_boundary_values() {
+        for (interval, threshold) in [(16, 0.0), (128, 1.0)] {
+            let args = vec![
+                "--headless".to_string(),
+                "--vad-interval-ms".to_string(),
+                interval.to_string(),
+                "--vad-threshold".to_string(),
+                threshold.to_string(),
+            ];
+            let options = HeadlessOptions::parse(&args).unwrap();
+
+            assert_eq!(options.vad_interval_ms, interval);
+            assert_eq!(options.vad_threshold, threshold);
+        }
+    }
+
+    #[test]
     fn headless_options_reject_missing_zero_and_unknown_values() {
         for args in [
             vec!["--headless".to_string(), "--port".to_string()],
             vec!["--headless".to_string(), "--port".to_string(), "0".to_string()],
+            vec!["--headless".to_string(), "--vad-interval-ms".to_string()],
+            vec!["--headless".to_string(), "--vad-interval-ms".to_string(), "15".to_string()],
+            vec!["--headless".to_string(), "--vad-interval-ms".to_string(), "17".to_string()],
+            vec!["--headless".to_string(), "--vad-threshold".to_string()],
+            vec!["--headless".to_string(), "--vad-threshold".to_string(), "NaN".to_string()],
+            vec!["--headless".to_string(), "--vad-threshold".to_string(), "1.01".to_string()],
+            vec!["--headless".to_string(), "--interim-result-silence-ms".to_string()],
+            vec![
+                "--headless".to_string(),
+                "--interim-result-silence-ms".to_string(),
+                "0".to_string(),
+            ],
+            vec![
+                "--headless".to_string(),
+                "--turn-check-silence-ms".to_string(),
+                "not-a-number".to_string(),
+            ],
             vec!["--headless".to_string(), "--mystery".to_string()],
         ] {
             assert!(HeadlessOptions::parse(&args).is_err(), "{args:?} should be rejected");

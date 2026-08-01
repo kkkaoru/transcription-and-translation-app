@@ -6,7 +6,9 @@ const START_IMMEDIATELY_MS: u32 = 1;
 const TWO_CHUNKS_MS: u32 = CHUNK_MS * 2;
 const THREE_CHUNKS_MS: u32 = CHUNK_MS * 3;
 const FOUR_CHUNKS_MS: u32 = CHUNK_MS * 4;
+const SIX_CHUNKS_MS: u32 = CHUNK_MS * 6;
 const TEN_CHUNKS_MS: u32 = CHUNK_MS * 10;
+const THIRTY_CHUNKS_MS: u32 = CHUNK_MS * 30;
 
 #[test]
 fn segment_builder_emits_started_extended_and_closed() {
@@ -405,6 +407,58 @@ fn interim_result_silence_waits_until_speech_resumes_before_closing_interim_segm
             }
         ],
         "interim should close only when silence reached the interim threshold and speech resumed before turn-check completion"
+    );
+}
+
+#[test]
+fn long_clause_pause_below_headless_turn_check_keeps_segment_chain() {
+    // The headless Simple profile uses a 960ms turn-check grace period. A
+    // normal breath (here 640ms) may trigger an interim update, but it must
+    // not become a new root turn when speech resumes. This is deliberately
+    // audio/VAD-only: no phrase dictionary or text mapping is involved.
+    let config = parapper_config! {
+        vad_interval_ms: CHUNK_MS,
+        segment_start_speech_ms: START_IMMEDIATELY_MS,
+        interim_result_enabled: true,
+        interim_result_silence_ms: SIX_CHUNKS_MS,
+        turn_check_silence_ms: THIRTY_CHUNKS_MS,
+        ..ParapperConfig::default()
+    };
+    let mut segment_builder = SegmentBuilder::new(&config);
+
+    assert!(matches!(
+        segment_builder.push(&[1.0], speech_vad()).as_slice(),
+        [SegmentBuilderEvent::SegmentStarted { segment_id: 1, previous_segment_id: None, .. }]
+    ));
+    for sample in 0_u8..20 {
+        assert!(matches!(
+            segment_builder.push(&[f32::from(sample)], silence_vad()).as_slice(),
+            [SegmentBuilderEvent::SegmentExtended { segment_id: 1, .. }]
+        ));
+    }
+
+    let events = segment_builder.push(&[2.0], speech_vad());
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            SegmentBuilderEvent::SegmentClosed {
+                segment_id: 1,
+                reason: SegmentCloseReason::InterimResultSilenceReached,
+                ..
+            }
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            SegmentBuilderEvent::SegmentStarted { segment_id: 2, previous_segment_id: Some(1), .. }
+        )
+    }));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SegmentBuilderEvent::TurnCheckSilenceReached { .. })),
+        "a pause shorter than 960ms must not complete the turn"
     );
 }
 

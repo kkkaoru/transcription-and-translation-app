@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import type { Server } from "node:http";
+import { GatewayError } from "@caption-bridge/inference-server-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GatewayConfig } from "./config.js";
 import { createGatewayServer } from "./server.js";
@@ -108,6 +109,58 @@ describe("inference gateway HTTP contract", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ text: "" });
     expect(transcribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes a legacy 422 transcript_missing adapter error to an empty success", async () => {
+    const transcribe = vi.fn(() => {
+      throw new GatewayError(
+        422,
+        "transcript_missing",
+        "Parapper completed without a final transcript",
+      );
+    });
+    const connection = await open(createGatewayServer(config, { transcribe }));
+    closers.push(connection.close);
+    const form = new FormData();
+    form.set("model", "parapper-ja");
+    form.set("file", wav(), "legacy-silent-caption.wav");
+
+    const response = await fetch(`${connection.origin}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: form,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ text: "" });
+  });
+
+  it("releases the ASR gate after a failed chunk so the next request can recover", async () => {
+    const transcribe = vi
+      .fn<(pcm: Uint8Array) => Promise<string>>()
+      .mockRejectedValueOnce(new GatewayError(504, "parapper_timeout", "sidecar timed out"))
+      .mockResolvedValueOnce("復旧した音声");
+    const connection = await open(createGatewayServer(config, { transcribe }));
+    closers.push(connection.close);
+
+    const first = new FormData();
+    first.set("model", "parapper-ja");
+    first.set("file", wav(), "timed-out.wav");
+    const failed = await fetch(`${connection.origin}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: first,
+    });
+    expect(failed.status).toBe(504);
+
+    const second = new FormData();
+    second.set("model", "parapper-ja");
+    second.set("file", wav(), "recovery.wav");
+    const recovered = await fetch(`${connection.origin}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: second,
+    });
+    expect(recovered.status).toBe(200);
+    await expect(recovered.json()).resolves.toEqual({ text: "復旧した音声" });
+    expect(transcribe).toHaveBeenCalledTimes(2);
   });
 
   it("rejects invalid routes, model IDs, and malformed transcription requests", async () => {

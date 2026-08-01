@@ -61,6 +61,34 @@ fn repeated_segment_interim_updates_replace_audio_and_text_instead_of_appending_
 }
 
 #[test]
+fn japanese_segments_in_one_turn_are_concatenated_without_phrase_mappings() {
+    let route = RecognitionRoute::from_language(AsrLanguage::Japanese);
+    let mut draft = TurnDraft::new("turn-1".to_string(), 0);
+
+    draft.append_recognized_segment(
+        1,
+        None,
+        &[1.0],
+        &[],
+        route,
+        "となりのきゃくはよく".to_string(),
+        0,
+    );
+    draft.append_recognized_segment(
+        2,
+        Some(1),
+        &[2.0],
+        &[],
+        route,
+        "かきくうきゃくだ".to_string(),
+        0,
+    );
+
+    assert_eq!(draft.combined_text, "となりのきゃくはよくかきくうきゃくだ");
+    assert_eq!(draft.segment_ids, vec![1, 2]);
+}
+
+#[test]
 fn spans_multiple_source_segments_only_changes_when_segment_ids_differ() {
     let route = RecognitionRoute::from_language(AsrLanguage::Japanese);
     let mut draft = TurnDraft::new("turn-1".to_string(), 0);

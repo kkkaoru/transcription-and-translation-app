@@ -239,53 +239,18 @@ async fn download_model_with_progress_cb_inner(
 
     let start = std::time::Instant::now();
     let mut response = response;
-    let mut downloaded: u64 = 0;
-    let mut last_emit = start;
-
-    let write_result: Result<(), String> = async {
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| format!("download interrupted for {}: {e}", runtime.id))?
-        {
-            if cancel.load(Ordering::SeqCst) {
-                return Err(format!("download cancelled for {}", runtime.id));
-            }
-            downloaded = downloaded.saturating_add(chunk.len() as u64);
-            if downloaded > runtime.expected_bytes {
-                return Err(format!("download exceeded expected size for {}", runtime.id));
-            }
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| format!("could not write download for {}: {e}", runtime.id))?;
-
-            let now = std::time::Instant::now();
-            if now.duration_since(last_emit).as_millis() >= 250 {
-                let progress = progress_snapshot(
-                    runtime.id,
-                    downloaded,
-                    runtime.expected_bytes,
-                    now.duration_since(start),
-                    false,
-                );
-                on_progress(&progress);
-                last_emit = now;
-            }
-        }
-
-        file.flush()
-            .await
-            .map_err(|e| format!("could not finish download for {}: {e}", runtime.id))?;
-        Ok(())
-    }
-    .await;
+    let write_result =
+        write_download_chunks(&mut response, &mut file, runtime, cancel, on_progress, start).await;
 
     drop(file);
 
-    if let Err(error) = write_result {
-        let _ = tokio::fs::remove_file(&partial).await;
-        return Err(error);
-    }
+    let downloaded = match write_result {
+        Ok(downloaded) => downloaded,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&partial).await;
+            return Err(error);
+        }
+    };
 
     if downloaded != runtime.expected_bytes {
         let _ = tokio::fs::remove_file(&partial).await;
@@ -310,6 +275,52 @@ async fn download_model_with_progress_cb_inner(
 
     log::info!(target: "kotoba_model_download", "downloaded model {}", runtime.id);
     Ok(destination)
+}
+
+async fn write_download_chunks(
+    response: &mut reqwest::Response,
+    file: &mut tokio::fs::File,
+    runtime: &ModelRuntimeSpec,
+    cancel: &AtomicBool,
+    on_progress: &mut impl FnMut(&DownloadProgress),
+    start: std::time::Instant,
+) -> Result<u64, String> {
+    let mut downloaded = 0_u64;
+    let mut last_emit = start;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("download interrupted for {}: {e}", runtime.id))?
+    {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(format!("download cancelled for {}", runtime.id));
+        }
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        if downloaded > runtime.expected_bytes {
+            return Err(format!("download exceeded expected size for {}", runtime.id));
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("could not write download for {}: {e}", runtime.id))?;
+
+        let now = std::time::Instant::now();
+        if now.duration_since(last_emit).as_millis() < 250 {
+            continue;
+        }
+        let progress = progress_snapshot(
+            runtime.id,
+            downloaded,
+            runtime.expected_bytes,
+            now.duration_since(start),
+            false,
+        );
+        on_progress(&progress);
+        last_emit = now;
+    }
+
+    file.flush().await.map_err(|e| format!("could not finish download for {}: {e}", runtime.id))?;
+    Ok(downloaded)
 }
 
 /// Download multiple models in order (used by quick-start / batch install).
@@ -448,7 +459,7 @@ mod tests {
         cancel_model_download, classify_model_status, download_model_with_progress_cb,
         download_models_with_progress_cb, preferred_translator_after_quick_start,
         progress_snapshot, quick_start_translator_id, register_download, unregister_download,
-        QUICK_START_MODEL_IDS,
+        DownloadProgress, ModelRuntimeSpec, QUICK_START_MODEL_IDS,
     };
     use crate::model_runtime::{model_path, spec};
     use std::io::{Seek, SeekFrom, Write};
@@ -462,6 +473,144 @@ mod tests {
         if expected_bytes > 0 {
             file.seek(SeekFrom::Start(expected_bytes - 1)).unwrap();
             file.write_all(&[0]).unwrap();
+        }
+    }
+
+    async fn download_ready_batch(
+        root: &std::path::Path,
+        seen: &mut Vec<String>,
+    ) -> Result<Vec<String>, String> {
+        download_models_with_progress_cb(QUICK_START_MODEL_IDS, root, |progress| {
+            seen.extend((progress.percent == 100).then(|| progress.model_id.clone()));
+        })
+        .await
+    }
+
+    fn log_batch_download_progress(progress: &DownloadProgress, model_id: &str) {
+        if progress.model_id != model_id || progress.percent >= 100 {
+            return;
+        }
+        eprintln!(
+            "batch progress {} {}% {}/{}",
+            progress.model_id, progress.percent, progress.downloaded_bytes, progress.total_bytes
+        );
+    }
+
+    async fn download_mixed_batch(
+        root: &std::path::Path,
+        runtime_xsmall_id: &str,
+        completed: &mut Vec<String>,
+    ) -> Result<Vec<String>, String> {
+        download_models_with_progress_cb(QUICK_START_MODEL_IDS, root, |progress| {
+            completed.extend((progress.percent == 100).then(|| progress.model_id.clone()));
+            log_batch_download_progress(progress, runtime_xsmall_id);
+        })
+        .await
+    }
+
+    async fn download_with_progress_channel(
+        runtime: &'static ModelRuntimeSpec,
+        root: std::path::PathBuf,
+        progress_tx: tokio::sync::mpsc::UnboundedSender<u8>,
+    ) -> Result<std::path::PathBuf, String> {
+        download_model_with_progress_cb(runtime, &root, |progress| {
+            let _ = progress_tx.send(progress.percent);
+        })
+        .await
+    }
+
+    async fn download_single_with_progress(
+        runtime: &'static ModelRuntimeSpec,
+        root: &std::path::Path,
+        percents: &mut Vec<u8>,
+    ) -> Result<std::path::PathBuf, String> {
+        download_model_with_progress_cb(runtime, root, |progress| {
+            percents.push(progress.percent);
+        })
+        .await
+    }
+
+    fn seed_quick_start_models(root: &std::path::Path) {
+        for id in QUICK_START_MODEL_IDS {
+            let runtime = spec(id).expect("quick-start id");
+            write_expected_size_file(&model_path(root, runtime), runtime.expected_bytes);
+        }
+    }
+
+    fn assert_quick_start_models_ready(root: &std::path::Path) {
+        for id in QUICK_START_MODEL_IDS {
+            assert_eq!(classify_model_status(root, spec(id).unwrap()).status, "ready");
+        }
+    }
+
+    fn record_xsmall_progress(
+        progress: &DownloadProgress,
+        runtime: &'static ModelRuntimeSpec,
+        last_percent: &mut u8,
+        events: &mut u32,
+    ) {
+        assert_eq!(progress.model_id, runtime.id);
+        assert_eq!(progress.total_bytes, runtime.expected_bytes);
+        assert!(progress.percent >= *last_percent);
+        *last_percent = progress.percent;
+        *events = events.saturating_add(1);
+        eprintln!(
+            "progress {} {}% {}/{} bytes {} bps",
+            progress.model_id,
+            progress.percent,
+            progress.downloaded_bytes,
+            progress.total_bytes,
+            progress.speed_bps
+        );
+    }
+
+    async fn download_xsmall_with_progress(
+        runtime: &'static ModelRuntimeSpec,
+        root: &std::path::Path,
+        last_percent: &mut u8,
+        events: &mut u32,
+    ) -> Result<std::path::PathBuf, String> {
+        download_model_with_progress_cb(runtime, root, |progress| {
+            record_xsmall_progress(progress, runtime, last_percent, events);
+        })
+        .await
+    }
+
+    async fn assert_cancelled_download(
+        download: tokio::task::JoinHandle<Result<std::path::PathBuf, String>>,
+        model_id: &str,
+    ) {
+        cancel_model_download(model_id.to_string())
+            .await
+            .expect("cancel should find the active download");
+        let err =
+            download.await.expect("join download task").expect_err("cancelled download must fail");
+        assert!(err.contains("cancelled"), "expected cancellation error, got: {err}");
+        eprintln!("cancel path ok for {model_id}: {err}");
+    }
+
+    async fn assert_completed_download(
+        download: tokio::task::JoinHandle<Result<std::path::PathBuf, String>>,
+        root: &std::path::Path,
+        runtime: &'static ModelRuntimeSpec,
+    ) {
+        let path =
+            download.await.expect("join download task").expect("download completed before cancel");
+        assert_eq!(path, model_path(root, runtime));
+        eprintln!("download finished before cancel could run (still success path): {path:?}");
+    }
+
+    async fn assert_download_outcome(
+        download: tokio::task::JoinHandle<Result<std::path::PathBuf, String>>,
+        saw_progress: bool,
+        model_id: &str,
+        root: &std::path::Path,
+        runtime: &'static ModelRuntimeSpec,
+    ) {
+        if saw_progress {
+            assert_cancelled_download(download, model_id).await;
+        } else {
+            assert_completed_download(download, root, runtime).await;
         }
     }
 
@@ -537,11 +686,9 @@ mod tests {
         assert_eq!(std::fs::metadata(&destination).unwrap().len(), runtime.expected_bytes);
 
         let mut percents = Vec::new();
-        let path = download_model_with_progress_cb(runtime, &root, |progress| {
-            percents.push(progress.percent);
-        })
-        .await
-        .expect("ready model should short-circuit");
+        let path = download_single_with_progress(runtime, &root, &mut percents)
+            .await
+            .expect("ready model should short-circuit");
 
         assert_eq!(path, destination);
         assert_eq!(percents, vec![100]);
@@ -555,25 +702,16 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        for id in QUICK_START_MODEL_IDS {
-            let runtime = spec(id).expect("quick-start id");
-            write_expected_size_file(&model_path(&root, runtime), runtime.expected_bytes);
-        }
+        seed_quick_start_models(&root);
 
         let mut seen = Vec::new();
-        let ids = download_models_with_progress_cb(QUICK_START_MODEL_IDS, &root, |progress| {
-            if progress.percent == 100 {
-                seen.push(progress.model_id.clone());
-            }
-        })
-        .await
-        .expect("batch quick-start with ready files");
+        let ids = download_ready_batch(&root, &mut seen)
+            .await
+            .expect("batch quick-start with ready files");
 
         assert_eq!(ids, QUICK_START_MODEL_IDS.iter().map(|s| (*s).to_string()).collect::<Vec<_>>());
         assert_eq!(seen, ids);
-        for id in QUICK_START_MODEL_IDS {
-            assert_eq!(classify_model_status(&root, spec(id).unwrap()).status, "ready");
-        }
+        assert_quick_start_models_ready(&root);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -600,23 +738,9 @@ mod tests {
         ));
         let mut last_percent = 0_u8;
         let mut events = 0_u32;
-        let path = download_model_with_progress_cb(runtime, &root, |progress| {
-            assert_eq!(progress.model_id, runtime.id);
-            assert_eq!(progress.total_bytes, runtime.expected_bytes);
-            assert!(progress.percent >= last_percent);
-            last_percent = progress.percent;
-            events = events.saturating_add(1);
-            eprintln!(
-                "progress {} {}% {}/{} bytes {} bps",
-                progress.model_id,
-                progress.percent,
-                progress.downloaded_bytes,
-                progress.total_bytes,
-                progress.speed_bps
-            );
-        })
-        .await
-        .expect("xsmall should download");
+        let path = download_xsmall_with_progress(runtime, &root, &mut last_percent, &mut events)
+            .await
+            .expect("xsmall should download");
 
         assert_eq!(path, model_path(&root, runtime));
         assert_eq!(last_percent, 100);
@@ -645,22 +769,9 @@ mod tests {
         write_expected_size_file(&model_path(&root, runtime_hy), runtime_hy.expected_bytes);
 
         let mut completed = Vec::new();
-        let ids = download_models_with_progress_cb(QUICK_START_MODEL_IDS, &root, |progress| {
-            if progress.percent == 100 {
-                completed.push(progress.model_id.clone());
-            }
-            if progress.model_id == runtime_xsmall.id && progress.percent < 100 {
-                eprintln!(
-                    "batch progress {} {}% {}/{}",
-                    progress.model_id,
-                    progress.percent,
-                    progress.downloaded_bytes,
-                    progress.total_bytes
-                );
-            }
-        })
-        .await
-        .expect("batch quick-start should complete");
+        let ids = download_mixed_batch(&root, runtime_xsmall.id, &mut completed)
+            .await
+            .expect("batch quick-start should complete");
 
         assert_eq!(ids, vec![runtime_xsmall.id.to_string(), runtime_hy.id.to_string()]);
         assert_eq!(completed, ids);
@@ -777,13 +888,8 @@ mod tests {
         let model_id = runtime.id.to_string();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<u8>();
 
-        let download_root = root.clone();
-        let download = tokio::spawn(async move {
-            download_model_with_progress_cb(runtime, &download_root, |progress| {
-                let _ = progress_tx.send(progress.percent);
-            })
-            .await
-        });
+        let download =
+            tokio::spawn(download_with_progress_channel(runtime, root.clone(), progress_tx));
 
         // Wait until the download has registered and emitted at least one progress tick,
         // or until the whole request finishes (very fast networks / cached CDN).
@@ -794,25 +900,8 @@ mod tests {
                 .flatten()
                 .is_some();
 
-        if saw_progress {
-            cancel_model_download(model_id.clone())
-                .await
-                .expect("cancel should find the active download");
-            let err = download
-                .await
-                .expect("join download task")
-                .expect_err("cancelled download must fail");
-            assert!(err.contains("cancelled"), "expected cancellation error, got: {err}");
-            eprintln!("cancel path ok for {model_id}: {err}");
-        } else {
-            // Finished before we could cancel — still prove the success path ran.
-            let path = download
-                .await
-                .expect("join download task")
-                .expect("download completed before cancel");
-            assert_eq!(path, model_path(&root, runtime));
-            eprintln!("download finished before cancel could run (still success path): {path:?}");
-        }
+        // Finished before we could cancel — still prove the success path ran.
+        assert_download_outcome(download, saw_progress, &model_id, &root, runtime).await;
 
         let destination = model_path(&root, runtime);
         let partial = std::path::PathBuf::from(format!("{}.partial", destination.display()));

@@ -8,6 +8,10 @@ pub struct AudioChunk {
     pub sample_rate: u32,
     pub channels: u8,
     pub duration_ms: u32,
+    /// Frontend-generated identity for correlating a chunk's source and
+    /// translation updates. Older callers may omit this field.
+    #[serde(default)]
+    pub utterance_id: Option<String>,
 }
 
 pub fn pcm_base64_to_wav(chunk: &AudioChunk) -> Result<Vec<u8>, String> {
@@ -72,6 +76,7 @@ mod tests {
             sample_rate: 16_000,
             channels: 1,
             duration_ms,
+            utterance_id: None,
         }
     }
 
@@ -83,6 +88,7 @@ mod tests {
             sample_rate: 16_000,
             channels: 1,
             duration_ms: 1_200,
+            utterance_id: None,
         };
         assert!(pcm_base64_to_wav(&empty).is_err());
     }
@@ -118,9 +124,25 @@ mod tests {
             sample_rate: 16_000,
             channels: 1,
             duration_ms: 100,
+            utterance_id: None,
         };
         let wav = pcm_base64_to_wav(&chunk).expect("silent chunk is valid");
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(wav.len(), 44 + pcm.len());
+    }
+
+    #[test]
+    fn utterance_id_is_optional_for_legacy_and_new_payloads() {
+        let without_id: AudioChunk = serde_json::from_str(
+            r#"{"pcmBase64":"AAAAAA==","sampleRate":16000,"channels":1,"durationMs":1}"#,
+        )
+        .expect("legacy audio chunk should deserialize");
+        assert_eq!(without_id.utterance_id, None);
+
+        let with_id: AudioChunk = serde_json::from_str(
+            r#"{"pcmBase64":"AAAAAA==","sampleRate":16000,"channels":1,"durationMs":1,"utteranceId":"chunk-7"}"#,
+        )
+        .expect("audio chunk with utterance id should deserialize");
+        assert_eq!(with_id.utterance_id.as_deref(), Some("chunk-7"));
     }
 }

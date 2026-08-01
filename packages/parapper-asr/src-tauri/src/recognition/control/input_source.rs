@@ -194,15 +194,18 @@ mod tests {
 
     #[test]
     fn channel_source_uses_the_same_gain_and_resampling_processor_as_desktop_audio() {
-        let handle = tauri_test_handle();
         let mut config = ParapperConfig::default();
         config.input.volume_db = 6.020_6;
         let (sender, source) = RunningInputSource::channel(ASR_SAMPLE_RATE);
         sender.send(InputChunk::new(vec![0.25; 512])).unwrap();
         drop(sender);
         let parts = source.into_parts();
-        let mut processor =
-            AudioInputProcessor::initialize(handle, &config, parts.source_sample_rate).unwrap();
+        let mut processor = AudioInputProcessor::initialize_without_handle_at_model_root(
+            &config,
+            parts.source_sample_rate,
+            std::path::Path::new("/tmp/parapper-test-models"),
+        )
+        .unwrap();
         let mut processed = Vec::new();
 
         for chunk in parts.receiver {
@@ -259,15 +262,5 @@ mod tests {
         }
 
         assert_eq!(sender.queued_samples(), 16_000);
-    }
-
-    fn tauri_test_handle() -> tauri::AppHandle {
-        let builder = tauri::Builder::default();
-        #[cfg(any(windows, target_os = "linux"))]
-        let builder = builder.any_thread();
-        let app = builder
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("test app should build");
-        app.handle().clone()
     }
 }

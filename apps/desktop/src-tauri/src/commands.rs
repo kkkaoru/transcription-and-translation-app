@@ -1,12 +1,15 @@
 use crate::audio::{pcm_base64_to_wav, AudioChunk};
 use crate::config::AppConfig;
 use crate::gateway;
+use crate::macos;
 use crate::models::{catalog, ModelCatalog};
 use crate::native_output::{NativeOutputHandle, OverlayFrame};
-use crate::pipeline::{CaptionPayload, PipelineStageEvent};
+use crate::pipeline::{
+    CaptionPayload, ParapperRecognitionInput, Pipeline, PipelineError, PipelineStageEvent,
+};
 use crate::state::{AppState, RuntimeStatus};
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
@@ -18,6 +21,15 @@ pub struct NativeOverlayFrame {
     pub rgba_base64: String,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelaunchResult {
+    /// `true` means capture is still active and the restart will be requested
+    /// by `stop_capture` after the microphone/backend session is idle.
+    pub deferred: bool,
+    pub reason: &'static str,
 }
 
 #[tauri::command]
@@ -75,9 +87,90 @@ pub fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, S
     state.status.lock().map(|status| status.clone()).map_err(|_| "status lock poisoned".to_string())
 }
 
+/// Return the most recent normalized source/translation caption for late
+/// overlay subscribers. Raw ASR text is intentionally never retained here.
+#[tauri::command]
+pub fn get_latest_caption(state: State<'_, AppState>) -> Option<CaptionPayload> {
+    state.latest_caption()
+}
+
+#[tauri::command]
+pub fn get_update_status() -> crate::updater::UpdateStatus {
+    crate::updater::status()
+}
+
+#[tauri::command]
+pub async fn check_for_update(
+    app: AppHandle,
+) -> Result<Option<crate::updater::UpdateMetadata>, String> {
+    crate::updater::check(&app).await
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    crate::updater::install(&app).await
+}
+
+#[tauri::command]
+pub async fn check_and_install_update(app: AppHandle) -> Result<(), String> {
+    crate::updater::check_and_install(&app).await
+}
+
+/// Restart into the bundle currently installed at the app's path.
+///
+/// macOS update installers replace the `.app` directory while the old process
+/// is still mapped. Tauri's request-restart path exits through the normal event
+/// loop (which stops gateway/model sidecars) and then starts the executable from
+/// that same path, so the next process loads the new bundle. Requests received
+/// during capture are held until `stop_capture` has made the runtime idle.
+#[tauri::command]
+pub fn relaunch_to_updated_app(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<RelaunchResult, String> {
+    let active = {
+        let status = state.status.lock().map_err(|_| "status lock poisoned".to_string())?;
+        capture_is_active(status.status.as_str())
+    };
+    if active {
+        *state.relaunch_after_capture.lock().map_err(|_| "relaunch lock poisoned".to_string())? =
+            true;
+        crate::updater::mark_switch_result(&app, "capture-active", true);
+        let _ = app.emit("update:relaunch-deferred", "capture-active");
+        return Ok(RelaunchResult { deferred: true, reason: "capture-active" });
+    }
+    macos::request_relaunch(&app)?;
+    crate::updater::mark_switch_result(&app, "relaunch-requested", false);
+    Ok(RelaunchResult { deferred: false, reason: "relaunch-requested" })
+}
+
 #[tauri::command]
 pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    let mut config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    // AzooKey's compact fallback is intentionally tiny.  Provision the pinned
+    // public LOUDS dictionary once, then pass its root through the existing
+    // `models.paths` route; the selected normalizer remains `azookey-rust`.
+    if let Some(dictionary_root) =
+        crate::azookey_runtime::ensure_system_dictionary(&app, &config).await
+    {
+        config
+            .models
+            .paths
+            .insert("azookey-rust".to_string(), dictionary_root.to_string_lossy().into_owned());
+        *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
+        let _ = app.emit("config:update", &config);
+        log::info!(
+            target: "kotoba_azookey",
+            "using public AzooKey dictionary root {}",
+            dictionary_root.display()
+        );
+    }
+    // Warm the dictionary while the capture command is already waiting for
+    // native services. The first audio chunk can then go straight to Viterbi
+    // instead of blocking the first subtitle on LOUDS initialization.
+    if let Err(error) = state.pipeline.warm_azookey_dictionary(&config) {
+        log::warn!(target: "kotoba_azookey", "dictionary warm-up deferred: {error}");
+    }
     // Ensure gateway / Parapper are accepting traffic before the frontend opens
     // the microphone, then bring up the selected local GGUF servers.
     gateway::ensure_services_ready(&config).await?;
@@ -87,7 +180,41 @@ pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result
 
 #[tauri::command]
 pub fn stop_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    set_status(&app, &state, "idle", None)
+    // Preserve a processing/translation failure while making the native
+    // session idle. The frontend and overlay use this field to distinguish a
+    // successful stop (clear caption) from a failed session (retain caption).
+    let previous_error =
+        state.status.lock().map_err(|_| "status lock poisoned".to_string())?.last_error.clone();
+    let had_previous_error = previous_error.is_some();
+    set_status(&app, &state, "idle", previous_error)?;
+    // Clear native replay only after the status transition and only for a
+    // successful session. On a failed session the last caption remains
+    // available to late overlay subscribers alongside the retained error.
+    // `emit_caption_update` serializes on the same status lock, so a late
+    // translation cannot refill a successfully-cleared slot after idle.
+    if !had_previous_error {
+        state.clear_latest_caption();
+    }
+    let restart = {
+        let mut pending = state
+            .relaunch_after_capture
+            .lock()
+            .map_err(|_| "relaunch lock poisoned".to_string())?;
+        let restart = *pending;
+        *pending = false;
+        restart
+    };
+    let update_pending = crate::updater::pending_available();
+    if restart && !update_pending {
+        macos::request_relaunch(&app)?;
+    }
+    // An automatic update discovered while capture was active is downloaded
+    // only after this command makes the native session idle. The updater owns
+    // the final signed install + restart sequence.
+    if update_pending {
+        crate::updater::install_after_capture(app.clone());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -98,10 +225,11 @@ pub async fn transcribe_audio_chunk(
 ) -> Result<CaptionPayload, String> {
     let wav = pcm_base64_to_wav(&chunk)?;
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
-    // Stage 1: ASR + normalize only. Return as soon as source text is ready so
-    // the frontend chunkQueue is not blocked on translation latency.
+    // Stage 1: ASR + normalize only. Return as soon as normalized source text
+    // is ready so the frontend chunkQueue is not blocked on translation latency.
     // Each stage is emitted immediately via on_stage (do not wait for full pipeline).
-    // Progressive captions: raw ASR paints first, then normalized source if it changes.
+    // Standard captions begin only after normalization. Raw ASR is represented
+    // by the `asr` stage event for DebugPanel, never painted as user-facing text.
     let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(3);
     let app_for_stages = app.clone();
     let config_for_stages = config.clone();
@@ -110,79 +238,31 @@ pub async fn transcribe_audio_chunk(
     };
     let app_for_captions = app.clone();
     let mut on_caption = move |caption: &CaptionPayload| {
-        if let Err(error) = app_for_captions.emit("caption:update", caption) {
-            log::warn!("could not emit progressive caption: {error}");
-        }
+        emit_caption_update(&app_for_captions, caption);
     };
     match state
         .pipeline
-        .recognize_source(&config, wav, &mut stages, &mut on_stage, &mut on_caption)
+        .recognize_source_with_id(
+            &config,
+            wav,
+            chunk.utterance_id.as_deref(),
+            &mut stages,
+            &mut on_stage,
+            &mut on_caption,
+        )
         .await
     {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state);
-            // Final normalized source was already emitted via on_caption when it
-            // differed from raw ASR. Re-emit once so late subscribers / invoke
+            // Final normalized source was already emitted via on_caption. Re-emit
+            // once so late subscribers / invoke
             // fallback always see the post-normalize string (no-op on the UI if
             // display fields are identical).
-            let _ = app.emit("caption:update", &partial);
+            emit_caption_update(&app, &partial);
 
             // Stage 2: translate in the background with the same caption id.
             // UI already shows source_text; a later caption:update fills translation.
-            let pipeline = state.pipeline.clone();
-            let app_for_translate = app.clone();
-            let config_for_translate = config.clone();
-            let partial_for_translate = partial.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut translate_stages: Vec<PipelineStageEvent> = Vec::with_capacity(1);
-                let app_for_stage = app_for_translate.clone();
-                let config_for_stage = config_for_translate.clone();
-                let mut on_translate_stage = move |stage: &PipelineStageEvent| {
-                    emit_pipeline_stage(&app_for_stage, &config_for_stage, stage);
-                };
-                match pipeline
-                    .complete_translation(
-                        &config_for_translate,
-                        partial_for_translate,
-                        &mut translate_stages,
-                        &mut on_translate_stage,
-                    )
-                    .await
-                {
-                    Ok(final_caption) => {
-                        let _ = app_for_translate.emit("caption:update", &final_caption);
-                    }
-                    Err(error) => {
-                        // Keep the already-shown source caption; only surface last_error.
-                        // translate stage event was already emitted via on_stage.
-                        log::warn!("translation failed for progressive caption: {error}");
-                        let detail = error.to_string();
-                        if let Some(app_state) = app_for_translate.try_state::<AppState>() {
-                            if let Ok(mut status) = app_state.status.lock() {
-                                let mut dirty = false;
-                                if status.status != "idle"
-                                    && status.status != "starting"
-                                    && status.status != "capturing"
-                                {
-                                    status.status = "capturing".to_string();
-                                    dirty = true;
-                                }
-                                // Source ASR already succeeded; do not mark the whole
-                                // backend unreachable solely because translation failed.
-                                if status.last_error.as_deref() != Some(detail.as_str()) {
-                                    status.last_error = Some(detail);
-                                    dirty = true;
-                                }
-                                if dirty {
-                                    let next = status.clone();
-                                    drop(status);
-                                    let _ = app_for_translate.emit("runtime:status", &next);
-                                }
-                            }
-                        }
-                    }
-                }
-            });
+            spawn_translation(app.clone(), config.clone(), state.pipeline.clone(), partial.clone());
 
             Ok(partial)
         }
@@ -190,37 +270,21 @@ pub async fn transcribe_audio_chunk(
             // No speech in this chunk — keep capture healthy and do not toast.
             // ASR (and maybe normalize) stage events were already emitted.
             mark_backend_healthy(&app, &state);
-            Ok(CaptionPayload {
-                id: format!("silence-{}", chrono_like_millis()),
-                source_text: String::new(),
-                translation_text: String::new(),
-                source_language: config.language.source,
-                target_language: config.language.target,
-                started_at: 0,
-                received_at: 0,
-                stage: "source",
-                sequence: 0,
-                is_final: false,
-                confidence: None,
-            })
+            let silence_id = chunk
+                .utterance_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("silence-{}", chrono_like_millis()));
+            Ok(empty_caption(&config, silence_id))
         }
         Err(error) => {
-            let detail = error.to_string();
+            let detail = redact_runtime_text(&error.to_string());
             // Failed stage event was already emitted via on_stage.
             // Keep the session in "capturing" so the frontend Stop control remains
             // available. Surface the concrete failure through last_error only.
-            let next_status = {
-                if let Ok(mut status) = state.status.lock() {
-                    if status.status != "idle" && status.status != "starting" {
-                        status.status = "capturing".to_string();
-                    }
-                    status.backend_reachable = false;
-                    status.last_error = Some(detail.clone());
-                    Some(status.clone())
-                } else {
-                    None
-                }
-            };
+            let next_status = transcription_error_status(state.inner(), &detail);
             if let Some(status) = next_status {
                 let _ = app.emit("runtime:status", &status);
             }
@@ -229,36 +293,240 @@ pub async fn transcribe_audio_chunk(
     }
 }
 
+/// Continue the live Parapper path after its persistent WebSocket has emitted
+/// an interim/final output. Parapper already performed VAD, segmentation and
+/// ASR; this command deliberately starts at its Hiragana text and reuses the
+/// same cached AzooKey normalizer and translation stages as HTTP callers.
+#[tauri::command]
+pub async fn normalize_parapper_output(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    output: ParapperRecognitionInput,
+) -> Result<CaptionPayload, String> {
+    let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    let output_is_final = output.is_final;
+    let empty_id =
+        format!("parapper:{}:{}:{}", output.session_id, output.turn_session_id, output.turn_id);
+    let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(2);
+    let app_for_stages = app.clone();
+    let config_for_stages = config.clone();
+    let mut on_stage = move |stage: &PipelineStageEvent| {
+        emit_pipeline_stage(&app_for_stages, &config_for_stages, stage);
+    };
+    let app_for_captions = app.clone();
+    let mut on_caption = move |caption: &CaptionPayload| {
+        emit_caption_update(&app_for_captions, caption);
+    };
+    match state
+        .pipeline
+        .normalize_parapper_output(&config, output, &mut stages, &mut on_stage, &mut on_caption)
+        .await
+    {
+        Ok(Some(partial)) => {
+            mark_backend_healthy(&app, &state);
+            if output_is_final {
+                spawn_translation(
+                    app.clone(),
+                    config.clone(),
+                    state.pipeline.clone(),
+                    partial.clone(),
+                );
+            }
+            Ok(partial)
+        }
+        Ok(None) => {
+            mark_backend_healthy(&app, &state);
+            Ok(empty_caption(&config, empty_id))
+        }
+        Err(error) => {
+            let detail = redact_runtime_text(&error.to_string());
+            if let Some(status) = transcription_error_status(state.inner(), &detail) {
+                let _ = app.emit("runtime:status", &status);
+            }
+            Err(detail)
+        }
+    }
+}
+
+/// Surface a translation failure without turning a healthy ASR session into a
+/// backend-unreachable state. The helper keeps the async translation callback
+/// shallow enough for the configured Clippy nesting budget.
+fn update_translation_error_status(app: &AppHandle, detail: &str) {
+    let Some(app_state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let Ok(mut status) = app_state.status.lock() else {
+        return;
+    };
+
+    // A background translator can finish after stop_capture made the session
+    // idle. Do not resurrect an error/runtime event for that completed session.
+    if status.status == "idle" {
+        return;
+    }
+
+    let mut dirty = false;
+    if !matches!(status.status.as_str(), "idle" | "starting" | "capturing") {
+        status.status = "capturing".to_string();
+        dirty = true;
+    }
+    // Source ASR already succeeded; do not mark the whole backend unreachable
+    // solely because translation failed.
+    if status.last_error.as_deref() != Some(detail) {
+        status.last_error = Some(detail.to_string());
+        dirty = true;
+    }
+    if !dirty {
+        return;
+    }
+
+    let next = status.clone();
+    drop(status);
+    let _ = app.emit("runtime:status", &next);
+}
+
+/// Build the status snapshot for a failed transcription request. Returning an
+/// `Option` via `ok()?` avoids nesting lock/error handling in the hot command.
+fn transcription_error_status(state: &AppState, detail: &str) -> Option<RuntimeStatus> {
+    let mut status = state.status.lock().ok()?;
+    if status.status == "idle" {
+        return None;
+    }
+    if status.status != "idle" && status.status != "starting" {
+        status.status = "capturing".to_string();
+    }
+    status.backend_reachable = false;
+    status.last_error = Some(detail.to_string());
+    Some(status.clone())
+}
+
+/// Run translation after the source caption has been returned to the UI.
+/// Keeping the spawned future in a top-level helper avoids adding another
+/// closure/match nesting level to the command handler.
+fn spawn_translation(
+    app: AppHandle,
+    config: AppConfig,
+    pipeline: Pipeline,
+    caption: CaptionPayload,
+) {
+    tauri::async_runtime::spawn(async move {
+        translate_caption(app, config, pipeline, caption).await;
+    });
+}
+
+async fn translate_caption(
+    app: AppHandle,
+    config: AppConfig,
+    pipeline: Pipeline,
+    caption: CaptionPayload,
+) {
+    let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(1);
+    let mut on_stage = |stage: &PipelineStageEvent| emit_pipeline_stage(&app, &config, stage);
+    let result = pipeline.complete_translation(&config, caption, &mut stages, &mut on_stage).await;
+    handle_translation_result(&app, result);
+}
+
+fn handle_translation_result(app: &AppHandle, result: Result<CaptionPayload, PipelineError>) {
+    match result {
+        Ok(caption) => emit_caption_update(app, &caption),
+        Err(error) => report_translation_error(app, &error),
+    }
+}
+
+/// Retain a user-facing caption before the best-effort event emit. The source
+/// callback is invoked only after normalization, so this cannot replay raw ASR.
+fn emit_caption_update(app: &AppHandle, caption: &CaptionPayload) {
+    if let Some(state) = app.try_state::<AppState>() {
+        // A translation task may finish after the user pressed Stop. Hold the
+        // runtime lock through the record + event so stop_capture's idle event
+        // is ordered after any caption that was accepted before the stop.
+        let Ok(status) = state.status.lock() else {
+            return;
+        };
+        if !capture_is_active(status.status.as_str()) {
+            return;
+        }
+        state.record_latest_caption(caption);
+        if let Err(error) = app.emit("caption:update", caption) {
+            log::warn!("could not emit caption:update: {error}");
+        }
+        return;
+    }
+    if let Err(error) = app.emit("caption:update", caption) {
+        log::warn!("could not emit caption:update: {error}");
+    }
+}
+
+fn report_translation_error(app: &AppHandle, error: &PipelineError) {
+    // Keep the already-shown source caption; only surface last_error.
+    // The translate stage event was already emitted via on_stage.
+    let detail = redact_runtime_text(&error.to_string());
+    log::warn!("translation failed for progressive caption: {detail}");
+    update_translation_error_status(app, &detail);
+}
+
+/// Normalize config logLevel into a filter rank (error=0 … trace=4).
+fn log_level_rank(level: &str) -> u8 {
+    match level.trim().to_ascii_lowercase().as_str() {
+        "error" => 0,
+        "warn" | "warning" => 1,
+        "info" => 2,
+        "debug" => 3,
+        "trace" => 4,
+        _ => 2,
+    }
+}
+
 /// Emit one stage immediately for DebugPanel progressive rows.
-/// Always emits `pipeline:stage`; raises log detail when `debug.verboseLogging`.
+/// Always emits `pipeline:stage`. File/console detail respects `debug.logLevel`
+/// and includes I/O samples when `debug.verboseLogging` is on.
 fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStageEvent) {
-    if config.debug.verbose_logging {
-        log::info!(
-            target: "pipeline_stage",
-            "stage={} model={} ok={} duration_ms={} started_at={} ended_at={} utterance={} in={} out={} err={:?}",
-            stage.stage,
-            stage.model_id,
-            stage.ok,
-            stage.duration_ms,
-            stage.started_at,
-            stage.at,
-            stage.utterance_id,
-            stage.input_snippet,
-            stage.output_text,
-            stage.error
-        );
-    } else {
-        log::info!(
-            target: "pipeline_stage",
-            "stage={} model={} ok={} duration_ms={} started_at={} ended_at={} utterance={}",
-            stage.stage,
-            stage.model_id,
-            stage.ok,
-            stage.duration_ms,
-            stage.started_at,
-            stage.at,
-            stage.utterance_id
-        );
+    // Tauri events are delivered only to listeners that are already attached.
+    // Retain the completed row first so opening DebugPanel after capture (or
+    // during a fast local stage) can recover the same output/timing/error data
+    // through get_debug_info.
+    if let Some(state) = app.try_state::<AppState>() {
+        state.record_pipeline_stage(stage);
+    }
+
+    // success → debug (rank 3); failure → error (rank 0)
+    let event_rank: u8 = if stage.ok { 3 } else { 0 };
+    let threshold = log_level_rank(&config.debug.log_level);
+    if event_rank <= threshold {
+        let input_bytes = stage
+            .input_snippet
+            .strip_prefix("wavBytes=")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(stage.input_snippet.len());
+        let output_bytes = stage.output_text.len();
+        if stage.ok {
+            log::debug!(
+                target: "pipeline_stage",
+                "stage={} model={} ok=true duration_ms={} started_at={} ended_at={} utterance={} input_bytes={} output_bytes={}",
+                stage.stage,
+                stage.model_id,
+                stage.duration_ms,
+                stage.started_at,
+                stage.at,
+                stage.utterance_id,
+                input_bytes,
+                output_bytes
+            );
+        } else {
+            log::error!(
+                target: "pipeline_stage",
+                "stage={} model={} ok=false duration_ms={} started_at={} ended_at={} utterance={} input_bytes={} output_bytes={} error_present={}",
+                stage.stage,
+                stage.model_id,
+                stage.duration_ms,
+                stage.started_at,
+                stage.at,
+                stage.utterance_id,
+                input_bytes,
+                output_bytes,
+                stage.error.is_some()
+            );
+        }
     }
     if let Err(error) = app.emit("pipeline:stage", stage) {
         log::warn!("could not emit pipeline:stage: {error}");
@@ -267,6 +535,12 @@ fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStag
 
 fn mark_backend_healthy(app: &AppHandle, state: &State<'_, AppState>) {
     if let Ok(mut status) = state.status.lock() {
+        // A request that was already in flight may complete after Stop. Keep
+        // the completed session idle instead of publishing a healthy status
+        // that would resurrect its caption/replay state.
+        if status.status == "idle" {
+            return;
+        }
         let mut dirty = false;
         if !status.backend_reachable {
             status.backend_reachable = true;
@@ -298,6 +572,129 @@ fn chrono_like_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
+}
+
+fn empty_caption(config: &AppConfig, id: String) -> CaptionPayload {
+    CaptionPayload {
+        id,
+        source_text: String::new(),
+        translation_text: String::new(),
+        source_language: config.language.source.clone(),
+        target_language: config.language.target.clone(),
+        started_at: 0,
+        received_at: 0,
+        stage: "source",
+        sequence: 0,
+        is_final: false,
+        confidence: None,
+    }
+}
+
+fn is_sensitive_debug_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key == "token"
+        || key.contains("api_key")
+        || key.contains("apikey")
+        || key.contains("access_token")
+        || key.contains("refresh_token")
+        || key.contains("id_token")
+        || key.contains("authorization")
+        || key.contains("password")
+        || key.contains("passwd")
+        || key.contains("secret")
+        || key.contains("private_key")
+        || key.contains("client_secret")
+        || key.contains("cookie")
+        || key.contains("signature")
+}
+
+/// Redact credentials from strings persisted in native diagnostics. Keep
+/// status/error context while avoiding bearer tokens and query-string secrets.
+fn redact_runtime_text(text: &str) -> String {
+    let mut value = text.to_string();
+    for marker in [
+        "access_token=",
+        "refresh_token=",
+        "id_token=",
+        "api_key=",
+        "apikey=",
+        "token=",
+        "secret=",
+        "password=",
+        "authorization=",
+    ] {
+        let lower = value.to_ascii_lowercase();
+        if let Some(start) = lower.find(marker) {
+            let end = value[start + marker.len()..]
+                .find(['&', '#', ' ', '\n', '\r', '"'])
+                .map(|offset| start + marker.len() + offset)
+                .unwrap_or(value.len());
+            value.replace_range(start + marker.len()..end, "[REDACTED]");
+        }
+    }
+    value = value
+        .split_once("Bearer ")
+        .map(|(prefix, _)| format!("{prefix}Bearer [REDACTED]"))
+        .unwrap_or(value);
+    value
+}
+
+fn sanitize_debug_json(value: serde_json::Value, key: Option<&str>) -> serde_json::Value {
+    if key.is_some_and(is_sensitive_debug_key) {
+        return if value.is_null() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String("[REDACTED]".to_string())
+        };
+    }
+    match value {
+        serde_json::Value::String(text) => serde_json::Value::String(redact_runtime_text(&text)),
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items.into_iter().map(|item| sanitize_debug_json(item, None)).collect(),
+        ),
+        serde_json::Value::Object(object) => serde_json::Value::Object(
+            object
+                .into_iter()
+                .map(|(child_key, child_value)| {
+                    let sanitized = sanitize_debug_json(child_value, Some(&child_key));
+                    (child_key, sanitized)
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn sanitize_export_body(body: &str, format: &str) -> String {
+    match format {
+        "json" => sanitize_json_body(body).unwrap_or_else(|| redact_runtime_text(body)),
+        "jsonl" => sanitize_jsonl_body(body).unwrap_or_else(|| redact_runtime_text(body)),
+        _ => redact_runtime_text(body),
+    }
+}
+
+fn sanitize_json_body(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    Some(
+        serde_json::to_string_pretty(&sanitize_debug_json(value, None))
+            .unwrap_or_else(|_| redact_runtime_text(body)),
+    )
+}
+
+fn sanitize_jsonl_body(body: &str) -> Option<String> {
+    let mut parsed_any = false;
+    let lines = body.lines().map(|line| sanitize_jsonl_line(line, &mut parsed_any));
+    let sanitized = lines.collect::<Vec<_>>().join("\n");
+    parsed_any.then_some(sanitized)
+}
+
+fn sanitize_jsonl_line(line: &str, parsed_any: &mut bool) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return redact_runtime_text(line);
+    };
+    *parsed_any = true;
+    serde_json::to_string(&sanitize_debug_json(value, None))
+        .unwrap_or_else(|_| redact_runtime_text(line))
 }
 
 #[tauri::command]
@@ -412,6 +809,11 @@ pub async fn get_debug_info(
 ) -> Result<serde_json::Value, String> {
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     let status = state.status.lock().map_err(|_| "status lock poisoned".to_string())?.clone();
+    // Snapshot before the health probes below. Stage events can continue while
+    // this command awaits sidecar status, but the bounded snapshot is
+    // self-consistent and can be merged into the frontend store on refresh.
+    let pipeline_stages = state.pipeline_stage_history();
+    let latest_caption = state.latest_caption();
     let app_data = app.path().app_data_dir().unwrap_or_default();
     let config_dir = app.path().app_config_dir().unwrap_or_default();
     let log_dir = app.path().app_log_dir().unwrap_or_default();
@@ -436,14 +838,41 @@ pub async fn get_debug_info(
         })
         .collect();
     let services = gateway::probe_service_health(&config).await;
+    let sidecars =
+        gateway::probe_sidecar_statuses(&config, &app.state::<gateway::RuntimeServices>()).await;
     let ready_models =
         models.iter().filter(|m| m.get("ready").and_then(|v| v.as_bool()) == Some(true)).count();
     let total_models = models.len();
-    let last_error = status.last_error.clone();
+    let last_error = status.last_error.as_deref().map(redact_runtime_text);
+    let safe_config = sanitize_debug_json(serde_json::to_value(&config).unwrap_or_default(), None);
+    let safe_runtime_status =
+        sanitize_debug_json(serde_json::to_value(&status).unwrap_or_default(), None);
+    // Stage snippets are already bounded by pipeline.rs; run the same
+    // credential redaction as the rest of diagnostics before exposing them to
+    // support tooling or the Debug panel.
+    let safe_pipeline_stages = sanitize_debug_json(
+        serde_json::to_value(&pipeline_stages)
+            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new())),
+        None,
+    );
+    let safe_latest_caption = sanitize_debug_json(
+        serde_json::to_value(&latest_caption).unwrap_or(serde_json::Value::Null),
+        None,
+    );
+    let updater_snapshot = crate::updater::status_value();
     Ok(serde_json::json!({
-        "config": serde_json::to_value(&config).unwrap_or_default(),
-        "runtimeStatus": serde_json::to_value(&status).unwrap_or_default(),
+        "config": safe_config,
+        "runtimeStatus": safe_runtime_status,
+        // Newest first, matching the frontend pipeline stage store. This
+        // recovers `pipeline:stage` rows emitted before DebugPanel subscribed.
+        "pipelineStages": safe_pipeline_stages.clone(),
+        // Alias kept for callers that describe the same rows as a history.
+        "stageHistory": safe_pipeline_stages,
+        // Latest normalized source/translation caption for late overlay/debug
+        // consumers. Raw ASR is not stored in AppState and cannot appear here.
+        "latestCaption": safe_latest_caption,
         "services": services,
+        "sidecars": sidecars,
         "modelsDir": models_dir.display().to_string(),
         "configDir": config_dir.display().to_string(),
         "appDataDir": app_data.display().to_string(),
@@ -456,6 +885,7 @@ pub async fn get_debug_info(
         },
         "debug": {
             "verboseLogging": config.debug.verbose_logging,
+            "logLevel": config.debug.log_level,
             "logDir": log_dir.display().to_string(),
             "logFilePrefix": "kotoba-beacon",
         },
@@ -474,6 +904,8 @@ pub async fn get_debug_info(
         "arch": std::env::consts::ARCH,
         "version": env!("CARGO_PKG_VERSION"),
         "lastError": last_error,
+        "update": updater_snapshot.get("update").cloned().unwrap_or_default(),
+        "updateHistory": updater_snapshot.get("updateHistory").cloned().unwrap_or_default(),
     }))
 }
 
@@ -485,9 +917,56 @@ fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .join("config.json"))
 }
 
+fn capture_is_active(status: &str) -> bool {
+    matches!(status, "starting" | "capturing")
+}
+
+/// Persist a frontend-exported structured log payload into the app log directory.
+/// Body is expected to be JSON or JSONL text produced by the Debug panel export.
+#[tauri::command]
+pub async fn export_debug_logs(
+    app: AppHandle,
+    body: String,
+    format: Option<String>,
+) -> Result<String, String> {
+    let log_dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| format!("could not resolve app log directory: {error}"))?;
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|error| format!("could not create log directory: {error}"))?;
+    let ext = match format.as_deref().map(str::trim).unwrap_or("jsonl") {
+        "json" => "json",
+        _ => "jsonl",
+    };
+    let stamp = chrono_like_millis();
+    let path = log_dir.join(format!("kotoba-beacon-export-{stamp}.{ext}"));
+    let safe_body = sanitize_export_body(&body, ext);
+    std::fs::write(&path, safe_body.as_bytes())
+        .map_err(|error| format!("could not write log export: {error}"))?;
+    log::info!(
+        target: "debug_export",
+        "wrote structured log export path={} bytes={}",
+        path.display(),
+        safe_body.len()
+    );
+    Ok(path.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ensure_overlay_window, validate_overlay_frame_dimensions};
+    use super::{
+        capture_is_active, ensure_overlay_window, redact_runtime_text, sanitize_debug_json,
+        sanitize_export_body, validate_overlay_frame_dimensions,
+    };
+
+    #[test]
+    fn update_relaunch_is_deferred_only_for_active_capture_states() {
+        assert!(capture_is_active("starting"));
+        assert!(capture_is_active("capturing"));
+        assert!(!capture_is_active("idle"));
+        assert!(!capture_is_active("error"));
+    }
 
     #[test]
     fn only_the_overlay_window_can_publish_a_native_frame() {
@@ -499,5 +978,23 @@ mod tests {
     fn native_frame_must_match_the_configured_output_resolution() {
         assert!(validate_overlay_frame_dimensions(1920, 1080, 1920, 1080).is_ok());
         assert!(validate_overlay_frame_dimensions(1280, 720, 1920, 1080).is_err());
+    }
+
+    #[test]
+    fn debug_redaction_removes_tokens_but_keeps_status_context() {
+        let redacted = redact_runtime_text("HTTP 401 token=abc123 status=401");
+        assert!(!redacted.contains("abc123"));
+        assert!(redacted.contains("status=401"));
+        let value = serde_json::json!({
+            "endpoint": "https://example.test/?access_token=abc123",
+            "token": "abc123",
+            "status": 503,
+        });
+        let safe = sanitize_debug_json(value, None);
+        assert!(!safe.to_string().contains("abc123"));
+        assert!(safe.to_string().contains("503"));
+        let export = sanitize_export_body(r#"{"token":"abc123","ok":true}"#, "json");
+        assert!(!export.contains("abc123"));
+        assert!(export.contains("true"));
     }
 }

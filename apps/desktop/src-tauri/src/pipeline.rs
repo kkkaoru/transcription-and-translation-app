@@ -1,9 +1,15 @@
 use crate::config::AppConfig;
-use crate::kana_kanji::{convert_kana_to_kanji, convert_kana_to_kanji_with_paths, DictionaryPaths};
+use crate::kana_kanji::{
+    convert_kana_to_kanji, convert_with_dictionary, AzooKeyDictionary, ConversionOptions,
+    DictionaryPaths,
+};
 use reqwest::multipart;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use uuid::Uuid;
@@ -63,6 +69,10 @@ pub struct PipelineStageEvent {
     /// Stage wall-clock end (epoch millis). Same as historical `at`.
     pub at: u64,
     pub duration_ms: u64,
+    /// `false` means the selected stage failed.  A recoverable AzooKey
+    /// dictionary fallback also reports `false` (with a diagnostic `error`)
+    /// while retaining its built-in conversion in `output_text`; hard failures
+    /// have an empty output and abort the pipeline.
     pub ok: bool,
     pub error: Option<String>,
 }
@@ -90,6 +100,54 @@ struct TranscriptResponse {
     transcript: Option<String>,
 }
 
+/// Structured output received from the persistent Parapper WebSocket session.
+///
+/// `text` is the sidecar's configured Hiragana output. `source_text` retains
+/// the original ASR surface selected by Vibrato; it is kept as stage metadata
+/// even though AzooKey's canonical input remains the Hiragana string.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParapperRecognitionInput {
+    pub text: String,
+    #[serde(default)]
+    pub source_text: Option<String>,
+    pub session_id: String,
+    pub turn_session_id: u64,
+    pub turn_id: u64,
+    pub revision: u64,
+    pub segment_id: u64,
+    #[serde(default)]
+    pub previous_segment_id: Option<u64>,
+    #[serde(default)]
+    pub source_asr_model: String,
+    #[serde(default = "default_source_language")]
+    pub source_language: String,
+    #[serde(default)]
+    pub detected_language: Option<String>,
+    #[serde(default)]
+    pub elapsed_ms: u64,
+    #[serde(default)]
+    pub audio_duration_ms: Option<u64>,
+    pub is_final: bool,
+}
+
+fn default_source_language() -> String {
+    "ja".to_string()
+}
+
+/// Result of a normalizer invocation.
+///
+/// A dictionary fallback is intentionally distinct from a hard normalizer
+/// error.  The selected AzooKey dictionary may be user-provided and is not
+/// required for the built-in lexicon to produce a caption.  In that case the
+/// stage is recorded as `ok = false` with a non-empty output and a diagnostic
+/// error, while the surrounding pipeline continues with the fallback text.
+#[derive(Debug, PartialEq, Eq)]
+enum NormalizeOutcome {
+    Success(String),
+    Fallback { text: String, error: String },
+}
+
 #[derive(Debug, Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
@@ -111,17 +169,50 @@ struct ChatMessageRequest<'a> {
 #[derive(Debug, Clone)]
 pub struct Pipeline {
     client: Client,
+    /// LOUDS loading reads the connection matrix and shard metadata. Keep the
+    /// loaded dictionary for the lifetime of the native pipeline so each
+    /// 640ms audio chunk only pays the Viterbi cost, not a multi-second disk
+    /// load. The mutex is required because the converter's internal shard
+    /// cache uses `RefCell`; conversions remain short and serialized here.
+    azookey_dictionaries: Arc<Mutex<HashMap<String, AzooKeyDictionary>>>,
 }
 
 impl Default for Pipeline {
     fn default() -> Self {
-        Self { client: Client::new() }
+        Self { client: Client::new(), azookey_dictionaries: Arc::new(Mutex::new(HashMap::new())) }
     }
 }
 
 impl Pipeline {
+    /// Load the selected AzooKey dictionary before the microphone starts.
+    /// Public LOUDS files are intentionally loaded once on the capture
+    /// boundary; otherwise the first 640ms chunk would pay the disk/matrix
+    /// initialization cost and make the first Japanese caption appear late.
+    /// A malformed optional path is recoverable and remains visible in the
+    /// normalizer stage, so this warm-up never makes capture fail.
+    pub fn warm_azookey_dictionary(&self, config: &AppConfig) -> Result<(), String> {
+        if config.models.normalizer != "azookey-rust" {
+            return Ok(());
+        }
+        let paths = azookey_dictionary_paths(config);
+        if let Some(error) = azookey_dictionary_paths_error(&paths) {
+            return Err(error);
+        }
+        let cache_key = azookey_dictionary_cache_key(&paths);
+        let mut dictionaries = self
+            .azookey_dictionaries
+            .lock()
+            .map_err(|_| "AzooKey dictionary cache lock poisoned".to_string())?;
+        if dictionaries.contains_key(&cache_key) {
+            return Ok(());
+        }
+        let dictionary = AzooKeyDictionary::from_paths(&paths)?;
+        dictionaries.insert(cache_key, dictionary);
+        Ok(())
+    }
+
     /// ASR → normalize only. Translation is intentionally left empty so the UI
-    /// can show source text immediately without waiting on the translator.
+    /// can show the normalized source without waiting on the translator.
     ///
     /// Returns `Ok(None)` when the chunk contained no usable speech (silence,
     /// noise-only, or Parapper `transcript_missing`). Callers must treat that as
@@ -133,9 +224,10 @@ impl Pipeline {
     /// `on_stage` is invoked as soon as each stage completes so the UI can render
     /// progressive latency rows without waiting for the rest of the pipeline.
     ///
-    /// `on_caption` is invoked for progressive UI paint:
-    /// 1. immediately after ASR with raw recognition text (do not wait for zenz/azookey)
-    /// 2. again after normalize when the display string changes
+    /// `on_caption` is invoked once after normalization. Raw ASR text is retained
+    /// in the `asr` stage event for DebugPanel inspection, but is never sent to
+    /// the standard caption surface. This keeps user-facing text consistent with
+    /// the selected AzooKey/zenz normalizer while preserving per-stage timings.
     pub async fn recognize_source(
         &self,
         config: &AppConfig,
@@ -144,8 +236,27 @@ impl Pipeline {
         on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
         on_caption: &mut (dyn FnMut(&CaptionPayload) + Send),
     ) -> Result<Option<CaptionPayload>, PipelineError> {
+        self.recognize_source_with_id(config, wav, None, stages, on_stage, on_caption).await
+    }
+
+    /// ASR → normalize only with an optional caller-provided utterance ID.
+    ///
+    /// Live microphone chunks provide an ID generated at the capture boundary
+    /// so retries and progressive source/translation events can be correlated
+    /// with the originating audio. Empty or whitespace-only IDs are treated as
+    /// missing and replaced with a UUID, preserving the historical behavior for
+    /// callers that use [`Self::recognize_source`].
+    pub async fn recognize_source_with_id(
+        &self,
+        config: &AppConfig,
+        wav: Vec<u8>,
+        provided_utterance_id: Option<&str>,
+        stages: &mut Vec<PipelineStageEvent>,
+        on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
+        on_caption: &mut (dyn FnMut(&CaptionPayload) + Send),
+    ) -> Result<Option<CaptionPayload>, PipelineError> {
         let started_at = now_millis();
-        let utterance_id = Uuid::new_v4().to_string();
+        let utterance_id = resolve_utterance_id(provided_utterance_id);
         let audio_snippet = format!("wavBytes={}", wav.len());
         let asr_model = config.models.asr.as_str();
         let normalize_model = config.models.normalizer.as_str();
@@ -222,16 +333,13 @@ impl Pipeline {
             }
         };
 
-        // Paint raw ASR immediately — do not block the first visible subtitle on
-        // kana-kanji conversion (local AzooKey is fast; remote zenz can be slow).
-        let provisional =
-            source_ready_caption(config, recognized.clone(), started_at, utterance_id.clone());
-        on_caption(&provisional);
-
-        // AzooKey is sync/local and fast; zenz is remote. Never wait for translation here.
+        // AzooKey is sync/local and fast; zenz is remote. The normalizer is the
+        // source of truth for user-facing Japanese, so do not emit raw ASR text
+        // while it is still running. The completed stage below is emitted before
+        // the command returns, allowing the frontend to measure normalize→paint.
         let normalize_started = Instant::now();
         let normalized = match self.normalize(config, &recognized).await {
-            Ok(text) => {
+            Ok(NormalizeOutcome::Success(text)) => {
                 record_stage(
                     stages,
                     on_stage,
@@ -244,6 +352,29 @@ impl Pipeline {
                         elapsed_ms(normalize_started),
                         true,
                         None,
+                    ),
+                );
+                text
+            }
+            Ok(NormalizeOutcome::Fallback { text, error }) => {
+                // A broken optional dictionary must be visible in DebugPanel,
+                // but it must not erase an otherwise usable source caption.
+                // `ok = false` is deliberate: the configured dictionary stage
+                // failed even though the built-in AzooKey fallback produced
+                // displayable text.  The non-empty output distinguishes this
+                // recoverable fallback from a hard normalizer failure below.
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "normalize",
+                        &utterance_id,
+                        normalize_model,
+                        &recognized,
+                        &text,
+                        elapsed_ms(normalize_started),
+                        false,
+                        Some(error),
                     ),
                 );
                 text
@@ -263,21 +394,165 @@ impl Pipeline {
                         Some(error.to_string()),
                     ),
                 );
-                // Keep the already-shown ASR provisional caption rather than
-                // failing the whole chunk when only the normalizer is down.
-                return Ok(Some(provisional));
+                // Do not fall back to raw ASR on the standard caption surface:
+                // doing so would make displayed text differ from the selected
+                // normalizer output. The command layer surfaces this concrete
+                // failure while the `asr`/`normalize` stage rows remain visible
+                // in DebugPanel; the existing caption remains on screen.
+                return Err(error);
             }
         };
         if normalized.trim().is_empty() {
-            // Soft-skip after a provisional paint: UI merge keeps last non-empty
-            // when a silence-shaped update arrives; return None for the invoke path.
+            // Empty normalization is a soft skip. No raw text was painted, so
+            // the UI keeps the previous non-empty caption unchanged.
             return Ok(None);
         }
         let ready = source_ready_caption(config, normalized, started_at, utterance_id);
-        // Second paint when kana→kanji (or zenz) changed the display string.
-        if ready.source_text.trim() != provisional.source_text.trim() {
-            on_caption(&ready);
+        // Always emit the normalized source, even when it happens to match the
+        // raw ASR string, so first-caption timing is tied to normalization.
+        on_caption(&ready);
+        Ok(Some(ready))
+    }
+
+    /// Normalize a structured output from one persistent Parapper session.
+    ///
+    /// This is the live desktop path: Parapper owns VAD/Segment/Turn state and
+    /// emits interim/final text over one WebSocket. The native pipeline starts
+    /// at the already-recognized Hiragana text, records the original Vibrato
+    /// surface in the ASR stage input, and then runs the same cached AzooKey
+    /// normalizer used by the legacy HTTP path.
+    pub async fn normalize_parapper_output(
+        &self,
+        config: &AppConfig,
+        output: ParapperRecognitionInput,
+        stages: &mut Vec<PipelineStageEvent>,
+        on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
+        on_caption: &mut (dyn FnMut(&CaptionPayload) + Send),
+    ) -> Result<Option<CaptionPayload>, PipelineError> {
+        let utterance_id =
+            format!("parapper:{}:{}:{}", output.session_id, output.turn_session_id, output.turn_id);
+        let recognized = output.text.trim().to_string();
+        let source_surface = output
+            .source_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .unwrap_or(recognized.as_str());
+        log::trace!(
+            target: "pipeline_asr",
+            "Parapper turn session={} turn={} revision={} segment={} previous_segment={:?} language={} detected_language={:?}",
+            output.session_id,
+            output.turn_id,
+            output.revision,
+            output.segment_id,
+            output.previous_segment_id,
+            output.source_language,
+            output.detected_language,
+        );
+        let asr_model = if output.source_asr_model.trim().is_empty() {
+            config.models.asr.as_str()
+        } else {
+            output.source_asr_model.as_str()
+        };
+        let asr_started = Instant::now();
+        if recognized.is_empty() {
+            record_stage(
+                stages,
+                on_stage,
+                stage_event(
+                    "asr",
+                    &utterance_id,
+                    asr_model,
+                    source_surface,
+                    "",
+                    elapsed_ms(asr_started),
+                    true,
+                    None,
+                ),
+            );
+            return Ok(None);
         }
+        record_stage(
+            stages,
+            on_stage,
+            stage_event(
+                "asr",
+                &utterance_id,
+                asr_model,
+                source_surface,
+                &recognized,
+                output.elapsed_ms,
+                true,
+                None,
+            ),
+        );
+
+        let normalize_started = Instant::now();
+        let normalized = match self.normalize(config, &recognized).await {
+            Ok(NormalizeOutcome::Success(text)) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "normalize",
+                        &utterance_id,
+                        config.models.normalizer.as_str(),
+                        &recognized,
+                        &text,
+                        elapsed_ms(normalize_started),
+                        true,
+                        None,
+                    ),
+                );
+                text
+            }
+            Ok(NormalizeOutcome::Fallback { text, error }) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "normalize",
+                        &utterance_id,
+                        config.models.normalizer.as_str(),
+                        &recognized,
+                        &text,
+                        elapsed_ms(normalize_started),
+                        false,
+                        Some(error),
+                    ),
+                );
+                text
+            }
+            Err(error) => {
+                record_stage(
+                    stages,
+                    on_stage,
+                    stage_event(
+                        "normalize",
+                        &utterance_id,
+                        config.models.normalizer.as_str(),
+                        &recognized,
+                        "",
+                        elapsed_ms(normalize_started),
+                        false,
+                        Some(error.to_string()),
+                    ),
+                );
+                return Err(error);
+            }
+        };
+        if normalized.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let mut ready = source_ready_caption(
+            config,
+            normalized,
+            now_millis().saturating_sub(output.audio_duration_ms.unwrap_or_default()),
+            utterance_id,
+        );
+        ready.is_final = output.is_final;
+        on_caption(&ready);
         Ok(Some(ready))
     }
 
@@ -378,21 +653,21 @@ impl Pipeline {
             self.client.post(url).timeout(timeout(config)).multipart(form).send().await?;
         let status = response.status();
         let body = response.text().await?;
+        // Live mic chunks often contain only ambient noise. Older gateways
+        // returned HTTP 422 transcript_missing when Parapper finished without
+        // a final — treat as empty ASR, not a pipeline fault. Current gateway
+        // soft-returns 200 with empty text instead.
+        if !status.is_success() && is_no_speech_response(status.as_u16(), &body) {
+            log::info!(
+                target: "pipeline_asr",
+                "no-speech soft-skip status={} body_chars={} body_prefix={}",
+                status.as_u16(),
+                body.len(),
+                body.chars().take(120).collect::<String>()
+            );
+            return Ok(String::new());
+        }
         if !status.is_success() {
-            // Live mic chunks often contain only ambient noise. Older gateways
-            // returned HTTP 422 transcript_missing when Parapper finished without
-            // a final — treat as empty ASR, not a pipeline fault. Current gateway
-            // soft-returns 200 with empty text instead.
-            if is_no_speech_response(status.as_u16(), &body) {
-                log::info!(
-                    target: "pipeline_asr",
-                    "no-speech soft-skip status={} body_chars={} body_prefix={}",
-                    status.as_u16(),
-                    body.len(),
-                    body.chars().take(120).collect::<String>()
-                );
-                return Ok(String::new());
-            }
             return Err(PipelineError::Http { status: status.as_u16(), body });
         }
         let parsed: TranscriptResponse = serde_json::from_str(&body).or_else(|_| {
@@ -410,40 +685,24 @@ impl Pipeline {
             .unwrap_or_default())
     }
 
-    async fn normalize(&self, config: &AppConfig, text: &str) -> Result<String, PipelineError> {
+    async fn normalize(
+        &self,
+        config: &AppConfig,
+        text: &str,
+    ) -> Result<NormalizeOutcome, PipelineError> {
         match config.models.normalizer.as_str() {
             "azookey-rust" => {
-                let paths = DictionaryPaths {
-                    system: config
-                        .models
-                        .paths
-                        .get("azookey-rust")
-                        .filter(|path| !path.trim().is_empty())
-                        .map(Into::into),
-                    user: config
-                        .models
-                        .paths
-                        .get("azookey-user-dictionary")
-                        .filter(|path| !path.trim().is_empty())
-                        .map(Into::into),
-                    memory: config
-                        .models
-                        .paths
-                        .get("azookey-learning-memory")
-                        .filter(|path| !path.trim().is_empty())
-                        .map(Into::into),
-                };
-                if paths.system.is_none() && paths.user.is_none() && paths.memory.is_none() {
-                    Ok(convert_kana_to_kanji(text))
-                } else {
-                    convert_kana_to_kanji_with_paths(text, paths).map_err(PipelineError::Model)
-                }
+                normalize_azookey_with_cache(config, text, &self.azookey_dictionaries)
             }
             "zenz-v2-q5-k-m-gguf" | "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf" => {
                 // Zenz is a dedicated kana-kanji converter, not an instruction-tuned chat model.
-                // Its model contract uses U+EE00 / U+EE01 delimiters around the phonetic input.
-                let prompt = format!("\u{EE00}{text}\u{EE01}");
-                self.chat(config, &config.models.normalizer, prompt).await
+                // Its model contract uses U+EE00 / U+EE01 delimiters around a
+                // Katakana phonetic input (the upstream AzooKey prompt builder
+                // calls `toKatakana()` before sending the composing text).
+                let prompt = zenz_prompt(text);
+                self.chat(config, &config.models.normalizer, prompt)
+                    .await
+                    .map(NormalizeOutcome::Success)
             }
             other => Err(PipelineError::UnsupportedModel(other.to_string())),
         }
@@ -500,7 +759,194 @@ impl Pipeline {
     }
 }
 
-/// Build the intermediate caption emitted as soon as normalized ASR is ready.
+fn zenz_prompt(input: &str) -> String {
+    format!("\u{EE00}{}\u{EE01}", to_katakana(input))
+}
+
+fn to_katakana(input: &str) -> String {
+    input
+        .chars()
+        .map(|character| {
+            let code = character as u32;
+            if (0x3041..=0x3096).contains(&code) {
+                char::from_u32(code + 0x60).unwrap_or(character)
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+type AzooKeyDictionaryCache = Arc<Mutex<HashMap<String, AzooKeyDictionary>>>;
+
+/// Compatibility wrapper used by focused unit tests and non-live callers.
+/// The live `Pipeline` passes its long-lived cache through
+/// `normalize_azookey_with_cache` so a public dictionary is loaded once.
+#[cfg(test)]
+fn normalize_azookey(config: &AppConfig, text: &str) -> Result<NormalizeOutcome, PipelineError> {
+    let cache = Arc::new(Mutex::new(HashMap::new()));
+    normalize_azookey_with_cache(config, text, &cache)
+}
+
+fn normalize_azookey_with_cache(
+    config: &AppConfig,
+    text: &str,
+    cache: &AzooKeyDictionaryCache,
+) -> Result<NormalizeOutcome, PipelineError> {
+    // Empty recognition text is a soft skip.  Check it before opening any
+    // optional dictionary so a stale/broken path cannot turn silence into a
+    // pipeline error (and so direct callers retain the same contract).
+    if text.trim().is_empty() {
+        return Ok(NormalizeOutcome::Success(String::new()));
+    }
+
+    let paths = azookey_dictionary_paths(config);
+
+    if let Some(error) = azookey_dictionary_paths_error(&paths) {
+        return Ok(azookey_fallback(text, error));
+    }
+
+    let cache_key = azookey_dictionary_cache_key(&paths);
+    let mut dictionaries = cache
+        .lock()
+        .map_err(|_| PipelineError::Model("AzooKey dictionary cache lock poisoned".to_string()))?;
+    if !dictionaries.contains_key(&cache_key) {
+        let dictionary = match AzooKeyDictionary::from_paths(&paths) {
+            Ok(dictionary) => dictionary,
+            Err(error) => return Ok(azookey_fallback(text, error)),
+        };
+        dictionaries.insert(cache_key.clone(), dictionary);
+    }
+    let dictionary =
+        dictionaries.get(&cache_key).expect("AzooKey dictionary inserted or already present");
+    let converted = convert_with_dictionary(text, dictionary, ConversionOptions::default())
+        .into_iter()
+        .next()
+        .map(|candidate| candidate.text)
+        .unwrap_or_else(|| text.trim().to_string());
+    Ok(NormalizeOutcome::Success(converted))
+}
+
+fn azookey_dictionary_cache_key(paths: &DictionaryPaths) -> String {
+    [paths.system.as_deref(), paths.user.as_deref(), paths.memory.as_deref()]
+        .into_iter()
+        .map(|path| path.map(|path| path.to_string_lossy().into_owned()).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
+}
+
+fn azookey_dictionary_paths(config: &AppConfig) -> DictionaryPaths {
+    DictionaryPaths {
+        system: config
+            .models
+            .paths
+            .get("azookey-rust")
+            .filter(|path| !path.trim().is_empty())
+            .map(Into::into),
+        user: config
+            .models
+            .paths
+            .get("azookey-user-dictionary")
+            .filter(|path| !path.trim().is_empty())
+            .map(Into::into),
+        memory: config
+            .models
+            .paths
+            .get("azookey-learning-memory")
+            .filter(|path| !path.trim().is_empty())
+            .map(Into::into),
+    }
+    .with_defaults()
+}
+
+/// Return a diagnostic for an explicitly configured dictionary path that is
+/// absent or clearly incomplete.  The AzooKey crate intentionally treats a
+/// missing system root as optional, which is useful at library boundaries but
+/// hides a typo in the app's user setting.  Detect it here so DebugPanel still
+/// explains why the built-in fallback was selected.
+fn azookey_dictionary_paths_error(paths: &DictionaryPaths) -> Option<String> {
+    let mut errors = Vec::new();
+    if let Some(path) = paths.system.as_deref() {
+        if let Some(error) = azookey_dictionary_path_error("system", path) {
+            errors.push(error);
+        }
+    }
+    if let Some(path) = paths.user.as_deref() {
+        if let Some(error) = azookey_dictionary_path_error("user", path) {
+            errors.push(error);
+        }
+    }
+    if let Some(path) = paths.memory.as_deref() {
+        if let Some(error) = azookey_dictionary_path_error("learning-memory", path) {
+            errors.push(error);
+        }
+    }
+    (!errors.is_empty()).then(|| errors.join("; "))
+}
+
+fn azookey_dictionary_path_error(kind: &str, path: &Path) -> Option<String> {
+    if !path.exists() {
+        return Some(format!("AzooKey {kind} dictionary path does not exist: {}", path.display()));
+    }
+    if path.is_file() {
+        // TSV parsing (including an empty/malformed file) is validated by the
+        // AzooKey loader and will produce a richer error there.
+        return None;
+    }
+    if !path.is_dir() {
+        return Some(format!(
+            "AzooKey {kind} dictionary path is not a regular file or directory: {}",
+            path.display()
+        ));
+    }
+
+    let complete = match kind {
+        "system" => {
+            system_dictionary_layout_present(path)
+                || system_dictionary_layout_present(&path.join("Dictionary"))
+        }
+        "user" => external_dictionary_layout_present(path, "user"),
+        "learning-memory" => external_dictionary_layout_present(path, "memory"),
+        _ => false,
+    };
+    (!complete).then(|| {
+        format!(
+            "AzooKey {kind} dictionary path is incomplete or missing required files: {}",
+            path.display()
+        )
+    })
+}
+
+fn system_dictionary_layout_present(path: &Path) -> bool {
+    path.join("louds").join("charID.chid").is_file() && path.join("mm.binary").is_file()
+}
+
+fn external_dictionary_layout_present(path: &Path, name: &str) -> bool {
+    let has_shard =
+        std::fs::read_dir(path).ok().into_iter().flatten().filter_map(Result::ok).any(|entry| {
+            let filename = entry.file_name();
+            let filename = filename.to_string_lossy();
+            filename.starts_with(name) && filename.ends_with(".loudstxt3")
+        });
+    // External dictionaries inherit char IDs from a valid system dictionary,
+    // so `charID.chid` is optional here.  The LOUDS pair plus at least one
+    // record shard are the files the loader must be able to open.
+    path.join(format!("{name}.louds")).is_file()
+        && path.join(format!("{name}.loudschars2")).is_file()
+        && has_shard
+}
+
+fn azookey_fallback(text: &str, dictionary_error: impl AsRef<str>) -> NormalizeOutcome {
+    let fallback = convert_kana_to_kanji(text);
+    let detail = format!(
+        "AzooKey dictionary conversion failed; falling back to built-in dictionary: {}",
+        dictionary_error.as_ref()
+    );
+    log::warn!(target: "pipeline_normalize", "{detail}");
+    NormalizeOutcome::Fallback { text: fallback, error: detail }
+}
+
+/// Build the intermediate caption emitted as soon as the normalizer is ready.
 /// `translation_text` is intentionally empty until `complete_translation`.
 /// `id` must be stable across progressive stages (ASR/normalize → translate).
 pub fn source_ready_caption(
@@ -640,13 +1086,44 @@ fn now_millis() -> u64 {
         .unwrap_or_default()
 }
 
+/// Keep a caller-provided chunk identity when it is meaningful, while
+/// preserving UUID-backed IDs for legacy callers and malformed metadata.
+fn resolve_utterance_id(provided: Option<&str>) -> String {
+    provided
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_model_text, is_no_speech_response, record_stage, snippet, source_ready_caption,
-        stage_event, with_translation, CaptionPayload, PipelineStageEvent, STAGE_SNIPPET_CHARS,
+        clean_model_text, is_no_speech_response, normalize_azookey, normalize_azookey_with_cache,
+        record_stage, resolve_utterance_id, snippet, source_ready_caption, stage_event,
+        with_translation, zenz_prompt, CaptionPayload, NormalizeOutcome, ParapperRecognitionInput,
+        Pipeline, PipelineStageEvent, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
+
+    static DICTIONARY_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn ignore_pipeline_stage(_: &PipelineStageEvent) {}
+
+    fn ignore_caption(_: &CaptionPayload) {}
+
+    fn temporary_dictionary_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "caption-bridge-pipeline-{label}-{}-{}",
+            std::process::id(),
+            super::now_millis()
+        ))
+    }
 
     #[test]
     fn detects_parapper_no_speech_payloads() {
@@ -678,6 +1155,69 @@ mod tests {
         assert!(is_no_speech_response(204, r#"{"transcript":""}"#));
     }
 
+    #[tokio::test]
+    async fn persistent_parapper_hiragana_output_reuses_azookey_and_turn_identity() {
+        let config = AppConfig::default();
+        let pipeline = Pipeline::default();
+        let output = ParapperRecognitionInput {
+            text: "きょうははいしんです".into(),
+            source_text: Some("今日は配信です".into()),
+            session_id: "socket-session".into(),
+            turn_session_id: 7,
+            turn_id: 3,
+            revision: 0,
+            segment_id: 11,
+            previous_segment_id: None,
+            source_asr_model: "reazonspeech-k2-v2".into(),
+            source_language: "ja".into(),
+            detected_language: None,
+            elapsed_ms: 12,
+            audio_duration_ms: None,
+            is_final: false,
+        };
+        let mut stages = Vec::new();
+        let mut captions = Vec::new();
+        let partial = pipeline
+            .normalize_parapper_output(
+                &config,
+                output.clone(),
+                &mut stages,
+                &mut ignore_pipeline_stage,
+                &mut |caption| captions.push(caption.clone()),
+            )
+            .await
+            .expect("Parapper output should normalize")
+            .expect("non-empty Hiragana should produce a caption");
+
+        assert_eq!(partial.id, "parapper:socket-session:7:3");
+        assert_eq!(partial.source_text, "今日は配信です");
+        assert!(!partial.is_final);
+        assert_eq!(captions.len(), 1);
+        assert_eq!(stages[0].stage, "asr");
+        assert_eq!(stages[0].input_snippet, "今日は配信です");
+        assert_eq!(stages[0].output_text, "きょうははいしんです");
+        assert_eq!(stages[1].stage, "normalize");
+        assert_eq!(stages[1].output_text, "今日は配信です");
+
+        let mut final_output = output;
+        final_output.revision = 1;
+        final_output.is_final = true;
+        final_output.audio_duration_ms = Some(640);
+        let final_caption = pipeline
+            .normalize_parapper_output(
+                &config,
+                final_output,
+                &mut Vec::new(),
+                &mut ignore_pipeline_stage,
+                &mut ignore_caption,
+            )
+            .await
+            .expect("final Parapper output should normalize")
+            .expect("final output should produce a caption");
+        assert_eq!(final_caption.id, partial.id);
+        assert!(final_caption.is_final);
+    }
+
     #[test]
     fn pipeline_error_http_display_includes_body_for_frontend_matching() {
         // Frontend defense-in-depth matches this Display form when a no-speech
@@ -704,6 +1244,199 @@ mod tests {
         assert_eq!(partial.target_language, config.language.target);
         assert_eq!(partial.started_at, 1_700_000_000_000);
         assert_eq!(partial.id, "utt-1");
+    }
+
+    #[test]
+    fn provided_utterance_id_is_trimmed_and_missing_ids_get_uuid() {
+        assert_eq!(resolve_utterance_id(Some("  chunk-42  ")), "chunk-42");
+        let generated = resolve_utterance_id(Some(" \n\t "));
+        assert!(Uuid::parse_str(&generated).is_ok(), "missing id should use UUID");
+        let generated_from_none = resolve_utterance_id(None);
+        assert!(Uuid::parse_str(&generated_from_none).is_ok(), "legacy caller should use UUID");
+    }
+
+    #[test]
+    fn caption_payload_text_is_not_limited_by_debug_snippet_length() {
+        // Stage samples are intentionally bounded for diagnostics, but the
+        // user-facing caption must retain the complete ASR/translation text.
+        let config = AppConfig::default();
+        let source = "あ".repeat(STAGE_SNIPPET_CHARS + 64);
+        let partial = source_ready_caption(&config, source.clone(), 1, "utt-long".into());
+        assert_eq!(partial.source_text, source);
+        assert_eq!(partial.source_text.chars().count(), STAGE_SNIPPET_CHARS + 64);
+
+        let translation = "A".repeat(STAGE_SNIPPET_CHARS + 64);
+        let finished = with_translation(partial, &translation, 2);
+        assert_eq!(finished.translation_text, translation);
+        assert_eq!(finished.translation_text.chars().count(), STAGE_SNIPPET_CHARS + 64);
+    }
+
+    #[test]
+    fn azookey_without_optional_paths_reports_success() {
+        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let config = AppConfig::default();
+        let outcome = normalize_azookey(&config, "きょうははいしんです").expect("normalize");
+        assert_eq!(outcome, NormalizeOutcome::Success("今日は配信です".to_string()));
+    }
+
+    #[test]
+    fn azookey_reuses_the_loaded_dictionary_for_repeated_chunks() {
+        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let path = temporary_dictionary_path("cache");
+        fs::write(&path, "はいしん\t配信\t-1\n").expect("dictionary fixture should write");
+        let mut config = AppConfig::default();
+        config.models.paths.insert("azookey-rust".to_string(), path.to_string_lossy().into_owned());
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+
+        let first = normalize_azookey_with_cache(&config, "はいしん", &cache)
+            .expect("first normalization should succeed");
+        let second = normalize_azookey_with_cache(&config, "はいしん", &cache)
+            .expect("second normalization should succeed");
+        assert_eq!(first, NormalizeOutcome::Success("配信".to_string()));
+        assert_eq!(second, first);
+        assert_eq!(cache.lock().expect("cache lock").len(), 1);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn zenz_prompt_converts_hiragana_to_katakana_inside_protocol_tags() {
+        assert_eq!(zenz_prompt("きょうは配信です"), "\u{EE00}キョウハ配信デス\u{EE01}");
+        assert_eq!(zenz_prompt("カタカナ"), "\u{EE00}カタカナ\u{EE01}");
+    }
+
+    #[test]
+    fn azookey_without_explicit_path_uses_environment_dictionary() {
+        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let path = temporary_dictionary_path("env");
+        fs::write(&path, "はいしん\t配信中\t-1\n").expect("fixture should write");
+        let previous = std::env::var_os("AZOOKEY_DICTIONARY_ROOT");
+        std::env::set_var("AZOOKEY_DICTIONARY_ROOT", &path);
+
+        let outcome = normalize_azookey(&AppConfig::default(), "はいしん").expect("normalize");
+
+        match previous {
+            Some(value) => std::env::set_var("AZOOKEY_DICTIONARY_ROOT", value),
+            None => std::env::remove_var("AZOOKEY_DICTIONARY_ROOT"),
+        }
+        let _ = fs::remove_file(path);
+        assert_eq!(outcome, NormalizeOutcome::Success("配信中".to_string()));
+    }
+
+    #[test]
+    fn azookey_valid_optional_tsv_path_remains_a_success() {
+        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let path = temporary_dictionary_path("valid");
+        fs::write(&path, "はいしん\t配信中\t-1\n").expect("fixture should write");
+        let mut config = AppConfig::default();
+        config
+            .models
+            .paths
+            .insert("azookey-user-dictionary".to_string(), path.display().to_string());
+
+        let outcome = normalize_azookey(&config, "はいしん").expect("normalize");
+        assert_eq!(outcome, NormalizeOutcome::Success("配信中".to_string()));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn azookey_empty_input_is_a_soft_skip_even_with_a_broken_path() {
+        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let mut config = AppConfig::default();
+        config.models.paths.insert(
+            "azookey-rust".to_string(),
+            "/definitely/not/an/azookey/dictionary".to_string(),
+        );
+        let outcome = normalize_azookey(&config, " \n\t ").expect("empty input should not fail");
+        assert_eq!(outcome, NormalizeOutcome::Success(String::new()));
+    }
+
+    #[test]
+    fn azookey_dictionary_error_falls_back_to_builtin_text_and_keeps_diagnostic() {
+        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let path = temporary_dictionary_path("invalid");
+        // An existing but empty TSV is a malformed optional dictionary.  The
+        // built-in lexicon should still convert the recognized kana.
+        fs::write(&path, b"\n# no usable entries\n").expect("fixture should write");
+        let mut config = AppConfig::default();
+        config.models.paths.insert("azookey-rust".to_string(), path.to_string_lossy().into_owned());
+
+        let outcome = normalize_azookey(&config, "きょうははいしんです").expect("fallback");
+        match outcome {
+            NormalizeOutcome::Fallback { text, error } => {
+                assert_eq!(text, "今日は配信です");
+                assert!(error.contains("AzooKey dictionary"));
+                assert!(error.contains("built-in dictionary"));
+                assert!(error.contains("did not contain any usable dictionary entries"));
+            }
+            NormalizeOutcome::Success(text) => panic!("expected fallback, got success: {text}"),
+        }
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn azookey_missing_optional_path_is_reported_before_loader_soft_skips_it() {
+        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let path = temporary_dictionary_path("missing");
+        let mut config = AppConfig::default();
+        config
+            .models
+            .paths
+            .insert("azookey-user-dictionary".to_string(), path.display().to_string());
+
+        let outcome = normalize_azookey(&config, "きょうははいしんです").expect("fallback");
+        match outcome {
+            NormalizeOutcome::Fallback { text, error } => {
+                assert_eq!(text, "今日は配信です");
+                assert!(error.contains("user dictionary path does not exist"));
+                assert!(error.contains("built-in dictionary"));
+            }
+            NormalizeOutcome::Success(text) => panic!("expected fallback, got success: {text}"),
+        }
+    }
+
+    #[test]
+    fn azookey_incomplete_directory_is_reported_as_a_fallback() {
+        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let path = temporary_dictionary_path("incomplete");
+        fs::create_dir_all(&path).expect("fixture directory should create");
+        let mut config = AppConfig::default();
+        config.models.paths.insert("azookey-rust".to_string(), path.display().to_string());
+
+        let outcome = normalize_azookey(&config, "きょうははいしんです").expect("fallback");
+        match outcome {
+            NormalizeOutcome::Fallback { text, error } => {
+                assert_eq!(text, "今日は配信です");
+                assert!(error.contains("system dictionary path is incomplete"));
+                assert!(error.contains("built-in dictionary"));
+            }
+            NormalizeOutcome::Success(text) => panic!("expected fallback, got success: {text}"),
+        }
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn fallback_stage_contract_keeps_output_while_marking_dictionary_failure() {
+        // A recoverable dictionary error is a failed configured stage, but its
+        // output remains non-empty so recognize_source can emit a caption.  A
+        // hard normalizer error has no output and returns PipelineError.
+        let event = stage_event(
+            "normalize",
+            "utt-fallback",
+            "azookey-rust",
+            "きょうははいしんです",
+            "今日は配信です",
+            3,
+            false,
+            Some(
+                "AzooKey dictionary conversion failed; falling back to built-in dictionary".into(),
+            ),
+        );
+        assert!(!event.ok);
+        assert_eq!(event.output_text, "今日は配信です");
+        assert!(event
+            .error
+            .as_deref()
+            .is_some_and(|error| { error.contains("dictionary") && error.contains("built-in") }));
     }
 
     #[test]
@@ -827,19 +1560,17 @@ mod tests {
     }
 
     #[test]
-    fn progressive_source_captions_share_id_across_asr_and_normalize() {
-        // Contract for the live path: provisional ASR and post-normalize source
-        // keep the same utterance id so the UI can upgrade text without flicker.
+    fn normalized_source_caption_keeps_the_utterance_identity_for_translation() {
+        // Contract for the live path: the normalized source and later translation
+        // keep one utterance id so the UI can fill translation without flicker.
         let config = AppConfig::default();
-        let provisional =
-            source_ready_caption(&config, "こんにちわ".into(), 10, "utt-progressive".into());
         let normalized =
             source_ready_caption(&config, "こんにちは".into(), 10, "utt-progressive".into());
-        assert_eq!(provisional.id, normalized.id);
-        assert_eq!(provisional.stage, "source");
+        let translated = with_translation(normalized.clone(), "Hello", 20);
+        assert_eq!(normalized.id, translated.id);
         assert_eq!(normalized.stage, "source");
-        assert!(provisional.translation_text.is_empty());
         assert!(normalized.translation_text.is_empty());
-        assert_ne!(provisional.source_text, normalized.source_text);
+        assert_eq!(translated.stage, "translation");
+        assert_eq!(translated.translation_text, "Hello");
     }
 }

@@ -15,5 +15,5 @@ mod viterbi;
 pub use dictionary::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
 pub use viterbi::{
     convert_kana_to_kanji, convert_kana_to_kanji_with_dictionary, convert_kana_to_kanji_with_paths,
-    ConversionCandidate, ConversionOptions,
+    convert_with_dictionary, ConversionCandidate, ConversionOptions,
 };

@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    path::Path,
     sync::{
         Arc, RwLock,
         atomic::{AtomicU8, Ordering},
@@ -410,7 +411,7 @@ struct VadFrame {
 }
 
 struct RecognitionVadStage {
-    handle: AppHandle,
+    handle: Option<AppHandle>,
     vad: Box<dyn VadEngine>,
     activity_sender: Option<Sender<RecognitionStreamEvent>>,
     was_speech: bool,
@@ -485,7 +486,16 @@ impl RecognitionVadStage {
         activity_sender: Option<Sender<RecognitionStreamEvent>>,
     ) -> Result<Self> {
         let vad_path = vad_model_path(&handle)?;
-        let vad = OnnxRuntimeSileroVadEngine::new(&vad_path, config.segmentation.vad_threshold)?;
+        Self::new_at(Some(handle), config, activity_sender, &vad_path)
+    }
+
+    fn new_at(
+        handle: Option<AppHandle>,
+        config: &ParapperConfig,
+        activity_sender: Option<Sender<RecognitionStreamEvent>>,
+        vad_path: &Path,
+    ) -> Result<Self> {
+        let vad = OnnxRuntimeSileroVadEngine::new(vad_path, config.segmentation.vad_threshold)?;
         Ok(Self { handle, vad: Box::new(vad), activity_sender, was_speech: false })
     }
 
@@ -503,9 +513,12 @@ impl RecognitionVadStage {
             let _ = sender.send(RecognitionStreamEvent::SpeechStarted);
         }
         self.was_speech = result.is_speech;
-        let _ = self
-            .handle
-            .emit("parapper://vad-state", VadStateEvent { state, probability: result.probability });
+        if let Some(handle) = self.handle.as_ref() {
+            let _ = handle.emit(
+                "parapper://vad-state",
+                VadStateEvent { state, probability: result.probability },
+            );
+        }
 
         Ok(VadFrame { samples, result })
     }
@@ -531,6 +544,23 @@ fn build_recognition_startup(
             return Err(err);
         }
     };
+    Ok(RecognitionStartup { audio_processor, vad_stage })
+}
+
+#[cfg(test)]
+fn build_recognition_startup_without_handle(
+    config: &ParapperConfig,
+    source_sample_rate: u32,
+    model_root: &Path,
+    activity_sender: Option<Sender<RecognitionStreamEvent>>,
+) -> Result<RecognitionStartup> {
+    let audio_processor = AudioInputProcessor::initialize_without_handle_at_model_root(
+        config,
+        source_sample_rate,
+        model_root,
+    )?;
+    let vad_path = model_root.join("silero_vad_v6").join("silero_vad.onnx");
+    let vad_stage = RecognitionVadStage::new_at(None, config, activity_sender, &vad_path)?;
     Ok(RecognitionStartup { audio_processor, vad_stage })
 }
 
@@ -687,6 +717,7 @@ fn recognition_input_wait_timeout(config: &ParapperConfig) -> Duration {
 mod tests {
     use std::{
         collections::VecDeque,
+        path::Path,
         sync::mpsc,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
@@ -694,7 +725,8 @@ mod tests {
     use super::{
         PendingInputChunks, PendingVadFrames, RecognitionInputLoop, RecognitionLoopStep,
         RecognitionShutdownResult, RecognitionStopControl, RecognitionStopMode, RuntimeConfigDirty,
-        build_recognition_startup, drive_recognition_input_loop, recognition_input_wait_timeout,
+        build_recognition_startup_without_handle, drive_recognition_input_loop,
+        recognition_input_wait_timeout,
     };
     use crate::{
         audio::{ASR_SAMPLE_RATE, InputChunk},
@@ -927,15 +959,16 @@ mod tests {
 
     #[test]
     fn recognition_startup_fails_when_vad_model_is_missing() {
-        let handle = crate::recognition::control::tests::tauri_test_handle();
         let config = parapper_config! {
             model_dir: Some(missing_model_dir("vad-init-failure")),
             ..ParapperConfig::default()
         };
 
-        let err = build_recognition_startup(&handle, &config, ASR_SAMPLE_RATE, None)
-            .err()
-            .expect("missing VAD model should fail recognition startup");
+        let model_root = Path::new(config.models.dir.as_deref().unwrap());
+        let err =
+            build_recognition_startup_without_handle(&config, ASR_SAMPLE_RATE, model_root, None)
+                .err()
+                .expect("missing VAD model should fail recognition startup");
 
         assert!(
             err.to_string().contains("VAD model not found"),

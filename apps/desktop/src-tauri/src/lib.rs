@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod azookey_runtime;
 mod commands;
 mod config;
 mod gateway;
+mod macos;
 mod model_download;
 mod model_runtime;
 mod models;
@@ -11,6 +13,7 @@ mod native_output;
 mod output;
 mod pipeline;
 mod state;
+mod updater;
 
 pub use caption_bridge_azookey_rust as kana_kanji;
 
@@ -28,17 +31,35 @@ pub fn run() {
                 }))
                 .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
                 .level(log::LevelFilter::Info)
+                // Stage timing rows are filtered in emit_pipeline_stage by config.debug.logLevel.
+                .level_for("pipeline_stage", log::LevelFilter::Trace)
+                .level_for("debug_export", log::LevelFilter::Info)
                 .max_file_size(10 * 1024 * 1024)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(7))
                 .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
                 .build(),
         )
         .plugin(tauri_plugin_shell::init())
+        .plugin(updater::install_plugin())
         .setup(|app| {
+            // Keep one foreground process per app-data directory. A duplicate
+            // launch is routed to the existing bundle through LaunchServices;
+            // it never creates a second Dock registration.
+            match macos::acquire_instance(app.handle()) {
+                Ok(instance_guard) => {
+                    app.manage(instance_guard);
+                }
+                Err(macos::InstanceError::AlreadyRunning) => {
+                    exit_duplicate_instance();
+                }
+                Err(error) => return Err(error.into()),
+            }
+            macos::configure_foreground_activation(app.handle())?;
             let config = load_config(app.handle()).unwrap_or_default();
             app.manage(AppState::new(config.clone(), output::runtime_output()));
             app.manage(gateway::RuntimeServices::default());
             gateway::start(app.handle(), &config)?;
+            updater::start_auto_check(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -46,13 +67,21 @@ pub fn run() {
             commands::save_config,
             commands::list_models,
             commands::get_runtime_status,
+            commands::get_latest_caption,
+            commands::get_update_status,
+            commands::check_for_update,
+            commands::install_update,
+            commands::check_and_install_update,
+            commands::relaunch_to_updated_app,
             commands::start_capture,
             commands::stop_capture,
             commands::transcribe_audio_chunk,
+            commands::normalize_parapper_output,
             commands::open_overlay,
             commands::close_overlay,
             commands::publish_overlay_frame,
             commands::get_debug_info,
+            commands::export_debug_logs,
             model_download::download_model,
             model_download::download_quick_start,
             model_download::cancel_model_download,
@@ -65,6 +94,15 @@ pub fn run() {
             gateway::shutdown(app_handle);
         }
     });
+}
+
+/// Route a duplicate launch to the existing foreground bundle and terminate
+/// before any gateway or sidecar can be started in this process.
+fn exit_duplicate_instance() -> ! {
+    if let Err(error) = macos::activate_existing_bundle() {
+        log::warn!("could not activate the existing Kotoba Beacon instance: {error}");
+    }
+    std::process::exit(0);
 }
 
 fn load_config(app: &tauri::AppHandle) -> Result<AppConfig, String> {

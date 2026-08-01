@@ -20,17 +20,13 @@ impl NativeOutputHandle {
     pub fn new(width: u32, height: u32) -> Self {
         let _ = (width, height);
         #[cfg(windows)]
-        {
-            if let Some(sender) = start_spout(width, height) {
-                return Self { sender: Some(sender), kind: "spout2".to_string() };
-            }
+        if let Some(sender) = start_spout(width, height) {
+            return Self { sender: Some(sender), kind: "spout2".to_string() };
         }
 
         #[cfg(target_os = "macos")]
-        {
-            if let Some(sender) = start_syphon(width, height) {
-                return Self { sender: Some(sender), kind: "syphon".to_string() };
-            }
+        if let Some(sender) = start_syphon(width, height) {
+            return Self { sender: Some(sender), kind: "syphon".to_string() };
         }
 
         Self { sender: None, kind: "transparent-window".to_string() }
@@ -51,22 +47,18 @@ impl NativeOutputHandle {
         if frame.rgba.len() != expected_length {
             return Err("native output frame byte length does not match dimensions".to_string());
         }
-        match &self.sender {
-            Some(sender) => {
-                #[cfg(any(windows, target_os = "macos"))]
-                match sender.try_send(frame) {
-                    Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
-                    Err(TrySendError::Disconnected(_)) => {
-                        Err("native output worker stopped".to_string())
-                    }
-                }
-                #[cfg(not(any(windows, target_os = "macos")))]
-                {
-                    let _ = sender;
-                    Ok(())
-                }
-            }
-            None => Ok(()),
+        let Some(sender) = self.sender.as_ref() else {
+            return Ok(());
+        };
+        #[cfg(any(windows, target_os = "macos"))]
+        return match sender.try_send(frame) {
+            Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
+            Err(TrySendError::Disconnected(_)) => Err("native output worker stopped".to_string()),
+        };
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            let _ = (sender, frame);
+            Ok(())
         }
     }
 }
@@ -86,10 +78,11 @@ fn start_spout(width: u32, height: u32) -> Option<SyncSender<OverlayFrame>> {
             }
         };
         let _ = ready_sender.send(true);
-        for frame in frame_receiver {
-            if frame.width == width && frame.height == height {
-                let _ = sender.send_image(&frame.rgba, frame.width, frame.height);
-            }
+        for frame in frame_receiver
+            .into_iter()
+            .filter(|frame| frame.width == width && frame.height == height)
+        {
+            let _ = sender.send_image(&frame.rgba, frame.width, frame.height);
         }
     });
     ready_receiver
@@ -112,10 +105,11 @@ fn start_syphon(width: u32, height: u32) -> Option<SyncSender<OverlayFrame>> {
             }
         };
         let _ = ready_sender.send(true);
-        for frame in frame_receiver {
-            if frame.width == width && frame.height == height {
-                server.send_frame(&frame.rgba);
-            }
+        for frame in frame_receiver
+            .into_iter()
+            .filter(|frame| frame.width == width && frame.height == height)
+        {
+            server.send_frame(&frame.rgba);
         }
     });
     ready_receiver

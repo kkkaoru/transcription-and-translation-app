@@ -5,7 +5,10 @@ use crate::{
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::Duration,
 };
 
@@ -20,6 +23,14 @@ use tauri_plugin_shell::{
 
 const GATEWAY_PORT: u16 = 8765;
 const PARAPPER_PORT: u16 = 18082;
+/// Headless Parapper keeps a brief pause inside the same turn.  Keep these
+/// values explicit in the desktop-to-sidecar command contract so a persisted
+/// interactive Parapper profile cannot reintroduce 96ms/320ms segmentation.
+const PARAPPER_INTERIM_RESULT_SILENCE_MS: u32 = 192;
+// Match the headless sidecar default: 960ms keeps a normal Japanese clause
+// together across an ordinary breath, with a bounded finalization delay for
+// genuinely short utterances.
+const PARAPPER_TURN_CHECK_SILENCE_MS: u32 = 960;
 const SERVICE_READY_ATTEMPTS: u32 = 90;
 const PARAPPER_READY_ATTEMPTS: u32 = 300;
 
@@ -28,14 +39,16 @@ const PARAPPER_READY_ATTEMPTS: u32 = 300;
 #[cfg(unix)]
 fn kill_port(port: u16) {
     let output = std::process::Command::new("lsof").args(["-ti", &format!(":{port}")]).output();
-    if let Ok(output) = output {
-        if output.status.success() {
-            let pids = String::from_utf8_lossy(&output.stdout);
-            for pid in pids.split_whitespace() {
-                log::warn!(target: "kotoba_runtime", "clearing stale listener on port {port} (pid {pid})");
-                let _ = std::process::Command::new("kill").args(["-9", pid]).output();
-            }
-        }
+    let Ok(output) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let pids = String::from_utf8_lossy(&output.stdout);
+    for pid in pids.split_whitespace() {
+        log::warn!(target: "kotoba_runtime", "clearing stale listener on port {port} (pid {pid})");
+        let _ = std::process::Command::new("kill").args(["-9", pid]).output();
     }
 }
 
@@ -56,6 +69,8 @@ pub struct RuntimeServices {
     parapper: Mutex<Option<CommandChild>>,
     models: Mutex<HashMap<String, CommandChild>>,
     model_reconciliation: tokio::sync::Mutex<()>,
+    lifecycle: Mutex<()>,
+    stopping: AtomicBool,
 }
 
 impl Default for RuntimeServices {
@@ -65,11 +80,31 @@ impl Default for RuntimeServices {
             parapper: Mutex::new(None),
             models: Mutex::new(HashMap::new()),
             model_reconciliation: tokio::sync::Mutex::new(()),
+            lifecycle: Mutex::new(()),
+            stopping: AtomicBool::new(false),
         }
     }
 }
 
 impl RuntimeServices {
+    fn begin_start(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        let lifecycle =
+            self.lifecycle.lock().map_err(|_| "runtime lifecycle lock poisoned".to_string())?;
+        self.stopping.store(false, Ordering::Release);
+        Ok(lifecycle)
+    }
+
+    fn begin_shutdown(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        let lifecycle =
+            self.lifecycle.lock().map_err(|_| "runtime lifecycle lock poisoned".to_string())?;
+        self.stopping.store(true, Ordering::Release);
+        Ok(lifecycle)
+    }
+
+    fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
+    }
+
     fn store_gateway(&self, child: CommandChild) -> Result<(), String> {
         self.store(&self.gateway, child, "inference gateway")
     }
@@ -83,6 +118,23 @@ impl RuntimeServices {
             .lock()
             .map(|models| models.contains_key(model_id))
             .map_err(|_| "model sidecar lock poisoned".to_string())
+    }
+
+    /// Snapshot process slots for diagnostics without exposing child handles.
+    pub fn active_sidecar(&self, id: &str) -> Result<bool, String> {
+        match id {
+            "kotoba-inference-gateway" => self
+                .gateway
+                .lock()
+                .map(|child| child.is_some())
+                .map_err(|_| "gateway child lock poisoned".to_string()),
+            "kotoba-parapper" => self
+                .parapper
+                .lock()
+                .map(|child| child.is_some())
+                .map_err(|_| "Parapper child lock poisoned".to_string()),
+            model_id => self.has_model(model_id),
+        }
     }
 
     fn store_model(&self, model_id: &str, child: CommandChild) -> Result<(), String> {
@@ -227,16 +279,18 @@ fn resource_runtime_path(app: &AppHandle, runtime_name: &str) -> Result<OsString
 }
 
 pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
+    config.validate()?;
     clear_sidecar_ports();
     let config_path = config_path(app)?;
     let services = app.state::<RuntimeServices>();
+    let _lifecycle = services.begin_start()?;
     let runtime_dir = parapper_runtime_dir(app)?;
-    let parapper_port = PARAPPER_PORT.to_string();
+    let parapper_args = parapper_headless_args(config);
     let parapper_command = app
         .shell()
         .sidecar("kotoba-parapper")
         .map_err(|error| format!("could not resolve embedded Parapper service: {error}"))?
-        .args(["--headless", "--port", parapper_port.as_str()])
+        .args(parapper_args)
         .env("PARAPPER_RUNTIME_DIR", &runtime_dir);
     #[cfg(windows)]
     let parapper_command = parapper_command.env("PATH", parapper_runtime_path(app)?);
@@ -247,8 +301,12 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     monitor_sidecar(parapper_events, "kotoba_parapper");
     log::info!(
         target: "kotoba_parapper",
-        "started headless recognition service with runtime data {}",
-        runtime_dir.display()
+        "started headless recognition service with runtime data {} (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={})",
+        runtime_dir.display(),
+        config.audio.vad_interval_ms,
+        config.audio.vad_threshold,
+        PARAPPER_INTERIM_RESULT_SILENCE_MS,
+        PARAPPER_TURN_CHECK_SILENCE_MS,
     );
 
     let (gateway_events, gateway_child) = app
@@ -275,6 +333,25 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// Build the explicit command-line contract used by the bundled Parapper
+/// sidecar. Keeping this as a pure helper makes it possible to test that the
+/// desktop settings are not silently dropped when the process is restarted.
+fn parapper_headless_args(config: &AppConfig) -> Vec<String> {
+    vec![
+        "--headless".to_string(),
+        "--port".to_string(),
+        PARAPPER_PORT.to_string(),
+        "--vad-interval-ms".to_string(),
+        config.audio.vad_interval_ms.to_string(),
+        "--vad-threshold".to_string(),
+        config.audio.vad_threshold.to_string(),
+        "--interim-result-silence-ms".to_string(),
+        PARAPPER_INTERIM_RESULT_SILENCE_MS.to_string(),
+        "--turn-check-silence-ms".to_string(),
+        PARAPPER_TURN_CHECK_SILENCE_MS.to_string(),
+    ]
+}
+
 /// Ensures that the bundled llama.cpp servers match the selected local models.
 /// A missing GGUF is fetched into the writable app-data directory before its
 /// server begins accepting requests.
@@ -286,16 +363,45 @@ pub async fn reconcile_models(app: &AppHandle, config: &AppConfig) -> Result<(),
     let _reconciliation = services.model_reconciliation.lock().await;
 
     for spec in desired {
-        if !services.has_model(spec.id)? {
-            let model_path = model_runtime::ensure_downloaded(spec, &models_dir).await?;
-            if !services.has_model(spec.id)? {
-                start_model_server(app, &services, &model_path, spec)?;
-            }
+        if services.is_stopping() {
+            return Ok(());
         }
-        wait_for_model_server(spec).await?;
+        reconcile_model_spec(app, &services, &models_dir, spec).await?;
     }
     services.stop_models_except(&active_ids);
     Ok(())
+}
+
+async fn reconcile_model_spec(
+    app: &AppHandle,
+    services: &RuntimeServices,
+    models_dir: &std::path::Path,
+    spec: &ModelRuntimeSpec,
+) -> Result<(), String> {
+    ensure_model_server(app, services, models_dir, spec).await?;
+    if services.is_stopping() {
+        return Ok(());
+    }
+    wait_for_model_server(spec).await
+}
+
+async fn ensure_model_server(
+    app: &AppHandle,
+    services: &RuntimeServices,
+    models_dir: &std::path::Path,
+    spec: &ModelRuntimeSpec,
+) -> Result<(), String> {
+    if services.has_model(spec.id)? {
+        return Ok(());
+    }
+    let model_path = model_runtime::ensure_downloaded(spec, models_dir).await?;
+    if services.is_stopping() {
+        return Ok(());
+    }
+    if services.has_model(spec.id)? {
+        return Ok(());
+    }
+    start_model_server(app, services, &model_path, spec)
 }
 
 /// Blocks until the inference gateway (and local Parapper, when configured) accept
@@ -316,7 +422,8 @@ pub async fn ensure_services_ready(config: &AppConfig) -> Result<(), String> {
 pub async fn probe_service_health(config: &AppConfig) -> serde_json::Value {
     let base = config.endpoint.base_url.trim_end_matches('/');
     let gateway = probe_http(&format!("{base}/health")).await;
-    let parapper = probe_tcp("127.0.0.1", PARAPPER_PORT).await;
+    let mut parapper = probe_tcp("127.0.0.1", PARAPPER_PORT).await;
+    add_parapper_vad_diagnostics(&mut parapper, config);
     serde_json::json!({
         "gateway": gateway,
         "parapper": parapper,
@@ -325,14 +432,124 @@ pub async fn probe_service_health(config: &AppConfig) -> serde_json::Value {
     })
 }
 
+/// Return a support-safe version/health snapshot for every bundled sidecar.
+///
+/// The process command line and child output are intentionally omitted. A
+/// sidecar can print request headers or prompts on stdout/stderr, so the Debug
+/// panel receives only static identifiers, build metadata, ports, and health
+/// booleans/status codes.
+pub async fn probe_sidecar_statuses(
+    config: &AppConfig,
+    services: &RuntimeServices,
+) -> Vec<serde_json::Value> {
+    let base = config.endpoint.base_url.trim_end_matches('/');
+    let gateway_url = format!("{base}/health");
+    let gateway_health = probe_http(&gateway_url).await;
+    let parapper_health = probe_tcp("127.0.0.1", PARAPPER_PORT).await;
+    let mut rows = vec![sidecar_status(
+        "kotoba-inference-gateway",
+        "gateway",
+        option_env!("KOTOBA_GATEWAY_VERSION").unwrap_or("0.1.0"),
+        "build metadata",
+        services.active_sidecar("kotoba-inference-gateway").unwrap_or(false),
+        gateway_health,
+        Some(GATEWAY_PORT),
+    )];
+    rows.push(sidecar_status(
+        "kotoba-parapper",
+        "asr",
+        option_env!("KOTOBA_PARAPPER_VERSION").unwrap_or("0.3.0"),
+        "build metadata",
+        services.active_sidecar("kotoba-parapper").unwrap_or(false),
+        parapper_health,
+        Some(PARAPPER_PORT),
+    ));
+    if let Some(parapper) = rows.get_mut(1) {
+        add_parapper_vad_diagnostics(parapper, config);
+    }
+
+    for runtime in model_runtime::all_specs() {
+        let url = format!("http://127.0.0.1:{}/health", runtime.port);
+        let health = probe_http_with_timeout(&url, Duration::from_millis(500)).await;
+        rows.push(sidecar_status(
+            runtime.id,
+            match runtime.server {
+                model_runtime::ModelServer::Zenz => "normalizer",
+                model_runtime::ModelServer::Llama => "translator",
+            },
+            "bundled",
+            "runtime spec",
+            services.active_sidecar(runtime.id).unwrap_or(false),
+            health,
+            Some(runtime.port),
+        ));
+    }
+    for row in &rows {
+        log::info!(
+            target: "kotoba_runtime",
+            "sidecar id={} kind={} version={} health={} active={} port={}",
+            row.get("id").and_then(serde_json::Value::as_str).unwrap_or("unknown"),
+            row.get("kind").and_then(serde_json::Value::as_str).unwrap_or("runtime"),
+            row.get("version").and_then(serde_json::Value::as_str).unwrap_or("unknown"),
+            row.get("health").and_then(serde_json::Value::as_str).unwrap_or("unknown"),
+            row.get("active").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            row.get("port").and_then(serde_json::Value::as_u64).unwrap_or(0),
+        );
+    }
+    rows
+}
+
+fn add_parapper_vad_diagnostics(value: &mut serde_json::Value, config: &AppConfig) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("vadIntervalMs".to_string(), serde_json::json!(config.audio.vad_interval_ms));
+        object.insert("vadThreshold".to_string(), serde_json::json!(config.audio.vad_threshold));
+        object.insert(
+            "interimResultSilenceMs".to_string(),
+            serde_json::json!(PARAPPER_INTERIM_RESULT_SILENCE_MS),
+        );
+        object.insert(
+            "turnCheckSilenceMs".to_string(),
+            serde_json::json!(PARAPPER_TURN_CHECK_SILENCE_MS),
+        );
+    }
+}
+
+fn sidecar_status(
+    id: &str,
+    kind: &str,
+    version: &str,
+    version_source: &str,
+    active: bool,
+    health: serde_json::Value,
+    port: Option<u16>,
+) -> serde_json::Value {
+    let ok = health.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let health_state = if ok {
+        "healthy"
+    } else if active {
+        "unhealthy"
+    } else {
+        "inactive"
+    };
+    serde_json::json!({
+        "id": id,
+        "kind": kind,
+        "version": version,
+        "versionSource": version_source,
+        "health": health_state,
+        "healthUrl": health.get("url").cloned().unwrap_or(serde_json::Value::Null),
+        "port": port,
+        "active": active,
+        "lastError": health.get("error").cloned().unwrap_or(serde_json::Value::Null),
+        "startedAt": serde_json::Value::Null,
+        "switchResult": serde_json::Value::Null,
+    })
+}
+
 async fn wait_for_http_ok(url: &str, label: &str, attempts: u32) -> Result<(), String> {
     for attempt in 1..=attempts {
-        if let Ok(response) =
-            reqwest::Client::new().get(url).timeout(Duration::from_secs(2)).send().await
-        {
-            if response.status().is_success() {
-                return Ok(());
-            }
+        if http_request_succeeded(url).await {
+            return Ok(());
         }
         if attempt == attempts {
             break;
@@ -343,6 +560,16 @@ async fn wait_for_http_ok(url: &str, label: &str, attempts: u32) -> Result<(), S
         "{label} did not become ready at {url} within {attempts}s. \
          Check that the embedded inference gateway sidecar is running."
     ))
+}
+
+async fn http_request_succeeded(url: &str) -> bool {
+    reqwest::Client::new()
+        .get(url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
 }
 
 async fn wait_for_tcp(host: &str, port: u16, label: &str, attempts: u32) -> Result<(), String> {
@@ -363,16 +590,20 @@ async fn wait_for_tcp(host: &str, port: u16, label: &str, attempts: u32) -> Resu
 }
 
 async fn probe_http(url: &str) -> serde_json::Value {
-    match reqwest::Client::new().get(url).timeout(Duration::from_secs(2)).send().await {
+    probe_http_with_timeout(url, Duration::from_secs(2)).await
+}
+
+async fn probe_http_with_timeout(url: &str, timeout: Duration) -> serde_json::Value {
+    match reqwest::Client::new().get(url).timeout(timeout).send().await {
         Ok(response) => serde_json::json!({
             "ok": response.status().is_success(),
             "status": response.status().as_u16(),
-            "url": url,
+            "url": safe_health_url(url),
         }),
         Err(error) => serde_json::json!({
             "ok": false,
-            "error": error.to_string(),
-            "url": url,
+            "error": redact_runtime_error(&error.to_string()),
+            "url": safe_health_url(url),
         }),
     }
 }
@@ -382,51 +613,151 @@ async fn probe_tcp(host: &str, port: u16) -> serde_json::Value {
         Ok(_) => serde_json::json!({ "ok": true, "host": host, "port": port }),
         Err(error) => serde_json::json!({
             "ok": false,
-            "error": error.to_string(),
+            "error": redact_runtime_error(&error.to_string()),
             "host": host,
             "port": port,
         }),
     }
 }
 
+/// Strip query/fragment and userinfo from a URL before diagnostics display it.
+fn safe_health_url(url: &str) -> String {
+    let without_fragment = url.split('#').next().unwrap_or(url);
+    let without_query = without_fragment.split('?').next().unwrap_or(without_fragment);
+    redact_health_url_userinfo(without_query).unwrap_or_else(|| without_query.to_string())
+}
+
+fn redact_health_url_userinfo(url: &str) -> Option<String> {
+    let scheme_end = url.find("://")?;
+    let authority_start = scheme_end + 3;
+    let path_offset = url[authority_start..].find('/')?;
+    let authority_end = authority_start + path_offset;
+    let authority = &url[authority_start..authority_end];
+    let at = authority.rfind('@')?;
+    Some(format!(
+        "{}://[REDACTED]@{}{}",
+        &url[..scheme_end],
+        &authority[at + 1..],
+        &url[authority_end..]
+    ))
+}
+
+fn redact_runtime_error(error: &str) -> String {
+    let mut value = error.to_string();
+    for marker in [
+        "access_token=",
+        "refresh_token=",
+        "id_token=",
+        "api_key=",
+        "apikey=",
+        "token=",
+        "secret=",
+        "password=",
+    ] {
+        let lower = value.to_ascii_lowercase();
+        if let Some(start) = lower.find(marker) {
+            let end = value[start + marker.len()..]
+                .find(['&', '#', ' ', '\n', '\r'])
+                .map(|offset| start + marker.len() + offset)
+                .unwrap_or(value.len());
+            value.replace_range(start + marker.len()..end, "[REDACTED]");
+        }
+    }
+    value
+}
+
 fn schedule_model_reconciliation(app: AppHandle, config: AppConfig) {
     tauri::async_runtime::spawn(async move {
         if let Err(error) = reconcile_models(&app, &config).await {
-            log::error!(target: "kotoba_model_download", "could not prepare selected models: {error}");
+            log::error!(
+                target: "kotoba_model_download",
+                "could not prepare selected models: {}",
+                redact_runtime_error(&error)
+            );
         }
     });
 }
 
 pub fn shutdown(app: &AppHandle) {
-    app.state::<RuntimeServices>().stop_all();
+    let services = app.state::<RuntimeServices>();
+    match services.begin_shutdown() {
+        Ok(_lifecycle) => services.stop_all(),
+        Err(error) => log::error!(
+            target: "kotoba_runtime",
+            "could not acquire runtime lifecycle lock: {error}"
+        ),
+    };
 }
 
-fn monitor_sidecar(mut events: tauri::async_runtime::Receiver<CommandEvent>, target: &'static str) {
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                CommandEvent::Stderr(line) => {
-                    log::warn!(target: target, "{}", String::from_utf8_lossy(&line));
-                }
-                CommandEvent::Error(error) => {
-                    log::error!(target: target, "{error}")
-                }
-                CommandEvent::Terminated(status) => {
-                    log::warn!(
-                        target: target,
-                        "exited (code={:?}, signal={:?})",
-                        status.code,
-                        status.signal
-                    );
-                    break;
-                }
-                CommandEvent::Stdout(line) => {
-                    log::info!(target: target, "{}", String::from_utf8_lossy(&line))
-                }
-                _ => {}
-            }
+fn safe_sidecar_event(line: &str) -> Option<&'static str> {
+    [
+        ("session start", "session-start"),
+        ("session completed", "session-completed"),
+        ("session done without final transcript", "no-final-transcript"),
+        ("Streaming recognition client connected", "recognition-connected"),
+        ("Streaming recognition client disconnected", "recognition-disconnected"),
+    ]
+    .iter()
+    .find_map(|(needle, label)| line.contains(needle).then_some(*label))
+}
+
+fn log_sidecar_stdout(target: &'static str, line: &[u8]) {
+    let text = std::str::from_utf8(line).unwrap_or_default();
+    if let Some(event) = safe_sidecar_event(text) {
+        log::info!(
+            target: target,
+            "sidecar stdout event={} ({} bytes)",
+            event,
+            line.len()
+        );
+    } else {
+        log::info!(target: target, "sidecar stdout received ({} bytes)", line.len());
+    }
+}
+
+fn monitor_sidecar(events: tauri::async_runtime::Receiver<CommandEvent>, target: &'static str) {
+    tauri::async_runtime::spawn(run_sidecar_monitor(events, target));
+}
+
+async fn run_sidecar_monitor(
+    mut events: tauri::async_runtime::Receiver<CommandEvent>,
+    target: &'static str,
+) {
+    while let Some(event) = events.recv().await {
+        if handle_sidecar_event(event, target) {
+            break;
         }
-    });
+    }
+}
+
+fn handle_sidecar_event(event: CommandEvent, target: &'static str) -> bool {
+    match event {
+        CommandEvent::Stderr(line) => {
+            // Sidecars may echo request headers or model prompts. Keep
+            // native logs useful for health triage without persisting
+            // arbitrary process output (which can contain secrets).
+            log::warn!(target: target, "sidecar stderr received ({} bytes)", line.len());
+            false
+        }
+        CommandEvent::Error(error) => {
+            log::error!(target: target, "{}", redact_runtime_error(&error));
+            false
+        }
+        CommandEvent::Terminated(status) => {
+            log::warn!(
+                target: target,
+                "exited (code={:?}, signal={:?})",
+                status.code,
+                status.signal
+            );
+            true
+        }
+        CommandEvent::Stdout(line) => {
+            log_sidecar_stdout(target, &line);
+            false
+        }
+        _ => false,
+    }
 }
 
 fn start_model_server(
@@ -435,6 +766,11 @@ fn start_model_server(
     model_path: &std::path::Path,
     spec: &ModelRuntimeSpec,
 ) -> Result<(), String> {
+    let _lifecycle =
+        services.lifecycle.lock().map_err(|_| "runtime lifecycle lock poisoned".to_string())?;
+    if services.is_stopping() {
+        return Ok(());
+    }
     let command = app
         .shell()
         .sidecar(spec.server.sidecar_name())
@@ -459,57 +795,82 @@ fn start_model_server(
 async fn wait_for_model_server(spec: &ModelRuntimeSpec) -> Result<(), String> {
     let url = format!("http://127.0.0.1:{}/health", spec.port);
     for _ in 0..120 {
-        if let Ok(response) = reqwest::get(&url).await {
-            if response.status().is_success() {
-                return Ok(());
-            }
+        if model_request_succeeded(&url).await {
+            return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     Err(format!("model server {} did not become ready at {url}", spec.id))
 }
 
+async fn model_request_succeeded(url: &str) -> bool {
+    reqwest::get(url).await.map(|response| response.status().is_success()).unwrap_or(false)
+}
+
 fn monitor_model_sidecar(
+    events: tauri::async_runtime::Receiver<CommandEvent>,
+    app: AppHandle,
+    model_id: &'static str,
+) {
+    tauri::async_runtime::spawn(run_model_sidecar_monitor(events, app, model_id));
+}
+
+async fn run_model_sidecar_monitor(
     mut events: tauri::async_runtime::Receiver<CommandEvent>,
     app: AppHandle,
     model_id: &'static str,
 ) {
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                CommandEvent::Stderr(line) => {
-                    log::warn!(
-                        target: "kotoba_llama_server",
-                        "{}: {}",
-                        model_id,
-                        String::from_utf8_lossy(&line)
-                    );
-                }
-                CommandEvent::Error(error) => {
-                    log::error!(target: "kotoba_llama_server", "{model_id}: {error}")
-                }
-                CommandEvent::Terminated(status) => {
-                    log::warn!(
-                        target: "kotoba_llama_server",
-                        "{model_id} exited (code={:?}, signal={:?})",
-                        status.code,
-                        status.signal
-                    );
-                    app.state::<RuntimeServices>().forget_model(model_id);
-                    break;
-                }
-                CommandEvent::Stdout(line) => {
-                    log::info!(
-                        target: "kotoba_llama_server",
-                        "{}: {}",
-                        model_id,
-                        String::from_utf8_lossy(&line)
-                    )
-                }
-                _ => {}
-            }
+    while let Some(event) = events.recv().await {
+        if handle_model_sidecar_event(event, &app, model_id) {
+            break;
         }
-    });
+    }
+}
+
+fn handle_model_sidecar_event(
+    event: CommandEvent,
+    app: &AppHandle,
+    model_id: &'static str,
+) -> bool {
+    match event {
+        CommandEvent::Stderr(line) => {
+            log::warn!(
+                target: "kotoba_llama_server",
+                "{}: sidecar stderr received ({} bytes)",
+                model_id,
+                line.len()
+            );
+            false
+        }
+        CommandEvent::Error(error) => {
+            log::error!(
+                target: "kotoba_llama_server",
+                "{model_id}: {}",
+                redact_runtime_error(&error)
+            );
+            false
+        }
+        CommandEvent::Terminated(status) => {
+            log::warn!(
+                target: "kotoba_llama_server",
+                "{model_id} exited (code={:?}, signal={:?})",
+                status.code,
+                status.signal
+            );
+            app.state::<RuntimeServices>().forget_model(model_id);
+            true
+        }
+        CommandEvent::Stdout(line) => {
+            log::info!(
+                target: "kotoba_llama_server",
+                "{}: sidecar stdout received ({} bytes)",
+                model_id,
+                line.len()
+            );
+            false
+        }
+        _ => false,
+    }
 }
 
 fn stop_child(slot: &Mutex<Option<CommandChild>>, target: &'static str) {
@@ -541,7 +902,10 @@ fn stop_model_child(model_id: &str, child: CommandChild) {
 mod tests {
     use std::path::Path;
 
-    use super::{default_gateway_config, PARAPPER_PORT};
+    use super::{
+        add_parapper_vad_diagnostics, default_gateway_config, parapper_headless_args,
+        redact_runtime_error, safe_health_url, safe_sidecar_event, AppConfig, PARAPPER_PORT,
+    };
 
     #[test]
     fn embedded_gateway_defaults_to_loopback_only() {
@@ -557,6 +921,45 @@ mod tests {
     }
 
     #[test]
+    fn embedded_parapper_receives_desktop_vad_settings_on_startup() {
+        let mut config = AppConfig::default();
+        config.audio.vad_interval_ms = 64;
+        config.audio.vad_threshold = 0.25;
+
+        assert_eq!(
+            parapper_headless_args(&config),
+            vec![
+                "--headless",
+                "--port",
+                "18082",
+                "--vad-interval-ms",
+                "64",
+                "--vad-threshold",
+                "0.25",
+                "--interim-result-silence-ms",
+                "192",
+                "--turn-check-silence-ms",
+                "960",
+            ],
+        );
+    }
+
+    #[test]
+    fn parapper_health_diagnostics_include_effective_vad_settings() {
+        let mut config = AppConfig::default();
+        config.audio.vad_interval_ms = 128;
+        config.audio.vad_threshold = 1.0;
+        let mut health = serde_json::json!({ "ok": true });
+
+        add_parapper_vad_diagnostics(&mut health, &config);
+
+        assert_eq!(health["vadIntervalMs"], 128);
+        assert_eq!(health["vadThreshold"], 1.0);
+        assert_eq!(health["interimResultSilenceMs"], 192);
+        assert_eq!(health["turnCheckSilenceMs"], 960);
+    }
+
+    #[test]
     fn embedded_gateway_routes_every_bundled_model_server() {
         let config = default_gateway_config();
         assert_eq!(config["models"].as_object().expect("model map").len(), 7);
@@ -567,5 +970,29 @@ mod tests {
     fn parapper_runtime_data_is_separate_from_gateway_configuration() {
         let base = Path::new("/tmp/kotoba-beacon");
         assert_eq!(base.join("parapper"), Path::new("/tmp/kotoba-beacon/parapper"));
+    }
+
+    #[test]
+    fn diagnostics_strip_credentials_from_health_urls_and_errors() {
+        assert_eq!(
+            safe_health_url("https://user:password@example.test/health?access_token=secret"),
+            "https://[REDACTED]@example.test/health"
+        );
+        let redacted = redact_runtime_error("request failed api_key=abc123&status=503");
+        assert!(!redacted.contains("abc123"));
+        assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn sidecar_event_summary_keeps_only_safe_marker_names() {
+        assert_eq!(
+            safe_sidecar_event("session completed { token: secret-value }"),
+            Some("session-completed")
+        );
+        assert_eq!(
+            safe_sidecar_event("Streaming recognition client connected"),
+            Some("recognition-connected")
+        );
+        assert_eq!(safe_sidecar_event("model logits: [0.1, 0.2]"), None);
     }
 }
