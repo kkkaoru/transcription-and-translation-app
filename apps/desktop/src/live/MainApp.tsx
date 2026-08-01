@@ -19,7 +19,9 @@ import {
 import {
   createDefaultConfig,
   DEFAULT_MODEL_CATALOG,
+  DEFAULT_RECOGNITION_MODE,
   DEFAULT_RUNTIME_STATUS,
+  isRecognitionMode,
 } from "../core/defaults";
 import { pushDiagnosticEvent } from "../core/diagnostics";
 import { clearCaptionDisplayTiming, markCaptionDisplay } from "../core/display-timing";
@@ -46,8 +48,14 @@ import type {
   ModelCatalog,
   ModelFamily,
   ParapperRecognitionOutput,
+  RecognitionMode,
   RuntimeStatus,
 } from "../core/types";
+import {
+  type WebSpeechRecognitionResult,
+  WebSpeechRecognitionStream,
+  type WebSpeechRecognitionStreamEvent,
+} from "../core/webSpeechRecognition";
 import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
 import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
@@ -71,6 +79,26 @@ const statusKeys: Record<RuntimeStatus["status"], MessageKey> = {
   error: "status.error",
 };
 
+const webSpeechLanguage = (source: string): string => {
+  const value = source.trim();
+  if (!value) {
+    return "ja-JP";
+  }
+  if (value.includes("-")) {
+    return value;
+  }
+  const defaults: Record<string, string> = {
+    ja: "ja-JP",
+    en: "en-US",
+    ko: "ko-KR",
+    zh: "zh-CN",
+    fr: "fr-FR",
+    de: "de-DE",
+    es: "es-ES",
+  };
+  return defaults[value.toLowerCase()] ?? value;
+};
+
 export const MainApp = () => {
   const { t } = useI18n();
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
@@ -87,6 +115,13 @@ export const MainApp = () => {
   const chunkProcessor = useRef<LatestWinsProcessor<AudioChunk> | null>(null);
   /** One continuous Parapper VAD/Segment/Turn session for desktop capture. */
   const parapperStream = useRef<ParapperRecognitionStream | null>(null);
+  /** Browser Web Speech stream used by the explicit debug recognition mode. */
+  const webSpeechStream = useRef<WebSpeechRecognitionStream | null>(null);
+  /** Aggregate Web Speech result slots until the browser ends one session. */
+  const webSpeechResults = useRef<Map<number, string>>(new Map());
+  const webSpeechCaptionId = useRef<string | null>(null);
+  const webSpeechStartedAt = useRef<number>(0);
+  const webSpeechPublishChain = useRef<Promise<void>>(Promise.resolve());
   /**
    * Preserve final turn order while coalescing high-frequency partials. A
    * Promise chain would queue every interim revision and delay the final
@@ -176,6 +211,10 @@ export const MainApp = () => {
       captureAttempt.current += 1;
       parapperStream.current?.cancel();
       parapperStream.current = null;
+      webSpeechStream.current?.cancel();
+      webSpeechStream.current = null;
+      webSpeechResults.current.clear();
+      webSpeechCaptionId.current = null;
       void capture.current.stop().catch(() => undefined);
     };
   }, [refreshDevices]);
@@ -422,11 +461,19 @@ export const MainApp = () => {
 
   const startCapture = async (captureConfig: AppConfig) => {
     const attempt = ++captureAttempt.current;
+    const recognitionMode: RecognitionMode = isRecognitionMode(captureConfig.recognitionMode)
+      ? captureConfig.recognitionMode
+      : DEFAULT_RECOGNITION_MODE;
+    const webSpeechMode = recognitionMode === "web-speech";
+    const parapperRawMode = recognitionMode === "parapper-raw";
     captionIdleGuard.current = false;
     captionFailureMessage.current = null;
     const microphone = new MicrophoneCapture();
     const previousMicrophone = capture.current;
+    const previousWebSpeech = webSpeechStream.current;
     capture.current = microphone;
+    webSpeechStream.current = null;
+    previousWebSpeech?.cancel();
     setNotice(null);
     clearInputLevelDb();
     clearCaptionDisplayTiming();
@@ -439,9 +486,139 @@ export const MainApp = () => {
     // Kick AudioContext construction / resume while the click gesture is still
     // warm. bridge.startCapture() may wait many seconds for sidecars; doing
     // resume() only after that wait leaves WKWebView contexts suspended.
-    microphone.primeAudioContext();
+    if (!webSpeechMode) {
+      microphone.primeAudioContext();
+    }
     let streamForAttempt: ParapperRecognitionStream | null = null;
+    let webSpeechForAttempt: WebSpeechRecognitionStream | null = null;
+
+    const publishWebSpeechResult = (result: WebSpeechRecognitionResult): void => {
+      // Keep the engine's whitespace between Latin words while using a
+      // trimmed value only for the empty-result guard and final caption.
+      const rawTranscript = result.transcript;
+      const transcript = rawTranscript.trim();
+      if (!transcript || attempt !== captureAttempt.current) {
+        return;
+      }
+      const startedAt = webSpeechStartedAt.current || Date.now();
+      const id = webSpeechCaptionId.current ?? `web-speech:${attempt}:${startedAt}`;
+      webSpeechCaptionId.current = id;
+      webSpeechResults.current.set(result.resultIndex, rawTranscript);
+      const sourceText = [...webSpeechResults.current.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, text]) => text)
+        .join("")
+        .trim();
+      if (!sourceText) {
+        return;
+      }
+      const receivedAt = Date.now();
+      const caption: CaptionPayload = {
+        id,
+        sourceText,
+        translationText: "",
+        sourceLanguage: captureConfig.language.source,
+        targetLanguage: captureConfig.language.target,
+        startedAt,
+        receivedAt,
+        stage: "source",
+        sequence: 0,
+        isFinal: result.isFinal,
+        confidence: result.confidence,
+      };
+      pushPipelineStageEvent({
+        stage: "asr",
+        utteranceId: id,
+        modelId: "web-speech",
+        inputSnippet: "",
+        outputText: sourceText,
+        startedAt,
+        at: receivedAt,
+        durationMs: Math.max(0, receivedAt - startedAt),
+        ok: true,
+        error: null,
+      });
+      setCaption((current) => {
+        const merged = mergeCaptionPayload(current, caption);
+        if (merged === null || merged === current) {
+          return current;
+        }
+        markCaptionDisplay(merged);
+        return merged;
+      });
+      setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
+      webSpeechPublishChain.current = webSpeechPublishChain.current
+        .then(() => bridge.publishSourceCaption(caption))
+        .catch((error: unknown) => {
+          pushDiagnosticEvent(
+            "error",
+            "Web Speech caption publish failed",
+            formatBridgeError(error) ?? String(error),
+          );
+        });
+    };
+
+    const handleWebSpeechEvent = (event: WebSpeechRecognitionStreamEvent): void => {
+      if (attempt !== captureAttempt.current) {
+        return;
+      }
+      if (event.type === "start") {
+        webSpeechStartedAt.current = Date.now();
+        if (!webSpeechCaptionId.current) {
+          webSpeechCaptionId.current = `web-speech:${attempt}:${webSpeechStartedAt.current}`;
+        }
+        pushDiagnosticEvent("audio", "Web Speech stream started");
+        return;
+      }
+      if (event.type === "end") {
+        pushDiagnosticEvent("audio", "Web Speech stream ended", `restart=${event.willRestart}`);
+        // Keep the final result slots until stopCapture drains the publish
+        // chain. Some WebKit builds dispatch `onend` before the last queued
+        // `onresult` callback; clearing here would lose that final caption.
+        // Automatic restarts begin a fresh recognition session and can safely
+        // reset the aggregate immediately.
+        if (event.willRestart) {
+          webSpeechResults.current.clear();
+          webSpeechCaptionId.current = null;
+          webSpeechStartedAt.current = 0;
+        }
+        return;
+      }
+      if (event.type === "error") {
+        pushDiagnosticEvent(
+          event.error.fatal ? "error" : "audio",
+          event.error.fatal ? "Web Speech stream failed" : "Web Speech stream warning",
+          `${event.error.code} · ${event.error.message}`,
+        );
+        if (event.error.fatal) {
+          const nextNotice = noticeFromError(event.error, "message.audioProcessingFailed");
+          setNotice(nextNotice);
+          captionFailureMessage.current = nextNotice.detail ?? t(nextNotice.key);
+          setStatus((current) => ({
+            ...current,
+            status: "error",
+            lastError: nextNotice.detail ?? t(nextNotice.key),
+          }));
+          void stopCapture();
+        }
+        return;
+      }
+      if (event.type === "partial" || event.type === "final") {
+        publishWebSpeechResult(event);
+      }
+    };
+
     try {
+      // Web Speech requires a user-gesture-adjacent start in Safari/WKWebView.
+      // Start it before the asynchronous native-service preparation below.
+      if (webSpeechMode) {
+        webSpeechForAttempt = new WebSpeechRecognitionStream({
+          language: webSpeechLanguage(captureConfig.language.source),
+          onEvent: handleWebSpeechEvent,
+        });
+        webSpeechStream.current = webSpeechForAttempt;
+        webSpeechForAttempt.start();
+      }
       // Free the previous mic device before opening a new stream (NotReadableError
       // if two sessions pin the same input).
       await previousMicrophone.stop();
@@ -452,6 +629,23 @@ export const MainApp = () => {
       await bridge.stopCapture().catch(() => undefined);
       if (attempt !== captureAttempt.current) {
         await microphone.stop().catch(() => undefined);
+        return;
+      }
+
+      // Web Speech owns the microphone through the browser's recognition
+      // service. Do not open a second getUserMedia/AudioContext graph or start
+      // the Parapper PCM stream for this mode. Native start_capture still
+      // marks the shared runtime as active so source captions can use the same
+      // overlay/replay command path.
+      if (webSpeechMode) {
+        await bridge.startCapture();
+        if (attempt !== captureAttempt.current) {
+          webSpeechForAttempt?.cancel();
+          await bridge.stopCapture().catch(() => undefined);
+          return;
+        }
+        setStatus((current) => ({ ...current, status: "capturing", lastError: null }));
+        pushDiagnosticEvent("audio", "Web Speech capture active");
         return;
       }
 
@@ -479,7 +673,7 @@ export const MainApp = () => {
         throw prepareResult.reason;
       }
 
-      const desktopStreaming = bridge.isDesktop();
+      const desktopStreaming = bridge.isDesktop() && !webSpeechMode;
       chunkProcessor.current?.reset();
       clearChunkTimingStats();
       parapperOutputQueue.current?.close();
@@ -488,6 +682,62 @@ export const MainApp = () => {
       if (desktopStreaming) {
         const processOutput = async (output: ParapperRecognitionOutput): Promise<void> => {
           if (attempt !== captureAttempt.current) {
+            return;
+          }
+          if (parapperRawMode) {
+            const rawText = output.text.trim();
+            if (!rawText) {
+              return;
+            }
+            const receivedAt = Date.now();
+            const startedAt = Math.max(0, receivedAt - Math.max(0, output.elapsedMs));
+            const rawCaption: CaptionPayload = {
+              id: `parapper:${output.sessionId}:${output.turnSessionId}:${output.turnId}`,
+              sourceText: rawText,
+              translationText: "",
+              sourceLanguage: captureConfig.language.source,
+              targetLanguage: captureConfig.language.target,
+              startedAt,
+              receivedAt,
+              stage: "source",
+              sequence: 0,
+              isFinal: output.isFinal,
+            };
+            pushPipelineStageEvent({
+              stage: "asr",
+              utteranceId: rawCaption.id,
+              modelId: output.sourceAsrModel || captureConfig.models.asr,
+              inputSnippet: output.sourceText ?? rawText,
+              outputText: rawText,
+              startedAt,
+              at: receivedAt,
+              durationMs: Math.max(0, output.elapsedMs),
+              ok: true,
+              error: null,
+            });
+            setCaption((current) => {
+              const merged = mergeCaptionPayload(current, rawCaption);
+              if (merged === null || merged === current) {
+                return current;
+              }
+              markCaptionDisplay(merged);
+              return merged;
+            });
+            setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
+            pushDiagnosticEvent(
+              "caption",
+              output.isFinal ? "Parapper raw final" : "Parapper raw interim",
+              `id=${rawCaption.id} · src=${rawText.slice(0, 48)}`,
+            );
+            webSpeechPublishChain.current = webSpeechPublishChain.current
+              .then(() => bridge.publishSourceCaption(rawCaption))
+              .catch((error: unknown) => {
+                pushDiagnosticEvent(
+                  "error",
+                  "Parapper raw caption publish failed",
+                  formatBridgeError(error) ?? String(error),
+                );
+              });
             return;
           }
           const startedAt =
@@ -715,8 +965,12 @@ export const MainApp = () => {
       }
     } catch (error) {
       streamForAttempt?.cancel();
+      webSpeechForAttempt?.cancel();
       if (parapperStream.current === streamForAttempt) {
         parapperStream.current = null;
+      }
+      if (webSpeechStream.current === webSpeechForAttempt) {
+        webSpeechStream.current = null;
       }
       await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
       if (attempt !== captureAttempt.current) {
@@ -747,6 +1001,7 @@ export const MainApp = () => {
     const microphone = capture.current;
     const processor = chunkProcessor.current;
     const stream = parapperStream.current;
+    const speech = webSpeechStream.current;
     const outputQueue = parapperOutputQueue.current;
     clearInputLevelDb();
     pushDiagnosticEvent("audio", "Capture stopping");
@@ -802,6 +1057,39 @@ export const MainApp = () => {
       }
       if (parapperStream.current === stream) {
         parapperStream.current = null;
+      }
+    }
+    if (speech) {
+      // Ask the browser for a graceful stop so any final result generated for
+      // the current utterance is delivered before the session closes. The
+      // stream disables auto-restart before calling stop(); the explicit
+      // cleanup below still handles engines that never emit onend.
+      speech.stop();
+      try {
+        // Final Web Speech results are delivered before the browser's onend in
+        // compliant engines. Drain publishes already queued by those results
+        // before invalidating this capture attempt.
+        await Promise.resolve();
+        await webSpeechPublishChain.current;
+      } catch (error) {
+        microphoneFailure ??= error;
+        captionFailureMessage.current =
+          formatBridgeError(error) ?? "Web Speech caption drain failed";
+      }
+      if (webSpeechStream.current === speech) {
+        webSpeechStream.current = null;
+      }
+      webSpeechResults.current.clear();
+      webSpeechCaptionId.current = null;
+      webSpeechStartedAt.current = 0;
+    }
+    if (!speech) {
+      try {
+        await webSpeechPublishChain.current;
+      } catch (error) {
+        microphoneFailure ??= error;
+        captionFailureMessage.current =
+          formatBridgeError(error) ?? "source caption publish drain failed";
       }
     }
     if (captureAttempt.current !== stoppingAttempt) {
@@ -892,6 +1180,17 @@ export const MainApp = () => {
     setConfig(next);
     if (status.status === "capturing") {
       void stopCapture().then(() => startCapture(next));
+    }
+  };
+
+  const handleConfigChange = (nextConfig: AppConfig) => {
+    const modeChanged = nextConfig.recognitionMode !== config.recognitionMode;
+    setConfig(nextConfig);
+    // A mode switch changes ownership of the microphone and the native
+    // pipeline. Restart an active session immediately so the selected path is
+    // actually applied instead of silently taking effect on the next launch.
+    if (modeChanged && (status.status === "capturing" || status.status === "starting")) {
+      void stopCapture().then(() => startCapture(nextConfig));
     }
   };
 
@@ -994,7 +1293,7 @@ export const MainApp = () => {
               models={models}
               devices={devices}
               saving={saving}
-              onConfigChange={setConfig}
+              onConfigChange={handleConfigChange}
               onModelChange={setModel}
               onDeviceChange={handleDeviceChange}
               onRefreshDevices={() => void refreshDevices({ primePermission: true })}

@@ -27,6 +27,75 @@ describe("SettingsView audio tuning", () => {
     container.remove();
   });
 
+  it("exposes the three recognition modes with a localized explanation", async () => {
+    const Harness = () => {
+      const [config, setConfig] = useState(createDefaultConfig());
+      return (
+        <SettingsView
+          config={config}
+          models={DEFAULT_MODEL_CATALOG}
+          devices={[]}
+          saving={false}
+          onConfigChange={setConfig}
+          onModelChange={() => undefined}
+          onDeviceChange={() => undefined}
+          onRefreshDevices={() => undefined}
+          onSave={() => undefined}
+        />
+      );
+    };
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <Harness />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    const select = container.querySelector<HTMLSelectElement>(
+      '[data-testid="recognition-mode-select"]',
+    );
+    const deviceControls = container.querySelector<HTMLFieldSetElement>(
+      '[data-testid="audio-device-controls"]',
+    );
+    const deviceSelect = deviceControls?.querySelector<HTMLSelectElement>("select");
+    const deviceRefresh = container.querySelector<HTMLButtonElement>(
+      '[data-testid="audio-device-refresh"]',
+    );
+    expect(select).not.toBeNull();
+    expect(select?.value).toBe("parapper-azookey");
+    expect(deviceControls?.disabled).toBe(false);
+    expect(deviceSelect?.matches(":disabled")).toBe(false);
+    expect(deviceRefresh?.disabled).toBe(false);
+    expect(Array.from(select?.options ?? []).map((option) => option.value)).toEqual([
+      "parapper-raw",
+      "web-speech",
+      "parapper-azookey",
+    ]);
+    expect(select?.closest(".field")?.textContent).toMatch(/現在の既定動作|current default/);
+    if (!select) throw new Error("recognition mode selector missing");
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(select, "web-speech");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(select.value).toBe("web-speech");
+    expect(select.closest(".field")?.textContent).toMatch(/デスクトップの検証用|desktop debugging/);
+    expect(deviceControls?.disabled).toBe(true);
+    expect(deviceSelect?.matches(":disabled")).toBe(true);
+    expect(deviceRefresh?.disabled).toBe(true);
+    expect(deviceControls?.textContent).toMatch(
+      /入力デバイス選択と更新は無効|device selection and refresh are disabled/,
+    );
+  });
+
   it("exposes VAD window and silence threshold as labeled sliders with reset", async () => {
     const onSave = vi.fn();
 

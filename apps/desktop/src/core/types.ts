@@ -4,6 +4,16 @@ export type BackendMode = "local" | "remote";
 export type TextAlign = "left" | "center" | "right";
 export type CaptionOrder = "source-first" | "translation-first";
 
+/**
+ * Selects the recognition path used by the live/debug pipeline.
+ *
+ * `parapper-azookey` is the historical/default path (Parapper ASR followed
+ * by the local AzooKey kana-kanji normalizer).  The other two values are
+ * intentionally explicit so a future runtime can switch paths without
+ * changing the persisted config shape.
+ */
+export type RecognitionMode = "parapper-raw" | "web-speech" | "parapper-azookey";
+
 export interface LanguageConfig {
   source: string;
   target: string;
@@ -118,6 +128,8 @@ export interface DebugConfig {
 
 export interface AppConfig {
   schemaVersion: 1;
+  /** Recognition path selected for live/debug capture. */
+  recognitionMode: RecognitionMode;
   language: LanguageConfig;
   endpoint: BackendEndpoint;
   models: ModelSelection;

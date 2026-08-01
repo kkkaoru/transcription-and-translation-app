@@ -6,18 +6,22 @@ import {
   createDefaultConfig,
   DEFAULT_AUDIO_CHUNK_MS,
   DEFAULT_MODEL_CATALOG,
+  DEFAULT_RECOGNITION_MODE,
   DEFAULT_VAD_INTERVAL_MS,
   DEFAULT_VAD_THRESHOLD,
   mergeConfig,
   migrateSilenceGateDb,
   normalizeVadIntervalMs,
   normalizeVadThreshold,
+  RECOGNITION_MODES,
 } from "./defaults";
 
 describe("default configuration", () => {
   it("defaults to Japanese-to-English local processing", () => {
     const config = createDefaultConfig();
     expect(config.language).toEqual({ source: "ja", target: "en" });
+    expect(config.recognitionMode).toBe(DEFAULT_RECOGNITION_MODE);
+    expect(DEFAULT_RECOGNITION_MODE).toBe("parapper-azookey");
     expect(config.models.asr).toBe("parapper-ja");
     expect(config.overlay.source.fontFamily).toContain("Noto Sans JP Variable");
     // 640ms default: lower TTFS while retaining enough 32ms VAD frames for ASR.
@@ -34,6 +38,16 @@ describe("default configuration", () => {
     expect(config.audio.adaptiveNoiseFloor).toBe(true);
     expect(config.debug.verboseLogging).toBe(false);
     expect(config.debug.logLevel).toBe("info");
+  });
+
+  it("keeps recognition mode values compatible with legacy and future configs", () => {
+    expect(RECOGNITION_MODES).toEqual(["parapper-raw", "web-speech", "parapper-azookey"]);
+    expect(mergeConfig({}).recognitionMode).toBe(DEFAULT_RECOGNITION_MODE);
+    expect(mergeConfig({ recognitionMode: "web-speech" }).recognitionMode).toBe("web-speech");
+    expect(mergeConfig({ recognitionMode: "parapper-raw" }).recognitionMode).toBe("parapper-raw");
+    expect(mergeConfig({ recognitionMode: "future-mode" as never }).recognitionMode).toBe(
+      DEFAULT_RECOGNITION_MODE,
+    );
   });
 
   it("defaults missing noiseSuppression to true when merging legacy config", () => {

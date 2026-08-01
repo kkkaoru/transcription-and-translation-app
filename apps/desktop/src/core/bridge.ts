@@ -210,6 +210,37 @@ export const bridge = {
     }
   },
 
+  /**
+   * Publish a source-only caption from a recognition mode that does not use
+   * the native Parapper/AzooKey pipeline (Web Speech or raw Parapper).
+   *
+   * The native command records the same event for the overlay/replay path;
+   * browser preview keeps the renderer-side cache so tests and the preview
+   * remain deterministic without Tauri IPC.
+   */
+  async publishSourceCaption(caption: CaptionPayload): Promise<void> {
+    const sourceText = caption.sourceText.trim();
+    if (!sourceText) {
+      return;
+    }
+    if (isTauriRuntime()) {
+      await invoke("publish_source_caption", {
+        caption: {
+          id: caption.id,
+          sourceText,
+          sourceLanguage: caption.sourceLanguage,
+          targetLanguage: caption.targetLanguage,
+          startedAt: caption.startedAt,
+          receivedAt: caption.receivedAt,
+          isFinal: caption.isFinal,
+          confidence: caption.confidence ?? null,
+        },
+      });
+      return;
+    }
+    rememberCaption({ ...caption, sourceText, translationText: "", stage: "source", sequence: 0 });
+  },
+
   getModels(): Promise<ModelCatalog> {
     if (isTauriRuntime()) {
       return invoke<ModelCatalog>("list_models");

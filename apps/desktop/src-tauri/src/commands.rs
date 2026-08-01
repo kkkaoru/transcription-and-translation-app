@@ -23,6 +23,23 @@ pub struct NativeOverlayFrame {
     pub height: u32,
 }
 
+/// Source-only caption supplied by a browser recognition path such as the Web
+/// Speech API.  The native command deliberately keeps this contract separate
+/// from [`AudioChunk`]: Web Speech has already performed recognition, so native
+/// code must only publish the source event and retain it for overlay replay.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceCaptionInput {
+    pub id: String,
+    pub source_text: String,
+    pub source_language: String,
+    pub target_language: String,
+    pub started_at: u64,
+    pub received_at: u64,
+    pub is_final: bool,
+    pub confidence: Option<f32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelaunchResult {
@@ -44,7 +61,13 @@ pub async fn save_config(
     config: AppConfig,
 ) -> Result<(), String> {
     config.validate()?;
-    gateway::reconcile_models(&app, &config).await?;
+    // Raw Parapper and Web Speech do not execute the local normalizer or
+    // translator. Do not make saving a mode selection depend on downloading
+    // unused GGUF assets; the normalizer path still reconciles its selected
+    // model as before.
+    if config.recognition_mode == "parapper-azookey" {
+        gateway::reconcile_models(&app, &config).await?;
+    }
     if let Some(window) = app.get_webview_window("overlay") {
         window
             .set_size(LogicalSize::new(config.overlay.width as f64, config.overlay.height as f64))
@@ -147,18 +170,45 @@ pub fn relaunch_to_updated_app(
 #[tauri::command]
 pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let mut config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
-    // AzooKey's compact fallback is intentionally tiny.  Provision the pinned
+    // Web Speech owns microphone capture and recognition in the webview. Do
+    // not warm native dictionaries or wait for sidecars for this mode; the
+    // frontend starts its SpeechRecognition stream immediately after this
+    // command reports the capturing state.
+    if config.recognition_mode == "web-speech" {
+        return set_status(&app, &state, "capturing", None);
+    }
+    if config.recognition_mode == "parapper-azookey" {
+        prepare_azookey_capture(&app, &state, &mut config).await?;
+    }
+    // Ensure gateway / Parapper are accepting traffic before the frontend opens
+    // the microphone, then bring up the selected local GGUF servers.
+    gateway::ensure_services_ready(&config).await?;
+    if config.recognition_mode != "parapper-raw" {
+        gateway::reconcile_models(&app, &config).await?;
+    }
+    set_status(&app, &state, "capturing", None)
+}
+
+/// Provision and warm the optional AzooKey dictionary only for the native
+/// normalizer path. Raw Parapper mode still needs the sidecar, but must not
+/// pay for dictionary I/O or model reconciliation that it never uses.
+async fn prepare_azookey_capture(
+    app: &AppHandle,
+    state: &AppState,
+    config: &mut AppConfig,
+) -> Result<(), String> {
+    // AzooKey's compact fallback is intentionally tiny. Provision the pinned
     // public LOUDS dictionary once, then pass its root through the existing
     // `models.paths` route; the selected normalizer remains `azookey-rust`.
     if let Some(dictionary_root) =
-        crate::azookey_runtime::ensure_system_dictionary(&app, &config).await
+        crate::azookey_runtime::ensure_system_dictionary(app, config).await
     {
         config
             .models
             .paths
             .insert("azookey-rust".to_string(), dictionary_root.to_string_lossy().into_owned());
         *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
-        let _ = app.emit("config:update", &config);
+        let _ = app.emit("config:update", &*config);
         log::info!(
             target: "kotoba_azookey",
             "using public AzooKey dictionary root {}",
@@ -168,14 +218,10 @@ pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result
     // Warm the dictionary while the capture command is already waiting for
     // native services. The first audio chunk can then go straight to Viterbi
     // instead of blocking the first subtitle on LOUDS initialization.
-    if let Err(error) = state.pipeline.warm_azookey_dictionary(&config) {
+    if let Err(error) = state.pipeline.warm_azookey_dictionary(config) {
         log::warn!(target: "kotoba_azookey", "dictionary warm-up deferred: {error}");
     }
-    // Ensure gateway / Parapper are accepting traffic before the frontend opens
-    // the microphone, then bring up the selected local GGUF servers.
-    gateway::ensure_services_ready(&config).await?;
-    gateway::reconcile_models(&app, &config).await?;
-    set_status(&app, &state, "capturing", None)
+    Ok(())
 }
 
 #[tauri::command]
@@ -346,6 +392,51 @@ pub async fn normalize_parapper_output(
             Err(detail)
         }
     }
+}
+
+/// Publish a source caption produced outside the native ASR pipeline.
+///
+/// Web Speech has already recognized the utterance, so this command does not
+/// invoke Parapper, AzooKey, or translation. It emits the same source-stage
+/// `caption:update` event used by native recognition and stores the caption in
+/// `AppState` so a late overlay subscriber can replay it.
+#[tauri::command]
+pub fn publish_source_caption(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    caption: SourceCaptionInput,
+) -> Result<(), String> {
+    let payload = source_caption_payload(caption)?;
+    let active = state
+        .status
+        .lock()
+        .map_err(|_| "status lock poisoned".to_string())
+        .map(|status| capture_is_active(status.status.as_str()))?;
+    if !active {
+        return Err("capture is not active".to_string());
+    }
+    emit_caption_update(&app, &payload);
+    Ok(())
+}
+
+fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload, String> {
+    let source_text = caption.source_text.trim().to_string();
+    if source_text.is_empty() {
+        return Err("source caption text is required".to_string());
+    }
+    Ok(CaptionPayload {
+        id: caption.id,
+        source_text,
+        translation_text: String::new(),
+        source_language: caption.source_language,
+        target_language: caption.target_language,
+        started_at: caption.started_at,
+        received_at: caption.received_at,
+        stage: "source",
+        sequence: 0,
+        is_final: caption.is_final,
+        confidence: caption.confidence,
+    })
 }
 
 /// Surface a translation failure without turning a healthy ASR session into a
@@ -957,7 +1048,8 @@ pub async fn export_debug_logs(
 mod tests {
     use super::{
         capture_is_active, ensure_overlay_window, redact_runtime_text, sanitize_debug_json,
-        sanitize_export_body, validate_overlay_frame_dimensions,
+        sanitize_export_body, source_caption_payload, validate_overlay_frame_dimensions,
+        SourceCaptionInput,
     };
 
     #[test]
@@ -996,5 +1088,64 @@ mod tests {
         let export = sanitize_export_body(r#"{"token":"abc123","ok":true}"#, "json");
         assert!(!export.contains("abc123"));
         assert!(export.contains("true"));
+    }
+
+    #[test]
+    fn source_caption_payload_trims_text_and_keeps_source_stage_contract() {
+        let payload = source_caption_payload(SourceCaptionInput {
+            id: "webspeech:session:1".to_string(),
+            source_text: "  こんにちは  ".to_string(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 100,
+            received_at: 120,
+            is_final: true,
+            confidence: Some(0.87),
+        })
+        .expect("non-empty source text should be accepted");
+
+        assert_eq!(payload.id, "webspeech:session:1");
+        assert_eq!(payload.source_text, "こんにちは");
+        assert!(payload.translation_text.is_empty());
+        assert_eq!(payload.stage, "source");
+        assert_eq!(payload.sequence, 0);
+        assert!(payload.is_final);
+        assert_eq!(payload.confidence, Some(0.87));
+    }
+
+    #[test]
+    fn source_caption_payload_rejects_blank_text() {
+        let result = source_caption_payload(SourceCaptionInput {
+            id: "webspeech:session:1".to_string(),
+            source_text: " \n\t".to_string(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 100,
+            received_at: 120,
+            is_final: false,
+            confidence: None,
+        });
+
+        assert_eq!(result.unwrap_err(), "source caption text is required");
+    }
+
+    #[test]
+    fn source_caption_input_uses_camel_case_ipc_keys() {
+        let input: SourceCaptionInput = serde_json::from_value(serde_json::json!({
+            "id": "webspeech:session:1",
+            "sourceText": "こんにちは",
+            "sourceLanguage": "ja",
+            "targetLanguage": "en",
+            "startedAt": 100,
+            "receivedAt": 120,
+            "isFinal": false,
+            "confidence": null,
+        }))
+        .expect("bridge payload should deserialize");
+
+        assert_eq!(input.source_text, "こんにちは");
+        assert_eq!(input.source_language, "ja");
+        assert_eq!(input.target_language, "en");
+        assert_eq!(input.confidence, None);
     }
 }

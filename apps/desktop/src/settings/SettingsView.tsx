@@ -7,9 +7,11 @@ import {
   AUDIO_CHUNK_STEP_MS,
   DEFAULT_ADAPTIVE_NOISE_FLOOR,
   DEFAULT_AUDIO_CHUNK_MS,
+  DEFAULT_RECOGNITION_MODE,
   DEFAULT_SILENCE_GATE_DB,
   DEFAULT_VAD_INTERVAL_MS,
   DEFAULT_VAD_THRESHOLD,
+  isRecognitionMode,
   VAD_INTERVAL_MAX_MS,
   VAD_INTERVAL_MIN_MS,
   VAD_INTERVAL_STEP_MS,
@@ -17,7 +19,13 @@ import {
   VAD_THRESHOLD_MIN,
   VAD_THRESHOLD_STEP,
 } from "../core/defaults";
-import type { AppConfig, AudioInputDevice, ModelCatalog, ModelFamily } from "../core/types";
+import type {
+  AppConfig,
+  AudioInputDevice,
+  ModelCatalog,
+  ModelFamily,
+  RecognitionMode,
+} from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 import { DebugPanel } from "./DebugPanel";
 import { ModelCard } from "./ModelCard";
@@ -74,6 +82,19 @@ export const SettingsView = ({
   const vadThreshold = Number.isFinite(config.audio.vadThreshold)
     ? config.audio.vadThreshold
     : DEFAULT_VAD_THRESHOLD;
+  const recognitionMode: RecognitionMode = isRecognitionMode(config.recognitionMode)
+    ? config.recognitionMode
+    : DEFAULT_RECOGNITION_MODE;
+  const recognitionModeDescription =
+    recognitionMode === "parapper-raw"
+      ? t("settings.recognitionModeParapperRawDescription")
+      : recognitionMode === "web-speech"
+        ? t("settings.recognitionModeWebSpeechDescription")
+        : t("settings.recognitionModeParapperAzookeyDescription");
+  const webSpeechMode = recognitionMode === "web-speech";
+  const inputDeviceHint = webSpeechMode
+    ? `${t("settings.deviceHint")} ${t("settings.webSpeechDeviceHint")}`
+    : t("settings.deviceHint");
   const resetAudioTuning = () =>
     setAudio({
       chunkMs: DEFAULT_AUDIO_CHUNK_MS,
@@ -148,6 +169,40 @@ export const SettingsView = ({
             >
               <option value="local">{t("settings.local")}</option>
               <option value="remote">{t("settings.remote")}</option>
+            </select>
+          </Field>
+          <Field
+            label={t("settings.recognitionMode")}
+            hint={`${t("settings.recognitionModeHint")} ${recognitionModeDescription}`}
+          >
+            <select
+              id="recognition-mode"
+              name="recognitionMode"
+              data-testid="recognition-mode-select"
+              value={recognitionMode}
+              onChange={(event) =>
+                onConfigChange({
+                  ...config,
+                  recognitionMode: event.target.value as RecognitionMode,
+                })
+              }
+              aria-label={t("settings.recognitionMode")}
+            >
+              <option
+                value="parapper-raw"
+                title={t("settings.recognitionModeParapperRawDescription")}
+              >
+                {t("settings.recognitionModeParapperRaw")}
+              </option>
+              <option value="web-speech" title={t("settings.recognitionModeWebSpeechDescription")}>
+                {t("settings.recognitionModeWebSpeech")}
+              </option>
+              <option
+                value="parapper-azookey"
+                title={t("settings.recognitionModeParapperAzookeyDescription")}
+              >
+                {t("settings.recognitionModeParapperAzookey")}
+              </option>
             </select>
           </Field>
           <Field label={t("settings.gatewayUrl")} wide hint={t("settings.gatewayHint")}>
@@ -234,19 +289,35 @@ export const SettingsView = ({
           </button>
         </div>
         <div className="settings-grid two">
-          <Field label={t("audio.inputDevice")} wide hint={t("settings.deviceHint")}>
-            <AudioDeviceSelect
-              devices={devices}
-              value={config.audio.inputDeviceId}
-              onChange={onDeviceChange}
-            />
-          </Field>
-          <div className="field button-field">
-            <span>&nbsp;</span>
-            <button className="secondary-button" type="button" onClick={onRefreshDevices}>
-              {t("audio.refreshShort")}
-            </button>
-          </div>
+          <fieldset
+            className="audio-device-controls"
+            data-testid="audio-device-controls"
+            disabled={webSpeechMode}
+            aria-disabled={webSpeechMode}
+            style={{ display: "contents" }}
+          >
+            <Field label={t("audio.inputDevice")} wide hint={inputDeviceHint}>
+              <AudioDeviceSelect
+                devices={devices}
+                value={config.audio.inputDeviceId}
+                onChange={onDeviceChange}
+                disabled={webSpeechMode}
+              />
+            </Field>
+            <div className="field button-field">
+              <span>&nbsp;</span>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={onRefreshDevices}
+                data-testid="audio-device-refresh"
+                disabled={webSpeechMode}
+                title={webSpeechMode ? t("settings.webSpeechDeviceHint") : undefined}
+              >
+                {t("audio.refreshShort")}
+              </button>
+            </div>
+          </fieldset>
           <Field label={t("settings.chunk")} hint={t("settings.chunkHint")}>
             <div className="range-field">
               <input

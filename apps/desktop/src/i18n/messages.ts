@@ -57,6 +57,7 @@ const ja = {
   "live.asr": "日本語音声認識",
   "live.normalizer": "かな漢字変換",
   "live.translation": "日本語 → English",
+  "live.pipelineInactive": "このモードでは未使用",
   "live.latestEyebrow": "LATEST CAPTION",
   "live.latestTitle": "直近の認識結果",
   "settings.eyebrow": "CONFIGURATION",
@@ -71,6 +72,18 @@ const ja = {
   "settings.backendMode": "推論モード",
   "settings.local": "このPC（ローカル）",
   "settings.remote": "別PC / サーバー",
+  "settings.recognitionMode": "認識モード",
+  "settings.recognitionModeHint":
+    "音声認識と字幕変換の経路を選択します。既定はParapper音声認識とAzooKeyかな漢字変換の組み合わせです。",
+  "settings.recognitionModeParapperRaw": "Parapper 生テキスト",
+  "settings.recognitionModeWebSpeech": "Web Speech API",
+  "settings.recognitionModeParapperAzookey": "Parapper + AzooKey（推奨）",
+  "settings.recognitionModeParapperRawDescription":
+    "Parapperの認識結果を変換せず、そのまま字幕ソースにします。",
+  "settings.recognitionModeWebSpeechDescription":
+    "ブラウザのWeb Speech APIで音声認識します。デスクトップの検証用です。",
+  "settings.recognitionModeParapperAzookeyDescription":
+    "Parapperの認識結果を内蔵AzooKeyでかな漢字変換します（現在の既定動作）。",
   "settings.gatewayUrl": "推論ゲートウェイURL",
   "settings.gatewayHint": "ParapperとテキストモデルのAPIを束ねるOpenAI互換ゲートウェイ。",
   "settings.timeout": "タイムアウト（ms）",
@@ -99,6 +112,8 @@ const ja = {
   "settings.milliseconds": "ms",
   "settings.decibels": "dBFS",
   "settings.deviceHint": "マイクの権限許可後にデバイス名が表示されます。",
+  "settings.webSpeechDeviceHint":
+    "Web Speech APIモードではブラウザ既定のマイクを使うため、入力デバイス選択と更新は無効です。",
   "settings.chunk": "音声区間（フロントVAD）",
   "settings.chunkHint":
     "既定 640ms。短いほど低遅延、長いほど認識が安定します。Parapper内部のVAD間隔（32ms）とは別の設定です。",
@@ -360,6 +375,27 @@ const ja = {
   "debug.sidecarVersion": "version",
   "debug.sidecarActive": "稼働中",
   "debug.switchResult": "切替結果",
+  "debug.recognitionMode": "認識モード（デバッグ）",
+  "debug.recognitionModeHint":
+    "ライブ字幕に使う認識経路を切り替えます。既定はParapper + AzooKeyです。",
+  "debug.recognitionModeParapperRaw": "Parapper 生テキスト",
+  "debug.recognitionModeWebSpeech": "Web Speech API",
+  "debug.recognitionModeParapperAzookey": "Parapper + AzooKey（推奨）",
+  "debug.recognitionModeParapperRawDescription":
+    "Parapperの認識結果を変換せず、そのまま字幕ソースにします。",
+  "debug.recognitionModeWebSpeechDescription":
+    "ブラウザのWeb Speech APIで音声認識します。デスクトップの検証用です。",
+  "debug.recognitionModeParapperAzookeyDescription":
+    "Parapperの認識結果を内蔵AzooKeyでかな漢字変換します（現在の既定動作）。",
+  "debug.testCaptionTitle": "テスト字幕を表示",
+  "debug.testCaptionHint":
+    "入力したテキストを現在の字幕ソースとして発行し、オーバーレイと表示経路を確認します。",
+  "debug.testCaptionPlaceholder": "例: デバッグ用の字幕です。",
+  "debug.testCaptionSend": "テスト字幕を発行",
+  "debug.testCaptionSending": "発行中…",
+  "debug.testCaptionReady": "入力して発行できます。",
+  "debug.testCaptionSent": "テスト字幕を発行しました。",
+  "debug.testCaptionRequired": "テスト字幕のテキストを入力してください。",
 } as const;
 
 export type MessageKey = keyof typeof ja;
@@ -419,6 +455,7 @@ const en: Record<MessageKey, string> = {
   "live.asr": "Japanese speech recognition",
   "live.normalizer": "Kana-kanji conversion",
   "live.translation": "Japanese → English",
+  "live.pipelineInactive": "Not used in this mode",
   "live.latestEyebrow": "LATEST CAPTION",
   "live.latestTitle": "Latest transcription",
   "settings.eyebrow": "CONFIGURATION",
@@ -433,6 +470,18 @@ const en: Record<MessageKey, string> = {
   "settings.backendMode": "Inference mode",
   "settings.local": "This computer (local)",
   "settings.remote": "Another computer / server",
+  "settings.recognitionMode": "Recognition mode",
+  "settings.recognitionModeHint":
+    "Choose the speech-recognition and caption-conversion path. The default combines Parapper speech recognition with AzooKey kana-kanji conversion.",
+  "settings.recognitionModeParapperRaw": "Parapper raw text",
+  "settings.recognitionModeWebSpeech": "Web Speech API",
+  "settings.recognitionModeParapperAzookey": "Parapper + AzooKey (recommended)",
+  "settings.recognitionModeParapperRawDescription":
+    "Use Parapper's recognition result as the caption source without conversion.",
+  "settings.recognitionModeWebSpeechDescription":
+    "Use the browser Web Speech API for speech recognition. Intended for desktop debugging.",
+  "settings.recognitionModeParapperAzookeyDescription":
+    "Convert Parapper recognition output with the built-in AzooKey normalizer (current default).",
   "settings.gatewayUrl": "Inference gateway URL",
   "settings.gatewayHint": "OpenAI-compatible gateway that routes Parapper and text-model requests.",
   "settings.timeout": "Timeout (ms)",
@@ -461,6 +510,8 @@ const en: Record<MessageKey, string> = {
   "settings.milliseconds": "ms",
   "settings.decibels": "dBFS",
   "settings.deviceHint": "Device names become available after microphone permission is granted.",
+  "settings.webSpeechDeviceHint":
+    "Web Speech API uses the browser's default microphone, so device selection and refresh are disabled.",
   "settings.chunk": "Audio window (frontend VAD)",
   "settings.chunkHint":
     "Default 640 ms. Shorter chunks reduce latency; longer chunks improve recognition stability. This is separate from Parapper's 32 ms internal VAD interval.",
@@ -722,6 +773,27 @@ const en: Record<MessageKey, string> = {
   "debug.sidecarVersion": "version",
   "debug.sidecarActive": "active",
   "debug.switchResult": "switch result",
+  "debug.recognitionMode": "Recognition mode (debug)",
+  "debug.recognitionModeHint":
+    "Switch the recognition path used for live captions. The default is Parapper + AzooKey.",
+  "debug.recognitionModeParapperRaw": "Parapper raw text",
+  "debug.recognitionModeWebSpeech": "Web Speech API",
+  "debug.recognitionModeParapperAzookey": "Parapper + AzooKey (recommended)",
+  "debug.recognitionModeParapperRawDescription":
+    "Use Parapper's recognition result as the caption source without conversion.",
+  "debug.recognitionModeWebSpeechDescription":
+    "Use the browser Web Speech API for speech recognition. Intended for desktop debugging.",
+  "debug.recognitionModeParapperAzookeyDescription":
+    "Convert Parapper recognition output with the built-in AzooKey normalizer (current default).",
+  "debug.testCaptionTitle": "Show test caption",
+  "debug.testCaptionHint":
+    "Publish the entered text as the current caption source to verify the overlay and display path.",
+  "debug.testCaptionPlaceholder": "Example: This is a debug caption.",
+  "debug.testCaptionSend": "Publish test caption",
+  "debug.testCaptionSending": "Publishing…",
+  "debug.testCaptionReady": "Enter text and publish it to verify the path.",
+  "debug.testCaptionSent": "Test caption published.",
+  "debug.testCaptionRequired": "Enter test caption text first.",
 };
 
 export const messages: Record<Locale, Record<MessageKey, string>> = { ja, en };

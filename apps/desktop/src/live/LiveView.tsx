@@ -6,7 +6,13 @@ import { rmsDbToMeterLevel } from "../core/audio";
 import { bridge } from "../core/bridge";
 import { getInputLevelDb, subscribeInputLevel } from "../core/input-level";
 import { computePreviewFitScale } from "../core/style";
-import type { AppConfig, AudioInputDevice, CaptionPayload, RuntimeStatus } from "../core/types";
+import type {
+  AppConfig,
+  AudioInputDevice,
+  CaptionPayload,
+  RecognitionMode,
+  RuntimeStatus,
+} from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 import { OverlayView } from "../overlay/CaptionOverlay";
 
@@ -160,6 +166,16 @@ export const LiveView = ({
   }, [caption.receivedAt, locale]);
   const capturing = status.status === "capturing";
   const starting = status.status === "starting";
+  const mode: RecognitionMode = config.recognitionMode;
+  const webSpeechMode = mode === "web-speech";
+  const sourceStageLabel =
+    mode === "parapper-raw"
+      ? t("settings.recognitionModeParapperRaw")
+      : mode === "web-speech"
+        ? t("settings.recognitionModeWebSpeech")
+        : config.models.normalizer === "azookey-rust"
+          ? "AzooKey"
+          : config.models.normalizer;
 
   // Re-bind when overlay design size changes so aspect-ratio restyle is measured.
   // biome-ignore lint/correctness/useExhaustiveDependencies: design size is a re-measure trigger, not read in the body
@@ -276,6 +292,7 @@ export const LiveView = ({
                 devices={devices}
                 value={config.audio.inputDeviceId}
                 onChange={onDeviceChange}
+                disabled={webSpeechMode}
               />
             </Field>
             <InputLevelMeter
@@ -284,7 +301,12 @@ export const LiveView = ({
               disconnectedLabel={t("live.disconnected")}
               ariaLabel={t("live.inputLevel")}
             />
-            <button className="text-button" type="button" onClick={onRefreshDevices}>
+            <button
+              className="text-button"
+              type="button"
+              onClick={onRefreshDevices}
+              disabled={webSpeechMode}
+            >
               {t("audio.refresh")}
             </button>
           </section>
@@ -299,21 +321,39 @@ export const LiveView = ({
             <div className="pipeline-list">
               <PipelineRow
                 number="01"
-                title="Parapper ASR"
-                value={t("live.asr")}
+                title={
+                  mode === "web-speech" ? t("settings.recognitionModeWebSpeech") : "Parapper ASR"
+                }
+                value={
+                  mode === "parapper-raw"
+                    ? t("settings.recognitionModeParapperRawDescription")
+                    : mode === "web-speech"
+                      ? t("settings.recognitionModeWebSpeechDescription")
+                      : t("live.asr")
+                }
                 active={capturing}
               />
               <PipelineRow
                 number="02"
-                title={config.models.normalizer === "azookey-rust" ? "AzooKey Rust" : "zenz"}
-                value={t("live.normalizer")}
-                active={capturing}
+                title={
+                  mode === "parapper-azookey"
+                    ? config.models.normalizer === "azookey-rust"
+                      ? "AzooKey Rust"
+                      : "zenz"
+                    : t("live.pipelineInactive")
+                }
+                value={
+                  mode === "parapper-azookey" ? t("live.normalizer") : t("live.pipelineInactive")
+                }
+                active={capturing && mode === "parapper-azookey"}
               />
               <PipelineRow
                 number="03"
-                title="Hy-MT2"
-                value={t("live.translation")}
-                active={capturing}
+                title={mode === "parapper-azookey" ? "Hy-MT2" : t("live.pipelineInactive")}
+                value={
+                  mode === "parapper-azookey" ? t("live.translation") : t("live.pipelineInactive")
+                }
+                active={capturing && mode === "parapper-azookey"}
               />
             </div>
           </section>
@@ -332,9 +372,9 @@ export const LiveView = ({
           <span
             className="caption-stage-label"
             data-testid="normalized-caption-stage"
-            title="AzooKey normalizer output"
+            title={sourceStageLabel}
           >
-            {config.models.normalizer === "azookey-rust" ? "AzooKey" : config.models.normalizer}
+            {sourceStageLabel}
           </span>
           <p
             className={caption.provisional ? "caption-text-provisional" : undefined}
@@ -346,7 +386,7 @@ export const LiveView = ({
         </div>
         <div className="transcript-row translation">
           <span className="language-tag blue">EN</span>
-          <p>{caption.translationText}</p>
+          <p>{mode === "parapper-azookey" ? caption.translationText : ""}</p>
         </div>
       </section>
     </>

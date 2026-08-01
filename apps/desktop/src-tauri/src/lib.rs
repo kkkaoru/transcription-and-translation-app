@@ -77,6 +77,7 @@ pub fn run() {
             commands::stop_capture,
             commands::transcribe_audio_chunk,
             commands::normalize_parapper_output,
+            commands::publish_source_caption,
             commands::open_overlay,
             commands::close_overlay,
             commands::publish_overlay_frame,

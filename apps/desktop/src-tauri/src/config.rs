@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Recognition paths exposed by the desktop debug controls.
+pub const RECOGNITION_MODES: [&str; 3] = ["parapper-raw", "web-speech", "parapper-azookey"];
+/// Preserve the historical Parapper + AzooKey pipeline for new and legacy configs.
+pub const DEFAULT_RECOGNITION_MODE: &str = "parapper-azookey";
+
+fn default_recognition_mode() -> String {
+    DEFAULT_RECOGNITION_MODE.to_string()
+}
+
+fn is_recognition_mode(value: &str) -> bool {
+    RECOGNITION_MODES.contains(&value)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LanguageConfig {
@@ -200,6 +213,9 @@ impl Default for DebugConfig {
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub schema_version: u8,
+    /// Recognition path selected by the live/debug UI.
+    #[serde(default = "default_recognition_mode")]
+    pub recognition_mode: String,
     pub language: LanguageConfig,
     pub endpoint: BackendEndpoint,
     pub models: ModelSelection,
@@ -213,6 +229,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            recognition_mode: default_recognition_mode(),
             language: LanguageConfig { source: "ja".to_string(), target: "en".to_string() },
             endpoint: BackendEndpoint {
                 mode: "local".to_string(),
@@ -265,6 +282,9 @@ impl AppConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != 1 {
             return Err("unsupported config schema version".to_string());
+        }
+        if !is_recognition_mode(&self.recognition_mode) {
+            return Err("recognition mode is invalid".to_string());
         }
         if self.language.source.trim().is_empty() || self.language.target.trim().is_empty() {
             return Err("source and target language codes are required".to_string());
@@ -407,7 +427,10 @@ fn is_hex_color(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, AudioConfig, DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD};
+    use super::{
+        AppConfig, AudioConfig, DEFAULT_RECOGNITION_MODE, DEFAULT_VAD_INTERVAL_MS,
+        DEFAULT_VAD_THRESHOLD,
+    };
 
     #[test]
     fn default_config_is_valid() {
@@ -419,6 +442,33 @@ mod tests {
         assert!(config.audio.adaptive_noise_floor);
         assert_eq!(config.audio.vad_interval_ms, DEFAULT_VAD_INTERVAL_MS);
         assert_eq!(config.audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
+        assert_eq!(config.recognition_mode, DEFAULT_RECOGNITION_MODE);
+    }
+
+    #[test]
+    fn recognition_mode_round_trips_and_defaults_for_legacy_json() {
+        let config =
+            AppConfig { recognition_mode: "web-speech".to_string(), ..AppConfig::default() };
+        let value = serde_json::to_value(&config).expect("desktop config should serialize");
+        assert_eq!(value["recognitionMode"], "web-speech");
+        assert!(!value.as_object().unwrap().contains_key("recognition_mode"));
+
+        let roundtrip: AppConfig =
+            serde_json::from_value(value).expect("desktop config should deserialize");
+        assert_eq!(roundtrip.recognition_mode, "web-speech");
+
+        let mut legacy = serde_json::to_value(AppConfig::default()).expect("serialize default");
+        legacy.as_object_mut().expect("config object").remove("recognitionMode");
+        let legacy_config: AppConfig =
+            serde_json::from_value(legacy).expect("legacy config should deserialize");
+        assert_eq!(legacy_config.recognition_mode, DEFAULT_RECOGNITION_MODE);
+    }
+
+    #[test]
+    fn recognition_mode_validation_rejects_unknown_values() {
+        let config =
+            AppConfig { recognition_mode: "future-mode".to_string(), ..AppConfig::default() };
+        assert_eq!(config.validate(), Err("recognition mode is invalid".to_string()));
     }
 
     #[test]

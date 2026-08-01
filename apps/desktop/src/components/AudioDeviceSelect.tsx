@@ -6,10 +6,12 @@ export const AudioDeviceSelect = ({
   devices,
   value,
   onChange,
+  disabled = false,
 }: {
   devices: AudioInputDevice[];
   value: string;
   onChange: ChangeEventHandler<HTMLSelectElement>;
+  disabled?: boolean;
 }) => {
   const { t } = useI18n();
   const inputs = devices.filter((device) => device.deviceId && device.deviceId !== "default");
@@ -24,7 +26,12 @@ export const AudioDeviceSelect = ({
         (orphanSelected ? `${t("audio.fallbackDevice", { number: "…" })} (${value})` : undefined);
 
   return (
-    <select value={value || "default"} title={selectedLabel} onChange={onChange}>
+    <select
+      value={value || "default"}
+      title={selectedLabel}
+      onChange={onChange}
+      disabled={disabled}
+    >
       <option value="default" title={t("audio.defaultDevice")}>
         {t("audio.defaultDevice")}
       </option>

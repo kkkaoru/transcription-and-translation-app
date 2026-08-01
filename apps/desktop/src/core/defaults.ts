@@ -1,7 +1,28 @@
-import type { AppConfig, CaptionTextStyle, ModelCatalog, ModelInfo, RuntimeStatus } from "./types";
+import type {
+  AppConfig,
+  CaptionTextStyle,
+  ModelCatalog,
+  ModelInfo,
+  RecognitionMode,
+  RuntimeStatus,
+} from "./types";
+
+/** Persisted recognition paths exposed by the debug controls. */
+export const RECOGNITION_MODES = [
+  "parapper-raw",
+  "web-speech",
+  "parapper-azookey",
+] as const satisfies readonly RecognitionMode[];
+
+/** Keep the existing Parapper + AzooKey path as the migration-safe default. */
+export const DEFAULT_RECOGNITION_MODE: RecognitionMode = "parapper-azookey";
+
+export const isRecognitionMode = (value: unknown): value is RecognitionMode =>
+  typeof value === "string" && (RECOGNITION_MODES as readonly string[]).includes(value);
 
 export interface PartialAppConfig {
   schemaVersion?: 1;
+  recognitionMode?: RecognitionMode;
   language?: Partial<AppConfig["language"]>;
   endpoint?: Partial<AppConfig["endpoint"]>;
   models?: Partial<AppConfig["models"]>;
@@ -101,6 +122,7 @@ export const createTextStyle = (overrides: Partial<CaptionTextStyle> = {}): Capt
 
 export const createDefaultConfig = (): AppConfig => ({
   schemaVersion: 1,
+  recognitionMode: DEFAULT_RECOGNITION_MODE,
   language: {
     source: "ja",
     target: "en",
@@ -286,6 +308,12 @@ export const migrateSilenceGateDb = (gateDb: number | undefined): number => {
 export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   const base = createDefaultConfig();
   const input = candidate;
+  // Recognition mode was added after the original config schema. Treat a
+  // missing, malformed, or future value as the safe historical pipeline so
+  // old localStorage/config.json files continue to load.
+  const recognitionMode = isRecognitionMode(input.recognitionMode)
+    ? input.recognitionMode
+    : DEFAULT_RECOGNITION_MODE;
   const audio = { ...base.audio, ...input.audio };
   audio.silenceGateDb = migrateSilenceGateDb(audio.silenceGateDb);
   audio.vadIntervalMs = normalizeVadIntervalMs(audio.vadIntervalMs);
@@ -300,6 +328,7 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   return {
     ...base,
     ...input,
+    recognitionMode,
     language: { ...base.language, ...input.language },
     endpoint: { ...base.endpoint, ...input.endpoint },
     models: {
