@@ -23,3 +23,6 @@ models
 *.gguf
 *.onnx
 *.bin
+
+# Generated UI/integration evidence is local-only and can become very large.
+docs/evidence/

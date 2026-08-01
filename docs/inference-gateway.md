@@ -73,6 +73,13 @@ JSON configuration); the gateway sends it as a Bearer token.
 The implementation follows Parapper's `session.start` → `session.ready` →
 binary PCM frames → `session.stop` → `turn.final`/`session.done` protocol.
 
+When a short live-caption window contains no usable speech, Parapper may finish
+with `session.done` and no non-empty `turn.final`. The gateway treats that as an
+empty transcript (`200` + `{ "text": "" }`) rather than HTTP `422
+transcript_missing`, so continuous capture can soft-skip ambient chunks without
+surfacing a hard audio-processing failure. Real protocol/timeout failures still
+return `502`/`504`.
+
 ## Bundled zenz and Hy-MT2 servers
 
 The desktop app packages two pinned `llama-server` builds and creates its
