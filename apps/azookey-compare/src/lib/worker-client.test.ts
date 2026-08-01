@@ -335,6 +335,45 @@ describe("AzooKey Worker client connection lifecycle", () => {
     expect(reconnect.connectionState).toBe("error");
   });
 
+  it("recovers from a connection error that is never followed by close", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const first = client.connect();
+    const firstSocket = FakeWebSocket.instances.at(-1);
+    if (!firstSocket) {
+      throw new Error("fake socket was not constructed");
+    }
+    firstSocket.error();
+    await expect(first).rejects.toThrow("接続エラー");
+
+    const retry = client.connect();
+    const secondSocket = FakeWebSocket.instances.at(-1);
+    if (!secondSocket) {
+      throw new Error("fake socket was not constructed");
+    }
+    expect(secondSocket).not.toBe(firstSocket);
+    let retried = false;
+    void retry.then(() => {
+      retried = true;
+    });
+    firstSocket.open();
+    await Promise.resolve();
+    expect(retried).toBe(false);
+    expect(client.connectionState).toBe("connecting");
+    secondSocket.open();
+    await retry;
+    expect(client.connectionState).toBe("open");
+
+    firstSocket.closeFromPeer(1006);
+    expect(client.connectionState).toBe("open");
+
+    const pending = client.convert(request());
+    await Promise.resolve();
+    const sent = JSON.parse(secondSocket.sent.at(-1) ?? "{}") as { requestId: string };
+    secondSocket.message(JSON.stringify({ requestId: sent.requestId, text: "復帰" }));
+    await expect(pending).resolves.toMatchObject({ convertedText: "復帰" });
+  });
+
   it("uses a deterministic fallback request ID when crypto is unavailable", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("crypto", undefined);

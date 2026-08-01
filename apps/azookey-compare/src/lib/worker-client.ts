@@ -285,23 +285,35 @@ export class AzooKeyWorkerClient {
       }
       this.socket = socket;
       socket.onopen = () => {
+        if (this.socket !== socket) {
+          return;
+        }
         this.setState("open");
         this.resolveConnect?.();
         this.resolveConnect = null;
         this.rejectConnect = null;
-        this.connectPromise = null;
       };
       socket.onmessage = (event) => {
+        if (this.socket !== socket) {
+          return;
+        }
         void this.handleMessage(event.data);
       };
       socket.onerror = () => {
+        if (this.socket !== socket) {
+          return;
+        }
         const error = new Error("Worker WebSocket で接続エラーが発生しました");
         this.setState("error");
         this.rejectConnect?.(error);
         this.resolveConnect = null;
         this.rejectConnect = null;
+        this.connectPromise = null;
       };
       socket.onclose = (event) => {
+        if (this.socket !== socket) {
+          return;
+        }
         this.socket = null;
         this.setState("closed");
         const error = new Error(
