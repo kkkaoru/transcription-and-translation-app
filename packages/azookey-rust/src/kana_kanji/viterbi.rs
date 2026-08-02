@@ -311,9 +311,7 @@ pub fn convert_with_dictionary(
                     && !chars
                         .get(start + entry_len)
                         .is_some_and(|character| is_small_hiragana(*character))
-                    && (entry.surface != entry.reading
-                        || contains_kanji(&entry.surface)
-                        || entry.surface.chars().any(|character| is_katakana(&character)))
+                    && is_lexical_surface_for_unknown(entry)
             });
             let unknown_after_predicate = state.last.as_ref().is_some_and(|entry| {
                 entry.surface.ends_with('る')
@@ -711,9 +709,7 @@ fn unknown_kana_span_end(
                 && !chars
                     .get(start + entry_len)
                     .is_some_and(|character| is_small_hiragana(*character))
-                && (entry.surface != entry.reading
-                    || contains_kanji(&entry.surface)
-                    || entry.surface.chars().any(|character| is_katakana(&character)))
+                && is_lexical_surface_for_unknown(entry)
         });
     if has_lexical_entry && !allow_particle_suffix {
         return None;
@@ -862,7 +858,16 @@ fn contextual_entry_bonus(
         .lookup_exact(&entry.reading)
         .unwrap_or_default()
         .into_iter()
-        .filter(|candidate| candidate.lcid == entry.lcid && candidate.rcid == entry.rcid)
+        .filter(|candidate| {
+            candidate.lcid == entry.lcid
+                && candidate.rcid == entry.rcid
+                // Raw-ruby identity rows are kept for faithful full
+                // conversion, but they must not manufacture a second
+                // lexical alternative for this Rust-only contextual prior.
+                // Otherwise adding `アツイ` makes the generic `熱い` row gain
+                // a +4.5 bonus and can reverse a homonym choice.
+                && !is_normalized_identity_surface(candidate)
+        })
         .collect::<Vec<_>>();
     alternatives.sort_by(|left, right| right.value.total_cmp(&left.value));
     if alternatives.len() < MIN_LEXICAL_ENTRY_CHARS {
@@ -890,6 +895,16 @@ fn contextual_entry_bonus(
     } else {
         NO_SCORE
     }
+}
+
+fn is_normalized_identity_surface(entry: &DictionaryEntry) -> bool {
+    to_hiragana(&entry.surface) == entry.reading
+}
+
+fn is_lexical_surface_for_unknown(entry: &DictionaryEntry) -> bool {
+    !is_normalized_identity_surface(entry)
+        && (contains_kanji(&entry.surface)
+            || entry.surface.chars().any(|character| is_katakana(&character)))
 }
 
 fn preceding_context_is_content(before: &[char]) -> bool {

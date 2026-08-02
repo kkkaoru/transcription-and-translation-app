@@ -1192,7 +1192,14 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
     }
     let fields = String::from_utf8_lossy(&bytes[header_end..]);
     let mut fields = fields.split('\t');
-    let reading = to_hiragana(fields.next().unwrap_or_default());
+    // Keep the serialized ruby for the identity-surface fallback below.
+    // The converter indexes readings in hiragana, but upstream uses the raw
+    // ruby when a loudstxt3 row omits its surface (notably for katakana rows).
+    // Normalizing first silently turns `トウキョウ` into `とうきょう`, which
+    // is then rejected by the full-conversion quality filter and loses the
+    // usable identity candidate entirely.
+    let raw_reading = fields.next().unwrap_or_default().to_string();
+    let reading = to_hiragana(&raw_reading);
     let repeated_reading_bytes = count
         .checked_mul(reading.len())
         .and_then(|bytes| bytes.checked_mul(2))
@@ -1210,8 +1217,11 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
     let mut entries = Vec::with_capacity(count);
     for index in 0..count {
         let base = LOUDSTXT3_COUNT_BYTES + index * LOUDSTXT3_ENTRY_BYTES;
-        let surface =
-            fields.next().filter(|surface| !surface.is_empty()).unwrap_or(&reading).to_string();
+        let surface = fields
+            .next()
+            .filter(|surface| !surface.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| raw_reading.clone());
         entries.push(DictionaryEntry {
             reading: reading.clone(),
             surface,
@@ -1660,6 +1670,22 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn preserves_raw_katakana_ruby_for_missing_surface() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1285u16.to_le_bytes());
+        bytes.extend_from_slice(&1285u16.to_le_bytes());
+        bytes.extend_from_slice(&501u16.to_le_bytes());
+        bytes.extend_from_slice(&(-3.0f32).to_le_bytes());
+        bytes.extend_from_slice("トウキョウ\t".as_bytes());
+
+        let entries = parse_loudstxt3_record(&bytes).expect("record should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].reading, "とうきょう");
+        assert_eq!(entries[0].surface, "トウキョウ");
     }
 
     #[test]
