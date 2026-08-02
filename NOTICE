@@ -1,0 +1,44 @@
+Kotoba Beacon includes third-party software and data. The licenses and notices
+listed below are shipped with the corresponding source or runtime artifact and
+remain applicable to that component; this repository's LICENSE applies only
+to Kotoba Beacon code that is not covered by another license.
+
+## Parapper-ASR
+
+Parapper-ASR is provided by Parakeet Inc. under the MIT License. The maintained
+Caption Bridge fork and its upstream revision are documented in
+`packages/parapper-asr/UPSTREAM.md` and `packages/parapper-asr/CAPTION_BRIDGE_FORK.md`.
+The complete license text is retained at `packages/parapper-asr/LICENSE` and is
+included in desktop bundles as `third-party/Parapper-ASR-LICENSE`.
+
+## AzooKey
+
+The bundled official AzooKey dictionary is Apache-2.0 licensed. Its complete
+license text is retained at `submodules/azooKey_dictionary_storage/LICENSE` and
+copied to `apps/cloudflare-worker-server/public/azookey/LICENSE` with the
+published Worker asset. The converter implementation and its upstream sources
+are referenced by the `submodules/AzooKeyKanaKanjiConverter` and
+`submodules/azooKey-Desktop` gitlinks.
+
+## Vibrato / IPADIC dictionary data
+
+The bundled IPADIC-derived dictionary data contains notices for:
+
+- Nara Institute of Science and Technology (NAIST), copyright 2000–2003.
+- LegalOn Technologies, Inc., copyright 2023.
+- ICOT Free Software, whose dictionary-entry distribution terms are included
+  in the accompanying `COPYING` text.
+- BCCWJ (Balanced Corpus of Contemporary Written Japanese), whose CORE data
+  supplies the connection-id remapping.
+
+The complete redistribution terms are retained in
+`assets/vibrato/ipadic-mecab-2_7_0/COPYING` and `NOTICE`, and copied beside the
+browser and Worker assets. The BCCWJ project is identified at
+<https://clrd.ninjal.ac.jp/bccwj/>.
+
+## Other bundled components
+
+Additional bundled runtimes retain their upstream notices in place, including
+`apps/desktop/src-tauri/third-party/llama.cpp-MIT.txt`, the Syphon framework
+headers, and generated Parapper dependency-license metadata. Do not remove or
+replace these files when producing a release bundle.
