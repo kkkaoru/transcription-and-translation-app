@@ -247,6 +247,10 @@ export const bridge = {
           receivedAt: caption.receivedAt,
           isFinal: caption.isFinal,
           confidence: caption.confidence ?? null,
+          // Without this the native command sees `None` and falls back to the
+          // legacy active-status check, which cannot reject an invoke that a
+          // Stop+Start superseded while it was in flight.
+          captureGeneration: caption.captureGeneration ?? null,
         },
       });
       return;

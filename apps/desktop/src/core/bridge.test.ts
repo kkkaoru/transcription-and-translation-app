@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { describe, expect, it, vi } from "vitest";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "./bridge";
+import type { CaptionPayload } from "./types";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 describe("formatBridgeError", () => {
   it("extracts details from strings, Errors, and Tauri-shaped objects", () => {
@@ -93,5 +97,52 @@ describe("browser replay bridges", () => {
   it("returns empty native history and no latest caption outside Tauri", async () => {
     expect(await bridge.getPipelineStageHistory()).toEqual([]);
     expect(await bridge.getLatestCaption()).toBeNull();
+  });
+});
+
+describe("publishSourceCaption generation fencing", () => {
+  const caption = (captureGeneration?: number): CaptionPayload => ({
+    id: "utterance-1",
+    sourceText: "こんにちは",
+    translationText: "",
+    sourceLanguage: "ja",
+    targetLanguage: "en",
+    startedAt: 1_000,
+    receivedAt: 1_200,
+    isFinal: true,
+    captureGeneration,
+  });
+
+  const withTauriRuntime = async (run: () => Promise<void>): Promise<void> => {
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    try {
+      await run();
+    } finally {
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = undefined;
+    }
+  };
+
+  it("forwards the capture generation so native can reject a superseded attempt", async () => {
+    vi.mocked(invoke).mockClear();
+    await withTauriRuntime(async () => {
+      await bridge.publishSourceCaption(caption(7));
+    });
+    const [command, args] = vi.mocked(invoke).mock.calls[0] ?? [];
+    expect(command).toBe("publish_source_caption");
+    expect(
+      (args as { caption: { captureGeneration: number | null } }).caption.captureGeneration,
+    ).toBe(7);
+  });
+
+  it("sends null rather than 0 when the caption carries no generation", async () => {
+    vi.mocked(invoke).mockClear();
+    await withTauriRuntime(async () => {
+      await bridge.publishSourceCaption(caption(undefined));
+    });
+    const [, args] = vi.mocked(invoke).mock.calls[0] ?? [];
+    // 0 is never a live generation natively, so it would drop every caption.
+    expect(
+      (args as { caption: { captureGeneration: number | null } }).caption.captureGeneration,
+    ).toBeNull();
   });
 });
