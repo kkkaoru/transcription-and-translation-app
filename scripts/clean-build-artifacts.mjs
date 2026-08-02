@@ -3,11 +3,13 @@
 /**
  * Remove generated build outputs that are safe to recreate.
  *
- * Rust `target/` directories and the CMake build trees are intentionally not
- * removed here: they contain expensive incremental caches and are not stale
- * application bundles.  Bun's `--compile` command leaves a temporary Mach-O
- * file in its current working directory, so only root-level files with Bun's
- * generated name shape are considered.
+ * Rust `target/` directories are handled by the optional `--prune-rust` mode.
+ * A normal cleanup only removes frontend/bundle outputs, while a build cleanup
+ * also removes Cargo's disposable debug and release caches.  Current release
+ * executables and runtime resources are retained so a cleanup never removes
+ * the installed app's source artifacts.  Bun's `--compile` command leaves a
+ * temporary Mach-O file in its current working directory, so only root-level
+ * files with Bun's generated name shape are considered.
  */
 
 import { lstat, readdir, rm } from "node:fs/promises";
@@ -66,18 +68,47 @@ const generatedDirectories = [
   "packages/parapper-asr/src-tauri/target/release/bundle",
 ];
 
+// Debug artifacts are never distributed and can grow without bound because
+// every changed Rust dependency/feature creates another hashed `deps` and
+// incremental tree.  Library-only targets have no runtime files to retain.
+const disposableRustTargets = [
+  "apps/desktop/src-tauri/target/debug",
+  "packages/parapper-asr/target/debug",
+  "packages/azookey-rust/target",
+  "packages/vibrato-wasm/target",
+  "submodules/Parapper-ASR/target",
+];
+
+// Keep release binaries, bundled sidecars, and downloaded runtime resources;
+// remove only Cargo's rebuildable indexes/objects.  This makes repeated
+// release builds bounded without forcing the distributed artifacts to be
+// rebuilt just to run the cleanup command.
+const releaseCacheDirectories = [
+  "apps/desktop/src-tauri/target/release/build",
+  "apps/desktop/src-tauri/target/release/deps",
+  "apps/desktop/src-tauri/target/release/.fingerprint",
+  "apps/desktop/src-tauri/target/release/incremental",
+  "apps/desktop/src-tauri/target/release/examples",
+  "packages/parapper-asr/target/release/build",
+  "packages/parapper-asr/target/release/deps",
+  "packages/parapper-asr/target/release/.fingerprint",
+  "packages/parapper-asr/target/release/incremental",
+  "packages/parapper-asr/target/release/examples",
+];
+
 const relativePath = (root, absolutePath) => relative(root, absolutePath) || ".";
 
 /**
  * Remove stale generated outputs.
  *
- * @param {{root?: string, dryRun?: boolean, temporaryOnly?: boolean}} [options]
+ * @param {{root?: string, dryRun?: boolean, temporaryOnly?: boolean, pruneRust?: boolean}} [options]
  * @returns {Promise<{removed: string[], skipped: string[]}>}
  */
 export async function cleanBuildArtifacts(options = {}) {
   const root = resolve(options.root ?? repositoryRoot);
   const dryRun = options.dryRun === true;
   const temporaryOnly = options.temporaryOnly === true;
+  const pruneRust = options.pruneRust === true;
   const removed = [];
   const skipped = [];
 
@@ -118,6 +149,25 @@ export async function cleanBuildArtifacts(options = {}) {
     removed.push(directory);
   }
 
+  if (pruneRust && !temporaryOnly) {
+    for (const directory of [...disposableRustTargets, ...releaseCacheDirectories]) {
+      const output = join(root, directory);
+      let stat;
+      try {
+        stat = await lstat(output);
+      } catch (error) {
+        if (error?.code === "ENOENT") continue;
+        throw error;
+      }
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        skipped.push(directory);
+        continue;
+      }
+      if (!dryRun) await rm(output, { recursive: true, force: true });
+      removed.push(directory);
+    }
+  }
+
   return { removed, skipped };
 }
 
@@ -131,6 +181,10 @@ const parseCliOptions = (argv) => {
     }
     if (argument === "--temporary-only") {
       options.temporaryOnly = true;
+      continue;
+    }
+    if (argument === "--prune-rust") {
+      options.pruneRust = true;
       continue;
     }
     if (argument === "--root") {

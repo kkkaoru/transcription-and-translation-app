@@ -95,6 +95,36 @@ describe("cleanBuildArtifacts", () => {
     assert.equal(existsSync(frontendOutput), true);
   });
 
+  it("prunes Rust debug/release caches while retaining release runtime files", async () => {
+    const root = await createRoot();
+    const debugCache = await createFile(root, "apps/desktop/src-tauri/target/debug/deps/old.rlib");
+    const libraryTarget = await createFile(
+      root,
+      "packages/azookey-rust/target/debug/deps/old.rlib",
+    );
+    const releaseDeps = await createFile(
+      root,
+      "apps/desktop/src-tauri/target/release/deps/old.rlib",
+    );
+    const releaseBinary = await createFile(
+      root,
+      "apps/desktop/src-tauri/target/release/kotoba-beacon",
+    );
+    const releaseRuntime = await createFile(
+      root,
+      "packages/parapper-asr/target/release/macos-runtime/libonnx.dylib",
+    );
+
+    await cleanBuildArtifacts({ root, pruneRust: true });
+
+    for (const removed of [debugCache, libraryTarget, releaseDeps]) {
+      assert.equal(existsSync(removed), false, `Rust cache remains: ${removed}`);
+    }
+    for (const retained of [releaseBinary, releaseRuntime]) {
+      assert.equal(existsSync(retained), true, `release runtime was removed: ${retained}`);
+    }
+  });
+
   it("rejects broad or symlinked roots before removing anything", async () => {
     const root = await createRoot();
     const symlinkRoot = join(root, "link");
@@ -115,6 +145,8 @@ describe("cleanBuildArtifacts", () => {
     for (const scriptName of ["build", "sidecar:build", "gateway:build", "clean:build"]) {
       assert.match(workspace.scripts[scriptName], new RegExp(cleanup));
     }
+    assert.match(workspace.scripts["clean:build"], /--prune-rust/);
+    assert.match(workspace.scripts["sidecar:build"], /--prune-rust/);
     for (const scriptName of ["build", "tauri:build", "tauri:build:release"]) {
       assert.match(desktop.scripts[scriptName], new RegExp(cleanup));
     }

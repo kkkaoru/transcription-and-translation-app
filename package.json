@@ -8,9 +8,10 @@
     "array-includes": "3.1.8"
   },
   "scripts": {
-    "clean:build": "node scripts/clean-build-artifacts.mjs",
+    "clean:build": "node scripts/clean-build-artifacts.mjs --prune-rust",
+    "clean:build:rust": "node scripts/clean-build-artifacts.mjs --prune-rust",
     "clean:build:temporary": "node scripts/clean-build-artifacts.mjs --temporary-only",
-    "sidecar:build": "node scripts/clean-build-artifacts.mjs && bun run scripts/build-sidecar.ts && node scripts/clean-build-artifacts.mjs --temporary-only",
+    "sidecar:build": "node scripts/clean-build-artifacts.mjs --prune-rust && bun run scripts/build-sidecar.ts && node scripts/clean-build-artifacts.mjs --temporary-only",
     "dev": "bun run sidecar:build && bun --filter=@caption-bridge/desktop run tauri:dev",
     "dev:web": "bun --filter=@caption-bridge/desktop run dev",
     "build": "node scripts/clean-build-artifacts.mjs && bun --filter=@caption-bridge/desktop run build",

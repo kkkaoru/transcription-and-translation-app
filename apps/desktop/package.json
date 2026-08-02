@@ -17,8 +17,8 @@
     "test:coverage": "vitest run --coverage",
     "tauri": "env -u RUSTUP_TOOLCHAIN tauri",
     "tauri:dev": "env -u RUSTUP_TOOLCHAIN tauri dev",
-    "tauri:build": "node ../../scripts/clean-build-artifacts.mjs --root ../.. && env -u RUSTUP_TOOLCHAIN tauri build",
-    "tauri:build:release": "node ../../scripts/clean-build-artifacts.mjs --root ../.. && env -u RUSTUP_TOOLCHAIN tauri build --config src-tauri/tauri.release.conf.json --bundles app"
+    "tauri:build": "node ../../scripts/clean-build-artifacts.mjs --root ../.. --prune-rust && env -u RUSTUP_TOOLCHAIN tauri build",
+    "tauri:build:release": "node ../../scripts/clean-build-artifacts.mjs --root ../.. --prune-rust && env -u RUSTUP_TOOLCHAIN tauri build --config src-tauri/tauri.release.conf.json --bundles app"
   },
   "dependencies": {
     "@fontsource-variable/noto-sans-jp": "^5.3.0",
