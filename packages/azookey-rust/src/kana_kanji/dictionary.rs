@@ -107,6 +107,25 @@ pub fn default_system_dictionary_path() -> Option<PathBuf> {
     }
 }
 
+/// Resolve the checked-in public dictionary for Rust tests.
+///
+/// Production callers intentionally require an explicit environment variable
+/// (or a supplied path), but keeping tests dependent on that shell setting
+/// makes the public-dictionary coverage silently disappear in CI. Prefer the
+/// environment when it points at a usable dictionary, then fall back to the
+/// repository's pinned submodule. If the submodule is not initialized, the
+/// caller can still skip the test as before.
+#[cfg(test)]
+pub(crate) fn test_system_dictionary_path() -> Option<PathBuf> {
+    if let Some(path) = default_system_dictionary_path() {
+        return Some(path);
+    }
+    let checked_in = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../submodules/azooKey_dictionary_storage/Dictionary");
+    let resolved = resolve_system_dictionary_root(&checked_in);
+    system_dictionary_present(&resolved).then_some(resolved)
+}
+
 /// Map a user-supplied path onto the LOUDS dictionary root when possible.
 ///
 /// Accepts:
@@ -1424,11 +1443,11 @@ mod tests {
 
     #[test]
     fn reads_the_public_azookey_dictionary_when_configured() {
-        let Ok(root) = std::env::var("AZOOKEY_DICTIONARY_ROOT") else {
+        let Some(root) = super::test_system_dictionary_path() else {
             return;
         };
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
-            system: Some(root.into()),
+            system: Some(root),
             ..DictionaryPaths::default()
         })
         .expect("public AzooKey dictionary should load");

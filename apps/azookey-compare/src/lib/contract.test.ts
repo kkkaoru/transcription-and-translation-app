@@ -8,7 +8,10 @@ import {
   comparisonConfigSchema,
   comparisonModeOptions,
   DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL,
+  DEFAULT_BROWSER_WASM_DICTIONARY_URL,
+  DEFAULT_BROWSER_WASM_FEATURE_INDEX,
   DEFAULT_BROWSER_WASM_GLOBAL_NAME,
+  DEFAULT_BROWSER_WASM_MODULE_URL,
   DEFAULT_COMPARISON_CONFIG,
   DEFAULT_COMPARISON_LANGUAGE,
   DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
@@ -30,17 +33,15 @@ describe("comparison configuration contract", () => {
       "browser-vibrato",
     ]);
     for (const option of comparisonModeOptions) {
-      expect(option.label.toLowerCase()).not.toContain("vibrato");
+      expect(option.label.toLowerCase()).toContain("vibrato");
       expect(option.description.toLowerCase()).toContain("azookey");
       expect(option.description.toLowerCase()).toMatch(/vibrato|unidic/);
-      expect(option.description).toMatch(/使いません/);
+      expect(option.description).not.toMatch(/使いません/);
     }
     expect(comparisonModeOptions[0]?.description).toContain("AzooKey WASM");
     expect(comparisonModeOptions[1]?.description).toContain("プリパス");
     expect(comparisonModeOptions[1]?.description).toContain("サイレント");
-    expect(comparisonConfigFieldDescriptions.mode.toLowerCase()).not.toMatch(
-      /vibrato runs|run vibrato/i,
-    );
+    expect(comparisonConfigFieldDescriptions.mode.toLowerCase()).toContain("vibrato");
     expect(comparisonConfigFieldDescriptions.websocketUrl).toContain("8787");
     expect(comparisonConfigFieldDescriptions.language).toContain("BCP-47");
     expect(comparisonConfigSchema.required).toEqual(["mode", "websocketUrl", "auth", "language"]);
@@ -52,7 +53,10 @@ describe("comparison configuration contract", () => {
       websocketUrl: DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
       auth: { scheme: "none" },
       language: DEFAULT_COMPARISON_LANGUAGE,
+      browserWasmModuleUrl: DEFAULT_BROWSER_WASM_MODULE_URL,
+      browserWasmDictionaryUrl: DEFAULT_BROWSER_WASM_DICTIONARY_URL,
     });
+    expect(DEFAULT_BROWSER_WASM_FEATURE_INDEX).toBe(7);
     expect(DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL).toMatch(/^ws:/);
   });
 
@@ -63,7 +67,7 @@ describe("comparison configuration contract", () => {
     expect(hasBrowserWasmConfiguration({ browserWasmGlobalName: "__CUSTOM__" })).toBe(true);
     expect(comparisonModeOptions[1]?.description).toContain("必須");
     expect(comparisonModeOptions[1]?.description).not.toMatch(/任意|optional/i);
-    expect(comparisonConfigFieldDescriptions.mode).toContain("required");
+    expect(comparisonConfigFieldDescriptions.mode).toContain("real");
     expect(comparisonConfigFieldDescriptions.mode).not.toMatch(/optional|任意/i);
     const unconfiguredStatus = browserWasmConfigurationStatus({});
     expect(unconfiguredStatus).toContain("未設定");
@@ -72,6 +76,12 @@ describe("comparison configuration contract", () => {
     expect(browserWasmConfigurationStatus({ browserWasmModuleUrl: "  /wasm/mod.js  " })).toContain(
       "/wasm/mod.js",
     );
+    expect(
+      browserWasmConfigurationStatus({
+        browserWasmModuleUrl: "/wasm/mod.js",
+        browserWasmDictionaryUrl: "/dict/system.dic.zst",
+      }),
+    ).toContain("/dict/system.dic.zst");
     expect(browserWasmConfigurationStatus({ browserWasmGlobalName: "  __CUSTOM__  " })).toContain(
       "globalThis.__CUSTOM__",
     );
@@ -193,10 +203,12 @@ describe("comparison configuration contract", () => {
         auth: { scheme: "none" },
         language: "ja",
         browserWasmModuleUrl: "  /wasm/azookey.js  ",
+        browserWasmDictionaryUrl: "  /dict/system.dic.zst  ",
         browserWasmGlobalName: "  __CUSTOM_VIBRATO__  ",
       }),
     ).toMatchObject({
       browserWasmModuleUrl: "/wasm/azookey.js",
+      browserWasmDictionaryUrl: "/dict/system.dic.zst",
       browserWasmGlobalName: "__CUSTOM_VIBRATO__",
     });
   });
@@ -233,8 +245,14 @@ describe("comparison configuration contract", () => {
     expect(() => validateComparisonConfig({ ...base, browserWasmModuleUrl: 4 })).toThrow(
       "browserWasmModuleUrl",
     );
+    expect(() => validateComparisonConfig({ ...base, browserWasmDictionaryUrl: 4 })).toThrow(
+      "browserWasmDictionaryUrl",
+    );
     expect(() =>
       validateComparisonConfig({ ...base, browserWasmModuleUrl: "javascript:alert(1)" }),
+    ).toThrow("javascript");
+    expect(() =>
+      validateComparisonConfig({ ...base, browserWasmDictionaryUrl: "javascript:alert(1)" }),
     ).toThrow("javascript");
     expect(() => validateComparisonConfig({ ...base, browserWasmGlobalName: 4 })).toThrow(
       "browserWasmGlobalName",
@@ -256,6 +274,8 @@ describe("comparison configuration contract", () => {
       websocketUrl: DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL,
       auth: { scheme: "bearer", token: "secret" },
       language: "en-US",
+      browserWasmModuleUrl: "/vibrato/vibrato_wasm.js",
+      browserWasmDictionaryUrl: "/vibrato/system.dic.zst",
     });
     expect(
       mergeComparisonConfig({
@@ -286,14 +306,40 @@ describe("comparison configuration contract", () => {
       auth: { scheme: "none" },
       language: "ja",
       browserWasmModuleUrl: "javascript:alert(1)",
+      browserWasmDictionaryUrl: "javascript:alert(1)",
       browserWasmGlobalName: 4,
     });
     expect(malformedOptional).toMatchObject({
       mode: "worker-vibrato",
       websocketUrl: "ws://custom.example",
     });
-    expect(malformedOptional.browserWasmModuleUrl).toBeUndefined();
+    expect(malformedOptional.browserWasmModuleUrl).toBe("/vibrato/vibrato_wasm.js");
+    expect(malformedOptional.browserWasmDictionaryUrl).toBe("/vibrato/system.dic.zst");
     expect(malformedOptional.browserWasmGlobalName).toBeUndefined();
+
+    const explicitDictionary = mergeComparisonConfig({
+      mode: "browser-vibrato",
+      websocketUrl: "ws://custom.example",
+      auth: { scheme: "none" },
+      language: "ja",
+      browserWasmModuleUrl: " /custom/vibrato.js ",
+      browserWasmDictionaryUrl: " /custom/system.dic.zst ",
+    });
+    expect(explicitDictionary).toMatchObject({
+      browserWasmModuleUrl: "/custom/vibrato.js",
+      browserWasmDictionaryUrl: "/custom/system.dic.zst",
+    });
+    const clearedBrowserAssets = mergeComparisonConfig({
+      mode: "browser-vibrato",
+      websocketUrl: "ws://custom.example",
+      auth: { scheme: "none" },
+      language: "ja",
+      browserWasmModuleUrl: " ",
+      browserWasmDictionaryUrl: " ",
+      browserWasmGlobalName: " ",
+    });
+    expect(clearedBrowserAssets.browserWasmModuleUrl).toBeUndefined();
+    expect(clearedBrowserAssets.browserWasmDictionaryUrl).toBeUndefined();
   });
 
   it("parses serialized settings with a defensive fallback", () => {

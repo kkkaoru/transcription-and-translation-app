@@ -107,6 +107,12 @@ async function openLive(page) {
     /^v\S+$/.test(buildInfo.version) && /^build\s+\S+$/.test(buildInfo.id),
     `${buildInfo.version} · ${buildInfo.id}`,
   );
+  const pipelineText = (await page.locator(".pipeline-panel").textContent()) || "";
+  recordCheck(
+    "live pipeline displays the selected recognition mode",
+    /Web Speech|Parapper ASR/i.test(pipelineText),
+    pipelineText.replace(/\s+/g, " ").trim().slice(0, 180) || "pipeline panel is empty",
+  );
   await sleep(350);
 }
 
@@ -486,6 +492,14 @@ async function exerciseBrowserErrorRecovery() {
   // NotAllowedError to exercise the same MainApp error/retry path while marking
   // the evidence synthetic (it is not a native TCC result).
   await context.addInitScript(() => {
+    // Chromium exposes Web Speech by default, so the runtime-aware config would
+    // otherwise select the Web Speech path and never call getUserMedia. Force
+    // the native-style Parapper path for this probe; the setting is synthetic
+    // and scoped to this temporary browser context only.
+    localStorage.setItem(
+      "caption-bridge.config.v1",
+      JSON.stringify({ recognitionMode: "parapper-azookey" }),
+    );
     if (navigator.mediaDevices) {
       navigator.mediaDevices.getUserMedia = () => {
         throw new DOMException("synthetic microphone denial", "NotAllowedError");

@@ -1096,6 +1096,41 @@ const main = async () => {
 
   copyProcessSnapshot("processes-before.txt");
   let pid = pidForExecutable(executable);
+  // macOS enforces one foreground instance through the app-data flock.  A
+  // second `open -n` of this bundle therefore exits immediately and activates
+  // whichever Kotoba Beacon is already registered with LaunchServices (often
+  // `/Applications/Kotoba Beacon.app`).  Do not mistake that existing window
+  // and its sidecars for the exact release bundle under test.
+  if (!pid && !noLaunch) {
+    const preexistingWindows = (await listWindows("Kotoba Beacon")).filter(
+      (window) => window.layer === 0 && window.windowNumber > 0,
+    );
+    if (preexistingWindows.length > 0) {
+      blocked(
+        "no conflicting Kotoba Beacon instance before launch",
+        `existing foreground pid(s): ${preexistingWindows
+          .map(
+            (window) =>
+              `${window.pid ?? "unknown"} ${window.owner || window.title || "Kotoba Beacon"}`,
+          )
+          .join(", ")}`,
+      );
+      note(
+        "A different Kotoba Beacon instance is already running. Close it and rerun native smoke so LaunchServices cannot route the test to the installed bundle.",
+      );
+      report.finishedAt = new Date().toISOString();
+      report.failedChecks = checks.filter(({ ok }) => !ok).map(({ name }) => name);
+      report.blockedChecks = checks
+        .filter(({ status }) => status === "blocked")
+        .map(({ name }) => name);
+      report.requiredFailures = checks
+        .filter(({ ok, required }) => !ok && required !== false)
+        .map(({ name }) => name);
+      writeJson("report.json", report);
+      process.exitCode = 1;
+      return;
+    }
+  }
   let launchedByUs = false;
   if (!pid && !noLaunch) {
     note(`launching ${launchTarget}`);

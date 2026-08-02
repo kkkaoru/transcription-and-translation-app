@@ -61,9 +61,7 @@ type PlaceholderTranslationEntry = {
 };
 
 type TranslationLogEntry =
-  | PendingTranslationEntry
-  | ReadyTranslationEntry
-  | PlaceholderTranslationEntry;
+  PendingTranslationEntry | ReadyTranslationEntry | PlaceholderTranslationEntry;
 
 type TranslationLogRow = {
   rowId: string;

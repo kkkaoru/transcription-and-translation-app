@@ -6,10 +6,19 @@
   "observability": {
     "enabled": true
   },
+  // These are public, non-secret defaults. Keep CORS_ORIGIN pinned to one
+  // explicit origin; override it at deploy time when the comparison UI has a
+  // different, owned HTTPS origin. Never add API tokens to this file.
   "vars": {
-    "CORS_ORIGIN": "https://example.invalid",
+    "CORS_ORIGIN": "https://kotoba-beacon-inference.kaoru.workers.dev",
     "MODEL_ROUTES": "{}",
-    "AZOOKEY_TIMEOUT_MS": "250"
+    "AZOOKEY_TIMEOUT_MS": "250",
+    "VIBRATO_DICTIONARY_URL": "https://raw.githubusercontent.com/kkkaoru/transcription-and-translation-app/main/assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst"
+  },
+  // Names only: Wrangler can warn when local/prod secrets are missing, but
+  // secret values are always entered through `wrangler secret put`.
+  "secrets": {
+    "required": ["AZOOKEY_API_TOKEN"]
   },
   "rules": [
     {

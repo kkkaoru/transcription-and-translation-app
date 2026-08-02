@@ -28,6 +28,7 @@ class FakeWebSocket {
   sent: string[] = [];
   closeCalls: Array<{ code?: number; reason?: string }> = [];
   sendFailure: Error | string | null = null;
+  closeFailure: Error | string | null = null;
 
   constructor(readonly endpoint: string) {
     if (FakeWebSocket.constructionFailure) {
@@ -45,6 +46,9 @@ class FakeWebSocket {
 
   close(code?: number, reason?: string): void {
     this.closeCalls.push({ code, reason });
+    if (this.closeFailure) {
+      throw this.closeFailure;
+    }
     this.readyState = FakeWebSocket.CLOSED;
   }
 
@@ -245,6 +249,15 @@ describe("AzooKey Worker client connection lifecycle", () => {
   it("handles malformed messages, protocol errors, and missing response text", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const { client, socket } = await openClient();
+    class ThrowingBlob extends Blob {
+      override text(): Promise<string> {
+        return Promise.reject(new Error("cannot read Blob"));
+      }
+    }
+    socket.message(new ThrowingBlob());
+    socket.message(JSON.stringify({ type: "result" }));
+    socket.message(JSON.stringify({ text: "orphan" }));
+    await Promise.resolve();
     const pending = client.convert(request());
     await Promise.resolve();
     socket.message(new Uint8Array([1, 2, 3]));
@@ -361,12 +374,39 @@ describe("AzooKey Worker client connection lifecycle", () => {
     expect(socket.closeCalls).toEqual([{ code: 1000, reason: "comparison page closed" }]);
   });
 
+  it("settles a handshake when the peer closes before opening", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const pending = client.connect();
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.closeFromPeer(1006);
+    await expect(pending).rejects.toThrow("1006");
+    expect(client.connectionState).toBe("closed");
+  });
+
+  it("does not enqueue a conversion after a handshake loses its open socket", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const pending = client.convert(request());
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    socket.readyState = FakeWebSocket.CLOSED;
+    await expect(pending).rejects.toThrow("接続されていません");
+  });
+
   it("rejects pending conversions and reconnects after an open socket error", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const { client, socket } = await openClient();
     const pending = client.convert(request());
     await Promise.resolve();
 
+    socket.closeFailure = "already closed";
     socket.error();
 
     await expect(pending).rejects.toThrow("接続エラー");
@@ -381,6 +421,140 @@ describe("AzooKey Worker client connection lifecycle", () => {
     replacement.open();
     await retry;
     expect(client.connectionState).toBe("open");
+  });
+
+  it("reconnects queued conversions after the active socket drops", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient();
+    const first = client.convert({ ...request(), sourceText: "一つ目", vibratoInput: "一つ目" });
+    const second = client.convert({ ...request(), sourceText: "二つ目", vibratoInput: "二つ目" });
+    expect(socket.sent).toHaveLength(1);
+
+    socket.closeFromPeer(1006);
+    await expect(first).rejects.toThrow("1006");
+
+    const replacement = FakeWebSocket.instances.at(-1);
+    if (!replacement) {
+      throw new Error("queued conversion did not request a replacement socket");
+    }
+    expect(replacement).not.toBe(socket);
+    replacement.open();
+    await Promise.resolve();
+    const payload = JSON.parse(replacement.sent[0] ?? "{}") as { requestId: string };
+    replacement.message(JSON.stringify({ requestId: payload.requestId, text: "二つ目の結果" }));
+    await expect(second).resolves.toMatchObject({ convertedText: "二つ目の結果" });
+  });
+
+  it("rejects a queued conversion when reconnecting never reaches OPEN", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient();
+    const first = client.convert({ ...request(), sourceText: "一つ目", vibratoInput: "一つ目" });
+    const second = client.convert({ ...request(), sourceText: "二つ目", vibratoInput: "二つ目" });
+
+    socket.closeFromPeer(1006);
+    await expect(first).rejects.toThrow("1006");
+    const replacement = FakeWebSocket.instances.at(-1);
+    if (!replacement) {
+      throw new Error("queued conversion did not request a replacement socket");
+    }
+    replacement.open();
+    replacement.readyState = FakeWebSocket.CLOSED;
+    await expect(second).rejects.toThrow("接続されていません");
+  });
+
+  it("reconnects the FIFO tail after socket error without orphaning a handshake", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient();
+    const first = client.convert({ ...request(), sourceText: "一つ目", vibratoInput: "一つ目" });
+    const second = client.convert({ ...request(), sourceText: "二つ目", vibratoInput: "二つ目" });
+
+    socket.error();
+    await expect(first).rejects.toThrow("接続エラー");
+    const firstConnect = client.connect();
+    const secondConnect = client.connect();
+    expect(secondConnect).toBe(firstConnect);
+    const replacement = FakeWebSocket.instances.at(-1);
+    if (!replacement) {
+      throw new Error("queued conversion did not request a replacement socket");
+    }
+    expect(replacement).not.toBe(socket);
+    replacement.open();
+    await expect(firstConnect).resolves.toBeUndefined();
+    await expect(secondConnect).resolves.toBeUndefined();
+    await Promise.resolve();
+    const payload = JSON.parse(replacement.sent[0] ?? "{}") as { requestId: string };
+    replacement.message(JSON.stringify({ requestId: payload.requestId, text: "二つ目の結果" }));
+    await expect(second).resolves.toMatchObject({ convertedText: "二つ目の結果" });
+  });
+
+  it("serializes rapid conversions and retries a transient busy refusal", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.useFakeTimers();
+    const { client, socket } = await openClient({
+      maxBusyRetries: 2,
+      busyRetryDelayMs: 10,
+    });
+    const first = client.convert({ ...request(), sourceText: "一つ目", vibratoInput: "一つ目" });
+    const second = client.convert({ ...request(), sourceText: "二つ目", vibratoInput: "二つ目" });
+    expect(socket.sent).toHaveLength(1);
+    const firstPayload = JSON.parse(socket.sent[0] ?? "{}") as {
+      requestId: string;
+      sourceText: string;
+    };
+    expect(firstPayload.sourceText).toBe("一つ目");
+
+    socket.message(
+      JSON.stringify({
+        type: "azookey.error",
+        requestId: firstPayload.requestId,
+        error: { code: "busy", message: "another conversion is in progress" },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(9);
+    expect(socket.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(socket.sent).toHaveLength(2);
+    const retryPayload = JSON.parse(socket.sent[1] ?? "{}") as { requestId: string };
+    expect(retryPayload.requestId).toBe(firstPayload.requestId);
+
+    socket.message(JSON.stringify({ requestId: retryPayload.requestId, text: "一つ目の結果" }));
+    await expect(first).resolves.toMatchObject({ convertedText: "一つ目の結果" });
+    await Promise.resolve();
+    expect(socket.sent).toHaveLength(3);
+    const secondPayload = JSON.parse(socket.sent[2] ?? "{}") as {
+      requestId: string;
+      sourceText: string;
+    };
+    expect(secondPayload.sourceText).toBe("二つ目");
+    socket.message(JSON.stringify({ requestId: secondPayload.requestId, text: "二つ目の結果" }));
+    await expect(second).resolves.toMatchObject({ convertedText: "二つ目の結果" });
+  });
+
+  it("rejects queued work and clears a busy retry when closed", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient({ maxBusyRetries: 2, busyRetryDelayMs: 100 });
+    const first = client.convert({ ...request(), sourceText: "一つ目", vibratoInput: "一つ目" });
+    const second = client.convert({ ...request(), sourceText: "二つ目", vibratoInput: "二つ目" });
+    await Promise.resolve();
+    const payload = JSON.parse(socket.sent[0] ?? "{}") as { requestId: string };
+    socket.message(
+      JSON.stringify({
+        type: "azookey.error",
+        requestId: payload.requestId,
+        error: { code: "busy", message: "busy" },
+      }),
+    );
+    client.close();
+    await expect(first).rejects.toThrow("閉じました");
+    await expect(second).rejects.toThrow("閉じました");
+  });
+
+  it("handles a close failure during explicit shutdown", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient();
+    socket.closeFailure = "close failed";
+    expect(() => client.close()).not.toThrow();
+    expect(client.connectionState).toBe("closed");
   });
 
   it("recovers from a connection error that is never followed by close", async () => {
@@ -412,6 +586,8 @@ describe("AzooKey Worker client connection lifecycle", () => {
     await retry;
     expect(client.connectionState).toBe("open");
 
+    firstSocket.message(JSON.stringify({ requestId: "stale", text: "無視" }));
+    firstSocket.error();
     firstSocket.closeFromPeer(1006);
     expect(client.connectionState).toBe("open");
 
@@ -438,7 +614,7 @@ describe("AzooKey Worker client connection lifecycle", () => {
 
   it("keeps the Worker's error code so a refusal is not read as a conversion", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    const { client, socket } = await openClient();
+    const { client, socket } = await openClient({ maxBusyRetries: 0 });
     const pending = client.convert(request());
     await Promise.resolve();
     const sent = JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string };

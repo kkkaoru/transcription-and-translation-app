@@ -683,6 +683,35 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(rawAsr, normalized)).toEqual(normalized);
   });
 
+  it("accepts a same-id final source even when audio duration backdates its start", () => {
+    // Parapper interim outputs have no audio duration and therefore use their
+    // receive time as startedAt.  A final output backdates startedAt by the
+    // measured turn duration; completion must win over that timestamp ordering.
+    const interim = caption({
+      id: "parapper:session:1:1",
+      sourceText: "あしたは",
+      startedAt: 2_000,
+      receivedAt: 2_010,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const final = caption({
+      id: "parapper:session:1:1",
+      sourceText: "明日は晴れです",
+      startedAt: 1_360,
+      receivedAt: 2_020,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(interim, final)).toMatchObject({
+      sourceText: "明日は晴れです",
+      isFinal: true,
+    });
+  });
+
   it("does not regress a same-id rolling revision to a shorter prefix", () => {
     const current = caption({
       id: "u-1",

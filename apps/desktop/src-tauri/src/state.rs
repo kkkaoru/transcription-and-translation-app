@@ -64,6 +64,22 @@ fn caption_is_stale(current: &CaptionPayload, candidate: &CaptionPayload) -> boo
     if current.id == candidate.id {
         let current_sequence = caption_sequence(current);
         let candidate_sequence = caption_sequence(candidate);
+
+        // Parapper partials have no measured duration and use their receipt
+        // time as `started_at`; finals backdate that field by the completed
+        // turn duration. A same-id source final therefore wins over its
+        // non-final interim even when its timestamp is earlier. The frontend
+        // merge applies the same completion precedence.
+        if current_sequence == 0
+            && candidate_sequence == 0
+            && current.stage == "source"
+            && candidate.stage == "source"
+            && !current.is_final
+            && candidate.is_final
+        {
+            return false;
+        }
+
         if candidate_sequence > current_sequence {
             // A translation for an older rolling-context window can finish
             // after a newer source revision has already been replayed.  The
@@ -263,6 +279,35 @@ mod tests {
         };
         state.record_latest_caption(&source);
         assert_eq!(state.latest_caption(), Some(source.clone()));
+
+        // A Parapper final backdates started_at by its turn duration. It must
+        // replace a same-id interim in native replay despite that timestamp.
+        let backdated_state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        let backdated_interim = CaptionPayload {
+            id: "parapper-session".to_string(),
+            source_text: "あしたは".to_string(),
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 2_000,
+            received_at: 2_010,
+            stage: "source",
+            sequence: 0,
+            is_final: false,
+            confidence: None,
+        };
+        backdated_state.record_latest_caption(&backdated_interim);
+        let final_source = CaptionPayload {
+            id: "parapper-session".to_string(),
+            source_text: "明日は晴れです".to_string(),
+            started_at: 1_360,
+            received_at: 2_020,
+            is_final: true,
+            ..backdated_interim
+        };
+        backdated_state.record_latest_caption(&final_source);
+        assert_eq!(backdated_state.latest_caption(), Some(final_source));
 
         let translated = CaptionPayload {
             translation_text: "normalized".to_string(),

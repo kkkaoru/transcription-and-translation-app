@@ -5,6 +5,7 @@ import {
   pcm16ToWav,
   validateGatewayConfig,
 } from "@caption-bridge/inference-server-core";
+import vibratoWasm from "../wasm/vibrato_wasm_bg.wasm";
 import {
   AZOOKEY_MAX_TEXT_BYTES,
   AZOOKEY_MODE,
@@ -25,6 +26,9 @@ export interface Env {
   ASR_UPSTREAM_URL?: string;
   AZOOKEY_API_TOKEN?: string;
   AZOOKEY_TIMEOUT_MS?: string;
+  VIBRATO_UPSTREAM_URL?: string;
+  VIBRATO_API_TOKEN?: string;
+  VIBRATO_DICTIONARY_URL?: string;
   CORS_ORIGIN?: string;
   MODEL_ROUTES: string;
 }
@@ -170,6 +174,16 @@ export const createWorker = (
             configured: Boolean(env.AZOOKEY_API_TOKEN?.trim()),
             transport: "authorization-header-or-first-frame",
           },
+          vibrato: {
+            workerStage:
+              env.VIBRATO_DICTIONARY_URL?.trim() || env.VIBRATO_UPSTREAM_URL?.trim()
+                ? "configured"
+                : "unconfigured",
+            transport: env.VIBRATO_DICTIONARY_URL?.trim() ? "wasm" : "http",
+            contract: env.VIBRATO_DICTIONARY_URL?.trim()
+              ? "Vibrato WASM + zstd system dictionary"
+              : "POST {text, language} -> {text}",
+          },
           modes: {
             worker: AZOOKEY_MODE,
             browser: BROWSER_VIBRATO_MODE,
@@ -180,9 +194,10 @@ export const createWorker = (
     }
     if (url.pathname === AZOOKEY_WS_PATH) {
       const response = await openAzookeySocket(request, env, {
+        ...dependencies,
+        fetcher,
         wasmModule: dependencies.wasmModule ?? azookeyWasm,
-        ...(dependencies.socketPair ? { socketPair: dependencies.socketPair } : {}),
-        ...(dependencies.converter ? { converter: dependencies.converter } : {}),
+        vibratoWasmModule: dependencies.vibratoWasmModule ?? vibratoWasm,
       });
       // Reconstructing a Response drops the non-standard `webSocket` slot
       // required by the Workers runtime for a 101 upgrade. CORS is relevant

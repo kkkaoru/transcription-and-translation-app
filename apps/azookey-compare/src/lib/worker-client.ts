@@ -6,6 +6,10 @@ export type VibratoExecution = "worker" | "browser-wasm";
 export interface WorkerClientOptions {
   endpoint: string;
   requestTimeoutMs?: number;
+  /** Number of times a server-side `busy` refusal is retried before failing. */
+  maxBusyRetries?: number;
+  /** Delay between `busy` retries. Defaults to a short 50ms backoff. */
+  busyRetryDelayMs?: number;
   onStateChange?: (state: WorkerConnectionState) => void;
 }
 
@@ -45,16 +49,42 @@ interface PendingRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+interface QueuedConversion {
+  readonly requestId: string;
+  readonly payload: string;
+  readonly resolve: (result: AzooKeyConvertResult) => void;
+  readonly reject: (error: Error) => void;
+  busyRetries: number;
+}
+
+interface ConnectionAttempt {
+  readonly socket: WebSocket;
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (error: Error) => void;
+}
+
 interface UnknownRecord {
   [key: string]: unknown;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const MIN_REQUEST_TIMEOUT_MS = 1_000;
+const DEFAULT_MAX_BUSY_RETRIES = 3;
+const DEFAULT_BUSY_RETRY_DELAY_MS = 50;
+const MIN_BUSY_RETRY_DELAY_MS = 0;
+const MIN_BUSY_RETRIES = 0;
 const NORMAL_WEBSOCKET_CLOSE_CODE = 1_000;
 const RANDOM_ID_SUFFIX_START = 2;
 const RANDOM_ID_SUFFIX_END = 10;
 const SINGLE_PENDING_REQUEST_COUNT = 1;
+
+const clampNonNegativeInteger = (value: number | undefined, fallback: number): number => {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.floor(value));
+};
 
 const isRecord = (value: unknown): value is UnknownRecord =>
   typeof value === "object" && value !== null;
@@ -142,6 +172,7 @@ const PRE_CONVERTER_ERROR_CODES: ReadonlySet<string> = new Set([
   "invalid_request_id",
   "invalid_contract",
   "unsupported_mode",
+  "vibrato_unavailable",
   "unauthorized",
   "busy",
   "converter_unavailable",
@@ -231,12 +262,18 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
 export class AzooKeyWorkerClient {
   private readonly endpoint: string;
   private readonly requestTimeoutMs: number;
+  private readonly maxBusyRetries: number;
+  private readonly busyRetryDelayMs: number;
   private readonly onStateChange?: (state: WorkerConnectionState) => void;
   private readonly pending = new Map<string, PendingRequest>();
+  /** The Worker accepts one conversion per socket; retain every utterance FIFO. */
+  private readonly conversionQueue: QueuedConversion[] = [];
   private socket: WebSocket | null = null;
-  private connectPromise: Promise<void> | null = null;
-  private resolveConnect: (() => void) | null = null;
-  private rejectConnect: ((error: Error) => void) | null = null;
+  /** One owner for the active handshake; stale socket events cannot settle a new attempt. */
+  private connectionAttempt: ConnectionAttempt | null = null;
+  private activeConversion: QueuedConversion | null = null;
+  private busyRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private closed = false;
   private state: WorkerConnectionState = "idle";
 
   constructor(options: WorkerClientOptions) {
@@ -244,6 +281,14 @@ export class AzooKeyWorkerClient {
     this.requestTimeoutMs = Math.max(
       MIN_REQUEST_TIMEOUT_MS,
       options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+    );
+    this.maxBusyRetries = Math.max(
+      MIN_BUSY_RETRIES,
+      clampNonNegativeInteger(options.maxBusyRetries, DEFAULT_MAX_BUSY_RETRIES),
+    );
+    this.busyRetryDelayMs = Math.max(
+      MIN_BUSY_RETRY_DELAY_MS,
+      clampNonNegativeInteger(options.busyRetryDelayMs, DEFAULT_BUSY_RETRY_DELAY_MS),
     );
     this.onStateChange = options.onStateChange;
   }
@@ -253,6 +298,9 @@ export class AzooKeyWorkerClient {
   }
 
   connect(): Promise<void> {
+    // `close()` is recoverable: a caller may explicitly reconnect the same
+    // client after a page-level transport reset.
+    this.closed = false;
     if (typeof WebSocket === "undefined") {
       this.setState("error");
       return Promise.reject(new Error("このブラウザでは WebSocket が利用できません"));
@@ -264,8 +312,8 @@ export class AzooKeyWorkerClient {
     if (this.socket?.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }
-    if (this.connectPromise) {
-      return this.connectPromise;
+    if (this.connectionAttempt) {
+      return this.connectionAttempt.promise;
     }
 
     this.setState("connecting");
@@ -277,23 +325,28 @@ export class AzooKeyWorkerClient {
       return Promise.reject(asError(error, "Worker WebSocket を作成できません"));
     }
 
-    this.socket = socket;
-    const connectPromise = new Promise<void>((resolve, reject) => {
-      this.resolveConnect = resolve;
-      this.rejectConnect = reject;
+    let resolveAttempt: () => void = () => undefined;
+    let rejectAttempt: (error: Error) => void = () => undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveAttempt = resolve;
+      rejectAttempt = reject;
     });
-    this.connectPromise = connectPromise;
+    const attempt: ConnectionAttempt = {
+      socket,
+      promise,
+      resolve: resolveAttempt,
+      reject: rejectAttempt,
+    };
+    this.socket = socket;
+    this.connectionAttempt = attempt;
 
     socket.onopen = () => {
-      if (this.socket !== socket) {
+      if (this.socket !== socket || this.connectionAttempt !== attempt) {
         return;
       }
-      const resolveConnect = this.resolveConnect;
-      this.connectPromise = null;
-      this.resolveConnect = null;
-      this.rejectConnect = null;
+      this.connectionAttempt = null;
       this.setState("open");
-      resolveConnect?.();
+      attempt.resolve();
     };
     socket.onmessage = (event) => {
       if (this.socket !== socket) {
@@ -306,14 +359,18 @@ export class AzooKeyWorkerClient {
         return;
       }
       const error = new Error("Worker WebSocket で接続エラーが発生しました");
-      const rejectConnect = this.rejectConnect;
       this.socket = null;
-      this.connectPromise = null;
-      this.resolveConnect = null;
-      this.rejectConnect = null;
+      if (this.connectionAttempt === attempt) {
+        this.connectionAttempt = null;
+      }
       this.setState("error");
-      rejectConnect?.(error);
+      attempt.reject(error);
       this.rejectPending(error);
+      // Keep FIFO requests submitted behind the failed frame moving. The
+      // active request is already settled above; pumpConversions() reconnects
+      // on demand for the next queued utterance or rejects it if reconnecting
+      // fails, so no caller Promise is left hanging after a socket drop.
+      this.pumpConversions();
       try {
         socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "connection error");
       } catch {
@@ -327,17 +384,17 @@ export class AzooKeyWorkerClient {
       const error = new Error(
         event.reason?.trim() || `Worker WebSocket が切断されました (${event.code})`,
       );
-      const rejectConnect = this.rejectConnect;
       this.socket = null;
-      this.connectPromise = null;
-      this.resolveConnect = null;
-      this.rejectConnect = null;
+      if (this.connectionAttempt === attempt) {
+        this.connectionAttempt = null;
+      }
       this.setState("closed");
-      rejectConnect?.(error);
+      attempt.reject(error);
       this.rejectPending(error);
+      this.pumpConversions();
     };
 
-    return connectPromise;
+    return promise;
   }
 
   convert(
@@ -345,19 +402,18 @@ export class AzooKeyWorkerClient {
   ): Promise<AzooKeyConvertResult> {
     const openSocket = this.socket;
     if (typeof WebSocket !== "undefined" && openSocket?.readyState === WebSocket.OPEN) {
-      return this.enqueueConversion(openSocket, request);
+      return this.enqueueConversion(request);
     }
     return this.connect().then(() => {
       const socket = this.socket;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         throw new Error("Worker WebSocket が接続されていません");
       }
-      return this.enqueueConversion(socket, request);
+      return this.enqueueConversion(request);
     });
   }
 
   private enqueueConversion(
-    socket: WebSocket,
     request: Omit<AzooKeyConvertRequest, "type" | "requestId">,
   ): Promise<AzooKeyConvertResult> {
     const requestId = createRequestId();
@@ -374,29 +430,112 @@ export class AzooKeyWorkerClient {
         : { vibratoExecution: request.vibratoExecution ?? ("worker" as const) }),
     };
     return new Promise<AzooKeyConvertResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(requestId);
-        reject(new Error("AzooKey Worker の応答がタイムアウトしました"));
-      }, this.requestTimeoutMs);
-      this.pending.set(requestId, { resolve, reject, timeout });
-      try {
-        socket.send(JSON.stringify(payload));
-      } catch (error) {
-        clearTimeout(timeout);
-        this.pending.delete(requestId);
-        reject(asError(error, "Worker WebSocket に送信できません"));
-      }
+      this.conversionQueue.push({
+        requestId,
+        payload: JSON.stringify(payload),
+        resolve,
+        reject,
+        busyRetries: 0,
+      });
+      this.pumpConversions();
     });
+  }
+
+  /**
+   * Send at most one conversion at a time. The Worker deliberately responds
+   * with `busy` for overlapping conversions, so a client-side FIFO is the
+   * reliable way to preserve rapid Web Speech finals.
+   */
+  private pumpConversions(): void {
+    if (this.closed || this.activeConversion || this.busyRetryTimer !== null) {
+      return;
+    }
+    const next = this.conversionQueue.shift();
+    if (!next) {
+      return;
+    }
+    this.activeConversion = next;
+
+    const socket = this.socket;
+    if (typeof WebSocket !== "undefined" && socket?.readyState === WebSocket.OPEN) {
+      this.sendQueuedConversion(socket, next);
+      return;
+    }
+    // A socket can close after `convert()` checks it but before this queued
+    // request is sent. Reconnect on demand instead of dropping the utterance.
+    void this.connect()
+      .then(() => {
+        const connected = this.socket;
+        if (!connected || connected.readyState !== WebSocket.OPEN) {
+          throw new Error("Worker WebSocket が接続されていません");
+        }
+        this.sendQueuedConversion(connected, next);
+      })
+      .catch((error: unknown) => {
+        this.finishQueuedConversion(next, asError(error, "Worker WebSocket に接続できません"));
+      });
+  }
+
+  private sendQueuedConversion(socket: WebSocket, queued: QueuedConversion): void {
+    const timeout = setTimeout(() => {
+      this.pending.delete(queued.requestId);
+      this.finishQueuedConversion(queued, new Error("AzooKey Worker の応答がタイムアウトしました"));
+    }, this.requestTimeoutMs);
+    this.pending.set(queued.requestId, {
+      resolve: (result) => this.finishQueuedConversion(queued, null, result),
+      reject: (error) => this.finishQueuedConversion(queued, error),
+      timeout,
+    });
+    try {
+      socket.send(queued.payload);
+    } catch (error) {
+      clearTimeout(timeout);
+      this.pending.delete(queued.requestId);
+      this.finishQueuedConversion(queued, asError(error, "Worker WebSocket に送信できません"));
+    }
+  }
+
+  private finishQueuedConversion(
+    queued: QueuedConversion,
+    error: Error | null,
+    result?: AzooKeyConvertResult,
+  ): void {
+    // A timeout, socket error, or malformed duplicate response can only settle
+    // one active attempt. Ignore a late callback after the job was already
+    // moved to the busy-retry queue.
+    if (this.activeConversion !== queued) {
+      return;
+    }
+    if (error instanceof AzooKeyWorkerError && error.code === "busy") {
+      if (queued.busyRetries < this.maxBusyRetries && !this.closed) {
+        queued.busyRetries += 1;
+        this.activeConversion = null;
+        this.conversionQueue.unshift(queued);
+        this.busyRetryTimer = setTimeout(() => {
+          this.busyRetryTimer = null;
+          this.pumpConversions();
+        }, this.busyRetryDelayMs);
+        return;
+      }
+    }
+    this.activeConversion = null;
+    if (error) {
+      queued.reject(error);
+    } else if (result) {
+      queued.resolve(result);
+    } else {
+      queued.reject(new Error("Worker 応答が空です"));
+    }
+    this.pumpConversions();
   }
 
   close(): void {
     const error = new Error("Worker WebSocket を閉じました");
+    this.closed = true;
     const socket = this.socket;
-    const rejectConnect = this.rejectConnect;
+    const attempt = this.connectionAttempt;
     this.socket = null;
-    this.connectPromise = null;
-    this.resolveConnect = null;
-    this.rejectConnect = null;
+    this.connectionAttempt = null;
     if (socket) {
       try {
         socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, "comparison page closed");
@@ -405,8 +544,15 @@ export class AzooKeyWorkerClient {
       }
     }
     this.setState("closed");
-    rejectConnect?.(error);
+    attempt?.reject(error);
     this.rejectPending(error);
+    if (this.busyRetryTimer !== null) {
+      clearTimeout(this.busyRetryTimer);
+      this.busyRetryTimer = null;
+    }
+    for (const queued of this.conversionQueue.splice(0)) {
+      queued.reject(error);
+    }
   }
 
   private async handleMessage(data: unknown): Promise<void> {

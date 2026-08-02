@@ -33,27 +33,35 @@ local so the app never talks to production unless you ask it to.
 
 ### Conversion modes (UI labels vs wire values)
 
-The UI toggle chooses **where** work runs. Neither mode runs Vibrato or UniDic:
+The UI toggle chooses **where** the required real Vibrato pre-pass runs. Both
+routes then send the resulting hiragana to the Worker-side AzooKey WASM:
 
 | UI label | What actually runs | Wire `mode` sent to Worker |
 | --- | --- | --- |
-| Worker 上の AzooKey WASM | Server-side AzooKey WASM kana→kanji only | `worker-vibrato` (kept for Worker compatibility) |
-| ブラウザ WASM プリパス → Worker | Required browser `convert`/`transform`/`tokenize` pre-pass (this mode fails without a configured module or global), then Worker AzooKey WASM | still wire `worker-vibrato`, plus `comparisonMode: "browser-vibrato"` |
+| Worker 上の Vibrato → AzooKey WASM | Worker の Vibrato WASM + 標準 IPADIC 辞書（必要に応じて HTTP adapter fallback）、then server-side AzooKey WASM | `worker-vibrato` plus `vibratoExecution: "worker"` |
+| ブラウザ Vibrato WASM → Worker | Generated `VibratoTokenizer` + IPADIC dictionary (F[7]) pre-pass, then Worker AzooKey WASM | `worker-vibrato` plus `comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"` |
 
-For the browser pre-pass, set `NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL` to a
-browser-loadable JS/WASM glue module, or inject
+The checked-in browser defaults use `/vibrato/vibrato_wasm.js` and
+`/vibrato/system.dic.zst`. Override them with
+`NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL` and
+`NEXT_PUBLIC_AZOO_KEY_VIBRATO_DICTIONARY_URL` when hosting a different
+wasm-bindgen module/dictionary. The generated module exports `initSync` and
+`VibratoTokenizer`; the loader initializes it and extracts IPADIC reading F[7]
+(UniDic CWJ uses F[20]). A custom wrapper/global may instead expose
 `globalThis.__AZOOKEY_VIBRATO_WASM__` (name overridable via
-`NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL`). The glue must export
+`NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL`). A custom wrapper may export
 `convert(text)`, `transform(text)`, or `tokenize(text)` and return a string
-(sync or async). A module whose default export is the function itself also
+(sync or async); a module whose default export is the function itself also
 works.
-If neither a module URL nor an injected global is available, browser mode
+If the module, dictionary, or injected global is unavailable, browser mode
 fails explicitly — it does not silently fall back to Worker-only conversion.
 
 ## Worker frame contract
 
-The comparison client sends one JSON text frame for every final Web Speech
-utterance:
+The comparison client sends one JSON text frame for each final Web Speech
+utterance that reaches the Worker. A setup failure (for example, a missing
+Bearer token) or a failed browser pre-pass aborts the request before any frame
+is sent:
 
 ```json
 {
@@ -64,6 +72,7 @@ utterance:
   "sourceText": "きょうのてんき",
   "vibratoInput": "きょうのてんき",
   "mode": "worker-vibrato",
+  "vibratoExecution": "worker",
   "auth": { "scheme": "none" }
 }
 ```
@@ -74,7 +83,8 @@ out of order; the UI keeps each request in its own timeline row. In the UI's
 browser pre-pass mode (`browser-vibrato` internal value), `vibratoInput` is the
 browser WASM result and the client still sends the Worker-compatible wire mode
 `worker-vibrato` with `comparisonMode: "browser-vibrato"` and
-`vibratoExecution: "browser-wasm"`. The Worker therefore performs AzooKey
-conversion only; it never runs Vibrato. Bearer tokens are sent in the JSON auth
+`vibratoExecution: "browser-wasm"`. The Worker performs AzooKey conversion
+only for that browser-prepass frame; worker-mode frames invoke the configured
+Vibrato WASM/IPADIC stage (or HTTP adapter fallback) before AzooKey. Bearer tokens are sent in the JSON auth
 field and are never appended to the WebSocket URL; use `wss://` for real
 credentials.

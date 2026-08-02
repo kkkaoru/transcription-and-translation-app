@@ -710,6 +710,15 @@ fn unknown_kana_span_end(
             .unwrap_or_default()
             .iter()
             .any(|entry| entry.reading.chars().count() >= MIN_LEXICAL_ENTRY_CHARS);
+        // Do not let an unresolved particle sequence swallow a lexical word
+        // that begins a few characters later (`のでさます`, `のですずしい`,
+        // ...).  The generic suffix fallback is intentionally bounded, but a
+        // particle inside that bounded run is still a hard lattice boundary.
+        // Leave the particle/auxiliary edges to the normal per-position pass;
+        // this preserves the lexical candidate without embedding a phrase.
+        if chars[start + 1..end].iter().any(|character| is_particle(*character)) {
+            return None;
+        }
         return Some(if following_has_word { start + 1 } else { end });
     }
     // Short runs are more likely to be valid dictionary words than an
@@ -1100,12 +1109,12 @@ mod tests {
 
     #[test]
     fn keeps_public_dictionary_context_for_ambiguous_caption_words() {
-        let Ok(root) = std::env::var("AZOOKEY_DICTIONARY_ROOT") else {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
             return;
         };
         let converted = super::convert_kana_to_kanji_with_paths(
             "かんじのしょりをかいぜん",
-            DictionaryPaths { system: Some(root.into()), ..DictionaryPaths::default() },
+            DictionaryPaths { system: Some(root), ..DictionaryPaths::default() },
         )
         .expect("configured public dictionary should convert");
         assert_eq!(converted, "漢字の処理を改善");
@@ -1307,11 +1316,11 @@ mod tests {
 
     #[test]
     fn converts_weather_and_soup_homophones_with_public_dictionary() {
-        let Ok(root) = std::env::var("AZOOKEY_DICTIONARY_ROOT") else {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
             return;
         };
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
-            system: Some(root.into()),
+            system: Some(root),
             ..DictionaryPaths::default()
         })
         .expect("configured public dictionary should load");
@@ -1331,11 +1340,11 @@ mod tests {
 
     #[test]
     fn converts_requested_weather_and_soup_sentences_with_public_dictionary() {
-        let Ok(root) = std::env::var("AZOOKEY_DICTIONARY_ROOT") else {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
             return;
         };
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
-            system: Some(root.into()),
+            system: Some(root),
             ..DictionaryPaths::default()
         })
         .expect("configured public dictionary should load");
@@ -1355,12 +1364,12 @@ mod tests {
 
     #[test]
     fn keeps_an_unknown_hiragana_suffix_readable_after_a_dictionary_clause() {
-        let Ok(root) = std::env::var("AZOOKEY_DICTIONARY_ROOT") else {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
             return;
         };
         let converted = convert_kana_to_kanji_with_paths(
             "あしたははれるでしょう",
-            DictionaryPaths { system: Some(root.into()), ..DictionaryPaths::default() },
+            DictionaryPaths { system: Some(root), ..DictionaryPaths::default() },
         )
         .expect("configured public dictionary should convert");
         // The implementation uses AzooKey's generic whole-hiragana fallback
@@ -1370,13 +1379,36 @@ mod tests {
     }
 
     #[test]
+    fn does_not_swallow_a_lexical_suffix_after_a_particle_sequence() {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
+            return;
+        };
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        let candidate = convert_with_dictionary(
+            "りょうりがあついのでさます",
+            &dictionary,
+            ConversionOptions::default(),
+        )
+        .into_iter()
+        .next()
+        .expect("public conversion should produce a candidate");
+        // A bounded unknown-kana edge may preserve an unresolved particle, but
+        // it must not consume the following dictionary word wholesale.
+        assert_ne!(candidate.text, "料理が暑いのでさます");
+    }
+
+    #[test]
     fn keeps_long_public_dictionary_paths_in_the_default_beam() {
-        let Ok(root) = std::env::var("AZOOKEY_DICTIONARY_ROOT") else {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
             return;
         };
         let converted = convert_kana_to_kanji_with_paths(
             "となりのきゃくはよくかきくうきゃくだ",
-            DictionaryPaths { system: Some(root.into()), ..DictionaryPaths::default() },
+            DictionaryPaths { system: Some(root), ..DictionaryPaths::default() },
         )
         .expect("configured public dictionary should convert");
         // A narrow (five-state) beam used to commit to `下記くうきゃくだ`

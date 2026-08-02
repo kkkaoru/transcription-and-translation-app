@@ -3,8 +3,8 @@ import type { ComparisonMode } from "./contract";
 /** User-visible conversion path after a single utterance is processed. */
 export const conversionPathLabel = (mode: ComparisonMode): string =>
   mode === "browser-vibrato"
-    ? "Browser WASM pre-pass → Worker AzooKey WASM"
-    : "Worker AzooKey WASM";
+    ? "Browser Vibrato WASM → Worker AzooKey WASM"
+    : "Worker Vibrato → Worker AzooKey WASM";
 
 /**
  * Stage that was in flight when a conversion failed.
@@ -39,25 +39,25 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
   }
   if (failedStage === "worker-connect") {
     return mode === "browser-vibrato"
-      ? "Browser WASM pre-pass 完了 / Worker AzooKey WASM 未実行"
-      : "Worker AzooKey WASM 未実行";
+      ? "Browser Vibrato WASM 完了 / Worker AzooKey WASM 未実行"
+      : "Worker Vibrato / AzooKey WASM 未実行";
   }
   if (failedStage === "worker-request") {
     return mode === "browser-vibrato"
-      ? "Browser WASM pre-pass 完了 / Worker がリクエストを拒否（AzooKey WASM 未実行）"
-      : "Worker がリクエストを拒否（AzooKey WASM 未実行）";
+      ? "Browser Vibrato WASM 完了 / Worker がリクエストを拒否（AzooKey WASM 未実行）"
+      : "Worker がリクエストを拒否（Vibrato / AzooKey WASM 未実行）";
   }
   if (failedStage === "worker-transport") {
     return mode === "browser-vibrato"
-      ? "Browser WASM pre-pass 完了 / Worker 処理結果不明（AzooKey WASM 実行不明）"
-      : "Worker 処理結果不明（AzooKey WASM 実行不明）";
+      ? "Browser Vibrato WASM 完了 / Worker 処理結果不明（AzooKey WASM 実行不明）"
+      : "Worker 処理結果不明（Vibrato / AzooKey WASM 実行不明）";
   }
   if (mode !== "browser-vibrato") {
-    return "Worker AzooKey WASM（失敗）";
+    return "Worker Vibrato / AzooKey WASM（失敗）";
   }
   return failedStage === "browser-wasm"
-    ? "Browser WASM pre-pass（失敗） / Worker AzooKey WASM 未実行"
-    : "Browser WASM pre-pass → Worker AzooKey WASM（失敗）";
+    ? "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行"
+    : "Browser Vibrato WASM → Worker AzooKey WASM（失敗）";
 };
 
 /** Row states that describe work still in flight. */
@@ -90,7 +90,7 @@ export const comparisonPathSummary = (
   browserWasmConfigured: boolean,
 ): string =>
   mode === "worker-vibrato"
-    ? "Web Speech → Worker AzooKey WASM"
-    : `Web Speech → Browser WASM pre-pass${
+    ? "Web Speech → Worker Vibrato → AzooKey WASM"
+    : `Web Speech → Browser Vibrato WASM${
         browserWasmConfigured ? "" : "（未設定）"
       } → Worker AzooKey WASM`;

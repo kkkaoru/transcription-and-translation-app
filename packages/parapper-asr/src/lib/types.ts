@@ -1,9 +1,6 @@
 export type AsrPrecision = "int8" | "int8_float32" | "float32";
 export type AsrLanguage =
-  | "japanese"
-  | "english"
-  | "european_multilingual"
-  | "multilingual";
+  "japanese" | "english" | "european_multilingual" | "multilingual";
 export type TurnDetector = "simple" | "morph" | "namo";
 export type NoiseCancellationModel = "ul_unas";
 export type NeoSendTiming = "interim" | "final";
@@ -38,8 +35,7 @@ export type RecognitionStatus =
   | "error";
 export type InputSourceKind = "desktop_audio" | "web_socket";
 export type StreamingRecognitionOutputMode =
-  | "web_socket_only"
-  | "web_socket_and_desktop";
+  "web_socket_only" | "web_socket_and_desktop";
 
 export type ParapperConfig = {
   neo_http_enabled: boolean;

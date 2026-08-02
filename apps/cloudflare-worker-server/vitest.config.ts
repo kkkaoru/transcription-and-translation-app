@@ -12,6 +12,9 @@ export default defineConfig({
         if (importer?.endsWith("/src/index.ts") && source === "./azookey-wasm.js") {
           return wasmTestStub;
         }
+        if (importer?.endsWith("/src/index.ts") && source === "../wasm/vibrato_wasm_bg.wasm") {
+          return wasmTestStub;
+        }
         return undefined;
       },
     },

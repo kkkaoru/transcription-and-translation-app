@@ -1037,7 +1037,10 @@ fn stage_event_with_surface(
         model_id: model_id.to_string(),
         input_snippet: snippet(input),
         output_text: snippet(output),
-        surface_text: surface.map(snippet),
+        // `surface_text` is consumed by the frontend's immediate provisional
+        // caption paint, so retain the complete surface instead of applying
+        // the bounded debug sample truncation used by input/output fields.
+        surface_text: surface.map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned),
         started_at,
         at: ended_at,
         duration_ms,
@@ -1150,8 +1153,8 @@ mod tests {
     use super::{
         clean_model_text, is_no_speech_response, normalize_azookey, normalize_azookey_with_cache,
         record_stage, resolve_utterance_id, snippet, source_ready_caption, stage_event,
-        with_translation, zenz_prompt, CaptionPayload, NormalizeOutcome, ParapperRecognitionInput,
-        Pipeline, PipelineStageEvent, STAGE_SNIPPET_CHARS,
+        stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload, NormalizeOutcome,
+        ParapperRecognitionInput, Pipeline, PipelineStageEvent, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;
@@ -1637,6 +1640,25 @@ mod tests {
         assert!(event.input_snippet.ends_with('…'));
         assert_eq!(snippet(" short "), "short");
         assert_eq!(event.output_text, "out");
+    }
+
+    #[test]
+    fn stage_event_surface_retains_full_text_for_provisional_caption_paint() {
+        let surface = "明".repeat(STAGE_SNIPPET_CHARS + 20);
+        let event = stage_event_with_surface(
+            "asr",
+            "utt",
+            "parapper-ja",
+            &surface,
+            "あ".repeat(STAGE_SNIPPET_CHARS + 20).as_str(),
+            7,
+            true,
+            None,
+            Some(&surface),
+        );
+
+        assert_eq!(event.surface_text.as_deref(), Some(surface.as_str()));
+        assert!(event.output_text.ends_with('…'));
     }
 
     #[test]

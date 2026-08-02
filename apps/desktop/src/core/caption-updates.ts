@@ -267,6 +267,24 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
 
     const nextSequence = sequenceOf(next);
     const currentSequence = sequenceOf(current);
+
+    // Parapper backdates a final caption's `startedAt` by its measured audio
+    // duration, while an interim has no duration and therefore starts at the
+    // receive time.  A final for the same source turn must still replace that
+    // interim even though its audio start is numerically earlier.  The
+    // persistent stream queue already orders/filters turn cursors, so this is
+    // only the completion upgrade at the caption merge boundary.
+    if (
+      currentSequence === SOURCE_SEQUENCE &&
+      nextSequence === SOURCE_SEQUENCE &&
+      current.isFinal !== true &&
+      next.isFinal === true &&
+      isSourceStagePayload(current) &&
+      isSourceStagePayload(next)
+    ) {
+      return false;
+    }
+
     if (nextSequence > currentSequence) {
       return false;
     }

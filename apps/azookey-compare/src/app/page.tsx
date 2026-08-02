@@ -87,7 +87,7 @@ const rowStateLabel = (state: ComparisonRowState): string => {
     case "queued":
       return "送信待ち";
     case "wasm":
-      return "ブラウザ WASM プリパス中";
+      return "ブラウザ Vibrato WASM 中";
     // This state spans connecting, sending, and awaiting the response, so it
     // must not claim the AzooKey WASM conversion is already running, nor that
     // the request is still being sent.
@@ -120,6 +120,9 @@ export default function ComparePage() {
     ...(process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL
       ? { browserWasmModuleUrl: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL }
       : {}),
+    ...(process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_DICTIONARY_URL
+      ? { browserWasmDictionaryUrl: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_DICTIONARY_URL }
+      : {}),
     ...(process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL
       ? { browserWasmGlobalName: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL }
       : {}),
@@ -138,6 +141,8 @@ export default function ComparePage() {
   const speechRef = useRef<WebSpeechController | null>(null);
   const workerRef = useRef<AzooKeyWorkerClient | null>(null);
   const finalTextHandlerRef = useRef<(text: string) => void>(() => undefined);
+  /** Serialize browser pre-pass + Worker work so rapid finals retain order. */
+  const dispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     let endpoint = config.websocketUrl;
@@ -162,7 +167,12 @@ export default function ComparePage() {
 
   useEffect(() => {
     const controller = new WebSpeechController(config.language, {
-      onStateChange: setSpeechState,
+      onStateChange: (state) => {
+        setSpeechState(state);
+        if (state === "listening") {
+          setError("");
+        }
+      },
       onTranscript: ({ finalText, interimText }: SpeechTranscriptUpdate) => {
         setSpeechFinalText(finalText);
         setSpeechInterimText(interimText);
@@ -189,6 +199,7 @@ export default function ComparePage() {
       sourceText: string,
       mode: ComparisonMode,
       wasmModuleUrl: string,
+      dictionaryUrl: string,
       wasmGlobalName: string,
       language: string,
       auth: ComparisonAuth,
@@ -230,6 +241,7 @@ export default function ComparePage() {
           try {
             const wasmResult = await runBrowserVibrato(normalizedSource, {
               moduleUrl: wasmModuleUrl,
+              dictionaryUrl,
               globalName: wasmGlobalName,
             });
             vibratoInput = wasmResult.text;
@@ -294,14 +306,22 @@ export default function ComparePage() {
   // Keep the controller callback stable while routing each final utterance to
   // the latest selected mode and WASM settings.
   finalTextHandlerRef.current = (text) => {
-    void dispatchFinalText(
-      text,
-      config.mode,
-      config.browserWasmModuleUrl ?? "",
-      config.browserWasmGlobalName ?? "",
-      config.language,
-      config.auth,
+    const dispatch = dispatchQueueRef.current.then(() =>
+      dispatchFinalText(
+        text,
+        config.mode,
+        config.browserWasmModuleUrl ?? "",
+        config.browserWasmDictionaryUrl ?? "",
+        config.browserWasmGlobalName ?? "",
+        config.language,
+        config.auth,
+      ),
     );
+    // Keep the chain alive after an unexpected observer/React failure. The
+    // conversion function normally catches stage errors itself, but this
+    // guard prevents one rapid utterance from blocking all later finals.
+    dispatchQueueRef.current = dispatch.catch(() => undefined);
+    void dispatch;
   };
 
   const browserWasmConfigured = hasBrowserWasmConfiguration(config);
@@ -321,10 +341,16 @@ export default function ComparePage() {
       config.mode === "browser-vibrato"
         ? browserWasmConfigurationStatus({
             browserWasmModuleUrl: config.browserWasmModuleUrl,
+            browserWasmDictionaryUrl: config.browserWasmDictionaryUrl,
             browserWasmGlobalName: config.browserWasmGlobalName,
           })
         : "",
-    [config.mode, config.browserWasmModuleUrl, config.browserWasmGlobalName],
+    [
+      config.mode,
+      config.browserWasmModuleUrl,
+      config.browserWasmDictionaryUrl,
+      config.browserWasmGlobalName,
+    ],
   );
 
   const toggleListening = (): void => {
@@ -365,7 +391,12 @@ export default function ComparePage() {
     // The browser WASM status describes the previous settings. A changed mode
     // or pre-pass configuration must not keep claiming ready/error until the
     // new configuration has actually been exercised.
-    if (key === "mode" || key === "browserWasmModuleUrl" || key === "browserWasmGlobalName") {
+    if (
+      key === "mode" ||
+      key === "browserWasmModuleUrl" ||
+      key === "browserWasmDictionaryUrl" ||
+      key === "browserWasmGlobalName"
+    ) {
       setBrowserWasmState("idle");
     }
   };
@@ -456,7 +487,7 @@ export default function ComparePage() {
 
             {config.mode === "browser-vibrato" ? (
               <div className="subsection browser-wasm-settings">
-                <p className="subsection-title">Browser WASM プリパス設定（このモードでは必須）</p>
+                <p className="subsection-title">Browser Vibrato WASM 設定（このモードでは必須）</p>
                 <p className="field-help" data-testid="browser-wasm-config-status">
                   {browserWasmStatus}
                 </p>
@@ -483,15 +514,30 @@ export default function ComparePage() {
                     spellCheck={false}
                   />
                 </label>
+                <label className="field-label" htmlFor="wasm-dictionary-url">
+                  Vibrato 辞書 URL（IPADIC F[7]、生成 module では必須）
+                  <input
+                    id="wasm-dictionary-url"
+                    type="url"
+                    inputMode="url"
+                    value={config.browserWasmDictionaryUrl ?? ""}
+                    onChange={(event) =>
+                      updateConfig("browserWasmDictionaryUrl", event.target.value)
+                    }
+                    placeholder="/vibrato/system.dic.zst"
+                    spellCheck={false}
+                  />
+                </label>
                 <p className="field-help">
-                  このアプリはブラウザ WASM を同梱していません。`convert(text)`、
-                  `transform(text)`、`tokenize(text)` のいずれかを export する wrapper の
-                  URL、または注入済み global を指定します。モジュール URL も global
-                  名も空のときはブラウザ WASM が未設定のためプリパスを実行できず失敗します（Worker
-                  のみへはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
-                  実行時フォールバックとして歴史的な既定名 `__AZOOKEY_VIBRATO_WASM__`（Vibrato
-                  本体ではない convert 用 global）を試します。 AzooKey のかな→漢字変換は常に Worker
-                  側の AzooKey WASM で実行します。
+                  既定の wasm-bindgen module（`/vibrato/vibrato_wasm.js`）は `VibratoTokenizer` と
+                  `initSync` を export し、この辞書の IPADIC F[7] を ひらがなへ変換します。独自
+                  module を使う場合は、`convert(text)`、 `transform(text)`、`tokenize(text)`
+                  のいずれかを export する wrapper の URL、または注入済み global
+                  を指定します。モジュール URL も global 名も空のときはブラウザ Vibrato WASM
+                  が未設定のためプリパスを実行できず失敗します（Worker 側 Vibrato
+                  へはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
+                  実行時フォールバックとして既定名 `__AZOOKEY_VIBRATO_WASM__` を試します。 AzooKey
+                  のかな→漢字変換は常に Worker 側の AzooKey WASM で実行します。
                 </p>
                 <div className={`mini-status wasm-${browserWasmState}`}>
                   <span className="status-dot" aria-hidden="true" />

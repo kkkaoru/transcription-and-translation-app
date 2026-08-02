@@ -6,7 +6,8 @@
  * adding these fields there would make persisted desktop settings ambiguous.
  *
  * Historical wire labels (`worker-vibrato`, `vibratoInput`) are preserved for
- * Worker compatibility; neither comparison mode runs Vibrato/UniDic.
+ * Worker compatibility. The selected mode records where the real Vibrato
+ * pre-pass runs; AzooKey kana→kanji remains on the Worker.
  */
 
 export const COMPARISON_CONFIG_SCHEMA_VERSION = 1 as const;
@@ -18,6 +19,12 @@ export const COMPARISON_CONFIG_SCHEMA_VERSION = 1 as const;
  * from the global the loader actually reads.
  */
 export const DEFAULT_BROWSER_WASM_GLOBAL_NAME = "__AZOOKEY_VIBRATO_WASM__";
+/** Browser-bundled wasm-bindgen glue emitted by `build-vibrato-wasm.mjs`. */
+export const DEFAULT_BROWSER_WASM_MODULE_URL = "/vibrato/vibrato_wasm.js";
+/** Browser-bundled IPADIC system.dic.zst used by the generated tokenizer. */
+export const DEFAULT_BROWSER_WASM_DICTIONARY_URL = "/vibrato/system.dic.zst";
+/** IPADIC's reading field (`feature[7]`); UniDic CWJ uses 20 instead. */
+export const DEFAULT_BROWSER_WASM_FEATURE_INDEX = 7 as const;
 
 export type ComparisonMode = "worker-vibrato" | "browser-vibrato";
 
@@ -48,6 +55,8 @@ export interface ComparisonConfig {
   language: string;
   /** Optional browser-side WASM module specifier; empty means use the global fallback. */
   browserWasmModuleUrl?: string;
+  /** Compressed Vibrato system dictionary URL for generated tokenizer modules. */
+  browserWasmDictionaryUrl?: string;
   /** Optional global converter name used by the browser pre-pass when no module URL is set. */
   browserWasmGlobalName?: string;
 }
@@ -59,6 +68,7 @@ export type ComparisonConfigInput = {
   auth?: unknown;
   language?: unknown;
   browserWasmModuleUrl?: unknown;
+  browserWasmDictionaryUrl?: unknown;
   browserWasmGlobalName?: unknown;
 };
 
@@ -71,15 +81,15 @@ export interface ComparisonModeOption {
 export const comparisonModeOptions: readonly ComparisonModeOption[] = [
   {
     value: "worker-vibrato",
-    label: "Worker 上の AzooKey WASM",
+    label: "Worker 上の Vibrato → AzooKey WASM",
     description:
-      "Worker 上で AzooKey WASM のかな→漢字変換だけを実行します（Vibrato / UniDic は使いません）。",
+      "Worker に組み込んだ Vibrato WASM と標準 IPADIC 辞書で漢字混じりの入力をひらがなにし、その結果を Worker の AzooKey WASM に渡します。辞書の取得に失敗した場合は明示的に失敗します。",
   },
   {
     value: "browser-vibrato",
-    label: "ブラウザ WASM プリパス → Worker",
+    label: "ブラウザ Vibrato WASM → Worker",
     description:
-      "ブラウザ側 WASM（convert/transform/tokenize）を先に通し、その結果を Worker の AzooKey WASM に渡します。Vibrato / UniDic は使いません。このモードではプリパスが必須で、モジュールも global も見つからなければ変換は失敗します（Worker のみへはサイレントに落ちません）。",
+      "ブラウザ側の Vibrato WASM と IPADIC 辞書を先に通し、その結果を Worker の AzooKey WASM に渡します。このモードではプリパスが必須で、モジュールも辞書も見つからなければ変換は失敗します（Worker 側 Vibrato へはサイレントに落ちません）。",
   },
 ] as const;
 
@@ -88,43 +98,53 @@ export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 
 /** Short, user-facing explanations for the fields in the settings panel. */
 export const comparisonConfigFieldDescriptions = {
-  mode: "Choose where the required browser WASM pre-pass runs when browser mode is selected; AzooKey kana→kanji always runs on the Worker.",
+  mode: "Choose whether the real Vibrato pre-pass runs through the configured Worker adapter or browser WASM; AzooKey kana→kanji always runs on the Worker.",
   websocketUrl:
     "A ws:// or wss:// URL for the AzooKey Worker endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
   auth: "Optional Bearer credentials for the Worker. Keep tokens out of URLs and logs.",
   language: "BCP-47 language tag sent to the recognizer (for example, ja or en-US).",
   browserWasmModuleUrl:
     "Optional browser WASM glue module URL for the pre-pass. Leave empty only when a named global converter is injected.",
+  browserWasmDictionaryUrl:
+    "Compressed Vibrato system.dic.zst URL for the generated tokenizer (IPADIC reading field F[7]).",
   browserWasmGlobalName:
     "Optional global converter name for the browser pre-pass (defaults to the built-in global name).",
 } as const;
 
 /**
  * True when browser-mode has either a module URL or an explicit global name
- * that could supply the optional convert/transform/tokenize pre-pass.
+ * that could supply the convert/transform/tokenize pre-pass.
  * Presence of a name alone does not guarantee the global is injected at runtime.
  */
 export const hasBrowserWasmConfiguration = (
-  config: Pick<ComparisonConfig, "browserWasmModuleUrl" | "browserWasmGlobalName">,
+  config: Pick<
+    ComparisonConfig,
+    "browserWasmModuleUrl" | "browserWasmDictionaryUrl" | "browserWasmGlobalName"
+  >,
 ): boolean => Boolean(config.browserWasmModuleUrl?.trim() || config.browserWasmGlobalName?.trim());
 
 /** Plain-language status for the browser pre-pass configuration panel. */
 export const browserWasmConfigurationStatus = (
-  config: Pick<ComparisonConfig, "browserWasmModuleUrl" | "browserWasmGlobalName">,
+  config: Pick<
+    ComparisonConfig,
+    "browserWasmModuleUrl" | "browserWasmDictionaryUrl" | "browserWasmGlobalName"
+  >,
 ): string => {
   const moduleUrl = config.browserWasmModuleUrl?.trim() ?? "";
+  const dictionaryUrl =
+    config.browserWasmDictionaryUrl?.trim() || DEFAULT_BROWSER_WASM_DICTIONARY_URL;
   const globalName = config.browserWasmGlobalName?.trim() ?? "";
   const effectiveGlobalName = globalName || DEFAULT_BROWSER_WASM_GLOBAL_NAME;
   if (moduleUrl && globalName) {
-    return `ブラウザ WASM プリパス: globalThis.${effectiveGlobalName} が注入されている場合はそちらが優先され、未注入ならモジュール URL（${moduleUrl}）を読み込みます。`;
+    return `ブラウザ Vibrato WASM: globalThis.${effectiveGlobalName} が注入されている場合はそちらが優先され、未注入ならモジュール URL（${moduleUrl}）と IPADIC 辞書（${dictionaryUrl}、F[7]）を読み込みます。`;
   }
   if (moduleUrl) {
-    return `ブラウザ WASM プリパス: モジュール URL を読み込みます（${moduleUrl}）。ただし globalThis.${effectiveGlobalName} が注入されている場合はそちらが優先されます。`;
+    return `ブラウザ Vibrato WASM: モジュール URL（${moduleUrl}）と IPADIC 辞書（${dictionaryUrl}、F[7]）を読み込みます。ただし globalThis.${effectiveGlobalName} が注入されている場合はそちらが優先されます。`;
   }
   if (globalName) {
-    return `ブラウザ WASM プリパス: globalThis.${effectiveGlobalName} が注入されている場合のみ実行します。未注入なら変換は失敗します（Worker のみにはなりません）。`;
+    return `ブラウザ Vibrato WASM: globalThis.${effectiveGlobalName} が注入されている場合のみ実行します。未注入なら変換は失敗します（Worker のみにはなりません）。`;
   }
-  return `ブラウザ WASM プリパス: モジュール URL も global 名も未設定です。globalThis.${effectiveGlobalName} が注入されていればそれを使い、なければ変換は失敗します（Worker のみにはなりません）。`;
+  return `ブラウザ Vibrato WASM: モジュール URL も global 名も未設定です。globalThis.${effectiveGlobalName} が注入されていればそれを使い、なければ変換は失敗します（Worker のみにはなりません）。`;
 };
 
 /** JSON Schema for persisted/transported comparison configuration. */
@@ -160,6 +180,7 @@ export const comparisonConfigSchema = {
     },
     language: { type: "string", minLength: 1 },
     browserWasmModuleUrl: { type: "string", minLength: 1 },
+    browserWasmDictionaryUrl: { type: "string", minLength: 1 },
     browserWasmGlobalName: { type: "string", minLength: 1 },
   },
 } as const;
@@ -172,7 +193,7 @@ export const comparisonConfigSchema = {
 export const DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL = "ws://127.0.0.1:8787/ws/azookey";
 /**
  * Browser comparison mode still uses the same AzooKey Worker for kana→kanji.
- * The optional browser WASM step is only a pre-pass before this endpoint.
+ * The browser WASM step is only a pre-pass before this endpoint.
  */
 export const DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL = DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL;
 export const DEFAULT_COMPARISON_LANGUAGE = "ja";
@@ -185,6 +206,8 @@ export const DEFAULT_COMPARISON_CONFIG: ComparisonConfig = {
   websocketUrl: DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
   auth: { scheme: "none" },
   language: DEFAULT_COMPARISON_LANGUAGE,
+  browserWasmModuleUrl: DEFAULT_BROWSER_WASM_MODULE_URL,
+  browserWasmDictionaryUrl: DEFAULT_BROWSER_WASM_DICTIONARY_URL,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -256,6 +279,14 @@ const browserWasmModuleUrl = (value: unknown): string | undefined => {
   return candidate;
 };
 
+const browserWasmDictionaryUrl = (value: unknown): string | undefined => {
+  const candidate = optionalTrimmedString(value, "browserWasmDictionaryUrl");
+  if (candidate && /^javascript:/i.test(candidate)) {
+    throw new Error("browserWasmDictionaryUrl cannot use the javascript: scheme");
+  }
+  return candidate;
+};
+
 const auth = (value: unknown, label = "auth"): ComparisonAuth => {
   if (typeof value === "string") {
     const token = value.trim();
@@ -308,6 +339,7 @@ export const validateComparisonConfig = (value: unknown): ComparisonConfig => {
     throw new Error("mode must be worker-vibrato or browser-vibrato");
   }
   const browserModuleUrl = browserWasmModuleUrl(value["browserWasmModuleUrl"]);
+  const browserDictionaryUrl = browserWasmDictionaryUrl(value["browserWasmDictionaryUrl"]);
   const browserGlobalName = optionalTrimmedString(
     value["browserWasmGlobalName"],
     "browserWasmGlobalName",
@@ -319,6 +351,7 @@ export const validateComparisonConfig = (value: unknown): ComparisonConfig => {
     auth: auth(value["auth"]),
     language: language(value["language"]),
     ...(browserModuleUrl ? { browserWasmModuleUrl: browserModuleUrl } : {}),
+    ...(browserDictionaryUrl ? { browserWasmDictionaryUrl: browserDictionaryUrl } : {}),
     ...(browserGlobalName ? { browserWasmGlobalName: browserGlobalName } : {}),
   };
 };
@@ -350,11 +383,25 @@ export const mergeComparisonConfig = (value: unknown): ComparisonConfig => {
     typeof input["language"] === "string" && input["language"].trim()
       ? input["language"].trim()
       : DEFAULT_COMPARISON_LANGUAGE;
-  let normalizedBrowserModuleUrl: string | undefined;
+  let normalizedBrowserModuleUrl: string | undefined =
+    DEFAULT_COMPARISON_CONFIG.browserWasmModuleUrl;
   try {
-    normalizedBrowserModuleUrl = browserWasmModuleUrl(input["browserWasmModuleUrl"]);
+    normalizedBrowserModuleUrl =
+      input["browserWasmModuleUrl"] === undefined
+        ? DEFAULT_COMPARISON_CONFIG.browserWasmModuleUrl
+        : browserWasmModuleUrl(input["browserWasmModuleUrl"]);
   } catch {
     // Ignore malformed optional browser WASM settings and use the global fallback.
+  }
+  let normalizedBrowserDictionaryUrl: string | undefined =
+    DEFAULT_COMPARISON_CONFIG.browserWasmDictionaryUrl;
+  try {
+    normalizedBrowserDictionaryUrl =
+      input["browserWasmDictionaryUrl"] === undefined
+        ? DEFAULT_COMPARISON_CONFIG.browserWasmDictionaryUrl
+        : browserWasmDictionaryUrl(input["browserWasmDictionaryUrl"]);
+  } catch {
+    // Ignore malformed optional browser dictionary settings and use the bundled default.
   }
   let normalizedBrowserGlobalName: string | undefined;
   try {
@@ -372,6 +419,9 @@ export const mergeComparisonConfig = (value: unknown): ComparisonConfig => {
     auth: normalizedAuth,
     language: normalizedLanguage,
     ...(normalizedBrowserModuleUrl ? { browserWasmModuleUrl: normalizedBrowserModuleUrl } : {}),
+    ...(normalizedBrowserDictionaryUrl
+      ? { browserWasmDictionaryUrl: normalizedBrowserDictionaryUrl }
+      : {}),
     ...(normalizedBrowserGlobalName ? { browserWasmGlobalName: normalizedBrowserGlobalName } : {}),
   };
 };

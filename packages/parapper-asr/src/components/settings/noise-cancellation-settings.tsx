@@ -2,10 +2,7 @@ import { Select, Stack, Switch } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 
 import { buildNoiseCancellationModelOptions } from "../../lib/settings-options";
-import type {
-  NoiseCancellationModel,
-  ParapperConfig,
-} from "../../lib/types";
+import type { NoiseCancellationModel, ParapperConfig } from "../../lib/types";
 import { DisabledReasonTooltip, settingLabel } from "../ui/display";
 
 type NoiseCancellationSettingsProps = {

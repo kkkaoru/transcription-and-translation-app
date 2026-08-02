@@ -65,6 +65,9 @@ interface SpeechRecognitionLike {
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 const MAX_SPEECH_ALTERNATIVES = 1;
+const DEFAULT_RESTART_DELAY_MS = 50;
+const MAX_RESTART_DELAY_MS = 2_000;
+const MAX_RESTART_EXPONENT = 5;
 
 declare global {
   interface Window {
@@ -77,7 +80,22 @@ export const getSpeechRecognitionConstructor = (): SpeechRecognitionConstructor 
   if (typeof window === "undefined") {
     return null;
   }
-  return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
+  const standard = window.SpeechRecognition;
+  if (typeof standard === "function") {
+    return standard;
+  }
+  const webkit = window.webkitSpeechRecognition;
+  return typeof webkit === "function" ? webkit : null;
+};
+
+const getSpeechRecognitionConstructors = (): SpeechRecognitionConstructor[] => {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  const constructors = [window.SpeechRecognition, window.webkitSpeechRecognition].filter(
+    (candidate): candidate is SpeechRecognitionConstructor => typeof candidate === "function",
+  );
+  return constructors.filter((candidate, index) => constructors.indexOf(candidate) === index);
 };
 
 const readTranscript = (result: SpeechRecognitionResultLike): string => {
@@ -94,12 +112,32 @@ export class WebSpeechController {
   private readonly emittedFinalSegments = new Map<number, string>();
   private state: SpeechRecognitionState = "idle";
   private requestedStop = false;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartAttempt = 0;
+  private ignoredEndEvents = 0;
+  private disposed = false;
 
   constructor(language: string, callbacks: SpeechRecognitionCallbacks = {}) {
     this.callbacks = callbacks;
-    const Constructor = getSpeechRecognitionConstructor();
-    this.supported = Constructor !== null;
-    this.recognition = Constructor ? new Constructor() : null;
+    const constructors = getSpeechRecognitionConstructors();
+    this.supported = constructors.length > 0;
+    let recognition: SpeechRecognitionLike | null = null;
+    let lastError: unknown = null;
+    for (const Constructor of constructors) {
+      try {
+        recognition = new Constructor();
+        break;
+      } catch (error) {
+        // A stale standard constructor can remain exposed while WebKit is the
+        // usable implementation (and vice versa). Try every vendor before
+        // surfacing an initialization failure.
+        lastError = error;
+      }
+    }
+    if (!recognition && lastError) {
+      throw lastError;
+    }
+    this.recognition = recognition;
     if (!this.recognition) {
       return;
     }
@@ -109,22 +147,51 @@ export class WebSpeechController {
     this.recognition.interimResults = true;
     this.recognition.maxAlternatives = MAX_SPEECH_ALTERNATIVES;
     this.recognition.onstart = () => {
+      if (this.disposed || this.requestedStop) {
+        return;
+      }
       this.requestedStop = false;
+      this.ignoredEndEvents = 0;
+      this.restartAttempt = 0;
       this.setState("listening");
     };
     this.recognition.onend = () => {
-      this.setState(this.requestedStop ? "idle" : "idle");
+      if (this.disposed) {
+        return;
+      }
+      if (this.ignoredEndEvents > 0) {
+        this.ignoredEndEvents -= 1;
+        return;
+      }
+      this.setState("idle");
+      if (!this.requestedStop) {
+        this.scheduleRestart();
+      }
     };
     this.recognition.onerror = (event) => {
+      if (this.disposed) {
+        return;
+      }
       // `aborted` is emitted by some browsers during a deliberate stop.
       if (event.error === "aborted" && this.requestedStop) {
         return;
       }
       this.setState("error");
-      this.callbacks.onError?.(event.message?.trim() || event.error || "Speech recognition failed");
+      try {
+        this.callbacks.onError?.(
+          event.message?.trim() || event.error || "Speech recognition failed",
+        );
+      } catch {
+        // Callback exceptions must not break the browser's recognition loop.
+      }
+      if (!this.requestedStop && !this.isFatalError(event.error)) {
+        this.scheduleRestart();
+      }
     };
     this.recognition.onresult = (event) => {
-      this.handleResult(event);
+      if (!this.disposed) {
+        this.handleResult(event);
+      }
     };
   }
 
@@ -135,10 +202,26 @@ export class WebSpeechController {
   }
 
   start(): void {
-    if (!this.recognition || this.state === "starting" || this.state === "listening") {
+    if (
+      this.disposed ||
+      !this.recognition ||
+      this.state === "starting" ||
+      this.state === "listening"
+    ) {
       return;
     }
+    this.clearRestartTimer();
     this.requestedStop = false;
+    if (this.state === "stopping" || this.state === "error") {
+      try {
+        this.recognition.abort();
+      } catch {
+        // The state transition below is the fallback for a service already
+        // unwinding after a network/permission failure.
+      }
+      this.ignoredEndEvents += 1;
+      this.setState("idle");
+    }
     this.finalSegments.clear();
     this.emittedFinalSegments.clear();
     this.setState("starting");
@@ -146,32 +229,96 @@ export class WebSpeechController {
       this.recognition.start();
     } catch (error) {
       this.setState("error");
-      this.callbacks.onError?.(
+      this.reportError(
         error instanceof Error ? error.message : "Speech recognition could not start",
       );
     }
   }
 
   stop(): void {
-    if (!this.recognition || this.state === "idle") {
+    if (!this.recognition || this.disposed || this.state === "idle" || this.state === "stopping") {
       return;
     }
+    this.clearRestartTimer();
     this.requestedStop = true;
     this.setState("stopping");
     try {
       this.recognition.stop();
     } catch (error) {
       this.setState("error");
-      this.callbacks.onError?.(
+      this.reportError(
         error instanceof Error ? error.message : "Speech recognition could not stop",
       );
     }
   }
 
   dispose(): void {
+    if (this.disposed) {
+      return;
+    }
     this.requestedStop = true;
-    this.recognition?.abort();
+    this.clearRestartTimer();
+    this.disposed = true;
+    try {
+      this.recognition?.abort();
+    } catch {
+      // Disposal is best effort; a browser that already released the service
+      // should not make React effect cleanup throw.
+    }
+    if (this.recognition) {
+      this.recognition.onstart = null;
+      this.recognition.onend = null;
+      this.recognition.onerror = null;
+      this.recognition.onresult = null;
+    }
     this.setState("idle");
+  }
+
+  private clearRestartTimer(): void {
+    if (this.restartTimer !== null) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+  }
+
+  private scheduleRestart(): void {
+    if (this.disposed || !this.recognition || this.requestedStop || this.restartTimer !== null) {
+      return;
+    }
+    const delay = Math.min(
+      MAX_RESTART_DELAY_MS,
+      DEFAULT_RESTART_DELAY_MS * 2 ** Math.min(this.restartAttempt, MAX_RESTART_EXPONENT),
+    );
+    this.restartAttempt += 1;
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (this.disposed || this.requestedStop) {
+        return;
+      }
+      this.start();
+    }, delay);
+  }
+
+  private isFatalError(value: string): boolean {
+    const code = value.trim().toLowerCase();
+    return [
+      "not-allowed",
+      "service-not-allowed",
+      "security-error",
+      "securityerror",
+      "notallowederror",
+      "language-not-supported",
+      "bad-grammar",
+      "phrases-not-supported",
+    ].includes(code);
+  }
+
+  private reportError(message: string): void {
+    try {
+      this.callbacks.onError?.(message);
+    } catch {
+      // Callback exceptions must not escape browser lifecycle handlers.
+    }
   }
 
   private handleResult(event: SpeechRecognitionEventLike): void {
@@ -203,14 +350,26 @@ export class WebSpeechController {
 
     const finalText = [...this.finalSegments.values()].join(" ").trim();
     const interimText = interimSegments.join(" ").trim();
-    this.callbacks.onTranscript?.({ finalText, interimText });
+    try {
+      this.callbacks.onTranscript?.({ finalText, interimText });
+    } catch {
+      // Keep processing later results even if a UI observer fails.
+    }
     for (const text of newFinalTexts) {
-      this.callbacks.onFinalText?.(text);
+      try {
+        this.callbacks.onFinalText?.(text);
+      } catch {
+        // Keep the browser event loop independent from application callbacks.
+      }
     }
   }
 
   private setState(state: SpeechRecognitionState): void {
     this.state = state;
-    this.callbacks.onStateChange?.(state);
+    try {
+      this.callbacks.onStateChange?.(state);
+    } catch {
+      // A state observer must not break recognition lifecycle recovery.
+    }
   }
 }

@@ -179,9 +179,13 @@ sidecar名、Syphon framework、Spout2 / MSVC、今回追加した Parapper runt
 Worker は production へ deploy 済みで、`https://kotoba-beacon-inference.kaoru.workers.dev`
 で応答します。`wss://kotoba-beacon-inference.kaoru.workers.dev/ws/azookey` へ
 `あしたははれです` を送ると `明日は晴れです` が返ることを確認しています。更新は
-`bun run worker:deploy` です。secret や `MODEL_ROUTES` は AzooKey 変換には不要で、
-HTTP 側の chat/ASR ルートを使う場合にだけ設定してください。Cloudflare agent setup は
-`https://developers.cloudflare.com/agent-setup/prompt.md` を基準にしています。
+`bun run worker:deploy` です。公開運用では `AZOOKEY_API_TOKEN` を Cloudflare
+secret として設定してから更新してください（値は config・履歴・URL に置かない）。
+ブラウザーは WebSocket の first-frame bearer、native client は upgrade header を使います。
+`CORS_ORIGIN` は `wrangler.jsonc` の単一 HTTPS origin を使い、別の UI を公開する場合だけ
+deploy 時に明示的に上書きします。現在の公開 Worker を再監査するには
+`docs/cloudflare-worker-deployment.md` の秘密を出さないチェックを使ってください。
+Cloudflare agent setup は `https://developers.cloudflare.com/agent-setup/prompt.md` を基準にしています。
 
 ## push 前の最終確認
 

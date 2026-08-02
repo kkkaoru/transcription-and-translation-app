@@ -9,6 +9,7 @@ import {
   azookeyTimeoutMs,
   bearerTokenMatches,
   convertAzookeyMessage,
+  createVibratoHttpConverter,
   createWasmConverter,
   isWebSocketUpgrade,
   openAzookeySocket,
@@ -106,6 +107,12 @@ describe("AzooKey Worker text contract", () => {
     expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, type: "convert" }))).toThrow(
       "azookey.convert",
     );
+    expect(
+      parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
+    ).toMatchObject({ vibratoExecution: "worker" });
+    expect(() =>
+      parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "heuristic" })),
+    ).toThrow("vibratoExecution");
   });
 
   it("enforces UTF-8 input limits before conversion", () => {
@@ -131,6 +138,58 @@ describe("AzooKey Worker text contract", () => {
       mode: "worker-vibrato",
     });
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("runs a configured Worker Vibrato stage before AzooKey", async () => {
+    const calls: string[] = [];
+    const message = parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" }));
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 250,
+      vibrato: (text, language) => {
+        calls.push(`vibrato:${language}:${text}`);
+        return "きょうははいしんです";
+      },
+      converter: (text) => {
+        calls.push(`azookey:${text}`);
+        return "今日は配信です";
+      },
+    });
+    expect(calls).toEqual(["vibrato:ja:きょうははいしんです", "azookey:きょうははいしんです"]);
+    expect(result.convertedText).toBe("今日は配信です");
+    await expect(
+      convertAzookeyMessage(message, { timeoutMs: 250, converter: (text) => text }),
+    ).rejects.toMatchObject({ code: "vibrato_unavailable", requestId: "req-1" });
+  });
+
+  it("uses an explicit HTTP Vibrato adapter contract without phrase fallbacks", async () => {
+    const fetcher = vi.fn((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      expect(String(input)).toBe("https://vibrato.example/v1/convert");
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toMatchObject({
+        "content-type": "application/json",
+        authorization: "Bearer vibrato-secret",
+      });
+      expect(JSON.parse(String(init?.body))).toEqual({ text: "漢字混じり", language: "ja" });
+      return new Response(JSON.stringify({ text: "かんじまじり" }), { status: 200 });
+    });
+    const convert = createVibratoHttpConverter(
+      {
+        VIBRATO_UPSTREAM_URL: "https://vibrato.example/v1/convert",
+        VIBRATO_API_TOKEN: " vibrato-secret ",
+      },
+      fetcher,
+    );
+    await expect(convert?.("漢字混じり", "ja")).resolves.toBe("かんじまじり");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(createVibratoHttpConverter({})).toBeUndefined();
+    expect(() =>
+      createVibratoHttpConverter({ VIBRATO_UPSTREAM_URL: "file:///tmp/vibrato" }),
+    ).toThrow("http://");
+    const invalidResponse = createVibratoHttpConverter(
+      { VIBRATO_UPSTREAM_URL: "https://vibrato.example" },
+      async () => new Response(JSON.stringify({ nope: "not-reading" }), { status: 200 }),
+    );
+    await expect(invalidResponse?.("入力", "ja")).rejects.toThrow("no non-empty text");
   });
 
   it("maps converter failures, non-string output, and elapsed timeout to protocol errors", async () => {

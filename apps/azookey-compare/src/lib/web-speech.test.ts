@@ -34,6 +34,7 @@ class FakeSpeechRecognition {
   startCalls = 0;
   stopCalls = 0;
   abortCalls = 0;
+  abortFailure: Error | string | null = null;
   startFailure: Error | string | null = null;
   stopFailure: Error | string | null = null;
 
@@ -57,6 +58,9 @@ class FakeSpeechRecognition {
 
   abort(): void {
     this.abortCalls += 1;
+    if (this.abortFailure) {
+      throw this.abortFailure;
+    }
   }
 }
 
@@ -117,9 +121,99 @@ describe("Web Speech feature detection", () => {
     });
     expect(getSpeechRecognitionConstructor()).toBeNull();
   });
+
+  it("falls back to WebKit when the standard constructor is stale", () => {
+    class BrokenStandard extends FakeSpeechRecognition {
+      constructor() {
+        super();
+        throw new Error("standard service disabled");
+      }
+    }
+    class WorkingWebKit extends FakeSpeechRecognition {}
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      writable: true,
+      value: {
+        SpeechRecognition: BrokenStandard,
+        webkitSpeechRecognition: WorkingWebKit,
+      },
+    });
+    const controller = new WebSpeechController("ja-JP");
+    expect(FakeSpeechRecognition.instances.at(-1)).toBeInstanceOf(WorkingWebKit);
+    controller.dispose();
+  });
+
+  it("surfaces constructor failure only when every browser implementation fails", () => {
+    class BrokenStandard extends FakeSpeechRecognition {
+      constructor() {
+        super();
+        throw new Error("standard failed");
+      }
+    }
+    class BrokenWebKit extends FakeSpeechRecognition {
+      constructor() {
+        super();
+        throw new Error("webkit failed");
+      }
+    }
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      writable: true,
+      value: { SpeechRecognition: BrokenStandard, webkitSpeechRecognition: BrokenWebKit },
+    });
+    expect(() => new WebSpeechController("ja-JP")).toThrow("webkit failed");
+  });
 });
 
 describe("WebSpeechController", () => {
+  it("restarts a continuous session after an unexpected end", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onend?.();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    vi.advanceTimersByTime(49);
+    expect(recognition.startCalls).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(recognition.startCalls).toBe(2);
+    recognition.onstart?.();
+    controller.stop();
+    recognition.onend?.();
+    vi.runOnlyPendingTimers();
+    expect(recognition.startCalls).toBe(2);
+    controller.dispose();
+  });
+
+  it("recovers from a transient recognition error and leaves fatal errors stopped", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onerror?.({ error: "network" });
+    expect(events.onError).toHaveBeenLastCalledWith("network");
+    vi.advanceTimersByTime(50);
+    expect(recognition.startCalls).toBe(2);
+    recognition.onstart?.();
+    recognition.onerror?.({ error: "not-allowed", message: "permission denied" });
+    vi.runOnlyPendingTimers();
+    expect(recognition.startCalls).toBe(2);
+    expect(events.onError).toHaveBeenLastCalledWith("permission denied");
+    controller.dispose();
+  });
+
   it("streams final and interim segments, de-duplicates finals, and stops cleanly", () => {
     installSpeech();
     const events = callbacks();
@@ -258,5 +352,96 @@ describe("WebSpeechController", () => {
     expect(recognition.stopCalls).toBe(0);
     recognition.onresult?.({ resultIndex: 0, results: results(result(false, "表示")) });
     recognition.onend?.();
+  });
+
+  it("isolates throwing observers and best-effort browser abort failures", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP", {
+      onStateChange: () => {
+        throw new Error("state observer");
+      },
+      onTranscript: () => {
+        throw new Error("transcript observer");
+      },
+      onFinalText: () => {
+        throw new Error("final observer");
+      },
+      onError: () => {
+        throw new Error("error observer");
+      },
+    });
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    recognition.startFailure = "start failed";
+    controller.start();
+    recognition.startFailure = null;
+    controller.start();
+    recognition.onstart?.();
+    recognition.onerror?.({ error: "network" });
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "確定")) });
+    recognition.abortFailure = "abort failed";
+    controller.start();
+    recognition.onend?.();
+    controller.dispose();
+    recognition.onend?.();
+    recognition.onerror?.({ error: "network" });
+    vi.runOnlyPendingTimers();
+  });
+
+  it("ignores stale lifecycle events and guards restart timers", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    recognition.onstart?.();
+    controller.stop();
+    // A late onstart from the deliberately stopped service must not revive it.
+    recognition.onstart?.();
+    expect(recognition.startCalls).toBe(1);
+
+    // Starting while the old service is stopping ignores its stale onend.
+    const staleEnd = recognition.onend;
+    controller.start();
+    staleEnd?.();
+    expect(recognition.startCalls).toBe(2);
+    recognition.onstart?.();
+
+    // Keep references before dispose: dispose detaches browser handlers, but a
+    // browser can still deliver callbacks that were already queued.
+    const queuedEnd = recognition.onend;
+    const queuedError = recognition.onerror;
+    controller.dispose();
+    queuedEnd?.();
+    queuedError?.({ error: "network" });
+
+    const timerController = new WebSpeechController("ja-JP");
+    const timerRecognition = FakeSpeechRecognition.instances[1];
+    if (!timerRecognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    timerController.start();
+    timerRecognition.onstart?.();
+    timerRecognition.onend?.();
+    // A second end while a restart is already queued must not queue another.
+    timerRecognition.onend?.();
+
+    // Deliberately keep the timer alive after stop so its callback exercises
+    // the requested-stop guard rather than being removed before it runs.
+    const clearTimeoutSpy = vi
+      .spyOn(globalThis, "clearTimeout")
+      .mockImplementation(() => undefined);
+    timerController.start();
+    timerController.stop();
+    vi.advanceTimersByTime(50);
+    clearTimeoutSpy.mockRestore();
+    timerController.dispose();
   });
 });

@@ -1,9 +1,34 @@
-# Never commit .dev.vars. Store production values with `wrangler secret put`.
-# MODEL_ROUTES must be a JSON object with the same model IDs as the desktop app.
-MODEL_ROUTES={"hy-mt2-1.8b-gguf":{"baseUrl":"https://models.example.com","servedModel":"hy-mt2-1.8b-gguf"}}
-CORS_ORIGIN=https://captions.example.com
+# Copy this file to `.dev.vars` for local-only overrides. `.dev.vars` is
+# ignored by git; do not rename it to a tracked `.env` file.
+#
+# Production secrets belong in Cloudflare's encrypted secret store. Set them
+# with `wrangler secret put AZOOKEY_API_TOKEN` (and, when needed,
+# `wrangler secret put ASR_API_TOKEN`); never put token values in this file,
+# wrangler.jsonc, or shell history.
+
+# The comparison app's local Next.js server runs on port 3000 by default.
+CORS_ORIGIN=http://127.0.0.1:3000
+
+# Keep this `{}` unless HTTP chat routing is intentionally enabled. Any model
+# route URL must be an owned HTTPS endpoint; credentials are separate secrets.
+MODEL_ROUTES={}
+
 # Optional: enables remote ASR proxying. The upstream must implement
 # POST /v1/audio/transcriptions with the same OpenAI-shaped contract.
-ASR_UPSTREAM_URL=https://asr.example.com/v1/audio/transcriptions
-# Optional bearer token for that upstream. Use `wrangler secret put` in production.
-ASR_API_TOKEN=replace-me
+# Set ASR_UPSTREAM_URL here in the untracked file to your owned HTTPS endpoint.
+
+# Worker-side Vibrato uses the standard IPADIC dictionary and the checked-in
+# Vibrato WASM module by default in wrangler.jsonc. Override this URL only with
+# an HTTPS zstd-compressed Vibrato `system.dic` that you control. The Worker
+# fetches it lazily and caches the tokenizer per isolate.
+# VIBRATO_DICTIONARY_URL=https://raw.githubusercontent.com/kkkaoru/transcription-and-translation-app/main/assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst
+
+# Optional legacy HTTP adapter for environments that cannot load the WASM
+# dictionary. It must accept POST {"text":"...","language":"..."} and return
+# {"text":"..."} (hiragana). The direct WASM adapter is preferred whenever
+# VIBRATO_DICTIONARY_URL is configured. If this endpoint needs a bearer, set
+# VIBRATO_API_TOKEN only as a secret with `wrangler secret put VIBRATO_API_TOKEN`.
+# Set VIBRATO_UPSTREAM_URL in this untracked file to your owned HTTPS endpoint.
+
+# Optional local tuning (25–2,000 ms; defaults to 250).
+AZOOKEY_TIMEOUT_MS=250

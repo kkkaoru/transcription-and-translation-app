@@ -72,6 +72,21 @@ describe("Cloudflare Worker inference adapter", () => {
     await expect(authenticated.json()).resolves.toMatchObject({
       auth: { configured: true },
     });
+
+    const wasmDictionary = await createWorker().fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      {
+        ...env,
+        VIBRATO_DICTIONARY_URL: "https://dictionary.example/system.dic.zst",
+      },
+    );
+    await expect(wasmDictionary.json()).resolves.toMatchObject({
+      vibrato: {
+        workerStage: "configured",
+        transport: "wasm",
+        contract: "Vibrato WASM + zstd system dictionary",
+      },
+    });
   });
 
   it("rejects non-GET metadata requests and non-upgrade WebSocket requests", async () => {

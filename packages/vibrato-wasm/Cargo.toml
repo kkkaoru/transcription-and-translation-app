@@ -1,0 +1,20 @@
+[package]
+name = "caption-bridge-vibrato-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Minimal WebAssembly wrapper around Vibrato-rkyv tokenization"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ruzstd = { version = "=0.7.3", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+vibrato = { version = "=0.5.2", default-features = false }
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+zstd = "0.13"

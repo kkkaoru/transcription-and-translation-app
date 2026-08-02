@@ -1,8 +1,13 @@
+import { initSync as initVibratoSync, VibratoTokenizer } from "./vibrato_wasm.js";
+
 export const AZOOKEY_WS_PATH = "/ws/azookey";
 export const AZOOKEY_PROTOCOL = "azookey.text.v1";
 export const AZOOKEY_MODEL = "azookey-rust-wasm";
 export const AZOOKEY_MODE = "worker-vibrato" as const;
 export const BROWSER_VIBRATO_MODE = "browser-vibrato" as const;
+/** Where the Vibrato pre-pass is executed for a comparison request. */
+export const WORKER_VIBRATO_EXECUTION = "worker" as const;
+export const BROWSER_VIBRATO_EXECUTION = "browser-wasm" as const;
 export const AZOOKEY_MAX_TEXT_BYTES = 4_096;
 export const AZOOKEY_MAX_MESSAGE_BYTES = 8_192;
 export const AZOOKEY_MAX_ID_BYTES = 128;
@@ -13,6 +18,10 @@ export const AZOOKEY_MAX_AUTH_TOKEN_BYTES =
 export const AZOOKEY_DEFAULT_TIMEOUT_MS = 250;
 export const AZOOKEY_MIN_TIMEOUT_MS = 25;
 export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
+/** IPADIC's comma-separated reading field used by the checked-in dictionary. */
+export const VIBRATO_IPADIC_FEATURE_INDEX = 7;
+/** Refuse unexpectedly large remote dictionaries before allocating in WASM. */
+export const VIBRATO_MAX_DICTIONARY_BYTES = 12 * 1024 * 1024;
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
 export const AZOOKEY_MIN_ELAPSED_MS = 0;
@@ -28,6 +37,11 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 export interface AzookeyEnv {
   AZOOKEY_API_TOKEN?: string;
   AZOOKEY_TIMEOUT_MS?: string;
+  /** Optional HTTP adapter that performs the real Vibrato/UniDic pre-pass. */
+  VIBRATO_UPSTREAM_URL?: string;
+  VIBRATO_API_TOKEN?: string;
+  /** URL of a zstd-compressed Vibrato system dictionary. */
+  VIBRATO_DICTIONARY_URL?: string;
 }
 
 export type AzookeyMode = typeof AZOOKEY_MODE | typeof BROWSER_VIBRATO_MODE;
@@ -45,9 +59,34 @@ export interface AzookeyWasmExports {
 }
 
 export type AzookeyConverter = (text: string) => string | Promise<string>;
+export type AzookeyVibratoConverter = ((
+  text: string,
+  language: string,
+) => string | Promise<string>) & {
+  /** Optional cold-start hook used by the WebSocket upgrade path. */
+  warmup?: () => Promise<void>;
+};
+
+export type AzookeyFetcher = (
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+) => Response | Promise<Response>;
+
+// Keep one tokenizer per loaded WASM module, dictionary URL, and fetcher. A
+// Worker isolate can handle several WebSocket upgrades, so rebuilding the 7.7
+// MiB dictionary for every socket would add avoidable cold latency and memory
+// pressure. The fetcher identity is part of the key so injected test or local
+// adapters cannot accidentally reuse another adapter's bytes. Failed loads are
+// removed below and may be retried safely.
+const vibratoTokenizerCache = new WeakMap<
+  WebAssembly.Module,
+  WeakMap<AzookeyFetcher, Map<string, Promise<VibratoTokenizer>>>
+>();
 
 export interface AzookeyRuntime {
   converter: AzookeyConverter;
+  /** Optional real Vibrato stage. Required when vibratoExecution is `worker`. */
+  vibrato?: AzookeyVibratoConverter;
   timeoutMs: number;
   expectedToken?: string;
   handshakeAuthorized?: boolean;
@@ -63,10 +102,16 @@ export type AzookeySocketPairFactory = () => AzookeySocketPair;
 export interface AzookeyRequestDependencies {
   /** Injected in tests; production uses the imported raw Wasm module. */
   wasmModule?: WebAssembly.Module;
+  /** Injected in tests; production uses the compiled Vibrato WASM module. */
+  vibratoWasmModule?: WebAssembly.Module;
   /** Injected in tests to avoid depending on the Workers WebSocket runtime. */
   socketPair?: AzookeySocketPairFactory;
   /** Injected in tests or for a controlled fallback implementation. */
   converter?: AzookeyConverter;
+  /** Injected in tests; production builds this from VIBRATO_UPSTREAM_URL. */
+  vibratoConverter?: AzookeyVibratoConverter;
+  /** Injected in tests; production uses the platform fetch. */
+  fetcher?: AzookeyFetcher;
 }
 
 export interface AzookeyMessage {
@@ -77,6 +122,8 @@ export interface AzookeyMessage {
   sourceText: string;
   vibratoInput: string;
   mode: AzookeyMode;
+  /** Explicitly records where the required Vibrato pre-pass ran. */
+  vibratoExecution?: typeof WORKER_VIBRATO_EXECUTION | typeof BROWSER_VIBRATO_EXECUTION;
   auth?: AzookeyAuth;
 }
 
@@ -110,6 +157,9 @@ export type AzookeyErrorCode =
   | "invalid_request_id"
   | "invalid_contract"
   | "unsupported_mode"
+  | "vibrato_unavailable"
+  | "vibrato_timeout"
+  | "vibrato_failed"
   | "unauthorized"
   | "busy"
   | "conversion_timeout"
@@ -263,6 +313,18 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
       requestId,
     );
   }
+  const vibratoExecution = parsed["vibratoExecution"];
+  if (
+    vibratoExecution !== undefined &&
+    vibratoExecution !== WORKER_VIBRATO_EXECUTION &&
+    vibratoExecution !== BROWSER_VIBRATO_EXECUTION
+  ) {
+    throw new AzookeyProtocolError(
+      "invalid_contract",
+      "vibratoExecution must be worker or browser-wasm",
+      requestId,
+    );
+  }
   try {
     auth = optionalAuth(parsed["auth"]);
   } catch (error) {
@@ -279,6 +341,7 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
     sourceText,
     vibratoInput,
     mode: AZOOKEY_MODE,
+    ...(vibratoExecution === undefined ? {} : { vibratoExecution }),
     ...(auth === undefined ? {} : { auth }),
   };
 };
@@ -332,6 +395,139 @@ export const createWasmConverter = (module: WebAssembly.Module): AzookeyConverte
   };
 };
 
+const isHttpUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Build the Worker-side Vibrato adapter without bundling a 684 MB UniDic
+ * dictionary into a Cloudflare isolate.  The upstream contract is deliberately
+ * tiny and explicit: POST `{text, language}` and return `{text}` (a hiragana
+ * string).  `hiragana` and `reading` are accepted aliases for interoperating
+ * with existing adapters, but no heuristic/fixed phrase fallback is used.
+ */
+export const createVibratoHttpConverter = (
+  env: Pick<AzookeyEnv, "VIBRATO_UPSTREAM_URL" | "VIBRATO_API_TOKEN">,
+  fetcher: AzookeyFetcher = fetch,
+): AzookeyVibratoConverter | undefined => {
+  const upstreamUrl = env.VIBRATO_UPSTREAM_URL?.trim();
+  if (!upstreamUrl) {
+    return undefined;
+  }
+  if (!isHttpUrl(upstreamUrl)) {
+    throw new Error("VIBRATO_UPSTREAM_URL must be an http:// or https:// URL");
+  }
+  const token = env.VIBRATO_API_TOKEN?.trim();
+  return async (text: string, language: string): Promise<string> => {
+    let response: Response;
+    try {
+      response = await fetcher(upstreamUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ text, language }),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "connection failed";
+      throw new Error(`Vibrato upstream connection failed: ${detail}`);
+    }
+    if (!response.ok) {
+      throw new Error(`Vibrato upstream returned ${response.status}`);
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error("Vibrato upstream returned invalid JSON");
+    }
+    if (!isRecord(payload)) {
+      throw new Error("Vibrato upstream response must be an object");
+    }
+    const output = payload["text"] ?? payload["hiragana"] ?? payload["reading"];
+    if (typeof output !== "string" || output.trim().length === 0) {
+      throw new Error("Vibrato upstream response has no non-empty text field");
+    }
+    if (encoder.encode(output).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+      throw new Error("Vibrato upstream output exceeds the text byte limit");
+    }
+    return output;
+  };
+};
+
+/**
+ * Build the real Worker-side Vibrato adapter from the checked-in WASM module
+ * and a standard Vibrato system dictionary.  The dictionary is fetched lazily
+ * once per Worker isolate so a cold start pays the cost only when a request
+ * selects `vibratoExecution: "worker"`; no phrase-specific fallback exists.
+ */
+export const createVibratoWasmConverter = (
+  wasmModule: WebAssembly.Module | undefined,
+  dictionaryUrl: string | undefined,
+  fetcher: AzookeyFetcher = fetch,
+): AzookeyVibratoConverter | undefined => {
+  const normalizedUrl = dictionaryUrl?.trim();
+  if (!wasmModule || !normalizedUrl) {
+    return undefined;
+  }
+  if (!isHttpUrl(normalizedUrl)) {
+    throw new Error("VIBRATO_DICTIONARY_URL must be an http:// or https:// URL");
+  }
+
+  let fetcherCache = vibratoTokenizerCache.get(wasmModule);
+  if (!fetcherCache) {
+    fetcherCache = new WeakMap<AzookeyFetcher, Map<string, Promise<VibratoTokenizer>>>();
+    vibratoTokenizerCache.set(wasmModule, fetcherCache);
+  }
+  let moduleCache = fetcherCache.get(fetcher);
+  if (!moduleCache) {
+    moduleCache = new Map<string, Promise<VibratoTokenizer>>();
+    fetcherCache.set(fetcher, moduleCache);
+  }
+
+  const loadTokenizer = (): Promise<VibratoTokenizer> => {
+    const cached = moduleCache.get(normalizedUrl);
+    if (cached) {
+      return cached;
+    }
+    const tokenizerPromise = (async () => {
+      const response = await fetcher(normalizedUrl);
+      if (!response.ok) {
+        throw new Error(`Vibrato dictionary returned ${response.status}`);
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength === 0) {
+        throw new Error("Vibrato dictionary is empty");
+      }
+      if (bytes.byteLength > VIBRATO_MAX_DICTIONARY_BYTES) {
+        throw new Error("Vibrato dictionary exceeds the byte limit");
+      }
+      initVibratoSync({ module: wasmModule });
+      return new VibratoTokenizer(bytes);
+    })().catch((error: unknown) => {
+      moduleCache.delete(normalizedUrl);
+      throw error instanceof Error ? error : new Error("Vibrato dictionary initialization failed");
+    });
+    moduleCache.set(normalizedUrl, tokenizerPromise);
+    return tokenizerPromise;
+  };
+
+  const converter = (async (text: string): Promise<string> => {
+    const tokenizer = await loadTokenizer();
+    return tokenizer.toHiragana(text, VIBRATO_IPADIC_FEATURE_INDEX);
+  }) as AzookeyVibratoConverter;
+  converter.warmup = async (): Promise<void> => {
+    await loadTokenizer();
+  };
+  return converter;
+};
+
 const withTimeout = async <T>(operation: () => T | Promise<T>, timeoutMs: number): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -356,10 +552,46 @@ export const convertAzookeyMessage = async (
   runtime: AzookeyRuntime,
 ): Promise<AzookeyResultMessage> => {
   const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  let conversionInput = message.vibratoInput;
+  if (message.vibratoExecution === WORKER_VIBRATO_EXECUTION) {
+    if (!runtime.vibrato) {
+      throw new AzookeyProtocolError(
+        "vibrato_unavailable",
+        "Worker Vibrato adapter is not configured",
+        message.requestId,
+      );
+    }
+    try {
+      const vibratoOutput = await withTimeout(
+        () => runtime.vibrato?.(message.sourceText, message.language),
+        runtime.timeoutMs,
+      );
+      if (typeof vibratoOutput !== "string" || vibratoOutput.trim().length === 0) {
+        throw new Error("Worker Vibrato adapter returned no text");
+      }
+      if (encoder.encode(vibratoOutput).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+        throw new Error("Worker Vibrato output exceeds the text byte limit");
+      }
+      conversionInput = vibratoOutput;
+    } catch (error) {
+      if (error instanceof AzookeyProtocolError && error.code === "conversion_timeout") {
+        throw new AzookeyProtocolError(
+          "vibrato_timeout",
+          "Worker Vibrato conversion timed out",
+          message.requestId,
+        );
+      }
+      throw new AzookeyProtocolError(
+        "vibrato_failed",
+        error instanceof Error ? error.message : "Worker Vibrato conversion failed",
+        message.requestId,
+      );
+    }
+  }
   let converted: string;
   try {
     const candidate = await withTimeout(
-      () => runtime.converter(message.vibratoInput),
+      () => runtime.converter(conversionInput),
       runtime.timeoutMs,
     );
     if (typeof candidate !== "string") {
@@ -480,13 +712,17 @@ export const attachAzookeySocket = (socket: WebSocket, runtime: AzookeyRuntime):
   });
 };
 
-export const readyAzookeyMessage = (timeoutMs: number): string =>
+export const readyAzookeyMessage = (timeoutMs: number, vibratoConfigured = false): string =>
   jsonMessage({
     type: "azookey.ready",
     protocol: AZOOKEY_PROTOCOL,
     model: AZOOKEY_MODEL,
     mode: AZOOKEY_MODE,
     browserMode: BROWSER_VIBRATO_MODE,
+    vibrato: {
+      workerStage: vibratoConfigured ? "configured" : "unconfigured",
+      browserStage: "client",
+    },
     maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
     timeoutMs,
   });
@@ -581,16 +817,53 @@ export const openAzookeySocket = async (
       },
     );
   }
+  let vibratoConverter: AzookeyVibratoConverter | undefined;
+  try {
+    vibratoConverter =
+      dependencies.vibratoConverter ??
+      createVibratoWasmConverter(
+        dependencies.vibratoWasmModule,
+        env.VIBRATO_DICTIONARY_URL,
+        dependencies.fetcher ?? fetch,
+      ) ??
+      createVibratoHttpConverter(env, dependencies.fetcher ?? fetch);
+  } catch {
+    return new Response(
+      JSON.stringify({
+        error: { code: "vibrato_unavailable", message: "Vibrato adapter is unavailable" },
+      }),
+      {
+        status: HTTP_SERVICE_UNAVAILABLE,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      },
+    );
+  }
   const pair = dependencies.socketPair?.() ?? createWorkersSocketPair();
-  pair.server.accept();
   const timeoutMs = azookeyTimeoutMs(env);
+  if (vibratoConverter?.warmup) {
+    try {
+      await vibratoConverter.warmup();
+    } catch {
+      return new Response(
+        JSON.stringify({
+          error: { code: "vibrato_unavailable", message: "Vibrato dictionary is unavailable" },
+        }),
+        {
+          status: HTTP_SERVICE_UNAVAILABLE,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        },
+      );
+    }
+  }
+  pair.server.accept();
   attachAzookeySocket(pair.server, {
     converter,
+    ...(vibratoConverter ? { vibrato: vibratoConverter } : {}),
     timeoutMs,
     handshakeAuthorized,
     ...(expectedToken ? { expectedToken } : {}),
   });
-  pair.server.send(readyAzookeyMessage(timeoutMs));
+  pair.server.send(readyAzookeyMessage(timeoutMs, Boolean(vibratoConverter)));
   return websocketUpgradeResponse(pair.client);
 };
 
