@@ -168,10 +168,7 @@ fn join_connection(connection: JoinHandle<()>) {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "the tungstenite handshake callback uses a large HTTP error response"
-)]
+#[allow(clippy::result_large_err)]
 fn handle_connection(
     stream: TcpStream,
     config: &StreamingRecognitionServerConfig,
