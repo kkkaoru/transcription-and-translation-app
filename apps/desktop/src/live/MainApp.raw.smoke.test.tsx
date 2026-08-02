@@ -9,6 +9,7 @@ import { createPreviewCaption } from "../overlay/captions";
 import {
   captureConfigRequiresRestart,
   clearLegacyFailureNotice,
+  createCaptureRestartCoordinator,
   mergeCaptionForDisplay,
   resolveTranscribeAudioChunkTimeoutMs,
   TRANSCRIBE_AUDIO_CHUNK_DEFAULT_TIMEOUT_MS,
@@ -240,5 +241,162 @@ describe("MainApp ASR lifecycle guards", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Capture restart latest-wins coalescing", () => {
+  const flush = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  it("starts only the second device after two rapid restarts share one stop", async () => {
+    let resolveStop!: () => void;
+    const stop = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStop = resolve;
+        }),
+    );
+    const start = vi.fn((_device: string) => Promise.resolve());
+    const onApplyFailed = vi.fn();
+    const coordinator = createCaptureRestartCoordinator({
+      stop,
+      start,
+      onApplyFailed,
+    });
+
+    coordinator.requestRestart("device-A");
+    coordinator.requestRestart("device-B");
+
+    await flush();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(start).not.toHaveBeenCalled();
+
+    resolveStop();
+    await flush();
+    await flush();
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith("device-B");
+    expect(onApplyFailed).not.toHaveBeenCalled();
+    expect(coordinator.isBusy()).toBe(false);
+    expect(coordinator.getPending()).toBeNull();
+  });
+
+  it("applies a mid-startup request after the in-flight start settles", async () => {
+    let resolveStop!: () => void;
+    let resolveStartA!: () => void;
+    const stop = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStop = resolve;
+        }),
+    );
+    const start = vi.fn(async (device: string) => {
+      if (device === "device-A") {
+        await new Promise<void>((resolve) => {
+          resolveStartA = resolve;
+        });
+      }
+    });
+    const coordinator = createCaptureRestartCoordinator({ stop, start });
+
+    coordinator.requestRestart("device-A");
+    await flush();
+    resolveStop();
+    await flush();
+    expect(start).toHaveBeenCalledWith("device-A");
+
+    // Second device arrives while A is still starting.
+    coordinator.requestRestart("device-B");
+    expect(coordinator.getPending()).toBe("device-B");
+    expect(start).toHaveBeenCalledTimes(1);
+
+    resolveStartA();
+    await flush();
+    // Drain stops again then starts B.
+    resolveStop();
+    await flush();
+    await flush();
+
+    expect(start.mock.calls.map((call) => call[0])).toEqual(["device-A", "device-B"]);
+    expect(coordinator.isBusy()).toBe(false);
+  });
+
+  it("does not leave the latest config unstarted after a stale start rejection", async () => {
+    let resolveStop!: () => void;
+    const stop = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStop = resolve;
+        }),
+    );
+    const start = vi.fn((device: string) => {
+      if (device === "device-A") {
+        return Promise.reject(new Error("stale start failed"));
+      }
+      return Promise.resolve();
+    });
+    const onApplyFailed = vi.fn();
+    const coordinator = createCaptureRestartCoordinator({
+      stop,
+      start,
+      onApplyFailed,
+    });
+
+    coordinator.requestRestart("device-A");
+    await flush();
+    // Supersede A while stop is still open so A is never started.
+    coordinator.requestRestart("device-B");
+    resolveStop();
+    await flush();
+    await flush();
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith("device-B");
+    expect(onApplyFailed).not.toHaveBeenCalled();
+
+    // A failing start that is still the newest request must surface.
+    let resolveStop2!: () => void;
+    stop.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStop2 = resolve;
+        }),
+    );
+    start.mockImplementation(() => Promise.reject(new Error("latest start failed")));
+    coordinator.requestRestart("device-C");
+    await flush();
+    resolveStop2();
+    await flush();
+    await flush();
+
+    expect(start).toHaveBeenLastCalledWith("device-C");
+    expect(onApplyFailed).toHaveBeenCalledTimes(1);
+    expect(onApplyFailed.mock.calls[0]?.[0]).toBe("device-C");
+    expect(String(onApplyFailed.mock.calls[0]?.[1])).toContain("latest start failed");
+  });
+
+  it("cancelPending prevents a planned start after an explicit stop", async () => {
+    let resolveStop!: () => void;
+    const stop = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStop = resolve;
+        }),
+    );
+    const start = vi.fn(() => Promise.resolve());
+    const coordinator = createCaptureRestartCoordinator({ stop, start });
+
+    coordinator.requestRestart("device-A");
+    await flush();
+    coordinator.cancelPending();
+    resolveStop();
+    await flush();
+    await flush();
+
+    expect(start).not.toHaveBeenCalled();
+    expect(coordinator.isBusy()).toBe(false);
   });
 });

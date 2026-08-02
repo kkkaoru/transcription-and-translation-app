@@ -168,6 +168,111 @@ export const withFiniteTimeout = <T,>(
 export const clearLegacyFailureNotice = (notice: Notice | null): Notice | null =>
   isTransientAudioNotice(notice) ? null : notice;
 
+/**
+ * Latest-wins coalescing for capture stop→start restarts.
+ *
+ * Rapid device/config changes must not attach multiple `.then(startCapture)`
+ * callbacks to the same stop promise: the first callback sets phase to
+ * `starting` and later callbacks hit the non-idle guard and silently drop the
+ * newest config. This coordinator keeps a single pending slot and a single
+ * drain loop so the latest request always wins.
+ */
+export type CaptureRestartCoordinatorOptions<TConfig> = {
+  stop: () => Promise<void>;
+  start: (config: TConfig) => Promise<void>;
+  /** Newest config could not be applied and no newer request replaced it. */
+  onApplyFailed?: (config: TConfig, error: unknown) => void;
+};
+
+export type CaptureRestartCoordinator<TConfig> = {
+  requestRestart: (config: TConfig) => void;
+  /**
+   * Drop any pending restart and invalidate the in-flight drain's planned
+   * start. Explicit user stop must call this so a coalesced start cannot
+   * resurrect capture after the toggle to idle.
+   */
+  cancelPending: () => void;
+  /** True while stop/start work is outstanding or a request is pending. */
+  isBusy: () => boolean;
+  getPending: () => TConfig | null;
+};
+
+export const createCaptureRestartCoordinator = <TConfig,>(
+  options: CaptureRestartCoordinatorOptions<TConfig>,
+): CaptureRestartCoordinator<TConfig> => {
+  let pending: TConfig | null = null;
+  let draining = false;
+  /** Bumped only on cancel so an explicit stop can skip a planned start. */
+  let epoch = 0;
+
+  const drain = async (): Promise<void> => {
+    if (draining) {
+      return;
+    }
+    draining = true;
+    try {
+      while (pending !== null) {
+        let config = pending;
+        const requestEpoch = epoch;
+        pending = null;
+        try {
+          await options.stop();
+        } catch (error) {
+          // Cancelled during stop: leave any later pending for the next loop.
+          if (epoch !== requestEpoch) {
+            continue;
+          }
+          // Superseded during a failed stop: retry with the newest config.
+          if (pending !== null) {
+            continue;
+          }
+          options.onApplyFailed?.(config, error);
+          continue;
+        }
+        // Explicit user cancel must not start the config that was in flight.
+        if (epoch !== requestEpoch) {
+          continue;
+        }
+        // A newer request arrived during stop: reuse this stop, start newest.
+        if (pending !== null) {
+          config = pending;
+          pending = null;
+        }
+        try {
+          await options.start(config);
+        } catch (error) {
+          if (pending !== null || epoch !== requestEpoch) {
+            continue;
+          }
+          options.onApplyFailed?.(config, error);
+        }
+      }
+    } finally {
+      draining = false;
+      // A request that arrived between the last pending clear and this flag
+      // flip must not be stranded without a drain.
+      if (pending !== null) {
+        void drain();
+      }
+    }
+  };
+
+  return {
+    requestRestart(config) {
+      // Overwrite only — do not bump epoch. Latest-wins is the pending slot;
+      // epoch is reserved for cancelPending so user stop can veto a start.
+      pending = config;
+      void drain();
+    },
+    cancelPending() {
+      pending = null;
+      epoch += 1;
+    },
+    isBusy: () => draining || pending !== null,
+    getPending: () => pending,
+  };
+};
+
 const platformKeys: Record<RuntimeStatus["platform"], MessageKey> = {
   macos: "platform.macos",
   windows: "platform.windows",
@@ -238,6 +343,29 @@ export const MainApp = () => {
   const stopPromise = useRef<Promise<void> | null>(null);
   /** Native start command that a startup stop must let settle before stopping. */
   const backendStartPromise = useRef<Promise<number> | null>(null);
+  /**
+   * Stable restart hooks. startCapture/stopCapture are re-bound each render;
+   * the coordinator itself is created once so rapid events share one drain.
+   */
+  const startCaptureRef = useRef<(captureConfig: AppConfig) => Promise<void>>(
+    async () => undefined,
+  );
+  const stopCaptureRef = useRef<() => Promise<void>>(async () => undefined);
+  const captureRestartRef = useRef(
+    createCaptureRestartCoordinator<AppConfig>({
+      stop: () => stopCaptureRef.current(),
+      start: (captureConfig) => startCaptureRef.current(captureConfig),
+      onApplyFailed: (_captureConfig, error) => {
+        const nextNotice = noticeFromError(error, "message.captureStartFailed");
+        pushDiagnosticEvent(
+          "error",
+          "Capture restart failed to apply latest config",
+          nextNotice.detail ?? nextNotice.key,
+        );
+        setNotice(nextNotice);
+      },
+    }),
+  );
   /** Latest-wins ASR queue: 1 in-flight + 1 pending (drop older pending). */
   const chunkProcessor = useRef<LatestWinsProcessor<AudioChunk> | null>(null);
   /** One continuous Parapper VAD/Segment/Turn session for desktop capture. */
@@ -1650,6 +1778,10 @@ export const MainApp = () => {
     return next;
   };
 
+  // Keep restart-coordinator hooks pointed at the latest closures each render.
+  startCaptureRef.current = startCapture;
+  stopCaptureRef.current = stopCapture;
+
   const openOverlay = async () => {
     try {
       await bridge.openOverlay();
@@ -1670,13 +1802,26 @@ export const MainApp = () => {
       status.status === "capturing" ||
       status.status === "starting" ||
       capturePhase.current === "capturing" ||
-      capturePhase.current === "starting"
+      capturePhase.current === "starting" ||
+      captureRestartRef.current.isBusy()
     ) {
+      // Explicit user stop cancels a pending restart so a coalesced start does
+      // not resurrect capture after the toggle to idle.
+      captureRestartRef.current.cancelPending();
       void stopCapture();
     } else {
       void startCapture(config);
     }
   };
+
+  const captureSessionActive =
+    status.status === "capturing" ||
+    status.status === "starting" ||
+    capturePhase.current === "capturing" ||
+    capturePhase.current === "starting" ||
+    // Mid-restart the UI may briefly show idle between stop and start; keep
+    // coalescing so the newest device/config is not dropped on the floor.
+    captureRestartRef.current.isBusy();
 
   const handleDeviceChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const next = {
@@ -1684,13 +1829,8 @@ export const MainApp = () => {
       audio: { ...config.audio, inputDeviceId: event.target.value },
     };
     setConfig(next);
-    if (
-      status.status === "capturing" ||
-      status.status === "starting" ||
-      capturePhase.current === "capturing" ||
-      capturePhase.current === "starting"
-    ) {
-      void stopCapture().then(() => startCapture(next));
+    if (captureSessionActive) {
+      captureRestartRef.current.requestRestart(next);
     }
   };
 
@@ -1700,15 +1840,10 @@ export const MainApp = () => {
     // Recognition mode, device, chunking, and gate settings change microphone
     // or stream ownership. Restart an active/starting session immediately so a
     // setting cannot appear to succeed while the existing graph keeps values
-    // from the previous config.
-    if (
-      captureChanged &&
-      (status.status === "capturing" ||
-        status.status === "starting" ||
-        capturePhase.current === "capturing" ||
-        capturePhase.current === "starting")
-    ) {
-      void stopCapture().then(() => startCapture(nextConfig));
+    // from the previous config. Latest-wins coalescing owns the stop→start
+    // sequence so rapid changes cannot attach multiple start callbacks.
+    if (captureChanged && captureSessionActive) {
+      captureRestartRef.current.requestRestart(nextConfig);
     }
   };
 
@@ -1811,6 +1946,11 @@ export const MainApp = () => {
               models={models}
               devices={devices}
               saving={saving}
+              captureStarting={
+                status.status === "starting" ||
+                capturePhase.current === "starting" ||
+                captureRestartRef.current.isBusy()
+              }
               onConfigChange={handleConfigChange}
               onModelChange={setModel}
               onDeviceChange={handleDeviceChange}
