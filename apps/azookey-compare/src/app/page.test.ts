@@ -1,0 +1,24 @@
+import { describe, expect, it, vi } from "vitest";
+import { syncSpeechLanguage } from "../lib/speech-language";
+
+describe("compare page speech settings", () => {
+  it("updates the existing recognition controller for repeated language edits", () => {
+    const controller = { setLanguage: vi.fn() };
+
+    // A language input emits one update per keystroke. The page must route
+    // those edits to the same controller rather than constructing a new one
+    // and disposing the active recognition session.
+    syncSpeechLanguage(controller, "j");
+    syncSpeechLanguage(controller, "ja");
+    syncSpeechLanguage(controller, "ja-JP");
+
+    expect(controller.setLanguage).toHaveBeenCalledTimes(3);
+    expect(controller.setLanguage).toHaveBeenNthCalledWith(1, "j");
+    expect(controller.setLanguage).toHaveBeenNthCalledWith(2, "ja");
+    expect(controller.setLanguage).toHaveBeenNthCalledWith(3, "ja-JP");
+  });
+
+  it("does not require a controller before the speech effect has mounted", () => {
+    expect(() => syncSpeechLanguage(null, "ja-JP")).not.toThrow();
+  });
+});

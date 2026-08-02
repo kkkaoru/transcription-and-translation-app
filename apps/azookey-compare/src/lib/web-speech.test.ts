@@ -166,6 +166,25 @@ describe("Web Speech feature detection", () => {
 });
 
 describe("WebSpeechController", () => {
+  it("updates the active recognition language without recreating the controller", () => {
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    recognition.onstart?.();
+    controller.setLanguage("j");
+    controller.setLanguage("ja");
+    controller.setLanguage("ja-JP");
+
+    expect(FakeSpeechRecognition.instances).toHaveLength(1);
+    expect(recognition.lang).toBe("ja-JP");
+    controller.dispose();
+  });
+
   it("restarts a continuous session after an unexpected end", () => {
     vi.useFakeTimers();
     installSpeech();

@@ -15,6 +15,7 @@ import {
   hasBrowserWasmConfiguration,
 } from "../lib/contract";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
+import { syncSpeechLanguage } from "../lib/speech-language";
 import {
   type SpeechRecognitionState,
   type SpeechTranscriptUpdate,
@@ -212,7 +213,7 @@ export default function ComparePage() {
   // replacement. The Web Speech implementation picks up the new language on
   // the next browser restart without losing the current state machine.
   useEffect(() => {
-    speechRef.current?.setLanguage(config.language);
+    syncSpeechLanguage(speechRef.current, config.language);
   }, [config.language]);
 
   const appendRow = useCallback((row: ComparisonRow): void => {
