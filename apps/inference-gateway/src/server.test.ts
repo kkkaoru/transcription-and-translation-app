@@ -534,6 +534,89 @@ describe("inference gateway HTTP contract", () => {
     info.mockRestore();
   });
 
+  it("keeps concurrent HTTP lifecycle records correlated by request identity", async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const info = vi.spyOn(console, "info").mockImplementation((line) => {
+      if (typeof line !== "string") {
+        return;
+      }
+      try {
+        records.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // Ignore unrelated non-JSON console output.
+      }
+    });
+    const transcribe = vi.fn(
+      (_pcm: Uint8Array, _signal?: AbortSignal, request?: Request): Promise<string> => {
+        const requestId = request?.headers.get("x-request-id") ?? "unknown";
+        const delay = requestId === "request-concurrent-slow" ? 30 : 1;
+        return new Promise((resolve) => {
+          setTimeout(() => resolve(requestId), delay);
+        });
+      },
+    );
+    const connection = await open(createGatewayServer(config, { transcribe }));
+    closers.push(connection.close);
+
+    const send = (requestId: string, sessionId: string): Promise<Response> => {
+      const form = new FormData();
+      form.set("model", "parapper-ja");
+      form.set("file", wav(), `${requestId}.wav`);
+      return fetch(new URL("/v1/audio/transcriptions", connection.origin), {
+        method: "POST",
+        headers: {
+          "x-request-id": requestId,
+          "x-session-id": sessionId,
+          "x-agent-id": `${requestId}-agent`,
+          "x-parent-agent-id": `${requestId}-parent`,
+        },
+        body: form,
+      });
+    };
+
+    const [slow, fast] = await Promise.all([
+      send("request-concurrent-slow", "session-concurrent-slow"),
+      send("request-concurrent-fast", "session-concurrent-fast"),
+    ]);
+    await expect(slow.json()).resolves.toEqual({ text: "request-concurrent-slow" });
+    await expect(fast.json()).resolves.toEqual({ text: "request-concurrent-fast" });
+
+    const lifecycle = records.filter((record) =>
+      ["http_request_start", "http_request_end", "http_request_failure"].includes(
+        String(record["event"]),
+      ),
+    );
+    expect(lifecycle).toHaveLength(4);
+    for (const expected of [
+      {
+        requestId: "request-concurrent-slow",
+        sessionId: "session-concurrent-slow",
+      },
+      {
+        requestId: "request-concurrent-fast",
+        sessionId: "session-concurrent-fast",
+      },
+    ]) {
+      const correlated = lifecycle.filter((record) => record["request_id"] === expected.requestId);
+      expect(correlated.map((record) => record["event"])).toEqual([
+        "http_request_start",
+        "http_request_end",
+      ]);
+      expect(correlated).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            request_id: expected.requestId,
+            session_id: expected.sessionId,
+            agent_id: `${expected.requestId}-agent`,
+            parent_agent_id: `${expected.requestId}-parent`,
+          }),
+        ]),
+      );
+      expect(correlated.every((record) => record["session_id"] === expected.sessionId)).toBe(true);
+    }
+    info.mockRestore();
+  });
+
   it("uses one generated correlation identity when request headers are absent", async () => {
     let observedRequestId: string | null = null;
     let observedSessionId: string | null = null;

@@ -44,7 +44,9 @@ const writeJson = (
 };
 
 const requestHeaders = (request: IncomingMessage): Headers =>
-  new Headers(Object.entries(request.headers).map(([name, value]) => [name, String(value)]));
+  new Headers(
+    Object.entries(request.headers).map(([name, value]): [string, string] => [name, String(value)]),
+  );
 
 const requestBody = async (request: IncomingMessage): Promise<Uint8Array> => {
   const chunks: Buffer[] = [];
@@ -74,7 +76,12 @@ const toFetchRequest = async (
   if (method === "GET" || method === "HEAD") {
     return new Request(url, { method, headers, signal });
   }
-  return new Request(url, { method, headers, body: await requestBody(request), signal });
+  const body = await requestBody(request);
+  // Node's undici accepts Uint8Array bodies at runtime, but the DOM typings
+  // reject Uint8Array<ArrayBufferLike> because its backing store may be a
+  // SharedArrayBuffer. Keep the runtime bytes unchanged while narrowing the
+  // value to the Request constructor's portable BodyInit contract.
+  return new Request(url, { method, headers, body: body as unknown as BodyInit, signal });
 };
 
 const writeFetchResponse = async (

@@ -4,6 +4,7 @@ import WebSocket from "ws";
 import { PARAPPER_SAMPLE_RATE, splitParapperFrames } from "./audio.js";
 import {
   type CorrelationContext,
+  correlationHeaders,
   emitStructuredLog,
   PROVIDER_TURN_END,
   PROVIDER_TURN_SKIP,
@@ -252,7 +253,10 @@ export const transcribeWithParapper = (
     let socket: WebSocket;
     try {
       socket = new WebSocket(options.url, {
-        ...(options.apiKey ? { headers: { Authorization: `Bearer ${options.apiKey}` } } : {}),
+        headers: {
+          ...correlationHeaders(correlation),
+          ...(options.apiKey ? { Authorization: `Bearer ${options.apiKey}` } : {}),
+        },
       });
     } catch (error) {
       const failure = new GatewayError(
@@ -510,7 +514,11 @@ export const transcribeWithParapper = (
       });
     }, options.timeoutMs);
 
-    socket.once("error", (error: unknown) => {
+    // Keep this listener attached for the socket lifetime. The ws client can
+    // emit a second error asynchronously after a refused connection is
+    // closed; removing the only listener after the first event turns that
+    // expected transport race into an unhandled process error.
+    socket.on("error", (error: unknown) => {
       settle({
         error: new GatewayError(
           HTTP_BAD_GATEWAY,

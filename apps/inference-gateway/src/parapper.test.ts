@@ -421,18 +421,30 @@ describe("Parapper WebSocket adapter", () => {
 
   it("uses the v1 start/ready/frame/stop/final/done protocol", async () => {
     const received: {
+      agentId: string | undefined;
       authorization: string | undefined;
       binaryFrames: number[];
       frameSentAt: number[];
+      parentAgentId: string | undefined;
+      requestId: string | undefined;
+      sessionId: string | undefined;
       start?: unknown;
       stop?: unknown;
     } = {
+      agentId: undefined,
       authorization: undefined,
       binaryFrames: [],
       frameSentAt: [],
+      parentAgentId: undefined,
+      requestId: undefined,
+      sessionId: undefined,
     };
     const fixture = await startParapper((socket, request) => {
+      received.agentId = request.headers["x-agent-id"]?.toString();
       received.authorization = request.headers.authorization;
+      received.parentAgentId = request.headers["x-parent-agent-id"]?.toString();
+      received.requestId = request.headers["x-request-id"]?.toString();
+      received.sessionId = request.headers["x-session-id"]?.toString();
       socket.on("message", (data: RawData, binary: boolean) => {
         if (binary) {
           received.binaryFrames.push(Buffer.isBuffer(data) ? data.length : 0);
@@ -478,10 +490,20 @@ describe("Parapper WebSocket adapter", () => {
           url: fixture.url,
           timeoutMs: 1000,
           apiKey: "local-key",
+          correlation: {
+            requestId: "request-caption-1",
+            sessionId: "capture-caption-1",
+            agentId: "agent-caption-1",
+            parentAgentId: "parent-caption-1",
+          },
           sessionId: () => "caption-1",
         }),
       ).resolves.toBe("こんにちは。");
       expect(received.authorization).toBe("Bearer local-key");
+      expect(received.requestId).toBe("request-caption-1");
+      expect(received.sessionId).toBe("capture-caption-1");
+      expect(received.agentId).toBe("agent-caption-1");
+      expect(received.parentAgentId).toBe("parent-caption-1");
       expect(received.start).toMatchObject({ type: "session.start", session_id: "caption-1" });
       expect(received.stop).toMatchObject({ type: "session.stop", session_id: "caption-1" });
       expect(received.binaryFrames).toEqual([3200, 3200, 2]);
