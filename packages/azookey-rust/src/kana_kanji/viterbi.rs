@@ -85,6 +85,24 @@ const UNKNOWN_CHARACTER_PENALTY: f32 = -36.0;
 const MAX_UNKNOWN_KANA_SPAN_CHARS: usize = 4;
 
 #[derive(Debug, Clone)]
+struct NumericPrefixContext {
+    length: usize,
+    surface: String,
+    has_unit: bool,
+    has_digit_and_unit: bool,
+    followed_by_counter: bool,
+    followed_by_boundary: bool,
+    invalid_shi_counter: bool,
+    unit_span_is_unbounded: bool,
+    numeric_context: bool,
+    counter_span: Option<(usize, String)>,
+    counter_lexical_span: bool,
+    explicit_digit: bool,
+    lexical_same_span: bool,
+    numeric_score: f32,
+}
+
+#[derive(Debug, Clone)]
 struct PathState {
     text: String,
     /// The score used while updating the lattice.  This intentionally only
@@ -105,6 +123,93 @@ struct PathState {
     /// such as `いち、に、さん` continue while blocking a suffix such as
     /// `校4` after an ordinary lexical word.
     numeric_chain: bool,
+}
+
+fn numeric_prefix_context(
+    chars: &[char],
+    start: usize,
+    entries: &[DictionaryEntry],
+) -> Option<NumericPrefixContext> {
+    let (length, surface) = numeric_surface_prefix(&chars[start..])?;
+    let reading: String = chars[start..start + length].iter().collect();
+    let has_unit = japanese_numeral_has_unit(&reading);
+    let has_digit_and_unit = has_unit && numeric_span_starts_with_digit(&reading);
+    let suffix = &chars[start + length..];
+    let followed_by_counter = japanese_counter_starts_at(suffix);
+    let followed_by_boundary = suffix.first().is_some_and(|character| is_boundary(*character));
+    let starts_after_boundary = start > 0 && is_boundary(chars[start - 1]);
+    // The counter reading `じ` uses the contracted `よじ` form; treating the
+    // standalone `し` reading as four here creates `4時` from `しじ`.
+    let invalid_shi_counter =
+        reading == "し" && suffix.first().is_some_and(|character| *character == 'じ');
+    let starts_after_text = start > 0 && !starts_after_boundary;
+    let unit_span_is_unbounded = has_unit
+        && !has_digit_and_unit
+        && starts_after_text
+        && !followed_by_counter
+        && !followed_by_boundary;
+    let numeric_context =
+        has_unit || followed_by_counter || followed_by_boundary || starts_after_boundary;
+    let counter_span = numeric_counter_surface(suffix);
+    let counter_numeric_surface =
+        counter_span.as_ref().map(|(_, counter_surface)| format!("{}{}", surface, counter_surface));
+    let counter_has_numeric_variant = counter_span.as_ref().is_some_and(|(counter_length, _)| {
+        let full_length = length + counter_length;
+        entries.iter().any(|entry| {
+            entry.reading.chars().count() == full_length
+                && entry.surface.chars().any(|character| character.is_ascii_digit())
+        })
+    });
+    // If a same-span dictionary row already renders a numeric surface (5年,
+    // 4月, ...), retain the numeric edge; otherwise a lexical homophone such
+    // as 司会 would be allowed to manufacture 4回.
+    let counter_lexical_span = if counter_has_numeric_variant {
+        false
+    } else {
+        counter_span.as_ref().is_some_and(|(counter_length, _)| {
+            let full_length = length + counter_length;
+            entries.iter().any(|entry| {
+                entry.reading.chars().count() == full_length
+                    && entry.surface != entry.reading
+                    && counter_numeric_surface.as_deref() != Some(entry.surface.as_str())
+            })
+        })
+    };
+    let explicit_digit = reading
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit() || ('０'..='９').contains(&character));
+    let lexical_same_span = entries.iter().any(|entry| {
+        entry.reading.chars().count() == length
+            && entry.surface != entry.reading
+            && contains_kanji(&entry.surface)
+    });
+    let numeric_score = if has_digit_and_unit
+        || followed_by_counter
+        || followed_by_boundary
+        || starts_after_boundary
+        || start == 0
+    {
+        NUMERIC_BOUNDARY_SCORE
+    } else {
+        NUMERIC_AMBIGUOUS_SCORE
+    };
+    Some(NumericPrefixContext {
+        length,
+        surface,
+        has_unit,
+        has_digit_and_unit,
+        followed_by_counter,
+        followed_by_boundary,
+        invalid_shi_counter,
+        unit_span_is_unbounded,
+        numeric_context,
+        counter_span,
+        counter_lexical_span,
+        explicit_digit,
+        lexical_same_span,
+        numeric_score,
+    })
 }
 
 pub fn convert_kana_to_kanji(input: &str) -> String {
@@ -188,115 +293,48 @@ pub fn convert_with_dictionary(
                 bounded_dictionary_word_chars(options.max_dictionary_word_chars),
             )
             .unwrap_or_default();
+        let numeric_prefix = numeric_prefix_context(&chars, start, &entries);
         for state in current {
-            if let Some((numeric_length, surface)) = numeric_surface_prefix(&chars[start..]) {
-                let numeric_reading: String = chars[start..start + numeric_length].iter().collect();
-                let has_unit = japanese_numeral_has_unit(&numeric_reading);
-                let has_digit_and_unit =
-                    has_unit && numeric_span_starts_with_digit(&numeric_reading);
-                let suffix = &chars[start + numeric_length..];
-                let followed_by_counter = japanese_counter_starts_at(suffix);
-                let followed_by_boundary =
-                    suffix.first().is_some_and(|character| is_boundary(*character));
-                let starts_after_boundary = start > 0 && is_boundary(chars[start - 1]);
-                // The counter reading `じ` uses the contracted `よじ` form;
-                // treating the standalone `し` reading as four here creates
-                // `4時` from the ordinary homophone `しじ` (支持/指示).
-                let invalid_shi_counter = numeric_reading == "し"
-                    && suffix.first().is_some_and(|character| *character == 'じ');
-                let starts_after_text = start > 0 && !starts_after_boundary;
-                // Unit-only spans are valid at a boundary (and before an
-                // explicit counter), but a unit discovered inside a normal
-                // word must not become a competing number (`そうじゅう`,
-                // `まんえん`, ...). Number+unit compounds remain available
-                // after ordinary text (`価格はさんびゃくえん`).
-                let unit_span_is_unbounded = has_unit
-                    && !has_digit_and_unit
-                    && starts_after_text
-                    && !followed_by_counter
-                    && !followed_by_boundary;
-                // A bare spoken digit is useful at a punctuation-separated
-                // boundary (`いち、に`) but dangerous in ordinary words:
-                // without this guard the final `ご` of `にほんご` could turn
-                // into `5`. Compound numerals and counter forms remain
-                // available anywhere in a caption.
-                let numeric_context = has_unit
-                    || followed_by_counter
-                    || followed_by_boundary
-                    || starts_after_boundary;
-                let counter_span = numeric_counter_surface(suffix);
-                let counter_numeric_surface = counter_span
-                    .as_ref()
-                    .map(|(_, counter_surface)| format!("{}{}", surface, counter_surface));
-                let counter_has_numeric_variant =
-                    counter_span.as_ref().is_some_and(|(counter_length, _)| {
-                        let full_length = numeric_length + counter_length;
-                        entries.iter().any(|entry| {
-                            entry.reading.chars().count() == full_length
-                                && entry.surface.chars().any(|character| character.is_ascii_digit())
-                        })
-                    });
-                let counter_lexical_span =
-                    counter_span.as_ref().is_some_and(|(counter_length, _)| {
-                        let full_length = numeric_length + counter_length;
-                        entries.iter().any(|entry| {
-                            entry.reading.chars().count() == full_length
-                                && entry.surface != entry.reading
-                                && !counter_has_numeric_variant
-                                && counter_numeric_surface.as_deref()
-                                    != Some(entry.surface.as_str())
-                        })
-                    });
-                let explicit_digit = numeric_reading.chars().next().is_some_and(|character| {
-                    character.is_ascii_digit() || ('０'..='９').contains(&character)
-                });
-                let bare_digit_outside_chain =
-                    !has_unit && !followed_by_counter && !explicit_digit && !state.numeric_chain;
-                let unit_only_outside_chain = has_unit
-                    && !has_digit_and_unit
-                    && !followed_by_counter
+            if let Some(numeric) = numeric_prefix.as_ref() {
+                // Do not exempt `followed_by_boundary` or
+                // `starts_after_boundary` here. A lexical word immediately
+                // before punctuation can still end in a bare numeric
+                // homophone (`こうし、...`), so only a real number chain may
+                // carry that one-kana reading forward.
+                let bare_digit_outside_chain = !numeric.has_unit
+                    && !numeric.followed_by_counter
+                    && !numeric.explicit_digit
+                    && !state.numeric_chain;
+                let unit_only_outside_chain = numeric.has_unit
+                    && !numeric.has_digit_and_unit
+                    && !numeric.followed_by_counter
                     && !state.numeric_chain
                     && start > 0;
-                let lexical_same_span = entries.iter().any(|entry| {
-                    entry.reading.chars().count() == numeric_length
-                        && entry.surface != entry.reading
-                        && contains_kanji(&entry.surface)
-                });
-                let shadowed_numeric_span = start + numeric_length < chars.len()
+                // Excluding a same-span lexical candidate only when plain
+                // text follows is intentional: a number ending at punctuation
+                // (`じゅう、`) must remain available.
+                let shadowed_numeric_span = start + numeric.length < chars.len()
                     && !state.numeric_chain
-                    && !followed_by_counter
-                    && !followed_by_boundary
-                    && lexical_same_span;
-                let shadowed_single_digit_counter = numeric_reading.chars().count() == 1
-                    && followed_by_counter
-                    && counter_lexical_span
+                    && !numeric.followed_by_counter
+                    && !numeric.followed_by_boundary
+                    && numeric.lexical_same_span;
+                let shadowed_single_digit_counter = numeric.length == 1
+                    && numeric.followed_by_counter
+                    && numeric.counter_lexical_span
                     && !state.numeric_chain;
-                if (numeric_context || start == 0)
+                if (numeric.numeric_context || start == 0)
                     && (!bare_digit_outside_chain || start == 0)
                     && !unit_only_outside_chain
                     && !shadowed_numeric_span
                     && !shadowed_single_digit_counter
-                    && !unit_span_is_unbounded
-                    && !invalid_shi_counter
+                    && !numeric.unit_span_is_unbounded
+                    && !numeric.invalid_shi_counter
                 {
-                    // Keep ambiguous one-syllable digits below dictionary
-                    // entries (`ご` -> `語`) unless the surrounding boundary
-                    // makes the numeric reading intentional.
-                    let numeric_score = if has_digit_and_unit
-                        || followed_by_counter
-                        || followed_by_boundary
-                        || starts_after_boundary
-                        || start == 0
-                    {
-                        NUMERIC_BOUNDARY_SCORE
-                    } else {
-                        NUMERIC_AMBIGUOUS_SCORE
-                    };
                     push_state(
-                        &mut states[start + numeric_length],
+                        &mut states[start + numeric.length],
                         PathState {
-                            text: format!("{}{}", state.text, surface),
-                            score: state.score + numeric_score,
+                            text: format!("{}{}", state.text, numeric.surface),
+                            score: state.score + numeric.numeric_score,
                             meaning_score: state.meaning_score,
                             last: None,
                             clause_mid: BOS_EOS_MID,
@@ -310,13 +348,17 @@ pub fn convert_with_dictionary(
                     // This prevents public-dictionary homophones such as
                     // `えん` -> 塩 from winning after `さん` while leaving
                     // ordinary `えん` unconstrained outside numeric context.
-                    if let Some((counter_length, counter_surface)) = numeric_counter_surface(suffix)
-                    {
+                    if let Some((counter_length, counter_surface)) = numeric.counter_span.as_ref() {
                         push_state(
-                            &mut states[start + numeric_length + counter_length],
+                            &mut states[start + numeric.length + counter_length],
                             PathState {
-                                text: format!("{}{}{}", state.text, surface, counter_surface),
-                                score: state.score + numeric_score + NUMERIC_COUNTER_SCORE_PENALTY,
+                                text: format!(
+                                    "{}{}{}",
+                                    state.text, numeric.surface, counter_surface
+                                ),
+                                score: state.score
+                                    + numeric.numeric_score
+                                    + NUMERIC_COUNTER_SCORE_PENALTY,
                                 meaning_score: state.meaning_score,
                                 last: None,
                                 clause_mid: BOS_EOS_MID,
@@ -422,6 +464,8 @@ pub fn convert_with_dictionary(
                 // previous clause through `？？` can crowd out the intended
                 // kana continuation in short conversational captions.
                 let keep_clause_context = matches!(chars[start], '、' | '。' | ',' | '.');
+                // Numeric chains are intentionally narrower than `is_boundary`:
+                // only `、`/`,` continue a chain; `。`/`.` terminate it.
                 push_state(
                     &mut states[start + 1],
                     PathState {
@@ -1164,6 +1208,9 @@ fn push_state(states: &mut Vec<PathState>, candidate: PathState, width: usize) {
 fn same_path_context(left: &PathState, right: &PathState) -> bool {
     if left.clause_mid != right.clause_mid
         || left.clause_has_word != right.clause_has_word
+        // Keep numeric-chain alternatives distinct. Collapsing this bit can
+        // reintroduce bare-digit absorption; if the extra variants dilute a
+        // future beam, tune width before removing this context.
         || left.numeric_chain != right.numeric_chain
         // MM is deliberately excluded from the intermediate ordering, but
         // two paths with different accumulated clause histories can receive
