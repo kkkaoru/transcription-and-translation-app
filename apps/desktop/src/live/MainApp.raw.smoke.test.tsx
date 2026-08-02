@@ -15,6 +15,7 @@ import {
   handlePipelineDropSignal,
   mergeCaptionForDisplay,
   reportCrossIdTranslationSaved,
+  resolveLiveNoticeText,
   resolveTranscribeAudioChunkTimeoutMs,
   shouldShowPipelineDropNotice,
   TRANSCRIBE_AUDIO_CHUNK_DEFAULT_TIMEOUT_MS,
@@ -200,6 +201,32 @@ describe("MainApp ASR lifecycle guards", () => {
     expect(shouldShowPipelineDropNotice(false, { key: "message.audioProcessingFailed" })).toBe(
       false,
     );
+    expect(shouldShowPipelineDropNotice(false, null, "persistent runtime failure")).toBe(false);
+    expect(
+      shouldShowPipelineDropNotice(
+        false,
+        { key: "message.pipelineDrop" },
+        "persistent runtime failure",
+      ),
+    ).toBe(false);
+    expect(shouldShowPipelineDropNotice(false, null, "no usable speech")).toBe(true);
+  });
+
+  it("keeps a persistent runtime error above a low-priority pipeline notice", () => {
+    const translate = (key: string): string => `translated:${key}`;
+    expect(resolveLiveNoticeText(null, "persistent runtime failure", translate)).toBe(
+      "persistent runtime failure",
+    );
+    expect(
+      resolveLiveNoticeText(
+        {
+          key: "message.pipelineDrop",
+          detail: "source=translation · reason=retired · count=1",
+        },
+        "persistent runtime failure",
+        translate,
+      ),
+    ).toBe("persistent runtime failure");
   });
 
   it("allows an older latest-caption replay to replace the design preview", () => {

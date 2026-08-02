@@ -33,7 +33,11 @@ import {
 } from "../core/defaults";
 import { pushDiagnosticEvent } from "../core/diagnostics";
 import { clearCaptionDisplayTiming, markCaptionDisplay } from "../core/display-timing";
-import { type PipelineDropSignal, recordPipelineDrop } from "../core/dropDiagnostics";
+import {
+  clearPipelineDrops,
+  type PipelineDropSignal,
+  recordPipelineDrop,
+} from "../core/dropDiagnostics";
 import { clearInputLevelDb, setInputLevelDb } from "../core/input-level";
 import {
   isTransientAudioNotice,
@@ -357,11 +361,33 @@ export const reportCrossIdTranslationSaved = (
 export const shouldShowPipelineDropNotice = (
   alreadyShown: boolean,
   current: Notice | null,
+  lastError: string | null = null,
 ): boolean =>
   !alreadyShown &&
+  !(lastError?.trim() && !isNoSpeechBridgeError(lastError)) &&
   (!current ||
     current.key === "message.noSpeechDetected" ||
     current.key === "message.pipelineDrop");
+
+/**
+ * Resolve the message shown in the live workspace.
+ *
+ * Pipeline-drop notices are intentionally low priority: a persistent runtime
+ * error must remain visible even when a drop event races its status update.
+ */
+export const resolveLiveNoticeText = (
+  notice: Notice | null,
+  lastError: string | null,
+  translate: (key: MessageKey) => string,
+): string | null => {
+  const fatalLastError = lastError && !isNoSpeechBridgeError(lastError) ? lastError : null;
+  if (notice?.key === "message.pipelineDrop" && fatalLastError) {
+    return fatalLastError;
+  }
+  return notice
+    ? [translate(notice.key), notice.detail].filter((part) => part).join(" ")
+    : fatalLastError;
+};
 
 export const MainApp = () => {
   const { t } = useI18n();
@@ -377,6 +403,11 @@ export const MainApp = () => {
   const [notice, setNotice] = useState<Notice | null>(null);
   /** Avoid training users to ignore a repeated low-priority drop banner. */
   const pipelineDropNoticeShown = useRef(false);
+  /** Keep an accepted drop token so React StrictMode updater replays are idempotent. */
+  const pipelineDropNoticeAccepted = useRef<Notice | null>(null);
+  /** Keep the latest runtime error available to long-lived bridge listeners. */
+  const runtimeStatusRef = useRef<RuntimeStatus>(DEFAULT_RUNTIME_STATUS);
+  runtimeStatusRef.current = status;
   const capture = useRef(new MicrophoneCapture());
   const captureAttempt = useRef(0);
   /** Lifecycle guard shared by starts/stops that outlive a React render. */
@@ -513,6 +544,7 @@ export const MainApp = () => {
         setConfig(nextConfig);
         setModels(nextModels);
         setStatus(nextStatus);
+        runtimeStatusRef.current = nextStatus;
         captionIdleGuard.current = nextStatus.status === "idle";
         captionFailureMessage.current =
           nextStatus.lastError && !isNoSpeechBridgeError(nextStatus.lastError)
@@ -759,17 +791,36 @@ export const MainApp = () => {
         // Keep the signal visible on the normal Live screen; DebugPanel still
         // retains the bounded per-source/per-reason history for investigation.
         handlePipelineDropSignal(drop, (nextNotice) => {
-          if (!shouldShowPipelineDropNotice(pipelineDropNoticeShown.current, null)) {
-            return;
-          }
-          pipelineDropNoticeShown.current = true;
           setNotice((current) => {
             // A drop is diagnostic back-pressure, not a replacement for a
             // capture/microphone failure. It may replace only a prior silence
             // or drop notice in this capture session.
-            if (!shouldShowPipelineDropNotice(false, current)) {
+            // React may replay the same functional updater in StrictMode. If
+            // this exact notice was already accepted, replay the same value
+            // after rechecking that no fatal notice/status won the race.
+            if (pipelineDropNoticeAccepted.current === nextNotice) {
+              return shouldShowPipelineDropNotice(
+                false,
+                current,
+                runtimeStatusRef.current.lastError || captionFailureMessage.current,
+              )
+                ? nextNotice
+                : current;
+            }
+            if (
+              !shouldShowPipelineDropNotice(
+                pipelineDropNoticeShown.current,
+                current,
+                runtimeStatusRef.current.lastError || captionFailureMessage.current,
+              )
+            ) {
               return current;
             }
+            // Consume the per-session gate only when this updater actually
+            // paints the low-priority notice. A fatal notice/status can race
+            // the drop event; that drop must remain eligible after recovery.
+            pipelineDropNoticeAccepted.current = nextNotice;
+            pipelineDropNoticeShown.current = true;
             return nextNotice;
           });
         });
@@ -798,6 +849,7 @@ export const MainApp = () => {
           nextStatus.lastError && isNoSpeechBridgeError(nextStatus.lastError)
             ? { ...nextStatus, lastError: null }
             : nextStatus;
+        runtimeStatusRef.current = sanitized;
         if (nextStatus.lastError && isNoSpeechBridgeError(nextStatus.lastError)) {
           pushDiagnosticEvent("audio", "No speech (soft-skip)", nextStatus.lastError);
         }
@@ -944,6 +996,8 @@ export const MainApp = () => {
     const attempt = ++captureAttempt.current;
     capturePhase.current = "starting";
     pipelineDropNoticeShown.current = false;
+    pipelineDropNoticeAccepted.current = null;
+    clearPipelineDrops();
     if (webSpeechMode) {
       // Permission queries never prompt and must not be awaited here: the
       // recognition start below has to stay in the button's transient gesture.
@@ -1925,11 +1979,7 @@ export const MainApp = () => {
     }
   };
 
-  const noticeText = notice
-    ? [t(notice.key), notice.detail].filter((part) => part).join(" ")
-    : status.lastError && !isNoSpeechBridgeError(status.lastError)
-      ? status.lastError
-      : null;
+  const noticeText = resolveLiveNoticeText(notice, status.lastError, t);
 
   return (
     <div className="app-shell">
