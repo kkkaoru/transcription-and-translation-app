@@ -43,13 +43,14 @@ const wav = (): File => {
   return new File([bytes], "caption.wav", { type: "audio/wav" });
 };
 
-const transcriptionRequest = (): Request => {
+const transcriptionRequest = (headers?: HeadersInit): Request => {
   const form = new FormData();
   form.set("model", "parapper-ja");
   form.set("language", "ja");
   form.set("file", wav());
   return new Request("https://worker.example/v1/audio/transcriptions", {
     method: "POST",
+    ...(headers ? { headers } : {}),
     body: form,
   });
 };
@@ -450,6 +451,61 @@ describe("Cloudflare Worker inference adapter", () => {
       "https://asr.example/v1/audio/transcriptions",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("forwards correlation headers to ASR and chat upstreams and advertises them in CORS", async () => {
+    const correlation = {
+      "x-request-id": "worker-request-1",
+      "x-session-id": "worker-session-1",
+      "x-agent-id": "worker-agent-1",
+      "x-parent-agent-id": "worker-parent-1",
+    };
+    const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      for (const [name, value] of Object.entries(correlation)) {
+        expect(headers.get(name)).toBe(value);
+      }
+      if (headers.get("authorization")) {
+        expect(headers.get("authorization")).toBe("Bearer worker-token");
+      }
+      return Promise.resolve(new Response(JSON.stringify({ text: "correlated" })));
+    });
+    const worker = createWorker(fetcher);
+    const asr = await worker.fetch(transcriptionRequest(correlation), {
+      ...env,
+      ASR_API_TOKEN: "worker-token",
+      ASR_UPSTREAM_URL: "https://asr.example/transcribe",
+    });
+    expect(asr.status).toBe(200);
+    await expect(asr.json()).resolves.toMatchObject({ text: "correlated" });
+
+    const chat = await worker.fetch(
+      new Request("https://worker.example/v1/chat/completions", {
+        method: "POST",
+        headers: { ...correlation, "content-type": "application/json" },
+        body: JSON.stringify({ model: "hy-mt2-1.8b-gguf", messages: [] }),
+      }),
+      env,
+    );
+    expect(chat.status).toBe(200);
+    await expect(chat.json()).resolves.toEqual({ text: "correlated" });
+
+    const preflight = await worker.fetch(
+      new Request("https://worker.example/v1/chat/completions", {
+        method: "OPTIONS",
+        headers: {
+          origin: env.CORS_ORIGIN,
+          "access-control-request-headers":
+            "content-type, x-request-id, x-session-id, x-agent-id, x-parent-agent-id",
+        },
+      }),
+      env,
+    );
+    expect(preflight.status).toBe(204);
+    const allowedHeaders = preflight.headers.get("access-control-allow-headers") ?? "";
+    for (const name of Object.keys(correlation)) {
+      expect(allowedHeaders).toContain(name);
+    }
   });
 
   it("uses Workers AI Nova-3 only when ASR_PROVIDER explicitly opts in", async () => {

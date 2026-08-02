@@ -1,5 +1,6 @@
 import type { GatewayConfig } from "@caption-bridge/inference-server-core";
 import {
+  correlationHeadersFromRequest,
   createGatewayFetchHandler,
   GatewayError,
   pcm16ToWav,
@@ -136,7 +137,10 @@ const workerConfig = (env: Env): GatewayConfig => {
 const cors = (response: Response, origin: string | undefined): Response => {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
-  headers.set("access-control-allow-headers", "content-type, authorization");
+  headers.set(
+    "access-control-allow-headers",
+    "content-type, authorization, x-request-id, x-session-id, x-agent-id, x-parent-agent-id",
+  );
   if (origin) {
     headers.set("access-control-allow-origin", origin);
     headers.set("vary", "Origin");
@@ -147,12 +151,12 @@ const cors = (response: Response, origin: string | undefined): Response => {
 const upstreamTranscriber = (
   env: Env,
   fetcher: WorkerFetcher,
-): ((pcm: Uint8Array) => Promise<string>) | undefined => {
+): ((pcm: Uint8Array, signal?: AbortSignal, request?: Request) => Promise<string>) | undefined => {
   const upstreamUrl = env.ASR_UPSTREAM_URL;
   if (!upstreamUrl) {
     return undefined;
   }
-  return async (pcm: Uint8Array): Promise<string> => {
+  return async (pcm: Uint8Array, signal?: AbortSignal, request?: Request): Promise<string> => {
     const form = new FormData();
     form.set("model", "parapper-ja");
     // Copy into an ArrayBuffer-backed view for the stricter Workers DOM Blob
@@ -166,7 +170,11 @@ const upstreamTranscriber = (
       response = await fetcher(upstreamUrl, {
         method: "POST",
         body: form,
-        ...(env.ASR_API_TOKEN ? { headers: { authorization: `Bearer ${env.ASR_API_TOKEN}` } } : {}),
+        headers: {
+          ...correlationHeadersFromRequest(request),
+          ...(env.ASR_API_TOKEN ? { authorization: `Bearer ${env.ASR_API_TOKEN}` } : {}),
+        },
+        ...(signal ? { signal } : {}),
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "connection failed";
