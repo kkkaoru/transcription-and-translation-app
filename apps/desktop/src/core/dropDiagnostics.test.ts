@@ -63,6 +63,16 @@ describe("pipeline drop diagnostics", () => {
     expect(snapshotPipelineDrops()).toMatchObject({ total: 1, bySource: { audio: 1 } });
   });
 
+  it("aggregates native translation retirement as a fourth source", () => {
+    recordPipelineDrop("translation", 1, "retired");
+    expect(snapshotPipelineDrops()).toMatchObject({
+      total: 1,
+      bySource: { translation: 1 },
+      byReason: { retired: 1 },
+      signals: [{ source: "translation", reason: "retired", count: 1 }],
+    });
+  });
+
   it("clears all aggregate state at a capture boundary", () => {
     recordPipelineDrop("parapper-output-queue", 4, "stale-final-cursor");
     clearPipelineDrops();

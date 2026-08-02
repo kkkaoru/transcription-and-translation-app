@@ -438,6 +438,7 @@ pub async fn normalize_parapper_output(
         // paths below. Count it so `get_debug_info` can explain a Parapper
         // turn that never became a caption without log scraping.
         state.record_parapper_output_superseded();
+        emit_pipeline_drop(&app, "parapper-output-queue", "superseded-generation", 1);
         log::debug!(
             "dropped Parapper output queued for a superseded capture generation \
              (enqueued_generation={capture_generation})"
@@ -665,6 +666,7 @@ fn spawn_translation(
         // Keep the current source caption immediate while making translator
         // backpressure explicit: the oldest unfinished result is retired and
         // cannot overwrite the latest caption when it eventually completes.
+        emit_pipeline_drop(&app, "translation", "retired", 1);
         log::debug!(
             "translation backlog reached its cap; retired the oldest pending result (latest wins)"
         );
@@ -766,6 +768,24 @@ fn emit_caption_update_for_generation(app: &AppHandle, caption: &CaptionPayload,
 fn emit_caption_event(app: &AppHandle, caption: &CaptionPayload) {
     if let Err(error) = app.emit("caption:update", caption) {
         log::warn!("could not emit caption:update: {error}");
+    }
+}
+
+/// Emit one bounded pipeline drop signal for the renderer diagnostics store.
+///
+/// Drop paths are intentionally non-fatal: a failed diagnostics event must
+/// never turn a successfully handled caption into a runtime error.
+fn emit_pipeline_drop(app: &AppHandle, source: &str, reason: &str, count: u64) {
+    if count == 0 {
+        return;
+    }
+    let payload = serde_json::json!({
+        "source": source,
+        "reason": reason,
+        "count": count,
+    });
+    if let Err(error) = app.emit("pipeline:drop", payload) {
+        log::warn!("could not emit pipeline:drop: {error}");
     }
 }
 

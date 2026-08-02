@@ -7,6 +7,7 @@ import {
   DEFAULT_RUNTIME_STATUS,
   mergeConfig,
 } from "./defaults";
+import type { PipelineDropSignal } from "./dropDiagnostics";
 import { normalizePipelineStageEvent } from "./pipelineStages";
 import type {
   AppConfig,
@@ -360,6 +361,14 @@ export const bridge = {
   listenPipelineStages(callback: (stage: PipelineStageEvent) => void): Promise<UnlistenFn> {
     if (isTauriRuntime()) {
       return listen<PipelineStageEvent>("pipeline:stage", (event) => callback(event.payload));
+    }
+    return Promise.resolve(() => undefined);
+  },
+
+  /** Surface native queue drops in the same bounded diagnostics aggregate as renderer drops. */
+  listenPipelineDrops(callback: (drop: PipelineDropSignal) => void): Promise<UnlistenFn> {
+    if (isTauriRuntime()) {
+      return listen<PipelineDropSignal>("pipeline:drop", (event) => callback(event.payload));
     }
     return Promise.resolve(() => undefined);
   },

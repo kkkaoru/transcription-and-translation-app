@@ -33,6 +33,7 @@ import {
 } from "../core/defaults";
 import { pushDiagnosticEvent } from "../core/diagnostics";
 import { clearCaptionDisplayTiming, markCaptionDisplay } from "../core/display-timing";
+import { type PipelineDropSignal, recordPipelineDrop } from "../core/dropDiagnostics";
 import { clearInputLevelDb, setInputLevelDb } from "../core/input-level";
 import {
   isTransientAudioNotice,
@@ -323,6 +324,45 @@ export const mergeCaptionForDisplay = (
   return mergeCaptionPayload(current, incoming);
 };
 
+/** Record and surface one native queue-drop signal on the normal Live screen. */
+export const handlePipelineDropSignal = (
+  drop: PipelineDropSignal,
+  notify: (notice: Notice) => void,
+): void => {
+  recordPipelineDrop(drop.source, drop.count, drop.reason);
+  const detail = `source=${drop.source} · reason=${drop.reason} · count=${drop.count}`;
+  pushDiagnosticEvent("caption", "Pipeline drop surfaced", detail);
+  notify({ key: "message.pipelineDrop", detail });
+};
+
+/** Mirror exactly one diagnostic when a new cross-ID translation is retained. */
+export const reportCrossIdTranslationSaved = (
+  beforeSaved: number,
+  afterSaved: number,
+  captionId: string,
+  pendingCount: number,
+): void => {
+  if (afterSaved <= beforeSaved) {
+    return;
+  }
+  pushDiagnosticEvent(
+    "caption",
+    "Late translation preserved for prior utterance",
+    `${captionId} · pending=${pendingCount}`,
+    { mirrorStructured: false },
+  );
+};
+
+/** Low-priority drop notices yield to real capture/microphone failures. */
+export const shouldShowPipelineDropNotice = (
+  alreadyShown: boolean,
+  current: Notice | null,
+): boolean =>
+  !alreadyShown &&
+  (!current ||
+    current.key === "message.noSpeechDetected" ||
+    current.key === "message.pipelineDrop");
+
 export const MainApp = () => {
   const { t } = useI18n();
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
@@ -335,6 +375,8 @@ export const MainApp = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** Avoid training users to ignore a repeated low-priority drop banner. */
+  const pipelineDropNoticeShown = useRef(false);
   const capture = useRef(new MicrophoneCapture());
   const captureAttempt = useRef(0);
   /** Lifecycle guard shared by starts/stops that outlive a React render. */
@@ -566,19 +608,15 @@ export const MainApp = () => {
         const paintedProgressiveSource =
           isSourceStage && painted && captionRef.current.sourceText.trim();
         const afterMergeDiagnostics = getCaptionMergeDiagnostics();
-        if (afterMergeDiagnostics.crossIdTranslationIdsSaved > beforeCrossIdSaved) {
-          // A cross-id translation was saved to the bounded side channel so it is
-          // not mis-attributed to the current live caption. Surface the retention
-          // through the debug/diagnostic channel (Debug panel) without mirroring
-          // to the structured log — the takePendingCaptionTranslation consumer
-          // below already records the retained text there when it is retrieved.
-          pushDiagnosticEvent(
-            "caption",
-            "Late translation preserved for prior utterance",
-            `${nextCaption.id} · pending=${afterMergeDiagnostics.pendingCrossIdTranslations}`,
-            { mirrorStructured: false },
-          );
-        }
+        // A cross-ID translation is retained in a bounded side channel so it
+        // cannot be mis-attributed to the current live caption. Report only a
+        // newly saved ID; later revisions of that ID must stay quiet.
+        reportCrossIdTranslationSaved(
+          beforeCrossIdSaved,
+          afterMergeDiagnostics.crossIdTranslationIdsSaved,
+          nextCaption.id,
+          afterMergeDiagnostics.pendingCrossIdTranslations,
+        );
         if (paintedProgressiveSource) {
           chunkProcessor.current?.markFirstCaption();
           if (chunkProcessor.current) {
@@ -709,6 +747,45 @@ export const MainApp = () => {
           pushDiagnosticEvent(
             "error",
             "Pipeline stage listen failed",
+            formatBridgeError(error) ?? String(error),
+          );
+        }
+      });
+    void bridge
+      .listenPipelineDrops((drop) => {
+        if (!mounted) {
+          return;
+        }
+        // Keep the signal visible on the normal Live screen; DebugPanel still
+        // retains the bounded per-source/per-reason history for investigation.
+        handlePipelineDropSignal(drop, (nextNotice) => {
+          if (!shouldShowPipelineDropNotice(pipelineDropNoticeShown.current, null)) {
+            return;
+          }
+          pipelineDropNoticeShown.current = true;
+          setNotice((current) => {
+            // A drop is diagnostic back-pressure, not a replacement for a
+            // capture/microphone failure. It may replace only a prior silence
+            // or drop notice in this capture session.
+            if (!shouldShowPipelineDropNotice(false, current)) {
+              return current;
+            }
+            return nextNotice;
+          });
+        });
+      })
+      .then((dispose) => {
+        if (mounted) {
+          disposers.push(dispose);
+        } else {
+          dispose();
+        }
+      })
+      .catch((error: unknown) => {
+        if (mounted) {
+          pushDiagnosticEvent(
+            "error",
+            "Pipeline drop listen failed",
             formatBridgeError(error) ?? String(error),
           );
         }
@@ -866,6 +943,7 @@ export const MainApp = () => {
     }
     const attempt = ++captureAttempt.current;
     capturePhase.current = "starting";
+    pipelineDropNoticeShown.current = false;
     if (webSpeechMode) {
       // Permission queries never prompt and must not be awaited here: the
       // recognition start below has to stay in the button's transient gesture.

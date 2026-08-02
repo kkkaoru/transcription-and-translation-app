@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { describe, expect, it, vi } from "vitest";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "./bridge";
+import type { PipelineDropSignal } from "./dropDiagnostics";
 import type { CaptionPayload } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 describe("formatBridgeError", () => {
   it("extracts details from strings, Errors, and Tauri-shaped objects", () => {
@@ -97,6 +100,47 @@ describe("browser replay bridges", () => {
   it("returns empty native history and no latest caption outside Tauri", async () => {
     expect(await bridge.getPipelineStageHistory()).toEqual([]);
     expect(await bridge.getLatestCaption()).toBeNull();
+  });
+});
+
+describe("pipeline drop bridge", () => {
+  const withTauriRuntime = async (run: () => Promise<void>): Promise<void> => {
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    try {
+      await run();
+    } finally {
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = undefined;
+    }
+  };
+
+  it("is a no-op outside Tauri", async () => {
+    vi.mocked(listen).mockClear();
+    const dispose = await bridge.listenPipelineDrops(() => undefined);
+    expect(dispose).toBeTypeOf("function");
+    expect(listen).not.toHaveBeenCalled();
+  });
+
+  it("forwards native drop payloads and returns the unlisten function", async () => {
+    const unlisten = vi.fn();
+    let onEvent: ((event: { payload: PipelineDropSignal }) => void) | undefined;
+    vi.mocked(listen).mockImplementation((_name, callback) => {
+      onEvent = callback as unknown as (event: { payload: PipelineDropSignal }) => void;
+      return Promise.resolve(unlisten);
+    });
+    const received = vi.fn();
+    await withTauriRuntime(async () => {
+      const dispose = await bridge.listenPipelineDrops(received);
+      expect(listen).toHaveBeenCalledWith("pipeline:drop", expect.any(Function));
+      onEvent?.({ payload: { source: "translation", reason: "retired", count: 1 } });
+      expect(received).toHaveBeenCalledWith({
+        source: "translation",
+        reason: "retired",
+        count: 1,
+      });
+      dispose();
+    });
+    expect(unlisten).toHaveBeenCalledOnce();
+    vi.mocked(listen).mockReset();
   });
 });
 

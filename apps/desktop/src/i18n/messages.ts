@@ -191,6 +191,7 @@ const ja = {
   "message.saved": "設定を保存しました。",
   "message.saveFailed": "設定の保存に失敗しました。",
   "message.audioProcessingFailed": "音声処理に失敗しました。",
+  "message.pipelineDrop": "音声字幕パイプラインで処理待ちの項目を整理しました。",
   "message.noSpeechDetected":
     "音声が検出されませんでした。マイク入力レベルを確認するか、もう少し大きな声で話してください。",
   "message.captureStartFailed":
@@ -614,6 +615,7 @@ const en: Record<MessageKey, string> = {
   "message.saved": "Settings saved.",
   "message.saveFailed": "Could not save settings.",
   "message.audioProcessingFailed": "Audio processing failed.",
+  "message.pipelineDrop": "The caption pipeline retired a queued item.",
   "message.noSpeechDetected":
     "No speech detected. Check the mic input level or speak a little louder.",
   "message.captureStartFailed":

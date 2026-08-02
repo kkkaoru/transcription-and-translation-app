@@ -118,6 +118,9 @@ export const SettingsView = ({
         : t("settings.recognitionModeParapperAzookeyDescription");
   const webSpeechMode = recognitionMode === "web-speech";
   const deviceControlsDisabled = captureStarting || webSpeechMode;
+  const audioPipelineControlsDisabled = captureStarting || webSpeechMode;
+  const audioPipelineHint = (hint: string): string =>
+    webSpeechMode ? `${hint} ${t("live.pipelineInactive")}` : hint;
   const silenceGateMode = resolveSilenceGateMode(config.audio.adaptiveNoiseFloor);
   const adaptiveNoiseFloorEnabled = silenceGateMode === "adaptive";
   const inputDeviceHint = webSpeechMode
@@ -321,7 +324,7 @@ export const SettingsView = ({
             type="button"
             onClick={resetAudioTuning}
             data-testid="audio-tuning-reset"
-            disabled={captureStarting}
+            disabled={audioPipelineControlsDisabled}
           >
             {t("settings.audioReset")}
           </button>
@@ -356,7 +359,7 @@ export const SettingsView = ({
               </button>
             </div>
           </fieldset>
-          <Field label={t("settings.chunk")} hint={t("settings.chunkHint")}>
+          <Field label={t("settings.chunk")} hint={audioPipelineHint(t("settings.chunkHint"))}>
             <div className="range-field">
               <input
                 id="audio-chunk-ms"
@@ -367,7 +370,7 @@ export const SettingsView = ({
                 value={config.audio.chunkMs}
                 onChange={(event) => setAudio({ chunkMs: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.chunk")}
-                disabled={captureStarting}
+                disabled={audioPipelineControlsDisabled}
                 aria-valuetext={`${config.audio.chunkMs} ${t("settings.milliseconds")}`}
               />
               <output className="range-value" htmlFor="audio-chunk-ms">
@@ -379,18 +382,18 @@ export const SettingsView = ({
               type="button"
               onClick={() => setAudio({ chunkMs: DEFAULT_AUDIO_CHUNK_MS })}
               aria-label={`${t("settings.resetValue")}: ${t("settings.chunk")}`}
-              disabled={captureStarting}
+              disabled={audioPipelineControlsDisabled}
             >
               {t("settings.resetValue")}
             </button>
           </Field>
           <Field
             label={t("settings.silenceGate")}
-            hint={
+            hint={audioPipelineHint(
               adaptiveNoiseFloorEnabled
                 ? `${t("settings.silenceGateHint")} ${t("settings.silenceGateAdaptiveDisabled")}`
-                : t("settings.silenceGateHint")
-            }
+                : t("settings.silenceGateHint"),
+            )}
           >
             <div className="range-field">
               <input
@@ -403,8 +406,8 @@ export const SettingsView = ({
                 onChange={(event) => setAudio({ silenceGateDb: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.silenceGate")}
                 aria-valuetext={`${config.audio.silenceGateDb} ${t("settings.decibels")}${adaptiveNoiseFloorEnabled ? ` · ${t("settings.silenceGateAdaptiveLabel")}` : ""}`}
-                aria-disabled={adaptiveNoiseFloorEnabled || captureStarting}
-                disabled={adaptiveNoiseFloorEnabled || captureStarting}
+                aria-disabled={adaptiveNoiseFloorEnabled || audioPipelineControlsDisabled}
+                disabled={adaptiveNoiseFloorEnabled || audioPipelineControlsDisabled}
               />
               <output className="range-value" htmlFor="audio-silence-gate-db">
                 {config.audio.silenceGateDb} {t("settings.decibels")}
@@ -416,12 +419,15 @@ export const SettingsView = ({
               type="button"
               onClick={() => setAudio({ silenceGateDb: DEFAULT_SILENCE_GATE_DB })}
               aria-label={`${t("settings.resetValue")}: ${t("settings.silenceGate")}`}
-              disabled={captureStarting}
+              disabled={audioPipelineControlsDisabled}
             >
               {t("settings.resetValue")}
             </button>
           </Field>
-          <Field label={t("settings.vadInterval")} hint={t("settings.vadIntervalHint")}>
+          <Field
+            label={t("settings.vadInterval")}
+            hint={audioPipelineHint(t("settings.vadIntervalHint"))}
+          >
             <div className="range-field">
               <input
                 id="audio-vad-interval-ms"
@@ -433,6 +439,7 @@ export const SettingsView = ({
                 onChange={(event) => setAudio({ vadIntervalMs: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.vadInterval")}
                 aria-valuetext={`${vadIntervalMs} ${t("settings.milliseconds")}`}
+                disabled={audioPipelineControlsDisabled}
               />
               <output className="range-value" htmlFor="audio-vad-interval-ms">
                 {vadIntervalMs} {t("settings.milliseconds")}
@@ -443,11 +450,15 @@ export const SettingsView = ({
               type="button"
               onClick={() => setAudio({ vadIntervalMs: DEFAULT_VAD_INTERVAL_MS })}
               aria-label={`${t("settings.resetValue")}: ${t("settings.vadInterval")}`}
+              disabled={audioPipelineControlsDisabled}
             >
               {t("settings.resetValue")}
             </button>
           </Field>
-          <Field label={t("settings.vadThreshold")} hint={t("settings.vadThresholdHint")}>
+          <Field
+            label={t("settings.vadThreshold")}
+            hint={audioPipelineHint(t("settings.vadThresholdHint"))}
+          >
             <div className="range-field">
               <input
                 id="audio-vad-threshold"
@@ -459,6 +470,7 @@ export const SettingsView = ({
                 onChange={(event) => setAudio({ vadThreshold: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.vadThreshold")}
                 aria-valuetext={vadThreshold.toFixed(VAD_THRESHOLD_DECIMAL_PLACES)}
+                disabled={audioPipelineControlsDisabled}
               />
               <output className="range-value" htmlFor="audio-vad-threshold">
                 {vadThreshold.toFixed(VAD_THRESHOLD_DECIMAL_PLACES)}
@@ -469,13 +481,14 @@ export const SettingsView = ({
               type="button"
               onClick={() => setAudio({ vadThreshold: DEFAULT_VAD_THRESHOLD })}
               aria-label={`${t("settings.resetValue")}: ${t("settings.vadThreshold")}`}
+              disabled={audioPipelineControlsDisabled}
             >
               {t("settings.resetValue")}
             </button>
           </Field>
           <Field
             label={t("settings.adaptiveNoiseFloor")}
-            hint={t("settings.adaptiveNoiseFloorHint")}
+            hint={audioPipelineHint(t("settings.adaptiveNoiseFloorHint"))}
           >
             <label className="checkbox-field">
               <input
@@ -483,12 +496,15 @@ export const SettingsView = ({
                 type="checkbox"
                 checked={config.audio.adaptiveNoiseFloor !== false}
                 onChange={(event) => setAudio({ adaptiveNoiseFloor: event.currentTarget.checked })}
-                disabled={captureStarting}
+                disabled={audioPipelineControlsDisabled}
               />
               <span>{t("settings.adaptiveNoiseFloorOn")}</span>
             </label>
           </Field>
-          <Field label={t("settings.noiseSuppression")} hint={t("settings.noiseSuppressionHint")}>
+          <Field
+            label={t("settings.noiseSuppression")}
+            hint={audioPipelineHint(t("settings.noiseSuppressionHint"))}
+          >
             <label className="checkbox-field">
               <input
                 id="audio-noise-suppression"
@@ -500,7 +516,7 @@ export const SettingsView = ({
                     audio: { ...config.audio, noiseSuppression: event.target.checked },
                   })
                 }
-                disabled={captureStarting}
+                disabled={audioPipelineControlsDisabled}
               />
               <span>{t("settings.noiseSuppressionOn")}</span>
             </label>

@@ -195,6 +195,31 @@ describe("LiveView in-app preview scaling", () => {
     );
   });
 
+  it("renders a pipeline-drop notice on the normal Live screen", async () => {
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={createDefaultConfig()}
+            status={DEFAULT_RUNTIME_STATUS}
+            caption={createPreviewCaption()}
+            devices={[]}
+            message="音声字幕パイプラインで処理待ちの項目を整理しました。 source=translation · reason=retired · count=1"
+            onToggleCapture={() => {}}
+            onOpenOverlay={() => {}}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector(".notice")?.textContent).toContain("source=translation");
+    expect(container.querySelector('.notice[role="status"]')).not.toBeNull();
+  });
+
   it("disables device controls only while capture is starting", async () => {
     const config = createDefaultConfig();
     const caption = createPreviewCaption();

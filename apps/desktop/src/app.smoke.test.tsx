@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { App } from "./app";
 import { BUILD_INFO } from "./core/buildInfo";
+import { clearDiagnosticEvents, getDiagnosticEvents } from "./core/diagnostics";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -92,6 +93,20 @@ describe("App routes", () => {
     // Structured log level selector is part of the always-present debug panel markup.
     expect(container.querySelector('[data-testid="debug-log-level"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="debug-structured-logs"]')).not.toBeNull();
+
+    clearDiagnosticEvents();
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("設定を保存"),
+    );
+    expect(saveButton).not.toBeUndefined();
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(
+      getDiagnosticEvents().filter((event) => event.message === "Settings saved"),
+    ).toHaveLength(1);
   });
 
   it("renders only the transparent caption route for overlay windows", async () => {

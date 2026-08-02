@@ -2,6 +2,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultConfig } from "../core/defaults";
+import { clearDiagnosticEvents, getDiagnosticEvents } from "../core/diagnostics";
+import { clearPipelineDrops, snapshotPipelineDrops } from "../core/dropDiagnostics";
 import { selectParapperSurfaceText } from "../core/parapperStream";
 import type { AppConfig, ParapperRecognitionOutput } from "../core/types";
 import { isWebSpeechRecognitionSupported } from "../core/webSpeechRecognition";
@@ -10,8 +12,11 @@ import {
   captureConfigRequiresRestart,
   clearLegacyFailureNotice,
   createCaptureRestartCoordinator,
+  handlePipelineDropSignal,
   mergeCaptionForDisplay,
+  reportCrossIdTranslationSaved,
   resolveTranscribeAudioChunkTimeoutMs,
+  shouldShowPipelineDropNotice,
   TRANSCRIBE_AUDIO_CHUNK_DEFAULT_TIMEOUT_MS,
   withFiniteTimeout,
 } from "./MainApp";
@@ -159,6 +164,44 @@ describe("Bug 2: Web Speech Recognition support detection", () => {
 });
 
 describe("MainApp ASR lifecycle guards", () => {
+  it("surfaces native pipeline drops through the normal Live notice path", () => {
+    clearDiagnosticEvents();
+    clearPipelineDrops();
+    const notify = vi.fn();
+    handlePipelineDropSignal({ source: "translation", reason: "retired", count: 1 }, notify);
+
+    expect(notify).toHaveBeenCalledWith({
+      key: "message.pipelineDrop",
+      detail: "source=translation · reason=retired · count=1",
+    });
+    expect(snapshotPipelineDrops().bySource).toEqual({ translation: 1 });
+    expect(getDiagnosticEvents()[0]).toMatchObject({
+      kind: "caption",
+      message: "Pipeline drop surfaced",
+    });
+  });
+
+  it("logs one diagnostic per newly saved cross-ID translation", () => {
+    clearDiagnosticEvents();
+    reportCrossIdTranslationSaved(0, 1, "late-translation", 1);
+    reportCrossIdTranslationSaved(1, 1, "late-translation", 1);
+
+    expect(
+      getDiagnosticEvents().filter(
+        (event) => event.message === "Late translation preserved for prior utterance",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("gates low-priority drop notices per capture session and preserves errors", () => {
+    expect(shouldShowPipelineDropNotice(false, null)).toBe(true);
+    expect(shouldShowPipelineDropNotice(true, null)).toBe(false);
+    expect(shouldShowPipelineDropNotice(false, { key: "message.pipelineDrop" })).toBe(true);
+    expect(shouldShowPipelineDropNotice(false, { key: "message.audioProcessingFailed" })).toBe(
+      false,
+    );
+  });
+
   it("allows an older latest-caption replay to replace the design preview", () => {
     const preview = createPreviewCaption();
     const latest = {

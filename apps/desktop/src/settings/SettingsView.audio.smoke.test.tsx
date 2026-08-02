@@ -29,7 +29,11 @@ describe("SettingsView audio tuning", () => {
 
   it("exposes the three recognition modes with a localized explanation", async () => {
     const Harness = () => {
-      const [config, setConfig] = useState(createDefaultConfig());
+      const initialConfig = createDefaultConfig();
+      const [config, setConfig] = useState({
+        ...initialConfig,
+        audio: { ...initialConfig.audio, adaptiveNoiseFloor: false },
+      });
       return (
         <SettingsView
           config={config}
@@ -94,6 +98,15 @@ describe("SettingsView audio tuning", () => {
     expect(deviceControls?.textContent).toMatch(
       /入力デバイス選択と更新は無効|device selection and refresh are disabled/,
     );
+    expect(container.querySelector<HTMLInputElement>("#audio-chunk-ms")?.disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>("#audio-silence-gate-db")?.disabled).toBe(
+      true,
+    );
+    expect(container.querySelector<HTMLInputElement>("#audio-vad-interval-ms")?.disabled).toBe(
+      true,
+    );
+    expect(container.querySelector<HTMLInputElement>("#audio-vad-threshold")?.disabled).toBe(true);
+    expect(container.textContent).toMatch(/このモードでは未使用|not used in this mode/i);
   });
 
   it("disables capture-affecting controls while capture is starting", async () => {
