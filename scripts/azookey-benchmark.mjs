@@ -444,7 +444,7 @@ const runWorker = async ({ sourceRoot, iterations, cases, port, quiet }) => {
     {
       cwd: workerDirectory,
       env: { ...process.env, NO_UPDATE_NOTIFIER: "1" },
-      stdio: ["ignore", quiet ? "ignore" : "pipe", quiet ? "ignore" : "pipe"],
+      stdio: ["ignore", quiet ? "ignore" : "inherit", quiet ? "ignore" : "inherit"],
     },
   );
   const rssState = { maxRssBytes: 0 };
