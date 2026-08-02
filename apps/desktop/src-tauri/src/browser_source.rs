@@ -228,7 +228,13 @@ fn stop_running(running: RunningServer) {
 
 /// Snapshot the latest caption and the overlay layout/styles for one request.
 fn feed(app: &AppHandle) -> BrowserSourceFeed {
-    let state = app.state::<AppState>();
+    let Some(state) = app.try_state::<AppState>() else {
+        // A detached response worker can outlive Tauri state teardown when a
+        // client stopped reading during shutdown. Return a valid empty feed
+        // instead of panicking in that late request.
+        log::warn!(target: LOG_TARGET, "browser source request arrived after app state teardown");
+        return feed_from_parts(&AppConfig::default(), None);
+    };
     let config = state.config.lock().map(|config| config.clone()).unwrap_or_default();
     feed_from_parts(&config, state.latest_caption().as_ref())
 }
@@ -264,6 +270,11 @@ impl From<&CaptionPayload> for CaptionFeed {
 /// prevent every other client (including health checks and OBS reloads) from
 /// being accepted.
 const REQUEST_WORKER_COUNT: usize = 4;
+/// Keep a finite amount of work queued behind stalled Browser Source clients.
+/// A full queue drops only the newly accepted request instead of allowing
+/// unbounded memory growth while all response workers are blocked in a socket
+/// write.
+const REQUEST_QUEUE_CAPACITY: usize = REQUEST_WORKER_COUNT * 4;
 
 fn request_worker_loop(request_receiver: Arc<Mutex<mpsc::Receiver<Request>>>, feed: Arc<FeedFn>) {
     loop {
@@ -283,7 +294,7 @@ fn request_worker_loop(request_receiver: Arc<Mutex<mpsc::Receiver<Request>>>, fe
 
 fn serve(server: Server, feed: FeedFn, stop: Arc<AtomicBool>) {
     let feed = Arc::new(feed);
-    let (request_sender, request_receiver) = mpsc::channel::<Request>();
+    let (request_sender, request_receiver) = mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
     let request_receiver = Arc::new(Mutex::new(request_receiver));
     let mut workers = Vec::with_capacity(REQUEST_WORKER_COUNT);
 
@@ -311,6 +322,10 @@ fn serve(server: Server, feed: FeedFn, stop: Arc<AtomicBool>) {
 
     while !stop.load(Ordering::Acquire) && accept_request(&server, &request_sender, &stop) {}
 
+    // Drop the listener before waiting for response workers. A worker can be
+    // blocked indefinitely in `request.respond` when a client stops reading;
+    // the listening socket must still close promptly during shutdown.
+    drop(server);
     drop(request_sender);
     for worker in workers {
         if let Err(error) = worker.join() {
@@ -321,17 +336,31 @@ fn serve(server: Server, feed: FeedFn, stop: Arc<AtomicBool>) {
 
 fn accept_request(
     server: &Server,
-    request_sender: &mpsc::Sender<Request>,
+    request_sender: &mpsc::SyncSender<Request>,
     stop: &AtomicBool,
 ) -> bool {
     match server.recv_timeout(RECV_TIMEOUT) {
-        Ok(Some(request)) => request_sender.send(request).is_ok(),
+        Ok(Some(request)) => enqueue_request(request_sender, request),
         Ok(None) => true,
         Err(_) if stop.load(Ordering::Acquire) => false,
         Err(error) => {
             log::warn!(target: LOG_TARGET, "browser source accept failed: {error}");
             false
         }
+    }
+}
+
+fn enqueue_request(request_sender: &mpsc::SyncSender<Request>, request: Request) -> bool {
+    match request_sender.try_send(request) {
+        Ok(()) => true,
+        Err(mpsc::TrySendError::Full(_request)) => {
+            log::warn!(
+                target: LOG_TARGET,
+                "browser source request queue full; dropping one request"
+            );
+            true
+        }
+        Err(mpsc::TrySendError::Disconnected(_request)) => false,
     }
 }
 
@@ -519,6 +548,7 @@ mod tests {
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::thread;
     use std::time::{Duration, Instant};
     use tiny_http::{ListenAddr, Server};
 
@@ -607,21 +637,21 @@ mod tests {
 
     #[test]
     fn runtime_drop_releases_the_listener_port() {
-        // Ask the OS for the listener port directly. Keeping that listener alive
-        // through spawn_feed avoids the probe/drop/rebind race that made this
-        // test intermittently fail when tests ran in parallel.
+        // Let the OS choose the port, then verify that the listener no longer
+        // accepts connections. Rebinding is not a reliable release probe on
+        // macOS because a recent connection can leave the port in TIME_WAIT.
         let config = Arc::new(AppConfig::default());
         let feed_config = Arc::clone(&config);
         let running = spawn_feed(0, Box::new(move || feed_from_parts(&feed_config, None)))
-            .expect("bind ephemeral browser source listener");
+            .expect("bind browser source listener");
         let port = running.port;
         let runtime =
             BrowserSourceRuntime { serving: Mutex::new(Some(running)), lifecycle: Mutex::new(()) };
         drop(runtime);
 
         assert!(
-            wait_for_port_release(port),
-            "dropping the runtime must release the browser source port"
+            server_is_stopped(port),
+            "dropping the runtime must stop the browser source listener"
         );
     }
 
@@ -665,6 +695,70 @@ mod tests {
 
         drop(runtime);
         drop(occupied);
+    }
+
+    fn wait_for_stop(stop: Arc<AtomicBool>) {
+        while !stop.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn fake_running_server(port: u16) -> RunningServer {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = thread::spawn(move || wait_for_stop(thread_stop));
+        RunningServer { port, stop, thread }
+    }
+
+    fn fake_spawn_after_first_attempt(
+        attempts: &std::sync::atomic::AtomicUsize,
+        port: u16,
+    ) -> Option<RunningServer> {
+        if attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+            return None;
+        }
+        Some(fake_running_server(port))
+    }
+
+    #[test]
+    fn reconcile_retries_after_spawn_failure_for_same_desired_port() {
+        let config = Arc::new(AppConfig::default());
+        let feed_config = Arc::clone(&config);
+        let running = spawn_feed(0, Box::new(move || feed_from_parts(&feed_config, None)))
+            .expect("bind existing browser source listener");
+        let old_port = running.port;
+        let desired_port = if old_port == u16::MAX { old_port - 1 } else { old_port + 1 };
+        let runtime =
+            BrowserSourceRuntime { serving: Mutex::new(Some(running)), lifecycle: Mutex::new(()) };
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_for_spawn = Arc::clone(&attempts);
+
+        runtime.reconcile_to_with(Some(desired_port), move |port| {
+            fake_spawn_after_first_attempt(&attempts_for_spawn, port)
+        });
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            runtime
+                .serving
+                .lock()
+                .expect("browser source state lock")
+                .as_ref()
+                .map(|server| server.port),
+            Some(old_port)
+        );
+
+        runtime.reconcile_to_with(Some(desired_port), |port| Some(fake_running_server(port)));
+        assert_eq!(
+            runtime
+                .serving
+                .lock()
+                .expect("browser source state lock")
+                .as_ref()
+                .map(|server| server.port),
+            Some(desired_port)
+        );
+
+        drop(runtime);
     }
 
     #[test]
@@ -730,18 +824,6 @@ mod tests {
         response.split("\r\n\r\n").nth(1).unwrap_or(response)
     }
 
-    fn wait_for_port_release(port: u16) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !port_is_released(port) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        port_is_released(port)
-    }
-
-    fn port_is_released(port: u16) -> bool {
-        Server::http(("127.0.0.1", port)).is_ok()
-    }
-
     /// Probe listener ownership without requiring an immediate rebind. A
     /// recently closed listener can leave short-lived connections in TIME_WAIT
     /// on macOS, so a bind failure does not prove that the serve thread stopped.
@@ -751,6 +833,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         TcpStream::connect(("127.0.0.1", port)).is_err()
+    }
+
+    fn can_rebind(port: u16) -> bool {
+        Server::http(("127.0.0.1", port)).is_ok()
+    }
+
+    fn wait_for_port_rebind(port: u16) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !can_rebind(port) {
+            thread::sleep(Duration::from_millis(25));
+        }
+        can_rebind(port)
     }
 
     #[test]
@@ -833,6 +927,14 @@ mod tests {
         assert!(
             elapsed < STOP_JOIN_TIMEOUT + Duration::from_secs(2),
             "stop_running must bound the join; took {elapsed:?}"
+        );
+        assert!(
+            server_is_stopped(port),
+            "stopping the server must close the listener while the client remains stalled"
+        );
+        assert!(
+            wait_for_port_rebind(port),
+            "stopping the server must release the port while the client remains stalled"
         );
 
         // Closing the stalled client unblocks the detached thread, which then
