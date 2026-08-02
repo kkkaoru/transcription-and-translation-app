@@ -150,6 +150,9 @@ describe("cleanBuildArtifacts", () => {
     for (const scriptName of ["build", "tauri:build", "tauri:build:release"]) {
       assert.match(desktop.scripts[scriptName], new RegExp(cleanup));
     }
+    for (const scriptName of ["tauri:build", "tauri:build:release"]) {
+      assert.match(desktop.scripts[scriptName], /--prune-rust/);
+    }
     assert.match(workspace.scripts["test:build-cleanup"], /node --test/);
   });
 });
