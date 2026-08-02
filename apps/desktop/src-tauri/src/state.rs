@@ -1035,6 +1035,7 @@ mod tests {
         let final_caption = CaptionPayload {
             id: "parapper:session:1:7".to_string(),
             source_text: "最終字幕".to_string(),
+            azookey_input_text: None,
             translation_text: String::new(),
             source_language: "ja".to_string(),
             target_language: "en".to_string(),
@@ -1171,6 +1172,7 @@ mod tests {
         let caption = CaptionPayload {
             id: "stale".to_string(),
             source_text: "遅延した字幕".to_string(),
+            azookey_input_text: None,
             translation_text: String::new(),
             source_language: "ja".to_string(),
             target_language: "en".to_string(),
@@ -1196,6 +1198,7 @@ mod tests {
         let caption = CaptionPayload {
             id: "live".to_string(),
             source_text: "現行字幕".to_string(),
+            azookey_input_text: None,
             translation_text: String::new(),
             source_language: "ja".to_string(),
             target_language: "en".to_string(),
@@ -1290,6 +1293,7 @@ mod tests {
         let source = CaptionPayload {
             id: "u1".to_string(),
             source_text: "正規化済み".to_string(),
+            azookey_input_text: None,
             translation_text: String::new(),
             source_language: "ja".to_string(),
             target_language: "en".to_string(),
@@ -1310,6 +1314,7 @@ mod tests {
         let backdated_interim = CaptionPayload {
             id: "parapper-session".to_string(),
             source_text: "あしたは".to_string(),
+            azookey_input_text: Some("あしたは".to_string()),
             translation_text: String::new(),
             source_language: "ja".to_string(),
             target_language: "en".to_string(),
@@ -1434,6 +1439,7 @@ mod tests {
         let caption = CaptionPayload {
             id: "test".to_string(),
             source_text: "src".to_string(),
+            azookey_input_text: None,
             translation_text: "trans".to_string(),
             source_language: "ja".to_string(),
             target_language: "en".to_string(),
@@ -1467,6 +1473,7 @@ mod tests {
         let caption = CaptionPayload {
             id: "u1".to_string(),
             source_text: "正規化済み".to_string(),
+            azookey_input_text: None,
             translation_text: "normalized".to_string(),
             source_language: "ja".to_string(),
             target_language: "en".to_string(),

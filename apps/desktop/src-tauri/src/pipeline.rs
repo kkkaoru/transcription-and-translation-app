@@ -35,6 +35,12 @@ pub enum PipelineError {
 pub struct CaptionPayload {
     pub id: String,
     pub source_text: String,
+    /// The phonetic text supplied to AzooKey for this caption, when the
+    /// persistent Parapper path exposes it.  Keeping this alongside the
+    /// rendered source lets the frontend distinguish a rolling suffix from a
+    /// kana-to-kanji revision without guessing from surface text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub azookey_input_text: Option<String>,
     pub translation_text: String,
     pub source_language: String,
     pub target_language: String,
@@ -581,11 +587,12 @@ impl Pipeline {
             return Ok(None);
         }
 
-        let mut ready = source_ready_caption(
+        let mut ready = source_ready_caption_with_input(
             config,
             normalized,
             now_millis().saturating_sub(output.audio_duration_ms.unwrap_or_default()),
             utterance_id,
+            Some(recognized),
         );
         ready.is_final = output.is_final;
         on_caption(&ready);
@@ -987,11 +994,26 @@ fn azookey_fallback(text: &str, dictionary_error: impl AsRef<str>) -> NormalizeO
 /// Build the intermediate caption emitted as soon as the normalizer is ready.
 /// `translation_text` is intentionally empty until `complete_translation`.
 /// `id` must be stable across progressive stages (ASR/normalize → translate).
+#[allow(dead_code)]
 pub fn source_ready_caption(
     config: &AppConfig,
     source_text: String,
     started_at: u64,
     id: String,
+) -> CaptionPayload {
+    source_ready_caption_with_input(config, source_text, started_at, id, None)
+}
+
+/// Build a source caption while retaining the phonetic input used by the
+/// normalizer.  HTTP/batch callers do not have a separate reading and use the
+/// compatibility wrapper above; the persistent Parapper path passes its
+/// explicit `azookey_input_text` here.
+pub fn source_ready_caption_with_input(
+    config: &AppConfig,
+    source_text: String,
+    started_at: u64,
+    id: String,
+    azookey_input_text: Option<String>,
 ) -> CaptionPayload {
     CaptionPayload {
         id,
@@ -1000,6 +1022,8 @@ pub fn source_ready_caption(
         // display text canonical so an otherwise identical partial/final pair
         // cannot look like two different rows to downstream merge logic.
         source_text: source_text.trim().to_string(),
+        azookey_input_text: azookey_input_text
+            .and_then(|text| (!text.trim().is_empty()).then(|| text.trim().to_string())),
         translation_text: String::new(),
         source_language: config.language.source.clone(),
         target_language: config.language.target.clone(),
@@ -1337,6 +1361,7 @@ mod tests {
 
         assert_eq!(partial.id, "parapper:socket-session:7:3");
         assert_eq!(partial.source_text, "今日は配信です");
+        assert_eq!(partial.azookey_input_text.as_deref(), Some("きょうははいしんです"));
         assert!(!partial.is_final);
         assert_eq!(captions.len(), 1);
         assert_eq!(stages[0].stage, "asr");
@@ -1406,6 +1431,7 @@ mod tests {
             .expect("non-empty explicit reading should produce a caption");
 
         assert_eq!(caption.source_text, "明日は");
+        assert_eq!(caption.azookey_input_text.as_deref(), Some("あしたは"));
         assert_eq!(stages[0].output_text, "あしたは");
         assert_eq!(stages[0].surface_text.as_deref(), Some("明日は"));
         assert_eq!(stages[1].input_snippet, "あしたは");
@@ -1668,6 +1694,7 @@ mod tests {
         let payload = CaptionPayload {
             id: "c1".into(),
             source_text: "源".into(),
+            azookey_input_text: Some("みなもと".into()),
             translation_text: String::new(),
             source_language: "ja".into(),
             target_language: "en".into(),
@@ -1680,6 +1707,7 @@ mod tests {
         };
         let value = serde_json::to_value(&payload).expect("serialize");
         assert_eq!(value["sourceText"], "源");
+        assert_eq!(value["azookeyInputText"], "みなもと");
         assert_eq!(value["translationText"], "");
         assert_eq!(value["stage"], "translation");
         assert_eq!(value["sequence"], 1);

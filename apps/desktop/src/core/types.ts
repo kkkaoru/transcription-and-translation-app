@@ -168,6 +168,8 @@ export type CaptionStage = "source" | "translation";
 export interface CaptionPayload {
   id: string;
   sourceText: string;
+  /** Phonetic input supplied to AzooKey, when the native path provides it. */
+  azookeyInputText?: string | null;
   translationText: string;
   sourceLanguage: string;
   targetLanguage: string;

@@ -1140,6 +1140,79 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, suffix)?.sourceText).toBe("明日の天気は晴れ");
   });
 
+  it("replaces kana surface when the incoming AzooKey reading is unchanged", () => {
+    const current = caption({
+      id: "u-reading",
+      sourceText: "あしたは",
+      azookeyInputText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const normalized = caption({
+      id: "u-reading",
+      sourceText: "明日は",
+      azookeyInputText: "あしたは",
+      startedAt: 1_300,
+      receivedAt: 1_300,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, normalized)?.sourceText).toBe("明日は");
+  });
+
+  it("replaces the current surface when the incoming AzooKey reading extends it", () => {
+    const current = caption({
+      id: "u-reading-extension",
+      sourceText: "あしたは",
+      azookeyInputText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const normalized = caption({
+      id: "u-reading-extension",
+      sourceText: "明日は晴れ",
+      azookeyInputText: "あしたははれ",
+      startedAt: 1_300,
+      receivedAt: 1_300,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, normalized)?.sourceText).toBe("明日は晴れ");
+  });
+
+  it("keeps rolling append behavior when AzooKey readings are unavailable", () => {
+    const current = caption({
+      id: "u-reading-rolling",
+      sourceText: "あつい",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const continuation = caption({
+      id: "u-reading-rolling",
+      sourceText: "りょうりはおいしい",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, continuation)?.sourceText).toBe("あついりょうりはおいしい");
+  });
+
   it("keeps a long same-id utterance together when windows end mid-word", () => {
     const fragments = ["となりの", "きゃくはよく", "かきくうきゃくだ"];
     let current = caption({

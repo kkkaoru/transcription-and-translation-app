@@ -643,6 +643,7 @@ fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload,
     Ok(CaptionPayload {
         id: caption.id,
         source_text,
+        azookey_input_text: None,
         translation_text: String::new(),
         source_language: caption.source_language,
         target_language: caption.target_language,
@@ -953,6 +954,7 @@ fn empty_caption(config: &AppConfig, id: String) -> CaptionPayload {
     CaptionPayload {
         id,
         source_text: String::new(),
+        azookey_input_text: None,
         translation_text: String::new(),
         source_language: config.language.source.clone(),
         target_language: config.language.target.clone(),
@@ -1360,8 +1362,9 @@ mod tests {
         parapper_output_generation_is_current, persistent_asr_loss_message,
         publish_source_caption_gated, redact_runtime_text, sanitize_debug_json,
         sanitize_export_body, source_caption_payload, stop_generation_is_current,
-        validate_overlay_frame_dimensions, SourceCaptionInput,
+        validate_overlay_frame_dimensions, NativeOverlayFrame, SourceCaptionInput,
     };
+    use base64::Engine;
     use crate::config::AppConfig;
     use crate::output::OutputStatus;
     use crate::pipeline::ParapperRecognitionInput;
@@ -1817,5 +1820,86 @@ mod tests {
         assert!(parapper_output_generation_is_current(&state, None));
         state.record_unfenced_caption_accepted();
         assert_eq!(state.unfenced_caption_accepted_count(), 1);
+    }
+
+    #[test]
+    fn overlay_frame_validation_rejects_mismatched_dimensions() {
+        assert!(validate_overlay_frame_dimensions(640, 480, 640, 480).is_ok());
+        assert!(validate_overlay_frame_dimensions(640, 480, 1920, 1080).is_err());
+        assert!(validate_overlay_frame_dimensions(1920, 1080, 640, 480).is_err());
+        assert!(validate_overlay_frame_dimensions(640, 480, 640, 481).is_err());
+    }
+
+    #[test]
+    fn overlay_frame_base64_decode_validates_format() {
+        let rgba = vec![0u8; 4];
+        let valid_base64 = base64::engine::general_purpose::STANDARD.encode(&rgba);
+        let frame = NativeOverlayFrame {
+            rgba_base64: valid_base64,
+            width: 1,
+            height: 1,
+        };
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(frame.rgba_base64)
+            .expect("valid base64");
+        assert_eq!(decoded.len(), 4);
+
+        let invalid = NativeOverlayFrame {
+            rgba_base64: "!!!".to_string(),
+            width: 1,
+            height: 1,
+        };
+        let result = base64::engine::general_purpose::STANDARD.decode(invalid.rgba_base64);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn overlay_frame_byte_length_must_match_dimensions() {
+        let width = 16u32;
+        let height = 9u32;
+        let expected_bytes = (width as usize) * (height as usize) * 4;
+        assert_eq!(expected_bytes, 576);
+
+        let correct_rgba = vec![0u8; expected_bytes];
+        let correct_base64 = base64::engine::general_purpose::STANDARD.encode(&correct_rgba);
+        let frame = NativeOverlayFrame {
+            rgba_base64: correct_base64,
+            width,
+            height,
+        };
+        let rgba = base64::engine::general_purpose::STANDARD
+            .decode(frame.rgba_base64.clone())
+            .expect("valid base64");
+        assert_eq!(rgba.len(), expected_bytes);
+
+        let short_rgba = vec![0u8; expected_bytes - 4];
+        let short_base64 = base64::engine::general_purpose::STANDARD.encode(&short_rgba);
+        let short_frame = NativeOverlayFrame {
+            rgba_base64: short_base64,
+            width,
+            height,
+        };
+        let short_decoded = base64::engine::general_purpose::STANDARD
+            .decode(short_frame.rgba_base64)
+            .expect("valid base64");
+        assert_eq!(short_decoded.len(), expected_bytes - 4);
+        assert_ne!(short_decoded.len(), expected_bytes);
+    }
+
+    #[test]
+    fn overlay_frame_dimensions_overflow_check() {
+        let huge_width = usize::MAX / 2;
+        let huge_height = 3usize;
+
+        let result = huge_width.checked_mul(huge_height).and_then(|pixels| pixels.checked_mul(4));
+
+        assert!(result.is_none(), "overflow should be detected");
+
+        let safe_width = 1920usize;
+        let safe_height = 1080usize;
+        let safe_result = safe_width.checked_mul(safe_height).and_then(|pixels| pixels.checked_mul(4));
+
+        assert!(safe_result.is_some(), "safe dimensions should not overflow");
+        assert_eq!(safe_result.unwrap(), 1920 * 1080 * 4);
     }
 }

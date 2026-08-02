@@ -278,6 +278,29 @@ const mergeSourceText = (
 const mergeCrossIdSourceText = (current: CaptionPayload, next: CaptionPayload): string =>
   mergeSourceText(current, next, true);
 
+const trimmedAzookeyReading = (caption: CaptionPayload): string =>
+  typeof caption.azookeyInputText === "string" ? caption.azookeyInputText.trim() : "";
+
+/**
+ * A normalizer can rewrite the same rolling span from kana to kanji. When the
+ * incoming AzooKey reading is the current reading or a strict continuation of
+ * it, the two surfaces describe one span and the incoming normalized surface
+ * replaces the old one. If either reading is missing, retain the historical
+ * lexical/rolling merge behavior instead of guessing from surface text.
+ */
+const hasSameOrExtendedAzookeyReading = (
+  current: CaptionPayload,
+  next: CaptionPayload,
+): boolean => {
+  const currentReading = trimmedAzookeyReading(current);
+  const nextReading = trimmedAzookeyReading(next);
+  return Boolean(
+    currentReading &&
+      nextReading &&
+      (nextReading === currentReading || nextReading.startsWith(currentReading)),
+  );
+};
+
 const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {
   if (
     current.id === next.id &&
@@ -286,6 +309,10 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
     isSourceStagePayload(current) &&
     isSourceStagePayload(next)
   ) {
+    return next.sourceText;
+  }
+
+  if (hasSameOrExtendedAzookeyReading(current, next)) {
     return next.sourceText;
   }
 

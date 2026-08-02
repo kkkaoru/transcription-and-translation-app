@@ -350,6 +350,7 @@ const captionEventSignature = (caption: CaptionPayload): string =>
   JSON.stringify([
     caption.id,
     caption.sourceText,
+    caption.azookeyInputText,
     caption.translationText,
     caption.sourceLanguage,
     caption.targetLanguage,
