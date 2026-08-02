@@ -332,6 +332,15 @@ const readTranslationRetired = (backend: JsonObject | null): number | null => {
   );
 };
 
+const readParapperOutputSuperseded = (backend: JsonObject | null): number | null => {
+  const runtime = pick(backend, "runtimeStatus");
+  return normalizeRetiredCount(
+    pick(backend, "parapperOutputSuperseded") ??
+      pick(backend, "parapper_output_superseded") ??
+      pick(isRecord(runtime) ? runtime : null, "parapperOutputSuperseded"),
+  );
+};
+
 const normalizeUpdateStatus = (value: unknown): UpdateStatus => {
   if (!isRecord(value)) {
     return { ...DEFAULT_UPDATE_STATUS };
@@ -1334,6 +1343,7 @@ export function DebugPanel() {
   const frontendViewport = isRecord(frontendViewportValue) ? frontendViewportValue : null;
 
   const nativeTranslationRetired = readTranslationRetired(backendInfo);
+  const nativeParapperOutputSuperseded = readParapperOutputSuperseded(backendInfo);
   const pipelineDropSourceRows = [
     ...PIPELINE_DROP_SOURCE_ORDER.map((source) => ({
       source,
@@ -1900,6 +1910,14 @@ export function DebugPanel() {
                         {t("debug.pipelineDropsTranslationRetired")}
                       </span>
                       <strong>{nativeTranslationRetired}</strong>
+                    </div>
+                  ) : null}
+                  {nativeParapperOutputSuperseded != null ? (
+                    <div className="debug-stat-card" data-testid="debug-parapper-output-superseded">
+                      <span className="debug-stat-label">
+                        {t("debug.pipelineDropsParapperOutputSuperseded")}
+                      </span>
+                      <strong>{nativeParapperOutputSuperseded}</strong>
                     </div>
                   ) : null}
                 </div>

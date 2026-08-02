@@ -1587,6 +1587,6 @@ describe("mergeCaptionPayload", () => {
     const empty = caption({ id: "empty", sourceText: "", translationText: "" });
     const merged = mergeCaptionPayload(empty, session2Source);
     expect(merged).toEqual(session2Source);
-    expect(merged.translationText).toBe("");
+    expect(merged?.translationText).toBe("");
   });
 });

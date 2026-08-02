@@ -294,11 +294,13 @@ export const bridge = {
     return latestCaption;
   },
 
-  async startCapture(): Promise<void> {
+  async startCapture(): Promise<number> {
+    let captureGeneration = 0;
     if (isTauriRuntime()) {
-      await invoke("start_capture");
+      captureGeneration = await invoke<number>("start_capture");
     }
     browserStatus = { ...browserStatus, status: "capturing", lastError: null };
+    return captureGeneration;
   },
 
   async stopCapture(): Promise<void> {

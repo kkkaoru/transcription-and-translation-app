@@ -237,7 +237,7 @@ export const MainApp = () => {
   /** Make repeated stop clicks idempotent while teardown is draining. */
   const stopPromise = useRef<Promise<void> | null>(null);
   /** Native start command that a startup stop must let settle before stopping. */
-  const backendStartPromise = useRef<Promise<void> | null>(null);
+  const backendStartPromise = useRef<Promise<number> | null>(null);
   /** Latest-wins ASR queue: 1 in-flight + 1 pending (drop older pending). */
   const chunkProcessor = useRef<LatestWinsProcessor<AudioChunk> | null>(null);
   /** One continuous Parapper VAD/Segment/Turn session for desktop capture. */
@@ -770,6 +770,10 @@ export const MainApp = () => {
     // starting. Keep the newest result per slot until startCapture resolves so
     // the first caption is published against a ready backend.
     let webSpeechBackendReady = !webSpeechMode;
+    // Native start_capture returns the generation that owns this attempt. Keep
+    // it on every queued Parapper/Web Speech payload so delayed invokes cannot
+    // adopt a replacement session's generation at dequeue time.
+    let captureGenerationForAttempt: number | undefined;
     const bufferedWebSpeechResults = new Map<number, WebSpeechRecognitionResult>();
 
     const publishWebSpeechResultNow = (result: WebSpeechRecognitionResult): void => {
@@ -805,6 +809,7 @@ export const MainApp = () => {
         sequence: 0,
         isFinal: result.isFinal,
         confidence: result.confidence,
+        captureGeneration: captureGenerationForAttempt,
       };
       pushPipelineStageEvent({
         stage: "asr",
@@ -965,7 +970,7 @@ export const MainApp = () => {
         const backendStart = bridge.startCapture();
         backendStartPromise.current = backendStart;
         try {
-          await backendStart;
+          captureGenerationForAttempt = await backendStart;
         } finally {
           if (backendStartPromise.current === backendStart) {
             backendStartPromise.current = null;
@@ -1016,6 +1021,7 @@ export const MainApp = () => {
         await microphone.stop().catch(() => undefined);
         throw backendResult.reason;
       }
+      captureGenerationForAttempt = backendResult.value;
       if (prepareResult.status === "rejected") {
         await bridge.stopCapture().catch(() => undefined);
         throw prepareResult.reason;
@@ -1050,6 +1056,7 @@ export const MainApp = () => {
               stage: "source",
               sequence: 0,
               isFinal: output.isFinal,
+              captureGeneration: captureGenerationForAttempt,
             };
             pushPipelineStageEvent({
               stage: "asr",
@@ -1166,6 +1173,7 @@ export const MainApp = () => {
             elapsedMs: event.elapsedMs,
             audioDurationMs: event.audioDurationMs,
             isFinal: event.type === "turn.final",
+            captureGeneration: captureGenerationForAttempt,
           };
           parapperOutputQueue.current?.enqueue(output);
         };

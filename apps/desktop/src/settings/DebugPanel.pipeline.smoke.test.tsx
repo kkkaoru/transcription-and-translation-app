@@ -78,6 +78,7 @@ vi.mock("../core/bridge", () => ({
         debug: { verboseLogging: false, logLevel: "info" },
       },
       translationRetired: 4,
+      parapperOutputSuperseded: 2,
     }),
     listModelStatus: async () => [],
   },
@@ -240,6 +241,9 @@ describe("DebugPanel pipeline stages", () => {
     expect(
       drops?.querySelector('[data-testid="debug-translation-retired"]')?.textContent,
     ).toContain("4");
+    expect(
+      drops?.querySelector('[data-testid="debug-parapper-output-superseded"]')?.textContent,
+    ).toContain("2");
     expect(
       drops?.querySelector('[data-testid="debug-pipeline-drop-reasons"]')?.textContent,
     ).toContain("silence-gate");

@@ -194,6 +194,8 @@ export interface CaptionPayload {
    * with the same `id` and `stage: "source"` arrives.
    */
   provisional?: boolean;
+  /** Native capture generation used to fence delayed source-caption invokes. */
+  captureGeneration?: number;
 }
 
 /** One structured interim/final output from the persistent Parapper session. */
@@ -217,6 +219,8 @@ export interface ParapperRecognitionOutput {
   elapsedMs: number;
   audioDurationMs?: number | null;
   isFinal: boolean;
+  /** Native capture generation captured when the output entered the queue. */
+  captureGeneration?: number;
 }
 
 /** Independent pipeline stage for debug mode (parapper / azookey / HY-MT2). */
@@ -238,6 +242,8 @@ export interface PipelineStageEvent {
   durationMs: number;
   ok: boolean;
   error?: string | null;
+  /** Native capture generation for stale-session diagnostics. */
+  captureGeneration?: number;
 }
 
 /** One live utterance with ordered stage rows for DebugPanel. */
