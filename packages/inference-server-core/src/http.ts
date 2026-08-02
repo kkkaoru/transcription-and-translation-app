@@ -49,7 +49,13 @@ export class SerialGate {
 
 export interface GatewayDependencies {
   fetch?: typeof fetch;
-  transcribe?: (pcm: Uint8Array) => Promise<string>;
+  /**
+   * Transcribe one PCM chunk. The request signal is optional so adapters that
+   * do not own a cancellable upstream can keep their existing one-argument
+   * implementation, while streaming adapters can stop promptly when the
+   * client disconnects.
+   */
+  transcribe?: (pcm: Uint8Array, signal?: AbortSignal) => Promise<string>;
 }
 
 const isGatewayError = (error: unknown): error is GatewayError => error instanceof GatewayError;
@@ -343,7 +349,7 @@ export const createGatewayFetchHandler = (
           fail(HTTP_BAD_REQUEST, "invalid_audio", detail);
         }
         const text = await asrGate
-          .run(() => requiredTranscriber(transcribe)(pcm))
+          .run(() => requiredTranscriber(transcribe)(pcm, request.signal))
           .catch((error: unknown) => {
             if (isNoSpeechFailure(error)) {
               return "";

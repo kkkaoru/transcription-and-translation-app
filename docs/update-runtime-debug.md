@@ -36,12 +36,12 @@ example:
 
 ```json
 {
-  "version": "0.1.1",
+  "version": "0.1.2",
   "notes": "Bug fixes",
   "pub_date": "2026-08-01T00:00:00Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://example.invalid/Kotoba_Beacon_0.1.1_aarch64.app.tar.gz",
+      "url": "https://github.com/kkkaoru/transcription-and-translation-app/releases/download/v0.1.2/Kotoba_Beacon_0.1.2_aarch64.app.tar.gz",
       "signature": "<contents of the matching .sig file>"
     }
   }

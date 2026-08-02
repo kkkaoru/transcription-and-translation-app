@@ -12,9 +12,11 @@
     "generate-license": "cargo run -p scripts --bin generate_license",
     "preview": "vite preview",
     "test": "cargo test -p parapper",
-    "check": "bun run lint && bun run rust:fmt && bun run rust:lint && bun run test",
+    "test:ui": "bun test tests/recognition-state.test.ts",
+    "check": "bun run typecheck && bun run lint && bun run rust:fmt && bun run rust:lint && bun run test && bun run test:ui",
     "format": "prettier --write \"./src/**/*.{ts,tsx,js,json}\" \"./*.json\"",
     "lint": "eslint ./src",
+    "typecheck": "tsc -b",
     "spell": "cspell .",
     "rust:fmt": "cargo fmt -p parapper -- --check",
     "rust:lint": "cargo clippy --all-targets --all-features -p parapper -- -D warnings"

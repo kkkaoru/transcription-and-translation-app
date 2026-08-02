@@ -60,6 +60,12 @@ pub const VAD_INTERVAL_STEP_MS: u32 = 16;
 pub const DEFAULT_VAD_THRESHOLD: f32 = 0.5;
 pub const MIN_VAD_THRESHOLD: f32 = 0.0;
 pub const MAX_VAD_THRESHOLD: f32 = 1.0;
+/// Frontend-compatible fixed silence-gate bounds in dBFS.
+///
+/// Keep these bounds named (rather than inline at validation call sites) so
+/// persisted desktop settings cannot drift from the settings UI contract.
+pub const SILENCE_GATE_MIN_DB: f32 = -90.0;
+pub const SILENCE_GATE_MAX_DB: f32 = 0.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -295,7 +301,12 @@ impl AppConfig {
         if !(250..=10_000).contains(&self.audio.chunk_ms) {
             return Err("audio chunk duration is outside the supported range".to_string());
         }
-        validate_finite_range("audio silence gate", self.audio.silence_gate_db, -120.0, 0.0)?;
+        validate_finite_range(
+            "audio silence gate",
+            self.audio.silence_gate_db,
+            SILENCE_GATE_MIN_DB,
+            SILENCE_GATE_MAX_DB,
+        )?;
         if !(MIN_VAD_INTERVAL_MS..=MAX_VAD_INTERVAL_MS).contains(&self.audio.vad_interval_ms)
             || !(self.audio.vad_interval_ms - MIN_VAD_INTERVAL_MS)
                 .is_multiple_of(VAD_INTERVAL_STEP_MS)
@@ -429,7 +440,7 @@ fn is_hex_color(value: &str) -> bool {
 mod tests {
     use super::{
         AppConfig, AudioConfig, DEFAULT_RECOGNITION_MODE, DEFAULT_VAD_INTERVAL_MS,
-        DEFAULT_VAD_THRESHOLD,
+        DEFAULT_VAD_THRESHOLD, SILENCE_GATE_MAX_DB, SILENCE_GATE_MIN_DB,
     };
 
     #[test]
@@ -527,6 +538,29 @@ mod tests {
             serde_json::from_value(value).expect("desktop config should deserialize");
         assert_eq!(roundtrip.audio.vad_interval_ms, 64);
         assert!((roundtrip.audio.vad_threshold - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn silence_gate_bounds_match_frontend_and_reject_stale_persisted_values() {
+        let mut config = AppConfig::default();
+        for value in [SILENCE_GATE_MIN_DB, SILENCE_GATE_MAX_DB] {
+            config.audio.silence_gate_db = value;
+            assert!(config.validate().is_ok(), "{value} dB should be accepted");
+        }
+
+        // A config persisted by an older build could contain -100 dB, which
+        // used to pass the Rust-only -120 dB validation while the frontend
+        // clamps to -90 dB. Keep loading and validation separate, but reject
+        // the stale value before it reaches the capture pipeline.
+        let mut persisted = serde_json::to_value(AppConfig::default())
+            .expect("default desktop config should serialize");
+        persisted["audio"]["silenceGateDb"] = serde_json::json!(-100.0);
+        let persisted_config: AppConfig =
+            serde_json::from_value(persisted).expect("persisted config should deserialize");
+        assert_eq!(
+            persisted_config.validate(),
+            Err("audio silence gate is outside the supported range".to_string())
+        );
     }
 
     #[test]

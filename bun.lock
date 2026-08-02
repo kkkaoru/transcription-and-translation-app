@@ -41,7 +41,7 @@
     },
     "apps/desktop": {
       "name": "@caption-bridge/desktop",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@fontsource-variable/noto-sans-jp": "^5.3.0",
         "@tauri-apps/api": "^2.5.0",

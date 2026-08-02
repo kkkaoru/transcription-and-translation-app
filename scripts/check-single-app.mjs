@@ -106,6 +106,12 @@ check(
     scripts["tauri:build:release"] === "bun run build:app:release",
   `build:app:release=${scripts["build:app:release"]}`,
 );
+check(
+  "macOS release credentials have an explicit, non-secret preflight",
+  scripts["check:macos-signing"] === "node scripts/check-macos-signing.mjs" &&
+    /check-macos-signing\.mjs/.test(read("scripts/build-tauri-release.mjs")),
+  "build-tauri-release.mjs must run check:macos-signing before invoking Tauri",
+);
 const updaterConfig = tauriConf?.plugins?.updater;
 check(
   "Tauri updater has a signed HTTPS feed and public key",
@@ -113,13 +119,59 @@ check(
     updaterConfig.pubkey.length > 20 &&
     Array.isArray(updaterConfig.endpoints) &&
     updaterConfig.endpoints.length > 0 &&
-    updaterConfig.endpoints.every((endpoint) => /^https:\/\//.test(endpoint)),
-  "plugins.updater must declare a public key and HTTPS endpoint",
+    updaterConfig.endpoints.every(
+      (endpoint) => /^https:\/\//.test(endpoint) && /\/latest\.json(?:$|[?#])/.test(endpoint),
+    ),
+  "plugins.updater must declare a public key and HTTPS latest.json endpoint",
 );
 const releaseConf = readJson("apps/desktop/src-tauri/tauri.release.conf.json");
+const desktopPkg = readJson("apps/desktop/package.json");
 check(
   "release Tauri config enables updater artifacts",
   releaseConf?.bundle?.createUpdaterArtifacts === true,
+);
+const rootVersion = rootPkg.version;
+const desktopVersion = desktopPkg.version;
+const tauriCargo = read("apps/desktop/src-tauri/Cargo.toml");
+const tauriVersion = tauriConf?.version;
+const cargoVersion = tauriCargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+check(
+  "root, desktop package, Tauri config, and Cargo versions stay aligned",
+  typeof rootVersion === "string" &&
+    rootVersion === desktopVersion &&
+    rootVersion === tauriVersion &&
+    rootVersion === cargoVersion,
+  `root=${rootVersion} desktop=${desktopVersion} tauri=${tauriVersion} cargo=${cargoVersion}`,
+);
+check(
+  "desktop version is a bumped semver release rather than the initial placeholder",
+  typeof rootVersion === "string" && /^\d+\.\d+\.\d+$/.test(rootVersion) && rootVersion !== "0.1.0",
+  `version=${rootVersion}`,
+);
+const entitlements = read("apps/desktop/src-tauri/Entitlements.plist");
+check(
+  "macOS bundle declares microphone/audio-input entitlement",
+  /com\.apple\.security\.device\.audio-input/.test(entitlements) &&
+    /<true\s*\/?\s*>/.test(entitlements),
+  "Entitlements.plist must grant com.apple.security.device.audio-input",
+);
+check(
+  "macOS bundle includes the usage-description Info.plist",
+  /NSMicrophoneUsageDescription/.test(read("apps/desktop/src-tauri/Info.plist")) &&
+    /NSAudioCaptureUsageDescription/.test(read("apps/desktop/src-tauri/Info.plist")) &&
+    releaseConf?.bundle?.macOS?.infoPlist === "Info.plist",
+  "Info.plist must be merged into release bundles",
+);
+check(
+  "release config carries macOS entitlements",
+  releaseConf?.bundle?.macOS?.entitlements === "Entitlements.plist",
+  "tauri.release.conf.json must reference Entitlements.plist",
+);
+check(
+  "macOS release bundles request hardened runtime",
+  tauriConf?.bundle?.macOS?.hardenedRuntime === true &&
+    releaseConf?.bundle?.macOS?.hardenedRuntime === true,
+  "hardenedRuntime must stay enabled for Developer ID/notarized bundles",
 );
 const clippyConfig = read("apps/desktop/src-tauri/clippy.toml");
 check(
@@ -141,7 +193,6 @@ check(
   tauriConf?.build?.beforeBuildCommand === "bun run build",
   `beforeBuildCommand=${tauriConf?.build?.beforeBuildCommand}`,
 );
-const desktopPkg = readJson("apps/desktop/package.json");
 check(
   "desktop `dev` is Vite (so beforeDevCommand never re-enters tauri)",
   /^vite\b/.test(desktopPkg.scripts?.dev ?? ""),

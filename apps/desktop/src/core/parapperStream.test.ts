@@ -363,6 +363,22 @@ describe("ParapperRecognitionStream", () => {
     expect(() => throwingErrorObserver.socket.fail()).not.toThrow();
   });
 
+  it("reports a same-session protocol error after session.ready", async () => {
+    const errors: Error[] = [];
+    const { stream, socket } = await createReadyStream({ onError: (error) => errors.push(error) });
+
+    socket.message({
+      version: 1,
+      type: "error",
+      session_id: stream.id,
+      code: "recognition_failed",
+      message: "model worker stopped",
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toMatch(/recognition_failed.*model worker stopped/);
+  });
+
   it("reports startup construction, send, close, and timeout failures", async () => {
     class ThrowingSocket extends FakeSocket {
       public constructor(url: string) {
@@ -507,5 +523,41 @@ describe("ParapperRecognitionStream", () => {
     const closeFailure = await createReadyStream();
     closeFailure.socket.throwOnClose = true;
     closeFailure.stream.cancel();
+  });
+
+  it("cancels an unresolved start for both cancel and stop", async () => {
+    FakeSocket.instances = [];
+    const cancelled = new ParapperRecognitionStream({
+      url: "ws://127.0.0.1:18082/ws/recognition",
+      webSocketConstructor: FakeSocket as never,
+    });
+    const cancelledStart = cancelled.start();
+    cancelled.cancel();
+    await expect(cancelledStart).rejects.toThrow(/cancelled/i);
+
+    const stopped = new ParapperRecognitionStream({
+      url: "ws://127.0.0.1:18082/ws/recognition",
+      webSocketConstructor: FakeSocket as never,
+    });
+    const stoppedStart = stopped.start();
+    await expect(stopped.stop()).resolves.toBeUndefined();
+    await expect(stoppedStart).rejects.toThrow(/cancelled/i);
+  });
+
+  it("only finishes stop for session.done from the active protocol session", async () => {
+    const { stream, socket } = await createReadyStream();
+    const stopping = stream.stop();
+    let settled = false;
+    void stopping.then(() => {
+      settled = true;
+    });
+
+    socket.message({ version: 2, type: "session.done", session_id: stream.id });
+    socket.message({ version: 1, type: "session.done", session_id: "another-session" });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    socket.message({ version: 1, type: "session.done", session_id: stream.id });
+    await expect(stopping).resolves.toBeUndefined();
   });
 });

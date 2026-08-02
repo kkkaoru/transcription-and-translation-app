@@ -39,6 +39,7 @@ import {
   updateAdaptiveSilenceGate,
 } from "./audio";
 import { DEFAULT_AUDIO_CHUNK_MS, DEFAULT_SILENCE_GATE_DB } from "./defaults";
+import { isVerbosePipelineLogging, setVerbosePipelineLogging } from "./pipelineStages";
 import type { AudioChunk } from "./types";
 
 const FULL_CAPTURE_CHUNK_SAMPLES = (TARGET_SAMPLE_RATE * DEFAULT_AUDIO_CHUNK_MS) / 1_000;
@@ -424,12 +425,10 @@ describe("audio conversion", () => {
     ).toBeUndefined();
   });
 
-  it("orders constraint strategies from strict device pin to relaxed default", () => {
+  it("keeps explicit device selection pinned while relaxing processing", () => {
     expect(microphoneConstraintStrategies("mic-1").map((entry) => entry.mode)).toEqual([
       "exact-device",
-      "ideal-device",
-      "default",
-      "default-relaxed",
+      "exact-device-relaxed",
     ]);
     expect(microphoneConstraintStrategies("default").map((entry) => entry.mode)).toEqual([
       "default",
@@ -445,8 +444,8 @@ describe("audio conversion", () => {
   });
 
   it("keeps noise suppression on through every non-final constraint strategy", () => {
-    // Default (noiseSuppression=true): NS/AEC/AGC requested until the final
-    // relaxed fallback, which omits them so a picky WebView can still open.
+    // Explicit selection keeps the device exact. It only relaxes NS/AEC/AGC
+    // in its final attempt, never switches to the system default microphone.
     const ladder = microphoneConstraintStrategies("mic-1");
     for (const entry of ladder.slice(0, -1)) {
       const audio = entry.constraints.audio as MediaTrackConstraints;
@@ -602,46 +601,44 @@ describe("audio conversion", () => {
     expect(withCause.causeError).toBeInstanceOf(Error);
   });
 
-  it("falls back through microphone constraint strategies", async () => {
-    const stream = { id: "stream-1" } as unknown as MediaStream;
+  it("does not silently fall back to the default microphone for an explicit device", async () => {
     const getUserMedia = vi
       .fn()
       .mockRejectedValueOnce(new DOMException("bad device", "OverconstrainedError"))
-      .mockRejectedValueOnce(new DOMException("still bad", "OverconstrainedError"))
-      .mockResolvedValueOnce(stream);
+      .mockRejectedValueOnce(new DOMException("still bad", "OverconstrainedError"));
 
     vi.stubGlobal("navigator", {
       mediaDevices: { getUserMedia },
     });
 
-    await expect(openMicrophoneStream("stale-device")).resolves.toEqual({
-      stream,
-      mode: "default",
+    await expect(openMicrophoneStream("stale-device")).rejects.toMatchObject({
+      name: "OverconstrainedError",
     });
-    expect(getUserMedia).toHaveBeenCalledTimes(3);
-    // First successful strategy should request noise suppression by default.
-    const lastConstraints = getUserMedia.mock.calls.at(-1)?.[0] as MediaStreamConstraints;
-    expect((lastConstraints.audio as MediaTrackConstraints).noiseSuppression).toBe(true);
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    for (const [constraints] of getUserMedia.mock.calls) {
+      expect((constraints.audio as MediaTrackConstraints).deviceId).toEqual({
+        exact: "stale-device",
+      });
+    }
     vi.unstubAllGlobals();
   });
 
-  it("retries microphone capture on NotReadableError with relaxed defaults", async () => {
+  it("retries the system default with relaxed constraints", async () => {
     const stream = { id: "stream-2" } as unknown as MediaStream;
     const getUserMedia = vi
       .fn()
       .mockRejectedValueOnce(new DOMException("busy", "NotReadableError"))
-      .mockRejectedValueOnce(new DOMException("still busy", "NotReadableError"))
       .mockResolvedValueOnce(stream);
 
     vi.stubGlobal("navigator", {
       mediaDevices: { getUserMedia },
     });
 
-    await expect(openMicrophoneStream("mic-1")).resolves.toEqual({
+    await expect(openMicrophoneStream("default")).resolves.toEqual({
       stream,
-      mode: "default",
+      mode: "default-relaxed",
     });
-    expect(getUserMedia).toHaveBeenCalledTimes(3);
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
 
@@ -741,6 +738,403 @@ describe("audio conversion", () => {
     expect(formatAudioCaptureDiagnostics(snapshot)).not.toContain("gate=");
   });
 
+  it("includes lifecycle and continuous-stream loss counters in diagnostics", () => {
+    const snapshot = getLastAudioCaptureDiagnostics();
+    expect(
+      formatAudioCaptureDiagnostics({
+        ...snapshot,
+        trackMuteEvents: 1,
+        deviceChangeEvents: 2,
+        contextStateChanges: 3,
+        contextRecoveryAttempts: 1,
+        streamFramesDropped: 4,
+      }),
+    ).toMatch(
+      /muteEvents=1.*deviceChanges=2.*contextChanges=3.*contextRecovery=1.*streamDropped=4/,
+    );
+  });
+
+  it("only allocates verbose chunk logs when pipeline logging is enabled", () => {
+    const wasVerbose = isVerbosePipelineLogging();
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    try {
+      const capture = new MicrophoneCapture();
+      const internals = capture as unknown as {
+        context: { sampleRate: number };
+        handler: (chunk: AudioChunk) => void;
+        chunkMs: number;
+        gateMode: "fixed";
+        silenceGateDb: number;
+        acceptSamples: (samples: Float32Array) => void;
+      };
+      internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+      internals.handler = vi.fn();
+      internals.chunkMs = DEFAULT_AUDIO_CHUNK_MS;
+      internals.gateMode = "fixed";
+      internals.silenceGateDb = -90;
+
+      setVerbosePipelineLogging(false);
+      internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1));
+      expect(debug).not.toHaveBeenCalled();
+
+      setVerbosePipelineLogging(true);
+      internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1));
+      expect(debug).toHaveBeenCalledWith("[audio] chunk accepted", expect.any(Object));
+    } finally {
+      setVerbosePipelineLogging(wasVerbose);
+      debug.mockRestore();
+    }
+  });
+
+  it("normalizes malformed chunk windows in start and before the hot sample loop", async () => {
+    const capture = new MicrophoneCapture();
+    const startInternals = capture as unknown as { chunkMs: number };
+    // AudioContext is intentionally unavailable in this unit environment, but
+    // start() assigns its validated configuration before opening hardware.
+    await expect(capture.start("default", Number.NaN, -50, null)).rejects.toBeInstanceOf(Error);
+    expect(startInternals.chunkMs).toBe(DEFAULT_AUDIO_CHUNK_MS);
+
+    const handler = vi.fn();
+    const hotCapture = new MicrophoneCapture();
+    const internals = hotCapture as unknown as {
+      context: { sampleRate: number };
+      handler: (chunk: AudioChunk) => void;
+      chunkMs: number;
+      gateMode: "fixed";
+      silenceGateDb: number;
+      acceptSamples: (samples: Float32Array) => void;
+    };
+    internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+    internals.handler = handler;
+    internals.chunkMs = 0;
+    internals.gateMode = "fixed";
+    internals.silenceGateDb = -90;
+
+    internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1));
+
+    // Zero must not become Math.max(1, 0), which would enqueue 10,240 tiny
+    // chunks. It is reset to the normal 640 ms window and emits exactly one.
+    expect(internals.chunkMs).toBe(DEFAULT_AUDIO_CHUNK_MS);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates normalized start settings and resolves adaptive/fixed gates", async () => {
+    const startPreparedCapture = async (adaptiveGate?: boolean) => {
+      const capture = new MicrophoneCapture();
+      const track = {
+        readyState: "live",
+        stop: vi.fn(),
+      } as unknown as MediaStreamTrack;
+      const source = { connect: vi.fn(), disconnect: vi.fn() };
+      const processor = {
+        onaudioprocess: null as ScriptProcessorNode["onaudioprocess"],
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+      };
+      const sink = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
+      const context = {
+        state: "running",
+        sampleRate: TARGET_SAMPLE_RATE,
+        createMediaStreamSource: vi.fn(() => source),
+        createScriptProcessor: vi.fn(() => processor),
+        createGain: vi.fn(() => sink),
+        destination: {},
+        close: vi.fn(async () => undefined),
+      };
+      const internals = capture as unknown as {
+        context: AudioContext | null;
+        stream: MediaStream | null;
+        hardwareReady: boolean;
+        deviceIdRequested: string | null;
+        noiseSuppression: boolean;
+        chunkMs: number;
+        gateMode: "adaptive" | "fixed";
+        silenceGateDb: number;
+      };
+      internals.context = context as unknown as AudioContext;
+      internals.stream = {
+        getAudioTracks: () => [track],
+        getTracks: () => [track],
+      } as unknown as MediaStream;
+      internals.hardwareReady = true;
+      internals.deviceIdRequested = "default";
+      internals.noiseSuppression = true;
+      await capture.start("default", 333, -60, null, undefined, undefined, true, {
+        adaptiveGate,
+      });
+      return { capture, internals };
+    };
+
+    const adaptive = await startPreparedCapture();
+    expect(adaptive.internals).toMatchObject({
+      chunkMs: 333,
+      gateMode: "adaptive",
+      silenceGateDb: DEFAULT_SILENCE_GATE_DB,
+    });
+    await adaptive.capture.stop();
+
+    const fixed = await startPreparedCapture(false);
+    expect(fixed.internals).toMatchObject({
+      chunkMs: 333,
+      gateMode: "fixed",
+      silenceGateDb: -60,
+    });
+    await fixed.capture.stop();
+  });
+
+  it("surfaces synchronous and rejected chunk delivery without throwing from capture", async () => {
+    const setup = (handler: (chunk: AudioChunk) => void | Promise<void>) => {
+      const capture = new MicrophoneCapture();
+      const onError = vi.fn();
+      const internals = capture as unknown as {
+        context: { sampleRate: number };
+        handler: (chunk: AudioChunk) => void | Promise<void>;
+        errorHandler: (error: AudioCaptureError) => void;
+        chunkMs: number;
+        gateMode: "fixed";
+        silenceGateDb: number;
+        acceptSamples: (samples: Float32Array) => void;
+      };
+      internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+      internals.handler = handler;
+      internals.errorHandler = onError;
+      internals.chunkMs = DEFAULT_AUDIO_CHUNK_MS;
+      internals.gateMode = "fixed";
+      internals.silenceGateDb = -90;
+      return { capture, internals, onError };
+    };
+
+    const synchronous = setup(() => {
+      throw new Error("sync chunk rejection");
+    });
+    expect(() =>
+      synchronous.internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1)),
+    ).not.toThrow();
+    expect(synchronous.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "audio-chunk-delivery-failed" }),
+    );
+
+    const asynchronous = setup(() => Promise.reject(new Error("async chunk rejection")));
+    asynchronous.internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1));
+    await Promise.resolve();
+    expect(asynchronous.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "audio-chunk-delivery-failed" }),
+    );
+  });
+
+  it("records track mute/unmute without stopping a capture that can recover", () => {
+    const listeners = new Map<string, () => void>();
+    const track = {
+      label: "USB mic",
+      muted: false,
+      readyState: "live",
+      addEventListener: vi.fn((type: string, listener: () => void) =>
+        listeners.set(type, listener),
+      ),
+      removeEventListener: vi.fn((type: string) => listeners.delete(type)),
+    } as unknown as MediaStreamTrack;
+    const capture = new MicrophoneCapture();
+    const onError = vi.fn();
+    const internals = capture as unknown as {
+      stream: MediaStream | null;
+      errorHandler: (error: AudioCaptureError) => void;
+      bindTrackEnded: (stream: MediaStream) => void;
+    };
+    internals.errorHandler = onError;
+    internals.stream = { getAudioTracks: () => [track] } as unknown as MediaStream;
+    internals.bindTrackEnded(internals.stream);
+
+    (track as unknown as { muted: boolean }).muted = true;
+    listeners.get("mute")?.();
+    expect(capture.getDiagnostics()).toMatchObject({
+      trackMuted: true,
+      trackMuteEvents: 1,
+      lastErrorCode: "microphone-track-muted",
+    });
+    expect(onError).not.toHaveBeenCalled();
+
+    (track as unknown as { muted: boolean }).muted = false;
+    listeners.get("unmute")?.();
+    expect(capture.getDiagnostics()).toMatchObject({ trackMuted: false, lastErrorCode: null });
+  });
+
+  it("makes one best-effort AudioContext resume after a suspended lifecycle event", async () => {
+    const listeners = new Map<string, () => void>();
+    const context = {
+      state: "suspended",
+      sampleRate: TARGET_SAMPLE_RATE,
+      resume: vi.fn(),
+      addEventListener: vi.fn((type: string, listener: () => void) =>
+        listeners.set(type, listener),
+      ),
+      removeEventListener: vi.fn((type: string) => listeners.delete(type)),
+    };
+    context.resume.mockImplementation(() => {
+      context.state = "running";
+      return Promise.resolve();
+    });
+    const capture = new MicrophoneCapture();
+    const onError = vi.fn();
+    const internals = capture as unknown as {
+      context: AudioContext | null;
+      errorHandler: (error: AudioCaptureError) => void;
+      bindContextStateChange: (context: AudioContext) => void;
+    };
+    internals.context = context as unknown as AudioContext;
+    internals.errorHandler = onError;
+    internals.bindContextStateChange(context as unknown as AudioContext);
+
+    listeners.get("statechange")?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(context.resume).toHaveBeenCalledTimes(1);
+    expect(capture.getDiagnostics()).toMatchObject({
+      contextState: "running",
+      contextStateChanges: 1,
+      contextRecoveryAttempts: 1,
+    });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("records device-list changes without reconnecting the microphone", () => {
+    const listeners = new Map<string, () => void>();
+    const addEventListener = vi.fn((type: string, listener: () => void) =>
+      listeners.set(type, listener),
+    );
+    const removeEventListener = vi.fn((type: string) => listeners.delete(type));
+    vi.stubGlobal("navigator", { mediaDevices: { addEventListener, removeEventListener } });
+    try {
+      const capture = new MicrophoneCapture();
+      const internals = capture as unknown as { bindDeviceChange: () => void };
+      internals.bindDeviceChange();
+      listeners.get("devicechange")?.();
+      expect(capture.getDiagnostics()).toMatchObject({ deviceChangeEvents: 1 });
+      expect(addEventListener).toHaveBeenCalledWith("devicechange", expect.any(Function));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reports dropped continuous PCM frames as a Parapper transport failure", () => {
+    const capture = new MicrophoneCapture();
+    const onError = vi.fn();
+    const internals = capture as unknown as {
+      context: { sampleRate: number };
+      streamPcmHandler: (frame: Uint8Array) => void;
+      errorHandler: (error: AudioCaptureError) => void;
+      acceptSamples: (samples: Float32Array) => void;
+    };
+    internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+    internals.streamPcmHandler = () => {
+      throw new Error("socket closed");
+    };
+    internals.errorHandler = onError;
+
+    internals.acceptSamples(new Float32Array(128).fill(0.1));
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "parapper-transport-failed" }),
+    );
+    expect(capture.getDiagnostics()).toMatchObject({
+      streamFramesDropped: 1,
+      lastErrorCode: "parapper-transport-failed",
+    });
+  });
+
+  it("contains ScriptProcessor callback failures and disables the failing node", () => {
+    const processor = {
+      onaudioprocess: null as ScriptProcessorNode["onaudioprocess"],
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const sink = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
+    const source = { connect: vi.fn(), disconnect: vi.fn() };
+    const capture = new MicrophoneCapture();
+    const onError = vi.fn();
+    const internals = capture as unknown as {
+      context: AudioContext | null;
+      source: MediaStreamAudioSourceNode | null;
+      errorHandler: (error: AudioCaptureError) => void;
+      startScriptProcessor: () => void;
+    };
+    internals.context = {
+      createScriptProcessor: vi.fn(() => processor),
+      createGain: vi.fn(() => sink),
+      destination: {},
+    } as unknown as AudioContext;
+    internals.source = source as unknown as MediaStreamAudioSourceNode;
+    internals.errorHandler = onError;
+    internals.startScriptProcessor();
+
+    const callback = processor.onaudioprocess;
+    expect(() =>
+      callback?.call(
+        processor as unknown as ScriptProcessorNode,
+        {
+          inputBuffer: {
+            getChannelData: () => {
+              throw new Error("frame unavailable");
+            },
+          },
+        } as unknown as AudioProcessingEvent,
+      ),
+    ).not.toThrow();
+    expect(processor.onaudioprocess).toBeNull();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "audio-chunk-delivery-failed" }),
+    );
+  });
+
+  it("reports an AudioWorklet processor crash once with the active delivery code", () => {
+    const capture = new MicrophoneCapture();
+    const onError = vi.fn();
+    const worklet = { onprocessorerror: null } as unknown as AudioWorkletNode;
+    const internals = capture as unknown as {
+      worklet: AudioWorkletNode | null;
+      streamPcmHandler: ((frame: Uint8Array) => void) | null;
+      errorHandler: (error: AudioCaptureError) => void;
+      bindWorkletProcessorError: (node: AudioWorkletNode) => void;
+    };
+    internals.worklet = worklet;
+    internals.streamPcmHandler = () => undefined;
+    internals.errorHandler = onError;
+    internals.bindWorkletProcessorError(worklet);
+
+    const callback = worklet.onprocessorerror;
+    callback?.call(worklet, { message: "processor crashed" } as ErrorEvent);
+    callback?.call(worklet, { message: "duplicate crash" } as ErrorEvent);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "parapper-transport-failed",
+        message: "parapper-transport-failed: processor crashed",
+      }),
+    );
+    expect(capture.getDiagnostics().lastErrorCode).toBe("parapper-transport-failed");
+  });
+
+  it("classifies an AudioWorklet processor crash as chunk delivery outside Parapper mode", () => {
+    const capture = new MicrophoneCapture();
+    const onError = vi.fn();
+    const worklet = { onprocessorerror: null } as unknown as AudioWorkletNode;
+    const internals = capture as unknown as {
+      worklet: AudioWorkletNode | null;
+      errorHandler: (error: AudioCaptureError) => void;
+      bindWorkletProcessorError: (node: AudioWorkletNode) => void;
+    };
+    internals.worklet = worklet;
+    internals.errorHandler = onError;
+    internals.bindWorkletProcessorError(worklet);
+
+    worklet.onprocessorerror?.call(worklet, { message: "processor crashed" } as ErrorEvent);
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "audio-chunk-delivery-failed" }),
+    );
+  });
+
   it("maps dBFS to a 0–1 meter fill", () => {
     expect(rmsDbToMeterLevel(null)).toBe(0);
     expect(rmsDbToMeterLevel(Number.NEGATIVE_INFINITY)).toBe(0);
@@ -784,6 +1178,98 @@ describe("audio conversion", () => {
     expect(handler.mock.calls[0]?.[0]).toMatchObject({
       sampleRate: TARGET_SAMPLE_RATE,
       durationMs: 200,
+    });
+  });
+
+  it("flushes a short speech tail through stop even below the streaming minimum", async () => {
+    const capture = new MicrophoneCapture();
+    const handler = vi.fn();
+    const internals = capture as unknown as {
+      pending: Float32Array;
+      handler: ((chunk: ReturnType<typeof makeAudioChunk>) => void) | null;
+    };
+    // 100 ms at the target rate would previously be dropped by the
+    // PARTIAL_FLUSH_MIN_MS safeguard.
+    internals.pending = new Float32Array(1_600).fill(0.1);
+    internals.handler = handler;
+
+    await capture.stop();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]?.[0]).toMatchObject({
+      sampleRate: TARGET_SAMPLE_RATE,
+      durationMs: 100,
+    });
+  });
+
+  it("flushes a partial AudioWorklet frame before disabling capture", async () => {
+    const capture = new MicrophoneCapture();
+    const handler = vi.fn();
+    let onMessage: ((event: MessageEvent<unknown>) => void) | null = null;
+    const port = {
+      set onmessage(value: ((event: MessageEvent<unknown>) => void) | null) {
+        onMessage = value;
+      },
+      postMessage: vi.fn((message: unknown) => {
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: string }).type === "flush"
+        ) {
+          onMessage?.({ data: new Float32Array(1_600).fill(0.1) } as MessageEvent<unknown>);
+          onMessage?.({ data: { type: "flushed" } } as MessageEvent<unknown>);
+        }
+      }),
+    };
+    const internals = capture as unknown as {
+      worklet: { port: typeof port };
+      context: { sampleRate: number };
+      handler: ((chunk: ReturnType<typeof makeAudioChunk>) => void) | null;
+      acceptSamples: (samples: Float32Array) => void;
+      finishWorkletFlush: () => void;
+    };
+    internals.worklet = { port };
+    internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+    internals.handler = handler;
+    onMessage = (event) => {
+      if (event.data instanceof Float32Array) {
+        internals.acceptSamples(event.data);
+      } else if (
+        typeof event.data === "object" &&
+        event.data !== null &&
+        (event.data as { type?: string }).type === "flushed"
+      ) {
+        internals.finishWorkletFlush();
+      }
+    };
+
+    await capture.stop();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]?.[0]).toMatchObject({ durationMs: 100 });
+  });
+
+  it("reports a rejected final tail but still completes microphone cleanup", async () => {
+    const capture = new MicrophoneCapture();
+    const onError = vi.fn();
+    const internals = capture as unknown as {
+      pending: Float32Array;
+      handler: ((chunk: ReturnType<typeof makeAudioChunk>) => Promise<void>) | null;
+      errorHandler: (error: AudioCaptureError) => void;
+    };
+    internals.pending = new Float32Array(1_600).fill(0.1);
+    internals.handler = async () => Promise.reject(new Error("caption queue rejected tail"));
+    internals.errorHandler = onError;
+
+    await expect(capture.stop()).resolves.toBeUndefined();
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "audio-chunk-delivery-failed" }),
+    );
+    expect(capture.getDiagnostics()).toMatchObject({
+      active: false,
+      captureMode: "none",
+      lastErrorCode: "audio-chunk-delivery-failed",
     });
   });
 

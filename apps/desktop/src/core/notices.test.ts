@@ -98,6 +98,15 @@ describe("AudioCaptureError → notice mapping", () => {
     expect(noticeFromError(new AudioCaptureError("microphone-track-ended"), FALLBACK).key).toBe(
       "message.microphoneTrackEnded",
     );
+    expect(noticeFromError(new AudioCaptureError("microphone-track-muted"), FALLBACK).key).toBe(
+      "message.microphoneTrackMuted",
+    );
+    expect(
+      noticeFromError(new AudioCaptureError("audio-chunk-delivery-failed"), FALLBACK).key,
+    ).toBe("message.audioChunkDeliveryFailed");
+    expect(noticeFromError(new AudioCaptureError("parapper-transport-failed"), FALLBACK).key).toBe(
+      "message.parapperTransportFailed",
+    );
   });
 
   it("prefers a DOMException cause message as the detail", () => {
@@ -146,6 +155,15 @@ describe("notice helpers", () => {
   it("drops blank no-speech details", () => {
     expect(sanitizeNoSpeechDetail(undefined)).toBeUndefined();
     expect(sanitizeNoSpeechDetail("   ")).toBeUndefined();
+  });
+
+  it("does not expose internal session identifiers in no-speech toasts", () => {
+    expect(
+      sanitizeNoSpeechDetail("parapper:123e4567-e89b-12d3-a456-426614174000:turn-1"),
+    ).toBeUndefined();
+    expect(
+      sanitizeNoSpeechDetail("web-speech:123e4567-e89b-12d3-a456-426614174000"),
+    ).toBeUndefined();
   });
 
   it("passes through a detail that is neither diagnostics nor a 422 body", () => {

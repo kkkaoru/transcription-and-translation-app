@@ -47,6 +47,11 @@ interface PendingRequest {
   resolve: (result: AzooKeyConvertResult) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  /** The transport that carried this request.  A response from another
+   * socket generation must never settle it, even if a legacy server omitted
+   * its requestId. */
+  readonly socket: WebSocket;
+  readonly socketGeneration: number;
 }
 
 interface QueuedConversion {
@@ -59,6 +64,7 @@ interface QueuedConversion {
 
 interface ConnectionAttempt {
   readonly socket: WebSocket;
+  readonly generation: number;
   readonly promise: Promise<void>;
   readonly resolve: () => void;
   readonly reject: (error: Error) => void;
@@ -269,6 +275,15 @@ export class AzooKeyWorkerClient {
   /** The Worker accepts one conversion per socket; retain every utterance FIFO. */
   private readonly conversionQueue: QueuedConversion[] = [];
   private socket: WebSocket | null = null;
+  /** Monotonic transport generation used to fence stale asynchronous events. */
+  private socketGeneration = 0;
+  /**
+   * A no-requestId response is only safe until the first conversion on this
+   * generation has been abandoned/consumed.  Keep the socket usable for
+   * correlated responses, but never let a late legacy frame claim a newer
+   * FIFO item.
+   */
+  private legacyResponseBlockedGeneration: number | null = null;
   /** One owner for the active handshake; stale socket events cannot settle a new attempt. */
   private connectionAttempt: ConnectionAttempt | null = null;
   private activeConversion: QueuedConversion | null = null;
@@ -331,8 +346,12 @@ export class AzooKeyWorkerClient {
       resolveAttempt = resolve;
       rejectAttempt = reject;
     });
+    const generation = this.socketGeneration + 1;
+    this.socketGeneration = generation;
+    this.legacyResponseBlockedGeneration = null;
     const attempt: ConnectionAttempt = {
       socket,
+      generation,
       promise,
       resolve: resolveAttempt,
       reject: rejectAttempt,
@@ -341,7 +360,11 @@ export class AzooKeyWorkerClient {
     this.connectionAttempt = attempt;
 
     socket.onopen = () => {
-      if (this.socket !== socket || this.connectionAttempt !== attempt) {
+      if (
+        this.socket !== socket ||
+        this.socketGeneration !== generation ||
+        this.connectionAttempt !== attempt
+      ) {
         return;
       }
       this.connectionAttempt = null;
@@ -349,17 +372,18 @@ export class AzooKeyWorkerClient {
       attempt.resolve();
     };
     socket.onmessage = (event) => {
-      if (this.socket !== socket) {
+      if (this.socket !== socket || this.socketGeneration !== generation) {
         return;
       }
-      void this.handleMessage(event.data);
+      void this.handleMessage(event.data, socket, generation);
     };
     socket.onerror = () => {
-      if (this.socket !== socket) {
+      if (this.socket !== socket || this.socketGeneration !== generation) {
         return;
       }
       const error = new Error("Worker WebSocket で接続エラーが発生しました");
       this.socket = null;
+      this.socketGeneration += 1;
       if (this.connectionAttempt === attempt) {
         this.connectionAttempt = null;
       }
@@ -378,13 +402,14 @@ export class AzooKeyWorkerClient {
       }
     };
     socket.onclose = (event) => {
-      if (this.socket !== socket) {
+      if (this.socket !== socket || this.socketGeneration !== generation) {
         return;
       }
       const error = new Error(
         event.reason?.trim() || `Worker WebSocket が切断されました (${event.code})`,
       );
       this.socket = null;
+      this.socketGeneration += 1;
       if (this.connectionAttempt === attempt) {
         this.connectionAttempt = null;
       }
@@ -477,14 +502,32 @@ export class AzooKeyWorkerClient {
   }
 
   private sendQueuedConversion(socket: WebSocket, queued: QueuedConversion): void {
+    const socketGeneration = this.socketGeneration;
     const timeout = setTimeout(() => {
+      const pending = this.pending.get(queued.requestId);
+      if (!pending || pending.socket !== socket || pending.socketGeneration !== socketGeneration) {
+        return;
+      }
       this.pending.delete(queued.requestId);
+      // A legacy Worker may omit requestId.  Once this request timed out, an
+      // eventual response is indistinguishable from the next FIFO request on
+      // the same socket. Keep correlated responses available, but fence all
+      // no-id frames on this generation until a fresh socket is established.
+      if (this.conversionQueue.length > 0) {
+        // If there is already FIFO work waiting, rotate immediately so the
+        // next item can still use a legacy no-id response safely.
+        this.retireSocket(socket, socketGeneration, "conversion timeout");
+      } else {
+        this.legacyResponseBlockedGeneration = socketGeneration;
+      }
       this.finishQueuedConversion(queued, new Error("AzooKey Worker の応答がタイムアウトしました"));
     }, this.requestTimeoutMs);
     this.pending.set(queued.requestId, {
       resolve: (result) => this.finishQueuedConversion(queued, null, result),
       reject: (error) => this.finishQueuedConversion(queued, error),
       timeout,
+      socket,
+      socketGeneration,
     });
     try {
       socket.send(queued.payload);
@@ -535,6 +578,7 @@ export class AzooKeyWorkerClient {
     const socket = this.socket;
     const attempt = this.connectionAttempt;
     this.socket = null;
+    this.socketGeneration += 1;
     this.connectionAttempt = null;
     if (socket) {
       try {
@@ -555,7 +599,11 @@ export class AzooKeyWorkerClient {
     }
   }
 
-  private async handleMessage(data: unknown): Promise<void> {
+  private async handleMessage(
+    data: unknown,
+    socket: WebSocket,
+    socketGeneration: number,
+  ): Promise<void> {
     let text: string;
     try {
       if (typeof data === "string") {
@@ -574,6 +622,10 @@ export class AzooKeyWorkerClient {
     if (!parsed) {
       return;
     }
+    // Responses without requestId are supported only as a strict FIFO
+    // compatibility contract: one in-flight conversion, on the same socket
+    // generation that carried it. This intentionally rejects a late legacy
+    // response instead of guessing which newer utterance it belongs to.
     const fallback = parsed.requestId
       ? undefined
       : this.pending.size === SINGLE_PENDING_REQUEST_COUNT
@@ -584,11 +636,32 @@ export class AzooKeyWorkerClient {
       return;
     }
     const pending = this.pending.get(requestId);
-    if (!pending) {
+    if (
+      !pending ||
+      pending.socket !== socket ||
+      pending.socketGeneration !== socketGeneration ||
+      this.socket !== socket ||
+      this.socketGeneration !== socketGeneration
+    ) {
+      return;
+    }
+    const legacyResponse = parsed.requestId === undefined;
+    if (legacyResponse && this.legacyResponseBlockedGeneration === socketGeneration) {
       return;
     }
     this.pending.delete(requestId);
     clearTimeout(pending.timeout);
+    if (legacyResponse) {
+      // A duplicate no-id frame after this response would otherwise be
+      // indistinguishable from the next FIFO item. Correlated responses remain
+      // valid on this socket; only legacy frames are fenced.
+      const legacyBusy = parsed.error instanceof AzooKeyWorkerError && parsed.error.code === "busy";
+      if (this.conversionQueue.length > 0 || legacyBusy) {
+        this.retireSocket(socket, socketGeneration, "legacy response without requestId");
+      } else {
+        this.legacyResponseBlockedGeneration = socketGeneration;
+      }
+    }
     if (parsed.error) {
       pending.reject(parsed.error);
       return;
@@ -605,6 +678,27 @@ export class AzooKeyWorkerClient {
       ...(parsed.elapsedMs !== undefined ? { elapsedMs: parsed.elapsedMs } : {}),
       receivedAt: Date.now(),
     });
+  }
+
+  /** Invalidate a transport before a response can be mistaken for a newer FIFO item. */
+  private retireSocket(socket: WebSocket, socketGeneration: number, reason: string): void {
+    if (this.socket !== socket || this.socketGeneration !== socketGeneration) {
+      return;
+    }
+    this.socket = null;
+    this.socketGeneration += 1;
+    this.legacyResponseBlockedGeneration = null;
+    if (this.connectionAttempt?.socket === socket) {
+      const error = new Error("Worker WebSocket が切断されました");
+      this.connectionAttempt.reject(error);
+      this.connectionAttempt = null;
+    }
+    this.setState("closed");
+    try {
+      socket.close(NORMAL_WEBSOCKET_CLOSE_CODE, reason);
+    } catch {
+      // The socket is already closing or closed.
+    }
   }
 
   private rejectPending(error: Error): void {

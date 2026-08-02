@@ -3,7 +3,10 @@ use crate::native_output::NativeOutputHandle;
 use crate::output::OutputStatus;
 use crate::pipeline::{CaptionPayload, Pipeline, PipelineStageEvent};
 use serde::Serialize;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 
 /// Number of completed pipeline stages retained for diagnostics.
 ///
@@ -12,6 +15,145 @@ use std::sync::Mutex;
 /// it subscribed (and keeps diagnostics from growing without bound during a
 /// long capture session).
 pub const PIPELINE_STAGE_HISTORY_LIMIT: usize = 96;
+
+/// A Parapper stream only yields turn output after its VAD has identified
+/// speech. A few empty turn outputs can still be legitimate revisions, but a
+/// run of them is a useful signal that recognition has stopped producing
+/// transcripts. Keep the observation bounded so an old turn cannot poison a
+/// later capture session.
+pub const ASR_EMPTY_RESULT_LIMIT: u8 = 3;
+pub const ASR_EMPTY_RESULT_WINDOW: Duration = Duration::from_secs(20);
+/// Stopping capture should preserve a translation that is already nearly
+/// complete, without making Stop wait for the full inference timeout.
+pub const TRANSLATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Do not let a slow translator accumulate unbounded detached work during a
+/// long live-capture session. Source captions stay immediate when this cap is
+/// reached; only their optional background translation is skipped.
+pub const MAX_PENDING_TRANSLATIONS_PER_CAPTURE: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedEmptyAsrResult {
+    Transient { consecutive: u8 },
+    PersistentLoss { consecutive: u8 },
+}
+
+#[derive(Debug, Default)]
+struct AsrHealthTracker {
+    first_empty_at: Option<Instant>,
+    last_empty_turn: Option<String>,
+    consecutive_empty: u8,
+    persistent_loss: bool,
+}
+
+impl AsrHealthTracker {
+    fn observe_expected_empty_at(&mut self, now: Instant, turn_id: &str) -> ExpectedEmptyAsrResult {
+        if self.persistent_loss {
+            return ExpectedEmptyAsrResult::PersistentLoss { consecutive: self.consecutive_empty };
+        }
+        if self
+            .first_empty_at
+            .is_none_or(|first| now.saturating_duration_since(first) > ASR_EMPTY_RESULT_WINDOW)
+        {
+            self.reset();
+            self.first_empty_at = Some(now);
+        }
+        // A single sidecar turn can emit both an interim and final revision.
+        // Count it once: repeated blank revisions of the same speech turn are
+        // not evidence that three separate utterances lost transcription.
+        if self.last_empty_turn.as_deref() == Some(turn_id) {
+            return ExpectedEmptyAsrResult::Transient { consecutive: self.consecutive_empty };
+        }
+        self.last_empty_turn = Some(turn_id.to_string());
+        self.consecutive_empty = self.consecutive_empty.saturating_add(1);
+        if self.consecutive_empty >= ASR_EMPTY_RESULT_LIMIT {
+            self.persistent_loss = true;
+            ExpectedEmptyAsrResult::PersistentLoss { consecutive: self.consecutive_empty }
+        } else {
+            ExpectedEmptyAsrResult::Transient { consecutive: self.consecutive_empty }
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TranslationTicket {
+    generation: u64,
+    sequence: u64,
+}
+
+#[derive(Debug, Default)]
+struct TranslationTracker {
+    current_generation: u64,
+    stopping_generation: Option<u64>,
+    next_ticket_sequence: u64,
+    pending_by_generation: HashMap<u64, VecDeque<u64>>,
+}
+
+impl TranslationTracker {
+    fn start_capture(&mut self) {
+        self.current_generation = self.current_generation.wrapping_add(1).max(1);
+        self.stopping_generation = None;
+        // A previous Stop may have hit its bounded wait. Those old tasks are
+        // generation-invalid and no later Stop must wait on them, so discard
+        // their counters rather than retaining an unbounded history.
+        self.pending_by_generation.clear();
+    }
+
+    fn register(&mut self) -> Option<(TranslationTicket, Option<TranslationTicket>)> {
+        if self.current_generation == 0 || self.stopping_generation == Some(self.current_generation)
+        {
+            return None;
+        }
+        let pending = self.pending_by_generation.entry(self.current_generation).or_default();
+        let superseded = if pending.len() >= MAX_PENDING_TRANSLATIONS_PER_CAPTURE {
+            pending
+                .pop_front()
+                .map(|sequence| TranslationTicket { generation: self.current_generation, sequence })
+        } else {
+            None
+        };
+        self.next_ticket_sequence = self.next_ticket_sequence.wrapping_add(1).max(1);
+        let ticket = TranslationTicket {
+            generation: self.current_generation,
+            sequence: self.next_ticket_sequence,
+        };
+        pending.push_back(ticket.sequence);
+        Some((ticket, superseded))
+    }
+
+    fn begin_drain(&mut self) -> u64 {
+        self.stopping_generation = Some(self.current_generation);
+        self.current_generation
+    }
+
+    fn finish(&mut self, ticket: TranslationTicket) {
+        let Some(pending) = self.pending_by_generation.get_mut(&ticket.generation) else {
+            return;
+        };
+        let Some(index) = pending.iter().position(|sequence| *sequence == ticket.sequence) else {
+            return;
+        };
+        pending.remove(index);
+        if pending.is_empty() {
+            self.pending_by_generation.remove(&ticket.generation);
+        }
+    }
+
+    fn pending(&self, generation: u64) -> usize {
+        self.pending_by_generation.get(&generation).map(VecDeque::len).unwrap_or_default()
+    }
+
+    fn is_current(&self, ticket: TranslationTicket) -> bool {
+        self.current_generation == ticket.generation
+            && self
+                .pending_by_generation
+                .get(&ticket.generation)
+                .is_some_and(|pending| pending.contains(&ticket.sequence))
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +175,14 @@ pub struct AppState {
     /// Raw ASR text is never passed to this slot.
     pub latest_caption: Mutex<Option<CaptionPayload>>,
     pub native_output: Mutex<NativeOutputHandle>,
+    /// Per-capture ASR health. This deliberately tracks only Parapper turn
+    /// outputs, not ambient microphone chunks, so ordinary silence remains a
+    /// soft skip while repeated empty results after VAD speech are visible.
+    asr_health: Mutex<AsrHealthTracker>,
+    /// Bounded in-flight translation bookkeeping. A generation prevents a
+    /// late detached task from publishing into a later capture session.
+    translation_tracker: Mutex<TranslationTracker>,
+    translation_notify: Notify,
     /// Set when an update is ready but capture is still active. The frontend
     /// stops the microphone first; `stop_capture` then consumes this flag and
     /// requests a graceful Tauri restart.
@@ -64,6 +214,19 @@ fn caption_is_stale(current: &CaptionPayload, candidate: &CaptionPayload) -> boo
     if current.id == candidate.id {
         let current_sequence = caption_sequence(current);
         let candidate_sequence = caption_sequence(candidate);
+
+        // A delayed interim revision must never overwrite an already-final
+        // source caption for the same Parapper turn, even when its receipt
+        // timestamp happens to be newer.
+        if current_sequence == 0
+            && candidate_sequence == 0
+            && current.stage == "source"
+            && candidate.stage == "source"
+            && current.is_final
+            && !candidate.is_final
+        {
+            return true;
+        }
 
         // Parapper partials have no measured duration and use their receipt
         // time as `started_at`; finals backdate that field by the completed
@@ -163,6 +326,9 @@ impl AppState {
             pipeline_stage_history: Mutex::new(Vec::new()),
             latest_caption: Mutex::new(None),
             native_output: Mutex::new(native_output),
+            asr_health: Mutex::new(AsrHealthTracker::default()),
+            translation_tracker: Mutex::new(TranslationTracker::default()),
+            translation_notify: Notify::new(),
             relaunch_after_capture: Mutex::new(false),
         }
     }
@@ -222,14 +388,126 @@ impl AppState {
             *latest = None;
         }
     }
+
+    /// Begin a fresh bounded observation window for a capture session.
+    pub fn reset_asr_health(&self) {
+        if let Ok(mut health) = self.asr_health.lock() {
+            health.reset();
+        }
+    }
+
+    /// A displayable ASR result is the only event that clears persistent
+    /// transcript loss. Ambient silence must never make a degraded ASR state
+    /// look healthy again.
+    pub fn record_asr_success(&self) {
+        self.reset_asr_health();
+    }
+
+    /// Snapshot the capture generation at the beginning of asynchronous ASR
+    /// work. A later start increments it, so delayed work cannot make the new
+    /// capture look healthy or overwrite its source caption.
+    pub fn current_capture_generation(&self) -> u64 {
+        self.translation_tracker
+            .lock()
+            .map(|tracker| tracker.current_generation)
+            .unwrap_or_default()
+    }
+
+    pub fn is_capture_generation_current(&self, generation: u64) -> bool {
+        self.translation_tracker
+            .lock()
+            .map(|tracker| tracker.current_generation == generation && generation != 0)
+            .unwrap_or(false)
+    }
+
+    /// Record an empty result from a Parapper turn for which VAD had already
+    /// identified speech. Lock failures degrade to a transient soft skip;
+    /// transcription itself must remain available even if diagnostics fail.
+    pub fn record_expected_empty_asr(&self, turn_id: &str) -> ExpectedEmptyAsrResult {
+        self.asr_health
+            .lock()
+            .map(|mut health| health.observe_expected_empty_at(Instant::now(), turn_id))
+            .unwrap_or(ExpectedEmptyAsrResult::Transient { consecutive: 0 })
+    }
+
+    /// Begin a new capture generation before work is accepted. Tasks from an
+    /// earlier generation may still finish after a bounded stop drain, but
+    /// cannot update a later session.
+    pub fn begin_capture_generation(&self) {
+        if let Ok(mut tracker) = self.translation_tracker.lock() {
+            tracker.start_capture();
+        }
+    }
+
+    /// Register a detached translation before spawning it. At capacity, the
+    /// oldest pending ticket is logically retired and returned so callers can
+    /// expose latest-wins diagnostics; its eventual completion cannot publish.
+    pub fn register_translation(&self) -> Option<(TranslationTicket, Option<TranslationTicket>)> {
+        self.translation_tracker.lock().ok()?.register()
+    }
+
+    /// Freeze the current generation against new translations and return the
+    /// generation whose existing work Stop should briefly drain.
+    pub fn begin_translation_drain(&self) -> u64 {
+        self.translation_tracker.lock().map(|mut tracker| tracker.begin_drain()).unwrap_or_default()
+    }
+
+    pub fn finish_translation(&self, ticket: TranslationTicket) {
+        if let Ok(mut tracker) = self.translation_tracker.lock() {
+            tracker.finish(ticket);
+        }
+        // `notify_one` retains a permit when the drain loop is between its
+        // count check and await, avoiding a missed completion wake-up.
+        self.translation_notify.notify_one();
+    }
+
+    /// Wait until all translations registered before Stop have finished, or
+    /// until the caller's explicit bounded timeout expires.
+    pub async fn drain_translations(&self, generation: u64, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, wait_for_translation_drain(self, generation)).await.is_ok()
+    }
+
+    /// Translation publication is generation-aware. Stopping a generation is
+    /// still publishable while Stop waits for it; only a later start invalidates
+    /// the task.
+    pub fn translation_is_current(&self, ticket: TranslationTicket) -> bool {
+        self.translation_tracker.lock().map(|tracker| tracker.is_current(ticket)).unwrap_or(false)
+    }
+}
+
+async fn wait_for_translation_drain(state: &AppState, generation: u64) {
+    loop {
+        let notified = state.translation_notify.notified();
+        let pending = state
+            .translation_tracker
+            .lock()
+            .map(|tracker| tracker.pending(generation))
+            .unwrap_or_default();
+        if pending == 0 {
+            return;
+        }
+        notified.await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, PIPELINE_STAGE_HISTORY_LIMIT};
+    use super::{
+        AppState, AsrHealthTracker, ExpectedEmptyAsrResult, ASR_EMPTY_RESULT_WINDOW,
+        MAX_PENDING_TRANSLATIONS_PER_CAPTURE, PIPELINE_STAGE_HISTORY_LIMIT,
+    };
     use crate::config::AppConfig;
     use crate::output::OutputStatus;
     use crate::pipeline::{CaptionPayload, PipelineStageEvent};
+    use std::sync::Arc;
+
+    async fn finish_translation_after_delay(
+        state: Arc<AppState>,
+        ticket: super::TranslationTicket,
+    ) {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        state.finish_translation(ticket);
+    }
 
     fn stage(index: usize) -> PipelineStageEvent {
         PipelineStageEvent {
@@ -258,6 +536,169 @@ mod tests {
         assert_eq!(history.len(), PIPELINE_STAGE_HISTORY_LIMIT);
         assert_eq!(history.first().map(|event| event.utterance_id.as_str()), Some("utterance-97"));
         assert_eq!(history.last().map(|event| event.utterance_id.as_str()), Some("utterance-2"));
+    }
+
+    #[test]
+    fn empty_turns_only_become_a_loss_when_they_repeat_in_the_bounded_window() {
+        let mut health = AsrHealthTracker::default();
+        let now = std::time::Instant::now();
+        assert_eq!(
+            health.observe_expected_empty_at(now, "turn-1"),
+            ExpectedEmptyAsrResult::Transient { consecutive: 1 }
+        );
+        assert_eq!(
+            health.observe_expected_empty_at(now + std::time::Duration::from_secs(2), "turn-2"),
+            ExpectedEmptyAsrResult::Transient { consecutive: 2 }
+        );
+        assert_eq!(
+            health.observe_expected_empty_at(now + std::time::Duration::from_secs(4), "turn-3"),
+            ExpectedEmptyAsrResult::PersistentLoss { consecutive: 3 }
+        );
+
+        health.reset();
+        assert_eq!(
+            health.observe_expected_empty_at(now, "turn-1"),
+            ExpectedEmptyAsrResult::Transient { consecutive: 1 }
+        );
+        assert_eq!(
+            health.observe_expected_empty_at(
+                now + ASR_EMPTY_RESULT_WINDOW + std::time::Duration::from_secs(1),
+                "turn-2",
+            ),
+            ExpectedEmptyAsrResult::Transient { consecutive: 1 },
+            "an old empty turn must not carry into a new observation window"
+        );
+    }
+
+    #[test]
+    fn successful_asr_resets_a_persistent_empty_turn_loss() {
+        let mut health = AsrHealthTracker::default();
+        let now = std::time::Instant::now();
+        for offset in [0, 1, 2] {
+            health.observe_expected_empty_at(
+                now + std::time::Duration::from_secs(offset),
+                &format!("turn-{offset}"),
+            );
+        }
+        health.reset();
+        assert_eq!(
+            health.observe_expected_empty_at(now + std::time::Duration::from_secs(3), "turn-4"),
+            ExpectedEmptyAsrResult::Transient { consecutive: 1 }
+        );
+    }
+
+    #[test]
+    fn blank_interim_and_final_revisions_count_as_one_speech_turn() {
+        let mut health = AsrHealthTracker::default();
+        let now = std::time::Instant::now();
+        assert_eq!(
+            health.observe_expected_empty_at(now, "session:1:7"),
+            ExpectedEmptyAsrResult::Transient { consecutive: 1 }
+        );
+        assert_eq!(
+            health
+                .observe_expected_empty_at(now + std::time::Duration::from_secs(1), "session:1:7"),
+            ExpectedEmptyAsrResult::Transient { consecutive: 1 }
+        );
+    }
+
+    #[test]
+    fn final_source_caption_does_not_regress_to_a_late_partial_revision() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        let final_caption = CaptionPayload {
+            id: "parapper:session:1:7".to_string(),
+            source_text: "最終字幕".to_string(),
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 100,
+            received_at: 200,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+        };
+        let late_partial = CaptionPayload {
+            source_text: "遅延した途中字幕".to_string(),
+            received_at: 300,
+            is_final: false,
+            ..final_caption.clone()
+        };
+
+        state.record_latest_caption(&final_caption);
+        state.record_latest_caption(&late_partial);
+        assert_eq!(state.latest_caption(), Some(final_caption));
+    }
+
+    #[test]
+    fn delayed_asr_work_is_rejected_after_a_new_capture_generation_starts() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let delayed_generation = state.current_capture_generation();
+        assert!(state.is_capture_generation_current(delayed_generation));
+
+        state.begin_capture_generation();
+        assert!(
+            !state.is_capture_generation_current(delayed_generation),
+            "a delayed ASR/normalizer completion belongs to the old capture"
+        );
+        assert!(state.is_capture_generation_current(state.current_capture_generation()));
+    }
+
+    #[tokio::test]
+    async fn stopping_capture_drains_a_delayed_translation_before_idle_can_win() {
+        let state = Arc::new(AppState::new(
+            AppConfig::default(),
+            OutputStatus { platform: "test".to_string() },
+        ));
+        state.begin_capture_generation();
+        let (ticket, superseded) =
+            state.register_translation().expect("active capture accepts translation");
+        assert!(superseded.is_none());
+        let generation = state.begin_translation_drain();
+        assert!(
+            state.register_translation().is_none(),
+            "Stop must reject work that would otherwise miss the drain"
+        );
+
+        tokio::spawn(finish_translation_after_delay(Arc::clone(&state), ticket));
+
+        assert!(
+            state.drain_translations(generation, std::time::Duration::from_millis(100)).await,
+            "Stop should retain an already-started translation that completes shortly after it"
+        );
+        assert!(
+            !state.translation_is_current(ticket),
+            "a completed translation is no longer pending or publishable"
+        );
+
+        state.begin_capture_generation();
+        assert!(
+            !state.translation_is_current(ticket),
+            "a delayed old task may never publish into the next capture generation"
+        );
+    }
+
+    #[test]
+    fn translation_backlog_retires_the_oldest_ticket_and_accepts_the_latest_work() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let mut tickets = Vec::new();
+        for _ in 0..MAX_PENDING_TRANSLATIONS_PER_CAPTURE {
+            let (ticket, superseded) = state.register_translation().expect("active capture");
+            assert!(superseded.is_none());
+            tickets.push(ticket);
+        }
+        let (latest, superseded) = state.register_translation().expect("latest work is accepted");
+        assert_eq!(superseded, Some(tickets[0]));
+        assert!(
+            !state.translation_is_current(tickets[0]),
+            "the oldest slow translation cannot publish after latest-wins retirement"
+        );
+        assert!(state.translation_is_current(latest));
     }
 
     #[test]

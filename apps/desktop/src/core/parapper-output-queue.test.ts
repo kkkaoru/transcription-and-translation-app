@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createParapperOutputQueue, type ParapperOutputQueueItem } from "./parapper-output-queue";
+import {
+  createParapperOutputQueue,
+  PARAPPER_OUTPUT_QUEUE_MAX_PENDING,
+  PARAPPER_OUTPUT_QUEUE_MAX_TRACKED_TURNS,
+  type ParapperOutputQueueItem,
+} from "./parapper-output-queue";
 
 type Item = ParapperOutputQueueItem & { id: string };
 
@@ -150,5 +155,51 @@ describe("Parapper output coalescing queue", () => {
     expect(started).toEqual(["turn-1-partial", "turn-2-partial", "turn-1-final"]);
     release.shift()?.();
     await queue.whenIdle();
+  });
+
+  it("bounds queued finals and cursor tracking while normalization is blocked", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queue = createParapperOutputQueue<Item>(() => blocked);
+    queue.enqueue({
+      id: "active",
+      isFinal: false,
+      sessionId: "socket-1",
+      turnSessionId: 1,
+      turnId: 0,
+      revision: 0,
+    });
+    await flush();
+    const finalCount = PARAPPER_OUTPUT_QUEUE_MAX_TRACKED_TURNS + 8;
+    for (let turnId = 1; turnId <= finalCount; turnId += 1) {
+      queue.enqueue({
+        id: `final-${turnId}`,
+        isFinal: true,
+        sessionId: "socket-1",
+        turnSessionId: 1,
+        turnId,
+        revision: 1,
+      });
+    }
+
+    expect(queue.getStats()).toMatchObject({
+      pending: PARAPPER_OUTPUT_QUEUE_MAX_PENDING,
+      droppedFinals: finalCount - PARAPPER_OUTPUT_QUEUE_MAX_PENDING,
+      trackedTurns: PARAPPER_OUTPUT_QUEUE_MAX_TRACKED_TURNS,
+    });
+    release();
+    queue.close();
+  });
+
+  it("settles whenIdle after its finite timeout when a normalizer never returns", async () => {
+    vi.useFakeTimers();
+    const queue = createParapperOutputQueue<Item>(() => new Promise<void>(() => undefined));
+    queue.enqueue(item("stuck"));
+    const idle = queue.whenIdle(25);
+    vi.advanceTimersByTime(25);
+    await expect(idle).rejects.toThrow(/did not become idle/i);
+    queue.close();
   });
 });

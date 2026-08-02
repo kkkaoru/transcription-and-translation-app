@@ -24,6 +24,13 @@ export const sanitizeNoSpeechDetail = (detail?: string): string | undefined => {
   if (!trimmed) {
     return undefined;
   }
+  // Session/turn identifiers are useful in verbose logs but are not
+  // actionable user-facing diagnostics. Keep them out of the toast even when
+  // a caller accidentally forwards an id instead of a capture detail.
+  const internalId = /^(?:web-speech:|parapper:)?[0-9a-f]{8}-[0-9a-f-]{27,}(?::[^\s]+)*$/i;
+  if (internalId.test(trimmed)) {
+    return undefined;
+  }
   // Prefer capture diagnostics over raw HTTP bodies when both are present.
   if (trimmed.includes("mode=") || trimmed.includes("rms=") || trimmed.includes("chunks=")) {
     // Drop a leading "inference returned HTTP …" prefix if diagnostics follow.
@@ -75,6 +82,9 @@ export const noticeFromError = (error: unknown, fallback: MessageKey): Notice =>
       "audio-context-failed": "message.audioContextFailed",
       "audio-context-suspended": "message.audioContextFailed",
       "microphone-track-ended": "message.microphoneTrackEnded",
+      "microphone-track-muted": "message.microphoneTrackMuted",
+      "audio-chunk-delivery-failed": "message.audioChunkDeliveryFailed",
+      "parapper-transport-failed": "message.parapperTransportFailed",
     };
     const detail =
       error.causeError instanceof DOMException

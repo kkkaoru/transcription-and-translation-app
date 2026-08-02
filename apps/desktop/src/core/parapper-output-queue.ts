@@ -25,19 +25,35 @@ export type ParapperOutputQueueStats = {
   droppedPartials: number;
   droppedFinals: number;
   pending: number;
+  /** Bounded cursor cache size, exposed for live-backlog diagnostics. */
+  trackedTurns: number;
   inFlight: boolean;
 };
 
 export type ParapperOutputQueue<T extends ParapperOutputQueueItem> = {
   enqueue: (item: T) => void;
-  /** Resolve once all accepted items have finished processing. */
-  whenIdle: () => Promise<void>;
+  /**
+   * Resolve once all accepted items have finished processing. Rejects after a
+   * finite timeout so teardown cannot wait forever on a stuck normalizer.
+   */
+  whenIdle: (timeoutMs?: number) => Promise<void>;
   /** Drop queued items and ignore future events for this capture attempt. */
   close: () => void;
   getStats: () => ParapperOutputQueueStats;
 };
 
-type Waiter = () => void;
+type IdleWaiter = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+/** Bound pending work even if the normalizer is permanently stalled. */
+export const PARAPPER_OUTPUT_QUEUE_MAX_PENDING = 32;
+/** Cursor de-duplication is session-scoped but must not grow for a long stream. */
+export const PARAPPER_OUTPUT_QUEUE_MAX_TRACKED_TURNS = 128;
+export const DEFAULT_PARAPPER_OUTPUT_QUEUE_IDLE_TIMEOUT_MS = 8_000;
+const MIN_IDLE_TIMEOUT_MS = 1;
 
 type TurnIdentity = {
   sessionId?: string;
@@ -131,16 +147,51 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
   let droppedPartials = 0;
   let droppedFinals = 0;
   const latestByTurn = new Map<string, T>();
-  const idleWaiters: Waiter[] = [];
+  const idleWaiters: IdleWaiter[] = [];
 
   const isIdle = (): boolean => !inFlight && pending.length === 0;
 
-  const resolveIdle = (): void => {
-    if (!isIdle()) {
+  const resolveIdle = (force = false): void => {
+    if (!force && !isIdle()) {
       return;
     }
     while (idleWaiters.length > 0) {
-      idleWaiters.shift()?.();
+      const waiter = idleWaiters.shift();
+      if (!waiter) {
+        continue;
+      }
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+  };
+
+  const rememberLatestTurn = (key: string, item: T): void => {
+    // Updating an existing entry must move it to the newest end of the Map so
+    // overflow evicts the least recently observed turn cursor.
+    latestByTurn.delete(key);
+    latestByTurn.set(key, item);
+    while (latestByTurn.size > PARAPPER_OUTPUT_QUEUE_MAX_TRACKED_TURNS) {
+      const oldest = latestByTurn.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      latestByTurn.delete(oldest);
+    }
+  };
+
+  const boundPending = (): void => {
+    while (pending.length > PARAPPER_OUTPUT_QUEUE_MAX_PENDING) {
+      // Preserve finals when possible, but never allow an unbounded final
+      // backlog to pin memory/UI teardown forever. If all entries are finals,
+      // newest wins and the oldest final is explicitly accounted for.
+      const partialIndex = pending.findIndex((queued) => !queued.isFinal);
+      const dropIndex = partialIndex >= 0 ? partialIndex : 0;
+      const [dropped] = pending.splice(dropIndex, 1);
+      if (dropped?.isFinal) {
+        droppedFinals += 1;
+      } else {
+        droppedPartials += 1;
+      }
     }
   };
 
@@ -181,7 +232,7 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
           }
           return;
         }
-        latestByTurn.set(key, item);
+        rememberLatestTurn(key, item);
       }
       if (item.isFinal) {
         // Partials waiting for this same turn are superseded by its final.
@@ -208,26 +259,45 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
       } else {
         pending.push(item);
       }
+      boundPending();
       void run();
     },
-    whenIdle: () => {
+    whenIdle: (timeoutMs = DEFAULT_PARAPPER_OUTPUT_QUEUE_IDLE_TIMEOUT_MS) => {
       if (isIdle()) {
         return Promise.resolve();
       }
-      return new Promise<void>((resolve) => {
-        idleWaiters.push(resolve);
+      const safeTimeout = Number.isFinite(timeoutMs)
+        ? Math.max(MIN_IDLE_TIMEOUT_MS, Math.floor(timeoutMs))
+        : DEFAULT_PARAPPER_OUTPUT_QUEUE_IDLE_TIMEOUT_MS;
+      return new Promise<void>((resolve, reject) => {
+        const waiter: IdleWaiter = {
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            const index = idleWaiters.indexOf(waiter);
+            if (index >= 0) {
+              idleWaiters.splice(index, 1);
+            }
+            reject(new Error("Parapper output queue did not become idle before timeout"));
+          }, safeTimeout),
+        };
+        idleWaiters.push(waiter);
       });
     },
     close: () => {
       closed = true;
       pending = [];
-      resolveIdle();
+      latestByTurn.clear();
+      // Close deliberately abandons the active normalization result, so
+      // callers waiting to tear down must not remain blocked by that Promise.
+      resolveIdle(true);
     },
     getStats: () => ({
       processed,
       droppedPartials,
       droppedFinals,
       pending: pending.length,
+      trackedTurns: latestByTurn.size,
       inFlight,
     }),
   };

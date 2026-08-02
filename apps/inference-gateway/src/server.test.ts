@@ -406,6 +406,35 @@ describe("inference gateway HTTP contract", () => {
     await expect(unexpected.json()).resolves.toMatchObject({ error: { code: "internal_error" } });
   });
 
+  it("propagates a cancelled HTTP request to the ASR transcriber", async () => {
+    const observedSignals: Array<AbortSignal | undefined> = [];
+    const transcribe = vi.fn((_pcm: Uint8Array, signal?: AbortSignal) => {
+      observedSignals.push(signal);
+      return new Promise<string>((resolve) => {
+        signal?.addEventListener("abort", () => resolve(""), { once: true });
+      });
+    });
+    const connection = await open(createGatewayServer(config, { transcribe }));
+    closers.push(connection.close);
+    const form = new FormData();
+    form.set("model", "parapper-ja");
+    form.set("file", wav(), "cancelled-caption.wav");
+    const controller = new AbortController();
+    const pending = fetch(`${connection.origin}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
+
+    await vi.waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1));
+    const signal = observedSignals[0];
+    expect(signal).toBeDefined();
+    expect(signal?.aborted).toBe(false);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+  });
+
   it("caps adapter request bodies and uses the configured Parapper connection by default", async () => {
     const connection = await open(
       createGatewayServer({

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createWebSpeechRecognitionStream,
+  DEFAULT_WEB_SPEECH_FINAL_GRACE_MS,
   DEFAULT_WEB_SPEECH_LANGUAGE,
   DEFAULT_WEB_SPEECH_RESTART_DELAY_MS,
   getWebSpeechRecognitionConstructor,
@@ -479,7 +480,7 @@ describe("WebSpeechRecognitionStream", () => {
     recognition.emitEnd();
     recognition.emitEnd();
     expect(recognition.startCalls).toBe(1);
-    vi.advanceTimersByTime(19);
+    vi.advanceTimersByTime(DEFAULT_WEB_SPEECH_FINAL_GRACE_MS + 19);
     expect(recognition.startCalls).toBe(1);
     vi.advanceTimersByTime(1);
     expect(recognition.startCalls).toBe(2);
@@ -498,6 +499,66 @@ describe("WebSpeechRecognitionStream", () => {
     recognition.emitEnd();
     vi.runOnlyPendingTimers();
     expect(recognition.startCalls).toBe(3);
+  });
+
+  it("keeps a final result delivered after onend during the bounded grace window", () => {
+    vi.useFakeTimers();
+    const recognition = new FakeRecognition();
+    const finals: string[] = [];
+    const stream = new WebSpeechRecognitionStream({
+      recognition,
+      restartDelayMs: 0,
+      finalResultGraceMs: 20,
+      onFinal: (transcript) => finals.push(transcript),
+    });
+    stream.start();
+    recognition.emitStart();
+    recognition.emitEnd();
+    expect(recognition.startCalls).toBe(1);
+
+    // WebKit can queue this callback after onend. It must still reach the
+    // consumer before the replacement recognition session starts.
+    recognition.emitResult(resultEvent([{ transcript: "明日の天気", isFinal: true }]));
+    expect(finals).toEqual(["明日の天気"]);
+    vi.advanceTimersByTime(19);
+    expect(recognition.startCalls).toBe(1);
+    vi.advanceTimersByTime(1);
+    vi.runOnlyPendingTimers();
+    expect(recognition.startCalls).toBe(2);
+  });
+
+  it("drains delayed results after stop or cancel even when onend is omitted", () => {
+    vi.useFakeTimers();
+    const recognition = new FakeRecognition();
+    const finals: string[] = [];
+    const stream = new WebSpeechRecognitionStream({
+      recognition,
+      finalResultGraceMs: 20,
+      onFinal: (transcript) => finals.push(transcript),
+    });
+    const stoppedResult = resultEvent([{ transcript: "停止前", isFinal: true }]);
+
+    stream.start();
+    recognition.emitStart();
+    stream.stop();
+    // This fake intentionally omits onend. A queued final result is still
+    // accepted during the finite stop drain and duplicate bookkeeping clears
+    // only after that window expires.
+    recognition.emitResult(stoppedResult);
+    expect(finals).toEqual(["停止前"]);
+    vi.advanceTimersByTime(20);
+    recognition.emitResult(stoppedResult);
+    expect(finals).toEqual(["停止前", "停止前"]);
+
+    const cancelledResult = resultEvent([{ transcript: "取消前", isFinal: true }]);
+    stream.start();
+    recognition.emitStart();
+    stream.cancel();
+    recognition.emitResult(cancelledResult);
+    expect(finals).toEqual(["停止前", "停止前", "取消前"]);
+    vi.advanceTimersByTime(20);
+    recognition.emitResult(cancelledResult);
+    expect(finals).toEqual(["停止前", "停止前", "取消前", "取消前"]);
   });
 
   it("aborts a recoverable WebKit session before restarting and ignores its late onend", () => {
@@ -521,7 +582,7 @@ describe("WebSpeechRecognitionStream", () => {
     expect(stream.state).toBe("starting");
     recognition.emitStart();
     recognition.emitEnd();
-    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(DEFAULT_WEB_SPEECH_FINAL_GRACE_MS + 20);
     expect(recognition.startCalls).toBe(3);
   });
 
@@ -601,6 +662,7 @@ describe("WebSpeechRecognitionStream", () => {
   });
 
   it("normalizes language, maxAlternatives, lifecycle failures, and dispose", () => {
+    vi.useFakeTimers();
     const recognition = new FakeRecognition();
     recognition.throwOnStart = new Error("busy");
     const errors: WebSpeechRecognitionError[] = [];
@@ -627,6 +689,7 @@ describe("WebSpeechRecognitionStream", () => {
     stream.start();
     stream.stop();
     expect(errors.map((error) => error.code)).toEqual(["lifecycle-start", "lifecycle-stop"]);
+    vi.advanceTimersByTime(DEFAULT_WEB_SPEECH_FINAL_GRACE_MS);
     recognition.throwOnAbort = new Error("abort failed");
     stream.start();
     stream.cancel();

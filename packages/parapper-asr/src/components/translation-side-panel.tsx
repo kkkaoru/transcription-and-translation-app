@@ -7,7 +7,15 @@ import {
   zeroMinHeight,
   zeroMinWidth,
 } from "../lib/layout-styles";
-import { recognitionSourceRowId } from "../lib/recognition-source";
+import {
+  recognitionTextRowId,
+  translationTextRowId,
+} from "../lib/recognition-source";
+import {
+  eventGeneration,
+  MAX_RECOGNITION_LOG_ROWS,
+  translationTextEventKey,
+} from "../lib/recognition-state";
 import { notificationColor } from "../lib/theme";
 import type {
   AsrLanguage,
@@ -47,6 +55,7 @@ type PendingTranslationEntry = {
   id: string;
   source_recognition_id: string;
   source: RecognitionSourceMeta;
+  generation: number;
   target_lang: string;
 };
 
@@ -193,7 +202,7 @@ const TranslationLogEntryRow: React.FC<{ entry: TranslationLogEntry }> = ({
   );
 };
 
-const buildTranslationLogRows = (
+export const buildTranslationLogRows = (
   config: ParapperConfig,
   recognizedTexts: RecognizedTextEvent[],
   translatedTexts: TranslationTextEvent[],
@@ -215,11 +224,11 @@ const buildTranslationLogRows = (
       if (shouldReservePlaceholderTranslationRow(config, recognized)) {
         return [
           {
-            rowId: recognitionSourceRowId(recognized.source),
+            rowId: recognitionTextRowId(recognized),
             entries: [
               {
                 kind: "placeholder",
-                id: `${recognitionSourceRowId(recognized.source)}|placeholder`,
+                id: `${recognitionTextRowId(recognized)}|placeholder`,
               },
             ],
           },
@@ -228,17 +237,17 @@ const buildTranslationLogRows = (
       return [];
     }
 
-    const rowId = recognitionSourceRowId(recognized.source);
+    const rowId = recognitionTextRowId(recognized);
     const showPending = shouldShowPendingTranslationForRecognizedText(
       config,
       recognized,
     );
     const entries = targets.flatMap((target_lang): TranslationLogEntry[] => {
       const translated = translatedBySourceTarget.get(
-        translationSourceTargetKey(recognized.source, target_lang),
+        translationSourceTargetKey(recognized, target_lang),
       );
       if (translated) {
-        usedTranslationIds.add(translated.id);
+        usedTranslationIds.add(translationTextEventKey(translated));
         return [{ kind: "ready", event: translated }];
       }
       if (!showPending) {
@@ -250,6 +259,7 @@ const buildTranslationLogRows = (
           id: `${rowId}|${target_lang}`,
           source_recognition_id: recognized.id,
           source: recognized.source,
+          generation: eventGeneration(recognized),
           target_lang,
         },
       ];
@@ -270,9 +280,12 @@ const buildTranslationLogRows = (
   const rowsById = new Map(rows.map((row) => [row.rowId, row]));
 
   const orphanRows = translatedTexts
-    .filter((translated) => !usedTranslationIds.has(translated.id))
+    .filter(
+      (translated) =>
+        !usedTranslationIds.has(translationTextEventKey(translated)),
+    )
     .reduce<Map<string, TranslationLogEntry[]>>((grouped, translated) => {
-      const rowId = recognitionSourceRowId(translated.source);
+      const rowId = translationTextRowId(translated);
       const entries = grouped.get(rowId) ?? [];
       entries.push({ kind: "ready", event: translated });
       grouped.set(rowId, entries);
@@ -288,7 +301,11 @@ const buildTranslationLogRows = (
     }
   }
 
-  return rows;
+  const requestedLimit =
+    config.recognition_log_limit === null
+      ? MAX_RECOGNITION_LOG_ROWS
+      : Math.max(1, config.recognition_log_limit ?? 500);
+  return rows.length > requestedLimit ? rows.slice(-requestedLimit) : rows;
 };
 
 const shouldShowPendingTranslationForRecognizedText = (
@@ -364,12 +381,12 @@ const translationLanguageFromAsrLanguage = (
 };
 
 const translationMapKey = (event: TranslationTextEvent) =>
-  translationSourceTargetKey(event.source, event.target_lang);
+  `${translationTextRowId(event)}|${event.target_lang}`;
 
 const translationSourceTargetKey = (
-  source: RecognitionSourceMeta,
+  event: RecognizedTextEvent,
   targetLang: string,
-) => `${recognitionSourceRowId(source)}|${targetLang}`;
+) => `${recognitionTextRowId(event)}|${targetLang}`;
 
-const translationEntryKey = (entry: TranslationLogEntry) =>
-  entry.kind === "ready" ? entry.event.id : entry.id;
+export const translationEntryKey = (entry: TranslationLogEntry) =>
+  entry.kind === "ready" ? translationTextEventKey(entry.event) : entry.id;

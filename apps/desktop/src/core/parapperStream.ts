@@ -199,6 +199,8 @@ export class ParapperRecognitionStream {
   private socket: WebSocketLike | null = null;
   private started = false;
   private startPromise: Promise<void> | null = null;
+  /** Settles a startup that is still awaiting session.ready. */
+  private failPendingStart: ((error: Error) => void) | null = null;
   private stopPromise: Promise<void> | null = null;
   private settled = false;
   private activeErrorReported = false;
@@ -248,6 +250,7 @@ export class ParapperRecognitionStream {
           return;
         }
         resolved = true;
+        this.failPendingStart = null;
         clearTimer();
         this.started = true;
         resolve();
@@ -257,10 +260,12 @@ export class ParapperRecognitionStream {
           return;
         }
         resolved = true;
+        this.failPendingStart = null;
         clearTimer();
         this.closeSocket();
         reject(error);
       };
+      this.failPendingStart = fail;
       let socket: WebSocketLike;
       try {
         socket = new this.webSocketConstructor(this.url);
@@ -306,7 +311,15 @@ export class ParapperRecognitionStream {
         if (message.type === "error") {
           const code = nonEmptyString(message.code) ?? "parapper_protocol_error";
           const detail = nonEmptyString(message.message) ?? "Parapper rejected the session";
-          fail(streamError(detail, code));
+          const error = streamError(detail, code);
+          if (resolved && this.started && !this.settled) {
+            // The startup promise is already resolved, so `fail()` would be a
+            // no-op here. Surface a protocol failure from an active session
+            // through the same one-shot owner callback as transport errors.
+            this.reportActiveError(error);
+          } else {
+            fail(error);
+          }
           return;
         }
         if (message.session_id !== this.sessionId) {
@@ -377,7 +390,18 @@ export class ParapperRecognitionStream {
       return this.stopPromise;
     }
     const socket = this.socket;
-    if (!this.started || !socket || this.settled) {
+    if (!this.started) {
+      // `stop()` is also used while start_capture is still awaiting
+      // session.ready. Detaching the socket handlers alone used to leave that
+      // start Promise pending until its timeout (or forever in fake hosts).
+      this.settled = true;
+      this.failPendingStart?.(
+        streamError("Parapper recognition start was cancelled before session.ready", "cancelled"),
+      );
+      this.closeSocket();
+      return Promise.resolve();
+    }
+    if (!socket || this.settled) {
       this.closeSocket();
       return Promise.resolve();
     }
@@ -405,16 +429,20 @@ export class ParapperRecognitionStream {
         // Keep dispatching turn.partial/final through the normal handler, then
         // consume only the terminal session.done control frame here.
         const message = parseMessage(event.data);
-        if (message?.type === "session.done" && message.session_id === this.sessionId) {
+        const isCurrentProtocolMessage =
+          finiteNumber(message?.version, UNKNOWN_PROTOCOL_VERSION) ===
+            PARAPPER_STREAM_PROTOCOL_VERSION && message?.session_id === this.sessionId;
+        if (message?.type === "session.done" && isCurrentProtocolMessage) {
           finish();
           return;
         }
-        previousMessage?.(event);
-        if (message?.type === "error") {
+        if (message?.type === "error" && isCurrentProtocolMessage) {
           const code = nonEmptyString(message.code) ?? "parapper_protocol_error";
           const detail = nonEmptyString(message.message) ?? "Parapper rejected session.stop";
           finish(streamError(detail, code));
+          return;
         }
+        previousMessage?.(event);
       };
       const previousClose = socket.onclose;
       socket.onclose = (event) => {
@@ -450,6 +478,16 @@ export class ParapperRecognitionStream {
 
   public cancel(): void {
     const socket = this.socket;
+    if (!this.started) {
+      // See stop(): cancel must resolve the pending startup first, before the
+      // close detaches its event handlers.
+      this.settled = true;
+      this.failPendingStart?.(
+        streamError("Parapper recognition start was cancelled before session.ready", "cancelled"),
+      );
+      this.closeSocket();
+      return;
+    }
     if (!socket || socket.readyState !== SOCKET_OPEN || this.settled) {
       this.closeSocket();
       return;

@@ -712,6 +712,82 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("does not let a delayed same-id interim overwrite a final source", () => {
+    const final = caption({
+      id: "parapper:session:1:1",
+      sourceText: "明日は晴れです",
+      startedAt: 1_360,
+      receivedAt: 2_020,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const delayedInterim = caption({
+      id: "parapper:session:1:1",
+      sourceText: "あしたは",
+      startedAt: 2_000,
+      receivedAt: 2_030,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(final, delayedInterim)).toBeNull();
+  });
+
+  it("uses receivedAt to reject an older cross-id caption when startedAt is zero", () => {
+    const current = caption({
+      id: "u-current",
+      sourceText: "新しい文",
+      startedAt: 0,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const stale = caption({
+      id: "u-stale",
+      sourceText: "古い文",
+      startedAt: 0,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, stale)).toBeNull();
+  });
+
+  it("still merges a same-id translation-only payload after a final source", () => {
+    const current = caption({
+      id: "u-final",
+      sourceText: "表示中の原文",
+      startedAt: 10,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const translationOnly = caption({
+      id: "u-final",
+      sourceText: "",
+      translationText: "Visible source",
+      startedAt: 10,
+      receivedAt: 20,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, translationOnly)).toEqual({
+      ...current,
+      translationText: "Visible source",
+      receivedAt: 20,
+      stage: "translation",
+      sequence: 1,
+    });
+  });
+
   it("does not regress a same-id rolling revision to a shorter prefix", () => {
     const current = caption({
       id: "u-1",

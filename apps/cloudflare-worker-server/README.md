@@ -125,7 +125,7 @@ The expected production value is `true`. A `false` value means the deployment
 is still anonymous and must not be advertised as a public service.
 
 `sourceText` and `vibratoInput` are each limited to 4,096 UTF-8 bytes. A JSON
-frame is limited to 8,192 bytes. Conversion timeout defaults to 250 ms and can
+frame is limited to 8,192 bytes. Conversion timeout defaults to 1,000 ms and can
 be tuned with `AZOOKEY_TIMEOUT_MS` (25–2,000 ms). Invalid, oversized, binary,
 unauthenticated, and timed-out messages receive explicit error codes without
 closing a healthy session.
@@ -139,7 +139,19 @@ filesystem access, or `wasm-bindgen`, so the Worker can import one small
 `louds/**`, `mm.binary`, and `cb/*.binary` files into
 `public/azookey/system.azkdict.gz`; it does not replace the dictionary with a
 phrase-specific table or custom homonym rules. `dev`, `typecheck`, `test`, and
-`deploy` regenerate this deterministic asset automatically.
+`deploy` build or verify this deterministic asset automatically.
+
+Before publishing or reviewing a clean checkout, run
+`bun run assets:verify`. It checks the pinned submodule gitlinks, the archive
+hash, and byte-identical Vibrato dictionary/WASM copies. If the AzooKey source
+submodule is not initialized, `build:wasm` verifies and reuses the checked-in
+archive rather than silently producing a different dictionary; initialize the
+submodule with `git submodule update --init submodules/azooKey_dictionary_storage`
+when a source rebuild is required.
+
+The bundled IPADIC dictionary is distributed with its upstream `COPYING` and
+`NOTICE` files in `public/vibrato/`; the build script refreshes both copies
+from `assets/vibrato/ipadic-mecab-2_7_0/` together with the dictionary bytes.
 
 The asset is pinned to `azooKey_dictionary_storage` revision
 `4d418525b090cf49c219819d05a7e3cc2a4346eb` (`v3.1.0-beta.15`) and its checked-in

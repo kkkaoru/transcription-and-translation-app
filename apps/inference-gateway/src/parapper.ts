@@ -108,8 +108,16 @@ const standardParapperText = (message: ParapperMessage): string | null => {
 const NO_SPEECH_MESSAGE =
   /(transcript[\s_-]*missing|without[\s_-]*a[\s_-]*final[\s_-]*transcript|no[\s_-]*final[\s_-]*transcript|no[\s_-]*transcript|empty[\s_-]*transcript|no[\s_-]*speech)/i;
 
-const isNoSpeechMessage = (message: ParapperMessage): boolean =>
-  NO_SPEECH_MESSAGE.test(JSON.stringify(message));
+const isNoSpeechMessage = (message: ParapperMessage): boolean => {
+  // Only the protocol's error code/message fields describe the error. Other
+  // fields (for example a `text` or diagnostic payload) may legitimately
+  // contain words such as "no speech" while the actual failure is fatal. Do
+  // not turn those unrelated fields into a successful empty transcript.
+  const detail = [message.code, message.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return NO_SPEECH_MESSAGE.test(detail);
+};
 
 const parseMessage = (data: WebSocket.RawData): ParapperMessage | null => {
   try {
@@ -191,7 +199,7 @@ export const transcribeWithParapper = (
     let finished = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let sendStarted = false;
-    let finalText: string | null = null;
+    let finalTranscript: PartialTranscript | null = null;
     let lastPartial: PartialTranscript | null = null;
     let partialCount = 0;
     let framesSent = 0;
@@ -199,6 +207,23 @@ export const transcribeWithParapper = (
     let readyAt: number | null = null;
     let stopAt: number | null = null;
     let finalAt: number | null = null;
+
+    /**
+     * `session.done` can close a short HTTP window after a turn finalized and
+     * a later turn only produced an interim. Select by the sidecar cursor, not
+     * by result kind: otherwise the older final discards the user's newest
+     * speech. When cursor metadata is absent, preserve the historical final
+     * preference because arrival order is then unknowable.
+     */
+    const latestUsableTranscript = (): PartialTranscript | null => {
+      if (!finalTranscript) {
+        return lastPartial;
+      }
+      if (!lastPartial || comparePartialCursor(finalTranscript, lastPartial) >= ORDER_EQUAL) {
+        return finalTranscript;
+      }
+      return lastPartial;
+    };
 
     const emitLog = (message: string, fields?: Record<string, unknown>): void => {
       // A diagnostic logger must never be able to strand the capture Promise.
@@ -276,7 +301,7 @@ export const transcribeWithParapper = (
           bytesSent,
           partialCount,
           lastPartialChars: lastPartial?.text.length ?? 0,
-          hasFinal: finalText !== null,
+          hasFinal: finalTranscript !== null,
           error: result.error.message,
         });
         reject(result.error);
@@ -334,6 +359,26 @@ export const transcribeWithParapper = (
     };
 
     timer = setTimeout(() => {
+      const latest = latestUsableTranscript();
+      if (latest) {
+        // The sidecar may still be doing work after the HTTP window expires.
+        // Return the best result already received, then make a best-effort
+        // cancellation before closing the transport so it does not keep an
+        // orphaned recognition session alive. An explicit abort/protocol
+        // error settles through its own handler and never reaches this path.
+        sendCancelControl();
+        emitLog("session timed out using latest transcript", {
+          sessionId,
+          pcmBytes: pcm.byteLength,
+          framesSent,
+          partialCount,
+          transcriptChars: latest.text.length,
+          transcriptRevision: latest.revision,
+          transcriptSegmentId: latest.segmentId,
+        });
+        settle({ text: latest.text });
+        return;
+      }
       settle({
         error: new GatewayError(
           HTTP_GATEWAY_TIMEOUT,
@@ -357,6 +402,24 @@ export const transcribeWithParapper = (
         return;
       }
       const detail = reason?.toString().trim();
+      const latest = latestUsableTranscript();
+      if (latest) {
+        // A sidecar restart or transport close can race the finalization
+        // acknowledgement. Match `session.done`'s cursor ladder so a newer
+        // partial is not discarded in favour of an older final. Explicit
+        // protocol errors and caller aborts settle first and set `finished`,
+        // preserving their existing error contract.
+        emitLog("session closed using latest transcript", {
+          sessionId,
+          code,
+          reason: detail || null,
+          transcriptChars: latest.text.length,
+          transcriptRevision: latest.revision,
+          transcriptSegmentId: latest.segmentId,
+        });
+        settle({ text: latest.text });
+        return;
+      }
       settle({
         error: new GatewayError(
           HTTP_BAD_GATEWAY,
@@ -377,18 +440,19 @@ export const transcribeWithParapper = (
       }
       if (message.type === "error") {
         if (isNoSpeechMessage(message)) {
-          if (lastPartial) {
+          const latest = latestUsableTranscript();
+          if (latest) {
             emitLog("Parapper reported no speech; using latest partial transcript", {
               sessionId,
               code: message.code ?? null,
               message: message.message ?? null,
               pcmBytes: pcm.byteLength,
               framesSent,
-              partialChars: lastPartial.text.length,
-              partialRevision: lastPartial.revision,
-              partialSegmentId: lastPartial.segmentId,
+              transcriptChars: latest.text.length,
+              transcriptRevision: latest.revision,
+              transcriptSegmentId: latest.segmentId,
             });
-            settle({ text: lastPartial.text });
+            settle({ text: latest.text });
           } else {
             emitLog("Parapper reported no speech (soft empty)", {
               sessionId,
@@ -448,7 +512,6 @@ export const transcribeWithParapper = (
         // can soft-return "" (same as no turn.final at all).
         const candidateText = standardParapperText(message);
         if (candidateText === null) {
-          finalText = null;
           return;
         }
         const candidate: PartialTranscript = {
@@ -460,7 +523,7 @@ export const transcribeWithParapper = (
           turnSessionId: numericCursor(message.turn_session_id),
         };
         if (lastPartial === null || comparePartialCursor(candidate, lastPartial) >= 0) {
-          finalText = candidateText;
+          finalTranscript = candidate;
         } else {
           emitLog("stale final transcript ignored", {
             sessionId,
@@ -472,19 +535,22 @@ export const transcribeWithParapper = (
         // A short window may have a usable interim result but no final because
         // stop raced the sidecar's finalization. Prefer that result over an
         // empty transcript; it is still normalized by the desktop pipeline.
-        if (finalText) {
-          settle({ text: finalText });
-        } else if (lastPartial) {
+        const latest = latestUsableTranscript();
+        if (latest) {
+          if (finalTranscript && latest === finalTranscript) {
+            settle({ text: finalTranscript.text });
+            return;
+          }
           emitLog("session done using latest partial transcript (final missing)", {
             sessionId,
             pcmBytes: pcm.byteLength,
             framesSent,
             partialCount,
-            partialChars: lastPartial.text.length,
-            partialRevision: lastPartial.revision,
-            partialSegmentId: lastPartial.segmentId,
+            partialChars: latest.text.length,
+            partialRevision: latest.revision,
+            partialSegmentId: latest.segmentId,
           });
-          settle({ text: lastPartial.text });
+          settle({ text: latest.text });
         } else {
           // No-speech / VAD-silent windows complete without a usable partial or
           // final. Return empty text so OpenAI-shaped clients soft-skip instead

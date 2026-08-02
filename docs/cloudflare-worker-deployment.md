@@ -46,10 +46,17 @@ printing the value; enter a long random token using your password manager or a
 local generator. Do not put the token in a command argument or shell history.
 
 ```sh
+git submodule update --init submodules/azooKey_dictionary_storage
+bun run assets:verify
 cd apps/cloudflare-worker-server && bun run build:wasm && cd ../..
 wrangler secret put AZOOKEY_API_TOKEN --config apps/cloudflare-worker-server/wrangler.jsonc
 bun run worker:deploy
 ```
+
+The checked-in archive is content-addressed, so a clean clone may run
+`build:wasm` before initializing the dictionary submodule; it will verify and
+reuse that archive. Initialize the pinned submodule as shown above whenever
+the archive itself must be regenerated.
 
 If a remote ASR service is enabled, set its URL as a non-secret variable and
 its bearer separately:

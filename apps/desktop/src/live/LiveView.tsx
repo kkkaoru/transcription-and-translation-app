@@ -217,8 +217,8 @@ export const LiveView = ({
             className={`primary-button ${capturing ? "danger" : ""}`}
             type="button"
             onClick={onToggleCapture}
-            disabled={starting}
           >
+            {/* Startup is cancellable; keep Stop available while status is starting. */}
             <span className="record-dot" />
             {capturing || starting ? t("live.stop") : t("live.start")}
           </button>

@@ -122,6 +122,9 @@ const ja = {
   "settings.silenceGate": "無音判定しきい値（RMS）",
   "settings.silenceGateHint":
     "audio.silenceGateDb。適応ノイズフロアをオフにしたときだけ使う固定ゲートです。値を上げると小さな声も無音扱いになります。",
+  "settings.silenceGateAdaptiveDisabled":
+    "現在は適応ノイズフロアが有効なため、この値は使われません。固定ゲートに切り替えると有効になります。",
+  "settings.silenceGateAdaptiveLabel": "適応ゲート有効（固定値は待機）",
   "settings.vadInterval": "VAD区間（sidecar）",
   "settings.vadIntervalHint":
     "audio.vadIntervalMs。Parapper/Sileroが音声区間を判定する間隔です。保存後、アプリ再起動時にsidecarへ反映します。",
@@ -134,7 +137,7 @@ const ja = {
   "settings.adaptiveNoiseFloorOn": "有効",
   "settings.noiseSuppression": "ノイズキャンセリング",
   "settings.noiseSuppressionHint":
-    "ブラウザのノイズ抑制・エコーキャンセルを使います。オフにすると未加工キャプチャ（AGCは維持）になります。",
+    "ブラウザのノイズ抑制・エコーキャンセルを使います。オフにすると未加工キャプチャ（AGCは維持）になります。配信中に変更するとマイクを再接続して反映します。",
   "settings.noiseSuppressionOn": "有効（推奨）",
   "settings.overlayEyebrow": "OVERLAY LAYOUT",
   "settings.overlayTitle": "字幕レイアウト",
@@ -204,6 +207,10 @@ const ja = {
     "選択したマイクを利用できません。別のデバイスを選択してください。",
   "message.microphoneTrackEnded":
     "マイクトラックが終了しました。デバイスが切断された可能性があります。",
+  "message.microphoneTrackMuted":
+    "マイク入力が一時的にミュートされています。入力デバイスを確認してください。",
+  "message.audioChunkDeliveryFailed": "音声チャンクを字幕処理へ渡せませんでした。",
+  "message.parapperTransportFailed": "Parapper 音声ストリームへの送信に失敗しました。",
   "message.webSpeechUnsupported":
     "このデスクトップ環境ではWeb Speech APIは利用できません。別の認識モードを選択してください。",
   "model.parapper.label": "Parapper ASR / 日本語",
@@ -296,6 +303,7 @@ const ja = {
   "debug.captionOrder": "表示順",
   "debug.chunkMs": "チャンク",
   "debug.silenceGate": "無音ゲート",
+  "debug.adaptiveNoiseFloor": "適応ノイズフロア",
   "debug.noiseSuppression": "ノイズ抑制",
   "debug.on": "オン",
   "debug.off": "オフ",
@@ -524,6 +532,9 @@ const en: Record<MessageKey, string> = {
   "settings.silenceGate": "Silence threshold (RMS)",
   "settings.silenceGateHint":
     "audio.silenceGateDb. Used as the fixed gate only when adaptive noise-floor gating is off. Higher values classify quiet speech as silence.",
+  "settings.silenceGateAdaptiveDisabled":
+    "Adaptive noise-floor gating is enabled, so this value is currently inactive. Turn adaptive gating off to use it.",
+  "settings.silenceGateAdaptiveLabel": "adaptive gate active (fixed value idle)",
   "settings.vadInterval": "VAD interval (sidecar)",
   "settings.vadIntervalHint":
     "audio.vadIntervalMs. How often Parapper/Silero checks speech activity. Saved changes apply to the sidecar on the next app launch.",
@@ -536,7 +547,7 @@ const en: Record<MessageKey, string> = {
   "settings.adaptiveNoiseFloorOn": "Enabled",
   "settings.noiseSuppression": "Noise cancellation",
   "settings.noiseSuppressionHint":
-    "Uses the browser’s noise suppression and echo cancellation. Turn off for unprocessed capture (AGC stays on).",
+    "Uses the browser’s noise suppression and echo cancellation. Turn off for unprocessed capture (AGC stays on). Changing it during capture reconnects the microphone to apply the new constraint.",
   "settings.noiseSuppressionOn": "Enabled (recommended)",
   "settings.overlayEyebrow": "OVERLAY LAYOUT",
   "settings.overlayTitle": "Caption layout",
@@ -604,6 +615,9 @@ const en: Record<MessageKey, string> = {
   "message.microphoneBusy": "The microphone is being used by another application.",
   "message.microphoneConstraint": "The selected microphone is unavailable. Select another device.",
   "message.microphoneTrackEnded": "Microphone track ended. The device may have been disconnected.",
+  "message.microphoneTrackMuted": "Microphone input is temporarily muted. Check the input device.",
+  "message.audioChunkDeliveryFailed": "Could not deliver an audio chunk to caption processing.",
+  "message.parapperTransportFailed": "Could not send audio to the Parapper stream.",
   "message.webSpeechUnsupported":
     "Web Speech API is not available in this desktop environment. Please select a different recognition mode.",
   "model.parapper.label": "Parapper ASR / Japanese",
@@ -697,6 +711,7 @@ const en: Record<MessageKey, string> = {
   "debug.captionOrder": "Order",
   "debug.chunkMs": "Chunk",
   "debug.silenceGate": "Silence gate",
+  "debug.adaptiveNoiseFloor": "Adaptive floor",
   "debug.noiseSuppression": "Noise cancel",
   "debug.on": "on",
   "debug.off": "off",

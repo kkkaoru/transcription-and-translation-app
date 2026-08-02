@@ -56,6 +56,11 @@ works.
 If the module, dictionary, or injected global is unavailable, browser mode
 fails explicitly — it does not silently fall back to Worker-only conversion.
 
+The checked-in IPADIC dictionary is accompanied by `public/vibrato/COPYING` and
+`public/vibrato/NOTICE`. These files are copied from the source asset directory
+by `node scripts/build-vibrato-wasm.mjs` and are checked by
+`bun run assets:verify`.
+
 ## Worker frame contract
 
 The comparison client sends one JSON text frame for each final Web Speech

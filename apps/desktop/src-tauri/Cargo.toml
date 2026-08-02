@@ -1,6 +1,6 @@
 [package]
 name = "kotoba-beacon"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local bilingual caption overlay for OBS"
 authors = ["Kotoba Beacon"]
 edition = "2021"
@@ -35,7 +35,10 @@ url = "2.5"
 [target.'cfg(windows)'.dependencies]
 spout2-rs = "0.1.1"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+# The vendored Syphon.framework is currently x86_64-only.  Do not link it into
+# an Apple-silicon build: the linker otherwise emits a non-fatal warning and
+# the runtime only falls back to the transparent overlay after startup.
+[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
 syphon-rs = "0.1.1"
 
 [features]

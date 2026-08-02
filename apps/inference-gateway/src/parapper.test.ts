@@ -232,6 +232,57 @@ describe("Parapper WebSocket adapter", () => {
     }
   });
 
+  it("salvages the newest transcript when the sidecar closes before session.done", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) return;
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          // The final belongs to an older turn. The later partial is the
+          // latest cursor and must survive the transport close.
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              turn_session_id: 1,
+              turn_id: 1,
+              revision: 4,
+              output_sequence: 10,
+              segment_id: 10,
+              text: "older final",
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.partial",
+              session_id: message.session_id,
+              turn_session_id: 1,
+              turn_id: 2,
+              revision: 0,
+              output_sequence: 11,
+              segment_id: 11,
+              text: "newer partial",
+            }),
+          );
+          socket.close(1001, "sidecar restarting");
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), { url: fixture.url, timeoutMs: 1_000 }),
+      ).resolves.toBe("newer partial");
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("settles a session-start send failure", async () => {
     const fixture = await startParapper(() => undefined);
     const originalSend = WebSocket.prototype.send;
@@ -411,6 +462,60 @@ describe("Parapper WebSocket adapter", () => {
     }
   });
 
+  it("uses the newest partial when a later turn has no final before session.done", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) return;
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          // A capture window may close after turn 1 finalized but while turn 2
+          // only has an interim. The latest protocol cursor is the useful
+          // transcript; returning the older final loses the newest speech.
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              turn_session_id: 1,
+              turn_id: 1,
+              revision: 1,
+              output_sequence: 10,
+              segment_id: 10,
+              text: "older final",
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.partial",
+              session_id: message.session_id,
+              turn_session_id: 1,
+              turn_id: 2,
+              revision: 0,
+              output_sequence: 11,
+              segment_id: 11,
+              text: "newer partial",
+            }),
+          );
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), { url: fixture.url, timeoutMs: 1_000 }),
+      ).resolves.toBe("newer partial");
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("turns Parapper errors and timeouts into useful gateway errors", async () => {
     const failing = await startParapper((socket) => {
       socket.on("message", (data: RawData, binary: boolean) => {
@@ -450,6 +555,46 @@ describe("Parapper WebSocket adapter", () => {
       });
     } finally {
       await Promise.all([failing.close(), timeout.close()]);
+    }
+  });
+
+  it("salvages a received final when the timeout races session.done", async () => {
+    let cancelReceived = false;
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) return;
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              turn_session_id: 2,
+              turn_id: 1,
+              revision: 1,
+              output_sequence: 2,
+              segment_id: 3,
+              text: "timeout final",
+            }),
+          );
+          // Keep the session open to force the adapter timeout path.
+        } else if (message.type === "session.cancel") {
+          cancelReceived = true;
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), { url: fixture.url, timeoutMs: 25 }),
+      ).resolves.toBe("timeout final");
+      await vi.waitFor(() => expect(cancelReceived).toBe(true));
+    } finally {
+      await fixture.close();
     }
   });
 
@@ -696,12 +841,9 @@ describe("Parapper WebSocket adapter", () => {
     const variants: Array<{
       code?: string;
       message?: string;
-      text?: string;
     }> = [
       { code: "no_speech", message: "no speech detected" },
       { code: "empty_transcript", message: "empty transcript" },
-      // Some sidecars omit both fields and only include a text explanation.
-      { text: "no speech" },
       { message: "Parapper completed without a final transcript" },
     ];
 
@@ -735,6 +877,39 @@ describe("Parapper WebSocket adapter", () => {
       } finally {
         await fixture.close();
       }
+    }
+  });
+
+  it("does not soften no-speech wording in unrelated error fields", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) return;
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          // `text` is not an error description. A fatal error carrying this
+          // diagnostic must retain the protocol-error contract.
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "error",
+              session_id: message.session_id,
+              code: "backend_unavailable",
+              text: "no speech result because the recognizer crashed",
+            }),
+          );
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), { url: fixture.url, timeoutMs: 1_000 }),
+      ).rejects.toMatchObject({ code: "backend_unavailable", status: 502 });
+    } finally {
+      await fixture.close();
     }
   });
 

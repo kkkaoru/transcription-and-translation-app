@@ -28,6 +28,12 @@ describe("Cloudflare deployment configuration", () => {
     expect(config.vars).not.toHaveProperty("VIBRATO_DICTIONARY_URL");
     expect(existsSync(new URL("../public/azookey/system.azkdict.gz", import.meta.url))).toBe(true);
     expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(true);
+    expect(readFileSync(new URL("../public/vibrato/COPYING", import.meta.url))).toEqual(
+      readFileSync(new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/COPYING", import.meta.url)),
+    );
+    expect(readFileSync(new URL("../public/vibrato/NOTICE", import.meta.url))).toEqual(
+      readFileSync(new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/NOTICE", import.meta.url)),
+    );
     expect(config.vars).not.toHaveProperty("AZOOKEY_API_TOKEN");
     expect(config.vars).not.toHaveProperty("ASR_API_TOKEN");
     expect(config.secrets?.required).toEqual(["AZOOKEY_API_TOKEN"]);

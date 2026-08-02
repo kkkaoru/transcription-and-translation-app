@@ -66,6 +66,12 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 const MAX_SPEECH_ALTERNATIVES = 1;
 const DEFAULT_RESTART_DELAY_MS = 50;
+/**
+ * WebKit can dispatch `end` before the final `result` already queued for the
+ * same recognition service. Keep that service's result buffers alive for a
+ * bounded window before clearing/restarting it.
+ */
+const FINAL_RESULT_GRACE_MS = 100;
 const MAX_RESTART_DELAY_MS = 2_000;
 const MAX_RESTART_EXPONENT = 5;
 
@@ -108,11 +114,14 @@ export class WebSpeechController {
 
   private readonly recognition: SpeechRecognitionLike | null;
   private readonly callbacks: SpeechRecognitionCallbacks;
-  private readonly finalSegments = new Map<number, string>();
-  private readonly emittedFinalSegments = new Map<number, string>();
+  private readonly finalSegmentsByGeneration = new Map<number, Map<number, string>>();
+  private readonly emittedFinalSegmentsByGeneration = new Map<number, Map<number, string>>();
   private state: SpeechRecognitionState = "idle";
+  private recognitionGeneration = 0;
+  private endingGeneration: number | null = null;
   private requestedStop = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly resultFlushTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private restartAttempt = 0;
   private ignoredEndEvents = 0;
   private disposed = false;
@@ -151,8 +160,8 @@ export class WebSpeechController {
         return;
       }
       this.requestedStop = false;
-      this.ignoredEndEvents = 0;
       this.restartAttempt = 0;
+      this.ensureResultBuffers(this.recognitionGeneration);
       this.setState("listening");
     };
     this.recognition.onend = () => {
@@ -163,10 +172,13 @@ export class WebSpeechController {
         this.ignoredEndEvents -= 1;
         return;
       }
+      const generation = this.recognitionGeneration;
+      this.endingGeneration = generation;
       this.setState("idle");
-      if (!this.requestedStop) {
-        this.scheduleRestart();
-      }
+      // Do not clear this generation's final buffers yet. A queued final
+      // result may be delivered after `end`, especially in WebKit. The flush
+      // callback restarts only after the bounded grace window has elapsed.
+      this.scheduleResultFlush(generation, !this.requestedStop);
     };
     this.recognition.onerror = (event) => {
       if (this.disposed) {
@@ -212,18 +224,34 @@ export class WebSpeechController {
     }
     this.clearRestartTimer();
     this.requestedStop = false;
+    const preserveResultBuffers = this.state === "stopping" || this.resultFlushTimers.size > 0;
     if (this.state === "stopping" || this.state === "error") {
+      let aborted = false;
       try {
         this.recognition.abort();
+        aborted = true;
       } catch {
         // The state transition below is the fallback for a service already
         // unwinding after a network/permission failure.
       }
-      this.ignoredEndEvents += 1;
+      // Only a successful abort guarantees that the next end event belongs
+      // to the superseded service. If abort throws, the real end event must
+      // still drive the normal restart/state transition.
+      if (aborted) {
+        this.ignoredEndEvents += 1;
+      }
       this.setState("idle");
     }
-    this.finalSegments.clear();
-    this.emittedFinalSegments.clear();
+    // A prior service may still have a queued final result. Advance the
+    // generation without clearing older buffers; its flush timer owns the
+    // eventual cleanup. This keeps a rapid stop/start from dropping that
+    // result or attributing its de-duplication state to the new service.
+    if (!preserveResultBuffers) {
+      this.finalSegmentsByGeneration.clear();
+      this.emittedFinalSegmentsByGeneration.clear();
+    }
+    this.recognitionGeneration += 1;
+    this.ensureResultBuffers(this.recognitionGeneration);
     this.setState("starting");
     try {
       this.recognition.start();
@@ -232,15 +260,28 @@ export class WebSpeechController {
       this.reportError(
         error instanceof Error ? error.message : "Speech recognition could not start",
       );
+      // WebKit may throw while the previous recognition service is still
+      // unwinding. Treat that the same as its recoverable asynchronous error:
+      // keep the continuous session requested and retry on the normal bounded
+      // backoff rather than leaving the controller permanently errored.
+      if (!this.requestedStop) {
+        this.scheduleRestart();
+      }
     }
   }
 
   stop(): void {
-    if (!this.recognition || this.disposed || this.state === "idle" || this.state === "stopping") {
+    if (!this.recognition || this.disposed) {
       return;
     }
     this.clearRestartTimer();
     this.requestedStop = true;
+    // `end` can move the controller to idle while its bounded result-flush
+    // timer is still waiting. Marking the stop request even in idle prevents
+    // that timer from scheduling a restart after the user cancelled capture.
+    if (this.state === "idle" || this.state === "stopping") {
+      return;
+    }
     this.setState("stopping");
     try {
       this.recognition.stop();
@@ -258,6 +299,7 @@ export class WebSpeechController {
     }
     this.requestedStop = true;
     this.clearRestartTimer();
+    this.clearResultFlushTimers();
     this.disposed = true;
     try {
       this.recognition?.abort();
@@ -271,6 +313,8 @@ export class WebSpeechController {
       this.recognition.onerror = null;
       this.recognition.onresult = null;
     }
+    this.finalSegmentsByGeneration.clear();
+    this.emittedFinalSegmentsByGeneration.clear();
     this.setState("idle");
   }
 
@@ -281,8 +325,49 @@ export class WebSpeechController {
     }
   }
 
-  private scheduleRestart(): void {
-    if (this.disposed || !this.recognition || this.requestedStop || this.restartTimer !== null) {
+  private clearResultFlushTimers(): void {
+    for (const timer of this.resultFlushTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.resultFlushTimers.clear();
+  }
+
+  private ensureResultBuffers(generation: number): void {
+    if (!this.finalSegmentsByGeneration.has(generation)) {
+      this.finalSegmentsByGeneration.set(generation, new Map());
+    }
+    if (!this.emittedFinalSegmentsByGeneration.has(generation)) {
+      this.emittedFinalSegmentsByGeneration.set(generation, new Map());
+    }
+  }
+
+  private scheduleResultFlush(generation: number, restart: boolean): void {
+    if (this.disposed || !this.recognition || this.resultFlushTimers.has(generation)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.resultFlushTimers.delete(generation);
+      this.finalSegmentsByGeneration.delete(generation);
+      this.emittedFinalSegmentsByGeneration.delete(generation);
+      if (this.endingGeneration !== generation) {
+        return;
+      }
+      this.endingGeneration = null;
+      if (restart && !this.requestedStop && this.recognitionGeneration === generation) {
+        this.scheduleRestart(generation);
+      }
+    }, FINAL_RESULT_GRACE_MS);
+    this.resultFlushTimers.set(generation, timer);
+  }
+
+  private scheduleRestart(generation = this.recognitionGeneration): void {
+    if (
+      this.disposed ||
+      !this.recognition ||
+      this.requestedStop ||
+      this.restartTimer !== null ||
+      this.resultFlushTimers.has(generation)
+    ) {
       return;
     }
     const delay = Math.min(
@@ -292,7 +377,7 @@ export class WebSpeechController {
     this.restartAttempt += 1;
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      if (this.disposed || this.requestedStop) {
+      if (this.disposed || this.requestedStop || this.recognitionGeneration !== generation) {
         return;
       }
       this.start();
@@ -322,6 +407,13 @@ export class WebSpeechController {
   }
 
   private handleResult(event: SpeechRecognitionEventLike): void {
+    const generation = this.recognitionGeneration;
+    this.ensureResultBuffers(generation);
+    const finalSegments = this.finalSegmentsByGeneration.get(generation);
+    const emittedFinalSegments = this.emittedFinalSegmentsByGeneration.get(generation);
+    if (!finalSegments || !emittedFinalSegments) {
+      return;
+    }
     const interimSegments: string[] = [];
     const newFinalTexts: string[] = [];
     for (let index = 0; index < event.results.length; index += 1) {
@@ -334,21 +426,21 @@ export class WebSpeechController {
         continue;
       }
       if (result.isFinal) {
-        this.finalSegments.set(index, text);
-        if (this.emittedFinalSegments.get(index) !== text) {
-          this.emittedFinalSegments.set(index, text);
-          // Only emit the segment after the last committed value. This avoids
-          // submitting the same final transcript repeatedly on Chrome updates.
-          if (index >= event.resultIndex) {
-            newFinalTexts.push(text);
-          }
+        finalSegments.set(index, text);
+        if (emittedFinalSegments.get(index) !== text) {
+          emittedFinalSegments.set(index, text);
+          // Browsers can revise a previously committed final segment while
+          // reporting a later resultIndex. The segment map de-duplicates the
+          // same text, so every changed final (including one before
+          // resultIndex) must reach the consumer.
+          newFinalTexts.push(text);
         }
       } else {
         interimSegments.push(text);
       }
     }
 
-    const finalText = [...this.finalSegments.values()].join(" ").trim();
+    const finalText = [...finalSegments.values()].join(" ").trim();
     const interimText = interimSegments.join(" ").trim();
     try {
       this.callbacks.onTranscript?.({ finalText, interimText });

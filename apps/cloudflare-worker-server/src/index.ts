@@ -14,6 +14,7 @@ import {
   AZOOKEY_WS_PATH,
   type AzookeyFetcher,
   type AzookeyRequestDependencies,
+  azookeyDictionaryTimeoutMs,
   azookeyTimeoutMs,
   BROWSER_VIBRATO_MODE,
   HTTP_METHOD_NOT_ALLOWED,
@@ -30,6 +31,7 @@ export interface Env {
   ASR_UPSTREAM_URL?: string;
   AZOOKEY_API_TOKEN?: string;
   AZOOKEY_DICTIONARY_URL?: string;
+  AZOOKEY_DICTIONARY_TIMEOUT_MS?: string;
   AZOOKEY_TIMEOUT_MS?: string;
   WORKERS_AI_ASR_TIMEOUT_MS?: string;
   VIBRATO_UPSTREAM_URL?: string;
@@ -59,20 +61,31 @@ const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
 // workerd accepts. Tests use the protocol path literal instead of exporting a
 // string binding from the module entrypoint.
 const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
+const VIBRATO_COPYING_PATH = "/vibrato/COPYING";
+const VIBRATO_NOTICE_PATH = "/vibrato/NOTICE";
 const AZOOKEY_DICTIONARY_PATH = "/azookey/system.azkdict.gz";
-const WORKER_ASSET_ORIGIN = "https://worker-assets.invalid";
+const PUBLIC_ASSET_PATHS = new Set([
+  VIBRATO_DICTIONARY_PATH,
+  VIBRATO_COPYING_PATH,
+  VIBRATO_NOTICE_PATH,
+  AZOOKEY_DICTIONARY_PATH,
+]);
 const assetFetcherCache = new WeakMap<WorkerAssets, AzookeyFetcher>();
 
-const cachedAssetFetcher = (assets: WorkerAssets): AzookeyFetcher => {
+const cachedAssetFetcher = (assets: WorkerAssets, requestUrl: string): AzookeyFetcher => {
   const cached = assetFetcherCache.get(assets);
   if (cached) {
     return cached;
   }
+  // Asset bindings are deployment-scoped, not host-scoped. Keep one fetcher
+  // per binding so custom hostnames share the loaded dictionary, while using a
+  // real Worker origin rather than an invented URL for the initial request.
+  const origin = new URL(requestUrl).origin;
   const fetcher: AzookeyFetcher = (input, init) => {
     const assetRequest =
       input instanceof Request
         ? new Request(input, init)
-        : new Request(new URL(String(input), WORKER_ASSET_ORIGIN), init);
+        : new Request(new URL(String(input), origin), init);
     return assets.fetch(assetRequest);
   };
   assetFetcherCache.set(assets, fetcher);
@@ -194,10 +207,7 @@ export const createWorker = (
       return cors(new Response(null, { status: HTTP_NO_CONTENT }), env.CORS_ORIGIN);
     }
     const url = new URL(request.url);
-    if (
-      (url.pathname === VIBRATO_DICTIONARY_PATH || url.pathname === AZOOKEY_DICTIONARY_PATH) &&
-      env.ASSETS
-    ) {
+    if (env.ASSETS && PUBLIC_ASSET_PATHS.has(url.pathname)) {
       return env.ASSETS.fetch(request);
     }
     if (url.pathname === "/v1/azookey") {
@@ -226,6 +236,7 @@ export const createWorker = (
           dictionary: {
             configured: Boolean(env.AZOOKEY_DICTIONARY_URL?.trim()),
             transport: env.AZOOKEY_DICTIONARY_URL?.trim() ? "portable-wasm" : "builtin",
+            fetchTimeoutMs: azookeyDictionaryTimeoutMs(env),
             contract: "official AzooKey LOUDS/MM/CID caption dictionary",
           },
           vibrato: {
@@ -258,7 +269,7 @@ export const createWorker = (
     if (url.pathname === AZOOKEY_WS_PATH) {
       const fetcher = dependencies.fetcher ?? fetch;
       const assets = env.ASSETS;
-      const assetFetcher = assets ? cachedAssetFetcher(assets) : undefined;
+      const assetFetcher = assets ? cachedAssetFetcher(assets, request.url) : undefined;
       const vibratoDictionaryFetcher =
         dependencies.vibratoDictionaryFetcher ??
         (assetFetcher && env.VIBRATO_DICTIONARY_URL?.trim().startsWith("/")
@@ -269,14 +280,24 @@ export const createWorker = (
         (assetFetcher && env.AZOOKEY_DICTIONARY_URL?.trim().startsWith("/")
           ? assetFetcher
           : fetcher);
-      const response = await openAzookeySocket(request, env, {
-        ...dependencies,
-        fetcher,
-        vibratoDictionaryFetcher,
-        azookeyDictionaryFetcher,
-        wasmModule: dependencies.wasmModule ?? azookeyWasm,
-        vibratoWasmModule: dependencies.vibratoWasmModule ?? vibratoWasm,
-      });
+      let response: Response;
+      try {
+        response = await openAzookeySocket(request, env, {
+          ...dependencies,
+          fetcher,
+          vibratoDictionaryFetcher,
+          azookeyDictionaryFetcher,
+          wasmModule: dependencies.wasmModule ?? azookeyWasm,
+          vibratoWasmModule: dependencies.vibratoWasmModule ?? vibratoWasm,
+        });
+      } catch {
+        return cors(
+          json(HTTP_INTERNAL_SERVER_ERROR, {
+            error: { code: "azookey_runtime_failed", message: "AzooKey runtime is unavailable" },
+          }),
+          env.CORS_ORIGIN,
+        );
+      }
       // Reconstructing a Response drops the non-standard `webSocket` slot
       // required by the Workers runtime for a 101 upgrade. CORS is relevant
       // to the pre-upgrade HTTP errors, not to the upgraded socket itself.

@@ -9,7 +9,7 @@ import { transcribeWithParapper } from "./parapper.js";
 
 export interface GatewayDependencies {
   fetch?: typeof fetch;
-  transcribe?: (pcm: Uint8Array) => Promise<string>;
+  transcribe?: (pcm: Uint8Array, signal?: AbortSignal) => Promise<string>;
 }
 
 const MAX_PROXY_REQUEST_BYTES = MAX_AUDIO_BYTES + 64 * 1024;
@@ -50,14 +50,14 @@ const requestBody = async (request: IncomingMessage): Promise<Uint8Array> => {
   return new Uint8Array(Buffer.concat(chunks));
 };
 
-const toFetchRequest = async (request: IncomingMessage): Promise<Request> => {
+const toFetchRequest = async (request: IncomingMessage, signal: AbortSignal): Promise<Request> => {
   const method = request.method as string;
   const headers = requestHeaders(request);
   const url = `http://${headers.get("host") ?? "kotoba-beacon.local"}${request.url as string}`;
   if (method === "GET" || method === "HEAD") {
-    return new Request(url, { method, headers });
+    return new Request(url, { method, headers, signal });
   }
-  return new Request(url, { method, headers, body: await requestBody(request) });
+  return new Request(url, { method, headers, body: await requestBody(request), signal });
 };
 
 const writeFetchResponse = async (response: ServerResponse, result: Response): Promise<void> => {
@@ -99,25 +99,43 @@ export const createGatewayServer = (
 ): Server => {
   const transcribe =
     dependencies.transcribe ??
-    ((pcm: Uint8Array) => {
+    ((pcm: Uint8Array, signal?: AbortSignal) => {
       const apiKey = config.parapper.apiKeyEnv ? process.env[config.parapper.apiKeyEnv] : undefined;
-      return transcribeWithParapper(pcm, { ...config.parapper, ...(apiKey ? { apiKey } : {}) });
+      return transcribeWithParapper(pcm, {
+        ...config.parapper,
+        ...(apiKey ? { apiKey } : {}),
+        ...(signal ? { signal } : {}),
+      });
     });
   const handler = createGatewayFetchHandler(config, {
     transcribe,
     ...(dependencies.fetch ? { fetch: dependencies.fetch } : {}),
   });
   return createServer((request, response) => {
+    const requestAbort = new AbortController();
+    const abortRequest = (): void => {
+      requestAbort.abort();
+    };
     // Request/response stream errors are expected when the UI cancels a
     // capture or navigates away. Install no-op listeners so Node does not turn
     // the transport race into an uncaught process-level error.
+    request.once("aborted", abortRequest);
     request.once("error", () => {
+      abortRequest();
       if (!response.writableEnded && !response.destroyed) {
         response.destroy();
       }
     });
+    response.once("close", () => {
+      // `close` also fires after a normal response has finished. At that
+      // point the handler has already settled; only abort an in-flight request
+      // whose peer disappeared before we could write its response.
+      if (!response.writableEnded) {
+        abortRequest();
+      }
+    });
     response.once("error", () => undefined);
-    void toFetchRequest(request)
+    void toFetchRequest(request, requestAbort.signal)
       .then(handler)
       .then(async (result) => writeFetchResponse(response, result))
       .catch((error: unknown) => handleAdapterError(response, error));

@@ -1,4 +1,11 @@
-import { DEFAULT_AUDIO_CHUNK_MS, DEFAULT_SILENCE_GATE_DB } from "./defaults";
+import {
+  DEFAULT_AUDIO_CHUNK_MS,
+  DEFAULT_SILENCE_GATE_DB,
+  resolveChunkMs,
+  resolveSilenceGate,
+  type SilenceGateMode,
+} from "./defaults";
+import { isVerbosePipelineLogging } from "./pipelineStages";
 import type { AudioChunk, AudioInputDevice } from "./types";
 
 /** Parapper / Rust pipeline expects mono PCM at this rate regardless of hardware. */
@@ -20,6 +27,7 @@ export const PARTIAL_FLUSH_MIN_MS = 160;
  * keeps capture responsive while materially reducing main-thread wakeups.
  */
 export const AUDIO_WORKLET_FRAME_SAMPLES = 1_024;
+const WORKLET_FLUSH_TIMEOUT_MS = 100;
 export const SCRIPT_PROCESSOR_BUFFER_SIZE = 4_096;
 
 /**
@@ -483,6 +491,7 @@ export const passesAdaptiveSilenceGate = (
 
 export type MicrophoneConstraintMode =
   | "exact-device"
+  | "exact-device-relaxed"
   | "ideal-device"
   | "default"
   | "default-relaxed"
@@ -551,9 +560,16 @@ export const microphoneConstraintStrategies = (
       constraints: createMicrophoneConstraints(deviceId, processing),
     });
     strategies.push({
-      mode: "ideal-device",
-      constraints: createMicrophoneConstraints(deviceId, { idealDevice: true, ...processing }),
+      // Preserve the explicit device pin while relaxing browser processing
+      // flags. Falling back to { ideal } or default here can silently switch
+      // to a different microphone, which is worse than a visible failure.
+      mode: "exact-device-relaxed",
+      constraints: createMicrophoneConstraints(deviceId, {
+        relaxProcessing: true,
+        ...processing,
+      }),
     });
+    return strategies;
   }
   strategies.push({
     mode: "default",
@@ -624,7 +640,12 @@ export type AudioCaptureErrorCode =
   | "audio-context-failed"
   | "microphone-unavailable"
   | "microphone-track-ended"
-  | "audio-context-suspended";
+  | "microphone-track-muted"
+  | "audio-context-suspended"
+  /** A legacy/chunk callback rejected while capture was flushing or processing audio. */
+  | "audio-chunk-delivery-failed"
+  /** Continuous Parapper PCM delivery failed; this is not an AudioContext failure. */
+  | "parapper-transport-failed";
 
 export class AudioCaptureError extends Error {
   public readonly code: AudioCaptureErrorCode;
@@ -646,7 +667,7 @@ export class AudioCaptureError extends Error {
 
 export type AudioCaptureMode = "worklet" | "script-processor" | "none";
 
-export type SilenceGateMode = "adaptive" | "fixed";
+export type { SilenceGateMode } from "./defaults";
 
 export type AudioCaptureDiagnostics = {
   active: boolean;
@@ -657,7 +678,17 @@ export type AudioCaptureDiagnostics = {
   trackReadyState: string | null;
   trackLabel: string | null;
   trackMuted: boolean | null;
+  /** Number of mute lifecycle events observed for the active microphone track. */
+  trackMuteEvents: number;
+  lastTrackMuteAt: string | null;
   deviceIdRequested: string | null;
+  /** Device-list changes are diagnostic only; capture never silently reconnects. */
+  deviceChangeEvents: number;
+  lastDeviceChangeAt: string | null;
+  contextStateChanges: number;
+  /** Bounded best-effort resumes triggered by a suspended AudioContext. */
+  contextRecoveryAttempts: number;
+  lastContextStateChangeAt: string | null;
   /** Most recent RMS level in dBFS while capturing; null when idle. */
   lastRmsDb: number | null;
   /** RMS of the last chunk that passed the silence gate (pre-normalize). */
@@ -672,6 +703,8 @@ export type AudioCaptureDiagnostics = {
   fixedGateDb: number | null;
   chunksAccepted: number;
   chunksDroppedSilent: number;
+  /** Frames that could not be delivered to the continuous Parapper transport. */
+  streamFramesDropped: number;
   lastError: string | null;
   lastErrorCode: AudioCaptureErrorCode | string | null;
   lastErrorAt: string | null;
@@ -686,7 +719,14 @@ const emptyDiagnostics = (): AudioCaptureDiagnostics => ({
   trackReadyState: null,
   trackLabel: null,
   trackMuted: null,
+  trackMuteEvents: 0,
+  lastTrackMuteAt: null,
   deviceIdRequested: null,
+  deviceChangeEvents: 0,
+  lastDeviceChangeAt: null,
+  contextStateChanges: 0,
+  contextRecoveryAttempts: 0,
+  lastContextStateChangeAt: null,
   lastRmsDb: null,
   lastAcceptedRmsDb: null,
   lastAcceptedGain: null,
@@ -695,6 +735,7 @@ const emptyDiagnostics = (): AudioCaptureDiagnostics => ({
   fixedGateDb: null,
   chunksAccepted: 0,
   chunksDroppedSilent: 0,
+  streamFramesDropped: 0,
   lastError: null,
   lastErrorCode: null,
   lastErrorAt: null,
@@ -720,6 +761,14 @@ export const formatAudioCaptureDiagnostics = (
     diagnostics.active ? `encodeSr=${TARGET_SAMPLE_RATE}` : null,
     diagnostics.trackReadyState ? `track=${diagnostics.trackReadyState}` : null,
     diagnostics.trackMuted === true ? "muted" : null,
+    diagnostics.trackMuteEvents > 0 ? `muteEvents=${diagnostics.trackMuteEvents}` : null,
+    diagnostics.deviceChangeEvents > 0 ? `deviceChanges=${diagnostics.deviceChangeEvents}` : null,
+    diagnostics.contextStateChanges > 0
+      ? `contextChanges=${diagnostics.contextStateChanges}`
+      : null,
+    diagnostics.contextRecoveryAttempts > 0
+      ? `contextRecovery=${diagnostics.contextRecoveryAttempts}`
+      : null,
     diagnostics.lastRmsDb !== null && Number.isFinite(diagnostics.lastRmsDb)
       ? `rms=${diagnostics.lastRmsDb.toFixed(1)}dB`
       : null,
@@ -738,6 +787,7 @@ export const formatAudioCaptureDiagnostics = (
       : null,
     diagnostics.chunksAccepted > 0 ? `chunks=${diagnostics.chunksAccepted}` : null,
     diagnostics.chunksDroppedSilent > 0 ? `silent=${diagnostics.chunksDroppedSilent}` : null,
+    diagnostics.streamFramesDropped > 0 ? `streamDropped=${diagnostics.streamFramesDropped}` : null,
   ].filter(Boolean);
   return parts.join(" · ");
 };
@@ -886,12 +936,26 @@ export class MicrophoneCapture {
   private constraintMode: MicrophoneConstraintMode | null = null;
   private deviceIdRequested: string | null = null;
   private trackEndedListener: (() => void) | null = null;
+  private contextStateListener: (() => void) | null = null;
+  private deviceChangeListener: (() => void) | null = null;
+  private contextRecovery: Promise<void> | null = null;
+  private workletFlushResolve: (() => void) | null = null;
+  private workletFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private workletProcessorErrorReported = false;
   private disposed = false;
   private lastRmsDb: number | null = null;
   private lastAcceptedRmsDb: number | null = null;
   private lastAcceptedGain: number | null = null;
   private chunksAccepted = 0;
   private chunksDroppedSilent = 0;
+  private streamFramesDropped = 0;
+  private trackMuteEvents = 0;
+  private lastTrackMuteAt: string | null = null;
+  private deviceChangeEvents = 0;
+  private lastDeviceChangeAt: string | null = null;
+  private contextStateChanges = 0;
+  private contextRecoveryAttempts = 0;
+  private lastContextStateChangeAt: string | null = null;
   private levelEmitAt = 0;
   /** True once getUserMedia + AudioContext are held and ready for graph wiring. */
   private hardwareReady = false;
@@ -907,7 +971,14 @@ export class MicrophoneCapture {
       trackReadyState: track?.readyState ?? null,
       trackLabel: track?.label || null,
       trackMuted: track ? track.muted : null,
+      trackMuteEvents: this.trackMuteEvents,
+      lastTrackMuteAt: this.lastTrackMuteAt,
       deviceIdRequested: this.deviceIdRequested,
+      deviceChangeEvents: this.deviceChangeEvents,
+      lastDeviceChangeAt: this.lastDeviceChangeAt,
+      contextStateChanges: this.contextStateChanges,
+      contextRecoveryAttempts: this.contextRecoveryAttempts,
+      lastContextStateChangeAt: this.lastContextStateChangeAt,
       lastRmsDb: this.lastRmsDb,
       lastAcceptedRmsDb: this.lastAcceptedRmsDb,
       lastAcceptedGain: this.lastAcceptedGain,
@@ -916,6 +987,7 @@ export class MicrophoneCapture {
       fixedGateDb: this.gateMode === "fixed" ? this.silenceGateDb : null,
       chunksAccepted: this.chunksAccepted,
       chunksDroppedSilent: this.chunksDroppedSilent,
+      streamFramesDropped: this.streamFramesDropped,
       lastError: lastCaptureDiagnostics.lastError,
       lastErrorCode: lastCaptureDiagnostics.lastErrorCode,
       lastErrorAt: lastCaptureDiagnostics.lastErrorAt,
@@ -931,12 +1003,14 @@ export class MicrophoneCapture {
   public primeAudioContext(): void {
     this.disposed = false;
     if (this.context && this.context.state !== "closed") {
+      this.bindContextStateChange(this.context);
       if (this.context.state === "suspended") {
         void this.context.resume().catch(() => undefined);
       }
       return;
     }
     this.context = createAudioContext();
+    this.bindContextStateChange(this.context);
     if (this.context.state === "suspended") {
       void this.context.resume().catch(() => undefined);
     }
@@ -994,6 +1068,7 @@ export class MicrophoneCapture {
         this.stream = opened.stream;
         this.constraintMode = opened.mode;
         this.bindTrackEnded(this.stream);
+        this.bindDeviceChange();
         this.hardwareReady = true;
       }
 
@@ -1024,18 +1099,27 @@ export class MicrophoneCapture {
     this.streamPcmHandler = options?.streamPcmHandler ?? null;
     this.errorHandler = onError ?? null;
     this.levelHandler = onLevel ?? null;
-    this.chunkMs = chunkMs;
-    this.silenceGateDb = silenceGateDb;
+    this.chunkMs = resolveChunkMs(chunkMs);
+    const resolvedGate = resolveSilenceGate(options?.adaptiveGate, silenceGateDb);
+    this.silenceGateDb = resolvedGate.fixedGateDb ?? DEFAULT_SILENCE_GATE_DB;
     this.noiseSuppression = noiseSuppression;
-    // Adaptive noise-floor gating is the default; silenceGateDb only applies
-    // when the caller explicitly opts into the fixed gate.
-    this.gateMode = options?.adaptiveGate === false ? "fixed" : "adaptive";
+    // Adaptive noise-floor gating is the default; use the shared resolver so
+    // persisted settings and live capture cannot disagree on the active policy.
+    this.gateMode = resolvedGate.mode;
     this.adaptiveGate = createAdaptiveSilenceGate();
     this.lastRmsDb = null;
     this.lastAcceptedRmsDb = null;
     this.lastAcceptedGain = null;
     this.chunksAccepted = 0;
     this.chunksDroppedSilent = 0;
+    this.streamFramesDropped = 0;
+    this.trackMuteEvents = 0;
+    this.lastTrackMuteAt = null;
+    this.deviceChangeEvents = 0;
+    this.lastDeviceChangeAt = null;
+    this.contextStateChanges = 0;
+    this.contextRecoveryAttempts = 0;
+    this.lastContextStateChangeAt = null;
     this.levelEmitAt = 0;
     this.pending = new Float32Array(0);
     this.rollingContext.reset();
@@ -1101,18 +1185,34 @@ export class MicrophoneCapture {
   }
 
   public async stop(): Promise<void> {
+    // Return any sub-frame held inside the AudioWorklet before disabling input.
+    // Otherwise a short utterance ending between render quanta is discarded
+    // before the main-thread tail flush can preserve it.
+    await this.flushWorkletTail();
     this.disposed = true;
     // Stop accepting new worklet/script-processor frames, but keep the
     // current handler and context alive long enough to deliver a speech-aware
     // tail. The helper takes ownership of `pending` synchronously so a
     // concurrent stop() cannot flush the same samples twice.
-    await this.flushPendingPartial();
+    try {
+      await this.flushPendingPartial(1);
+    } catch (error) {
+      // A rejected final tail must be visible, but must never skip hardware
+      // cleanup. This method deliberately resolves after teardown below.
+      this.reportCaptureFailure(
+        error instanceof AudioCaptureError
+          ? error
+          : new AudioCaptureError("audio-chunk-delivery-failed", error),
+      );
+    }
     this.handler = null;
     this.streamPcmHandler = null;
     this.errorHandler = null;
     this.levelHandler = null;
     this.hardwareReady = false;
     this.unbindTrackEnded();
+    this.unbindDeviceChange();
+    this.unbindContextStateChange();
     this.teardownGraphNodes();
 
     for (const track of this.stream?.getTracks() ?? []) {
@@ -1138,6 +1238,8 @@ export class MicrophoneCapture {
     this.lastAcceptedGain = null;
     this.gateMode = "adaptive";
     this.adaptiveGate = createAdaptiveSilenceGate();
+    this.contextRecovery = null;
+    this.finishWorkletFlush();
 
     if (context) {
       try {
@@ -1152,19 +1254,49 @@ export class MicrophoneCapture {
     this.publishDiagnostics(lastCaptureDiagnostics.lastErrorCode ? undefined : null);
   }
 
+  private async flushWorkletTail(): Promise<void> {
+    const worklet = this.worklet;
+    if (!worklet) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.finishWorkletFlush();
+      this.workletFlushResolve = resolve;
+      this.workletFlushTimer = setTimeout(
+        () => this.finishWorkletFlush(),
+        WORKLET_FLUSH_TIMEOUT_MS,
+      );
+      try {
+        worklet.port.postMessage({ type: "flush" });
+      } catch {
+        this.finishWorkletFlush();
+      }
+    });
+  }
+
+  private finishWorkletFlush(): void {
+    if (this.workletFlushTimer !== null) {
+      clearTimeout(this.workletFlushTimer);
+      this.workletFlushTimer = null;
+    }
+    const resolve = this.workletFlushResolve;
+    this.workletFlushResolve = null;
+    resolve?.();
+  }
+
   /**
    * Send the final sub-window when it contains enough real audio to plausibly
    * contain speech. This intentionally reuses the active silence-gate policy;
    * stopping after a pause must not turn ambient tail noise into an ASR request.
    */
-  private async flushPendingPartial(): Promise<void> {
+  private async flushPendingPartial(minimumDurationMs = PARTIAL_FLUSH_MIN_MS): Promise<void> {
     const pending = this.pending;
     // Clear ownership before awaiting the handler. A re-entrant/concurrent
     // stop() then observes an empty tail and cannot emit a duplicate chunk.
     this.pending = new Float32Array(0);
     const handler = this.handler;
     const sampleRate = this.context?.sampleRate ?? TARGET_SAMPLE_RATE;
-    if (!handler || !shouldFlushPartialAudio(pending.length, sampleRate, PARTIAL_FLUSH_MIN_MS)) {
+    if (!handler || !shouldFlushPartialAudio(pending.length, sampleRate, minimumDurationMs)) {
       return;
     }
 
@@ -1203,9 +1335,8 @@ export class MicrophoneCapture {
           makeAudioChunk(normalized.samples, sampleRate, contextualDurationMs, { utteranceId }),
         ),
       );
-    } catch {
-      // A consumer failure must not leave microphone resources open. Existing
-      // full-window callbacks are fire-and-forget; keep stop() equally safe.
+    } catch (error) {
+      throw new AudioCaptureError("audio-chunk-delivery-failed", error);
     }
     this.publishDiagnostics(undefined);
   }
@@ -1251,6 +1382,9 @@ export class MicrophoneCapture {
       if (this.worklet?.port) {
         this.worklet.port.onmessage = null;
       }
+      if (this.worklet) {
+        this.worklet.onprocessorerror = null;
+      }
     } catch {
       // ignore
     }
@@ -1278,6 +1412,7 @@ export class MicrophoneCapture {
       // ignore
     }
     this.worklet = null;
+    this.workletProcessorErrorReported = false;
     this.processor = null;
     this.sink = null;
   }
@@ -1299,15 +1434,147 @@ export class MicrophoneCapture {
       this.publishDiagnostics(error);
       this.errorHandler?.(error);
     };
+    const onMute = () => {
+      if (this.disposed) {
+        return;
+      }
+      this.trackMuteEvents += 1;
+      this.lastTrackMuteAt = new Date().toISOString();
+      // Muting can be transient (for example, while macOS switches inputs), so
+      // record it without forcing the owner to stop a session that may recover.
+      this.publishDiagnostics(
+        new AudioCaptureError(
+          "microphone-track-muted",
+          track.label ? `track muted: ${track.label}` : "microphone track muted",
+        ),
+      );
+    };
+    const onUnmute = () => {
+      if (this.disposed) {
+        return;
+      }
+      this.lastTrackMuteAt = new Date().toISOString();
+      this.clearLastErrorIf("microphone-track-muted");
+      this.publishDiagnostics(undefined);
+    };
     track.addEventListener("ended", onEnded);
+    track.addEventListener("mute", onMute);
+    track.addEventListener("unmute", onUnmute);
     this.trackEndedListener = () => {
       track.removeEventListener("ended", onEnded);
+      track.removeEventListener("mute", onMute);
+      track.removeEventListener("unmute", onUnmute);
     };
   }
 
   private unbindTrackEnded(): void {
     this.trackEndedListener?.();
     this.trackEndedListener = null;
+  }
+
+  /** Publish AudioContext transitions and make one bounded resume attempt. */
+  private bindContextStateChange(context: AudioContext): void {
+    this.unbindContextStateChange();
+    const onStateChange = () => {
+      if (this.disposed || this.context !== context) {
+        return;
+      }
+      this.contextStateChanges += 1;
+      this.lastContextStateChangeAt = new Date().toISOString();
+      this.publishDiagnostics(undefined);
+      if (context.state === "closed") {
+        this.reportCaptureFailure(
+          new AudioCaptureError("audio-context-failed", "AudioContext closed unexpectedly"),
+        );
+        return;
+      }
+      if (context.state === "suspended") {
+        this.recoverSuspendedContext(context);
+      }
+    };
+    context.addEventListener("statechange", onStateChange);
+    this.contextStateListener = () => context.removeEventListener("statechange", onStateChange);
+  }
+
+  private unbindContextStateChange(): void {
+    this.contextStateListener?.();
+    this.contextStateListener = null;
+  }
+
+  private recoverSuspendedContext(context: AudioContext): void {
+    if (this.contextRecovery || this.disposed || this.context !== context) {
+      return;
+    }
+    this.contextRecoveryAttempts += 1;
+    this.contextRecovery = Promise.resolve()
+      .then(() => context.resume())
+      .then(() => {
+        if (this.disposed || this.context !== context) {
+          return;
+        }
+        if (context.state === "suspended") {
+          this.reportCaptureFailure(
+            new AudioCaptureError(
+              "audio-context-suspended",
+              "AudioContext remained suspended after lifecycle recovery",
+            ),
+          );
+          return;
+        }
+        this.publishDiagnostics(undefined);
+      })
+      .catch((error: unknown) => {
+        if (!this.disposed && this.context === context) {
+          this.reportCaptureFailure(new AudioCaptureError("audio-context-suspended", error));
+        }
+      })
+      .finally(() => {
+        if (this.context === context) {
+          this.contextRecovery = null;
+        }
+      });
+  }
+
+  /** Device changes are observable, but automatic reconnect would violate user intent. */
+  private bindDeviceChange(): void {
+    this.unbindDeviceChange();
+    const mediaDevices = typeof navigator === "undefined" ? null : navigator.mediaDevices;
+    if (!mediaDevices?.addEventListener) {
+      return;
+    }
+    const onDeviceChange = () => {
+      if (this.disposed) {
+        return;
+      }
+      this.deviceChangeEvents += 1;
+      this.lastDeviceChangeAt = new Date().toISOString();
+      this.publishDiagnostics(undefined);
+    };
+    mediaDevices.addEventListener("devicechange", onDeviceChange);
+    this.deviceChangeListener = () =>
+      mediaDevices.removeEventListener("devicechange", onDeviceChange);
+  }
+
+  private unbindDeviceChange(): void {
+    this.deviceChangeListener?.();
+    this.deviceChangeListener = null;
+  }
+
+  private reportCaptureFailure(error: AudioCaptureError): void {
+    this.publishDiagnostics(error);
+    this.errorHandler?.(error);
+  }
+
+  private clearLastErrorIf(code: AudioCaptureErrorCode): void {
+    if (lastCaptureDiagnostics.lastErrorCode !== code) {
+      return;
+    }
+    lastCaptureDiagnostics = {
+      ...lastCaptureDiagnostics,
+      lastError: null,
+      lastErrorCode: null,
+      lastErrorAt: null,
+    };
   }
 
   private publishDiagnostics(error: AudioCaptureError | null | undefined): void {
@@ -1347,6 +1614,16 @@ export class MicrophoneCapture {
             : FRAME_SIZE;
           this.frame = new Float32Array(this.frameSize);
           this.offset = 0;
+          this.port.onmessage = (event) => {
+            if (!event || !event.data || event.data.type !== 'flush') return;
+            if (this.offset > 0) {
+              const frame = this.frame.slice(0, this.offset);
+              this.port.postMessage(frame.buffer, [frame.buffer]);
+              this.frame = new Float32Array(this.frameSize);
+              this.offset = 0;
+            }
+            this.port.postMessage({ type: 'flushed' });
+          };
         }
         process(inputs) {
           const channel = inputs[0] && inputs[0][0];
@@ -1386,13 +1663,28 @@ export class MicrophoneCapture {
       channelCountMode: "explicit",
       processorOptions: { frameSize: AUDIO_WORKLET_FRAME_SAMPLES },
     });
-    this.worklet.port.onmessage = (event: MessageEvent<Float32Array | ArrayBuffer>) => {
-      // New worklet versions transfer an ArrayBuffer. Keep accepting a typed
-      // view for compatibility with cached/older modules in a running WebView.
-      if (event.data instanceof ArrayBuffer) {
-        this.acceptSamples(new Float32Array(event.data));
-      } else {
-        this.acceptSamples(event.data);
+    this.bindWorkletProcessorError(this.worklet);
+    this.worklet.port.onmessage = (
+      event: MessageEvent<Float32Array | ArrayBuffer | { type?: string }>,
+    ) => {
+      try {
+        if (event.data && typeof event.data === "object" && "type" in event.data) {
+          if (event.data.type === "flushed") {
+            this.finishWorkletFlush();
+          }
+          return;
+        }
+        // New worklet versions transfer an ArrayBuffer. Keep accepting a typed
+        // view for compatibility with cached/older modules in a running WebView.
+        if (event.data instanceof ArrayBuffer) {
+          this.acceptSamples(new Float32Array(event.data));
+        } else if (event.data instanceof Float32Array) {
+          this.acceptSamples(event.data);
+        }
+      } catch (error) {
+        // A message event is an audio callback boundary: report rather than
+        // allowing a malformed frame/consumer to escape into the WebView.
+        this.reportCaptureFailure(new AudioCaptureError("audio-chunk-delivery-failed", error));
       }
     };
     this.sink = this.context.createGain();
@@ -1402,14 +1694,43 @@ export class MicrophoneCapture {
     this.sink.connect(this.context.destination);
   }
 
+  /** Report a terminal AudioWorklet processor crash once for this node. */
+  private bindWorkletProcessorError(worklet: AudioWorkletNode): void {
+    this.workletProcessorErrorReported = false;
+    worklet.onprocessorerror = (event) => {
+      if (this.disposed || this.worklet !== worklet || this.workletProcessorErrorReported) {
+        return;
+      }
+      this.workletProcessorErrorReported = true;
+      const detail = event.message?.trim() || "AudioWorklet processor stopped unexpectedly";
+      // A continuous Parapper session has lost its PCM producer; legacy mode
+      // instead lost a chunk-delivery node. Both cases are terminal and use
+      // the existing owner teardown path, but retain their actionable codes.
+      const code = this.streamPcmHandler
+        ? "parapper-transport-failed"
+        : "audio-chunk-delivery-failed";
+      this.reportCaptureFailure(new AudioCaptureError(code, detail));
+    };
+  }
+
   private startScriptProcessor(): void {
     if (!this.context || !this.source) {
       throw new AudioCaptureError("audio-context-failed");
     }
     this.processor = this.context.createScriptProcessor(SCRIPT_PROCESSOR_BUFFER_SIZE, 1, 1);
     this.processor.onaudioprocess = (event) => {
-      // Copy: the AudioBuffer channel view is reused across callbacks.
-      this.acceptSamples(event.inputBuffer.getChannelData(0).slice());
+      try {
+        // Copy: the AudioBuffer channel view is reused across callbacks.
+        this.acceptSamples(event.inputBuffer.getChannelData(0).slice());
+      } catch (error) {
+        // Browser audio callbacks must never throw into the rendering thread.
+        // Disable this node before notifying the owner so a broken callback
+        // cannot produce an unbounded stream of repeated failures.
+        if (this.processor) {
+          this.processor.onaudioprocess = null;
+        }
+        this.reportCaptureFailure(new AudioCaptureError("audio-chunk-delivery-failed", error));
+      }
     };
     this.sink = this.context.createGain();
     this.sink.gain.value = 0;
@@ -1455,7 +1776,8 @@ export class MicrophoneCapture {
         // A transport failure must not be retried on every audio quantum. Stop
         // forwarding frames and let the owner tear down the capture/session.
         this.streamPcmHandler = null;
-        this.errorHandler?.(new AudioCaptureError("audio-context-failed", error));
+        this.streamFramesDropped += 1;
+        this.reportCaptureFailure(new AudioCaptureError("parapper-transport-failed", error));
       }
     }
 
@@ -1471,7 +1793,13 @@ export class MicrophoneCapture {
     next.set(frame, this.pending.length);
     this.pending = next;
     const sampleRate = this.context?.sampleRate ?? TARGET_SAMPLE_RATE;
-    const chunkSize = Math.max(1, Math.round((sampleRate * this.chunkMs) / 1000));
+    // Re-normalize here as a final boundary check: private/test/legacy callers
+    // can mutate a capture instance after start(), and a bad value must not
+    // either make the while condition permanently false or flood one-sample
+    // chunks into the legacy ASR queue.
+    const chunkMs = resolveChunkMs(this.chunkMs);
+    this.chunkMs = chunkMs;
+    const chunkSize = Math.max(1, Math.round((sampleRate * chunkMs) / 1000));
     while (this.pending.length >= chunkSize) {
       const chunk = this.pending.slice(0, chunkSize);
       this.pending = this.pending.slice(chunkSize);
@@ -1499,26 +1827,28 @@ export class MicrophoneCapture {
         this.chunksAccepted += 1;
         this.lastAcceptedRmsDb = chunkDb;
         this.lastAcceptedGain = normalized.gain;
-        // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
-        if (typeof console !== "undefined" && typeof console.debug === "function") {
+        if (isVerbosePipelineLogging()) {
           // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
-          console.debug("[audio] chunk accepted", {
-            rmsDb: Number(chunkDb.toFixed(1)),
-            peak: Number(normalized.peak.toFixed(4)),
-            gain: Number(normalized.gain.toFixed(2)),
-            chunkMs: this.chunkMs,
-            contextMs: Number(contextualDurationMs.toFixed(1)),
-            sampleRate,
-            gateMode: this.gateMode,
-            adaptiveFloorDb:
-              this.adaptiveGate.floorDb === null
-                ? null
-                : Number(this.adaptiveGate.floorDb.toFixed(1)),
-            accepted: this.chunksAccepted,
-            silentDrops: this.chunksDroppedSilent,
-          });
+          if (typeof console !== "undefined" && typeof console.debug === "function") {
+            // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
+            console.debug("[audio] chunk accepted", {
+              rmsDb: Number(chunkDb.toFixed(1)),
+              peak: Number(normalized.peak.toFixed(4)),
+              gain: Number(normalized.gain.toFixed(2)),
+              chunkMs: this.chunkMs,
+              contextMs: Number(contextualDurationMs.toFixed(1)),
+              sampleRate,
+              gateMode: this.gateMode,
+              adaptiveFloorDb:
+                this.adaptiveGate.floorDb === null
+                  ? null
+                  : Number(this.adaptiveGate.floorDb.toFixed(1)),
+              accepted: this.chunksAccepted,
+              silentDrops: this.chunksDroppedSilent,
+            });
+          }
         }
-        void this.handler?.(
+        this.deliverChunk(
           makeAudioChunk(normalized.samples, sampleRate, contextualDurationMs, { utteranceId }),
         );
       } else {
@@ -1529,7 +1859,10 @@ export class MicrophoneCapture {
           this.utteranceId = null;
         }
         this.chunksDroppedSilent += 1;
-        if (this.chunksDroppedSilent <= 3 || this.chunksDroppedSilent % 20 === 0) {
+        if (
+          isVerbosePipelineLogging() &&
+          (this.chunksDroppedSilent <= 3 || this.chunksDroppedSilent % 20 === 0)
+        ) {
           // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
           if (typeof console !== "undefined" && typeof console.debug === "function") {
             // biome-ignore lint/suspicious/noConsole: debug audio capture metrics
@@ -1551,6 +1884,36 @@ export class MicrophoneCapture {
         this.publishDiagnostics(undefined);
       }
     }
+  }
+
+  /**
+   * Deliver an accepted legacy chunk without allowing a consumer exception to
+   * escape an AudioWorklet/ScriptProcessor callback. A rejected consumer means
+   * the chunk was lost, so disable further legacy delivery and surface it.
+   */
+  private deliverChunk(chunk: AudioChunk): void {
+    const handler = this.handler;
+    if (!handler) {
+      return;
+    }
+    try {
+      const delivery = handler(chunk);
+      if (delivery && typeof delivery.then === "function") {
+        void delivery.catch((error: unknown) => this.handleChunkDeliveryFailure(error));
+      }
+    } catch (error) {
+      this.handleChunkDeliveryFailure(error);
+    }
+  }
+
+  private handleChunkDeliveryFailure(error: unknown): void {
+    if (!this.handler) {
+      return;
+    }
+    // A broken consumer should not repeatedly reject every capture window
+    // while the owner tears down the session.
+    this.handler = null;
+    this.reportCaptureFailure(new AudioCaptureError("audio-chunk-delivery-failed", error));
   }
 }
 /* c8 ignore stop */

@@ -21,7 +21,10 @@ import {
   DEFAULT_MODEL_CATALOG,
   DEFAULT_RECOGNITION_MODE,
   DEFAULT_RUNTIME_STATUS,
+  ENDPOINT_TIMEOUT_MAX_MS,
+  ENDPOINT_TIMEOUT_MIN_MS,
   isRecognitionMode,
+  resolveSilenceGateMode,
 } from "../core/defaults";
 import { pushDiagnosticEvent } from "../core/diagnostics";
 import { clearCaptionDisplayTiming, markCaptionDisplay } from "../core/display-timing";
@@ -54,6 +57,7 @@ import type {
 } from "../core/types";
 import {
   getWebSpeechRecognitionDiagnostics,
+  isWebSpeechRecognitionSupported,
   queryWebSpeechRecognitionPermission,
   type WebSpeechRecognitionResult,
   WebSpeechRecognitionStream,
@@ -67,6 +71,92 @@ import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
 
 type ActiveTab = "live" | "settings";
+
+type CapturePhase = "idle" | "starting" | "capturing" | "stopping";
+
+/** Keep only the newest Web Speech result for each result slot while native startup drains. */
+export const MAX_BUFFERED_WEB_SPEECH_RESULTS = 32;
+
+/** Return whether a live capture must be rebuilt to apply the new settings. */
+export const captureConfigRequiresRestart = (before: AppConfig, after: AppConfig): boolean =>
+  before.recognitionMode !== after.recognitionMode ||
+  before.audio.inputDeviceId !== after.audio.inputDeviceId ||
+  before.audio.noiseSuppression !== after.audio.noiseSuppression ||
+  before.audio.adaptiveNoiseFloor !== after.audio.adaptiveNoiseFloor ||
+  before.audio.chunkMs !== after.audio.chunkMs ||
+  before.audio.silenceGateDb !== after.audio.silenceGateDb;
+
+/**
+ * Bound renderer-side ASR invokes as a last line of defence.
+ *
+ * The native command normally applies the configured gateway timeout itself,
+ * but a hung IPC call would otherwise keep the latest-wins flight alive
+ * forever.  The timeout only rejects the renderer promise; the underlying
+ * invoke is still observed by the caller so a late rejection cannot become an
+ * unhandled promise.
+ */
+export const TRANSCRIBE_AUDIO_CHUNK_DEFAULT_TIMEOUT_MS = 18_000;
+
+export const resolveTranscribeAudioChunkTimeoutMs = (configured: number): number => {
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return TRANSCRIBE_AUDIO_CHUNK_DEFAULT_TIMEOUT_MS;
+  }
+  return Math.min(
+    ENDPOINT_TIMEOUT_MAX_MS,
+    Math.max(ENDPOINT_TIMEOUT_MIN_MS, Math.round(configured)),
+  );
+};
+
+export const withFiniteTimeout = <T,>(
+  operation: PromiseLike<T>,
+  timeoutMs: number,
+  label = "operation timed out",
+  onLateReject?: (error: unknown) => void,
+): Promise<T> => {
+  const boundedTimeout =
+    Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.max(1, Math.round(timeoutMs))
+      : TRANSCRIBE_AUDIO_CHUNK_DEFAULT_TIMEOUT_MS;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      const error = new Error(`${label} (${boundedTimeout}ms)`);
+      error.name = "TimeoutError";
+      reject(error);
+    }, boundedTimeout);
+    Promise.resolve(operation).then(
+      (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) {
+          try {
+            onLateReject?.(error);
+          } catch {
+            // Late-error telemetry must not create a second unhandled reject.
+          }
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+};
+
+/** Clear only transient ASR/audio notices once legacy recognition succeeds. */
+export const clearLegacyFailureNotice = (notice: Notice | null): Notice | null =>
+  isTransientAudioNotice(notice) ? null : notice;
 
 const platformKeys: Record<RuntimeStatus["platform"], MessageKey> = {
   macos: "platform.macos",
@@ -114,6 +204,12 @@ export const MainApp = () => {
   const [notice, setNotice] = useState<Notice | null>(null);
   const capture = useRef(new MicrophoneCapture());
   const captureAttempt = useRef(0);
+  /** Lifecycle guard shared by starts/stops that outlive a React render. */
+  const capturePhase = useRef<CapturePhase>("idle");
+  /** Make repeated stop clicks idempotent while teardown is draining. */
+  const stopPromise = useRef<Promise<void> | null>(null);
+  /** Native start command that a startup stop must let settle before stopping. */
+  const backendStartPromise = useRef<Promise<void> | null>(null);
   /** Latest-wins ASR queue: 1 in-flight + 1 pending (drop older pending). */
   const chunkProcessor = useRef<LatestWinsProcessor<AudioChunk> | null>(null);
   /** One continuous Parapper VAD/Segment/Turn session for desktop capture. */
@@ -137,6 +233,17 @@ export const MainApp = () => {
   const captionIdleGuard = useRef(false);
   /** Preserve the last caption when processing reported a real failure. */
   const captionFailureMessage = useRef<string | null>(null);
+  /** Initialization barrier used to order latest-caption replay after status. */
+  const initialRuntimeReady = useRef<Promise<void>>(Promise.resolve());
+
+  // A later ambient soft-skip must not replace the visible notice from a
+  // persistent ASR result-loss error. A real caption clears this ref through
+  // the normal healthy status path, at which point no-speech notices resume.
+  const showNoSpeechNotice = (detail?: string): void => {
+    if (!captionFailureMessage.current) {
+      setNotice(noticeForNoSpeech(detail));
+    }
+  };
 
   const refreshDevices = useCallback(async (options?: { primePermission?: boolean }) => {
     try {
@@ -167,7 +274,11 @@ export const MainApp = () => {
 
   useEffect(() => {
     let mounted = true;
-    void Promise.all([bridge.getConfig(), bridge.getModels(), bridge.getStatus()])
+    initialRuntimeReady.current = Promise.all([
+      bridge.getConfig(),
+      bridge.getModels(),
+      bridge.getStatus(),
+    ])
       .then(([nextConfig, nextModels, nextStatus]) => {
         if (!mounted) {
           return;
@@ -211,7 +322,9 @@ export const MainApp = () => {
     void refreshDevices();
     return () => {
       mounted = false;
-      captureAttempt.current += 1;
+      capturePhase.current = "stopping";
+      const cleanupAttempt = ++captureAttempt.current;
+      const backendStart = backendStartPromise.current;
       parapperStream.current?.cancel();
       parapperStream.current = null;
       webSpeechStream.current?.cancel();
@@ -219,14 +332,35 @@ export const MainApp = () => {
       webSpeechResults.current.clear();
       webSpeechCaptionId.current = null;
       void capture.current.stop().catch(() => undefined);
+      // A component can unmount while `start_capture` is still in flight. Wait
+      // for that command, then stop only if no newer generation superseded this
+      // cleanup. This prevents a late startup completion from resurrecting the
+      // native runtime while guaranteeing unmount tears it down.
+      void (async () => {
+        try {
+          await backendStart;
+        } catch {
+          // Startup failure is already reported by its owner; teardown still
+          // needs to release any partially-created native session.
+        }
+        if (captureAttempt.current !== cleanupAttempt) {
+          return;
+        }
+        await bridge.stopCapture().catch(() => undefined);
+      })();
     };
   }, [refreshDevices]);
 
   useEffect(() => {
     let mounted = true;
+    // React StrictMode intentionally runs mount effects once, cleans them up,
+    // then runs them again in development. The first cleanup marks the shared
+    // lifecycle as stopping; reset that transient marker for the real mount so
+    // the first user click is not incorrectly ignored as a duplicate start.
+    capturePhase.current = "idle";
     const disposers: Array<() => void> = [];
     let lastCaptionId: string | null = null;
-    void bridge
+    const captionListenerPromise = bridge
       .listenCaptions((nextCaption) => {
         // A background translation can complete after Stop. Once the runtime
         // is idle, retain the last caption (on failure) or the explicit empty
@@ -286,6 +420,32 @@ export const MainApp = () => {
           setNotice(notice);
         }
       });
+    // Register the caption listener and settle the initial runtime status
+    // before replaying the latest caption. Otherwise a replay can race the
+    // status snapshot/listener and be immediately cleared or painted stale.
+    void Promise.all([initialRuntimeReady.current, captionListenerPromise]).then(async () => {
+      if (!mounted) {
+        return;
+      }
+      const latest = await bridge.getLatestCaption().catch(() => null);
+      if (!mounted || !latest || captionIdleGuard.current) {
+        return;
+      }
+      let replayed = false;
+      setCaption((current) => {
+        const merged = mergeCaptionPayload(current, latest);
+        if (merged === null || merged === current) {
+          return current;
+        }
+        replayed = true;
+        markCaptionDisplay(merged);
+        return merged;
+      });
+      if (replayed) {
+        lastCaptionId = latest.id;
+        pushDiagnosticEvent("caption", "Latest caption replayed", latest.id);
+      }
+    });
     // Fine-grained ASR / normalize / translate events for Debug mode.
     // Keep the subscription app-wide so the panel can stay open for continuous inspection.
     void bridge
@@ -468,14 +628,21 @@ export const MainApp = () => {
   };
 
   const startCapture = async (captureConfig: AppConfig) => {
-    const attempt = ++captureAttempt.current;
+    // A replacement start is queued by the device/mode handlers only after
+    // stopCapture() resolves.  Ignore accidental duplicate starts while the
+    // current lifecycle is still preparing or draining.
+    if (capturePhase.current !== "idle") {
+      pushDiagnosticEvent("audio", "Capture start ignored", `phase=${capturePhase.current}`);
+      return;
+    }
     const recognitionMode: RecognitionMode = isRecognitionMode(captureConfig.recognitionMode)
       ? captureConfig.recognitionMode
       : DEFAULT_RECOGNITION_MODE;
     const webSpeechMode = recognitionMode === "web-speech";
     const parapperRawMode = recognitionMode === "parapper-raw";
+    const webSpeechSupported = webSpeechMode ? isWebSpeechRecognitionSupported() : true;
     const webSpeechDiagnostics = webSpeechMode ? getWebSpeechRecognitionDiagnostics() : null;
-    if (webSpeechMode && !webSpeechDiagnostics?.supported) {
+    if (webSpeechMode && !webSpeechSupported) {
       pushDiagnosticEvent(
         "audio",
         "Web Speech unsupported in this runtime",
@@ -489,6 +656,8 @@ export const MainApp = () => {
       setNotice({ key: "message.webSpeechUnsupported" });
       return;
     }
+    const attempt = ++captureAttempt.current;
+    capturePhase.current = "starting";
     if (webSpeechMode) {
       // Permission queries never prompt and must not be awaited here: the
       // recognition start below has to stay in the button's transient gesture.
@@ -513,16 +682,16 @@ export const MainApp = () => {
       "Capture starting",
       `device=${captureConfig.audio.inputDeviceId} · chunk=${captureConfig.audio.chunkMs}ms`,
     );
-    // Kick AudioContext construction / resume while the click gesture is still
-    // warm. bridge.startCapture() may wait many seconds for sidecars; doing
-    // resume() only after that wait leaves WKWebView contexts suspended.
-    if (!webSpeechMode) {
-      microphone.primeAudioContext();
-    }
     let streamForAttempt: ParapperRecognitionStream | null = null;
+    let outputQueueForAttempt: ParapperOutputQueue<ParapperRecognitionOutput> | null = null;
     let webSpeechForAttempt: WebSpeechRecognitionStream | null = null;
+    // Web Speech can produce a result while the shared native runtime is still
+    // starting. Keep the newest result per slot until startCapture resolves so
+    // the first caption is published against a ready backend.
+    let webSpeechBackendReady = !webSpeechMode;
+    const bufferedWebSpeechResults = new Map<number, WebSpeechRecognitionResult>();
 
-    const publishWebSpeechResult = (result: WebSpeechRecognitionResult): void => {
+    const publishWebSpeechResultNow = (result: WebSpeechRecognitionResult): void => {
       // Keep the engine's whitespace between Latin words while using a
       // trimmed value only for the empty-result guard and final caption.
       const rawTranscript = result.transcript;
@@ -576,16 +745,53 @@ export const MainApp = () => {
         markCaptionDisplay(merged);
         return merged;
       });
+      captionFailureMessage.current = null;
+      setNotice(clearLegacyFailureNotice);
       setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
-      webSpeechPublishChain.current = webSpeechPublishChain.current
-        .then(() => bridge.publishSourceCaption(caption))
-        .catch((error: unknown) => {
-          pushDiagnosticEvent(
-            "error",
-            "Web Speech caption publish failed",
-            formatBridgeError(error) ?? String(error),
-          );
-        });
+      webSpeechPublishChain.current = webSpeechPublishChain.current.then(async () => {
+        if (attempt !== captureAttempt.current) {
+          return;
+        }
+        try {
+          await bridge.publishSourceCaption(caption);
+        } catch (firstError: unknown) {
+          // Native startup can race the first renderer caption even after
+          // its promise resolves. Retry once on the next microtask while the
+          // attempt is still current; the bounded chain never grows without
+          // limit and stopCapture drains it before invalidation.
+          if (attempt !== captureAttempt.current) {
+            return;
+          }
+          await Promise.resolve();
+          try {
+            await bridge.publishSourceCaption(caption);
+          } catch (retryError: unknown) {
+            pushDiagnosticEvent(
+              "error",
+              "Web Speech caption publish failed",
+              formatBridgeError(retryError ?? firstError) ?? String(retryError ?? firstError),
+            );
+          }
+        }
+      });
+    };
+
+    const publishWebSpeechResult = (result: WebSpeechRecognitionResult): void => {
+      if (attempt !== captureAttempt.current) {
+        return;
+      }
+      if (!webSpeechBackendReady) {
+        bufferedWebSpeechResults.set(result.resultIndex, result);
+        while (bufferedWebSpeechResults.size > MAX_BUFFERED_WEB_SPEECH_RESULTS) {
+          const oldest = bufferedWebSpeechResults.keys().next().value;
+          if (oldest === undefined) {
+            break;
+          }
+          bufferedWebSpeechResults.delete(oldest);
+        }
+        return;
+      }
+      publishWebSpeechResultNow(result);
     };
 
     const handleWebSpeechEvent = (event: WebSpeechRecognitionStreamEvent): void => {
@@ -646,6 +852,13 @@ export const MainApp = () => {
     };
 
     try {
+      // Kick AudioContext construction / resume while the click gesture is
+      // still warm. Keep this inside the startup guard: createAudioContext can
+      // throw synchronously in a restricted host and must not strand the
+      // lifecycle in `starting`.
+      if (!webSpeechMode) {
+        microphone.primeAudioContext();
+      }
       // Web Speech requires a user-gesture-adjacent start in Safari/WKWebView.
       // Start it before the asynchronous native-service preparation below.
       if (webSpeechMode) {
@@ -675,12 +888,29 @@ export const MainApp = () => {
       // marks the shared runtime as active so source captions can use the same
       // overlay/replay command path.
       if (webSpeechMode) {
-        await bridge.startCapture();
+        const backendStart = bridge.startCapture();
+        backendStartPromise.current = backendStart;
+        try {
+          await backendStart;
+        } finally {
+          if (backendStartPromise.current === backendStart) {
+            backendStartPromise.current = null;
+          }
+        }
         if (attempt !== captureAttempt.current) {
           webSpeechForAttempt?.cancel();
-          await bridge.stopCapture().catch(() => undefined);
+          bufferedWebSpeechResults.clear();
           return;
         }
+        webSpeechBackendReady = true;
+        const bufferedResults = [...bufferedWebSpeechResults.values()].sort(
+          (left, right) => left.resultIndex - right.resultIndex,
+        );
+        bufferedWebSpeechResults.clear();
+        for (const result of bufferedResults) {
+          publishWebSpeechResultNow(result);
+        }
+        capturePhase.current = "capturing";
         setStatus((current) => ({ ...current, status: "capturing", lastError: null }));
         pushDiagnosticEvent("audio", "Web Speech capture active");
         return;
@@ -693,12 +923,19 @@ export const MainApp = () => {
         captureConfig.audio.noiseSuppression !== false,
       );
       const backendPromise = bridge.startCapture();
+      backendStartPromise.current = backendPromise;
       const [prepareResult, backendResult] = await Promise.allSettled([
         preparePromise,
         backendPromise,
       ]);
+      if (backendStartPromise.current === backendPromise) {
+        backendStartPromise.current = null;
+      }
       if (attempt !== captureAttempt.current) {
-        await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
+        // The stop that invalidated this attempt owns backend teardown.  Do
+        // not issue a second stop here: a replacement attempt may already
+        // have started by the time these parallel preparations settle.
+        await microphone.stop().catch(() => undefined);
         return;
       }
       if (backendResult.status === "rejected") {
@@ -760,6 +997,8 @@ export const MainApp = () => {
               markCaptionDisplay(merged);
               return merged;
             });
+            captionFailureMessage.current = null;
+            setNotice(clearLegacyFailureNotice);
             setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
             pushDiagnosticEvent(
               "caption",
@@ -800,7 +1039,7 @@ export const MainApp = () => {
                 "No speech (soft-skip)",
                 `${output.sessionId} · ${elapsed}ms`,
               );
-              setNotice(noticeForNoSpeech(output.sessionId));
+              showNoSpeechNotice();
               return;
             }
             pushDiagnosticEvent(
@@ -816,16 +1055,17 @@ export const MainApp = () => {
               markCaptionDisplay(merged);
               return merged;
             });
+            captionFailureMessage.current = null;
+            setNotice(clearLegacyFailureNotice);
             setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
-            setNotice((current) => (isTransientAudioNotice(current) ? null : current));
           } catch (error: unknown) {
             if (attempt !== captureAttempt.current) {
               return;
             }
             if (!shouldToastAudioProcessingFailure(error)) {
-              const detail = formatBridgeError(error) ?? output.sessionId;
+              const detail = formatBridgeError(error);
               pushDiagnosticEvent("audio", "No speech (soft-skip)", detail);
-              setNotice(noticeForNoSpeech(detail));
+              showNoSpeechNotice();
               return;
             }
             const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
@@ -870,6 +1110,7 @@ export const MainApp = () => {
           parapperOutputQueue.current?.enqueue(output);
         };
         const outputQueue = createParapperOutputQueue<ParapperRecognitionOutput>(processOutput);
+        outputQueueForAttempt = outputQueue;
         parapperOutputQueue.current = outputQueue;
         streamForAttempt = new ParapperRecognitionStream({
           url: DEFAULT_PARAPPER_STREAM_URL,
@@ -889,46 +1130,101 @@ export const MainApp = () => {
             void stopCapture();
           },
         });
-        await streamForAttempt.start();
+        // Publish the local stream before awaiting session.ready so a Stop
+        // pressed during startup can cancel the connecting socket as well.
+        parapperStream.current = streamForAttempt;
+        // Start and await the transport before wiring microphone.start().  The
+        // PCM callback throws when the socket is not ready; starting both in
+        // parallel would turn a normal session-ready race into a fatal track
+        // error and leave an orphaned WebSocket on failure.
+        try {
+          await streamForAttempt.start();
+        } catch (error) {
+          pushDiagnosticEvent(
+            "error",
+            "Parapper stream start failed",
+            formatBridgeError(error) ?? String(error),
+          );
+          throw error;
+        }
         if (attempt !== captureAttempt.current) {
           streamForAttempt.cancel();
           await microphone.stop().catch(() => undefined);
-          await bridge.stopCapture().catch(() => undefined);
           return;
         }
-        parapperStream.current = streamForAttempt;
       } else {
         // Browser preview keeps the historical HTTP demo path. The native
         // desktop path above is the only path that talks to a real Parapper
         // sidecar, so it can preserve the continuous state machine.
         const processorRef: { current: LatestWinsProcessor<AudioChunk> | null } = { current: null };
+        const transcribeTimeoutMs = resolveTranscribeAudioChunkTimeoutMs(
+          captureConfig.endpoint.timeoutMs,
+        );
+        const reportTranscriptionFailure = (
+          error: unknown,
+          late = false,
+          flightCurrent = true,
+        ): void => {
+          const detail = formatBridgeError(error) ?? String(error);
+          const current = attempt === captureAttempt.current && flightCurrent;
+          if (late || !current) {
+            // A first-caption race deliberately lets the queue move on while
+            // the native invoke finishes in the background.  Always observe a
+            // later rejection, but never repaint an error over a replacement
+            // session's caption.
+            pushDiagnosticEvent("error", "Late ASR invoke failed", detail);
+            return;
+          }
+          if (!shouldToastAudioProcessingFailure(error)) {
+            pushDiagnosticEvent("audio", "No speech (soft-skip)", detail);
+            showNoSpeechNotice();
+            return;
+          }
+          const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
+          pushDiagnosticEvent(
+            "error",
+            "Audio processing failed",
+            nextNotice.detail ?? nextNotice.key,
+          );
+          setNotice(nextNotice);
+          captionFailureMessage.current = nextNotice.detail ?? t(nextNotice.key);
+          setStatus((currentStatus) => ({
+            ...currentStatus,
+            lastError: nextNotice.detail ?? t(nextNotice.key),
+          }));
+        };
         const processor = createLatestWinsProcessor<AudioChunk>({
           isActive: () => attempt === captureAttempt.current,
           onStatsChange: (stats) => setChunkTimingStats(stats),
           process: async (chunk, { whenFirstCaption, isCurrent }) => {
             const invokePromise = (async (): Promise<void> => {
-              try {
-                const nextCaption = await bridge.transcribeAudioChunk(chunk);
-                if (attempt !== captureAttempt.current || !isCurrent()) return;
-                if (!nextCaption.sourceText.trim()) {
-                  setNotice(noticeForNoSpeech(nextCaption.id));
-                  return;
-                }
-                processorRef.current?.markFirstCaption();
-                setCaption((current) => mergeCaptionPayload(current, nextCaption) ?? current);
-              } catch (error: unknown) {
-                if (attempt !== captureAttempt.current || !isCurrent()) return;
-                if (!shouldToastAudioProcessingFailure(error)) {
-                  setNotice(noticeForNoSpeech(formatBridgeError(error)));
-                  return;
-                }
-                const nextNotice = noticeFromError(error, "message.audioProcessingFailed");
-                setNotice(nextNotice);
-                captionFailureMessage.current = nextNotice.detail ?? t(nextNotice.key);
+              const nextCaption = await withFiniteTimeout(
+                bridge.transcribeAudioChunk(chunk),
+                transcribeTimeoutMs,
+                "transcribe_audio_chunk timed out",
+                (error) => reportTranscriptionFailure(error, true),
+              );
+              if (attempt !== captureAttempt.current || !isCurrent()) return;
+              if (!nextCaption.sourceText.trim()) {
+                showNoSpeechNotice();
+                return;
               }
+              processorRef.current?.markFirstCaption();
+              setCaption((current) => mergeCaptionPayload(current, nextCaption) ?? current);
+              captionFailureMessage.current = null;
+              setNotice(clearLegacyFailureNotice);
+              setStatus((current) =>
+                current.lastError ? { ...current, lastError: null } : current,
+              );
             })();
-            await Promise.race([whenFirstCaption(), invokePromise]);
-            void invokePromise.catch(() => undefined);
+            // Keep an explicit rejection observer attached before racing
+            // against first paint.  This is the important part of latest-wins:
+            // a slow ASR rejection still reaches diagnostics after process()
+            // returned and must never become an unhandled promise rejection.
+            const observedInvoke = invokePromise.catch((error: unknown) => {
+              reportTranscriptionFailure(error, false, isCurrent());
+            });
+            await Promise.race([whenFirstCaption(), observedInvoke]);
           },
         });
         processorRef.current = processor;
@@ -982,16 +1278,21 @@ export const MainApp = () => {
         },
         captureConfig.audio.noiseSuppression !== false,
         {
-          adaptiveGate: captureConfig.audio.adaptiveNoiseFloor !== false,
+          adaptiveGate:
+            resolveSilenceGateMode(captureConfig.audio.adaptiveNoiseFloor) === "adaptive",
           streamPcmHandler: streamForAttempt
             ? (frame) => streamForAttempt?.sendPcm16(frame)
             : undefined,
         },
       );
       if (attempt !== captureAttempt.current) {
-        await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
+        // A newer lifecycle owns the bridge now; only release this attempt's
+        // microphone.  Stopping the shared backend here could tear down the
+        // replacement session after a slow microphone.start() continuation.
+        await microphone.stop().catch(() => undefined);
         return;
       }
+      capturePhase.current = "capturing";
       await refreshDevices();
       if (attempt === captureAttempt.current) {
         const diag = microphone.getDiagnostics();
@@ -1005,16 +1306,26 @@ export const MainApp = () => {
     } catch (error) {
       streamForAttempt?.cancel();
       webSpeechForAttempt?.cancel();
-      if (parapperStream.current === streamForAttempt) {
+      bufferedWebSpeechResults.clear();
+      if (outputQueueForAttempt && parapperOutputQueue.current === outputQueueForAttempt) {
+        outputQueueForAttempt.close();
+        parapperOutputQueue.current = null;
+      }
+      if (streamForAttempt && parapperStream.current === streamForAttempt) {
         parapperStream.current = null;
       }
       if (webSpeechStream.current === webSpeechForAttempt) {
         webSpeechStream.current = null;
       }
-      await Promise.allSettled([microphone.stop(), bridge.stopCapture()]);
+      await microphone.stop().catch(() => undefined);
       if (attempt !== captureAttempt.current) {
         return;
       }
+      // This attempt still owns the backend only when its generation remains
+      // current.  A stop/restart may have taken ownership while microphone
+      // cleanup was awaiting; never stop that replacement bridge session.
+      await bridge.stopCapture().catch(() => undefined);
+      capturePhase.current = "idle";
       captionIdleGuard.current = true;
       // Prefer a backend-prep message when the mic never started; formatBridgeError
       // still carries the concrete Rust/sidecar detail. When the failure is a
@@ -1031,7 +1342,12 @@ export const MainApp = () => {
     }
   };
 
-  const stopCapture = async () => {
+  const stopCaptureImpl = async (): Promise<void> => {
+    if (capturePhase.current === "stopping") {
+      return;
+    }
+    const wasStarting = capturePhase.current === "starting";
+    capturePhase.current = "stopping";
     // Keep the current attempt valid through microphone.stop(). AudioCapture
     // flushes a speech-aware partial tail from its pending buffer, and the
     // handler must still be allowed to enqueue that tail into the processor.
@@ -1042,8 +1358,63 @@ export const MainApp = () => {
     const stream = parapperStream.current;
     const speech = webSpeechStream.current;
     const outputQueue = parapperOutputQueue.current;
+    const backendStart = backendStartPromise.current;
     clearInputLevelDb();
     pushDiagnosticEvent("audio", "Capture stopping");
+
+    if (wasStarting) {
+      // A start can be suspended in prepareInput(), stream.start(), or
+      // microphone.start(). Invalidate it before awaiting teardown so none of
+      // those continuations can publish a capturing status or stop a newer
+      // bridge session. There is no user-visible capture tail to drain yet.
+      captureAttempt.current += 1;
+      captionIdleGuard.current = true;
+      processor?.reset();
+      if (chunkProcessor.current === processor) {
+        chunkProcessor.current = null;
+      }
+      clearChunkTimingStats();
+      clearCaptionDisplayTiming();
+      parapperOutputQueue.current?.close();
+      parapperOutputQueue.current = null;
+      parapperStream.current?.cancel();
+      parapperStream.current = null;
+      webSpeechStream.current?.cancel();
+      webSpeechStream.current = null;
+      webSpeechResults.current.clear();
+      webSpeechCaptionId.current = null;
+      webSpeechStartedAt.current = 0;
+      try {
+        await webSpeechPublishChain.current;
+      } catch (error) {
+        pushDiagnosticEvent(
+          "error",
+          "Web Speech caption drain failed",
+          formatBridgeError(error) ?? String(error),
+        );
+      }
+      await microphone.stop().catch(() => undefined);
+      try {
+        // Ensure a start_capture command that was already dispatched cannot
+        // complete after the stop command and resurrect the native session.
+        await backendStart;
+      } catch {
+        // The start failure is owned by startCapture; teardown still proceeds.
+      }
+      // The invalidated start owns the bridge only until a replacement starts;
+      // check the generation after mic cleanup before issuing stop_capture.
+      if (captureAttempt.current !== stoppingAttempt + 1) {
+        return;
+      }
+      await bridge.stopCapture().catch(() => undefined);
+      capturePhase.current = "idle";
+      setCaption(createEmptyCaption());
+      setStatus((current) => ({ ...current, status: "idle", lastError: null }));
+      if (capture.current === microphone) {
+        capture.current = new MicrophoneCapture();
+      }
+      return;
+    }
     let microphoneFailure: unknown = null;
     try {
       await microphone.stop();
@@ -1163,6 +1534,7 @@ export const MainApp = () => {
     }
 
     const failure = microphoneFailure ?? bridgeFailure;
+    capturePhase.current = "idle";
     if (!failure) {
       pushDiagnosticEvent("audio", "Capture stopped");
       const retainedFailure = captionFailureMessage.current;
@@ -1188,6 +1560,23 @@ export const MainApp = () => {
     }
   };
 
+  const stopCapture = (): Promise<void> => {
+    const existing = stopPromise.current;
+    if (existing) {
+      return existing;
+    }
+    const next = stopCaptureImpl();
+    stopPromise.current = next;
+    void next
+      .finally(() => {
+        if (stopPromise.current === next) {
+          stopPromise.current = null;
+        }
+      })
+      .catch(() => undefined);
+    return next;
+  };
+
   const openOverlay = async () => {
     try {
       await bridge.openOverlay();
@@ -1204,7 +1593,12 @@ export const MainApp = () => {
   };
 
   const toggleCapture = () => {
-    if (status.status === "capturing" || status.status === "starting") {
+    if (
+      status.status === "capturing" ||
+      status.status === "starting" ||
+      capturePhase.current === "capturing" ||
+      capturePhase.current === "starting"
+    ) {
       void stopCapture();
     } else {
       void startCapture(config);
@@ -1217,18 +1611,30 @@ export const MainApp = () => {
       audio: { ...config.audio, inputDeviceId: event.target.value },
     };
     setConfig(next);
-    if (status.status === "capturing") {
+    if (
+      status.status === "capturing" ||
+      status.status === "starting" ||
+      capturePhase.current === "capturing" ||
+      capturePhase.current === "starting"
+    ) {
       void stopCapture().then(() => startCapture(next));
     }
   };
 
   const handleConfigChange = (nextConfig: AppConfig) => {
-    const modeChanged = nextConfig.recognitionMode !== config.recognitionMode;
+    const captureChanged = captureConfigRequiresRestart(config, nextConfig);
     setConfig(nextConfig);
-    // A mode switch changes ownership of the microphone and the native
-    // pipeline. Restart an active session immediately so the selected path is
-    // actually applied instead of silently taking effect on the next launch.
-    if (modeChanged && (status.status === "capturing" || status.status === "starting")) {
+    // Recognition mode, device, chunking, and gate settings change microphone
+    // or stream ownership. Restart an active/starting session immediately so a
+    // setting cannot appear to succeed while the existing graph keeps values
+    // from the previous config.
+    if (
+      captureChanged &&
+      (status.status === "capturing" ||
+        status.status === "starting" ||
+        capturePhase.current === "capturing" ||
+        capturePhase.current === "starting")
+    ) {
       void stopCapture().then(() => startCapture(nextConfig));
     }
   };

@@ -12,7 +12,7 @@ const packageJson = JSON.parse(
 const appVersion =
   typeof packageJson.version === "string" && packageJson.version.trim()
     ? packageJson.version.trim()
-    : "0.1.0";
+    : "0.1.1";
 
 const shortGitRevision = (): string => {
   try {

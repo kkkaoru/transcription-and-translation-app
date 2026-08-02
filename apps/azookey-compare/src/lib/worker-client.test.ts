@@ -530,6 +530,39 @@ describe("AzooKey Worker client connection lifecycle", () => {
     await expect(second).resolves.toMatchObject({ convertedText: "二つ目の結果" });
   });
 
+  it("does not attribute a delayed requestId-less response to the next FIFO item", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.useFakeTimers();
+    const { client, socket } = await openClient({ requestTimeoutMs: 1_000 });
+
+    const first = client.convert({ ...request(), sourceText: "一つ目", vibratoInput: "一つ目" });
+    const firstRejection = expect(first).rejects.toThrow("タイムアウト");
+    await vi.advanceTimersByTimeAsync(1_001);
+    await firstRejection;
+
+    const second = client.convert({ ...request(), sourceText: "二つ目", vibratoInput: "二つ目" });
+    await Promise.resolve();
+    const secondPayload = JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string };
+
+    // This frame is a late response to the timed-out first request. It has no
+    // correlation id, so the client must leave the second conversion pending.
+    socket.message(JSON.stringify({ text: "一つ目の遅延結果" }));
+    let settled = false;
+    void second.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    socket.message(JSON.stringify({ requestId: secondPayload.requestId, text: "二つ目の結果" }));
+    await expect(second).resolves.toMatchObject({ convertedText: "二つ目の結果" });
+  });
+
   it("rejects queued work and clears a busy retry when closed", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const { client, socket } = await openClient({ maxBusyRetries: 2, busyRetryDelayMs: 100 });

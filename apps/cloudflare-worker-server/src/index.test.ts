@@ -11,6 +11,7 @@ import { createWorker, type Env, type WorkerHandler } from "./index.js";
 import { WORKERS_AI_ASR_MODEL, type WorkersAiAsrRun } from "./workers-ai-asr.js";
 
 const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
+const VIBRATO_NOTICE_PATH = "/vibrato/NOTICE";
 const AZOOKEY_DICTIONARY_PATH = "/azookey/system.azkdict.gz";
 
 const env = {
@@ -67,6 +68,7 @@ describe("Cloudflare Worker inference adapter", () => {
       model: "azookey-rust-wasm",
       websocketPath: AZOOKEY_WS_PATH,
       maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
+      dictionary: { fetchTimeoutMs: 10_000 },
       modes: { worker: AZOOKEY_MODE, browser: BROWSER_VIBRATO_MODE },
     });
 
@@ -95,10 +97,14 @@ describe("Cloudflare Worker inference adapter", () => {
 
     const portableDictionary = await createWorker().fetch(
       asWorkerRequest(new Request("https://worker.example/v1/azookey")),
-      { ...env, AZOOKEY_DICTIONARY_URL: AZOOKEY_DICTIONARY_PATH },
+      {
+        ...env,
+        AZOOKEY_DICTIONARY_URL: AZOOKEY_DICTIONARY_PATH,
+        AZOOKEY_DICTIONARY_TIMEOUT_MS: "1100",
+      },
     );
     await expect(portableDictionary.json()).resolves.toMatchObject({
-      dictionary: { configured: true, transport: "portable-wasm" },
+      dictionary: { configured: true, transport: "portable-wasm", fetchTimeoutMs: 1_100 },
       vibrato: { workerStage: "passthrough", transport: "azookey-mixed-input" },
     });
   });
@@ -147,6 +153,22 @@ describe("Cloudflare Worker inference adapter", () => {
     expect(assets.fetch).toHaveBeenCalledOnce();
   });
 
+  it("serves the bundled Vibrato attribution notices through the assets binding", async () => {
+    const assets = {
+      fetch: vi.fn((request: Request) => {
+        expect(new URL(request.url).pathname).toBe(VIBRATO_NOTICE_PATH);
+        return Promise.resolve(new Response("IPADIC notice", { status: 200 }));
+      }),
+    };
+    const response = await createWorker().fetch(
+      new Request(`https://worker.example${VIBRATO_NOTICE_PATH}`),
+      { ...env, ASSETS: assets },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("IPADIC notice");
+    expect(assets.fetch).toHaveBeenCalledOnce();
+  });
+
   it("routes Worker Vibrato warmup through the assets binding", async () => {
     class TestSocket extends EventTarget {
       readonly sent: string[] = [];
@@ -161,11 +183,12 @@ describe("Cloudflare Worker inference adapter", () => {
     const server = new TestSocket();
     const client = new TestSocket() as unknown as WebSocket;
     const assets = {
-      fetch: vi.fn(() =>
-        Promise.resolve(
+      fetch: vi.fn((request: Request) => {
+        expect(new URL(request.url).origin).toBe("https://worker.example");
+        return Promise.resolve(
           new Response(readFileSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))),
-        ),
-      ),
+        );
+      }),
     };
     const vibratoWasmModule = new WebAssembly.Module(
       readFileSync(new URL("../wasm/vibrato_wasm_bg.wasm", import.meta.url)),
@@ -199,9 +222,11 @@ describe("Cloudflare Worker inference adapter", () => {
     const dictionary = readFileSync(
       new URL("../public/azookey/system.azkdict.gz", import.meta.url),
     );
+    const assetOrigins: string[] = [];
     const assets = {
       fetch: vi.fn((request: Request) => {
         expect(new URL(request.url).pathname).toBe(AZOOKEY_DICTIONARY_PATH);
+        assetOrigins.push(new URL(request.url).origin);
         return Promise.resolve(new Response(dictionary));
       }),
     };
@@ -228,6 +253,7 @@ describe("Cloudflare Worker inference adapter", () => {
       expect(response.status).toBe(101);
     }
     expect(assets.fetch).toHaveBeenCalledTimes(1);
+    expect(assetOrigins).toEqual(["https://worker.example"]);
     expect(servers).toHaveLength(2);
     for (const server of servers) {
       expect(JSON.parse(server.sent[0] ?? "{}")).toMatchObject({
@@ -236,6 +262,25 @@ describe("Cloudflare Worker inference adapter", () => {
       });
     }
   }, 20_000);
+
+  it("maps unexpected AzooKey runtime errors to an internal response", async () => {
+    const response = await createWorker(undefined, {
+      converter: (text) => text,
+      socketPair: () => {
+        throw new Error("WebSocket runtime is unavailable");
+      },
+    }).fetch(
+      new Request(`https://worker.example${AZOOKEY_WS_PATH}`, {
+        headers: { upgrade: "websocket" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(500);
+    expect(response.headers.get("access-control-allow-origin")).toBe(env.CORS_ORIGIN);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "azookey_runtime_failed", message: "AzooKey runtime is unavailable" },
+    });
+  });
 
   it("rejects non-GET metadata requests and non-upgrade WebSocket requests", async () => {
     const worker = createWorker();

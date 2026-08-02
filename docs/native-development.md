@@ -1,12 +1,25 @@
 # Native development and verification
 
 The repository fixes Rust at 1.97.1 through `rust-toolchain.toml`. Bun 1.3.x is
-required for the TypeScript workspace.
+required for the TypeScript workspace. The vendored Parapper workspace keeps
+its upstream `packages/parapper-asr/rust-toolchain.toml` pin at 1.90.0; its
+sidecar build selects that nested pin while the desktop crate and all root
+quality checks use 1.97.1. This split is intentional and is mirrored in CI.
 
 ## macOS
 
 Install Xcode Command Line Tools, Bun, and Rust. `Syphon.framework` is bundled
-from the official Syphon SDK, so no system-wide framework installation is needed.
+from the official Syphon SDK, so no system-wide framework installation is needed
+on Intel Macs. The currently vendored framework is x86_64-only; Apple-silicon
+builds deliberately use the transparent overlay (which OBS can capture as a
+window) until a universal Syphon.framework is supplied.
+
+Initialize nested dependencies before running the dictionary or sidecar checks;
+the official AzooKey dictionary lives below the converter submodule:
+
+```bash
+git submodule update --init --recursive
+```
 
 The transparent overlay uses Tauri's macOS private API. It is suitable for the
 local/OBS distribution described here, but the resulting application is not
@@ -18,9 +31,11 @@ bun install --frozen-lockfile
 bun run build:app
 ```
 
-Open the application, configure a numeric shared-output resolution, open the
-overlay, and select the `Kotoba Beacon` Syphon server in the Syphon-capable
-OBS source. Verify that the main settings window is not visible in OBS.
+On Intel Macs, open the application, configure a numeric shared-output
+resolution, open the overlay, and select the `Kotoba Beacon` Syphon server in
+the Syphon-capable OBS source. Verify that the main settings window is not
+visible in OBS. On Apple Silicon, use OBS Window Capture for the transparent
+overlay until a universal Syphon.framework is bundled.
 
 ### Update hand-off and single-instance behavior
 
@@ -115,7 +130,25 @@ used, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) from the CI secret store and run
 `apps/desktop/src-tauri/tauri.release.conf.json`, which enables updater archive
 generation. The normal `build:app` path deliberately does not require a key.
 Publish the generated archive and signature together with a signed Tauri
-`latest.json` feed; never commit the private key or put it in `.env`.
+`latest.json` feed; never commit the private key or put it in `.env`. The
+current bundle version is **0.1.1**; every published feed entry must be greater
+than the installed version and must use the matching archive `.sig`.
+
+The main app declares `Entitlements.plist` with the
+`com.apple.security.device.audio-input` entitlement and `Info.plist` contains
+the user-facing microphone/system-audio usage strings. Developer ID signing
+and notarization still require Apple credentials that cannot be checked into
+this repository. CI runs `bun run check:macos-signing` and records an explicit
+`SKIP` for pull requests without those secrets; a trusted release job must set
+`KOTOBA_REQUIRE_APPLE_SIGNING=1` (repository variable) to turn missing
+`APPLE_*` credentials into a hard failure. Notarization may use either
+`APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` or an App Store Connect API key
+(`APPLE_API_KEY`/`APPLE_API_ISSUER`/`APPLE_API_KEY_PATH`). The check only
+validates prerequisites; the release job remains responsible for importing
+the certificate, signing the bundled Syphon.framework and app with
+`codesign`, and submitting with `xcrun notarytool`. The vendored framework is
+not signed in the source tree, so a successful unsigned PR bundle is not
+evidence of a notarizable release.
 
 After the system libraries above are installed, run `bun run rust:lint` as the
 full Tauri/Rust Clippy check. It is also included in `check:all`, so the shared

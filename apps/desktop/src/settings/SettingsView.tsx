@@ -26,6 +26,7 @@ import {
   OVERLAY_SAFE_AREA_MIN_PX,
   OVERLAY_WIDTH_MAX_PX,
   OVERLAY_WIDTH_MIN_PX,
+  resolveSilenceGateMode,
   SILENCE_GATE_MAX_DB,
   SILENCE_GATE_MIN_DB,
   SILENCE_GATE_STEP_DB,
@@ -113,6 +114,8 @@ export const SettingsView = ({
         ? t("settings.recognitionModeWebSpeechDescription")
         : t("settings.recognitionModeParapperAzookeyDescription");
   const webSpeechMode = recognitionMode === "web-speech";
+  const silenceGateMode = resolveSilenceGateMode(config.audio.adaptiveNoiseFloor);
+  const adaptiveNoiseFloorEnabled = silenceGateMode === "adaptive";
   const inputDeviceHint = webSpeechMode
     ? `${t("settings.deviceHint")} ${t("settings.webSpeechDeviceHint")}`
     : t("settings.deviceHint");
@@ -373,7 +376,14 @@ export const SettingsView = ({
               {t("settings.resetValue")}
             </button>
           </Field>
-          <Field label={t("settings.silenceGate")} hint={t("settings.silenceGateHint")}>
+          <Field
+            label={t("settings.silenceGate")}
+            hint={
+              adaptiveNoiseFloorEnabled
+                ? `${t("settings.silenceGateHint")} ${t("settings.silenceGateAdaptiveDisabled")}`
+                : t("settings.silenceGateHint")
+            }
+          >
             <div className="range-field">
               <input
                 id="audio-silence-gate-db"
@@ -384,10 +394,13 @@ export const SettingsView = ({
                 value={config.audio.silenceGateDb}
                 onChange={(event) => setAudio({ silenceGateDb: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.silenceGate")}
-                aria-valuetext={`${config.audio.silenceGateDb} ${t("settings.decibels")}`}
+                aria-valuetext={`${config.audio.silenceGateDb} ${t("settings.decibels")}${adaptiveNoiseFloorEnabled ? ` · ${t("settings.silenceGateAdaptiveLabel")}` : ""}`}
+                aria-disabled={adaptiveNoiseFloorEnabled}
+                disabled={adaptiveNoiseFloorEnabled}
               />
               <output className="range-value" htmlFor="audio-silence-gate-db">
                 {config.audio.silenceGateDb} {t("settings.decibels")}
+                {adaptiveNoiseFloorEnabled ? ` · ${t("settings.silenceGateAdaptiveLabel")}` : ""}
               </output>
             </div>
             <button
@@ -457,6 +470,7 @@ export const SettingsView = ({
           >
             <label className="checkbox-field">
               <input
+                id="audio-adaptive-noise-floor"
                 type="checkbox"
                 checked={config.audio.adaptiveNoiseFloor !== false}
                 onChange={(event) => setAudio({ adaptiveNoiseFloor: event.currentTarget.checked })}
@@ -467,6 +481,7 @@ export const SettingsView = ({
           <Field label={t("settings.noiseSuppression")} hint={t("settings.noiseSuppressionHint")}>
             <label className="checkbox-field">
               <input
+                id="audio-noise-suppression"
                 type="checkbox"
                 checked={config.audio.noiseSuppression !== false}
                 onChange={(event) =>

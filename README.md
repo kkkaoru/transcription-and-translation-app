@@ -47,6 +47,8 @@ docs/                    設計・運用・引き継ぎ資料
 
 ```bash
 bun install --frozen-lockfile
+# Required only when rebuilding the official AzooKey archive from source.
+git submodule update --init submodules/azooKey_dictionary_storage
 
 # アプリ本体の起動はこれ一本（フロントエンド + Tauri + 内蔵サイドカーを一括起動）
 bun run dev
@@ -57,6 +59,7 @@ bun run format:check
 bun run test:coverage
 bun run build                 # フロントエンドの本番出力（dist）
 bun run check:single-app      # 起動経路と単一アプリ構成の静的検査
+bun run assets:verify         # tracked WASM/dictionary copies and hashes
 bun run check:macos-autoswitch # macOS .app / Dock / graceful quit 検証（macOSのみ）
 bun run verify:tauri:build    # macOS: bundleを構築して実アプリ/native smoke
 bun run verify:tauri:ui       # macOS: Accessibility UI smoke（TCC許可時）
@@ -77,7 +80,10 @@ Tauri の `.app` release bundle を一つの経路で実行します。DMGまで
 `bun run build:app:dmg` を使えます。既存の CI / 手動手順向けに
 `bun run tauri:build` も同じコマンドの別名として利用できます。
 
-署名付き自動更新成果物（`.app.tar.gz` / `.sig` と `latest.json` 用のアーティファクト）は、秘密鍵を環境変数へ注入したリリース環境でだけ `bun run build:app:release` を実行します。`TAURI_SIGNING_PRIVATE_KEY` がない場合は安全に停止し、秘密鍵をリポジトリや `.env` に保存しません。通常の `build:app` は開発・実機確認用の署名なしbundleです。更新時はTauri bundle全体が置換されるため、Gateway / Parapper / model server / frontend は常に同じrevisionへ切り替わり、macOSではsidecarを停止して同じ`.app`を再起動します。更新feedの署名検証・進捗・失敗理由は設定→デバッグ情報で確認できます。
+署名付き自動更新成果物（`.app.tar.gz` / `.sig` と `latest.json` 用のアーティファクト）は、秘密鍵を環境変数へ注入したリリース環境でだけ `bun run build:app:release` を実行します。`TAURI_SIGNING_PRIVATE_KEY` がない場合は安全に停止し、秘密鍵をリポジトリや `.env` に保存しません。通常の `build:app` は開発・実機確認用の署名なしbundleです。現在のアプリ版は **0.1.1** で、feedの次版（例: 0.1.2）は一致する`.sig`とともに公開します。更新時はTauri bundle全体が置換されるため、Gateway / Parapper / model server / frontend は常に同じrevisionへ切り替わり、macOSではsidecarを停止して同じ`.app`を再起動します。更新feedの署名検証・進捗・失敗理由は設定→デバッグ情報で確認できます。
+
+macOS配布では`Entitlements.plist`でマイク入力を宣言し、`Info.plist`でシステムの利用説明を表示します。Developer ID証明書とnotarization認証情報はCI secretへ注入する必要があるため、通常のPR CIでは署名/notarizationを行わず、`bun run check:macos-signing`が明示的に`SKIP`を記録します。信頼済みreleaseジョブだけで`KOTOBA_REQUIRE_APPLE_SIGNING=1`を設定すると、Apple証明書・notarytool認証がない場合に失敗します。秘密情報をリポジトリへ保存しないでください。
+配布時は同じDeveloper IDで同梱の`Syphon.framework`とアプリ本体を署名してからnotarizeします。frameworkはソースツリーでは未署名のため、PR CIのunsigned bundle成功だけでは配布可否を示しません。
 
 `bun run test:coverage`と`bun run gateway:test:coverage`は、それぞれの対象にstatements / branches / functions / lines 95%以上を強制します。純粋なAzooKey Rustポートも、GTK/WebKit不要の`bun run rust:azookey:test`とClippyで検査します。
 
@@ -142,9 +148,11 @@ bun run build:app
 bun run build:app
 ```
 
-すべてのデスクトップビルドでネイティブ出力を有効にします。Spout2/Syphonを使う場合は、対応するOBS側プラグインも別途インストールしてください。ネイティブcrateの初期化に失敗した場合も透明ウィンドウへフォールバックします。
+対応するプラットフォームのデスクトップビルドではネイティブ出力を有効にします。Spout2/Syphonを使う場合は、対応するOBS側プラグインも別途インストールしてください。ネイティブcrateの初期化に失敗した場合も透明ウィンドウへフォールバックします。
 
-Spout2のネイティブビルドはWindows x86_64 + MSVCが対象です。Syphon.framework 5 は macOS バンドルに同梱します。
+Spout2のネイティブビルドはWindows x86_64 + MSVCが対象です。Syphon.framework 5 は Intel macOS
+バンドルで利用します。現在同梱しているframeworkはx86_64専用のため、Apple Silicon版は透明
+ウィンドウ出力へ明示的にフォールバックします（OBSのWindow Captureで利用できます）。
 
 ## 設計上の注意
 

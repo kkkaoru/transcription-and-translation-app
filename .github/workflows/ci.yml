@@ -10,24 +10,65 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The AzooKey dictionary is a nested submodule of the checked-in
+          # converter tree.  A shallow top-level checkout leaves the source
+          # present but the dictionary files missing, which makes both the
+          # hash check and the Rust conversion tests silently unusable.
+          submodules: recursive
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      - uses: dtolnay/rust-toolchain@1.88.0
+      # Keep this in lock-step with the repository rust-toolchain.toml.  The
+      # older 1.88 pin used to let CI pass while local desktop builds used a
+      # different compiler and formatter.
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - name: Verify the pinned quality toolchain
+        run: |
+          set -euo pipefail
+          rustc --version | grep -E '^rustc 1\.97\.1([[:space:]]|$)'
+          rustup target list --installed | grep -Fx wasm32-unknown-unknown
+      - name: Install the nested Parapper toolchain components
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.90.0 --profile minimal --no-self-update
+          rustup component add --toolchain 1.90.0 rustfmt clippy
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run format:check
+      - run: bun run assets:verify
+      - run: bun run test:build-cleanup
       - run: bun run typecheck
+      - run: bun run azookey-compare:typecheck
+      - run: bun run check:single-app
       - run: bun run test:coverage
+      - run: bun run core:test:coverage
+      - run: bun run azookey-compare:test:coverage
       - run: bun run gateway:build
       - run: bun run gateway:test:coverage
       - run: bun run worker:typecheck
-      - run: bun run worker:test
+      - run: bun run worker:test:coverage
+      # worker:typecheck regenerates the checked-in AzooKey WASM/archive; verify
+      # the exact post-build bytes rather than only the checkout baseline.
+      - run: bun run assets:verify
+      - run: cargo build --locked --manifest-path packages/azookey-wasm/Cargo.toml --target wasm32-unknown-unknown --release
+      - run: cargo build --locked --manifest-path packages/vibrato-wasm/Cargo.toml --target wasm32-unknown-unknown --release
+      - run: bun run parapper:lint
+      # The quality action exports RUSTUP_TOOLCHAIN=1.97.1.  Clear it for the
+      # nested fork so its checked-in 1.90.0 pin is actually honored.
+      - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:fmt
+      - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:lint
       - run: bun run rust:azookey:fmt
       - run: bun run rust:azookey:lint
       - run: bun run rust:azookey:test
+      - run: bun run rust:vibrato:fmt
+      - run: bun run rust:vibrato:lint
+      - run: bun run rust:vibrato:test
+      - run: bun run rust:fmt
+      - run: bun run rust:lint
 
   desktop-build:
     strategy:
@@ -41,11 +82,31 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      # Parapper's pinned toolchain is 1.90.0. It also builds the desktop crate.
+      # Install Parapper's nested 1.90.0 pin. Desktop build scripts clear this
+      # action's RUSTUP_TOOLCHAIN so the root app crate uses 1.97.1 instead.
       - uses: dtolnay/rust-toolchain@1.90.0
       - run: cargo install cargo-about --locked --features cli
       - run: bun install --frozen-lockfile
+      - name: Report macOS signing and notarization prerequisites
+        if: runner.os == 'macOS'
+        env:
+          KOTOBA_REQUIRE_APPLE_SIGNING: ${{ vars.KOTOBA_REQUIRE_APPLE_SIGNING || '0' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
+        run: bun run check:macos-signing
       - run: ${{ matrix.command }}
+      - run: bun run check:single-app
+      - if: runner.os == 'macOS'
+        run: bun run check:macos-autoswitch

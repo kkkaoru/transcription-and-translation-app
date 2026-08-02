@@ -67,6 +67,23 @@ export const DEFAULT_AUDIO_CHUNK_MS = 640;
 export const AUDIO_CHUNK_MIN_MS = 320;
 export const AUDIO_CHUNK_MAX_MS = 2_000;
 export const AUDIO_CHUNK_STEP_MS = 32;
+/** Runtime bounds accepted by the native audio pipeline (wider than the UI). */
+export const AUDIO_CHUNK_RUNTIME_MIN_MS = 250;
+export const AUDIO_CHUNK_RUNTIME_MAX_MS = 10_000;
+
+/**
+ * Resolve persisted/runtime capture windows before they reach the audio loop.
+ *
+ * Do not round valid legacy values to the current 32 ms UI cadence: old config
+ * JSON may contain a useful custom duration. Invalid/non-positive values use
+ * the safe default; finite outliers are bounded to the native Rust range.
+ */
+export const resolveChunkMs = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_AUDIO_CHUNK_MS;
+  }
+  return Math.min(AUDIO_CHUNK_RUNTIME_MAX_MS, Math.max(AUDIO_CHUNK_RUNTIME_MIN_MS, value));
+};
 export const ENDPOINT_TIMEOUT_MIN_MS = 1_000;
 export const ENDPOINT_TIMEOUT_MAX_MS = 120_000;
 export const ENDPOINT_TIMEOUT_STEP_MS = 1_000;
@@ -109,6 +126,42 @@ export const DEFAULT_SILENCE_GATE_DB = -50;
 export const SILENCE_GATE_MIN_DB = -90;
 export const SILENCE_GATE_MAX_DB = 0;
 export const SILENCE_GATE_STEP_DB = 1;
+
+/**
+ * Resolve the mutually exclusive silence-gate policies in one place.  The
+ * adaptive floor is the safe default for missing/legacy values; the fixed
+ * dBFS value is only effective when adaptive gating is explicitly disabled.
+ */
+export type SilenceGateMode = "adaptive" | "fixed";
+
+export const resolveSilenceGateMode = (adaptiveNoiseFloor: unknown): SilenceGateMode =>
+  adaptiveNoiseFloor === false ? "fixed" : "adaptive";
+
+/** Return a finite, UI-range fixed threshold for runtime use. */
+export const resolveSilenceGateDb = (silenceGateDb: unknown): number => {
+  const value =
+    typeof silenceGateDb === "number" && Number.isFinite(silenceGateDb)
+      ? silenceGateDb
+      : DEFAULT_SILENCE_GATE_DB;
+  return Math.min(SILENCE_GATE_MAX_DB, Math.max(SILENCE_GATE_MIN_DB, value));
+};
+
+export type ResolvedSilenceGate = {
+  mode: SilenceGateMode;
+  /** Null when adaptive mode owns the decision; otherwise the fixed dBFS gate. */
+  fixedGateDb: number | null;
+};
+
+export const resolveSilenceGate = (
+  adaptiveNoiseFloor: unknown,
+  silenceGateDb: unknown,
+): ResolvedSilenceGate => {
+  const mode = resolveSilenceGateMode(adaptiveNoiseFloor);
+  return {
+    mode,
+    fixedGateDb: mode === "fixed" ? resolveSilenceGateDb(silenceGateDb) : null,
+  };
+};
 
 /**
  * Adaptive noise-floor gating is the default: each chunk is compared against a
@@ -353,6 +406,7 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
     ? input.recognitionMode
     : getDefaultRecognitionMode();
   const audio = { ...base.audio, ...input.audio };
+  audio.chunkMs = resolveChunkMs(audio.chunkMs);
   audio.silenceGateDb = migrateSilenceGateDb(audio.silenceGateDb);
   audio.vadIntervalMs = normalizeVadIntervalMs(audio.vadIntervalMs);
   audio.vadThreshold = normalizeVadThreshold(audio.vadThreshold);

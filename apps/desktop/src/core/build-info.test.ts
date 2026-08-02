@@ -35,7 +35,7 @@ describe("build metadata", () => {
     vi.stubGlobal("__KOTOBA_BUILD_ID__", 42);
     try {
       const configured = await import("./buildInfo");
-      expect(configured.BUILD_INFO).toEqual({ appVersion: "0.1.0", buildId: "dev" });
+      expect(configured.BUILD_INFO).toEqual({ appVersion: "0.1.1", buildId: "dev" });
     } finally {
       vi.unstubAllGlobals();
       vi.resetModules();

@@ -7,7 +7,10 @@ use crate::native_output::{NativeOutputHandle, OverlayFrame};
 use crate::pipeline::{
     CaptionPayload, ParapperRecognitionInput, Pipeline, PipelineError, PipelineStageEvent,
 };
-use crate::state::{AppState, RuntimeStatus};
+use crate::state::{
+    AppState, ExpectedEmptyAsrResult, RuntimeStatus, TranslationTicket, ASR_EMPTY_RESULT_WINDOW,
+    TRANSLATION_DRAIN_TIMEOUT,
+};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -169,6 +172,11 @@ pub fn relaunch_to_updated_app(
 
 #[tauri::command]
 pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // A new capture session gets its own bounded empty-turn observation
+    // window. Do this before the early Web Speech return as well, so switching
+    // recognition modes cannot retain a prior native ASR loss.
+    state.reset_asr_health();
+    state.begin_capture_generation();
     let mut config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     // Web Speech owns microphone capture and recognition in the webview. Do
     // not warm native dictionaries or wait for sidecars for this mode; the
@@ -225,7 +233,18 @@ async fn prepare_azookey_capture(
 }
 
 #[tauri::command]
-pub fn stop_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // Freeze this capture generation before looking at the final status. A
+    // source caption may already have spawned translation; give that bounded
+    // work a chance to publish before idle makes caption events ineligible.
+    let translation_generation = state.begin_translation_drain();
+    if !state.drain_translations(translation_generation, TRANSLATION_DRAIN_TIMEOUT).await {
+        log::warn!(
+            "timed out waiting {}ms for pending translation generation {} during capture stop",
+            TRANSLATION_DRAIN_TIMEOUT.as_millis(),
+            translation_generation
+        );
+    }
     // Preserve a processing/translation failure while making the native
     // session idle. The frontend and overlay use this field to distinguish a
     // successful stop (clear caption) from a failed session (retain caption).
@@ -233,6 +252,7 @@ pub fn stop_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), St
         state.status.lock().map_err(|_| "status lock poisoned".to_string())?.last_error.clone();
     let had_previous_error = previous_error.is_some();
     set_status(&app, &state, "idle", previous_error)?;
+    state.reset_asr_health();
     // Clear native replay only after the status transition and only for a
     // successful session. On a failed session the last caption remains
     // available to late overlay subscribers alongside the retained error.
@@ -271,6 +291,7 @@ pub async fn transcribe_audio_chunk(
 ) -> Result<CaptionPayload, String> {
     let wav = pcm_base64_to_wav(&chunk)?;
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    let capture_generation = state.current_capture_generation();
     // Stage 1: ASR + normalize only. Return as soon as normalized source text
     // is ready so the frontend chunkQueue is not blocked on translation latency.
     // Each stage is emitted immediately via on_stage (do not wait for full pipeline).
@@ -284,7 +305,7 @@ pub async fn transcribe_audio_chunk(
     };
     let app_for_captions = app.clone();
     let mut on_caption = move |caption: &CaptionPayload| {
-        emit_caption_update(&app_for_captions, caption);
+        emit_caption_update_for_generation(&app_for_captions, caption, capture_generation);
     };
     match state
         .pipeline
@@ -299,23 +320,32 @@ pub async fn transcribe_audio_chunk(
         .await
     {
         Ok(Some(partial)) => {
-            mark_backend_healthy(&app, &state);
+            mark_backend_healthy(&app, &state, capture_generation);
             // Final normalized source was already emitted via on_caption. Re-emit
             // once so late subscribers / invoke
             // fallback always see the post-normalize string (no-op on the UI if
             // display fields are identical).
-            emit_caption_update(&app, &partial);
+            emit_caption_update_for_generation(&app, &partial, capture_generation);
 
             // Stage 2: translate in the background with the same caption id.
             // UI already shows source_text; a later caption:update fills translation.
-            spawn_translation(app.clone(), config.clone(), state.pipeline.clone(), partial.clone());
+            if state.is_capture_generation_current(capture_generation) {
+                spawn_translation(
+                    app.clone(),
+                    config.clone(),
+                    state.pipeline.clone(),
+                    partial.clone(),
+                    &state,
+                );
+            }
 
             Ok(partial)
         }
         Ok(None) => {
-            // No speech in this chunk — keep capture healthy and do not toast.
-            // ASR (and maybe normalize) stage events were already emitted.
-            mark_backend_healthy(&app, &state);
+            // Audio chunks are also sent for low-level ambient/noise input by
+            // browser callers. Keep that intentional silence non-fatal, but
+            // do not let it erase a prior ASR failure.
+            mark_backend_reachable_without_clearing_error(&app, &state, capture_generation);
             let silence_id = chunk
                 .utterance_id
                 .as_deref()
@@ -351,6 +381,7 @@ pub async fn normalize_parapper_output(
     output: ParapperRecognitionInput,
 ) -> Result<CaptionPayload, String> {
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    let capture_generation = state.current_capture_generation();
     let output_is_final = output.is_final;
     let empty_id =
         format!("parapper:{}:{}:{}", output.session_id, output.turn_session_id, output.turn_id);
@@ -362,7 +393,7 @@ pub async fn normalize_parapper_output(
     };
     let app_for_captions = app.clone();
     let mut on_caption = move |caption: &CaptionPayload| {
-        emit_caption_update(&app_for_captions, caption);
+        emit_caption_update_for_generation(&app_for_captions, caption, capture_generation);
     };
     match state
         .pipeline
@@ -370,20 +401,42 @@ pub async fn normalize_parapper_output(
         .await
     {
         Ok(Some(partial)) => {
-            mark_backend_healthy(&app, &state);
-            if output_is_final {
+            mark_backend_healthy(&app, &state, capture_generation);
+            if output_is_final && state.is_capture_generation_current(capture_generation) {
                 spawn_translation(
                     app.clone(),
                     config.clone(),
                     state.pipeline.clone(),
                     partial.clone(),
+                    &state,
                 );
             }
             Ok(partial)
         }
         Ok(None) => {
-            mark_backend_healthy(&app, &state);
-            Ok(empty_caption(&config, empty_id))
+            if !state.is_capture_generation_current(capture_generation) {
+                return Ok(empty_caption(&config, empty_id));
+            }
+            // Persistent Parapper output is produced only after its VAD has
+            // identified a speech turn. Treat one/two blank revisions as a
+            // soft skip, but surface a bounded run as ASR result loss instead
+            // of repeatedly clearing `last_error` as though it were silence.
+            match state.record_expected_empty_asr(&empty_id) {
+                ExpectedEmptyAsrResult::Transient { .. } => {
+                    mark_backend_reachable_without_clearing_error(&app, &state, capture_generation);
+                    Ok(empty_caption(&config, empty_id))
+                }
+                ExpectedEmptyAsrResult::PersistentLoss { consecutive } => {
+                    let detail = persistent_asr_loss_message(consecutive);
+                    emit_persistent_asr_loss_status(
+                        &app,
+                        state.inner(),
+                        capture_generation,
+                        &detail,
+                    );
+                    Err(detail)
+                }
+            }
         }
         Err(error) => {
             let detail = redact_runtime_text(&error.to_string());
@@ -500,9 +553,24 @@ fn spawn_translation(
     config: AppConfig,
     pipeline: Pipeline,
     caption: CaptionPayload,
+    state: &State<'_, AppState>,
 ) {
+    let Some((ticket, superseded)) = state.register_translation() else {
+        // Stop has already frozen this generation, or this source result
+        // arrived outside an active native capture session.
+        log::debug!("skipped background translation because its capture generation is unavailable");
+        return;
+    };
+    if superseded.is_some() {
+        // Keep the current source caption immediate while making translator
+        // backpressure explicit: the oldest unfinished result is retired and
+        // cannot overwrite the latest caption when it eventually completes.
+        log::debug!(
+            "translation backlog reached its cap; retired the oldest pending result (latest wins)"
+        );
+    }
     tauri::async_runtime::spawn(async move {
-        translate_caption(app, config, pipeline, caption).await;
+        translate_caption(app, config, pipeline, caption, ticket).await;
     });
 }
 
@@ -511,14 +579,28 @@ async fn translate_caption(
     config: AppConfig,
     pipeline: Pipeline,
     caption: CaptionPayload,
+    ticket: TranslationTicket,
 ) {
     let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(1);
     let mut on_stage = |stage: &PipelineStageEvent| emit_pipeline_stage(&app, &config, stage);
     let result = pipeline.complete_translation(&config, caption, &mut stages, &mut on_stage).await;
-    handle_translation_result(&app, result);
+    handle_translation_result(&app, ticket, result);
+    if let Some(state) = app.try_state::<AppState>() {
+        state.finish_translation(ticket);
+    }
 }
 
-fn handle_translation_result(app: &AppHandle, result: Result<CaptionPayload, PipelineError>) {
+fn handle_translation_result(
+    app: &AppHandle,
+    ticket: TranslationTicket,
+    result: Result<CaptionPayload, PipelineError>,
+) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if !state.translation_is_current(ticket) {
+        return;
+    }
     match result {
         Ok(caption) => emit_caption_update(app, &caption),
         Err(error) => report_translation_error(app, &error),
@@ -547,6 +629,19 @@ fn emit_caption_update(app: &AppHandle, caption: &CaptionPayload) {
     if let Err(error) = app.emit("caption:update", caption) {
         log::warn!("could not emit caption:update: {error}");
     }
+}
+
+/// ASR/normalizer work can outlive a stop/start boundary. Source updates carry
+/// the capture generation they started under so an old completion cannot paint
+/// over the newer session before the normal active-status guard runs.
+fn emit_caption_update_for_generation(app: &AppHandle, caption: &CaptionPayload, generation: u64) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if !state.is_capture_generation_current(generation) {
+        return;
+    }
+    emit_caption_update(app, caption);
 }
 
 fn report_translation_error(app: &AppHandle, error: &PipelineError) {
@@ -625,14 +720,18 @@ fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStag
     }
 }
 
-fn mark_backend_healthy(app: &AppHandle, state: &State<'_, AppState>) {
+fn mark_backend_healthy(app: &AppHandle, state: &State<'_, AppState>, generation: u64) {
+    if !state.is_capture_generation_current(generation) {
+        return;
+    }
     if let Ok(mut status) = state.status.lock() {
         // A request that was already in flight may complete after Stop. Keep
         // the completed session idle instead of publishing a healthy status
         // that would resurrect its caption/replay state.
-        if status.status == "idle" {
+        if !capture_is_active(status.status.as_str()) {
             return;
         }
+        state.record_asr_success();
         let mut dirty = false;
         if !status.backend_reachable {
             status.backend_reachable = true;
@@ -640,12 +739,6 @@ fn mark_backend_healthy(app: &AppHandle, state: &State<'_, AppState>) {
         }
         if status.last_error.is_some() {
             status.last_error = None;
-            dirty = true;
-        }
-        // A successful chunk must not flip a transient processing
-        // failure into a hard "error" session state — stay capturing.
-        if status.status == "error" {
-            status.status = "capturing".to_string();
             dirty = true;
         }
         // Avoid flooding the UI with identical runtime:status events on every
@@ -657,6 +750,63 @@ fn mark_backend_healthy(app: &AppHandle, state: &State<'_, AppState>) {
         drop(status);
         let _ = app.emit("runtime:status", &next);
     }
+}
+
+/// A response without a caption proves the sidecar is reachable, but it is
+/// not proof that ASR has recovered. In particular, this must never clear a
+/// persistent transcript-loss error after a VAD-confirmed speech turn.
+fn mark_backend_reachable_without_clearing_error(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    generation: u64,
+) {
+    if !state.is_capture_generation_current(generation) {
+        return;
+    }
+    if let Ok(mut status) = state.status.lock() {
+        if !capture_is_active(status.status.as_str()) || status.backend_reachable {
+            return;
+        }
+        status.backend_reachable = true;
+        let next = status.clone();
+        drop(status);
+        let _ = app.emit("runtime:status", &next);
+    }
+}
+
+fn persistent_asr_loss_message(consecutive: u8) -> String {
+    format!(
+        "ASR result loss: {consecutive} VAD-confirmed speech turns produced empty output within {} seconds.",
+        ASR_EMPTY_RESULT_WINDOW.as_secs()
+    )
+}
+
+/// Build a status snapshot for repeated empty Parapper turn results. Unlike a
+/// one-off no-speech soft skip, this is visible failure state and remains so
+/// until a real ASR caption succeeds or capture starts a new session.
+fn persistent_asr_loss_status(state: &AppState, detail: &str) -> Option<RuntimeStatus> {
+    let mut status = state.status.lock().ok()?;
+    if !capture_is_active(status.status.as_str()) {
+        return None;
+    }
+    status.backend_reachable = false;
+    status.last_error = Some(detail.to_string());
+    Some(status.clone())
+}
+
+fn emit_persistent_asr_loss_status(
+    app: &AppHandle,
+    state: &AppState,
+    generation: u64,
+    detail: &str,
+) {
+    if !state.is_capture_generation_current(generation) {
+        return;
+    }
+    let Some(status) = persistent_asr_loss_status(state, detail) else {
+        return;
+    };
+    let _ = app.emit("runtime:status", &status);
 }
 
 fn chrono_like_millis() -> u64 {
@@ -1048,10 +1198,13 @@ pub async fn export_debug_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_is_active, ensure_overlay_window, redact_runtime_text, sanitize_debug_json,
-        sanitize_export_body, source_caption_payload, validate_overlay_frame_dimensions,
-        SourceCaptionInput,
+        capture_is_active, ensure_overlay_window, persistent_asr_loss_message,
+        persistent_asr_loss_status, redact_runtime_text, sanitize_debug_json, sanitize_export_body,
+        source_caption_payload, validate_overlay_frame_dimensions, SourceCaptionInput,
     };
+    use crate::config::AppConfig;
+    use crate::output::OutputStatus;
+    use crate::state::{AppState, ASR_EMPTY_RESULT_WINDOW};
 
     #[test]
     fn update_relaunch_is_deferred_only_for_active_capture_states() {
@@ -1059,6 +1212,30 @@ mod tests {
         assert!(capture_is_active("capturing"));
         assert!(!capture_is_active("idle"));
         assert!(!capture_is_active("error"));
+    }
+
+    #[test]
+    fn repeated_vad_confirmed_empty_results_remain_a_visible_asr_failure() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = Some("an earlier error".to_string());
+        }
+        let detail = persistent_asr_loss_message(3);
+        let next = persistent_asr_loss_status(&state, &detail).expect("active capture status");
+
+        assert_eq!(next.status, "capturing");
+        assert!(!next.backend_reachable);
+        assert_eq!(next.last_error.as_deref(), Some(detail.as_str()));
+        assert!(detail.contains("ASR result loss"));
+        assert!(detail.contains(&ASR_EMPTY_RESULT_WINDOW.as_secs().to_string()));
+        assert!(
+            !detail.to_ascii_lowercase().contains("no transcript"),
+            "the frontend must not classify persistent result loss as a no-speech soft skip"
+        );
     }
 
     #[test]

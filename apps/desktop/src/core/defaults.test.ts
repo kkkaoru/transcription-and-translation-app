@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AUDIO_CHUNK_MAX_MS,
   AUDIO_CHUNK_MIN_MS,
+  AUDIO_CHUNK_RUNTIME_MAX_MS,
+  AUDIO_CHUNK_RUNTIME_MIN_MS,
   AUDIO_CHUNK_STEP_MS,
   createDefaultConfig,
   createTextStyle,
@@ -17,6 +19,10 @@ import {
   normalizeVadIntervalMs,
   normalizeVadThreshold,
   RECOGNITION_MODES,
+  resolveChunkMs,
+  resolveSilenceGate,
+  resolveSilenceGateDb,
+  resolveSilenceGateMode,
 } from "./defaults";
 
 describe("default configuration", () => {
@@ -92,6 +98,33 @@ describe("default configuration", () => {
     const fixed = mergeConfig({ audio: { adaptiveNoiseFloor: false, silenceGateDb: -60 } });
     expect(fixed.audio.adaptiveNoiseFloor).toBe(false);
     expect(fixed.audio.silenceGateDb).toBe(-60);
+  });
+
+  it("resolves the effective silence gate without treating an adaptive fallback as active", () => {
+    expect(resolveSilenceGateMode(undefined)).toBe("adaptive");
+    expect(resolveSilenceGateMode(true)).toBe("adaptive");
+    expect(resolveSilenceGateMode(false)).toBe("fixed");
+    expect(resolveSilenceGate(true, -60)).toEqual({ mode: "adaptive", fixedGateDb: null });
+    expect(resolveSilenceGate(false, -60)).toEqual({ mode: "fixed", fixedGateDb: -60 });
+    // Runtime values are bounded to the same range as the settings slider.
+    expect(resolveSilenceGateDb(Number.NaN)).toBe(-50);
+    expect(resolveSilenceGateDb(-200)).toBe(-90);
+    expect(resolveSilenceGateDb(12)).toBe(0);
+  });
+
+  it("normalizes malformed chunk windows while preserving valid legacy values", () => {
+    expect(resolveChunkMs(Number.NaN)).toBe(DEFAULT_AUDIO_CHUNK_MS);
+    expect(resolveChunkMs(Number.POSITIVE_INFINITY)).toBe(DEFAULT_AUDIO_CHUNK_MS);
+    expect(resolveChunkMs(0)).toBe(DEFAULT_AUDIO_CHUNK_MS);
+    expect(resolveChunkMs(-320)).toBe(DEFAULT_AUDIO_CHUNK_MS);
+    expect(resolveChunkMs(100)).toBe(AUDIO_CHUNK_RUNTIME_MIN_MS);
+    expect(resolveChunkMs(20_000)).toBe(AUDIO_CHUNK_RUNTIME_MAX_MS);
+    // A pre-UI-cadence JSON value remains usable rather than being rounded.
+    expect(resolveChunkMs(333)).toBe(333);
+    expect(mergeConfig({ audio: { chunkMs: Number.NaN } }).audio.chunkMs).toBe(
+      DEFAULT_AUDIO_CHUNK_MS,
+    );
+    expect(mergeConfig({ audio: { chunkMs: 333 } }).audio.chunkMs).toBe(333);
   });
 
   it("migrates the legacy -55 silence gate that let ambient -54.2 dB through", () => {

@@ -23,7 +23,7 @@
   "vars": {
     "CORS_ORIGIN": "https://kotoba-beacon-inference.kaoru.workers.dev",
     "MODEL_ROUTES": "{}",
-    "AZOOKEY_TIMEOUT_MS": "250",
+    "AZOOKEY_TIMEOUT_MS": "1000",
     "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz"
   },
   // Names only: Wrangler can warn when local/prod secrets are missing, but

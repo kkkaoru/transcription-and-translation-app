@@ -18,7 +18,7 @@ export interface BuildInfo {
 export const BUILD_INFO: BuildInfo = Object.freeze({
   appVersion: readString(
     typeof __KOTOBA_APP_VERSION__ === "undefined" ? undefined : __KOTOBA_APP_VERSION__,
-    "0.1.0",
+    "0.1.1",
   ),
   buildId: readString(
     typeof __KOTOBA_BUILD_ID__ === "undefined" ? undefined : __KOTOBA_BUILD_ID__,

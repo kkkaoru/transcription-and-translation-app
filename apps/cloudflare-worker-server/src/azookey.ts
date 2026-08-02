@@ -15,9 +15,18 @@ export const AZOOKEY_MAX_LANGUAGE_BYTES = 64;
 export const AZOOKEY_AUTH_TOKEN_MAX_ID_MULTIPLIER = 4;
 export const AZOOKEY_MAX_AUTH_TOKEN_BYTES =
   AZOOKEY_MAX_ID_BYTES * AZOOKEY_AUTH_TOKEN_MAX_ID_MULTIPLIER;
-export const AZOOKEY_DEFAULT_TIMEOUT_MS = 250;
+// Portable AzooKey conversion is synchronous Wasm. Measurements for the
+// official dictionary put normal Japanese sentences around 300–600 ms, so a
+// 250 ms default produced false conversion_timeout errors before a result
+// could be displayed. Keep the bound finite while leaving room for a cold
+// isolate; deployments can tune it within the validated range.
+export const AZOOKEY_DEFAULT_TIMEOUT_MS = 1_000;
 export const AZOOKEY_MIN_TIMEOUT_MS = 25;
 export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
+/** A dictionary cold load is intentionally bounded separately from conversion latency. */
+export const AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS = 10_000;
+export const AZOOKEY_MIN_DICTIONARY_TIMEOUT_MS = 1_000;
+export const AZOOKEY_MAX_DICTIONARY_TIMEOUT_MS = 60_000;
 /** IPADIC's comma-separated reading field used by the checked-in dictionary. */
 export const VIBRATO_IPADIC_FEATURE_INDEX = 7;
 /** Refuse unexpectedly large remote dictionaries before allocating in WASM. */
@@ -42,6 +51,8 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 export interface AzookeyEnv {
   AZOOKEY_API_TOKEN?: string;
   AZOOKEY_TIMEOUT_MS?: string;
+  /** Maximum time to wait for one lazy dictionary fetch during socket setup. */
+  AZOOKEY_DICTIONARY_TIMEOUT_MS?: string;
   /** Optional HTTP adapter that performs the real Vibrato/UniDic pre-pass. */
   VIBRATO_UPSTREAM_URL?: string;
   VIBRATO_API_TOKEN?: string;
@@ -132,6 +143,8 @@ export interface AzookeyRequestDependencies {
   vibratoDictionaryFetcher?: AzookeyFetcher;
   /** Optional asset-bound fetcher for the official AzooKey dictionary. */
   azookeyDictionaryFetcher?: AzookeyFetcher;
+  /** Test seam for the bounded lazy dictionary fetch. */
+  dictionaryTimeoutMs?: number;
 }
 
 export interface AzookeyMessage {
@@ -213,6 +226,23 @@ const clampTimeout = (value: string | undefined): number => {
 };
 
 export const azookeyTimeoutMs = (env: AzookeyEnv): number => clampTimeout(env.AZOOKEY_TIMEOUT_MS);
+
+const clampDictionaryTimeout = (value: string | undefined): number => {
+  if (!value?.trim()) {
+    return AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS;
+  }
+  return Math.min(
+    AZOOKEY_MAX_DICTIONARY_TIMEOUT_MS,
+    Math.max(AZOOKEY_MIN_DICTIONARY_TIMEOUT_MS, Math.round(parsed)),
+  );
+};
+
+export const azookeyDictionaryTimeoutMs = (env: AzookeyEnv): number =>
+  clampDictionaryTimeout(env.AZOOKEY_DICTIONARY_TIMEOUT_MS);
 
 const jsonMessage = (message: object): string => JSON.stringify(message);
 
@@ -511,19 +541,48 @@ const decompressPortableDictionary = (response: Response): Promise<Uint8Array> =
   return collectStream(decompressed);
 };
 
-const fetchPortableDictionary = async (
+const fetchPortableDictionary = (
   dictionaryUrl: string,
   fetcher: AzookeyFetcher,
+  timeoutMs: number,
 ): Promise<Uint8Array> => {
-  const response = await fetcher(dictionaryUrl);
-  if (!response.ok) {
-    throw new Error(`AzooKey dictionary returned ${response.status}`);
+  return withDictionaryFetchTimeout(async (signal) => {
+    const response = await fetcher(dictionaryUrl, { signal });
+    if (!response.ok) {
+      throw new Error(`AzooKey dictionary returned ${response.status}`);
+    }
+    const dictionary = await decompressPortableDictionary(response);
+    if (dictionary.byteLength === 0) {
+      throw new Error("AzooKey dictionary is empty");
+    }
+    return dictionary;
+  }, timeoutMs);
+};
+
+const withDictionaryFetchTimeout = async <T>(
+  operation: (signal: AbortSignal) => T | Promise<T>,
+  timeoutMs: number,
+): Promise<T> => {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timer = setTimeout(
+        () => {
+          controller.abort();
+          reject(new Error("dictionary fetch timed out"));
+        },
+        Math.max(1, timeoutMs),
+      );
+      void Promise.resolve()
+        .then(() => operation(controller.signal))
+        .then(resolve, reject);
+    });
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
-  const dictionary = await decompressPortableDictionary(response);
-  if (dictionary.byteLength === 0) {
-    throw new Error("AzooKey dictionary is empty");
-  }
-  return dictionary;
 };
 
 const moduleConverterCache = (
@@ -547,6 +606,7 @@ export const createWasmConverter = (
   module: WebAssembly.Module,
   dictionaryUrl?: string,
   fetcher: AzookeyFetcher = fetch,
+  dictionaryTimeoutMs: number = AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS,
 ): AzookeyConverter => {
   const normalizedUrl = dictionaryUrl?.trim();
   if (!normalizedUrl) {
@@ -563,10 +623,14 @@ export const createWasmConverter = (
     if (cached) {
       return cached;
     }
-    const pending = fetchPortableDictionary(normalizedUrl, fetcher)
+    let pending!: Promise<AzookeyConverter>;
+    pending = fetchPortableDictionary(normalizedUrl, fetcher, dictionaryTimeoutMs)
       .then((dictionary) => instantiateWasmConverter(module, dictionary))
       .catch((error: unknown) => {
-        cache.delete(normalizedUrl);
+        // A late rejection must not evict a newer retry for the same URL.
+        if (cache.get(normalizedUrl) === pending) {
+          cache.delete(normalizedUrl);
+        }
         throw error instanceof Error
           ? error
           : new Error("AzooKey dictionary initialization failed");
@@ -668,6 +732,7 @@ export const createVibratoWasmConverter = (
   wasmModule: WebAssembly.Module | undefined,
   dictionaryUrl: string | undefined,
   fetcher: AzookeyFetcher = fetch,
+  dictionaryTimeoutMs: number = AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS,
 ): AzookeyVibratoConverter | undefined => {
   const normalizedUrl = dictionaryUrl?.trim();
   if (!wasmModule || !normalizedUrl) {
@@ -695,8 +760,9 @@ export const createVibratoWasmConverter = (
     if (cached) {
       return cached;
     }
-    const tokenizerPromise = (async () => {
-      const response = await fetcher(normalizedUrl);
+    let tokenizerPromise!: Promise<VibratoTokenizer>;
+    tokenizerPromise = withDictionaryFetchTimeout(async (signal) => {
+      const response = await fetcher(normalizedUrl, { signal });
       if (!response.ok) {
         throw new Error(`Vibrato dictionary returned ${response.status}`);
       }
@@ -709,8 +775,11 @@ export const createVibratoWasmConverter = (
       }
       initVibratoSync({ module: wasmModule });
       return new VibratoTokenizer(bytes);
-    })().catch((error: unknown) => {
-      moduleCache.delete(normalizedUrl);
+    }, dictionaryTimeoutMs).catch((error: unknown) => {
+      // A late rejection must not evict a newer retry for the same URL.
+      if (moduleCache.get(normalizedUrl) === tokenizerPromise) {
+        moduleCache.delete(normalizedUrl);
+      }
       throw error instanceof Error ? error : new Error("Vibrato dictionary initialization failed");
     });
     moduleCache.set(normalizedUrl, tokenizerPromise);
@@ -1015,6 +1084,7 @@ export const openAzookeySocket = async (
   }
   let converter: AzookeyConverter;
   const portableDictionaryConfigured = Boolean(env.AZOOKEY_DICTIONARY_URL?.trim());
+  const dictionaryTimeoutMs = dependencies.dictionaryTimeoutMs ?? azookeyDictionaryTimeoutMs(env);
   try {
     converter =
       dependencies.converter ??
@@ -1022,6 +1092,7 @@ export const openAzookeySocket = async (
         dependencies.wasmModule as WebAssembly.Module,
         env.AZOOKEY_DICTIONARY_URL,
         dependencies.azookeyDictionaryFetcher ?? dependencies.fetcher ?? fetch,
+        dictionaryTimeoutMs,
       );
     await converter.warmup?.();
   } catch {
@@ -1049,6 +1120,7 @@ export const openAzookeySocket = async (
             dependencies.vibratoWasmModule,
             env.VIBRATO_DICTIONARY_URL,
             dependencies.vibratoDictionaryFetcher ?? dependencies.fetcher ?? fetch,
+            dictionaryTimeoutMs,
           ) ?? httpVibrato));
   } catch {
     return new Response(
@@ -1061,7 +1133,6 @@ export const openAzookeySocket = async (
       },
     );
   }
-  const pair = dependencies.socketPair?.() ?? createWorkersSocketPair();
   const timeoutMs = azookeyTimeoutMs(env);
   if (vibratoConverter?.warmup && vibratoConverter !== converter) {
     try {
@@ -1078,6 +1149,10 @@ export const openAzookeySocket = async (
       );
     }
   }
+  // Allocate the socket pair only after all warmups succeed. Creating a pair
+  // before a 503 path leaves an accepted server endpoint unreachable and can
+  // leak resources on repeated reconnects.
+  const pair = dependencies.socketPair?.() ?? createWorkersSocketPair();
   pair.server.accept();
   attachAzookeySocket(pair.server, {
     converter,

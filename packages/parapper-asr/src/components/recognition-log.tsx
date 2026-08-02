@@ -22,7 +22,8 @@ import {
   formatCsvFileTimestamp,
   formatLogTime,
 } from "../lib/recognition-log-csv";
-import { recognitionSourceRowId } from "../lib/recognition-source";
+import { recognitionTextRowId } from "../lib/recognition-source";
+import { recognitionTextEventKey } from "../lib/recognition-state";
 import { notificationColor } from "../lib/theme";
 import type { RecognizedTextEvent } from "../lib/types";
 
@@ -205,8 +206,8 @@ export const RecognitionLog: React.FC<RecognitionLogProps> = ({
             ) : (
               recognizedTexts.map((entry) => (
                 <Paper
-                  key={entry.id}
-                  data-log-row-id={recognitionSourceRowId(entry.source)}
+                  key={recognitionTextEventKey(entry)}
+                  data-log-row-id={recognitionTextRowId(entry)}
                   p="xs"
                   withBorder
                   radius="sm"

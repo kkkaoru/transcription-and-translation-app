@@ -513,7 +513,9 @@ async function exerciseBrowserErrorRecovery() {
     await start.click();
     await page.waitForTimeout(800);
     const first = await page.evaluate(() => ({
-      notice: document.querySelector('[role="status"], [role="alert"]')?.textContent?.trim() || "",
+      // Prefer the actionable alert over the persistent input-level status;
+      // both are present on the live screen after a failed start.
+      notice: document.querySelector('[role="alert"], [role="status"]')?.textContent?.trim() || "",
       button: document.querySelector(".content-heading .primary-button")?.textContent?.trim() || "",
       disabled: Boolean(document.querySelector(".content-heading .primary-button")?.disabled),
     }));

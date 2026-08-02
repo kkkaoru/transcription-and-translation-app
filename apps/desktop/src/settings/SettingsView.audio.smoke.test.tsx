@@ -136,9 +136,23 @@ describe("SettingsView audio tuning", () => {
     );
     expect(gate?.type).toBe("range");
     expect(gate?.value).toBe("-50");
+    expect(gate?.disabled).toBe(true);
     expect(container.querySelector("output[for='audio-silence-gate-db']")?.textContent).toContain(
       "-50 dBFS",
     );
+    expect(container.querySelector("output[for='audio-silence-gate-db']")?.textContent).toMatch(
+      /適応ゲート有効|adaptive gate active/,
+    );
+
+    // The fixed dBFS slider becomes effective only after adaptive gating is
+    // explicitly disabled; the UI must make that state reversible.
+    const adaptiveToggle = container.querySelector<HTMLInputElement>("#audio-adaptive-noise-floor");
+    expect(adaptiveToggle?.checked).toBe(true);
+    await act(async () => {
+      adaptiveToggle?.click();
+      await Promise.resolve();
+    });
+    expect(gate?.disabled).toBe(false);
     const vadInterval = container.querySelector<HTMLInputElement>("#audio-vad-interval-ms");
     const vadThreshold = container.querySelector<HTMLInputElement>("#audio-vad-threshold");
     expect(vadInterval?.value).toBe("32");

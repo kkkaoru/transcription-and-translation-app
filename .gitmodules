@@ -1,7 +1,6 @@
 [submodule "submodules/Parapper-ASR"]
 	path = submodules/Parapper-ASR
-	url = git@github.com:Parakeet-Inc/Parapper-ASR.git
-	branch = main
+	url = https://github.com/Parakeet-Inc/Parapper-ASR.git
 [submodule "submodules/AzooKeyKanaKanjiConverter"]
 	path = submodules/AzooKeyKanaKanjiConverter
 	url = https://github.com/azooKey/AzooKeyKanaKanjiConverter.git

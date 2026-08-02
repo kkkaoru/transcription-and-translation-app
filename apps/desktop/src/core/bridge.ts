@@ -104,20 +104,33 @@ export const formatBridgeError = (error: unknown): string | undefined => {
  * Rust pipeline error string (`inference returned HTTP 422: ...`).
  */
 export const isNoSpeechBridgeError = (error: unknown): boolean => {
-  const detail = collectErrorText(error).toLowerCase();
+  const detail = collectErrorText(error).replace(/\s+/g, " ").trim().toLowerCase();
   if (!detail) {
     return false;
   }
-  return (
-    detail.includes("transcript_missing") ||
-    detail.includes("without a final transcript") ||
-    detail.includes("no final transcript") ||
-    detail.includes("no transcript") ||
-    detail.includes("empty transcript") ||
-    // Soft empty success paths (defense if a wrapper rephrases).
-    detail.includes("no speech") ||
-    detail.includes("no usable speech")
-  );
+  // `transcript_missing` is the stable gateway code. Keep this token-based
+  // match because it is present in both the JSON body and the Rust error
+  // wrapper, while avoiding broad substring matches such as
+  // `transcript_missing_timeout`.
+  if (/(?:^|[\s:{,"'])transcript_missing(?:$|[\s},"'])/.test(detail)) {
+    return true;
+  }
+
+  // A few transports only forward the human-readable result. Accept the
+  // complete, bounded messages emitted by Parapper/Web Speech; a sentence
+  // such as "gateway no transcript buffer" is a real transport failure and
+  // must remain visible instead of being silently classified as silence.
+  if (
+    /^(?:parapper )?completed without a final transcript$/.test(detail) ||
+    /^empty transcript$/.test(detail) ||
+    /^no transcript(?: available| returned| received)?$/.test(detail) ||
+    /^no usable speech$/.test(detail) ||
+    /^no[- ]speech$/.test(detail) ||
+    /\(no[- ]speech\)$/.test(detail)
+  ) {
+    return true;
+  }
+  return false;
 };
 
 const demoCaption = (): CaptionPayload => {

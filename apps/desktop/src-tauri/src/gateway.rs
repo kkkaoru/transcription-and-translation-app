@@ -154,8 +154,26 @@ impl RuntimeServices {
         Ok(())
     }
 
-    fn forget_model(&self, model_id: &str) {
-        if let Ok(mut models) = self.models.lock() {
+    fn forget_sidecar(&self, id: &str, pid: u32) {
+        let slot = match id {
+            "kotoba-inference-gateway" | "kotoba_inference_gateway" => &self.gateway,
+            "kotoba-parapper" | "kotoba_parapper" => &self.parapper,
+            _ => return,
+        };
+        let Ok(mut child) = slot.lock() else { return };
+        // A restart can replace the slot before the old monitor observes
+        // its Terminated event. Only clear the child that actually
+        // emitted this event; never hide the replacement process.
+        let Some(current) = child.as_ref() else { return };
+        if current.pid() == pid {
+            child.take();
+        }
+    }
+
+    fn forget_model(&self, model_id: &str, pid: u32) {
+        let Ok(mut models) = self.models.lock() else { return };
+        let Some(current) = models.get(model_id) else { return };
+        if current.pid() == pid {
             models.remove(model_id);
         }
     }
@@ -303,8 +321,9 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     let (parapper_events, parapper_child) = parapper_command
         .spawn()
         .map_err(|error| format!("could not start embedded Parapper service: {error}"))?;
+    let parapper_pid = parapper_child.pid();
     services.store_parapper(parapper_child)?;
-    monitor_sidecar(parapper_events, "kotoba_parapper");
+    monitor_sidecar(parapper_events, app.clone(), "kotoba_parapper", parapper_pid);
     log::info!(
         target: "kotoba_parapper",
         "started headless recognition service with runtime data {} (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={} turn_detector={} interim_result_enabled={} rerecognize_full_on_complete={} noise_cancellation_enabled={})",
@@ -329,11 +348,12 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
             services.stop_parapper();
             format!("could not start embedded inference gateway: {error}")
         })?;
+    let gateway_pid = gateway_child.pid();
     if let Err(error) = services.store_gateway(gateway_child) {
         services.stop_parapper();
         return Err(error);
     }
-    monitor_sidecar(gateway_events, "kotoba_inference_gateway");
+    monitor_sidecar(gateway_events, app.clone(), "kotoba_inference_gateway", gateway_pid);
     log::info!(
         target: "kotoba_inference_gateway",
         "started with configuration {}",
@@ -747,19 +767,30 @@ fn log_sidecar_stdout(target: &'static str, line: &[u8]) {
     }
 }
 
-fn monitor_sidecar(events: tauri::async_runtime::Receiver<CommandEvent>, target: &'static str) {
-    tauri::async_runtime::spawn(run_sidecar_monitor(events, target));
+fn monitor_sidecar(
+    events: tauri::async_runtime::Receiver<CommandEvent>,
+    app: AppHandle,
+    target: &'static str,
+    pid: u32,
+) {
+    tauri::async_runtime::spawn(run_sidecar_monitor(events, app, target, pid));
 }
 
 async fn run_sidecar_monitor(
     mut events: tauri::async_runtime::Receiver<CommandEvent>,
+    app: AppHandle,
     target: &'static str,
+    pid: u32,
 ) {
     while let Some(event) = events.recv().await {
         if handle_sidecar_event(event, target) {
             break;
         }
     }
+    // A closed event channel is also terminal from the monitor's point of
+    // view. Reconcile the slot so diagnostics and a later start do not retain
+    // a dead child when the shell plugin omitted its Terminated event.
+    app.state::<RuntimeServices>().forget_sidecar(target, pid);
 }
 
 fn handle_sidecar_event(event: CommandEvent, target: &'static str) -> bool {
@@ -813,8 +844,9 @@ fn start_model_server(
     let (events, child) = command
         .spawn()
         .map_err(|error| format!("could not start model server {}: {error}", spec.id))?;
+    let child_pid = child.pid();
     services.store_model(spec.id, child)?;
-    monitor_model_sidecar(events, app.clone(), spec.id);
+    monitor_model_sidecar(events, app.clone(), spec.id, child_pid);
     log::info!(
         target: "kotoba_llama_server",
         "started bundled model server {} with model path {}",
@@ -843,26 +875,30 @@ fn monitor_model_sidecar(
     events: tauri::async_runtime::Receiver<CommandEvent>,
     app: AppHandle,
     model_id: &'static str,
+    pid: u32,
 ) {
-    tauri::async_runtime::spawn(run_model_sidecar_monitor(events, app, model_id));
+    tauri::async_runtime::spawn(run_model_sidecar_monitor(events, app, model_id, pid));
 }
 
 async fn run_model_sidecar_monitor(
     mut events: tauri::async_runtime::Receiver<CommandEvent>,
     app: AppHandle,
     model_id: &'static str,
+    pid: u32,
 ) {
     while let Some(event) = events.recv().await {
-        if handle_model_sidecar_event(event, &app, model_id) {
+        if handle_model_sidecar_event(event, &app, model_id, pid) {
             break;
         }
     }
+    app.state::<RuntimeServices>().forget_model(model_id, pid);
 }
 
 fn handle_model_sidecar_event(
     event: CommandEvent,
     app: &AppHandle,
     model_id: &'static str,
+    pid: u32,
 ) -> bool {
     match event {
         CommandEvent::Stderr(line) => {
@@ -889,7 +925,7 @@ fn handle_model_sidecar_event(
                 status.code,
                 status.signal
             );
-            app.state::<RuntimeServices>().forget_model(model_id);
+            app.state::<RuntimeServices>().forget_model(model_id, pid);
             true
         }
         CommandEvent::Stdout(line) => {

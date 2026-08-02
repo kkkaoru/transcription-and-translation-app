@@ -1959,7 +1959,11 @@ export function DebugPanel() {
                     <code>
                       {t("debug.chunkMs")}: {asString(pick(audioConfig, "chunkMs"))} ms ·{" "}
                       {t("debug.silenceGate")}: {asString(pick(audioConfig, "silenceGateDb"))} dB ·{" "}
-                      {t("debug.noiseSuppression")}:{" "}
+                      {t("debug.adaptiveNoiseFloor")}:{" "}
+                      {pick(audioConfig, "adaptiveNoiseFloor") === false
+                        ? t("debug.off")
+                        : t("debug.on")}{" "}
+                      · {t("debug.noiseSuppression")}:{" "}
                       {pick(audioConfig, "noiseSuppression") === false
                         ? t("debug.off")
                         : t("debug.on")}{" "}

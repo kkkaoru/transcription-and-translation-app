@@ -1,8 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPortableDictionaryArchive } from "./build-azookey-dictionary.mjs";
+import {
+  buildPortableDictionaryArchive,
+  verifyPortableDictionaryArchive,
+} from "./build-azookey-dictionary.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = resolve(root, "packages/azookey-wasm/Cargo.toml");
@@ -14,13 +17,31 @@ const destination = resolve(root, "apps/cloudflare-worker-server/wasm/azookey.wa
 
 execFileSync(
   "cargo",
-  ["build", "--manifest-path", manifest, "--target", "wasm32-unknown-unknown", "--release"],
+  [
+    "build",
+    "--locked",
+    "--manifest-path",
+    manifest,
+    "--target",
+    "wasm32-unknown-unknown",
+    "--release",
+  ],
   { cwd: root, stdio: "inherit" },
 );
 mkdirSync(dirname(destination), { recursive: true });
 copyFileSync(source, destination);
 console.log(`Built ${destination}`);
-const dictionary = buildPortableDictionaryArchive();
+const dictionaryRoot = resolve(root, "submodules/azooKey_dictionary_storage/Dictionary");
+const dictionaryAvailable = existsSync(resolve(dictionaryRoot, "louds/charID.chid"));
+const dictionary = dictionaryAvailable
+  ? buildPortableDictionaryArchive()
+  : verifyPortableDictionaryArchive();
+if (!dictionaryAvailable) {
+  console.warn(
+    "AzooKey dictionary submodule is not initialized; using the verified checked-in archive. " +
+      "Run `git submodule update --init submodules/azooKey_dictionary_storage` to rebuild it.",
+  );
+}
 console.log(
   `Built ${dictionary.destination} (${dictionary.compressedBytes} bytes, sha256=${dictionary.sha256})`,
 );

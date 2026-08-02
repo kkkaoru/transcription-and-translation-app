@@ -78,6 +78,7 @@ wasm-bindgen 出力へ渡したところ、`東京都に住む` は `東京`/`�
 
 # 動作する heap-backed wrapper
 cargo build --manifest-path packages/vibrato-wasm/Cargo.toml \
+  --locked \
   --target wasm32-unknown-unknown --release
 cargo test --manifest-path packages/vibrato-wasm/Cargo.toml
 
@@ -85,7 +86,19 @@ cargo test --manifest-path packages/vibrato-wasm/Cargo.toml
 node scripts/build-vibrato-wasm.mjs
 ```
 
+The checked-in IPADIC asset is `assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst`
+(SHA-256 `82a6da70bb4a17be70f20ff44f650f9ad1d2b0b4fcb2f39c17fc797f92d0ab75`).
+Its upstream `COPYING` and `NOTICE` are shipped alongside each public copy of
+the dictionary.
+The browser, Worker, and `pkg-web` copies of the generated post-bindgen WASM
+binary are kept byte-identical (SHA-256
+`334375e6442c3be496a9cf90c21c59fcdbd4ff96560805341333ba1b881c969b`); run
+`bun run assets:verify` after regenerating or copying them. The verification
+command also checks that all four submodule gitlinks remain at their pinned
+revisions; release checks can add `--require-tracked` to reject unstaged assets.
+
 `wasm-bindgen-cli` をインストールしている環境では、`node
 scripts/build-vibrato-wasm.mjs --bindgen` で JavaScript glue も生成できる。
-raw `.wasm` はビルド検証用であり、公開 `initTokenizer` API を使うには
-生成された glue が必要である。
+この bindgen モードは `pkg-web` と比較アプリ/Worker の tracked JS・d.ts・WASM
+コピーを同時に同期する。raw `.wasm` モードは `pkg/` の検証用出力だけを更新し、
+公開 `initTokenizer` API を使う tracked glue は変更しない。公開 API には bindgen 出力が必要である。

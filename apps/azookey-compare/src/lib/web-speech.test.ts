@@ -179,14 +179,105 @@ describe("WebSpeechController", () => {
     recognition.onstart?.();
     recognition.onend?.();
     expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
-    vi.advanceTimersByTime(49);
+    vi.advanceTimersByTime(99);
     expect(recognition.startCalls).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(recognition.startCalls).toBe(1);
+    vi.advanceTimersByTime(49);
     vi.advanceTimersByTime(1);
     expect(recognition.startCalls).toBe(2);
     recognition.onstart?.();
     controller.stop();
     recognition.onend?.();
     vi.runOnlyPendingTimers();
+    expect(recognition.startCalls).toBe(2);
+    controller.dispose();
+  });
+
+  it("keeps a final result queued after end until the bounded flush grace expires", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onend?.();
+
+    // WebKit can enqueue this final result after `end`. It must be delivered
+    // before the old generation is flushed and a replacement is started.
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "遅延した確定")) });
+    expect(events.onFinalText).toHaveBeenCalledWith("遅延した確定");
+    vi.advanceTimersByTime(99);
+    expect(recognition.startCalls).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(recognition.startCalls).toBe(1);
+    vi.advanceTimersByTime(50);
+    expect(recognition.startCalls).toBe(2);
+    controller.dispose();
+  });
+
+  it("cancels a pending end flush restart when stop is requested from idle", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onend?.();
+    controller.stop();
+    vi.advanceTimersByTime(200);
+    expect(recognition.startCalls).toBe(1);
+    controller.dispose();
+  });
+
+  it("keeps a queued final when stop and start overlap the old session", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    controller.stop();
+    recognition.onend?.();
+    controller.start();
+    recognition.onstart?.();
+
+    // The old session's result was already queued across stop/start. It must
+    // still reach the final-text lane rather than being lost by a buffer reset.
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "停止直前の確定")) });
+    expect(events.onFinalText).toHaveBeenCalledWith("停止直前の確定");
+    controller.dispose();
+  });
+
+  it("ignores the old end queued after the replacement session starts", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    controller.stop();
+    controller.start();
+    recognition.onstart?.();
+
+    // The superseded service can deliver `end` after the new start callback.
+    // The successful abort's ignored-end budget must still fence it.
+    recognition.onend?.();
+    vi.advanceTimersByTime(200);
     expect(recognition.startCalls).toBe(2);
     controller.dispose();
   });
@@ -249,7 +340,7 @@ describe("WebSpeechController", () => {
       finalText: "先に確定 新しい確定",
       interimText: "",
     });
-    expect(events.onFinalText).toHaveBeenCalledTimes(1);
+    expect(events.onFinalText).toHaveBeenCalledTimes(2);
     expect(events.onFinalText).toHaveBeenLastCalledWith("新しい確定");
 
     recognition?.onresult?.({
@@ -260,14 +351,23 @@ describe("WebSpeechController", () => {
       finalText: "先に確定 新しい確定",
       interimText: "続き",
     });
-    expect(events.onFinalText).toHaveBeenCalledTimes(1);
+    expect(events.onFinalText).toHaveBeenCalledTimes(2);
 
     recognition?.onresult?.({
       resultIndex: 0,
       results: results(result(true, "更新された確定")),
     });
     expect(events.onFinalText).toHaveBeenLastCalledWith("更新された確定");
-    expect(events.onFinalText).toHaveBeenCalledTimes(2);
+    expect(events.onFinalText).toHaveBeenCalledTimes(3);
+
+    // A browser may revise an earlier final while resultIndex points at a
+    // later segment. The revision is still a new final and must be forwarded.
+    recognition?.onresult?.({
+      resultIndex: 2,
+      results: results(result(true, "さらに更新された確定")),
+    });
+    expect(events.onFinalText).toHaveBeenLastCalledWith("さらに更新された確定");
+    expect(events.onFinalText).toHaveBeenCalledTimes(4);
 
     controller.stop();
     expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
@@ -335,6 +435,56 @@ describe("WebSpeechController", () => {
     errorStopRecognition.stopFailure = new Error("stop failed");
     errorStopController.stop();
     expect(errorStopEvents.onError).toHaveBeenLastCalledWith("stop failed");
+  });
+
+  it("does not consume a real end event when abort fails during restart", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    controller.stop();
+    recognition.abortFailure = "abort failed";
+    controller.start();
+    expect(recognition.startCalls).toBe(2);
+
+    // This onend is not ignored: abort did not succeed, so it belongs to the
+    // active browser service and must schedule the ordinary restart path.
+    recognition.onend?.();
+    vi.advanceTimersByTime(100);
+    expect(recognition.startCalls).toBe(2);
+    vi.advanceTimersByTime(50);
+    expect(recognition.startCalls).toBe(3);
+    controller.dispose();
+  });
+
+  it("retries a recoverable synchronous start failure instead of leaving recognition errored", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    // WebKit can synchronously reject start() while it is still releasing a
+    // prior service session. The caller still requested continuous capture, so
+    // the existing restart policy must make a later attempt.
+    recognition.startFailure = new Error("recognition service busy");
+    controller.start();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("error");
+    expect(recognition.startCalls).toBe(1);
+
+    recognition.startFailure = null;
+    vi.advanceTimersByTime(50);
+    expect(recognition.startCalls).toBe(2);
+    recognition.onstart?.();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("listening");
   });
 
   it("ignores duplicate lifecycle calls and supports callbacks being omitted", () => {

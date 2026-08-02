@@ -144,6 +144,8 @@ export type VadStateEvent = {
 
 export type RecognizedTextEvent = {
   id: string;
+  /** Frontend-only generation; native event payloads omit this field. */
+  generation?: number;
   source: RecognitionSourceMeta;
   is_final: boolean;
   update_mode: "append" | "replace";
@@ -170,6 +172,8 @@ export type RecognitionSourceMeta = {
 
 export type TranslationTextEvent = {
   id: string;
+  /** Frontend-only generation; native event payloads omit this field. */
+  generation?: number;
   source_recognition_id: string;
   source: RecognitionSourceMeta;
   source_asr_model: AsrModel;

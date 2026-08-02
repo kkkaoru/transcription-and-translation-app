@@ -1,13 +1,14 @@
 /**
  * A small, browser-independent adapter for the Web Speech API.
  *
- * Chrome exposes the API as `SpeechRecognition`, and some WebKit builds expose
- * it as `webkitSpeechRecognition`. A browser can expose the constructor while
- * an embedded WKWebView disables the recognition service, so constructor
- * detection is only a capability hint: the first `start()` and its error event
- * remain authoritative. Keeping the detection and event handling here means
- * the rest of the app can use the same stream contract in a browser, a Tauri
- * webview, and unit tests.
+ * Chrome-based browsers expose the API as `SpeechRecognition`, and a few
+ * browser WebKit builds historically exposed `webkitSpeechRecognition`.
+ * macOS WKWebView (including the Tauri desktop shell) does not expose either
+ * constructor, so feature detection must treat that mode as unavailable there.
+ * Even when a browser exposes a constructor, the recognition service can still
+ * reject `start()`; the first `start()` and its error event remain
+ * authoritative. Keeping detection and event handling here lets the rest of the
+ * app use one stream contract in browsers and tests.
  *
  * The native API is a session API rather than a truly long-lived stream: even
  * with `continuous = true` it eventually fires `onend`.  A stream requested by
@@ -18,6 +19,12 @@
 export const DEFAULT_WEB_SPEECH_LANGUAGE = "ja-JP";
 /** Chrome can still be unwinding its previous session when `onend` fires. */
 export const DEFAULT_WEB_SPEECH_RESTART_DELAY_MS = 50;
+/**
+ * WebKit can dispatch `onend` just before its last final `onresult`. Keep the
+ * result slots alive for this short, finite drain window before restarting or
+ * discarding a session.
+ */
+export const DEFAULT_WEB_SPEECH_FINAL_GRACE_MS = 50;
 const MAX_TRACKED_RESULTS = 256;
 const MAX_RESTART_BACKOFF_MS = 2_000;
 const MIN_RESTART_DELAY_MS = 0;
@@ -186,6 +193,11 @@ export interface WebSpeechRecognitionStreamOptions {
   maxAlternatives?: number;
   /** Delay before an automatic restart. Zero still schedules a separate tick. */
   restartDelayMs?: number;
+  /**
+   * Grace period after `onend` for a delayed final `onresult`. Defaults to
+   * `DEFAULT_WEB_SPEECH_FINAL_GRACE_MS` and is always finite and non-negative.
+   */
+  finalResultGraceMs?: number;
   /** Inject a constructor when running without a browser (or in tests). */
   recognitionConstructor?: WebSpeechRecognitionConstructor;
   /** Factory alternative for fakes that are not constructable classes. */
@@ -356,6 +368,13 @@ const clampRestartDelay = (value: number | undefined): number => {
   return Math.max(MIN_RESTART_DELAY_MS, Math.floor(value));
 };
 
+const clampFinalResultGrace = (value: number | undefined): number => {
+  if (value === undefined || !Number.isFinite(value)) {
+    return DEFAULT_WEB_SPEECH_FINAL_GRACE_MS;
+  }
+  return Math.max(MIN_RESTART_DELAY_MS, Math.floor(value));
+};
+
 const normalizeLanguage = (value: string | undefined): string => {
   const language = value?.trim();
   return language || DEFAULT_WEB_SPEECH_LANGUAGE;
@@ -416,6 +435,7 @@ const errorCodeFromCause = (cause: unknown): string | null => {
 export class WebSpeechRecognitionStream {
   private readonly recognition: WebSpeechRecognitionLike;
   private readonly restartDelayMs: number;
+  private readonly finalResultGraceMs: number;
   private readonly onResult: (result: WebSpeechRecognitionResult) => void;
   private readonly onPartial: (transcript: string, result: WebSpeechRecognitionResult) => void;
   private readonly onFinal: (transcript: string, result: WebSpeechRecognitionResult) => void;
@@ -425,6 +445,7 @@ export class WebSpeechRecognitionStream {
   private stateValue: WebSpeechRecognitionStreamState = "idle";
   private shouldRun = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private finalResultGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private restartAttempt = 0;
   /** True while an error recovery abort is waiting for the browser's `onend`. */
   private recoveryAbortPending = false;
@@ -436,6 +457,7 @@ export class WebSpeechRecognitionStream {
     const recognition = options.recognition ?? this.createRecognition(options);
     this.recognition = recognition;
     this.restartDelayMs = clampRestartDelay(options.restartDelayMs);
+    this.finalResultGraceMs = clampFinalResultGrace(options.finalResultGraceMs);
     this.onResult = options.onResult ?? (() => undefined);
     this.onPartial = options.onPartial ?? (() => undefined);
     this.onFinal = options.onFinal ?? (() => undefined);
@@ -486,9 +508,10 @@ export class WebSpeechRecognitionStream {
       this.stateValue = "idle";
       const willRestart = this.shouldRun;
       this.emitEvent({ type: "end", willRestart });
-      if (willRestart) {
-        this.scheduleRestart();
-      }
+      // Do not restart or clear de-duplication state synchronously. WebKit can
+      // deliver the final result on the next task after `onend`; the grace
+      // timer keeps that result observable before the next session begins.
+      this.armFinalResultGrace(true);
     };
   }
 
@@ -580,6 +603,13 @@ export class WebSpeechRecognitionStream {
       }
       this.recoveryAbortPending = false;
     }
+    // If `onend` already fired, let its finite drain window finish before
+    // starting a replacement. Starting now would clear resultSlots and could
+    // lose WebKit's delayed final result.
+    if (this.finalResultGraceTimer !== null && this.finalResultGraceAwaitingEnd) {
+      return;
+    }
+    this.clearFinalResultGraceTimer();
     this.startRecognizer();
   }
 
@@ -593,6 +623,9 @@ export class WebSpeechRecognitionStream {
     this.recoveryAbortPending = false;
     this.ignoredEndEvents = 0;
     if (this.stateValue === "idle" || this.stateValue === "stopping") {
+      if (this.stateValue === "stopping" && this.finalResultGraceTimer === null) {
+        this.armFinalResultGrace();
+      }
       return;
     }
     this.stateValue = "stopping";
@@ -601,7 +634,12 @@ export class WebSpeechRecognitionStream {
     } catch (error) {
       this.reportLifecycleError("stop", error);
       this.stateValue = "idle";
+      // If stop() failed before the browser could emit onend, still provide
+      // the same bounded drain for a late final result.
     }
+    // Some WebKit builds omit onend after stop(). Arm the drain proactively;
+    // a synchronous/late onend simply resets the same finite timer.
+    this.armFinalResultGrace();
   }
 
   /** Stop immediately and discard in-flight browser recognition. */
@@ -611,6 +649,9 @@ export class WebSpeechRecognitionStream {
     this.recoveryAbortPending = false;
     this.ignoredEndEvents = 0;
     if (this.stateValue === "idle" || this.stateValue === "stopping") {
+      if (this.stateValue === "stopping" && this.finalResultGraceTimer === null) {
+        this.armFinalResultGrace();
+      }
       return;
     }
     this.stateValue = "stopping";
@@ -620,6 +661,9 @@ export class WebSpeechRecognitionStream {
       this.reportLifecycleError("cancel", error);
       this.stateValue = "idle";
     }
+    // abort() is not required to dispatch onend. Keep a bounded drain even
+    // in that case so an already-queued final result is not dropped.
+    this.armFinalResultGrace();
   }
 
   /** Alias useful to owners that treat streams as disposable resources. */
@@ -629,6 +673,7 @@ export class WebSpeechRecognitionStream {
     }
     this.cancel();
     this.disposed = true;
+    this.clearFinalResultGraceTimer();
     this.resultSlots.clear();
     this.recognition.onstart = null;
     this.recognition.onresult = null;
@@ -722,6 +767,30 @@ export class WebSpeechRecognitionStream {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
+  }
+
+  private finalResultGraceAwaitingEnd = false;
+
+  private armFinalResultGrace(awaitingEnd = false): void {
+    const hadEndBoundary = this.finalResultGraceTimer !== null && this.finalResultGraceAwaitingEnd;
+    this.clearFinalResultGraceTimer();
+    this.finalResultGraceAwaitingEnd = awaitingEnd || hadEndBoundary;
+    this.finalResultGraceTimer = setTimeout(() => {
+      this.finalResultGraceTimer = null;
+      this.finalResultGraceAwaitingEnd = false;
+      this.resultSlots.clear();
+      if (this.shouldRun && !this.disposed && this.stateValue === "idle") {
+        this.scheduleRestart();
+      }
+    }, this.finalResultGraceMs);
+  }
+
+  private clearFinalResultGraceTimer(): void {
+    if (this.finalResultGraceTimer !== null) {
+      clearTimeout(this.finalResultGraceTimer);
+      this.finalResultGraceTimer = null;
+    }
+    this.finalResultGraceAwaitingEnd = false;
   }
 
   private handleResult(event: WebSpeechRecognitionEventLike): void {

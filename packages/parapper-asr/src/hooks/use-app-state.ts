@@ -18,6 +18,12 @@ import {
   notifyParapperIssue,
 } from "../lib/error";
 import { isMacOs } from "../lib/platform";
+import {
+  trimRecognitionLogRows,
+  upsertRecognizedText,
+  upsertTranslatedText,
+  withEventGeneration,
+} from "../lib/recognition-state";
 import { notificationColor } from "../lib/theme";
 import type {
   AsrMissingEvent,
@@ -139,9 +145,100 @@ export const useAppState = ({
   const [translatedTexts, setTranslatedTexts] = useState<
     TranslationTextEvent[]
   >([]);
+  // Native turn_session_id values are process/session scoped. Keep a local
+  // generation so a restarted sidecar can reuse those values without causing
+  // an old row to be replaced or a React key to be reused.
+  const recognitionGenerationRef = useRef(0);
+  const recognitionStatusRef = useRef<RecognitionStatus>("idle");
+  const highestTurnSessionIdRef = useRef<number | null>(null);
+  const latestSourceCursorRef = useRef<{
+    turn_session_id: number;
+    turn_id: number;
+    turn_revision: number;
+    output_sequence: number;
+  } | null>(null);
   const nativeConnectionsDisabled = isMacOs();
   const notifiedMissingTargetsRef = useRef<Set<ConnectionStateEvent["target"]>>(
     new Set(),
+  );
+
+  const observeRecognitionStatus = useCallback((status: RecognitionStatus) => {
+    const previousStatus = recognitionStatusRef.current;
+    if (
+      (!recognitionIsRunning(previousStatus) && recognitionIsRunning(status)) ||
+      (previousStatus === "waiting_for_client" && status === "listening") ||
+      (previousStatus === "listening" && status === "waiting_for_client")
+    ) {
+      recognitionGenerationRef.current += 1;
+      // A newly started runtime is allowed to reuse the sidecar's native
+      // counters. Cursor regression detection below handles restarts that do
+      // not emit a complete stopped -> started status sequence.
+      highestTurnSessionIdRef.current = null;
+      latestSourceCursorRef.current = null;
+    }
+    recognitionStatusRef.current = status;
+  }, []);
+
+  const generationForSource = useCallback(
+    (
+      source: {
+        turn_session_id: number;
+        turn_id: number;
+        turn_revision: number;
+        output_sequence: number;
+      },
+      trackCursor = false,
+    ) => {
+      const previousSession = highestTurnSessionIdRef.current;
+      if (trackCursor) {
+        if (
+          previousSession !== null &&
+          source.turn_session_id < previousSession
+        ) {
+          recognitionGenerationRef.current += 1;
+          highestTurnSessionIdRef.current = source.turn_session_id;
+        } else if (
+          previousSession === null ||
+          source.turn_session_id > previousSession
+        ) {
+          highestTurnSessionIdRef.current = source.turn_session_id;
+        }
+        const previousCursor = latestSourceCursorRef.current;
+        const sameSession =
+          previousCursor?.turn_session_id === source.turn_session_id;
+        const cursorMovedBack =
+          sameSession &&
+          (source.turn_id < previousCursor.turn_id ||
+            (source.turn_id === previousCursor.turn_id &&
+              (source.turn_revision < previousCursor.turn_revision ||
+                (source.turn_revision === previousCursor.turn_revision &&
+                  source.output_sequence < previousCursor.output_sequence))));
+        if (cursorMovedBack) {
+          recognitionGenerationRef.current += 1;
+        }
+        if (
+          previousCursor === null ||
+          !sameSession ||
+          source.turn_id > previousCursor.turn_id ||
+          (source.turn_id === previousCursor.turn_id &&
+            (source.turn_revision > previousCursor.turn_revision ||
+              (source.turn_revision === previousCursor.turn_revision &&
+                source.output_sequence >= previousCursor.output_sequence)))
+        ) {
+          latestSourceCursorRef.current = source;
+        }
+      }
+      return recognitionGenerationRef.current;
+    },
+    [],
+  );
+
+  const displayRecognitionLimit = useCallback(
+    (value: number | null | undefined) =>
+      value === null
+        ? null
+        : configuredLimit(value, DEFAULT_RECOGNITION_LOG_LIMIT),
+    [],
   );
 
   const applyConnectionState = (
@@ -223,6 +320,7 @@ export const useAppState = ({
         const loadedStatus = await invoke<RecognitionStatus>(
           "get_recognition_status",
         );
+        observeRecognitionStatus(loadedStatus);
         setRuntime((current) => ({
           ...current,
           status: loadedStatus,
@@ -246,7 +344,13 @@ export const useAppState = ({
         notifyParapperIssue(payload);
       }
     })();
-  }, [loadAudioDevices, setAppliedConfig, setConfig, t]);
+  }, [
+    loadAudioDevices,
+    observeRecognitionStatus,
+    setAppliedConfig,
+    setConfig,
+    t,
+  ]);
 
   useEffect(() => {
     configRef.current = config;
@@ -263,12 +367,24 @@ export const useAppState = ({
     if (!config) return;
     setRecognizedTexts((texts) =>
       trimRecognizedTextLog(
-        texts,
-        config.recognition_log_limit,
-        config.debug_audio_log_limit,
+        trimRecognitionLogRows(
+          texts,
+          displayRecognitionLimit(config.recognition_log_limit),
+        ),
+        displayRecognitionLimit(config.recognition_log_limit),
+        configuredLimit(
+          config.debug_audio_log_limit,
+          DEFAULT_DEBUG_AUDIO_LOG_LIMIT,
+        ),
       ),
     );
-  }, [config]);
+    setTranslatedTexts((texts) =>
+      trimRecognitionLogRows(
+        texts,
+        displayRecognitionLimit(config.recognition_log_limit),
+      ),
+    );
+  }, [config, displayRecognitionLimit]);
 
   useEffect(() => {
     if (!config) return;
@@ -324,6 +440,7 @@ export const useAppState = ({
   useEffect(() => {
     const unlistenCallbacks = [
       listen<RecognitionStatus>("parapper://status", (event) => {
+        observeRecognitionStatus(event.payload);
         setRuntime((current) => ({
           ...current,
           status: event.payload,
@@ -347,13 +464,15 @@ export const useAppState = ({
       }),
       listen<RecognizedTextEvent>("parapper://recognized-text", (event) => {
         const eventConfig = configRef.current;
+        const generation = generationForSource(event.payload.source, true);
+        const displayEvent = withEventGeneration(event.payload, generation);
         setRecognizedTexts((texts) =>
           trimRecognizedTextLog(
-            upsertRecognizedText(texts, event.payload),
-            configuredLimit(
-              eventConfig?.recognition_log_limit,
-              DEFAULT_RECOGNITION_LOG_LIMIT,
+            trimRecognitionLogRows(
+              upsertRecognizedText(texts, displayEvent),
+              displayRecognitionLimit(eventConfig?.recognition_log_limit),
             ),
+            displayRecognitionLimit(eventConfig?.recognition_log_limit),
             configuredLimit(
               eventConfig?.debug_audio_log_limit,
               DEFAULT_DEBUG_AUDIO_LOG_LIMIT,
@@ -362,8 +481,14 @@ export const useAppState = ({
         );
       }),
       listen<TranslationTextEvent>("parapper://translated-text", (event) => {
+        const eventConfig = configRef.current;
+        const generation = generationForSource(event.payload.source);
+        const displayEvent = withEventGeneration(event.payload, generation);
         setTranslatedTexts((texts) =>
-          upsertTranslatedText(texts, event.payload),
+          trimRecognitionLogRows(
+            upsertTranslatedText(texts, displayEvent),
+            displayRecognitionLimit(eventConfig?.recognition_log_limit),
+          ),
         );
       }),
       listen<SpeechRequestEvent>("parapper://speech-request", (event) => {
@@ -419,7 +544,13 @@ export const useAppState = ({
         callbacks.forEach((unlisten) => unlisten());
       });
     };
-  }, [configRef, t]);
+  }, [
+    configRef,
+    displayRecognitionLimit,
+    generationForSource,
+    observeRecognitionStatus,
+    t,
+  ]);
 
   const downloadSelectedModels = async (downloadConfig = config) => {
     if (!downloadConfig) return null;
@@ -492,89 +623,8 @@ const parseInputLevelEvent = (
   };
 };
 
-const upsertRecognizedText = (
-  texts: RecognizedTextEvent[],
-  event: RecognizedTextEvent,
-) => {
-  if (event.update_mode !== "replace") {
-    return [...texts, event];
-  }
-
-  const index = texts.findIndex((text) =>
-    sameRecognitionSource(text.source, event.source),
-  );
-  if (index < 0) {
-    return [...texts, event];
-  }
-
-  const current = texts[index];
-  if (!shouldReplaceRecognitionEvent(current, event)) {
-    return texts;
-  }
-
-  return texts.map((text, currentIndex) =>
-    currentIndex === index ? event : text,
-  );
-};
-
-const upsertTranslatedText = (
-  texts: TranslationTextEvent[],
-  event: TranslationTextEvent,
-) => {
-  if (event.update_mode !== "replace") {
-    return [...texts, event];
-  }
-
-  const index = texts.findIndex(
-    (text) =>
-      sameRecognitionSource(text.source, event.source) &&
-      text.target_lang === event.target_lang,
-  );
-  if (index < 0) {
-    return [...texts, event];
-  }
-
-  const current = texts[index];
-  if (!shouldReplaceRecognitionEvent(current, event)) {
-    return texts;
-  }
-
-  return texts.map((text, currentIndex) =>
-    currentIndex === index ? event : text,
-  );
-};
-
-const sameRecognitionSource = (
-  left: { turn_session_id: number; turn_id: number },
-  right: { turn_session_id: number; turn_id: number },
-) =>
-  left.turn_session_id === right.turn_session_id &&
-  left.turn_id === right.turn_id;
-
-const shouldReplaceRecognitionEvent = (
-  current: {
-    source: {
-      turn_revision: number;
-      output_sequence: number;
-    };
-    is_final: boolean;
-  },
-  incoming: {
-    source: {
-      turn_revision: number;
-      output_sequence: number;
-    };
-    is_final: boolean;
-  },
-) => {
-  if (current.is_final && !incoming.is_final) {
-    return false;
-  }
-  if (incoming.source.turn_revision !== current.source.turn_revision) {
-    return incoming.source.turn_revision > current.source.turn_revision;
-  }
-  if (incoming.source.output_sequence !== current.source.output_sequence) {
-    return incoming.source.output_sequence > current.source.output_sequence;
-  }
-  return incoming.is_final || !current.is_final;
-};
+export {
+  sameRecognitionSource,
+  upsertRecognizedText,
+  upsertTranslatedText,
+} from "../lib/recognition-state";

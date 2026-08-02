@@ -268,6 +268,21 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     const nextSequence = sequenceOf(next);
     const currentSequence = sequenceOf(current);
 
+    // A completed source turn is terminal at this merge boundary.  The event
+    // and invoke paths can race, so an earlier interim may be delivered after
+    // its final counterpart; receipt time alone must not let that stale
+    // interim replace the completed text.
+    if (
+      currentSequence === SOURCE_SEQUENCE &&
+      nextSequence === SOURCE_SEQUENCE &&
+      current.isFinal === true &&
+      next.isFinal !== true &&
+      isSourceStagePayload(current) &&
+      isSourceStagePayload(next)
+    ) {
+      return true;
+    }
+
     // Parapper backdates a final caption's `startedAt` by its measured audio
     // duration, while an interim has no duration and therefore starts at the
     // receive time.  A final for the same source turn must still replace that
@@ -315,16 +330,22 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     return !isNewerSourceRevision(current, next);
   }
 
-  if (current.startedAt > NO_TIME_MS && next.startedAt > NO_TIME_MS) {
-    if (next.startedAt < current.startedAt) {
+  const currentStartedAt = startedAtOf(current);
+  const nextStartedAt = startedAtOf(next);
+  if (currentStartedAt > NO_TIME_MS && nextStartedAt > NO_TIME_MS) {
+    if (nextStartedAt < currentStartedAt) {
       return true;
     }
-    if (next.startedAt === current.startedAt && next.receivedAt < current.receivedAt) {
+    if (nextStartedAt === currentStartedAt && receivedAtOf(next) < receivedAtOf(current)) {
       return true;
     }
+    return false;
   }
 
-  return false;
+  // Legacy/transport payloads can use zero as an unknown audio start. In
+  // that case retain ordering protection between utterance ids using receipt
+  // time rather than treating every event as a newer caption.
+  return receivedAtOf(next) < receivedAtOf(current);
 };
 
 /**

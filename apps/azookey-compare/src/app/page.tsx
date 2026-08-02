@@ -134,17 +134,23 @@ export default function ComparePage() {
   const [speechFinalText, setSpeechFinalText] = useState("");
   const [speechInterimText, setSpeechInterimText] = useState("");
   const [rows, setRows] = useState<ComparisonRow[]>([]);
+  const [droppedRows, setDroppedRows] = useState(0);
   const [latestWorker, setLatestWorker] = useState<ComparisonRow | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
   const speechRef = useRef<WebSpeechController | null>(null);
+  const initialSpeechLanguageRef = useRef(config.language);
   const workerRef = useRef<AzooKeyWorkerClient | null>(null);
+  const workerGenerationRef = useRef(0);
+  const rowsRef = useRef<ComparisonRow[]>([]);
   const finalTextHandlerRef = useRef<(text: string) => void>(() => undefined);
   /** Serialize browser pre-pass + Worker work so rapid finals retain order. */
   const dispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
+    const generation = workerGenerationRef.current + 1;
+    workerGenerationRef.current = generation;
     let endpoint = config.websocketUrl;
     try {
       endpoint = buildVibratoWebSocketUrl({ websocketUrl: config.websocketUrl });
@@ -153,7 +159,13 @@ export default function ComparePage() {
     }
     const client = new AzooKeyWorkerClient({
       endpoint,
-      onStateChange: setWorkerState,
+      onStateChange: (state) => {
+        // A close/error callback from a retired client must not overwrite the
+        // state of the replacement client created for the edited URL.
+        if (workerGenerationRef.current === generation) {
+          setWorkerState(state);
+        }
+      },
     });
     workerRef.current = client;
     setWorkerState(client.connectionState);
@@ -166,7 +178,7 @@ export default function ComparePage() {
   }, [config.websocketUrl]);
 
   useEffect(() => {
-    const controller = new WebSpeechController(config.language, {
+    const controller = new WebSpeechController(initialSpeechLanguageRef.current, {
       onStateChange: (state) => {
         setSpeechState(state);
         if (state === "listening") {
@@ -192,7 +204,28 @@ export default function ComparePage() {
         speechRef.current = null;
       }
     };
+  }, []);
+
+  // Keep one browser recognition session alive while settings are edited. A
+  // dependency on `config.language` here would dispose the active controller,
+  // leave the button showing "stop", and route future finals to an idle
+  // replacement. The Web Speech implementation picks up the new language on
+  // the next browser restart without losing the current state machine.
+  useEffect(() => {
+    speechRef.current?.setLanguage(config.language);
   }, [config.language]);
+
+  const appendRow = useCallback((row: ComparisonRow): void => {
+    const current = rowsRef.current;
+    const overflow = Math.max(0, current.length + 1 - MAX_ROWS);
+    const next = [row, ...current].slice(0, MAX_ROWS);
+    rowsRef.current = next;
+    setRows(next);
+    if (overflow > 0) {
+      setDroppedRows((count) => count + overflow);
+      setNotice(`履歴は最大 ${MAX_ROWS} 件です。古い ${overflow} 件を省略しました`);
+    }
+  }, []);
 
   const dispatchFinalText = useCallback(
     async (
@@ -216,12 +249,14 @@ export default function ComparePage() {
         mode,
         createdAt: Date.now(),
       };
-      setRows((current) => [initialRow, ...current].slice(0, MAX_ROWS));
+      appendRow(initialRow);
       setLatestWorker(initialRow);
       setError("");
 
       const patchRow = (patch: Partial<ComparisonRow>): void => {
-        setRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+        const nextRows = rowsRef.current.map((row) => (row.id === id ? { ...row, ...patch } : row));
+        rowsRef.current = nextRows;
+        setRows(nextRows);
         setLatestWorker((current) => (current?.id === id ? { ...current, ...patch } : current));
       };
 
@@ -271,7 +306,14 @@ export default function ComparePage() {
         if (!client) {
           throw new Error("Worker WebSocket クライアントを初期化できません");
         }
+        const workerGeneration = workerGenerationRef.current;
+        if (workerRef.current !== client || workerGenerationRef.current !== workerGeneration) {
+          throw new Error("Worker 設定が変更されました。発話を再送してください");
+        }
         await client.connect();
+        if (workerRef.current !== client || workerGenerationRef.current !== workerGeneration) {
+          throw new Error("Worker 設定が変更されました。発話を再送してください");
+        }
         stage = "worker";
         const result: AzooKeyConvertResult = await client.convert({
           source: "web-speech",
@@ -300,7 +342,7 @@ export default function ComparePage() {
         setError(message);
       }
     },
-    [],
+    [appendRow],
   );
 
   // Keep the controller callback stable while routing each final utterance to
@@ -402,7 +444,9 @@ export default function ComparePage() {
   };
 
   const clearComparison = (): void => {
+    rowsRef.current = [];
     setRows([]);
+    setDroppedRows(0);
     setLatestWorker(null);
     setSpeechFinalText("");
     setSpeechInterimText("");
@@ -735,6 +779,12 @@ export default function ComparePage() {
                 ))}
               </ol>
             )}
+            {droppedRows > 0 ? (
+              <p className="field-help" role="status">
+                表示上限に達したため、古い発話 {droppedRows} 件を省略しています。履歴をクリアすると
+                件数をリセットできます。
+              </p>
+            ) : null}
           </section>
         </section>
       </div>
@@ -748,6 +798,7 @@ export default function ComparePage() {
         <span className="footer-spacer" />
         <span>
           {rows.length} / {MAX_ROWS} events
+          {droppedRows > 0 ? ` · ${droppedRows} omitted` : ""}
         </span>
       </footer>
     </main>

@@ -137,12 +137,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const exactProcessRows = () => {
   try {
-    const output = execFileSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+    const output = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+      encoding: "utf8",
+    });
     return output
       .split("\n")
       .map((line) => {
-        const match = line.trimStart().match(/^(\d+)\s+(.*)$/);
-        return match ? { pid: Number(match[1]), command: match[2] } : null;
+        const match = line.trimStart().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+        return match ? { pid: Number(match[1]), ppid: Number(match[2]), command: match[3] } : null;
       })
       .filter(Boolean);
   } catch {
@@ -979,8 +981,9 @@ const childPidsForApp = (appPid) => {
   const executableDirectory = path.dirname(executable);
   return rows
     .filter(
-      ({ pid, command }) =>
+      ({ pid, ppid, command }) =>
         pid !== appPid &&
+        ppid === appPid &&
         command.startsWith(`${executableDirectory}/kotoba-`) &&
         /kotoba-(parapper|inference-gateway|llama-server|zenz-server)/u.test(command),
     )

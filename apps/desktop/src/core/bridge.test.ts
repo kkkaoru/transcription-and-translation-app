@@ -43,6 +43,16 @@ describe("isNoSpeechBridgeError", () => {
     expect(isNoSpeechBridgeError(null)).toBe(false);
     expect(isNoSpeechBridgeError(undefined)).toBe(false);
     expect(isNoSpeechBridgeError("")).toBe(false);
+    expect(isNoSpeechBridgeError("gateway no transcript buffer")).toBe(false);
+    expect(isNoSpeechBridgeError("transcript_missing_timeout")).toBe(false);
+    expect(isNoSpeechBridgeError("inference returned HTTP 500: no speech timeout")).toBe(false);
+  });
+
+  it("accepts only the bounded no-speech messages emitted by recognizers", () => {
+    expect(isNoSpeechBridgeError("no-speech")).toBe(true);
+    expect(isNoSpeechBridgeError("Web Speech Recognition failed (no-speech)")).toBe(true);
+    expect(isNoSpeechBridgeError("no usable speech")).toBe(true);
+    expect(isNoSpeechBridgeError("speech service returned no transcript")).toBe(false);
   });
 
   it("matches nested Tauri IPC error envelopes", () => {

@@ -17,6 +17,9 @@ export const PORTABLE_DICTIONARY_FILE_LIMIT = 4_096;
 export const PORTABLE_DICTIONARY_PATH_LIMIT = 1_024;
 export const PORTABLE_DICTIONARY_GZIP_LEVEL = 9;
 export const AZOOKEY_DICTIONARY_REVISION = "4d418525b090cf49c219819d05a7e3cc2a4346eb";
+export const AZOOKEY_DICTIONARY_ARCHIVE_SHA256 =
+  "84f605a5c76e09480ef1a0a02d91982fb8c9426a8a7a18fb64d9f27210641b22";
+export const AZOOKEY_DICTIONARY_ARCHIVE_BYTES = 10_064_704;
 export const AZOOKEY_CID_FILE_COUNT = 1_319;
 export const AZOOKEY_LOUDS_FILE_COUNT = 160;
 export const AZOOKEY_LOUDS_TEXT_FILE_COUNT = 422;
@@ -120,6 +123,35 @@ export const buildPortableDictionaryArchive = ({
     packedBytes: packed.byteLength,
     compressedBytes: compressed.byteLength,
     sha256: createHash("sha256").update(compressed).digest("hex"),
+  };
+};
+
+/**
+ * Validate the checked-in archive when the source submodule is unavailable.
+ *
+ * A clean clone contains the gitlink and generated static asset, but it does
+ * not contain the submodule's working tree until `git submodule update` is
+ * run. Build/typecheck commands can still use the checked-in asset safely as
+ * long as its content-addressed hash is verified first.
+ */
+export const verifyPortableDictionaryArchive = (archivePath = defaultDestination) => {
+  if (!existsSync(archivePath) || !statSync(archivePath).isFile()) {
+    throw new Error(`portable dictionary archive is unavailable at ${archivePath}`);
+  }
+  const compressed = readFileSync(archivePath);
+  const sha256 = createHash("sha256").update(compressed).digest("hex");
+  if (
+    compressed.byteLength !== AZOOKEY_DICTIONARY_ARCHIVE_BYTES ||
+    sha256 !== AZOOKEY_DICTIONARY_ARCHIVE_SHA256
+  ) {
+    throw new Error(
+      `portable dictionary archive hash mismatch: expected ${AZOOKEY_DICTIONARY_ARCHIVE_SHA256}, got ${sha256}`,
+    );
+  }
+  return {
+    destination: archivePath,
+    compressedBytes: compressed.byteLength,
+    sha256,
   };
 };
 

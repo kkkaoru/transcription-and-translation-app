@@ -6,6 +6,7 @@ import {
   AZOOKEY_MODE,
   type AzookeyRuntime,
   attachAzookeySocket,
+  azookeyDictionaryTimeoutMs,
   azookeyTimeoutMs,
   bearerTokenMatches,
   convertAzookeyMessage,
@@ -47,12 +48,15 @@ const valid = {
 
 describe("AzooKey Worker text contract", () => {
   it("clamps timeout configuration and publishes the ready protocol envelope", () => {
-    expect(azookeyTimeoutMs({})).toBe(250);
-    expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: " " })).toBe(250);
-    expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "not-a-number" })).toBe(250);
+    expect(azookeyTimeoutMs({})).toBe(1_000);
+    expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: " " })).toBe(1_000);
+    expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "not-a-number" })).toBe(1_000);
     expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "1" })).toBe(25);
     expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "250.6" })).toBe(251);
     expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "99999" })).toBe(2_000);
+    expect(azookeyDictionaryTimeoutMs({})).toBe(10_000);
+    expect(azookeyDictionaryTimeoutMs({ AZOOKEY_DICTIONARY_TIMEOUT_MS: "1" })).toBe(1_000);
+    expect(azookeyDictionaryTimeoutMs({ AZOOKEY_DICTIONARY_TIMEOUT_MS: "999999" })).toBe(60_000);
     expect(JSON.parse(readyAzookeyMessage(125))).toMatchObject({
       type: "azookey.ready",
       protocol: "azookey.text.v1",
@@ -234,6 +238,62 @@ describe("AzooKey Worker text contract", () => {
     expect(() =>
       createWasmConverter(new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]))),
     ).toThrow("required raw ABI");
+  });
+
+  it("aborts and retries a dictionary fetch that exceeds its cold-load deadline", async () => {
+    const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    let signal: AbortSignal | undefined;
+    const fetcher = vi.fn((_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>(() => undefined);
+    });
+    const converter = createWasmConverter(emptyModule, "/azookey/dictionary.gz", fetcher, 10);
+
+    await expect(converter.warmup?.()).rejects.toThrow("dictionary fetch timed out");
+    expect(signal?.aborted).toBe(true);
+    await expect(converter.warmup?.()).rejects.toThrow("dictionary fetch timed out");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the dictionary deadline while a response body never finishes", async () => {
+    const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    let signal: AbortSignal | undefined;
+    const neverEndingBody = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => undefined),
+    });
+    const converter = createWasmConverter(
+      emptyModule,
+      "/azookey/dictionary.gz",
+      (_input, init) => {
+        signal = init?.signal ?? undefined;
+        return new Response(neverEndingBody);
+      },
+      10,
+    );
+
+    await expect(converter.warmup?.()).rejects.toThrow("dictionary fetch timed out");
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("reports a bounded dictionary warmup failure as converter unavailability", async () => {
+    const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    const response = await openAzookeySocket(
+      new Request("https://worker.example/ws/azookey", { headers: { upgrade: "websocket" } }),
+      { AZOOKEY_DICTIONARY_URL: "/azookey/dictionary.gz" },
+      {
+        wasmModule: emptyModule,
+        dictionaryTimeoutMs: 10,
+        azookeyDictionaryFetcher: () => new Promise<Response>(() => undefined),
+      },
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "converter_unavailable",
+        message: "AzooKey converter or dictionary is unavailable",
+      },
+    });
   });
 
   it("guards raw Wasm allocation and output ranges", () => {
