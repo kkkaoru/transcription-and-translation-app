@@ -90,6 +90,7 @@ struct TranslationTracker {
     stopping_generation: Option<u64>,
     next_ticket_sequence: u64,
     pending_by_generation: HashMap<u64, VecDeque<u64>>,
+    retired_count: u64,
 }
 
 impl TranslationTracker {
@@ -109,12 +110,16 @@ impl TranslationTracker {
         }
         let pending = self.pending_by_generation.entry(self.current_generation).or_default();
         let superseded = if pending.len() >= MAX_PENDING_TRANSLATIONS_PER_CAPTURE {
-            pending
-                .pop_front()
-                .map(|sequence| TranslationTicket { generation: self.current_generation, sequence })
+            pending.pop_front().map(|sequence| TranslationTicket {
+                generation: self.current_generation,
+                sequence,
+            })
         } else {
             None
         };
+        if superseded.is_some() {
+            self.retired_count = self.retired_count.saturating_add(1);
+        }
         self.next_ticket_sequence = self.next_ticket_sequence.wrapping_add(1).max(1);
         let ticket = TranslationTicket {
             generation: self.current_generation,
@@ -580,6 +585,15 @@ impl AppState {
         self.translation_tracker.lock().ok()?.register()
     }
 
+    /// Total translation tickets retired by the bounded latest-wins queue,
+    /// surfaced in the debug snapshot to explain dropped translations.
+    pub fn translation_retired_count(&self) -> u64 {
+        self.translation_tracker
+            .lock()
+            .map(|tracker| tracker.retired_count)
+            .unwrap_or_default()
+    }
+
     /// Freeze the current generation against new translations and return the
     /// generation whose existing work Stop should briefly drain.
     pub fn begin_translation_drain(&self) -> u64 {
@@ -636,6 +650,39 @@ impl AppState {
         emit(caption);
         drop(status);
         drop(tracker);
+    }
+
+    /// Surface a translation failure only when its ticket remains current. A
+    /// stop-bounded task may finish during the next capture session; its error
+    /// must not poison the replacement session's runtime status.
+    ///
+    /// Lock order: `translation_tracker` then `status`.
+    pub fn apply_translation_error_for_ticket(
+        &self,
+        ticket: TranslationTicket,
+        detail: &str,
+    ) -> Option<RuntimeStatus> {
+        let tracker = self.translation_tracker.lock().ok()?;
+        if !tracker.is_current(ticket) {
+            return None;
+        }
+        let mut status = self.status.lock().ok()?;
+        if status.status == "idle" {
+            return None;
+        }
+        let mut dirty = false;
+        if !matches!(status.status.as_str(), "idle" | "starting" | "capturing") {
+            status.status = "capturing".to_string();
+            dirty = true;
+        }
+        if status.last_error.as_deref() != Some(detail) {
+            status.last_error = Some(detail.to_string());
+            dirty = true;
+        }
+        if !dirty {
+            return None;
+        }
+        Some(status.clone())
     }
 
     /// Record an empty result from a Parapper turn for a still-current generation,
@@ -1209,6 +1256,66 @@ mod tests {
             None,
             "translation from old generation must not update replay slot"
         );
+    }
+
+    #[test]
+    fn current_ticket_translation_publishes_and_records() {
+        let state = capturing_state();
+        let (ticket, _) = state.register_translation().expect("active capture");
+        let caption = CaptionPayload {
+            id: "u1".to_string(),
+            source_text: "正規化済み".to_string(),
+            translation_text: "normalized".to_string(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "translation",
+            sequence: 1,
+            is_final: true,
+            confidence: None,
+        };
+        let mut emitted = 0;
+        state.publish_translation_for_ticket(ticket, &caption, |_| {
+            emitted += 1;
+        });
+        assert_eq!(emitted, 1, "a current ticket's translation must publish");
+        assert_eq!(state.latest_caption(), Some(caption));
+    }
+
+    #[test]
+    fn stale_ticket_translation_error_does_not_poison_replacement_session() {
+        let state = capturing_state();
+        let (ticket, _) = state.register_translation().expect("active capture");
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = None;
+        }
+
+        assert!(state
+            .apply_translation_error_for_ticket(ticket, "stale translation error")
+            .is_none());
+        let status = state.status.lock().expect("status lock");
+        assert!(status.backend_reachable);
+        assert_eq!(status.last_error, None);
+    }
+
+    #[test]
+    fn current_ticket_translation_error_surfaces_last_error_without_backend_loss() {
+        let state = capturing_state();
+        let (ticket, _) = state.register_translation().expect("active capture");
+        let next = state
+            .apply_translation_error_for_ticket(ticket, "live translation error")
+            .expect("current ticket may surface last_error");
+        assert_eq!(next.status, "capturing");
+        assert!(
+            next.backend_reachable,
+            "source ASR already succeeded; translation failure must not mark the backend unreachable"
+        );
+        assert_eq!(next.last_error.as_deref(), Some("live translation error"));
     }
 
     #[test]

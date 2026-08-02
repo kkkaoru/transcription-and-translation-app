@@ -41,6 +41,12 @@ pub struct SourceCaptionInput {
     pub received_at: u64,
     pub is_final: bool,
     pub confidence: Option<f32>,
+    /// Native capture generation the renderer observed before dispatching this
+    /// invoke. Older renderers omit it; the command then falls back to the
+    /// historical active-status-only check and cannot tell a stale attempt
+    /// apart from a live one (see the MainApp/bridge handoff).
+    #[serde(default)]
+    pub capture_generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,9 +348,41 @@ pub async fn transcribe_audio_chunk(
             Ok(partial)
         }
         Ok(None) => {
+            // A chunk with a non-empty utterance id has already passed the
+            // frontend speech gate. An empty ASR result for three distinct
+            // accepted chunks is actionable result loss, just like the
+            // persistent Parapper stream path below. Legacy callers and
+            // ambient/noise chunks omit the id; those remain soft silence and
+            // must never trip the ASR health tracker.
+            match observe_http_empty_asr(
+                state.inner(),
+                capture_generation,
+                chunk.utterance_id.as_deref(),
+            ) {
+                Some((utterance_id, ExpectedEmptyAsrResult::Transient { .. })) => {
+                    mark_backend_reachable_without_clearing_error(
+                        &app,
+                        &state,
+                        capture_generation,
+                    );
+                    return Ok(empty_caption(&config, utterance_id));
+                }
+                Some((_, ExpectedEmptyAsrResult::PersistentLoss { consecutive })) => {
+                    let detail = persistent_asr_loss_message(consecutive);
+                    emit_persistent_asr_loss_status(
+                        &app,
+                        state.inner(),
+                        capture_generation,
+                        &detail,
+                    );
+                    return Err(detail);
+                }
+                None => {}
+            }
+
             // Audio chunks are also sent for low-level ambient/noise input by
-            // browser callers. Keep that intentional silence non-fatal, but
-            // do not let it erase a prior ASR failure.
+            // legacy/browser callers. Keep that intentional silence non-fatal,
+            // but do not let it erase a prior ASR failure.
             mark_backend_reachable_without_clearing_error(&app, &state, capture_generation);
             let silence_id = chunk
                 .utterance_id
@@ -470,17 +508,62 @@ pub fn publish_source_caption(
     state: State<'_, AppState>,
     caption: SourceCaptionInput,
 ) -> Result<(), String> {
+    let capture_generation = caption.capture_generation;
     let payload = source_caption_payload(caption)?;
-    let active = state
-        .status
-        .lock()
-        .map_err(|_| "status lock poisoned".to_string())
-        .map(|status| capture_is_active(status.status.as_str()))?;
-    if !active {
-        return Err("capture is not active".to_string());
+    match capture_generation {
+        // The renderer checks its attempt token before awaiting, so an invoke
+        // dispatched for attempt N can resolve after Stop+Start. Publish under
+        // the tracker lock so a stale attempt cannot clobber the replacement
+        // session's overlay/replay slot; it is dropped silently because the
+        // renderer already decided this result is obsolete.
+        Some(generation) => {
+            let _ = publish_source_caption_gated(
+                &state,
+                Some(generation),
+                &payload,
+                |payload| emit_caption_event(&app, payload),
+            );
+            Ok(())
+        }
+        // Legacy renderers send no generation. Keep the historical
+        // active-status check and unversioned publish.
+        None => {
+            publish_source_caption_gated(&state, None, &payload, |payload| {
+                emit_caption_update(&app, payload);
+            })?;
+            Ok(())
+        }
     }
-    emit_caption_update(&app, &payload);
-    Ok(())
+}
+
+/// Generation-aware publication for a source caption. `Ok(true)` means the
+/// caption was accepted; `Ok(false)` means a stale generation silently dropped
+/// it; `Err` is reserved for the legacy unversioned path when capture is not
+/// active.
+fn publish_source_caption_gated(
+    state: &AppState,
+    generation: Option<u64>,
+    caption: &CaptionPayload,
+    emit: impl FnOnce(&CaptionPayload),
+) -> Result<bool, String> {
+    match generation {
+        Some(generation) => {
+            let published = state.publish_caption_for_generation(generation, caption, emit);
+            Ok(published)
+        }
+        None => {
+            let active = state
+                .status
+                .lock()
+                .map_err(|_| "status lock poisoned".to_string())
+                .map(|status| capture_is_active(status.status.as_str()))?;
+            if !active {
+                return Err("capture is not active".to_string());
+            }
+            emit(caption);
+            Ok(true)
+        }
+    }
 }
 
 fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload, String> {
@@ -501,43 +584,6 @@ fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload,
         is_final: caption.is_final,
         confidence: caption.confidence,
     })
-}
-
-/// Surface a translation failure without turning a healthy ASR session into a
-/// backend-unreachable state. The helper keeps the async translation callback
-/// shallow enough for the configured Clippy nesting budget.
-fn update_translation_error_status(app: &AppHandle, detail: &str) {
-    let Some(app_state) = app.try_state::<AppState>() else {
-        return;
-    };
-    let Ok(mut status) = app_state.status.lock() else {
-        return;
-    };
-
-    // A background translator can finish after stop_capture made the session
-    // idle. Do not resurrect an error/runtime event for that completed session.
-    if status.status == "idle" {
-        return;
-    }
-
-    let mut dirty = false;
-    if !matches!(status.status.as_str(), "idle" | "starting" | "capturing") {
-        status.status = "capturing".to_string();
-        dirty = true;
-    }
-    // Source ASR already succeeded; do not mark the whole backend unreachable
-    // solely because translation failed.
-    if status.last_error.as_deref() != Some(detail) {
-        status.last_error = Some(detail.to_string());
-        dirty = true;
-    }
-    if !dirty {
-        return;
-    }
-
-    let next = status.clone();
-    drop(status);
-    let _ = app.emit("runtime:status", &next);
 }
 
 /// Run translation after the source caption has been returned to the UI.
@@ -594,12 +640,25 @@ fn handle_translation_result(
         return;
     };
     match result {
+        // Publication is ticket-atomic under the tracker lock: a stop-bounded
+        // task may finish during the next capture session but can never publish
+        // into it. The helper records the caption and invokes the raw emit
+        // closure while holding runtime status, so the closure must not
+        // re-lock status.
         Ok(caption) => {
             state.publish_translation_for_ticket(ticket, &caption, |payload| {
-                emit_caption_update(app, payload);
+                emit_caption_event(app, payload);
             });
         }
-        Err(error) => report_translation_error(app, &error),
+        // A stale translation failure must not poison the replacement
+        // session's runtime status either; same ticket-atomic gate.
+        Err(error) => {
+            let detail = redact_runtime_text(&error.to_string());
+            log::warn!("translation failed for progressive caption: {detail}");
+            if let Some(next) = state.apply_translation_error_for_ticket(ticket, &detail) {
+                let _ = app.emit("runtime:status", &next);
+            }
+        }
     }
 }
 
@@ -636,18 +695,17 @@ fn emit_caption_update_for_generation(app: &AppHandle, caption: &CaptionPayload,
         return;
     };
     let _ = state.publish_caption_for_generation(generation, caption, |payload| {
-        if let Err(error) = app.emit("caption:update", payload) {
-            log::warn!("could not emit caption:update: {error}");
-        }
+        emit_caption_event(app, payload);
     });
 }
 
-fn report_translation_error(app: &AppHandle, error: &PipelineError) {
-    // Keep the already-shown source caption; only surface last_error.
-    // The translate stage event was already emitted via on_stage.
-    let detail = redact_runtime_text(&error.to_string());
-    log::warn!("translation failed for progressive caption: {detail}");
-    update_translation_error_status(app, &detail);
+/// Emit a caption while a publish helper holds the runtime status lock. The
+/// helpers (`publish_caption_for_generation`, `publish_translation_for_ticket`)
+/// already record the caption; the closure must not re-lock status.
+fn emit_caption_event(app: &AppHandle, caption: &CaptionPayload) {
+    if let Err(error) = app.emit("caption:update", caption) {
+        log::warn!("could not emit caption:update: {error}");
+    }
 }
 
 /// Normalize config logLevel into a filter rank (error=0 … trace=4).
@@ -738,6 +796,23 @@ fn mark_backend_reachable_without_clearing_error(
     if let Some(next) = state.mark_backend_reachable_for_generation(generation) {
         let _ = app.emit("runtime:status", &next);
     }
+}
+
+/// Observe an empty HTTP ASR result only when the caller supplied a meaningful
+/// utterance identity and the request still belongs to the active generation.
+///
+/// Frontend-gated chunks carry a stable utterance id; legacy callers and
+/// ambient/noise input do not. Keeping this distinction at the command
+/// boundary prevents ordinary silence from incrementing the persistent-loss
+/// tracker while still making repeated accepted speech failures visible.
+fn observe_http_empty_asr(
+    state: &AppState,
+    generation: u64,
+    provided_id: Option<&str>,
+) -> Option<(String, ExpectedEmptyAsrResult)> {
+    let utterance_id = provided_id.map(str::trim).filter(|id| !id.is_empty())?.to_string();
+    let result = state.record_expected_empty_asr_for_generation(generation, &utterance_id)?;
+    Some((utterance_id, result))
 }
 
 fn persistent_asr_loss_message(consecutive: u8) -> String {
@@ -1062,6 +1137,10 @@ pub async fn get_debug_info(
         // Latest normalized source/translation caption for late overlay/debug
         // consumers. Raw ASR is not stored in AppState and cannot appear here.
         "latestCaption": safe_latest_caption,
+        // Number of translation tickets retired by the bounded latest-wins
+        // queue. Expose this alongside the frontend drop diagnostics so a
+        // single debug view can explain missing output without log scraping.
+        "translationRetired": state.translation_retired_count(),
         "services": services,
         "sidecars": sidecars,
         "modelsDir": models_dir.display().to_string(),
@@ -1147,13 +1226,14 @@ pub async fn export_debug_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_is_active, ensure_overlay_window, persistent_asr_loss_message, redact_runtime_text,
+        capture_is_active, ensure_overlay_window, observe_http_empty_asr,
+        persistent_asr_loss_message, publish_source_caption_gated, redact_runtime_text,
         sanitize_debug_json, sanitize_export_body, source_caption_payload,
         validate_overlay_frame_dimensions, SourceCaptionInput,
     };
     use crate::config::AppConfig;
     use crate::output::OutputStatus;
-    use crate::state::{AppState, ASR_EMPTY_RESULT_WINDOW};
+    use crate::state::{AppState, ExpectedEmptyAsrResult, ASR_EMPTY_RESULT_WINDOW};
 
     #[test]
     fn update_relaunch_is_deferred_only_for_active_capture_states() {
@@ -1189,6 +1269,63 @@ mod tests {
             !detail.to_ascii_lowercase().contains("no transcript"),
             "the frontend must not classify persistent result loss as a no-speech soft skip"
         );
+    }
+
+    #[test]
+    fn http_empty_results_for_distinct_speech_chunks_surface_asr_loss() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+        }
+        let generation = state.current_capture_generation();
+
+        assert!(matches!(
+            observe_http_empty_asr(&state, generation, Some("speech-1")),
+            Some((ref id, ExpectedEmptyAsrResult::Transient { consecutive: 1 })) if id == "speech-1"
+        ));
+        assert!(matches!(
+            observe_http_empty_asr(&state, generation, Some("speech-2")),
+            Some((ref id, ExpectedEmptyAsrResult::Transient { consecutive: 2 })) if id == "speech-2"
+        ));
+        assert!(matches!(
+            observe_http_empty_asr(&state, generation, Some("speech-3")),
+            Some((ref id, ExpectedEmptyAsrResult::PersistentLoss { consecutive: 3 })) if id == "speech-3"
+        ));
+
+        let detail = persistent_asr_loss_message(3);
+        let status = state
+            .apply_persistent_asr_loss_for_generation(generation, &detail)
+            .expect("active generation status");
+        assert!(!status.backend_reachable);
+        assert_eq!(status.last_error.as_deref(), Some(detail.as_str()));
+    }
+
+    #[test]
+    fn http_empty_legacy_or_silence_chunks_do_not_fire_asr_loss() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+        }
+        let generation = state.current_capture_generation();
+
+        for id in [None, Some(""), Some("  "), Some("\t")] {
+            assert!(observe_http_empty_asr(&state, generation, id).is_none());
+        }
+        let status = state.status.lock().expect("status lock");
+        assert_eq!(status.last_error, None);
+        drop(status);
+        assert!(matches!(
+            observe_http_empty_asr(&state, generation, Some("speech-after-silence")),
+            Some((_, ExpectedEmptyAsrResult::Transient { consecutive: 1 }))
+        ));
     }
 
     #[test]
@@ -1254,6 +1391,7 @@ mod tests {
             received_at: 120,
             is_final: true,
             confidence: Some(0.87),
+            capture_generation: Some(2),
         })
         .expect("non-empty source text should be accepted");
 
@@ -1277,6 +1415,7 @@ mod tests {
             received_at: 120,
             is_final: false,
             confidence: None,
+            capture_generation: None,
         });
 
         assert_eq!(result.unwrap_err(), "source caption text is required");
@@ -1293,6 +1432,7 @@ mod tests {
             "receivedAt": 120,
             "isFinal": false,
             "confidence": null,
+            "captureGeneration": 3,
         }))
         .expect("bridge payload should deserialize");
 
@@ -1300,5 +1440,114 @@ mod tests {
         assert_eq!(input.source_language, "ja");
         assert_eq!(input.target_language, "en");
         assert_eq!(input.confidence, None);
+        assert_eq!(input.capture_generation, Some(3));
+    }
+
+    #[test]
+    fn source_caption_input_defaults_capture_generation_to_none_for_legacy_payloads() {
+        let input: SourceCaptionInput = serde_json::from_value(serde_json::json!({
+            "id": "webspeech:session:1",
+            "sourceText": "こんにちは",
+            "sourceLanguage": "ja",
+            "targetLanguage": "en",
+            "startedAt": 100,
+            "receivedAt": 120,
+            "isFinal": false,
+            "confidence": null,
+        }))
+        .expect("legacy bridge payloads must still deserialize");
+
+        assert_eq!(input.capture_generation, None);
+    }
+
+    fn source_caption_with_generation(
+        id: &str,
+    ) -> (AppState, crate::pipeline::CaptionPayload) {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = None;
+        }
+        let payload = source_caption_payload(SourceCaptionInput {
+            id: id.to_string(),
+            source_text: format!("{id} の字幕"),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 100,
+            received_at: 120,
+            is_final: true,
+            confidence: None,
+            capture_generation: None,
+        })
+        .expect("non-empty source text should be accepted");
+        (state, payload)
+    }
+
+    #[test]
+    fn stale_generation_source_caption_is_dropped_without_emit_or_record() {
+        let (state, payload) = source_caption_with_generation("webspeech:stale");
+        let stale_generation = state.current_capture_generation();
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = None;
+        }
+
+        let mut emitted = 0;
+        let published = publish_source_caption_gated(&state, Some(stale_generation), &payload, |_| {
+            emitted += 1;
+        })
+        .expect("a stale attempt is dropped, not rejected");
+        assert!(!published);
+        assert_eq!(emitted, 0, "a stale attempt must not emit into the new session");
+        assert_eq!(
+            state.latest_caption(),
+            None,
+            "a stale attempt must not touch the replacement session's replay slot"
+        );
+    }
+
+    #[test]
+    fn current_generation_source_caption_publishes_and_records() {
+        let (state, payload) = source_caption_with_generation("webspeech:live");
+        let generation = state.current_capture_generation();
+
+        let mut emitted = 0;
+        let published = publish_source_caption_gated(&state, Some(generation), &payload, |_| {
+            emitted += 1;
+        })
+        .expect("a current attempt is accepted");
+        assert!(published);
+        assert_eq!(emitted, 1);
+        assert_eq!(state.latest_caption(), Some(payload));
+    }
+
+    #[test]
+    fn legacy_source_caption_without_generation_keeps_active_status_contract() {
+        let (state, payload) = source_caption_with_generation("webspeech:legacy");
+
+        let mut emitted = 0;
+        let published = publish_source_caption_gated(&state, None, &payload, |_| {
+            emitted += 1;
+        })
+        .expect("an active legacy session accepts the caption");
+        assert!(published);
+        assert_eq!(emitted, 1);
+
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "idle".to_string();
+        }
+        assert_eq!(
+            publish_source_caption_gated(&state, None, &payload, |_| emitted += 1).unwrap_err(),
+            "capture is not active"
+        );
+        assert_eq!(emitted, 1, "an idle session must not emit");
     }
 }
