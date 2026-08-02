@@ -96,6 +96,79 @@ describe("SettingsView audio tuning", () => {
     );
   });
 
+  it("disables capture-affecting controls while capture is starting", async () => {
+    const config = createDefaultConfig();
+
+    const renderSettings = async (captureStarting: boolean) => {
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <SettingsView
+              config={config}
+              models={DEFAULT_MODEL_CATALOG}
+              devices={[]}
+              saving={false}
+              captureStarting={captureStarting}
+              onConfigChange={() => undefined}
+              onModelChange={() => undefined}
+              onDeviceChange={() => undefined}
+              onRefreshDevices={() => undefined}
+              onSave={() => undefined}
+              webSpeechSupported
+            />
+          </I18nProvider>,
+        );
+        await Promise.resolve();
+      });
+    };
+
+    await renderSettings(true);
+
+    const recognitionMode = container.querySelector<HTMLSelectElement>(
+      '[data-testid="recognition-mode-select"]',
+    );
+    const deviceControls = container.querySelector<HTMLFieldSetElement>(
+      '[data-testid="audio-device-controls"]',
+    );
+    const deviceSelect = deviceControls?.querySelector<HTMLSelectElement>("select");
+    const deviceRefresh = container.querySelector<HTMLButtonElement>(
+      '[data-testid="audio-device-refresh"]',
+    );
+    const chunk = container.querySelector<HTMLInputElement>("#audio-chunk-ms");
+    const gate = container.querySelector<HTMLInputElement>("#audio-silence-gate-db");
+    const adaptiveToggle = container.querySelector<HTMLInputElement>("#audio-adaptive-noise-floor");
+    const noiseSuppression = container.querySelector<HTMLInputElement>("#audio-noise-suppression");
+    const audioReset = container.querySelector<HTMLButtonElement>(
+      '[data-testid="audio-tuning-reset"]',
+    );
+    const rangeResets = container.querySelectorAll<HTMLButtonElement>(".range-reset");
+
+    expect(recognitionMode?.disabled).toBe(true);
+    expect(deviceControls?.disabled).toBe(true);
+    expect(deviceSelect?.disabled).toBe(true);
+    expect(deviceRefresh?.disabled).toBe(true);
+    expect(chunk?.disabled).toBe(true);
+    expect(gate?.disabled).toBe(true);
+    expect(adaptiveToggle?.disabled).toBe(true);
+    expect(noiseSuppression?.disabled).toBe(true);
+    expect(audioReset?.disabled).toBe(true);
+    expect(rangeResets[0]?.disabled).toBe(true);
+    expect(rangeResets[1]?.disabled).toBe(true);
+
+    await renderSettings(false);
+
+    expect(recognitionMode?.disabled).toBe(false);
+    expect(deviceControls?.disabled).toBe(false);
+    expect(deviceSelect?.disabled).toBe(false);
+    expect(deviceRefresh?.disabled).toBe(false);
+    expect(chunk?.disabled).toBe(false);
+    expect(adaptiveToggle?.disabled).toBe(false);
+    expect(noiseSuppression?.disabled).toBe(false);
+    expect(audioReset?.disabled).toBe(false);
+    expect(rangeResets[0]?.disabled).toBe(false);
+    expect(rangeResets[1]?.disabled).toBe(false);
+  });
+
   it("exposes VAD window and silence threshold as labeled sliders with reset", async () => {
     const onSave = vi.fn();
 

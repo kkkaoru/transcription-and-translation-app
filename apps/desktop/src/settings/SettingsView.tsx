@@ -75,6 +75,7 @@ export const SettingsView = ({
   models,
   devices,
   saving,
+  captureStarting = false,
   onConfigChange,
   onModelChange,
   onDeviceChange,
@@ -86,6 +87,8 @@ export const SettingsView = ({
   models: ModelCatalog;
   devices: AudioInputDevice[];
   saving: boolean;
+  /** Prevent capture-affecting edits while MainApp is preparing a session. */
+  captureStarting?: boolean;
   onConfigChange: (next: AppConfig) => void;
   onModelChange: (family: ModelFamily, value: string) => void;
   onDeviceChange: (event: ChangeEvent<HTMLSelectElement>) => void;
@@ -114,6 +117,7 @@ export const SettingsView = ({
         ? t("settings.recognitionModeWebSpeechDescription")
         : t("settings.recognitionModeParapperAzookeyDescription");
   const webSpeechMode = recognitionMode === "web-speech";
+  const deviceControlsDisabled = captureStarting || webSpeechMode;
   const silenceGateMode = resolveSilenceGateMode(config.audio.adaptiveNoiseFloor);
   const adaptiveNoiseFloorEnabled = silenceGateMode === "adaptive";
   const inputDeviceHint = webSpeechMode
@@ -211,6 +215,7 @@ export const SettingsView = ({
                 })
               }
               aria-label={t("settings.recognitionMode")}
+              disabled={captureStarting}
             >
               <option
                 value="parapper-raw"
@@ -316,6 +321,7 @@ export const SettingsView = ({
             type="button"
             onClick={resetAudioTuning}
             data-testid="audio-tuning-reset"
+            disabled={captureStarting}
           >
             {t("settings.audioReset")}
           </button>
@@ -324,8 +330,8 @@ export const SettingsView = ({
           <fieldset
             className="audio-device-controls"
             data-testid="audio-device-controls"
-            disabled={webSpeechMode}
-            aria-disabled={webSpeechMode}
+            disabled={deviceControlsDisabled}
+            aria-disabled={deviceControlsDisabled}
             style={{ display: "contents" }}
           >
             <Field label={t("audio.inputDevice")} wide hint={inputDeviceHint}>
@@ -333,7 +339,7 @@ export const SettingsView = ({
                 devices={devices}
                 value={config.audio.inputDeviceId}
                 onChange={onDeviceChange}
-                disabled={webSpeechMode}
+                disabled={deviceControlsDisabled}
               />
             </Field>
             <div className="field button-field">
@@ -343,7 +349,7 @@ export const SettingsView = ({
                 type="button"
                 onClick={onRefreshDevices}
                 data-testid="audio-device-refresh"
-                disabled={webSpeechMode}
+                disabled={deviceControlsDisabled}
                 title={webSpeechMode ? t("settings.webSpeechDeviceHint") : undefined}
               >
                 {t("audio.refreshShort")}
@@ -361,6 +367,7 @@ export const SettingsView = ({
                 value={config.audio.chunkMs}
                 onChange={(event) => setAudio({ chunkMs: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.chunk")}
+                disabled={captureStarting}
                 aria-valuetext={`${config.audio.chunkMs} ${t("settings.milliseconds")}`}
               />
               <output className="range-value" htmlFor="audio-chunk-ms">
@@ -372,6 +379,7 @@ export const SettingsView = ({
               type="button"
               onClick={() => setAudio({ chunkMs: DEFAULT_AUDIO_CHUNK_MS })}
               aria-label={`${t("settings.resetValue")}: ${t("settings.chunk")}`}
+              disabled={captureStarting}
             >
               {t("settings.resetValue")}
             </button>
@@ -395,8 +403,8 @@ export const SettingsView = ({
                 onChange={(event) => setAudio({ silenceGateDb: event.currentTarget.valueAsNumber })}
                 aria-label={t("settings.silenceGate")}
                 aria-valuetext={`${config.audio.silenceGateDb} ${t("settings.decibels")}${adaptiveNoiseFloorEnabled ? ` · ${t("settings.silenceGateAdaptiveLabel")}` : ""}`}
-                aria-disabled={adaptiveNoiseFloorEnabled}
-                disabled={adaptiveNoiseFloorEnabled}
+                aria-disabled={adaptiveNoiseFloorEnabled || captureStarting}
+                disabled={adaptiveNoiseFloorEnabled || captureStarting}
               />
               <output className="range-value" htmlFor="audio-silence-gate-db">
                 {config.audio.silenceGateDb} {t("settings.decibels")}
@@ -408,6 +416,7 @@ export const SettingsView = ({
               type="button"
               onClick={() => setAudio({ silenceGateDb: DEFAULT_SILENCE_GATE_DB })}
               aria-label={`${t("settings.resetValue")}: ${t("settings.silenceGate")}`}
+              disabled={captureStarting}
             >
               {t("settings.resetValue")}
             </button>
@@ -474,6 +483,7 @@ export const SettingsView = ({
                 type="checkbox"
                 checked={config.audio.adaptiveNoiseFloor !== false}
                 onChange={(event) => setAudio({ adaptiveNoiseFloor: event.currentTarget.checked })}
+                disabled={captureStarting}
               />
               <span>{t("settings.adaptiveNoiseFloorOn")}</span>
             </label>
@@ -490,6 +500,7 @@ export const SettingsView = ({
                     audio: { ...config.audio, noiseSuppression: event.target.checked },
                   })
                 }
+                disabled={captureStarting}
               />
               <span>{t("settings.noiseSuppressionOn")}</span>
             </label>

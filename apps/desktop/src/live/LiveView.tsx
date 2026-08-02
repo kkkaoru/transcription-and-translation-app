@@ -168,6 +168,7 @@ export const LiveView = ({
   const starting = status.status === "starting";
   const mode: RecognitionMode = config.recognitionMode;
   const webSpeechMode = mode === "web-speech";
+  const deviceControlsDisabled = starting || webSpeechMode;
   const sourceStageLabel =
     mode === "parapper-raw"
       ? t("settings.recognitionModeParapperRaw")
@@ -292,7 +293,7 @@ export const LiveView = ({
                 devices={devices}
                 value={config.audio.inputDeviceId}
                 onChange={onDeviceChange}
-                disabled={webSpeechMode}
+                disabled={deviceControlsDisabled}
               />
             </Field>
             <InputLevelMeter
@@ -305,7 +306,7 @@ export const LiveView = ({
               className="text-button"
               type="button"
               onClick={onRefreshDevices}
-              disabled={webSpeechMode}
+              disabled={deviceControlsDisabled}
             >
               {t("audio.refresh")}
             </button>

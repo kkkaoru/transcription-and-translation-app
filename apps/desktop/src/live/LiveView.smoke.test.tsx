@@ -194,4 +194,55 @@ describe("LiveView in-app preview scaling", () => {
       "AzooKey",
     );
   });
+
+  it("disables device controls only while capture is starting", async () => {
+    const config = createDefaultConfig();
+    const caption = createPreviewCaption();
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={config}
+            status={{ ...DEFAULT_RUNTIME_STATUS, status: "starting" }}
+            caption={caption}
+            devices={[]}
+            message={null}
+            onToggleCapture={() => {}}
+            onOpenOverlay={() => {}}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLSelectElement>("select")?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>(".text-button")?.disabled).toBe(true);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={config}
+            status={{ ...DEFAULT_RUNTIME_STATUS, status: "capturing" }}
+            caption={caption}
+            devices={[]}
+            message={null}
+            onToggleCapture={() => {}}
+            onOpenOverlay={() => {}}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLSelectElement>("select")?.disabled).toBe(false);
+    expect(container.querySelector<HTMLButtonElement>(".text-button")?.disabled).toBe(false);
+  });
 });
