@@ -78,7 +78,10 @@ jobs:
       # nested fork so its checked-in 1.90.0 pin is actually honored.
       - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:fmt
       - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:lint
-      - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:test
+      # Serial test threads on Linux: parallel tests race to acquire the glib
+      # main context when constructing tao event loops and panic with
+      # "Failed to initialize gtk backend". macOS/local runs stay parallel.
+      - run: env -u RUSTUP_TOOLCHAIN RUST_TEST_THREADS=1 bun run parapper:rust:test
       - run: bun run rust:azookey:fmt
       - run: bun run rust:azookey:lint
       - run: bun run rust:azookey:test
