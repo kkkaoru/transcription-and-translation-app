@@ -37,7 +37,7 @@ const wav = (): Blob => {
 };
 
 const transcription = (
-  options: { model?: string; language?: string; file?: Blob | string } = {},
+  options: { model?: string; language?: string; file?: Blob | string; headers?: HeadersInit } = {},
 ): Request => {
   const form = new FormData();
   if (options.model !== undefined) form.set("model", options.model);
@@ -48,6 +48,7 @@ const transcription = (
   }
   return new Request("https://gateway.example/v1/audio/transcriptions", {
     method: "POST",
+    ...(options.headers ? { headers: options.headers } : {}),
     body: form,
   });
 };
@@ -109,6 +110,47 @@ describe("portable inference gateway HTTP contract", () => {
       text: "",
     });
     expect(transcribe).toHaveBeenCalledTimes(2);
+  });
+
+  it("forwards bounded correlation headers to ASR and chat adapters", async () => {
+    const correlation = {
+      "x-request-id": "request-core-1",
+      "x-session-id": "session-core-1",
+      "x-agent-id": "agent-core-1",
+      "x-parent-agent-id": "parent-core-1",
+    };
+    const assertCorrelation = (headers: Headers): void => {
+      for (const [name, value] of Object.entries(correlation)) {
+        expect(headers.get(name)).toBe(value);
+      }
+    };
+    const transcribe = vi.fn(
+      (_pcm: Uint8Array, _signal: AbortSignal | undefined, request: Request | undefined) => {
+        expect(request).toBeDefined();
+        assertCorrelation(request?.headers ?? new Headers());
+        return Promise.resolve("相関あり");
+      },
+    );
+    const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      assertCorrelation(new Headers(init?.headers));
+      return Promise.resolve(new Response(JSON.stringify({ choices: [] })));
+    });
+    const handler = createGatewayFetchHandler(config, { transcribe, fetch: fetcher });
+
+    const asr = await handler(
+      transcription({ model: "parapper-ja", file: wav(), headers: correlation }),
+    );
+    expect(asr.status).toBe(200);
+    await expect(jsonBody(asr)).resolves.toEqual({ text: "相関あり" });
+
+    const chatResponse = await handler(
+      chat(
+        { model: "plain-model", messages: [] },
+        { "content-type": "application/json", ...correlation },
+      ),
+    );
+    expect(chatResponse.status).toBe(200);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("normalizes legacy transcript-missing failures and releases the serial gate", async () => {

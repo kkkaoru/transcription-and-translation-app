@@ -59,6 +59,35 @@ export interface GatewayDependencies {
   transcribe?: (pcm: Uint8Array, signal?: AbortSignal, request?: Request) => Promise<string>;
 }
 
+const CORRELATION_HEADER_NAMES = [
+  "x-request-id",
+  "x-session-id",
+  "x-agent-id",
+  "x-parent-agent-id",
+] as const;
+const MAX_CORRELATION_HEADER_LENGTH = 256;
+
+/**
+ * Copy only the bounded correlation headers to an upstream request.
+ *
+ * Correlation is deliberately opt-in: an absent header is not synthesized at
+ * this transport boundary, so callers that need generated IDs can establish
+ * them at the HTTP edge and preserve the same values through every adapter.
+ */
+export const correlationHeadersFromRequest = (request?: Request): Record<string, string> => {
+  if (!request) {
+    return {};
+  }
+  const headers: Record<string, string> = {};
+  for (const name of CORRELATION_HEADER_NAMES) {
+    const value = request.headers.get(name)?.trim();
+    if (value) {
+      headers[name] = value.slice(0, MAX_CORRELATION_HEADER_LENGTH);
+    }
+  }
+  return headers;
+};
+
 const isGatewayError = (error: unknown): error is GatewayError => error instanceof GatewayError;
 
 /**
@@ -284,13 +313,17 @@ const forwardChat = async (
   route: TextModelRoute,
   payload: Json,
   fetcher: typeof fetch,
+  request?: Request,
 ): Promise<Response> => {
   const zenz = isZenzModel(model);
   const response = await fetcher(
     zenz ? completionEndpoint(route.baseUrl) : modelEndpoint(route.baseUrl),
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...correlationHeadersFromRequest(request),
+      },
       body: JSON.stringify(zenz ? zenzRequest(payload) : modelRequest(model, payload, route)),
     },
   ).catch((error: unknown) => {
@@ -369,7 +402,7 @@ export const createGatewayFetchHandler = (
         // Await so asynchronous upstream/protocol errors are normalized by the
         // surrounding gateway error boundary instead of escaping as a rejected
         // request promise.
-        return await forwardChat(modelId, route, payload, fetcher);
+        return await forwardChat(modelId, route, payload, fetcher, request);
       }
       return json(HTTP_NOT_FOUND, { error: { code: "not_found", message: "Route not found" } });
     } catch (error) {

@@ -9,6 +9,7 @@ export type { GatewayConfig, TextModelRoute } from "./config.js";
 export { validateGatewayConfig } from "./config.js";
 export type { GatewayDependencies } from "./http.js";
 export {
+  correlationHeadersFromRequest,
   createGatewayFetchHandler,
   GatewayError,
   MAX_AUDIO_BYTES,
