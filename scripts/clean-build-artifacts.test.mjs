@@ -195,6 +195,9 @@ describe("cleanBuildArtifacts", () => {
     const comparison = JSON.parse(
       await readFile(join(repositoryRoot, "apps/azookey-compare/package.json"), "utf8"),
     );
+    const parapper = JSON.parse(
+      await readFile(join(repositoryRoot, "packages/parapper-asr/package.json"), "utf8"),
+    );
     const cleanup = "clean-build-artifacts";
 
     for (const scriptName of ["build", "sidecar:build", "gateway:build", "clean:build"]) {
@@ -206,6 +209,9 @@ describe("cleanBuildArtifacts", () => {
       assert.match(desktop.scripts[scriptName], new RegExp(cleanup));
     }
     assert.match(comparison.scripts.build, new RegExp(cleanup));
+    for (const scriptName of ["build", "build:msi"]) {
+      assert.match(parapper.scripts[scriptName], new RegExp(cleanup));
+    }
     for (const scriptName of ["tauri:build", "tauri:build:release"]) {
       assert.match(desktop.scripts[scriptName], /--prune-rust/);
     }
