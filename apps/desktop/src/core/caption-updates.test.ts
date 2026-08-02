@@ -393,7 +393,7 @@ describe("mergeCaptionPayload", () => {
 
     expect(merged).toBe(current);
     expect(getCaptionMergeDiagnostics()).toEqual({
-      crossIdTranslationsSaved: 1,
+      crossIdTranslationIdsSaved: 1,
       pendingCrossIdTranslations: 1,
     });
     expect(takePendingCaptionTranslation("chunk-1")).toMatchObject(lateTranslation);
@@ -483,7 +483,7 @@ describe("mergeCaptionPayload", () => {
     }
 
     expect(getCaptionMergeDiagnostics()).toEqual({
-      crossIdTranslationsSaved: 65,
+      crossIdTranslationIdsSaved: 65,
       pendingCrossIdTranslations: 64,
     });
     expect(takePendingCaptionTranslation("pending-0")).toBeNull();
@@ -520,7 +520,7 @@ describe("mergeCaptionPayload", () => {
     });
 
     expect(mergeCaptionPayload(empty, firstSource)).toEqual(firstSource);
-    expect(getCaptionMergeDiagnostics().crossIdTranslationsSaved).toBe(0);
+    expect(getCaptionMergeDiagnostics().crossIdTranslationIdsSaved).toBe(0);
   });
 
   it("preserves a source+translation payload in the side channel when current is the empty placeholder", () => {
@@ -589,10 +589,10 @@ describe("mergeCaptionPayload", () => {
     });
 
     expect(mergeCaptionPayload(current, newerPending)).toBe(current);
-    expect(getCaptionMergeDiagnostics().crossIdTranslationsSaved).toBe(1);
+    expect(getCaptionMergeDiagnostics().crossIdTranslationIdsSaved).toBe(1);
     // The older revision is discarded; the counter must not increment.
     expect(mergeCaptionPayload(current, olderPending)).toBe(current);
-    expect(getCaptionMergeDiagnostics().crossIdTranslationsSaved).toBe(1);
+    expect(getCaptionMergeDiagnostics().crossIdTranslationIdsSaved).toBe(1);
     expect(takePendingCaptionTranslation("late-1")).toMatchObject({
       translationText: "Newer translation",
     });
@@ -633,7 +633,7 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, emptyIdTranslation)).toBe(current);
     expect(mergeCaptionPayload(current, whitespaceIdTranslation)).toBe(current);
     expect(getCaptionMergeDiagnostics()).toEqual({
-      crossIdTranslationsSaved: 0,
+      crossIdTranslationIdsSaved: 0,
       pendingCrossIdTranslations: 0,
     });
     expect(takePendingCaptionTranslation("")).toBeNull();
@@ -1494,7 +1494,7 @@ describe("mergeCaptionPayload", () => {
     // Must return empty (unchanged) and preserve the translation in pending.
     expect(merged).toBe(empty);
     expect(getCaptionMergeDiagnostics()).toEqual({
-      crossIdTranslationsSaved: 1,
+      crossIdTranslationIdsSaved: 1,
       pendingCrossIdTranslations: 1,
     });
     expect(takePendingCaptionTranslation("u-1")).toMatchObject(lateTranslation);

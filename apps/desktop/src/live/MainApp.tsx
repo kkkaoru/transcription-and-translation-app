@@ -48,7 +48,11 @@ import {
   type ParapperStreamEvent,
   selectParapperSurfaceText,
 } from "../core/parapperStream";
-import { hydratePipelineStageEvents, pushPipelineStageEvent } from "../core/pipelineStages";
+import {
+  hydratePipelineStageEvents,
+  pushPendingCaptionTranslationStage,
+  pushPipelineStageEvent,
+} from "../core/pipelineStages";
 import { appendStructuredLog } from "../core/structuredLog";
 import type {
   AppConfig,
@@ -203,7 +207,9 @@ export const MainApp = () => {
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
   const [models, setModels] = useState<ModelCatalog>(DEFAULT_MODEL_CATALOG);
   const [status, setStatus] = useState<RuntimeStatus>(DEFAULT_RUNTIME_STATUS);
-  const [caption, setCaption] = useState<CaptionPayload>(createPreviewCaption);
+  /** Mutable caption cursor keeps merge side effects outside React state updaters. */
+  const captionRef = useRef<CaptionPayload>(createPreviewCaption());
+  const [caption, setCaption] = useState<CaptionPayload>(() => captionRef.current);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);
@@ -241,6 +247,32 @@ export const MainApp = () => {
   const captionFailureMessage = useRef<string | null>(null);
   /** Initialization barrier used to order latest-caption replay after status. */
   const initialRuntimeReady = useRef<Promise<void>>(Promise.resolve());
+
+  /**
+   * Merge and publish outside React's functional state updater. `mergeCaptionPayload`
+   * records late cross-ID translations in a bounded side channel; doing that work
+   * inside `setCaption(current => ...)` would duplicate entries when React replays
+   * an updater in StrictMode/concurrent rendering.
+   */
+  const mergeAndCommitCaption = useCallback((incoming: CaptionPayload): boolean => {
+    const current = captionRef.current;
+    const merged = mergeCaptionPayload(current, incoming);
+    if (merged === null || merged === current) {
+      return false;
+    }
+    captionRef.current = merged;
+    markCaptionDisplay(merged);
+    setCaption(merged);
+    return true;
+  }, []);
+
+  /** Reset the visible caption and any retained translation from this session. */
+  const clearCaptionState = useCallback((): void => {
+    const empty = createEmptyCaption();
+    captionRef.current = empty;
+    setCaption(empty);
+    clearCaptionMergeDiagnostics();
+  }, []);
 
   // A later ambient soft-skip must not replace the visible notice from a
   // persistent ASR result-loss error. A real caption clears this ref through
@@ -337,6 +369,7 @@ export const MainApp = () => {
       webSpeechStream.current = null;
       webSpeechResults.current.clear();
       webSpeechCaptionId.current = null;
+      clearCaptionMergeDiagnostics();
       void capture.current.stop().catch(() => undefined);
       // A component can unmount while `start_capture` is still in flight. Wait
       // for that command, then stop only if no newer generation superseded this
@@ -379,21 +412,14 @@ export const MainApp = () => {
         // release the queue / skew first-caption timing for a newer flight.
         const isSourceStage =
           nextCaption.stage === "source" || (nextCaption.sequence === 0 && !nextCaption.isFinal);
-        let paintedProgressiveSource = false;
-        const beforeCrossIdSaved = getCaptionMergeDiagnostics().crossIdTranslationsSaved;
-        setCaption((current) => {
-          const merged = mergeCaptionPayload(current, nextCaption);
-          if (merged === null || merged === current) {
-            return current;
-          }
-          if (isSourceStage && merged.sourceText.trim()) {
-            paintedProgressiveSource = true;
-          }
-          markCaptionDisplay(merged);
-          return merged;
-        });
+        const beforeCrossIdSaved = getCaptionMergeDiagnostics().crossIdTranslationIdsSaved;
+        // Merge every event (source and translation stage alike); only the
+        // painted-source flag is gated on stage so TTFS stays tied to source.
+        const painted = mergeAndCommitCaption(nextCaption);
+        const paintedProgressiveSource =
+          isSourceStage && painted && captionRef.current.sourceText.trim();
         const afterMergeDiagnostics = getCaptionMergeDiagnostics();
-        if (afterMergeDiagnostics.crossIdTranslationsSaved > beforeCrossIdSaved) {
+        if (afterMergeDiagnostics.crossIdTranslationIdsSaved > beforeCrossIdSaved) {
           // A cross-id translation was saved to the bounded side channel so it is
           // not mis-attributed to the current live caption. Surface the retention
           // through the debug/diagnostic channel (Debug panel) without mirroring
@@ -431,6 +457,11 @@ export const MainApp = () => {
         if (nextCaption.id.trim() && nextCaption.sourceText.trim()) {
           const pending = takePendingCaptionTranslation(nextCaption.id);
           if (pending) {
+            // Keep the recovered translation in the same utterance/stage history
+            // as native rows (DebugPanel groups by utteranceId) without
+            // attaching it to the visible live caption. The synthetic translate
+            // row must never feed back into caption rendering.
+            pushPendingCaptionTranslationStage(pending, nextCaption.sourceText);
             // Log that a late translation was retained for this utterance id.
             // Use appendStructuredLog to preserve the retained translation in the
             // structured debug log for history reconstruction (not in live overlay).
@@ -472,16 +503,7 @@ export const MainApp = () => {
       if (!mounted || !latest || captionIdleGuard.current) {
         return;
       }
-      let replayed = false;
-      setCaption((current) => {
-        const merged = mergeCaptionPayload(current, latest);
-        if (merged === null || merged === current) {
-          return current;
-        }
-        replayed = true;
-        markCaptionDisplay(merged);
-        return merged;
-      });
+      const replayed = mergeAndCommitCaption(latest);
       if (replayed) {
         lastCaptionId = latest.id;
         pushDiagnosticEvent("caption", "Latest caption replayed", latest.id);
@@ -508,31 +530,23 @@ export const MainApp = () => {
           stageEvent.ok &&
           (stageEvent.surfaceText?.trim() || stageEvent.outputText.trim())
         ) {
-          setCaption((current) => {
-            // Parapper's Vibrato sink retains the surface form alongside its
-            // Hiragana reading. Prefer that surface for the provisional paint
-            // so the same-id revision does not look like a suffix when the
-            // normalized caption arrives through the other event channel.
-            const provisionalText = stageEvent.surfaceText?.trim() || stageEvent.outputText.trim();
-            const provisional: CaptionPayload = {
-              id: stageEvent.utteranceId,
-              sourceText: provisionalText,
-              translationText: "",
-              sourceLanguage: current.sourceLanguage,
-              targetLanguage: current.targetLanguage,
-              startedAt: stageEvent.startedAt,
-              receivedAt: stageEvent.at,
-              stage: "source",
-              sequence: 0,
-              isFinal: false,
-              provisional: true,
-            };
-            const merged = mergeCaptionPayload(current, provisional);
-            if (merged === null || merged === current) {
-              return current;
-            }
-            markCaptionDisplay(merged);
-            return merged;
+          // Parapper's Vibrato sink retains the surface form alongside its
+          // Hiragana reading. Prefer that surface for the provisional paint
+          // so the same-id revision does not look like a suffix when the
+          // normalized caption arrives through the other event channel.
+          const provisionalText = stageEvent.surfaceText?.trim() || stageEvent.outputText.trim();
+          mergeAndCommitCaption({
+            id: stageEvent.utteranceId,
+            sourceText: provisionalText,
+            translationText: "",
+            sourceLanguage: captionRef.current.sourceLanguage,
+            targetLanguage: captionRef.current.targetLanguage,
+            startedAt: stageEvent.startedAt,
+            receivedAt: stageEvent.at,
+            stage: "source",
+            sequence: 0,
+            isFinal: false,
+            provisional: true,
           });
         }
       })
@@ -574,13 +588,18 @@ export const MainApp = () => {
           // idle error until stop finishes so the failure caption is retained.
           captionFailureMessage.current = null;
         }
-        // A normal idle transition ends the current live session. Clear the
-        // painted caption so a later session/overlay cannot mistake it for
-        // current speech. Error transitions intentionally retain the last
-        // caption for diagnosis and follow the README failure contract.
-        if (sanitized.status === "idle" && !sanitized.lastError && !captionFailureMessage.current) {
-          setCaption(createEmptyCaption());
-          clearCaptionMergeDiagnostics();
+        // An idle transition ends the current live session. Clear the painted
+        // caption so a later session/overlay cannot mistake it for current
+        // speech. Error transitions intentionally retain the last caption for
+        // diagnosis (README failure contract), but every idle boundary must
+        // still drop pending cross-id translations so a same-id lookup in a
+        // later session cannot pick up a stale entry.
+        if (sanitized.status === "idle") {
+          if (sanitized.lastError || captionFailureMessage.current) {
+            clearCaptionMergeDiagnostics();
+          } else {
+            clearCaptionState();
+          }
         }
         const statusKey = [
           sanitized.status,
@@ -648,7 +667,7 @@ export const MainApp = () => {
         dispose();
       }
     };
-  }, []);
+  }, [clearCaptionState, mergeAndCommitCaption]);
 
   const setModel = (family: ModelFamily, value: string) => {
     setConfig({ ...config, models: { ...config.models, [family]: value } });
@@ -779,14 +798,7 @@ export const MainApp = () => {
         ok: true,
         error: null,
       });
-      setCaption((current) => {
-        const merged = mergeCaptionPayload(current, caption);
-        if (merged === null || merged === current) {
-          return current;
-        }
-        markCaptionDisplay(merged);
-        return merged;
-      });
+      mergeAndCommitCaption(caption);
       captionFailureMessage.current = null;
       setNotice(clearLegacyFailureNotice);
       setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
@@ -1031,14 +1043,7 @@ export const MainApp = () => {
               ok: true,
               error: null,
             });
-            setCaption((current) => {
-              const merged = mergeCaptionPayload(current, rawCaption);
-              if (merged === null || merged === current) {
-                return current;
-              }
-              markCaptionDisplay(merged);
-              return merged;
-            });
+            mergeAndCommitCaption(rawCaption);
             captionFailureMessage.current = null;
             setNotice(clearLegacyFailureNotice);
             setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
@@ -1089,14 +1094,7 @@ export const MainApp = () => {
               output.isFinal ? "Parapper final normalized" : "Parapper interim normalized",
               `id=${nextCaption.id} · ${elapsed}ms · src=${nextCaption.sourceText.slice(0, 48)}`,
             );
-            setCaption((current) => {
-              const merged = mergeCaptionPayload(current, nextCaption);
-              if (merged === null || merged === current) {
-                return current;
-              }
-              markCaptionDisplay(merged);
-              return merged;
-            });
+            mergeAndCommitCaption(nextCaption);
             captionFailureMessage.current = null;
             setNotice(clearLegacyFailureNotice);
             setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
@@ -1252,7 +1250,7 @@ export const MainApp = () => {
                 return;
               }
               processorRef.current?.markFirstCaption();
-              setCaption((current) => mergeCaptionPayload(current, nextCaption) ?? current);
+              mergeAndCommitCaption(nextCaption);
               captionFailureMessage.current = null;
               setNotice(clearLegacyFailureNotice);
               setStatus((current) =>
@@ -1450,8 +1448,7 @@ export const MainApp = () => {
       }
       await bridge.stopCapture().catch(() => undefined);
       capturePhase.current = "idle";
-      setCaption(createEmptyCaption());
-      clearCaptionMergeDiagnostics();
+      clearCaptionState();
       setStatus((current) => ({ ...current, status: "idle", lastError: null }));
       if (capture.current === microphone) {
         capture.current = new MicrophoneCapture();
@@ -1584,17 +1581,21 @@ export const MainApp = () => {
       if (retainedFailure) {
         // A successful microphone/backend teardown does not erase evidence of
         // an earlier ASR/translation failure. Keep the caption and surface the
-        // error while transitioning to idle.
+        // error while transitioning to idle; the session is over, so pending
+        // cross-id translations must not leak into the next capture.
+        clearCaptionMergeDiagnostics();
         setStatus((current) => ({ ...current, status: "idle", lastError: retainedFailure }));
       } else {
-        setCaption(createEmptyCaption());
-        clearCaptionMergeDiagnostics();
+        clearCaptionState();
         setStatus((current) => ({ ...current, status: "idle", lastError: null }));
       }
     } else {
       const nextNotice = noticeFromError(failure, "message.microphoneStopFailed");
       captionFailureMessage.current = nextNotice.detail ?? t(nextNotice.key);
       pushDiagnosticEvent("error", "Capture stop failed", nextNotice.detail ?? nextNotice.key);
+      // The session ended in failure; drop pending cross-id translations so a
+      // retry cannot recover an entry from this aborted session.
+      clearCaptionMergeDiagnostics();
       setNotice(nextNotice);
       setStatus((current) => ({
         ...current,

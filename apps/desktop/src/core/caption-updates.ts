@@ -54,21 +54,28 @@ const sequenceOf = (caption: CaptionPayload): number => {
  * payload for its original utterance ID without making the live slot regress.
  */
 export interface CaptionMergeDiagnostics {
-  crossIdTranslationsSaved: number;
+  /** Number of first-time IDs inserted into the bounded pending store. */
+  crossIdTranslationIdsSaved: number;
   pendingCrossIdTranslations: number;
 }
 
-let crossIdTranslationsSaved = 0;
+let crossIdTranslationIdsSaved = 0;
 const pendingCrossIdTranslations = new Map<string, CaptionPayload>();
 
-const saveCrossIdTranslation = (caption: CaptionPayload): void => {
+/**
+ * Preserve a cross-ID translation outside React state updaters.
+ *
+ * The bounded store is intentionally keyed by utterance ID. Revisions for an
+ * already-pending ID may replace its payload, but do not increment the
+ * first-insert counter.
+ */
+export const savePendingCaptionTranslation = (caption: CaptionPayload): boolean => {
   // Gate empty/whitespace id: a malformed or placeholder payload (e.g. the
   // "empty" caption right after reset, or a silence skip) must never occupy a
-  // Map key or inflate the saved counter.  The merge still returns current
-  // (translation-only) or null (source-bearing) per the existing contract;
-  // only the side-channel storage is suppressed.
+  // Map key or inflate the saved counter. The caller still receives the merge
+  // result, but side-channel storage is suppressed.
   if (!caption.id.trim()) {
-    return;
+    return false;
   }
   if (!pendingCrossIdTranslations.has(caption.id)) {
     while (pendingCrossIdTranslations.size >= MAX_PENDING_CROSS_ID_TRANSLATIONS) {
@@ -82,13 +89,16 @@ const saveCrossIdTranslation = (caption: CaptionPayload): void => {
 
   const previous = pendingCrossIdTranslations.get(caption.id);
   const shouldStore = !previous || !isOlderSameIdRevision(previous, caption);
-  if (shouldStore) {
-    // Only increment if this is truly a new entry being stored for the first time.
-    if (!previous) {
-      crossIdTranslationsSaved += 1;
-    }
-    pendingCrossIdTranslations.set(caption.id, { ...caption });
+  if (!shouldStore) {
+    return false;
   }
+
+  // Count IDs, not every newer revision stored for an existing ID.
+  if (!previous) {
+    crossIdTranslationIdsSaved += 1;
+  }
+  pendingCrossIdTranslations.set(caption.id, { ...caption });
+  return true;
 };
 
 /** Return and remove a translation preserved for a different caption ID. */
@@ -103,13 +113,13 @@ export const takePendingCaptionTranslation = (id: string): CaptionPayload | null
 
 /** Inspect cross-ID translation preservation without mutating the pending store. */
 export const getCaptionMergeDiagnostics = (): CaptionMergeDiagnostics => ({
-  crossIdTranslationsSaved,
+  crossIdTranslationIdsSaved,
   pendingCrossIdTranslations: pendingCrossIdTranslations.size,
 });
 
 /** Clear caption merge diagnostics and pending cross-ID translations. */
 export const clearCaptionMergeDiagnostics = (): void => {
-  crossIdTranslationsSaved = 0;
+  crossIdTranslationIdsSaved = 0;
   pendingCrossIdTranslations.clear();
 };
 
@@ -466,14 +476,7 @@ export const mergeCaptionPayload = (
   const hasIncomingSource = hasText(incoming.sourceText);
   const hasIncomingTranslation = hasText(incoming.translationText);
   const incomingIsTranslationPayload = sequenceOf(incoming) >= TRANSLATION_SEQUENCE;
-  const crossIdTranslation =
-    !sameChunk &&
-    incomingIsTranslationPayload &&
-    hasIncomingTranslation &&
-    // Keep placeholder bootstrap captions transparent: the very first live state uses
-    // `id === "empty"`, so a source-bearing translation payload for that state is not
-    // a stale cross-ID rewrite and should remain eligible to paint.
-    !(current.id === "empty" && hasIncomingSource);
+  const crossIdTranslation = !sameChunk && incomingIsTranslationPayload && hasIncomingTranslation;
 
   // A translator may finish turn N after turn N+1 has already become the
   // visible caption. Never merge that text into N+1 (whether the payload also
@@ -483,7 +486,7 @@ export const mergeCaptionPayload = (
   // source-bearing legacy path keeps its null/drop contract after the ordering
   // guard below.
   if (crossIdTranslation) {
-    saveCrossIdTranslation(incoming);
+    savePendingCaptionTranslation(incoming);
     if (!hasIncomingSource) {
       return current;
     }
