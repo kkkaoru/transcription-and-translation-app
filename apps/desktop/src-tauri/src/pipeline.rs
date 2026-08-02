@@ -146,6 +146,19 @@ pub struct ParapperRecognitionInput {
     #[serde(default)]
     pub audio_duration_ms: Option<u64>,
     pub is_final: bool,
+    /// Native capture generation the frontend queue
+    /// (`parapper-output-queue.ts`) observed when this item was enqueued —
+    /// not whatever generation happens to be current when the Tauri invoke
+    /// for it finally runs. The queue keeps at most one pending partial and
+    /// can serialize behind an in-flight normalizer call, so an item queued
+    /// under session N can still be dequeued and processed after a
+    /// Stop+Start bumped the generation to N+1. Capturing the generation
+    /// fresh inside the command instead of at enqueue time would silently
+    /// treat that stale item as belonging to whichever session happens to be
+    /// active when it is finally processed. Older callers omit it; the
+    /// command then falls back to the historical current-generation read.
+    #[serde(default)]
+    pub capture_generation: Option<u64>,
 }
 
 fn default_source_language() -> String {
@@ -1228,6 +1241,7 @@ mod tests {
             elapsed_ms: 12,
             audio_duration_ms: None,
             is_final: false,
+            capture_generation: None,
         };
         let mut stages = Vec::new();
         let mut captions = Vec::new();
@@ -1298,6 +1312,7 @@ mod tests {
             elapsed_ms: 8,
             audio_duration_ms: None,
             is_final: false,
+            capture_generation: None,
         };
         let mut stages = Vec::new();
         let caption = pipeline

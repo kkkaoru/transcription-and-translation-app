@@ -4,6 +4,7 @@ use crate::output::OutputStatus;
 use crate::pipeline::{CaptionPayload, Pipeline, PipelineStageEvent};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -84,6 +85,17 @@ pub struct TranslationTicket {
     sequence: u64,
 }
 
+impl TranslationTicket {
+    /// The capture generation this ticket was issued under. Exposed so a
+    /// caller holding only the ticket (e.g. a spawned translation task) can
+    /// tag its own diagnostics (`PipelineStageEvent`) with the generation
+    /// they actually belong to, instead of re-reading whatever generation is
+    /// current when the stage happens to complete.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
 #[derive(Debug, Default)]
 struct TranslationTracker {
     current_generation: u64,
@@ -159,6 +171,25 @@ impl TranslationTracker {
     }
 }
 
+/// A completed pipeline stage tagged with the capture generation active when
+/// it was recorded.
+///
+/// Diagnostics must not be silently dropped merely because a capture session
+/// ended: unlike a caption or a runtime status mutation (which are correctly
+/// gated to the current generation only), a stage row is only ever appended
+/// to a bounded history for debugging, so retaining a stale session's row
+/// alongside the live one cannot mis-attribute user-facing output. Dropping
+/// it instead would just be a different silent-loss bug. Tagging the row
+/// with its generation preserves the diagnostic while letting a debug
+/// consumer tell a stale row apart from the live session's rows.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedPipelineStage {
+    pub capture_generation: u64,
+    #[serde(flatten)]
+    pub stage: PipelineStageEvent,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStatus {
@@ -173,8 +204,9 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub status: Mutex<RuntimeStatus>,
     pub pipeline: Pipeline,
-    /// Completed ASR / normalizer / translator stages, oldest first.
-    pub pipeline_stage_history: Mutex<Vec<PipelineStageEvent>>,
+    /// Completed ASR / normalizer / translator stages, oldest first, each
+    /// tagged with the capture generation that produced it.
+    pub pipeline_stage_history: Mutex<Vec<RecordedPipelineStage>>,
     /// Most recent normalized source/translation caption for overlay replay.
     /// Raw ASR text is never passed to this slot.
     pub latest_caption: Mutex<Option<CaptionPayload>>,
@@ -191,6 +223,13 @@ pub struct AppState {
     /// stops the microphone first; `stop_capture` then consumes this flag and
     /// requests a graceful Tauri restart.
     pub relaunch_after_capture: Mutex<bool>,
+    /// Parapper turn outputs dropped because the capture generation the
+    /// frontend queue (`parapper-output-queue.ts`) captured at enqueue time
+    /// had already been superseded by a Stop+Start before this command
+    /// processed them. Exposed in `get_debug_info` alongside
+    /// `translationRetired` so a silent-loss investigation is not limited to
+    /// log scraping.
+    parapper_output_superseded: AtomicU64,
 }
 
 /// Match the frontend caption merge ordering before replacing the replay slot.
@@ -334,6 +373,7 @@ impl AppState {
             translation_tracker: Mutex::new(TranslationTracker::default()),
             translation_notify: Notify::new(),
             relaunch_after_capture: Mutex::new(false),
+            parapper_output_superseded: AtomicU64::new(0),
         }
     }
 
@@ -342,11 +382,12 @@ impl AppState {
     /// A poisoned diagnostics lock must not make transcription fail. The
     /// event stream remains best effort, while callers can still emit the
     /// `pipeline:stage` event and return a caption normally.
-    pub fn record_pipeline_stage(&self, stage: &PipelineStageEvent) {
+    pub fn record_pipeline_stage(&self, generation: u64, stage: &PipelineStageEvent) {
         let Ok(mut history) = self.pipeline_stage_history.lock() else {
             return;
         };
-        history.push(stage.clone());
+        history
+            .push(RecordedPipelineStage { capture_generation: generation, stage: stage.clone() });
         if history.len() > PIPELINE_STAGE_HISTORY_LIMIT {
             let excess = history.len() - PIPELINE_STAGE_HISTORY_LIMIT;
             history.drain(0..excess);
@@ -355,7 +396,7 @@ impl AppState {
 
     /// Return retained stages newest first, matching the frontend diagnostic
     /// store's snapshot order. A poisoned lock degrades to an empty snapshot.
-    pub fn pipeline_stage_history(&self) -> Vec<PipelineStageEvent> {
+    pub fn pipeline_stage_history(&self) -> Vec<RecordedPipelineStage> {
         self.pipeline_stage_history
             .lock()
             .map(|history| history.iter().rev().cloned().collect())
@@ -571,10 +612,14 @@ impl AppState {
     /// Begin a new capture generation before work is accepted. Tasks from an
     /// earlier generation may still finish after a bounded stop drain, but
     /// cannot update a later session.
-    pub fn begin_capture_generation(&self) {
-        if let Ok(mut tracker) = self.translation_tracker.lock() {
-            tracker.start_capture();
-        }
+    pub fn begin_capture_generation(&self) -> u64 {
+        self.translation_tracker
+            .lock()
+            .map(|mut tracker| {
+                tracker.start_capture();
+                tracker.current_generation
+            })
+            .unwrap_or_default()
     }
 
     /// Register a detached translation before spawning it. At capacity, the
@@ -588,6 +633,21 @@ impl AppState {
     /// surfaced in the debug snapshot to explain dropped translations.
     pub fn translation_retired_count(&self) -> u64 {
         self.translation_tracker.lock().map(|tracker| tracker.retired_count).unwrap_or_default()
+    }
+
+    /// Record a Parapper turn output dropped because the generation the
+    /// frontend queue captured at enqueue time was superseded before this
+    /// command processed it. See [`Self::parapper_output_superseded_count`].
+    pub fn record_parapper_output_superseded(&self) -> u64 {
+        self.parapper_output_superseded.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Total Parapper turn outputs dropped for a superseded enqueue-time
+    /// generation, surfaced in the debug snapshot alongside
+    /// `translation_retired_count` to explain output that never became a
+    /// caption.
+    pub fn parapper_output_superseded_count(&self) -> u64 {
+        self.parapper_output_superseded.load(Ordering::Relaxed)
     }
 
     /// Freeze the current generation against new translations and return the
@@ -765,12 +825,81 @@ mod tests {
         let state =
             AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
         for index in 0..PIPELINE_STAGE_HISTORY_LIMIT + 2 {
-            state.record_pipeline_stage(&stage(index));
+            state.record_pipeline_stage(1, &stage(index));
         }
         let history = state.pipeline_stage_history();
         assert_eq!(history.len(), PIPELINE_STAGE_HISTORY_LIMIT);
-        assert_eq!(history.first().map(|event| event.utterance_id.as_str()), Some("utterance-97"));
-        assert_eq!(history.last().map(|event| event.utterance_id.as_str()), Some("utterance-2"));
+        assert_eq!(
+            history.first().map(|event| event.stage.utterance_id.as_str()),
+            Some("utterance-97")
+        );
+        assert_eq!(
+            history.last().map(|event| event.stage.utterance_id.as_str()),
+            Some("utterance-2")
+        );
+    }
+
+    #[test]
+    fn recorded_pipeline_stage_flattens_capture_generation_alongside_stage_fields() {
+        // The frontend's `normalizePipelineStageEvent` reads fields directly
+        // off the top-level `pipeline:stage` payload (see
+        // `apps/desktop/src/core/pipelineStages.ts`). If `#[serde(flatten)]`
+        // ever regressed to a nested `stage` object instead of flattening its
+        // fields, every existing consumer would silently stop matching
+        // `stage`/`utteranceId`/etc. and no Rust test would catch it without
+        // asserting the actual serialized shape here.
+        let recorded = super::RecordedPipelineStage { capture_generation: 7, stage: stage(1) };
+        let value = serde_json::to_value(&recorded).expect("RecordedPipelineStage serializes");
+        let object = value.as_object().expect("flat JSON object, not a nested wrapper");
+
+        assert_eq!(object.get("captureGeneration").and_then(|v| v.as_u64()), Some(7));
+        assert_eq!(object.get("stage").and_then(|v| v.as_str()), Some("asr"));
+        assert!(object.contains_key("utteranceId"));
+        assert!(object.contains_key("modelId"));
+        assert!(object.contains_key("inputSnippet"));
+        assert!(object.contains_key("outputText"));
+        assert!(object.contains_key("startedAt"));
+        assert!(object.contains_key("at"));
+        assert!(object.contains_key("durationMs"));
+        assert!(object.contains_key("ok"));
+        // `surface_text: None` in the fixture must still be skipped, matching
+        // PipelineStageEvent's own `skip_serializing_if`, not emitted as null.
+        assert!(!object.contains_key("surfaceText"));
+        // No nested "stage" object: flatten must not double-wrap the payload.
+        assert!(object.get("stage").is_some_and(|v| v.is_string()));
+    }
+
+    #[test]
+    fn stale_generation_stage_is_retained_and_tagged_not_dropped() {
+        // A stage row from a superseded capture generation is a diagnostic,
+        // not a user-facing publish: dropping it would be a silent-loss bug
+        // in its own right, so it must remain in history but be tagged with
+        // the generation that actually produced it.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let stale_generation = state.current_capture_generation();
+        state.record_pipeline_stage(stale_generation, &stage(1));
+        state.begin_capture_generation();
+        let live_generation = state.current_capture_generation();
+        assert_ne!(stale_generation, live_generation);
+        state.record_pipeline_stage(live_generation, &stage(2));
+
+        let history = state.pipeline_stage_history();
+        assert_eq!(history.len(), 2);
+        // Newest first.
+        assert_eq!(history[0].capture_generation, live_generation);
+        assert_eq!(history[1].capture_generation, stale_generation);
+    }
+
+    #[test]
+    fn superseded_parapper_output_is_counted() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        assert_eq!(state.parapper_output_superseded_count(), 0);
+        assert_eq!(state.record_parapper_output_superseded(), 1);
+        assert_eq!(state.record_parapper_output_superseded(), 2);
+        assert_eq!(state.parapper_output_superseded_count(), 2);
     }
 
     #[test]

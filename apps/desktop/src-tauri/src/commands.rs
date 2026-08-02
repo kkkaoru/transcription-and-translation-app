@@ -8,8 +8,8 @@ use crate::pipeline::{
     CaptionPayload, ParapperRecognitionInput, Pipeline, PipelineError, PipelineStageEvent,
 };
 use crate::state::{
-    AppState, ExpectedEmptyAsrResult, RuntimeStatus, TranslationTicket, ASR_EMPTY_RESULT_WINDOW,
-    TRANSLATION_DRAIN_TIMEOUT,
+    AppState, ExpectedEmptyAsrResult, RecordedPipelineStage, RuntimeStatus, TranslationTicket,
+    ASR_EMPTY_RESULT_WINDOW, TRANSLATION_DRAIN_TIMEOUT,
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -177,19 +177,19 @@ pub fn relaunch_to_updated_app(
 }
 
 #[tauri::command]
-pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
     // A new capture session gets its own bounded empty-turn observation
     // window. Do this before the early Web Speech return as well, so switching
     // recognition modes cannot retain a prior native ASR loss.
     state.reset_asr_health();
-    state.begin_capture_generation();
+    let capture_generation = state.begin_capture_generation();
     let mut config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     // Web Speech owns microphone capture and recognition in the webview. Do
     // not warm native dictionaries or wait for sidecars for this mode; the
     // frontend starts its SpeechRecognition stream immediately after this
     // command reports the capturing state.
     if config.recognition_mode == "web-speech" {
-        return set_status(&app, &state, "capturing", None);
+        return set_status(&app, &state, "capturing", None).map(|_| capture_generation);
     }
     if config.recognition_mode == "parapper-azookey" {
         prepare_azookey_capture(&app, &state, &mut config).await?;
@@ -200,7 +200,7 @@ pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result
     if config.recognition_mode != "parapper-raw" {
         gateway::reconcile_models(&app, &config).await?;
     }
-    set_status(&app, &state, "capturing", None)
+    set_status(&app, &state, "capturing", None).map(|_| capture_generation)
 }
 
 /// Provision and warm the optional AzooKey dictionary only for the native
@@ -307,7 +307,7 @@ pub async fn transcribe_audio_chunk(
     let app_for_stages = app.clone();
     let config_for_stages = config.clone();
     let mut on_stage = move |stage: &PipelineStageEvent| {
-        emit_pipeline_stage(&app_for_stages, &config_for_stages, stage);
+        emit_pipeline_stage(&app_for_stages, &config_for_stages, stage, capture_generation);
     };
     let app_for_captions = app.clone();
     let mut on_caption = move |caption: &CaptionPayload| {
@@ -418,15 +418,37 @@ pub async fn normalize_parapper_output(
     output: ParapperRecognitionInput,
 ) -> Result<CaptionPayload, String> {
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
-    let capture_generation = state.current_capture_generation();
     let output_is_final = output.is_final;
     let empty_id =
         format!("parapper:{}:{}:{}", output.session_id, output.turn_session_id, output.turn_id);
+    // The frontend queue (`parapper-output-queue.ts`) keeps at most one
+    // pending partial and can serialize this item behind a slow in-flight
+    // normalizer call, so it can still reach this command after a Stop+Start
+    // bumped the capture generation. Use the generation the queue captured at
+    // enqueue time (not a fresh read of "current") so a stale item is
+    // recognized as stale here instead of silently adopting whatever session
+    // happens to be active when it is finally processed. Legacy callers that
+    // omit it fall back to the historical current-generation read, which is
+    // unconditionally current by construction and changes no behavior.
+    let capture_generation =
+        output.capture_generation.unwrap_or_else(|| state.current_capture_generation());
+    if !parapper_output_generation_is_current(&state, output.capture_generation) {
+        // Superseded before any pipeline work started: drop, not error, the
+        // same contract as the ASR-empty and translation-backlog superseded
+        // paths below. Count it so `get_debug_info` can explain a Parapper
+        // turn that never became a caption without log scraping.
+        state.record_parapper_output_superseded();
+        log::debug!(
+            "dropped Parapper output queued for a superseded capture generation \
+             (enqueued_generation={capture_generation})"
+        );
+        return Ok(empty_caption(&config, empty_id));
+    }
     let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(2);
     let app_for_stages = app.clone();
     let config_for_stages = config.clone();
     let mut on_stage = move |stage: &PipelineStageEvent| {
-        emit_pipeline_stage(&app_for_stages, &config_for_stages, stage);
+        emit_pipeline_stage(&app_for_stages, &config_for_stages, stage, capture_generation);
     };
     let app_for_captions = app.clone();
     let mut on_caption = move |caption: &CaptionPayload| {
@@ -559,6 +581,27 @@ fn publish_source_caption_gated(
     }
 }
 
+/// Generation gate for a Parapper turn output the frontend queue
+/// (`parapper-output-queue.ts`) enqueued before this command ran.
+///
+/// Returns `true` when the output should still be processed: either its
+/// enqueue-time generation is still the active capture generation, or it is a
+/// legacy caller that never captured one (kept unconditionally current, same
+/// as the historical behavior of always reading "current" fresh). Returns
+/// `false` when the item was queued under a capture generation that a
+/// Stop+Start has since superseded; the caller must drop it — never surface
+/// it as an error — and is responsible for counting the drop via
+/// [`AppState::record_parapper_output_superseded`] so it stays observable.
+fn parapper_output_generation_is_current(
+    state: &AppState,
+    enqueued_generation: Option<u64>,
+) -> bool {
+    match enqueued_generation {
+        Some(generation) => state.is_capture_generation_current(generation),
+        None => true,
+    }
+}
+
 fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload, String> {
     let source_text = caption.source_text.trim().to_string();
     if source_text.is_empty() {
@@ -616,7 +659,9 @@ async fn translate_caption(
     ticket: TranslationTicket,
 ) {
     let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(1);
-    let mut on_stage = |stage: &PipelineStageEvent| emit_pipeline_stage(&app, &config, stage);
+    let generation = ticket.generation();
+    let mut on_stage =
+        |stage: &PipelineStageEvent| emit_pipeline_stage(&app, &config, stage, generation);
     let result = pipeline.complete_translation(&config, caption, &mut stages, &mut on_stage).await;
     handle_translation_result(&app, ticket, result);
     if let Some(state) = app.try_state::<AppState>() {
@@ -716,13 +761,30 @@ fn log_level_rank(level: &str) -> u8 {
 /// Emit one stage immediately for DebugPanel progressive rows.
 /// Always emits `pipeline:stage`. File/console detail respects `debug.logLevel`
 /// and includes I/O samples when `debug.verboseLogging` is on.
-fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStageEvent) {
+///
+/// `generation` is the capture generation this stage's work belongs to (the
+/// same value already threaded through the surrounding generation-atomic
+/// helpers for its command). Unlike a caption publish or a runtime status
+/// mutation, a stage row is diagnostics-only and append-only, so a stale
+/// generation is deliberately *not* gated out here — silently dropping a
+/// completed stage would itself be a silent-loss bug, the exact failure
+/// class this codebase is eliminating. Instead every retained row and live
+/// event is tagged with its generation so a debug consumer can tell a stale
+/// session's rows apart from the current one without losing them.
+fn emit_pipeline_stage(
+    app: &AppHandle,
+    config: &AppConfig,
+    stage: &PipelineStageEvent,
+    generation: u64,
+) {
+    let tagged = RecordedPipelineStage { capture_generation: generation, stage: stage.clone() };
+
     // Tauri events are delivered only to listeners that are already attached.
     // Retain the completed row first so opening DebugPanel after capture (or
     // during a fast local stage) can recover the same output/timing/error data
     // through get_debug_info.
     if let Some(state) = app.try_state::<AppState>() {
-        state.record_pipeline_stage(stage);
+        state.record_pipeline_stage(generation, stage);
     }
 
     // success → debug (rank 3); failure → error (rank 0)
@@ -738,20 +800,7 @@ fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStag
         if stage.ok {
             log::debug!(
                 target: "pipeline_stage",
-                "stage={} model={} ok=true duration_ms={} started_at={} ended_at={} utterance={} input_bytes={} output_bytes={}",
-                stage.stage,
-                stage.model_id,
-                stage.duration_ms,
-                stage.started_at,
-                stage.at,
-                stage.utterance_id,
-                input_bytes,
-                output_bytes
-            );
-        } else {
-            log::error!(
-                target: "pipeline_stage",
-                "stage={} model={} ok=false duration_ms={} started_at={} ended_at={} utterance={} input_bytes={} output_bytes={} error_present={}",
+                "stage={} model={} ok=true duration_ms={} started_at={} ended_at={} utterance={} input_bytes={} output_bytes={} generation={}",
                 stage.stage,
                 stage.model_id,
                 stage.duration_ms,
@@ -760,11 +809,26 @@ fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStag
                 stage.utterance_id,
                 input_bytes,
                 output_bytes,
-                stage.error.is_some()
+                generation
+            );
+        } else {
+            log::error!(
+                target: "pipeline_stage",
+                "stage={} model={} ok=false duration_ms={} started_at={} ended_at={} utterance={} input_bytes={} output_bytes={} error_present={} generation={}",
+                stage.stage,
+                stage.model_id,
+                stage.duration_ms,
+                stage.started_at,
+                stage.at,
+                stage.utterance_id,
+                input_bytes,
+                output_bytes,
+                stage.error.is_some(),
+                generation
             );
         }
     }
-    if let Err(error) = app.emit("pipeline:stage", stage) {
+    if let Err(error) = app.emit("pipeline:stage", &tagged) {
         log::warn!("could not emit pipeline:stage: {error}");
     }
 }
@@ -1134,6 +1198,10 @@ pub async fn get_debug_info(
         // queue. Expose this alongside the frontend drop diagnostics so a
         // single debug view can explain missing output without log scraping.
         "translationRetired": state.translation_retired_count(),
+        // Parapper turn outputs dropped because their enqueue-time capture
+        // generation had already been superseded before this command
+        // processed them. Companion counter to `translationRetired` above.
+        "parapperOutputSuperseded": state.parapper_output_superseded_count(),
         "services": services,
         "sidecars": sidecars,
         "modelsDir": models_dir.display().to_string(),
@@ -1220,12 +1288,14 @@ pub async fn export_debug_logs(
 mod tests {
     use super::{
         capture_is_active, ensure_overlay_window, observe_http_empty_asr,
-        persistent_asr_loss_message, publish_source_caption_gated, redact_runtime_text,
-        sanitize_debug_json, sanitize_export_body, source_caption_payload,
-        validate_overlay_frame_dimensions, SourceCaptionInput,
+        parapper_output_generation_is_current, persistent_asr_loss_message,
+        publish_source_caption_gated, redact_runtime_text, sanitize_debug_json,
+        sanitize_export_body, source_caption_payload, validate_overlay_frame_dimensions,
+        SourceCaptionInput,
     };
     use crate::config::AppConfig;
     use crate::output::OutputStatus;
+    use crate::pipeline::ParapperRecognitionInput;
     use crate::state::{AppState, ExpectedEmptyAsrResult, ASR_EMPTY_RESULT_WINDOW};
 
     #[test]
@@ -1451,6 +1521,93 @@ mod tests {
         .expect("legacy bridge payloads must still deserialize");
 
         assert_eq!(input.capture_generation, None);
+    }
+
+    #[test]
+    fn parapper_recognition_input_defaults_capture_generation_to_none_for_legacy_payloads() {
+        // Older sidecar/queue producers never send captureGeneration; the
+        // command must still deserialize their payload and fall back to a
+        // fresh current-generation read (see `normalize_parapper_output`).
+        let input: ParapperRecognitionInput = serde_json::from_value(serde_json::json!({
+            "text": "こんにちは",
+            "sessionId": "socket-session",
+            "turnSessionId": 1,
+            "turnId": 1,
+            "revision": 0,
+            "segmentId": 1,
+            "isFinal": false,
+        }))
+        .expect("legacy Parapper payloads must still deserialize");
+
+        assert_eq!(input.capture_generation, None);
+    }
+
+    #[test]
+    fn parapper_recognition_input_captures_enqueue_time_generation_when_present() {
+        let input: ParapperRecognitionInput = serde_json::from_value(serde_json::json!({
+            "text": "こんにちは",
+            "sessionId": "socket-session",
+            "turnSessionId": 1,
+            "turnId": 1,
+            "revision": 0,
+            "segmentId": 1,
+            "isFinal": false,
+            "captureGeneration": 4,
+        }))
+        .expect("Parapper payloads carrying an enqueue-time generation must deserialize");
+
+        assert_eq!(input.capture_generation, Some(4));
+    }
+
+    #[test]
+    fn parapper_output_without_generation_is_always_current() {
+        // A legacy caller that never captured an enqueue-time generation must
+        // never be treated as superseded; this preserves the historical
+        // current-generation-read behavior exactly.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        assert!(parapper_output_generation_is_current(&state, None));
+        state.begin_capture_generation();
+        assert!(parapper_output_generation_is_current(&state, None));
+    }
+
+    #[test]
+    fn parapper_output_generation_gate_drops_a_superseded_enqueue_time_generation() {
+        // Pins the enqueue-time generation-ownership fix: an item enqueued
+        // under session N (captured at enqueue time, not re-read at dequeue)
+        // must be recognized as stale once a Stop+Start bumps the generation
+        // to N+1, even though it is only now reaching this command.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let enqueued_generation = state.current_capture_generation();
+        assert!(parapper_output_generation_is_current(&state, Some(enqueued_generation)));
+
+        state.begin_capture_generation();
+        let live_generation = state.current_capture_generation();
+        assert_ne!(enqueued_generation, live_generation);
+        assert!(
+            !parapper_output_generation_is_current(&state, Some(enqueued_generation)),
+            "an item queued for a superseded generation must be dropped, not processed"
+        );
+        assert!(parapper_output_generation_is_current(&state, Some(live_generation)));
+    }
+
+    #[test]
+    fn superseded_parapper_output_drop_is_counted_for_diagnostics() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        assert_eq!(state.parapper_output_superseded_count(), 0);
+        state.begin_capture_generation();
+        let enqueued_generation = state.current_capture_generation();
+        state.begin_capture_generation();
+
+        // Mirrors what `normalize_parapper_output` does on the drop path: it
+        // is the caller's responsibility to count a drop the gate reports.
+        assert!(!parapper_output_generation_is_current(&state, Some(enqueued_generation)));
+        state.record_parapper_output_superseded();
+
+        assert_eq!(state.parapper_output_superseded_count(), 1);
     }
 
     fn source_caption_with_generation(id: &str) -> (AppState, crate::pipeline::CaptionPayload) {
