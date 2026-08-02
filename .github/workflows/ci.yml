@@ -39,6 +39,19 @@ jobs:
           set -euo pipefail
           rustup toolchain install 1.90.0 --profile minimal --no-self-update
           rustup component add --toolchain 1.90.0 rustfmt clippy
+      - name: Install Linux desktop build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            patchelf
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run format:check
