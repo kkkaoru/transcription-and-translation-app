@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import {
   buildPortableDictionaryArchive,
+  packPortableDictionary,
   verifyPortableDictionaryArchive,
 } from "./build-azookey-dictionary.mjs";
 
@@ -33,9 +35,29 @@ copyFileSync(source, destination);
 console.log(`Built ${destination}`);
 const dictionaryRoot = resolve(root, "submodules/azooKey_dictionary_storage/Dictionary");
 const dictionaryAvailable = existsSync(resolve(dictionaryRoot, "louds/charID.chid"));
-const dictionary = dictionaryAvailable
-  ? buildPortableDictionaryArchive()
-  : verifyPortableDictionaryArchive();
+let dictionary;
+if (!dictionaryAvailable) {
+  dictionary = verifyPortableDictionaryArchive();
+} else {
+  // Keep the checked-in gzip as the canonical distribution artifact. Deflate
+  // output can differ between Node/zlib versions even when the packed source
+  // bytes are identical, so do not rewrite the tracked archive on every CI
+  // typecheck. A raw-byte mismatch still regenerates the archive and makes the
+  // asset hash check fail until the intentional dictionary update is recorded.
+  const packedSource = packPortableDictionary(dictionaryRoot);
+  let packedArchive;
+  try {
+    packedArchive = gunzipSync(
+      readFileSync(resolve(root, "apps/cloudflare-worker-server/public/azookey/system.azkdict.gz")),
+    );
+  } catch {
+    packedArchive = null;
+  }
+  dictionary =
+    packedArchive && Buffer.compare(packedSource, packedArchive) === 0
+      ? verifyPortableDictionaryArchive()
+      : buildPortableDictionaryArchive();
+}
 if (!dictionaryAvailable) {
   console.warn(
     "AzooKey dictionary submodule is not initialized; using the verified checked-in archive. " +

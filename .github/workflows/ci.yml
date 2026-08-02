@@ -85,8 +85,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        if: runner.os == 'macOS'
         with:
           submodules: recursive
+      - uses: actions/checkout@v4
+        if: runner.os == 'Windows'
+        with:
+          # Desktop sidecars are built from tracked workspace sources. The
+          # optional AzooKey/Parapper source submodules contain nested paths
+          # beyond Windows MAX_PATH and are not needed by this job.
+          submodules: false
       - uses: oven-sh/setup-bun@v2
         with:
           # Keep this in lock-step with package.json's packageManager field.
