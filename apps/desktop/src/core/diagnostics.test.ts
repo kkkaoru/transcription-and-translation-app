@@ -35,6 +35,19 @@ describe("diagnostic event log", () => {
     );
   });
 
+  it("redacts credential-shaped diagnostic details before UI retention", () => {
+    const entry = pushDiagnosticEvent(
+      "error",
+      "request failed Authorization: Bearer abc.def.ghi",
+      "https://example.test/?access_token=top-secret",
+      { mirrorStructured: false },
+    );
+
+    expect(entry.message).not.toContain("abc.def.ghi");
+    expect(entry.detail).not.toContain("top-secret");
+    expect(entry.detail).toContain("[REDACTED]");
+  });
+
   it("notifies subscribers for additions and clears without coupling producers", () => {
     const listener = vi.fn();
     const throwingListener = vi.fn(() => {

@@ -1,4 +1,5 @@
 use crate::audio::{pcm_base64_to_wav, AudioChunk};
+use crate::browser_source;
 use crate::config::AppConfig;
 use crate::gateway;
 use crate::macos;
@@ -69,6 +70,10 @@ pub async fn save_config(
     state: State<'_, AppState>,
     config: AppConfig,
 ) -> Result<(), String> {
+    // Keep the full save transaction in order. Model reconciliation is async;
+    // without a single guard, an older save can finish after a newer save and
+    // overwrite the persisted config and live browser/native output state.
+    let _save_guard = state.config_save_lock.lock().await;
     config.validate()?;
     // Raw Parapper and Web Speech do not execute the local normalizer or
     // translator. Do not make saving a mode selection depend on downloading
@@ -99,6 +104,16 @@ pub async fn save_config(
     *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
     *state.native_output.lock().map_err(|_| "native output lock poisoned".to_string())? =
         native_output;
+    // The OBS Browser Source fallback is reconciled live so the settings
+    // toggle applies without restarting the app. Bind failures are logged and
+    // leave the previous state untouched; they never fail the save itself.
+    browser_source::reconcile(&app, &config);
+    // A native worker can become available after a transient startup failure.
+    // Ensure the hidden publisher webview is mounted after every successful
+    // native-output replacement as well as during initial app setup.
+    if let Err(error) = ensure_native_overlay(&app, &config, &native_output_kind) {
+        log::warn!("could not start hidden native overlay renderer: {error}");
+    }
     let next_status = {
         let mut status = state.status.lock().map_err(|_| "status lock poisoned".to_string())?;
         status.native_output = native_output_kind;
@@ -1074,6 +1089,53 @@ fn sanitize_jsonl_line(line: &str, parsed_any: &mut bool) -> String {
         .unwrap_or_else(|_| redact_runtime_text(line))
 }
 
+fn create_overlay_window(
+    app: &AppHandle,
+    config: &AppConfig,
+    visible: bool,
+    native_renderer: bool,
+) -> Result<(), String> {
+    let url =
+        if native_renderer { "index.html?overlay=1&native=1" } else { "index.html?overlay=1" };
+    WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App(url.into()))
+        .title("Kotoba Beacon Overlay")
+        .inner_size(config.overlay.width as f64, config.overlay.height as f64)
+        .position(config.overlay.x as f64, config.overlay.y as f64)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(visible)
+        // Output dimensions are configured numerically. Keeping the overlay fixed
+        // prevents a user resize from desynchronizing the window and the native
+        // Spout2/Syphon frame dimensions.
+        .resizable(false)
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("could not create overlay: {error}"))
+}
+
+/// Start the caption-only overlay renderer when a native transport is active.
+///
+/// Spout2 and Syphon publish frames from the overlay webview's canvas. The
+/// native sender itself can be ready at app setup, but no caption frame can
+/// reach OBS until that webview is mounted. Keep this renderer hidden so native
+/// output does not add a desktop window; the existing Open Overlay action shows
+/// the same window when a user wants to inspect it locally.
+pub(crate) fn ensure_native_overlay(
+    app: &AppHandle,
+    config: &AppConfig,
+    native_output_kind: &str,
+) -> Result<(), String> {
+    if !matches!(native_output_kind, "spout2" | "syphon") {
+        return Ok(());
+    }
+    if app.get_webview_window("overlay").is_some() {
+        return Ok(());
+    }
+    create_overlay_window(app, config, false, true)
+}
+
 #[tauri::command]
 pub fn open_overlay(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("overlay") {
@@ -1082,21 +1144,7 @@ pub fn open_overlay(app: AppHandle, state: State<'_, AppState>) -> Result<(), St
         return Ok(());
     }
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
-    WebviewWindowBuilder::new(&app, "overlay", WebviewUrl::App("index.html?overlay=1".into()))
-        .title("Kotoba Beacon Overlay")
-        .inner_size(config.overlay.width as f64, config.overlay.height as f64)
-        .position(config.overlay.x as f64, config.overlay.y as f64)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        // Output dimensions are configured numerically. Keeping the overlay fixed
-        // prevents a user resize from desynchronizing the window and the native
-        // Spout2/Syphon frame dimensions.
-        .resizable(false)
-        .build()
-        .map(|_| ())
-        .map_err(|error| format!("could not create overlay: {error}"))
+    create_overlay_window(&app, &config, true, false)
 }
 
 #[tauri::command]

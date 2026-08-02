@@ -1,5 +1,6 @@
 import type {
   AppConfig,
+  BrowserSourceConfig,
   CaptionTextStyle,
   ModelCatalog,
   ModelInfo,
@@ -7,6 +8,12 @@ import type {
   RuntimeStatus,
 } from "./types";
 import { isWebSpeechRecognitionSupported } from "./webSpeechRecognition";
+
+/** Fixed loopback port for the OBS Browser Source fallback (macOS arm64). */
+export const DEFAULT_BROWSER_SOURCE_PORT = 1_421;
+/** Browser source ports must stay above the privileged range. */
+export const BROWSER_SOURCE_PORT_MIN = 1_024;
+export const BROWSER_SOURCE_PORT_MAX = 65_535;
 
 /** Persisted recognition paths exposed by the debug controls. */
 export const RECOGNITION_MODES = [
@@ -261,6 +268,10 @@ export const createDefaultConfig = (): AppConfig => ({
       color: "#bfe8ff",
       cullingColor: "#07121d",
     }),
+    browserSource: {
+      enabled: false,
+      port: DEFAULT_BROWSER_SOURCE_PORT,
+    },
   },
   debug: {
     verboseLogging: false,
@@ -396,6 +407,27 @@ export const migrateSilenceGateDb = (gateDb: number | undefined): number => {
   return gateDb;
 };
 
+/**
+ * Normalize a legacy/malformed `browserSource` block onto the documented
+ * defaults. A missing block (pre-fallback configs) stays disabled on the
+ * documented port; an out-of-range port falls back to the default port.
+ */
+export const mergeBrowserSource = (
+  base: BrowserSourceConfig | undefined,
+  input: Partial<BrowserSourceConfig> | undefined,
+): BrowserSourceConfig => {
+  const port = input?.port;
+  const validPort =
+    typeof port === "number" &&
+    Number.isInteger(port) &&
+    port >= BROWSER_SOURCE_PORT_MIN &&
+    port <= BROWSER_SOURCE_PORT_MAX;
+  return {
+    enabled: typeof input?.enabled === "boolean" ? input.enabled : (base?.enabled ?? false),
+    port: validPort ? port : (base?.port ?? DEFAULT_BROWSER_SOURCE_PORT),
+  };
+};
+
 export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   const base = createDefaultConfig();
   const input = candidate;
@@ -434,6 +466,7 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
       ...input.overlay,
       source: { ...base.overlay.source, ...input.overlay?.source },
       translation: { ...base.overlay.translation, ...input.overlay?.translation },
+      browserSource: mergeBrowserSource(base.overlay.browserSource, input.overlay?.browserSource),
     },
     debug: { ...base.debug, ...input.debug },
   };

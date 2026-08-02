@@ -79,6 +79,8 @@ vi.mock("../core/bridge", () => ({
       },
       translationRetired: 4,
       parapperOutputSuperseded: 2,
+      sourceCaptionStaleDropped: 3,
+      unfencedCaptionAccepted: 5,
     }),
     listModelStatus: async () => [],
   },
@@ -244,6 +246,12 @@ describe("DebugPanel pipeline stages", () => {
     expect(
       drops?.querySelector('[data-testid="debug-parapper-output-superseded"]')?.textContent,
     ).toContain("2");
+    expect(
+      drops?.querySelector('[data-testid="debug-source-caption-stale-dropped"]')?.textContent,
+    ).toContain("3");
+    expect(
+      drops?.querySelector('[data-testid="debug-unfenced-caption-accepted"]')?.textContent,
+    ).toContain("5");
     expect(
       drops?.querySelector('[data-testid="debug-pipeline-drop-reasons"]')?.textContent,
     ).toContain("silence-gate");

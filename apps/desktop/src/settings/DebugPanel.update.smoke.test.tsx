@@ -107,6 +107,7 @@ describe("DebugPanel updater/runtime diagnostics", () => {
   beforeEach(() => {
     localStorage.clear();
     localStorage.setItem("caption-bridge.ui-locale.v1", "en");
+    window.history.replaceState({}, "", "/debug?access_token=secret#fragment");
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -118,6 +119,7 @@ describe("DebugPanel updater/runtime diagnostics", () => {
       await Promise.resolve();
     });
     container.remove();
+    window.history.replaceState({}, "", "/");
     localStorage.clear();
   });
 

@@ -37,9 +37,15 @@ const disposeSafely = (dispose: () => void): void => {
   }
 };
 
+const isNativeOverlayRoute = (): boolean =>
+  new URLSearchParams(window.location.search).get("native") === "1";
+
 export const OverlayApp = () => {
+  const nativeOverlay = isNativeOverlayRoute();
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
-  const [caption, setCaption] = useState<CaptionPayload>(createPreviewCaption);
+  const [caption, setCaption] = useState<CaptionPayload>(() =>
+    nativeOverlay ? createEmptyCaption() : createPreviewCaption(),
+  );
 
   useEffect(() => {
     document.documentElement.classList.add("overlay-document");

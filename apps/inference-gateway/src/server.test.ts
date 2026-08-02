@@ -408,6 +408,17 @@ describe("inference gateway HTTP contract", () => {
 
   it("propagates a cancelled HTTP request to the ASR transcriber", async () => {
     const observedSignals: Array<AbortSignal | undefined> = [];
+    const records: Array<Record<string, unknown>> = [];
+    const info = vi.spyOn(console, "info").mockImplementation((line) => {
+      if (typeof line !== "string") {
+        return;
+      }
+      try {
+        records.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // Ignore unrelated non-JSON console output.
+      }
+    });
     const transcribe = vi.fn((_pcm: Uint8Array, signal?: AbortSignal) => {
       observedSignals.push(signal);
       return new Promise<string>((resolve) => {
@@ -433,6 +444,23 @@ describe("inference gateway HTTP contract", () => {
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+    await vi.waitFor(() =>
+      expect(
+        records.some(
+          (record) =>
+            record["event"] === "http_request_failure" &&
+            record["status"] === 499 &&
+            record["error_code"] === "client_closed_request",
+        ),
+      ).toBe(true),
+    );
+    expect(records.filter((record) => record["event"] === "http_request_end").at(-1)).toMatchObject(
+      {
+        status: 499,
+        outcome: "failed",
+      },
+    );
+    info.mockRestore();
   });
 
   it("propagates correlation identities through ASR and HTTP lifecycle JSON", async () => {

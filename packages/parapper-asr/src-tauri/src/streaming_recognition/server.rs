@@ -7,7 +7,7 @@ use std::{
         mpsc::{self, Receiver, TryRecvError},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -17,6 +17,7 @@ use tungstenite::{
     handshake::server::{ErrorResponse, Request, Response},
     http::StatusCode,
 };
+use uuid::Uuid;
 
 use super::{
     backend::{
@@ -44,6 +45,103 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_QUEUED_AUDIO_SAMPLES: usize = ASR_SAMPLE_RATE as usize * 2;
+const MAX_CORRELATION_VALUE_CHARS: usize = 256;
+const RECOGNITION_PATH: &str = "/ws/recognition";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(clippy::struct_field_names, reason = "wire correlation fields use the shared *_id schema")]
+struct ConnectionCorrelation {
+    request_id: String,
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    parent_agent_id: Option<String>,
+}
+
+impl ConnectionCorrelation {
+    fn from_request(request: &Request) -> Self {
+        Self {
+            request_id: header_value(request, "x-request-id")
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            session_id: header_value(request, "x-session-id"),
+            agent_id: header_value(request, "x-agent-id"),
+            parent_agent_id: header_value(request, "x-parent-agent-id"),
+        }
+    }
+
+    fn for_session(&self, session_id: &str) -> Self {
+        Self {
+            session_id: self.session_id.clone().or_else(|| Some(session_id.to_string())),
+            ..self.clone()
+        }
+    }
+}
+
+fn header_value(request: &Request, name: &str) -> Option<String> {
+    request
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().chars().take(MAX_CORRELATION_VALUE_CHARS).collect::<String>())
+        .filter(|value| !value.is_empty())
+}
+
+fn request_start_event(
+    correlation: &ConnectionCorrelation,
+    peer: Option<SocketAddr>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event": "http_request_start",
+        "request_id": correlation.request_id,
+        "session_id": correlation.session_id,
+        "agent_id": correlation.agent_id,
+        "parent_agent_id": correlation.parent_agent_id,
+        "method": "GET",
+        "path": RECOGNITION_PATH,
+        "peer": peer,
+        "outcome": "started",
+    })
+}
+
+fn request_end_event(
+    correlation: &ConnectionCorrelation,
+    peer: Option<SocketAddr>,
+    status: Option<u16>,
+    reason: &str,
+    elapsed: Duration,
+) -> serde_json::Value {
+    let failed = status.is_none_or(|status| status >= 400)
+        || !matches!(reason, "done" | "cancelled" | "client_disconnected");
+    serde_json::json!({
+        "event": "http_request_end",
+        "request_id": correlation.request_id,
+        "session_id": correlation.session_id,
+        "agent_id": correlation.agent_id,
+        "parent_agent_id": correlation.parent_agent_id,
+        "method": "GET",
+        "path": RECOGNITION_PATH,
+        "peer": peer,
+        "status": status,
+        "outcome": if failed { "failed" } else { "completed" },
+        "reason": reason,
+        "duration_ms": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
+fn connection_event(
+    event: &str,
+    correlation: &ConnectionCorrelation,
+    peer: Option<SocketAddr>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event": event,
+        "request_id": correlation.request_id,
+        "session_id": correlation.session_id,
+        "agent_id": correlation.agent_id,
+        "parent_agent_id": correlation.parent_agent_id,
+        "path": RECOGNITION_PATH,
+        "peer": peer,
+    })
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct StreamingRecognitionServerConfig {
@@ -182,23 +280,88 @@ fn handle_connection(
         return;
     }
     let peer = stream.peer_addr().ok();
+    let request_started = Instant::now();
     let api_key = config.api_key.clone();
+    let handshake_correlation = Arc::new(std::sync::Mutex::new(None));
+    let rejection_status = Arc::new(std::sync::Mutex::new(None));
+    let callback_correlation = handshake_correlation.clone();
+    let callback_rejection_status = rejection_status.clone();
     let mut websocket = match tungstenite::accept_hdr(stream, move |request: &Request, response| {
-        validate_upgrade(request, response, api_key.as_deref())
+        let candidate = ConnectionCorrelation::from_request(request);
+        log::info!("{}", request_start_event(&candidate, peer));
+        *callback_correlation.lock().expect("handshake correlation lock") = Some(candidate);
+        let result = validate_upgrade(request, response, api_key.as_deref());
+        if let Err(error) = &result {
+            *callback_rejection_status.lock().expect("rejection status lock") =
+                Some(error.status());
+        }
+        result
     }) {
         Ok(websocket) => websocket,
         Err(error) => {
+            let correlation = handshake_correlation
+                .lock()
+                .expect("handshake correlation lock")
+                .clone()
+                .unwrap_or_else(|| ConnectionCorrelation {
+                    request_id: Uuid::new_v4().to_string(),
+                    session_id: None,
+                    agent_id: None,
+                    parent_agent_id: None,
+                });
+            let status = rejection_status
+                .lock()
+                .expect("rejection status lock")
+                .map(|status| status.as_u16());
             log::debug!("Streaming recognition upgrade rejected: {error}");
+            log::info!(
+                "{}",
+                request_end_event(
+                    &correlation,
+                    peer,
+                    status,
+                    "upgrade_rejected",
+                    request_started.elapsed(),
+                )
+            );
             return;
         }
     };
+    let correlation =
+        handshake_correlation.lock().expect("handshake correlation lock").clone().unwrap_or_else(
+            || ConnectionCorrelation {
+                request_id: Uuid::new_v4().to_string(),
+                session_id: None,
+                agent_id: None,
+                parent_agent_id: None,
+            },
+        );
     if websocket.get_ref().set_read_timeout(Some(READ_POLL_INTERVAL)).is_err() {
+        log::info!(
+            "{}",
+            request_end_event(
+                &correlation,
+                peer,
+                None,
+                "socket_setup_failed",
+                request_started.elapsed(),
+            )
+        );
         return;
     }
-    log::info!("Streaming recognition client connected: {peer:?}");
-    run_session(&mut websocket, config.output_mode, backend, shutdown);
+    log::info!("{}", connection_event("recognition_connection_start", &correlation, peer));
+    let (reason, session_id) =
+        run_session(&mut websocket, config.output_mode, backend, shutdown, peer, &correlation);
     finish_close_handshake(&mut websocket);
-    log::info!("Streaming recognition client disconnected: {peer:?}");
+    log::info!("{}", connection_event("recognition_connection_end", &correlation, peer));
+    let correlation = session_id
+        .as_deref()
+        .map(|session_id| correlation.for_session(session_id))
+        .unwrap_or(correlation);
+    log::info!(
+        "{}",
+        request_end_event(&correlation, peer, Some(101), reason, request_started.elapsed(),)
+    );
 }
 
 fn finish_close_handshake(websocket: &mut WebSocket<TcpStream>) {
@@ -326,33 +489,56 @@ fn accept_output(
     accepted
 }
 
-#[expect(clippy::too_many_lines, reason = "protocol event loop keeps state transitions together")]
 fn run_session(
     websocket: &mut WebSocket<TcpStream>,
     output_mode: NetworkOutputMode,
     backend: &Arc<dyn RecognitionBackend>,
     shutdown: &AtomicBool,
-) {
+    peer: Option<SocketAddr>,
+    correlation: &ConnectionCorrelation,
+) -> (&'static str, Option<String>) {
+    let started = Instant::now();
+    let result = run_session_loop(websocket, output_mode, backend, shutdown, peer, correlation);
+    if let Some(session_id) = result.1.as_deref() {
+        let session_correlation = correlation.for_session(session_id);
+        log::info!(
+            "{}",
+            session_end_event(&session_correlation, peer, result.0, started.elapsed())
+        );
+    }
+    result
+}
+
+#[expect(clippy::too_many_lines, reason = "protocol event loop keeps state transitions together")]
+fn run_session_loop(
+    websocket: &mut WebSocket<TcpStream>,
+    output_mode: NetworkOutputMode,
+    backend: &Arc<dyn RecognitionBackend>,
+    shutdown: &AtomicBool,
+    peer: Option<SocketAddr>,
+    correlation: &ConnectionCorrelation,
+) -> (&'static str, Option<String>) {
     let mut protocol = SessionProtocol::new();
     let mut active: Option<ActiveConnectionSession> = None;
+    let mut logged_session_id: Option<String> = None;
 
     loop {
         if let Some(session) = active.as_mut()
-            && send_pending_events(websocket, session).is_err()
+            && send_pending_events(websocket, session, correlation).is_err()
         {
             cancel_recognition_in_background(session);
-            return;
+            return ("send_failed", logged_session_id);
         }
         if let Some(result) = active.as_mut().and_then(poll_drain_result) {
             let mut session = active.take().expect("polled active session");
             join_drain_thread(&mut session);
-            if send_pending_events(websocket, &mut session).is_err() {
-                return;
+            if send_pending_events(websocket, &mut session, correlation).is_err() {
+                return ("send_failed", logged_session_id);
             }
-            match result {
+            let reason = match result {
                 RecognitionShutdownResult::Completed => {
                     if protocol.mark_done().is_err() {
-                        return;
+                        return ("protocol_error", logged_session_id);
                     }
                     let _ = send_message(
                         websocket,
@@ -361,6 +547,7 @@ fn run_session(
                             session_id: session.session_id,
                         },
                     );
+                    "done"
                 }
                 RecognitionShutdownResult::TimedOut => {
                     let _ = send_message(
@@ -371,6 +558,7 @@ fn run_session(
                             "recognition drain exceeded its time limit",
                         ),
                     );
+                    "drain_timeout"
                 }
                 RecognitionShutdownResult::Cancelled => {
                     let _ = send_message(
@@ -381,9 +569,10 @@ fn run_session(
                             "recognition drain was cancelled",
                         ),
                     );
+                    "drain_cancelled"
                 }
-            }
-            return;
+            };
+            return (reason, logged_session_id);
         }
         if shutdown.load(Ordering::Acquire) {
             if let Some(session) = active.as_mut() {
@@ -392,7 +581,7 @@ fn run_session(
                     active_recognition.cancel();
                 }
                 join_drain_thread(session);
-                let _ = send_pending_events(websocket, session);
+                let _ = send_pending_events(websocket, session, correlation);
                 let _ = send_message(
                     websocket,
                     &ServerMessage::error(
@@ -402,7 +591,7 @@ fn run_session(
                     ),
                 );
             }
-            return;
+            return ("server_stopping", logged_session_id);
         }
 
         match websocket.read() {
@@ -412,11 +601,13 @@ fn run_session(
                     Err(error) => {
                         send_protocol_error(websocket, active.as_ref(), &error);
                         cancel_active(&mut active);
-                        return;
+                        return ("protocol_error", logged_session_id);
                     }
                 };
                 match action {
                     ProtocolAction::Start { session_id, audio, .. } => {
+                        logged_session_id = Some(session_id.clone());
+                        let session_correlation = correlation.for_session(&session_id);
                         let (input_sender, source) = RunningInputSource::bounded_channel(
                             audio.sample_rate,
                             MAX_QUEUED_AUDIO_SAMPLES,
@@ -431,11 +622,12 @@ fn run_session(
                                     drain_join: None,
                                     emitted_outputs: HashMap::new(),
                                 });
+                                log::info!("{}", session_start_event(&session_correlation, peer));
                                 if send_message(websocket, &ServerMessage::ready(&session_id))
                                     .is_err()
                                 {
                                     cancel_active(&mut active);
-                                    return;
+                                    return ("send_failed", logged_session_id);
                                 }
                             }
                             Err(error) => {
@@ -444,7 +636,7 @@ fn run_session(
                                     websocket,
                                     &ServerMessage::error(Some(&session_id), code, message),
                                 );
-                                return;
+                                return ("start_failed", logged_session_id);
                             }
                         }
                     }
@@ -466,7 +658,7 @@ fn run_session(
                                 },
                             );
                         }
-                        return;
+                        return ("cancelled", logged_session_id);
                     }
                     ProtocolAction::Pong { request_id } => {
                         if send_message(
@@ -476,7 +668,7 @@ fn run_session(
                         .is_err()
                         {
                             cancel_active(&mut active);
-                            return;
+                            return ("send_failed", logged_session_id);
                         }
                     }
                     ProtocolAction::Audio { .. } => {}
@@ -488,13 +680,13 @@ fn run_session(
                 if let Err(error) = protocol.on_binary(bytes.len()) {
                     send_protocol_error(websocket, active.as_ref(), &error);
                     cancel_active(&mut active);
-                    return;
+                    return ("protocol_error", logged_session_id);
                 }
                 let Some(session) = active.as_ref() else {
-                    return;
+                    return ("connection_error", logged_session_id);
                 };
                 let Some(input_sender) = session.input_sender.as_ref() else {
-                    return;
+                    return ("connection_error", logged_session_id);
                 };
                 match input_sender.try_send(pcm_s16le_to_f32(&bytes)) {
                     Ok(()) => {}
@@ -508,7 +700,7 @@ fn run_session(
                             ),
                         );
                         cancel_active(&mut active);
-                        return;
+                        return ("audio_queue_overrun", logged_session_id);
                     }
                     Err(BoundedInputSendError::Disconnected) => {
                         let _ = send_message(
@@ -520,14 +712,14 @@ fn run_session(
                             ),
                         );
                         cancel_active(&mut active);
-                        return;
+                        return ("input_disconnected", logged_session_id);
                     }
                 }
             }
             Ok(Message::Close(_))
             | Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
                 cancel_active(&mut active);
-                return;
+                return ("client_disconnected", logged_session_id);
             }
             Ok(_) => {}
             Err(tungstenite::Error::Io(error))
@@ -537,7 +729,7 @@ fn run_session(
                 ) => {}
             Err(_) => {
                 cancel_active(&mut active);
-                return;
+                return ("connection_error", logged_session_id);
             }
         }
     }
@@ -614,23 +806,28 @@ fn poll_drain_result(session: &mut ActiveConnectionSession) -> Option<Recognitio
 fn send_pending_events(
     websocket: &mut WebSocket<TcpStream>,
     session: &mut ActiveConnectionSession,
+    correlation: &ConnectionCorrelation,
 ) -> Result<(), tungstenite::Error> {
+    let session_correlation = correlation.for_session(&session.session_id);
     while let Ok(event) = session.recognition.event_receiver.try_recv() {
         match event {
-            RecognitionStreamEvent::SpeechStarted => send_message(
-                websocket,
-                &ServerMessage::SpeechStarted {
-                    version: PROTOCOL_VERSION,
-                    session_id: session.session_id.clone(),
-                },
-            )?,
+            RecognitionStreamEvent::SpeechStarted => {
+                log::info!("{}", turn_start_event(&session_correlation));
+                send_message(
+                    websocket,
+                    &ServerMessage::SpeechStarted {
+                        version: PROTOCOL_VERSION,
+                        session_id: session.session_id.clone(),
+                    },
+                )?;
+            }
             RecognitionStreamEvent::Output(output) => {
                 if !accept_output(&mut session.emitted_outputs, &output) {
-                    log::debug!(
-                        "ignored stale recognition output for session {}",
-                        session.session_id
-                    );
+                    log::debug!("{}", turn_skip_event(&session_correlation, &output));
                     continue;
+                }
+                if output.output.meta.is_final {
+                    log::info!("{}", turn_end_event(&session_correlation, &output));
                 }
                 send_message(websocket, &message_from_output(&session.session_id, output))?;
             }
@@ -704,6 +901,97 @@ fn source_language_code(language: AsrLanguage) -> &'static str {
         AsrLanguage::English => "en",
         AsrLanguage::EuropeanMultilingual | AsrLanguage::Multilingual => "mul",
     }
+}
+
+/// Structured JSON lifecycle payloads for operators. The logger prefix is
+/// intentionally kept outside these values so tests and downstream adapters can
+/// validate the event payload independently of the selected log target.
+fn session_start_event(
+    correlation: &ConnectionCorrelation,
+    peer: Option<SocketAddr>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event": "recognition_session_start",
+        "request_id": correlation.request_id,
+        "session_id": correlation.session_id,
+        "agent_id": correlation.agent_id,
+        "parent_agent_id": correlation.parent_agent_id,
+        "peer": peer,
+    })
+}
+
+fn session_end_event(
+    correlation: &ConnectionCorrelation,
+    peer: Option<SocketAddr>,
+    reason: &str,
+    elapsed: Duration,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event": "recognition_session_end",
+        "request_id": correlation.request_id,
+        "session_id": correlation.session_id,
+        "agent_id": correlation.agent_id,
+        "parent_agent_id": correlation.parent_agent_id,
+        "peer": peer,
+        "reason": reason,
+        "elapsed_ms": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
+fn turn_start_event(correlation: &ConnectionCorrelation) -> serde_json::Value {
+    serde_json::json!({
+        "event": "recognition_turn_start",
+        "request_id": correlation.request_id,
+        "session_id": correlation.session_id,
+        "agent_id": correlation.agent_id,
+        "parent_agent_id": correlation.parent_agent_id,
+    })
+}
+
+fn turn_end_event(
+    correlation: &ConnectionCorrelation,
+    stream_output: &crate::recognition::control::input::RecognitionStreamOutput,
+) -> serde_json::Value {
+    let source = &stream_output.output.meta.source;
+    let audio_duration_ms =
+        u64::try_from(stream_output.output.phrase.len()).unwrap_or(u64::MAX).saturating_mul(1_000)
+            / u64::from(ASR_SAMPLE_RATE);
+    serde_json::json!({
+        "event": "recognition_turn_end",
+        "request_id": correlation.request_id,
+        "session_id": correlation.session_id,
+        "agent_id": correlation.agent_id,
+        "parent_agent_id": correlation.parent_agent_id,
+        "turn_session_id": source.turn_session_id,
+        "turn_id": source.turn_id,
+        "revision": source.turn_revision,
+        "output_sequence": source.output_sequence,
+        "segment_id": source.segment_id,
+        "previous_segment_id": source.previous_segment_id,
+        "audio_duration_ms": audio_duration_ms,
+        "elapsed_ms": u64::try_from(stream_output.output.elapsed_millis).unwrap_or(u64::MAX),
+    })
+}
+
+fn turn_skip_event(
+    correlation: &ConnectionCorrelation,
+    stream_output: &crate::recognition::control::input::RecognitionStreamOutput,
+) -> serde_json::Value {
+    let source = &stream_output.output.meta.source;
+    serde_json::json!({
+        "event": "recognition_turn_skip",
+        "request_id": correlation.request_id,
+        "session_id": correlation.session_id,
+        "agent_id": correlation.agent_id,
+        "parent_agent_id": correlation.parent_agent_id,
+        "turn_session_id": source.turn_session_id,
+        "turn_id": source.turn_id,
+        "revision": source.turn_revision,
+        "output_sequence": source.output_sequence,
+        "segment_id": source.segment_id,
+        "is_final": stream_output.output.meta.is_final,
+        "reason": "stale_output",
+    })
 }
 
 fn send_protocol_error(
@@ -1012,6 +1300,166 @@ mod tests {
     }
 
     #[test]
+    fn session_lifecycle_log_events_are_json_with_correlation_ids() {
+        let peer: SocketAddr = "127.0.0.1:53012".parse().unwrap();
+        let correlation = ConnectionCorrelation {
+            request_id: "request-1".to_string(),
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            parent_agent_id: Some("parent-1".to_string()),
+        };
+        assert_eq!(
+            request_start_event(&correlation, Some(peer)),
+            json!({
+                "event": "http_request_start",
+                "request_id": "request-1",
+                "session_id": "session-1",
+                "agent_id": "agent-1",
+                "parent_agent_id": "parent-1",
+                "method": "GET",
+                "path": "/ws/recognition",
+                "peer": "127.0.0.1:53012",
+                "outcome": "started",
+            })
+        );
+        assert_eq!(
+            session_start_event(&correlation, Some(peer)),
+            json!({
+                "event": "recognition_session_start",
+                "request_id": "request-1",
+                "session_id": "session-1",
+                "agent_id": "agent-1",
+                "parent_agent_id": "parent-1",
+                "peer": "127.0.0.1:53012",
+            })
+        );
+        assert_eq!(
+            turn_start_event(&correlation),
+            json!({
+                "event": "recognition_turn_start",
+                "request_id": "request-1",
+                "session_id": "session-1",
+                "agent_id": "agent-1",
+                "parent_agent_id": "parent-1",
+            })
+        );
+        assert_eq!(
+            session_end_event(&correlation, None, "done", Duration::from_millis(1_234)),
+            json!({
+                "event": "recognition_session_end",
+                "request_id": "request-1",
+                "session_id": "session-1",
+                "agent_id": "agent-1",
+                "parent_agent_id": "parent-1",
+                "peer": null,
+                "reason": "done",
+                "elapsed_ms": 1_234,
+            })
+        );
+        assert_eq!(
+            request_end_event(
+                &correlation,
+                Some(peer),
+                Some(101),
+                "done",
+                Duration::from_millis(1_234),
+            )["outcome"],
+            "completed"
+        );
+        assert_eq!(
+            request_end_event(
+                &correlation,
+                Some(peer),
+                None,
+                "handshake_failed",
+                Duration::from_millis(1),
+            )["outcome"],
+            "failed"
+        );
+        assert_eq!(
+            request_end_event(
+                &correlation,
+                Some(peer),
+                Some(101),
+                "protocol_error",
+                Duration::from_millis(1),
+            )["outcome"],
+            "failed"
+        );
+
+        let protocol_only = ConnectionCorrelation {
+            request_id: "request-2".to_string(),
+            session_id: None,
+            agent_id: None,
+            parent_agent_id: None,
+        };
+        assert_eq!(
+            protocol_only.for_session("protocol-session").session_id.as_deref(),
+            Some("protocol-session")
+        );
+        assert_eq!(
+            correlation.for_session("protocol-session").session_id.as_deref(),
+            Some("session-1")
+        );
+    }
+
+    #[test]
+    fn turn_log_events_carry_the_full_output_cursor_and_correlation() {
+        let correlation = ConnectionCorrelation {
+            request_id: "request-1".to_string(),
+            session_id: Some("session-1".to_string()),
+            agent_id: None,
+            parent_agent_id: None,
+        };
+        let final_output = RecognitionStreamOutput {
+            output: recognized_output(true),
+            source_text: None,
+            azookey_input_text: None,
+        };
+        assert_eq!(
+            turn_end_event(&correlation, &final_output),
+            json!({
+                "event": "recognition_turn_end",
+                "request_id": "request-1",
+                "session_id": "session-1",
+                "agent_id": null,
+                "parent_agent_id": null,
+                "turn_session_id": 7,
+                "turn_id": 3,
+                "revision": 2,
+                "output_sequence": 1,
+                "segment_id": 8,
+                "previous_segment_id": 7,
+                "audio_duration_ms": 1_280,
+                "elapsed_ms": 96,
+            })
+        );
+
+        let stale_output = RecognitionStreamOutput {
+            output: recognized_output(false),
+            source_text: None,
+            azookey_input_text: None,
+        };
+        assert_eq!(
+            turn_skip_event(&correlation, &stale_output),
+            json!({
+                "event": "recognition_turn_skip",
+                "request_id": "request-1",
+                "session_id": "session-1",
+                "agent_id": null,
+                "parent_agent_id": null,
+                "turn_session_id": 7,
+                "turn_id": 3,
+                "revision": 2,
+                "output_sequence": 1,
+                "segment_id": 8,
+                "is_final": false,
+                "reason": "stale_output",
+            })
+        );
+    }
+
+    #[test]
     fn real_socket_start_audio_stop_returns_ready_speech_final_and_done_in_order() {
         let server = start_test_server(FakeBackend::new(true), None);
         let (mut socket, _) = connect(server_url(&server)).unwrap();
@@ -1197,10 +1645,15 @@ mod tests {
             ))
             .unwrap();
 
-        assert_eq!(
-            read_json(&mut socket),
-            json!({"version": 1, "type": "pong", "request_id": "during-drain"})
-        );
+        let mut pong = None;
+        for _ in 0..4 {
+            let message = read_json(&mut socket);
+            if message["type"] == "pong" {
+                pong = Some(message);
+                break;
+            }
+        }
+        assert_eq!(pong, Some(json!({"version": 1, "type": "pong", "request_id": "during-drain"})));
     }
 
     #[test]

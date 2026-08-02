@@ -2,6 +2,7 @@
 
 mod audio;
 mod azookey_runtime;
+mod browser_source;
 mod commands;
 mod config;
 mod gateway;
@@ -57,9 +58,25 @@ pub fn run() {
             }
             macos::configure_foreground_activation(app.handle())?;
             let config = load_config(app.handle()).unwrap_or_default();
-            app.manage(AppState::new(config.clone(), output::runtime_output()));
+            let state = AppState::new(config.clone(), output::runtime_output());
+            let native_output_kind = state
+                .status
+                .lock()
+                .map(|status| status.native_output.clone())
+                .unwrap_or_else(|_| "transparent-window".to_string());
+            app.manage(state);
             app.manage(gateway::RuntimeServices::default());
+            app.manage(browser_source::BrowserSourceRuntime::default());
+            // Syphon/Spout2 publish the overlay webview's caption canvas. Mount
+            // that renderer during setup (hidden) so OBS can discover the native
+            // source and receive captions without the user pressing Open Overlay.
+            if let Err(error) =
+                commands::ensure_native_overlay(app.handle(), &config, &native_output_kind)
+            {
+                log::warn!("could not start hidden native overlay renderer: {error}");
+            }
             gateway::start(app.handle(), &config)?;
+            browser_source::reconcile(app.handle(), &config);
             updater::start_auto_check(app.handle().clone());
             Ok(())
         })
@@ -94,6 +111,7 @@ pub fn run() {
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             gateway::shutdown(app_handle);
+            browser_source::shutdown(app_handle);
         }
     });
 }

@@ -282,6 +282,39 @@ const mergeSourceText = (
 const mergeCrossIdSourceText = (current: CaptionPayload, next: CaptionPayload): string =>
   mergeSourceText(current, next, true);
 
+/**
+ * A Parapper turn usually preserves `id` across interim/final revisions, but
+ * older sidecars can rotate ids when a completed segment is normalized.  A
+ * cross-id replacement is safe only when AzooKey reports exactly the same
+ * reading: an extended reading is a rolling continuation and must append,
+ * while an equal reading is the same utterance rendered with a new surface.
+ * This keeps the merge generic and avoids a surface/dictionary heuristic.
+ */
+const isLikelyCrossIdSourceRevision = (current: CaptionPayload, next: CaptionPayload): boolean => {
+  if (
+    !isSourceStagePayload(current) ||
+    !isSourceStagePayload(next) ||
+    !hasText(current.sourceText) ||
+    !hasText(next.sourceText)
+  ) {
+    return false;
+  }
+
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  if (
+    nextText.startsWith(currentText) ||
+    currentText.startsWith(nextText) ||
+    sourceOverlapLength(currentText, nextText) > NO_TIME_MS
+  ) {
+    return false;
+  }
+
+  const currentReading = trimmedAzookeyReading(current);
+  const nextReading = trimmedAzookeyReading(next);
+  return Boolean(currentReading && nextReading && currentReading === nextReading);
+};
+
 const normalizeAzookeyReading = (value: string): string =>
   [...value.normalize("NFKC")]
     .map((character) => {
@@ -583,11 +616,13 @@ export const mergeCaptionPayload = (
     sourceText: hasIncomingSource
       ? sameChunk
         ? mergeSameIdSourceText(current, incoming)
-        : isSourceStagePayload(incoming) &&
-            (hasCloseSourceTiming(current, incoming) ||
-              hasLexicalSourceContinuation(current, incoming))
-          ? mergeCrossIdSourceText(current, incoming)
-          : incoming.sourceText
+        : isSourceStagePayload(incoming) && isLikelyCrossIdSourceRevision(current, incoming)
+          ? trim(incoming.sourceText)
+          : isSourceStagePayload(incoming) &&
+              (hasCloseSourceTiming(current, incoming) ||
+                hasLexicalSourceContinuation(current, incoming))
+            ? mergeCrossIdSourceText(current, incoming)
+            : incoming.sourceText
       : current.sourceText,
     translationText: sameChunk
       ? hasIncomingTranslation

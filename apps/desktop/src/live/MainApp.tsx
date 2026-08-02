@@ -691,16 +691,17 @@ export const MainApp = () => {
             // row must never feed back into caption rendering.
             pushPendingCaptionTranslationStage(pending, nextCaption.sourceText);
             // Log that a late translation was retained for this utterance id.
-            // Use appendStructuredLog to preserve the retained translation in the
-            // structured debug log for history reconstruction (not in live overlay).
+            // Keep only char counts: the chunkId correlates with the caption
+            // store and pipeline stage history, which already gate speech
+            // samples behind the verbose privacy toggle.
             appendStructuredLog({
               level: "info",
               source: "frontend",
               message: "Late translation retained for utterance",
               chunkId: nextCaption.id,
               fields: {
-                translationText: pending.translationText.slice(0, 100),
-                sourceText: nextCaption.sourceText.slice(0, 100),
+                translationChars: pending.translationText.length,
+                sourceChars: nextCaption.sourceText.length,
               },
             });
           }

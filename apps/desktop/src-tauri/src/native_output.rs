@@ -1,7 +1,7 @@
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64")))]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64")))]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
 use std::time::Duration;
 
 pub struct OverlayFrame {
@@ -154,8 +154,81 @@ where
     }
 }
 
+/// A running native-output worker: the latest-wins mailbox the renderer
+/// publishes into, plus the thread's join handle so teardown can wait for the
+/// worker to exit instead of leaking a detached thread.
+struct NativeOutputWorker {
+    sender: LatestFrameSender,
+    join_handle: std::thread::JoinHandle<()>,
+}
+
+/// Run a native-output worker body with panic containment. A panic inside the
+/// worker (e.g. a panicking transport call) must not leave `closed == false`,
+/// which would let publishers keep receiving `Ok(())` while OBS freezes on a
+/// stale texture. Closing the mailbox here gives publish the same error
+/// contract as the transport-failure path.
+#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+fn run_worker<F>(frame_receiver: LatestFrameSender, body: F)
+where
+    F: FnOnce() + std::panic::UnwindSafe,
+{
+    if let Err(panic) = std::panic::catch_unwind(body) {
+        log::error!(
+            "native output worker panicked: {}; closing mailbox so publishers surface the failure",
+            panic_message(&panic)
+        );
+        frame_receiver.close();
+    }
+}
+
+#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        message.to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+/// Wait up to `timeout` for the worker to report readiness. A constructor that
+/// never finishes (or reports failure) must not leave the worker thread blocked
+/// forever in `receive()`: closing the mailbox unblocks it via the Closed state
+/// so the thread exits instead of leaking.
+#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+fn await_ready_or_close(
+    ready_receiver: mpsc::Receiver<bool>,
+    frame_sender: &LatestFrameSender,
+    timeout: Duration,
+) -> Option<LatestFrameSender> {
+    match ready_receiver.recv_timeout(timeout) {
+        Ok(true) => Some(frame_sender.clone()),
+        Ok(false) | Err(_) => {
+            frame_sender.close();
+            None
+        }
+    }
+}
+
+/// Close the worker's mailbox and wait briefly for the worker thread to exit.
+/// A worker stuck inside a blocking constructor (e.g. SyphonServer::new or
+/// D3D11 device creation hanging) must never block teardown indefinitely, so
+/// the wait is bounded and the thread is detached when it does not finish.
+fn join_worker(worker: NativeOutputWorker) {
+    worker.sender.close();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while !worker.join_handle.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let _ = worker.join_handle.join();
+}
+
 pub struct NativeOutputHandle {
-    sender: Option<LatestFrameSender>,
+    worker: Option<NativeOutputWorker>,
     kind: String,
 }
 
@@ -163,8 +236,8 @@ impl NativeOutputHandle {
     pub fn new(width: u32, height: u32) -> Self {
         let _ = (width, height);
         #[cfg(windows)]
-        if let Some(sender) = start_spout(width, height) {
-            return Self { sender: Some(sender), kind: "spout2".to_string() };
+        if let Some(worker) = start_spout(width, height) {
+            return Self { worker: Some(worker), kind: "spout2".to_string() };
         }
 
         // The vendored Syphon.framework is x86_64-only. Apple-silicon builds
@@ -172,11 +245,11 @@ impl NativeOutputHandle {
         // framework is supplied, rather than attempting a runtime load that
         // is known to be incompatible.
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-        if let Some(sender) = start_syphon(width, height) {
-            return Self { sender: Some(sender), kind: "syphon".to_string() };
+        if let Some(worker) = start_syphon(width, height) {
+            return Self { worker: Some(worker), kind: "syphon".to_string() };
         }
 
-        Self { sender: None, kind: "transparent-window".to_string() }
+        Self { worker: None, kind: "transparent-window".to_string() }
     }
 
     pub fn kind(&self) -> &str {
@@ -194,10 +267,10 @@ impl NativeOutputHandle {
         if frame.rgba.len() != expected_length {
             return Err("native output frame byte length does not match dimensions".to_string());
         }
-        let Some(sender) = self.sender.as_ref() else {
+        let Some(worker) = self.worker.as_ref() else {
             return Ok(());
         };
-        match sender.send_latest(frame)? {
+        match worker.sender.send_latest(frame)? {
             EnqueueOutcome::Enqueued => Ok(()),
             EnqueueOutcome::Replaced { replacements } => {
                 // Report at powers of two: a persistently stalled native sender
@@ -212,82 +285,172 @@ impl NativeOutputHandle {
 
 impl Drop for NativeOutputHandle {
     fn drop(&mut self) {
-        if let Some(sender) = self.sender.take() {
-            sender.close();
+        if let Some(worker) = self.worker.take() {
+            join_worker(worker);
         }
     }
 }
 
+/// Copy an RGBA pixel buffer into `bgra` with the red and blue channels
+/// swapped, validating the byte length against `width * height * 4` first.
+///
+/// Spout's shared texture defaults to `DXGI_FORMAT_B8G8R8A8_UNORM` and
+/// `spout2::dx::Sender::send_image` uploads CPU pixels verbatim with no channel
+/// conversion, while the overlay canvas (`CanvasRenderingContext2D::getImageData`)
+/// produces RGBA bytes. Without this swap the bytes would not match the texture
+/// format and OBS would render captions with red and blue exchanged. The buffer
+/// is reused across frames so the native worker thread does not allocate per
+/// frame.
+#[cfg(any(windows, test))]
+fn prepare_spout_bgra(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    bgra: &mut Vec<u8>,
+) -> Result<(), String> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "spout frame dimensions overflow".to_string())?;
+    if rgba.len() != expected {
+        return Err(format!(
+            "spout frame byte length {} does not match dimensions {}x{}",
+            rgba.len(),
+            width,
+            height
+        ));
+    }
+    bgra.clear();
+    bgra.extend_from_slice(rgba);
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
-fn start_spout(width: u32, height: u32) -> Option<LatestFrameSender> {
+fn start_spout(width: u32, height: u32) -> Option<NativeOutputWorker> {
     let frame_sender = LatestFrameSender::new();
     let frame_receiver = frame_sender.clone();
     let (ready_sender, ready_receiver) = mpsc::channel::<bool>();
-    std::thread::spawn(move || {
-        // The DirectX path owns its D3D11 device and accepts CPU RGBA pixels,
-        // so the Tauri WebView does not need to expose or share a GL context.
-        let mut sender = match spout2::dx::Sender::new("Kotoba Beacon") {
-            Ok(sender) => sender,
-            Err(_) => {
-                let _ = ready_sender.send(false);
-                return;
-            }
-        };
-        let _ = ready_sender.send(true);
-        pump_native_frames(&frame_receiver, width, height, |frame| {
-            sender
-                .send_image(&frame.rgba, frame.width, frame.height)
-                .map_err(|error| format!("spout send_image failed: {error}"))
-        });
+    let join_handle = std::thread::spawn(move || {
+        let body_receiver = frame_receiver.clone();
+        run_worker(
+            frame_receiver,
+            std::panic::AssertUnwindSafe(move || {
+                // The DirectX path owns its D3D11 device, so the Tauri WebView does
+                // not need to expose or share a GL context. The canvas produces
+                // RGBA pixels; `prepare_spout_bgra` swaps them to BGRA to match
+                // Spout's default B8G8R8A8 shared-texture format so OBS does not
+                // see red/blue swapped.
+                let mut sender = match spout2::dx::Sender::new("Kotoba Beacon") {
+                    Ok(sender) => sender,
+                    Err(_) => {
+                        let _ = ready_sender.send(false);
+                        return;
+                    }
+                };
+                // Spout registers the sender in `SendImage`, not in `Sender::new`.
+                // Publish one transparent frame before reporting readiness so an
+                // OBS Spout client can discover the source immediately, even when
+                // the overlay webview has not painted its first caption yet.
+                let initial_len = (width as usize)
+                    .checked_mul(height as usize)
+                    .and_then(|pixels| pixels.checked_mul(4));
+                let Some(initial_len) = initial_len else {
+                    let _ = ready_sender.send(false);
+                    return;
+                };
+                let mut bgra = vec![0u8; initial_len];
+                if let Err(error) = sender.send_image(&bgra, width, height) {
+                    log::warn!("spout initial transparent frame failed: {error}");
+                    let _ = ready_sender.send(false);
+                    return;
+                }
+                let _ = ready_sender.send(true);
+                pump_native_frames(&body_receiver, width, height, |frame| {
+                    prepare_spout_bgra(&frame.rgba, frame.width, frame.height, &mut bgra)?;
+                    sender
+                        .send_image(&bgra, frame.width, frame.height)
+                        .map_err(|error| format!("spout send_image failed: {error}"))
+                });
+            }),
+        );
     });
-    ready_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .ok()
-        .filter(|ready| *ready)
-        .map(|_| frame_sender)
+    let ready = await_ready_or_close(ready_receiver, &frame_sender, Duration::from_secs(2));
+    if ready.is_none() {
+        // Keep ownership of the handle on startup failure. Closing the mailbox
+        // wakes a worker already waiting in `receive`; `join_worker` also gives
+        // a slow native constructor the same bounded teardown as normal Drop.
+        join_worker(NativeOutputWorker { sender: frame_sender, join_handle });
+        return None;
+    }
+    ready.map(|sender| NativeOutputWorker { sender, join_handle })
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-fn start_syphon(width: u32, height: u32) -> Option<LatestFrameSender> {
+fn start_syphon(width: u32, height: u32) -> Option<NativeOutputWorker> {
     let frame_sender = LatestFrameSender::new();
     let frame_receiver = frame_sender.clone();
     let (ready_sender, ready_receiver) = mpsc::channel::<bool>();
-    std::thread::spawn(move || {
-        let mut server = match syphon_rs::Server::new("Kotoba Beacon", width, height) {
-            Ok(server) => server,
-            Err(_) => {
-                let _ = ready_sender.send(false);
-                return;
-            }
-        };
-        let _ = ready_sender.send(true);
-        // syphon-rs::Server::send_frame returns () and can only fail open
-        // inside the crate (e.g. missing Metal command buffer). Validate the
-        // buffer length here and route through pump_native_frames so a length
-        // mismatch — or a future fallible transport — closes the mailbox
-        // instead of leaving publishers believing frames are still flowing.
-        pump_native_frames(&frame_receiver, width, height, |frame| {
-            let expected = (frame.width as usize)
-                .checked_mul(frame.height as usize)
-                .and_then(|pixels| pixels.checked_mul(4))
-                .ok_or_else(|| "syphon frame dimensions overflow".to_string())?;
-            if frame.rgba.len() != expected {
-                return Err(format!(
-                    "syphon frame byte length {} does not match dimensions {}x{}",
-                    frame.rgba.len(),
-                    frame.width,
-                    frame.height
-                ));
-            }
-            server.send_frame(&frame.rgba);
-            Ok(())
-        });
+    let join_handle = std::thread::spawn(move || {
+        let body_receiver = frame_receiver.clone();
+        run_worker(
+            frame_receiver,
+            std::panic::AssertUnwindSafe(move || {
+                let mut server = match syphon_rs::Server::new("Kotoba Beacon", width, height) {
+                    Ok(server) => server,
+                    Err(_) => {
+                        let _ = ready_sender.send(false);
+                        return;
+                    }
+                };
+                // Publish an initial transparent frame so Syphon clients can
+                // render a valid texture immediately after discovery, before the
+                // overlay webview sends its first caption frame.
+                let initial_len = (width as usize)
+                    .checked_mul(height as usize)
+                    .and_then(|pixels| pixels.checked_mul(4));
+                let Some(initial_len) = initial_len else {
+                    let _ = ready_sender.send(false);
+                    return;
+                };
+                let initial_frame = vec![0u8; initial_len];
+                server.send_frame(&initial_frame);
+                let _ = ready_sender.send(true);
+                // syphon-rs::Server::send_frame returns () and can only fail open
+                // inside the crate (e.g. missing Metal command buffer). Validate the
+                // buffer length here and route through pump_native_frames so a length
+                // mismatch — or a future fallible transport — closes the mailbox
+                // instead of leaving publishers believing frames are still flowing.
+                pump_native_frames(&body_receiver, width, height, |frame| {
+                    let expected = (frame.width as usize)
+                        .checked_mul(frame.height as usize)
+                        .and_then(|pixels| pixels.checked_mul(4))
+                        .ok_or_else(|| "syphon frame dimensions overflow".to_string())?;
+                    if frame.rgba.len() != expected {
+                        return Err(format!(
+                            "syphon frame byte length {} does not match dimensions {}x{}",
+                            frame.rgba.len(),
+                            frame.width,
+                            frame.height
+                        ));
+                    }
+                    server.send_frame(&frame.rgba);
+                    Ok(())
+                });
+            }),
+        );
     });
-    ready_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .ok()
-        .filter(|ready| *ready)
-        .map(|_| frame_sender)
+    let ready = await_ready_or_close(ready_receiver, &frame_sender, Duration::from_secs(2));
+    if ready.is_none() {
+        // Keep ownership of the handle on startup failure. Closing the mailbox
+        // wakes a worker already waiting in `receive`; `join_worker` also gives
+        // a slow native constructor the same bounded teardown as normal Drop.
+        join_worker(NativeOutputWorker { sender: frame_sender, join_handle });
+        return None;
+    }
+    ready.map(|sender| NativeOutputWorker { sender, join_handle })
 }
 
 #[cfg(test)]
@@ -398,6 +561,175 @@ mod tests {
         assert_eq!(sent, vec![2]);
         assert!(matches!(
             sender.send_latest(frame(3)),
+            Err(error) if error == "native output worker stopped"
+        ));
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn prepare_spout_bgra_swaps_red_and_blue_to_match_bgra_texture() {
+        let mut bgra = Vec::new();
+        super::prepare_spout_bgra(&[255, 0, 0, 255, 0, 255, 0, 128], 2, 1, &mut bgra)
+            .expect("2x1 frame is valid");
+        // red (255, 0, 0) -> blue (0, 0, 255); green (0, 255, 0) is unchanged.
+        assert_eq!(bgra, [0, 0, 255, 255, 0, 255, 0, 128]);
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn prepare_spout_bgra_rejects_byte_length_mismatch() {
+        let mut bgra = Vec::new();
+        let error = super::prepare_spout_bgra(&[0; 4], 2, 1, &mut bgra)
+            .expect_err("undersized buffer must be rejected");
+        assert!(error.contains("does not match dimensions 2x1"), "unexpected error: {error}");
+    }
+
+    #[cfg(any(windows, test))]
+    #[test]
+    fn prepare_spout_bgra_reuses_buffer_without_growing_per_frame() {
+        let mut bgra = vec![0u8; 16];
+        let capacity = bgra.capacity();
+        super::prepare_spout_bgra(&[1, 2, 3, 4], 1, 1, &mut bgra).expect("1x1 frame is valid");
+        assert_eq!(bgra, [3, 2, 1, 4]);
+        super::prepare_spout_bgra(&[5, 6, 7, 8], 1, 1, &mut bgra).expect("second 1x1 frame");
+        assert_eq!(bgra, [7, 6, 5, 8]);
+        assert_eq!(bgra.capacity(), capacity, "buffer must not reallocate per frame");
+    }
+
+    #[test]
+    fn closing_the_mailbox_unblocks_a_waiting_worker_thread_and_makes_it_joinable() {
+        let sender = sender();
+        let worker = sender.clone();
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            started_sender.send(()).expect("test receiver should be alive");
+            worker.receive()
+        });
+        started_receiver.recv().expect("worker should begin waiting in receive()");
+        sender.close();
+
+        assert!(
+            handle.join().expect("worker thread must exit after the mailbox closes").is_none(),
+            "a closed mailbox must unblock receive() with None"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::excessive_nesting)]
+    fn panicking_worker_body_closes_the_mailbox_so_publishers_see_the_error() {
+        let sender = sender();
+        let worker = sender.clone();
+        assert!(matches!(sender.send_latest(frame(1)), Ok(super::EnqueueOutcome::Enqueued)));
+
+        let handle = std::thread::spawn(move || {
+            let body_receiver = worker.clone();
+            super::run_worker(
+                worker,
+                std::panic::AssertUnwindSafe(move || {
+                    super::pump_native_frames(&body_receiver, 1, 1, |_frame| {
+                        panic!("simulated native transport panic");
+                    });
+                }),
+            );
+        });
+        handle.join().expect("worker thread must exit after the panic is contained");
+
+        // A panicked worker must not leave the mailbox open: publishers keep
+        // receiving Ok(()) while OBS freezes on a stale texture. The panic
+        // wrapper closes it with the same error contract as a transport failure.
+        assert!(matches!(
+            sender.send_latest(frame(2)),
+            Err(error) if error == "native output worker stopped"
+        ));
+        assert!(sender.receive().is_none());
+    }
+
+    #[test]
+    fn readiness_timeout_closes_the_mailbox_so_the_worker_thread_exits() {
+        let sender = sender();
+        let worker = sender.clone();
+        // ready_sender stays alive through the wait so recv_timeout observes a
+        // timeout, not a disconnect; both paths close the mailbox, but the
+        // timeout is the slow-constructor regression being guarded here.
+        let (ready_sender, ready_receiver) = std::sync::mpsc::channel::<bool>();
+        let handle = std::thread::spawn(move || worker.receive());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let result = super::await_ready_or_close(
+            ready_receiver,
+            &sender,
+            std::time::Duration::from_millis(10),
+        );
+        assert!(result.is_none(), "a timed-out constructor must not yield a sender");
+        assert!(
+            handle.join().expect("worker thread must exit after the mailbox closes").is_none(),
+            "closing the mailbox on readiness timeout must unblock the worker"
+        );
+        assert!(matches!(
+            sender.send_latest(frame(1)),
+            Err(error) if error == "native output worker stopped"
+        ));
+        drop(ready_sender);
+    }
+
+    #[test]
+    fn not_ready_worker_closes_the_mailbox_so_the_worker_thread_exits() {
+        let sender = sender();
+        let worker = sender.clone();
+        let (ready_sender, ready_receiver) = std::sync::mpsc::channel::<bool>();
+        let handle = std::thread::spawn(move || worker.receive());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        ready_sender.send(false).expect("test channel should be open");
+        let result =
+            super::await_ready_or_close(ready_receiver, &sender, std::time::Duration::from_secs(1));
+        assert!(result.is_none(), "a failed constructor must not yield a sender");
+        assert!(
+            handle.join().expect("worker thread must exit after the mailbox closes").is_none(),
+            "closing the mailbox on not-ready must unblock the worker"
+        );
+        assert!(matches!(
+            sender.send_latest(frame(1)),
+            Err(error) if error == "native output worker stopped"
+        ));
+    }
+
+    #[test]
+    fn readiness_success_keeps_the_mailbox_open() {
+        let sender = sender();
+        let (ready_sender, ready_receiver) = std::sync::mpsc::channel::<bool>();
+        ready_sender.send(true).expect("test channel should be open");
+        let result = super::await_ready_or_close(
+            ready_receiver,
+            &sender,
+            std::time::Duration::from_millis(100),
+        );
+        let alive = result.expect("a ready worker must yield a sender");
+        // The success path must keep the mailbox open: frames enqueue and the
+        // worker can still drain them.
+        assert!(matches!(alive.send_latest(frame(1)), Ok(super::EnqueueOutcome::Enqueued)));
+        assert_eq!(
+            alive.receive().expect("ready worker must still deliver frames").rgba,
+            vec![1; 4]
+        );
+        sender.close();
+    }
+
+    #[test]
+    fn dropping_the_handle_closes_the_mailbox_and_joins_the_worker_thread() {
+        let sender = sender();
+        let worker = sender.clone();
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            started_sender.send(()).expect("test receiver should be alive");
+            let _ = worker.receive();
+        });
+        started_receiver.recv().expect("worker should begin waiting");
+        let output = super::NativeOutputHandle {
+            worker: Some(super::NativeOutputWorker { sender: sender.clone(), join_handle: handle }),
+            kind: "test".to_string(),
+        };
+        drop(output);
+        assert!(matches!(
+            sender.send_latest(frame(1)),
             Err(error) if error == "native output worker stopped"
         ));
     }

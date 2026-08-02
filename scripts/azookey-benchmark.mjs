@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptDirectory, "..");
+const DEFAULT_WORKER_TIMEOUT_MS = 5_000;
 
 const defaultCases = [
   ["short1", "きょうのてんきはあつい"],
@@ -50,6 +51,7 @@ const parseArgs = (argv) => {
     sourceRoot: repositoryRoot,
     iterations: Number(process.env.AZOOKEY_BENCH_ITERATIONS ?? 100),
     port: Number(process.env.AZOOKEY_BENCH_PORT ?? 8797),
+    workerTimeoutMs: Number(process.env.AZOOKEY_BENCH_TIMEOUT_MS ?? DEFAULT_WORKER_TIMEOUT_MS),
     quiet: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -84,6 +86,9 @@ const parseArgs = (argv) => {
   }
   if (!Number.isInteger(options.port) || options.port < 1024 || options.port > 65535) {
     throw new Error("--port must be an integer between 1024 and 65535");
+  }
+  if (!Number.isInteger(options.workerTimeoutMs) || options.workerTimeoutMs < 1_000) {
+    throw new Error("AZOOKEY_BENCH_TIMEOUT_MS must be an integer >= 1000");
   }
   return options;
 };
@@ -426,7 +431,7 @@ const wranglerBinary = (sourceRoot) => {
   );
 };
 
-const runWorker = async ({ sourceRoot, iterations, cases, port, quiet }) => {
+const runWorker = async ({ sourceRoot, iterations, cases, port, workerTimeoutMs, quiet }) => {
   const command = wranglerBinary(sourceRoot);
   const workerDirectory = resolve(sourceRoot, "apps/cloudflare-worker-server");
   const child = spawn(
@@ -439,7 +444,7 @@ const runWorker = async ({ sourceRoot, iterations, cases, port, quiet }) => {
       "--log-level",
       "error",
       "--var",
-      "AZOOKEY_TIMEOUT_MS:2000",
+      `AZOOKEY_TIMEOUT_MS:${workerTimeoutMs}`,
     ],
     {
       cwd: workerDirectory,

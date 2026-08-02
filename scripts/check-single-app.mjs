@@ -66,7 +66,7 @@ check(
 );
 check(
   'the overlay window is labelled "overlay"',
-  /WebviewWindowBuilder::new\(&app,\s*"overlay"/.test(commands),
+  /WebviewWindowBuilder::new\(\s*&?app,\s*"overlay"/.test(commands),
 );
 check("the overlay window skips the taskbar/Dock", /\.skip_taskbar\(true\)/.test(commands));
 
@@ -126,10 +126,34 @@ check(
   "plugins.updater must declare a public key and HTTPS latest.json endpoint",
 );
 const releaseConf = readJson("apps/desktop/src-tauri/tauri.release.conf.json");
+const intelConf = readJson("apps/desktop/src-tauri/tauri.macos-intel.conf.json");
+const intelReleaseConf = readJson("apps/desktop/src-tauri/tauri.release.macos-intel.conf.json");
 const desktopPkg = readJson("apps/desktop/package.json");
+const desktopTauriWrapper = read("scripts/run-desktop-tauri-build.mjs");
 check(
   "release Tauri config enables updater artifacts",
   releaseConf?.bundle?.createUpdaterArtifacts === true,
+);
+check(
+  "Apple Silicon base configs do not embed the x86_64-only Syphon framework",
+  !tauriConf?.bundle?.macOS?.frameworks && !releaseConf?.bundle?.macOS?.frameworks,
+  "tauri.conf.json and tauri.release.conf.json must stay framework-free for arm64 builds",
+);
+check(
+  "Intel macOS overlays are the only configs that bundle Syphon",
+  JSON.stringify(intelConf?.bundle?.macOS?.frameworks ?? []) ===
+    JSON.stringify(["./frameworks/Syphon.framework"]) &&
+    JSON.stringify(intelReleaseConf?.bundle?.macOS?.frameworks ?? []) ===
+      JSON.stringify(["./frameworks/Syphon.framework"]),
+  "Intel overlays must carry the legacy Syphon framework explicitly",
+);
+check(
+  "desktop Tauri scripts select architecture-specific config overlays",
+  /run-desktop-tauri-build\.mjs/.test(desktopPkg.scripts?.["tauri:dev"] ?? "") &&
+    /run-desktop-tauri-build\.mjs/.test(desktopPkg.scripts?.["tauri:build"] ?? "") &&
+    /run-desktop-tauri-build\.mjs/.test(desktopPkg.scripts?.["tauri:build:release"] ?? "") &&
+    /isIntelMacBuild/.test(desktopTauriWrapper),
+  "desktop Tauri dev/build/release scripts must use the architecture-aware wrapper",
 );
 const rootVersion = rootPkg.version;
 const desktopVersion = desktopPkg.version;

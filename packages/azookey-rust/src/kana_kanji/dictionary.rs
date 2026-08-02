@@ -70,6 +70,11 @@ pub struct DictionaryEntry {
     pub lcid: u16,
     pub rcid: u16,
     pub mid: u16,
+    /// True when the loudstxt3 row omitted its surface and the serialized
+    /// ruby was retained as a Katakana identity surface. This is internal
+    /// provenance used by the lattice; ordinary TSV/builtin/Katakana lexical
+    /// rows remain false.
+    pub raw_ruby_identity: bool,
     /// AzooKey stores log-probability-like scores where a higher value is
     /// preferred (for example, -5 beats -15).
     pub value: f32,
@@ -83,6 +88,7 @@ impl DictionaryEntry {
             lcid: DEFAULT_CID,
             rcid: DEFAULT_CID,
             mid: DEFAULT_MID,
+            raw_ruby_identity: false,
             value,
         }
     }
@@ -1146,6 +1152,7 @@ fn parse_tsv(path: &Path) -> Result<Vec<DictionaryEntry>, String> {
                 lcid: columns.get(3).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_CID),
                 rcid: columns.get(4).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_CID),
                 mid: columns.get(5).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_MID),
+                raw_ruby_identity: false,
             })
         })
         .collect::<Vec<_>>();
@@ -1217,17 +1224,20 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
     let mut entries = Vec::with_capacity(count);
     for index in 0..count {
         let base = LOUDSTXT3_COUNT_BYTES + index * LOUDSTXT3_ENTRY_BYTES;
-        let surface = fields
-            .next()
-            .filter(|surface| !surface.is_empty())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| raw_reading.clone());
+        let serialized_surface = fields.next().unwrap_or_default();
+        let raw_ruby_identity = serialized_surface.is_empty() && raw_reading != reading;
+        let surface = if !serialized_surface.is_empty() {
+            serialized_surface.to_string()
+        } else {
+            raw_reading.clone()
+        };
         entries.push(DictionaryEntry {
             reading: reading.clone(),
             surface,
             lcid: read_u16(bytes, base)?,
             rcid: read_u16(bytes, base + U16_BYTES)?,
             mid: read_u16(bytes, base + U16_BYTES * 2)?,
+            raw_ruby_identity,
             value: read_f32(bytes, base + LOUDSTXT3_VALUE_OFFSET)?,
         });
     }
@@ -1658,6 +1668,7 @@ mod tests {
                     lcid: 1285,
                     rcid: 1285,
                     mid: 501,
+                    raw_ruby_identity: false,
                     value: -3.0
                 },
                 DictionaryEntry {
@@ -1666,6 +1677,7 @@ mod tests {
                     lcid: 1288,
                     rcid: 1288,
                     mid: 344,
+                    raw_ruby_identity: false,
                     value: -4.0
                 },
             ]
@@ -1686,6 +1698,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].reading, "とうきょう");
         assert_eq!(entries[0].surface, "トウキョウ");
+        assert!(entries[0].raw_ruby_identity);
     }
 
     #[test]

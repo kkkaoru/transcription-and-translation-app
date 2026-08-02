@@ -100,6 +100,14 @@ export interface CaptionTextStyle {
   borderRadius: number;
 }
 
+/** OBS Browser Source fallback used where native Syphon/Spout2 is unavailable. */
+export interface BrowserSourceConfig {
+  /** Serve the caption-only page and JSON feed on loopback HTTP. */
+  enabled: boolean;
+  /** Loopback port for the caption-only page. */
+  port: number;
+}
+
 export interface OverlayConfig {
   width: number;
   height: number;
@@ -112,6 +120,8 @@ export interface OverlayConfig {
   captionYPercent: number;
   source: CaptionTextStyle;
   translation: CaptionTextStyle;
+  /** Optional so legacy configs (and their fixtures) keep parsing. */
+  browserSource?: BrowserSourceConfig;
 }
 
 /** Structured debug log severity (frontend ring buffer + backend filtering). */

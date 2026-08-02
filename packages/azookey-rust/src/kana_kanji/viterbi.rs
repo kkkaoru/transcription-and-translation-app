@@ -33,6 +33,7 @@ const ORTHOGRAPHIC_SURFACE_PENALTY: f32 = -3.0;
 const IDENTITY_SURFACE_PENALTY: f32 = -1.5;
 const MODEL_DEFAULT_METADATA_PENALTY: f32 = -2.0;
 const MODEL_DEFAULT_MID_PENALTY: f32 = -2.5;
+const COPULAR_CONTINUATION_PENALTY: f32 = -6.0;
 const GRAMMATICAL_CONTEXT_BONUS: f32 = 4.0;
 const CONTEXTUAL_ENTRY_BONUS: f32 = 4.5;
 const MIN_IDENTITY_FALLBACK_CHARS: usize = 2;
@@ -295,6 +296,36 @@ pub fn convert_with_dictionary(
             .unwrap_or_default();
         let numeric_prefix = numeric_prefix_context(&chars, start, &entries);
         for state in current {
+            // A caption can end one kana after a high-confidence lexical
+            // prefix (`ありがとうご`). Treat that final non-particle kana as
+            // an unresolved continuation and retain the original utterance
+            // as a candidate. This keeps a public-dictionary homophone from
+            // winning solely because its one-character tail is unknown,
+            // while complete lexical entries and grammatical particles keep
+            // their normal ranking.
+            if start == 0
+                && unresolved_single_tail_candidate(
+                    dictionary,
+                    &chars,
+                    &source_chars,
+                    &entries,
+                    bounded_dictionary_word_chars(options.max_dictionary_word_chars),
+                )
+            {
+                push_state(
+                    &mut states[chars.len()],
+                    PathState {
+                        text: trimmed.to_string(),
+                        score: UNKNOWN_SPAN_PENALTY,
+                        meaning_score: NO_SCORE,
+                        last: None,
+                        clause_mid: BOS_EOS_MID,
+                        clause_has_word: false,
+                        numeric_chain: false,
+                    },
+                    width,
+                );
+            }
             if let Some(numeric) = numeric_prefix.as_ref() {
                 // Do not exempt `followed_by_boundary` or
                 // `starts_after_boundary` here. A lexical word immediately
@@ -543,6 +574,7 @@ pub fn convert_with_dictionary(
                             )
                             + model_metadata_penalty(dictionary, entry)
                             + grammatical_context_bonus(&state, entry)
+                            + copular_continuation_penalty(&state, entry)
                             + contextual_entry_bonus(
                                 dictionary,
                                 &chars,
@@ -736,6 +768,25 @@ fn grammatical_context_bonus(state: &PathState, entry: &DictionaryEntry) -> f32 
     GRAMMATICAL_CONTEXT_BONUS
 }
 
+/// A public dictionary often contains a high-scoring Kanji homograph for the
+/// `した` reading (`下`, `舌`). After an identity `で` particle, that edge is
+/// more commonly the copular continuation `でした`; keep the homograph in
+/// n-best while applying a bounded grammar prior to the lexical path.
+fn copular_continuation_penalty(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    let Some(former) = state.last.as_ref() else {
+        return NO_SCORE;
+    };
+    if former.surface == former.reading
+        && former.reading == "で"
+        && entry.reading == "した"
+        && contains_kanji(&entry.surface)
+    {
+        COPULAR_CONTINUATION_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
 fn is_particle_reading(reading: &str) -> bool {
     matches!(
         reading,
@@ -877,6 +928,38 @@ fn unknown_kana_span_end(
     Some(end)
 }
 
+fn unresolved_single_tail_candidate(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    source: &[char],
+    entries: &[DictionaryEntry],
+    max_dictionary_word_chars: usize,
+) -> bool {
+    if chars.len() < MIN_UNKNOWN_FALLBACK_CHARS
+        || chars.len() != source.len()
+        || is_particle(*chars.last().unwrap_or(&' '))
+    {
+        return false;
+    }
+    let tail_start = chars.len() - 1;
+    let has_complete_lexical_entry = entries.iter().any(|entry| {
+        entry.reading.chars().count() == chars.len() && is_lexical_surface_for_unknown(entry)
+    });
+    if has_complete_lexical_entry {
+        return false;
+    }
+    let has_lexical_prefix = entries.iter().any(|entry| {
+        entry.reading.chars().count() == tail_start && is_lexical_surface_for_unknown(entry)
+    });
+    if !has_lexical_prefix {
+        return false;
+    }
+    let tail = dictionary
+        .entries_starting_at(chars, tail_start, max_dictionary_word_chars)
+        .unwrap_or_default();
+    !tail.iter().any(is_lexical_surface_for_unknown)
+}
+
 fn is_small_hiragana(character: char) -> bool {
     matches!(character, 'ぁ' | 'ぃ' | 'ぅ' | 'ぇ' | 'ぉ' | 'っ' | 'ゃ' | 'ゅ' | 'ょ')
 }
@@ -919,6 +1002,18 @@ fn dictionary_surface_for_source(entry: &DictionaryEntry, source: &[char]) -> St
     // reading. Preserve that original orthography while retaining true
     // kana→kanji and kana→loanword surfaces.
     let source_surface: String = source.iter().collect();
+    // A missing loudstxt3 surface is represented by the serialized ruby.  It
+    // can therefore look like a Katakana lexical row (`デス`) even though it
+    // is semantically an identity edge for the normalized reading (`です`).
+    // Preserve the user's source script for these rows; otherwise the raw
+    // ruby can outrank the real hiragana identity row in the public lattice.
+    if entry.raw_ruby_identity {
+        return if source_is_katakana_surface(source) || source.contains(&'ー') {
+            entry.surface.clone()
+        } else {
+            source_surface
+        };
+    }
     if source_is_katakana_surface(source)
         && (entry.surface == entry.reading
             || (entry.surface != source_surface
@@ -1034,6 +1129,12 @@ fn following_context_is_content(
     if is_boundary(*first) {
         return false;
     }
+    // Do not let a dictionary compound that starts with a particle make
+    // the following clause look content-bearing. The particle belongs to
+    // the next edge, not to the homonym's lexical context.
+    if matches!(*first, 'を' | 'は') {
+        return false;
+    }
     if after.iter().take(CONTEXT_LOOKBACK_CHARS).any(|character| *character == 'ー') {
         return true;
     }
@@ -1105,6 +1206,7 @@ fn identity_fallback_entry(
         lcid: candidate.lcid,
         rcid: candidate.rcid,
         mid: candidate.mid,
+        raw_ruby_identity: false,
         value,
     })
 }

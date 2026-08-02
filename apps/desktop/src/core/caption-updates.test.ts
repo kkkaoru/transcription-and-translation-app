@@ -1263,6 +1263,31 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, nextTurn)?.sourceText).toBe("あしたは晴れ");
   });
 
+  it("replaces a cross-id kana surface when AzooKey keeps the exact reading", () => {
+    const current = caption({
+      id: "turn-kana",
+      sourceText: "あしたは",
+      azookeyInputText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const normalized = caption({
+      id: "turn-surface",
+      sourceText: "明日は",
+      azookeyInputText: "あしたは",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, normalized)?.sourceText).toBe("明日は");
+  });
+
   it("keeps a long same-id utterance together when windows end mid-word", () => {
     const fragments = ["となりの", "きゃくはよく", "かきくうきゃくだ"];
     let current = caption({

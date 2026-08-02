@@ -442,6 +442,10 @@ const nativeConfigEvidence = async () => {
     overlay: {
       width: sourceConfig.overlay?.width ?? null,
       height: sourceConfig.overlay?.height ?? null,
+      browserSource: {
+        enabled: sourceConfig.overlay?.browserSource?.enabled ?? null,
+        port: sourceConfig.overlay?.browserSource?.port ?? null,
+      },
     },
   };
   writeJson("native-config.json", evidence);
@@ -527,6 +531,71 @@ const nativeConfigEvidence = async () => {
     );
   }
   return evidence;
+};
+
+/**
+ * Verify the caption-only loopback fallback on the Apple Silicon host where
+ * the bundled x86_64 Syphon framework is intentionally unavailable. This is
+ * separate from the native gateway checks: a healthy app process is not proof
+ * that OBS can actually discover the fallback source.
+ */
+const browserSourceEvidence = async (config) => {
+  if (process.platform !== "darwin" || process.arch !== "arm64") {
+    return;
+  }
+  const browserSource = config?.overlay?.browserSource;
+  // Rust defaults this fallback on for a fresh arm64 configuration. An
+  // explicit persisted false remains an intentional opt-out and is reported
+  // as skipped rather than treated as a runtime failure.
+  if (browserSource?.enabled === false) {
+    skipped("Apple Silicon OBS Browser Source fallback", "disabled in the persisted config");
+    return;
+  }
+  const port = Number(browserSource?.port ?? 1_421);
+  const portOk = Number.isInteger(port) && port >= 1_024 && port <= 65_535;
+  check(
+    "Apple Silicon OBS Browser Source port is valid",
+    portOk,
+    `port=${browserSource?.port ?? "default 1421"}`,
+  );
+  if (!portOk) return;
+
+  const health = await waitFor(
+    async () => {
+      try {
+        const result = await fetchWithTimeout(`http://127.0.0.1:${port}/health`, 1200);
+        return result.response.ok && result.body.trim() === "ok" ? result : null;
+      } catch {
+        return null;
+      }
+    },
+    10_000,
+    250,
+  );
+  check(
+    "Apple Silicon OBS Browser Source health endpoint responds",
+    Boolean(health),
+    `http://127.0.0.1:${port}/health`,
+  );
+
+  const feed = await waitFor(
+    async () => {
+      try {
+        const result = await fetchWithTimeout(`http://127.0.0.1:${port}/captions.json`, 1200);
+        const body = result.json;
+        return result.response.ok && body && typeof body.overlay === "object" ? result : null;
+      } catch {
+        return null;
+      }
+    },
+    10_000,
+    250,
+  );
+  check(
+    "Apple Silicon OBS Browser Source serves the caption feed",
+    Boolean(feed),
+    `http://127.0.0.1:${port}/captions.json`,
+  );
 };
 
 const copyProcessSnapshot = (name) => {
@@ -1157,7 +1226,8 @@ const main = async () => {
       Boolean(windowCapture.candidate),
       JSON.stringify(windowCapture.candidate ?? {}),
     );
-    await nativeConfigEvidence();
+    const configEvidence = await nativeConfigEvidence();
+    await browserSourceEvidence(configEvidence);
     const logFile = path.join(
       os.homedir(),
       "Library",
@@ -1194,7 +1264,10 @@ const main = async () => {
       const uiCompleted = await uiSmoke();
       // Saving through AX is the only in-scope native path that can create the
       // user's main config without writing into app-data behind their back.
-      if (uiCompleted) await nativeConfigEvidence();
+      if (uiCompleted) {
+        const updatedConfigEvidence = await nativeConfigEvidence();
+        await browserSourceEvidence(updatedConfigEvidence);
+      }
     }
     copyProcessSnapshot("processes-after.txt");
     if (fs.existsSync(logFile)) {

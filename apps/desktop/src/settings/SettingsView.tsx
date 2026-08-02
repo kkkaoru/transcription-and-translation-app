@@ -5,10 +5,13 @@ import {
   AUDIO_CHUNK_MAX_MS,
   AUDIO_CHUNK_MIN_MS,
   AUDIO_CHUNK_STEP_MS,
+  BROWSER_SOURCE_PORT_MAX,
+  BROWSER_SOURCE_PORT_MIN,
   CAPTION_POSITION_MAX_PERCENT,
   CAPTION_POSITION_MIN_PERCENT,
   DEFAULT_ADAPTIVE_NOISE_FLOOR,
   DEFAULT_AUDIO_CHUNK_MS,
+  DEFAULT_BROWSER_SOURCE_PORT,
   DEFAULT_RECOGNITION_MODE,
   DEFAULT_SILENCE_GATE_DB,
   DEFAULT_VAD_INTERVAL_MS,
@@ -601,6 +604,49 @@ export const SettingsView = ({
               max={CAPTION_POSITION_MAX_PERCENT}
               value={config.overlay.captionYPercent}
               onChange={(event) => setOverlay({ captionYPercent: Number(event.target.value) })}
+            />
+          </Field>
+          <Field
+            label={t("settings.browserSourceLabel")}
+            hint={
+              (config.overlay.browserSource?.enabled ?? false)
+                ? t("settings.browserSourceUrl", {
+                    port: config.overlay.browserSource?.port ?? DEFAULT_BROWSER_SOURCE_PORT,
+                  })
+                : t("settings.browserSourceHint")
+            }
+          >
+            <label className="checkbox-field">
+              <input
+                id="overlay-browser-source"
+                type="checkbox"
+                checked={config.overlay.browserSource?.enabled ?? false}
+                onChange={(event) =>
+                  setOverlay({
+                    browserSource: {
+                      enabled: event.currentTarget.checked,
+                      port: config.overlay.browserSource?.port ?? DEFAULT_BROWSER_SOURCE_PORT,
+                    },
+                  })
+                }
+              />
+              <span>{t("settings.browserSourceToggle")}</span>
+            </label>
+          </Field>
+          <Field label={t("settings.browserSourcePort")}>
+            <input
+              type="number"
+              min={BROWSER_SOURCE_PORT_MIN}
+              max={BROWSER_SOURCE_PORT_MAX}
+              value={config.overlay.browserSource?.port ?? DEFAULT_BROWSER_SOURCE_PORT}
+              onChange={(event) =>
+                setOverlay({
+                  browserSource: {
+                    enabled: config.overlay.browserSource?.enabled ?? false,
+                    port: Number(event.target.value),
+                  },
+                })
+              }
             />
           </Field>
         </div>

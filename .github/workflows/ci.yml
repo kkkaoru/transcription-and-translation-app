@@ -74,10 +74,11 @@ jobs:
       - run: cargo build --locked --manifest-path packages/azookey-wasm/Cargo.toml --target wasm32-unknown-unknown --release
       - run: cargo build --locked --manifest-path packages/vibrato-wasm/Cargo.toml --target wasm32-unknown-unknown --release
       - run: bun run parapper:lint
-      # The quality action exports RUSTUP_TOOLCHAIN=1.97.1.  Clear it for the
+      # The quality action exports RUSTUP_TOOLCHAIN=1.97.1. Clear it for the
       # nested fork so its checked-in 1.90.0 pin is actually honored.
       - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:fmt
       - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:lint
+      - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:test
       - run: bun run rust:azookey:fmt
       - run: bun run rust:azookey:lint
       - run: bun run rust:azookey:test
@@ -86,6 +87,7 @@ jobs:
       - run: bun run rust:vibrato:test
       - run: bun run rust:fmt
       - run: bun run rust:lint
+      - run: bun run rust:desktop:test
 
   desktop-build:
     strategy:

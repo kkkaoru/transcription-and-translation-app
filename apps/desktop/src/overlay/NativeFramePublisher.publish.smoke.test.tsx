@@ -13,6 +13,11 @@ const mocks = vi.hoisted(() => ({
   publishOverlayFrame: vi.fn(),
 }));
 
+const audioMocks = vi.hoisted(() => ({
+  bytesToBase64: vi.fn(),
+  realBytesToBase64: null as ((bytes: Uint8Array) => string) | null,
+}));
+
 vi.mock("../core/bridge", () => ({
   bridge: mocks,
   formatBridgeError: (error: unknown): string | undefined => {
@@ -22,6 +27,12 @@ vi.mock("../core/bridge", () => ({
     return typeof error === "string" ? error : undefined;
   },
 }));
+
+vi.mock("../core/audio", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../core/audio")>();
+  audioMocks.realBytesToBase64 = actual.bytesToBase64;
+  return { ...actual, bytesToBase64: audioMocks.bytesToBase64 };
+});
 
 import { NativeFramePublisher } from "./NativeFramePublisher";
 
@@ -43,6 +54,9 @@ const captionWith = (sourceText: string): CaptionPayload => ({
 // jsdom ships no 2D canvas implementation. The publisher only needs the
 // measurement / pixel-readback surface to produce a frame; the pixel contents
 // are irrelevant to the publish-lifecycle assertions below.
+let encodeThrows = false;
+let getContextUnavailable = false;
+
 const installCanvasStub = (): void => {
   const context = {
     beginPath: () => undefined,
@@ -60,8 +74,8 @@ const installCanvasStub = (): void => {
     save: () => undefined,
     strokeText: () => undefined,
   };
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
-    () => context as unknown as CanvasRenderingContext2D,
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() =>
+    getContextUnavailable ? null : (context as unknown as CanvasRenderingContext2D),
   );
 };
 
@@ -78,6 +92,15 @@ describe("NativeFramePublisher publish failures", () => {
   beforeEach(() => {
     mocks.isDesktop.mockReset().mockReturnValue(true);
     mocks.publishOverlayFrame.mockReset().mockResolvedValue(undefined);
+    encodeThrows = false;
+    getContextUnavailable = false;
+    audioMocks.bytesToBase64.mockReset();
+    audioMocks.bytesToBase64.mockImplementation((bytes: Uint8Array): string => {
+      if (encodeThrows) {
+        throw new Error("base64 encoding is unavailable in this runtime");
+      }
+      return audioMocks.realBytesToBase64?.(bytes) ?? "";
+    });
     __resetStructuredLogForTests();
     installCanvasStub();
     container = document.createElement("div");
@@ -148,5 +171,60 @@ describe("NativeFramePublisher publish failures", () => {
     // bounded even though the native worker stays dead.
     await flush(400);
     expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(3);
+  });
+
+  it("releases the in-flight gate after a synchronous encode throw so the next caption publishes", async () => {
+    encodeThrows = true;
+
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("first")} />);
+    });
+    await flush(60);
+
+    // The throw happens after the in-flight claim, so without the guard every
+    // later caption would hit the defer branch and native output would freeze.
+    expect(mocks.publishOverlayFrame).not.toHaveBeenCalled();
+    const nativeLogs = getStructuredLogs().filter((entry) => entry.stage === "native-output");
+    expect(
+      nativeLogs.some((entry) => entry.error?.includes("base64 encoding is unavailable")),
+    ).toBe(true);
+
+    encodeThrows = false;
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("second")} />);
+    });
+    await flush(60);
+
+    // The catch path released the gate, so the second caption publishes again.
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes the wire frame contract as rgba base64 of width×height×4 bytes", async () => {
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("wire")} />);
+    });
+    await flush(60);
+
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledWith(expect.any(String), 64, 36);
+    const [rgbaBase64] = mocks.publishOverlayFrame.mock.calls[0] ?? [];
+    expect(atob(rgbaBase64).length).toBe(64 * 36 * 4);
+  });
+
+  it("retries when the canvas context is unavailable instead of dropping the frame", async () => {
+    getContextUnavailable = true;
+
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("first")} />);
+    });
+    await flush(40);
+    expect(mocks.publishOverlayFrame).not.toHaveBeenCalled();
+
+    getContextUnavailable = false;
+    await flush(60);
+
+    // The retry scheduled by the null-context branch publishes the pending
+    // frame once a context is available, without requiring a new caption.
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
   });
 });

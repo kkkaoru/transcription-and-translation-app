@@ -44,13 +44,46 @@ describe("Parapper WebSocket adapter", () => {
   it("rejects an already-cancelled capture before opening a socket", async () => {
     const controller = new AbortController();
     controller.abort();
-    await expect(
-      transcribeWithParapper(new Uint8Array(2), {
-        url: "ws://127.0.0.1:1/ws/recognition",
-        timeoutMs: 1_000,
-        signal: controller.signal,
-      }),
-    ).rejects.toMatchObject({ code: "parapper_cancelled", status: 499 });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), {
+          url: "ws://127.0.0.1:1/ws/recognition",
+          timeoutMs: 1_000,
+          signal: controller.signal,
+          correlation: {
+            requestId: "request-pre-abort",
+            sessionId: "capture-pre-abort",
+            agentId: null,
+            parentAgentId: null,
+          },
+        }),
+      ).rejects.toMatchObject({ code: "parapper_cancelled", status: 499 });
+      const records = info.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter((record) =>
+          [PROVIDER_TURN_START, PROVIDER_TURN_END, PROVIDER_TURN_SKIP].includes(
+            String(record["event"]),
+          ),
+        );
+      expect(records.map((record) => record["event"])).toEqual([
+        PROVIDER_TURN_START,
+        PROVIDER_TURN_END,
+      ]);
+      expect(records).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            request_id: "request-pre-abort",
+            session_id: "capture-pre-abort",
+            outcome: "failed",
+            status: "failed",
+            errorCode: "parapper_cancelled",
+          }),
+        ]),
+      );
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it("turns a synchronous invalid WebSocket URL into a connection error", async () => {
@@ -1464,6 +1497,44 @@ describe("Parapper WebSocket adapter", () => {
     }
   });
 
+  it("emits a failed provider end record when the socket constructor throws", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array([0, 1]), {
+          url: "not-a-valid-url",
+          timeoutMs: 1_000,
+          correlation: {
+            requestId: "request-constructor",
+            sessionId: "capture-constructor",
+            agentId: null,
+            parentAgentId: null,
+          },
+        }),
+      ).rejects.toMatchObject({ code: "parapper_connection_failed", status: 502 });
+      const records = info.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter((record) =>
+          [PROVIDER_TURN_START, PROVIDER_TURN_END, PROVIDER_TURN_SKIP].includes(
+            String(record["event"]),
+          ),
+        );
+      expect(records.map((record) => record["event"])).toEqual([
+        PROVIDER_TURN_START,
+        PROVIDER_TURN_END,
+      ]);
+      expect(records[1]).toMatchObject({
+        request_id: "request-constructor",
+        session_id: "capture-constructor",
+        outcome: "failed",
+        status: "failed",
+        errorCode: "parapper_connection_failed",
+      });
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it("keeps provider correlation isolated across concurrent sessions", async () => {
     const fixture = await startParapper((socket) => {
       socket.on("message", (data: RawData, binary: boolean) => {
@@ -1556,7 +1627,9 @@ describe("Parapper WebSocket adapter", () => {
             }),
           ]),
         );
-        expect(correlated.every((record) => record["session_id"] === expected.sessionId)).toBe(true);
+        expect(correlated.every((record) => record["session_id"] === expected.sessionId)).toBe(
+          true,
+        );
       }
       expect(new Set(records.map((record) => record["request_id"]))).toEqual(
         new Set(["request-a", "request-b"]),

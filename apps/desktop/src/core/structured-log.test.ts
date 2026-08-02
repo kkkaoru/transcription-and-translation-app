@@ -227,4 +227,29 @@ describe("structuredLog", () => {
       { accessToken: "[REDACTED]", modelId: "hy-mt2", ok: true },
     );
   });
+
+  it("bounds malformed timestamps and unbounded diagnostic text", () => {
+    const huge = "x".repeat(10_000);
+    const record = appendStructuredLog({
+      level: "info",
+      message: huge,
+      error: huge,
+      fields: { detail: huge },
+      epochMs: Number.MAX_VALUE,
+    });
+
+    expect(() => new Date(record.epochMs).toISOString()).not.toThrow();
+    expect(record.message.length).toBeLessThanOrEqual(4_097);
+    expect(record.error?.length).toBeLessThanOrEqual(4_097);
+    expect(String(record.fields["detail"]).length).toBeLessThanOrEqual(4_097);
+  });
+
+  it("falls back to epoch zero when the wall clock is non-finite", () => {
+    vi.spyOn(Date, "now").mockReturnValue(Number.POSITIVE_INFINITY);
+
+    const record = appendStructuredLog({ level: "info", message: "clock edge" });
+
+    expect(record.epochMs).toBe(0);
+    expect(record.at).toBe("1970-01-01T00:00:00.000Z");
+  });
 });

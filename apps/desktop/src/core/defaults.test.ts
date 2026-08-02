@@ -5,9 +5,12 @@ import {
   AUDIO_CHUNK_RUNTIME_MAX_MS,
   AUDIO_CHUNK_RUNTIME_MIN_MS,
   AUDIO_CHUNK_STEP_MS,
+  BROWSER_SOURCE_PORT_MAX,
+  BROWSER_SOURCE_PORT_MIN,
   createDefaultConfig,
   createTextStyle,
   DEFAULT_AUDIO_CHUNK_MS,
+  DEFAULT_BROWSER_SOURCE_PORT,
   DEFAULT_MODEL_CATALOG,
   DEFAULT_RECOGNITION_MODE,
   DEFAULT_VAD_INTERVAL_MS,
@@ -98,6 +101,37 @@ describe("default configuration", () => {
     const fixed = mergeConfig({ audio: { adaptiveNoiseFloor: false, silenceGateDb: -60 } });
     expect(fixed.audio.adaptiveNoiseFloor).toBe(false);
     expect(fixed.audio.silenceGateDb).toBe(-60);
+  });
+
+  it("defaults the OBS browser source to disabled on the documented port", () => {
+    const config = createDefaultConfig();
+    expect(config.overlay.browserSource).toEqual({ enabled: false, port: 1_421 });
+    expect(DEFAULT_BROWSER_SOURCE_PORT).toBe(1_421);
+    expect(BROWSER_SOURCE_PORT_MIN).toBe(1_024);
+    expect(BROWSER_SOURCE_PORT_MAX).toBe(65_535);
+  });
+
+  it("keeps a legacy overlay without browserSource disabled on the default port", () => {
+    const merged = mergeConfig({ overlay: { order: "translation-first" } });
+    expect(merged.overlay.browserSource).toEqual({ enabled: false, port: 1_421 });
+  });
+
+  it("normalizes an out-of-range browser source port and preserves a valid one", () => {
+    const fixed = mergeConfig({
+      overlay: { browserSource: { enabled: true, port: 80 } },
+    });
+    expect(fixed.overlay.browserSource).toEqual({ enabled: true, port: 1_421 });
+    const custom = mergeConfig({
+      overlay: { browserSource: { enabled: true, port: 40_000 } },
+    });
+    expect(custom.overlay.browserSource).toEqual({ enabled: true, port: 40_000 });
+  });
+
+  it("keeps malformed browser source values on safe defaults", () => {
+    const merged = mergeConfig({
+      overlay: { browserSource: { enabled: "yes" as never, port: "1421" as never } },
+    });
+    expect(merged.overlay.browserSource).toEqual({ enabled: false, port: 1_421 });
   });
 
   it("resolves the effective silence gate without treating an adaptive fallback as active", () => {

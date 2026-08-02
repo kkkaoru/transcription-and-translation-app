@@ -1,6 +1,6 @@
 /** Lightweight in-memory diagnostic event log for the Debug panel. */
 
-import { appendStructuredLog } from "./structuredLog";
+import { appendStructuredLog, redactSensitiveText } from "./structuredLog";
 import type { LogLevel } from "./types";
 
 export type DiagnosticEventKind =
@@ -67,8 +67,15 @@ export const pushDiagnosticEvent = (
   detail?: string,
   options?: PushDiagnosticOptions,
 ): DiagnosticEvent => {
-  const safeMessage = typeof message === "string" ? message : String(message ?? "");
-  const safeDetail = detail == null ? undefined : String(detail).trim() || undefined;
+  const toSafeText = (value: unknown): string | null => {
+    try {
+      return redactSensitiveText(value == null ? null : String(value));
+    } catch {
+      return null;
+    }
+  };
+  const safeMessage = toSafeText(message) ?? "(empty)";
+  const safeDetail = toSafeText(detail) ?? undefined;
   const entry: DiagnosticEvent = {
     id: `evt-${Date.now()}-${sequence++}`,
     at: new Date().toISOString(),

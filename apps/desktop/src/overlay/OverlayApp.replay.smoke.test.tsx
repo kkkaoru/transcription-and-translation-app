@@ -243,6 +243,27 @@ describe("OverlayApp caption replay", () => {
     container.remove();
   });
 
+  it("starts the hidden native-renderer route without preview text", async () => {
+    history.pushState({}, "", "/?overlay=1&native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(container.querySelector(".caption-line-source")).toBeNull();
+    expect(container.querySelector(".caption-line-translation")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    history.replaceState({}, "", "/");
+    container.remove();
+  });
+
   it("clears on successful idle and ignores caption events that arrive afterward", async () => {
     await act(async () => {
       root.render(<OverlayApp />);

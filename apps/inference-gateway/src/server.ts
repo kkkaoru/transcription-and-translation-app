@@ -194,6 +194,10 @@ export const createGatewayServer = (
 
     const abortRequest = (): void => {
       requestAbort.abort();
+      // A disconnected client may leave an adapter that ignores AbortSignal
+      // unresolved. Record the transport failure immediately so every request
+      // still has a terminal lifecycle event.
+      finishRequest(499, { error_code: "client_closed_request" });
     };
     // Request/response stream errors are expected when the UI cancels a
     // capture or navigates away. Install no-op listeners so Node does not turn

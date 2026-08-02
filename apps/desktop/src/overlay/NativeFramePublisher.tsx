@@ -570,7 +570,6 @@ export const NativeFramePublisher = ({
                 "native overlay publish suppressed after repeated failures; OBS may show a frozen frame",
               chunkId: currentCaption.id,
               fields: {
-                paintKey: nextKey.slice(0, 80),
                 failureCount: gateRef.current.failureCount,
               },
             });
@@ -596,60 +595,94 @@ export const NativeFramePublisher = ({
             canvas.height = height;
             lastSizeRef.current = { width, height };
           }
-          const frame = renderNativeFrame(canvas, currentConfig, currentCaption);
-          if (!frame || cancelled) {
-            gateRef.current.inFlightKey = null;
-            return;
-          }
-
           const publishedKey = nextKey;
-          void bridge
-            .publishOverlayFrame(bytesToBase64(frame.pixels), frame.width, frame.height)
-            .then(() => {
-              if (cancelled) {
-                if (gateRef.current.inFlightKey === publishedKey) {
-                  gateRef.current.inFlightKey = null;
+          try {
+            const frame = renderNativeFrame(canvas, currentConfig, currentCaption);
+            if (!frame) {
+              gateRef.current.inFlightKey = null;
+              scheduleRetry(16);
+              return;
+            }
+            if (cancelled) {
+              gateRef.current.inFlightKey = null;
+              return;
+            }
+            void bridge
+              .publishOverlayFrame(bytesToBase64(frame.pixels), frame.width, frame.height)
+              .then(() => {
+                if (cancelled) {
+                  if (gateRef.current.inFlightKey === publishedKey) {
+                    gateRef.current.inFlightKey = null;
+                  }
+                  return;
                 }
-                return;
-              }
-              const followUp = completeNativePublishSuccess(gateRef.current, publishedKey);
-              if (followUp) {
-                schedule();
-              }
-            })
-            .catch((error: unknown) => {
-              if (cancelled) {
-                if (gateRef.current.inFlightKey === publishedKey) {
-                  gateRef.current.inFlightKey = null;
+                const followUp = completeNativePublishSuccess(gateRef.current, publishedKey);
+                if (followUp) {
+                  schedule();
                 }
-                return;
-              }
-              const detail = formatBridgeError(error) ?? "native overlay publish rejected";
-              const { nextKey: retryKey, exhausted } = completeNativePublishFailure(
-                gateRef.current,
-                publishedKey,
-              );
-              appendStructuredLog({
-                level: exhausted ? "error" : "warn",
-                source: "frontend",
-                stage: "native-output",
-                message: exhausted
-                  ? "native overlay publish exhausted retries; OBS may show a frozen frame"
-                  : "native overlay publish failed; will retry latest frame",
-                error: detail,
-                chunkId: currentCaption.id,
-                fields: {
-                  paintKey: publishedKey.slice(0, 80),
-                  failureCount: gateRef.current.failureCount,
-                  exhausted,
-                },
+              })
+              .catch((error: unknown) => {
+                if (cancelled) {
+                  if (gateRef.current.inFlightKey === publishedKey) {
+                    gateRef.current.inFlightKey = null;
+                  }
+                  return;
+                }
+                const detail = formatBridgeError(error) ?? "native overlay publish rejected";
+                const { nextKey: retryKey, exhausted } = completeNativePublishFailure(
+                  gateRef.current,
+                  publishedKey,
+                );
+                appendStructuredLog({
+                  level: exhausted ? "error" : "warn",
+                  source: "frontend",
+                  stage: "native-output",
+                  message: exhausted
+                    ? "native overlay publish exhausted retries; OBS may show a frozen frame"
+                    : "native overlay publish failed; will retry latest frame",
+                  error: detail,
+                  chunkId: currentCaption.id,
+                  fields: {
+                    failureCount: gateRef.current.failureCount,
+                    exhausted,
+                  },
+                });
+                if (retryKey) {
+                  // Brief backoff avoids a tight loop when the native worker is
+                  // reconnecting, while still recovering without a caption change.
+                  scheduleRetry(200);
+                }
               });
-              if (retryKey) {
-                // Brief backoff avoids a tight loop when the native worker is
-                // reconnecting, while still recovering without a caption change.
-                scheduleRetry(200);
+          } catch (error) {
+            if (cancelled) {
+              if (gateRef.current.inFlightKey === publishedKey) {
+                gateRef.current.inFlightKey = null;
               }
+              return;
+            }
+            const detail = formatBridgeError(error) ?? "native overlay frame render failed";
+            const { nextKey: retryKey, exhausted } = completeNativePublishFailure(
+              gateRef.current,
+              publishedKey,
+            );
+            appendStructuredLog({
+              level: exhausted ? "error" : "warn",
+              source: "frontend",
+              stage: "native-output",
+              message: exhausted
+                ? "native overlay publish exhausted retries; OBS may show a frozen frame"
+                : "native overlay frame render failed; will retry latest frame",
+              error: detail,
+              chunkId: currentCaption.id,
+              fields: {
+                failureCount: gateRef.current.failureCount,
+                exhausted,
+              },
             });
+            if (retryKey) {
+              scheduleRetry(200);
+            }
+          }
         });
       });
     };

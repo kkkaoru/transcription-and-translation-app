@@ -172,16 +172,6 @@ export const transcribeWithParapper = (
   options: ParapperOptions,
 ): Promise<string> =>
   new Promise((resolve, reject) => {
-    if (options.signal?.aborted) {
-      reject(
-        new GatewayError(
-          HTTP_CLIENT_CLOSED_REQUEST,
-          "parapper_cancelled",
-          "Parapper recognition was cancelled",
-        ),
-      );
-      return;
-    }
     // Keep the sidecar protocol session separate from the HTTP/capture identity.
     const sessionId = (options.sessionId ?? randomUUID)();
     const correlation: CorrelationContext = options.correlation ?? {
@@ -207,20 +197,98 @@ export const transcribeWithParapper = (
         // Logging must never strand the recognition Promise.
       }
     };
+    const emitLog = (message: string, fields?: Record<string, unknown>): void => {
+      // A diagnostic logger must never be able to strand the capture Promise.
+      try {
+        log(message, fields);
+      } catch {
+        // Ignore logger failures; the session result remains authoritative.
+      }
+    };
     const startedAt = Date.now();
+    emitProvider(PROVIDER_TURN_START, {
+      outcome: "started",
+      pcmBytes: pcm.byteLength,
+      sampleRate: PARAPPER_SAMPLE_RATE,
+      textChars: null,
+    });
+    const cancellation = new GatewayError(
+      HTTP_CLIENT_CLOSED_REQUEST,
+      "parapper_cancelled",
+      "Parapper recognition was cancelled",
+    );
+    if (options.signal?.aborted) {
+      const elapsedMs = Date.now() - startedAt;
+      emitProvider(PROVIDER_TURN_END, {
+        sessionId,
+        elapsedMs,
+        duration_ms: elapsedMs,
+        pcmBytes: pcm.byteLength,
+        framesSent: 0,
+        bytesSent: 0,
+        partialCount: 0,
+        lastPartialChars: 0,
+        outcome: "failed",
+        status: "failed",
+        errorCode: cancellation.code,
+        error: cancellation.message,
+        textChars: null,
+      });
+      emitLog("session failed", {
+        sessionId,
+        elapsedMs,
+        duration_ms: elapsedMs,
+        pcmBytes: pcm.byteLength,
+        framesSent: 0,
+        bytesSent: 0,
+        partialCount: 0,
+        lastPartialChars: 0,
+        hasFinal: false,
+        error: cancellation.message,
+      });
+      reject(cancellation);
+      return;
+    }
     let socket: WebSocket;
     try {
       socket = new WebSocket(options.url, {
         ...(options.apiKey ? { headers: { Authorization: `Bearer ${options.apiKey}` } } : {}),
       });
     } catch (error) {
-      reject(
-        new GatewayError(
-          HTTP_BAD_GATEWAY,
-          "parapper_connection_failed",
-          formatParapperConnectionError(error),
-        ),
+      const failure = new GatewayError(
+        HTTP_BAD_GATEWAY,
+        "parapper_connection_failed",
+        formatParapperConnectionError(error),
       );
+      const elapsedMs = Date.now() - startedAt;
+      emitProvider(PROVIDER_TURN_END, {
+        sessionId,
+        elapsedMs,
+        duration_ms: elapsedMs,
+        pcmBytes: pcm.byteLength,
+        framesSent: 0,
+        bytesSent: 0,
+        partialCount: 0,
+        lastPartialChars: 0,
+        outcome: "failed",
+        status: "failed",
+        errorCode: failure.code,
+        error: failure.message,
+        textChars: null,
+      });
+      emitLog("session failed", {
+        sessionId,
+        elapsedMs,
+        duration_ms: elapsedMs,
+        pcmBytes: pcm.byteLength,
+        framesSent: 0,
+        bytesSent: 0,
+        partialCount: 0,
+        lastPartialChars: 0,
+        hasFinal: false,
+        error: failure.message,
+      });
+      reject(failure);
       return;
     }
     let finished = false;
@@ -251,15 +319,6 @@ export const transcribeWithParapper = (
         return finalTranscript;
       }
       return lastPartial;
-    };
-
-    const emitLog = (message: string, fields?: Record<string, unknown>): void => {
-      // A diagnostic logger must never be able to strand the capture Promise.
-      try {
-        log(message, fields);
-      } catch {
-        // Ignore logger failures; the session result remains authoritative.
-      }
     };
 
     const clearSessionTimer = (): void => {
@@ -635,12 +694,9 @@ export const transcribeWithParapper = (
       if (finished) {
         return;
       }
-      emitProvider(PROVIDER_TURN_START, {
-        outcome: "started",
-        pcmBytes: pcm.byteLength,
-        sampleRate: PARAPPER_SAMPLE_RATE,
-        textChars: null,
-      });
+      // provider_turn.start is emitted once at turn entry, before the socket is
+      // created, so every terminal record has a matching start even when the
+      // connection fails synchronously; it must not be re-emitted on open.
       emitLog("session start", {
         sessionId,
         pcmBytes: pcm.byteLength,

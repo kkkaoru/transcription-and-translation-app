@@ -168,6 +168,49 @@ impl CaptionTextStyle {
     }
 }
 
+/// Fixed loopback port for the OBS Browser Source fallback. OBS adds a
+/// Browser Source pointing at `http://127.0.0.1:{port}/`; the desktop app
+/// serves a caption-only page plus the latest-caption JSON feed.
+pub const DEFAULT_BROWSER_SOURCE_PORT: u16 = 1421;
+pub const BROWSER_SOURCE_PORT_MIN: u16 = 1024;
+pub const BROWSER_SOURCE_PORT_MAX: u16 = 65_535;
+
+/// Apple Silicon cannot load the bundled x86_64-only Syphon framework, so the
+/// loopback Browser Source is enabled on a fresh native macOS configuration.
+/// An explicit persisted `false` remains an opt-out; this only supplies the
+/// default needed for automatic launch publication.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const DEFAULT_BROWSER_SOURCE_ENABLED: bool = true;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+const DEFAULT_BROWSER_SOURCE_ENABLED: bool = false;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserSourceConfig {
+    /// Serve the caption-only page and JSON feed over loopback HTTP. This is
+    /// the OBS fallback for platforms without Spout2/Syphon (notably Apple
+    /// Silicon macOS). It starts automatically on a fresh Apple Silicon
+    /// configuration and can be disabled from Settings.
+    #[serde(default = "default_browser_source_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_browser_source_port")]
+    pub port: u16,
+}
+
+fn default_browser_source_enabled() -> bool {
+    DEFAULT_BROWSER_SOURCE_ENABLED
+}
+
+fn default_browser_source_port() -> u16 {
+    DEFAULT_BROWSER_SOURCE_PORT
+}
+
+impl Default for BrowserSourceConfig {
+    fn default() -> Self {
+        Self { enabled: default_browser_source_enabled(), port: default_browser_source_port() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayConfig {
@@ -184,6 +227,8 @@ pub struct OverlayConfig {
     pub caption_y_percent: f32,
     pub source: CaptionTextStyle,
     pub translation: CaptionTextStyle,
+    #[serde(default)]
+    pub browser_source: BrowserSourceConfig,
 }
 
 fn default_caption_x_percent() -> f32 {
@@ -278,6 +323,7 @@ impl Default for AppConfig {
                 caption_y_percent: default_caption_y_percent(),
                 source: CaptionTextStyle::default_source(),
                 translation: CaptionTextStyle::default_translation(),
+                browser_source: BrowserSourceConfig::default(),
             },
             debug: DebugConfig::default(),
         }
@@ -363,6 +409,11 @@ impl AppConfig {
         )?;
         validate_text_style("source caption", &self.overlay.source)?;
         validate_text_style("translation caption", &self.overlay.translation)?;
+        if !(BROWSER_SOURCE_PORT_MIN..=BROWSER_SOURCE_PORT_MAX)
+            .contains(&self.overlay.browser_source.port)
+        {
+            return Err("browser source port is outside the supported range".to_string());
+        }
         Ok(())
     }
 }
@@ -889,6 +940,140 @@ mod tests {
         assert_eq!(
             config.validate(),
             Err("translation caption color must be a #RRGGBB color".to_string())
+        );
+    }
+
+    #[test]
+    fn browser_source_defaults_to_platform_safe_launch_behavior_on_the_documented_port() {
+        let config = AppConfig::default();
+        assert_eq!(config.overlay.browser_source.enabled, super::default_browser_source_enabled());
+        assert_eq!(config.overlay.browser_source.port, super::DEFAULT_BROWSER_SOURCE_PORT);
+        assert_eq!(config.overlay.browser_source.port, 1_421);
+    }
+
+    #[test]
+    fn legacy_config_without_browser_source_still_parses() {
+        let raw = r##"{
+            "schemaVersion": 1,
+            "recognitionMode": "web-speech",
+            "language": { "source": "ja", "target": "en" },
+            "endpoint": {
+                "mode": "local",
+                "baseUrl": "http://127.0.0.1:8765",
+                "transcriptionPath": "/v1/audio/transcriptions",
+                "chatPath": "/v1/chat/completions",
+                "timeoutMs": 18000
+            },
+            "models": {
+                "asr": "parapper-ja",
+                "normalizer": "azookey-rust",
+                "translator": "hy-mt2-1.8b-gguf",
+                "paths": {}
+            },
+            "audio": {
+                "inputDeviceId": "default",
+                "sampleRate": 16000,
+                "chunkMs": 640,
+                "silenceGateDb": -50.0,
+                "vadIntervalMs": 32,
+                "vadThreshold": 0.5,
+                "noiseSuppression": true,
+                "adaptiveNoiseFloor": true
+            },
+            "overlay": {
+                "width": 1280,
+                "height": 720,
+                "x": 0,
+                "y": 0,
+                "order": "source-first",
+                "gapPx": 8.0,
+                "safeAreaPx": 42.0,
+                "captionXPercent": 50.0,
+                "captionYPercent": 86.0,
+                "source": {
+                    "fontFamily": "Noto Sans JP",
+                    "fontSizePx": 36.0,
+                    "fontWeight": 700,
+                    "color": "#ffffff",
+                    "opacity": 1.0,
+                    "letterSpacingPx": 0.2,
+                    "lineHeight": 1.3,
+                    "textAlign": "center",
+                    "maxWidthPercent": 86.0,
+                    "cullingEnabled": true,
+                    "cullingColor": "#061018",
+                    "cullingWidthPx": 3.0,
+                    "cullingOpacity": 0.92,
+                    "shadowEnabled": true,
+                    "shadowColor": "#000000",
+                    "shadowBlurPx": 8.0,
+                    "shadowOffsetX": 0.0,
+                    "shadowOffsetY": 3.0,
+                    "backgroundEnabled": false,
+                    "backgroundColor": "#061018",
+                    "backgroundOpacity": 0.72,
+                    "paddingX": 14.0,
+                    "paddingY": 7.0,
+                    "borderRadius": 9.0
+                },
+                "translation": {
+                    "fontFamily": "Noto Sans JP",
+                    "fontSizePx": 29.0,
+                    "fontWeight": 650,
+                    "color": "#bfe8ff",
+                    "opacity": 1.0,
+                    "letterSpacingPx": 0.2,
+                    "lineHeight": 1.3,
+                    "textAlign": "center",
+                    "maxWidthPercent": 86.0,
+                    "cullingEnabled": true,
+                    "cullingColor": "#07121d",
+                    "cullingWidthPx": 3.0,
+                    "cullingOpacity": 0.92,
+                    "shadowEnabled": true,
+                    "shadowColor": "#000000",
+                    "shadowBlurPx": 8.0,
+                    "shadowOffsetX": 0.0,
+                    "shadowOffsetY": 3.0,
+                    "backgroundEnabled": false,
+                    "backgroundColor": "#061018",
+                    "backgroundOpacity": 0.72,
+                    "paddingX": 14.0,
+                    "paddingY": 7.0,
+                    "borderRadius": 9.0
+                }
+            }
+        }"##;
+        let config: AppConfig =
+            serde_json::from_str(raw).expect("legacy config without browserSource should parse");
+        assert_eq!(config.overlay.browser_source.enabled, super::default_browser_source_enabled());
+        assert_eq!(config.overlay.browser_source.port, super::DEFAULT_BROWSER_SOURCE_PORT);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn browser_source_explicit_opt_out_survives_platform_default() {
+        let raw = serde_json::json!({
+            "enabled": false,
+            "port": super::DEFAULT_BROWSER_SOURCE_PORT,
+        });
+        let config: super::BrowserSourceConfig =
+            serde_json::from_value(raw).expect("explicit browser source opt-out parses");
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn browser_source_port_outside_priviledged_or_ephemeral_range_is_rejected() {
+        let mut config = AppConfig::default();
+        config.overlay.browser_source.port = 80;
+        assert_eq!(
+            config.validate(),
+            Err("browser source port is outside the supported range".to_string())
+        );
+        config.overlay.browser_source.port = super::BROWSER_SOURCE_PORT_MIN - 1;
+        assert_eq!(
+            config.validate(),
+            Err("browser source port is outside the supported range".to_string())
         );
     }
 }

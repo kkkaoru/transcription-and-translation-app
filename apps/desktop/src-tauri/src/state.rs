@@ -205,6 +205,10 @@ pub struct RuntimeStatus {
 
 pub struct AppState {
     pub config: Mutex<AppConfig>,
+    /// Serialize config saves across the async model reconciliation and all
+    /// listener/native-output replacement side effects. Without this guard, an
+    /// older save can finish after a newer one and roll the app back.
+    pub config_save_lock: tokio::sync::Mutex<()>,
     pub status: Mutex<RuntimeStatus>,
     pub pipeline: Pipeline,
     /// Completed ASR / normalizer / translator stages, oldest first, each
@@ -374,6 +378,7 @@ impl AppState {
         let native_output_kind = native_output.kind().to_string();
         Self {
             config: Mutex::new(config),
+            config_save_lock: tokio::sync::Mutex::new(()),
             status: Mutex::new(RuntimeStatus {
                 status: "idle".to_string(),
                 platform: output.platform,

@@ -55,6 +55,14 @@ const LEVEL_RANK: Record<LogLevel, number> = {
 export const LOG_LEVELS: readonly LogLevel[] = ["error", "warn", "info", "debug", "trace"];
 
 const REDACTED = "[REDACTED]";
+/** Bound diagnostic text so one malformed/user-controlled payload cannot
+ * consume the entire in-memory ring buffer or make exports unbounded. */
+const MAX_DIAGNOSTIC_TEXT_LENGTH = 4_096;
+/** ECMAScript Date's largest representable millisecond timestamp. */
+const MAX_DATE_EPOCH_MS = 8_640_000_000_000_000;
+
+const truncateDiagnosticText = (text: string): string =>
+  text.length > MAX_DIAGNOSTIC_TEXT_LENGTH ? `${text.slice(0, MAX_DIAGNOSTIC_TEXT_LENGTH)}…` : text;
 
 const optionalText = (value: unknown): string | null => {
   if (value == null) {
@@ -112,7 +120,7 @@ export const redactSensitiveText = (value: string | null | undefined): string | 
   }
   try {
     const trimmed = String(value).trim();
-    return trimmed ? redactCredentialText(trimmed) : null;
+    return trimmed ? truncateDiagnosticText(redactCredentialText(trimmed)) : null;
   } catch {
     return null;
   }
@@ -132,7 +140,7 @@ export const sanitizeStructuredFields = (
       if (SENSITIVE_KEY_PATTERN.test(key)) {
         sanitized[key] = raw == null ? null : REDACTED;
       } else if (typeof raw === "string") {
-        sanitized[key] = redactCredentialText(raw);
+        sanitized[key] = truncateDiagnosticText(redactCredentialText(raw));
       } else if (raw == null || typeof raw === "number" || typeof raw === "boolean") {
         sanitized[key] = raw;
       } else {
@@ -244,6 +252,14 @@ export const clearStructuredLogs = (): void => {
   notify();
 };
 
+const normalizeEpochMs = (value: unknown): number => {
+  const candidate = typeof value === "number" && Number.isFinite(value) ? value : Date.now();
+  if (!Number.isFinite(candidate)) {
+    return 0;
+  }
+  return Math.max(-MAX_DATE_EPOCH_MS, Math.min(MAX_DATE_EPOCH_MS, Math.round(candidate)));
+};
+
 const utf8ByteLength = (text: string): number => {
   if (typeof TextEncoder !== "undefined") {
     return new TextEncoder().encode(text).length;
@@ -309,10 +325,7 @@ const writeConsole = (record: StructuredLogRecord): void => {
 };
 
 export const appendStructuredLog = (input: StructuredLogInput): StructuredLogRecord => {
-  const epochMs =
-    typeof input.epochMs === "number" && Number.isFinite(input.epochMs)
-      ? Math.round(input.epochMs)
-      : Date.now();
+  const epochMs = normalizeEpochMs(input.epochMs);
   // IPC callers and replay tools are not type-safe at runtime. Normalize the
   // severity/source before retaining or filtering a row so malformed payloads
   // can never make the Debug panel disappear or poison the ring buffer.
@@ -328,9 +341,9 @@ export const appendStructuredLog = (input: StructuredLogInput): StructuredLogRec
     epochMs,
     level,
     source,
-    stage: stage ? redactCredentialText(stage) : null,
-    chunkId: chunkId ? redactCredentialText(chunkId) : null,
-    message: redactCredentialText(message) || "(empty)",
+    stage: stage ? truncateDiagnosticText(redactCredentialText(stage)) : null,
+    chunkId: chunkId ? truncateDiagnosticText(redactCredentialText(chunkId)) : null,
+    message: truncateDiagnosticText(redactCredentialText(message)) || "(empty)",
     inputBytes:
       typeof input.inputBytes === "number" && Number.isFinite(input.inputBytes)
         ? Math.max(0, Math.round(input.inputBytes))
@@ -343,7 +356,7 @@ export const appendStructuredLog = (input: StructuredLogInput): StructuredLogRec
       typeof input.durationMs === "number" && Number.isFinite(input.durationMs)
         ? Math.max(0, Math.round(input.durationMs))
         : null,
-    error: error ? redactCredentialText(error) : null,
+    error: error ? truncateDiagnosticText(redactCredentialText(error)) : null,
     fields: sanitizeStructuredFields(input.fields),
   };
   records.push(record);

@@ -102,7 +102,9 @@ const collectFrontendDiagnostics = (): JsonObject => {
         typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia),
       audioContext: audioSupported,
     },
-    href: typeof window !== "undefined" ? window.location.href : null,
+    // Keep the route useful for support while dropping query/fragment credentials
+    // and userinfo from a copied/exported diagnostics snapshot.
+    href: typeof window !== "undefined" ? safeEndpointLabel(window.location.href) : null,
     collectedAt: new Date().toISOString(),
   };
 };
@@ -341,6 +343,24 @@ const readParapperOutputSuperseded = (backend: JsonObject | null): number | null
   );
 };
 
+const readSourceCaptionStaleDropped = (backend: JsonObject | null): number | null => {
+  const runtime = pick(backend, "runtimeStatus");
+  return normalizeRetiredCount(
+    pick(backend, "sourceCaptionStaleDropped") ??
+      pick(backend, "source_caption_stale_dropped") ??
+      pick(isRecord(runtime) ? runtime : null, "sourceCaptionStaleDropped"),
+  );
+};
+
+const readUnfencedCaptionAccepted = (backend: JsonObject | null): number | null => {
+  const runtime = pick(backend, "runtimeStatus");
+  return normalizeRetiredCount(
+    pick(backend, "unfencedCaptionAccepted") ??
+      pick(backend, "unfenced_caption_accepted") ??
+      pick(isRecord(runtime) ? runtime : null, "unfencedCaptionAccepted"),
+  );
+};
+
 const normalizeUpdateStatus = (value: unknown): UpdateStatus => {
   if (!isRecord(value)) {
     return { ...DEFAULT_UPDATE_STATUS };
@@ -348,12 +368,15 @@ const normalizeUpdateStatus = (value: unknown): UpdateStatus => {
   const metadataValue = pick(value, "metadata");
   const metadata = isRecord(metadataValue)
     ? {
-        version: asString(pick(metadataValue, "version"), "—"),
-        date: toNullableString(pick(metadataValue, "date")),
-        body: toNullableString(pick(metadataValue, "body")),
-        target: toNullableString(pick(metadataValue, "target")),
-        source: toNullableString(pick(metadataValue, "source")),
-        channel: toNullableString(pick(metadataValue, "channel")),
+        version: redactSensitiveText(asString(pick(metadataValue, "version"), "—")) ?? "—",
+        date: redactSensitiveText(toNullableString(pick(metadataValue, "date"))),
+        body: redactSensitiveText(toNullableString(pick(metadataValue, "body"))),
+        target: redactSensitiveText(toNullableString(pick(metadataValue, "target"))),
+        source: (() => {
+          const source = toNullableString(pick(metadataValue, "source"));
+          return source ? safeEndpointLabel(source) : null;
+        })(),
+        channel: redactSensitiveText(toNullableString(pick(metadataValue, "channel"))),
       }
     : null;
   return {
@@ -369,7 +392,9 @@ const normalizeUpdateStatus = (value: unknown): UpdateStatus => {
       return source ? safeEndpointLabel(source) : null;
     })(),
     channel: toNullableString(pick(value, "channel")),
-    switchResult: toNullableString(pick(value, "switchResult") ?? pick(value, "relaunchResult")),
+    switchResult: redactSensitiveText(
+      toNullableString(pick(value, "switchResult") ?? pick(value, "relaunchResult")),
+    ),
     relaunchDeferred: pick(value, "relaunchDeferred") === true,
     metadata,
   };
@@ -395,7 +420,9 @@ const normalizeSidecars = (value: unknown): SidecarStatus[] => {
       toNullableString(pick(entry, "lastError") ?? pick(entry, "error")),
     ),
     startedAt: toNullableString(pick(entry, "startedAt")),
-    switchResult: toNullableString(pick(entry, "switchResult") ?? pick(entry, "switch")),
+    switchResult: redactSensitiveText(
+      toNullableString(pick(entry, "switchResult") ?? pick(entry, "switch")),
+    ),
   }));
 };
 
@@ -691,6 +718,9 @@ export function DebugPanel() {
       chunkTiming,
       pipelineDrops,
       translationRetired: readTranslationRetired(backendInfo),
+      parapperOutputSuperseded: readParapperOutputSuperseded(backendInfo),
+      sourceCaptionStaleDropped: readSourceCaptionStaleDropped(backendInfo),
+      unfencedCaptionAccepted: readUnfencedCaptionAccepted(backendInfo),
       verbosePipelineLogging: verboseLogging,
       logLevel,
       structuredLogs,
@@ -1243,7 +1273,15 @@ export function DebugPanel() {
       return;
     }
     try {
-      await navigator.clipboard.writeText(JSON.stringify(combined, null, 2));
+      // The file export path runs sanitize_export_body natively; the clipboard
+      // path must apply the same credential redaction to every string value.
+      const redacted = JSON.stringify(
+        combined,
+        (_key, value: unknown) =>
+          typeof value === "string" ? (redactSensitiveText(value) ?? value) : value,
+        2,
+      );
+      await navigator.clipboard.writeText(redacted);
       if (!mountedRef.current) {
         return;
       }
@@ -1344,6 +1382,8 @@ export function DebugPanel() {
 
   const nativeTranslationRetired = readTranslationRetired(backendInfo);
   const nativeParapperOutputSuperseded = readParapperOutputSuperseded(backendInfo);
+  const nativeSourceCaptionStaleDropped = readSourceCaptionStaleDropped(backendInfo);
+  const nativeUnfencedCaptionAccepted = readUnfencedCaptionAccepted(backendInfo);
   const pipelineDropSourceRows = [
     ...PIPELINE_DROP_SOURCE_ORDER.map((source) => ({
       source,
@@ -1918,6 +1958,25 @@ export function DebugPanel() {
                         {t("debug.pipelineDropsParapperOutputSuperseded")}
                       </span>
                       <strong>{nativeParapperOutputSuperseded}</strong>
+                    </div>
+                  ) : null}
+                  {nativeSourceCaptionStaleDropped != null ? (
+                    <div
+                      className="debug-stat-card"
+                      data-testid="debug-source-caption-stale-dropped"
+                    >
+                      <span className="debug-stat-label">
+                        {t("debug.pipelineDropsSourceCaptionStaleDropped")}
+                      </span>
+                      <strong>{nativeSourceCaptionStaleDropped}</strong>
+                    </div>
+                  ) : null}
+                  {nativeUnfencedCaptionAccepted != null ? (
+                    <div className="debug-stat-card" data-testid="debug-unfenced-caption-accepted">
+                      <span className="debug-stat-label">
+                        {t("debug.pipelineDropsUnfencedCaptionAccepted")}
+                      </span>
+                      <strong>{nativeUnfencedCaptionAccepted}</strong>
                     </div>
                   ) : null}
                 </div>

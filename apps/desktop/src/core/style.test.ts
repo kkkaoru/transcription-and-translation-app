@@ -19,8 +19,7 @@ describe("caption styles", () => {
     const style = { ...createDefaultConfig().overlay.source, backgroundEnabled: true };
     const css = toCaptionCss(style);
     expect(css.fontFamily).toContain("Noto Sans JP");
-    expect(css.WebkitTextStroke).toContain("#061018");
-    expect(css.WebkitTextStroke).toContain("92");
+    expect(css.WebkitTextStroke).toBe("3px color-mix(in srgb, #061018 92%, transparent)");
     expect(css.textShadow).toContain("#000000");
     expect(css.backgroundColor).toContain("color-mix");
   });
