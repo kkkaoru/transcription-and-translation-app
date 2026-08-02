@@ -1073,15 +1073,4 @@ mod tests {
             ..ParapperConfig::default()
         }
     }
-
-    #[cfg(not(target_os = "macos"))]
-    fn tauri_test_handle() -> tauri::AppHandle {
-        let builder = tauri::Builder::default();
-        #[cfg(any(windows, target_os = "linux"))]
-        let builder = builder.any_thread();
-        let app = builder
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("test app should build");
-        app.handle().clone()
-    }
 }
