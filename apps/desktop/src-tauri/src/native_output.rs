@@ -121,6 +121,39 @@ fn report_replacement(replacements: u64) {
     }
 }
 
+/// Drain the latest-wins mailbox into a native transport (Spout/Syphon).
+///
+/// On the first transport error the mailbox is closed so subsequent
+/// `NativeOutputHandle::publish` calls return an error instead of enqueueing
+/// frames that can never reach OBS. Without this, a runtime Spout/Syphon
+/// failure left the mailbox open, the renderer believed publish succeeded, and
+/// OBS froze on a stale texture with no status surface.
+#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+fn pump_native_frames<F>(receiver: &LatestFrameSender, width: u32, height: u32, mut send: F)
+where
+    F: FnMut(&OverlayFrame) -> Result<(), String>,
+{
+    while let Some(frame) = receiver.receive() {
+        if frame.width != width || frame.height != height {
+            log::warn!(
+                "native output dropping frame with unexpected dimensions {}x{} (expected {}x{})",
+                frame.width,
+                frame.height,
+                width,
+                height
+            );
+            continue;
+        }
+        if let Err(error) = send(&frame) {
+            log::error!(
+                "native output transport failed: {error}; closing mailbox so publishers surface the failure"
+            );
+            receiver.close();
+            break;
+        }
+    }
+}
+
 pub struct NativeOutputHandle {
     sender: Option<LatestFrameSender>,
     kind: String,
@@ -201,11 +234,11 @@ fn start_spout(width: u32, height: u32) -> Option<LatestFrameSender> {
             }
         };
         let _ = ready_sender.send(true);
-        while let Some(frame) = frame_receiver.receive() {
-            if frame.width == width && frame.height == height {
-                let _ = sender.send_image(&frame.rgba, frame.width, frame.height);
-            }
-        }
+        pump_native_frames(&frame_receiver, width, height, |frame| {
+            sender
+                .send_image(&frame.rgba, frame.width, frame.height)
+                .map_err(|error| format!("spout send_image failed: {error}"))
+        });
     });
     ready_receiver
         .recv_timeout(Duration::from_secs(2))
@@ -228,11 +261,27 @@ fn start_syphon(width: u32, height: u32) -> Option<LatestFrameSender> {
             }
         };
         let _ = ready_sender.send(true);
-        while let Some(frame) = frame_receiver.receive() {
-            if frame.width == width && frame.height == height {
-                server.send_frame(&frame.rgba);
+        // syphon-rs::Server::send_frame returns () and can only fail open
+        // inside the crate (e.g. missing Metal command buffer). Validate the
+        // buffer length here and route through pump_native_frames so a length
+        // mismatch — or a future fallible transport — closes the mailbox
+        // instead of leaving publishers believing frames are still flowing.
+        pump_native_frames(&frame_receiver, width, height, |frame| {
+            let expected = (frame.width as usize)
+                .checked_mul(frame.height as usize)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| "syphon frame dimensions overflow".to_string())?;
+            if frame.rgba.len() != expected {
+                return Err(format!(
+                    "syphon frame byte length {} does not match dimensions {}x{}",
+                    frame.rgba.len(),
+                    frame.width,
+                    frame.height
+                ));
             }
-        }
+            server.send_frame(&frame.rgba);
+            Ok(())
+        });
     });
     ready_receiver
         .recv_timeout(Duration::from_secs(2))
@@ -291,6 +340,60 @@ mod tests {
         sender.close();
 
         assert!(waiter.join().expect("worker should not panic").is_none());
+        assert!(matches!(
+            sender.send_latest(frame(3)),
+            Err(error) if error == "native output worker stopped"
+        ));
+    }
+
+    #[test]
+    fn transport_send_failure_closes_mailbox_so_publishers_see_the_error() {
+        let sender = sender();
+        let worker = sender.clone();
+        assert!(matches!(sender.send_latest(frame(1)), Ok(super::EnqueueOutcome::Enqueued)));
+
+        let pump = std::thread::spawn(move || {
+            super::pump_native_frames(&worker, 1, 1, |_frame| {
+                Err("simulated spout/syphon failure".to_string())
+            });
+        });
+        pump.join().expect("pump thread should finish after the first send error");
+
+        // The renderer-side publish path enqueues through send_latest. After a
+        // transport failure the mailbox must reject new frames rather than
+        // silently accepting them while OBS stays frozen on the last good frame.
+        assert!(matches!(
+            sender.send_latest(frame(2)),
+            Err(error) if error == "native output worker stopped"
+        ));
+        assert!(sender.receive().is_none());
+    }
+
+    #[test]
+    fn transport_send_success_keeps_mailbox_open_until_close() {
+        let sender = sender();
+        let worker = sender.clone();
+        assert!(matches!(sender.send_latest(frame(1)), Ok(super::EnqueueOutcome::Enqueued)));
+        assert!(matches!(
+            sender.send_latest(frame(2)),
+            Ok(super::EnqueueOutcome::Replaced { replacements: 1 })
+        ));
+
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let pump = std::thread::spawn(move || {
+            let mut sent = Vec::new();
+            super::pump_native_frames(&worker, 1, 1, |frame| {
+                sent.push(frame.rgba[0]);
+                let _ = done_sender.send(sent.len());
+                Ok(())
+            });
+            sent
+        });
+        // Wait until the latest pending frame has been delivered, then close.
+        assert_eq!(done_receiver.recv().expect("first delivery"), 1);
+        sender.close();
+        let sent = pump.join().expect("pump should exit after close");
+        assert_eq!(sent, vec![2]);
         assert!(matches!(
             sender.send_latest(frame(3)),
             Err(error) if error == "native output worker stopped"

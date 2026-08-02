@@ -606,6 +606,54 @@ impl AppState {
     pub fn translation_is_current(&self, ticket: TranslationTicket) -> bool {
         self.translation_tracker.lock().map(|tracker| tracker.is_current(ticket)).unwrap_or(false)
     }
+
+    /// Publish a translation result only when its ticket remains current.
+    /// Invokes `emit` while the tracker lock is held so generation-awareness is
+    /// atomic with publication.
+    ///
+    /// Lock order: `translation_tracker` then `status` then `latest_caption`.
+    pub fn publish_translation_for_ticket(
+        &self,
+        ticket: TranslationTicket,
+        caption: &CaptionPayload,
+        emit: impl FnOnce(&CaptionPayload),
+    ) {
+        let Ok(tracker) = self.translation_tracker.lock() else {
+            return;
+        };
+        if !tracker.is_current(ticket) {
+            return;
+        }
+        let Ok(status) = self.status.lock() else {
+            return;
+        };
+        if !capture_status_is_active(status.status.as_str()) {
+            return;
+        }
+        self.record_latest_caption(caption);
+        emit(caption);
+        drop(status);
+        drop(tracker);
+    }
+
+    /// Record an empty result from a Parapper turn for a still-current generation,
+    /// returning None if the generation has been superseded. This prevents a
+    /// Stop+Start between the generation check and the empty-asr record from
+    /// poisoning the new session's health tracker.
+    ///
+    /// Lock order: `translation_tracker` then `asr_health`.
+    pub fn record_expected_empty_asr_for_generation(
+        &self,
+        generation: u64,
+        turn_id: &str,
+    ) -> Option<ExpectedEmptyAsrResult> {
+        let tracker = self.translation_tracker.lock().ok()?;
+        if !generation_is_current(&tracker, generation) {
+            return None;
+        }
+        let mut health = self.asr_health.lock().ok()?;
+        Some(health.observe_expected_empty_at(Instant::now(), turn_id))
+    }
 }
 
 /// Shared active-capture predicate for generation-gated status mutations.
