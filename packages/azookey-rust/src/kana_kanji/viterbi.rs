@@ -368,9 +368,11 @@ pub fn convert_with_dictionary(
                         score: state.score,
                         meaning_score: state.meaning_score,
                         last: keep_clause_context.then(|| state.last.clone()).flatten(),
-                        clause_mid: keep_clause_context
-                            .then_some(state.clause_mid)
-                            .unwrap_or(BOS_EOS_MID),
+                        clause_mid: if keep_clause_context {
+                            state.clause_mid
+                        } else {
+                            BOS_EOS_MID
+                        },
                         clause_has_word: keep_clause_context && state.clause_has_word,
                     },
                     width,
