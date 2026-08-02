@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { mergeCaptionPayload } from "./caption-updates";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  clearCaptionMergeDiagnostics,
+  getCaptionMergeDiagnostics,
+  mergeCaptionPayload,
+  takePendingCaptionTranslation,
+} from "./caption-updates";
 import type { CaptionPayload } from "./types";
 
 const base = {
@@ -19,6 +24,10 @@ const caption = (overrides: Partial<CaptionPayload>): CaptionPayload => ({
 });
 
 describe("mergeCaptionPayload", () => {
+  beforeEach(() => {
+    clearCaptionMergeDiagnostics();
+  });
+
   it("keeps recognized source immediately and merges translation by utterance id", () => {
     const first = caption({});
     const translated = caption({
@@ -241,6 +250,29 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, next)?.sourceText).toBe("別の文です");
   });
 
+  it("does not continue a cross-id source when the next start time is non-finite", () => {
+    const current = caption({
+      id: "chunk-1",
+      sourceText: "明日の天気は",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const next = caption({
+      id: "chunk-2",
+      sourceText: "別の文です",
+      startedAt: Number.NaN,
+      receivedAt: 2_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, next)?.sourceText).toBe("別の文です");
+  });
+
   it("falls back to receipt ordering when same-id timestamps are non-finite", () => {
     const current = caption({
       id: "u-1",
@@ -332,6 +364,132 @@ describe("mergeCaptionPayload", () => {
     });
 
     expect(mergeCaptionPayload(current, staleTranslation)).toBeNull();
+    expect(takePendingCaptionTranslation("chunk-1")).toMatchObject(staleTranslation);
+  });
+
+  it("preserves a cross-id translation-only payload without attaching it to the newer source", () => {
+    const current = caption({
+      id: "chunk-2",
+      sourceText: "明日の天気は晴れ",
+      translationText: "",
+      startedAt: 1_640,
+      receivedAt: 1_640,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const lateTranslation = caption({
+      id: "chunk-1",
+      sourceText: "",
+      translationText: "The weather tomorrow",
+      startedAt: 1_000,
+      receivedAt: 1_700,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    const merged = mergeCaptionPayload(current, lateTranslation);
+
+    expect(merged).toBe(current);
+    expect(getCaptionMergeDiagnostics()).toEqual({
+      crossIdTranslationsSaved: 1,
+      pendingCrossIdTranslations: 1,
+    });
+    expect(takePendingCaptionTranslation("chunk-1")).toMatchObject(lateTranslation);
+    expect(getCaptionMergeDiagnostics().pendingCrossIdTranslations).toBe(0);
+  });
+
+  it("keeps a future source-bearing translation out of the current live slot", () => {
+    const current = caption({
+      id: "chunk-1",
+      sourceText: "明日の天気は",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const earlyTranslation = caption({
+      id: "chunk-2",
+      sourceText: "明日の天気は晴れ",
+      translationText: "The weather tomorrow is sunny",
+      startedAt: 1_640,
+      receivedAt: 1_650,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, earlyTranslation)).toBe(current);
+    expect(takePendingCaptionTranslation("chunk-2")).toMatchObject(earlyTranslation);
+  });
+
+  it("returns null when a pending translation ID is unknown", () => {
+    expect(takePendingCaptionTranslation("missing-translation")).toBeNull();
+  });
+
+  it("stores a translation that arrives before its newer source caption", () => {
+    const current = caption({
+      id: "chunk-1",
+      sourceText: "明日の天気は",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const earlyTranslation = caption({
+      id: "chunk-2",
+      sourceText: "",
+      translationText: "The weather tomorrow is sunny",
+      startedAt: 1_640,
+      receivedAt: 1_650,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, earlyTranslation)).toBe(current);
+    expect(takePendingCaptionTranslation("chunk-2")).toMatchObject(earlyTranslation);
+  });
+
+  it("evicts the oldest cross-id translation when the bounded side channel is full", () => {
+    const current = caption({
+      id: "current",
+      sourceText: "表示中の文",
+      translationText: "",
+      startedAt: 10_000,
+      receivedAt: 10_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    for (let index = 0; index < 65; index += 1) {
+      const pending = caption({
+        id: `pending-${index}`,
+        sourceText: "",
+        translationText: `translation-${index}`,
+        startedAt: index + 1,
+        receivedAt: index + 1,
+        stage: "translation",
+        sequence: 1,
+        isFinal: true,
+      });
+      expect(mergeCaptionPayload(current, pending)).toBe(current);
+    }
+
+    expect(getCaptionMergeDiagnostics()).toEqual({
+      crossIdTranslationsSaved: 65,
+      pendingCrossIdTranslations: 64,
+    });
+    expect(takePendingCaptionTranslation("pending-0")).toBeNull();
+    expect(takePendingCaptionTranslation("pending-1")).toMatchObject({
+      translationText: "translation-1",
+    });
   });
 
   it("preserves source when a same-id translation update omits sourceText", () => {

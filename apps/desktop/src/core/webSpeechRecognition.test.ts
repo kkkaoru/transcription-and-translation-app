@@ -4,6 +4,7 @@ import {
   DEFAULT_WEB_SPEECH_FINAL_GRACE_MS,
   DEFAULT_WEB_SPEECH_LANGUAGE,
   DEFAULT_WEB_SPEECH_RESTART_DELAY_MS,
+  DEFAULT_WEB_SPEECH_START_TIMEOUT_MS,
   getWebSpeechRecognitionConstructor,
   getWebSpeechRecognitionConstructorName,
   getWebSpeechRecognitionDiagnostics,
@@ -499,6 +500,114 @@ describe("WebSpeechRecognitionStream", () => {
     recognition.emitEnd();
     vi.runOnlyPendingTimers();
     expect(recognition.startCalls).toBe(3);
+  });
+
+  it("recovers from a start that never receives onstart or onend", () => {
+    vi.useFakeTimers();
+    const recognition = new FakeRecognition();
+    const stream = new WebSpeechRecognitionStream({
+      recognition,
+      startTimeoutMs: 10,
+      finalResultGraceMs: 1,
+      restartDelayMs: 5,
+    });
+
+    stream.start();
+    expect(stream.state).toBe("starting");
+    vi.advanceTimersByTime(9);
+    expect(recognition.abortCalls).toBe(0);
+    expect(recognition.startCalls).toBe(1);
+
+    // A host can acknowledge start() without dispatching either lifecycle
+    // event. The watchdog must release the stuck state and retry instead of
+    // leaving subsequent start() calls as no-ops forever.
+    vi.advanceTimersByTime(1);
+    expect(stream.state).toBe("idle");
+    expect(recognition.abortCalls).toBe(1);
+    vi.advanceTimersByTime(1 + 5);
+    expect(recognition.startCalls).toBe(2);
+    expect(stream.state).toBe("starting");
+
+    stream.stop();
+    stream.dispose();
+    expect(DEFAULT_WEB_SPEECH_START_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  it("does not remain starting when a stale onend is consumed before onstart", () => {
+    vi.useFakeTimers();
+    const recognition = new FakeRecognition();
+    const stream = new WebSpeechRecognitionStream({
+      recognition,
+      startTimeoutMs: 10,
+      finalResultGraceMs: 1,
+      restartDelayMs: 5,
+    });
+
+    stream.start();
+    recognition.emitStart();
+    stream.stop();
+    stream.start();
+    expect(stream.state).toBe("starting");
+    expect(recognition.startCalls).toBe(2);
+
+    // start() had to abort the stopped service and reserved one late onend.
+    // If that callback arrives before the replacement's onstart, the old
+    // implementation consumed it and stranded the replacement in starting.
+    recognition.emitEnd();
+    expect(stream.state).toBe("starting");
+    vi.advanceTimersByTime(10);
+    expect(stream.state).toBe("idle");
+    expect(recognition.abortCalls).toBe(2);
+
+    vi.advanceTimersByTime(1 + 5);
+    expect(recognition.startCalls).toBe(3);
+    expect(stream.state).toBe("starting");
+    stream.stop();
+    stream.dispose();
+  });
+
+  it("keeps watchdog recovery safe when abort ends synchronously, throws, or is cancelled", () => {
+    vi.useFakeTimers();
+
+    const synchronous = new FakeRecognition();
+    synchronous.abort = () => synchronous.emitEnd();
+    const synchronousStream = new WebSpeechRecognitionStream({
+      recognition: synchronous,
+      startTimeoutMs: 10,
+      finalResultGraceMs: 1,
+      restartDelayMs: 5,
+    });
+    synchronousStream.start();
+    vi.advanceTimersByTime(10);
+    // abort() delivered onend immediately, so the existing grace timer owns
+    // the next retry and the watchdog must not schedule a duplicate timer.
+    expect(synchronousStream.state).toBe("idle");
+    vi.advanceTimersByTime(1 + 5);
+    expect(synchronous.startCalls).toBe(2);
+    synchronousStream.stop();
+    // The timeout callback is harmless once the caller has requested stop.
+    (synchronousStream as unknown as { handleStartTimeout: () => void }).handleStartTimeout();
+    expect(synchronousStream.state).toBe("stopping");
+    synchronousStream.cancel();
+    synchronousStream.dispose();
+
+    const throwing = new FakeRecognition();
+    throwing.throwOnAbort = new Error("abort unavailable");
+    const throwingStream = new WebSpeechRecognitionStream({
+      recognition: throwing,
+      startTimeoutMs: 10,
+      finalResultGraceMs: 1,
+      restartDelayMs: 5,
+    });
+    throwingStream.start();
+    vi.advanceTimersByTime(10);
+    // A host that rejects abort() still reaches idle through the explicit
+    // fallback and retries after the finite result grace period.
+    expect(throwingStream.state).toBe("idle");
+    vi.advanceTimersByTime(1 + 5);
+    expect(throwing.startCalls).toBe(2);
+    throwingStream.stop();
+    throwingStream.dispose();
   });
 
   it("keeps a final result delivered after onend during the bounded grace window", () => {

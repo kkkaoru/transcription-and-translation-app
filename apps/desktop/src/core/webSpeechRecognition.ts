@@ -20,6 +20,12 @@ export const DEFAULT_WEB_SPEECH_LANGUAGE = "ja-JP";
 /** Chrome can still be unwinding its previous session when `onend` fires. */
 export const DEFAULT_WEB_SPEECH_RESTART_DELAY_MS = 50;
 /**
+ * Some WebKit builds resolve `start()` without ever dispatching `onstart` (or
+ * an `onend` for the failed session). Keep a bounded watchdog so a stream
+ * cannot remain in `starting` forever and block subsequent retries.
+ */
+export const DEFAULT_WEB_SPEECH_START_TIMEOUT_MS = 2_000;
+/**
  * WebKit can dispatch `onend` just before its last final `onresult`. Keep the
  * result slots alive for this short, finite drain window before restarting or
  * discarding a session.
@@ -193,6 +199,12 @@ export interface WebSpeechRecognitionStreamOptions {
   maxAlternatives?: number;
   /** Delay before an automatic restart. Zero still schedules a separate tick. */
   restartDelayMs?: number;
+  /**
+   * Maximum time to wait for `onstart` after `start()`. Defaults to
+   * `DEFAULT_WEB_SPEECH_START_TIMEOUT_MS`; zero schedules the watchdog on the
+   * next task and is useful for deterministic tests.
+   */
+  startTimeoutMs?: number;
   /**
    * Grace period after `onend` for a delayed final `onresult`. Defaults to
    * `DEFAULT_WEB_SPEECH_FINAL_GRACE_MS` and is always finite and non-negative.
@@ -368,6 +380,13 @@ const clampRestartDelay = (value: number | undefined): number => {
   return Math.max(MIN_RESTART_DELAY_MS, Math.floor(value));
 };
 
+const clampStartTimeout = (value: number | undefined): number => {
+  if (value === undefined || !Number.isFinite(value)) {
+    return DEFAULT_WEB_SPEECH_START_TIMEOUT_MS;
+  }
+  return Math.max(MIN_RESTART_DELAY_MS, Math.floor(value));
+};
+
 const clampFinalResultGrace = (value: number | undefined): number => {
   if (value === undefined || !Number.isFinite(value)) {
     return DEFAULT_WEB_SPEECH_FINAL_GRACE_MS;
@@ -435,6 +454,7 @@ const errorCodeFromCause = (cause: unknown): string | null => {
 export class WebSpeechRecognitionStream {
   private readonly recognition: WebSpeechRecognitionLike;
   private readonly restartDelayMs: number;
+  private readonly startTimeoutMs: number;
   private readonly finalResultGraceMs: number;
   private readonly onResult: (result: WebSpeechRecognitionResult) => void;
   private readonly onPartial: (transcript: string, result: WebSpeechRecognitionResult) => void;
@@ -445,6 +465,7 @@ export class WebSpeechRecognitionStream {
   private stateValue: WebSpeechRecognitionStreamState = "idle";
   private shouldRun = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private startWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private finalResultGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private restartAttempt = 0;
   /** True while an error recovery abort is waiting for the browser's `onend`. */
@@ -457,6 +478,7 @@ export class WebSpeechRecognitionStream {
     const recognition = options.recognition ?? this.createRecognition(options);
     this.recognition = recognition;
     this.restartDelayMs = clampRestartDelay(options.restartDelayMs);
+    this.startTimeoutMs = clampStartTimeout(options.startTimeoutMs);
     this.finalResultGraceMs = clampFinalResultGrace(options.finalResultGraceMs);
     this.onResult = options.onResult ?? (() => undefined);
     this.onPartial = options.onPartial ?? (() => undefined);
@@ -474,6 +496,7 @@ export class WebSpeechRecognitionStream {
       if (this.disposed) {
         return;
       }
+      this.clearStartWatchdog();
       // A forced recovery may have reserved one stale onend callback. If the
       // replacement reaches onstart first, that callback either never arrives
       // or belongs to the new session; never consume the new session's end as
@@ -504,6 +527,7 @@ export class WebSpeechRecognitionStream {
         this.recoveryAbortPending = false;
         return;
       }
+      this.clearStartWatchdog();
       this.recoveryAbortPending = false;
       this.stateValue = "idle";
       const willRestart = this.shouldRun;
@@ -620,6 +644,7 @@ export class WebSpeechRecognitionStream {
   public stop(): void {
     this.shouldRun = false;
     this.clearRestartTimer();
+    this.clearStartWatchdog();
     this.recoveryAbortPending = false;
     this.ignoredEndEvents = 0;
     if (this.stateValue === "idle" || this.stateValue === "stopping") {
@@ -646,6 +671,7 @@ export class WebSpeechRecognitionStream {
   public cancel(): void {
     this.shouldRun = false;
     this.clearRestartTimer();
+    this.clearStartWatchdog();
     this.recoveryAbortPending = false;
     this.ignoredEndEvents = 0;
     if (this.stateValue === "idle" || this.stateValue === "stopping") {
@@ -674,6 +700,7 @@ export class WebSpeechRecognitionStream {
     this.cancel();
     this.disposed = true;
     this.clearFinalResultGraceTimer();
+    this.clearStartWatchdog();
     this.resultSlots.clear();
     this.recognition.onstart = null;
     this.recognition.onresult = null;
@@ -695,11 +722,13 @@ export class WebSpeechRecognitionStream {
     this.clearRestartTimer();
     this.resultSlots.clear();
     this.stateValue = "starting";
+    this.armStartWatchdog();
     try {
       this.recognition.start();
     } catch (error) {
       // Browsers can throw InvalidStateError when an `onend`/`onstart` race
       // occurs. Treat it as recoverable while the caller still wants a stream.
+      this.clearStartWatchdog();
       this.stateValue = "idle";
       const fatal = isFatalErrorCode(errorCodeFromCause(error) ?? "");
       if (fatal) {
@@ -766,6 +795,58 @@ export class WebSpeechRecognitionStream {
     if (this.restartTimer !== null) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
+    }
+  }
+
+  private armStartWatchdog(): void {
+    this.clearStartWatchdog();
+    this.startWatchdogTimer = setTimeout(() => {
+      this.startWatchdogTimer = null;
+      this.handleStartTimeout();
+    }, this.startTimeoutMs);
+  }
+
+  private clearStartWatchdog(): void {
+    if (this.startWatchdogTimer !== null) {
+      clearTimeout(this.startWatchdogTimer);
+      this.startWatchdogTimer = null;
+    }
+  }
+
+  private handleStartTimeout(): void {
+    if (this.disposed || !this.shouldRun || this.stateValue !== "starting") {
+      return;
+    }
+
+    // There is no reliable way to distinguish a late `onend` from the timed
+    // out session once a single recognizer instance is reused. Abort first,
+    // then reserve one stale end slot only when the abort did not synchronously
+    // deliver an end boundary. This mirrors the existing recoverable-error
+    // path and prevents the replacement session from being torn down by an
+    // old callback.
+    this.recoveryAbortPending = true;
+    try {
+      this.recognition.abort();
+    } catch {
+      // The explicit idle transition below is the fallback for hosts that
+      // reject abort() while their speech service is already unwinding.
+    }
+    const stateAfterAbort = this.stateValue as WebSpeechRecognitionStreamState;
+    const endedSynchronously = stateAfterAbort === "idle";
+    if (!endedSynchronously) {
+      this.stateValue = "idle";
+      this.ignoredEndEvents += 1;
+      this.emitEvent({ type: "end", willRestart: this.shouldRun });
+      // Keep a late final result observable even when the host omitted onend.
+      this.armFinalResultGrace(true);
+    }
+    this.recoveryAbortPending = false;
+
+    // A synchronous abort can have armed the same grace timer through onend;
+    // its expiry owns the retry in that case. Otherwise schedule the bounded
+    // replacement now.
+    if (this.shouldRun && !this.disposed && this.finalResultGraceTimer === null) {
+      this.scheduleRestart();
     }
   }
 

@@ -5,6 +5,7 @@ const SOURCE_SEQUENCE = 0;
 const TRANSLATION_SEQUENCE = 1;
 const MIN_OVERLAP_CHARS = 2;
 const INDEX_STEP = 1;
+const MAX_PENDING_CROSS_ID_TRANSLATIONS = 64;
 
 const trim = (value: string): string => value.trim();
 
@@ -43,6 +44,61 @@ const sequenceOf = (caption: CaptionPayload): number => {
     return TRANSLATION_SEQUENCE;
   }
   return SOURCE_SEQUENCE;
+};
+
+/**
+ * Translation completion can race the next source caption.  The live view has
+ * one visible caption slot, so attaching an older translation to the newer
+ * source would silently change its meaning.  Keep those completions in a
+ * bounded side channel instead; a history/diagnostic consumer can claim the
+ * payload for its original utterance ID without making the live slot regress.
+ */
+export interface CaptionMergeDiagnostics {
+  crossIdTranslationsSaved: number;
+  pendingCrossIdTranslations: number;
+}
+
+let crossIdTranslationsSaved = 0;
+const pendingCrossIdTranslations = new Map<string, CaptionPayload>();
+
+const saveCrossIdTranslation = (caption: CaptionPayload): void => {
+  if (!pendingCrossIdTranslations.has(caption.id)) {
+    while (pendingCrossIdTranslations.size >= MAX_PENDING_CROSS_ID_TRANSLATIONS) {
+      const oldestId = pendingCrossIdTranslations.keys().next().value;
+      if (typeof oldestId !== "string") {
+        break;
+      }
+      pendingCrossIdTranslations.delete(oldestId);
+    }
+  }
+
+  const previous = pendingCrossIdTranslations.get(caption.id);
+  if (!previous || !isOlderSameIdRevision(previous, caption)) {
+    pendingCrossIdTranslations.set(caption.id, { ...caption });
+  }
+  crossIdTranslationsSaved += 1;
+};
+
+/** Return and remove a translation preserved for a different caption ID. */
+export const takePendingCaptionTranslation = (id: string): CaptionPayload | null => {
+  const pending = pendingCrossIdTranslations.get(id);
+  if (!pending) {
+    return null;
+  }
+  pendingCrossIdTranslations.delete(id);
+  return { ...pending };
+};
+
+/** Inspect cross-ID translation preservation without mutating the pending store. */
+export const getCaptionMergeDiagnostics = (): CaptionMergeDiagnostics => ({
+  crossIdTranslationsSaved,
+  pendingCrossIdTranslations: pendingCrossIdTranslations.size,
+});
+
+/** Clear caption merge diagnostics and pending cross-ID translations. */
+export const clearCaptionMergeDiagnostics = (): void => {
+  crossIdTranslationsSaved = 0;
+  pendingCrossIdTranslations.clear();
 };
 
 /** Max wall-clock gap for chunks that may share rolling ASR context. */
@@ -394,13 +450,37 @@ export const mergeCaptionPayload = (
     return null;
   }
 
+  const sameChunk = current.id === incoming.id;
+  const hasIncomingSource = hasText(incoming.sourceText);
+  const hasIncomingTranslation = hasText(incoming.translationText);
+  const incomingIsTranslationPayload = sequenceOf(incoming) >= TRANSLATION_SEQUENCE;
+  const crossIdTranslation = !sameChunk && incomingIsTranslationPayload && hasIncomingTranslation;
+
+  // A translator may finish turn N after turn N+1 has already become the
+  // visible caption. Never merge that text into N+1 (whether the payload also
+  // carries sourceText or is translation-only). Preserve it by utterance ID
+  // for history/debug consumers instead. Translation-only payloads return the
+  // current reference so the visible caption is explicitly unchanged; the
+  // source-bearing legacy path keeps its null/drop contract after the ordering
+  // guard below.
+  if (crossIdTranslation) {
+    saveCrossIdTranslation(incoming);
+    if (!hasIncomingSource) {
+      return current;
+    }
+  }
+
   if (isOutOfOrder(current, incoming)) {
     return null;
   }
 
-  const sameChunk = current.id === incoming.id;
-  const hasIncomingSource = hasText(incoming.sourceText);
-  const hasIncomingTranslation = hasText(incoming.translationText);
+  if (crossIdTranslation) {
+    // A cross-ID translation with source text is still never eligible to
+    // replace the current live slot. The older source-bearing path reaches
+    // here only when its timing is not stale; retain the current caption while
+    // the side channel holds the original payload.
+    return current;
+  }
 
   // A source revision may arrive after an earlier translation was painted.
   // That revision keeps the prior translation visible while the new translation
