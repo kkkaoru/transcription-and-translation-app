@@ -179,6 +179,11 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
   const surfaceTextRaw = record["surfaceText"] ?? record["surface_text"];
   const surfaceText =
     typeof surfaceTextRaw === "string" && surfaceTextRaw.trim() ? surfaceTextRaw : undefined;
+  const captureGenerationRaw = record["captureGeneration"] ?? record["capture_generation"];
+  const captureGeneration =
+    typeof captureGenerationRaw === "number" && Number.isFinite(captureGenerationRaw)
+      ? Math.max(0, Math.round(captureGenerationRaw))
+      : undefined;
   return {
     stage,
     utteranceId: utteranceId || `stage-${Date.now()}-${sequence}`,
@@ -191,6 +196,7 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
     durationMs,
     ok: Boolean(ok) && !error,
     error,
+    ...(captureGeneration !== undefined ? { captureGeneration } : {}),
   };
 };
 

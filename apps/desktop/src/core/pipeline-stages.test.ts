@@ -46,6 +46,7 @@ describe("pipeline stage events", () => {
       error: null,
       startedAt: 57,
       at: 100,
+      captureGeneration: 3,
     });
     expect(camel).toMatchObject({
       stage: "asr",
@@ -59,6 +60,7 @@ describe("pipeline stage events", () => {
       error: null,
       startedAt: 57,
       at: 100,
+      captureGeneration: 3,
     });
 
     const snake = normalizePipelineStageEvent({
