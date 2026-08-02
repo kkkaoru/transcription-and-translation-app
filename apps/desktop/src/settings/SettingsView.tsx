@@ -76,6 +76,7 @@ export const SettingsView = ({
   devices,
   saving,
   captureStarting = false,
+  desktopStreaming = false,
   onConfigChange,
   onModelChange,
   onDeviceChange,
@@ -89,6 +90,8 @@ export const SettingsView = ({
   saving: boolean;
   /** Prevent capture-affecting edits while MainApp is preparing a session. */
   captureStarting?: boolean;
+  /** Native Parapper streaming owns VAD/chunking instead of the browser pipeline. */
+  desktopStreaming?: boolean;
   onConfigChange: (next: AppConfig) => void;
   onModelChange: (family: ModelFamily, value: string) => void;
   onDeviceChange: (event: ChangeEvent<HTMLSelectElement>) => void;
@@ -117,10 +120,12 @@ export const SettingsView = ({
         ? t("settings.recognitionModeWebSpeechDescription")
         : t("settings.recognitionModeParapperAzookeyDescription");
   const webSpeechMode = recognitionMode === "web-speech";
+  const desktopStreamingMode = desktopStreaming && !webSpeechMode;
+  const audioPipelineInactive = webSpeechMode || desktopStreamingMode;
   const deviceControlsDisabled = captureStarting || webSpeechMode;
-  const audioPipelineControlsDisabled = captureStarting || webSpeechMode;
+  const audioPipelineControlsDisabled = captureStarting || audioPipelineInactive;
   const audioPipelineHint = (hint: string): string =>
-    webSpeechMode ? `${hint} ${t("live.pipelineInactive")}` : hint;
+    audioPipelineInactive ? `${hint} ${t("live.pipelineInactive")}` : hint;
   const silenceGateMode = resolveSilenceGateMode(config.audio.adaptiveNoiseFloor);
   const adaptiveNoiseFloorEnabled = silenceGateMode === "adaptive";
   const inputDeviceHint = webSpeechMode

@@ -2024,6 +2024,7 @@ export const MainApp = () => {
               models={models}
               devices={devices}
               saving={saving}
+              desktopStreaming={bridge.isDesktop()}
               captureStarting={
                 status.status === "starting" ||
                 capturePhase.current === "starting" ||

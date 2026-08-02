@@ -182,6 +182,45 @@ describe("SettingsView audio tuning", () => {
     expect(rangeResets[1]?.disabled).toBe(false);
   });
 
+  it("disables browser pipeline tuning while native Parapper owns the stream", async () => {
+    const config = { ...createDefaultConfig(), recognitionMode: "parapper-raw" as const };
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <SettingsView
+            config={config}
+            models={DEFAULT_MODEL_CATALOG}
+            devices={[]}
+            saving={false}
+            desktopStreaming
+            onConfigChange={() => undefined}
+            onModelChange={() => undefined}
+            onDeviceChange={() => undefined}
+            onRefreshDevices={() => undefined}
+            onSave={() => undefined}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    for (const selector of [
+      "#audio-chunk-ms",
+      "#audio-silence-gate-db",
+      "#audio-vad-interval-ms",
+      "#audio-vad-threshold",
+      "#audio-adaptive-noise-floor",
+      "#audio-noise-suppression",
+    ]) {
+      expect(container.querySelector<HTMLInputElement>(selector)?.disabled).toBe(true);
+    }
+    expect(
+      container.querySelector<HTMLButtonElement>('[data-testid="audio-tuning-reset"]')?.disabled,
+    ).toBe(true);
+    expect(container.textContent).toMatch(/このモードでは未使用|not used in this mode/i);
+  });
+
   it("exposes VAD window and silence threshold as labeled sliders with reset", async () => {
     const onSave = vi.fn();
 
