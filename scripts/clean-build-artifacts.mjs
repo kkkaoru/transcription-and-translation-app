@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
