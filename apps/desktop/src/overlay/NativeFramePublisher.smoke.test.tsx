@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "../core/defaults";
 import type { CaptionPayload } from "../core/types";
 import { createPreviewCaption } from "./captions";
-import { renderNativeFrame, wrapNativeText } from "./NativeFramePublisher";
+import {
+  beginNativePublish,
+  completeNativePublishFailure,
+  completeNativePublishSuccess,
+  createNativePublishGate,
+  NATIVE_PUBLISH_MAX_FAILURES,
+  renderNativeFrame,
+  wrapNativeText,
+} from "./NativeFramePublisher";
 
 interface FillCall {
   text: string;
@@ -71,5 +79,81 @@ describe("native caption canvas wrapping", () => {
     const paintedSource = fillCalls.map((call) => call.text).join("");
     expect(paintedSource).toBe(source);
     expect(new Set(fillCalls.map((call) => call.y)).size).toBeGreaterThan(1);
+  });
+});
+
+describe("native publish gate", () => {
+  it("does not permanently suppress republish after a rejected invoke", () => {
+    const gate = createNativePublishGate();
+
+    expect(beginNativePublish(gate, "caption-a")).toEqual({ action: "publish", key: "caption-a" });
+    // Rejection must not advance lastSuccessfulKey — the same caption can retry.
+    const failure = completeNativePublishFailure(gate, "caption-a");
+    expect(failure).toEqual({ nextKey: "caption-a", exhausted: false });
+    expect(gate.lastSuccessfulKey).toBe("");
+    expect(gate.inFlightKey).toBeNull();
+
+    expect(beginNativePublish(gate, "caption-a")).toEqual({ action: "publish", key: "caption-a" });
+    expect(completeNativePublishSuccess(gate, "caption-a")).toBeNull();
+    expect(gate.lastSuccessfulKey).toBe("caption-a");
+
+    // After success the same key is skipped (no redundant republish).
+    expect(beginNativePublish(gate, "caption-a")).toEqual({ action: "skip" });
+  });
+
+  it("keeps latest-wins while an invoke is in flight and drains pending after success", () => {
+    const gate = createNativePublishGate();
+
+    expect(beginNativePublish(gate, "a")).toEqual({ action: "publish", key: "a" });
+    // A newer caption arrives before the first invoke resolves.
+    expect(beginNativePublish(gate, "b")).toEqual({ action: "defer", pendingKey: "b" });
+    expect(beginNativePublish(gate, "c")).toEqual({ action: "defer", pendingKey: "c" });
+
+    // Success of the older in-flight frame must still schedule the latest pending key.
+    expect(completeNativePublishSuccess(gate, "a")).toBe("c");
+    expect(gate.lastSuccessfulKey).toBe("a");
+    expect(gate.inFlightKey).toBeNull();
+
+    expect(beginNativePublish(gate, "c")).toEqual({ action: "publish", key: "c" });
+    expect(completeNativePublishSuccess(gate, "c")).toBeNull();
+    expect(gate.lastSuccessfulKey).toBe("c");
+  });
+
+  it("on failure prefers a newer pending key over retrying a stale frame", () => {
+    const gate = createNativePublishGate();
+
+    expect(beginNativePublish(gate, "stale")).toEqual({ action: "publish", key: "stale" });
+    expect(beginNativePublish(gate, "fresh")).toEqual({ action: "defer", pendingKey: "fresh" });
+
+    const failure = completeNativePublishFailure(gate, "stale");
+    expect(failure).toEqual({ nextKey: "fresh", exhausted: false });
+    expect(gate.lastSuccessfulKey).toBe("");
+    // Failure budget for the stale key must not poison the newer caption.
+    expect(gate.failureCount).toBe(0);
+    expect(gate.failureKey).toBeNull();
+  });
+
+  it("bounds retries for a permanently failing key", () => {
+    const gate = createNativePublishGate();
+
+    for (let attempt = 1; attempt < NATIVE_PUBLISH_MAX_FAILURES; attempt += 1) {
+      expect(beginNativePublish(gate, "broken")).toEqual({ action: "publish", key: "broken" });
+      const failure = completeNativePublishFailure(gate, "broken");
+      expect(failure.exhausted).toBe(false);
+      expect(failure.nextKey).toBe("broken");
+      expect(gate.failureCount).toBe(attempt);
+    }
+
+    expect(beginNativePublish(gate, "broken")).toEqual({ action: "publish", key: "broken" });
+    const finalFailure = completeNativePublishFailure(gate, "broken");
+    expect(finalFailure).toEqual({ nextKey: null, exhausted: true });
+    expect(gate.lastSuccessfulKey).toBe("");
+    expect(beginNativePublish(gate, "broken")).toEqual({ action: "exhausted", key: "broken" });
+
+    // A new caption resets the path even after exhaustion of a prior key.
+    expect(beginNativePublish(gate, "recovered")).toEqual({
+      action: "publish",
+      key: "recovered",
+    });
   });
 });

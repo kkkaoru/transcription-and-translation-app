@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { bytesToBase64 } from "../core/audio";
-import { bridge } from "../core/bridge";
+import { bridge, formatBridgeError } from "../core/bridge";
+import { appendStructuredLog } from "../core/structuredLog";
 import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types";
 import { captionItems } from "./captions";
 
@@ -361,7 +362,7 @@ const ensureFontsReady = (): Promise<void> => {
 };
 
 /** Stable key for display-relevant native frame inputs (skip identical republish). */
-const framePaintKey = (config: AppConfig, caption: CaptionPayload): string =>
+export const framePaintKey = (config: AppConfig, caption: CaptionPayload): string =>
   [
     caption.id,
     caption.sourceText,
@@ -378,6 +379,130 @@ const framePaintKey = (config: AppConfig, caption: CaptionPayload): string =>
     JSON.stringify(config.overlay.translation),
   ].join("\u0001");
 
+/** Max automatic retries for the same paint key after a rejected invoke. */
+export const NATIVE_PUBLISH_MAX_FAILURES = 3;
+
+/**
+ * Pure publish gate for native overlay frames.
+ *
+ * Guarantees:
+ * - `lastSuccessfulKey` advances only after a successful publish
+ * - a rejected publish does not permanently suppress that key
+ * - while one invoke is in flight, newer keys queue as latest-wins pending
+ * - a success for a stale in-flight key never overwrites a newer success path
+ * - retries are bounded per key so a permanently dead native worker cannot spin
+ */
+export type NativePublishGate = {
+  lastSuccessfulKey: string;
+  inFlightKey: string | null;
+  pendingKey: string | null;
+  failureCount: number;
+  failureKey: string | null;
+};
+
+export const createNativePublishGate = (): NativePublishGate => ({
+  lastSuccessfulKey: "",
+  inFlightKey: null,
+  pendingKey: null,
+  failureCount: 0,
+  failureKey: null,
+});
+
+export type NativePublishStart =
+  | { action: "skip" }
+  | { action: "defer"; pendingKey: string }
+  | { action: "publish"; key: string }
+  | { action: "exhausted"; key: string };
+
+/** Decide whether to start a publish for `nextKey`. Mutates the gate when publishing or deferring. */
+export const beginNativePublish = (
+  gate: NativePublishGate,
+  nextKey: string,
+): NativePublishStart => {
+  if (nextKey === gate.lastSuccessfulKey) {
+    gate.pendingKey = null;
+    return { action: "skip" };
+  }
+  if (gate.inFlightKey !== null) {
+    // Latest-wins while a previous invoke is outstanding.
+    gate.pendingKey = nextKey;
+    return { action: "defer", pendingKey: nextKey };
+  }
+  if (gate.failureKey === nextKey && gate.failureCount >= NATIVE_PUBLISH_MAX_FAILURES) {
+    return { action: "exhausted", key: nextKey };
+  }
+  gate.inFlightKey = nextKey;
+  gate.pendingKey = null;
+  return { action: "publish", key: nextKey };
+};
+
+/** Record a successful publish. Returns the next key that should be published, if any. */
+export const completeNativePublishSuccess = (
+  gate: NativePublishGate,
+  publishedKey: string,
+): string | null => {
+  if (gate.inFlightKey === publishedKey) {
+    gate.inFlightKey = null;
+  }
+  // A stale success must not rewind past a newer key already in flight/pending.
+  if (gate.inFlightKey !== null && gate.inFlightKey !== publishedKey) {
+    return null;
+  }
+  if (gate.pendingKey !== null && gate.pendingKey !== publishedKey) {
+    gate.lastSuccessfulKey = publishedKey;
+    if (gate.failureKey === publishedKey) {
+      gate.failureCount = 0;
+      gate.failureKey = null;
+    }
+    const next = gate.pendingKey;
+    gate.pendingKey = null;
+    return next !== gate.lastSuccessfulKey ? next : null;
+  }
+  gate.lastSuccessfulKey = publishedKey;
+  if (gate.failureKey === publishedKey) {
+    gate.failureCount = 0;
+    gate.failureKey = null;
+  }
+  const next = gate.pendingKey;
+  gate.pendingKey = null;
+  return next && next !== gate.lastSuccessfulKey ? next : null;
+};
+
+/**
+ * Record a rejected publish without advancing `lastSuccessfulKey`.
+ * Returns the latest key to retry, or null when retries are exhausted / cancelled.
+ */
+export const completeNativePublishFailure = (
+  gate: NativePublishGate,
+  publishedKey: string,
+): { nextKey: string | null; exhausted: boolean } => {
+  if (gate.inFlightKey === publishedKey) {
+    gate.inFlightKey = null;
+  }
+  const nextKey = gate.pendingKey ?? publishedKey;
+  gate.pendingKey = null;
+  if (nextKey === gate.lastSuccessfulKey) {
+    return { nextKey: null, exhausted: false };
+  }
+  if (nextKey !== publishedKey) {
+    // A newer caption arrived during the failed invoke — retry that key with a
+    // fresh failure budget instead of the stale failed frame.
+    gate.failureKey = null;
+    gate.failureCount = 0;
+    return { nextKey, exhausted: false };
+  }
+  if (gate.failureKey === publishedKey) {
+    gate.failureCount += 1;
+  } else {
+    gate.failureKey = publishedKey;
+    gate.failureCount = 1;
+  }
+  if (gate.failureCount >= NATIVE_PUBLISH_MAX_FAILURES) {
+    return { nextKey: null, exhausted: true };
+  }
+  return { nextKey: publishedKey, exhausted: false };
+};
+
 export const NativeFramePublisher = ({
   config,
   caption,
@@ -386,61 +511,159 @@ export const NativeFramePublisher = ({
   caption: CaptionPayload;
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const lastPaintKeyRef = useRef<string>("");
   const lastSizeRef = useRef({ width: 0, height: 0 });
+  const gateRef = useRef<NativePublishGate>(createNativePublishGate());
+  // Always-latest props so an in-flight retry can paint the current caption
+  // without republishing a stale frame that lost a race to a newer effect.
+  const latestRef = useRef({ config, caption });
+  latestRef.current = { config, caption };
 
   useEffect(() => {
     if (!bridge.isDesktop()) {
       return;
     }
-    const paintKey = framePaintKey(config, caption);
-    if (paintKey === lastPaintKeyRef.current) {
-      return;
-    }
+    // Capture the prop revision that triggered this effect. Inner schedule()
+    // still reads latestRef so a queued retry never paints a stale caption.
+    latestRef.current = { config, caption };
 
     let cancelled = false;
     let raf = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const clearRetry = (): void => {
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+    };
+
+    const scheduleRetry = (delayMs: number): void => {
+      clearRetry();
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        if (!cancelled) {
+          schedule();
+        }
+      }, delayMs);
+    };
+
     const schedule = (): void => {
       // Coalesce burst progressive updates (ASR → normalize → translate) into one frame.
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
       raf = requestAnimationFrame(() => {
+        raf = 0;
         void ensureFontsReady().then(() => {
-          const canvas = canvasRef.current;
-          if (!canvas || cancelled) {
-            return;
-          }
-          // Re-check after rAF: a newer effect may have cancelled this paint.
           if (cancelled) {
             return;
           }
-          const nextKey = framePaintKey(config, caption);
-          if (nextKey === lastPaintKeyRef.current) {
+          const { config: currentConfig, caption: currentCaption } = latestRef.current;
+          const nextKey = framePaintKey(currentConfig, currentCaption);
+          const decision = beginNativePublish(gateRef.current, nextKey);
+          if (decision.action === "exhausted") {
+            appendStructuredLog({
+              level: "error",
+              source: "frontend",
+              stage: "native-output",
+              message:
+                "native overlay publish suppressed after repeated failures; OBS may show a frozen frame",
+              chunkId: currentCaption.id,
+              fields: {
+                paintKey: nextKey.slice(0, 80),
+                failureCount: gateRef.current.failureCount,
+              },
+            });
             return;
           }
-          const width = Math.max(1, Math.round(config.overlay.width));
-          const height = Math.max(1, Math.round(config.overlay.height));
+          if (decision.action !== "publish") {
+            return;
+          }
+
+          const canvas = canvasRef.current;
+          if (!canvas) {
+            // Canvas not mounted yet; release the in-flight claim and retry shortly.
+            gateRef.current.inFlightKey = null;
+            scheduleRetry(16);
+            return;
+          }
+
+          const width = Math.max(1, Math.round(currentConfig.overlay.width));
+          const height = Math.max(1, Math.round(currentConfig.overlay.height));
           // Avoid resetting the bitmap when only text changes (cheaper clearRect path).
           if (lastSizeRef.current.width !== width || lastSizeRef.current.height !== height) {
             canvas.width = width;
             canvas.height = height;
             lastSizeRef.current = { width, height };
           }
-          const frame = renderNativeFrame(canvas, config, caption);
+          const frame = renderNativeFrame(canvas, currentConfig, currentCaption);
           if (!frame || cancelled) {
+            gateRef.current.inFlightKey = null;
             return;
           }
-          lastPaintKeyRef.current = nextKey;
+
+          const publishedKey = nextKey;
           void bridge
             .publishOverlayFrame(bytesToBase64(frame.pixels), frame.width, frame.height)
-            .catch(() => undefined);
+            .then(() => {
+              if (cancelled) {
+                if (gateRef.current.inFlightKey === publishedKey) {
+                  gateRef.current.inFlightKey = null;
+                }
+                return;
+              }
+              const followUp = completeNativePublishSuccess(gateRef.current, publishedKey);
+              if (followUp) {
+                schedule();
+              }
+            })
+            .catch((error: unknown) => {
+              if (cancelled) {
+                if (gateRef.current.inFlightKey === publishedKey) {
+                  gateRef.current.inFlightKey = null;
+                }
+                return;
+              }
+              const detail = formatBridgeError(error) ?? "native overlay publish rejected";
+              const { nextKey: retryKey, exhausted } = completeNativePublishFailure(
+                gateRef.current,
+                publishedKey,
+              );
+              appendStructuredLog({
+                level: exhausted ? "error" : "warn",
+                source: "frontend",
+                stage: "native-output",
+                message: exhausted
+                  ? "native overlay publish exhausted retries; OBS may show a frozen frame"
+                  : "native overlay publish failed; will retry latest frame",
+                error: detail,
+                chunkId: currentCaption.id,
+                fields: {
+                  paintKey: publishedKey.slice(0, 80),
+                  failureCount: gateRef.current.failureCount,
+                  exhausted,
+                },
+              });
+              if (retryKey) {
+                // Brief backoff avoids a tight loop when the native worker is
+                // reconnecting, while still recovering without a caption change.
+                scheduleRetry(200);
+              }
+            });
         });
       });
     };
+
     schedule();
     return () => {
       cancelled = true;
+      clearRetry();
       if (raf) {
         cancelAnimationFrame(raf);
+        raf = 0;
       }
+      // Drop in-flight claim so a remount can republish the current caption.
+      gateRef.current.inFlightKey = null;
     };
   }, [caption, config]);
 
