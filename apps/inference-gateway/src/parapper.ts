@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import { GatewayError } from "@caption-bridge/inference-server-core";
 import WebSocket from "ws";
 import { PARAPPER_SAMPLE_RATE, splitParapperFrames } from "./audio.js";
+import {
+  type CorrelationContext,
+  emitStructuredLog,
+  PROVIDER_TURN_END,
+  PROVIDER_TURN_SKIP,
+  PROVIDER_TURN_START,
+} from "./structuredLog.js";
 
 const PCM16_BYTES_PER_MILLISECOND = (PARAPPER_SAMPLE_RATE * 2) / 1_000;
 const PARAPPER_PROTOCOL_VERSION = 1;
@@ -27,6 +34,8 @@ export interface ParapperOptions {
   url: string;
   /** Optional logger for fine-grained ASR session diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** Correlation metadata supplied by the HTTP gateway. */
+  correlation?: CorrelationContext;
 }
 
 interface ParapperMessage {
@@ -151,11 +160,6 @@ export const formatParapperConnectionError = (error: unknown): string =>
     ? error.message
     : "could not open Parapper connection";
 
-const defaultLog = (message: string, fields?: Record<string, unknown>): void => {
-  // biome-ignore lint/suspicious/noConsole: gateway log helper invoked by callers
-  console.info(`[parapper] ${message}`, fields);
-};
-
 /**
  * Stream mono 16 kHz PCM16LE to Parapper and return the final transcript text.
  *
@@ -178,8 +182,31 @@ export const transcribeWithParapper = (
       );
       return;
     }
+    // Keep the sidecar protocol session separate from the HTTP/capture identity.
     const sessionId = (options.sessionId ?? randomUUID)();
-    const log = options.log ?? defaultLog;
+    const correlation: CorrelationContext = options.correlation ?? {
+      requestId: randomUUID(),
+      sessionId,
+      agentId: null,
+      parentAgentId: null,
+    };
+    const log =
+      options.log ??
+      ((message, fields) =>
+        emitStructuredLog(message, correlation, {
+          parapper_session_id: sessionId,
+          ...fields,
+        }));
+    const emitProvider = (event: string, fields: Record<string, unknown> = {}): void => {
+      try {
+        emitStructuredLog(event, correlation, {
+          parapper_session_id: sessionId,
+          ...fields,
+        });
+      } catch {
+        // Logging must never strand the recognition Promise.
+      }
+    };
     const startedAt = Date.now();
     let socket: WebSocket;
     try {
@@ -207,6 +234,7 @@ export const transcribeWithParapper = (
     let readyAt: number | null = null;
     let stopAt: number | null = null;
     let finalAt: number | null = null;
+    let skipReason = "empty_transcript";
 
     /**
      * `session.done` can close a short HTTP window after a turn finalized and
@@ -272,7 +300,7 @@ export const transcribeWithParapper = (
       }
     };
 
-    function settle(result: { error: Error } | { text: string }): void {
+    function settle(result: { error: GatewayError } | { text: string }): void {
       if (finished) {
         return;
       }
@@ -292,28 +320,63 @@ export const transcribeWithParapper = (
         // ignore close races
       }
       const elapsedMs = Date.now() - startedAt;
+      const baseFields = {
+        sessionId,
+        elapsedMs,
+        duration_ms: elapsedMs,
+        pcmBytes: pcm.byteLength,
+        framesSent,
+        bytesSent,
+        partialCount,
+        lastPartialChars: lastPartial?.text.length ?? 0,
+      };
       if ("error" in result) {
+        emitProvider(PROVIDER_TURN_END, {
+          ...baseFields,
+          outcome: "failed",
+          status: "failed",
+          errorCode: result.error.code,
+          error: result.error.message,
+          textChars: null,
+        });
         emitLog("session failed", {
-          sessionId,
-          elapsedMs,
-          pcmBytes: pcm.byteLength,
-          framesSent,
-          bytesSent,
-          partialCount,
-          lastPartialChars: lastPartial?.text.length ?? 0,
+          ...baseFields,
           hasFinal: finalTranscript !== null,
           error: result.error.message,
         });
         reject(result.error);
-      } else {
+      } else if (!result.text) {
+        emitProvider(PROVIDER_TURN_SKIP, {
+          ...baseFields,
+          outcome: "skipped",
+          status: "skipped",
+          reason: skipReason,
+          hasFinal: false,
+          textChars: 0,
+          readyLatencyMs: readyAt == null ? null : readyAt - startedAt,
+          stopLatencyMs: stopAt == null ? null : stopAt - startedAt,
+          finalLatencyMs: finalAt == null ? null : finalAt - startedAt,
+        });
         emitLog("session completed", {
-          sessionId,
-          elapsedMs,
-          pcmBytes: pcm.byteLength,
-          framesSent,
-          bytesSent,
-          partialCount,
-          lastPartialChars: lastPartial?.text.length ?? 0,
+          ...baseFields,
+          hasFinal: false,
+          textChars: 0,
+          readyLatencyMs: readyAt == null ? null : readyAt - startedAt,
+          stopLatencyMs: stopAt == null ? null : stopAt - startedAt,
+          finalLatencyMs: finalAt == null ? null : finalAt - startedAt,
+        });
+        resolve(result.text);
+      } else {
+        emitProvider(PROVIDER_TURN_END, {
+          ...baseFields,
+          outcome: "completed",
+          status: "completed",
+          hasFinal: Boolean(finalTranscript),
+          textChars: result.text.length,
+          error: null,
+        });
+        emitLog("session completed", {
+          ...baseFields,
           hasFinal: Boolean(result.text),
           textChars: result.text.length,
           readyLatencyMs: readyAt == null ? null : readyAt - startedAt,
@@ -388,7 +451,7 @@ export const transcribeWithParapper = (
       });
     }, options.timeoutMs);
 
-    socket.once("error", (error: Error) => {
+    socket.once("error", (error: unknown) => {
       settle({
         error: new GatewayError(
           HTTP_BAD_GATEWAY,
@@ -454,6 +517,7 @@ export const transcribeWithParapper = (
             });
             settle({ text: latest.text });
           } else {
+            skipReason = "no_speech";
             emitLog("Parapper reported no speech (soft empty)", {
               sessionId,
               code: message.code ?? null,
@@ -555,6 +619,7 @@ export const transcribeWithParapper = (
           // No-speech / VAD-silent windows complete without a usable partial or
           // final. Return empty text so OpenAI-shaped clients soft-skip instead
           // of treating 422 as a hard audio processing failure.
+          skipReason = "soft_empty";
           emitLog("session done without final transcript (soft empty)", {
             sessionId,
             pcmBytes: pcm.byteLength,
@@ -570,6 +635,12 @@ export const transcribeWithParapper = (
       if (finished) {
         return;
       }
+      emitProvider(PROVIDER_TURN_START, {
+        outcome: "started",
+        pcmBytes: pcm.byteLength,
+        sampleRate: PARAPPER_SAMPLE_RATE,
+        textChars: null,
+      });
       emitLog("session start", {
         sessionId,
         pcmBytes: pcm.byteLength,

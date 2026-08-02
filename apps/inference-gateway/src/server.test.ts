@@ -435,6 +435,158 @@ describe("inference gateway HTTP contract", () => {
     await vi.waitFor(() => expect(signal?.aborted).toBe(true));
   });
 
+  it("propagates correlation identities through ASR and HTTP lifecycle JSON", async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const info = vi.spyOn(console, "info").mockImplementation((line) => {
+      if (typeof line !== "string") {
+        return;
+      }
+      try {
+        records.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // Ignore unrelated non-JSON console output.
+      }
+    });
+    const transcribe = vi.fn((_pcm: Uint8Array, _signal?: AbortSignal, request?: Request) =>
+      Promise.resolve().then(() => {
+        expect(request?.headers.get("x-request-id")).toBe("request-http-1");
+        expect(request?.headers.get("x-session-id")).toBe("session-http-1");
+        expect(request?.headers.get("x-agent-id")).toBe("agent-http-1");
+        expect(request?.headers.get("x-parent-agent-id")).toBe("parent-http-1");
+        return "captured";
+      }),
+    );
+    const connection = await open(createGatewayServer(config, { transcribe }));
+    closers.push(connection.close);
+    const form = new FormData();
+    form.set("model", "parapper-ja");
+    form.set("file", wav(), "correlated.wav");
+    const response = await fetch(
+      new URL("/v1/audio/transcriptions?token=hidden", connection.origin),
+      {
+        method: "POST",
+        headers: {
+          "x-request-id": "request-http-1",
+          "x-session-id": "session-http-1",
+          "x-agent-id": "agent-http-1",
+          "x-parent-agent-id": "parent-http-1",
+        },
+        body: form,
+      },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ text: "captured" });
+    expect(response.headers.get("x-request-id")).toBe("request-http-1");
+    expect(response.headers.get("x-session-id")).toBe("session-http-1");
+    expect(response.headers.get("x-agent-id")).toBe("agent-http-1");
+    expect(response.headers.get("x-parent-agent-id")).toBe("parent-http-1");
+
+    const lifecycle = records.filter((record) =>
+      ["http_request_start", "http_request_end", "http_request_failure"].includes(
+        String(record["event"]),
+      ),
+    );
+    expect(lifecycle.map((record) => record["event"])).toEqual([
+      "http_request_start",
+      "http_request_end",
+    ]);
+    for (const record of lifecycle) {
+      expect(record).toMatchObject({
+        request_id: "request-http-1",
+        session_id: "session-http-1",
+        agent_id: "agent-http-1",
+        parent_agent_id: "parent-http-1",
+      });
+      expect(String(record["path"])).toBe("/v1/audio/transcriptions");
+      expect(String(record["path"])).not.toContain("token");
+    }
+    expect(lifecycle[0]).toMatchObject({ outcome: "started", method: "POST" });
+    expect(lifecycle[1]).toMatchObject({ outcome: "completed", status: 200 });
+    expect(typeof lifecycle[1]?.["duration_ms"]).toBe("number");
+    info.mockRestore();
+  });
+
+  it("uses one generated correlation identity when request headers are absent", async () => {
+    let observedRequestId: string | null = null;
+    let observedSessionId: string | null = null;
+    const transcribe = vi.fn(
+      (_pcm: Uint8Array, _signal?: AbortSignal, request?: Request): Promise<string> => {
+        observedRequestId = request ? request.headers.get("x-request-id") : null;
+        observedSessionId = request ? request.headers.get("x-session-id") : null;
+        return Promise.resolve("generated-correlation");
+      },
+    );
+    const connection = await open(createGatewayServer(config, { transcribe }));
+    closers.push(connection.close);
+    const form = new FormData();
+    form.set("model", "parapper-ja");
+    form.set("file", wav(), "generated-correlation.wav");
+    const response = await fetch(new URL("/v1/audio/transcriptions", connection.origin), {
+      method: "POST",
+      body: form,
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ text: "generated-correlation" });
+    expect(observedRequestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(observedSessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(response.headers.get("x-request-id")).toBe(observedRequestId);
+    expect(response.headers.get("x-session-id")).toBe(observedSessionId);
+  });
+
+  it("emits failure and terminal HTTP records for an adapter error", async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const info = vi.spyOn(console, "info").mockImplementation((line) => {
+      if (typeof line !== "string") {
+        return;
+      }
+      try {
+        records.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // Ignore unrelated non-JSON console output.
+      }
+    });
+    const transcribe = vi.fn(() =>
+      Promise.reject(new GatewayError(504, "parapper_timeout", "sidecar timed out")),
+    );
+    const connection = await open(createGatewayServer(config, { transcribe }));
+    closers.push(connection.close);
+    const form = new FormData();
+    form.set("model", "parapper-ja");
+    form.set("file", wav(), "failed.wav");
+    const response = await fetch(new URL("/v1/audio/transcriptions", connection.origin), {
+      method: "POST",
+      headers: { "x-request-id": "request-http-failure" },
+      body: form,
+    });
+    expect(response.status).toBe(504);
+    expect(response.headers.get("x-request-id")).toBe("request-http-failure");
+
+    const lifecycle = records.filter(
+      (record) =>
+        record["request_id"] === "request-http-failure" &&
+        ["http_request_start", "http_request_end", "http_request_failure"].includes(
+          String(record["event"]),
+        ),
+    );
+    expect(lifecycle.map((record) => record["event"])).toEqual([
+      "http_request_start",
+      "http_request_failure",
+      "http_request_end",
+    ]);
+    expect(lifecycle.slice(1)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          request_id: "request-http-failure",
+          session_id: expect.any(String),
+          outcome: "failed",
+          status: 504,
+        }),
+      ]),
+    );
+    expect(lifecycle.at(-1)?.["duration_ms"]).toEqual(expect.any(Number));
+    info.mockRestore();
+  });
+
   it("caps adapter request bodies and uses the configured Parapper connection by default", async () => {
     const connection = await open(
       createGatewayServer({

@@ -6,10 +6,16 @@ import {
 } from "@caption-bridge/inference-server-core";
 import type { GatewayConfig } from "./config.js";
 import { transcribeWithParapper } from "./parapper.js";
+import {
+  type CorrelationContext,
+  correlationFromHeaders,
+  correlationHeaders,
+  emitStructuredLog,
+} from "./structuredLog.js";
 
 export interface GatewayDependencies {
   fetch?: typeof fetch;
-  transcribe?: (pcm: Uint8Array, signal?: AbortSignal) => Promise<string>;
+  transcribe?: (pcm: Uint8Array, signal?: AbortSignal, request?: Request) => Promise<string>;
 }
 
 const MAX_PROXY_REQUEST_BYTES = MAX_AUDIO_BYTES + 64 * 1024;
@@ -18,6 +24,7 @@ const writeJson = (
   response: ServerResponse,
   status: number,
   body: Record<string, unknown>,
+  correlation: CorrelationContext,
 ): void => {
   // A browser/desktop stop can close the HTTP stream while ASR is still
   // settling. Do not attempt a second write (which would surface as an
@@ -26,7 +33,10 @@ const writeJson = (
     return;
   }
   try {
-    response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+    response.writeHead(status, {
+      "content-type": "application/json; charset=utf-8",
+      ...correlationHeaders(correlation),
+    });
     response.end(JSON.stringify(body));
   } catch {
     response.destroy();
@@ -50,9 +60,16 @@ const requestBody = async (request: IncomingMessage): Promise<Uint8Array> => {
   return new Uint8Array(Buffer.concat(chunks));
 };
 
-const toFetchRequest = async (request: IncomingMessage, signal: AbortSignal): Promise<Request> => {
+const toFetchRequest = async (
+  request: IncomingMessage,
+  signal: AbortSignal,
+  correlation: CorrelationContext,
+): Promise<Request> => {
   const method = request.method as string;
   const headers = requestHeaders(request);
+  for (const [name, value] of Object.entries(correlationHeaders(correlation))) {
+    headers.set(name, value);
+  }
   const url = `http://${headers.get("host") ?? "kotoba-beacon.local"}${request.url as string}`;
   if (method === "GET" || method === "HEAD") {
     return new Request(url, { method, headers, signal });
@@ -60,7 +77,11 @@ const toFetchRequest = async (request: IncomingMessage, signal: AbortSignal): Pr
   return new Request(url, { method, headers, body: await requestBody(request), signal });
 };
 
-const writeFetchResponse = async (response: ServerResponse, result: Response): Promise<void> => {
+const writeFetchResponse = async (
+  response: ServerResponse,
+  result: Response,
+  correlation: CorrelationContext,
+): Promise<void> => {
   if (response.writableEnded || response.destroyed) {
     return;
   }
@@ -69,7 +90,10 @@ const writeFetchResponse = async (response: ServerResponse, result: Response): P
     if (response.writableEnded || response.destroyed) {
       return;
     }
-    response.writeHead(result.status, Object.fromEntries(result.headers.entries()));
+    response.writeHead(result.status, {
+      ...Object.fromEntries(result.headers.entries()),
+      ...correlationHeaders(correlation),
+    });
     response.end(body);
   } catch {
     // The peer may have cancelled the request while the upstream body was
@@ -80,17 +104,32 @@ const writeFetchResponse = async (response: ServerResponse, result: Response): P
   }
 };
 
-const handleAdapterError = (response: ServerResponse, error: unknown): void => {
+const handleAdapterError = (
+  response: ServerResponse,
+  error: unknown,
+  correlation: CorrelationContext,
+): { status: number; code: string } => {
   if (error instanceof GatewayError) {
-    writeJson(response, error.status, { error: { code: error.code, message: error.message } });
-    return;
+    writeJson(
+      response,
+      error.status,
+      { error: { code: error.code, message: error.message } },
+      correlation,
+    );
+    return { status: error.status, code: error.code };
   }
-  writeJson(response, 500, {
-    error: {
-      code: "internal_error",
-      message: "The inference gateway encountered an internal error",
+  writeJson(
+    response,
+    500,
+    {
+      error: {
+        code: "internal_error",
+        message: "The inference gateway encountered an internal error",
+      },
     },
-  });
+    correlation,
+  );
+  return { status: 500, code: "internal_error" };
 };
 
 export const createGatewayServer = (
@@ -99,12 +138,14 @@ export const createGatewayServer = (
 ): Server => {
   const transcribe =
     dependencies.transcribe ??
-    ((pcm: Uint8Array, signal?: AbortSignal) => {
+    ((pcm: Uint8Array, signal?: AbortSignal, request?: Request) => {
       const apiKey = config.parapper.apiKeyEnv ? process.env[config.parapper.apiKeyEnv] : undefined;
+      const correlation = request ? correlationFromHeaders(request.headers) : undefined;
       return transcribeWithParapper(pcm, {
         ...config.parapper,
         ...(apiKey ? { apiKey } : {}),
         ...(signal ? { signal } : {}),
+        ...(correlation ? { correlation } : {}),
       });
     });
   const handler = createGatewayFetchHandler(config, {
@@ -113,6 +154,44 @@ export const createGatewayServer = (
   });
   return createServer((request, response) => {
     const requestAbort = new AbortController();
+    const correlation = correlationFromHeaders(requestHeaders(request));
+    const method = request.method ?? "UNKNOWN";
+    // Keep query values out of logs: gateway URLs can contain user supplied
+    // tokens even though the request body is never logged.
+    const path = (request.url ?? "/").split("?", 1)[0] ?? "/";
+    const startedAt = Date.now();
+    let requestFinished = false;
+    const emitHttpLog = (event: string, fields: Record<string, unknown> = {}): void => {
+      try {
+        emitStructuredLog(event, correlation, {
+          log_event: event,
+          method,
+          path,
+          ...fields,
+        });
+      } catch {
+        // Logging must never turn a settled HTTP request into a process error.
+      }
+    };
+    const finishRequest = (status: number, fields: Record<string, unknown> = {}): void => {
+      if (requestFinished) {
+        return;
+      }
+      requestFinished = true;
+      const outcome = status >= 400 ? "failed" : "completed";
+      const terminalFields = {
+        status,
+        outcome,
+        duration_ms: Date.now() - startedAt,
+        ...fields,
+      };
+      if (outcome === "failed") {
+        emitHttpLog("http_request_failure", terminalFields);
+      }
+      emitHttpLog("http_request_end", terminalFields);
+    };
+    emitHttpLog("http_request_start", { outcome: "started" });
+
     const abortRequest = (): void => {
       requestAbort.abort();
     };
@@ -135,9 +214,15 @@ export const createGatewayServer = (
       }
     });
     response.once("error", () => undefined);
-    void toFetchRequest(request, requestAbort.signal)
+    void toFetchRequest(request, requestAbort.signal, correlation)
       .then(handler)
-      .then(async (result) => writeFetchResponse(response, result))
-      .catch((error: unknown) => handleAdapterError(response, error));
+      .then(async (result) => {
+        await writeFetchResponse(response, result, correlation);
+        finishRequest(result.status);
+      })
+      .catch((error: unknown) => {
+        const failure = handleAdapterError(response, error, correlation);
+        finishRequest(failure.status, { error_code: failure.code });
+      });
   });
 };

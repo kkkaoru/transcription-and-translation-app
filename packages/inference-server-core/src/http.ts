@@ -53,9 +53,10 @@ export interface GatewayDependencies {
    * Transcribe one PCM chunk. The request signal is optional so adapters that
    * do not own a cancellable upstream can keep their existing one-argument
    * implementation, while streaming adapters can stop promptly when the
-   * client disconnects.
+   * client disconnects. The originating request is also optional so an adapter
+   * can propagate correlation headers without changing existing callers.
    */
-  transcribe?: (pcm: Uint8Array, signal?: AbortSignal) => Promise<string>;
+  transcribe?: (pcm: Uint8Array, signal?: AbortSignal, request?: Request) => Promise<string>;
 }
 
 const isGatewayError = (error: unknown): error is GatewayError => error instanceof GatewayError;
@@ -349,7 +350,7 @@ export const createGatewayFetchHandler = (
           fail(HTTP_BAD_REQUEST, "invalid_audio", detail);
         }
         const text = await asrGate
-          .run(() => requiredTranscriber(transcribe)(pcm, request.signal))
+          .run(() => requiredTranscriber(transcribe)(pcm, request.signal, request))
           .catch((error: unknown) => {
             if (isNoSpeechFailure(error)) {
               return "";

@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket, { type RawData, WebSocketServer } from "ws";
 import { formatParapperConnectionError, SerialGate, transcribeWithParapper } from "./parapper.js";
+import { PROVIDER_TURN_END, PROVIDER_TURN_SKIP, PROVIDER_TURN_START } from "./structuredLog.js";
 
 const startParapper = async (
   onConnection: (socket: WebSocket, request: IncomingMessage) => void,
@@ -1219,6 +1220,350 @@ describe("Parapper WebSocket adapter", () => {
       ).rejects.toMatchObject({ code: "parapper_send_failed", status: 502 });
     } finally {
       await Promise.all([rejecting.close(), malformed.close()]);
+    }
+  });
+
+  it("emits correlated provider start and successful end records without transcript bodies", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              text: "認識結果",
+            }),
+          );
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array([0, 1]), {
+          url: fixture.url,
+          timeoutMs: 1_000,
+          correlation: {
+            requestId: "request-1",
+            sessionId: "capture-1",
+            agentId: "agent-1",
+            parentAgentId: "parent-1",
+          },
+        }),
+      ).resolves.toBe("認識結果");
+      const records = info.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter((record) =>
+          [PROVIDER_TURN_START, PROVIDER_TURN_END, PROVIDER_TURN_SKIP].includes(
+            String(record["event"]),
+          ),
+        );
+      expect(records.map((record) => record["event"])).toEqual([
+        PROVIDER_TURN_START,
+        PROVIDER_TURN_END,
+      ]);
+      expect(records[0]).toMatchObject({
+        request_id: "request-1",
+        session_id: "capture-1",
+        agent_id: "agent-1",
+        parent_agent_id: "parent-1",
+        outcome: "started",
+      });
+      expect(records[1]).toMatchObject({
+        request_id: "request-1",
+        session_id: "capture-1",
+        agent_id: "agent-1",
+        parent_agent_id: "parent-1",
+        outcome: "completed",
+        status: "completed",
+        textChars: 4,
+      });
+      expect(records[1]?.["error"]).toBeNull();
+      for (const record of records) {
+        expect(JSON.stringify(record)).not.toContain("認識結果");
+      }
+    } finally {
+      info.mockRestore();
+      await fixture.close();
+    }
+  });
+
+  it("emits a provider skip record for a no-speech window", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array([0, 1]), {
+          url: fixture.url,
+          timeoutMs: 1_000,
+          correlation: {
+            requestId: "request-skip",
+            sessionId: "capture-skip",
+            agentId: null,
+            parentAgentId: null,
+          },
+        }),
+      ).resolves.toBe("");
+      const records = info.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter((record) =>
+          [PROVIDER_TURN_START, PROVIDER_TURN_END, PROVIDER_TURN_SKIP].includes(
+            String(record["event"]),
+          ),
+        );
+      expect(records.map((record) => record["event"])).toEqual([
+        PROVIDER_TURN_START,
+        PROVIDER_TURN_SKIP,
+      ]);
+      expect(records[1]).toMatchObject({
+        request_id: "request-skip",
+        session_id: "capture-skip",
+        outcome: "skipped",
+        status: "skipped",
+        reason: "soft_empty",
+        textChars: 0,
+      });
+    } finally {
+      info.mockRestore();
+      await fixture.close();
+    }
+  });
+
+  it("emits a failed provider end record with the protocol error", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "error",
+              session_id: message.session_id,
+              code: "sidecar_failed",
+              message: "recognition failed",
+            }),
+          );
+        }
+      });
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array([0, 1]), {
+          url: fixture.url,
+          timeoutMs: 1_000,
+          correlation: {
+            requestId: "request-error",
+            sessionId: "capture-error",
+            agentId: "agent-error",
+            parentAgentId: null,
+          },
+        }),
+      ).rejects.toMatchObject({ code: "sidecar_failed", status: 502 });
+      const records = info.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter((record) =>
+          [PROVIDER_TURN_START, PROVIDER_TURN_END, PROVIDER_TURN_SKIP].includes(
+            String(record["event"]),
+          ),
+        );
+      expect(records.map((record) => record["event"])).toEqual([
+        PROVIDER_TURN_START,
+        PROVIDER_TURN_END,
+      ]);
+      expect(records[1]).toMatchObject({
+        request_id: "request-error",
+        session_id: "capture-error",
+        agent_id: "agent-error",
+        parent_agent_id: null,
+        outcome: "failed",
+        status: "failed",
+        errorCode: "sidecar_failed",
+      });
+      expect(typeof records[1]?.["duration_ms"]).toBe("number");
+    } finally {
+      info.mockRestore();
+      await fixture.close();
+    }
+  });
+
+  it("emits a failed provider end record when the sidecar times out", async () => {
+    const fixture = await startParapper(() => undefined);
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array([0, 1]), {
+          url: fixture.url,
+          timeoutMs: 200,
+          correlation: {
+            requestId: "request-timeout",
+            sessionId: "capture-timeout",
+            agentId: "agent-timeout",
+            parentAgentId: "parent-timeout",
+          },
+        }),
+      ).rejects.toMatchObject({ code: "parapper_timeout", status: 504 });
+      const records = info.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter((record) =>
+          [PROVIDER_TURN_START, PROVIDER_TURN_END, PROVIDER_TURN_SKIP].includes(
+            String(record["event"]),
+          ),
+        );
+      expect(records.map((record) => record["event"])).toEqual([
+        PROVIDER_TURN_START,
+        PROVIDER_TURN_END,
+      ]);
+      expect(records[1]).toMatchObject({
+        request_id: "request-timeout",
+        session_id: "capture-timeout",
+        agent_id: "agent-timeout",
+        parent_agent_id: "parent-timeout",
+        outcome: "failed",
+        status: "failed",
+        errorCode: "parapper_timeout",
+      });
+    } finally {
+      info.mockRestore();
+      await fixture.close();
+    }
+  });
+
+  it("keeps provider correlation isolated across concurrent sessions", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) {
+          return;
+        }
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          const delay = message.session_id === "sidecar-a" ? 15 : 0;
+          setTimeout(() => {
+            socket.send(
+              JSON.stringify({
+                version: 1,
+                type: "turn.final",
+                session_id: message.session_id,
+                text: message.session_id,
+              }),
+            );
+            socket.send(
+              JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+            );
+          }, delay);
+        }
+      });
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      const [first, second] = await Promise.all([
+        transcribeWithParapper(new Uint8Array([0, 1]), {
+          url: fixture.url,
+          timeoutMs: 1_000,
+          sessionId: () => "sidecar-a",
+          correlation: {
+            requestId: "request-a",
+            sessionId: "capture-a",
+            agentId: "agent-a",
+            parentAgentId: "parent-a",
+          },
+        }),
+        transcribeWithParapper(new Uint8Array([2, 3]), {
+          url: fixture.url,
+          timeoutMs: 1_000,
+          sessionId: () => "sidecar-b",
+          correlation: {
+            requestId: "request-b",
+            sessionId: "capture-b",
+            agentId: "agent-b",
+            parentAgentId: "parent-b",
+          },
+        }),
+      ]);
+      expect([first, second]).toEqual(["sidecar-a", "sidecar-b"]);
+      const records = info.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter((record) =>
+          [PROVIDER_TURN_START, PROVIDER_TURN_END, PROVIDER_TURN_SKIP].includes(
+            String(record["event"]),
+          ),
+        );
+      for (const expected of [
+        {
+          requestId: "request-a",
+          sessionId: "capture-a",
+          agentId: "agent-a",
+          parentAgentId: "parent-a",
+        },
+        {
+          requestId: "request-b",
+          sessionId: "capture-b",
+          agentId: "agent-b",
+          parentAgentId: "parent-b",
+        },
+      ]) {
+        const correlated = records.filter((record) => record["request_id"] === expected.requestId);
+        expect(correlated.map((record) => record["event"])).toEqual([
+          PROVIDER_TURN_START,
+          PROVIDER_TURN_END,
+        ]);
+        expect(correlated).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              request_id: expected.requestId,
+              session_id: expected.sessionId,
+              agent_id: expected.agentId,
+              parent_agent_id: expected.parentAgentId,
+            }),
+          ]),
+        );
+        expect(correlated.every((record) => record["session_id"] === expected.sessionId)).toBe(true);
+      }
+      expect(new Set(records.map((record) => record["request_id"]))).toEqual(
+        new Set(["request-a", "request-b"]),
+      );
+    } finally {
+      info.mockRestore();
+      await fixture.close();
     }
   });
 
