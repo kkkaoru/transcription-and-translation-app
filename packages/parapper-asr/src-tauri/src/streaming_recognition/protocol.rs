@@ -710,4 +710,48 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn turn_partial_serialization_matches_the_version_one_wire_contract() {
+        let partial = ServerMessage::TurnPartial {
+            version: 1,
+            session_id: "fixture-session".to_string(),
+            turn_session_id: 7,
+            turn_id: 3,
+            revision: 2,
+            output_sequence: 1,
+            segment_id: 8,
+            previous_segment_id: Some(7),
+            text: "こんにちは".to_string(),
+            source_text: None,
+            azookey_input_text: None,
+            source_asr_model: "reazonspeech_k2_v2".to_string(),
+            source_language: "ja".to_string(),
+            detected_language: None,
+            elapsed_ms: 96,
+        };
+
+        // `source_text` and `azookey_input_text` must be omitted (not null)
+        // when absent, while `detected_language` stays an explicit null and
+        // `audio_duration_ms` never appears on a partial.
+        assert_eq!(
+            serde_json::to_value(partial).unwrap(),
+            json!({
+                "version": 1,
+                "type": "turn.partial",
+                "session_id": "fixture-session",
+                "turn_session_id": 7,
+                "turn_id": 3,
+                "revision": 2,
+                "output_sequence": 1,
+                "segment_id": 8,
+                "previous_segment_id": 7,
+                "text": "こんにちは",
+                "source_asr_model": "reazonspeech_k2_v2",
+                "source_language": "ja",
+                "detected_language": null,
+                "elapsed_ms": 96,
+            })
+        );
+    }
 }

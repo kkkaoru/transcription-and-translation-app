@@ -251,7 +251,7 @@ fn nemotron_interim_chunk_request(
     range: std::ops::Range<u64>,
     sample: f32,
 ) -> AsrRequest {
-    let len = (range.end - range.start) as usize;
+    let len = usize::try_from(range.end - range.start).expect("test audio range fits usize");
     let chunk_len = 2_560.min(len);
     AsrRequest {
         request_id: AsrRequestId(request_id),
@@ -276,7 +276,7 @@ fn nemotron_interim_chunk_request(
 
 #[cfg(not(target_os = "macos"))]
 fn nemotron_completion_request(request_id: u64, range: std::ops::Range<u64>) -> AsrRequest {
-    let len = (range.end - range.start) as usize;
+    let len = usize::try_from(range.end - range.start).expect("test audio range fits usize");
     AsrRequest {
         request_id: AsrRequestId(request_id),
         kind: AsrTaskKind::CompletionCheck,
