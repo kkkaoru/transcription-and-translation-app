@@ -254,8 +254,7 @@ export async function cleanBuildArtifacts(options = {}) {
   const releaseLock = await acquireCleanupLock(root);
 
   try {
-    const activeProcesses =
-      pruneRust && !temporaryOnly ? (options.activeProcesses ?? activeRustProcesses(root)) : [];
+    const activeProcesses = options.activeProcesses ?? activeRustProcesses(root);
     if (activeProcesses.length > 0) {
       return {
         removed,

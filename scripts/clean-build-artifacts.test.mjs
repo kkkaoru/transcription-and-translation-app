@@ -272,7 +272,6 @@ describe("cleanBuildArtifacts", () => {
 
     const result = await cleanBuildArtifacts({
       root,
-      pruneRust: true,
       activeProcesses: ["cargo test --manifest-path packages/parapper-asr/src-tauri/Cargo.toml"],
     });
 
