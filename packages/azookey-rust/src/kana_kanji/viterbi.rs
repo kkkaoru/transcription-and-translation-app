@@ -356,15 +356,24 @@ pub fn convert_with_dictionary(
                 }
             }
             if is_boundary(chars[start]) {
+                // Clause-level MM context continues across sentence-internal
+                // separators (comma/full stop), matching the upstream
+                // punctuation dictionary nodes. Terminal/question/exclaim
+                // marks end the lexical context instead; carrying the
+                // previous clause through `？？` can crowd out the intended
+                // kana continuation in short conversational captions.
+                let keep_clause_context = matches!(chars[start], '、' | '。' | ',' | '.');
                 push_state(
                     &mut states[start + 1],
                     PathState {
                         text: format!("{}{}", state.text, source_chars[start]),
                         score: state.score,
                         meaning_score: state.meaning_score,
-                        last: None,
-                        clause_mid: BOS_EOS_MID,
-                        clause_has_word: false,
+                        last: keep_clause_context.then(|| state.last.clone()).flatten(),
+                        clause_mid: keep_clause_context
+                            .then_some(state.clause_mid)
+                            .unwrap_or(BOS_EOS_MID),
+                        clause_has_word: keep_clause_context && state.clause_has_word,
                     },
                     width,
                 );
@@ -1141,6 +1150,27 @@ mod tests {
         )
         .expect("configured public dictionary should convert");
         assert_eq!(converted, "漢字の処理を改善");
+    }
+
+    #[test]
+    fn carries_meaning_context_across_clause_punctuation() {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
+            return;
+        };
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        let candidate = convert_with_dictionary(
+            "しょうぼう、しょうか、ほのお",
+            &dictionary,
+            ConversionOptions { n_best: 10, ..ConversionOptions::default() },
+        )
+        .into_iter()
+        .next()
+        .expect("public conversion should produce a candidate");
+        assert_eq!(candidate.text, "消防、消火、炎");
     }
 
     #[test]
