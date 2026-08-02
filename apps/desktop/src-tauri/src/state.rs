@@ -416,8 +416,141 @@ impl AppState {
     pub fn is_capture_generation_current(&self, generation: u64) -> bool {
         self.translation_tracker
             .lock()
-            .map(|tracker| tracker.current_generation == generation && generation != 0)
+            .map(|tracker| generation_is_current(&tracker, generation))
             .unwrap_or(false)
+    }
+
+    /// Apply a transcription/normalizer failure to runtime status only when
+    /// `generation` is still the active capture generation.
+    ///
+    /// Lock order: `translation_tracker` then `status` (never reverse). Holding
+    /// the tracker lock while mutating status makes the generation check atomic
+    /// with the write because `begin_capture_generation` needs the same tracker
+    /// lock to bump the generation.
+    pub fn apply_transcription_error_for_generation(
+        &self,
+        generation: u64,
+        detail: &str,
+    ) -> Option<RuntimeStatus> {
+        let tracker = self.translation_tracker.lock().ok()?;
+        if !generation_is_current(&tracker, generation) {
+            return None;
+        }
+        let mut status = self.status.lock().ok()?;
+        if status.status == "idle" {
+            return None;
+        }
+        if status.status != "starting" {
+            status.status = "capturing".to_string();
+        }
+        status.backend_reachable = false;
+        status.last_error = Some(detail.to_string());
+        Some(status.clone())
+    }
+
+    /// Mark the sidecar healthy for a still-current capture generation.
+    /// Returns a status snapshot only when a visible field changed.
+    ///
+    /// Lock order: `translation_tracker`, then `status`, then `asr_health`.
+    pub fn mark_backend_healthy_for_generation(&self, generation: u64) -> Option<RuntimeStatus> {
+        let tracker = self.translation_tracker.lock().ok()?;
+        if !generation_is_current(&tracker, generation) {
+            return None;
+        }
+        let mut status = self.status.lock().ok()?;
+        if !capture_status_is_active(status.status.as_str()) {
+            return None;
+        }
+        // Success is generation-scoped: only clear empty-turn loss for the
+        // session that actually produced a displayable ASR caption.
+        // `record_asr_success` takes `asr_health` after tracker+status (never reverse).
+        self.record_asr_success();
+        let mut dirty = false;
+        if !status.backend_reachable {
+            status.backend_reachable = true;
+            dirty = true;
+        }
+        if status.last_error.is_some() {
+            status.last_error = None;
+            dirty = true;
+        }
+        if !dirty {
+            return None;
+        }
+        Some(status.clone())
+    }
+
+    /// Reachability without clearing `last_error`. Same generation atomicity
+    /// contract as [`Self::mark_backend_healthy_for_generation`].
+    ///
+    /// Lock order: `translation_tracker` then `status`.
+    pub fn mark_backend_reachable_for_generation(&self, generation: u64) -> Option<RuntimeStatus> {
+        let tracker = self.translation_tracker.lock().ok()?;
+        if !generation_is_current(&tracker, generation) {
+            return None;
+        }
+        let mut status = self.status.lock().ok()?;
+        if !capture_status_is_active(status.status.as_str()) || status.backend_reachable {
+            return None;
+        }
+        status.backend_reachable = true;
+        Some(status.clone())
+    }
+
+    /// Persistent VAD-confirmed empty ASR loss for a still-current generation.
+    ///
+    /// Lock order: `translation_tracker` then `status`.
+    pub fn apply_persistent_asr_loss_for_generation(
+        &self,
+        generation: u64,
+        detail: &str,
+    ) -> Option<RuntimeStatus> {
+        let tracker = self.translation_tracker.lock().ok()?;
+        if !generation_is_current(&tracker, generation) {
+            return None;
+        }
+        let mut status = self.status.lock().ok()?;
+        if !capture_status_is_active(status.status.as_str()) {
+            return None;
+        }
+        status.backend_reachable = false;
+        status.last_error = Some(detail.to_string());
+        Some(status.clone())
+    }
+
+    /// Accept a user-facing caption into native replay only when generation is
+    /// current and capture is still active. Invokes `emit` while the status
+    /// lock is held so `stop_capture`'s idle transition stays ordered after an
+    /// accepted caption (same contract as the previous emit path).
+    ///
+    /// Lock order: `translation_tracker`, then `status`, then `latest_caption`.
+    pub fn publish_caption_for_generation(
+        &self,
+        generation: u64,
+        caption: &CaptionPayload,
+        emit: impl FnOnce(&CaptionPayload),
+    ) -> bool {
+        let Ok(tracker) = self.translation_tracker.lock() else {
+            return false;
+        };
+        if !generation_is_current(&tracker, generation) {
+            return false;
+        }
+        let Ok(status) = self.status.lock() else {
+            return false;
+        };
+        if !capture_status_is_active(status.status.as_str()) {
+            return false;
+        }
+        // Record under the active-session guard so a concurrent successful stop
+        // cannot clear the replay slot before we decide the caption is live.
+        self.record_latest_caption(caption);
+        emit(caption);
+        // Keep `status` (and generation) held through emit so idle cannot race
+        // ahead of a caption that was accepted for this generation.
+        drop(status);
+        drop(tracker);
+        true
     }
 
     /// Record an empty result from a Parapper turn for which VAD had already
@@ -473,6 +606,15 @@ impl AppState {
     pub fn translation_is_current(&self, ticket: TranslationTicket) -> bool {
         self.translation_tracker.lock().map(|tracker| tracker.is_current(ticket)).unwrap_or(false)
     }
+}
+
+/// Shared active-capture predicate for generation-gated status mutations.
+fn capture_status_is_active(status: &str) -> bool {
+    matches!(status, "starting" | "capturing")
+}
+
+fn generation_is_current(tracker: &TranslationTracker, generation: u64) -> bool {
+    tracker.current_generation == generation && generation != 0
 }
 
 async fn wait_for_translation_drain(state: &AppState, generation: u64) {
@@ -645,6 +787,147 @@ mod tests {
             "a delayed ASR/normalizer completion belongs to the old capture"
         );
         assert!(state.is_capture_generation_current(state.current_capture_generation()));
+    }
+
+    fn capturing_state() -> AppState {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = None;
+        }
+        state
+    }
+
+    #[test]
+    fn stale_generation_does_not_poison_status_with_a_late_transcription_error() {
+        let state = capturing_state();
+        let delayed_generation = state.current_capture_generation();
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = None;
+        }
+
+        assert!(
+            state
+                .apply_transcription_error_for_generation(delayed_generation, "stale ASR failure")
+                .is_none(),
+            "an old Err completion must not emit runtime:status into the replacement session"
+        );
+        let status = state.status.lock().expect("status lock");
+        assert!(status.backend_reachable);
+        assert_eq!(status.last_error, None);
+    }
+
+    #[test]
+    fn current_generation_transcription_error_still_marks_backend_unreachable() {
+        let state = capturing_state();
+        let generation = state.current_capture_generation();
+        let next = state
+            .apply_transcription_error_for_generation(generation, "live ASR failure")
+            .expect("current generation may surface last_error");
+        assert!(!next.backend_reachable);
+        assert_eq!(next.last_error.as_deref(), Some("live ASR failure"));
+        assert_eq!(next.status, "capturing");
+    }
+
+    #[test]
+    fn stale_generation_does_not_mark_backend_healthy_or_clear_errors() {
+        let state = capturing_state();
+        let delayed_generation = state.current_capture_generation();
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = false;
+            status.last_error = Some("new session error".to_string());
+        }
+
+        assert!(state.mark_backend_healthy_for_generation(delayed_generation).is_none());
+        let status = state.status.lock().expect("status lock");
+        assert!(!status.backend_reachable);
+        assert_eq!(status.last_error.as_deref(), Some("new session error"));
+    }
+
+    #[test]
+    fn stale_generation_does_not_apply_persistent_asr_loss() {
+        let state = capturing_state();
+        let delayed_generation = state.current_capture_generation();
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = None;
+        }
+
+        assert!(state
+            .apply_persistent_asr_loss_for_generation(delayed_generation, "stale ASR loss")
+            .is_none());
+        let status = state.status.lock().expect("status lock");
+        assert!(status.backend_reachable);
+        assert_eq!(status.last_error, None);
+    }
+
+    #[test]
+    fn stale_generation_does_not_publish_a_late_source_caption() {
+        let state = capturing_state();
+        let delayed_generation = state.current_capture_generation();
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+        }
+        let caption = CaptionPayload {
+            id: "stale".to_string(),
+            source_text: "遅延した字幕".to_string(),
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+        };
+        let mut emitted = false;
+        assert!(!state.publish_caption_for_generation(delayed_generation, &caption, |_| {
+            emitted = true;
+        }));
+        assert!(!emitted);
+        assert_eq!(state.latest_caption(), None);
+    }
+
+    #[test]
+    fn current_generation_publishes_caption_while_capture_is_active() {
+        let state = capturing_state();
+        let generation = state.current_capture_generation();
+        let caption = CaptionPayload {
+            id: "live".to_string(),
+            source_text: "現行字幕".to_string(),
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+        };
+        let mut emitted = false;
+        assert!(state.publish_caption_for_generation(generation, &caption, |_| {
+            emitted = true;
+        }));
+        assert!(emitted);
+        assert_eq!(state.latest_caption(), Some(caption));
     }
 
     #[tokio::test]

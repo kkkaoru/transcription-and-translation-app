@@ -360,8 +360,11 @@ pub async fn transcribe_audio_chunk(
             // Failed stage event was already emitted via on_stage.
             // Keep the session in "capturing" so the frontend Stop control remains
             // available. Surface the concrete failure through last_error only.
-            let next_status = transcription_error_status(state.inner(), &detail);
-            if let Some(status) = next_status {
+            // Generation-gated: a delayed Err after Stop+Start must not poison
+            // the replacement session's runtime:status.
+            if let Some(status) =
+                state.apply_transcription_error_for_generation(capture_generation, &detail)
+            {
                 let _ = app.emit("runtime:status", &status);
             }
             Err(detail)
@@ -440,7 +443,9 @@ pub async fn normalize_parapper_output(
         }
         Err(error) => {
             let detail = redact_runtime_text(&error.to_string());
-            if let Some(status) = transcription_error_status(state.inner(), &detail) {
+            if let Some(status) =
+                state.apply_transcription_error_for_generation(capture_generation, &detail)
+            {
                 let _ = app.emit("runtime:status", &status);
             }
             Err(detail)
@@ -528,21 +533,6 @@ fn update_translation_error_status(app: &AppHandle, detail: &str) {
     let next = status.clone();
     drop(status);
     let _ = app.emit("runtime:status", &next);
-}
-
-/// Build the status snapshot for a failed transcription request. Returning an
-/// `Option` via `ok()?` avoids nesting lock/error handling in the hot command.
-fn transcription_error_status(state: &AppState, detail: &str) -> Option<RuntimeStatus> {
-    let mut status = state.status.lock().ok()?;
-    if status.status == "idle" {
-        return None;
-    }
-    if status.status != "idle" && status.status != "starting" {
-        status.status = "capturing".to_string();
-    }
-    status.backend_reachable = false;
-    status.last_error = Some(detail.to_string());
-    Some(status.clone())
 }
 
 /// Run translation after the source caption has been returned to the UI.
@@ -633,15 +623,17 @@ fn emit_caption_update(app: &AppHandle, caption: &CaptionPayload) {
 
 /// ASR/normalizer work can outlive a stop/start boundary. Source updates carry
 /// the capture generation they started under so an old completion cannot paint
-/// over the newer session before the normal active-status guard runs.
+/// over the newer session. Generation and active-status are checked under one
+/// lock sequence before record+emit (see AppState::publish_caption_for_generation).
 fn emit_caption_update_for_generation(app: &AppHandle, caption: &CaptionPayload, generation: u64) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    if !state.is_capture_generation_current(generation) {
-        return;
-    }
-    emit_caption_update(app, caption);
+    let _ = state.publish_caption_for_generation(generation, caption, |payload| {
+        if let Err(error) = app.emit("caption:update", payload) {
+            log::warn!("could not emit caption:update: {error}");
+        }
+    });
 }
 
 fn report_translation_error(app: &AppHandle, error: &PipelineError) {
@@ -721,33 +713,10 @@ fn emit_pipeline_stage(app: &AppHandle, config: &AppConfig, stage: &PipelineStag
 }
 
 fn mark_backend_healthy(app: &AppHandle, state: &State<'_, AppState>, generation: u64) {
-    if !state.is_capture_generation_current(generation) {
-        return;
-    }
-    if let Ok(mut status) = state.status.lock() {
-        // A request that was already in flight may complete after Stop. Keep
-        // the completed session idle instead of publishing a healthy status
-        // that would resurrect its caption/replay state.
-        if !capture_is_active(status.status.as_str()) {
-            return;
-        }
-        state.record_asr_success();
-        let mut dirty = false;
-        if !status.backend_reachable {
-            status.backend_reachable = true;
-            dirty = true;
-        }
-        if status.last_error.is_some() {
-            status.last_error = None;
-            dirty = true;
-        }
-        // Avoid flooding the UI with identical runtime:status events on every
-        // silent/success chunk — each emit used to re-render the live shell.
-        if !dirty {
-            return;
-        }
-        let next = status.clone();
-        drop(status);
+    // A request that was already in flight may complete after Stop/Start.
+    // Generation check and status mutation share one lock sequence so a new
+    // Start cannot interleave between them.
+    if let Some(next) = state.mark_backend_healthy_for_generation(generation) {
         let _ = app.emit("runtime:status", &next);
     }
 }
@@ -760,16 +729,7 @@ fn mark_backend_reachable_without_clearing_error(
     state: &State<'_, AppState>,
     generation: u64,
 ) {
-    if !state.is_capture_generation_current(generation) {
-        return;
-    }
-    if let Ok(mut status) = state.status.lock() {
-        if !capture_is_active(status.status.as_str()) || status.backend_reachable {
-            return;
-        }
-        status.backend_reachable = true;
-        let next = status.clone();
-        drop(status);
+    if let Some(next) = state.mark_backend_reachable_for_generation(generation) {
         let _ = app.emit("runtime:status", &next);
     }
 }
@@ -781,32 +741,15 @@ fn persistent_asr_loss_message(consecutive: u8) -> String {
     )
 }
 
-/// Build a status snapshot for repeated empty Parapper turn results. Unlike a
-/// one-off no-speech soft skip, this is visible failure state and remains so
-/// until a real ASR caption succeeds or capture starts a new session.
-fn persistent_asr_loss_status(state: &AppState, detail: &str) -> Option<RuntimeStatus> {
-    let mut status = state.status.lock().ok()?;
-    if !capture_is_active(status.status.as_str()) {
-        return None;
-    }
-    status.backend_reachable = false;
-    status.last_error = Some(detail.to_string());
-    Some(status.clone())
-}
-
 fn emit_persistent_asr_loss_status(
     app: &AppHandle,
     state: &AppState,
     generation: u64,
     detail: &str,
 ) {
-    if !state.is_capture_generation_current(generation) {
-        return;
+    if let Some(status) = state.apply_persistent_asr_loss_for_generation(generation, detail) {
+        let _ = app.emit("runtime:status", &status);
     }
-    let Some(status) = persistent_asr_loss_status(state, detail) else {
-        return;
-    };
-    let _ = app.emit("runtime:status", &status);
 }
 
 fn chrono_like_millis() -> u64 {
@@ -1198,9 +1141,9 @@ pub async fn export_debug_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_is_active, ensure_overlay_window, persistent_asr_loss_message,
-        persistent_asr_loss_status, redact_runtime_text, sanitize_debug_json, sanitize_export_body,
-        source_caption_payload, validate_overlay_frame_dimensions, SourceCaptionInput,
+        capture_is_active, ensure_overlay_window, persistent_asr_loss_message, redact_runtime_text,
+        sanitize_debug_json, sanitize_export_body, source_caption_payload,
+        validate_overlay_frame_dimensions, SourceCaptionInput,
     };
     use crate::config::AppConfig;
     use crate::output::OutputStatus;
@@ -1218,6 +1161,7 @@ mod tests {
     fn repeated_vad_confirmed_empty_results_remain_a_visible_asr_failure() {
         let state =
             AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
         {
             let mut status = state.status.lock().expect("status lock");
             status.status = "capturing".to_string();
@@ -1225,7 +1169,10 @@ mod tests {
             status.last_error = Some("an earlier error".to_string());
         }
         let detail = persistent_asr_loss_message(3);
-        let next = persistent_asr_loss_status(&state, &detail).expect("active capture status");
+        let generation = state.current_capture_generation();
+        let next = state
+            .apply_persistent_asr_loss_for_generation(generation, &detail)
+            .expect("active capture status");
 
         assert_eq!(next.status, "capturing");
         assert!(!next.backend_reachable);
@@ -1236,6 +1183,28 @@ mod tests {
             !detail.to_ascii_lowercase().contains("no transcript"),
             "the frontend must not classify persistent result loss as a no-speech soft skip"
         );
+    }
+
+    #[test]
+    fn delayed_error_after_generation_bump_does_not_mutate_runtime_status() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let delayed_generation = state.current_capture_generation();
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = None;
+        }
+
+        assert!(state
+            .apply_transcription_error_for_generation(delayed_generation, "late failure")
+            .is_none());
+        let status = state.status.lock().expect("status lock");
+        assert!(status.backend_reachable);
+        assert_eq!(status.last_error, None);
     }
 
     #[test]
