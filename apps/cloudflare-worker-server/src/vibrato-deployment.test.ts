@@ -66,6 +66,13 @@ describe("Worker-side Vibrato and deployment paths", () => {
     await expect(converter("スープが熱い", "ja")).resolves.toBe("すーぷがあつい");
     expect(fetcher).toHaveBeenCalledTimes(1);
 
+    const assetConverter = createVibratoWasmConverter(
+      wasmModule,
+      "/vibrato/system.dic.zst",
+      () => new Response(dictionary),
+    );
+    await expect(assetConverter?.("東京都に住む", "ja")).resolves.toBe("とうきょうとにすむ");
+
     expect(
       createVibratoWasmConverter(undefined, "https://dictionary.example/dict"),
     ).toBeUndefined();

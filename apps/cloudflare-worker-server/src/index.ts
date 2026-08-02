@@ -31,6 +31,11 @@ export interface Env {
   VIBRATO_DICTIONARY_URL?: string;
   CORS_ORIGIN?: string;
   MODEL_ROUTES: string;
+  ASSETS?: WorkerAssets;
+}
+
+export interface WorkerAssets {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
 export interface WorkerHandler {
@@ -44,6 +49,7 @@ const HTTP_INTERNAL_SERVER_ERROR = 500;
 const LOCAL_GATEWAY_HOST = "127.0.0.1";
 const LOCAL_GATEWAY_PORT = 8765;
 const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
+export const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
 
 /**
  * The Worker adapter accepts the native fetch function as well as a small
@@ -151,6 +157,9 @@ export const createWorker = (
       return cors(new Response(null, { status: HTTP_NO_CONTENT }), env.CORS_ORIGIN);
     }
     const url = new URL(request.url);
+    if (url.pathname === VIBRATO_DICTIONARY_PATH && env.ASSETS) {
+      return env.ASSETS.fetch(request);
+    }
     if (url.pathname === "/v1/azookey") {
       if (request.method !== "GET") {
         return cors(
@@ -193,9 +202,23 @@ export const createWorker = (
       );
     }
     if (url.pathname === AZOOKEY_WS_PATH) {
+      const fetcher = dependencies.fetcher ?? fetch;
+      const assets = env.ASSETS;
+      const dictionaryFetcher =
+        dependencies.vibratoDictionaryFetcher ??
+        (assets && env.VIBRATO_DICTIONARY_URL?.trim().startsWith("/")
+          ? (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+              const assetRequest =
+                input instanceof Request
+                  ? new Request(input, init)
+                  : new Request(new URL(String(input), request.url), init);
+              return assets.fetch(assetRequest);
+            }
+          : fetcher);
       const response = await openAzookeySocket(request, env, {
         ...dependencies,
         fetcher,
+        vibratoDictionaryFetcher: dictionaryFetcher,
         wasmModule: dependencies.wasmModule ?? azookeyWasm,
         vibratoWasmModule: dependencies.vibratoWasmModule ?? vibratoWasm,
       });

@@ -14,8 +14,9 @@ The comparison app sends one text frame per conversion.
 Wire labels `worker-vibrato` and `vibratoInput` are historical names only.
 AzooKey conversion always runs with the compact WASM module on this Worker,
 using `vibratoInput` as its conversion input. In worker comparison mode, a
-`vibratoExecution: "worker"` frame may request the separately configured
-Vibrato HTTP pre-pass; the Worker does not bundle the large UniDic dictionary.
+`vibratoExecution: "worker"` frame requests the bundled Vibrato WASM/IPADIC
+pre-pass (or the optional HTTP adapter fallback); the Worker does not bundle
+the large UniDic dictionary.
 Browser comparison mode performs its pre-pass in the client and sends
 `vibratoExecution: "browser-wasm"`.
 
@@ -124,19 +125,20 @@ closing a healthy session.
 `packages/azookey-wasm` is a raw ABI wrapper around the existing built-in
 `packages/azookey-rust` lexicon. It intentionally does not require WASI,
 filesystem access, or `wasm-bindgen`, so the Worker can import one small
-`wasm/azookey.wasm` module. Run `bun run --cwd apps/cloudflare-worker-server
+`wasm/azookey.wasm` module. Run `cd apps/cloudflare-worker-server && bun run
 build:wasm` to reproduce the binary; `dev`, `typecheck`, `test`, and `deploy`
 run that step automatically.
 
 AzooKey conversion runs in the Worker as raw WASM. Worker comparison mode runs
 the checked-in `packages/vibrato-wasm` module with the standard IPADIC
 `system.dic.zst` configured by `VIBRATO_DICTIONARY_URL` before AzooKey. The
-dictionary is fetched lazily and cached per isolate; it is not a fixed phrase
-table. The optional `VIBRATO_UPSTREAM_URL` HTTP adapter remains available as a
-fallback for deployments that cannot load the dictionary. Wire field names such
-as `vibratoInput` and mode value `worker-vibrato` are historical protocol
-labels; `vibratoExecution` identifies whether the pre-pass ran in the Worker or
-in the browser.
+default dictionary is a bundled static asset served through the `ASSETS`
+binding, fetched lazily, and cached per isolate; it is not a fixed phrase
+table. An HTTPS dictionary URL and the optional `VIBRATO_UPSTREAM_URL` HTTP
+adapter remain available as deployment overrides. Wire field names such as
+`vibratoInput` and mode value `worker-vibrato` are historical protocol labels;
+`vibratoExecution` identifies whether the pre-pass ran in the Worker or in the
+browser.
 
 ## Deploy and local environment
 

@@ -24,12 +24,14 @@ checks below report the expected secret and origin.
 - `secrets.required` names `AZOOKEY_API_TOKEN` without embedding its value.
   Wrangler may warn during local development when the loopback-only secret is
   absent; production still requires the interactive secret setup below.
-- `VIBRATO_UPSTREAM_URL` is an optional public URL for the Worker-side
-  pre-pass. Its bearer, when required, belongs in the `VIBRATO_API_TOKEN`
-  secret. `VIBRATO_DICTIONARY_URL` is the alternative public URL for a
-  zstd-compressed system dictionary consumed by the checked-in Vibrato WASM;
-  the checked-in config points to the repository's public default. Leave both
-  URLs unset only for local/demo requests that explicitly use a browser pre-pass.
+- `VIBRATO_DICTIONARY_URL` defaults to `/vibrato/system.dic.zst`, a static asset
+  uploaded with the Worker and served through the `ASSETS` binding. It is a
+  standard IPADIC zstd dictionary consumed by the checked-in Vibrato WASM, not
+  a phrase table. Override it only with an HTTPS dictionary URL you control.
+- `VIBRATO_UPSTREAM_URL` is an optional HTTP fallback for deployments that
+  cannot load the bundled dictionary. Its bearer, when required, belongs in
+  the `VIBRATO_API_TOKEN` secret. Leave both overrides unset only for local
+  requests that explicitly use a browser pre-pass.
 - `.dev.vars.example` is a template. Copy it to the git-ignored `.dev.vars`
   for local work, and do not commit token assignments.
 
@@ -40,7 +42,7 @@ printing the value; enter a long random token using your password manager or a
 local generator. Do not put the token in a command argument or shell history.
 
 ```sh
-bun run --cwd apps/cloudflare-worker-server build:wasm
+cd apps/cloudflare-worker-server && bun run build:wasm && cd ../..
 wrangler secret put AZOOKEY_API_TOKEN --config apps/cloudflare-worker-server/wrangler.jsonc
 bun run worker:deploy
 ```

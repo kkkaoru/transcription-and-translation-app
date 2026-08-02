@@ -17,11 +17,11 @@ MODEL_ROUTES={}
 # POST /v1/audio/transcriptions with the same OpenAI-shaped contract.
 # Set ASR_UPSTREAM_URL here in the untracked file to your owned HTTPS endpoint.
 
-# Worker-side Vibrato uses the standard IPADIC dictionary and the checked-in
-# Vibrato WASM module by default in wrangler.jsonc. Override this URL only with
-# an HTTPS zstd-compressed Vibrato `system.dic` that you control. The Worker
-# fetches it lazily and caches the tokenizer per isolate.
-# VIBRATO_DICTIONARY_URL=https://raw.githubusercontent.com/kkkaoru/transcription-and-translation-app/main/assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst
+# Worker-side Vibrato uses the bundled static asset and checked-in WASM module
+# by default in wrangler.jsonc. The asset binding serves this path locally and
+# in production. Override it only with an HTTPS zstd-compressed Vibrato
+# `system.dic` that you control.
+# VIBRATO_DICTIONARY_URL=/vibrato/system.dic.zst
 
 # Optional legacy HTTP adapter for environments that cannot load the WASM
 # dictionary. It must accept POST {"text":"...","language":"..."} and return

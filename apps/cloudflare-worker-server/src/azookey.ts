@@ -112,6 +112,8 @@ export interface AzookeyRequestDependencies {
   vibratoConverter?: AzookeyVibratoConverter;
   /** Injected in tests; production uses the platform fetch. */
   fetcher?: AzookeyFetcher;
+  /** Optional asset-bound fetcher for a Worker-hosted system dictionary. */
+  vibratoDictionaryFetcher?: AzookeyFetcher;
 }
 
 export interface AzookeyMessage {
@@ -404,6 +406,9 @@ const isHttpUrl = (value: string): boolean => {
   }
 };
 
+const isDictionaryUrl = (value: string): boolean =>
+  isHttpUrl(value) || (value.startsWith("/") && !value.startsWith("//"));
+
 /**
  * Build the Worker-side Vibrato adapter without bundling a 684 MB UniDic
  * dictionary into a Cloudflare isolate.  The upstream contract is deliberately
@@ -476,8 +481,10 @@ export const createVibratoWasmConverter = (
   if (!wasmModule || !normalizedUrl) {
     return undefined;
   }
-  if (!isHttpUrl(normalizedUrl)) {
-    throw new Error("VIBRATO_DICTIONARY_URL must be an http:// or https:// URL");
+  if (!isDictionaryUrl(normalizedUrl)) {
+    throw new Error(
+      "VIBRATO_DICTIONARY_URL must be an http:// or https:// URL or an absolute Worker asset path",
+    );
   }
 
   let fetcherCache = vibratoTokenizerCache.get(wasmModule);
@@ -824,7 +831,7 @@ export const openAzookeySocket = async (
       createVibratoWasmConverter(
         dependencies.vibratoWasmModule,
         env.VIBRATO_DICTIONARY_URL,
-        dependencies.fetcher ?? fetch,
+        dependencies.vibratoDictionaryFetcher ?? dependencies.fetcher ?? fetch,
       ) ??
       createVibratoHttpConverter(env, dependencies.fetcher ?? fetch);
   } catch {

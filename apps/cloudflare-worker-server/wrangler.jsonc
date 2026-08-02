@@ -3,6 +3,11 @@
   "name": "kotoba-beacon-inference",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
   "observability": {
     "enabled": true
   },
@@ -13,7 +18,7 @@
     "CORS_ORIGIN": "https://kotoba-beacon-inference.kaoru.workers.dev",
     "MODEL_ROUTES": "{}",
     "AZOOKEY_TIMEOUT_MS": "250",
-    "VIBRATO_DICTIONARY_URL": "https://raw.githubusercontent.com/kkkaoru/transcription-and-translation-app/main/assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst"
+    "VIBRATO_DICTIONARY_URL": "/vibrato/system.dic.zst"
   },
   // Names only: Wrangler can warn when local/prod secrets are missing, but
   // secret values are always entered through `wrangler secret put`.

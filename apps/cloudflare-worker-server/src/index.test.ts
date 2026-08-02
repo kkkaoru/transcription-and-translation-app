@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   AZOOKEY_MAX_TEXT_BYTES,
@@ -6,7 +7,7 @@ import {
   AZOOKEY_WS_PATH,
   BROWSER_VIBRATO_MODE,
 } from "./azookey.js";
-import { createWorker, type WorkerHandler } from "./index.js";
+import { createWorker, VIBRATO_DICTIONARY_PATH, type WorkerHandler } from "./index.js";
 
 const env = {
   CORS_ORIGIN: "https://captions.example.com",
@@ -87,6 +88,65 @@ describe("Cloudflare Worker inference adapter", () => {
         contract: "Vibrato WASM + zstd system dictionary",
       },
     });
+  });
+
+  it("serves the Worker-hosted Vibrato dictionary through the assets binding", async () => {
+    const assets = {
+      fetch: vi.fn((request: Request) => {
+        expect(new URL(request.url).pathname).toBe(VIBRATO_DICTIONARY_PATH);
+        return Promise.resolve(
+          new Response(new Uint8Array([1, 2, 3]), {
+            headers: { "content-type": "application/zstd" },
+          }),
+        );
+      }),
+    };
+    const response = await createWorker().fetch(
+      new Request(`https://worker.example${VIBRATO_DICTIONARY_PATH}`),
+      { ...env, ASSETS: assets },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/zstd");
+    await expect(response.arrayBuffer()).resolves.toEqual(new Uint8Array([1, 2, 3]).buffer);
+    expect(assets.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes Worker Vibrato warmup through the assets binding", async () => {
+    class TestSocket extends EventTarget {
+      readonly sent: string[] = [];
+
+      accept(): void {}
+
+      send(message: string): void {
+        this.sent.push(message);
+      }
+    }
+
+    const server = new TestSocket();
+    const client = new TestSocket() as unknown as WebSocket;
+    const assets = {
+      fetch: vi.fn(() =>
+        Promise.resolve(
+          new Response(readFileSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))),
+        ),
+      ),
+    };
+    const vibratoWasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/vibrato_wasm_bg.wasm", import.meta.url)),
+    );
+    const response = await createWorker(undefined, {
+      converter: (text) => text,
+      vibratoWasmModule,
+      socketPair: () => ({ client, server: server as unknown as WebSocket }),
+    }).fetch(
+      new Request(`https://worker.example${AZOOKEY_WS_PATH}`, {
+        headers: { upgrade: "websocket" },
+      }),
+      { ...env, ASSETS: assets, VIBRATO_DICTIONARY_URL: VIBRATO_DICTIONARY_PATH },
+    );
+    expect(response.status).toBe(101);
+    expect(assets.fetch).toHaveBeenCalledTimes(1);
+    expect(server.sent[0]).toContain('"type":"azookey.ready"');
   });
 
   it("rejects non-GET metadata requests and non-upgrade WebSocket requests", async () => {
