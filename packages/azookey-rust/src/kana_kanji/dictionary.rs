@@ -729,13 +729,9 @@ fn include_meaning_cost(entry: &DictionaryEntry) -> bool {
         || word_type(entry.rcid) == WordType::ContentWord
 }
 
-/// Return whether an entry may terminate a conversion candidate.
-///
-/// AzooKey keeps this table separate from `wordTypes`: many inflectional
-/// forms are valid in the middle of a clause but cannot be emitted as its
-/// final row.  The table is copied from the upstream `predictionUsable`
-/// metadata (CID data), so it remains dictionary/model driven and does not
-/// encode any reading or phrase.
+/// AzooKey's prediction-only CID usability table. Full conversion does not
+/// apply this table while building its lattice; predictive suggestions do.
+#[cfg(test)]
 fn prediction_usable_rcid(rcid: u16) -> bool {
     !matches!(
         rcid,
@@ -926,20 +922,17 @@ fn prediction_usable_rcid(rcid: u16) -> bool {
     )
 }
 
+/// Keep finite system rows that pass AzooKey's full-conversion
+/// `shouldBeRemoved` threshold. Prediction-only CID usability must not run
+/// here: inflectional rows are needed by the full Viterbi lattice. Keep the
+/// existing bounded identity policy for the lightweight converter; particles
+/// and one-kana grammar rows remain available.
 fn system_entry_is_usable(entry: &DictionaryEntry) -> bool {
     if !entry.value.is_finite() {
         return false;
     }
-    if !prediction_usable_rcid(entry.rcid) {
-        return false;
-    }
     let ruby_count = entry.reading.chars().count();
     let is_hiragana_identity = entry.surface == entry.reading;
-    // Full conversion still needs one-kana identity rows for particles and
-    // inflectional continuations (for example `は` in `天気は`), but ordinary
-    // multi-kana identities suppress useful compact-lexicon conversions. A
-    // non-identity one-kana row is generally a name/placeholder and should
-    // not enter the prediction lattice.
     if (ruby_count >= 2 && is_hiragana_identity) || (ruby_count < 2 && !is_hiragana_identity) {
         return false;
     }
@@ -1670,7 +1663,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_upstream_quality_threshold_to_system_entries() {
+    fn applies_upstream_full_conversion_quality_threshold_to_system_entries() {
         let one_kana = DictionaryEntry::plain("あ", "亜", -15.0);
         let short = DictionaryEntry::plain("とう", "当", -16.0);
         let short_placeholder = DictionaryEntry::plain("とう", "沼", -16.34);
@@ -1691,8 +1684,8 @@ mod tests {
         assert!(!system_entry_is_usable(&long_placeholder));
         assert!(!system_entry_is_usable(&hiragana_identity));
         assert!(system_entry_is_usable(&katakana_surface));
-        assert!(!system_entry_is_usable(&contraction));
-        assert!(!system_entry_is_usable(&inflection_tail));
+        assert!(system_entry_is_usable(&contraction));
+        assert!(system_entry_is_usable(&inflection_tail));
     }
 
     #[test]
@@ -1732,6 +1725,30 @@ mod tests {
         let first = entries.first().expect("public dictionary should return at least one entry");
         assert!(dictionary.connection_cost(first, first).is_finite());
         assert!(dictionary.beginning_connection_cost(first).is_finite());
+    }
+
+    #[test]
+    fn full_lookup_keeps_inflectional_rows_that_prediction_filters_reject() {
+        let Some(root) = super::test_system_dictionary_path() else {
+            return;
+        };
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("public AzooKey dictionary should load");
+        for (reading, surface) in
+            [("おこなわ", "行わ"), ("おもっ", "思っ"), ("まわっ", "回っ"), ("つかっ", "使っ")]
+        {
+            assert!(
+                dictionary
+                    .lookup_exact(reading)
+                    .expect("full lookup should complete")
+                    .iter()
+                    .any(|entry| entry.surface == surface),
+                "full lookup lost {surface} for {reading}"
+            );
+        }
     }
 
     #[test]

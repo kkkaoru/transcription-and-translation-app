@@ -1440,6 +1440,29 @@ mod tests {
     }
 
     #[test]
+    fn keeps_inflectional_rows_available_to_full_conversion() {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
+            return;
+        };
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        for (input, expected) in
+            [("おこなわ", "行わ"), ("おもっ", "思っ"), ("まわっ", "回っ"), ("つかっ", "使っ")]
+        {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
+    }
+
+    #[test]
     fn keeps_an_unknown_hiragana_suffix_readable_after_a_dictionary_clause() {
         let Some(root) = crate::dictionary::test_system_dictionary_path() else {
             return;
