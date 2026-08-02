@@ -193,6 +193,7 @@ pub fn relaunch_to_updated_app(
 
 #[tauri::command]
 pub async fn start_capture(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
+    let _capture_lifecycle = state.capture_lifecycle_lock.lock().await;
     // A new capture session gets its own bounded empty-turn observation
     // window. Do this before the early Web Speech return as well, so switching
     // recognition modes cannot retain a prior native ASR loss.
@@ -255,6 +256,7 @@ async fn prepare_azookey_capture(
 
 #[tauri::command]
 pub async fn stop_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let _capture_lifecycle = state.capture_lifecycle_lock.lock().await;
     // Freeze this capture generation before looking at the final status. A
     // source caption may already have spawned translation; give that bounded
     // work a chance to publish before idle makes caption events ineligible.

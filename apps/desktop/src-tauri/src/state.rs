@@ -209,6 +209,10 @@ pub struct AppState {
     /// listener/native-output replacement side effects. Without this guard, an
     /// older save can finish after a newer one and roll the app back.
     pub config_save_lock: tokio::sync::Mutex<()>,
+    /// Serialize native capture start/stop commands. Both operations await
+    /// sidecars or translation drains; without one lifecycle lock, an old Stop
+    /// can pass its generation check and then reset a replacement Start to idle.
+    pub capture_lifecycle_lock: tokio::sync::Mutex<()>,
     pub status: Mutex<RuntimeStatus>,
     pub pipeline: Pipeline,
     /// Completed ASR / normalizer / translator stages, oldest first, each
@@ -379,6 +383,7 @@ impl AppState {
         Self {
             config: Mutex::new(config),
             config_save_lock: tokio::sync::Mutex::new(()),
+            capture_lifecycle_lock: tokio::sync::Mutex::new(()),
             status: Mutex::new(RuntimeStatus {
                 status: "idle".to_string(),
                 platform: output.platform,
@@ -634,15 +639,19 @@ impl AppState {
 
     /// Begin a new capture generation before work is accepted. Tasks from an
     /// earlier generation may still finish after a bounded stop drain, but
-    /// cannot update a later session.
+    /// cannot update a later session. The replay slot is cleared at the same
+    /// lifecycle boundary so a replacement capture cannot expose stale text.
     pub fn begin_capture_generation(&self) -> u64 {
-        self.translation_tracker
+        let generation = self
+            .translation_tracker
             .lock()
             .map(|mut tracker| {
                 tracker.start_capture();
                 tracker.current_generation
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.clear_latest_caption();
+        generation
     }
 
     /// Register a detached translation before spawning it. At capacity, the
@@ -1077,6 +1086,35 @@ mod tests {
             "a delayed ASR/normalizer completion belongs to the old capture"
         );
         assert!(state.is_capture_generation_current(state.current_capture_generation()));
+    }
+
+    #[test]
+    fn starting_a_new_capture_clears_the_previous_replay_caption() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.record_latest_caption(&CaptionPayload {
+            id: "old-session".to_string(),
+            source_text: "前の字幕".to_string(),
+            azookey_input_text: None,
+            translation_text: "old caption".to_string(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "translation",
+            sequence: 1,
+            is_final: true,
+            confidence: None,
+        });
+        assert!(state.latest_caption().is_some());
+
+        state.begin_capture_generation();
+
+        assert_eq!(
+            state.latest_caption(),
+            None,
+            "a replacement capture must not replay the prior session"
+        );
     }
 
     fn capturing_state() -> AppState {
