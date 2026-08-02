@@ -379,17 +379,22 @@ pub fn run() {
                 .level(LevelFilter::Debug)
                 .level_for("mdns_sd", LevelFilter::Info)
                 .format(|c, a, r| {
-                    let now = chrono::Local::now();
-                    c.finish(format_args!(
-                        "[{date} {time}] [{level}][{module}][{file}:{line}] {message}",
-                        date = now.format("%Y-%m-%d"),
-                        time = now.format("%H:%M:%S"),
-                        level = r.level(),
-                        module = r.target(),
-                        file = r.file().unwrap_or("unknown"),
-                        line = r.line().unwrap_or(0),
-                        message = a
-                    ));
+                    let message = a.to_string();
+                    if let Some(json) = structured_json_log_message(&message) {
+                        c.finish(format_args!("{json}"));
+                    } else {
+                        let now = chrono::Local::now();
+                        c.finish(format_args!(
+                            "[{date} {time}] [{level}][{module}][{file}:{line}] {message}",
+                            date = now.format("%Y-%m-%d"),
+                            time = now.format("%H:%M:%S"),
+                            level = r.level(),
+                            module = r.target(),
+                            file = r.file().unwrap_or("unknown"),
+                            line = r.line().unwrap_or(0),
+                            message = message
+                        ));
+                    }
                 })
                 .build(),
         )
@@ -446,6 +451,22 @@ fn app_context() -> tauri::Context<tauri::Wry> {
     tauri::generate_context!()
 }
 
+/// Return structured JSON messages without adding a human-readable log prefix.
+///
+/// The regular logger format remains unchanged for ordinary diagnostics, while
+/// lifecycle records emitted by the recognition and translation paths stay
+/// directly parseable as one JSON object per line on stdout and in log files.
+fn structured_json_log_message(message: &str) -> Option<&str> {
+    let trimmed = message.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(serde_json::Value::Object(_)) => Some(trimmed),
+        Ok(_) | Err(_) => None,
+    }
+}
+
 /// Starts the Parapper WebSocket recognition service without exposing its own
 /// desktop window. This mode is intended for a trusted parent application such
 /// as Kotoba Beacon, which supplies a separate runtime data directory through
@@ -478,6 +499,24 @@ pub fn run_headless(arguments: &[String]) -> Result<(), String> {
                     }),
                 ])
                 .level(LevelFilter::Info)
+                .format(|c, a, r| {
+                    let message = a.to_string();
+                    if let Some(json) = structured_json_log_message(&message) {
+                        c.finish(format_args!("{json}"));
+                    } else {
+                        let now = chrono::Local::now();
+                        c.finish(format_args!(
+                            "[{date} {time}] [{level}][{module}][{file}:{line}] {message}",
+                            date = now.format("%Y-%m-%d"),
+                            time = now.format("%H:%M:%S"),
+                            level = r.level(),
+                            module = r.target(),
+                            file = r.file().unwrap_or("unknown"),
+                            line = r.line().unwrap_or(0),
+                            message = message
+                        ));
+                    }
+                })
                 .build(),
         )
         .setup(move |app| {
@@ -560,8 +599,22 @@ mod headless_tests {
         DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS, DEFAULT_HEADLESS_NOISE_CANCELLATION_ENABLED,
         DEFAULT_HEADLESS_PORT, DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS, DEFAULT_VAD_INTERVAL_MS,
         DEFAULT_VAD_THRESHOLD, HeadlessOptions, apply_headless_quality_defaults,
+        structured_json_log_message,
     };
     use crate::config::{ParapperConfig, TurnDetector};
+
+    #[test]
+    fn structured_lifecycle_messages_remain_parseable_without_prefixes() {
+        assert_eq!(
+            structured_json_log_message(
+                r#" {"event":"recognition_session_start","request_id":"req-1"} "#
+            ),
+            Some(r#"{"event":"recognition_session_start","request_id":"req-1"}"#),
+        );
+        assert_eq!(structured_json_log_message("ordinary diagnostic"), None);
+        assert_eq!(structured_json_log_message("{not-json}"), None);
+        assert_eq!(structured_json_log_message(r#"[{"event":"not-an-object"}]"#), None);
+    }
 
     #[test]
     fn headless_options_use_the_loopback_service_default_port() {
