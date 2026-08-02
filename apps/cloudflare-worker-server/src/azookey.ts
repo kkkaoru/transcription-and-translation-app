@@ -22,6 +22,10 @@ export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
 export const VIBRATO_IPADIC_FEATURE_INDEX = 7;
 /** Refuse unexpectedly large remote dictionaries before allocating in WASM. */
 export const VIBRATO_MAX_DICTIONARY_BYTES = 12 * 1024 * 1024;
+/** Compressed official AzooKey archive limit (the pinned asset is about 10 MiB). */
+export const AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES = 16 * 1024 * 1024;
+/** Uncompressed LOUDS/MM/CID archive limit before copying it into Wasm. */
+export const AZOOKEY_MAX_DICTIONARY_BYTES = 32 * 1024 * 1024;
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
 export const AZOOKEY_MIN_ELAPSED_MS = 0;
@@ -42,6 +46,8 @@ export interface AzookeyEnv {
   VIBRATO_API_TOKEN?: string;
   /** URL of a zstd-compressed Vibrato system dictionary. */
   VIBRATO_DICTIONARY_URL?: string;
+  /** URL of the gzip-compressed official portable AzooKey dictionary. */
+  AZOOKEY_DICTIONARY_URL?: string;
 }
 
 export type AzookeyMode = typeof AZOOKEY_MODE | typeof BROWSER_VIBRATO_MODE;
@@ -56,9 +62,13 @@ export interface AzookeyWasmExports {
   azookey_alloc: (length: number) => number;
   azookey_dealloc: (pointer: number, length: number) => void;
   azookey_convert: (pointer: number, length: number) => bigint | number;
+  azookey_dictionary_init_owned: (pointer: number, length: number) => number;
 }
 
-export type AzookeyConverter = (text: string) => string | Promise<string>;
+export type AzookeyConverter = ((text: string) => string | Promise<string>) & {
+  /** Optional cold-start hook used by the WebSocket upgrade path. */
+  warmup?: () => Promise<void>;
+};
 export type AzookeyVibratoConverter = ((
   text: string,
   language: string,
@@ -81,6 +91,10 @@ export type AzookeyFetcher = (
 const vibratoTokenizerCache = new WeakMap<
   WebAssembly.Module,
   WeakMap<AzookeyFetcher, Map<string, Promise<VibratoTokenizer>>>
+>();
+const azookeyConverterCache = new WeakMap<
+  WebAssembly.Module,
+  WeakMap<AzookeyFetcher, Map<string, Promise<AzookeyConverter>>>
 >();
 
 export interface AzookeyRuntime {
@@ -114,6 +128,8 @@ export interface AzookeyRequestDependencies {
   fetcher?: AzookeyFetcher;
   /** Optional asset-bound fetcher for a Worker-hosted system dictionary. */
   vibratoDictionaryFetcher?: AzookeyFetcher;
+  /** Optional asset-bound fetcher for the official AzooKey dictionary. */
+  azookeyDictionaryFetcher?: AzookeyFetcher;
 }
 
 export interface AzookeyMessage {
@@ -365,7 +381,10 @@ const unpackResult = (exports: AzookeyWasmExports, packed: bigint | number): str
   }
 };
 
-export const createWasmConverter = (module: WebAssembly.Module): AzookeyConverter => {
+const instantiateWasmConverter = (
+  module: WebAssembly.Module,
+  dictionary?: Uint8Array,
+): AzookeyConverter => {
   const instance = new WebAssembly.Instance(module, {});
   const exports = instance.exports as unknown as Partial<AzookeyWasmExports>;
   if (
@@ -377,6 +396,12 @@ export const createWasmConverter = (module: WebAssembly.Module): AzookeyConverte
     throw new Error("AzooKey Wasm module is missing the required raw ABI");
   }
   const checkedExports = exports as AzookeyWasmExports;
+  if (dictionary) {
+    if (typeof exports.azookey_dictionary_init_owned !== "function") {
+      throw new Error("AzooKey Wasm module does not support portable dictionaries");
+    }
+    initializeWasmDictionary(checkedExports, dictionary);
+  }
 
   return (text: string): string => {
     const bytes = encoder.encode(text);
@@ -397,6 +422,165 @@ export const createWasmConverter = (module: WebAssembly.Module): AzookeyConverte
   };
 };
 
+const initializeWasmDictionary = (exports: AzookeyWasmExports, dictionary: Uint8Array): void => {
+  const pointer = exports.azookey_alloc(dictionary.byteLength);
+  if (pointer === 0) {
+    throw new Error("AzooKey Wasm dictionary allocation failed");
+  }
+  let transferred = false;
+  try {
+    new Uint8Array(exports.memory.buffer, pointer, dictionary.byteLength).set(dictionary);
+    // The owned ABI consumes the allocation at the call boundary, including
+    // malformed-input and trap paths. Never deallocate it from JavaScript
+    // after invoking the function.
+    transferred = true;
+    const status = exports.azookey_dictionary_init_owned(pointer, dictionary.byteLength);
+    if (status !== 0) {
+      throw new Error(`AzooKey Wasm dictionary initialization failed (${status})`);
+    }
+  } finally {
+    if (!transferred) {
+      exports.azookey_dealloc(pointer, dictionary.byteLength);
+    }
+  }
+};
+
+const byteLimitTransform = (
+  limit: number,
+  message: string,
+): TransformStream<Uint8Array, Uint8Array> => {
+  let total = 0;
+  return new TransformStream({
+    transform(chunk, controller): void {
+      total += chunk.byteLength;
+      if (total > limit) {
+        controller.error(new Error(message));
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
+};
+
+const collectStream = async (stream: ReadableStream<Uint8Array>): Promise<Uint8Array> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined;
+};
+
+const decompressPortableDictionary = async (response: Response): Promise<Uint8Array> => {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES) {
+    throw new Error("AzooKey compressed dictionary exceeds the byte limit");
+  }
+  if (!response.body) {
+    throw new Error("AzooKey dictionary response has no body");
+  }
+  const compressed = response.body.pipeThrough(
+    byteLimitTransform(
+      AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES,
+      "AzooKey compressed dictionary exceeds the byte limit",
+    ),
+  );
+  const decompressed = compressed
+    .pipeThrough(new DecompressionStream("gzip"))
+    .pipeThrough(
+      byteLimitTransform(
+        AZOOKEY_MAX_DICTIONARY_BYTES,
+        "AzooKey dictionary exceeds the byte limit",
+      ),
+    );
+  return collectStream(decompressed);
+};
+
+const fetchPortableDictionary = async (
+  dictionaryUrl: string,
+  fetcher: AzookeyFetcher,
+): Promise<Uint8Array> => {
+  const response = await fetcher(dictionaryUrl);
+  if (!response.ok) {
+    throw new Error(`AzooKey dictionary returned ${response.status}`);
+  }
+  const dictionary = await decompressPortableDictionary(response);
+  if (dictionary.byteLength === 0) {
+    throw new Error("AzooKey dictionary is empty");
+  }
+  return dictionary;
+};
+
+const moduleConverterCache = (
+  module: WebAssembly.Module,
+  fetcher: AzookeyFetcher,
+): Map<string, Promise<AzookeyConverter>> => {
+  let fetcherCache = azookeyConverterCache.get(module);
+  if (!fetcherCache) {
+    fetcherCache = new WeakMap<AzookeyFetcher, Map<string, Promise<AzookeyConverter>>>();
+    azookeyConverterCache.set(module, fetcherCache);
+  }
+  let converterCache = fetcherCache.get(fetcher);
+  if (!converterCache) {
+    converterCache = new Map<string, Promise<AzookeyConverter>>();
+    fetcherCache.set(fetcher, converterCache);
+  }
+  return converterCache;
+};
+
+export const createWasmConverter = (
+  module: WebAssembly.Module,
+  dictionaryUrl?: string,
+  fetcher: AzookeyFetcher = fetch,
+): AzookeyConverter => {
+  const normalizedUrl = dictionaryUrl?.trim();
+  if (!normalizedUrl) {
+    return instantiateWasmConverter(module);
+  }
+  if (!isDictionaryUrl(normalizedUrl)) {
+    throw new Error(
+      "AZOOKEY_DICTIONARY_URL must be an http:// or https:// URL or an absolute Worker asset path",
+    );
+  }
+  const cache = moduleConverterCache(module, fetcher);
+  const loadConverter = (): Promise<AzookeyConverter> => {
+    const cached = cache.get(normalizedUrl);
+    if (cached) {
+      return cached;
+    }
+    const pending = fetchPortableDictionary(normalizedUrl, fetcher)
+      .then((dictionary) => instantiateWasmConverter(module, dictionary))
+      .catch((error: unknown) => {
+        cache.delete(normalizedUrl);
+        throw error instanceof Error
+          ? error
+          : new Error("AzooKey dictionary initialization failed");
+      });
+    cache.set(normalizedUrl, pending);
+    return pending;
+  };
+  const converter = (async (text: string): Promise<string> => {
+    const loaded = await loadConverter();
+    return loaded(text);
+  }) as AzookeyConverter;
+  converter.warmup = async (): Promise<void> => {
+    await loadConverter();
+  };
+  return converter;
+};
+
 const isHttpUrl = (value: string): boolean => {
   try {
     const parsed = new URL(value);
@@ -408,6 +592,9 @@ const isHttpUrl = (value: string): boolean => {
 
 const isDictionaryUrl = (value: string): boolean =>
   isHttpUrl(value) || (value.startsWith("/") && !value.startsWith("//"));
+
+const createPortableDictionaryInputAdapter = (): AzookeyVibratoConverter =>
+  (text: string): string => text;
 
 /**
  * Build the Worker-side Vibrato adapter without bundling a 684 MB UniDic
@@ -810,13 +997,23 @@ export const openAzookeySocket = async (
     );
   }
   let converter: AzookeyConverter;
+  const portableDictionaryConfigured = Boolean(env.AZOOKEY_DICTIONARY_URL?.trim());
   try {
     converter =
-      dependencies.converter ?? createWasmConverter(dependencies.wasmModule as WebAssembly.Module);
+      dependencies.converter ??
+      createWasmConverter(
+        dependencies.wasmModule as WebAssembly.Module,
+        env.AZOOKEY_DICTIONARY_URL,
+        dependencies.azookeyDictionaryFetcher ?? dependencies.fetcher ?? fetch,
+      );
+    await converter.warmup?.();
   } catch {
     return new Response(
       JSON.stringify({
-        error: { code: "converter_unavailable", message: "AzooKey converter is unavailable" },
+        error: {
+          code: "converter_unavailable",
+          message: "AzooKey converter or dictionary is unavailable",
+        },
       }),
       {
         status: HTTP_SERVICE_UNAVAILABLE,
@@ -826,14 +1023,16 @@ export const openAzookeySocket = async (
   }
   let vibratoConverter: AzookeyVibratoConverter | undefined;
   try {
+    const httpVibrato = createVibratoHttpConverter(env, dependencies.fetcher ?? fetch);
     vibratoConverter =
       dependencies.vibratoConverter ??
-      createVibratoWasmConverter(
-        dependencies.vibratoWasmModule,
-        env.VIBRATO_DICTIONARY_URL,
-        dependencies.vibratoDictionaryFetcher ?? dependencies.fetcher ?? fetch,
-      ) ??
-      createVibratoHttpConverter(env, dependencies.fetcher ?? fetch);
+      (portableDictionaryConfigured
+        ? (httpVibrato ?? createPortableDictionaryInputAdapter())
+        : (createVibratoWasmConverter(
+            dependencies.vibratoWasmModule,
+            env.VIBRATO_DICTIONARY_URL,
+            dependencies.vibratoDictionaryFetcher ?? dependencies.fetcher ?? fetch,
+          ) ?? httpVibrato));
   } catch {
     return new Response(
       JSON.stringify({
@@ -847,7 +1046,7 @@ export const openAzookeySocket = async (
   }
   const pair = dependencies.socketPair?.() ?? createWorkersSocketPair();
   const timeoutMs = azookeyTimeoutMs(env);
-  if (vibratoConverter?.warmup) {
+  if (vibratoConverter?.warmup && vibratoConverter !== converter) {
     try {
       await vibratoConverter.warmup();
     } catch {
