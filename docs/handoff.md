@@ -47,6 +47,7 @@ bun run worker:test
 - `packages/parapper-asr` — Parakeet-Inc/Parapper-ASR の管理対象フォーク。上流 commit、
   MIT ライセンス、帰属、および Caption Bridge 固有の差分は
   [`CAPTION_BRIDGE_FORK.md`](../packages/parapper-asr/CAPTION_BRIDGE_FORK.md) を参照。
+  `submodules/Parapper-ASR` は出荷経路外の未修正版であり、ガード済みの正は `packages/` 側です。
 
 詳細は [architecture.md](architecture.md)、[inference-gateway.md](inference-gateway.md)、
 [native-development.md](native-development.md)、[llama-runtime.md](llama-runtime.md) を参照してください。
