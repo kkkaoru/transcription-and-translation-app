@@ -91,7 +91,8 @@ check(
 check(
   "root `tauri:build` builds sidecars before the Tauri app",
   /sidecar:build/.test(scripts["tauri:build"] ?? "") &&
-    /desktop run tauri:build/.test(scripts["tauri:build"] ?? ""),
+    (/desktop run tauri:build/.test(scripts["tauri:build"] ?? "") ||
+      /run-tauri-build\.mjs/.test(scripts["tauri:build"] ?? "")),
   `tauri:build=${scripts["tauri:build"]}`,
 );
 check(

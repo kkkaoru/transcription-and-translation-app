@@ -17,7 +17,7 @@
     "dev:web": "bun --filter=@caption-bridge/desktop run dev",
     "build": "node scripts/clean-build-artifacts.mjs && bun --filter=@caption-bridge/desktop run build",
     "build:app": "bun run tauri:build",
-    "build:app:dmg": "bun run sidecar:build && bun --filter=@caption-bridge/desktop run tauri:build -- --bundles app,dmg",
+    "build:app:dmg": "bun run sidecar:build && node scripts/run-tauri-build.mjs --dmg",
     "build:app:release": "bun run sidecar:build && node scripts/build-tauri-release.mjs",
     "typecheck": "bun --filter=@caption-bridge/desktop run typecheck && bun --filter=@caption-bridge/inference-server-core run typecheck",
     "lint": "biome check .",
@@ -66,11 +66,11 @@
     "vibrato:wasm:build": "node scripts/build-vibrato-wasm.mjs --bindgen",
     "rust:fmt": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check",
     "rust:lint": "node scripts/rust-lint.mjs",
-    "test:build-cleanup": "node --test scripts/build-azookey-dictionary.test.mjs scripts/clean-build-artifacts.test.mjs scripts/run-coverage-locked.test.mjs scripts/check-macos-signing.test.mjs scripts/verify-generated-assets.test.mjs",
+    "test:build-cleanup": "node --test scripts/build-azookey-dictionary.test.mjs scripts/clean-build-artifacts.test.mjs scripts/run-coverage-locked.test.mjs scripts/check-macos-signing.test.mjs scripts/verify-generated-assets.test.mjs scripts/run-tauri-build.test.mjs",
     "check:all": "bun run lint && bun run format:check && bun run check:single-app && bun run assets:verify && bun run test:build-cleanup && bun run typecheck && bun run azookey-compare:typecheck && bun run test:coverage && bun run core:test:coverage && bun run azookey-compare:test:coverage && bun run gateway:build && bun run gateway:test:coverage && bun run worker:typecheck && bun run worker:test:coverage && bun run assets:verify && bun run parapper:lint && bun run parapper:test:ui && bun run parapper:rust:fmt && bun run parapper:rust:lint && bun run rust:azookey:fmt && bun run rust:azookey:lint && bun run rust:azookey:test && bun run rust:vibrato:fmt && bun run rust:vibrato:lint && bun run rust:vibrato:test && bun run rust:fmt && bun run rust:lint",
     "tauri": "bun --filter=@caption-bridge/desktop run tauri",
     "tauri:dev": "bun run dev",
-    "tauri:build": "bun run sidecar:build && bun --filter=@caption-bridge/desktop run tauri:build -- --bundles app",
+    "tauri:build": "bun run sidecar:build && node scripts/run-tauri-build.mjs",
     "tauri:build:release": "bun run build:app:release"
   },
   "devDependencies": {
