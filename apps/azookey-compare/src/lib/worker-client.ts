@@ -83,7 +83,6 @@ const MIN_BUSY_RETRIES = 0;
 const NORMAL_WEBSOCKET_CLOSE_CODE = 1_000;
 const RANDOM_ID_SUFFIX_START = 2;
 const RANDOM_ID_SUFFIX_END = 10;
-const SINGLE_PENDING_REQUEST_COUNT = 1;
 
 const clampNonNegativeInteger = (value: number | undefined, fallback: number): number => {
   if (value === undefined || !Number.isFinite(value)) {
@@ -277,13 +276,6 @@ export class AzooKeyWorkerClient {
   private socket: WebSocket | null = null;
   /** Monotonic transport generation used to fence stale asynchronous events. */
   private socketGeneration = 0;
-  /**
-   * A no-requestId response is only safe until the first conversion on this
-   * generation has been abandoned/consumed.  Keep the socket usable for
-   * correlated responses, but never let a late legacy frame claim a newer
-   * FIFO item.
-   */
-  private legacyResponseBlockedGeneration: number | null = null;
   /** One owner for the active handshake; stale socket events cannot settle a new attempt. */
   private connectionAttempt: ConnectionAttempt | null = null;
   private activeConversion: QueuedConversion | null = null;
@@ -348,7 +340,6 @@ export class AzooKeyWorkerClient {
     });
     const generation = this.socketGeneration + 1;
     this.socketGeneration = generation;
-    this.legacyResponseBlockedGeneration = null;
     const attempt: ConnectionAttempt = {
       socket,
       generation,
@@ -509,16 +500,12 @@ export class AzooKeyWorkerClient {
         return;
       }
       this.pending.delete(queued.requestId);
-      // A legacy Worker may omit requestId.  Once this request timed out, an
+      // A legacy Worker may omit requestId. Once this request timed out, an
       // eventual response is indistinguishable from the next FIFO request on
-      // the same socket. Keep correlated responses available, but fence all
-      // no-id frames on this generation until a fresh socket is established.
+      // the same socket. Rotate the generation when there is queued work so
+      // stale transport events cannot settle the next request.
       if (this.conversionQueue.length > 0) {
-        // If there is already FIFO work waiting, rotate immediately so the
-        // next item can still use a legacy no-id response safely.
         this.retireSocket(socket, socketGeneration, "conversion timeout");
-      } else {
-        this.legacyResponseBlockedGeneration = socketGeneration;
       }
       this.finishQueuedConversion(queued, new Error("AzooKey Worker の応答がタイムアウトしました"));
     }, this.requestTimeoutMs);
@@ -622,19 +609,13 @@ export class AzooKeyWorkerClient {
     if (!parsed) {
       return;
     }
-    // Responses without requestId are supported only as a strict FIFO
-    // compatibility contract: one in-flight conversion, on the same socket
-    // generation that carried it. This intentionally rejects a late legacy
-    // response instead of guessing which newer utterance it belongs to.
-    const fallback = parsed.requestId
-      ? undefined
-      : this.pending.size === SINGLE_PENDING_REQUEST_COUNT
-        ? this.pending.keys().next().value
-        : undefined;
-    const requestId = parsed.requestId ?? fallback;
-    if (!requestId) {
+    // Every conversion request carries a requestId. A response without one
+    // cannot be correlated to a specific FIFO item, so ignore it rather than
+    // allowing a late/duplicate legacy frame to claim the next utterance.
+    if (parsed.requestId === undefined) {
       return;
     }
+    const requestId = parsed.requestId;
     const pending = this.pending.get(requestId);
     if (
       !pending ||
@@ -645,23 +626,8 @@ export class AzooKeyWorkerClient {
     ) {
       return;
     }
-    const legacyResponse = parsed.requestId === undefined;
-    if (legacyResponse && this.legacyResponseBlockedGeneration === socketGeneration) {
-      return;
-    }
     this.pending.delete(requestId);
     clearTimeout(pending.timeout);
-    if (legacyResponse) {
-      // A duplicate no-id frame after this response would otherwise be
-      // indistinguishable from the next FIFO item. Correlated responses remain
-      // valid on this socket; only legacy frames are fenced.
-      const legacyBusy = parsed.error instanceof AzooKeyWorkerError && parsed.error.code === "busy";
-      if (this.conversionQueue.length > 0 || legacyBusy) {
-        this.retireSocket(socket, socketGeneration, "legacy response without requestId");
-      } else {
-        this.legacyResponseBlockedGeneration = socketGeneration;
-      }
-    }
     if (parsed.error) {
       pending.reject(parsed.error);
       return;
@@ -687,7 +653,6 @@ export class AzooKeyWorkerClient {
     }
     this.socket = null;
     this.socketGeneration += 1;
-    this.legacyResponseBlockedGeneration = null;
     if (this.connectionAttempt?.socket === socket) {
       const error = new Error("Worker WebSocket が切断されました");
       this.connectionAttempt.reject(error);

@@ -1,7 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "kotoba-beacon-inference",
-  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
   "assets": {

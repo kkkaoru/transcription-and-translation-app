@@ -274,10 +274,24 @@ describe("AzooKey Worker client connection lifecycle", () => {
     socket.message(JSON.stringify({ requestId: missingId }));
     await expect(missing).rejects.toThrow("convertedText");
 
-    const fallback = client.convert(request());
+    const noId = client.convert(request());
     await Promise.resolve();
     socket.message(JSON.stringify({ text: "ID省略" }));
-    await expect(fallback).resolves.toMatchObject({ convertedText: "ID省略" });
+    let noIdSettled = false;
+    void noId.then(
+      () => {
+        noIdSettled = true;
+      },
+      () => {
+        noIdSettled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(noIdSettled).toBe(false);
+    const noIdRequestId = (JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string })
+      .requestId;
+    socket.message(JSON.stringify({ requestId: noIdRequestId, text: "相関ID付き" }));
+    await expect(noId).resolves.toMatchObject({ convertedText: "相関ID付き" });
 
     const noMessage = client.convert(request());
     await Promise.resolve();
@@ -558,6 +572,40 @@ describe("AzooKey Worker client connection lifecycle", () => {
     );
     await Promise.resolve();
     expect(settled).toBe(false);
+
+    socket.message(JSON.stringify({ requestId: secondPayload.requestId, text: "二つ目の結果" }));
+    await expect(second).resolves.toMatchObject({ convertedText: "二つ目の結果" });
+  });
+
+  it("ignores a duplicate requestId-less frame after a correlated response", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient();
+
+    const first = client.convert({ ...request(), sourceText: "一つ目", vibratoInput: "一つ目" });
+    await Promise.resolve();
+    const firstPayload = JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string };
+    socket.message(JSON.stringify({ requestId: firstPayload.requestId, text: "一つ目の結果" }));
+    await expect(first).resolves.toMatchObject({ convertedText: "一つ目の結果" });
+
+    const second = client.convert({ ...request(), sourceText: "二つ目", vibratoInput: "二つ目" });
+    await Promise.resolve();
+    const secondPayload = JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string };
+
+    // Some legacy servers emit a duplicate frame without requestId after the
+    // correlated response. It must not claim the next FIFO conversion.
+    socket.message(JSON.stringify({ text: "一つ目の重複" }));
+    let settled = false;
+    void second.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(socket.closeCalls).toHaveLength(0);
 
     socket.message(JSON.stringify({ requestId: secondPayload.requestId, text: "二つ目の結果" }));
     await expect(second).resolves.toMatchObject({ convertedText: "二つ目の結果" });
