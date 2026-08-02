@@ -100,6 +100,11 @@ struct PathState {
     /// Latest content-word MID in the current AzooKey clause.
     clause_mid: u16,
     clause_has_word: bool,
+    /// Whether the path is currently inside a spoken-number chain. Bare kana
+    /// digits are ambiguous homophones; retaining this bit lets a sequence
+    /// such as `いち、に、さん` continue while blocking a suffix such as
+    /// `校4` after an ordinary lexical word.
+    numeric_chain: bool,
 }
 
 pub fn convert_kana_to_kanji(input: &str) -> String {
@@ -168,6 +173,7 @@ pub fn convert_with_dictionary(
         last: None,
         clause_mid: BOS_EOS_MID,
         clause_has_word: false,
+        numeric_chain: false,
     });
 
     for start in 0..chars.len() {
@@ -218,7 +224,58 @@ pub fn convert_with_dictionary(
                     || followed_by_counter
                     || followed_by_boundary
                     || starts_after_boundary;
+                let counter_span = numeric_counter_surface(suffix);
+                let counter_numeric_surface = counter_span
+                    .as_ref()
+                    .map(|(_, counter_surface)| format!("{}{}", surface, counter_surface));
+                let counter_has_numeric_variant =
+                    counter_span.as_ref().is_some_and(|(counter_length, _)| {
+                        let full_length = numeric_length + counter_length;
+                        entries.iter().any(|entry| {
+                            entry.reading.chars().count() == full_length
+                                && entry.surface.chars().any(|character| character.is_ascii_digit())
+                        })
+                    });
+                let counter_lexical_span =
+                    counter_span.as_ref().is_some_and(|(counter_length, _)| {
+                        let full_length = numeric_length + counter_length;
+                        entries.iter().any(|entry| {
+                            entry.reading.chars().count() == full_length
+                                && entry.surface != entry.reading
+                                && !counter_has_numeric_variant
+                                && counter_numeric_surface.as_deref()
+                                    != Some(entry.surface.as_str())
+                        })
+                    });
+                let explicit_digit = numeric_reading.chars().next().is_some_and(|character| {
+                    character.is_ascii_digit() || ('０'..='９').contains(&character)
+                });
+                let bare_digit_outside_chain =
+                    !has_unit && !followed_by_counter && !explicit_digit && !state.numeric_chain;
+                let unit_only_outside_chain = has_unit
+                    && !has_digit_and_unit
+                    && !followed_by_counter
+                    && !state.numeric_chain
+                    && start > 0;
+                let lexical_same_span = entries.iter().any(|entry| {
+                    entry.reading.chars().count() == numeric_length
+                        && entry.surface != entry.reading
+                        && contains_kanji(&entry.surface)
+                });
+                let shadowed_numeric_span = start + numeric_length < chars.len()
+                    && !state.numeric_chain
+                    && !followed_by_counter
+                    && !followed_by_boundary
+                    && lexical_same_span;
+                let shadowed_single_digit_counter = numeric_reading.chars().count() == 1
+                    && followed_by_counter
+                    && counter_lexical_span
+                    && !state.numeric_chain;
                 if (numeric_context || start == 0)
+                    && (!bare_digit_outside_chain || start == 0)
+                    && !unit_only_outside_chain
+                    && !shadowed_numeric_span
+                    && !shadowed_single_digit_counter
                     && !unit_span_is_unbounded
                     && !invalid_shi_counter
                 {
@@ -244,6 +301,7 @@ pub fn convert_with_dictionary(
                             last: None,
                             clause_mid: BOS_EOS_MID,
                             clause_has_word: false,
+                            numeric_chain: true,
                         },
                         width,
                     );
@@ -263,6 +321,7 @@ pub fn convert_with_dictionary(
                                 last: None,
                                 clause_mid: BOS_EOS_MID,
                                 clause_has_word: false,
+                                numeric_chain: true,
                             },
                             width,
                         );
@@ -286,6 +345,7 @@ pub fn convert_with_dictionary(
                     last: None,
                     clause_mid: BOS_EOS_MID,
                     clause_has_word: false,
+                    numeric_chain: false,
                 },
                 width,
             );
@@ -347,6 +407,7 @@ pub fn convert_with_dictionary(
                                 last: None,
                                 clause_mid: BOS_EOS_MID,
                                 clause_has_word: false,
+                                numeric_chain: false,
                             },
                             width,
                         );
@@ -374,6 +435,9 @@ pub fn convert_with_dictionary(
                             BOS_EOS_MID
                         },
                         clause_has_word: keep_clause_context && state.clause_has_word,
+                        numeric_chain: keep_clause_context
+                            && state.numeric_chain
+                            && matches!(chars[start], '、' | ','),
                     },
                     width,
                 );
@@ -447,6 +511,7 @@ pub fn convert_with_dictionary(
                         last: Some(entry.clone()),
                         clause_mid,
                         clause_has_word,
+                        numeric_chain: false,
                     },
                     width,
                 );
@@ -465,6 +530,7 @@ pub fn convert_with_dictionary(
                                 last: Some(identity),
                                 clause_mid,
                                 clause_has_word,
+                                numeric_chain: false,
                             },
                             width,
                         );
@@ -1098,6 +1164,7 @@ fn push_state(states: &mut Vec<PathState>, candidate: PathState, width: usize) {
 fn same_path_context(left: &PathState, right: &PathState) -> bool {
     if left.clause_mid != right.clause_mid
         || left.clause_has_word != right.clause_has_word
+        || left.numeric_chain != right.numeric_chain
         // MM is deliberately excluded from the intermediate ordering, but
         // two paths with different accumulated clause histories can receive
         // different final scores. Do not collapse those alternatives merely
@@ -1188,6 +1255,36 @@ mod tests {
         .next()
         .expect("public conversion should produce a candidate");
         assert_eq!(candidate.text, "消防、消火、炎");
+    }
+
+    #[test]
+    fn suppresses_bare_numeric_homophones_without_breaking_counter_paths() {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
+            return;
+        };
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("public conversion dictionary should load");
+        for (input, expected) in [
+            ("かたち、こうし、もよう", "形、格子、模様"),
+            ("せんそう、しんこう、しんりゃく", "戦争、侵攻、侵略"),
+            ("かせん、かこう、かわべ", "河川、河口、川辺"),
+            ("ごねん", "5年"),
+            ("しがつ", "4月"),
+            ("じゅう、", "10、"),
+        ] {
+            let candidate = convert_with_dictionary(
+                input,
+                &dictionary,
+                ConversionOptions { n_best: 10, ..ConversionOptions::default() },
+            )
+            .into_iter()
+            .next()
+            .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
     }
 
     #[test]
