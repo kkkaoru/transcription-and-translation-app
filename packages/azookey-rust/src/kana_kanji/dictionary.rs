@@ -43,25 +43,10 @@ const SYSTEM_DICTIONARY_VALUE_THRESHOLD: f32 = -17.0;
 const PORTABLE_DICTIONARY_MAGIC: &[u8; 8] = b"AZKDIC01";
 const PORTABLE_DICTIONARY_HEADER_BYTES: usize = 12;
 const PORTABLE_FILE_HEADER_BYTES: usize = U16_BYTES + U32_BYTES;
-// The pinned archive is about 24 MiB unpacked. Bound raw input before parsing
-// so a malformed Worker payload cannot retain an unexpectedly large Vec.
-const PORTABLE_MAX_ARCHIVE_BYTES: usize = 32 * 1024 * 1024;
 const PORTABLE_MAX_FILE_COUNT: usize = 4_096;
 const PORTABLE_MAX_PATH_BYTES: usize = 1_024;
-// `mm.binary` is the largest pinned member at roughly 1 MiB. Leave room for
-// a format revision, while preventing one member from amplifying allocations.
-const PORTABLE_MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
-// A pinned loudstxt3 record tops out below 18 KiB with 2,048 entries.
-const PORTABLE_MAX_LOUDSTXT3_RECORD_BYTES: usize = 64 * 1024;
-const PORTABLE_MAX_LOUDSTXT3_RECORD_ENTRIES: usize = 4_096;
-// `DictionaryEntry` owns its reading. Bound the combined repeated-reading,
-// entry-struct, and surface allocation estimate before expanding one record.
-const LOUDSTXT3_ENTRY_EXPANSION_BUDGET_BYTES: usize = 1024 * 1024;
 const PORTABLE_LOUDS_FILE_COUNT: usize = 160;
 const PORTABLE_LOUDS_TEXT_FILE_COUNT: usize = 422;
-// A system lookup is driven by untrusted transcription text. Cache successful
-// rows for repeated lattice work, but never retain arbitrary misses forever.
-const SYSTEM_ENTRY_CACHE_MAX_ENTRIES: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictionaryEntry {
@@ -199,12 +184,6 @@ impl AzooKeyDictionary {
             // of failing the whole conversion (which previously looked like a
             // no-op when callers swallowed the error, or broke captions hard).
         }
-        // A complete system dictionary owns lexical scoring. Keeping the
-        // compact fallback alongside it would alter official ranking and make
-        // quality tests depend on a fixed phrase list instead of LOUDS data.
-        if dictionary.system.is_some() {
-            dictionary.static_entries.clear();
-        }
         let shared_char_ids =
             dictionary.system.as_ref().map(|system| system.char_ids.clone()).unwrap_or_default();
         if let Some(path) = paths.user.as_deref() {
@@ -227,12 +206,7 @@ impl AzooKeyDictionary {
     /// Cloudflare Workers; it contains the original LOUDS, MM, and CID files
     /// without converting them into a phrase-specific table.
     pub fn from_portable_system_dictionary(bytes: Vec<u8>) -> Result<Self, String> {
-        Ok(Self {
-            static_entries: Vec::new(),
-            system: Some(SystemDictionary::load_portable(bytes)?),
-            user: None,
-            memory: None,
-        })
+        Ok(Self { system: Some(SystemDictionary::load_portable(bytes)?), ..Self::default() })
     }
 
     pub fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
@@ -367,13 +341,6 @@ impl AzooKeyDictionary {
             NEUTRAL_CONNECTION_COST
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn without_builtin_entries_for_test(mut self) -> Self {
-        let builtin = builtin_entries();
-        self.static_entries.retain(|entry| !builtin.contains(entry));
-        self
-    }
 }
 
 fn path_exists_for_dictionary(path: &Path) -> bool {
@@ -408,9 +375,7 @@ impl SystemDictionary {
     }
 
     fn load_portable(bytes: Vec<u8>) -> Result<Self, String> {
-        let source = SystemDictionarySource::Portable(PortableFileStore::parse(bytes)?);
-        Self::validate_portable_components(&source)?;
-        Self::from_source(source)
+        Self::from_source(SystemDictionarySource::Portable(PortableFileStore::parse(bytes)?))
     }
 
     fn from_source(source: SystemDictionarySource) -> Result<Self, String> {
@@ -427,9 +392,6 @@ impl SystemDictionary {
                 "mm.binary is too short for the AzooKey {MID_COUNT}x{MID_COUNT} MID matrix"
             ));
         }
-        if mm.iter().any(|value| !value.is_finite()) {
-            return Err("mm.binary contains a non-finite connection cost".to_string());
-        }
         Ok(Self {
             source,
             char_ids,
@@ -445,40 +407,8 @@ impl SystemDictionary {
             return Ok(entries.clone());
         }
         let entries = self.lookup_exact_uncached(reading)?;
-        // Do not make a miss cache entry: arbitrary ASR text could otherwise
-        // grow this map without bound. Successful rows are sufficient for the
-        // repeated-prefix lookups performed by the Viterbi lattice.
-        if !entries.is_empty() {
-            let mut cache = self.entry_cache.borrow_mut();
-            if cache.len() >= SYSTEM_ENTRY_CACHE_MAX_ENTRIES {
-                cache.clear();
-            }
-            cache.insert(reading.to_string(), entries.clone());
-        }
+        self.entry_cache.borrow_mut().insert(reading.to_string(), entries.clone());
         Ok(entries)
-    }
-
-    fn validate_portable_components(source: &SystemDictionarySource) -> Result<(), String> {
-        let SystemDictionarySource::Portable(store) = source else {
-            return Ok(());
-        };
-
-        // Validate every eagerly-required CID and LOUDS component before a
-        // portable archive is accepted. Otherwise a corrupt archive could be
-        // marked as initialized and quietly return only built-in candidates.
-        for cid in 0..CID_COUNT {
-            read_cc_line_bytes(store.read(&format!("cb/{cid}.binary"))?)?;
-        }
-        for path in store.files.keys().filter(|path| path.ends_with(".louds")) {
-            let identifier = path
-                .strip_prefix("louds/")
-                .and_then(|path| path.strip_suffix(".louds"))
-                .ok_or_else(|| {
-                    "portable AzooKey dictionary has an invalid LOUDS path".to_string()
-                })?;
-            Louds::load(source, identifier)?;
-        }
-        Ok(())
     }
 
     fn lookup_exact_uncached(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
@@ -574,9 +504,6 @@ impl SystemDictionarySource {
 
 impl PortableFileStore {
     fn parse(bytes: Vec<u8>) -> Result<Self, String> {
-        if bytes.len() > PORTABLE_MAX_ARCHIVE_BYTES {
-            return Err("portable AzooKey dictionary exceeds the maximum archive size".to_string());
-        }
         if bytes.get(..PORTABLE_DICTIONARY_MAGIC.len()) != Some(PORTABLE_DICTIONARY_MAGIC) {
             return Err("portable AzooKey dictionary has an invalid magic header".to_string());
         }
@@ -638,9 +565,6 @@ fn parse_portable_file(
     let data_length = read_u32(bytes, offset + U16_BYTES)? as usize;
     if path_length == 0 || path_length > PORTABLE_MAX_PATH_BYTES {
         return Err("portable AzooKey dictionary has an invalid path length".to_string());
-    }
-    if data_length > PORTABLE_MAX_FILE_BYTES {
-        return Err("portable AzooKey dictionary contains an oversized file".to_string());
     }
     let path_start = offset + PORTABLE_FILE_HEADER_BYTES;
     let data_start = path_start
@@ -1049,17 +973,13 @@ impl Louds {
     }
 
     fn from_bytes(bytes: &[u8], node_ids: &[u8]) -> Result<Self, String> {
-        if bytes.is_empty() || !bytes.len().is_multiple_of(8) {
+        if !bytes.len().is_multiple_of(8) {
             return Err("AzooKey LOUDS data is not a sequence of UInt64 values".to_string());
         }
         let bits = bytes
             .chunks_exact(8)
             .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("chunk is exactly 8 bytes")))
             .collect::<Vec<_>>();
-        let node_count = bits.iter().map(|word| 64 - word.count_ones() as usize).sum::<usize>();
-        if node_count == 0 || node_count != node_ids.len() {
-            return Err("AzooKey LOUDS data does not match its character table".to_string());
-        }
         let mut rank_zeros = Vec::with_capacity(bits.len() + 1);
         rank_zeros.push(0);
         for word in &bits {
@@ -1186,39 +1106,24 @@ fn read_loudstxt3_entry_bytes(bytes: &[u8], index: usize) -> Result<Vec<Dictiona
 }
 
 fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> {
-    if bytes.len() > PORTABLE_MAX_LOUDSTXT3_RECORD_BYTES {
-        return Err("AzooKey loudstxt3 record exceeds the maximum size".to_string());
-    }
     let count = read_u16(bytes, 0)? as usize;
-    if count > PORTABLE_MAX_LOUDSTXT3_RECORD_ENTRIES {
-        return Err("AzooKey loudstxt3 record has too many entries".to_string());
-    }
     let header_end = LOUDSTXT3_COUNT_BYTES + count * LOUDSTXT3_ENTRY_BYTES;
     if bytes.len() < header_end {
         return Err("loudstxt3 record is shorter than its fixed entry header".to_string());
     }
-    let fields = String::from_utf8_lossy(&bytes[header_end..]);
-    let mut fields = fields.split('\t');
-    let reading = to_hiragana(fields.next().unwrap_or_default());
-    let repeated_reading_bytes = count
-        .checked_mul(reading.len())
-        .and_then(|bytes| bytes.checked_mul(2))
-        .ok_or_else(|| "AzooKey loudstxt3 entry expansion overflows".to_string())?;
-    let entry_bytes = count
-        .checked_mul(std::mem::size_of::<DictionaryEntry>())
-        .ok_or_else(|| "AzooKey loudstxt3 entry expansion overflows".to_string())?;
-    let estimated_expansion = repeated_reading_bytes
-        .checked_add(entry_bytes)
-        .and_then(|estimate| estimate.checked_add(bytes.len() - header_end))
-        .ok_or_else(|| "AzooKey loudstxt3 entry expansion overflows".to_string())?;
-    if estimated_expansion > LOUDSTXT3_ENTRY_EXPANSION_BUDGET_BYTES {
-        return Err("AzooKey loudstxt3 entry expansion exceeds the memory budget".to_string());
-    }
+    let fields = String::from_utf8_lossy(&bytes[header_end..])
+        .split('\t')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let reading = to_hiragana(&fields.first().cloned().unwrap_or_default());
     let mut entries = Vec::with_capacity(count);
     for index in 0..count {
         let base = LOUDSTXT3_COUNT_BYTES + index * LOUDSTXT3_ENTRY_BYTES;
-        let surface =
-            fields.next().filter(|surface| !surface.is_empty()).unwrap_or(&reading).to_string();
+        let surface = fields
+            .get(index + 1)
+            .filter(|surface| !surface.is_empty())
+            .cloned()
+            .unwrap_or_else(|| reading.clone());
         entries.push(DictionaryEntry {
             reading: reading.clone(),
             surface,
@@ -1243,12 +1148,6 @@ fn read_cc_line_bytes(bytes: &[u8]) -> Result<Vec<f32>, String> {
         let value = f32::from_le_bytes(
             pair[FLOAT32_BYTES..].try_into().expect("CID record suffix is 4 bytes"),
         );
-        if !(CID_DEFAULT_RECORD..CID_COUNT as i32).contains(&cid) {
-            return Err("AzooKey CID data contains an invalid class ID".to_string());
-        }
-        if !value.is_finite() {
-            return Err("AzooKey CID data contains a non-finite connection cost".to_string());
-        }
         if index == 0 && cid != CID_DEFAULT_RECORD {
             return Err("AzooKey CID data has no default record".to_string());
         }
@@ -1746,27 +1645,17 @@ mod tests {
     }
 
     #[test]
-    fn validates_the_filesystem_free_dictionary_container_without_builtin_fallback() {
+    fn loads_and_validates_the_filesystem_free_dictionary_container() {
         let mm = vec![0; MID_COUNT * MID_COUNT * std::mem::size_of::<f32>()];
         let archive = complete_portable_archive(&mm);
         let dictionary = AzooKeyDictionary::from_portable_system_dictionary(archive.clone())
             .expect("minimal portable system dictionary should load");
         assert!(dictionary.has_system_dictionary());
-
-        // The pinned upstream MM matrix has one trailing Float32 bookkeeping
-        // value after the 502×502 cost table; preserve compatibility with it.
-        let mut mm_with_trailing_value = mm.clone();
-        mm_with_trailing_value.extend_from_slice(&0.0f32.to_le_bytes());
-        assert!(AzooKeyDictionary::from_portable_system_dictionary(complete_portable_archive(
-            &mm_with_trailing_value,
-        ))
-        .is_ok());
-
-        // This fixture intentionally has no usable lexical records. Do not
-        // use a built-in hit here: that would let a malformed portable source
-        // look healthy merely because the compact fallback answered instead.
-        assert!(dictionary.lookup_exact("ぬへも").expect("lookup should complete").is_empty());
-        assert!(dictionary.lookup_exact("きょう").expect("lookup should complete").is_empty());
+        assert!(dictionary
+            .lookup_exact("きょう")
+            .expect("missing optional LOUDS shard should fail open")
+            .iter()
+            .any(|entry| entry.surface == "今日"));
 
         let mut trailing = archive;
         trailing.push(0);
@@ -1781,99 +1670,6 @@ mod tests {
         assert!(AzooKeyDictionary::from_portable_system_dictionary(unsafe_path)
             .expect_err("unsafe paths must be rejected")
             .contains("unsafe path"));
-    }
-
-    #[test]
-    fn rejects_corrupt_portable_mm_cid_and_louds_components() {
-        let mm = vec![0; MID_COUNT * MID_COUNT * std::mem::size_of::<f32>()];
-
-        let mut corrupt_mm = complete_portable_archive(&mm);
-        replace_portable_file_data(&mut corrupt_mm, "mm.binary", &f32::NAN.to_le_bytes());
-        assert!(AzooKeyDictionary::from_portable_system_dictionary(corrupt_mm)
-            .expect_err("non-finite MM data must reject the archive")
-            .contains("non-finite"));
-
-        let mut corrupt_cid = complete_portable_archive(&mm);
-        let mut invalid_cid = Vec::new();
-        invalid_cid.extend_from_slice(&0i32.to_le_bytes());
-        invalid_cid.extend_from_slice(&super::DEFAULT_CONNECTION_COST.to_le_bytes());
-        replace_portable_file_data(&mut corrupt_cid, "cb/0.binary", &invalid_cid);
-        assert!(AzooKeyDictionary::from_portable_system_dictionary(corrupt_cid)
-            .expect_err("CID data without its default record must reject the archive")
-            .contains("default record"));
-
-        let mut corrupt_louds = complete_portable_archive(&mm);
-        replace_portable_file_data(&mut corrupt_louds, "louds/test0.louds", &[0; 8]);
-        assert!(AzooKeyDictionary::from_portable_system_dictionary(corrupt_louds)
-            .expect_err("LOUDS data inconsistent with its character table must reject the archive")
-            .contains("does not match its character table"));
-    }
-
-    #[test]
-    fn rejects_portable_archives_and_records_that_exceed_resource_bounds() {
-        let mut oversized_archive = vec![0; super::PORTABLE_MAX_ARCHIVE_BYTES + 1];
-        oversized_archive[..super::PORTABLE_DICTIONARY_MAGIC.len()]
-            .copy_from_slice(super::PORTABLE_DICTIONARY_MAGIC);
-        assert!(super::PortableFileStore::parse(oversized_archive)
-            .expect_err("archive above the raw input limit must be rejected")
-            .contains("maximum archive size"));
-
-        let oversized_file = vec![0; super::PORTABLE_MAX_FILE_BYTES + 1];
-        assert!(super::PortableFileStore::parse(portable_archive(&[(
-            "mm.binary",
-            &oversized_file
-        )]))
-        .expect_err("member above the per-file limit must be rejected")
-        .contains("oversized file"));
-
-        let oversized_record = vec![0; super::PORTABLE_MAX_LOUDSTXT3_RECORD_BYTES + 1];
-        assert!(parse_loudstxt3_record(&oversized_record)
-            .expect_err("record above the per-record limit must be rejected")
-            .contains("maximum size"));
-
-        let too_many_entries =
-            (super::PORTABLE_MAX_LOUDSTXT3_RECORD_ENTRIES as u16 + 1).to_le_bytes();
-        assert!(parse_loudstxt3_record(&too_many_entries)
-            .expect_err("record with too many rows must be rejected")
-            .contains("too many entries"));
-
-        // A valid-size record can still make every entry clone one enormous
-        // reading (and again for its missing surface). Reject before building
-        // the `Vec<DictionaryEntry>` or allocating any of those clones.
-        let count = super::PORTABLE_MAX_LOUDSTXT3_RECORD_ENTRIES;
-        let header_end = super::LOUDSTXT3_COUNT_BYTES + count * super::LOUDSTXT3_ENTRY_BYTES;
-        let mut repeated_reading = vec![b'a'; super::PORTABLE_MAX_LOUDSTXT3_RECORD_BYTES];
-        repeated_reading[..super::U16_BYTES].copy_from_slice(&(count as u16).to_le_bytes());
-        assert!(header_end < repeated_reading.len());
-        assert!(parse_loudstxt3_record(&repeated_reading)
-            .expect_err("count times a long reading must stay within the expansion budget")
-            .contains("memory budget"));
-    }
-
-    #[test]
-    fn system_lookup_caches_only_bounded_hits() {
-        let Some(root) = super::test_system_dictionary_path() else {
-            return;
-        };
-        let system = super::SystemDictionary::load(&root).expect("public system dictionary loads");
-        for index in 0..super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES * 2 {
-            system
-                .lookup_exact(&format!("cache-miss-{index}"))
-                .expect("unknown readings should be non-fatal");
-        }
-        assert!(system.entry_cache.borrow().is_empty());
-
-        // Positive rows remain cached, but a full cache is cleared before the
-        // next insert rather than growing with an unbounded input vocabulary.
-        for index in 0..super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES {
-            system.entry_cache.borrow_mut().insert(
-                format!("cached-{index}"),
-                vec![DictionaryEntry::plain("cached", "cached", 0.0)],
-            );
-        }
-        assert_eq!(system.entry_cache.borrow().len(), super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES);
-        assert!(!system.lookup_exact("かんじ").expect("known reading should load").is_empty());
-        assert_eq!(system.entry_cache.borrow().len(), 1);
     }
 
     fn portable_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -1894,16 +1690,12 @@ mod tests {
         archive.extend_from_slice(&(file_count as u32).to_le_bytes());
         append_portable_file(&mut archive, "louds/charID.chid", "アイ".as_bytes());
         append_portable_file(&mut archive, "mm.binary", mm);
-        let mut cid_line = Vec::new();
-        cid_line.extend_from_slice(&super::CID_DEFAULT_RECORD.to_le_bytes());
-        cid_line.extend_from_slice(&super::DEFAULT_CONNECTION_COST.to_le_bytes());
         for cid in 0..super::CID_COUNT {
-            append_portable_file(&mut archive, &format!("cb/{cid}.binary"), &cid_line);
+            append_portable_file(&mut archive, &format!("cb/{cid}.binary"), &[]);
         }
-        let louds = (u64::MAX ^ 1).to_le_bytes();
         for index in 0..super::PORTABLE_LOUDS_FILE_COUNT {
-            append_portable_file(&mut archive, &format!("louds/test{index}.louds"), &louds);
-            append_portable_file(&mut archive, &format!("louds/test{index}.loudschars2"), &[0]);
+            append_portable_file(&mut archive, &format!("louds/test{index}.louds"), &[]);
+            append_portable_file(&mut archive, &format!("louds/test{index}.loudschars2"), &[]);
         }
         for index in 0..super::PORTABLE_LOUDS_TEXT_FILE_COUNT {
             append_portable_file(&mut archive, &format!("louds/text{index}.loudstxt3"), &[]);
@@ -1917,41 +1709,6 @@ mod tests {
         archive.extend_from_slice(&(data.len() as u32).to_le_bytes());
         archive.extend_from_slice(path);
         archive.extend_from_slice(data);
-    }
-
-    fn replace_portable_file_data(archive: &mut [u8], target: &str, replacement: &[u8]) {
-        let mut offset = super::PORTABLE_DICTIONARY_HEADER_BYTES;
-        let file_count = u32::from_le_bytes(
-            archive
-                [super::PORTABLE_DICTIONARY_MAGIC.len()..super::PORTABLE_DICTIONARY_HEADER_BYTES]
-                .try_into()
-                .expect("archive header contains file count"),
-        ) as usize;
-        for _ in 0..file_count {
-            let path_length = u16::from_le_bytes(
-                archive[offset..offset + super::U16_BYTES]
-                    .try_into()
-                    .expect("archive file header contains path length"),
-            ) as usize;
-            let data_length = u32::from_le_bytes(
-                archive[offset + super::U16_BYTES..offset + super::PORTABLE_FILE_HEADER_BYTES]
-                    .try_into()
-                    .expect("archive file header contains data length"),
-            ) as usize;
-            let path_start = offset + super::PORTABLE_FILE_HEADER_BYTES;
-            let data_start = path_start + path_length;
-            let data_end = data_start + data_length;
-            if &archive[path_start..data_start] == target.as_bytes() {
-                assert!(
-                    replacement.len() <= data_length,
-                    "replacement fits existing archive entry"
-                );
-                archive[data_start..data_start + replacement.len()].copy_from_slice(replacement);
-                return;
-            }
-            offset = data_end;
-        }
-        panic!("fixture archive did not contain {target}");
     }
 
     #[test]

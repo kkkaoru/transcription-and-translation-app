@@ -492,6 +492,154 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("paints the first source caption after a reset when current is the empty placeholder", () => {
+    // Right after a reset, current.id === "empty" (createEmptyCaption). The
+    // first real-utterance payload is cross-id (empty !== u-first), but because
+    // it is source-only (no translation), the merge proceeds normally and
+    // paints the new source. This pins the normal first-caption path so a
+    // pipeline contract change is caught.
+    const empty = caption({
+      id: "empty",
+      sourceText: "",
+      translationText: "",
+      startedAt: 0,
+      receivedAt: 0,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const firstSource = caption({
+      id: "u-first",
+      sourceText: "最初の発話",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(empty, firstSource)).toEqual(firstSource);
+    expect(getCaptionMergeDiagnostics().crossIdTranslationsSaved).toBe(0);
+  });
+
+  it("preserves a source+translation payload in the side channel when current is the empty placeholder", () => {
+    // Pipeline contract (pipeline.rs:973) prevents source+translation arriving
+    // together on a new id. If that contract ever changes, this test will
+    // fail and force a review: the cross-id translation guard currently
+    // returns the empty caption (freezing the live slot) rather than
+    // mis-attributing the old utterance's translation onto the new source.
+    const empty = caption({
+      id: "empty",
+      sourceText: "",
+      translationText: "",
+      startedAt: 0,
+      receivedAt: 0,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const firstWithTranslation = caption({
+      id: "u-first",
+      sourceText: "最初の発話",
+      translationText: "First utterance",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(empty, firstWithTranslation)).toBe(empty);
+    expect(takePendingCaptionTranslation("u-first")).toMatchObject({
+      translationText: "First utterance",
+    });
+  });
+
+  it("does not increment the saved counter when discarding an older revision of an existing pending entry", () => {
+    const current = caption({
+      id: "live",
+      sourceText: "表示中",
+      translationText: "",
+      startedAt: 5_000,
+      receivedAt: 5_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const newerPending = caption({
+      id: "late-1",
+      sourceText: "",
+      translationText: "Newer translation",
+      startedAt: 2_000,
+      receivedAt: 5_100,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+    const olderPending = caption({
+      id: "late-1",
+      sourceText: "",
+      translationText: "Older translation",
+      startedAt: 1_000,
+      receivedAt: 5_200,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, newerPending)).toBe(current);
+    expect(getCaptionMergeDiagnostics().crossIdTranslationsSaved).toBe(1);
+    // The older revision is discarded; the counter must not increment.
+    expect(mergeCaptionPayload(current, olderPending)).toBe(current);
+    expect(getCaptionMergeDiagnostics().crossIdTranslationsSaved).toBe(1);
+    expect(takePendingCaptionTranslation("late-1")).toMatchObject({
+      translationText: "Newer translation",
+    });
+  });
+
+  it("does not save a cross-id translation with an empty or whitespace id", () => {
+    const current = caption({
+      id: "live",
+      sourceText: "表示中",
+      translationText: "",
+      startedAt: 5_000,
+      receivedAt: 5_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const emptyIdTranslation = caption({
+      id: "",
+      sourceText: "",
+      translationText: "No id",
+      startedAt: 1_000,
+      receivedAt: 5_100,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+    const whitespaceIdTranslation = caption({
+      id: "   ",
+      sourceText: "",
+      translationText: "Whitespace id",
+      startedAt: 1_000,
+      receivedAt: 5_200,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, emptyIdTranslation)).toBe(current);
+    expect(mergeCaptionPayload(current, whitespaceIdTranslation)).toBe(current);
+    expect(getCaptionMergeDiagnostics()).toEqual({
+      crossIdTranslationsSaved: 0,
+      pendingCrossIdTranslations: 0,
+    });
+    expect(takePendingCaptionTranslation("")).toBeNull();
+    expect(takePendingCaptionTranslation("   ")).toBeNull();
+  });
+
   it("preserves source when a same-id translation update omits sourceText", () => {
     const first = caption({ sourceText: "こんにちは" });
     const translatedOnly = caption({
