@@ -230,6 +230,19 @@ pub struct AppState {
     /// `translationRetired` so a silent-loss investigation is not limited to
     /// log scraping.
     parapper_output_superseded: AtomicU64,
+    /// Source captions dropped as stale: their stamped capture generation was
+    /// already superseded when `publish_source_caption_gated` ran. The drop
+    /// itself is silent by design, so a producer stamping a wrong generation
+    /// would otherwise lose every caption with no signal; this counter makes
+    /// that failure visible in `get_debug_info`.
+    source_caption_stale_dropped: AtomicU64,
+    /// Captions and Parapper turn outputs accepted through the legacy
+    /// no-generation path. That path is deliberately never fenced (rejecting
+    /// `None` would convert mis-attribution into silent caption loss, which
+    /// is strictly worse), so the unfenced volume is counted instead to keep
+    /// `get_debug_info` able to distinguish legacy producers from modern
+    /// generation-checked ones.
+    unfenced_caption_accepted: AtomicU64,
 }
 
 /// Match the frontend caption merge ordering before replacing the replay slot.
@@ -374,6 +387,8 @@ impl AppState {
             translation_notify: Notify::new(),
             relaunch_after_capture: Mutex::new(false),
             parapper_output_superseded: AtomicU64::new(0),
+            source_caption_stale_dropped: AtomicU64::new(0),
+            unfenced_caption_accepted: AtomicU64::new(0),
         }
     }
 
@@ -648,6 +663,34 @@ impl AppState {
     /// caption.
     pub fn parapper_output_superseded_count(&self) -> u64 {
         self.parapper_output_superseded.load(Ordering::Relaxed)
+    }
+
+    /// Record a source caption dropped as stale because its stamped capture
+    /// generation was superseded before `publish_source_caption_gated` ran.
+    /// See [`Self::source_caption_stale_dropped_count`].
+    pub fn record_source_caption_stale_dropped(&self) -> u64 {
+        self.source_caption_stale_dropped.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Total source captions dropped for a superseded stamped generation,
+    /// surfaced in the debug snapshot so a producer stamping a wrong
+    /// generation is visible instead of silently losing every caption.
+    pub fn source_caption_stale_dropped_count(&self) -> u64 {
+        self.source_caption_stale_dropped.load(Ordering::Relaxed)
+    }
+
+    /// Record a caption or Parapper turn output accepted through the legacy
+    /// no-generation path, which is deliberately never generation-fenced.
+    /// See [`Self::unfenced_caption_accepted_count`].
+    pub fn record_unfenced_caption_accepted(&self) -> u64 {
+        self.unfenced_caption_accepted.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Total legacy unfenced accepts across `publish_source_caption_gated`
+    /// and `normalize_parapper_output`, surfaced in the debug snapshot to
+    /// quantify the producers that cannot be generation-checked.
+    pub fn unfenced_caption_accepted_count(&self) -> u64 {
+        self.unfenced_caption_accepted.load(Ordering::Relaxed)
     }
 
     /// Freeze the current generation against new translations and return the

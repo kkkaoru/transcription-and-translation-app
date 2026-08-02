@@ -444,6 +444,13 @@ pub async fn normalize_parapper_output(
         );
         return Ok(empty_caption(&config, empty_id));
     }
+    // A legacy output without any generation passes the gate unconditionally
+    // and is deliberately never rejected; count it as an unfenced accept so
+    // the debug snapshot can quantify these producers alongside source
+    // captions that take the same no-generation path.
+    if output.capture_generation.is_none() {
+        state.record_unfenced_caption_accepted();
+    }
     let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(2);
     let app_for_stages = app.clone();
     let config_for_stages = config.clone();
@@ -555,6 +562,11 @@ pub fn publish_source_caption(
 /// caption was accepted; `Ok(false)` means a stale generation silently dropped
 /// it; `Err` is reserved for the legacy unversioned path when capture is not
 /// active.
+///
+/// Both silent outcomes are counted here, where the result is decided, so a
+/// producer stamping a wrong generation (or a legacy producer that can never
+/// be checked) is observable through `get_debug_info` rather than
+/// indistinguishable from a healthy publish.
 fn publish_source_caption_gated(
     state: &AppState,
     generation: Option<u64>,
@@ -564,6 +576,12 @@ fn publish_source_caption_gated(
     match generation {
         Some(generation) => {
             let published = state.publish_caption_for_generation(generation, caption, emit);
+            // The drop is silent by design (the renderer already decided this
+            // attempt is obsolete), so count it: without the counter a stale
+            // generation loses every caption with zero observability.
+            if !published {
+                state.record_source_caption_stale_dropped();
+            }
             Ok(published)
         }
         None => {
@@ -576,6 +594,11 @@ fn publish_source_caption_gated(
                 return Err("capture is not active".to_string());
             }
             emit(caption);
+            // Legacy no-generation publishes are deliberately never fenced
+            // (rejecting them would turn mis-attribution into silent loss);
+            // count the unfenced volume instead so the debug snapshot can
+            // quantify producers that cannot be generation-checked.
+            state.record_unfenced_caption_accepted();
             Ok(true)
         }
     }
@@ -1202,6 +1225,16 @@ pub async fn get_debug_info(
         // generation had already been superseded before this command
         // processed them. Companion counter to `translationRetired` above.
         "parapperOutputSuperseded": state.parapper_output_superseded_count(),
+        // Source captions dropped as stale: their stamped capture generation
+        // was superseded before publish, so a producer stamping a wrong
+        // generation silently loses every caption. Companion counter to
+        // `parapperOutputSuperseded`, covering the fenced source path.
+        "sourceCaptionStaleDropped": state.source_caption_stale_dropped_count(),
+        // Captions and Parapper turn outputs accepted through the legacy
+        // no-generation path (older renderers, DebugPanel test captions).
+        // Deliberately never fenced, so this counter quantifies the unfenced
+        // volume instead of leaving it indistinguishable from fenced accepts.
+        "unfencedCaptionAccepted": state.unfenced_caption_accepted_count(),
         "services": services,
         "sidecars": sidecars,
         "modelsDir": models_dir.display().to_string(),
