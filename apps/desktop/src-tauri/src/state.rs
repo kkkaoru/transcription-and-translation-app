@@ -946,6 +946,22 @@ mod tests {
     }
 
     #[test]
+    fn stale_source_caption_drop_and_unfenced_accept_are_counted() {
+        // Pins the two observability counters that make the silent caption
+        // loss paths visible: fenced stale drops and legacy no-generation
+        // accepts are both counted independently of each other.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        assert_eq!(state.source_caption_stale_dropped_count(), 0);
+        assert_eq!(state.unfenced_caption_accepted_count(), 0);
+        assert_eq!(state.record_source_caption_stale_dropped(), 1);
+        assert_eq!(state.record_source_caption_stale_dropped(), 2);
+        assert_eq!(state.record_unfenced_caption_accepted(), 1);
+        assert_eq!(state.source_caption_stale_dropped_count(), 2);
+        assert_eq!(state.unfenced_caption_accepted_count(), 1);
+    }
+
+    #[test]
     fn empty_turns_only_become_a_loss_when_they_repeat_in_the_bounded_window() {
         let mut health = AsrHealthTracker::default();
         let now = std::time::Instant::now();

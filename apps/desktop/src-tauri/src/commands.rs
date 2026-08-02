@@ -1669,7 +1669,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_generation_source_caption_is_dropped_without_emit_or_record() {
+    fn stale_generation_source_caption_is_dropped_without_emit_or_replay_and_is_counted() {
         let (state, payload) = source_caption_with_generation("webspeech:stale");
         let stale_generation = state.current_capture_generation();
         state.begin_capture_generation();
@@ -1679,6 +1679,7 @@ mod tests {
             status.backend_reachable = true;
             status.last_error = None;
         }
+        assert_eq!(state.source_caption_stale_dropped_count(), 0);
 
         let mut emitted = 0;
         let published =
@@ -1692,6 +1693,11 @@ mod tests {
             state.latest_caption(),
             None,
             "a stale attempt must not touch the replacement session's replay slot"
+        );
+        assert_eq!(
+            state.source_caption_stale_dropped_count(),
+            1,
+            "a silent stale drop must be observable through the debug counter"
         );
     }
 
@@ -1721,6 +1727,11 @@ mod tests {
         .expect("an active legacy session accepts the caption");
         assert!(published);
         assert_eq!(emitted, 1);
+        assert_eq!(
+            state.unfenced_caption_accepted_count(),
+            1,
+            "an unfenced publish must still be observable"
+        );
 
         {
             let mut status = state.status.lock().expect("status lock");
@@ -1731,5 +1742,24 @@ mod tests {
             "capture is not active"
         );
         assert_eq!(emitted, 1, "an idle session must not emit");
+        assert_eq!(
+            state.unfenced_caption_accepted_count(),
+            1,
+            "a rejected publish must not count as an accept"
+        );
+    }
+
+    #[test]
+    fn parapper_output_without_generation_still_processes_and_is_counted_unfenced() {
+        // Mirrors `normalize_parapper_output`'s legacy path: an output without
+        // an enqueue-time generation always passes the gate (never treated as
+        // superseded) and is counted as an unfenced accept so the debug
+        // snapshot can quantify producers that cannot be generation-checked.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        assert_eq!(state.unfenced_caption_accepted_count(), 0);
+        assert!(parapper_output_generation_is_current(&state, None));
+        state.record_unfenced_caption_accepted();
+        assert_eq!(state.unfenced_caption_accepted_count(), 1);
     }
 }
