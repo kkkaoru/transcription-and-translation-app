@@ -1324,4 +1324,49 @@ describe("mergeCaptionPayload", () => {
     // receivedAt differs but display fields match → preserve React identity.
     expect(mergeCaptionPayload(live, duplicate)).toBe(live);
   });
+
+  it("treats the very first payload after reset as a cross-id translation when it has translation", () => {
+    // Right after reset, current.id === "empty", so the first real payload is always cross-id.
+    // If that payload is a translation (e.g., late completion for a prior utterance), it must
+    // be preserved in the side channel and not attached to the empty slot.
+    const empty = caption({ id: "empty", sourceText: "", translationText: "" });
+    const lateTranslation = caption({
+      id: "u-1",
+      sourceText: "",
+      translationText: "Late completion from prior session",
+      startedAt: 100,
+      receivedAt: 200,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    const merged = mergeCaptionPayload(empty, lateTranslation);
+
+    // Must return empty (unchanged) and preserve the translation in pending.
+    expect(merged).toBe(empty);
+    expect(getCaptionMergeDiagnostics()).toEqual({
+      crossIdTranslationsSaved: 1,
+      pendingCrossIdTranslations: 1,
+    });
+    expect(takePendingCaptionTranslation("u-1")).toMatchObject(lateTranslation);
+  });
+
+  it("accepts a new source caption immediately after reset", () => {
+    const empty = caption({ id: "empty", sourceText: "", translationText: "" });
+    const newSource = caption({
+      id: "u-1",
+      sourceText: "最初の認識結果",
+      translationText: "",
+      startedAt: 100,
+      receivedAt: 200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    const merged = mergeCaptionPayload(empty, newSource);
+
+    expect(merged).toEqual(newSource);
+  });
 });

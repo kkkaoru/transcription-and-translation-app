@@ -62,6 +62,14 @@ let crossIdTranslationsSaved = 0;
 const pendingCrossIdTranslations = new Map<string, CaptionPayload>();
 
 const saveCrossIdTranslation = (caption: CaptionPayload): void => {
+  // Gate empty/whitespace id: a malformed or placeholder payload (e.g. the
+  // "empty" caption right after reset, or a silence skip) must never occupy a
+  // Map key or inflate the saved counter.  The merge still returns current
+  // (translation-only) or null (source-bearing) per the existing contract;
+  // only the side-channel storage is suppressed.
+  if (!caption.id.trim()) {
+    return;
+  }
   if (!pendingCrossIdTranslations.has(caption.id)) {
     while (pendingCrossIdTranslations.size >= MAX_PENDING_CROSS_ID_TRANSLATIONS) {
       const oldestId = pendingCrossIdTranslations.keys().next().value;
@@ -73,10 +81,14 @@ const saveCrossIdTranslation = (caption: CaptionPayload): void => {
   }
 
   const previous = pendingCrossIdTranslations.get(caption.id);
-  if (!previous || !isOlderSameIdRevision(previous, caption)) {
+  const shouldStore = !previous || !isOlderSameIdRevision(previous, caption);
+  if (shouldStore) {
+    // Only increment if this is truly a new entry being stored for the first time.
+    if (!previous) {
+      crossIdTranslationsSaved += 1;
+    }
     pendingCrossIdTranslations.set(caption.id, { ...caption });
   }
-  crossIdTranslationsSaved += 1;
 };
 
 /** Return and remove a translation preserved for a different caption ID. */
@@ -454,7 +466,14 @@ export const mergeCaptionPayload = (
   const hasIncomingSource = hasText(incoming.sourceText);
   const hasIncomingTranslation = hasText(incoming.translationText);
   const incomingIsTranslationPayload = sequenceOf(incoming) >= TRANSLATION_SEQUENCE;
-  const crossIdTranslation = !sameChunk && incomingIsTranslationPayload && hasIncomingTranslation;
+  const crossIdTranslation =
+    !sameChunk &&
+    incomingIsTranslationPayload &&
+    hasIncomingTranslation &&
+    // Keep placeholder bootstrap captions transparent: the very first live state uses
+    // `id === "empty"`, so a source-bearing translation payload for that state is not
+    // a stale cross-ID rewrite and should remain eligible to paint.
+    !(current.id === "empty" && hasIncomingSource);
 
   // A translator may finish turn N after turn N+1 has already become the
   // visible caption. Never merge that text into N+1 (whether the payload also

@@ -9,7 +9,12 @@ import {
 } from "../core/audio";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "../core/bridge";
 import { BUILD_INFO } from "../core/buildInfo";
-import { mergeCaptionPayload } from "../core/caption-updates";
+import {
+  clearCaptionMergeDiagnostics,
+  getCaptionMergeDiagnostics,
+  mergeCaptionPayload,
+  takePendingCaptionTranslation,
+} from "../core/caption-updates";
 import {
   clearChunkTimingStats,
   createLatestWinsProcessor,
@@ -44,6 +49,7 @@ import {
   selectParapperSurfaceText,
 } from "../core/parapperStream";
 import { hydratePipelineStageEvents, pushPipelineStageEvent } from "../core/pipelineStages";
+import { appendStructuredLog } from "../core/structuredLog";
 import type {
   AppConfig,
   AudioChunk,
@@ -374,6 +380,7 @@ export const MainApp = () => {
         const isSourceStage =
           nextCaption.stage === "source" || (nextCaption.sequence === 0 && !nextCaption.isFinal);
         let paintedProgressiveSource = false;
+        const beforeCrossIdSaved = getCaptionMergeDiagnostics().crossIdTranslationsSaved;
         setCaption((current) => {
           const merged = mergeCaptionPayload(current, nextCaption);
           if (merged === null || merged === current) {
@@ -385,6 +392,20 @@ export const MainApp = () => {
           markCaptionDisplay(merged);
           return merged;
         });
+        const afterMergeDiagnostics = getCaptionMergeDiagnostics();
+        if (afterMergeDiagnostics.crossIdTranslationsSaved > beforeCrossIdSaved) {
+          // A cross-id translation was saved to the bounded side channel so it is
+          // not mis-attributed to the current live caption. Surface the retention
+          // through the debug/diagnostic channel (Debug panel) without mirroring
+          // to the structured log — the takePendingCaptionTranslation consumer
+          // below already records the retained text there when it is retrieved.
+          pushDiagnosticEvent(
+            "caption",
+            "Late translation preserved for prior utterance",
+            `${nextCaption.id} · pending=${afterMergeDiagnostics.pendingCrossIdTranslations}`,
+            { mirrorStructured: false },
+          );
+        }
         if (paintedProgressiveSource) {
           chunkProcessor.current?.markFirstCaption();
           if (chunkProcessor.current) {
@@ -404,6 +425,26 @@ export const MainApp = () => {
             stage === "translation" ? "Caption translated" : "Caption normalized source ready",
             `${nextCaption.id} · src=${nextCaption.sourceText.slice(0, 48)}${latency}`,
           );
+        }
+        // Consume pending cross-id translations that arrived before their newer source.
+        // Gate empty/whitespace id to avoid Map entries for placeholder/silence payloads.
+        if (nextCaption.id.trim() && nextCaption.sourceText.trim()) {
+          const pending = takePendingCaptionTranslation(nextCaption.id);
+          if (pending) {
+            // Log that a late translation was retained for this utterance id.
+            // Use appendStructuredLog to preserve the retained translation in the
+            // structured debug log for history reconstruction (not in live overlay).
+            appendStructuredLog({
+              level: "info",
+              source: "frontend",
+              message: "Late translation retained for utterance",
+              chunkId: nextCaption.id,
+              fields: {
+                translationText: pending.translationText.slice(0, 100),
+                sourceText: nextCaption.sourceText.slice(0, 100),
+              },
+            });
+          }
         }
       })
       .then((dispose) => {
@@ -539,6 +580,7 @@ export const MainApp = () => {
         // caption for diagnosis and follow the README failure contract.
         if (sanitized.status === "idle" && !sanitized.lastError && !captionFailureMessage.current) {
           setCaption(createEmptyCaption());
+          clearCaptionMergeDiagnostics();
         }
         const statusKey = [
           sanitized.status,
@@ -1409,6 +1451,7 @@ export const MainApp = () => {
       await bridge.stopCapture().catch(() => undefined);
       capturePhase.current = "idle";
       setCaption(createEmptyCaption());
+      clearCaptionMergeDiagnostics();
       setStatus((current) => ({ ...current, status: "idle", lastError: null }));
       if (capture.current === microphone) {
         capture.current = new MicrophoneCapture();
@@ -1545,6 +1588,7 @@ export const MainApp = () => {
         setStatus((current) => ({ ...current, status: "idle", lastError: retainedFailure }));
       } else {
         setCaption(createEmptyCaption());
+        clearCaptionMergeDiagnostics();
         setStatus((current) => ({ ...current, status: "idle", lastError: null }));
       }
     } else {
