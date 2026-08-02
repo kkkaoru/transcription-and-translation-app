@@ -38,6 +38,7 @@ describe("cleanBuildArtifacts", () => {
     const unrelatedHiddenFile = await createFile(root, ".keep-me");
     const nestedBunBuild = await createFile(root, "nested/.deadbeef-00000000.bun-build");
     const frontendOutput = await createFile(root, "apps/desktop/dist/assets/index.js");
+    const comparisonOutput = await createFile(root, "apps/azookey-compare/.next/server/app.js");
     const gatewayOutput = await createFile(root, "apps/inference-gateway/dist/index.js");
     const tauriBundle = await createFile(
       root,
@@ -54,7 +55,13 @@ describe("cleanBuildArtifacts", () => {
 
     await cleanBuildArtifacts({ root });
 
-    for (const removed of [staleBunBuild, frontendOutput, gatewayOutput, tauriBundle]) {
+    for (const removed of [
+      staleBunBuild,
+      frontendOutput,
+      comparisonOutput,
+      gatewayOutput,
+      tauriBundle,
+    ]) {
       assert.equal(existsSync(removed), false, `stale output remains: ${removed}`);
     }
     for (const preserved of [
@@ -140,6 +147,9 @@ describe("cleanBuildArtifacts", () => {
     const desktop = JSON.parse(
       await readFile(join(repositoryRoot, "apps/desktop/package.json"), "utf8"),
     );
+    const comparison = JSON.parse(
+      await readFile(join(repositoryRoot, "apps/azookey-compare/package.json"), "utf8"),
+    );
     const cleanup = "clean-build-artifacts";
 
     for (const scriptName of ["build", "sidecar:build", "gateway:build", "clean:build"]) {
@@ -150,6 +160,7 @@ describe("cleanBuildArtifacts", () => {
     for (const scriptName of ["build", "tauri:build", "tauri:build:release"]) {
       assert.match(desktop.scripts[scriptName], new RegExp(cleanup));
     }
+    assert.match(comparison.scripts.build, new RegExp(cleanup));
     for (const scriptName of ["tauri:build", "tauri:build:release"]) {
       assert.match(desktop.scripts[scriptName], /--prune-rust/);
     }

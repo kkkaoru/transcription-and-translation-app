@@ -5,7 +5,7 @@
   "description": "WebSpeech and Worker AzooKey conversion comparison UI",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node ../../scripts/clean-build-artifacts.mjs --root ../.. && next build",
     "start": "next start",
     "typecheck": "tsc --noEmit --pretty false",
     "lint": "biome check src",

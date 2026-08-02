@@ -60,6 +60,7 @@ const assertSafeRoot = async (root) => {
  */
 const generatedDirectories = [
   "apps/desktop/dist",
+  "apps/azookey-compare/.next",
   "apps/inference-gateway/dist",
   "packages/parapper-asr/dist",
   "apps/desktop/src-tauri/target/debug/bundle",
