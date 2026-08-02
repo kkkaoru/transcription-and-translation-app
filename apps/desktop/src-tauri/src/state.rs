@@ -113,6 +113,9 @@ impl TranslationTracker {
         // generation-invalid and no later Stop must wait on them, so discard
         // their counters rather than retaining an unbounded history.
         self.pending_by_generation.clear();
+        // Retirement diagnostics describe only the active capture. A new
+        // generation must not inherit drops from the previous session.
+        self.retired_count = 0;
     }
 
     fn register(&mut self) -> Option<(TranslationTicket, Option<TranslationTicket>)> {
@@ -1250,6 +1253,7 @@ mod tests {
         let state =
             AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
         state.begin_capture_generation();
+        assert_eq!(state.translation_retired_count(), 0);
         let mut tickets = Vec::new();
         for _ in 0..MAX_PENDING_TRANSLATIONS_PER_CAPTURE {
             let (ticket, superseded) = state.register_translation().expect("active capture");
@@ -1263,6 +1267,20 @@ mod tests {
             "the oldest slow translation cannot publish after latest-wins retirement"
         );
         assert!(state.translation_is_current(latest));
+        assert_eq!(state.translation_retired_count(), 1);
+
+        // A late (or duplicate) completion of an already-retired ticket is a
+        // no-op and must not increment the retirement diagnostic again.
+        state.finish_translation(tickets[0]);
+        state.finish_translation(tickets[0]);
+        assert_eq!(state.translation_retired_count(), 1);
+
+        // Starting a second capture resets the generation-scoped diagnostic;
+        // an old task finishing afterwards cannot resurrect the old count.
+        state.begin_capture_generation();
+        assert_eq!(state.translation_retired_count(), 0);
+        state.finish_translation(latest);
+        assert_eq!(state.translation_retired_count(), 0);
     }
 
     #[test]

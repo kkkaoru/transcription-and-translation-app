@@ -1,7 +1,8 @@
 # Native development and verification
 
-The repository fixes Rust at 1.97.1 through `rust-toolchain.toml`. Bun 1.3.x is
-required for the TypeScript workspace. The vendored Parapper workspace keeps
+The repository fixes Rust at 1.97.1 through `rust-toolchain.toml`. Bun 1.3.14 is
+required for the TypeScript workspace and is pinned in the root
+`package.json` `packageManager` field. The vendored Parapper workspace keeps
 its upstream `packages/parapper-asr/rust-toolchain.toml` pin at 1.90.0; its
 sidecar build selects that nested pin while the desktop crate and all root
 quality checks use 1.97.1. This split is intentional and is mirrored in CI.

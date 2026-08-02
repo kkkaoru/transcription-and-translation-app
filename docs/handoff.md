@@ -95,7 +95,7 @@ bun run worker:test
 1. root Biome から `packages/parapper-asr` を除外する。フォークは upstream の
    ESLint / Prettier / Rust 設定を維持するため、root formatter で書き換えない。
 2. Gateway / Worker の既存の Biome 指摘を修正する。
-3. `parapper:*` の `bun --cwd=…` 指定を修正し、Bun 1.3 で実行可能にする。
+3. `parapper:*` の `bun --cwd=…` 指定を修正し、Bun 1.3.14 で実行可能にする。
 4. `array-includes@3.1.9` が存在しない `es-abstract/2025/*` を要求する upstream
    不整合を回避するため、root `package.json` の `overrides` で `3.1.8` を固定する。
 5. Parapper の import 漏れと小さな Clippy 指摘を修正する。

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridge } from "../core/bridge";
@@ -19,6 +19,7 @@ describe("MainApp pipeline-drop notice wiring", () => {
   let root: Root;
   let pipelineDropListener: ((drop: PipelineDropSignal) => void) | undefined;
   let runtimeListener: ((status: RuntimeStatus) => void) | undefined;
+  let runtimeListeners: Array<(status: RuntimeStatus) => void> = [];
 
   const noticeText = (): string =>
     Array.from(container.querySelectorAll<HTMLElement>('.notice[role="status"]'))
@@ -33,12 +34,14 @@ describe("MainApp pipeline-drop notice wiring", () => {
     clearDiagnosticEvents();
     pipelineDropListener = undefined;
     runtimeListener = undefined;
+    runtimeListeners = [];
     vi.spyOn(bridge, "listenPipelineDrops").mockImplementation((callback) => {
       pipelineDropListener = callback;
       return Promise.resolve(() => undefined);
     });
     vi.spyOn(bridge, "listenRuntime").mockImplementation((callback) => {
       runtimeListener = callback;
+      runtimeListeners.push(callback);
       return Promise.resolve(() => undefined);
     });
     vi.spyOn(bridge, "getStatus").mockResolvedValue({ ...DEFAULT_RUNTIME_STATUS });
@@ -110,9 +113,9 @@ describe("MainApp pipeline-drop notice wiring", () => {
       await Promise.resolve();
     });
     expect(noticeText()).not.toContain("source=audio");
-    expect(getDiagnosticEvents().some((event) => event.message === "Pipeline drop surfaced")).toBe(
-      true,
-    );
+    expect(
+      getDiagnosticEvents().filter((event) => event.message === "Pipeline drop signal"),
+    ).toHaveLength(3);
   });
 
   it("clears the drop aggregate when a new capture session starts", async () => {
@@ -147,5 +150,66 @@ describe("MainApp pipeline-drop notice wiring", () => {
       byReason: {},
       signals: [],
     });
+  });
+
+  it("keeps the notice/drop bridge wired through a StrictMode mount", async () => {
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <I18nProvider>
+            <MainApp />
+          </I18nProvider>
+        </StrictMode>,
+      );
+      for (let index = 0; index < 8; index += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(container.querySelector(".app-shell")).not.toBeNull();
+    expect(runtimeListener).toBeTypeOf("function");
+    expect(pipelineDropListener).toBeTypeOf("function");
+
+    const healthyStatus: RuntimeStatus = {
+      ...DEFAULT_RUNTIME_STATUS,
+      status: "capturing",
+      lastError: null,
+    };
+    await act(async () => {
+      runtimeListener?.(healthyStatus);
+      pipelineDropListener?.({ source: "translation", reason: "retired", count: 1 });
+      await Promise.resolve();
+    });
+
+    expect(noticeText()).toContain("source=translation");
+    expect(snapshotPipelineDrops().bySource).toEqual({ translation: 1 });
+  });
+
+  it("ignores a delayed runtime event after the MainApp DOM is unmounted", async () => {
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <MainApp />
+        </I18nProvider>,
+      );
+      for (let index = 0; index < 8; index += 1) {
+        await Promise.resolve();
+      }
+    });
+    const staleRuntimeListener = runtimeListeners[0];
+    expect(staleRuntimeListener).toBeTypeOf("function");
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    clearDiagnosticEvents();
+
+    staleRuntimeListener?.({
+      ...DEFAULT_RUNTIME_STATUS,
+      status: "error",
+      lastError: "late runtime event",
+    });
+    expect(getDiagnosticEvents().some((event) => event.message === "Runtime → error")).toBe(false);
   });
 });

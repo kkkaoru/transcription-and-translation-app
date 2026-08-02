@@ -3,7 +3,7 @@ use super::dictionary::{
 };
 use super::normalization::{
     is_boundary, japanese_counter_starts_at, japanese_numeral_has_unit, numeric_counter_surface,
-    numeric_surface_prefix, to_hiragana, to_katakana,
+    numeric_span_starts_with_digit, numeric_surface_prefix, to_hiragana, to_katakana,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +34,7 @@ const IDENTITY_SURFACE_PENALTY: f32 = -1.5;
 const MODEL_DEFAULT_METADATA_PENALTY: f32 = -2.0;
 const MODEL_DEFAULT_MID_PENALTY: f32 = -2.5;
 const GRAMMATICAL_CONTEXT_BONUS: f32 = 4.0;
-const CONTEXTUAL_ENTRY_BONUS: f32 = 2.5;
+const CONTEXTUAL_ENTRY_BONUS: f32 = 4.5;
 const MIN_IDENTITY_FALLBACK_CHARS: usize = 2;
 const INFLECTIONAL_IDENTITY_FALLBACK_VALUE: f32 = -3.0;
 const PARTICLE_IDENTITY_FALLBACK_VALUE: f32 = -1.0;
@@ -186,11 +186,29 @@ pub fn convert_with_dictionary(
             if let Some((numeric_length, surface)) = numeric_surface_prefix(&chars[start..]) {
                 let numeric_reading: String = chars[start..start + numeric_length].iter().collect();
                 let has_unit = japanese_numeral_has_unit(&numeric_reading);
+                let has_digit_and_unit =
+                    has_unit && numeric_span_starts_with_digit(&numeric_reading);
                 let suffix = &chars[start + numeric_length..];
                 let followed_by_counter = japanese_counter_starts_at(suffix);
                 let followed_by_boundary =
                     suffix.first().is_some_and(|character| is_boundary(*character));
                 let starts_after_boundary = start > 0 && is_boundary(chars[start - 1]);
+                // The counter reading `じ` uses the contracted `よじ` form;
+                // treating the standalone `し` reading as four here creates
+                // `4時` from the ordinary homophone `しじ` (支持/指示).
+                let invalid_shi_counter = numeric_reading == "し"
+                    && suffix.first().is_some_and(|character| *character == 'じ');
+                let starts_after_text = start > 0 && !starts_after_boundary;
+                // Unit-only spans are valid at a boundary (and before an
+                // explicit counter), but a unit discovered inside a normal
+                // word must not become a competing number (`そうじゅう`,
+                // `まんえん`, ...). Number+unit compounds remain available
+                // after ordinary text (`価格はさんびゃくえん`).
+                let unit_span_is_unbounded = has_unit
+                    && !has_digit_and_unit
+                    && starts_after_text
+                    && !followed_by_counter
+                    && !followed_by_boundary;
                 // A bare spoken digit is useful at a punctuation-separated
                 // boundary (`いち、に`) but dangerous in ordinary words:
                 // without this guard the final `ご` of `にほんご` could turn
@@ -200,14 +218,18 @@ pub fn convert_with_dictionary(
                     || followed_by_counter
                     || followed_by_boundary
                     || starts_after_boundary;
-                if numeric_context || start == 0 {
+                if (numeric_context || start == 0)
+                    && !unit_span_is_unbounded
+                    && !invalid_shi_counter
+                {
                     // Keep ambiguous one-syllable digits below dictionary
                     // entries (`ご` -> `語`) unless the surrounding boundary
                     // makes the numeric reading intentional.
-                    let numeric_score = if has_unit
+                    let numeric_score = if has_digit_and_unit
                         || followed_by_counter
                         || followed_by_boundary
                         || starts_after_boundary
+                        || start == 0
                     {
                         NUMERIC_BOUNDARY_SCORE
                     } else {
@@ -557,6 +579,7 @@ fn model_metadata_penalty(dictionary: &AzooKeyDictionary, entry: &DictionaryEntr
         .max_by(f32::total_cmp);
     if entry.lcid == DEFAULT_CID
         && entry.rcid == DEFAULT_CID
+        && entry.mid == DEFAULT_MID
         && best_specific_value.is_some_and(|value| entry.value < value)
     {
         penalty += MODEL_DEFAULT_METADATA_PENALTY;
@@ -1210,6 +1233,51 @@ mod tests {
     }
 
     #[test]
+    fn keeps_nonnumeric_large_unit_suffixes_in_plain_text() {
+        let dictionary = AzooKeyDictionary::default();
+        for (input, expected) in [
+            ("けいさん", "けいさん"),
+            ("まるまん", "まるまん"),
+            ("あまん", "あまん"),
+            ("そうじゅう", "そうじゅう"),
+            ("まんえん", "まんえん"),
+            ("しけい", "しけい"),
+            ("しじ", "しじ"),
+            ("よけい", "よけい"),
+            // Keep the existing lexical `ぜん` guard intact: 改善 must not
+            // become 改1000 when the lattice starts at the suffix.
+            ("かいぜん", "改善"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("plain dictionary should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn preserves_valid_bare_and_compound_number_paths() {
+        let dictionary = AzooKeyDictionary::default();
+        for (input, expected) in [
+            ("いちまん", "10000"),
+            ("さんじゅうまんえん", "300000円"),
+            ("ひゃくえん", "100円"),
+            ("さんびゃくえん", "300円"),
+            ("にせんにじゅうよねん", "2024年"),
+            ("じゅう", "10"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("plain dictionary should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
+    }
+
+    #[test]
     fn selects_user_dictionary_entry_and_returns_n_best() {
         let root = std::env::temp_dir().join(format!("caption-bridge-{}", std::process::id()));
         // AzooKey scores are log-probabilities: -1 outranks the built-in -10.
@@ -1258,12 +1326,10 @@ mod tests {
     }
 
     #[test]
-    fn portable_dictionary_quality_is_ranked_and_stable_across_prefixes() {
-        // This mirrors AzooKey's accuracy/gradual-input tests with generated
-        // dictionary rows rather than a production phrase list.  It checks
-        // the converter's general lattice contracts: a higher-scoring full
-        // edge wins over a raw tail, every prefix remains convertible, and
-        // candidate ordering is deterministic.
+    fn tsv_fixture_is_ranked_and_stable_across_prefixes_without_builtin_rows() {
+        // This is a converter-contract test, not a portable/official-dictionary
+        // quality claim. Excluding built-in rows ensures the fixture alone
+        // supplies every lexical result asserted below.
         let root = std::env::temp_dir().join(format!(
             "caption-bridge-quality-{}-{}",
             std::process::id(),
@@ -1283,7 +1349,8 @@ mod tests {
             system: Some(root.clone()),
             ..DictionaryPaths::default()
         })
-        .expect("quality fixture should load");
+        .expect("quality fixture should load")
+        .without_builtin_entries_for_test();
 
         let options = ConversionOptions { n_best: 8, ..ConversionOptions::default() };
         let full = convert_with_dictionary(full_reading, &dictionary, options);
@@ -1323,7 +1390,12 @@ mod tests {
             system: Some(root),
             ..DictionaryPaths::default()
         })
-        .expect("configured public dictionary should load");
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        assert!(
+            dictionary.has_system_dictionary(),
+            "quality test requires the official dictionary"
+        );
         for (input, expected) in [
             ("そとのてんきがあついから", "外の天気が暑いから"),
             ("外の天気があついから", "外の天気が暑いから"),
@@ -1347,7 +1419,12 @@ mod tests {
             system: Some(root),
             ..DictionaryPaths::default()
         })
-        .expect("configured public dictionary should load");
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        assert!(
+            dictionary.has_system_dictionary(),
+            "quality test requires the official dictionary"
+        );
         for (input, expected) in [
             ("きょうのてんきはあつい", "今日の天気は暑い"),
             ("すーぷがあつい", "スープが熱い"),
@@ -1416,5 +1493,31 @@ mod tests {
         // wider default keeps the complete lexical path without embedding a
         // phrase-specific replacement.
         assert_eq!(converted, "隣の客は良くかきくう客だ");
+    }
+
+    #[test]
+    fn public_dictionary_keeps_numeric_edges_below_ordinary_homophones() {
+        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
+            return;
+        };
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        for (input, expected) in [
+            ("けいさん", "計算"),
+            ("そうじゅう", "操縦"),
+            ("しけい", "死刑"),
+            ("しじ", "支持"),
+            ("よけい", "余計"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
     }
 }

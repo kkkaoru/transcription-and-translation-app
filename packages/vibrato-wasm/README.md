@@ -40,7 +40,8 @@ module to `packages/vibrato-wasm/pkg/`. Pass `--bindgen` (with the pinned
 `wasm-bindgen` CLI available) to emit the JavaScript glue and TypeScript-friendly
 entry points under `packages/vibrato-wasm/pkg-web/`; that mode also synchronizes
 the generated JS/d.ts/WASM and dictionary/license copies into the comparison
-app and Worker. If the CLI is unavailable, the raw fallback is written only to
+app (the Worker receives only the raw module and attribution notices). If the
+CLI is unavailable, the raw fallback is written only to
 the ignored `packages/vibrato-wasm/pkg/` directory so a tracked bindgen package
 cannot be replaced accidentally. The generated web package is checked in so
 the TypeScript API remains usable after a clean clone.

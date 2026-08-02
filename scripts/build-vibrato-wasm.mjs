@@ -19,10 +19,11 @@ const rawDestination = resolve(destinationDir, "vibrato_wasm_bg.wasm");
 const rawFallbackDestination = resolve(root, "packages/vibrato-wasm/pkg/vibrato_wasm_bg.wasm");
 let bindgenProduced = false;
 const vibratoAssetDirectory = resolve(root, "assets/vibrato/ipadic-mecab-2_7_0");
-const publicVibratoDirectories = [
-  resolve(root, "apps/azookey-compare/public/vibrato"),
-  resolve(root, "apps/cloudflare-worker-server/public/vibrato"),
-];
+const browserVibratoDirectory = resolve(root, "apps/azookey-compare/public/vibrato");
+// The IPADIC dictionary is intentionally browser-only. Loading it alongside
+// the portable AzooKey archive exceeds a Worker isolate's memory budget; the
+// Worker uses VIBRATO_UPSTREAM_URL for a server-side pre-pass instead.
+const workerVibratoDirectory = resolve(root, "apps/cloudflare-worker-server/public/vibrato");
 const rawWasmDestinations = [
   resolve(root, "apps/azookey-compare/public/vibrato/vibrato_wasm_bg.wasm"),
   resolve(root, "apps/cloudflare-worker-server/wasm/vibrato_wasm_bg.wasm"),
@@ -33,12 +34,22 @@ const generatedGlueDestinations = {
 };
 
 const copyVibratoAssets = () => {
-  for (const name of ["system.dic.zst", "COPYING", "NOTICE"]) {
+  const dictionarySource = resolve(vibratoAssetDirectory, "system.dic.zst");
+  if (!existsSync(dictionarySource)) {
+    throw new Error(`Vibrato source asset is missing: ${dictionarySource}`);
+  }
+  mkdirSync(browserVibratoDirectory, { recursive: true });
+  copyFileSync(dictionarySource, resolve(browserVibratoDirectory, "system.dic.zst"));
+
+  // Keep attribution notices in both packages, but never copy the large
+  // dictionary into the Worker public assets. This makes a normal build
+  // unable to reintroduce the memory-heavy Worker-side dictionary.
+  for (const name of ["COPYING", "NOTICE"]) {
     const source = resolve(vibratoAssetDirectory, name);
     if (!existsSync(source)) {
       throw new Error(`Vibrato source asset is missing: ${source}`);
     }
-    for (const directory of publicVibratoDirectories) {
+    for (const directory of [browserVibratoDirectory, workerVibratoDirectory]) {
       mkdirSync(directory, { recursive: true });
       copyFileSync(source, resolve(directory, name));
     }
@@ -116,4 +127,6 @@ if (bindgenRequested) {
 
 copyVibratoAssets();
 syncGeneratedVibratoOutputs();
-console.log("Copied Vibrato IPADIC dictionary, COPYING, and NOTICE to public assets.");
+console.log(
+  "Copied the Vibrato IPADIC dictionary to the browser assets and attribution files to both packages.",
+);

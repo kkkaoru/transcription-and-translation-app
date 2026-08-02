@@ -219,6 +219,9 @@ export const createWorker = (
           env.CORS_ORIGIN,
         );
       }
+      const hasVibratoUpstream = Boolean(env.VIBRATO_UPSTREAM_URL?.trim());
+      const hasVibratoDictionary = Boolean(env.VIBRATO_DICTIONARY_URL?.trim());
+      const hasAzookeyDictionary = Boolean(env.AZOOKEY_DICTIONARY_URL?.trim());
       return cors(
         json(HTTP_OK, {
           ok: true,
@@ -234,29 +237,29 @@ export const createWorker = (
             transport: "authorization-header-or-first-frame",
           },
           dictionary: {
-            configured: Boolean(env.AZOOKEY_DICTIONARY_URL?.trim()),
-            transport: env.AZOOKEY_DICTIONARY_URL?.trim() ? "portable-wasm" : "builtin",
+            configured: hasAzookeyDictionary,
+            transport: hasAzookeyDictionary ? "portable-wasm" : "builtin",
             fetchTimeoutMs: azookeyDictionaryTimeoutMs(env),
             contract: "official AzooKey LOUDS/MM/CID caption dictionary",
           },
           vibrato: {
-            workerStage: env.VIBRATO_UPSTREAM_URL?.trim()
-              ? "configured"
-              : env.AZOOKEY_DICTIONARY_URL?.trim()
-                ? "passthrough"
-                : env.VIBRATO_DICTIONARY_URL?.trim()
-                  ? "configured"
+            workerStage:
+              hasVibratoUpstream || hasVibratoDictionary
+                ? "configured"
+                : hasAzookeyDictionary
+                  ? "passthrough"
                   : "unconfigured",
-            transport: env.VIBRATO_UPSTREAM_URL?.trim()
+            transport: hasVibratoUpstream
               ? "http"
-              : env.AZOOKEY_DICTIONARY_URL?.trim()
-                ? "azookey-mixed-input"
-                : env.VIBRATO_DICTIONARY_URL?.trim()
-                  ? "wasm"
+              : hasVibratoDictionary
+                ? "wasm"
+                : hasAzookeyDictionary
+                  ? "azookey-mixed-input"
                   : "none",
-            contract: env.AZOOKEY_DICTIONARY_URL?.trim()
-              ? "mixed Japanese text is converted directly by full AzooKey"
-              : "Vibrato reading pre-pass",
+            contract:
+              hasVibratoUpstream || hasVibratoDictionary
+                ? "Vibrato reading pre-pass"
+                : "mixed Japanese text is converted directly by full AzooKey",
           },
           modes: {
             worker: AZOOKEY_MODE,

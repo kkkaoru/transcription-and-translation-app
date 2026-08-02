@@ -18,7 +18,10 @@ jobs:
           submodules: recursive
       - uses: oven-sh/setup-bun@v2
         with:
+          # Keep this in lock-step with package.json's packageManager field.
           bun-version: 1.3.14
+      - name: Verify the pinned Bun toolchain
+        run: test "$(bun --version)" = "1.3.14"
       # Keep this in lock-step with the repository rust-toolchain.toml.  The
       # older 1.88 pin used to let CI pass while local desktop builds used a
       # different compiler and formatter.
@@ -86,7 +89,10 @@ jobs:
           submodules: recursive
       - uses: oven-sh/setup-bun@v2
         with:
+          # Keep this in lock-step with package.json's packageManager field.
           bun-version: 1.3.14
+      - name: Verify the pinned Bun toolchain
+        run: test "$(bun --version)" = "1.3.14"
       # Install Parapper's nested 1.90.0 pin. Desktop build scripts clear this
       # action's RUSTUP_TOOLCHAIN so the root app crate uses 1.97.1 instead.
       - uses: dtolnay/rust-toolchain@1.90.0

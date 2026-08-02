@@ -580,6 +580,33 @@ const fetchPortableDictionary = (
   }, timeoutMs);
 };
 
+const fetchVibratoDictionary = (
+  dictionaryUrl: string,
+  fetcher: AzookeyFetcher,
+  timeoutMs: number,
+): Promise<Uint8Array> =>
+  withDictionaryFetchTimeout(async (signal) => {
+    const response = await fetcher(dictionaryUrl, { signal });
+    if (!response.ok) {
+      throw new Error(`Vibrato dictionary returned ${response.status}`);
+    }
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > VIBRATO_MAX_DICTIONARY_BYTES) {
+      throw new Error("Vibrato dictionary exceeds the byte limit");
+    }
+    if (!response.body) {
+      throw new Error("Vibrato dictionary response has no body");
+    }
+    return collectStream(
+      response.body.pipeThrough(
+        byteLimitTransform(
+          VIBRATO_MAX_DICTIONARY_BYTES,
+          "Vibrato dictionary exceeds the byte limit",
+        ),
+      ),
+    );
+  }, timeoutMs);
+
 const withDictionaryFetchTimeout = async <T>(
   operation: (signal: AbortSignal) => T | Promise<T>,
   timeoutMs: number,
@@ -782,27 +809,23 @@ export const createVibratoWasmConverter = (
       return cached;
     }
     let tokenizerPromise!: Promise<VibratoTokenizer>;
-    tokenizerPromise = withDictionaryFetchTimeout(async (signal) => {
-      const response = await fetcher(normalizedUrl, { signal });
-      if (!response.ok) {
-        throw new Error(`Vibrato dictionary returned ${response.status}`);
-      }
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength === 0) {
-        throw new Error("Vibrato dictionary is empty");
-      }
-      if (bytes.byteLength > VIBRATO_MAX_DICTIONARY_BYTES) {
-        throw new Error("Vibrato dictionary exceeds the byte limit");
-      }
-      initVibratoSync({ module: wasmModule });
-      return new VibratoTokenizer(bytes);
-    }, dictionaryTimeoutMs).catch((error: unknown) => {
-      // A late rejection must not evict a newer retry for the same URL.
-      if (moduleCache.get(normalizedUrl) === tokenizerPromise) {
-        moduleCache.delete(normalizedUrl);
-      }
-      throw error instanceof Error ? error : new Error("Vibrato dictionary initialization failed");
-    });
+    tokenizerPromise = fetchVibratoDictionary(normalizedUrl, fetcher, dictionaryTimeoutMs)
+      .then((bytes) => {
+        if (bytes.byteLength === 0) {
+          throw new Error("Vibrato dictionary is empty");
+        }
+        initVibratoSync({ module: wasmModule });
+        return new VibratoTokenizer(bytes);
+      })
+      .catch((error: unknown) => {
+        // A late rejection must not evict a newer retry for the same URL.
+        if (moduleCache.get(normalizedUrl) === tokenizerPromise) {
+          moduleCache.delete(normalizedUrl);
+        }
+        throw error instanceof Error
+          ? error
+          : new Error("Vibrato dictionary initialization failed");
+      });
     moduleCache.set(normalizedUrl, tokenizerPromise);
     return tokenizerPromise;
   };
@@ -1152,18 +1175,32 @@ export const openAzookeySocket = async (
     );
   }
   let vibratoConverter: AzookeyVibratoConverter | undefined;
+  const vibratoDictionaryConfigured = Boolean(env.VIBRATO_DICTIONARY_URL?.trim());
+  let httpVibrato: AzookeyVibratoConverter | undefined;
   try {
-    const httpVibrato = createVibratoHttpConverter(env, dependencies.fetcher ?? fetch);
-    vibratoConverter =
-      dependencies.vibratoConverter ??
-      (portableDictionaryConfigured
-        ? (httpVibrato ?? createPortableDictionaryInputAdapter())
-        : (createVibratoWasmConverter(
+    httpVibrato = createVibratoHttpConverter(env, dependencies.fetcher ?? fetch);
+    const dictionaryVibrato =
+      vibratoDictionaryConfigured && !httpVibrato && !dependencies.vibratoConverter
+        ? createVibratoWasmConverter(
             dependencies.vibratoWasmModule,
             env.VIBRATO_DICTIONARY_URL,
             dependencies.vibratoDictionaryFetcher ?? dependencies.fetcher ?? fetch,
             dictionaryTimeoutMs,
-          ) ?? httpVibrato));
+          )
+        : undefined;
+    if (
+      vibratoDictionaryConfigured &&
+      !httpVibrato &&
+      !dictionaryVibrato &&
+      !dependencies.vibratoConverter
+    ) {
+      throw new Error("Vibrato dictionary is configured but the WASM adapter is unavailable");
+    }
+    vibratoConverter =
+      dependencies.vibratoConverter ??
+      httpVibrato ??
+      dictionaryVibrato ??
+      (portableDictionaryConfigured ? createPortableDictionaryInputAdapter() : undefined);
   } catch {
     closePair();
     return new Response(
@@ -1197,12 +1234,16 @@ export const openAzookeySocket = async (
   // deferred pair after all warmups have succeeded; Workers always took the
   // pre-warmup branch above and therefore still get explicit cleanup on 503.
   pair ??= createWorkersSocketPair();
-  const workerInputStage: WorkerInputStage =
-    portableDictionaryConfigured && !env.VIBRATO_UPSTREAM_URL?.trim()
-      ? "passthrough"
-      : vibratoConverter
-        ? "configured"
-        : "unconfigured";
+  const workerPassthrough =
+    portableDictionaryConfigured &&
+    !vibratoDictionaryConfigured &&
+    !httpVibrato &&
+    !dependencies.vibratoConverter;
+  const workerInputStage: WorkerInputStage = workerPassthrough
+    ? "passthrough"
+    : vibratoConverter
+      ? "configured"
+      : "unconfigured";
   try {
     pair.server.accept();
     attachAzookeySocket(pair.server, {

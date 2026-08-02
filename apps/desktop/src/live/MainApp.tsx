@@ -335,7 +335,6 @@ export const handlePipelineDropSignal = (
 ): void => {
   recordPipelineDrop(drop.source, drop.count, drop.reason);
   const detail = `source=${drop.source} · reason=${drop.reason} · count=${drop.count}`;
-  pushDiagnosticEvent("caption", "Pipeline drop surfaced", detail);
   notify({ key: "message.pipelineDrop", detail });
 };
 
@@ -372,8 +371,9 @@ export const shouldShowPipelineDropNotice = (
 /**
  * Resolve the message shown in the live workspace.
  *
- * Pipeline-drop notices are intentionally low priority: a persistent runtime
- * error must remain visible even when a drop event races its status update.
+ * Renderer notices are intentionally lower priority than a persistent runtime
+ * error, which must remain visible even when a drop or soft-skip event races
+ * its status update.
  */
 export const resolveLiveNoticeText = (
   notice: Notice | null,
@@ -381,7 +381,15 @@ export const resolveLiveNoticeText = (
   translate: (key: MessageKey) => string,
 ): string | null => {
   const fatalLastError = lastError && !isNoSpeechBridgeError(lastError) ? lastError : null;
-  if (notice?.key === "message.pipelineDrop" && fatalLastError) {
+  // Runtime failures are the highest-priority live signal. Do this check
+  // before rendering any renderer-side notice (including a stale no-speech or
+  // pipeline-drop banner) so a status event cannot be hidden by an older
+  // low-priority message. A capture error notice typically carries the same
+  // detail, so returning the status text is still lossless in that case.
+  if (fatalLastError) {
+    if (notice?.detail?.trim() === fatalLastError.trim()) {
+      return [translate(notice.key), notice.detail].filter((part) => part).join(" ");
+    }
     return fatalLastError;
   }
   return notice
@@ -622,6 +630,9 @@ export const MainApp = () => {
     let lastCaptionId: string | null = null;
     const captionListenerPromise = bridge
       .listenCaptions((nextCaption) => {
+        if (!mounted) {
+          return;
+        }
         // A background translation can complete after Stop. Once the runtime
         // is idle, retain the last caption (on failure) or the explicit empty
         // state (on success) rather than repainting a stale event.
@@ -730,6 +741,9 @@ export const MainApp = () => {
     // Keep the subscription app-wide so the panel can stay open for continuous inspection.
     void bridge
       .listenPipelineStages((stageEvent) => {
+        if (!mounted) {
+          return;
+        }
         pushPipelineStageEvent(stageEvent);
         // Progressive first paint: raw ASR text is available well before the
         // normalizer finishes, and the backend never sends it over the
@@ -843,6 +857,9 @@ export const MainApp = () => {
       });
     void bridge
       .listenRuntime((nextStatus) => {
+        if (!mounted) {
+          return;
+        }
         // Ambient / no-speech chunks must never pin a fatal lastError in the UI.
         // Keep the detail in the debug event log only.
         const sanitized =

@@ -149,9 +149,11 @@ archive rather than silently producing a different dictionary; initialize the
 submodule with `git submodule update --init submodules/azooKey_dictionary_storage`
 when a source rebuild is required.
 
-The bundled IPADIC dictionary is distributed with its upstream `COPYING` and
-`NOTICE` files in `public/vibrato/`; the build script refreshes both copies
-from `assets/vibrato/ipadic-mecab-2_7_0/` together with the dictionary bytes.
+The browser comparison app bundles the IPADIC dictionary with its upstream
+`COPYING` and `NOTICE` files. The Worker keeps only those attribution notices;
+its public assets deliberately omit the memory-heavy dictionary. To restore
+the browser dictionary after cleaning generated assets, run
+`node scripts/build-vibrato-wasm.mjs --bindgen`.
 
 The asset is pinned to `azooKey_dictionary_storage` revision
 `4d418525b090cf49c219819d05a7e3cc2a4346eb` (`v3.1.0-beta.15`) and its checked-in
@@ -165,16 +167,21 @@ files used by current Rust caption conversion. It intentionally excludes
 ASR caption conversion, so this is caption-conversion parity rather than a
 claim of full keyboard-app feature parity.
 
-The Wrangler default loads that static asset through `ASSETS`, lazily and once
-per Worker isolate. The initialized AzooKey memory is about 26.5 MiB. The
-checked-in Vibrato IPADIC WASM is intentionally not initialized alongside the
-portable dictionary: its dictionary expands beyond the Workers 128 MiB isolate
-limit. Use `VIBRATO_UPSTREAM_URL` for a server-side Vibrato pre-pass, or choose
-the browser Vibrato WASM mode in the comparison app. Wire field names such as
-`vibratoInput` and mode value `worker-vibrato` are historical protocol labels;
-`vibratoExecution` identifies whether a real pre-pass ran in the Worker or in
-the browser, while the ready metadata makes the mixed-input passthrough
-explicit.
+The Wrangler default loads the official AzooKey archive through `ASSETS`,
+lazily and once per Worker isolate. The initialized AzooKey memory is about
+26.5 MiB. The Vibrato IPADIC dictionary is about 7.7 MiB compressed and is not
+packaged in Worker assets because its expanded form exceeds the Workers 128
+MiB isolate limit when combined with the portable AzooKey dictionary. For a
+server-side Vibrato pre-pass, configure `VIBRATO_UPSTREAM_URL` (or an external
+`VIBRATO_DICTIONARY_URL`); otherwise choose the browser Vibrato WASM mode in
+the comparison app.
+
+Wire field names such as `vibratoInput` and mode value `worker-vibrato` are
+historical protocol labels. `vibratoExecution` identifies whether a real
+pre-pass ran in the Worker or in the browser. The ready metadata and result
+metadata also identify the effective stage and explicitly mark the
+mixed-input passthrough path; a passthrough result must never be interpreted
+as evidence that Vibrato ran.
 
 ## Deploy and local environment
 

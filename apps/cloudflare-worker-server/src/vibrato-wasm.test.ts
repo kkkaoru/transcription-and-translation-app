@@ -66,6 +66,23 @@ describe("Worker Vibrato WASM dictionary adapter", () => {
       () => new Response(new Uint8Array(12 * 1024 * 1024 + 1)),
     );
     await expect(tooLarge?.("入力", "ja")).rejects.toThrow("exceeds the byte limit");
+
+    const tooLargeHeader = createVibratoWasmConverter(
+      wasmModule,
+      "https://dict.example.test/system.dic.zst",
+      () =>
+        new Response(null, {
+          headers: { "content-length": String(12 * 1024 * 1024 + 1) },
+        }),
+    );
+    await expect(tooLargeHeader?.("入力", "ja")).rejects.toThrow("exceeds the byte limit");
+
+    const missingBody = createVibratoWasmConverter(
+      wasmModule,
+      "https://dict.example.test/system.dic.zst",
+      () => new Response(null),
+    );
+    await expect(missingBody?.("入力", "ja")).rejects.toThrow("response has no body");
   });
 
   it("resets a failed lazy load so a later request can retry", async () => {

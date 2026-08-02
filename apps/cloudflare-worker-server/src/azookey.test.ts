@@ -67,6 +67,13 @@ describe("AzooKey Worker text contract", () => {
       protocol: "azookey.text.v1",
       timeoutMs: 125,
     });
+    expect(JSON.parse(readyAzookeyMessage(125, "passthrough"))).toMatchObject({
+      vibrato: {
+        workerStage: "passthrough",
+        workerInput: "sourceText",
+        workerPassthrough: true,
+      },
+    });
   });
 
   it("rejects every malformed request field and authentication shape", () => {

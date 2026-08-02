@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 
 const jsonc = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
 const withoutLineComments = jsonc.replace(/^\s*\/\/.*$/gm, "");
+const deploymentRunbook = readFileSync(
+  new URL("../../../docs/cloudflare-worker-deployment.md", import.meta.url),
+  "utf8",
+);
 const config = JSON.parse(withoutLineComments) as {
   vars?: Record<string, unknown>;
   secrets?: { required?: unknown };
@@ -11,6 +15,14 @@ const config = JSON.parse(withoutLineComments) as {
 };
 
 describe("Cloudflare deployment configuration", () => {
+  it("keeps account selection in CLOUDFLARE_ACCOUNT_ID instead of public config", () => {
+    expect(jsonc).not.toMatch(/^\s*"account_id"\s*:/m);
+    expect(deploymentRunbook).toContain("CLOUDFLARE_ACCOUNT_ID");
+    expect(deploymentRunbook).toContain(
+      "wrangler deploy --config apps/cloudflare-worker-server/wrangler.jsonc",
+    );
+  });
+
   it("pins CORS to an explicit HTTPS origin and never stores API secrets", () => {
     const origin = config.vars?.["CORS_ORIGIN"];
     expect(typeof origin).toBe("string");
@@ -27,7 +39,11 @@ describe("Cloudflare deployment configuration", () => {
     expect(config.ai).toEqual({ binding: "AI" });
     expect(config.vars).not.toHaveProperty("VIBRATO_DICTIONARY_URL");
     expect(existsSync(new URL("../public/azookey/system.azkdict.gz", import.meta.url))).toBe(true);
-    expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(true);
+    // The IPADIC dictionary stays in the browser comparison bundle. Keeping it
+    // out of Worker public assets avoids loading it alongside AzooKey's
+    // portable archive in the 128 MiB Worker isolate; configure an external
+    // VIBRATO_UPSTREAM_URL when a server-side pre-pass is required.
+    expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(false);
     expect(readFileSync(new URL("../public/vibrato/COPYING", import.meta.url))).toEqual(
       readFileSync(new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/COPYING", import.meta.url)),
     );

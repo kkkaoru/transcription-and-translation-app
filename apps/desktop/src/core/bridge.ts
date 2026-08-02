@@ -97,6 +97,169 @@ export const formatBridgeError = (error: unknown): string | undefined => {
   return undefined;
 };
 
+const NO_SPEECH_HTTP_STATUSES = new Set([204, 404, 422]);
+
+const statusFromValue = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const parsed = Number(value.trim());
+  return Number.isInteger(parsed) && parsed >= 100 && parsed <= 599 ? parsed : undefined;
+};
+
+/** Find an HTTP status in a Tauri envelope or its human-readable message. */
+const collectHttpStatus = (error: unknown, depth = 0): number | undefined => {
+  if (depth > 4 || error == null) {
+    return undefined;
+  }
+  if (typeof error === "string") {
+    const match = error.match(
+      /\bHTTP(?:\/\d(?:\.\d)?)?(?:\s+status)?\s*[: ]\s*(\d{3})\b|\b(?:status|status_code|http_status|httpStatus)\s*[:=]\s*["']?(\d{3})\b|["'](?:status|status_code|http_status|httpStatus)["']\s*:\s*["']?(\d{3})\b/i,
+    );
+    return statusFromValue(match?.[1] ?? match?.[2] ?? match?.[3]);
+  }
+  if (typeof error === "number") {
+    return statusFromValue(error);
+  }
+  if (error instanceof Error) {
+    const record = error as Error & Record<string, unknown>;
+    for (const key of [
+      "status",
+      "statusCode",
+      "status_code",
+      "httpStatus",
+      "http_status",
+    ] as const) {
+      const status = statusFromValue(record[key]);
+      if (status !== undefined) {
+        return status;
+      }
+    }
+    return collectHttpStatus(error.message, depth + 1) ?? collectHttpStatus(error.cause, depth + 1);
+  }
+  if (typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    for (const key of [
+      "status",
+      "statusCode",
+      "status_code",
+      "httpStatus",
+      "http_status",
+    ] as const) {
+      const status = statusFromValue(record[key]);
+      if (status !== undefined) {
+        return status;
+      }
+    }
+    for (const key of ["message", "error", "detail", "data", "body", "cause"] as const) {
+      const status = collectHttpStatus(record[key], depth + 1);
+      if (status !== undefined) {
+        return status;
+      }
+    }
+  }
+  return undefined;
+};
+
+const hasEmptyHttpBody = (error: unknown, depth = 0): boolean => {
+  if (depth > 4 || error == null) {
+    return false;
+  }
+  if (error instanceof Error) {
+    const record = error as Error & Record<string, unknown>;
+    return hasEmptyHttpBody(record["body"], depth + 1);
+  }
+  if (typeof error !== "object") {
+    return false;
+  }
+  const record = error as Record<string, unknown>;
+  if (Object.hasOwn(record, "body")) {
+    const body = record["body"];
+    return body == null || (typeof body === "string" && body.trim().length === 0);
+  }
+  for (const key of ["error", "data", "cause"] as const) {
+    if (hasEmptyHttpBody(record[key], depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const embeddedJson = (detail: string): Record<string, unknown> | null => {
+  const direct = detail.trim();
+  const candidates = [direct];
+  const objectStart = direct.indexOf("{");
+  if (objectStart > 0) {
+    candidates.push(direct.slice(objectStart));
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Non-JSON transport text is handled by the bounded phrase checks below.
+    }
+  }
+  return null;
+};
+
+const isNoSpeechPhrase = (detail: string): boolean => {
+  const normalized = detail.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (/(?:^|[\s:{,"'])transcript_missing(?:$|[\s},"'])/.test(normalized)) {
+    return true;
+  }
+  const message =
+    normalized.match(/\bhttp(?:\/\d(?:\.\d)?)?\s*[: ]\s*\d{3}\s*:\s*(.+)$/)?.[1] ?? normalized;
+  return (
+    /^(?:parapper )?completed without a final transcript$/.test(message) ||
+    /^no final transcript$/.test(message) ||
+    /^empty transcript$/.test(message) ||
+    /^no transcript(?: available| returned| received)?$/.test(message) ||
+    /^no usable speech$/.test(message) ||
+    /^no(?:[- ]speech)$/.test(message) ||
+    /\(no[- ]speech\)$/.test(message)
+  );
+};
+
+const isNoSpeechDetail = (detail: string): boolean => {
+  const parsed = embeddedJson(detail);
+  if (parsed) {
+    const errorValue = parsed["error"];
+    const errorObject =
+      errorValue && typeof errorValue === "object" && !Array.isArray(errorValue)
+        ? (errorValue as Record<string, unknown>)
+        : null;
+    const code =
+      typeof errorObject?.["code"] === "string" ? errorObject["code"].trim().toLowerCase() : "";
+    if (code) {
+      // An explicit non-silence gateway code wins over a coincidental empty
+      // text field (for example invalid_audio + text: "").
+      return code === "transcript_missing";
+    }
+    const hasTranscriptField = Object.hasOwn(parsed, "text") || Object.hasOwn(parsed, "transcript");
+    if (hasTranscriptField) {
+      const transcriptValue = Object.hasOwn(parsed, "text") ? parsed["text"] : parsed["transcript"];
+      return (
+        transcriptValue === null ||
+        (typeof transcriptValue === "string" && transcriptValue.trim().length === 0)
+      );
+    }
+    const message = typeof errorObject?.["message"] === "string" ? errorObject["message"] : "";
+    if (message && isNoSpeechPhrase(message)) {
+      return true;
+    }
+  }
+  return isNoSpeechPhrase(detail);
+};
+
 /**
  * Parapper / gateway "no usable speech" outcomes that must never surface as
  * fatal audio-processing toasts during continuous capture.
@@ -105,33 +268,24 @@ export const formatBridgeError = (error: unknown): string | undefined => {
  * Rust pipeline error string (`inference returned HTTP 422: ...`).
  */
 export const isNoSpeechBridgeError = (error: unknown): boolean => {
-  const detail = collectErrorText(error).replace(/\s+/g, " ").trim().toLowerCase();
-  if (!detail) {
+  const status = collectHttpStatus(error);
+  // Match the native pipeline contract: only explicit empty/not-found/
+  // transcript-missing responses are silence. In particular, a 5xx body may
+  // mention transcript_missing while still representing a backend outage.
+  if (status !== undefined && !NO_SPEECH_HTTP_STATUSES.has(status)) {
     return false;
   }
-  // `transcript_missing` is the stable gateway code. Keep this token-based
-  // match because it is present in both the JSON body and the Rust error
-  // wrapper, while avoiding broad substring matches such as
-  // `transcript_missing_timeout`.
-  if (/(?:^|[\s:{,"'])transcript_missing(?:$|[\s},"'])/.test(detail)) {
+  // Prefer the user-facing message for Error instances (rather than the
+  // synthetic `Error` class name prepended by collectErrorText), while keeping
+  // collectErrorText as a fallback for opaque IPC envelopes.
+  const detail = (formatBridgeError(error) ?? collectErrorText(error)).trim();
+  // A standards-compliant 204 has no body and is itself the no-speech signal.
+  const empty204Text =
+    typeof error === "string" && /\bHTTP(?:\/\d(?:\.\d)?)?\s*[: ]\s*204\s*:?\s*$/i.test(error);
+  if (status === 204 && (hasEmptyHttpBody(error) || empty204Text || !detail)) {
     return true;
   }
-
-  // A few transports only forward the human-readable result. Accept the
-  // complete, bounded messages emitted by Parapper/Web Speech; a sentence
-  // such as "gateway no transcript buffer" is a real transport failure and
-  // must remain visible instead of being silently classified as silence.
-  if (
-    /^(?:parapper )?completed without a final transcript$/.test(detail) ||
-    /^empty transcript$/.test(detail) ||
-    /^no transcript(?: available| returned| received)?$/.test(detail) ||
-    /^no usable speech$/.test(detail) ||
-    /^no[- ]speech$/.test(detail) ||
-    /\(no[- ]speech\)$/.test(detail)
-  ) {
-    return true;
-  }
-  return false;
+  return isNoSpeechDetail(detail);
 };
 
 const demoCaption = (): CaptionPayload => {
@@ -182,6 +336,32 @@ const rememberCaption = (caption: CaptionPayload): void => {
   }
   latestCaption = caption;
 };
+
+/**
+ * Build an identity for one caption:update payload.
+ *
+ * Native source publication is event-driven, while the corresponding invoke
+ * resolves independently. A transport retry or an accidentally repeated
+ * native emit can therefore deliver the exact same payload more than once.
+ * Keep the bridge idempotent for identical events while still allowing any
+ * actual revision (text, stage, timing, completion, etc.) through.
+ */
+const captionEventSignature = (caption: CaptionPayload): string =>
+  JSON.stringify([
+    caption.id,
+    caption.sourceText,
+    caption.translationText,
+    caption.sourceLanguage,
+    caption.targetLanguage,
+    caption.startedAt,
+    caption.receivedAt,
+    caption.stage,
+    caption.sequence,
+    caption.isFinal,
+    caption.confidence,
+    caption.provisional,
+    caption.captureGeneration,
+  ]);
 
 const DEFAULT_UPDATE_STATUS: UpdateStatus = {
   status: "unsupported",
@@ -349,7 +529,16 @@ export const bridge = {
 
   listenCaptions(callback: (caption: CaptionPayload) => void): Promise<UnlistenFn> {
     if (isTauriRuntime()) {
+      // Keep this state local to each listener. Two webviews (main + overlay)
+      // must both receive the first event, while a duplicate payload delivered
+      // to one listener should not trigger a second paint or diagnostic row.
+      let lastSignature: string | null = null;
       return listen<CaptionPayload>("caption:update", (event) => {
+        const signature = captionEventSignature(event.payload);
+        if (signature === lastSignature) {
+          return;
+        }
+        lastSignature = signature;
         rememberCaption(event.payload);
         callback(event.payload);
       });

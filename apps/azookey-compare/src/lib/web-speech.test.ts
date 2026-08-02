@@ -318,9 +318,33 @@ describe("WebSpeechController", () => {
     expect(recognition.startCalls).toBe(2);
     recognition.onstart?.();
     recognition.onerror?.({ error: "not-allowed", message: "permission denied" });
+    // Browsers dispatch `end` after a permission/policy error. That terminal
+    // event must not re-arm the continuous restart loop.
+    recognition.onend?.();
     vi.runOnlyPendingTimers();
     expect(recognition.startCalls).toBe(2);
     expect(events.onError).toHaveBeenLastCalledWith("permission denied");
+    controller.dispose();
+  });
+
+  it("cancels a pending transient retry when a fatal error follows", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onerror?.({ error: "network" });
+    // A browser may report the permission/policy refusal before the queued
+    // network backoff timer has fired. Neither that timer nor the end event
+    // should resurrect a denied session.
+    recognition.onerror?.({ error: "not-allowed" });
+    recognition.onend?.();
+    vi.runOnlyPendingTimers();
+    expect(recognition.startCalls).toBe(1);
     controller.dispose();
   });
 
@@ -504,6 +528,34 @@ describe("WebSpeechController", () => {
     expect(recognition.startCalls).toBe(2);
     recognition.onstart?.();
     expect(events.onStateChange).toHaveBeenLastCalledWith("listening");
+  });
+
+  it("surfaces a start that never produces a browser lifecycle event", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    // Some environments expose the constructor but never grant/resolve the
+    // microphone service. A watchdog must leave the UI recoverable instead of
+    // keeping the button on "starting" forever.
+    controller.start();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("starting");
+    vi.advanceTimersByTime(10_000);
+    expect(events.onStateChange).toHaveBeenLastCalledWith("error");
+    expect(events.onError).toHaveBeenLastCalledWith(
+      "Speech recognition did not start; check microphone permission and site security settings",
+    );
+    recognition.onstart?.();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("error");
+    recognition.onend?.();
+    vi.runOnlyPendingTimers();
+    expect(recognition.startCalls).toBe(1);
+    controller.dispose();
   });
 
   it("ignores duplicate lifecycle calls and supports callbacks being omitted", () => {

@@ -67,6 +67,12 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 const MAX_SPEECH_ALTERNATIVES = 1;
 const DEFAULT_RESTART_DELAY_MS = 50;
 /**
+ * A permission prompt or an unavailable browser speech service can leave
+ * `start()` pending without dispatching either `start` or `error`. Bound that
+ * state so the UI never remains on "starting" forever.
+ */
+const START_TIMEOUT_MS = 10_000;
+/**
  * WebKit can dispatch `end` before the final `result` already queued for the
  * same recognition service. Keep that service's result buffers alive for a
  * bounded window before clearing/restarting it.
@@ -120,10 +126,18 @@ export class WebSpeechController {
   private recognitionGeneration = 0;
   private endingGeneration: number | null = null;
   private requestedStop = false;
+  private startTimer: ReturnType<typeof setTimeout> | null = null;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly resultFlushTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private restartAttempt = 0;
   private ignoredEndEvents = 0;
+  /**
+   * A fatal recognition error (most notably `not-allowed`) must stop the
+   * continuous-session loop. Browsers normally dispatch `end` after `error`,
+   * so keeping this separate from `state` prevents that `end` from scheduling
+   * a restart and repeatedly re-triggering a denied permission prompt.
+   */
+  private restartBlocked = false;
   private disposed = false;
 
   constructor(language: string, callbacks: SpeechRecognitionCallbacks = {}) {
@@ -160,6 +174,8 @@ export class WebSpeechController {
         return;
       }
       this.requestedStop = false;
+      this.restartBlocked = false;
+      this.clearStartTimer();
       this.restartAttempt = 0;
       this.ensureResultBuffers(this.recognitionGeneration);
       this.setState("listening");
@@ -172,13 +188,14 @@ export class WebSpeechController {
         this.ignoredEndEvents -= 1;
         return;
       }
+      this.clearStartTimer();
       const generation = this.recognitionGeneration;
       this.endingGeneration = generation;
       this.setState("idle");
       // Do not clear this generation's final buffers yet. A queued final
       // result may be delivered after `end`, especially in WebKit. The flush
       // callback restarts only after the bounded grace window has elapsed.
-      this.scheduleResultFlush(generation, !this.requestedStop);
+      this.scheduleResultFlush(generation, !this.requestedStop && !this.restartBlocked);
     };
     this.recognition.onerror = (event) => {
       if (this.disposed) {
@@ -188,7 +205,15 @@ export class WebSpeechController {
       if (event.error === "aborted" && this.requestedStop) {
         return;
       }
+      this.clearStartTimer();
       this.setState("error");
+      if (this.isFatalError(event.error)) {
+        this.restartBlocked = true;
+        // A transient error may already have queued a backoff restart before
+        // the fatal error arrives. Cancel that timer as well as suppressing
+        // the `end`-driven restart below.
+        this.clearRestartTimer();
+      }
       try {
         this.callbacks.onError?.(
           event.message?.trim() || event.error || "Speech recognition failed",
@@ -196,7 +221,7 @@ export class WebSpeechController {
       } catch {
         // Callback exceptions must not break the browser's recognition loop.
       }
-      if (!this.requestedStop && !this.isFatalError(event.error)) {
+      if (!this.requestedStop && !this.restartBlocked && !this.isFatalError(event.error)) {
         this.scheduleRestart();
       }
     };
@@ -223,7 +248,11 @@ export class WebSpeechController {
       return;
     }
     this.clearRestartTimer();
+    this.clearStartTimer();
     this.requestedStop = false;
+    // An explicit start is the user's acknowledgement/retry after a fatal
+    // permission or policy error. Allow a fresh browser session to run.
+    this.restartBlocked = false;
     const preserveResultBuffers = this.state === "stopping" || this.resultFlushTimers.size > 0;
     if (this.state === "stopping" || this.state === "error") {
       let aborted = false;
@@ -255,7 +284,30 @@ export class WebSpeechController {
     this.setState("starting");
     try {
       this.recognition.start();
+      if (this.isStarting() && !this.disposed && !this.requestedStop) {
+        this.startTimer = setTimeout(() => {
+          this.startTimer = null;
+          if (this.disposed || this.requestedStop || this.state !== "starting") {
+            return;
+          }
+          // Fence a late `start` callback from the service we are aborting;
+          // only an explicit user retry clears this stop request.
+          this.requestedStop = true;
+          this.restartBlocked = true;
+          this.setState("error");
+          this.reportError(
+            "Speech recognition did not start; check microphone permission and site security settings",
+          );
+          try {
+            this.recognition?.abort();
+          } catch {
+            // A service that never started may reject abort; the controller is
+            // already in a recoverable, user-retryable error state.
+          }
+        }, START_TIMEOUT_MS);
+      }
     } catch (error) {
+      this.clearStartTimer();
       this.setState("error");
       this.reportError(
         error instanceof Error ? error.message : "Speech recognition could not start",
@@ -275,6 +327,7 @@ export class WebSpeechController {
       return;
     }
     this.clearRestartTimer();
+    this.clearStartTimer();
     this.requestedStop = true;
     // `end` can move the controller to idle while its bounded result-flush
     // timer is still waiting. Marking the stop request even in idle prevents
@@ -298,6 +351,7 @@ export class WebSpeechController {
       return;
     }
     this.requestedStop = true;
+    this.clearStartTimer();
     this.clearRestartTimer();
     this.clearResultFlushTimers();
     this.disposed = true;
@@ -322,6 +376,13 @@ export class WebSpeechController {
     if (this.restartTimer !== null) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
+    }
+  }
+
+  private clearStartTimer(): void {
+    if (this.startTimer !== null) {
+      clearTimeout(this.startTimer);
+      this.startTimer = null;
     }
   }
 
@@ -463,5 +524,9 @@ export class WebSpeechController {
     } catch {
       // A state observer must not break recognition lifecycle recovery.
     }
+  }
+
+  private isStarting(): boolean {
+    return this.state === "starting";
   }
 }

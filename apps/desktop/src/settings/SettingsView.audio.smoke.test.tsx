@@ -73,6 +73,16 @@ describe("SettingsView audio tuning", () => {
     expect(deviceControls?.disabled).toBe(false);
     expect(deviceSelect?.matches(":disabled")).toBe(false);
     expect(deviceRefresh?.disabled).toBe(false);
+    for (const selector of [
+      "#audio-chunk-ms",
+      "#audio-silence-gate-db",
+      "#audio-vad-interval-ms",
+      "#audio-vad-threshold",
+      "#audio-adaptive-noise-floor",
+      "#audio-noise-suppression",
+    ]) {
+      expect(container.querySelector<HTMLInputElement>(selector)?.disabled).toBe(false);
+    }
     expect(Array.from(select?.options ?? []).map((option) => option.value)).toEqual([
       "parapper-raw",
       "web-speech",
@@ -106,6 +116,19 @@ describe("SettingsView audio tuning", () => {
       true,
     );
     expect(container.querySelector<HTMLInputElement>("#audio-vad-threshold")?.disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>("#audio-adaptive-noise-floor")?.disabled).toBe(
+      true,
+    );
+    expect(container.querySelector<HTMLInputElement>("#audio-noise-suppression")?.disabled).toBe(
+      true,
+    );
+    expect(
+      container.querySelector<HTMLInputElement>("#audio-chunk-ms")?.closest(".field")?.textContent,
+    ).toMatch(/フロントVAD|frontend VAD/i);
+    expect(
+      container.querySelector<HTMLInputElement>("#audio-vad-interval-ms")?.closest(".field")
+        ?.textContent,
+    ).toMatch(/sidecar/);
     expect(container.textContent).toMatch(/このモードでは未使用|not used in this mode/i);
   });
 

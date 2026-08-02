@@ -29,8 +29,9 @@ const EXPECTED_SUBMODULE_GITLINKS = {
 const VIBRATO_DICTIONARY_PATHS = [
   "assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst",
   "apps/azookey-compare/public/vibrato/system.dic.zst",
-  "apps/cloudflare-worker-server/public/vibrato/system.dic.zst",
 ];
+const WORKER_VIBRATO_DICTIONARY_PATH =
+  "apps/cloudflare-worker-server/public/vibrato/system.dic.zst";
 const VIBRATO_COPYING_PATHS = [
   "assets/vibrato/ipadic-mecab-2_7_0/COPYING",
   "apps/azookey-compare/public/vibrato/COPYING",
@@ -68,6 +69,14 @@ const readAsset = (root, path) => {
     throw new Error(`generated asset is missing: ${path}`);
   }
   return readFileSync(absolutePath);
+};
+
+const assertWorkerVibratoDictionaryAbsent = (root) => {
+  if (existsSync(resolve(root, WORKER_VIBRATO_DICTIONARY_PATH))) {
+    throw new Error(
+      `Worker Vibrato dictionary must not be bundled: ${WORKER_VIBRATO_DICTIONARY_PATH}`,
+    );
+  }
 };
 
 const assertSameBytes = (root, paths, expectedHash, label) => {
@@ -160,6 +169,7 @@ const verifyAzookeyWasm = (root) => {
  */
 export const verifyGeneratedAssets = ({ root = repositoryRoot, requireTracked = false } = {}) => {
   const tracked = trackedFiles(root);
+  assertWorkerVibratoDictionaryAbsent(root);
   verifyTracked(
     root,
     tracked,

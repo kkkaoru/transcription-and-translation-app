@@ -108,6 +108,76 @@ describe("Worker-side Vibrato and deployment paths", () => {
     }
   });
 
+  it("selects an explicit Worker dictionary even when the portable AzooKey archive is configured", async () => {
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/vibrato_wasm_bg.wasm", import.meta.url)),
+    );
+    const dictionary = readFileSync(
+      new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst", import.meta.url),
+    );
+    const server = new FakeSocket();
+    const response = await openAzookeySocket(
+      new Request("https://worker.example/ws/azookey", { headers: { upgrade: "websocket" } }),
+      {
+        AZOOKEY_DICTIONARY_URL: "/azookey/system.azkdict.gz",
+        VIBRATO_DICTIONARY_URL: "/vibrato/system.dic.zst",
+      },
+      {
+        converter: (text) => text,
+        vibratoWasmModule: wasmModule,
+        vibratoDictionaryFetcher: () => new Response(dictionary),
+        socketPair: () => ({ client: {} as WebSocket, server: server as unknown as WebSocket }),
+      },
+    );
+
+    expect(response.status).toBe(101);
+    expect(JSON.parse(server.sent[0] ?? "{}")).toMatchObject({
+      vibrato: { workerStage: "configured", workerPassthrough: false },
+    });
+    server.emit(
+      JSON.stringify({
+        ...valid,
+        requestId: "req-explicit-worker-dictionary",
+        sourceText: "東京都に住む",
+        vibratoInput: "東京都に住む",
+        vibratoExecution: "worker",
+      }),
+    );
+    await waitForMessage();
+    expect(JSON.parse(server.sent.at(-1) ?? "{}")).toMatchObject({
+      requestId: "req-explicit-worker-dictionary",
+      vibratoInput: "とうきょうとにすむ",
+      vibratoStage: "configured",
+      vibratoPassthrough: false,
+    });
+  });
+
+  it("fails closed when an explicit Worker dictionary has no WASM adapter", async () => {
+    const server = new FakeSocket();
+    const client = new FakeSocket();
+    const response = await openAzookeySocket(
+      new Request("https://worker.example/ws/azookey", { headers: { upgrade: "websocket" } }),
+      {
+        AZOOKEY_DICTIONARY_URL: "/azookey/system.azkdict.gz",
+        VIBRATO_DICTIONARY_URL: "/vibrato/system.dic.zst",
+      },
+      {
+        converter: (text) => text,
+        socketPair: () => ({
+          client: client as unknown as WebSocket,
+          server: server as unknown as WebSocket,
+        }),
+      },
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "vibrato_unavailable" },
+    });
+    expect(server.closed).toBe(true);
+    expect(client.closed).toBe(true);
+  });
+
   it("validates the optional HTTP adapter and preserves its small contract", async () => {
     expect(createVibratoHttpConverter({})).toBeUndefined();
     expect(() =>
@@ -197,8 +267,29 @@ describe("Worker-side Vibrato and deployment paths", () => {
         },
         converter: (text) => `converted:${text}`,
       }),
-    ).resolves.toMatchObject({ convertedText: "converted:ひらがな" });
+    ).resolves.toMatchObject({
+      convertedText: "converted:ひらがな",
+      vibratoInput: "ひらがな",
+      vibratoExecution: "worker",
+      vibratoStage: "configured",
+      vibratoPassthrough: false,
+    });
     expect(seen).toEqual(["ja:きょうははいしんです"]);
+
+    await expect(
+      convertAzookeyMessage(message, {
+        timeoutMs: 250,
+        vibratoStage: "passthrough",
+        vibrato: (text) => text,
+        converter: (text) => `converted:${text}`,
+      }),
+    ).resolves.toMatchObject({
+      sourceText: "きょうははいしんです",
+      vibratoInput: "きょうははいしんです",
+      vibratoExecution: "worker",
+      vibratoStage: "passthrough",
+      vibratoPassthrough: true,
+    });
 
     await expect(
       convertAzookeyMessage(message, { timeoutMs: 250, converter: (text) => text }),
@@ -240,7 +331,13 @@ describe("Worker-side Vibrato and deployment paths", () => {
     const browserMessage = workerMessage("browser-wasm");
     await expect(
       convertAzookeyMessage(browserMessage, { timeoutMs: 250, converter: (text) => `ok:${text}` }),
-    ).resolves.toMatchObject({ convertedText: "ok:きょうははいしんです" });
+    ).resolves.toMatchObject({
+      convertedText: "ok:きょうははいしんです",
+      vibratoInput: "きょうははいしんです",
+      vibratoExecution: "browser-wasm",
+      vibratoStage: "browser-wasm",
+      vibratoPassthrough: false,
+    });
   });
 
   it("supports first-frame bearer auth and reports invalid adapter configuration safely", async () => {

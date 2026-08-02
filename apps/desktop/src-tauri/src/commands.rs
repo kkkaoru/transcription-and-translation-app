@@ -251,6 +251,17 @@ pub async fn stop_capture(app: AppHandle, state: State<'_, AppState>) -> Result<
             translation_generation
         );
     }
+    // A replacement capture may start while the bounded drain above is
+    // waiting on a slow translator. Once start_capture bumps the generation,
+    // this stop belongs to the superseded session and must not transition the
+    // replacement back to idle or clear its replay/health state.
+    if !stop_generation_is_current(state.inner(), translation_generation) {
+        log::debug!(
+            "ignoring stop completion for superseded capture generation {}",
+            translation_generation
+        );
+        return Ok(());
+    }
     // Preserve a processing/translation failure while making the native
     // session idle. The frontend and overlay use this field to distinguish a
     // successful stop (clear caption) from a failed session (retain caption).
@@ -327,14 +338,12 @@ pub async fn transcribe_audio_chunk(
     {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state, capture_generation);
-            // Final normalized source was already emitted via on_caption. Re-emit
-            // once so late subscribers / invoke
-            // fallback always see the post-normalize string (no-op on the UI if
-            // display fields are identical).
-            emit_caption_update_for_generation(&app, &partial, capture_generation);
-
             // Stage 2: translate in the background with the same caption id.
-            // UI already shows source_text; a later caption:update fills translation.
+            // `recognize_source_with_id` already emitted the normalized source
+            // through `on_caption`. Do not emit the returned value a second
+            // time: the invoke result is the caller's completion signal, while
+            // `caption:update` is the single event stream. Native replay has
+            // already retained the source before the command returns.
             if state.is_capture_generation_current(capture_generation) {
                 spawn_translation(
                     app.clone(),
@@ -1305,6 +1314,13 @@ fn capture_is_active(status: &str) -> bool {
     matches!(status, "starting" | "capturing")
 }
 
+/// A stop issued for generation zero is the idle/no-op path. For an active
+/// generation, only the session that began the drain may finish the idle
+/// transition; a later start invalidates this stop completion.
+fn stop_generation_is_current(state: &AppState, generation: u64) -> bool {
+    generation == 0 || state.is_capture_generation_current(generation)
+}
+
 /// Persist a frontend-exported structured log payload into the app log directory.
 /// Body is expected to be JSON or JSONL text produced by the Debug panel export.
 #[tauri::command]
@@ -1343,8 +1359,8 @@ mod tests {
         capture_is_active, ensure_overlay_window, observe_http_empty_asr,
         parapper_output_generation_is_current, persistent_asr_loss_message,
         publish_source_caption_gated, redact_runtime_text, sanitize_debug_json,
-        sanitize_export_body, source_caption_payload, validate_overlay_frame_dimensions,
-        SourceCaptionInput,
+        sanitize_export_body, source_caption_payload, stop_generation_is_current,
+        validate_overlay_frame_dimensions, SourceCaptionInput,
     };
     use crate::config::AppConfig;
     use crate::output::OutputStatus;
@@ -1644,6 +1660,26 @@ mod tests {
             "an item queued for a superseded generation must be dropped, not processed"
         );
         assert!(parapper_output_generation_is_current(&state, Some(live_generation)));
+    }
+
+    #[test]
+    fn stop_completion_is_rejected_after_a_replacement_capture_starts() {
+        // A stop can be waiting for a bounded translation drain while the
+        // frontend starts a replacement session. The old stop must not make
+        // that replacement idle when its drain eventually completes.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let stopping_generation = state.begin_translation_drain();
+        assert!(stop_generation_is_current(&state, stopping_generation));
+
+        let replacement_generation = state.begin_capture_generation();
+        assert_ne!(stopping_generation, replacement_generation);
+        assert!(
+            !stop_generation_is_current(&state, stopping_generation),
+            "an old stop completion must not transition the replacement session"
+        );
+        assert!(stop_generation_is_current(&state, replacement_generation));
     }
 
     #[test]

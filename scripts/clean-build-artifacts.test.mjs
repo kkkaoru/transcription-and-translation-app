@@ -40,6 +40,8 @@ describe("cleanBuildArtifacts", () => {
     const frontendOutput = await createFile(root, "apps/desktop/dist/assets/index.js");
     const comparisonOutput = await createFile(root, "apps/azookey-compare/.next/server/app.js");
     const gatewayOutput = await createFile(root, "apps/inference-gateway/dist/index.js");
+    const coreOutput = await createFile(root, "packages/inference-server-core/dist/index.js");
+    const coverageOutput = await createFile(root, "apps/desktop/coverage/coverage-summary.json");
     const tauriBundle = await createFile(
       root,
       "apps/desktop/src-tauri/target/release/bundle/macos/Kotoba Beacon.app/Contents/Info.plist",
@@ -60,6 +62,8 @@ describe("cleanBuildArtifacts", () => {
       frontendOutput,
       comparisonOutput,
       gatewayOutput,
+      coreOutput,
+      coverageOutput,
       tauriBundle,
     ]) {
       assert.equal(existsSync(removed), false, `stale output remains: ${removed}`);
@@ -72,6 +76,29 @@ describe("cleanBuildArtifacts", () => {
       releaseBinary,
     ]) {
       assert.equal(existsSync(preserved), true, `unrelated file was removed: ${preserved}`);
+    }
+  });
+
+  it("removes stale coverage reports from every workspace package", async () => {
+    const root = await createRoot();
+    const coverageDirectories = [
+      "apps/desktop/coverage",
+      "apps/azookey-compare/coverage",
+      "apps/inference-gateway/coverage",
+      "apps/cloudflare-worker-server/coverage",
+      "packages/inference-server-core/coverage",
+      "packages/parapper-asr/coverage",
+    ];
+    const coverageOutputs = await Promise.all(
+      coverageDirectories.map((directory) =>
+        createFile(root, `${directory}/coverage-summary.json`),
+      ),
+    );
+
+    await cleanBuildArtifacts({ root });
+
+    for (const output of coverageOutputs) {
+      assert.equal(existsSync(output), false, `stale coverage remains: ${output}`);
     }
   });
 
@@ -109,6 +136,14 @@ describe("cleanBuildArtifacts", () => {
       root,
       "packages/azookey-rust/target/debug/deps/old.rlib",
     );
+    const azookeyWasmTarget = await createFile(
+      root,
+      "packages/azookey-wasm/target/wasm32-unknown-unknown/release/deps/old.rlib",
+    );
+    const parapperTauriTarget = await createFile(
+      root,
+      "packages/parapper-asr/src-tauri/target/release/deps/old.rlib",
+    );
     const releaseDeps = await createFile(
       root,
       "apps/desktop/src-tauri/target/release/deps/old.rlib",
@@ -124,7 +159,13 @@ describe("cleanBuildArtifacts", () => {
 
     await cleanBuildArtifacts({ root, pruneRust: true });
 
-    for (const removed of [debugCache, libraryTarget, releaseDeps]) {
+    for (const removed of [
+      debugCache,
+      libraryTarget,
+      azookeyWasmTarget,
+      parapperTauriTarget,
+      releaseDeps,
+    ]) {
       assert.equal(existsSync(removed), false, `Rust cache remains: ${removed}`);
     }
     for (const retained of [releaseBinary, releaseRuntime]) {
@@ -138,6 +179,10 @@ describe("cleanBuildArtifacts", () => {
     await symlink(root, symlinkRoot, "dir");
 
     await assert.rejects(() => cleanBuildArtifacts({ root: tmpdir() }), /temporary test directory/);
+    await assert.rejects(
+      () => cleanBuildArtifacts({ root: "/Applications" }),
+      /temporary test directory/,
+    );
     await assert.rejects(() => cleanBuildArtifacts({ root: "/" }), /filesystem root/);
     await assert.rejects(() => cleanBuildArtifacts({ root: symlinkRoot }), /real directory/);
   });

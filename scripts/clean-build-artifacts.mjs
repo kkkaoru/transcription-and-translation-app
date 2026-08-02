@@ -4,12 +4,12 @@
  * Remove generated build outputs that are safe to recreate.
  *
  * Rust `target/` directories are handled by the optional `--prune-rust` mode.
- * A normal cleanup only removes frontend/bundle outputs, while a build cleanup
- * also removes Cargo's disposable debug and release caches.  Current release
- * executables and runtime resources are retained so a cleanup never removes
- * the installed app's source artifacts.  Bun's `--compile` command leaves a
- * temporary Mach-O file in its current working directory, so only root-level
- * files with Bun's generated name shape are considered.
+ * A normal cleanup removes frontend/bundle and coverage outputs, while a build
+ * cleanup also removes Cargo's disposable debug and release caches.  Current
+ * release executables and runtime resources are retained so a cleanup never
+ * removes the installed app's source artifacts.  Bun's `--compile` command
+ * leaves a temporary Mach-O file in its current working directory, so only
+ * root-level files with Bun's generated name shape are considered.
  */
 
 import { lstat, readdir, rm } from "node:fs/promises";
@@ -62,6 +62,7 @@ const generatedDirectories = [
   "apps/desktop/dist",
   "apps/azookey-compare/.next",
   "apps/inference-gateway/dist",
+  "packages/inference-server-core/dist",
   "packages/parapper-asr/dist",
   "apps/desktop/src-tauri/target/debug/bundle",
   "apps/desktop/src-tauri/target/release/bundle",
@@ -69,12 +70,26 @@ const generatedDirectories = [
   "packages/parapper-asr/src-tauri/target/release/bundle",
 ];
 
+// Vitest writes reports beneath each workspace package.  They are generated
+// outputs rather than source/runtime resources, so remove stale reports before
+// every build to keep local and CI runs from retaining unbounded old coverage.
+const coverageDirectories = [
+  "apps/desktop/coverage",
+  "apps/azookey-compare/coverage",
+  "apps/inference-gateway/coverage",
+  "apps/cloudflare-worker-server/coverage",
+  "packages/inference-server-core/coverage",
+  "packages/parapper-asr/coverage",
+];
+
 // Debug artifacts are never distributed and can grow without bound because
 // every changed Rust dependency/feature creates another hashed `deps` and
 // incremental tree.  Library-only targets have no runtime files to retain.
 const disposableRustTargets = [
   "apps/desktop/src-tauri/target/debug",
+  "packages/azookey-wasm/target",
   "packages/parapper-asr/target/debug",
+  "packages/parapper-asr/src-tauri/target",
   "packages/azookey-rust/target",
   "packages/vibrato-wasm/target",
   "submodules/Parapper-ASR/target",
@@ -132,7 +147,7 @@ export async function cleanBuildArtifacts(options = {}) {
     removed.push(relativePath(root, output));
   }
 
-  for (const directory of generatedDirectories) {
+  for (const directory of [...generatedDirectories, ...coverageDirectories]) {
     if (temporaryOnly) break;
     const output = join(root, directory);
     let stat;

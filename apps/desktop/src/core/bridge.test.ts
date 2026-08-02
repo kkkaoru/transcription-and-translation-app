@@ -24,6 +24,74 @@ describe("formatBridgeError", () => {
 describe("isNoSpeechBridgeError", () => {
   const parapper422 =
     'inference returned HTTP 422: {"error":{"code":"transcript_missing","message":"Parapper completed without a final transcript"}}';
+  const pipelineContractFixtures = [
+    {
+      name: "204 empty response",
+      status: 204,
+      body: "",
+      noSpeech: true,
+    },
+    {
+      name: "404 no transcript message",
+      status: 404,
+      body: '{"error":{"message":"no transcript"}}',
+      noSpeech: true,
+    },
+    {
+      name: "422 transcript_missing",
+      status: 422,
+      body: '{"error":{"code":"transcript_missing","message":"Parapper completed without a final transcript"}}',
+      noSpeech: true,
+    },
+    {
+      name: "422 empty text",
+      status: 422,
+      body: '{"text":""}',
+      noSpeech: true,
+    },
+    {
+      name: "422 null text",
+      status: 422,
+      body: '{"text":null}',
+      noSpeech: true,
+    },
+    {
+      name: "422 whitespace transcript",
+      status: 422,
+      body: '{"transcript":" \\n\\t "}',
+      noSpeech: true,
+    },
+    {
+      name: "422 invalid audio with empty text",
+      status: 422,
+      body: '{"error":{"code":"invalid_audio"},"text":""}',
+      noSpeech: false,
+    },
+    {
+      name: "422 nonempty text with no-transcript message",
+      status: 422,
+      body: '{"error":{"message":"no transcript"},"text":"partial result"}',
+      noSpeech: false,
+    },
+    {
+      name: "422 transcript_missing_timeout",
+      status: 422,
+      body: '{"error":{"code":"transcript_missing_timeout"}}',
+      noSpeech: false,
+    },
+    {
+      name: "500 transcript_missing body",
+      status: 500,
+      body: '{"error":{"code":"transcript_missing","message":"Parapper completed without a final transcript"}}',
+      noSpeech: false,
+    },
+    {
+      name: "500 no transcript message",
+      status: 503,
+      body: "gateway no transcript buffer",
+      noSpeech: false,
+    },
+  ] as const;
 
   it("classifies Parapper transcript_missing 422 payloads as no-speech", () => {
     expect(isNoSpeechBridgeError(parapper422)).toBe(true);
@@ -39,6 +107,7 @@ describe("isNoSpeechBridgeError", () => {
 
   it("classifies message-only no-transcript variants", () => {
     expect(isNoSpeechBridgeError("Parapper completed without a final transcript")).toBe(true);
+    expect(isNoSpeechBridgeError("inference returned HTTP 422: no final transcript")).toBe(true);
     expect(isNoSpeechBridgeError("empty transcript")).toBe(true);
     expect(isNoSpeechBridgeError("no transcript available")).toBe(true);
   });
@@ -57,6 +126,7 @@ describe("isNoSpeechBridgeError", () => {
 
   it("accepts only the bounded no-speech messages emitted by recognizers", () => {
     expect(isNoSpeechBridgeError("no-speech")).toBe(true);
+    expect(isNoSpeechBridgeError(new Error("no-speech"))).toBe(true);
     expect(isNoSpeechBridgeError("Web Speech Recognition failed (no-speech)")).toBe(true);
     expect(isNoSpeechBridgeError("no usable speech")).toBe(true);
     expect(isNoSpeechBridgeError("speech service returned no transcript")).toBe(false);
@@ -77,6 +147,19 @@ describe("isNoSpeechBridgeError", () => {
       }),
     ).toBe("nested failure");
   });
+
+  it("matches the native pipeline status/body contract and rejects 5xx silence lookalikes", () => {
+    for (const fixture of pipelineContractFixtures) {
+      expect(
+        isNoSpeechBridgeError({ status: fixture.status, body: fixture.body }),
+        fixture.name,
+      ).toBe(fixture.noSpeech);
+      expect(
+        isNoSpeechBridgeError(`inference returned HTTP ${fixture.status}: ${fixture.body}`),
+        `${fixture.name} string envelope`,
+      ).toBe(fixture.noSpeech);
+    }
+  });
 });
 
 describe("browser updater bridge", () => {
@@ -93,6 +176,79 @@ describe("browser updater bridge", () => {
 describe("caption replay bridge", () => {
   it("keeps browser replay non-fatal when native history is unavailable", async () => {
     expect(await bridge.getLatestCaption()).toBeNull();
+  });
+});
+
+describe("caption event bridge", () => {
+  const withTauriRuntime = async (run: () => Promise<void>): Promise<void> => {
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    try {
+      await run();
+    } finally {
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = undefined;
+    }
+  };
+
+  const sourceCaption = (): CaptionPayload => ({
+    id: "event-1",
+    sourceText: "こんにちは",
+    translationText: "",
+    sourceLanguage: "ja",
+    targetLanguage: "en",
+    startedAt: 1_000,
+    receivedAt: 1_100,
+    stage: "source",
+    sequence: 0,
+    isFinal: false,
+  });
+
+  it("forwards one callback for an identical success event and keeps revisions", async () => {
+    let onEvent: ((event: { payload: CaptionPayload }) => void) | undefined;
+    vi.mocked(listen).mockImplementation((_name, callback) => {
+      onEvent = callback as unknown as (event: { payload: CaptionPayload }) => void;
+      return Promise.resolve(() => undefined);
+    });
+    const received = vi.fn();
+
+    await withTauriRuntime(async () => {
+      await bridge.listenCaptions(received);
+      const source = sourceCaption();
+      onEvent?.({ payload: source });
+      // A repeated native emit / invoke retry must be idempotent at the event
+      // bridge; a real revision must still reach the renderer.
+      onEvent?.({ payload: { ...source } });
+      onEvent?.({ payload: { ...source, sourceText: "こんにちは。", receivedAt: 1_200 } });
+    });
+
+    expect(received).toHaveBeenCalledTimes(2);
+    expect(received.mock.calls[0]?.[0]).toMatchObject({ sourceText: "こんにちは" });
+    expect(received.mock.calls[1]?.[0]).toMatchObject({ sourceText: "こんにちは。" });
+    await bridge.stopCapture();
+    vi.mocked(listen).mockReset();
+  });
+
+  it("keeps duplicate suppression isolated to each webview listener", async () => {
+    const callbacks: Array<(event: { payload: CaptionPayload }) => void> = [];
+    vi.mocked(listen).mockImplementation((_name, callback) => {
+      callbacks.push(callback as unknown as (event: { payload: CaptionPayload }) => void);
+      return Promise.resolve(() => undefined);
+    });
+    const mainReceived = vi.fn();
+    const overlayReceived = vi.fn();
+
+    await withTauriRuntime(async () => {
+      await bridge.listenCaptions(mainReceived);
+      await bridge.listenCaptions(overlayReceived);
+    });
+
+    const event = { payload: sourceCaption() };
+    for (const callback of callbacks) {
+      callback(event);
+    }
+    expect(mainReceived).toHaveBeenCalledOnce();
+    expect(overlayReceived).toHaveBeenCalledOnce();
+    await bridge.stopCapture();
+    vi.mocked(listen).mockReset();
   });
 });
 

@@ -77,6 +77,9 @@ const JAPANESE_NUMERAL_LEXEMES: &[(&str, NumeralToken)] = &[
     ("ろっ", NumeralToken::Digit(6)),
     ("なな", NumeralToken::Digit(7)),
     ("しち", NumeralToken::Digit(7)),
+    // The shortened 4 reading is used before some counters (`よねん`,
+    // `よにん`) and must remain available to the generic counter edge.
+    ("よ", NumeralToken::Digit(4)),
     ("はち", NumeralToken::Digit(8)),
     ("はっ", NumeralToken::Digit(8)),
     ("く", NumeralToken::Digit(9)),
@@ -97,7 +100,13 @@ pub(crate) fn numeric_surface_prefix(reading: &[char]) -> Option<(usize, String)
     }
     for length in (1..=reading.len()).rev() {
         let candidate: String = reading[..length].iter().collect();
-        let Some(surface) = numeric_surface(&candidate) else {
+        let Some(surface) = numeric_surface(&candidate).or_else(|| {
+            // `よ` is a contracted 4-reading used before counters (`よねん`,
+            // `よにん`), not a standalone number. Keep it contextual rather
+            // than converting an ordinary one-character `よ`.
+            (candidate == "よ" && japanese_counter_starts_at(&reading[length..]))
+                .then(|| "4".to_string())
+        }) else {
             continue;
         };
         if length == reading.len()
@@ -121,6 +130,9 @@ pub(crate) fn numeric_surface(reading: &str) -> Option<String> {
     if normalized == "ぜん" {
         return None;
     }
+    if normalized == "よ" {
+        return None;
+    }
     let digits: String = normalized
         .chars()
         .map(|character| match character {
@@ -134,6 +146,27 @@ pub(crate) fn numeric_surface(reading: &str) -> Option<String> {
         return Some(digits);
     }
     parse_japanese_numeral(&normalized).map(|number| number.to_string())
+}
+
+/// Return whether a spoken-numeral span starts with an explicit digit.
+///
+/// Unit-only spans such as `じゅう` are useful at a sentence boundary, but a
+/// unit found in the middle of an ordinary word (`そうじゅう`, `あまん`) must
+/// not become a number merely because a counter happens to follow it. This
+/// helper lets the lattice apply that boundary rule without exposing the
+/// tokenizer itself.
+pub(crate) fn numeric_span_starts_with_digit(reading: &str) -> bool {
+    let normalized = to_hiragana(reading);
+    if normalized
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit() || ('０'..='９').contains(&character))
+    {
+        return true;
+    }
+    tokenize_japanese_numeral(&normalized)
+        .and_then(|tokens| tokens.first().copied())
+        .is_some_and(|token| matches!(token, NumeralToken::Digit(_)))
 }
 
 pub(crate) fn japanese_numeral_has_unit(reading: &str) -> bool {
@@ -233,6 +266,23 @@ fn tokenize_japanese_numeral(reading: &str) -> Option<Vec<NumeralToken>> {
 
 fn parse_japanese_numeral(reading: &str) -> Option<u128> {
     let tokens = tokenize_japanese_numeral(reading)?;
+    // A Japanese large unit needs a numeric component on its left. Treating
+    // bare `まん`/`おく`/`ちょう` as numbers makes ordinary words such as
+    // `あまん` convert to `あ10000` when the lattice starts at the suffix.
+    if matches!(tokens.first(), Some(NumeralToken::LargeUnit(_))) {
+        return None;
+    }
+    // `し` is a standalone reading for four, while the shortened `よ` form is
+    // used with counters. Large units use the unambiguous `よん` form
+    // (`よんまん`, `よんけい`). This prevents ordinary words such as `しけい`
+    // and `よけい` from being interpreted as large numbers.
+    let has_large_unit = tokens.iter().any(|token| matches!(token, NumeralToken::LargeUnit(_)));
+    if has_large_unit
+        && (reading.starts_with('し')
+            || (reading.starts_with('よ') && !reading.starts_with("よん")))
+    {
+        return None;
+    }
     let mut total = 0u128;
     let mut section = 0u128;
     let mut pending_digit = None;
@@ -260,6 +310,13 @@ fn parse_japanese_numeral(reading: &str) -> Option<u128> {
             }
             NumeralToken::LargeUnit(unit) => {
                 if last_large_unit.is_some_and(|previous| unit >= previous) {
+                    return None;
+                }
+                // A large unit must have a non-zero numeric component on its
+                // left; accepting `まん`/`けい` by itself (or `ぜろまん`)
+                // creates false positives when the lattice starts at a
+                // suffix of an ordinary word.
+                if section == 0 && pending_digit.is_none_or(|digit| digit == 0) {
                     return None;
                 }
                 if let Some(digit) = pending_digit.take() {
@@ -327,11 +384,25 @@ mod tests {
         assert_eq!(numeric_surface_prefix(&counter), Some((2, "1".to_string())));
         let currency = "さんえん".chars().collect::<Vec<_>>();
         assert_eq!(numeric_surface_prefix(&currency), Some((2, "3".to_string())));
+        let short_four_year = "よねん".chars().collect::<Vec<_>>();
+        assert_eq!(numeric_surface_prefix(&short_four_year), Some((1, "4".to_string())));
+        assert_eq!(numeric_surface("よ"), None);
         let currency_suffix = "えんです".chars().collect::<Vec<_>>();
         assert_eq!(numeric_counter_surface(&currency_suffix), Some((2, "円".to_string())));
         let people_suffix = "にんいる".chars().collect::<Vec<_>>();
         assert_eq!(numeric_counter_surface(&people_suffix), Some((2, "人".to_string())));
         let separated = "いち、に".chars().collect::<Vec<_>>();
         assert_eq!(numeric_surface_prefix(&separated), Some((2, "1".to_string())));
+    }
+
+    #[test]
+    fn rejects_bare_large_units_and_classifies_compound_spans() {
+        for reading in ["まんえん", "けいさん", "あまん", "ぜろまん", "よけい"] {
+            let chars = reading.chars().collect::<Vec<_>>();
+            assert_eq!(numeric_surface_prefix(&chars), None, "reading: {reading}");
+        }
+        assert!(!super::numeric_span_starts_with_digit("じゅう"));
+        assert!(super::numeric_span_starts_with_digit("さんびゃく"));
+        assert!(super::numeric_span_starts_with_digit("１２３"));
     }
 }

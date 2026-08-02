@@ -176,9 +176,10 @@ describe("MainApp ASR lifecycle guards", () => {
       detail: "source=translation · reason=retired · count=1",
     });
     expect(snapshotPipelineDrops().bySource).toEqual({ translation: 1 });
+    expect(getDiagnosticEvents()).toHaveLength(1);
     expect(getDiagnosticEvents()[0]).toMatchObject({
       kind: "caption",
-      message: "Pipeline drop surfaced",
+      message: "Pipeline drop signal",
     });
   });
 
@@ -227,6 +228,23 @@ describe("MainApp ASR lifecycle guards", () => {
         translate,
       ),
     ).toBe("persistent runtime failure");
+    expect(
+      resolveLiveNoticeText(
+        { key: "message.noSpeechDetected", detail: "ambient" },
+        "persistent runtime failure",
+        translate,
+      ),
+    ).toBe("persistent runtime failure");
+    expect(
+      resolveLiveNoticeText({ key: "message.saved" }, "persistent runtime failure", translate),
+    ).toBe("persistent runtime failure");
+    expect(
+      resolveLiveNoticeText(
+        { key: "message.audioProcessingFailed", detail: "persistent runtime failure" },
+        "persistent runtime failure",
+        translate,
+      ),
+    ).toBe("translated:message.audioProcessingFailed persistent runtime failure");
   });
 
   it("allows an older latest-caption replay to replace the design preview", () => {

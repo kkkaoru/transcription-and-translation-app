@@ -107,6 +107,23 @@ describe("Cloudflare Worker inference adapter", () => {
       dictionary: { configured: true, transport: "portable-wasm", fetchTimeoutMs: 1_100 },
       vibrato: { workerStage: "passthrough", transport: "azookey-mixed-input" },
     });
+
+    const portableAndVibrato = await createWorker().fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      {
+        ...env,
+        AZOOKEY_DICTIONARY_URL: AZOOKEY_DICTIONARY_PATH,
+        VIBRATO_DICTIONARY_URL: VIBRATO_DICTIONARY_PATH,
+      },
+    );
+    await expect(portableAndVibrato.json()).resolves.toMatchObject({
+      dictionary: { configured: true, transport: "portable-wasm" },
+      vibrato: {
+        workerStage: "configured",
+        transport: "wasm",
+        contract: "Vibrato reading pre-pass",
+      },
+    });
   });
 
   it("serves the Worker-hosted Vibrato dictionary through the assets binding", async () => {
@@ -186,7 +203,11 @@ describe("Cloudflare Worker inference adapter", () => {
       fetch: vi.fn((request: Request) => {
         expect(new URL(request.url).origin).toBe("https://worker.example");
         return Promise.resolve(
-          new Response(readFileSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))),
+          new Response(
+            readFileSync(
+              new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst", import.meta.url),
+            ),
+          ),
         );
       }),
     };
@@ -280,6 +301,45 @@ describe("Cloudflare Worker inference adapter", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "azookey_runtime_failed", message: "AzooKey runtime is unavailable" },
     });
+  });
+
+  it("keeps configured Worker Vibrato metadata consistent with the ready envelope", async () => {
+    class TestSocket extends EventTarget {
+      readonly sent: string[] = [];
+
+      accept(): void {}
+
+      send(message: string): void {
+        this.sent.push(message);
+      }
+    }
+
+    const server = new TestSocket();
+    const worker = createWorker(undefined, {
+      converter: (text) => text,
+      vibratoConverter: (text) => text,
+      socketPair: () => ({
+        client: new TestSocket() as unknown as WebSocket,
+        server: server as unknown as WebSocket,
+      }),
+    });
+    const configured = { ...env, VIBRATO_UPSTREAM_URL: "https://vibrato.example/convert" };
+    const metadata = await worker.fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      configured,
+    );
+    const upgrade = await worker.fetch(
+      new Request(`https://worker.example${AZOOKEY_WS_PATH}`, {
+        headers: { upgrade: "websocket" },
+      }),
+      configured,
+    );
+
+    expect(upgrade.status).toBe(101);
+    const metadataBody = (await metadata.json()) as { vibrato: { workerStage: string } };
+    const readyBody = JSON.parse(server.sent[0] ?? "{}") as { vibrato: { workerStage: string } };
+    expect(metadataBody.vibrato.workerStage).toBe("configured");
+    expect(readyBody.vibrato.workerStage).toBe(metadataBody.vibrato.workerStage);
   });
 
   it("rejects non-GET metadata requests and non-upgrade WebSocket requests", async () => {

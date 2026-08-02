@@ -692,8 +692,10 @@ impl Pipeline {
         // Live mic chunks often contain only ambient noise. Older gateways
         // returned HTTP 422 transcript_missing when Parapper finished without
         // a final — treat as empty ASR, not a pipeline fault. Current gateway
-        // soft-returns 200 with empty text instead.
-        if !status.is_success() && is_no_speech_response(status.as_u16(), &body) {
+        // soft-returns 200 with empty text instead. A standards-compliant 204
+        // has no body at all, so classify it before attempting JSON parsing;
+        // otherwise an empty response body would become a spurious Json error.
+        if is_no_speech_response(status.as_u16(), &body) {
             log::info!(
                 target: "pipeline_asr",
                 "no-speech soft-skip status={} body_chars={} body_prefix={}",
@@ -993,7 +995,11 @@ pub fn source_ready_caption(
 ) -> CaptionPayload {
     CaptionPayload {
         id,
-        source_text,
+        // Normalizers should already return a trimmed result, but remote Zenz
+        // responses can carry a trailing newline. Keep caption identity and
+        // display text canonical so an otherwise identical partial/final pair
+        // cannot look like two different rows to downstream merge logic.
+        source_text: source_text.trim().to_string(),
         translation_text: String::new(),
         source_language: config.language.source.clone(),
         target_language: config.language.target.clone(),
@@ -1129,19 +1135,72 @@ fn clean_model_text(text: &str) -> String {
 }
 
 fn is_no_speech_response(status: u16, body: &str) -> bool {
-    if !(status == 404 || status == 422 || status == 204) {
+    // 204 is an explicit empty response by definition. There is normally no
+    // JSON body to inspect, and treating that empty body as a transcript
+    // failure would turn ordinary silence into a user-visible error. Keep a
+    // non-empty malformed 204 body on the inspection path below so it cannot
+    // hide an unrelated server failure.
+    if status == 204 && body.trim().is_empty() {
+        return true;
+    }
+    if !(status == 204 || status == 404 || status == 422) {
         return false;
     }
+
+    // Prefer structured inspection when a gateway returns a top-level empty
+    // transcript field. This covers `null`, whitespace-only strings, and JSON
+    // spacing/escaping variants without broadening the no-speech match to an
+    // arbitrary error body.
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        let error = value.get("error");
+        if let Some(code) = error.and_then(|error| error.get("code")).and_then(Value::as_str) {
+            return code.eq_ignore_ascii_case("transcript_missing");
+        }
+        if let Some(value) = ["text", "transcript"].into_iter().find_map(|field| value.get(field)) {
+            return value.is_null() || value.as_str().is_some_and(|text| text.trim().is_empty());
+        }
+        if error
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .is_some_and(is_no_speech_message)
+        {
+            return true;
+        }
+    }
+
     let lower = body.to_ascii_lowercase();
-    lower.contains("transcript_missing")
-        || lower.contains("without a final transcript")
-        || lower.contains("no final transcript")
-        || lower.contains("no transcript")
-        || lower.contains("empty transcript")
-        || lower.contains("\"text\":\"\"")
-        || lower.contains("\"text\": \"\"")
-        || lower.contains("\"transcript\":\"\"")
-        || lower.contains("\"transcript\": \"\"")
+    contains_bounded_token(&lower, "transcript_missing") || is_no_speech_message(&lower)
+}
+
+fn is_no_speech_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    matches!(
+        normalized.as_str(),
+        "completed without a final transcript"
+            | "parapper completed without a final transcript"
+            | "no final transcript"
+            | "empty transcript"
+            | "no transcript"
+            | "no transcript available"
+            | "no transcript returned"
+            | "no transcript received"
+            | "no usable speech"
+            | "no speech"
+            | "no-speech"
+    )
+}
+
+fn contains_bounded_token(input: &str, token: &str) -> bool {
+    input.match_indices(token).any(|(index, _)| {
+        let before = input[..index].chars().next_back();
+        let after = input[index + token.len()..].chars().next();
+        !before.is_some_and(is_token_character) && !after.is_some_and(is_token_character)
+    })
+}
+
+fn is_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
 }
 
 fn now_millis() -> u64 {
@@ -1199,13 +1258,32 @@ mod tests {
         // Message-only variants (code field missing / differently shaped bodies).
         assert!(is_no_speech_response(422, "Parapper completed without a final transcript"));
         assert!(is_no_speech_response(404, r#"{"error":{"message":"no transcript"}}"#));
+        assert!(is_no_speech_response(204, ""));
         assert!(is_no_speech_response(204, r#"{"text":""}"#));
+        assert!(!is_no_speech_response(204, r#"{"text":"unexpected body"}"#));
         assert!(is_no_speech_response(422, r#"{"text": ""}"#));
+        assert!(is_no_speech_response(422, r#"{"text":null}"#));
+        assert!(is_no_speech_response(422, r#"{"transcript":" \n\t "}"#));
         // Real faults must still fail the pipeline.
         assert!(!is_no_speech_response(500, exact));
         assert!(!is_no_speech_response(500, r#"{"error":{"code":"boom"}}"#));
         assert!(!is_no_speech_response(422, r#"{"error":{"code":"invalid_audio"}}"#));
+        assert!(!is_no_speech_response(422, r#"{"error":{"code":"invalid_audio"},"text":""}"#));
         assert!(!is_no_speech_response(422, r#"{"error":{"code":"parapper_timeout"}}"#));
+        assert!(!is_no_speech_response(
+            422,
+            r#"{"error":{"code":"transcript_missing_timeout","message":"Parapper completed without a final transcript"}}"#,
+        ));
+        assert!(!is_no_speech_response(422, r#"{"text":"partial result"}"#));
+        // Do not hide unrelated gateway failures that merely contain a
+        // transcript-like substring. The frontend uses the same bounded
+        // classification contract.
+        assert!(!is_no_speech_response(422, "transcript_missing_timeout"));
+        assert!(!is_no_speech_response(422, "gateway no transcript buffer"));
+        assert!(!is_no_speech_response(
+            422,
+            r#"{"error":{"message":"gateway no transcript buffer"}}"#,
+        ));
     }
 
     #[test]
@@ -1360,6 +1438,13 @@ mod tests {
         assert_eq!(partial.target_language, config.language.target);
         assert_eq!(partial.started_at, 1_700_000_000_000);
         assert_eq!(partial.id, "utt-1");
+    }
+
+    #[test]
+    fn source_ready_caption_trims_remote_normalizer_whitespace() {
+        let config = AppConfig::default();
+        let partial = source_ready_caption(&config, "  こんにちは\n".into(), 1, "utt-trim".into());
+        assert_eq!(partial.source_text, "こんにちは");
     }
 
     #[test]

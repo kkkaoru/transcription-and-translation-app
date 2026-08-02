@@ -33,9 +33,11 @@ checks below report the expected secret and origin.
   `84f605a5c76e09480ef1a0a02d91982fb8c9426a8a7a18fb64d9f27210641b22`.
 - `VIBRATO_UPSTREAM_URL` is the optional HTTP adapter for a real server-side
   Vibrato pre-pass. Its bearer, when required, belongs in the
-  `VIBRATO_API_TOKEN` secret. The bundled IPADIC Vibrato WASM is not initialized
-  together with the portable AzooKey dictionary because it exceeds the Workers
-  128 MiB isolate limit; use browser Vibrato WASM when no upstream is configured.
+  `VIBRATO_API_TOKEN` secret. Worker public assets intentionally omit the IPADIC
+  dictionary because it exceeds the Workers 128 MiB isolate limit; configure
+  `VIBRATO_UPSTREAM_URL` (and its optional `VIBRATO_DICTIONARY_URL`) for a
+  server-side dictionary, or use the browser Vibrato WASM when no upstream is
+  configured.
 - `.dev.vars.example` is a template. Copy it to the git-ignored `.dev.vars`
   for local work, and do not commit token assignments.
 
@@ -44,6 +46,19 @@ checks below report the expected secret and origin.
 Run these commands from the repository root. The secret command prompts without
 printing the value; enter a long random token using your password manager or a
 local generator. Do not put the token in a command argument or shell history.
+`wrangler.jsonc` intentionally does not contain an `account_id`; select the
+Cloudflare account through `CLOUDFLARE_ACCOUNT_ID` so a public checkout never
+publishes an account identifier. Set it in the shell that performs the deploy,
+then pass the checked-in config explicitly:
+
+```sh
+export CLOUDFLARE_ACCOUNT_ID="<your-cloudflare-account-id>"
+wrangler deploy --config apps/cloudflare-worker-server/wrangler.jsonc
+```
+
+The same environment variable is inherited by `bun run worker:deploy` below.
+Keep the value in your shell/CI secret store, not in `wrangler.jsonc` or a
+tracked `.env` file.
 
 ```sh
 git submodule update --init submodules/azooKey_dictionary_storage
