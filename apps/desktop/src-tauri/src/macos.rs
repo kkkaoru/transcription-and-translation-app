@@ -143,6 +143,7 @@ pub fn request_relaunch(app: &AppHandle) -> Result<(), String> {
 /// launch is attempted.  `open -a` addresses the bundle through LaunchServices
 /// rather than starting `Contents/MacOS/kotoba-beacon` directly, so the Dock
 /// keeps one application identity.
+#[cfg(target_os = "macos")]
 pub fn activate_existing_bundle() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {

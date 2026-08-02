@@ -100,6 +100,7 @@ pub fn run() {
 
 /// Route a duplicate launch to the existing foreground bundle and terminate
 /// before any gateway or sidecar can be started in this process.
+#[cfg(target_os = "macos")]
 fn exit_duplicate_instance() -> ! {
     if let Err(error) = macos::activate_existing_bundle() {
         log::warn!("could not activate the existing Kotoba Beacon instance: {error}");
