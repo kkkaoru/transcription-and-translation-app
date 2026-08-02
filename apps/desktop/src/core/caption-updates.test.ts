@@ -1517,4 +1517,76 @@ describe("mergeCaptionPayload", () => {
 
     expect(merged).toEqual(newSource);
   });
+
+  it("enforces session-boundary contract: clearCaptionMergeDiagnostics must reset pending translations", () => {
+    // This test documents the session-boundary contract: at capture start, pending
+    // cross-id translations must be cleared to prevent mis-attribution when utterance
+    // IDs collide across sessions. startCapture() is responsible for calling
+    // clearCaptionMergeDiagnostics(); this test validates what that call must accomplish.
+    //
+    // IMPORTANT: This is NOT a regression test for the startCapture() call site. A
+    // true regression test would render MainApp and call startCapture() end-to-end, then
+    // assert the pending map is empty afterward. That would require new mocking for
+    // MicrophoneCapture, the bridge, and the parapper stream. This test only verifies
+    // that the clearCaptionMergeDiagnostics() function does its job. If startCapture()
+    // is modified to delete its clearCaptionMergeDiagnostics() call, this test will
+    // still pass because it calls the function directly. To catch that regression, an
+    // integration test in MainApp.raw.smoke.test.tsx or similar would be required.
+
+    // Simulate session 1: a source caption with id "u-1" is displayed, then a
+    // translation arrives after a newer caption replaced it. The translation
+    // is stored as pending and marked for retrieval when u-1 source appears again.
+    const session1Current = caption({
+      id: "u-2",
+      sourceText: "次の認識結果",
+      translationText: "",
+      startedAt: 200,
+      receivedAt: 200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const session1LateTranslation = caption({
+      id: "u-1",
+      sourceText: "",
+      translationText: "First utterance translation",
+      startedAt: 100,
+      receivedAt: 250,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    // Store the pending translation: u-1 source has moved on, so u-1 translation
+    // is held for future u-1 source lookup.
+    mergeCaptionPayload(session1Current, session1LateTranslation);
+    expect(getCaptionMergeDiagnostics().pendingCrossIdTranslations).toBe(1);
+    expect(takePendingCaptionTranslation("u-1")).toMatchObject(session1LateTranslation);
+
+    // The contract: clearCaptionMergeDiagnostics() must clear the pending map.
+    clearCaptionMergeDiagnostics();
+    expect(getCaptionMergeDiagnostics().pendingCrossIdTranslations).toBe(0);
+
+    // After the clear: a new source caption with the same id "u-1" arrives
+    // (utterance IDs can collide across sessions). The pending translation from
+    // session 1 is not retrieved.
+    const session2Source = caption({
+      id: "u-1",
+      sourceText: "新しいセッションの音声",
+      translationText: "",
+      startedAt: 1000,
+      receivedAt: 1000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(takePendingCaptionTranslation("u-1")).toBeNull();
+
+    // The new source caption is displayed without stale translation.
+    const empty = caption({ id: "empty", sourceText: "", translationText: "" });
+    const merged = mergeCaptionPayload(empty, session2Source);
+    expect(merged).toEqual(session2Source);
+    expect(merged.translationText).toBe("");
+  });
 });

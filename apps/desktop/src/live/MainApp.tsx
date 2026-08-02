@@ -756,6 +756,7 @@ export const MainApp = () => {
     setNotice(null);
     clearInputLevelDb();
     clearCaptionDisplayTiming();
+    clearCaptionMergeDiagnostics();
     setStatus((current) => ({ ...current, status: "starting", lastError: null }));
     pushDiagnosticEvent(
       "audio",
