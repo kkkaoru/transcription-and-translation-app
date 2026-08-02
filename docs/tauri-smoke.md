@@ -30,11 +30,12 @@ launching. It never runs the signed updater build; use the explicit release
 command only in a signing environment.
 
 The harness also records `native-config.json` from Tauri's app-data directory.
-That evidence contains only the selected model IDs, overlay dimensions, and
-audio/VAD fields (`chunkMs`, `silenceGateDb`, `vadIntervalMs`, `vadThreshold`,
-`noiseSuppression`, `adaptiveNoiseFloor`, and `sampleRate`); user dictionary
-paths are deliberately omitted. Values are range-checked and can be asserted
-without editing a user's configuration:
+That evidence contains only the selected model IDs, overlay dimensions (plus the
+OBS Browser Source `enabled`/`port` pair), and audio/VAD fields (`chunkMs`,
+`silenceGateDb`, `vadIntervalMs`, `vadThreshold`, `noiseSuppression`,
+`adaptiveNoiseFloor`, and `sampleRate`); user dictionary paths are deliberately
+omitted. Values are range-checked and can be asserted without editing a user's
+configuration:
 
 ```bash
 TAURI_SMOKE_EXPECT_CHUNK_MS=640 \
@@ -44,6 +45,15 @@ TAURI_SMOKE_EXPECT_VAD_INTERVAL_MS=32 \
 TAURI_SMOKE_EXPECT_VAD_THRESHOLD=0.5 \
 node scripts/tauri-smoke.mjs --no-launch
 ```
+
+On an Apple Silicon host the harness additionally probes the caption-only
+loopback fallback: the configured port is range-checked and the live app must
+answer `http://127.0.0.1:{port}/health` with `ok` and
+`http://127.0.0.1:{port}/captions.json` with a feed carrying an `overlay`
+object. A persisted `browserSource.enabled: false` is an intentional opt-out
+and is reported as skipped rather than as a runtime failure. The probe runs
+twice when `--ui` saves settings: once with the persisted config and once after
+the save.
 
 Set `TAURI_SMOKE_CONFIG_PATH` when a test account uses a non-default Tauri
 app-data directory. A malformed multipart/JSON audio request is sent before the
