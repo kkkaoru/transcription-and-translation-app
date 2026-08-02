@@ -5,7 +5,12 @@
 
 import { pushDiagnosticEvent } from "./diagnostics";
 import { logPipelineStageEvent } from "./structuredLog";
-import type { PipelineStageEvent, PipelineStageName, UtteranceStageGroup } from "./types";
+import type {
+  CaptionPayload,
+  PipelineStageEvent,
+  PipelineStageName,
+  UtteranceStageGroup,
+} from "./types";
 
 const MAX_STAGE_EVENTS = 96;
 const MAX_UTTERANCES = 24;
@@ -202,6 +207,44 @@ export const pushPipelineStageEvent = (raw: unknown): PipelineStageEvent | null 
   logStage(event);
   notify();
   return event;
+};
+
+/**
+ * Preserve a translation recovered from the caption merge side channel in the
+ * same utterance history as native pipeline rows. The row is synthetic because
+ * the original `pipeline:stage` event was already emitted before its caption
+ * became visible; it must never be fed back into caption rendering.
+ */
+export const pushPendingCaptionTranslationStage = (
+  caption: CaptionPayload,
+  sourceText = "",
+): PipelineStageEvent | null => {
+  const utteranceId = caption.id.trim();
+  const outputText = caption.translationText.trim();
+  if (!utteranceId || !outputText) {
+    return null;
+  }
+
+  const startedAt =
+    typeof caption.startedAt === "number" && Number.isFinite(caption.startedAt)
+      ? Math.max(0, Math.round(caption.startedAt))
+      : 0;
+  const at =
+    typeof caption.receivedAt === "number" && Number.isFinite(caption.receivedAt)
+      ? Math.max(0, Math.round(caption.receivedAt))
+      : startedAt;
+  return pushPipelineStageEvent({
+    stage: "translate",
+    utteranceId,
+    modelId: "frontend-pending-translation",
+    inputSnippet: (sourceText.trim() || caption.sourceText.trim()).slice(0, 100),
+    outputText,
+    startedAt,
+    at,
+    durationMs: Math.max(0, at - startedAt),
+    ok: true,
+    error: null,
+  });
 };
 
 /**

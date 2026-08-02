@@ -12,6 +12,7 @@ import {
   isPipelineStageName,
   isVerbosePipelineLogging,
   normalizePipelineStageEvent,
+  pushPendingCaptionTranslationStage,
   pushPipelineStageEvent,
   readDebugPanelOpenPreference,
   relativeStageOffsetMs,
@@ -144,6 +145,45 @@ describe("pipeline stage events", () => {
     expect(getLatestPipelineStageByName("asr")?.outputText).toBe("に");
     expect(getLatestPipelineStageByName("normalize")?.outputText).toBe("一");
     expect(getLatestPipelineStageByName("translate")).toBeNull();
+  });
+
+  it("records a retained caption translation as a synthetic translate stage", () => {
+    const event = pushPendingCaptionTranslationStage(
+      {
+        id: "utterance-retained",
+        sourceText: "",
+        translationText: "Recovered translation",
+        sourceLanguage: "ja",
+        targetLanguage: "en",
+        startedAt: 100,
+        receivedAt: 145,
+      },
+      "元の発話",
+    );
+
+    expect(event).toMatchObject({
+      stage: "translate",
+      utteranceId: "utterance-retained",
+      modelId: "frontend-pending-translation",
+      inputSnippet: "元の発話",
+      outputText: "Recovered translation",
+      startedAt: 100,
+      at: 145,
+      durationMs: 45,
+      ok: true,
+    });
+    expect(getLatestPipelineStageByName("translate")).toEqual(event);
+    expect(
+      pushPendingCaptionTranslationStage({
+        id: "",
+        sourceText: "",
+        translationText: "ignored",
+        sourceLanguage: "ja",
+        targetLanguage: "en",
+        startedAt: 0,
+        receivedAt: 0,
+      }),
+    ).toBeNull();
   });
 
   it("hydrates backend stage history without duplicating live events", () => {
