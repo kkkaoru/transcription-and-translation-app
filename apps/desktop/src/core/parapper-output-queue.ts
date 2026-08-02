@@ -9,6 +9,8 @@
  * can only wait for one in-flight normalizer call.
  */
 
+import { recordPipelineDrop } from "./dropDiagnostics";
+
 export type ParapperOutputQueueItem = {
   isFinal: boolean;
   /** Optional protocol cursor fields (legacy callers may omit them). */
@@ -189,8 +191,10 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
       const [dropped] = pending.splice(dropIndex, 1);
       if (dropped?.isFinal) {
         droppedFinals += 1;
+        recordPipelineDrop("parapper-output-queue", 1, "pending-overflow-final");
       } else {
         droppedPartials += 1;
+        recordPipelineDrop("parapper-output-queue", 1, "pending-overflow-partial");
       }
     }
   };
@@ -227,8 +231,10 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
         if (current && shouldDropForCursor(item, current)) {
           if (item.isFinal) {
             droppedFinals += 1;
+            recordPipelineDrop("parapper-output-queue", 1, "stale-final-cursor");
           } else {
             droppedPartials += 1;
+            recordPipelineDrop("parapper-output-queue", 1, "stale-partial-cursor");
           }
           return;
         }
@@ -245,6 +251,7 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
         ) {
           pending.pop();
           droppedPartials += 1;
+          recordPipelineDrop("parapper-output-queue", 1, "final-superseded-partial");
         }
         pending.push(item);
       } else if (
@@ -256,6 +263,7 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
         // or a partial from another turn must retain its ordering.
         pending[pending.length - 1] = item;
         droppedPartials += 1;
+        recordPipelineDrop("parapper-output-queue", 1, "partial-replaced");
       } else {
         pending.push(item);
       }
@@ -286,6 +294,21 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
     },
     close: () => {
       closed = true;
+      const droppedPending = pending;
+      const droppedPendingPartials = droppedPending.filter((queued) => !queued.isFinal).length;
+      const droppedPendingFinals = droppedPending.length - droppedPendingPartials;
+      if (droppedPendingPartials > 0) {
+        droppedPartials += droppedPendingPartials;
+        recordPipelineDrop(
+          "parapper-output-queue",
+          droppedPendingPartials,
+          "close-pending-partial",
+        );
+      }
+      if (droppedPendingFinals > 0) {
+        droppedFinals += droppedPendingFinals;
+        recordPipelineDrop("parapper-output-queue", droppedPendingFinals, "close-pending-final");
+      }
       pending = [];
       latestByTurn.clear();
       // Close deliberately abandons the active normalization result, so

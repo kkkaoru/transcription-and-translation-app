@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import { advanceRecognitionGeneration } from "../src/hooks/use-app-state";
 import {
   recognitionTextEventKey,
   trimRecognitionLogRows,
@@ -86,6 +87,32 @@ const translated = (
 });
 
 describe("generation-aware Parapper display state", () => {
+  it("advances once on a cursor regression and keeps restart updates together", () => {
+    const running = {
+      generation: 0,
+      highestTurnSessionId: 7,
+      latestSourceCursor: source(3, 2, 4),
+    };
+
+    const restarted = advanceRecognitionGeneration(running, source(1, 0, 1));
+    const duplicateRestart = advanceRecognitionGeneration(
+      restarted,
+      source(1, 0, 1),
+    );
+    const partial = advanceRecognitionGeneration(
+      duplicateRestart,
+      source(1, 0, 2),
+    );
+    const final = advanceRecognitionGeneration(partial, source(1, 1, 3));
+
+    expect(restarted.generation).toBe(1);
+    expect(restarted.latestSourceCursor).toEqual(source(1, 0, 1));
+    expect(duplicateRestart.generation).toBe(1);
+    expect(partial.generation).toBe(1);
+    expect(final.generation).toBe(1);
+    expect(final.latestSourceCursor).toEqual(source(1, 1, 3));
+  });
+
   it("does not duplicate an identical append event but keeps distinct cumulative appends", () => {
     const first = recognized("turn-7-1-0-a", "字幕", {
       outputSequence: 1,

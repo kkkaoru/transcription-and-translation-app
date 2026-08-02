@@ -17,6 +17,7 @@ import {
   getCaptionDisplayTimingStats,
   subscribeCaptionDisplayTiming,
 } from "../core/display-timing";
+import { type PipelineDropSnapshot, snapshotPipelineDrops } from "../core/dropDiagnostics";
 import {
   clearPipelineStageEvents,
   getLatestPipelineStageByName,
@@ -196,7 +197,30 @@ const recognitionModeDescription = (
   }
 };
 
+const pipelineDropSourceLabel = (source: string, t: ReturnType<typeof useI18n>["t"]): string => {
+  switch (source) {
+    case "audio":
+      return t("debug.pipelineDropAudio");
+    case "chunk-queue":
+      return t("debug.pipelineDropChunkQueue");
+    case "parapper-output-queue":
+      return t("debug.pipelineDropParapperQueue");
+    case "translation":
+      return t("debug.pipelineDropTranslation");
+    default:
+      return source;
+  }
+};
+
 const STAGE_NAMES: PipelineStageName[] = ["asr", "normalize", "translate"];
+
+/** Keep the common drop producers visible even when their current count is zero. */
+const PIPELINE_DROP_SOURCE_ORDER = [
+  "audio",
+  "chunk-queue",
+  "parapper-output-queue",
+  "translation",
+] as const;
 
 const DEFAULT_TEST_CAPTION = "これはデバッグ用のテスト字幕です。";
 
@@ -281,6 +305,32 @@ const toNullableString = (value: unknown): string | null => {
 
 const toNullableNumber = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
+
+const normalizeRetiredCount = (value: unknown): number | null => {
+  const direct = toNullableNumber(value);
+  if (direct != null) {
+    return direct;
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+  for (const key of ["count", "total", "retired"]) {
+    const nested = toNullableNumber(pick(value, key));
+    if (nested != null) {
+      return nested;
+    }
+  }
+  return null;
+};
+
+const readTranslationRetired = (backend: JsonObject | null): number | null => {
+  const runtime = pick(backend, "runtimeStatus");
+  return normalizeRetiredCount(
+    pick(backend, "translationRetired") ??
+      pick(backend, "translation_retired") ??
+      pick(isRecord(runtime) ? runtime : null, "translationRetired"),
+  );
+};
 
 const normalizeUpdateStatus = (value: unknown): UpdateStatus => {
   if (!isRecord(value)) {
@@ -465,6 +515,9 @@ export function DebugPanel() {
   const [testCaptionRunning, setTestCaptionRunning] = useState(false);
   const [testCaptionNotice, setTestCaptionNotice] = useState<string | null>(null);
   const [testCaptionError, setTestCaptionError] = useState<string | null>(null);
+  const [pipelineDrops, setPipelineDrops] = useState<PipelineDropSnapshot>(() =>
+    snapshotPipelineDrops(),
+  );
   // The panel is mounted in both Live and Settings routes. Avoid rerendering
   // its large diagnostics tree for every caption while collapsed; opening the
   // panel resubscribes and useSyncExternalStore reconciles the latest snapshot.
@@ -604,6 +657,7 @@ export function DebugPanel() {
       modelStatus.length === 0 &&
       events.length === 0 &&
       stageEvents.length === 0 &&
+      pipelineDrops.total === 0 &&
       structuredLogs.length === 0 &&
       !updateStatus &&
       sidecars.length === 0
@@ -626,6 +680,8 @@ export function DebugPanel() {
       utteranceGroups,
       displayTiming,
       chunkTiming,
+      pipelineDrops,
+      translationRetired: readTranslationRetired(backendInfo),
       verbosePipelineLogging: verboseLogging,
       logLevel,
       structuredLogs,
@@ -647,6 +703,7 @@ export function DebugPanel() {
     utteranceGroups,
     displayTiming,
     chunkTiming,
+    pipelineDrops,
     verboseLogging,
     logLevel,
     structuredLogs,
@@ -665,6 +722,7 @@ export function DebugPanel() {
       setFrontendInfo(nextFrontend);
       setCaptureInfo(nextCapture);
       setChunkTiming(getChunkTimingStats());
+      setPipelineDrops(snapshotPipelineDrops());
       const [infoResult, devicesResult, modelStatusResult, updateResult, configResult] =
         await Promise.allSettled([
           bridge.getDebugInfo(),
@@ -855,8 +913,10 @@ export function DebugPanel() {
       return;
     }
     setChunkTiming(getChunkTimingStats());
+    setPipelineDrops(snapshotPipelineDrops());
     const timer = window.setInterval(() => {
       setChunkTiming(getChunkTimingStats());
+      setPipelineDrops(snapshotPipelineDrops());
     }, 500);
     return () => {
       window.clearInterval(timer);
@@ -1272,6 +1332,21 @@ export function DebugPanel() {
   const frontendAudio = isRecord(frontendAudioValue) ? frontendAudioValue : null;
   const frontendViewportValue = pick(frontendInfo, "viewport");
   const frontendViewport = isRecord(frontendViewportValue) ? frontendViewportValue : null;
+
+  const nativeTranslationRetired = readTranslationRetired(backendInfo);
+  const pipelineDropSourceRows = [
+    ...PIPELINE_DROP_SOURCE_ORDER.map((source) => ({
+      source,
+      count:
+        source === "translation" && nativeTranslationRetired != null
+          ? nativeTranslationRetired
+          : (pipelineDrops.bySource[source] ?? 0),
+    })),
+    ...Object.entries(pipelineDrops.bySource)
+      .filter(([source]) => !PIPELINE_DROP_SOURCE_ORDER.some((known) => known === source))
+      .map(([source, count]) => ({ source, count })),
+  ];
+  const pipelineDropReasonRows = Object.entries(pipelineDrops.byReason);
 
   const setPanelOpen = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
@@ -1810,6 +1885,50 @@ export function DebugPanel() {
                   </ul>
                 )}
               </div>
+
+              <section className="debug-section" data-testid="debug-pipeline-drops">
+                <h4 className="debug-section-title">{t("debug.pipelineDropsTitle")}</h4>
+                <p className="debug-inline-meta">{t("debug.pipelineDropsLead")}</p>
+                <div className="debug-summary-grid">
+                  <div className="debug-stat-card" data-testid="debug-pipeline-drop-total">
+                    <span className="debug-stat-label">{t("debug.pipelineDropsTotal")}</span>
+                    <strong>{pipelineDrops.total}</strong>
+                  </div>
+                  {nativeTranslationRetired != null ? (
+                    <div className="debug-stat-card" data-testid="debug-translation-retired">
+                      <span className="debug-stat-label">
+                        {t("debug.pipelineDropsTranslationRetired")}
+                      </span>
+                      <strong>{nativeTranslationRetired}</strong>
+                    </div>
+                  ) : null}
+                </div>
+                <h5 className="debug-subsection-title">{t("debug.pipelineDropsSources")}</h5>
+                <ul className="debug-kv-list" data-testid="debug-pipeline-drop-sources">
+                  {pipelineDropSourceRows.map(({ source, count }) => (
+                    <li
+                      key={source}
+                      data-testid={`debug-pipeline-drop-source-${source.replaceAll("_", "-")}`}
+                    >
+                      <span>{pipelineDropSourceLabel(source, t)}</span>
+                      <code>{count}</code>
+                    </li>
+                  ))}
+                </ul>
+                <h5 className="debug-subsection-title">{t("debug.pipelineDropsReasons")}</h5>
+                {pipelineDropReasonRows.length === 0 ? (
+                  <p className="download-empty">{t("debug.pipelineDropsNone")}</p>
+                ) : (
+                  <ul className="debug-kv-list" data-testid="debug-pipeline-drop-reasons">
+                    {pipelineDropReasonRows.map(([reason, count]) => (
+                      <li key={reason}>
+                        <span>{reason}</span>
+                        <code>{count}</code>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
 
               <div className="debug-section" data-testid="debug-chunk-timing">
                 <h4 className="debug-section-title">{t("debug.chunkTimingTitle")}</h4>

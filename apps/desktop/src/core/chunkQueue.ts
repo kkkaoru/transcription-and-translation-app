@@ -21,6 +21,8 @@
  * arrives.
  */
 
+import { recordPipelineDrop } from "./dropDiagnostics";
+
 export type ChunkTimingStats = {
   /**
    * Wall time until process() returned for the last flight.
@@ -148,6 +150,10 @@ export const createLatestWinsProcessor = <T>(
       return;
     }
     if (options.isActive && !options.isActive()) {
+      if (hasPending) {
+        recordPipelineDrop("chunk-queue", 1, "inactive-pending");
+        publish({ chunksDropped: stats.chunksDropped + 1 });
+      }
       pending = null;
       hasPending = false;
       publish();
@@ -236,6 +242,7 @@ export const createLatestWinsProcessor = <T>(
       // Replace any waiting chunk so the queue never grows beyond 1 pending.
       if (hasPending) {
         publish({ chunksDropped: stats.chunksDropped + 1 });
+        recordPipelineDrop("chunk-queue", 1, "pending-replaced");
       }
       pending = item;
       hasPending = true;
@@ -251,6 +258,9 @@ export const createLatestWinsProcessor = <T>(
       });
     },
     reset: () => {
+      if (hasPending) {
+        recordPipelineDrop("chunk-queue", 1, "reset-pending");
+      }
       generation += 1;
       flightSerial += 1;
       pending = null;

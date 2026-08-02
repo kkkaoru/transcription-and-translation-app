@@ -40,6 +40,7 @@ import type {
   SpeechRequestEvent,
   TranslationTextEvent,
   VadStateEvent,
+  RecognitionSourceMeta,
 } from "../lib/types";
 
 export type RuntimeState = {
@@ -94,6 +95,89 @@ const recognitionIsRunning = (status: RecognitionStatus) =>
   status === "draining";
 
 const TRANSLATION_SPEECH_DELAY_WARNING_MS = 3000;
+
+type RecognitionSourceCursor = Pick<
+  RecognitionSourceMeta,
+  "turn_session_id" | "turn_id" | "turn_revision" | "output_sequence"
+>;
+
+export type RecognitionGenerationCursorState = {
+  generation: number;
+  highestTurnSessionId: number | null;
+  latestSourceCursor: RecognitionSourceCursor | null;
+};
+
+const sourceCursorMovedBack = (
+  previous: RecognitionSourceCursor | null,
+  source: RecognitionSourceCursor,
+) => {
+  if (previous?.turn_session_id !== source.turn_session_id) {
+    return false;
+  }
+  return (
+    source.turn_id < previous.turn_id ||
+    (source.turn_id === previous.turn_id &&
+      (source.turn_revision < previous.turn_revision ||
+        (source.turn_revision === previous.turn_revision &&
+          source.output_sequence < previous.output_sequence)))
+  );
+};
+
+/**
+ * Advance the local display generation when a sidecar restarts and reuses a
+ * native cursor. The regressed cursor becomes the new baseline so the
+ * restart's partial/final follow-ups stay in that same generation.
+ */
+export const advanceRecognitionGeneration = (
+  state: RecognitionGenerationCursorState,
+  source: RecognitionSourceCursor,
+): RecognitionGenerationCursorState => {
+  let generation = state.generation;
+  let highestTurnSessionId = state.highestTurnSessionId;
+  const previousSession = state.highestTurnSessionId;
+
+  if (
+    previousSession !== null &&
+    source.turn_session_id < previousSession
+  ) {
+    generation += 1;
+    highestTurnSessionId = source.turn_session_id;
+  } else if (
+    previousSession === null ||
+    source.turn_session_id > previousSession
+  ) {
+    highestTurnSessionId = source.turn_session_id;
+  }
+
+  const cursorMovedBack = sourceCursorMovedBack(
+    state.latestSourceCursor,
+    source,
+  );
+  if (cursorMovedBack) {
+    generation += 1;
+  }
+
+  // Keep the regressed cursor as the baseline. Otherwise every follow-up
+  // partial/final from the restarted sidecar would look regressed again.
+  const previousCursor = state.latestSourceCursor;
+  const sameSession =
+    previousCursor?.turn_session_id === source.turn_session_id;
+  const cursorIsAtOrAhead =
+    previousCursor === null ||
+    !sameSession ||
+    source.turn_id > previousCursor.turn_id ||
+    (source.turn_id === previousCursor.turn_id &&
+      (source.turn_revision > previousCursor.turn_revision ||
+        (source.turn_revision === previousCursor.turn_revision &&
+          source.output_sequence >= previousCursor.output_sequence)));
+
+  return {
+    generation,
+    highestTurnSessionId,
+    latestSourceCursor:
+      cursorMovedBack || cursorIsAtOrAhead ? source : previousCursor,
+  };
+};
 
 const initialModelState: ModelState = {
   status: null,
@@ -189,44 +273,18 @@ export const useAppState = ({
       },
       trackCursor = false,
     ) => {
-      const previousSession = highestTurnSessionIdRef.current;
       if (trackCursor) {
-        if (
-          previousSession !== null &&
-          source.turn_session_id < previousSession
-        ) {
-          recognitionGenerationRef.current += 1;
-          highestTurnSessionIdRef.current = source.turn_session_id;
-        } else if (
-          previousSession === null ||
-          source.turn_session_id > previousSession
-        ) {
-          highestTurnSessionIdRef.current = source.turn_session_id;
-        }
-        const previousCursor = latestSourceCursorRef.current;
-        const sameSession =
-          previousCursor?.turn_session_id === source.turn_session_id;
-        const cursorMovedBack =
-          sameSession &&
-          (source.turn_id < previousCursor.turn_id ||
-            (source.turn_id === previousCursor.turn_id &&
-              (source.turn_revision < previousCursor.turn_revision ||
-                (source.turn_revision === previousCursor.turn_revision &&
-                  source.output_sequence < previousCursor.output_sequence))));
-        if (cursorMovedBack) {
-          recognitionGenerationRef.current += 1;
-        }
-        if (
-          previousCursor === null ||
-          !sameSession ||
-          source.turn_id > previousCursor.turn_id ||
-          (source.turn_id === previousCursor.turn_id &&
-            (source.turn_revision > previousCursor.turn_revision ||
-              (source.turn_revision === previousCursor.turn_revision &&
-                source.output_sequence >= previousCursor.output_sequence)))
-        ) {
-          latestSourceCursorRef.current = source;
-        }
+        const next = advanceRecognitionGeneration(
+          {
+            generation: recognitionGenerationRef.current,
+            highestTurnSessionId: highestTurnSessionIdRef.current,
+            latestSourceCursor: latestSourceCursorRef.current,
+          },
+          source,
+        );
+        recognitionGenerationRef.current = next.generation;
+        highestTurnSessionIdRef.current = next.highestTurnSessionId;
+        latestSourceCursorRef.current = next.latestSourceCursor;
       }
       return recognitionGenerationRef.current;
     },

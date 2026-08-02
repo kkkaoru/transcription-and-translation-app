@@ -110,10 +110,9 @@ impl TranslationTracker {
         }
         let pending = self.pending_by_generation.entry(self.current_generation).or_default();
         let superseded = if pending.len() >= MAX_PENDING_TRANSLATIONS_PER_CAPTURE {
-            pending.pop_front().map(|sequence| TranslationTicket {
-                generation: self.current_generation,
-                sequence,
-            })
+            pending
+                .pop_front()
+                .map(|sequence| TranslationTicket { generation: self.current_generation, sequence })
         } else {
             None
         };
@@ -588,10 +587,7 @@ impl AppState {
     /// Total translation tickets retired by the bounded latest-wins queue,
     /// surfaced in the debug snapshot to explain dropped translations.
     pub fn translation_retired_count(&self) -> u64 {
-        self.translation_tracker
-            .lock()
-            .map(|tracker| tracker.retired_count)
-            .unwrap_or_default()
+        self.translation_tracker.lock().map(|tracker| tracker.retired_count).unwrap_or_default()
     }
 
     /// Freeze the current generation against new translations and return the

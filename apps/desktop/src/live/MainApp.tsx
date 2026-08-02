@@ -202,6 +202,22 @@ const webSpeechLanguage = (source: string): string => {
   return defaults[value.toLowerCase()] ?? value;
 };
 
+/**
+ * Merge a caption for the live view, allowing the first native replay to replace
+ * the design-time preview even when that caption's timestamps predate mount.
+ * Subsequent updates still use the normal ordering/translation guards.
+ */
+export const mergeCaptionForDisplay = (
+  current: CaptionPayload,
+  incoming: CaptionPayload,
+  bootstrapPreview = false,
+): CaptionPayload | null => {
+  if (bootstrapPreview && current.id === "preview") {
+    return incoming.sourceText.trim() || incoming.translationText.trim() ? incoming : null;
+  }
+  return mergeCaptionPayload(current, incoming);
+};
+
 export const MainApp = () => {
   const { t } = useI18n();
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
@@ -254,17 +270,20 @@ export const MainApp = () => {
    * inside `setCaption(current => ...)` would duplicate entries when React replays
    * an updater in StrictMode/concurrent rendering.
    */
-  const mergeAndCommitCaption = useCallback((incoming: CaptionPayload): boolean => {
-    const current = captionRef.current;
-    const merged = mergeCaptionPayload(current, incoming);
-    if (merged === null || merged === current) {
-      return false;
-    }
-    captionRef.current = merged;
-    markCaptionDisplay(merged);
-    setCaption(merged);
-    return true;
-  }, []);
+  const mergeAndCommitCaption = useCallback(
+    (incoming: CaptionPayload, bootstrapPreview = false): boolean => {
+      const current = captionRef.current;
+      const merged = mergeCaptionForDisplay(current, incoming, bootstrapPreview);
+      if (merged === null || merged === current) {
+        return false;
+      }
+      captionRef.current = merged;
+      markCaptionDisplay(merged);
+      setCaption(merged);
+      return true;
+    },
+    [],
+  );
 
   /** Reset the visible caption and any retained translation from this session. */
   const clearCaptionState = useCallback((): void => {
@@ -503,7 +522,7 @@ export const MainApp = () => {
       if (!mounted || !latest || captionIdleGuard.current) {
         return;
       }
-      const replayed = mergeAndCommitCaption(latest);
+      const replayed = mergeAndCommitCaption(latest, true);
       if (replayed) {
         lastCaptionId = latest.id;
         pushDiagnosticEvent("caption", "Latest caption replayed", latest.id);

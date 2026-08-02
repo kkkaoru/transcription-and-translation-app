@@ -5,6 +5,8 @@ import {
   resolveSilenceGate,
   type SilenceGateMode,
 } from "./defaults";
+import { pushDiagnosticEvent } from "./diagnostics";
+import { recordPipelineDrop } from "./dropDiagnostics";
 import { isVerbosePipelineLogging } from "./pipelineStages";
 import type { AudioChunk, AudioInputDevice } from "./types";
 
@@ -399,6 +401,8 @@ export const passesSilenceGate = (
  *   silence: never passed and never treated as ambient.
  */
 export const ADAPTIVE_GATE_MIN_ABSOLUTE_DB = -70;
+/** Number of consecutive absolute-floor drops before surfacing a warning. */
+export const ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS = 3;
 /**
  * Loudest chunk that may be treated as ambient. Speech is never this quiet, so
  * capping floor learning here stops a user who talks from the first chunk from
@@ -420,6 +424,15 @@ export const ADAPTIVE_GATE_MARGIN_DB = 9;
 export const ADAPTIVE_GATE_FLOOR_ADMIT_DB = 3;
 export const ADAPTIVE_GATE_RISE_RATIO = 0.2;
 
+/**
+ * Identify a hard-floor drop without treating malformed NaN readings as a
+ * microphone-level warning. RMS of digital silence is -Infinity and is an
+ * expected hard-floor drop, while positive Infinity/NaN are malformed.
+ */
+const isAbsoluteFloorDrop = (chunkDb: number): boolean =>
+  chunkDb === Number.NEGATIVE_INFINITY ||
+  (Number.isFinite(chunkDb) && chunkDb <= ADAPTIVE_GATE_MIN_ABSOLUTE_DB);
+
 export interface AdaptiveSilenceGateState {
   /** Rolling ambient floor estimate in dBFS; null until warmup completes. */
   floorDb: number | null;
@@ -438,7 +451,7 @@ export const updateAdaptiveSilenceGate = (
   chunkDb: number,
   passed: boolean,
 ): void => {
-  if (!Number.isFinite(chunkDb) || chunkDb < ADAPTIVE_GATE_MIN_ABSOLUTE_DB) {
+  if (!Number.isFinite(chunkDb) || chunkDb <= ADAPTIVE_GATE_MIN_ABSOLUTE_DB) {
     return;
   }
   // Only genuinely quiet chunks may define ambient. A chunk louder than the
@@ -469,7 +482,7 @@ export const passesAdaptiveSilenceGate = (
   state: AdaptiveSilenceGateState,
   chunkDb: number,
 ): boolean => {
-  if (!Number.isFinite(chunkDb) || chunkDb < ADAPTIVE_GATE_MIN_ABSOLUTE_DB) {
+  if (!Number.isFinite(chunkDb) || chunkDb <= ADAPTIVE_GATE_MIN_ABSOLUTE_DB) {
     return false;
   }
   // Warmup: let chunks through so the floor can be established and speech at
@@ -703,6 +716,12 @@ export type AudioCaptureDiagnostics = {
   fixedGateDb: number | null;
   chunksAccepted: number;
   chunksDroppedSilent: number;
+  /** Number of adaptive-gate chunks rejected by the absolute floor. */
+  absoluteFloorDrops: number;
+  /** Current consecutive absolute-floor drop streak. */
+  consecutiveAbsoluteFloorDrops: number;
+  /** Most recent absolute-floor drop timestamp. */
+  lastAbsoluteFloorDropAt: string | null;
   /** Frames that could not be delivered to the continuous Parapper transport. */
   streamFramesDropped: number;
   lastError: string | null;
@@ -735,6 +754,9 @@ const emptyDiagnostics = (): AudioCaptureDiagnostics => ({
   fixedGateDb: null,
   chunksAccepted: 0,
   chunksDroppedSilent: 0,
+  absoluteFloorDrops: 0,
+  consecutiveAbsoluteFloorDrops: 0,
+  lastAbsoluteFloorDropAt: null,
   streamFramesDropped: 0,
   lastError: null,
   lastErrorCode: null,
@@ -787,6 +809,10 @@ export const formatAudioCaptureDiagnostics = (
       : null,
     diagnostics.chunksAccepted > 0 ? `chunks=${diagnostics.chunksAccepted}` : null,
     diagnostics.chunksDroppedSilent > 0 ? `silent=${diagnostics.chunksDroppedSilent}` : null,
+    diagnostics.absoluteFloorDrops > 0 ? `floorDrops=${diagnostics.absoluteFloorDrops}` : null,
+    diagnostics.consecutiveAbsoluteFloorDrops > 0
+      ? `floorStreak=${diagnostics.consecutiveAbsoluteFloorDrops}`
+      : null,
     diagnostics.streamFramesDropped > 0 ? `streamDropped=${diagnostics.streamFramesDropped}` : null,
   ].filter(Boolean);
   return parts.join(" · ");
@@ -948,6 +974,9 @@ export class MicrophoneCapture {
   private lastAcceptedGain: number | null = null;
   private chunksAccepted = 0;
   private chunksDroppedSilent = 0;
+  private absoluteFloorDrops = 0;
+  private consecutiveAbsoluteFloorDrops = 0;
+  private lastAbsoluteFloorDropAt: string | null = null;
   private streamFramesDropped = 0;
   private trackMuteEvents = 0;
   private lastTrackMuteAt: string | null = null;
@@ -987,6 +1016,9 @@ export class MicrophoneCapture {
       fixedGateDb: this.gateMode === "fixed" ? this.silenceGateDb : null,
       chunksAccepted: this.chunksAccepted,
       chunksDroppedSilent: this.chunksDroppedSilent,
+      absoluteFloorDrops: this.absoluteFloorDrops,
+      consecutiveAbsoluteFloorDrops: this.consecutiveAbsoluteFloorDrops,
+      lastAbsoluteFloorDropAt: this.lastAbsoluteFloorDropAt,
       streamFramesDropped: this.streamFramesDropped,
       lastError: lastCaptureDiagnostics.lastError,
       lastErrorCode: lastCaptureDiagnostics.lastErrorCode,
@@ -1112,6 +1144,9 @@ export class MicrophoneCapture {
     this.lastAcceptedGain = null;
     this.chunksAccepted = 0;
     this.chunksDroppedSilent = 0;
+    this.absoluteFloorDrops = 0;
+    this.consecutiveAbsoluteFloorDrops = 0;
+    this.lastAbsoluteFloorDropAt = null;
     this.streamFramesDropped = 0;
     this.trackMuteEvents = 0;
     this.lastTrackMuteAt = null;
@@ -1238,6 +1273,7 @@ export class MicrophoneCapture {
     this.lastAcceptedGain = null;
     this.gateMode = "adaptive";
     this.adaptiveGate = createAdaptiveSilenceGate();
+    this.consecutiveAbsoluteFloorDrops = 0;
     this.contextRecovery = null;
     this.finishWorkletFlush();
 
@@ -1285,6 +1321,41 @@ export class MicrophoneCapture {
   }
 
   /**
+   * Record a gated chunk and surface a bounded warning for a persistently
+   * silent input. A brief pause remains a quiet counter; a repeated hard-floor
+   * streak is actionable (muted track, wrong device, or a failed audio graph).
+   */
+  private recordSilentDrop(chunkDb: number): void {
+    this.chunksDroppedSilent += 1;
+    const absoluteFloorDrop = this.gateMode === "adaptive" && isAbsoluteFloorDrop(chunkDb);
+    recordPipelineDrop("audio", 1, absoluteFloorDrop ? "absolute-floor" : "silence-gate");
+    if (!absoluteFloorDrop) {
+      this.consecutiveAbsoluteFloorDrops = 0;
+      return;
+    }
+
+    this.absoluteFloorDrops += 1;
+    this.consecutiveAbsoluteFloorDrops += 1;
+    this.lastAbsoluteFloorDropAt = new Date().toISOString();
+    if (this.consecutiveAbsoluteFloorDrops !== ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS) {
+      return;
+    }
+
+    const level = Number.isFinite(chunkDb) ? `${chunkDb.toFixed(1)}dB` : String(chunkDb);
+    const detail = [
+      `rms=${level}`,
+      `floor=${ADAPTIVE_GATE_MIN_ABSOLUTE_DB.toFixed(1)}dBFS`,
+      `streak=${this.consecutiveAbsoluteFloorDrops}`,
+      `drops=${this.absoluteFloorDrops}`,
+    ].join(" · ");
+    try {
+      pushDiagnosticEvent("audio", "Absolute floor drop warning", detail);
+    } catch {
+      // Diagnostics are best-effort; never throw from an audio callback.
+    }
+  }
+
+  /**
    * Send the final sub-window when it contains enough real audio to plausibly
    * contain speech. This intentionally reuses the active silence-gate policy;
    * stopping after a pause must not turn ambient tail noise into an ASR request.
@@ -1314,7 +1385,7 @@ export class MicrophoneCapture {
       if (!this.rollingContext.hasContext()) {
         this.utteranceId = null;
       }
-      this.chunksDroppedSilent += 1;
+      this.recordSilentDrop(chunkDb);
       this.publishDiagnostics(undefined);
       return;
     }
@@ -1324,6 +1395,7 @@ export class MicrophoneCapture {
     const contextualDurationMs = partialAudioDurationMs(contextual.length, sampleRate);
     const normalized = applyPeakNormalize(contextual);
     this.chunksAccepted += 1;
+    this.consecutiveAbsoluteFloorDrops = 0;
     this.lastAcceptedRmsDb = chunkDb;
     this.lastAcceptedGain = normalized.gain;
     try {
@@ -1777,6 +1849,7 @@ export class MicrophoneCapture {
         // forwarding frames and let the owner tear down the capture/session.
         this.streamPcmHandler = null;
         this.streamFramesDropped += 1;
+        recordPipelineDrop("audio", 1, "stream-frame-delivery-failed");
         this.reportCaptureFailure(new AudioCaptureError("parapper-transport-failed", error));
       }
     }
@@ -1825,6 +1898,7 @@ export class MicrophoneCapture {
         const contextualDurationMs = partialAudioDurationMs(contextual.length, sampleRate);
         const normalized = applyPeakNormalize(contextual);
         this.chunksAccepted += 1;
+        this.consecutiveAbsoluteFloorDrops = 0;
         this.lastAcceptedRmsDb = chunkDb;
         this.lastAcceptedGain = normalized.gain;
         if (isVerbosePipelineLogging()) {
@@ -1858,7 +1932,7 @@ export class MicrophoneCapture {
           // pause; do not let it reuse the prior request's correlation key.
           this.utteranceId = null;
         }
-        this.chunksDroppedSilent += 1;
+        this.recordSilentDrop(chunkDb);
         if (
           isVerbosePipelineLogging() &&
           (this.chunksDroppedSilent <= 3 || this.chunksDroppedSilent % 20 === 0)

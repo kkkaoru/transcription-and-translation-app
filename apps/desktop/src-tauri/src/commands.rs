@@ -360,11 +360,7 @@ pub async fn transcribe_audio_chunk(
                 chunk.utterance_id.as_deref(),
             ) {
                 Some((utterance_id, ExpectedEmptyAsrResult::Transient { .. })) => {
-                    mark_backend_reachable_without_clearing_error(
-                        &app,
-                        &state,
-                        capture_generation,
-                    );
+                    mark_backend_reachable_without_clearing_error(&app, &state, capture_generation);
                     return Ok(empty_caption(&config, utterance_id));
                 }
                 Some((_, ExpectedEmptyAsrResult::PersistentLoss { consecutive })) => {
@@ -517,12 +513,9 @@ pub fn publish_source_caption(
         // session's overlay/replay slot; it is dropped silently because the
         // renderer already decided this result is obsolete.
         Some(generation) => {
-            let _ = publish_source_caption_gated(
-                &state,
-                Some(generation),
-                &payload,
-                |payload| emit_caption_event(&app, payload),
-            );
+            let _ = publish_source_caption_gated(&state, Some(generation), &payload, |payload| {
+                emit_caption_event(&app, payload)
+            });
             Ok(())
         }
         // Legacy renderers send no generation. Keep the historical
@@ -1460,9 +1453,7 @@ mod tests {
         assert_eq!(input.capture_generation, None);
     }
 
-    fn source_caption_with_generation(
-        id: &str,
-    ) -> (AppState, crate::pipeline::CaptionPayload) {
+    fn source_caption_with_generation(id: &str) -> (AppState, crate::pipeline::CaptionPayload) {
         let state =
             AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
         state.begin_capture_generation();
@@ -1500,10 +1491,11 @@ mod tests {
         }
 
         let mut emitted = 0;
-        let published = publish_source_caption_gated(&state, Some(stale_generation), &payload, |_| {
-            emitted += 1;
-        })
-        .expect("a stale attempt is dropped, not rejected");
+        let published =
+            publish_source_caption_gated(&state, Some(stale_generation), &payload, |_| {
+                emitted += 1;
+            })
+            .expect("a stale attempt is dropped, not rejected");
         assert!(!published);
         assert_eq!(emitted, 0, "a stale attempt must not emit into the new session");
         assert_eq!(

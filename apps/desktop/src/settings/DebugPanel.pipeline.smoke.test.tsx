@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearCaptionDisplayTiming, markCaptionDisplay } from "../core/display-timing";
+import { clearPipelineDrops, recordPipelineDrop } from "../core/dropDiagnostics";
 import {
   clearPipelineStageEvents,
   isVerbosePipelineLogging,
@@ -76,6 +77,7 @@ vi.mock("../core/bridge", () => ({
         },
         debug: { verboseLogging: false, logLevel: "info" },
       },
+      translationRetired: 4,
     }),
     listModelStatus: async () => [],
   },
@@ -95,6 +97,7 @@ describe("DebugPanel pipeline stages", () => {
     // Match other smoke tests: UI copy assertions use Japanese strings.
     localStorage.setItem("caption-bridge.ui-locale.v1", "ja");
     clearPipelineStageEvents();
+    clearPipelineDrops();
     clearCaptionDisplayTiming();
     setVerbosePipelineLogging(false);
     __resetStructuredLogForTests();
@@ -111,6 +114,7 @@ describe("DebugPanel pipeline stages", () => {
     });
     container.remove();
     clearPipelineStageEvents();
+    clearPipelineDrops();
     clearCaptionDisplayTiming();
     setVerbosePipelineLogging(false);
     __resetStructuredLogForTests();
@@ -136,6 +140,9 @@ describe("DebugPanel pipeline stages", () => {
   };
 
   it("shows independent ASR / normalizer / translator sections and utterance stage rows", async () => {
+    recordPipelineDrop("audio", 2, "silence-gate");
+    recordPipelineDrop("chunk-queue", 1, "pending-replaced");
+    recordPipelineDrop("parapper-output-queue", 3, "stale-final-cursor");
     const base = Date.now();
     pushPipelineStageEvent({
       stage: "asr",
@@ -220,6 +227,22 @@ describe("DebugPanel pipeline stages", () => {
       "parapper-ja",
     );
     expect(container.querySelector('[data-testid="debug-chunk-timing"]')).not.toBeNull();
+    const drops = container.querySelector('[data-testid="debug-pipeline-drops"]');
+    expect(drops).not.toBeNull();
+    expect(
+      drops?.querySelector('[data-testid="debug-pipeline-drop-total"]')?.textContent,
+    ).toContain("6");
+    for (const source of ["audio", "chunk-queue", "parapper-output-queue", "translation"]) {
+      expect(
+        drops?.querySelector(`[data-testid="debug-pipeline-drop-source-${source}"]`),
+      ).not.toBeNull();
+    }
+    expect(
+      drops?.querySelector('[data-testid="debug-translation-retired"]')?.textContent,
+    ).toContain("4");
+    expect(
+      drops?.querySelector('[data-testid="debug-pipeline-drop-reasons"]')?.textContent,
+    ).toContain("silence-gate");
     expect(container.textContent).toContain("詳細ログ");
     expect(container.textContent).toContain("発話ごとの段階行");
     expect(container.querySelector('[data-testid="debug-enable-hint"]')?.textContent).toContain(

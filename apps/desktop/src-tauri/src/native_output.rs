@@ -347,6 +347,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_nesting)]
     fn transport_send_failure_closes_mailbox_so_publishers_see_the_error() {
         let sender = sender();
         let worker = sender.clone();
@@ -370,6 +371,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_nesting)]
     fn transport_send_success_keeps_mailbox_open_until_close() {
         let sender = sender();
         let worker = sender.clone();

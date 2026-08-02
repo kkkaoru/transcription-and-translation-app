@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS,
   ADAPTIVE_GATE_AMBIENT_CEILING_DB,
   ADAPTIVE_GATE_FLOOR_ADMIT_DB,
   ADAPTIVE_GATE_MARGIN_DB,
@@ -39,10 +40,22 @@ import {
   updateAdaptiveSilenceGate,
 } from "./audio";
 import { DEFAULT_AUDIO_CHUNK_MS, DEFAULT_SILENCE_GATE_DB } from "./defaults";
+import { clearDiagnosticEvents, getDiagnosticEvents } from "./diagnostics";
+import { clearPipelineDrops, snapshotPipelineDrops } from "./dropDiagnostics";
 import { isVerbosePipelineLogging, setVerbosePipelineLogging } from "./pipelineStages";
 import type { AudioChunk } from "./types";
 
 const FULL_CAPTURE_CHUNK_SAMPLES = (TARGET_SAMPLE_RATE * DEFAULT_AUDIO_CHUNK_MS) / 1_000;
+
+beforeEach(() => {
+  clearDiagnosticEvents();
+  clearPipelineDrops();
+});
+
+afterEach(() => {
+  clearDiagnosticEvents();
+  clearPipelineDrops();
+});
 
 describe("audio conversion", () => {
   it("keeps a speech-aware partial tail only when it reaches the minimum duration", () => {
@@ -242,6 +255,9 @@ describe("audio conversion", () => {
 
     it("blocks digital silence with an absolute floor even during warmup", () => {
       const state = createAdaptiveSilenceGate();
+      const boundary = createAdaptiveSilenceGate();
+      expect(feed(boundary, ADAPTIVE_GATE_MIN_ABSOLUTE_DB)).toBe(false);
+      expect(boundary.fedChunks).toBe(0);
       expect(feed(state, -75)).toBe(false);
       expect(feed(state, -75)).toBe(false);
       expect(feed(state, -71)).toBe(false);
@@ -368,6 +384,54 @@ describe("audio conversion", () => {
       // chunks never feed the floor.
       expect(ADAPTIVE_GATE_FLOOR_ADMIT_DB).toBeLessThan(ADAPTIVE_GATE_MARGIN_DB);
     });
+  });
+
+  it("surfaces a bounded warning for repeated absolute-floor drops", () => {
+    const capture = new MicrophoneCapture();
+    const internals = capture as unknown as {
+      context: { sampleRate: number };
+      handler: (chunk: AudioChunk) => void;
+      gateMode: "adaptive";
+      adaptiveGate: ReturnType<typeof createAdaptiveSilenceGate>;
+      chunksAccepted: number;
+      publishDiagnostics: () => void;
+      acceptSamples: (samples: Float32Array) => void;
+    };
+    internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+    internals.handler = vi.fn();
+    internals.gateMode = "adaptive";
+    internals.adaptiveGate = createAdaptiveSilenceGate();
+    internals.chunksAccepted = 2;
+    internals.publishDiagnostics = () => undefined;
+
+    const silentChunk = new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES);
+    const warningEvents = () =>
+      getDiagnosticEvents().filter((event) => event.message === "Absolute floor drop warning");
+    for (let index = 0; index < ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS - 1; index += 1) {
+      internals.acceptSamples(silentChunk.slice());
+    }
+    expect(warningEvents()).toHaveLength(0);
+
+    internals.acceptSamples(silentChunk.slice());
+    expect(warningEvents()).toHaveLength(1);
+    expect(warningEvents()[0]).toMatchObject({ kind: "audio" });
+    expect(warningEvents()[0]?.detail).toContain(
+      `floor=${ADAPTIVE_GATE_MIN_ABSOLUTE_DB.toFixed(1)}dBFS`,
+    );
+    expect(capture.getDiagnostics()).toMatchObject({
+      absoluteFloorDrops: ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS,
+      consecutiveAbsoluteFloorDrops: ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS,
+      chunksDroppedSilent: ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS,
+      lastAbsoluteFloorDropAt: expect.any(String),
+    });
+    expect(snapshotPipelineDrops()).toMatchObject({
+      total: ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS,
+      bySource: { audio: ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS },
+      byReason: { "absolute-floor": ABSOLUTE_FLOOR_WARNING_CONSECUTIVE_CHUNKS },
+    });
+
+    internals.acceptSamples(new Float32Array(FULL_CAPTURE_CHUNK_SAMPLES).fill(0.1));
+    expect(capture.getDiagnostics().consecutiveAbsoluteFloorDrops).toBe(0);
   });
 
   it("soft peak-normalizes quiet speech that already passed the silence gate", () => {
@@ -712,8 +776,17 @@ describe("audio conversion", () => {
         captureMode: "script-processor",
         lastRmsDb: -24.5,
         chunksAccepted: 3,
+        absoluteFloorDrops: 3,
+        consecutiveAbsoluteFloorDrops: 2,
       }),
     ).toMatch(/rms=-24\.5dB/);
+    expect(
+      formatAudioCaptureDiagnostics({
+        ...snapshot,
+        absoluteFloorDrops: 3,
+        consecutiveAbsoluteFloorDrops: 2,
+      }),
+    ).toMatch(/floorDrops=3.*floorStreak=2|floorStreak=2.*floorDrops=3/);
   });
 
   it("surfaces the silence gate mode in diagnostics", () => {
@@ -1039,6 +1112,11 @@ describe("audio conversion", () => {
     expect(capture.getDiagnostics()).toMatchObject({
       streamFramesDropped: 1,
       lastErrorCode: "parapper-transport-failed",
+    });
+    expect(snapshotPipelineDrops()).toMatchObject({
+      total: 1,
+      bySource: { audio: 1 },
+      byReason: { "stream-frame-delivery-failed": 1 },
     });
   });
 

@@ -5,9 +5,11 @@ import { createDefaultConfig } from "../core/defaults";
 import { selectParapperSurfaceText } from "../core/parapperStream";
 import type { AppConfig, ParapperRecognitionOutput } from "../core/types";
 import { isWebSpeechRecognitionSupported } from "../core/webSpeechRecognition";
+import { createPreviewCaption } from "../overlay/captions";
 import {
   captureConfigRequiresRestart,
   clearLegacyFailureNotice,
+  mergeCaptionForDisplay,
   resolveTranscribeAudioChunkTimeoutMs,
   TRANSCRIBE_AUDIO_CHUNK_DEFAULT_TIMEOUT_MS,
   withFiniteTimeout,
@@ -156,6 +158,24 @@ describe("Bug 2: Web Speech Recognition support detection", () => {
 });
 
 describe("MainApp ASR lifecycle guards", () => {
+  it("allows an older latest-caption replay to replace the design preview", () => {
+    const preview = createPreviewCaption();
+    const latest = {
+      ...preview,
+      id: "captured-utterance",
+      sourceText: "過去に認識した発話",
+      translationText: "A caption from the active session",
+      startedAt: 1,
+      receivedAt: 2,
+      stage: "translation" as const,
+      sequence: 1,
+      isFinal: true,
+    };
+
+    expect(mergeCaptionForDisplay(preview, latest)).toBeNull();
+    expect(mergeCaptionForDisplay(preview, latest, true)).toEqual(latest);
+  });
+
   it("restarts for capture settings that affect an active or starting stream", () => {
     const before = createDefaultConfig();
     const changed = (patch: Partial<AppConfig["audio"]>): AppConfig => ({
