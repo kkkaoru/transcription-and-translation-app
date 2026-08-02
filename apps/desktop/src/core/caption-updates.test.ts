@@ -1165,6 +1165,31 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, normalized)?.sourceText).toBe("明日は");
   });
 
+  it("normalizes katakana and prolonged-mark variants before comparing readings", () => {
+    const current = caption({
+      id: "u-reading-normalized",
+      sourceText: "すーぱー",
+      azookeyInputText: "スーパー",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const normalized = caption({
+      id: "u-reading-normalized",
+      sourceText: "スーパー",
+      azookeyInputText: "すーぱー",
+      startedAt: 1_300,
+      receivedAt: 1_300,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, normalized)?.sourceText).toBe("スーパー");
+  });
+
   it("replaces the current surface when the incoming AzooKey reading extends it", () => {
     const current = caption({
       id: "u-reading-extension",
@@ -1211,6 +1236,31 @@ describe("mergeCaptionPayload", () => {
     });
 
     expect(mergeCaptionPayload(current, continuation)?.sourceText).toBe("あついりょうりはおいしい");
+  });
+
+  it("keeps adjacent turns joined when their readings look like a rolling extension", () => {
+    const current = caption({
+      id: "turn-1",
+      sourceText: "あしたは",
+      azookeyInputText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const nextTurn = caption({
+      id: "turn-2",
+      sourceText: "晴れ",
+      azookeyInputText: "あしたははれ",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, nextTurn)?.sourceText).toBe("あしたは晴れ");
   });
 
   it("keeps a long same-id utterance together when windows end mid-word", () => {

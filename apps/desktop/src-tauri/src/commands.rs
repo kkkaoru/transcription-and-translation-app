@@ -1364,11 +1364,11 @@ mod tests {
         sanitize_export_body, source_caption_payload, stop_generation_is_current,
         validate_overlay_frame_dimensions, NativeOverlayFrame, SourceCaptionInput,
     };
-    use base64::Engine;
     use crate::config::AppConfig;
     use crate::output::OutputStatus;
     use crate::pipeline::ParapperRecognitionInput;
     use crate::state::{AppState, ExpectedEmptyAsrResult, ASR_EMPTY_RESULT_WINDOW};
+    use base64::Engine;
 
     #[test]
     fn update_relaunch_is_deferred_only_for_active_capture_states() {
@@ -1834,21 +1834,13 @@ mod tests {
     fn overlay_frame_base64_decode_validates_format() {
         let rgba = vec![0u8; 4];
         let valid_base64 = base64::engine::general_purpose::STANDARD.encode(&rgba);
-        let frame = NativeOverlayFrame {
-            rgba_base64: valid_base64,
-            width: 1,
-            height: 1,
-        };
+        let frame = NativeOverlayFrame { rgba_base64: valid_base64, width: 1, height: 1 };
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(frame.rgba_base64)
             .expect("valid base64");
         assert_eq!(decoded.len(), 4);
 
-        let invalid = NativeOverlayFrame {
-            rgba_base64: "!!!".to_string(),
-            width: 1,
-            height: 1,
-        };
+        let invalid = NativeOverlayFrame { rgba_base64: "!!!".to_string(), width: 1, height: 1 };
         let result = base64::engine::general_purpose::STANDARD.decode(invalid.rgba_base64);
         assert!(result.is_err());
     }
@@ -1862,11 +1854,7 @@ mod tests {
 
         let correct_rgba = vec![0u8; expected_bytes];
         let correct_base64 = base64::engine::general_purpose::STANDARD.encode(&correct_rgba);
-        let frame = NativeOverlayFrame {
-            rgba_base64: correct_base64,
-            width,
-            height,
-        };
+        let frame = NativeOverlayFrame { rgba_base64: correct_base64, width, height };
         let rgba = base64::engine::general_purpose::STANDARD
             .decode(frame.rgba_base64.clone())
             .expect("valid base64");
@@ -1874,11 +1862,7 @@ mod tests {
 
         let short_rgba = vec![0u8; expected_bytes - 4];
         let short_base64 = base64::engine::general_purpose::STANDARD.encode(&short_rgba);
-        let short_frame = NativeOverlayFrame {
-            rgba_base64: short_base64,
-            width,
-            height,
-        };
+        let short_frame = NativeOverlayFrame { rgba_base64: short_base64, width, height };
         let short_decoded = base64::engine::general_purpose::STANDARD
             .decode(short_frame.rgba_base64)
             .expect("valid base64");
@@ -1897,7 +1881,8 @@ mod tests {
 
         let safe_width = 1920usize;
         let safe_height = 1080usize;
-        let safe_result = safe_width.checked_mul(safe_height).and_then(|pixels| pixels.checked_mul(4));
+        let safe_result =
+            safe_width.checked_mul(safe_height).and_then(|pixels| pixels.checked_mul(4));
 
         assert!(safe_result.is_some(), "safe dimensions should not overflow");
         assert_eq!(safe_result.unwrap(), 1920 * 1080 * 4);

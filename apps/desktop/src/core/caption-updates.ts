@@ -6,6 +6,10 @@ const TRANSLATION_SEQUENCE = 1;
 const MIN_OVERLAP_CHARS = 2;
 const INDEX_STEP = 1;
 const MAX_PENDING_CROSS_ID_TRANSLATIONS = 64;
+const HIRAGANA_START_CODE_POINT = 0x3041;
+const KATAKANA_START_CODE_POINT = 0x30a1;
+const KATAKANA_END_CODE_POINT = 0x30f6;
+const KATAKANA_TO_HIRAGANA_OFFSET = KATAKANA_START_CODE_POINT - HIRAGANA_START_CODE_POINT;
 
 const trim = (value: string): string => value.trim();
 
@@ -278,8 +282,20 @@ const mergeSourceText = (
 const mergeCrossIdSourceText = (current: CaptionPayload, next: CaptionPayload): string =>
   mergeSourceText(current, next, true);
 
+const normalizeAzookeyReading = (value: string): string =>
+  [...value.normalize("NFKC")]
+    .map((character) => {
+      const codePoint = character.codePointAt(0) ?? NO_TIME_MS;
+      return codePoint >= KATAKANA_START_CODE_POINT && codePoint <= KATAKANA_END_CODE_POINT
+        ? String.fromCodePoint(codePoint - KATAKANA_TO_HIRAGANA_OFFSET)
+        : character;
+    })
+    .join("");
+
 const trimmedAzookeyReading = (caption: CaptionPayload): string =>
-  typeof caption.azookeyInputText === "string" ? caption.azookeyInputText.trim() : "";
+  typeof caption.azookeyInputText === "string"
+    ? normalizeAzookeyReading(caption.azookeyInputText.trim())
+    : "";
 
 /**
  * A normalizer can rewrite the same rolling span from kana to kanji. When the
