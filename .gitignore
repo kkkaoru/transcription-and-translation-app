@@ -40,4 +40,4 @@ models
 docs/evidence/
 
 # Atomic lock used to serialize local build artifact cleanup.
-/.kotoba-build-cleanup.lock/
+/.kotoba-build-cleanup.lock*/
