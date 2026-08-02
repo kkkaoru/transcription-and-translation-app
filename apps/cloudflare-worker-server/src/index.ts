@@ -12,6 +12,7 @@ import {
   AZOOKEY_MODEL,
   AZOOKEY_PROTOCOL,
   AZOOKEY_WS_PATH,
+  type AzookeyFetcher,
   type AzookeyRequestDependencies,
   azookeyTimeoutMs,
   BROWSER_VIBRATO_MODE,
@@ -20,12 +21,17 @@ import {
   openAzookeySocket,
 } from "./azookey.js";
 import azookeyWasm from "./azookey-wasm.js";
+import { createWorkersAiAsrTranscriber, type WorkersAiAsrRun } from "./workers-ai-asr.js";
 
 export interface Env {
+  AI?: Ai;
   ASR_API_TOKEN?: string;
+  ASR_PROVIDER?: string;
   ASR_UPSTREAM_URL?: string;
   AZOOKEY_API_TOKEN?: string;
+  AZOOKEY_DICTIONARY_URL?: string;
   AZOOKEY_TIMEOUT_MS?: string;
+  WORKERS_AI_ASR_TIMEOUT_MS?: string;
   VIBRATO_UPSTREAM_URL?: string;
   VIBRATO_API_TOKEN?: string;
   VIBRATO_DICTIONARY_URL?: string;
@@ -49,7 +55,29 @@ const HTTP_INTERNAL_SERVER_ERROR = 500;
 const LOCAL_GATEWAY_HOST = "127.0.0.1";
 const LOCAL_GATEWAY_PORT = 8765;
 const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
-export const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
+// Keep entrypoint exports limited to the Worker handler/function shapes that
+// workerd accepts. Tests use the protocol path literal instead of exporting a
+// string binding from the module entrypoint.
+const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
+const AZOOKEY_DICTIONARY_PATH = "/azookey/system.azkdict.gz";
+const WORKER_ASSET_ORIGIN = "https://worker-assets.invalid";
+const assetFetcherCache = new WeakMap<WorkerAssets, AzookeyFetcher>();
+
+const cachedAssetFetcher = (assets: WorkerAssets): AzookeyFetcher => {
+  const cached = assetFetcherCache.get(assets);
+  if (cached) {
+    return cached;
+  }
+  const fetcher: AzookeyFetcher = (input, init) => {
+    const assetRequest =
+      input instanceof Request
+        ? new Request(input, init)
+        : new Request(new URL(String(input), WORKER_ASSET_ORIGIN), init);
+    return assets.fetch(assetRequest);
+  };
+  assetFetcherCache.set(assets, fetcher);
+  return fetcher;
+};
 
 /**
  * The Worker adapter accepts the native fetch function as well as a small
@@ -63,6 +91,7 @@ export type WorkerFetcher = (
 
 export interface WorkerDependencies extends AzookeyRequestDependencies {
   fetch?: typeof fetch;
+  workersAiRun?: WorkersAiAsrRun;
 }
 
 const json = (status: number, body: Record<string, unknown>): Response =>
@@ -113,7 +142,12 @@ const upstreamTranscriber = (
   return async (pcm: Uint8Array): Promise<string> => {
     const form = new FormData();
     form.set("model", "parapper-ja");
-    form.set("file", new File([pcm16ToWav(pcm)], "caption.wav", { type: "audio/wav" }));
+    // Copy into an ArrayBuffer-backed view for the stricter Workers DOM Blob
+    // typings (the gateway's Uint8Array may be backed by SharedArrayBuffer).
+    form.set(
+      "file",
+      new File([new Uint8Array(pcm16ToWav(pcm))], "caption.wav", { type: "audio/wav" }),
+    );
     let response: Response;
     try {
       response = await fetcher(upstreamUrl, {
@@ -148,6 +182,9 @@ const upstreamTranscriber = (
   };
 };
 
+const usesWorkersAiAsr = (provider: string | undefined): boolean =>
+  provider?.trim().toLowerCase() === "workers-ai";
+
 export const createWorker = (
   fetcher: WorkerFetcher = fetch,
   dependencies: WorkerDependencies = {},
@@ -157,7 +194,10 @@ export const createWorker = (
       return cors(new Response(null, { status: HTTP_NO_CONTENT }), env.CORS_ORIGIN);
     }
     const url = new URL(request.url);
-    if (url.pathname === VIBRATO_DICTIONARY_PATH && env.ASSETS) {
+    if (
+      (url.pathname === VIBRATO_DICTIONARY_PATH || url.pathname === AZOOKEY_DICTIONARY_PATH) &&
+      env.ASSETS
+    ) {
       return env.ASSETS.fetch(request);
     }
     if (url.pathname === "/v1/azookey") {
@@ -183,15 +223,29 @@ export const createWorker = (
             configured: Boolean(env.AZOOKEY_API_TOKEN?.trim()),
             transport: "authorization-header-or-first-frame",
           },
+          dictionary: {
+            configured: Boolean(env.AZOOKEY_DICTIONARY_URL?.trim()),
+            transport: env.AZOOKEY_DICTIONARY_URL?.trim() ? "portable-wasm" : "builtin",
+            contract: "official AzooKey LOUDS/MM/CID caption dictionary",
+          },
           vibrato: {
-            workerStage:
-              env.VIBRATO_DICTIONARY_URL?.trim() || env.VIBRATO_UPSTREAM_URL?.trim()
-                ? "configured"
-                : "unconfigured",
-            transport: env.VIBRATO_DICTIONARY_URL?.trim() ? "wasm" : "http",
-            contract: env.VIBRATO_DICTIONARY_URL?.trim()
-              ? "Vibrato WASM + zstd system dictionary"
-              : "POST {text, language} -> {text}",
+            workerStage: env.VIBRATO_UPSTREAM_URL?.trim()
+              ? "configured"
+              : env.AZOOKEY_DICTIONARY_URL?.trim()
+                ? "passthrough"
+                : env.VIBRATO_DICTIONARY_URL?.trim()
+                  ? "configured"
+                  : "unconfigured",
+            transport: env.VIBRATO_UPSTREAM_URL?.trim()
+              ? "http"
+              : env.AZOOKEY_DICTIONARY_URL?.trim()
+                ? "azookey-mixed-input"
+                : env.VIBRATO_DICTIONARY_URL?.trim()
+                  ? "wasm"
+                  : "none",
+            contract: env.AZOOKEY_DICTIONARY_URL?.trim()
+              ? "mixed Japanese text is converted directly by full AzooKey"
+              : "Vibrato reading pre-pass",
           },
           modes: {
             worker: AZOOKEY_MODE,
@@ -204,21 +258,22 @@ export const createWorker = (
     if (url.pathname === AZOOKEY_WS_PATH) {
       const fetcher = dependencies.fetcher ?? fetch;
       const assets = env.ASSETS;
-      const dictionaryFetcher =
+      const assetFetcher = assets ? cachedAssetFetcher(assets) : undefined;
+      const vibratoDictionaryFetcher =
         dependencies.vibratoDictionaryFetcher ??
-        (assets && env.VIBRATO_DICTIONARY_URL?.trim().startsWith("/")
-          ? (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-              const assetRequest =
-                input instanceof Request
-                  ? new Request(input, init)
-                  : new Request(new URL(String(input), request.url), init);
-              return assets.fetch(assetRequest);
-            }
+        (assetFetcher && env.VIBRATO_DICTIONARY_URL?.trim().startsWith("/")
+          ? assetFetcher
+          : fetcher);
+      const azookeyDictionaryFetcher =
+        dependencies.azookeyDictionaryFetcher ??
+        (assetFetcher && env.AZOOKEY_DICTIONARY_URL?.trim().startsWith("/")
+          ? assetFetcher
           : fetcher);
       const response = await openAzookeySocket(request, env, {
         ...dependencies,
         fetcher,
-        vibratoDictionaryFetcher: dictionaryFetcher,
+        vibratoDictionaryFetcher,
+        azookeyDictionaryFetcher,
         wasmModule: dependencies.wasmModule ?? azookeyWasm,
         vibratoWasmModule: dependencies.vibratoWasmModule ?? vibratoWasm,
       });
@@ -241,7 +296,35 @@ export const createWorker = (
         env.CORS_ORIGIN,
       );
     }
-    const transcribe = upstreamTranscriber(env, fetcher);
+    const aiBinding = env.AI;
+    const transcribe = usesWorkersAiAsr(env.ASR_PROVIDER)
+      ? createWorkersAiAsrTranscriber(
+          {
+            ...(env.WORKERS_AI_ASR_TIMEOUT_MS
+              ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
+              : {}),
+            ...(aiBinding
+              ? {
+                  AI: {
+                    run: (model, input, options) =>
+                      aiBinding.run(
+                        model,
+                        {
+                          ...input,
+                          // Generated Workers types currently declare Nova-3's
+                          // base64 body as object; the binding contract is a
+                          // base64 string (matching Cloudflare's adapter).
+                          audio: { ...input.audio, body: input.audio.body as unknown as object },
+                        },
+                        options,
+                      ),
+                  },
+                }
+              : {}),
+          },
+          dependencies.workersAiRun,
+        )
+      : upstreamTranscriber(env, fetcher);
     const handler = createGatewayFetchHandler(config, {
       // The shared gateway core deliberately models the platform fetch as
       // async.  Awaiting here also makes synchronous test doubles conform to

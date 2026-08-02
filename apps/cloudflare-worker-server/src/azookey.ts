@@ -28,6 +28,7 @@ export const AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES = 16 * 1024 * 1024;
 export const AZOOKEY_MAX_DICTIONARY_BYTES = 32 * 1024 * 1024;
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
+export const AZOOKEY_WASM_ABI_VERSION = 2;
 export const AZOOKEY_MIN_ELAPSED_MS = 0;
 export const HTTP_SWITCHING_PROTOCOLS = 101;
 export const HTTP_UNAUTHORIZED = 401;
@@ -62,6 +63,7 @@ export interface AzookeyWasmExports {
   azookey_alloc: (length: number) => number;
   azookey_dealloc: (pointer: number, length: number) => void;
   azookey_convert: (pointer: number, length: number) => bigint | number;
+  azookey_abi_version: () => number;
   azookey_dictionary_init_owned: (pointer: number, length: number) => number;
 }
 
@@ -397,7 +399,11 @@ const instantiateWasmConverter = (
   }
   const checkedExports = exports as AzookeyWasmExports;
   if (dictionary) {
-    if (typeof exports.azookey_dictionary_init_owned !== "function") {
+    if (
+      typeof exports.azookey_abi_version !== "function" ||
+      exports.azookey_abi_version() !== AZOOKEY_WASM_ABI_VERSION ||
+      typeof exports.azookey_dictionary_init_owned !== "function"
+    ) {
       throw new Error("AzooKey Wasm module does not support portable dictionaries");
     }
     initializeWasmDictionary(checkedExports, dictionary);
@@ -483,7 +489,7 @@ const collectStream = async (stream: ReadableStream<Uint8Array>): Promise<Uint8A
   return combined;
 };
 
-const decompressPortableDictionary = async (response: Response): Promise<Uint8Array> => {
+const decompressPortableDictionary = (response: Response): Promise<Uint8Array> => {
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES) {
     throw new Error("AzooKey compressed dictionary exceeds the byte limit");
@@ -500,10 +506,7 @@ const decompressPortableDictionary = async (response: Response): Promise<Uint8Ar
   const decompressed = compressed
     .pipeThrough(new DecompressionStream("gzip"))
     .pipeThrough(
-      byteLimitTransform(
-        AZOOKEY_MAX_DICTIONARY_BYTES,
-        "AzooKey dictionary exceeds the byte limit",
-      ),
+      byteLimitTransform(AZOOKEY_MAX_DICTIONARY_BYTES, "AzooKey dictionary exceeds the byte limit"),
     );
   return collectStream(decompressed);
 };
@@ -593,8 +596,10 @@ const isHttpUrl = (value: string): boolean => {
 const isDictionaryUrl = (value: string): boolean =>
   isHttpUrl(value) || (value.startsWith("/") && !value.startsWith("//"));
 
-const createPortableDictionaryInputAdapter = (): AzookeyVibratoConverter =>
-  (text: string): string => text;
+const createPortableDictionaryInputAdapter =
+  (): AzookeyVibratoConverter =>
+  (text: string): string =>
+    text;
 
 /**
  * Build the Worker-side Vibrato adapter without bundling a 684 MB UniDic
@@ -906,20 +911,32 @@ export const attachAzookeySocket = (socket: WebSocket, runtime: AzookeyRuntime):
   });
 };
 
-export const readyAzookeyMessage = (timeoutMs: number, vibratoConfigured = false): string =>
-  jsonMessage({
+type WorkerInputStage = "configured" | "passthrough" | "unconfigured";
+
+export const readyAzookeyMessage = (
+  timeoutMs: number,
+  workerInputStage: WorkerInputStage | boolean = "unconfigured",
+): string => {
+  const normalizedStage =
+    typeof workerInputStage === "boolean"
+      ? workerInputStage
+        ? "configured"
+        : "unconfigured"
+      : workerInputStage;
+  return jsonMessage({
     type: "azookey.ready",
     protocol: AZOOKEY_PROTOCOL,
     model: AZOOKEY_MODEL,
     mode: AZOOKEY_MODE,
     browserMode: BROWSER_VIBRATO_MODE,
     vibrato: {
-      workerStage: vibratoConfigured ? "configured" : "unconfigured",
+      workerStage: normalizedStage,
       browserStage: "client",
     },
     maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
     timeoutMs,
   });
+};
 
 export const isWebSocketUpgrade = (request: Request): boolean =>
   request.headers.get("upgrade")?.toLowerCase() === "websocket";
@@ -1069,7 +1086,13 @@ export const openAzookeySocket = async (
     handshakeAuthorized,
     ...(expectedToken ? { expectedToken } : {}),
   });
-  pair.server.send(readyAzookeyMessage(timeoutMs, Boolean(vibratoConverter)));
+  const workerInputStage =
+    portableDictionaryConfigured && !env.VIBRATO_UPSTREAM_URL?.trim()
+      ? "passthrough"
+      : vibratoConverter
+        ? "configured"
+        : "unconfigured";
+  pair.server.send(readyAzookeyMessage(timeoutMs, workerInputStage));
   return websocketUpgradeResponse(pair.client);
 };
 

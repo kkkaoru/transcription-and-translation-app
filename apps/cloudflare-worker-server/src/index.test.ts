@@ -7,7 +7,11 @@ import {
   AZOOKEY_WS_PATH,
   BROWSER_VIBRATO_MODE,
 } from "./azookey.js";
-import { createWorker, VIBRATO_DICTIONARY_PATH, type WorkerHandler } from "./index.js";
+import { createWorker, type Env, type WorkerHandler } from "./index.js";
+import { WORKERS_AI_ASR_MODEL, type WorkersAiAsrRun } from "./workers-ai-asr.js";
+
+const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
+const AZOOKEY_DICTIONARY_PATH = "/azookey/system.azkdict.gz";
 
 const env = {
   CORS_ORIGIN: "https://captions.example.com",
@@ -85,8 +89,17 @@ describe("Cloudflare Worker inference adapter", () => {
       vibrato: {
         workerStage: "configured",
         transport: "wasm",
-        contract: "Vibrato WASM + zstd system dictionary",
+        contract: "Vibrato reading pre-pass",
       },
+    });
+
+    const portableDictionary = await createWorker().fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      { ...env, AZOOKEY_DICTIONARY_URL: AZOOKEY_DICTIONARY_PATH },
+    );
+    await expect(portableDictionary.json()).resolves.toMatchObject({
+      dictionary: { configured: true, transport: "portable-wasm" },
+      vibrato: { workerStage: "passthrough", transport: "azookey-mixed-input" },
     });
   });
 
@@ -109,6 +122,29 @@ describe("Cloudflare Worker inference adapter", () => {
     expect(response.headers.get("content-type")).toContain("application/zstd");
     await expect(response.arrayBuffer()).resolves.toEqual(new Uint8Array([1, 2, 3]).buffer);
     expect(assets.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves the official portable AzooKey archive through the assets binding", async () => {
+    const archive = new Uint8Array([31, 139, 8, 0]);
+    const assets = {
+      fetch: vi.fn((request: Request) => {
+        expect(new URL(request.url).pathname).toBe(AZOOKEY_DICTIONARY_PATH);
+        return Promise.resolve(
+          new Response(archive, {
+            status: 200,
+            headers: { "content-type": "application/gzip" },
+          }),
+        );
+      }),
+    };
+    const response = await createWorker().fetch(
+      new Request(`https://worker.example${AZOOKEY_DICTIONARY_PATH}`),
+      { ...env, ASSETS: assets },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/gzip");
+    await expect(response.arrayBuffer()).resolves.toEqual(archive.buffer);
+    expect(assets.fetch).toHaveBeenCalledOnce();
   });
 
   it("routes Worker Vibrato warmup through the assets binding", async () => {
@@ -148,6 +184,58 @@ describe("Cloudflare Worker inference adapter", () => {
     expect(assets.fetch).toHaveBeenCalledTimes(1);
     expect(server.sent[0]).toContain('"type":"azookey.ready"');
   });
+
+  it("shares one portable AzooKey asset and Wasm instance across request origins", async () => {
+    class TestSocket extends EventTarget {
+      readonly sent: string[] = [];
+
+      accept(): void {}
+
+      send(message: string): void {
+        this.sent.push(message);
+      }
+    }
+
+    const dictionary = readFileSync(
+      new URL("../public/azookey/system.azkdict.gz", import.meta.url),
+    );
+    const assets = {
+      fetch: vi.fn((request: Request) => {
+        expect(new URL(request.url).pathname).toBe(AZOOKEY_DICTIONARY_PATH);
+        return Promise.resolve(new Response(dictionary));
+      }),
+    };
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/azookey.wasm", import.meta.url)),
+    );
+    const servers: TestSocket[] = [];
+    const worker = createWorker(undefined, {
+      wasmModule,
+      socketPair: () => {
+        const server = new TestSocket();
+        servers.push(server);
+        return {
+          client: new TestSocket() as unknown as WebSocket,
+          server: server as unknown as WebSocket,
+        };
+      },
+    });
+    for (const host of ["worker.example", "captions.example.com"]) {
+      const response = await worker.fetch(
+        new Request(`https://${host}${AZOOKEY_WS_PATH}`, { headers: { upgrade: "websocket" } }),
+        { ...env, ASSETS: assets, AZOOKEY_DICTIONARY_URL: AZOOKEY_DICTIONARY_PATH },
+      );
+      expect(response.status).toBe(101);
+    }
+    expect(assets.fetch).toHaveBeenCalledTimes(1);
+    expect(servers).toHaveLength(2);
+    for (const server of servers) {
+      expect(JSON.parse(server.sent[0] ?? "{}")).toMatchObject({
+        type: "azookey.ready",
+        vibrato: { workerStage: "passthrough" },
+      });
+    }
+  }, 20_000);
 
   it("rejects non-GET metadata requests and non-upgrade WebSocket requests", async () => {
     const worker = createWorker();
@@ -257,6 +345,75 @@ describe("Cloudflare Worker inference adapter", () => {
       "https://asr.example/v1/audio/transcriptions",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("uses Workers AI Nova-3 only when ASR_PROVIDER explicitly opts in", async () => {
+    const workersAiRun: WorkersAiAsrRun = vi.fn((model, input) => {
+      expect(model).toBe(WORKERS_AI_ASR_MODEL);
+      expect(input.language).toBe("ja");
+      return Promise.resolve({
+        results: {
+          channels: [{ alternatives: [{ transcript: "Workers AI の文字起こし" }] }],
+        },
+      });
+    });
+    const upstream = vi.fn(() => {
+      throw new Error("the opt-in path must not call the upstream");
+    });
+    const response = await createWorker(upstream, { workersAiRun }).fetch(transcriptionRequest(), {
+      ...env,
+      ASR_PROVIDER: " Workers-AI ",
+      ASR_UPSTREAM_URL: "https://asr.example/transcribe",
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(env.CORS_ORIGIN);
+    await expect(response.json()).resolves.toEqual({
+      text: "Workers AI の文字起こし",
+      language: "ja",
+    });
+    expect(workersAiRun).toHaveBeenCalledTimes(1);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Workers AI provider unavailable without an AI binding or test seam", async () => {
+    const response = await createWorker().fetch(transcriptionRequest(), {
+      ...env,
+      ASR_PROVIDER: "workers-ai",
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "asr_workers_ai_unavailable" },
+    });
+  });
+
+  it("adapts a real-shaped AI binding while keeping the provider opt-in", async () => {
+    const bindingRun = vi.fn((model: string, input: Record<string, unknown>) => {
+      expect(model).toBe(WORKERS_AI_ASR_MODEL);
+      const audio = input["audio"] as { body?: unknown; contentType?: unknown };
+      expect(typeof audio.body).toBe("string");
+      expect(audio.contentType).toBe("audio/wav");
+      return Promise.resolve({
+        results: { channels: [{ alternatives: [{ transcript: "AI binding" }] }] },
+      });
+    });
+    const ai = { run: bindingRun } as unknown as NonNullable<Env["AI"]>;
+    const response = await createWorker().fetch(transcriptionRequest(), {
+      ...env,
+      AI: ai,
+      ASR_PROVIDER: "workers-ai",
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ text: "AI binding", language: "ja" });
+    expect(bindingRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not invoke an available AI binding when the provider flag is unset", async () => {
+    const bindingRun = vi.fn(() => Promise.resolve({ results: {} }));
+    const ai = { run: bindingRun } as unknown as NonNullable<Env["AI"]>;
+    const response = await createWorker().fetch(transcriptionRequest(), { ...env, AI: ai });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "asr_unavailable" } });
+    expect(bindingRun).not.toHaveBeenCalled();
   });
 
   it("maps upstream connection, status, and payload failures to stable ASR errors", async () => {

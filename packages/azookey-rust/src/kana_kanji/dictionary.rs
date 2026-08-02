@@ -1,4 +1,5 @@
 use super::normalization::{to_hiragana, to_katakana};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
@@ -39,6 +40,13 @@ const SYSTEM_DICTIONARY_LENGTH_MARGIN: f32 = 2.0;
 // The extra length-dependent margin mirrors upstream `shouldBeRemoved`:
 // value must be at least `threshold + 2 / ruby_count`.
 const SYSTEM_DICTIONARY_VALUE_THRESHOLD: f32 = -17.0;
+const PORTABLE_DICTIONARY_MAGIC: &[u8; 8] = b"AZKDIC01";
+const PORTABLE_DICTIONARY_HEADER_BYTES: usize = 12;
+const PORTABLE_FILE_HEADER_BYTES: usize = U16_BYTES + U32_BYTES;
+const PORTABLE_MAX_FILE_COUNT: usize = 4_096;
+const PORTABLE_MAX_PATH_BYTES: usize = 1_024;
+const PORTABLE_LOUDS_FILE_COUNT: usize = 160;
+const PORTABLE_LOUDS_TEXT_FILE_COUNT: usize = 422;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictionaryEntry {
@@ -193,6 +201,14 @@ impl AzooKeyDictionary {
         Ok(dictionary)
     }
 
+    /// Load the official AzooKey system dictionary from a single in-memory
+    /// archive. This is the filesystem-free format used by WebAssembly and
+    /// Cloudflare Workers; it contains the original LOUDS, MM, and CID files
+    /// without converting them into a phrase-specific table.
+    pub fn from_portable_system_dictionary(bytes: Vec<u8>) -> Result<Self, String> {
+        Ok(Self { system: Some(SystemDictionary::load_portable(bytes)?), ..Self::default() })
+    }
+
     pub fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
         let normalized = to_hiragana(reading);
         let mut entries: Vec<DictionaryEntry> = self
@@ -333,37 +349,69 @@ fn path_exists_for_dictionary(path: &Path) -> bool {
 
 #[derive(Debug, Clone)]
 struct SystemDictionary {
-    root: PathBuf,
+    source: SystemDictionarySource,
     char_ids: HashMap<char, u8>,
     mm: Vec<f32>,
     cc_cache: RefCell<HashMap<u16, Vec<f32>>>,
+    louds_cache: RefCell<HashMap<String, Louds>>,
+    entry_cache: RefCell<HashMap<String, Vec<DictionaryEntry>>>,
+}
+
+#[derive(Debug, Clone)]
+enum SystemDictionarySource {
+    Filesystem(PathBuf),
+    Portable(PortableFileStore),
+}
+
+#[derive(Debug, Clone)]
+struct PortableFileStore {
+    bytes: Vec<u8>,
+    files: HashMap<String, Range<usize>>,
 }
 
 impl SystemDictionary {
     fn load(root: &Path) -> Result<Self, String> {
-        let char_path = root.join("louds").join("charID.chid");
-        let chars = fs::read_to_string(&char_path)
-            .map_err(|error| format!("could not read {}: {error}", char_path.display()))?;
+        Self::from_source(SystemDictionarySource::Filesystem(root.to_path_buf()))
+    }
+
+    fn load_portable(bytes: Vec<u8>) -> Result<Self, String> {
+        Self::from_source(SystemDictionarySource::Portable(PortableFileStore::parse(bytes)?))
+    }
+
+    fn from_source(source: SystemDictionarySource) -> Result<Self, String> {
+        let chars = source.read_utf8("louds/charID.chid")?;
         let mut char_ids = HashMap::new();
         for (index, character) in chars.chars().enumerate() {
             let id = u8::try_from(index)
                 .map_err(|_| "AzooKey charID.chid has more than 256 characters".to_string())?;
             char_ids.insert(character, id);
         }
-        let mm_path = root.join("mm.binary");
-        let mm = read_f32_le(&mm_path)?;
+        let mm = read_f32_bytes(&source.read("mm.binary")?)?;
         if mm.len() < MID_COUNT * MID_COUNT {
             return Err(format!(
-                "{} is too short for the AzooKey {}x{} MID matrix",
-                mm_path.display(),
-                MID_COUNT,
-                MID_COUNT
+                "mm.binary is too short for the AzooKey {MID_COUNT}x{MID_COUNT} MID matrix"
             ));
         }
-        Ok(Self { root: root.to_path_buf(), char_ids, mm, cc_cache: RefCell::new(HashMap::new()) })
+        Ok(Self {
+            source,
+            char_ids,
+            mm,
+            cc_cache: RefCell::new(HashMap::new()),
+            louds_cache: RefCell::new(HashMap::new()),
+            entry_cache: RefCell::new(HashMap::new()),
+        })
     }
 
     fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
+        if let Some(entries) = self.entry_cache.borrow().get(reading) {
+            return Ok(entries.clone());
+        }
+        let entries = self.lookup_exact_uncached(reading)?;
+        self.entry_cache.borrow_mut().insert(reading.to_string(), entries.clone());
+        Ok(entries)
+    }
+
+    fn lookup_exact_uncached(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
         let dictionary_reading = to_katakana(reading);
         let Some(first) = dictionary_reading.chars().next() else {
             return Ok(Vec::new());
@@ -377,18 +425,18 @@ impl SystemDictionary {
         else {
             return Ok(Vec::new());
         };
-        let louds = match Louds::load(&self.root, &escaped_identifier(&first.to_string())) {
-            Ok(louds) => louds,
-            Err(_) => return Ok(Vec::new()),
-        };
-        let Some(node_index) = louds.search_node_index(&ids) else {
+        let identifier = escaped_identifier(&first.to_string());
+        let Some(node_index) = self.search_node_index(&identifier, &ids) else {
             return Ok(Vec::new());
         };
         let shard = node_index >> SHARD_SHIFT;
         let local_index = node_index & LOCAL_MASK;
-        let file_name = format!("{}{}.loudstxt3", escaped_identifier(&first.to_string()), shard);
-        let path = self.root.join("louds").join(file_name);
-        match read_loudstxt3_entry(&path, local_index) {
+        let path = format!("louds/{identifier}{shard}.loudstxt3");
+        match self
+            .source
+            .read(&path)
+            .and_then(|bytes| read_loudstxt3_entry_bytes(&bytes, local_index))
+        {
             Ok(entries) => Ok(entries.into_iter().filter(system_entry_is_usable).collect()),
             Err(_) => Ok(Vec::new()),
         }
@@ -396,6 +444,14 @@ impl SystemDictionary {
 
     fn class_connection_cost(&self, former: &DictionaryEntry, latter: &DictionaryEntry) -> f32 {
         self.cid_connection_cost(former.rcid, latter.lcid).unwrap_or(DEFAULT_CONNECTION_COST)
+    }
+
+    fn search_node_index(&self, identifier: &str, ids: &[u8]) -> Option<usize> {
+        if !self.louds_cache.borrow().contains_key(identifier) {
+            let louds = Louds::load(&self.source, identifier).ok()?;
+            self.louds_cache.borrow_mut().insert(identifier.to_string(), louds);
+        }
+        self.louds_cache.borrow().get(identifier)?.search_node_index(ids)
     }
 
     fn meaning_connection_cost(&self, former_mid: u16, latter_mid: u16) -> f32 {
@@ -408,8 +464,8 @@ impl SystemDictionary {
 
     fn cid_connection_cost(&self, former: u16, latter: u16) -> Result<f32, String> {
         if !self.cc_cache.borrow().contains_key(&former) {
-            let path = self.root.join("cb").join(format!("{former}.binary"));
-            self.cc_cache.borrow_mut().insert(former, read_cc_line(&path)?);
+            let bytes = self.source.read(&format!("cb/{former}.binary"))?;
+            self.cc_cache.borrow_mut().insert(former, read_cc_line_bytes(&bytes)?);
         }
         Ok(self
             .cc_cache
@@ -419,6 +475,119 @@ impl SystemDictionary {
             .copied()
             .unwrap_or(DEFAULT_CONNECTION_COST))
     }
+}
+
+impl SystemDictionarySource {
+    fn read(&self, relative_path: &str) -> Result<Cow<'_, [u8]>, String> {
+        match self {
+            Self::Filesystem(root) => {
+                let path = root.join(relative_path);
+                fs::read(&path)
+                    .map(Cow::Owned)
+                    .map_err(|error| format!("could not read {}: {error}", path.display()))
+            }
+            Self::Portable(store) => store.read(relative_path).map(Cow::Borrowed),
+        }
+    }
+
+    fn read_utf8(&self, relative_path: &str) -> Result<Cow<'_, str>, String> {
+        match self.read(relative_path)? {
+            Cow::Borrowed(bytes) => std::str::from_utf8(bytes)
+                .map(Cow::Borrowed)
+                .map_err(|_| format!("{relative_path} is not UTF-8")),
+            Cow::Owned(bytes) => String::from_utf8(bytes)
+                .map(Cow::Owned)
+                .map_err(|_| format!("{relative_path} is not UTF-8")),
+        }
+    }
+}
+
+impl PortableFileStore {
+    fn parse(bytes: Vec<u8>) -> Result<Self, String> {
+        if bytes.get(..PORTABLE_DICTIONARY_MAGIC.len()) != Some(PORTABLE_DICTIONARY_MAGIC) {
+            return Err("portable AzooKey dictionary has an invalid magic header".to_string());
+        }
+        let file_count = read_u32(&bytes, PORTABLE_DICTIONARY_MAGIC.len())? as usize;
+        if file_count == 0 || file_count > PORTABLE_MAX_FILE_COUNT {
+            return Err("portable AzooKey dictionary has an invalid file count".to_string());
+        }
+        let mut offset = PORTABLE_DICTIONARY_HEADER_BYTES;
+        let mut files = HashMap::with_capacity(file_count);
+        for _ in 0..file_count {
+            offset = parse_portable_file(&bytes, offset, &mut files)?;
+        }
+        if offset != bytes.len() {
+            return Err("portable AzooKey dictionary has trailing bytes".to_string());
+        }
+        validate_portable_layout(&files)?;
+        Ok(Self { bytes, files })
+    }
+
+    fn read(&self, relative_path: &str) -> Result<&[u8], String> {
+        let range = self
+            .files
+            .get(relative_path)
+            .ok_or_else(|| format!("portable AzooKey dictionary is missing {relative_path}"))?;
+        Ok(&self.bytes[range.clone()])
+    }
+}
+
+fn validate_portable_layout(files: &HashMap<String, Range<usize>>) -> Result<(), String> {
+    if !files.contains_key("louds/charID.chid") || !files.contains_key("mm.binary") {
+        return Err("portable AzooKey dictionary is missing required metadata".to_string());
+    }
+    let complete_cid_matrix =
+        (0..CID_COUNT).all(|cid| files.contains_key(&format!("cb/{cid}.binary")));
+    let louds = files.keys().filter(|path| path.ends_with(".louds")).collect::<Vec<_>>();
+    let complete_louds = louds.len() == PORTABLE_LOUDS_FILE_COUNT
+        && louds.iter().all(|path| {
+            let chars_path = format!("{}chars2", path);
+            files.contains_key(&chars_path)
+        });
+    let louds_chars = files.keys().filter(|path| path.ends_with(".loudschars2")).count();
+    let louds_text = files.keys().filter(|path| path.ends_with(".loudstxt3")).count();
+    if !complete_cid_matrix
+        || !complete_louds
+        || louds_chars != PORTABLE_LOUDS_FILE_COUNT
+        || louds_text != PORTABLE_LOUDS_TEXT_FILE_COUNT
+    {
+        return Err("portable AzooKey dictionary has an incomplete caption layout".to_string());
+    }
+    Ok(())
+}
+
+fn parse_portable_file(
+    bytes: &[u8],
+    offset: usize,
+    files: &mut HashMap<String, Range<usize>>,
+) -> Result<usize, String> {
+    let path_length = read_u16(bytes, offset)? as usize;
+    let data_length = read_u32(bytes, offset + U16_BYTES)? as usize;
+    if path_length == 0 || path_length > PORTABLE_MAX_PATH_BYTES {
+        return Err("portable AzooKey dictionary has an invalid path length".to_string());
+    }
+    let path_start = offset + PORTABLE_FILE_HEADER_BYTES;
+    let data_start = path_start
+        .checked_add(path_length)
+        .ok_or_else(|| "portable AzooKey dictionary offset overflow".to_string())?;
+    let data_end = data_start
+        .checked_add(data_length)
+        .filter(|end| *end <= bytes.len())
+        .ok_or_else(|| "portable AzooKey dictionary is truncated".to_string())?;
+    let path = parse_portable_path(&bytes[path_start..data_start])?;
+    if files.insert(path, data_start..data_end).is_some() {
+        return Err("portable AzooKey dictionary contains a duplicate path".to_string());
+    }
+    Ok(data_end)
+}
+
+fn parse_portable_path(bytes: &[u8]) -> Result<String, String> {
+    let path = std::str::from_utf8(bytes)
+        .map_err(|_| "portable AzooKey dictionary path is not UTF-8".to_string())?;
+    if path.starts_with('/') || path.contains("\\") || path.split('/').any(|part| part == "..") {
+        return Err("portable AzooKey dictionary contains an unsafe path".to_string());
+    }
+    Ok(path.to_string())
 }
 
 /// AzooKey's compact word-type classification used by `isClause` and
@@ -782,10 +951,10 @@ struct Louds {
 }
 
 impl Louds {
-    fn load(root: &Path, identifier: &str) -> Result<Self, String> {
-        let louds = root.join("louds").join(format!("{identifier}.louds"));
-        let chars = root.join("louds").join(format!("{identifier}.loudschars2"));
-        Self::from_files(&louds, &chars)
+    fn load(source: &SystemDictionarySource, identifier: &str) -> Result<Self, String> {
+        let louds = source.read(&format!("louds/{identifier}.louds"))?;
+        let chars = source.read(&format!("louds/{identifier}.loudschars2"))?;
+        Self::from_bytes(&louds, &chars)
     }
 
     fn load_external(root: &Path, identifier: &str) -> Result<Self, String> {
@@ -798,15 +967,19 @@ impl Louds {
     fn from_files(louds_path: &Path, chars_path: &Path) -> Result<Self, String> {
         let bytes = fs::read(louds_path)
             .map_err(|error| format!("could not read {}: {error}", louds_path.display()))?;
-        if bytes.len() % 8 != 0 {
-            return Err(format!("{} is not a UInt64 LOUDS file", louds_path.display()));
+        let node_ids = fs::read(chars_path)
+            .map_err(|error| format!("could not read {}: {error}", chars_path.display()))?;
+        Self::from_bytes(&bytes, &node_ids)
+    }
+
+    fn from_bytes(bytes: &[u8], node_ids: &[u8]) -> Result<Self, String> {
+        if !bytes.len().is_multiple_of(8) {
+            return Err("AzooKey LOUDS data is not a sequence of UInt64 values".to_string());
         }
         let bits = bytes
             .chunks_exact(8)
             .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("chunk is exactly 8 bytes")))
             .collect::<Vec<_>>();
-        let node_ids = fs::read(chars_path)
-            .map_err(|error| format!("could not read {}: {error}", chars_path.display()))?;
         let mut rank_zeros = Vec::with_capacity(bits.len() + 1);
         rank_zeros.push(0);
         for word in &bits {
@@ -814,7 +987,7 @@ impl Louds {
                 rank_zeros.last().copied().unwrap_or_default() + 64 - word.count_ones() as usize;
             rank_zeros.push(next);
         }
-        Ok(Self { bits, node_ids, rank_zeros })
+        Ok(Self { bits, node_ids: node_ids.to_vec(), rank_zeros })
     }
 
     fn child_node_indices(&self, parent: usize) -> Range<usize> {
@@ -912,18 +1085,22 @@ fn parse_tsv(path: &Path) -> Result<Vec<DictionaryEntry>, String> {
 fn read_loudstxt3_entry(path: &Path, index: usize) -> Result<Vec<DictionaryEntry>, String> {
     let bytes =
         fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    let record_count = read_u16(&bytes, 0)? as usize;
+    read_loudstxt3_entry_bytes(&bytes, index)
+}
+
+fn read_loudstxt3_entry_bytes(bytes: &[u8], index: usize) -> Result<Vec<DictionaryEntry>, String> {
+    let record_count = read_u16(bytes, 0)? as usize;
     if index >= record_count {
         return Ok(Vec::new());
     }
-    let start = read_u32(&bytes, LOUDSTXT3_COUNT_BYTES + index * LOUDSTXT3_OFFSET_BYTES)? as usize;
+    let start = read_u32(bytes, LOUDSTXT3_COUNT_BYTES + index * LOUDSTXT3_OFFSET_BYTES)? as usize;
     let end = if index + 1 == record_count {
         bytes.len()
     } else {
-        read_u32(&bytes, LOUDSTXT3_COUNT_BYTES + (index + 1) * LOUDSTXT3_OFFSET_BYTES)? as usize
+        read_u32(bytes, LOUDSTXT3_COUNT_BYTES + (index + 1) * LOUDSTXT3_OFFSET_BYTES)? as usize
     };
     if start > end || end > bytes.len() {
-        return Err(format!("{} contains an invalid loudstxt3 offset", path.display()));
+        return Err("AzooKey loudstxt3 data contains an invalid offset".to_string());
     }
     parse_loudstxt3_record(&bytes[start..end])
 }
@@ -959,11 +1136,9 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
     Ok(entries)
 }
 
-fn read_cc_line(path: &Path) -> Result<Vec<f32>, String> {
-    let bytes =
-        fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    if bytes.len() % CID_RECORD_BYTES != 0 || bytes.is_empty() {
-        return Err(format!("{} is not an AzooKey CID connection-cost file", path.display()));
+fn read_cc_line_bytes(bytes: &[u8]) -> Result<Vec<f32>, String> {
+    if !bytes.len().is_multiple_of(CID_RECORD_BYTES) || bytes.is_empty() {
+        return Err("data is not an AzooKey CID connection-cost file".to_string());
     }
     let mut line = vec![DEFAULT_CONNECTION_COST; CID_COUNT];
     for (index, pair) in bytes.chunks_exact(CID_RECORD_BYTES).enumerate() {
@@ -974,7 +1149,7 @@ fn read_cc_line(path: &Path) -> Result<Vec<f32>, String> {
             pair[FLOAT32_BYTES..].try_into().expect("CID record suffix is 4 bytes"),
         );
         if index == 0 && cid != CID_DEFAULT_RECORD {
-            return Err(format!("{} has no CID default record", path.display()));
+            return Err("AzooKey CID data has no default record".to_string());
         }
         if cid == CID_DEFAULT_RECORD {
             line.fill(value);
@@ -985,11 +1160,9 @@ fn read_cc_line(path: &Path) -> Result<Vec<f32>, String> {
     Ok(line)
 }
 
-fn read_f32_le(path: &Path) -> Result<Vec<f32>, String> {
-    let bytes =
-        fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    if bytes.len() % FLOAT32_BYTES != 0 {
-        return Err(format!("{} is not a Float32 file", path.display()));
+fn read_f32_bytes(bytes: &[u8]) -> Result<Vec<f32>, String> {
+    if !bytes.len().is_multiple_of(FLOAT32_BYTES) {
+        return Err("data is not a Float32 file".to_string());
     }
     Ok(bytes
         .chunks_exact(FLOAT32_BYTES)
@@ -1349,6 +1522,7 @@ mod tests {
     use super::{
         escaped_identifier, parse_loudstxt3_record, prediction_usable_rcid, system_entry_is_usable,
         word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths, WordType, BOS_CID, EOS_CID,
+        MID_COUNT, PORTABLE_DICTIONARY_MAGIC,
     };
 
     #[test]
@@ -1468,6 +1642,73 @@ mod tests {
                 "context-specific row unexpectedly embedded for {reading}"
             );
         }
+    }
+
+    #[test]
+    fn loads_and_validates_the_filesystem_free_dictionary_container() {
+        let mm = vec![0; MID_COUNT * MID_COUNT * std::mem::size_of::<f32>()];
+        let archive = complete_portable_archive(&mm);
+        let dictionary = AzooKeyDictionary::from_portable_system_dictionary(archive.clone())
+            .expect("minimal portable system dictionary should load");
+        assert!(dictionary.has_system_dictionary());
+        assert!(dictionary
+            .lookup_exact("きょう")
+            .expect("missing optional LOUDS shard should fail open")
+            .iter()
+            .any(|entry| entry.surface == "今日"));
+
+        let mut trailing = archive;
+        trailing.push(0);
+        assert!(AzooKeyDictionary::from_portable_system_dictionary(trailing)
+            .expect_err("trailing bytes must be rejected")
+            .contains("trailing bytes"));
+        let duplicate = portable_archive(&[("mm.binary", &mm), ("mm.binary", &mm)]);
+        assert!(AzooKeyDictionary::from_portable_system_dictionary(duplicate)
+            .expect_err("duplicate paths must be rejected")
+            .contains("duplicate path"));
+        let unsafe_path = portable_archive(&[("../mm.binary", &mm)]);
+        assert!(AzooKeyDictionary::from_portable_system_dictionary(unsafe_path)
+            .expect_err("unsafe paths must be rejected")
+            .contains("unsafe path"));
+    }
+
+    fn portable_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = PORTABLE_DICTIONARY_MAGIC.to_vec();
+        archive.extend_from_slice(&(files.len() as u32).to_le_bytes());
+        for (path, data) in files {
+            append_portable_file(&mut archive, path, data);
+        }
+        archive
+    }
+
+    fn complete_portable_archive(mm: &[u8]) -> Vec<u8> {
+        let file_count = 2
+            + super::CID_COUNT
+            + super::PORTABLE_LOUDS_FILE_COUNT * 2
+            + super::PORTABLE_LOUDS_TEXT_FILE_COUNT;
+        let mut archive = PORTABLE_DICTIONARY_MAGIC.to_vec();
+        archive.extend_from_slice(&(file_count as u32).to_le_bytes());
+        append_portable_file(&mut archive, "louds/charID.chid", "アイ".as_bytes());
+        append_portable_file(&mut archive, "mm.binary", mm);
+        for cid in 0..super::CID_COUNT {
+            append_portable_file(&mut archive, &format!("cb/{cid}.binary"), &[]);
+        }
+        for index in 0..super::PORTABLE_LOUDS_FILE_COUNT {
+            append_portable_file(&mut archive, &format!("louds/test{index}.louds"), &[]);
+            append_portable_file(&mut archive, &format!("louds/test{index}.loudschars2"), &[]);
+        }
+        for index in 0..super::PORTABLE_LOUDS_TEXT_FILE_COUNT {
+            append_portable_file(&mut archive, &format!("louds/text{index}.loudstxt3"), &[]);
+        }
+        archive
+    }
+
+    fn append_portable_file(archive: &mut Vec<u8>, path: &str, data: &[u8]) {
+        let path = path.as_bytes();
+        archive.extend_from_slice(&(path.len() as u16).to_le_bytes());
+        archive.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        archive.extend_from_slice(path);
+        archive.extend_from_slice(data);
     }
 
     #[test]

@@ -24,14 +24,18 @@ checks below report the expected secret and origin.
 - `secrets.required` names `AZOOKEY_API_TOKEN` without embedding its value.
   Wrangler may warn during local development when the loopback-only secret is
   absent; production still requires the interactive secret setup below.
-- `VIBRATO_DICTIONARY_URL` defaults to `/vibrato/system.dic.zst`, a static asset
-  uploaded with the Worker and served through the `ASSETS` binding. It is a
-  standard IPADIC zstd dictionary consumed by the checked-in Vibrato WASM, not
-  a phrase table. Override it only with an HTTPS dictionary URL you control.
-- `VIBRATO_UPSTREAM_URL` is an optional HTTP fallback for deployments that
-  cannot load the bundled dictionary. Its bearer, when required, belongs in
-  the `VIBRATO_API_TOKEN` secret. Leave both overrides unset only for local
-  requests that explicitly use a browser pre-pass.
+- `AZOOKEY_DICTIONARY_URL` defaults to `/azookey/system.azkdict.gz`, a static
+  official LOUDS/MM/CID archive generated from the pinned AzooKey submodule and
+  served through the `ASSETS` binding. It is not a phrase table. The deploy
+  preflight rebuilds it deterministically. The source is Apache-2.0 revision
+  `4d418525b090cf49c219819d05a7e3cc2a4346eb` (`v3.1.0-beta.15`); the expected
+  gzip SHA-256 is
+  `84f605a5c76e09480ef1a0a02d91982fb8c9426a8a7a18fb64d9f27210641b22`.
+- `VIBRATO_UPSTREAM_URL` is the optional HTTP adapter for a real server-side
+  Vibrato pre-pass. Its bearer, when required, belongs in the
+  `VIBRATO_API_TOKEN` secret. The bundled IPADIC Vibrato WASM is not initialized
+  together with the portable AzooKey dictionary because it exceeds the Workers
+  128 MiB isolate limit; use browser Vibrato WASM when no upstream is configured.
 - `.dev.vars.example` is a template. Copy it to the git-ignored `.dev.vars`
   for local work, and do not commit token assignments.
 

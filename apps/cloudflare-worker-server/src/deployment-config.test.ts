@@ -7,6 +7,7 @@ const config = JSON.parse(withoutLineComments) as {
   vars?: Record<string, unknown>;
   secrets?: { required?: unknown };
   assets?: { directory?: string; binding?: string; run_worker_first?: boolean };
+  ai?: { binding?: string };
 };
 
 describe("Cloudflare deployment configuration", () => {
@@ -16,13 +17,16 @@ describe("Cloudflare deployment configuration", () => {
     expect(origin).toMatch(/^https:\/\//);
     expect(origin).not.toBe("https://example.invalid");
     expect(origin).not.toBe("*");
-    const dictionaryUrl = config.vars?.["VIBRATO_DICTIONARY_URL"];
-    expect(dictionaryUrl).toBe("/vibrato/system.dic.zst");
+    const dictionaryUrl = config.vars?.["AZOOKEY_DICTIONARY_URL"];
+    expect(dictionaryUrl).toBe("/azookey/system.azkdict.gz");
     expect(config.assets).toMatchObject({
       directory: "./public",
       binding: "ASSETS",
       run_worker_first: true,
     });
+    expect(config.ai).toEqual({ binding: "AI" });
+    expect(config.vars).not.toHaveProperty("VIBRATO_DICTIONARY_URL");
+    expect(existsSync(new URL("../public/azookey/system.azkdict.gz", import.meta.url))).toBe(true);
     expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(true);
     expect(config.vars).not.toHaveProperty("AZOOKEY_API_TOKEN");
     expect(config.vars).not.toHaveProperty("ASR_API_TOKEN");

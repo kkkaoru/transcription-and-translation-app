@@ -7,18 +7,28 @@ AzooKey text conversion endpoint:
 - `GET /ws/azookey` — JSON-text WebSocket conversion session (Bearer-authenticated
   in production).
 
+The standard AzooKey WebSocket path never invokes speech recognition. ASR stays
+on `POST /v1/audio/transcriptions`; it keeps the existing `parapper-ja` upstream
+or 503 behavior unless `ASR_PROVIDER=workers-ai` is explicitly configured. That
+opt-in uses the Worker AI binding and `@cf/deepgram/nova-3` with `language: "ja"`
+for comparison/fallback requests. It is metered and sends audio through
+Cloudflare/Deepgram, so enable it only after reviewing cost and privacy. Set
+`WORKERS_AI_ASR_TIMEOUT_MS` (100–30,000 ms, default 15,000) when needed.
+
 ## WebSocket contract (`azookey.text.v1`)
 
 The comparison app sends one text frame per conversion.
 
 Wire labels `worker-vibrato` and `vibratoInput` are historical names only.
-AzooKey conversion always runs with the compact WASM module on this Worker,
-using `vibratoInput` as its conversion input. In worker comparison mode, a
-`vibratoExecution: "worker"` frame requests the bundled Vibrato WASM/IPADIC
-pre-pass (or the optional HTTP adapter fallback); the Worker does not bundle
-the large UniDic dictionary.
-Browser comparison mode performs its pre-pass in the client and sends
-`vibratoExecution: "browser-wasm"`.
+AzooKey conversion always runs with the official portable LOUDS/MM/CID
+dictionary in the Worker when `AZOOKEY_DICTIONARY_URL` is configured, using
+`vibratoInput` as its conversion input. In worker comparison mode, a
+`vibratoExecution: "worker"` frame uses the configured HTTP Vibrato adapter
+when `VIBRATO_UPSTREAM_URL` is set. Without that adapter the full AzooKey
+dictionary accepts mixed Japanese input directly; the ready frame reports this
+as `workerStage: "passthrough"` rather than claiming that Vibrato ran.
+Browser comparison mode performs the real Vibrato WASM pre-pass in the client
+and sends `vibratoExecution: "browser-wasm"`.
 
 ```json
 {
@@ -122,23 +132,37 @@ closing a healthy session.
 
 ## WASM conversion path and Vibrato pre-pass
 
-`packages/azookey-wasm` is a raw ABI wrapper around the existing built-in
-`packages/azookey-rust` lexicon. It intentionally does not require WASI,
+`packages/azookey-wasm` is a raw ABI wrapper around the existing
+`packages/azookey-rust` converter. It intentionally does not require WASI,
 filesystem access, or `wasm-bindgen`, so the Worker can import one small
-`wasm/azookey.wasm` module. Run `cd apps/cloudflare-worker-server && bun run
-build:wasm` to reproduce the binary; `dev`, `typecheck`, `test`, and `deploy`
-run that step automatically.
+`wasm/azookey.wasm` module. `build:wasm` also packs the pinned official
+`louds/**`, `mm.binary`, and `cb/*.binary` files into
+`public/azookey/system.azkdict.gz`; it does not replace the dictionary with a
+phrase-specific table or custom homonym rules. `dev`, `typecheck`, `test`, and
+`deploy` regenerate this deterministic asset automatically.
 
-AzooKey conversion runs in the Worker as raw WASM. Worker comparison mode runs
-the checked-in `packages/vibrato-wasm` module with the standard IPADIC
-`system.dic.zst` configured by `VIBRATO_DICTIONARY_URL` before AzooKey. The
-default dictionary is a bundled static asset served through the `ASSETS`
-binding, fetched lazily, and cached per isolate; it is not a fixed phrase
-table. An HTTPS dictionary URL and the optional `VIBRATO_UPSTREAM_URL` HTTP
-adapter remain available as deployment overrides. Wire field names such as
+The asset is pinned to `azooKey_dictionary_storage` revision
+`4d418525b090cf49c219819d05a7e3cc2a4346eb` (`v3.1.0-beta.15`) and its checked-in
+gzip SHA-256 is
+`84f605a5c76e09480ef1a0a02d91982fb8c9426a8a7a18fb64d9f27210641b22`.
+The upstream data is Apache-2.0; the build copies its license to
+`public/azookey/LICENSE` from `submodules/azooKey_dictionary_storage/LICENSE`.
+The archive contains the 2,063
+files used by current Rust caption conversion. It intentionally excludes
+`p/*.csv`, which upstream uses for keyboard zero-hint prediction rather than
+ASR caption conversion, so this is caption-conversion parity rather than a
+claim of full keyboard-app feature parity.
+
+The Wrangler default loads that static asset through `ASSETS`, lazily and once
+per Worker isolate. The initialized AzooKey memory is about 26.5 MiB. The
+checked-in Vibrato IPADIC WASM is intentionally not initialized alongside the
+portable dictionary: its dictionary expands beyond the Workers 128 MiB isolate
+limit. Use `VIBRATO_UPSTREAM_URL` for a server-side Vibrato pre-pass, or choose
+the browser Vibrato WASM mode in the comparison app. Wire field names such as
 `vibratoInput` and mode value `worker-vibrato` are historical protocol labels;
-`vibratoExecution` identifies whether the pre-pass ran in the Worker or in the
-browser.
+`vibratoExecution` identifies whether a real pre-pass ran in the Worker or in
+the browser, while the ready metadata makes the mixed-input passthrough
+explicit.
 
 ## Deploy and local environment
 

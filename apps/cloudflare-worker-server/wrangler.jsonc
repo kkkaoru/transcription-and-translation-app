@@ -1,12 +1,18 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "kotoba-beacon-inference",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
     "run_worker_first": true
+  },
+  // Binding availability alone never selects this paid ASR path. Set the
+  // secret/variable ASR_PROVIDER=workers-ai explicitly for a comparison.
+  "ai": {
+    "binding": "AI"
   },
   "observability": {
     "enabled": true
@@ -18,7 +24,7 @@
     "CORS_ORIGIN": "https://kotoba-beacon-inference.kaoru.workers.dev",
     "MODEL_ROUTES": "{}",
     "AZOOKEY_TIMEOUT_MS": "250",
-    "VIBRATO_DICTIONARY_URL": "/vibrato/system.dic.zst"
+    "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz"
   },
   // Names only: Wrangler can warn when local/prod secrets are missing, but
   // secret values are always entered through `wrangler secret put`.

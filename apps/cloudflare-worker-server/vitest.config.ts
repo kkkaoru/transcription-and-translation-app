@@ -24,7 +24,7 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     coverage: {
       provider: "v8",
-      include: ["src/index.ts", "src/azookey.ts"],
+      include: ["src/index.ts", "src/azookey.ts", "src/workers-ai-asr.ts"],
       exclude: ["src/**/*.test.ts"],
       thresholds: {
         statements: 95,

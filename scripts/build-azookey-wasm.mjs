@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildPortableDictionaryArchive } from "./build-azookey-dictionary.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = resolve(root, "packages/azookey-wasm/Cargo.toml");
@@ -19,3 +20,7 @@ execFileSync(
 mkdirSync(dirname(destination), { recursive: true });
 copyFileSync(source, destination);
 console.log(`Built ${destination}`);
+const dictionary = buildPortableDictionaryArchive();
+console.log(
+  `Built ${dictionary.destination} (${dictionary.compressedBytes} bytes, sha256=${dictionary.sha256})`,
+);

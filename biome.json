@@ -22,6 +22,7 @@
       "!**/vibrato_wasm_bg.wasm.d.ts",
       "!.tools",
       "!.claude",
+      "!.codex",
       "!apps/desktop/src-tauri/gen",
       "!models",
       "!packages/parapper-asr",

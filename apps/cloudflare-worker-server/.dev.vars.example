@@ -17,17 +17,29 @@ MODEL_ROUTES={}
 # POST /v1/audio/transcriptions with the same OpenAI-shaped contract.
 # Set ASR_UPSTREAM_URL here in the untracked file to your owned HTTPS endpoint.
 
-# Worker-side Vibrato uses the bundled static asset and checked-in WASM module
-# by default in wrangler.jsonc. The asset binding serves this path locally and
-# in production. Override it only with an HTTPS zstd-compressed Vibrato
-# `system.dic` that you control.
-# VIBRATO_DICTIONARY_URL=/vibrato/system.dic.zst
+# Optional comparison/fallback: use Cloudflare Workers AI's
+# @cf/deepgram/nova-3 Japanese ASR only when this is explicitly enabled. The
+# Wrangler AI binding may be enabled, but this provider flag is omitted by
+# default; leave it unset to preserve the configured upstream/503 behavior.
+# Workers AI is metered and sends audio to Cloudflare/Deepgram, so review cost
+# and privacy before use.
+# ASR_PROVIDER=workers-ai
+# WORKERS_AI_ASR_TIMEOUT_MS=15000
 
-# Optional legacy HTTP adapter for environments that cannot load the WASM
-# dictionary. It must accept POST {"text":"...","language":"..."} and return
-# {"text":"..."} (hiragana). The direct WASM adapter is preferred whenever
-# VIBRATO_DICTIONARY_URL is configured. If this endpoint needs a bearer, set
-# VIBRATO_API_TOKEN only as a secret with `wrangler secret put VIBRATO_API_TOKEN`.
+# The default Worker conversion loads the official AzooKey LOUDS/MM/CID
+# archive from /azookey/system.azkdict.gz. The deploy script regenerates this
+# asset from the pinned submodule; no phrase-specific dictionary is used.
+# AZOOKEY_DICTIONARY_URL=/azookey/system.azkdict.gz
+
+# Direct Worker Vibrato WASM is not enabled with the portable AzooKey asset:
+# the IPADIC tokenizer exceeds the Workers isolate memory limit. For a real
+# server-side pre-pass configure an owned HTTPS adapter instead. The browser
+# comparison mode uses the generated Vibrato WASM locally.
+
+# Optional server-side Vibrato adapter. It must accept POST
+# {"text":"...","language":"..."} and return {"text":"..."} (hiragana).
+# If this endpoint needs a bearer, set VIBRATO_API_TOKEN only as a secret with
+# `wrangler secret put VIBRATO_API_TOKEN`.
 # Set VIBRATO_UPSTREAM_URL in this untracked file to your owned HTTPS endpoint.
 
 # Optional local tuning (25–2,000 ms; defaults to 250).

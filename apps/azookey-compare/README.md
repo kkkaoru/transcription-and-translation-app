@@ -38,7 +38,7 @@ routes then send the resulting hiragana to the Worker-side AzooKey WASM:
 
 | UI label | What actually runs | Wire `mode` sent to Worker |
 | --- | --- | --- |
-| Worker 上の Vibrato → AzooKey WASM | Worker の Vibrato WASM + 標準 IPADIC 辞書（必要に応じて HTTP adapter fallback）、then server-side AzooKey WASM | `worker-vibrato` plus `vibratoExecution: "worker"` |
+| Worker 上の Vibrato → AzooKey WASM | `VIBRATO_UPSTREAM_URL` を設定した Worker の Vibrato HTTP adapter、then server-side AzooKey WASM。未設定時は公式 AzooKey の mixed-input passthrough（ready frame に明示） | `worker-vibrato` plus `vibratoExecution: "worker"` |
 | ブラウザ Vibrato WASM → Worker | Generated `VibratoTokenizer` + IPADIC dictionary (F[7]) pre-pass, then Worker AzooKey WASM | `worker-vibrato` plus `comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"` |
 
 The checked-in browser defaults use `/vibrato/vibrato_wasm.js` and
@@ -85,6 +85,7 @@ browser WASM result and the client still sends the Worker-compatible wire mode
 `worker-vibrato` with `comparisonMode: "browser-vibrato"` and
 `vibratoExecution: "browser-wasm"`. The Worker performs AzooKey conversion
 only for that browser-prepass frame; worker-mode frames invoke the configured
-Vibrato WASM/IPADIC stage (or HTTP adapter fallback) before AzooKey. Bearer tokens are sent in the JSON auth
-field and are never appended to the WebSocket URL; use `wss://` for real
-credentials.
+HTTP Vibrato stage before AzooKey, or use the official mixed-input AzooKey path
+when no server-side Vibrato adapter is configured. The ready frame distinguishes
+these stages. Bearer tokens are sent in the JSON auth field and are never
+appended to the WebSocket URL; use `wss://` for real credentials.

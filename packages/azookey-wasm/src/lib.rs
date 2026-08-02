@@ -1,14 +1,30 @@
-//! Minimal, dependency-light WebAssembly ABI for the built-in AzooKey converter.
+//! Minimal, dependency-light WebAssembly ABI for the AzooKey converter.
 //!
-//! The desktop converter accepts filesystem-backed dictionaries, but the
-//! Cloudflare Worker cannot use a filesystem or ship the multi-hundred-MB
-//! public dictionary.  This wrapper intentionally exposes only the compact
-//! built-in lexicon through a raw ABI so the Worker can import the generated
-//! module without a `wasm-bindgen` runtime or WASI.
+//! The desktop converter accepts filesystem-backed dictionaries. Cloudflare
+//! Workers do not expose a filesystem, so this wrapper accepts the same
+//! official LOUDS/MM/CID files through one portable in-memory archive while
+//! keeping the ABI independent of `wasm-bindgen` and WASI.
 
-use caption_bridge_azookey_rust::convert_kana_to_kanji;
+use caption_bridge_azookey_rust::{
+    convert_kana_to_kanji, convert_with_dictionary, AzooKeyDictionary, ConversionOptions,
+};
 use std::alloc::{alloc, dealloc, Layout};
 use std::slice;
+use std::sync::Mutex;
+
+const DICTIONARY_INIT_OK: u32 = 0;
+const DICTIONARY_INIT_INVALID: u32 = 1;
+const DICTIONARY_INIT_UNAVAILABLE: u32 = 2;
+const AZOOKEY_ABI_VERSION: u32 = 2;
+
+static ACTIVE_DICTIONARY: Mutex<Option<AzooKeyDictionary>> = Mutex::new(None);
+
+/// Return the raw ABI revision. Version 2 adds the owned portable dictionary
+/// initialization entrypoint while preserving the version 1 conversion ABI.
+#[no_mangle]
+pub extern "C" fn azookey_abi_version() -> u32 {
+    AZOOKEY_ABI_VERSION
+}
 
 /// Allocate a byte buffer owned by the Wasm module.
 ///
@@ -49,6 +65,36 @@ pub unsafe extern "C" fn azookey_dealloc(pointer: *mut u8, length: usize) {
     dealloc(pointer, layout);
 }
 
+/// Initialize the converter with an official portable AzooKey dictionary.
+///
+/// Returns zero on success, one when the archive is malformed, or two when
+/// the process-wide dictionary lock is unavailable. A failed reinitialization
+/// preserves the last valid dictionary.
+///
+/// # Safety
+///
+/// `pointer` must be a live allocation returned by [`azookey_alloc`] with
+/// exactly `length` bytes. This function takes ownership of that allocation
+/// on every non-empty call, including an error result; the caller must not
+/// release or reuse it afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn azookey_dictionary_init_owned(pointer: *mut u8, length: usize) -> u32 {
+    if pointer.is_null() || length == 0 {
+        return DICTIONARY_INIT_INVALID;
+    }
+    // SAFETY: the caller transfers an allocation created by this module's
+    // global allocator with capacity exactly equal to `length`.
+    let bytes = Vec::from_raw_parts(pointer, length, length);
+    let Ok(dictionary) = AzooKeyDictionary::from_portable_system_dictionary(bytes) else {
+        return DICTIONARY_INIT_INVALID;
+    };
+    let Ok(mut active) = ACTIVE_DICTIONARY.lock() else {
+        return DICTIONARY_INIT_UNAVAILABLE;
+    };
+    *active = Some(dictionary);
+    DICTIONARY_INIT_OK
+}
+
 /// Convert UTF-8 input into UTF-8 output.
 ///
 /// The return value packs the output pointer in the high 32 bits and the
@@ -72,7 +118,7 @@ pub unsafe extern "C" fn azookey_convert(pointer: *const u8, length: usize) -> u
     // boundary into the Worker.
     let bytes = if length == 0 { &[] } else { slice::from_raw_parts(pointer, length) };
     let input = std::str::from_utf8(bytes).unwrap_or_default();
-    let output = convert_kana_to_kanji(input);
+    let output = convert_with_active_dictionary(input);
     let output_bytes = output.as_bytes();
     let output_length = output_bytes.len();
     if output_length > u32::MAX as usize {
@@ -90,9 +136,23 @@ pub unsafe extern "C" fn azookey_convert(pointer: *const u8, length: usize) -> u
     ((output_pointer as u32 as u64) << 32) | output_length as u64
 }
 
+fn convert_with_active_dictionary(input: &str) -> String {
+    let Ok(active) = ACTIVE_DICTIONARY.lock() else {
+        return convert_kana_to_kanji(input);
+    };
+    let Some(dictionary) = active.as_ref() else {
+        return convert_kana_to_kanji(input);
+    };
+    convert_with_dictionary(input, dictionary, ConversionOptions::default())
+        .into_iter()
+        .next()
+        .map(|candidate| candidate.text)
+        .unwrap_or_else(|| input.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{azookey_alloc, azookey_convert, azookey_dealloc};
+    use super::{azookey_alloc, azookey_convert, azookey_dealloc, azookey_dictionary_init_owned};
 
     #[cfg(target_arch = "wasm32")]
     #[test]
@@ -115,5 +175,16 @@ mod tests {
         unsafe { azookey_dealloc(pointer, 0) };
         let result = unsafe { azookey_convert(std::ptr::null(), 0) };
         assert_eq!(result & u64::from(u32::MAX), 0);
+    }
+
+    #[test]
+    fn dictionary_initialization_rejects_empty_and_malformed_archives() {
+        assert_eq!(super::azookey_abi_version(), 2);
+        assert_eq!(unsafe { azookey_dictionary_init_owned(std::ptr::null_mut(), 0) }, 1);
+        let malformed = b"not-a-dictionary";
+        let pointer = azookey_alloc(malformed.len());
+        assert!(!pointer.is_null());
+        unsafe { std::ptr::copy_nonoverlapping(malformed.as_ptr(), pointer, malformed.len()) };
+        assert_eq!(unsafe { azookey_dictionary_init_owned(pointer, malformed.len()) }, 1);
     }
 }
