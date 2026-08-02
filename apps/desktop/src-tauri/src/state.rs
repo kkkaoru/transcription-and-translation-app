@@ -556,6 +556,7 @@ impl AppState {
     /// Record an empty result from a Parapper turn for which VAD had already
     /// identified speech. Lock failures degrade to a transient soft skip;
     /// transcription itself must remain available even if diagnostics fail.
+    #[allow(dead_code)]
     pub fn record_expected_empty_asr(&self, turn_id: &str) -> ExpectedEmptyAsrResult {
         self.asr_health
             .lock()
@@ -603,6 +604,7 @@ impl AppState {
     /// Translation publication is generation-aware. Stopping a generation is
     /// still publishable while Stop waits for it; only a later start invalidates
     /// the task.
+    #[allow(dead_code)]
     pub fn translation_is_current(&self, ticket: TranslationTicket) -> bool {
         self.translation_tracker.lock().map(|tracker| tracker.is_current(ticket)).unwrap_or(false)
     }
@@ -1166,5 +1168,79 @@ mod tests {
 
         state.clear_latest_caption();
         assert_eq!(state.latest_caption(), None);
+    }
+
+    #[test]
+    fn publish_translation_for_ticket_rejects_stale_generations() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let (ticket_gen_1, _) = state.register_translation().expect("active capture");
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+        }
+
+        let caption = CaptionPayload {
+            id: "test".to_string(),
+            source_text: "src".to_string(),
+            translation_text: "trans".to_string(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "translation",
+            sequence: 1,
+            is_final: true,
+            confidence: None,
+        };
+
+        let mut emitted_count = 0;
+        state.publish_translation_for_ticket(ticket_gen_1, &caption, |_| {
+            emitted_count += 1;
+        });
+        assert_eq!(
+            emitted_count, 0,
+            "translation from old generation must never emit into new capture session"
+        );
+        assert_eq!(
+            state.latest_caption(),
+            None,
+            "translation from old generation must not update replay slot"
+        );
+    }
+
+    #[test]
+    fn record_expected_empty_asr_for_generation_atomically_checks_and_records() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let gen1 = state.current_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+        }
+
+        let result1 = state.record_expected_empty_asr_for_generation(gen1, "turn1");
+        assert!(matches!(result1, Some(ExpectedEmptyAsrResult::Transient { consecutive: 1 })));
+
+        let result2 = state.record_expected_empty_asr_for_generation(gen1, "turn2");
+        assert!(matches!(result2, Some(ExpectedEmptyAsrResult::Transient { consecutive: 2 })));
+
+        state.begin_capture_generation();
+        let result_stale = state.record_expected_empty_asr_for_generation(gen1, "turn3");
+        assert!(
+            result_stale.is_none(),
+            "generation must be checked atomically with record; old generation must be rejected"
+        );
+
+        let gen2 = state.current_capture_generation();
+        state.reset_asr_health();
+        let result_new_gen = state.record_expected_empty_asr_for_generation(gen2, "turn4");
+        assert!(
+            matches!(result_new_gen, Some(ExpectedEmptyAsrResult::Transient { consecutive: 1 })),
+            "new generation starts fresh with consecutive count 1 after health reset"
+        );
     }
 }

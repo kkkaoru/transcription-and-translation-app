@@ -417,19 +417,19 @@ pub async fn normalize_parapper_output(
             Ok(partial)
         }
         Ok(None) => {
-            if !state.is_capture_generation_current(capture_generation) {
-                return Ok(empty_caption(&config, empty_id));
-            }
             // Persistent Parapper output is produced only after its VAD has
             // identified a speech turn. Treat one/two blank revisions as a
             // soft skip, but surface a bounded run as ASR result loss instead
             // of repeatedly clearing `last_error` as though it were silence.
-            match state.record_expected_empty_asr(&empty_id) {
-                ExpectedEmptyAsrResult::Transient { .. } => {
+            // Use record_expected_empty_asr_for_generation to ensure the
+            // generation check is atomic with the health record, preventing
+            // a Stop+Start from poisoning the new session's health tracker.
+            match state.record_expected_empty_asr_for_generation(capture_generation, &empty_id) {
+                Some(ExpectedEmptyAsrResult::Transient { .. }) => {
                     mark_backend_reachable_without_clearing_error(&app, &state, capture_generation);
                     Ok(empty_caption(&config, empty_id))
                 }
-                ExpectedEmptyAsrResult::PersistentLoss { consecutive } => {
+                Some(ExpectedEmptyAsrResult::PersistentLoss { consecutive }) => {
                     let detail = persistent_asr_loss_message(consecutive);
                     emit_persistent_asr_loss_status(
                         &app,
@@ -438,6 +438,11 @@ pub async fn normalize_parapper_output(
                         &detail,
                     );
                     Err(detail)
+                }
+                None => {
+                    // Generation has been superseded by a Stop+Start since we
+                    // captured it. Return empty caption without recording health.
+                    Ok(empty_caption(&config, empty_id))
                 }
             }
         }
@@ -588,11 +593,12 @@ fn handle_translation_result(
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    if !state.translation_is_current(ticket) {
-        return;
-    }
     match result {
-        Ok(caption) => emit_caption_update(app, &caption),
+        Ok(caption) => {
+            state.publish_translation_for_ticket(ticket, &caption, |payload| {
+                emit_caption_update(app, payload);
+            });
+        }
         Err(error) => report_translation_error(app, &error),
     }
 }
