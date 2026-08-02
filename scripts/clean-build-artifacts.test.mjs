@@ -46,6 +46,14 @@ describe("cleanBuildArtifacts", () => {
       root,
       "apps/desktop/src-tauri/target/release/bundle/macos/Kotoba Beacon.app/Contents/Info.plist",
     );
+    const parapperBundle = await createFile(
+      root,
+      "packages/parapper-asr/target/release/bundle/macos/Parapper.app/Contents/Info.plist",
+    );
+    const parapperWindowsBundle = await createFile(
+      root,
+      "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/bundle/msi/Parapper.msi",
+    );
     const targetCache = await createFile(
       root,
       "apps/desktop/src-tauri/target/release/cache/keep.o",
@@ -65,6 +73,8 @@ describe("cleanBuildArtifacts", () => {
       coreOutput,
       coverageOutput,
       tauriBundle,
+      parapperBundle,
+      parapperWindowsBundle,
     ]) {
       assert.equal(existsSync(removed), false, `stale output remains: ${removed}`);
     }
@@ -144,6 +154,22 @@ describe("cleanBuildArtifacts", () => {
       root,
       "packages/parapper-asr/src-tauri/target/release/deps/old.rlib",
     );
+    const parapperReleaseDeps = await createFile(
+      root,
+      "packages/parapper-asr/target/release/deps/old.rlib",
+    );
+    const parapperWindowsReleaseDeps = await createFile(
+      root,
+      "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/deps/old.rlib",
+    );
+    const parapperBundle = await createFile(
+      root,
+      "packages/parapper-asr/target/release/bundle/msi/old.msi",
+    );
+    const parapperWindowsBundle = await createFile(
+      root,
+      "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/bundle/msi/old.msi",
+    );
     const releaseDeps = await createFile(
       root,
       "apps/desktop/src-tauri/target/release/deps/old.rlib",
@@ -164,6 +190,10 @@ describe("cleanBuildArtifacts", () => {
       libraryTarget,
       azookeyWasmTarget,
       parapperTauriTarget,
+      parapperReleaseDeps,
+      parapperWindowsReleaseDeps,
+      parapperBundle,
+      parapperWindowsBundle,
       releaseDeps,
     ]) {
       assert.equal(existsSync(removed), false, `Rust cache remains: ${removed}`);
@@ -216,5 +246,40 @@ describe("cleanBuildArtifacts", () => {
       assert.match(desktop.scripts[scriptName], /--prune-rust/);
     }
     assert.match(workspace.scripts["test:build-cleanup"], /node --test/);
+  });
+
+  it("serializes concurrent cleanup calls for one worktree", async () => {
+    const root = await createRoot();
+    const staleOutput = await createFile(root, "apps/desktop/dist/index.js");
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => cleanBuildArtifacts({ root, pruneRust: true })),
+    );
+
+    assert.equal(existsSync(staleOutput), false);
+    assert.equal(existsSync(join(root, ".kotoba-build-cleanup.lock")), false);
+    assert.equal(results.length, 4);
+  });
+
+  it("defers every deletion while a Rust build is active", async () => {
+    const root = await createRoot();
+    const staleBunBuild = await createFile(root, ".deadbeefdeadbeef-00000000.bun-build");
+    const frontendOutput = await createFile(root, "apps/desktop/dist/index.js");
+    const rustBundle = await createFile(
+      root,
+      "packages/parapper-asr/target/release/bundle/msi/old.msi",
+    );
+
+    const result = await cleanBuildArtifacts({
+      root,
+      pruneRust: true,
+      activeProcesses: ["cargo test --manifest-path packages/parapper-asr/src-tauri/Cargo.toml"],
+    });
+
+    assert.equal(existsSync(staleBunBuild), true);
+    assert.equal(existsSync(frontendOutput), true);
+    assert.equal(existsSync(rustBundle), true);
+    assert.equal(result.removed.length, 0);
+    assert.match(result.skipped[0], /deferred/);
   });
 });

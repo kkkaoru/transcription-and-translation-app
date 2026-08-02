@@ -38,3 +38,6 @@ models
 
 # Generated UI/integration evidence is local-only and can become very large.
 docs/evidence/
+
+# Atomic lock used to serialize local build artifact cleanup.
+/.kotoba-build-cleanup.lock/

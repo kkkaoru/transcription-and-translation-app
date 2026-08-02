@@ -12,12 +12,18 @@
  * root-level files with Bun's generated name shape are considered.
  */
 
-import { lstat, readdir, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, parse, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+const CLEANUP_LOCK_DIRECTORY = ".kotoba-build-cleanup.lock";
+const CLEANUP_LOCK_TIMEOUT_MS = 30_000;
+const CLEANUP_LOCK_RETRY_MS = 100;
+const CLEANUP_LOCK_STALE_MS = CLEANUP_LOCK_TIMEOUT_MS;
 
 // Bun currently uses a hidden hexadecimal prefix and hexadecimal suffix for
 // these temporary compile outputs.  Keep this root-level and suffix-limited so
@@ -68,6 +74,8 @@ const generatedDirectories = [
   "apps/desktop/src-tauri/target/release/bundle",
   "packages/parapper-asr/src-tauri/target/debug/bundle",
   "packages/parapper-asr/src-tauri/target/release/bundle",
+  "packages/parapper-asr/target/release/bundle",
+  "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/bundle",
 ];
 
 // Vitest writes reports beneath each workspace package.  They are generated
@@ -89,6 +97,7 @@ const disposableRustTargets = [
   "apps/desktop/src-tauri/target/debug",
   "packages/azookey-wasm/target",
   "packages/parapper-asr/target/debug",
+  "packages/parapper-asr/target/x86_64-pc-windows-msvc/debug",
   "packages/parapper-asr/src-tauri/target",
   "packages/azookey-rust/target",
   "packages/vibrato-wasm/target",
@@ -110,14 +119,127 @@ const releaseCacheDirectories = [
   "packages/parapper-asr/target/release/.fingerprint",
   "packages/parapper-asr/target/release/incremental",
   "packages/parapper-asr/target/release/examples",
+  "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/build",
+  "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/deps",
+  "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/.fingerprint",
+  "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/incremental",
+  "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/examples",
 ];
 
 const relativePath = (root, absolutePath) => relative(root, absolutePath) || ".";
 
+const sleep = (milliseconds) =>
+  new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, milliseconds);
+  });
+
+const processIsAlive = (pid) => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+};
+
+const readLockOwner = async (lockDirectory) => {
+  try {
+    const owner = await readFile(join(lockDirectory, "owner.json"), "utf8");
+    return JSON.parse(owner);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Serialize cleanup calls for the same worktree. A directory is used because
+ * mkdir is atomic across the supported filesystems; an owner PID lets a later
+ * invocation reclaim a lock left behind by a crashed process.
+ */
+const acquireCleanupLock = async (root) => {
+  const lockDirectory = join(root, CLEANUP_LOCK_DIRECTORY);
+  const deadline = Date.now() + CLEANUP_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      await mkdir(lockDirectory);
+      await writeFile(
+        join(lockDirectory, "owner.json"),
+        JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+        "utf8",
+      );
+      return async () => {
+        await rm(lockDirectory, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const owner = await readLockOwner(lockDirectory);
+      let stale = owner && !processIsAlive(Number(owner.pid));
+      if (!owner) {
+        try {
+          stale = Date.now() - (await stat(lockDirectory)).mtimeMs >= CLEANUP_LOCK_STALE_MS;
+        } catch {
+          stale = false;
+        }
+      }
+      if (stale) {
+        const staleDirectory = `${lockDirectory}.stale-${process.pid}-${Date.now()}`;
+        try {
+          await rename(lockDirectory, staleDirectory);
+          await rm(staleDirectory, { recursive: true, force: true });
+        } catch (staleError) {
+          if (staleError?.code !== "ENOENT") throw staleError;
+        }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`timed out waiting for build cleanup lock (${CLEANUP_LOCK_DIRECTORY})`);
+      }
+      await sleep(CLEANUP_LOCK_RETRY_MS);
+    }
+  }
+};
+
+/**
+ * Return active Rust build commands for this exact worktree. Cargo/rustc
+ * include the absolute target path in their command line on macOS/Linux; a
+ * conservative empty result on Windows avoids false positives where tasklist
+ * does not expose command lines.
+ */
+const activeRustProcesses = (root) => {
+  try {
+    const output =
+      process.platform === "win32"
+        ? execFileSync(
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }",
+            ],
+            { encoding: "utf8" },
+          )
+        : execFileSync("ps", ["-axo", "command="], { encoding: "utf8" });
+    const rustCommand = /(?:^|[\\/\s])(?:cargo|rustc|rustdoc)(?:\.exe)?(?:\s|$)/i;
+    const rootMarker = basename(root);
+    return output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(
+        (line) =>
+          line.length > 0 &&
+          (line.includes(root) || line.includes(`${sep}${rootMarker}${sep}`)) &&
+          rustCommand.test(line),
+      );
+  } catch {
+    return [];
+  }
+};
+
 /**
  * Remove stale generated outputs.
  *
- * @param {{root?: string, dryRun?: boolean, temporaryOnly?: boolean, pruneRust?: boolean}} [options]
+ * @param {{root?: string, dryRun?: boolean, temporaryOnly?: boolean, pruneRust?: boolean, activeProcesses?: string[]}} [options]
  * @returns {Promise<{removed: string[], skipped: string[]}>}
  */
 export async function cleanBuildArtifacts(options = {}) {
@@ -129,44 +251,38 @@ export async function cleanBuildArtifacts(options = {}) {
   const skipped = [];
 
   await assertSafeRoot(root);
+  const releaseLock = await acquireCleanupLock(root);
 
-  let entries;
   try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return { removed, skipped };
+    const activeProcesses =
+      pruneRust && !temporaryOnly ? (options.activeProcesses ?? activeRustProcesses(root)) : [];
+    if (activeProcesses.length > 0) {
+      return {
+        removed,
+        skipped: [
+          `build cleanup deferred while ${activeProcesses.length} Rust process(es) are active`,
+        ],
+      };
     }
-    throw error;
-  }
-
-  for (const entry of entries) {
-    if (!entry.isFile() || !bunCompileOutput.test(entry.name)) continue;
-    const output = join(root, entry.name);
-    if (!dryRun) await rm(output, { force: true });
-    removed.push(relativePath(root, output));
-  }
-
-  for (const directory of [...generatedDirectories, ...coverageDirectories]) {
-    if (temporaryOnly) break;
-    const output = join(root, directory);
-    let stat;
+    let entries;
     try {
-      stat = await lstat(output);
+      entries = await readdir(root, { withFileTypes: true });
     } catch (error) {
-      if (error?.code === "ENOENT") continue;
+      if (error?.code === "ENOENT") {
+        return { removed, skipped };
+      }
       throw error;
     }
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      skipped.push(directory);
-      continue;
-    }
-    if (!dryRun) await rm(output, { recursive: true, force: true });
-    removed.push(directory);
-  }
 
-  if (pruneRust && !temporaryOnly) {
-    for (const directory of [...disposableRustTargets, ...releaseCacheDirectories]) {
+    for (const entry of entries) {
+      if (!entry.isFile() || !bunCompileOutput.test(entry.name)) continue;
+      const output = join(root, entry.name);
+      if (!dryRun) await rm(output, { force: true });
+      removed.push(relativePath(root, output));
+    }
+
+    for (const directory of [...generatedDirectories, ...coverageDirectories]) {
+      if (temporaryOnly) break;
       const output = join(root, directory);
       let stat;
       try {
@@ -182,9 +298,36 @@ export async function cleanBuildArtifacts(options = {}) {
       if (!dryRun) await rm(output, { recursive: true, force: true });
       removed.push(directory);
     }
-  }
 
-  return { removed, skipped };
+    if (pruneRust && !temporaryOnly) {
+      if (activeProcesses.length > 0) {
+        skipped.push(
+          `Rust cleanup deferred while ${activeProcesses.length} build process(es) are active`,
+        );
+      } else {
+        for (const directory of [...disposableRustTargets, ...releaseCacheDirectories]) {
+          const output = join(root, directory);
+          let stat;
+          try {
+            stat = await lstat(output);
+          } catch (error) {
+            if (error?.code === "ENOENT") continue;
+            throw error;
+          }
+          if (stat.isSymbolicLink() || !stat.isDirectory()) {
+            skipped.push(directory);
+            continue;
+          }
+          if (!dryRun) await rm(output, { recursive: true, force: true });
+          removed.push(directory);
+        }
+      }
+    }
+
+    return { removed, skipped };
+  } finally {
+    await releaseLock();
+  }
 }
 
 const parseCliOptions = (argv) => {
