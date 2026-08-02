@@ -13,6 +13,7 @@
 //! The non-macOS stubs keep the command surface portable so Linux CI can still
 //! compile and run the Rust unit tests.
 
+#[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
@@ -28,6 +29,7 @@ pub struct InstanceGuard {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstanceError {
+    #[cfg(target_os = "macos")]
     AlreadyRunning,
     Io(String),
 }
@@ -35,6 +37,7 @@ pub enum InstanceError {
 impl std::fmt::Display for InstanceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(target_os = "macos")]
             Self::AlreadyRunning => {
                 formatter.write_str("another Kotoba Beacon instance is running")
             }
@@ -162,6 +165,7 @@ pub fn activate_existing_bundle() -> Result<(), String> {
 /// Find the `.app` ancestor for an executable inside
 /// `Kotoba Beacon.app/Contents/MacOS/…`.  Keeping this parser pure makes it
 /// testable without launching a GUI process.
+#[cfg(target_os = "macos")]
 pub fn bundle_path_from_executable(executable: &Path) -> Option<PathBuf> {
     executable.ancestors().find_map(|candidate| {
         (candidate.extension().and_then(|extension| extension.to_str()) == Some("app"))
@@ -169,6 +173,7 @@ pub fn bundle_path_from_executable(executable: &Path) -> Option<PathBuf> {
     })
 }
 
+#[cfg(target_os = "macos")]
 fn current_bundle_path() -> Result<PathBuf, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not resolve current executable: {error}"))?;
@@ -182,6 +187,7 @@ fn current_bundle_path() -> Result<PathBuf, String> {
 }
 
 #[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests {
     use super::bundle_path_from_executable;
     use std::path::Path;

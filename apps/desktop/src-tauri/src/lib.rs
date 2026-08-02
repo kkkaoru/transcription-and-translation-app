@@ -49,6 +49,7 @@ pub fn run() {
                 Ok(instance_guard) => {
                     app.manage(instance_guard);
                 }
+                #[cfg(target_os = "macos")]
                 Err(macos::InstanceError::AlreadyRunning) => {
                     exit_duplicate_instance();
                 }
