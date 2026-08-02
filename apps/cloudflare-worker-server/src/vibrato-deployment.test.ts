@@ -24,9 +24,14 @@ const valid = {
 class FakeSocket extends EventTarget {
   readonly sent: string[] = [];
   accepted = false;
+  closed = false;
 
   accept(): void {
     this.accepted = true;
+  }
+
+  close(): void {
+    this.closed = true;
   }
 
   send(value: string): void {
@@ -297,6 +302,8 @@ describe("Worker-side Vibrato and deployment paths", () => {
     expect(warmup).toHaveBeenCalledTimes(1);
     expect(server.accepted).toBe(true);
 
+    const failedClient = new FakeSocket();
+    const failedServer = new FakeSocket();
     const failed = await openAzookeySocket(
       new Request("https://worker.example/ws/azookey", { headers: { upgrade: "websocket" } }),
       {},
@@ -305,12 +312,16 @@ describe("Worker-side Vibrato and deployment paths", () => {
         vibratoConverter: Object.assign((text: string) => text, {
           warmup: () => Promise.reject(new Error("dictionary offline")),
         }),
-        socketPair: () =>
-          ({ client, server }) as unknown as { client: WebSocket; server: WebSocket },
+        socketPair: () => ({
+          client: failedClient as unknown as WebSocket,
+          server: failedServer as unknown as WebSocket,
+        }),
       },
     );
     expect(failed.status).toBe(503);
-    expect(server.accepted).toBe(true);
+    expect(failedServer.accepted).toBe(false);
+    expect(failedServer.closed).toBe(true);
+    expect(failedClient.closed).toBe(true);
   });
 
   it("advertises the configured worker pre-pass without revealing credentials", async () => {

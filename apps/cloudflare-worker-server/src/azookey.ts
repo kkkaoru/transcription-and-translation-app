@@ -8,6 +8,14 @@ export const BROWSER_VIBRATO_MODE = "browser-vibrato" as const;
 /** Where the Vibrato pre-pass is executed for a comparison request. */
 export const WORKER_VIBRATO_EXECUTION = "worker" as const;
 export const BROWSER_VIBRATO_EXECUTION = "browser-wasm" as const;
+/** Result marker for clients that supplied no explicit Vibrato execution. */
+export const VIBRATO_NOT_REQUESTED = "not-requested" as const;
+/** Effective Worker-side input stage advertised in ready/result metadata. */
+export type WorkerInputStage = "configured" | "passthrough" | "unconfigured";
+export type AzookeyResultVibratoStage =
+  | WorkerInputStage
+  | typeof BROWSER_VIBRATO_EXECUTION
+  | typeof VIBRATO_NOT_REQUESTED;
 export const AZOOKEY_MAX_TEXT_BYTES = 4_096;
 export const AZOOKEY_MAX_MESSAGE_BYTES = 8_192;
 export const AZOOKEY_MAX_ID_BYTES = 128;
@@ -114,6 +122,8 @@ export interface AzookeyRuntime {
   converter: AzookeyConverter;
   /** Optional real Vibrato stage. Required when vibratoExecution is `worker`. */
   vibrato?: AzookeyVibratoConverter;
+  /** The effective Worker-side stage; `passthrough` is an intentional identity adapter. */
+  vibratoStage?: WorkerInputStage;
   timeoutMs: number;
   expectedToken?: string;
   handshakeAuthorized?: boolean;
@@ -164,6 +174,17 @@ export interface AzookeyResultMessage {
   type: "azookey.result";
   requestId: string;
   sourceText: string;
+  /** The exact text passed to the AzooKey converter after any pre-pass. */
+  vibratoInput: string;
+  /** Requested/executed pre-pass location, or `not-requested` for legacy frames. */
+  vibratoExecution:
+    | typeof WORKER_VIBRATO_EXECUTION
+    | typeof BROWSER_VIBRATO_EXECUTION
+    | typeof VIBRATO_NOT_REQUESTED;
+  /** Effective stage, including explicit identity passthrough. */
+  vibratoStage: AzookeyResultVibratoStage;
+  /** True only when Worker Vibrato intentionally returned source text unchanged. */
+  vibratoPassthrough: boolean;
   convertedText: string;
   mode: typeof AZOOKEY_MODE;
   elapsedMs: number;
@@ -820,6 +841,13 @@ export const convertAzookeyMessage = async (
   runtime: AzookeyRuntime,
 ): Promise<AzookeyResultMessage> => {
   const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const vibratoExecution = message.vibratoExecution ?? VIBRATO_NOT_REQUESTED;
+  const vibratoStage: AzookeyResultVibratoStage =
+    message.vibratoExecution === WORKER_VIBRATO_EXECUTION
+      ? (runtime.vibratoStage ?? (runtime.vibrato ? "configured" : "unconfigured"))
+      : message.vibratoExecution === BROWSER_VIBRATO_EXECUTION
+        ? BROWSER_VIBRATO_EXECUTION
+        : VIBRATO_NOT_REQUESTED;
   let conversionInput = message.vibratoInput;
   if (message.vibratoExecution === WORKER_VIBRATO_EXECUTION) {
     if (!runtime.vibrato) {
@@ -887,6 +915,10 @@ export const convertAzookeyMessage = async (
     type: "azookey.result",
     requestId: message.requestId,
     sourceText: message.sourceText,
+    vibratoInput: conversionInput,
+    vibratoExecution,
+    vibratoStage,
+    vibratoPassthrough: vibratoStage === "passthrough",
     convertedText: converted,
     mode: AZOOKEY_MODE,
     elapsedMs: Math.max(AZOOKEY_MIN_ELAPSED_MS, Math.round(elapsed)),
@@ -980,8 +1012,6 @@ export const attachAzookeySocket = (socket: WebSocket, runtime: AzookeyRuntime):
   });
 };
 
-type WorkerInputStage = "configured" | "passthrough" | "unconfigured";
-
 export const readyAzookeyMessage = (
   timeoutMs: number,
   workerInputStage: WorkerInputStage | boolean = "unconfigured",
@@ -1000,6 +1030,8 @@ export const readyAzookeyMessage = (
     browserMode: BROWSER_VIBRATO_MODE,
     vibrato: {
       workerStage: normalizedStage,
+      workerInput: normalizedStage === "passthrough" ? "sourceText" : "vibrato-output",
+      workerPassthrough: normalizedStage === "passthrough",
       browserStage: "client",
     },
     maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
@@ -1082,6 +1114,15 @@ export const openAzookeySocket = async (
       },
     );
   }
+  // A WebSocketPair is an allocated resource even while the lazy dictionary
+  // warmup is in flight.  Create an injected/Workers pair before warmup so a
+  // failed 503 path can close both ends explicitly.  Node/Vitest does not
+  // expose WebSocketPair, so defer the native pair there until the upgrade is
+  // known to be successful.
+  let pair = createWarmupSocketPair(dependencies);
+  const closePair = (): void => {
+    closeAzookeySocketPair(pair);
+  };
   let converter: AzookeyConverter;
   const portableDictionaryConfigured = Boolean(env.AZOOKEY_DICTIONARY_URL?.trim());
   const dictionaryTimeoutMs = dependencies.dictionaryTimeoutMs ?? azookeyDictionaryTimeoutMs(env);
@@ -1096,6 +1137,7 @@ export const openAzookeySocket = async (
       );
     await converter.warmup?.();
   } catch {
+    closePair();
     return new Response(
       JSON.stringify({
         error: {
@@ -1123,6 +1165,7 @@ export const openAzookeySocket = async (
             dictionaryTimeoutMs,
           ) ?? httpVibrato));
   } catch {
+    closePair();
     return new Response(
       JSON.stringify({
         error: { code: "vibrato_unavailable", message: "Vibrato adapter is unavailable" },
@@ -1138,6 +1181,7 @@ export const openAzookeySocket = async (
     try {
       await vibratoConverter.warmup();
     } catch {
+      closePair();
       return new Response(
         JSON.stringify({
           error: { code: "vibrato_unavailable", message: "Vibrato dictionary is unavailable" },
@@ -1149,26 +1193,35 @@ export const openAzookeySocket = async (
       );
     }
   }
-  // Allocate the socket pair only after all warmups succeed. Creating a pair
-  // before a 503 path leaves an accepted server endpoint unreachable and can
-  // leak resources on repeated reconnects.
-  const pair = dependencies.socketPair?.() ?? createWorkersSocketPair();
-  pair.server.accept();
-  attachAzookeySocket(pair.server, {
-    converter,
-    ...(vibratoConverter ? { vibrato: vibratoConverter } : {}),
-    timeoutMs,
-    handshakeAuthorized,
-    ...(expectedToken ? { expectedToken } : {}),
-  });
-  const workerInputStage =
+  // In Node/Vitest there is no native WebSocketPair.  Only allocate the
+  // deferred pair after all warmups have succeeded; Workers always took the
+  // pre-warmup branch above and therefore still get explicit cleanup on 503.
+  pair ??= createWorkersSocketPair();
+  const workerInputStage: WorkerInputStage =
     portableDictionaryConfigured && !env.VIBRATO_UPSTREAM_URL?.trim()
       ? "passthrough"
       : vibratoConverter
         ? "configured"
         : "unconfigured";
-  pair.server.send(readyAzookeyMessage(timeoutMs, workerInputStage));
-  return websocketUpgradeResponse(pair.client);
+  try {
+    pair.server.accept();
+    attachAzookeySocket(pair.server, {
+      converter,
+      ...(vibratoConverter ? { vibrato: vibratoConverter } : {}),
+      vibratoStage: workerInputStage,
+      timeoutMs,
+      handshakeAuthorized,
+      ...(expectedToken ? { expectedToken } : {}),
+    });
+    pair.server.send(readyAzookeyMessage(timeoutMs, workerInputStage));
+    return websocketUpgradeResponse(pair.client);
+  } catch (error) {
+    // A runtime throw after pair creation (accept/send/upgrade response) must
+    // not strand either endpoint.  Re-throw so the Worker entrypoint can
+    // preserve its existing 500 error envelope.
+    closePair();
+    throw error;
+  }
 };
 
 /**
@@ -1190,4 +1243,36 @@ const websocketUpgradeResponse = (client: WebSocket): Response => {
 const createWorkersSocketPair = (): AzookeySocketPair => {
   const pair = new WebSocketPair();
   return { client: pair[0], server: pair[1] };
+};
+
+const closeAzookeySocket = (socket: WebSocket | undefined): void => {
+  if (!socket || typeof socket.close !== "function") {
+    return;
+  }
+  try {
+    socket.close();
+  } catch {
+    // Closing one endpoint must not prevent the other endpoint from being
+    // closed when a Worker runtime rejects a close on an unaccepted socket.
+  }
+};
+
+const closeAzookeySocketPair = (pair: AzookeySocketPair | undefined): void => {
+  if (!pair) {
+    return;
+  }
+  closeAzookeySocket(pair.server);
+  closeAzookeySocket(pair.client);
+};
+
+const createWarmupSocketPair = (
+  dependencies: AzookeyRequestDependencies,
+): AzookeySocketPair | undefined => {
+  if (dependencies.socketPair) {
+    return dependencies.socketPair();
+  }
+  if (typeof WebSocketPair === "undefined") {
+    return undefined;
+  }
+  return createWorkersSocketPair();
 };

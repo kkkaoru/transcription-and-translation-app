@@ -21,6 +21,7 @@ import {
 class FakeSocket extends EventTarget {
   readonly sent: string[] = [];
   accepted = false;
+  closed = false;
 
   send(value: string): void {
     this.sent.push(value);
@@ -28,6 +29,10 @@ class FakeSocket extends EventTarget {
 
   accept(): void {
     this.accepted = true;
+  }
+
+  close(): void {
+    this.closed = true;
   }
 
   emit(value: unknown): void {
@@ -294,6 +299,33 @@ describe("AzooKey Worker text contract", () => {
         message: "AzooKey converter or dictionary is unavailable",
       },
     });
+  });
+
+  it("closes both WebSocket endpoints when warmup fails before upgrade", async () => {
+    const client = new FakeSocket();
+    const server = new FakeSocket();
+    const socketPair = vi.fn(() => ({
+      client: client as unknown as WebSocket,
+      server: server as unknown as WebSocket,
+    }));
+    const converter = Object.assign((text: string) => text, {
+      warmup: vi.fn(async () => undefined),
+    });
+    const vibratoConverter = Object.assign((text: string) => text, {
+      warmup: vi.fn(() => Promise.reject(new Error("dictionary offline"))),
+    });
+
+    const response = await openAzookeySocket(
+      new Request("https://worker.example/ws/azookey", { headers: { upgrade: "websocket" } }),
+      {},
+      { converter, vibratoConverter, socketPair },
+    );
+
+    expect(response.status).toBe(503);
+    expect(socketPair).toHaveBeenCalledOnce();
+    expect(server.accepted).toBe(false);
+    expect(server.closed).toBe(true);
+    expect(client.closed).toBe(true);
   });
 
   it("guards raw Wasm allocation and output ranges", () => {
