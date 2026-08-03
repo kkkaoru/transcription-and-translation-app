@@ -419,14 +419,18 @@ export const beginNativePublish = (
   gate: NativePublishGate,
   nextKey: string,
 ): NativePublishStart => {
+  if (gate.inFlightKey !== null) {
+    // Latest-wins while a previous invoke is outstanding. This check must come
+    // before the last-success comparison: the current props can legitimately
+    // revert to a frame that was already successful while a newer frame is
+    // still in flight. Keep that reverted frame pending so the newer success
+    // cannot leave OBS showing stale output.
+    gate.pendingKey = nextKey;
+    return { action: "defer", pendingKey: nextKey };
+  }
   if (nextKey === gate.lastSuccessfulKey) {
     gate.pendingKey = null;
     return { action: "skip" };
-  }
-  if (gate.inFlightKey !== null) {
-    // Latest-wins while a previous invoke is outstanding.
-    gate.pendingKey = nextKey;
-    return { action: "defer", pendingKey: nextKey };
   }
   if (gate.failureKey === nextKey && gate.failureCount >= NATIVE_PUBLISH_MAX_FAILURES) {
     return { action: "exhausted", key: nextKey };
@@ -611,9 +615,8 @@ export const NativeFramePublisher = ({
               .publishOverlayFrame(bytesToBase64(frame.pixels), frame.width, frame.height)
               .then(() => {
                 if (cancelled) {
-                  if (gateRef.current.inFlightKey === publishedKey) {
-                    gateRef.current.inFlightKey = null;
-                  }
+                  // Cleanup already released the old claim. Never clear a
+                  // replacement effect's claim if it republishes the same key.
                   return;
                 }
                 const followUp = completeNativePublishSuccess(gateRef.current, publishedKey);
@@ -623,9 +626,8 @@ export const NativeFramePublisher = ({
               })
               .catch((error: unknown) => {
                 if (cancelled) {
-                  if (gateRef.current.inFlightKey === publishedKey) {
-                    gateRef.current.inFlightKey = null;
-                  }
+                  // Cleanup already released the old claim. Never clear a
+                  // replacement effect's claim if it republishes the same key.
                   return;
                 }
                 const detail = formatBridgeError(error) ?? "native overlay publish rejected";
@@ -695,8 +697,19 @@ export const NativeFramePublisher = ({
         cancelAnimationFrame(raf);
         raf = 0;
       }
-      // Drop in-flight claim so a remount can republish the current caption.
-      gateRef.current.inFlightKey = null;
+      // A prop change can clean up this effect while its native IPC call is
+      // still unresolved. Preserve the latest desired key and invalidate an
+      // otherwise-successful key so the replacement effect cannot skip it after
+      // dropping the stale in-flight claim. Without this, a B→A transition can
+      // leave OBS on B forever because A was already successful before B began.
+      if (gateRef.current.inFlightKey !== null) {
+        const latestKey = framePaintKey(latestRef.current.config, latestRef.current.caption);
+        gateRef.current.inFlightKey = null;
+        gateRef.current.pendingKey = latestKey;
+        if (gateRef.current.lastSuccessfulKey === latestKey) {
+          gateRef.current.lastSuccessfulKey = "";
+        }
+      }
     };
   }, [caption, config]);
 

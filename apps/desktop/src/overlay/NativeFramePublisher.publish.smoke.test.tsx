@@ -34,7 +34,12 @@ vi.mock("../core/audio", async (importOriginal) => {
   return { ...actual, bytesToBase64: audioMocks.bytesToBase64 };
 });
 
-import { NativeFramePublisher } from "./NativeFramePublisher";
+import {
+  beginNativePublish,
+  completeNativePublishSuccess,
+  createNativePublishGate,
+  NativeFramePublisher,
+} from "./NativeFramePublisher";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -86,6 +91,34 @@ const flush = async (ms: number): Promise<void> => {
 };
 
 describe("NativeFramePublisher publish failures", () => {
+  it("queues a revert to the last successful frame while a newer frame is in flight", () => {
+    const gate = createNativePublishGate();
+
+    expect(beginNativePublish(gate, "frame-a")).toEqual({
+      action: "publish",
+      key: "frame-a",
+    });
+    expect(completeNativePublishSuccess(gate, "frame-a")).toBeNull();
+
+    expect(beginNativePublish(gate, "frame-b")).toEqual({
+      action: "publish",
+      key: "frame-b",
+    });
+    // The current props can revert to A before B's IPC call completes. A was
+    // successful previously, but it still must be queued behind B.
+    expect(beginNativePublish(gate, "frame-a")).toEqual({
+      action: "defer",
+      pendingKey: "frame-a",
+    });
+    expect(completeNativePublishSuccess(gate, "frame-b")).toBe("frame-a");
+    expect(gate.lastSuccessfulKey).toBe("frame-b");
+
+    expect(beginNativePublish(gate, "frame-a")).toEqual({
+      action: "publish",
+      key: "frame-a",
+    });
+  });
+
   let container: HTMLDivElement;
   let root: Root;
 
@@ -112,6 +145,41 @@ describe("NativeFramePublisher publish failures", () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("republishes the latest caption after cleanup cancels an unresolved invoke", async () => {
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("first")} />);
+    });
+    await flush(60);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+
+    let resolveSecond: (() => void) | null = null;
+    mocks.publishOverlayFrame.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSecond = resolve;
+        }),
+    );
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("second")} />);
+    });
+    await flush(60);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(2);
+
+    // Reverting to the already-successful first caption while the second IPC
+    // call is unresolved must still publish first again. The effect cleanup
+    // cannot leave the native output stuck on second.
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("first")} />);
+    });
+    await flush(60);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(3);
+
+    expect(resolveSecond).not.toBeNull();
+    (resolveSecond as unknown as () => void)();
+    await flush(60);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(3);
   });
 
   it("republishes the next caption after a rejected invoke instead of suppressing it", async () => {
