@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  assertNativeMacTarget,
   configPathForBuild,
   isIntelMacBuild,
   tauriArgsForBuild,
+  tauriExecutableForPlatform,
 } from "./run-desktop-tauri-build.mjs";
 
 describe("architecture-specific desktop Tauri config", () => {
@@ -73,6 +75,38 @@ describe("architecture-specific desktop Tauri config", () => {
       }),
       ["build", "--target=aarch64-apple-darwin"],
     );
+  });
+
+  it("rejects cross-target macOS packaging before Tauri runs", () => {
+    assert.throws(
+      () =>
+        assertNativeMacTarget({
+          platform: "darwin",
+          arch: "arm64",
+          targetTriple: "x86_64-apple-darwin",
+        }),
+      /Cross-target macOS desktop builds are unsupported/,
+    );
+    assert.doesNotThrow(() =>
+      assertNativeMacTarget({
+        platform: "darwin",
+        arch: "x64",
+        targetTriple: "x86_64-apple-darwin",
+      }),
+    );
+    assert.doesNotThrow(() =>
+      assertNativeMacTarget({
+        platform: "darwin",
+        arch: "arm64",
+        targetTriple: "aarch64-apple-darwin",
+      }),
+    );
+  });
+
+  it("uses the Windows command shim when launching Tauri without a shell", () => {
+    assert.equal(tauriExecutableForPlatform("win32"), "tauri.cmd");
+    assert.equal(tauriExecutableForPlatform("darwin"), "tauri");
+    assert.equal(tauriExecutableForPlatform("linux"), "tauri");
   });
 
   it("does not select a macOS framework config on Windows or Linux", () => {

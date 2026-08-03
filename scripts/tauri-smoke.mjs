@@ -534,27 +534,27 @@ const nativeConfigEvidence = async () => {
 };
 
 /**
- * Verify the caption-only loopback fallback on the Apple Silicon host where
- * the bundled x86_64 Syphon framework is intentionally unavailable. This is
- * separate from the native gateway checks: a healthy app process is not proof
- * that OBS can actually discover the fallback source.
+ * Verify the caption-only loopback fallback on macOS, where the bundled
+ * Syphon framework is not a reliable native path. This is separate from the
+ * native gateway checks: a healthy app process is not proof that OBS can
+ * actually discover the fallback source.
  */
 const browserSourceEvidence = async (config) => {
-  if (process.platform !== "darwin" || process.arch !== "arm64") {
+  if (process.platform !== "darwin") {
     return;
   }
   const browserSource = config?.overlay?.browserSource;
-  // Rust defaults this fallback on for a fresh arm64 configuration. An
+  // Rust defaults this fallback on for a fresh macOS configuration. An
   // explicit persisted false remains an intentional opt-out and is reported
   // as skipped rather than treated as a runtime failure.
   if (browserSource?.enabled === false) {
-    skipped("Apple Silicon OBS Browser Source fallback", "disabled in the persisted config");
+    skipped("macOS OBS Browser Source fallback", "disabled in the persisted config");
     return;
   }
   const port = Number(browserSource?.port ?? 1_421);
   const portOk = Number.isInteger(port) && port >= 1_024 && port <= 65_535;
   check(
-    "Apple Silicon OBS Browser Source port is valid",
+    "macOS OBS Browser Source port is valid",
     portOk,
     `port=${browserSource?.port ?? "default 1421"}`,
   );
@@ -573,7 +573,7 @@ const browserSourceEvidence = async (config) => {
     250,
   );
   check(
-    "Apple Silicon OBS Browser Source health endpoint responds",
+    "macOS OBS Browser Source health endpoint responds",
     Boolean(health),
     `http://127.0.0.1:${port}/health`,
   );
@@ -592,7 +592,7 @@ const browserSourceEvidence = async (config) => {
     250,
   );
   check(
-    "Apple Silicon OBS Browser Source serves the caption feed",
+    "macOS OBS Browser Source serves the caption feed",
     Boolean(feed),
     `http://127.0.0.1:${port}/captions.json`,
   );

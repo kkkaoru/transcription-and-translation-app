@@ -46,9 +46,9 @@ TAURI_SMOKE_EXPECT_VAD_THRESHOLD=0.5 \
 node scripts/tauri-smoke.mjs --no-launch
 ```
 
-On an Apple Silicon host the harness additionally probes the caption-only
-loopback fallback: the configured port is range-checked and the live app must
-answer `http://127.0.0.1:{port}/health` with `ok` and
+On macOS the harness additionally probes the caption-only loopback
+fallback: the configured port is range-checked and the live app must answer
+`http://127.0.0.1:{port}/health` with `ok` and
 `http://127.0.0.1:{port}/captions.json` with a feed carrying an `overlay`
 object. A persisted `browserSource.enabled: false` is an intentional opt-out
 and is reported as skipped rather than as a runtime failure. The probe runs

@@ -103,7 +103,7 @@ describe("default configuration", () => {
     expect(fixed.audio.silenceGateDb).toBe(-60);
   });
 
-  it("defaults the OBS browser source to disabled on the documented port", () => {
+  it("keeps browser-only previews disabled until the native runtime supplies its platform default", () => {
     const config = createDefaultConfig();
     expect(config.overlay.browserSource).toEqual({ enabled: false, port: 1_421 });
     expect(DEFAULT_BROWSER_SOURCE_PORT).toBe(1_421);

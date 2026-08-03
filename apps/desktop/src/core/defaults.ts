@@ -408,9 +408,11 @@ export const migrateSilenceGateDb = (gateDb: number | undefined): number => {
 };
 
 /**
- * Normalize a legacy/malformed `browserSource` block onto the documented
- * defaults. A missing block (pre-fallback configs) stays disabled on the
- * documented port; an out-of-range port falls back to the default port.
+ * Normalize a legacy/malformed `browserSource` block for the browser renderer.
+ * The native Tauri runtime supplies the platform-specific default (enabled on
+ * macOS); browser-only previews stay disabled until a caller explicitly opts in.
+ * A missing block keeps the documented port, and an out-of-range port falls
+ * back to the default.
  */
 export const mergeBrowserSource = (
   base: BrowserSourceConfig | undefined,

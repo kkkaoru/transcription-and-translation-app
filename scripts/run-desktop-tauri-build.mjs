@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { bundleArgsForPlatform } from "./run-tauri-build.mjs";
 
 const desktopRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -21,6 +22,39 @@ const targetTripleFromArgs = (args) => {
   return index >= 0 ? (args[index + 1] ?? "") : "";
 };
 
+const targetTripleFromEnvironment = (env) =>
+  env.TAURI_ENV_TARGET_TRIPLE || env.TAURI_TARGET_TRIPLE || env.CARGO_BUILD_TARGET || "";
+
+const targetArchitectureFromTriple = (targetTriple) => {
+  if (/(?:^|-)x86_64-apple-darwin$/u.test(targetTriple)) return "x64";
+  if (/(?:^|-)aarch64-apple-darwin$/u.test(targetTriple)) return "arm64";
+  return null;
+};
+
+export const assertNativeMacTarget = ({
+  platform = process.platform,
+  arch = process.arch,
+  env = process.env,
+  targetTriple = "",
+} = {}) => {
+  if (platform !== "darwin") return;
+  const selectedTarget = targetTriple || targetTripleFromEnvironment(env);
+  const targetArchitecture = targetArchitectureFromTriple(selectedTarget);
+  if (targetArchitecture && targetArchitecture !== arch) {
+    throw new Error(
+      `Cross-target macOS desktop builds are unsupported (host ${arch}, target ${targetArchitecture}).`,
+    );
+  }
+};
+
+/**
+ * Resolve the package executable in a form Node can launch without a shell.
+ * Windows installs the Bun/npm bin shim as `tauri.cmd`; `spawnSync("tauri")`
+ * cannot execute that cmd shim when `shell` is false.
+ */
+export const tauriExecutableForPlatform = (platform = process.platform) =>
+  platform === "win32" ? "tauri.cmd" : "tauri";
+
 /**
  * Resolve the target architecture before invoking Tauri. Tauri's own target
  * environment is not available until after the CLI starts, so host architecture
@@ -34,12 +68,7 @@ export const isIntelMacBuild = ({
   targetTriple = "",
 } = {}) => {
   if (platform !== "darwin") return false;
-  const selectedTarget =
-    targetTriple ||
-    env.TAURI_ENV_TARGET_TRIPLE ||
-    env.TAURI_TARGET_TRIPLE ||
-    env.CARGO_BUILD_TARGET ||
-    "";
+  const selectedTarget = targetTriple || targetTripleFromEnvironment(env);
   if (selectedTarget) return /(?:^|-)x86_64-apple-darwin$/u.test(selectedTarget);
   return arch === "x64";
 };
@@ -77,9 +106,14 @@ export const tauriArgsForBuild = ({
     release,
     targetTriple: targetTripleFromArgs(extraArgs),
   });
+  const hasBundleSelection = extraArgs.some(
+    (arg) => arg === "--bundles" || arg.startsWith("--bundles="),
+  );
+  const releaseBundleArgs = release && !hasBundleSelection ? bundleArgsForPlatform(platform) : [];
   return [
     command,
     ...(config ? ["--config", config] : []),
+    ...releaseBundleArgs,
     ...extraArgs.filter((arg) => arg !== RELEASE_FLAG && arg !== DEV_FLAG),
   ];
 };
@@ -87,14 +121,21 @@ export const tauriArgsForBuild = ({
 const main = () => {
   const release = process.argv.includes(RELEASE_FLAG);
   const dev = process.argv.includes(DEV_FLAG);
+  const extraArgs = process.argv.slice(2);
+  try {
+    assertNativeMacTarget({ targetTriple: targetTripleFromArgs(extraArgs) });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
   const args = tauriArgsForBuild({
     release,
     command: dev ? "dev" : "build",
-    extraArgs: process.argv.slice(2),
+    extraArgs,
   });
   const env = { ...process.env };
   delete env.RUSTUP_TOOLCHAIN;
-  const result = spawnSync("tauri", args, {
+  const result = spawnSync(tauriExecutableForPlatform(), args, {
     cwd: desktopRoot,
     env,
     stdio: "inherit",

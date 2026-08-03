@@ -154,7 +154,7 @@ const ja = {
   "settings.captionYHint": "0=上、100=下",
   "settings.browserSourceLabel": "OBS Browser Source（字幕のみ）",
   "settings.browserSourceHint":
-    "Apple SiliconでSyphon/Spout2が使えない場合の代替です。ループバックの字幕ページとJSONフィードを提供します。",
+    "macOSでSyphon/Spout2が使えない場合の代替です。ループバックの字幕ページとJSONフィードを提供します。",
   "settings.browserSourceUrl": "OBSのBrowser Sourceに追加: http://127.0.0.1:{port}/",
   "settings.browserSourceToggle": "有効化する",
   "settings.browserSourcePort": "ポート",
@@ -586,7 +586,7 @@ const en: Record<MessageKey, string> = {
   "settings.captionYHint": "0=top, 100=bottom",
   "settings.browserSourceLabel": "OBS Browser Source (captions only)",
   "settings.browserSourceHint":
-    "Fallback where Syphon/Spout2 are unavailable (Apple Silicon). Serves a caption-only page and JSON feed over loopback.",
+    "Fallback where Syphon/Spout2 are unavailable on macOS. Serves a caption-only page and JSON feed over loopback.",
   "settings.browserSourceUrl": "Add to OBS as a Browser Source: http://127.0.0.1:{port}/",
   "settings.browserSourceToggle": "Enable",
   "settings.browserSourcePort": "Port",
