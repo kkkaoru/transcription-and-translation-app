@@ -302,6 +302,17 @@ fn resource_runtime_path(app: &AppHandle, runtime_name: &str) -> Result<OsString
         .map_err(|error| format!("could not construct Parapper DLL search path: {error}"))
 }
 
+fn map_gateway_resolution_error<T, E, F>(result: Result<T, E>, cleanup: F) -> Result<T, String>
+where
+    E: std::fmt::Display,
+    F: FnOnce(),
+{
+    result.map_err(|error| {
+        cleanup();
+        format!("could not resolve embedded inference gateway: {error}")
+    })
+}
+
 pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     config.validate()?;
     clear_sidecar_ports();
@@ -338,10 +349,11 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
         config.audio.noise_suppression,
     );
 
-    let (gateway_events, gateway_child) = app
-        .shell()
-        .sidecar("kotoba-inference-gateway")
-        .map_err(|error| format!("could not resolve embedded inference gateway: {error}"))?
+    let gateway_command =
+        map_gateway_resolution_error(app.shell().sidecar("kotoba-inference-gateway"), || {
+            services.stop_parapper()
+        })?;
+    let (gateway_events, gateway_child) = gateway_command
         .args(["--config", config_path.to_string_lossy().as_ref()])
         .spawn()
         .map_err(|error| {
@@ -971,10 +983,25 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        add_parapper_vad_diagnostics, default_gateway_config, parapper_headless_args,
-        parapper_headless_args_with_noise_cancellation, redact_runtime_error, safe_health_url,
-        safe_sidecar_event, AppConfig, PARAPPER_PORT,
+        add_parapper_vad_diagnostics, default_gateway_config, map_gateway_resolution_error,
+        parapper_headless_args, parapper_headless_args_with_noise_cancellation,
+        redact_runtime_error, safe_health_url, safe_sidecar_event, AppConfig, PARAPPER_PORT,
     };
+
+    #[test]
+    fn gateway_resolution_failure_runs_cleanup_before_returning_error() {
+        let mut cleaned_up = false;
+        let result =
+            map_gateway_resolution_error(Result::<(), &str>::Err("sidecar is not bundled"), || {
+                cleaned_up = true
+            });
+
+        assert_eq!(
+            result.unwrap_err(),
+            "could not resolve embedded inference gateway: sidecar is not bundled"
+        );
+        assert!(cleaned_up);
+    }
 
     #[test]
     fn embedded_gateway_defaults_to_loopback_only() {

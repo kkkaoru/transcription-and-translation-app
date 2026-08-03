@@ -175,22 +175,23 @@ pub const DEFAULT_BROWSER_SOURCE_PORT: u16 = 1421;
 pub const BROWSER_SOURCE_PORT_MIN: u16 = 1024;
 pub const BROWSER_SOURCE_PORT_MAX: u16 = 65_535;
 
-/// Apple Silicon cannot load the bundled x86_64-only Syphon framework, so the
-/// loopback Browser Source is enabled on a fresh native macOS configuration.
-/// An explicit persisted `false` remains an opt-out; this only supplies the
-/// default needed for automatic launch publication.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+/// The bundled Syphon.framework is x86_64-only and the vendored syphon-rs
+/// backend expects a Metal server class it does not provide reliably. Keep the
+/// loopback Browser Source enabled on every fresh macOS configuration so OBS
+/// still receives captions when native Syphon is unavailable. An explicit
+/// persisted `false` remains an opt-out.
+#[cfg(target_os = "macos")]
 const DEFAULT_BROWSER_SOURCE_ENABLED: bool = true;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_os = "macos"))]
 const DEFAULT_BROWSER_SOURCE_ENABLED: bool = false;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserSourceConfig {
     /// Serve the caption-only page and JSON feed over loopback HTTP. This is
-    /// the OBS fallback for platforms without Spout2/Syphon (notably Apple
-    /// Silicon macOS). It starts automatically on a fresh Apple Silicon
-    /// configuration and can be disabled from Settings.
+    /// the OBS fallback for platforms without a working Spout2/Syphon path
+    /// (notably macOS). It starts automatically on a fresh macOS configuration
+    /// and can be disabled from Settings.
     #[serde(default = "default_browser_source_enabled")]
     pub enabled: bool,
     #[serde(default = "default_browser_source_port")]
@@ -949,6 +950,16 @@ mod tests {
         assert_eq!(config.overlay.browser_source.enabled, super::default_browser_source_enabled());
         assert_eq!(config.overlay.browser_source.port, super::DEFAULT_BROWSER_SOURCE_PORT);
         assert_eq!(config.overlay.browser_source.port, 1_421);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_defaults_to_browser_source_for_native_output_fallback() {
+        let config = AppConfig::default();
+        assert!(
+            config.overlay.browser_source.enabled,
+            "macOS must expose the caption-only Browser Source when native Syphon is unavailable"
+        );
     }
 
     #[test]

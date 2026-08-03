@@ -1257,9 +1257,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use tokio::sync::Mutex as AsyncMutex;
     use uuid::Uuid;
 
-    static DICTIONARY_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static DICTIONARY_ENV_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
     fn ignore_pipeline_stage(_: &PipelineStageEvent) {}
 
@@ -1324,6 +1325,11 @@ mod tests {
 
     #[tokio::test]
     async fn persistent_parapper_hiragana_output_reuses_azookey_and_turn_identity() {
+        // DictionaryPaths::with_defaults reads a process-global environment
+        // variable. Serialize this pipeline test with the fixture that mutates
+        // AZOOKEY_DICTIONARY_ROOT so parallel test execution cannot change the
+        // expected conversion mid-request.
+        let _dictionary_env_guard = DICTIONARY_ENV_LOCK.lock().await;
         let config = AppConfig::default();
         let pipeline = Pipeline::default();
         let output = ParapperRecognitionInput {
@@ -1392,6 +1398,9 @@ mod tests {
 
     #[tokio::test]
     async fn persistent_parapper_prefers_explicit_azookey_input_over_surface_text() {
+        // Keep the persistent normalizer test from racing the environment-backed
+        // dictionary fixture when the desktop test harness runs in parallel.
+        let _dictionary_env_guard = DICTIONARY_ENV_LOCK.lock().await;
         let config = AppConfig::default();
         let pipeline = Pipeline::default();
         // A surface-form sidecar may still populate `text` for compatibility
@@ -1500,7 +1509,7 @@ mod tests {
 
     #[test]
     fn azookey_without_optional_paths_reports_success() {
-        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let config = AppConfig::default();
         let outcome = normalize_azookey(&config, "きょうははいしんです").expect("normalize");
         assert_eq!(outcome, NormalizeOutcome::Success("今日は配信です".to_string()));
@@ -1508,7 +1517,7 @@ mod tests {
 
     #[test]
     fn azookey_reuses_the_loaded_dictionary_for_repeated_chunks() {
-        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let path = temporary_dictionary_path("cache");
         fs::write(&path, "はいしん\t配信\t-1\n").expect("dictionary fixture should write");
         let mut config = AppConfig::default();
@@ -1533,7 +1542,7 @@ mod tests {
 
     #[test]
     fn azookey_without_explicit_path_uses_environment_dictionary() {
-        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let path = temporary_dictionary_path("env");
         fs::write(&path, "はいしん\t配信中\t-1\n").expect("fixture should write");
         let previous = std::env::var_os("AZOOKEY_DICTIONARY_ROOT");
@@ -1551,7 +1560,7 @@ mod tests {
 
     #[test]
     fn azookey_valid_optional_tsv_path_remains_a_success() {
-        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let path = temporary_dictionary_path("valid");
         fs::write(&path, "はいしん\t配信中\t-1\n").expect("fixture should write");
         let mut config = AppConfig::default();
@@ -1567,7 +1576,7 @@ mod tests {
 
     #[test]
     fn azookey_empty_input_is_a_soft_skip_even_with_a_broken_path() {
-        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let mut config = AppConfig::default();
         config.models.paths.insert(
             "azookey-rust".to_string(),
@@ -1579,7 +1588,7 @@ mod tests {
 
     #[test]
     fn azookey_dictionary_error_falls_back_to_builtin_text_and_keeps_diagnostic() {
-        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let path = temporary_dictionary_path("invalid");
         // An existing but empty TSV is a malformed optional dictionary.  The
         // built-in lexicon should still convert the recognized kana.
@@ -1602,7 +1611,7 @@ mod tests {
 
     #[test]
     fn azookey_missing_optional_path_is_reported_before_loader_soft_skips_it() {
-        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let path = temporary_dictionary_path("missing");
         let mut config = AppConfig::default();
         config
@@ -1623,7 +1632,7 @@ mod tests {
 
     #[test]
     fn azookey_incomplete_directory_is_reported_as_a_fallback() {
-        let _guard = DICTIONARY_ENV_LOCK.lock().expect("dictionary env lock");
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let path = temporary_dictionary_path("incomplete");
         fs::create_dir_all(&path).expect("fixture directory should create");
         let mut config = AppConfig::default();

@@ -199,6 +199,13 @@ pub struct RuntimeStatus {
     pub status: String,
     pub platform: String,
     pub backend_reachable: bool,
+    /// Kind of the native output handle only: `spout2`, `syphon`, or
+    /// `transparent-window`. This field describes the native lane and never
+    /// reports the loopback OBS Browser Source fallback, which is served by
+    /// `browser_source.rs` as a separate lane with its own listener state. On
+    /// macOS (where Syphon is x86_64-only and Spout2 is Windows-only) the
+    /// active OBS caption path is that Browser Source while this field stays
+    /// `transparent-window`; treat the two lanes as independent.
     pub native_output: String,
     pub last_error: Option<String>,
 }
@@ -1258,6 +1265,77 @@ mod tests {
         }));
         assert!(emitted);
         assert_eq!(state.latest_caption(), Some(caption));
+    }
+
+    #[test]
+    fn paused_capture_drops_a_late_caption_and_resume_publishes_fresh_work() {
+        // A chunk that straddles the pause boundary can finish its pipeline
+        // run while the runtime is idle.  Its generation is still current
+        // (no replacement start has happened yet), but the caption must not
+        // be emitted or replayed.  After resume — start_capture bumps the
+        // generation and the status returns to capturing — fresh work
+        // publishes normally while the paused session's generation stays
+        // permanently superseded.
+        let state = capturing_state();
+        let paused_generation = state.current_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "idle".to_string();
+        }
+        let late = CaptionPayload {
+            id: "paused-late".to_string(),
+            source_text: "停止中に完成した字幕".to_string(),
+            azookey_input_text: None,
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+        };
+        let mut emitted = false;
+        assert!(!state.publish_caption_for_generation(paused_generation, &late, |_| {
+            emitted = true;
+        }));
+        assert!(!emitted, "a chunk completed during pause must not reach the caption surface");
+        assert_eq!(state.latest_caption(), None);
+
+        let resumed_generation = state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+        }
+        assert!(
+            !state.publish_caption_for_generation(paused_generation, &late, |_| {
+                emitted = true;
+            }),
+            "paused-session audio must not affect the resumed session's transcription"
+        );
+        assert!(!emitted);
+        assert_eq!(state.latest_caption(), None);
+
+        let fresh = CaptionPayload {
+            id: "resumed-fresh".to_string(),
+            source_text: "再開後の字幕".to_string(),
+            azookey_input_text: None,
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 3,
+            received_at: 4,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+        };
+        assert!(state.publish_caption_for_generation(resumed_generation, &fresh, |_| {
+            emitted = true;
+        }));
+        assert!(emitted, "resumed capture must process new chunks again");
+        assert_eq!(state.latest_caption(), Some(fresh));
     }
 
     #[tokio::test]

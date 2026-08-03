@@ -240,10 +240,15 @@ impl NativeOutputHandle {
             return Self { worker: Some(worker), kind: "spout2".to_string() };
         }
 
-        // The vendored Syphon.framework is x86_64-only. Apple-silicon builds
-        // intentionally use the transparent-window output until a universal
-        // framework is supplied, rather than attempting a runtime load that
-        // is known to be incompatible.
+        // The vendored Syphon.framework is x86_64-only and Spout2 is
+        // Windows-only, so Apple-silicon builds have no native transport.
+        // OBS integration on macOS falls back to the loopback Browser Source
+        // served by `browser_source.rs` (default-enabled on fresh macOS
+        // configurations), never a runtime load of the known-incompatible
+        // framework. This native lane intentionally stays a no-op
+        // transparent-window handle: it powers the on-screen overlay window
+        // when opened manually and keeps `kind()`/status reporting honest
+        // about the absence of a Spout2/Syphon sender.
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
         if let Some(worker) = start_syphon(width, height) {
             return Self { worker: Some(worker), kind: "syphon".to_string() };
@@ -711,6 +716,72 @@ mod tests {
             vec![1; 4]
         );
         sender.close();
+    }
+
+    /// Targets without a native transport (macOS arm64, Linux, ...) must
+    /// construct a no-op `transparent-window` handle: `publish` succeeds
+    /// without a worker while `kind()` stays honest about the absence of a
+    /// Spout2/Syphon sender. Windows and macOS-x86_64 test builds are excluded
+    /// because they would start real transport workers.
+    #[cfg(not(any(windows, all(target_os = "macos", target_arch = "x86_64"))))]
+    #[test]
+    fn no_transport_platforms_fall_back_to_a_noop_transparent_window_handle() {
+        let output = super::NativeOutputHandle::new(1280, 720);
+        assert_eq!(output.kind(), "transparent-window");
+        let frame = OverlayFrame { rgba: vec![0; 1280 * 720 * 4], width: 1280, height: 720 };
+        assert!(
+            output.publish(frame).is_ok(),
+            "a no-op handle must accept frames without a worker"
+        );
+    }
+
+    /// A worker stuck inside a blocking transport call (e.g. a hung
+    /// Spout/Syphon constructor or send) must not block teardown
+    /// indefinitely: `join_worker` closes the mailbox, waits a bounded
+    /// 500 ms, and detaches the thread when it cannot finish. `Drop` for
+    /// `NativeOutputHandle` — and therefore `save_config` replacement and app
+    /// shutdown — depends on this bound.
+    #[test]
+    #[allow(clippy::excessive_nesting)]
+    fn join_worker_bounds_teardown_when_the_worker_thread_never_finishes() {
+        let sender = sender();
+        let worker_sender = sender.clone();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_gate = gate.clone();
+        let (released_sender, released_receiver) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            // Park on an unrelated condvar to simulate a transport call that
+            // can neither observe the mailbox close nor finish on its own.
+            let (lock, condvar) = &*worker_gate;
+            let released = condvar
+                .wait_while(lock.lock().expect("gate lock"), |released| !*released)
+                .expect("gate condvar");
+            drop(released);
+            let _ = released_sender.send(());
+            drop(worker_sender);
+        });
+        // Sleep briefly so the thread is parked before the bounded wait
+        // starts; the thread cannot finish until it is released below.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let output = super::NativeOutputWorker { sender: sender.clone(), join_handle: handle };
+        let began = std::time::Instant::now();
+        super::join_worker(output);
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(2),
+            "join_worker must not block teardown indefinitely on a stuck worker"
+        );
+        assert!(matches!(
+            sender.send_latest(frame(1)),
+            Err(error) if error == "native output worker stopped"
+        ));
+        // Release the parked thread so it does not leak across the test
+        // process, then confirm it observed the release.
+        let (lock, condvar) = &*gate;
+        let mut released = lock.lock().expect("gate lock");
+        *released = true;
+        condvar.notify_all();
+        drop(released);
+        released_receiver.recv().expect("stuck worker must exit after release");
     }
 
     #[test]
