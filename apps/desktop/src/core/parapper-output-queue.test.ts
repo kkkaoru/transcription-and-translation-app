@@ -89,6 +89,56 @@ describe("Parapper output coalescing queue", () => {
     expect(queue.getStats()).toMatchObject({ pending: 0, inFlight: false });
   });
 
+  it("close drops queued events from a paused session and ignores later arrivals", async () => {
+    // stopCapture closes the queue while a normalization can still be in
+    // flight with events waiting behind it. Those pending events belong to
+    // the paused session: they must be dropped and accounted for, and later
+    // outputs must not start processing. A resumed capture owns a fresh
+    // queue, so nothing here may leak into it.
+    const started: string[] = [];
+    const release: Array<() => void> = [];
+    const turn = (id: string, turnId: number, isFinal = false): Item => ({
+      id,
+      isFinal,
+      sessionId: "socket-1",
+      turnSessionId: 1,
+      turnId,
+      revision: 0,
+    });
+    const queue = createParapperOutputQueue<Item>((next) => {
+      started.push(next.id);
+      return new Promise<void>((resolve) => {
+        release.push(resolve);
+      });
+    });
+
+    queue.enqueue(turn("in-flight-partial", 0));
+    await flush();
+    queue.enqueue(turn("pending-partial", 1));
+    queue.enqueue(turn("pending-final", 2, true));
+    expect(queue.getStats()).toMatchObject({ pending: 2, inFlight: true });
+
+    queue.close();
+    expect(queue.getStats()).toMatchObject({
+      pending: 0,
+      droppedPartials: 1,
+      droppedFinals: 1,
+    });
+
+    // Outputs that arrive while paused are ignored outright.
+    queue.enqueue(turn("after-close", 3, true));
+    await flush();
+    expect(started).toEqual(["in-flight-partial"]);
+
+    // The in-flight normalization settles after close; no queued work may
+    // start once the paused session has been torn down. close() abandons the
+    // active result but cannot cancel the Promise, so drain after release.
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(started).toEqual(["in-flight-partial"]);
+    expect(queue.getStats().pending).toBe(0);
+  });
+
   it("drops a late partial after the same-turn final, even when both share a revision", async () => {
     const processed: string[] = [];
     const queue = createParapperOutputQueue<Item>((next) => {

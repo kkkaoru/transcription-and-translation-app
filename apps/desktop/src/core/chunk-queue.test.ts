@@ -460,6 +460,62 @@ describe("latest-wins chunk processor", () => {
     await vi.waitFor(() => expect(processed).toEqual([2]));
   });
 
+  it("drops a pending chunk when capture pauses mid-flight and resumes cleanly", async () => {
+    // Pause/resume maps to the stopCapture/startCapture lifecycle: isActive
+    // flips false while a flight is still running, and the chunk waiting
+    // behind it must be dropped instead of transcribed. Chunks arriving
+    // during the pause are silently ignored, and a resumed capture processes
+    // new chunks again.
+    let active = true;
+    const processed: number[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstEntered = false;
+    const processor = createLatestWinsProcessor<number>({
+      isActive: () => active,
+      process: async (item) => {
+        processed.push(item);
+        if (!firstEntered) {
+          firstEntered = true;
+          await gate;
+        }
+      },
+    });
+
+    processor.enqueue(1);
+    await vi.waitFor(() => {
+      expect(processed).toEqual([1]);
+    });
+    processor.enqueue(2);
+    expect(processor.getStats().hasPending).toBe(true);
+
+    // The user pauses while chunk 1 is still in flight: the pending chunk 2
+    // must never reach ASR when the flight completes.
+    active = false;
+    release();
+    await vi.waitFor(() => {
+      expect(processor.getStats().inFlight).toBe(false);
+    });
+    expect(processed).toEqual([1]);
+    expect(processor.getStats()).toMatchObject({ chunksDropped: 1, hasPending: false });
+
+    // Chunks arriving during the pause are dropped without counting.
+    processor.enqueue(3);
+    await Promise.resolve();
+    expect(processed).toEqual([1]);
+    expect(processor.getStats()).toMatchObject({ chunksDropped: 1, chunksProcessed: 1 });
+
+    // Resume: new chunks are transcribed again.
+    active = true;
+    processor.enqueue(4);
+    await vi.waitFor(() => {
+      expect(processor.getStats()).toMatchObject({ chunksProcessed: 2, hasPending: false });
+    });
+    expect(processed).toEqual([1, 4]);
+  });
+
   it("markFirstCaption ignores calls when not in flight", () => {
     const processor = createLatestWinsProcessor<number>({
       process: () => Promise.resolve(),
