@@ -98,7 +98,7 @@ describe("SettingsView OBS browser source", () => {
     });
   };
 
-  it("defaults the browser source toggle to disabled on the documented port", async () => {
+  it("keeps the browser-only preview toggle disabled on the documented port", async () => {
     await renderSettings();
 
     const checkbox = toggleCheckbox();
