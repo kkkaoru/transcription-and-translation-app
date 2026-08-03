@@ -9,6 +9,7 @@ import type { AppConfig, ParapperRecognitionOutput } from "../core/types";
 import { isWebSpeechRecognitionSupported } from "../core/webSpeechRecognition";
 import { createPreviewCaption } from "../overlay/captions";
 import {
+  acceptsPipelineStageGeneration,
   captureConfigRequiresRestart,
   clearLegacyFailureNotice,
   createCaptureRestartCoordinator,
@@ -181,6 +182,22 @@ describe("MainApp ASR lifecycle guards", () => {
       kind: "caption",
       message: "Pipeline drop signal",
     });
+  });
+
+  it("paints provisional ASR only for the generation that owns the live caption", () => {
+    // A Stop+Start can advance the native generation while an older ASR stage
+    // is still in flight. That stale row stays in the Debug panel, but must
+    // not repaint the replacement session's caption.
+    expect(acceptsPipelineStageGeneration(2, 2)).toBe(true);
+    expect(acceptsPipelineStageGeneration(1, 2)).toBe(false);
+    expect(acceptsPipelineStageGeneration(2, 1)).toBe(false);
+    // No active capture owns the view, so a generation-tagged row cannot paint.
+    expect(acceptsPipelineStageGeneration(1, null)).toBe(false);
+    // Older bundles omit the field entirely; they keep the historical
+    // behaviour rather than silently losing every provisional paint.
+    expect(acceptsPipelineStageGeneration(undefined, 2)).toBe(true);
+    expect(acceptsPipelineStageGeneration(null, 2)).toBe(true);
+    expect(acceptsPipelineStageGeneration(undefined, null)).toBe(true);
   });
 
   it("logs one diagnostic per newly saved cross-ID translation", () => {

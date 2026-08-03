@@ -328,6 +328,17 @@ export const mergeCaptionForDisplay = (
   return mergeCaptionPayload(current, incoming);
 };
 
+/**
+ * Keep provisional ASR paints inside the capture generation that produced them.
+ * Older native workers may finish after Stop and still emit diagnostic stage rows;
+ * those rows remain useful in the Debug panel, but must not repaint the live view.
+ * Events from older bundles without a generation remain display-compatible.
+ */
+export const acceptsPipelineStageGeneration = (
+  eventGeneration: number | null | undefined,
+  activeGeneration: number | null,
+): boolean => eventGeneration == null || eventGeneration === activeGeneration;
+
 /** Record and surface one native queue-drop signal on the normal Live screen. */
 export const handlePipelineDropSignal = (
   drop: PipelineDropSignal,
@@ -468,6 +479,13 @@ export const MainApp = () => {
   const lastRuntimeStatusKey = useRef<string>("");
   /** Ignore caption events that arrive after a stop/idle transition. */
   const captionIdleGuard = useRef(false);
+  /**
+   * Native capture generation that currently owns the visible caption. Set only
+   * after `start_capture` resolves, cleared on stop/teardown. Diagnostic stage
+   * rows from a superseded generation stay in the Debug panel, but must not
+   * repaint the live view of a replacement session.
+   */
+  const activeCaptureGeneration = useRef<number | null>(null);
   /** Preserve the last caption when processing reported a real failure. */
   const captionFailureMessage = useRef<string | null>(null);
   /** Initialization barrier used to order latest-caption replay after status. */
@@ -590,6 +608,7 @@ export const MainApp = () => {
     return () => {
       mounted = false;
       capturePhase.current = "stopping";
+      activeCaptureGeneration.current = null;
       const cleanupAttempt = ++captureAttempt.current;
       const backendStart = backendStartPromise.current;
       parapperStream.current?.cancel();
@@ -758,6 +777,10 @@ export const MainApp = () => {
         // (and the next chunk's ASR call) is unchanged.
         if (
           !captionIdleGuard.current &&
+          acceptsPipelineStageGeneration(
+            stageEvent.captureGeneration,
+            activeCaptureGeneration.current,
+          ) &&
           stageEvent.stage === "asr" &&
           stageEvent.ok &&
           (stageEvent.surfaceText?.trim() || stageEvent.outputText.trim())
@@ -1013,6 +1036,9 @@ export const MainApp = () => {
     }
     const attempt = ++captureAttempt.current;
     capturePhase.current = "starting";
+    // Do not let a tagged stage from the superseded session paint while the
+    // replacement's native start_capture is still resolving.
+    activeCaptureGeneration.current = null;
     pipelineDropNoticeShown.current = false;
     pipelineDropNoticeAccepted.current = null;
     clearPipelineDrops();
@@ -1260,6 +1286,7 @@ export const MainApp = () => {
           return;
         }
         webSpeechBackendReady = true;
+        activeCaptureGeneration.current = captureGenerationForAttempt ?? null;
         const bufferedResults = [...bufferedWebSpeechResults.values()].sort(
           (left, right) => left.resultIndex - right.resultIndex,
         );
@@ -1300,6 +1327,7 @@ export const MainApp = () => {
         throw backendResult.reason;
       }
       captureGenerationForAttempt = backendResult.value;
+      activeCaptureGeneration.current = captureGenerationForAttempt ?? null;
       if (prepareResult.status === "rejected") {
         await bridge.stopCapture().catch(() => undefined);
         throw prepareResult.reason;
@@ -1673,6 +1701,7 @@ export const MainApp = () => {
       await bridge.stopCapture().catch(() => undefined);
       capturePhase.current = "idle";
       captionIdleGuard.current = true;
+      activeCaptureGeneration.current = null;
       // Prefer a backend-prep message when the mic never started; formatBridgeError
       // still carries the concrete Rust/sidecar detail. When the failure is a
       // browser mic error, noticeFromError maps DOMException names first.
@@ -1715,6 +1744,7 @@ export const MainApp = () => {
       // bridge session. There is no user-visible capture tail to drain yet.
       captureAttempt.current += 1;
       captionIdleGuard.current = true;
+      activeCaptureGeneration.current = null;
       processor?.reset();
       if (chunkProcessor.current === processor) {
         chunkProcessor.current = null;
@@ -1855,6 +1885,7 @@ export const MainApp = () => {
     // Invalidate late invoke completions/events only after the queue drained.
     captureAttempt.current += 1;
     captionIdleGuard.current = true;
+    activeCaptureGeneration.current = null;
     processor?.reset();
     if (chunkProcessor.current === processor) {
       chunkProcessor.current = null;

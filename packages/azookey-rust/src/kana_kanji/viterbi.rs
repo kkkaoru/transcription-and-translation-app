@@ -97,6 +97,8 @@ struct NumericPrefixContext {
     unit_span_is_unbounded: bool,
     numeric_context: bool,
     counter_span: Option<(usize, String)>,
+    counter_has_numeric_variant: bool,
+    counter_kanji_homophone: bool,
     counter_lexical_span: bool,
     explicit_digit: bool,
     lexical_same_span: bool,
@@ -164,6 +166,15 @@ fn numeric_prefix_context(
     // If a same-span dictionary row already renders a numeric surface (5年,
     // 4月, ...), retain the numeric edge; otherwise a lexical homophone such
     // as 司会 would be allowed to manufacture 4回.
+    let counter_kanji_homophone = counter_span.as_ref().is_some_and(|(counter_length, _)| {
+        let full_length = length + counter_length;
+        entries.iter().any(|entry| {
+            entry.reading.chars().count() == full_length
+                && entry.surface != entry.reading
+                && contains_kanji(&entry.surface)
+                && counter_numeric_surface.as_deref() != Some(entry.surface.as_str())
+        })
+    });
     let counter_lexical_span = if counter_has_numeric_variant {
         false
     } else {
@@ -206,6 +217,8 @@ fn numeric_prefix_context(
         unit_span_is_unbounded,
         numeric_context,
         counter_span,
+        counter_has_numeric_variant,
+        counter_kanji_homophone,
         counter_lexical_span,
         explicit_digit,
         lexical_same_span,
@@ -353,11 +366,23 @@ pub fn convert_with_dictionary(
                     && numeric.followed_by_counter
                     && numeric.counter_lexical_span
                     && !state.numeric_chain;
+                // A numeric counter that begins inside an ordinary lexical
+                // span is usually a dictionary homophone (for example
+                // `ぞくじ` -> `俗字`, not `ぞ9時`). Keep genuine number
+                // chains available, and retain multi-kana counters when a
+                // Kanji homophone explicitly competes with their numeric row.
+                let shadowed_midword_counter = numeric.followed_by_counter
+                    && !state.numeric_chain
+                    && start > 0
+                    && !is_boundary(chars[start - 1])
+                    && numeric.counter_has_numeric_variant
+                    && (numeric.length == 1 || !numeric.counter_kanji_homophone);
                 if (numeric.numeric_context || start == 0)
                     && (!bare_digit_outside_chain || start == 0)
                     && !unit_only_outside_chain
                     && !shadowed_numeric_span
                     && !shadowed_single_digit_counter
+                    && !shadowed_midword_counter
                     && !numeric.unit_span_is_unbounded
                     && !numeric.invalid_shi_counter
                 {
@@ -531,10 +556,10 @@ pub fn convert_with_dictionary(
                 // verb (`東京へいきます` -> `東京平気ます`). Keep the
                 // particle edge and let the following kana word be scored on
                 // its own. Identity particles remain available for grammar
-                // context; only a multi-character Kanji surface is blocked.
+                // context; Kanji homophones are blocked even when the particle
+                // itself is only one kana (for example `今日は...`).
                 if start > 0
                     && is_kanji(source_chars[start - 1])
-                    && entry_len > 1
                     && is_particle(chars[start])
                     && contains_kanji(&entry.surface)
                 {
@@ -548,6 +573,14 @@ pub fn convert_with_dictionary(
                 if prolonged_mark_adjacent_to_span(&source_chars, &chars, start, end)
                     && !entry.surface.chars().any(|character| is_katakana(&character))
                 {
+                    continue;
+                }
+                // Keep a complete lexical row such as 俗字 ahead of a
+                // one-kana suffix split (族 + 時). The public dictionary
+                // legitimately contains one-kana lexical rows (き -> 木),
+                // so filter only when the immediately preceding row and this
+                // row are covered by a usable longer surface.
+                if one_kana_suffix_shadowed_by_longer_entry(dictionary, &state, entry) {
                     continue;
                 }
                 let (connection, clause_mid, clause_has_word, meaning_delta) =
@@ -957,7 +990,36 @@ fn unresolved_single_tail_candidate(
     let tail = dictionary
         .entries_starting_at(chars, tail_start, max_dictionary_word_chars)
         .unwrap_or_default();
-    !tail.iter().any(is_lexical_surface_for_unknown)
+    // A single-kana system row is too ambiguous to establish that an
+    // unresolved tail is a real lexical continuation. Public dictionaries
+    // contain many one-kana homophones (for example `ご`), and allowing any
+    // of them here turns an incomplete ASR suffix into arbitrary Kanji. Require
+    // a multi-kana lexical row before suppressing the raw utterance candidate.
+    let has_multi_kana_tail = tail.iter().any(|entry| {
+        entry.reading.chars().count() >= MIN_LEXICAL_ENTRY_CHARS
+            && is_lexical_surface_for_unknown(entry)
+    });
+    if has_multi_kana_tail {
+        return false;
+    }
+    // Do not hide a grammatical inflection behind the raw fallback merely
+    // because its final kana is only one character. A lexical prefix such as
+    // `木を切っ` is expected to continue with the postposition `て`; the
+    // public CID table marks that transition as staying inside the clause.
+    // Conversely, an unresolved preposition such as `ご` after `有難う`
+    // starts a new clause and remains eligible for the readable raw candidate.
+    let has_grammatical_tail = entries
+        .iter()
+        .filter(|prefix| {
+            prefix.reading.chars().count() == tail_start && is_lexical_surface_for_unknown(prefix)
+        })
+        .any(|prefix| {
+            tail.iter().any(|tail_entry| {
+                tail_entry.surface == tail_entry.reading
+                    && !dictionary.is_clause_boundary(prefix.rcid, tail_entry.lcid)
+            })
+        });
+    !has_grammatical_tail
 }
 
 fn is_small_hiragana(character: char) -> bool {
@@ -1243,6 +1305,28 @@ fn unknown_run_has_prolonged_mark(source: &[char], chars: &[char], index: usize)
     chars[left..right].contains(&'ー') && !source[left..right].iter().any(is_katakana)
 }
 
+fn one_kana_suffix_shadowed_by_longer_entry(
+    dictionary: &AzooKeyDictionary,
+    state: &PathState,
+    entry: &DictionaryEntry,
+) -> bool {
+    if entry.reading.chars().count() != 1
+        || entry.surface == entry.reading
+        || !dictionary.has_system_dictionary()
+    {
+        return false;
+    }
+    let Some(former) = state.last.as_ref() else {
+        return false;
+    };
+    let combined_reading = format!("{}{}", former.reading, entry.reading);
+    dictionary.lookup_exact(&combined_reading).unwrap_or_default().iter().any(|candidate| {
+        candidate.surface != candidate.reading
+            && contains_kanji(&candidate.surface)
+            && candidate.reading.chars().count() > entry.reading.chars().count()
+    })
+}
+
 fn prolonged_mark_adjacent_to_span(
     source: &[char],
     chars: &[char],
@@ -1298,7 +1382,10 @@ fn push_state(states: &mut Vec<PathState>, candidate: PathState, width: usize) {
     // can interleave equal contexts, so scan the small beam explicitly.
     let mut unique = Vec::with_capacity(states.len());
     for state in states.drain(..) {
-        if unique.iter().any(|kept: &PathState| same_path_context(kept, &state)) {
+        if unique
+            .iter()
+            .any(|kept: &PathState| kept.text == state.text && same_path_context(kept, &state))
+        {
             continue;
         }
         unique.push(state);
@@ -1374,9 +1461,7 @@ mod tests {
 
     #[test]
     fn keeps_public_dictionary_context_for_ambiguous_caption_words() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let converted = super::convert_kana_to_kanji_with_paths(
             "かんじのしょりをかいぜん",
             DictionaryPaths { system: Some(root), ..DictionaryPaths::default() },
@@ -1387,9 +1472,7 @@ mod tests {
 
     #[test]
     fn carries_meaning_context_across_clause_punctuation() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()
@@ -1408,9 +1491,7 @@ mod tests {
 
     #[test]
     fn suppresses_bare_numeric_homophones_without_breaking_counter_paths() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()
@@ -1420,6 +1501,8 @@ mod tests {
             ("かたち、こうし、もよう", "形、格子、模様"),
             ("せんそう、しんこう、しんりゃく", "戦争、侵攻、侵略"),
             ("かせん、かこう、かわべ", "河川、河口、川辺"),
+            ("にゅうきん、しゅうし、かくにん", "入金、収支、確認"),
+            ("もじ、かんじ、ぞくじ", "文字、漢字、俗字"),
             ("ごねん", "5年"),
             ("しがつ", "4月"),
             ("じゅう、", "10、"),
@@ -1649,6 +1732,16 @@ mod tests {
         let full = convert_with_dictionary(full_reading, &dictionary, options);
         assert!(!full.is_empty());
         assert_eq!(full[0].text, full_surface);
+
+        // Check the same-reading alternatives directly. The full-reading
+        // conversion appends the unknown kana tail to each shorter path, so
+        // asserting on the standalone stem isolates beam surface retention.
+        let stem = convert_with_dictionary(stem_reading, &dictionary, options);
+        assert_eq!(stem[0].text, "検証語");
+        assert!(
+            stem.iter().any(|candidate| candidate.text == "検証歩"),
+            "same-metadata alternatives must retain distinct rendered surfaces"
+        );
         assert!(full.windows(2).all(|pair| pair[0].score >= pair[1].score));
         assert!(full.len() <= options.n_best);
 
@@ -1676,9 +1769,7 @@ mod tests {
 
     #[test]
     fn converts_weather_and_soup_homophones_with_public_dictionary() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()
@@ -1705,9 +1796,7 @@ mod tests {
 
     #[test]
     fn converts_requested_weather_and_soup_sentences_with_public_dictionary() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()
@@ -1734,18 +1823,20 @@ mod tests {
 
     #[test]
     fn keeps_inflectional_rows_available_to_full_conversion() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()
         })
         .expect("configured public dictionary should load")
         .without_builtin_entries_for_test();
-        for (input, expected) in
-            [("おこなわ", "行わ"), ("おもっ", "思っ"), ("まわっ", "回っ"), ("つかっ", "使っ")]
-        {
+        for (input, expected) in [
+            ("おこなわ", "行わ"),
+            ("おもっ", "思っ"),
+            ("まわっ", "回っ"),
+            ("つかっ", "使っ"),
+            ("きをきって", "木を切って"),
+        ] {
             let candidate =
                 convert_with_dictionary(input, &dictionary, ConversionOptions::default())
                     .into_iter()
@@ -1757,9 +1848,7 @@ mod tests {
 
     #[test]
     fn keeps_an_unknown_hiragana_suffix_readable_after_a_dictionary_clause() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let converted = convert_kana_to_kanji_with_paths(
             "あしたははれるでしょう",
             DictionaryPaths { system: Some(root), ..DictionaryPaths::default() },
@@ -1773,9 +1862,7 @@ mod tests {
 
     #[test]
     fn does_not_swallow_a_lexical_suffix_after_a_particle_sequence() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()
@@ -1796,9 +1883,7 @@ mod tests {
 
     #[test]
     fn keeps_long_public_dictionary_paths_in_the_default_beam() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let converted = convert_kana_to_kanji_with_paths(
             "となりのきゃくはよくかきくうきゃくだ",
             DictionaryPaths { system: Some(root), ..DictionaryPaths::default() },
@@ -1813,9 +1898,7 @@ mod tests {
 
     #[test]
     fn public_dictionary_keeps_numeric_edges_below_ordinary_homophones() {
-        let Some(root) = crate::dictionary::test_system_dictionary_path() else {
-            return;
-        };
+        let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()

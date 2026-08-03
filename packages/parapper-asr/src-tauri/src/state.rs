@@ -57,8 +57,11 @@ pub struct AppState {
     config: Mutex<ParapperConfig>,
     runtime_config: Arc<RuntimeConfigState>,
     recognition_status: Mutex<RecognitionStatus>,
-    recognition_session: Mutex<RecognitionSessionSlot<RunningRecognitionInput>>,
+    // Drop the server before the recognition session. Its connection threads own
+    // the network input sender and must close it before RunningRecognitionInput's
+    // graceful drop waits for the worker to observe input disconnection.
     streaming_recognition_server: Mutex<Option<StreamingRecognitionServer>>,
+    recognition_session: Mutex<RecognitionSessionSlot<RunningRecognitionInput>>,
     translation_http_listener: StdMutex<Option<TranslationHttpListener>>,
     translation_http_listener_status: StdMutex<TranslationHttpListenerStatus>,
 }

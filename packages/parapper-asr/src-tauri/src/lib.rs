@@ -537,8 +537,14 @@ pub fn run_headless(arguments: &[String]) -> Result<(), String> {
             app.manage(state);
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(error) = start_headless_recognition(handle, options).await {
+                if let Err(error) = start_headless_recognition(handle.clone(), options).await {
+                    // Do not leave a hidden sidecar registered as healthy when
+                    // model loading or listener startup fails. The parent shell
+                    // observes this terminal exit and can clear its child slot;
+                    // keeping the process alive would make every later readiness
+                    // probe wait on a listener that will never appear.
                     log::error!("Kotoba Beacon headless recognition startup failed: {error}");
+                    handle.exit(1);
                 }
             });
             Ok(())

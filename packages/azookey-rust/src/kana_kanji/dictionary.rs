@@ -136,23 +136,30 @@ pub fn default_system_dictionary_path() -> Option<PathBuf> {
     }
 }
 
-/// Resolve the checked-in public dictionary for Rust tests.
+/// Resolve the checked-in public dictionary required by Rust quality tests.
 ///
 /// Production callers intentionally require an explicit environment variable
-/// (or a supplied path), but keeping tests dependent on that shell setting
-/// makes the public-dictionary coverage silently disappear in CI. Prefer the
-/// environment when it points at a usable dictionary, then fall back to the
-/// repository's pinned submodule. If the submodule is not initialized, the
-/// caller can still skip the test as before.
+/// (or a supplied path), but the quality tests must never silently disappear
+/// when a checkout omitted the dictionary submodule. Prefer the environment
+/// when it points at a usable dictionary, then fall back to the repository's
+/// pinned submodule. A missing dictionary is a test setup failure and panics
+/// with an actionable message instead of turning the test into a false pass.
 #[cfg(test)]
-pub(crate) fn test_system_dictionary_path() -> Option<PathBuf> {
+pub(crate) fn test_system_dictionary_path() -> PathBuf {
     if let Some(path) = default_system_dictionary_path() {
-        return Some(path);
+        return path;
     }
     let checked_in = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../submodules/azooKey_dictionary_storage/Dictionary");
     let resolved = resolve_system_dictionary_root(&checked_in);
-    system_dictionary_present(&resolved).then_some(resolved)
+    if system_dictionary_present(&resolved) {
+        resolved
+    } else {
+        panic!(
+            "official AzooKey dictionary is unavailable for quality tests; initialize {} or set AZOOKEY_DICTIONARY_ROOT",
+            checked_in.display()
+        );
+    }
 }
 
 /// Map a user-supplied path onto the LOUDS dictionary root when possible.
@@ -930,16 +937,17 @@ fn prediction_usable_rcid(rcid: u16) -> bool {
 
 /// Keep finite system rows that pass AzooKey's full-conversion
 /// `shouldBeRemoved` threshold. Prediction-only CID usability must not run
-/// here: inflectional rows are needed by the full Viterbi lattice. Keep the
-/// existing bounded identity policy for the lightweight converter; particles
-/// and one-kana grammar rows remain available.
+/// here: inflectional and one-kana lexical rows are needed by the full
+/// Viterbi lattice.
 fn system_entry_is_usable(entry: &DictionaryEntry) -> bool {
     if !entry.value.is_finite() {
         return false;
     }
     let ruby_count = entry.reading.chars().count();
     let is_hiragana_identity = entry.surface == entry.reading;
-    if (ruby_count >= 2 && is_hiragana_identity) || (ruby_count < 2 && !is_hiragana_identity) {
+    // Multi-kana hiragana identity rows are not lexical conversions, but a
+    // one-kana non-identity row can be a real lexical word (き -> 木).
+    if ruby_count >= 2 && is_hiragana_identity {
         return false;
     }
     let minimum =
@@ -1715,7 +1723,7 @@ mod tests {
         contraction.rcid = 17;
         let mut inflection_tail = DictionaryEntry::plain("ねん", "煉ん", -1.0);
         inflection_tail.rcid = 782;
-        assert!(!system_entry_is_usable(&one_kana));
+        assert!(system_entry_is_usable(&one_kana));
         assert!(system_entry_is_usable(&particle_identity));
         assert!(system_entry_is_usable(&short));
         assert!(!system_entry_is_usable(&short_placeholder));
@@ -1750,9 +1758,7 @@ mod tests {
 
     #[test]
     fn reads_the_public_azookey_dictionary_when_configured() {
-        let Some(root) = super::test_system_dictionary_path() else {
-            return;
-        };
+        let root = super::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()
@@ -1768,9 +1774,7 @@ mod tests {
 
     #[test]
     fn full_lookup_keeps_inflectional_rows_that_prediction_filters_reject() {
-        let Some(root) = super::test_system_dictionary_path() else {
-            return;
-        };
+        let root = super::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             system: Some(root),
             ..DictionaryPaths::default()
@@ -1908,9 +1912,7 @@ mod tests {
 
     #[test]
     fn system_lookup_caches_only_bounded_hits() {
-        let Some(root) = super::test_system_dictionary_path() else {
-            return;
-        };
+        let root = super::test_system_dictionary_path();
         let system = super::SystemDictionary::load(&root).expect("public system dictionary loads");
         for index in 0..super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES * 2 {
             system
