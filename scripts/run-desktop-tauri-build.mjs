@@ -48,12 +48,19 @@ export const assertNativeMacTarget = ({
 };
 
 /**
- * Resolve the package executable in a form Node can launch without a shell.
- * Windows installs the Bun/npm bin shim as `tauri.cmd`; `spawnSync("tauri")`
- * cannot execute that cmd shim when `shell` is false.
+ * Resolve the package executable for the host platform. Windows installs the
+ * Bun/npm bin shim as `tauri.cmd`.
  */
 export const tauriExecutableForPlatform = (platform = process.platform) =>
   platform === "win32" ? "tauri.cmd" : "tauri";
+
+/**
+ * Node refuses to spawn `.cmd`/`.bat` shims without a shell (EINVAL, the
+ * CVE-2024-27980 hardening), so Windows must launch through the shell. The
+ * argument list contains only fixed flags and repo-relative config names, so
+ * shell interpretation cannot inject anything user-controlled.
+ */
+export const tauriSpawnUsesShell = (platform = process.platform) => platform === "win32";
 
 /**
  * Resolve the target architecture before invoking Tauri. Tauri's own target
@@ -139,6 +146,7 @@ const main = () => {
     cwd: desktopRoot,
     env,
     stdio: "inherit",
+    shell: tauriSpawnUsesShell(),
   });
   if (result.error) {
     console.error(result.error.message);

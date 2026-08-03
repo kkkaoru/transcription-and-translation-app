@@ -6,15 +6,16 @@ import {
   isIntelMacBuild,
   tauriArgsForBuild,
   tauriExecutableForPlatform,
+  tauriSpawnUsesShell,
 } from "./run-desktop-tauri-build.mjs";
 
 describe("architecture-specific desktop Tauri config", () => {
-  it("omits the x86_64-only Syphon framework on Apple Silicon", () => {
+  it("uses the base macOS config (universal Syphon framework) on Apple Silicon", () => {
     assert.equal(configPathForBuild({ platform: "darwin", arch: "arm64" }), null);
     assert.equal(isIntelMacBuild({ platform: "darwin", arch: "arm64" }), false);
   });
 
-  it("selects the Syphon overlay only for Intel macOS", () => {
+  it("keeps the Intel config overlay for x64 macOS builds", () => {
     assert.equal(
       configPathForBuild({ platform: "darwin", arch: "x64" }),
       "src-tauri/tauri.macos-intel.conf.json",
@@ -103,10 +104,13 @@ describe("architecture-specific desktop Tauri config", () => {
     );
   });
 
-  it("uses the Windows command shim when launching Tauri without a shell", () => {
+  it("uses the Windows command shim and launches it through a shell", () => {
     assert.equal(tauriExecutableForPlatform("win32"), "tauri.cmd");
     assert.equal(tauriExecutableForPlatform("darwin"), "tauri");
     assert.equal(tauriExecutableForPlatform("linux"), "tauri");
+    assert.equal(tauriSpawnUsesShell("win32"), true);
+    assert.equal(tauriSpawnUsesShell("darwin"), false);
+    assert.equal(tauriSpawnUsesShell("linux"), false);
   });
 
   it("does not select a macOS framework config on Windows or Linux", () => {
