@@ -1,7 +1,7 @@
 //! OBS Browser Source fallback: a caption-only loopback HTTP page.
 //!
 //! The vendored Syphon.framework is x86_64-only and Spout2 is Windows-only, so
-//! on Apple Silicon macOS the app cannot publish native RGBA frames into OBS.
+//! macOS needs a loopback fallback whenever the native output path is unavailable.
 //! When `overlay.browserSource.enabled` is set, this module serves a
 //! caption-only page plus a JSON caption feed on `http://127.0.0.1:{port}/`
 //! that OBS captures with a regular Browser Source. The transparent Tauri
@@ -350,17 +350,29 @@ fn accept_request(
     }
 }
 
+/// Reject an accepted request without letting tiny_http's `Request::drop`
+/// synchronously write its implicit 500 response. The serve loop must never
+/// drop an unanswered request itself: a stalled client could otherwise block
+/// the listener while tiny_http flushes that response.
+fn reject_request(request: Request) {
+    drop(request.into_writer());
+}
+
 fn enqueue_request(request_sender: &mpsc::SyncSender<Request>, request: Request) -> bool {
     match request_sender.try_send(request) {
         Ok(()) => true,
-        Err(mpsc::TrySendError::Full(_request)) => {
+        Err(mpsc::TrySendError::Full(request)) => {
+            reject_request(request);
             log::warn!(
                 target: LOG_TARGET,
-                "browser source request queue full; dropping one request"
+                "browser source request queue full; dropped one request without response"
             );
             true
         }
-        Err(mpsc::TrySendError::Disconnected(_request)) => false,
+        Err(mpsc::TrySendError::Disconnected(request)) => {
+            reject_request(request);
+            false
+        }
     }
 }
 
@@ -369,10 +381,13 @@ fn enqueue_request(request_sender: &mpsc::SyncSender<Request>, request: Request)
 fn serve_request(request: Request, feed: &FeedFn) {
     match catch_unwind(AssertUnwindSafe(feed)) {
         Ok(feed) => respond(request, &feed),
-        Err(_) => log::error!(
-            target: LOG_TARGET,
-            "browser source feed panicked; dropped one caption request"
-        ),
+        Err(_) => {
+            reject_request(request);
+            log::error!(
+                target: LOG_TARGET,
+                "browser source feed panicked; dropped one caption request"
+            );
+        }
     }
 }
 
@@ -462,7 +477,6 @@ function styleCss(s) {
   const css = [
     ["color", s.color],
     ["opacity", clamp(s.opacity, 0, 1)],
-    ["font-family", s.fontFamily],
     ["font-size", Math.max(1, s.fontSizePx) + "px"],
     ["font-weight", clamp(s.fontWeight, 100, 900)],
     ["letter-spacing", s.letterSpacingPx + "px"],
@@ -477,6 +491,12 @@ function styleCss(s) {
     ["border-radius", Math.max(0, s.borderRadius) + "px"]
   ];
   return css.map(([key, value]) => key + ": " + value).join("; ");
+}
+function applyStyle(element, style) {
+  element.style.cssText = styleCss(style);
+  // setProperty parses the value as one declaration, so a configured font
+  // family cannot inject additional declarations into cssText.
+  element.style.setProperty("font-family", style.fontFamily);
 }
 function layoutCss(o) {
   const safe = Math.max(0, o.safeAreaPx);
@@ -503,7 +523,7 @@ function render(f) {
   for (const [text, style] of items) {
     const line = document.createElement("div");
     line.className = "line";
-    line.style.cssText = styleCss(style);
+    applyStyle(line, style);
     line.textContent = text;
     lines.appendChild(line);
   }
@@ -544,10 +564,10 @@ mod tests {
     use crate::output::OutputStatus;
     use crate::pipeline::CaptionPayload;
     use crate::state::AppState;
-    use std::io::{Read, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
     use tiny_http::{ListenAddr, Server};
@@ -606,7 +626,10 @@ mod tests {
         assert!(page.contains("setInterval(refresh, 120)"));
         assert!(page.contains("refreshInFlight"), "polling stays single-flight");
         assert!(page.contains("render(feed);"), "embedded feed paints before the first fetch");
-        assert!(page.contains("[\"font-family\""), "Browser Source uses CSS property names");
+        assert!(
+            page.contains("setProperty(\"font-family\", style.fontFamily)"),
+            "font family is assigned through CSSStyleDeclaration"
+        );
         assert!(page.contains("[\"-webkit-text-stroke\""), "outline uses a valid stroke property");
         assert!(page.contains("こんにちは、世界"), "initial feed is embedded for first paint");
         assert!(!page.contains("<script>alert"), "caption text cannot break out of script");
@@ -835,16 +858,50 @@ mod tests {
         TcpStream::connect(("127.0.0.1", port)).is_err()
     }
 
-    fn can_rebind(port: u16) -> bool {
-        Server::http(("127.0.0.1", port)).is_ok()
-    }
+    #[test]
+    fn saturated_request_is_rejected_without_tiny_http_implicit_500() {
+        let server = Server::http(("127.0.0.1", 0)).expect("ephemeral bind");
+        let ListenAddr::IP(addr) = server.server_addr() else {
+            panic!("expected a TCP listener address");
+        };
+        let port = addr.port();
+        let (result_sender, result_receiver) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(2))
+                .expect("receive request")
+                .expect("request arrives");
+            let (request_sender, _request_receiver) = mpsc::sync_channel(0);
+            let accepted = super::enqueue_request(&request_sender, request);
+            result_sender.send(accepted).expect("send enqueue result");
+        });
 
-    fn wait_for_port_rebind(port: u16) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline && !can_rebind(port) {
-            thread::sleep(Duration::from_millis(25));
-        }
-        can_rebind(port)
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream.set_read_timeout(Some(Duration::from_secs(2))).expect("read timeout");
+        write!(
+            stream,
+            "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        )
+        .expect("send request");
+        // `into_writer` releases tiny_http's implicit-response guard, but the
+        // crate may retain the connection until its client task observes the
+        // dropped writer. Probe for a response rather than waiting for EOF: a
+        // read timeout is the expected no-response outcome for this rejection.
+        let mut response = [0_u8; 1];
+        let response_len = match stream.read(&mut response) {
+            Ok(length) => length,
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => 0,
+            Err(error) => panic!("read rejected response: {error}"),
+        };
+
+        assert!(result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("enqueue result arrives"));
+        thread.join().expect("request thread exits");
+        assert_eq!(
+            response_len, 0,
+            "a saturated request must not receive tiny_http's implicit 500 response"
+        );
     }
 
     #[test]
@@ -932,13 +989,10 @@ mod tests {
             server_is_stopped(port),
             "stopping the server must close the listener while the client remains stalled"
         );
-        assert!(
-            wait_for_port_rebind(port),
-            "stopping the server must release the port while the client remains stalled"
-        );
-
-        // Closing the stalled client unblocks the detached thread, which then
-        // exits and releases the listener port.
+        // tiny_http can retain the listener's local port while the detached
+        // response still owns an active stalled connection. Closing that client
+        // is the deterministic release boundary; the final probe below verifies
+        // the port is reclaimable before the test exits.
         drop(stream);
         let released = Instant::now();
         while Server::http(("127.0.0.1", port)).is_err() {
