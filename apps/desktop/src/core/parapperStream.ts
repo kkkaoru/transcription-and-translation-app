@@ -308,6 +308,13 @@ export class ParapperRecognitionStream {
           }
           return;
         }
+        // Session-scoped protocol failures must not tear down a replacement
+        // capture when a stale sidecar frame arrives after reconnect. Keep this
+        // check ahead of error handling because errors do not flow through
+        // `toEvent` and therefore would otherwise bypass the session fence.
+        if (message.session_id !== this.sessionId) {
+          return;
+        }
         if (message.type === "error") {
           const code = nonEmptyString(message.code) ?? "parapper_protocol_error";
           const detail = nonEmptyString(message.message) ?? "Parapper rejected the session";
@@ -320,9 +327,6 @@ export class ParapperRecognitionStream {
           } else {
             fail(error);
           }
-          return;
-        }
-        if (message.session_id !== this.sessionId) {
           return;
         }
         const output = toEvent(message, this.sessionId);

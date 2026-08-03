@@ -393,6 +393,11 @@ export const transcribeWithParapper = (
         partialCount,
         lastPartialChars: lastPartial?.text.length ?? 0,
       };
+      const selectedFinal =
+        "text" in result &&
+        finalTranscript !== null &&
+        latestUsableTranscript() === finalTranscript &&
+        result.text === finalTranscript.text;
       if ("error" in result) {
         emitProvider(PROVIDER_TURN_END, {
           ...baseFields,
@@ -653,13 +658,19 @@ export const transcribeWithParapper = (
           turnId: numericCursor(message.turn_id),
           turnSessionId: numericCursor(message.turn_session_id),
         };
-        if (lastPartial === null || comparePartialCursor(candidate, lastPartial) >= 0) {
+        const isAtLeastAsNewAsFinal =
+          finalTranscript === null ||
+          comparePartialCursor(candidate, finalTranscript) >= ORDER_EQUAL;
+        const isAtLeastAsNewAsPartial =
+          lastPartial === null || comparePartialCursor(candidate, lastPartial) >= ORDER_EQUAL;
+        if (isAtLeastAsNewAsFinal && isAtLeastAsNewAsPartial) {
           finalTranscript = candidate;
         } else {
+          const latest = finalTranscript ?? lastPartial;
           emitLog("stale final transcript ignored", {
             sessionId,
             finalRevision: candidate.revision,
-            latestRevision: lastPartial.revision,
+            latestRevision: latest?.revision ?? null,
           });
         }
       } else if (message.type === "session.done") {

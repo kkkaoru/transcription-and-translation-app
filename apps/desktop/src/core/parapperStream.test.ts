@@ -219,11 +219,13 @@ describe("ParapperRecognitionStream", () => {
   it("ignores frames from another session and sends an explicit cancel", async () => {
     FakeSocket.instances = [];
     const events: ParapperStreamEvent[] = [];
+    const errors: Error[] = [];
     const stream = new ParapperRecognitionStream({
       url: "ws://127.0.0.1:18082/ws/recognition",
       sessionId: "session-2",
       webSocketConstructor: FakeSocket as never,
       onEvent: (event) => events.push(event),
+      onError: (error) => errors.push(error),
     });
     const startPromise = stream.start();
     const socket = FakeSocket.instances[0] as FakeSocket;
@@ -231,7 +233,15 @@ describe("ParapperRecognitionStream", () => {
     socket.message({ version: 1, type: "session.ready", session_id: "session-2" });
     await startPromise;
     socket.message({ version: 1, type: "speech.started", session_id: "other" });
+    socket.message({
+      version: 1,
+      type: "error",
+      session_id: "other",
+      code: "stale_session_failed",
+      message: "superseded capture failed",
+    });
     expect(events).toEqual([]);
+    expect(errors).toEqual([]);
     stream.cancel();
     expect(jsonMessages(socket).at(-1)).toMatchObject({
       type: "session.cancel",

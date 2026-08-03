@@ -572,6 +572,110 @@ describe("Parapper WebSocket adapter", () => {
     }
   });
 
+  it("keeps a newer partial when a stale final arrives without an existing final", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) return;
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.partial",
+              session_id: message.session_id,
+              turn_session_id: 1,
+              turn_id: 1,
+              revision: 2,
+              output_sequence: 20,
+              segment_id: 20,
+              text: "newer partial",
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              turn_session_id: 1,
+              turn_id: 1,
+              revision: 1,
+              output_sequence: 19,
+              segment_id: 19,
+              text: "stale final",
+            }),
+          );
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), { url: fixture.url, timeoutMs: 1_000 }),
+      ).resolves.toBe("newer partial");
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("keeps a newer final when a stale final arrives later", async () => {
+    const fixture = await startParapper((socket) => {
+      socket.on("message", (data: RawData, binary: boolean) => {
+        if (binary) return;
+        const message = JSON.parse(data.toString()) as { session_id: string; type: string };
+        if (message.type === "session.start") {
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.ready", session_id: message.session_id }),
+          );
+        } else if (message.type === "session.stop") {
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              turn_session_id: 1,
+              turn_id: 2,
+              revision: 2,
+              output_sequence: 20,
+              segment_id: 20,
+              text: "newer final",
+            }),
+          );
+          // A delayed frame from an older turn must not replace the final
+          // already selected for the current capture window.
+          socket.send(
+            JSON.stringify({
+              version: 1,
+              type: "turn.final",
+              session_id: message.session_id,
+              turn_session_id: 1,
+              turn_id: 1,
+              revision: 5,
+              output_sequence: 21,
+              segment_id: 21,
+              text: "stale final",
+            }),
+          );
+          socket.send(
+            JSON.stringify({ version: 1, type: "session.done", session_id: message.session_id }),
+          );
+        }
+      });
+    });
+    try {
+      await expect(
+        transcribeWithParapper(new Uint8Array(2), { url: fixture.url, timeoutMs: 1_000 }),
+      ).resolves.toBe("newer final");
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("turns Parapper errors and timeouts into useful gateway errors", async () => {
     const failing = await startParapper((socket) => {
       socket.on("message", (data: RawData, binary: boolean) => {
