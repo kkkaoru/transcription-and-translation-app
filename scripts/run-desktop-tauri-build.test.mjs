@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   assertNativeMacTarget,
   configPathForBuild,
   isIntelMacBuild,
+  resolveTauriCliEntry,
   tauriArgsForBuild,
-  tauriExecutableForPlatform,
-  tauriSpawnUsesShell,
 } from "./run-desktop-tauri-build.mjs";
 
 describe("architecture-specific desktop Tauri config", () => {
@@ -104,13 +104,10 @@ describe("architecture-specific desktop Tauri config", () => {
     );
   });
 
-  it("uses the Windows command shim and launches it through a shell", () => {
-    assert.equal(tauriExecutableForPlatform("win32"), "tauri.cmd");
-    assert.equal(tauriExecutableForPlatform("darwin"), "tauri");
-    assert.equal(tauriExecutableForPlatform("linux"), "tauri");
-    assert.equal(tauriSpawnUsesShell("win32"), true);
-    assert.equal(tauriSpawnUsesShell("darwin"), false);
-    assert.equal(tauriSpawnUsesShell("linux"), false);
+  it("resolves the tauri cli javascript entry instead of a platform bin shim", () => {
+    const entry = resolveTauriCliEntry();
+    assert.ok(entry.endsWith(`tauri.js`));
+    assert.ok(existsSync(entry));
   });
 
   it("does not select a macOS framework config on Windows or Linux", () => {

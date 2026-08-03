@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -48,19 +49,14 @@ export const assertNativeMacTarget = ({
 };
 
 /**
- * Resolve the package executable for the host platform. Windows installs the
- * Bun/npm bin shim as `tauri.cmd`.
+ * Resolve the Tauri CLI's JavaScript entry from the desktop package and run it
+ * under the current Node executable. Bin shims are not portable launch
+ * targets: Node refuses to spawn Windows `.cmd` shims without a shell
+ * (EINVAL, the CVE-2024-27980 hardening) and Bun installs `.exe` shims that a
+ * shell cannot find by the `.cmd` name either.
  */
-export const tauriExecutableForPlatform = (platform = process.platform) =>
-  platform === "win32" ? "tauri.cmd" : "tauri";
-
-/**
- * Node refuses to spawn `.cmd`/`.bat` shims without a shell (EINVAL, the
- * CVE-2024-27980 hardening), so Windows must launch through the shell. The
- * argument list contains only fixed flags and repo-relative config names, so
- * shell interpretation cannot inject anything user-controlled.
- */
-export const tauriSpawnUsesShell = (platform = process.platform) => platform === "win32";
+export const resolveTauriCliEntry = (fromDir = desktopRoot) =>
+  createRequire(path.join(fromDir, "package.json")).resolve("@tauri-apps/cli/tauri.js");
 
 /**
  * Resolve the target architecture before invoking Tauri. Tauri's own target
@@ -142,11 +138,10 @@ const main = () => {
   });
   const env = { ...process.env };
   delete env.RUSTUP_TOOLCHAIN;
-  const result = spawnSync(tauriExecutableForPlatform(), args, {
+  const result = spawnSync(process.execPath, [resolveTauriCliEntry(), ...args], {
     cwd: desktopRoot,
     env,
     stdio: "inherit",
-    shell: tauriSpawnUsesShell(),
   });
   if (result.error) {
     console.error(result.error.message);
