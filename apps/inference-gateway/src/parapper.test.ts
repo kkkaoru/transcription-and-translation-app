@@ -614,11 +614,27 @@ describe("Parapper WebSocket adapter", () => {
         }
       });
     });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     try {
       await expect(
         transcribeWithParapper(new Uint8Array(2), { url: fixture.url, timeoutMs: 1_000 }),
       ).resolves.toBe("newer partial");
+      const records = info.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter(
+          (record) => record["event"] === PROVIDER_TURN_END && record["outcome"] === "completed",
+        );
+      expect(records).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: PROVIDER_TURN_END,
+            hasFinal: false,
+            textChars: "newer partial".length,
+          }),
+        ]),
+      );
     } finally {
+      info.mockRestore();
       await fixture.close();
     }
   });

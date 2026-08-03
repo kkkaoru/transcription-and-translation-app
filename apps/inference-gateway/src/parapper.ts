@@ -439,13 +439,13 @@ export const transcribeWithParapper = (
           ...baseFields,
           outcome: "completed",
           status: "completed",
-          hasFinal: Boolean(finalTranscript),
+          hasFinal: selectedFinal,
           textChars: result.text.length,
           error: null,
         });
         emitLog("session completed", {
           ...baseFields,
-          hasFinal: Boolean(result.text),
+          hasFinal: selectedFinal,
           textChars: result.text.length,
           readyLatencyMs: readyAt == null ? null : readyAt - startedAt,
           stopLatencyMs: stopAt == null ? null : stopAt - startedAt,
