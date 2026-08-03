@@ -203,9 +203,9 @@ pub struct RuntimeStatus {
     /// `transparent-window`. This field describes the native lane and never
     /// reports the loopback OBS Browser Source fallback, which is served by
     /// `browser_source.rs` as a separate lane with its own listener state. On
-    /// macOS (where Syphon is x86_64-only and Spout2 is Windows-only) the
-    /// active OBS caption path is that Browser Source while this field stays
-    /// `transparent-window`; treat the two lanes as independent.
+    /// macOS the native Syphon lane is the primary caption path while the
+    /// loopback Browser Source remains default-enabled as an OBS fallback;
+    /// treat the two lanes as independent.
     pub native_output: String,
     pub last_error: Option<String>,
 }
@@ -661,11 +661,31 @@ impl AppState {
         generation
     }
 
-    /// Register a detached translation before spawning it. At capacity, the
-    /// oldest pending ticket is logically retired and returned so callers can
-    /// expose latest-wins diagnostics; its eventual completion cannot publish.
+    /// Register a detached translation directly for state-machine tests. Production
+    /// callers must use `register_translation_for_generation` so a stale source
+    /// completion cannot acquire a ticket for a replacement capture.
+    #[cfg(test)]
     pub fn register_translation(&self) -> Option<(TranslationTicket, Option<TranslationTicket>)> {
         self.translation_tracker.lock().ok()?.register()
+    }
+
+    /// Register work only for the generation that produced the source caption.
+    ///
+    /// The caller may have observed that generation as current before an async
+    /// spawn, but a Stop+Start can advance the tracker in between those two
+    /// operations. Checking the supplied generation while holding the same
+    /// tracker lock as `register` closes that time-of-check/time-of-use gap: a
+    /// stale completion is dropped instead of receiving a ticket belonging to
+    /// the replacement capture.
+    pub fn register_translation_for_generation(
+        &self,
+        generation: u64,
+    ) -> Option<(TranslationTicket, Option<TranslationTicket>)> {
+        let mut tracker = self.translation_tracker.lock().ok()?;
+        if !generation_is_current(&tracker, generation) {
+            return None;
+        }
+        tracker.register()
     }
 
     /// Total translation tickets retired by the bounded latest-wins queue,
@@ -1336,6 +1356,33 @@ mod tests {
         }));
         assert!(emitted, "resumed capture must process new chunks again");
         assert_eq!(state.latest_caption(), Some(fresh));
+    }
+
+    #[test]
+    fn generation_fenced_translation_registration_rejects_stale_work() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let stale_generation = state.current_capture_generation();
+
+        state.begin_capture_generation();
+        let current_generation = state.current_capture_generation();
+        assert_ne!(stale_generation, current_generation);
+        assert!(
+            state.register_translation_for_generation(stale_generation).is_none(),
+            "a source completion from the prior capture must not receive a new ticket"
+        );
+        assert!(
+            state.register_translation_for_generation(current_generation).is_some(),
+            "work from the active capture should still be accepted"
+        );
+
+        let stopping_generation = state.begin_translation_drain();
+        assert_eq!(stopping_generation, current_generation);
+        assert!(
+            state.register_translation_for_generation(current_generation).is_none(),
+            "Stop must fence registration before its bounded translation drain"
+        );
     }
 
     #[tokio::test]

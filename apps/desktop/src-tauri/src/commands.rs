@@ -367,6 +367,7 @@ pub async fn transcribe_audio_chunk(
                     config.clone(),
                     state.pipeline.clone(),
                     partial.clone(),
+                    capture_generation,
                     &state,
                 );
             }
@@ -501,6 +502,7 @@ pub async fn normalize_parapper_output(
                     config.clone(),
                     state.pipeline.clone(),
                     partial.clone(),
+                    capture_generation,
                     &state,
                 );
             }
@@ -681,9 +683,10 @@ fn spawn_translation(
     config: AppConfig,
     pipeline: Pipeline,
     caption: CaptionPayload,
+    generation: u64,
     state: &State<'_, AppState>,
 ) {
-    let Some((ticket, superseded)) = state.register_translation() else {
+    let Some((ticket, superseded)) = state.register_translation_for_generation(generation) else {
         // Stop has already frozen this generation, or this source result
         // arrived outside an active native capture session.
         log::debug!("skipped background translation because its capture generation is unavailable");
