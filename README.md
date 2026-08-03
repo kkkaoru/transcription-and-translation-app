@@ -122,7 +122,7 @@ macOS配布では`Entitlements.plist`でマイク入力を宣言し、`Info.plis
 
 標準経路は透明ウィンドウのため、OBS側のWindow Captureだけで利用できます。WindowsのSpout2、macOSのSyphonを使う場合は、対応するOBSプラグインと下記のネイティブ出力ビルドを用います。これらの設定項目はUIには表示していません。Spout2/Syphonへ送るのは`?overlay=1`の透明字幕キャンバスだけであり、設定画面・プレビュー・ウィンドウ装飾は送信されません。
 
-ネイティブ出力が使えない環境（macOS、またはSyphon/Spout2プラグイン未導入）では、**OBS Browser Source（字幕のみ）** を提供します。macOSの新規設定ではアプリ起動時から有効で、`http://127.0.0.1:1421/`（変更可）に字幕だけのページとJSONフィードがloopbackで起動します。OBS側ではBrowser Sourceとして同じURLを追加するだけです。設定 → 字幕レイアウトでオフにもできます。ウィンドウキャプチャと違い、オーバーレイウィンドウの表示状態に依存しません。この出力は既存の透明ウィンドウ出力と併用でき、bindに失敗してもアプリ起動は妨げません（詳細は[Spout2 / Syphonのビルド](#spout2--syphonのビルド)を参照）。
+ネイティブ出力が使えない環境（Syphon/Spout2プラグイン未導入、またはネイティブcrateの初期化失敗）では、**OBS Browser Source（字幕のみ）** を提供します。macOSの新規設定ではアプリ起動時から有効で、`http://127.0.0.1:1421/`（変更可）に字幕だけのページとJSONフィードがloopbackで起動します。OBS側ではBrowser Sourceとして同じURLを追加するだけです。設定 → 字幕レイアウトでオフにもできます。ウィンドウキャプチャと違い、オーバーレイウィンドウの表示状態に依存しません。この出力は既存の透明ウィンドウ出力と併用でき、bindに失敗してもアプリ起動は妨げません（詳細は[Spout2 / Syphonのビルド](#spout2--syphonのビルド)を参照）。
 
 ## モデル
 
@@ -152,15 +152,15 @@ bun run build:app
 
 対応するプラットフォームのデスクトップビルドではネイティブ出力を有効にします。Spout2/Syphonを使う場合は、対応するOBS側プラグインも別途インストールしてください。ネイティブcrateの初期化に失敗した場合も透明ウィンドウへフォールバックします。
 
-Spout2のネイティブビルドはWindows x86_64 + MSVCが対象です。Syphon.framework 5 は Intel macOS
-バンドル向けですが、現在同梱しているframeworkはx86_64専用かつRust bridgeが要求する
-Metal server APIを提供しないため、macOSではBrowser Sourceフォールバックを標準経路にします。
+Spout2のネイティブビルドはWindows x86_64 + MSVCが対象です。Syphon.framework 5 は
+arm64 + x86_64のuniversal binaryで、Rust bridgeが要求するMetal server APIを含みます。
+macOSでは起動時からSyphonのネイティブ出力を使い、Syphonが利用できない場合やOBS側プラグインを
+導入していない場合は字幕のみのBrowser Sourceへフォールバックします。
 
 ### macOS での OBS Browser Source フォールバック
 
-macOSではSyphon（x86_64専用・互換APIなし）もSpout2（Windows専用）も安定した
-ネイティブ経路にならないため、透明ウィンドウ出力に加えて**字幕のみのBrowser Source**
-を提供します。
+Syphonを使えないmacOS環境でも字幕を受け取れるよう、透明ウィンドウ出力に加えて
+**字幕のみのBrowser Source**を提供します。
 
 1. macOSの新規設定では起動時から有効です。既存設定では、必要に応じて設定 → 字幕レイアウト → **OBS Browser Source（字幕のみ）** を有効にして保存します（ポートは既定`1421`。`1024〜65535`の範囲で変更可）。
 2. OBSでソース追加 → **ブラウザ** を選び、URLに `http://127.0.0.1:1421/` を入力します（幅・高さは共有出力のサイズ、例: 1280×720）。

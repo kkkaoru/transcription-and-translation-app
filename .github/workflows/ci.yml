@@ -154,19 +154,27 @@ jobs:
           APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
         run: bun run check:macos-signing
       - run: ${{ matrix.command }}
-      - name: Verify macOS architecture-specific Syphon packaging
+      - name: Verify universal Syphon packaging on macOS
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
           test "$(uname -m)" = "${{ matrix.architecture }}"
           app="apps/desktop/src-tauri/target/release/bundle/macos/Kotoba Beacon.app"
           framework="$app/Contents/Frameworks/Syphon.framework/Versions/A/Syphon"
-          if [ "${{ matrix.architecture }}" = "x86_64" ]; then
-            test -f "$framework"
-            test "$(lipo -archs "$framework")" = "x86_64"
-          else
-            test ! -e "$framework"
-          fi
+          resources="$app/Contents/Frameworks/Syphon.framework/Versions/A/Resources"
+          test -f "$framework"
+          test -f "$resources/default.metallib"
+          test -f "$resources/Info.plist"
+          architectures="$(lipo -archs "$framework")"
+          for required_architecture in arm64 x86_64; do
+            case " $architectures " in
+              *" $required_architecture "*) ;;
+              *)
+                echo "Syphon.framework is missing $required_architecture (found: $architectures)"
+                exit 1
+                ;;
+            esac
+          done
       # Parapper's mock-app tests cannot run on the Linux quality job (single
       # tao event loop per process) and are cfg'd out on macOS, so Windows is
       # the one CI platform that exercises them. RUSTUP_TOOLCHAIN=1.90.0 from

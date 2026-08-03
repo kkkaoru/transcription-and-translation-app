@@ -10,11 +10,11 @@ quality checks use 1.97.1. This split is intentional and is mirrored in CI.
 ## macOS
 
 Install Xcode Command Line Tools, Bun, and Rust. `Syphon.framework` is bundled
-from the official Syphon SDK, so no system-wide framework installation is needed
-on Intel Macs. The currently vendored framework is x86_64-only and does not
-provide the Metal server API expected by the Rust bridge. Fresh macOS
-configurations therefore enable the loopback Browser Source fallback; an
-explicit persisted opt-out remains supported.
+from the official Syphon SDK as a universal (arm64 + x86_64) build that
+includes the Metal server classes, so no system-wide framework installation is
+needed. Fresh macOS configurations still enable the loopback Browser Source
+fallback as a second OBS lane; an explicit persisted opt-out remains
+supported.
 
 Initialize nested dependencies before running the dictionary or sidecar checks;
 the official AzooKey dictionary lives below the converter submodule:
@@ -34,11 +34,12 @@ bun run build:app
 ```
 
 On macOS, open the application and configure a numeric shared-output
-resolution. The default OBS path is the caption-only Browser Source at
+resolution. The app publishes a Syphon server named `Kotoba Beacon` at launch
+without further interaction: add an OBS Syphon source and select it. The
+default OBS path remains the caption-only Browser Source at
 `http://127.0.0.1:1421/`; verify its `/health` and `/captions.json` endpoints
-before adding it to OBS. If a compatible Syphon server is available, the
-transparent overlay can also be opened and selected in an OBS Syphon source.
-The main settings window must never be visible in the captured output.
+before adding it to OBS. The main settings window must never be visible in the
+captured output.
 
 ### Update hand-off and single-instance behavior
 

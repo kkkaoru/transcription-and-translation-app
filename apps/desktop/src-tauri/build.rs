@@ -9,15 +9,15 @@ fn main() {
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=RUSTC_VERSION={rustc_version}");
 
-    // Only Intel builds link against the vendored legacy Syphon framework.
-    // Apple-silicon builds intentionally use the transparent-window/browser-source
-    // fallback and must not search an x86_64 framework directory.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
-        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64")
-    {
+    // The vendored Syphon.framework is a universal (arm64 + x86_64) build that
+    // includes the Metal server classes, so every macOS target links it.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         let framework_dir =
             std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("frameworks");
         println!("cargo:rustc-link-search=framework={}", framework_dir.display());
+        // Let test binaries and raw `cargo run` find the framework at runtime;
+        // the Tauri bundle carries its own copy under Contents/Frameworks.
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", framework_dir.display());
     }
     tauri_build::build();
 }

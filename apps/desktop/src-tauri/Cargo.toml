@@ -36,10 +36,9 @@ url = "2.5"
 [target.'cfg(windows)'.dependencies]
 spout2-rs = "0.1.1"
 
-# The vendored Syphon.framework is currently x86_64-only.  Do not link it into
-# an Apple-silicon build: the linker otherwise emits a non-fatal warning and
-# the runtime only falls back to the transparent overlay after startup.
-[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
+# The vendored Syphon.framework is a universal (arm64 + x86_64) build with the
+# Metal server classes, so every macOS target links it.
+[target.'cfg(target_os = "macos")'.dependencies]
 syphon-rs = "0.1.1"
 
 [features]

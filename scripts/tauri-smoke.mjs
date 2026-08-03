@@ -534,8 +534,8 @@ const nativeConfigEvidence = async () => {
 };
 
 /**
- * Verify the caption-only loopback fallback on macOS, where the bundled
- * Syphon framework is not a reliable native path. This is separate from the
+ * Verify the caption-only loopback fallback on macOS. Native Syphon is the
+ * primary OBS lane there, and this loopback check is separate from the
  * native gateway checks: a healthy app process is not proof that OBS can
  * actually discover the fallback source.
  */

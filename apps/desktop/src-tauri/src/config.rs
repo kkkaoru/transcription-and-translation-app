@@ -175,10 +175,9 @@ pub const DEFAULT_BROWSER_SOURCE_PORT: u16 = 1421;
 pub const BROWSER_SOURCE_PORT_MIN: u16 = 1024;
 pub const BROWSER_SOURCE_PORT_MAX: u16 = 65_535;
 
-/// The bundled Syphon.framework is x86_64-only and the vendored syphon-rs
-/// backend expects a Metal server class it does not provide reliably. Keep the
-/// loopback Browser Source enabled on every fresh macOS configuration so OBS
-/// still receives captions when native Syphon is unavailable. An explicit
+/// The bundled Syphon.framework is a universal build whose Metal server
+/// classes back the native macOS lane; the loopback Browser Source stays
+/// enabled on every fresh macOS configuration as an OBS fallback. An explicit
 /// persisted `false` remains an opt-out.
 #[cfg(target_os = "macos")]
 const DEFAULT_BROWSER_SOURCE_ENABLED: bool = true;

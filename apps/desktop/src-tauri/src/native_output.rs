@@ -1,7 +1,7 @@
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use std::time::Duration;
 
 pub struct OverlayFrame {
@@ -37,7 +37,7 @@ enum EnqueueOutcome {
     Replaced { replacements: u64 },
 }
 
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+#[cfg(any(windows, target_os = "macos", test))]
 enum ReceiveOutcome {
     Frame(OverlayFrame),
     Closed,
@@ -45,7 +45,7 @@ enum ReceiveOutcome {
 }
 
 impl LatestFrameSender {
-    #[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64")))]
+    #[cfg(any(windows, target_os = "macos", test))]
     fn new() -> Self {
         Self {
             mailbox: Arc::new(LatestFrameMailbox {
@@ -83,7 +83,7 @@ impl LatestFrameSender {
         Ok(outcome)
     }
 
-    #[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+    #[cfg(any(windows, target_os = "macos", test))]
     fn receive(&self) -> Option<OverlayFrame> {
         let mut state = self.mailbox.state.lock().ok()?;
         loop {
@@ -104,7 +104,7 @@ impl LatestFrameSender {
     }
 }
 
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn receive_outcome(state: &mut LatestFrameMailboxState) -> ReceiveOutcome {
     match (state.pending.take(), state.closed) {
         (Some(frame), _) => ReceiveOutcome::Frame(frame),
@@ -128,7 +128,7 @@ fn report_replacement(replacements: u64) {
 /// frames that can never reach OBS. Without this, a runtime Spout/Syphon
 /// failure left the mailbox open, the renderer believed publish succeeded, and
 /// OBS froze on a stale texture with no status surface.
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn pump_native_frames<F>(receiver: &LatestFrameSender, width: u32, height: u32, mut send: F)
 where
     F: FnMut(&OverlayFrame) -> Result<(), String>,
@@ -167,7 +167,7 @@ struct NativeOutputWorker {
 /// which would let publishers keep receiving `Ok(())` while OBS freezes on a
 /// stale texture. Closing the mailbox here gives publish the same error
 /// contract as the transport-failure path.
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn run_worker<F>(frame_receiver: LatestFrameSender, body: F)
 where
     F: FnOnce() + std::panic::UnwindSafe,
@@ -181,7 +181,7 @@ where
     }
 }
 
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         message.to_string()
@@ -196,7 +196,7 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
 /// never finishes (or reports failure) must not leave the worker thread blocked
 /// forever in `receive()`: closing the mailbox unblocks it via the Closed state
 /// so the thread exits instead of leaking.
-#[cfg(any(windows, all(target_os = "macos", target_arch = "x86_64"), test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn await_ready_or_close(
     ready_receiver: mpsc::Receiver<bool>,
     frame_sender: &LatestFrameSender,
@@ -240,16 +240,13 @@ impl NativeOutputHandle {
             return Self { worker: Some(worker), kind: "spout2".to_string() };
         }
 
-        // The vendored Syphon.framework is x86_64-only and Spout2 is
-        // Windows-only, so Apple-silicon builds have no native transport.
-        // OBS integration on macOS falls back to the loopback Browser Source
-        // served by `browser_source.rs` (default-enabled on fresh macOS
-        // configurations), never a runtime load of the known-incompatible
-        // framework. This native lane intentionally stays a no-op
-        // transparent-window handle: it powers the on-screen overlay window
-        // when opened manually and keeps `kind()`/status reporting honest
-        // about the absence of a Spout2/Syphon sender.
-        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        // The vendored Syphon.framework is a universal build with the Metal
+        // server classes, so macOS (arm64 and x86_64) publishes captions over
+        // Syphon. Test builds skip the real transport so unit tests stay
+        // hermetic (no Metal device or Syphon directory registration). The
+        // loopback Browser Source served by `browser_source.rs` remains
+        // default-enabled as an OBS fallback.
+        #[cfg(all(target_os = "macos", not(test)))]
         if let Some(worker) = start_syphon(width, height) {
             return Self { worker: Some(worker), kind: "syphon".to_string() };
         }
@@ -393,7 +390,8 @@ fn start_spout(width: u32, height: u32) -> Option<NativeOutputWorker> {
     ready.map(|sender| NativeOutputWorker { sender, join_handle })
 }
 
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+#[cfg(all(target_os = "macos", not(test)))]
+#[allow(clippy::excessive_nesting)]
 fn start_syphon(width: u32, height: u32) -> Option<NativeOutputWorker> {
     let frame_sender = LatestFrameSender::new();
     let frame_receiver = frame_sender.clone();
@@ -460,20 +458,11 @@ fn start_syphon(width: u32, height: u32) -> Option<NativeOutputWorker> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LatestFrameMailbox, LatestFrameMailboxState, LatestFrameSender, OverlayFrame};
+    use super::{LatestFrameSender, OverlayFrame};
     use std::sync::{Arc, Condvar, Mutex};
 
     fn sender() -> LatestFrameSender {
-        LatestFrameSender {
-            mailbox: Arc::new(LatestFrameMailbox {
-                state: Mutex::new(LatestFrameMailboxState {
-                    pending: None,
-                    closed: false,
-                    replacements: 0,
-                }),
-                available: Condvar::new(),
-            }),
-        }
+        LatestFrameSender::new()
     }
 
     fn frame(value: u8) -> OverlayFrame {
@@ -718,12 +707,12 @@ mod tests {
         sender.close();
     }
 
-    /// Targets without a native transport (macOS arm64, Linux, ...) must
-    /// construct a no-op `transparent-window` handle: `publish` succeeds
-    /// without a worker while `kind()` stays honest about the absence of a
-    /// Spout2/Syphon sender. Windows and macOS-x86_64 test builds are excluded
-    /// because they would start real transport workers.
-    #[cfg(not(any(windows, all(target_os = "macos", target_arch = "x86_64"))))]
+    /// Targets without a native transport (Linux, ...) must construct a
+    /// no-op `transparent-window` handle: `publish` succeeds without a worker
+    /// while `kind()` stays honest about the absence of a Spout2/Syphon
+    /// sender. Windows and macOS test builds are excluded because they would
+    /// start real transport workers.
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn no_transport_platforms_fall_back_to_a_noop_transparent_window_handle() {
         let output = super::NativeOutputHandle::new(1280, 720);

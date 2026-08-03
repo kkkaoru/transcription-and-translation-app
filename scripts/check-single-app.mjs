@@ -134,18 +134,13 @@ check(
   "release Tauri config enables updater artifacts",
   releaseConf?.bundle?.createUpdaterArtifacts === true,
 );
+const syphonFrameworks = JSON.stringify(["./frameworks/Syphon.framework"]);
 check(
-  "Apple Silicon base configs do not embed the x86_64-only Syphon framework",
-  !tauriConf?.bundle?.macOS?.frameworks && !releaseConf?.bundle?.macOS?.frameworks,
-  "tauri.conf.json and tauri.release.conf.json must stay framework-free for arm64 builds",
-);
-check(
-  "Intel macOS overlays are the only configs that bundle Syphon",
-  JSON.stringify(intelConf?.bundle?.macOS?.frameworks ?? []) ===
-    JSON.stringify(["./frameworks/Syphon.framework"]) &&
-    JSON.stringify(intelReleaseConf?.bundle?.macOS?.frameworks ?? []) ===
-      JSON.stringify(["./frameworks/Syphon.framework"]),
-  "Intel overlays must carry the legacy Syphon framework explicitly",
+  "all macOS Tauri configs bundle the universal Syphon framework",
+  [tauriConf, releaseConf, intelConf, intelReleaseConf].every(
+    (config) => JSON.stringify(config?.bundle?.macOS?.frameworks ?? []) === syphonFrameworks,
+  ),
+  "base, release, Intel, and Intel release configs must bundle the universal Syphon framework",
 );
 check(
   "desktop Tauri scripts select architecture-specific config overlays",

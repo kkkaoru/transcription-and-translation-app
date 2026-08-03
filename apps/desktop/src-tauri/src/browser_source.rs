@@ -1,7 +1,7 @@
 //! OBS Browser Source fallback: a caption-only loopback HTTP page.
 //!
-//! The vendored Syphon.framework is x86_64-only and Spout2 is Windows-only, so
-//! macOS needs a loopback fallback whenever the native output path is unavailable.
+//! The native Syphon/Spout2 lanes are platform-specific, so every platform
+//! keeps a loopback fallback for when the native output path is unavailable.
 //! When `overlay.browserSource.enabled` is set, this module serves a
 //! caption-only page plus a JSON caption feed on `http://127.0.0.1:{port}/`
 //! that OBS captures with a regular Browser Source. The transparent Tauri
