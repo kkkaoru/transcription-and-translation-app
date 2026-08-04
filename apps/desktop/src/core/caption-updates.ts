@@ -379,6 +379,33 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
 };
 
 /**
+ * Decide whether a cross-id source pair may enter {@link mergeCrossIdSourceText}.
+ *
+ * Parapper turn ids are stable per utterance (`parapper:session:turnSession:turnId`),
+ * so two different Parapper ids are different turns. Close timing alone must not
+ * concatenate them when an earlier turn is still non-final (the output queue can
+ * interleave turn N+1 ahead of turn N's final). Legacy chunk ids still allow a
+ * close-timing no-overlap suffix for rolling ASR windows.
+ */
+const canMergeCrossIdSource = (current: CaptionPayload, next: CaptionPayload): boolean => {
+  const bothUnset = startedAtOf(current) === NO_TIME_MS && startedAtOf(next) === NO_TIME_MS;
+  const related =
+    hasLexicalSourceContinuation(current, next) || hasSameOrExtendedAzookeyReading(current, next);
+  if (related) {
+    return hasCloseSourceTiming(current, next) || bothUnset;
+  }
+
+  const bothParapperTurns = current.id.startsWith("parapper:") && next.id.startsWith("parapper:");
+  if (bothParapperTurns) {
+    return false;
+  }
+
+  // Legacy rolling-context chunks can continue an incomplete phrase across ids
+  // when the audio starts are still inside the continuation window.
+  return hasCloseSourceTiming(current, next);
+};
+
+/**
  * A source-stage payload can be a newer recognition revision for the same
  * utterance.  Translation is sequence 1, so a naïve sequence comparison would
  * drop that revision whenever the translator happened to finish first.  Keep
@@ -621,11 +648,7 @@ export const mergeCaptionPayload = (
         ? mergeSameIdSourceText(current, incoming)
         : isSourceStagePayload(incoming) && isLikelyCrossIdSourceRevision(current, incoming)
           ? trim(incoming.sourceText)
-          : isSourceStagePayload(incoming) &&
-              (hasCloseSourceTiming(current, incoming) ||
-                (hasLexicalSourceContinuation(current, incoming) &&
-                  startedAtOf(current) === NO_TIME_MS &&
-                  startedAtOf(incoming) === NO_TIME_MS))
+          : isSourceStagePayload(incoming) && canMergeCrossIdSource(current, incoming)
             ? mergeCrossIdSourceText(current, incoming)
             : incoming.sourceText
       : current.sourceText,

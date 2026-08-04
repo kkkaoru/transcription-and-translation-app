@@ -1446,6 +1446,36 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, continuation)?.sourceText).toBe("りょうりはおいしい");
   });
 
+  it("does not append a new turn onto a non-final particle ending just because timing is close", () => {
+    // The output queue can deliver turn N+1's interim while turn N's final is
+    // still waiting behind an in-flight normalizer. Close timing alone must not
+    // concatenate unrelated turns when the visible caption still ends in a
+    // particle (は/が/…) and there is no lexical or AzooKey reading relation.
+    const turnOnePartial = caption({
+      id: "parapper:socket:4:1",
+      sourceText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_010,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const turnTwoPartial = caption({
+      id: "parapper:socket:4:2",
+      sourceText: "きょうは雨",
+      startedAt: 1_800,
+      receivedAt: 1_810,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(turnOnePartial, turnTwoPartial)).toMatchObject({
+      id: "parapper:socket:4:2",
+      sourceText: "きょうは雨",
+    });
+  });
+
   it("does not append after a finalized short source", () => {
     const current = caption({
       id: "chunk-1",
