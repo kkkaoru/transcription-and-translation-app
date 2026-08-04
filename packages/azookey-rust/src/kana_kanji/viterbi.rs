@@ -1377,6 +1377,26 @@ fn contextual_entry_bonus(
     if alternatives.len() < MIN_LEXICAL_ENTRY_CHARS {
         return NO_SCORE;
     }
+    // Do not reward a short homophone row that is only a *prefix* of a longer
+    // converted reading at the same lattice position.  For example `觀` (1 mora)
+    // is a prefix of the full-span `観ている`; steering the tie-breaker at the
+    // prefix column would let the rarer `観` beat the natural `見` (which also
+    // has a full-span `見ている`) purely from a following accusative auxiliary.
+    // A full-span adjective such as `あつい`/`熱い` has no longer same-span
+    // reading, so the semantic tie-breaker still applies there.
+    if entry.reading.chars().count() == 1
+        && dictionary
+            .entries_starting_at(chars, start, max_dictionary_word_chars)
+            .unwrap_or_default()
+            .iter()
+            .any(|candidate| {
+                candidate.reading.chars().count() > 1
+                    && candidate.reading.starts_with(&entry.reading)
+                    && contains_kanji(&candidate.surface)
+            })
+    {
+        return NO_SCORE;
+    }
     let rank = alternatives
         .iter()
         .position(|candidate| candidate.surface == entry.surface && candidate.mid == entry.mid);
