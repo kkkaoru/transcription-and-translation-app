@@ -1390,6 +1390,37 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, next)?.sourceText).toBe("りょうりはおいしい");
   });
 
+  it("keeps pause-separated Parapper turns as separate captions", () => {
+    // The two turns share only the internal 「てんきは」 substring. They are
+    // not a prefix/suffix continuation and the pause exceeds the rolling
+    // context window, so the second turn must replace the visible slot rather
+    // than concatenate both sentences.
+    const current = caption({
+      id: "turn-101",
+      sourceText: "あしたのてんきははれ",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const next = caption({
+      id: "turn-102",
+      sourceText: "あさってのてんきはあめです",
+      startedAt: 5_500,
+      receivedAt: 5_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, next)).toMatchObject({
+      id: "turn-102",
+      sourceText: "あさってのてんきはあめです",
+      translationText: "",
+    });
+  });
+
   it("keeps same-start semantic source corrections as replacements", () => {
     const current = caption({
       id: "u-1",
