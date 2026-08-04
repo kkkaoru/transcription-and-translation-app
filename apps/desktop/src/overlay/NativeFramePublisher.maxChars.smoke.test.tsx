@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "../core/defaults";
 import type { AppConfig, CaptionPayload } from "../core/types";
 import { createPreviewCaption } from "./captions";
-import { renderNativeFrame } from "./NativeFramePublisher";
+import {
+  beginNativePublish,
+  completeNativePublishSuccess,
+  createNativePublishGate,
+  framePaintKey,
+  renderNativeFrame,
+} from "./NativeFramePublisher";
 
 const withBudget = (source: number, translation: number): AppConfig => {
   const config = createDefaultConfig();
@@ -69,5 +75,36 @@ describe("configurable budget changes the native/Syphon line split", () => {
     expect(narrowBaselines).toBeGreaterThan(wideBaselines);
     // Segmentation only inserts breaks; no source graphemes are dropped.
     expect(narrow.map((call) => call.text).join("")).toBe(sourceText);
+  });
+
+  it("repaints on a budget-only change (framePaintKey and publish gate invalidate)", () => {
+    const base = createDefaultConfig();
+    base.overlay.captionMaxChars = { source: 40, translation: 48 };
+    const caption = createPreviewCaption();
+
+    const keyWide = framePaintKey(base, caption);
+
+    // Same display inputs except the caption budget: this must change the key
+    // so the native publish gate schedules a repaint instead of skipping.
+    const narrowed: AppConfig = { ...base, overlay: { ...base.overlay } };
+    narrowed.overlay.captionMaxChars = { source: 10, translation: 48 };
+    const keyNarrowed = framePaintKey(narrowed, caption);
+    expect(keyNarrowed).not.toBe(keyWide);
+
+    const gate = createNativePublishGate();
+    expect(beginNativePublish(gate, keyWide)).toEqual({ action: "publish", key: keyWide });
+    // A successful publish records the wide key…
+    expect(completeNativePublishSuccess(gate, keyWide)).toBeNull();
+    expect(beginNativePublish(gate, keyWide)).toEqual({ action: "skip" });
+    // …so a budget-only change must be treated as a new frame and republished.
+    expect(beginNativePublish(gate, keyNarrowed)).toEqual({ action: "publish", key: keyNarrowed });
+  });
+
+  it("keeps the budget out of the key when it is absent (undefined legacy config)", () => {
+    const base = createDefaultConfig();
+    base.overlay.captionMaxChars = undefined;
+    const caption = createPreviewCaption();
+
+    expect(framePaintKey(base, caption)).toBe(framePaintKey({ ...base }, caption));
   });
 });

@@ -386,6 +386,11 @@ export const framePaintKey = (config: AppConfig, caption: CaptionPayload): strin
     config.overlay.captionYPercent,
     JSON.stringify(config.overlay.source),
     JSON.stringify(config.overlay.translation),
+    // The per-line character budget directly changes the painted line split,
+    // so a budget-only config change must invalidate the previous frame key
+    // and trigger a native repaint. `captionMaxChars` is optional for legacy
+    // configs; JSON.stringify yields a stable distinct value either way.
+    JSON.stringify(config.overlay.captionMaxChars),
   ].join("\u0001");
 
 /** Max automatic retries for the same paint key after a rejected invoke. */
