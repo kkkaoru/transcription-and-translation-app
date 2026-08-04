@@ -623,7 +623,9 @@ export const mergeCaptionPayload = (
           ? trim(incoming.sourceText)
           : isSourceStagePayload(incoming) &&
               (hasCloseSourceTiming(current, incoming) ||
-                hasLexicalSourceContinuation(current, incoming))
+                (hasLexicalSourceContinuation(current, incoming) &&
+                  startedAtOf(current) === NO_TIME_MS &&
+                  startedAtOf(incoming) === NO_TIME_MS))
             ? mergeCrossIdSourceText(current, incoming)
             : incoming.sourceText
       : current.sourceText,

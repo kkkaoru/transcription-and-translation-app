@@ -395,6 +395,32 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(previous, next)?.sourceText).toBe("です。今日は晴れ");
   });
 
+  it("does not append lexical overlap after the rolling-context window", () => {
+    // A delayed final/interim boundary can leave the prior source non-final
+    // even though the next ID starts after a real pause. Timing must still
+    // prevent a shared suffix/prefix from joining two utterances.
+    const previous = caption({
+      id: "turn-1",
+      sourceText: "明日の天気は",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const next = caption({
+      id: "turn-2",
+      sourceText: "天気は雨です",
+      startedAt: 5_000,
+      receivedAt: 5_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(previous, next)?.sourceText).toBe("天気は雨です");
+  });
+
   it("drops a late translation for the prior rolling-context chunk", () => {
     const current = caption({
       id: "chunk-2",
