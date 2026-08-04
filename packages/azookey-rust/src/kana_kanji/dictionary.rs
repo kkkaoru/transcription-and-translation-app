@@ -972,8 +972,9 @@ fn filter_system_entries(entries: Vec<DictionaryEntry>) -> Vec<DictionaryEntry> 
                     && system_entry_passes_quality_threshold(entry))
         })
         .collect::<Vec<_>>();
-    let has_competitive_converted =
-        quality_entries.iter().any(is_competitive_converted_system_entry);
+    let has_competitive_converted = quality_entries
+        .iter()
+        .any(|entry| is_competitive_converted_system_entry(entry, &quality_entries));
     quality_entries
         .into_iter()
         .filter(|entry| !is_multi_kana_hiragana_identity(entry) || !has_competitive_converted)
@@ -998,10 +999,13 @@ fn is_multi_kana_hiragana_identity(entry: &DictionaryEntry) -> bool {
 /// alternative (kanji and/or katakana) with enough frequency that it should
 /// suppress the multi-kana hiragana identity row.
 ///
-/// Near-floor rare kanji such as `迚も` (≈ -15) stay non-competitive so the
-/// identity `とても` can win. Ordinary entries such as `東京` remain above the
-/// floor and keep identity suppressed.
-fn is_competitive_converted_system_entry(entry: &DictionaryEntry) -> bool {
+/// A converted surface is competitive when its score is close to the best
+/// sibling for the same reading. Comparing siblings keeps this decision
+/// stable when a dictionary shard uses a different absolute score scale.
+fn is_competitive_converted_system_entry(
+    entry: &DictionaryEntry,
+    siblings: &[DictionaryEntry],
+) -> bool {
     if is_multi_kana_hiragana_identity(entry) {
         return false;
     }
@@ -1013,14 +1017,20 @@ fn is_competitive_converted_system_entry(entry: &DictionaryEntry) -> bool {
         .surface
         .chars()
         .any(|character| is_kanji_char(character) || is_katakana_char(character));
-    has_converted_script && entry.value >= COMPETITIVE_CONVERTED_VALUE_FLOOR
+    if !has_converted_script {
+        return false;
+    }
+    let best_sibling_value = siblings
+        .iter()
+        .filter(|candidate| candidate.surface != entry.surface)
+        .map(|candidate| candidate.value)
+        .max_by(f32::total_cmp);
+    best_sibling_value.is_none_or(|value| entry.value + COMPETITIVE_CONVERTED_VALUE_MARGIN >= value)
 }
 
-/// Converted surfaces at or above this value suppress multi-kana hiragana
-/// identity rows. The public dictionary places rare orthography such as
-/// `迚も` well below this floor while common kanji/katakana spellings sit
-/// above it.
-const COMPETITIVE_CONVERTED_VALUE_FLOOR: f32 = -12.5;
+/// Maximum score gap from the best sibling for a converted surface to suppress
+/// a multi-kana hiragana identity row.
+const COMPETITIVE_CONVERTED_VALUE_MARGIN: f32 = 4.0;
 
 fn is_kanji_char(character: char) -> bool {
     let code = character as u32;
@@ -1723,7 +1733,7 @@ mod tests {
     use super::{
         escaped_identifier, filter_system_entries, parse_loudstxt3_record, prediction_usable_rcid,
         system_entry_is_usable, word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths,
-        WordType, BOS_CID, COMPETITIVE_CONVERTED_VALUE_FLOOR, EOS_CID, MID_COUNT,
+        WordType, BOS_CID, COMPETITIVE_CONVERTED_VALUE_MARGIN, EOS_CID, MID_COUNT,
         PORTABLE_DICTIONARY_MAGIC,
     };
 
@@ -1829,9 +1839,13 @@ mod tests {
             filtered.iter().any(|entry| entry.surface == "迚も"),
             "rare kanji remains available as an n-best alternative"
         );
-        // Just below the competitive floor: still treated as rare.
-        let near_floor_rare =
-            DictionaryEntry::plain("とても", "迚も", COMPETITIVE_CONVERTED_VALUE_FLOOR - 0.01);
+        // A converted sibling that trails the best identity by more than the
+        // relative margin remains rare.
+        let near_floor_rare = DictionaryEntry::plain(
+            "とても",
+            "迚も",
+            identity.value - COMPETITIVE_CONVERTED_VALUE_MARGIN - 0.01,
+        );
         let filtered_near = filter_system_entries(vec![near_floor_rare, identity.clone()]);
         assert!(
             filtered_near.iter().any(|entry| entry.surface == "とても"),
@@ -1850,10 +1864,13 @@ mod tests {
             filtered.iter().all(|entry| entry.surface != "とうきょう"),
             "multi-kana identity must stay suppressed when a competitive kanji exists"
         );
-        // At the competitive floor: treated as competitive.
-        let at_floor =
-            DictionaryEntry::plain("とうきょう", "東京", COMPETITIVE_CONVERTED_VALUE_FLOOR);
-        let filtered_floor = filter_system_entries(vec![at_floor, identity]);
+        // A converted sibling within the relative margin is competitive.
+        let at_margin = DictionaryEntry::plain(
+            "とうきょう",
+            "東京",
+            identity.value - COMPETITIVE_CONVERTED_VALUE_MARGIN,
+        );
+        let filtered_floor = filter_system_entries(vec![at_margin, identity]);
         assert!(
             filtered_floor.iter().all(|entry| entry.surface != "とうきょう"),
             "kanji at the competitive floor must suppress multi-kana identity"
