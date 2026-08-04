@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultConfig } from "../core/defaults";
 import type { CaptionPayload, RuntimeStatus, UnlistenFn } from "../core/types";
+import { isOverlayCaption, OverlayApp } from "./OverlayApp";
 
 const noopUnlisten: UnlistenFn = () => undefined;
 
@@ -21,8 +22,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../core/bridge", () => ({
   bridge: mocks,
 }));
-
-import { OverlayApp } from "./OverlayApp";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -334,6 +333,274 @@ describe("OverlayApp caption replay", () => {
       root.unmount();
       await Promise.resolve();
     });
+    container.remove();
+  });
+});
+
+describe("isOverlayCaption", () => {
+  it("rejects non-display stages even when text is present", () => {
+    expect(isOverlayCaption({ ...sourceCaption(), stage: "asr" as CaptionPayload["stage"] })).toBe(
+      false,
+    );
+    expect(
+      isOverlayCaption({ ...sourceCaption(), stage: "translate" as CaptionPayload["stage"] }),
+    ).toBe(false);
+  });
+
+  it("accepts a caption with only a trimmed source line", () => {
+    expect(isOverlayCaption({ ...sourceCaption(), translationText: "" })).toBe(true);
+  });
+
+  it("accepts a caption whose translation is non-empty even when source is blank", () => {
+    expect(
+      isOverlayCaption({ ...sourceCaption(), sourceText: "   ", translationText: "訳文" }),
+    ).toBe(true);
+  });
+
+  it("rejects a caption with only whitespace on both lines", () => {
+    expect(isOverlayCaption({ ...sourceCaption(), sourceText: " \t", translationText: "  " })).toBe(
+      false,
+    );
+  });
+});
+describe("OverlayApp listener cleanup robustness", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mocks.isDesktop.mockReset().mockReturnValue(false);
+    mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
+    mocks.getLatestCaption.mockReset().mockResolvedValue(null);
+    mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenRuntime.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  it("tolerates a promise-like unlisten and a throwing unlisten on unmount", async () => {
+    const promiseLike = (): PromiseLike<unknown> => Promise.resolve().then(() => undefined);
+    mocks.listenConfig.mockResolvedValue(promiseLike as unknown as UnlistenFn);
+    mocks.listenCaptions.mockResolvedValue(() => {
+      throw new Error("webview gone");
+    });
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+
+  it("keeps the previous caption when runtime reports an error status", async () => {
+    mocks.getLatestCaption.mockResolvedValue(sourceCaption());
+    let runtimeListener: ((status: RuntimeStatus) => void) | null = null;
+    mocks.listenRuntime.mockImplementation((callback: (status: RuntimeStatus) => void) => {
+      runtimeListener = callback;
+      return Promise.resolve(noopUnlisten);
+    });
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("正規化された字幕");
+
+    await act(async () => {
+      runtimeListener?.({
+        status: "error",
+        platform: "unknown",
+        backendReachable: false,
+        nativeOutput: "unsupported",
+        lastError: "boom",
+      });
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("正規化された字幕");
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+});
+describe("OverlayApp synchronous bridge throws", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mocks.isDesktop.mockReset().mockReturnValue(false);
+    mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
+    mocks.getLatestCaption.mockReset().mockResolvedValue(null);
+    mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenRuntime.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  it("survives a bridge.getLatestCaption() that throws synchronously", async () => {
+    mocks.getLatestCaption.mockImplementation(() => {
+      throw new Error("ipc unavailable");
+    });
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+    // The overlay still mounts and subscribes even when history replay throws.
+    expect(mocks.listenCaptions).toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+
+  it("falls back cleanly when bridge.listenCaptions throws synchronously", async () => {
+    mocks.listenCaptions.mockImplementation(() => {
+      throw new Error("listen unavailable");
+    });
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+    // No crash; the reject path still runs a best-effort history read.
+    expect(mocks.getLatestCaption).toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+});
+describe("OverlayApp resolves listeners after unmount", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mocks.isDesktop.mockReset().mockReturnValue(false);
+    mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
+    mocks.getLatestCaption.mockReset().mockResolvedValue(null);
+    mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenRuntime.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  it("disposes a late-resolving config listener after unmount", async () => {
+    let resolveConfig!: (dispose: UnlistenFn) => void;
+    mocks.listenConfig.mockImplementation(
+      () =>
+        new Promise<UnlistenFn>((resolve) => {
+          resolveConfig = resolve;
+        }),
+    );
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+
+    // Resolve the config listener only after unmount: the else-dispose path runs.
+    await act(async () => {
+      resolveConfig(() => {
+        throw new Error("late dispose");
+      });
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+
+  it("disposes a late-resolving runtime listener after unmount", async () => {
+    let resolveRuntime!: (dispose: UnlistenFn) => void;
+    mocks.listenRuntime.mockImplementation(
+      () =>
+        new Promise<UnlistenFn>((resolve) => {
+          resolveRuntime = resolve;
+        }),
+    );
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      resolveRuntime(() => undefined);
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+});
+
+describe("OverlayApp caption listener late dispose", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mocks.isDesktop.mockReset().mockReturnValue(false);
+    mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
+    mocks.getLatestCaption.mockReset().mockResolvedValue(null);
+    mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenRuntime.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  it("disposes a caption listener that resolves after unmount", async () => {
+    let resolved = false;
+    mocks.listenCaptions.mockImplementation(
+      () =>
+        new Promise<UnlistenFn>((resolve) => {
+          setTimeout(() => {
+            resolved = true;
+            resolve(() => undefined);
+          }, 0);
+        }),
+    );
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(resolved).toBe(true);
     container.remove();
   });
 });

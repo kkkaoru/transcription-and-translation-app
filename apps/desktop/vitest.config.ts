@@ -7,10 +7,13 @@ export default defineConfig({
     include: ["src/core/**/*.test.ts", "src/i18n/**/*.test.{ts,tsx}", "src/**/*.smoke.test.tsx"],
     coverage: {
       provider: "v8",
-      include: ["src/core/**/*.ts", "src/i18n/messages.ts"],
+      include: ["src/core/**/*.ts", "src/i18n/messages.ts", "src/overlay/**/*.{ts,tsx}"],
       exclude: [
         "src/core/**/*.test.ts",
         "src/i18n/**/*.test.ts",
+        "src/overlay/**/*.test.ts",
+        "src/overlay/**/*.test.tsx",
+        "src/overlay/**/*.smoke.test.tsx",
         "src/core/types.ts",
         "src/core/bridge.ts",
       ],
@@ -20,7 +23,7 @@ export default defineConfig({
         functions: 95,
         lines: 95,
       },
-      reporter: ["text", "html", "json-summary"],
+      reporter: ["text", "html", "json-summary", "lcov"],
     },
   },
 });

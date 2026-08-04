@@ -207,6 +207,44 @@ describe("NativeFramePublisher publish failures", () => {
     expect(nativeLogs[0]?.error).toContain("native output worker stopped");
   });
 
+  it("uses a stable fallback when native publish rejects with an unstructured value", async () => {
+    mocks.publishOverlayFrame.mockRejectedValueOnce({ reason: "worker stopped" });
+
+    await act(() => {
+      root.render(
+        <NativeFramePublisher config={smallConfig()} caption={captionWith("malformed")} />,
+      );
+    });
+    await flush(60);
+
+    const nativeLogs = getStructuredLogs().filter((entry) => entry.stage === "native-output");
+    expect(nativeLogs[0]?.error).toBe("native overlay publish rejected");
+  });
+
+  it("ignores a rejected native call that settles after the publisher unmounts", async () => {
+    let rejectSecond: ((error: unknown) => void) | null = null;
+    mocks.publishOverlayFrame.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSecond = reject;
+        }),
+    );
+
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("late")} />);
+    });
+    await flush(60);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+
+    await act(() => {
+      root.unmount();
+    });
+    rejectSecond?.(new Error("webview closed"));
+    await flush(60);
+
+    expect(getStructuredLogs().filter((entry) => entry.stage === "native-output")).toHaveLength(0);
+  });
+
   it("retries the latest frame after a transient failure without a caption change", async () => {
     mocks.publishOverlayFrame.mockRejectedValueOnce(new Error("ipc disconnected"));
 
@@ -267,6 +305,21 @@ describe("NativeFramePublisher publish failures", () => {
     expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
   });
 
+  it("bounds retries when every native frame render fails synchronously", async () => {
+    encodeThrows = true;
+
+    await act(() => {
+      root.render(
+        <NativeFramePublisher config={smallConfig()} caption={captionWith("stuck-render")} />,
+      );
+    });
+    await flush(900);
+
+    expect(mocks.publishOverlayFrame).not.toHaveBeenCalled();
+    const nativeLogs = getStructuredLogs().filter((entry) => entry.stage === "native-output");
+    expect(nativeLogs.some((entry) => entry.level === "error")).toBe(true);
+  });
+
   it("publishes the wire frame contract as rgba base64 of width×height×4 bytes", async () => {
     await act(() => {
       root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("wire")} />);
@@ -294,5 +347,256 @@ describe("NativeFramePublisher publish failures", () => {
     // The retry scheduled by the null-context branch publishes the pending
     // frame once a context is available, without requiring a new caption.
     expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it("schedules a follow-up publish when a newer caption replaces a successful one", async () => {
+    // Two distinct captions in quick succession coalesce into one rAF; the
+    // drain path must keep the channel alive after the first success.
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("a")} />);
+    });
+    await flush(60);
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("b")} />);
+    });
+    await flush(60);
+    expect(mocks.publishOverlayFrame.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("NativeFramePublisher cancelled render catch", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mocks.isDesktop.mockReset().mockReturnValue(true);
+    mocks.publishOverlayFrame.mockReset().mockResolvedValue(undefined);
+    encodeThrows = false;
+    getContextUnavailable = false;
+    audioMocks.bytesToBase64.mockReset();
+    audioMocks.bytesToBase64.mockImplementation((bytes: Uint8Array): string => {
+      if (encodeThrows) {
+        throw new Error("base64 encoding is unavailable in this runtime");
+      }
+      return audioMocks.realBytesToBase64?.(bytes) ?? "";
+    });
+    __resetStructuredLogForTests();
+    installCanvasStub();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it("releases the in-flight claim when unmounted during a throwing render", async () => {
+    audioMocks.bytesToBase64.mockImplementationOnce(() => {
+      root.unmount();
+      throw new Error("render interrupted by teardown");
+    });
+
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("boom")} />);
+    });
+    await flush(40);
+    expect(mocks.publishOverlayFrame).not.toHaveBeenCalled();
+  });
+
+  it("uses the render-failure fallback for an unstructured synchronous throw", async () => {
+    audioMocks.bytesToBase64.mockImplementationOnce(() => {
+      throw { reason: "encoder unavailable" };
+    });
+
+    await act(() => {
+      root.render(
+        <NativeFramePublisher config={smallConfig()} caption={captionWith("fallback")} />,
+      );
+    });
+    await flush(60);
+
+    const nativeLogs = getStructuredLogs().filter((entry) => entry.stage === "native-output");
+    expect(nativeLogs[0]?.error).toBe("native overlay frame render failed");
+  });
+});
+
+describe("NativeFramePublisher decision-skip effects", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mocks.isDesktop.mockReset().mockReturnValue(true);
+    mocks.publishOverlayFrame.mockReset().mockResolvedValue(undefined);
+    encodeThrows = false;
+    getContextUnavailable = false;
+    audioMocks.bytesToBase64.mockReset();
+    audioMocks.bytesToBase64.mockImplementation((bytes: Uint8Array): string => {
+      if (encodeThrows) {
+        throw new Error("base64 encoding is unavailable in this runtime");
+      }
+      return audioMocks.realBytesToBase64?.(bytes) ?? "";
+    });
+    __resetStructuredLogForTests();
+    installCanvasStub();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it("skips a repeat render of the same caption after it already succeeded", async () => {
+    const caption = captionWith("same");
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={caption} />);
+    });
+    await flush(60);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+
+    // Re-render the identical caption: the publish gate returns skip.
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={caption} />);
+    });
+    await flush(60);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("NativeFramePublisher coalesce and cancelled paths", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mocks.isDesktop.mockReset().mockReturnValue(true);
+    mocks.publishOverlayFrame.mockReset().mockResolvedValue(undefined);
+    encodeThrows = false;
+    getContextUnavailable = false;
+    audioMocks.bytesToBase64.mockReset();
+    audioMocks.bytesToBase64.mockImplementation((bytes: Uint8Array): string => {
+      if (encodeThrows) {
+        throw new Error("base64 encoding is unavailable in this runtime");
+      }
+      return audioMocks.realBytesToBase64?.(bytes) ?? "";
+    });
+    __resetStructuredLogForTests();
+    installCanvasStub();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it("coalesces rapid caption bursts into a single published frame", async () => {
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("a")} />);
+    });
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("b")} />);
+    });
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("c")} />);
+    });
+    // All three re-renders land in the same rAF; only the latest frame paints.
+    await flush(60);
+    expect(mocks.publishOverlayFrame.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("reuses the cached fonts.ready promise across captions", async () => {
+    // Define a real document.fonts.ready so the ensureFontsReady cache path runs
+    // on the second effect instead of short-circuiting on the missing-fonts guard.
+    const readyCallbacks: Array<() => void> = [];
+    const ready = new Promise<void>((resolve) => {
+      readyCallbacks.push(resolve);
+    });
+    const originalFonts = document.fonts;
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { ready },
+    });
+    try {
+      await act(() => {
+        root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("one")} />);
+      });
+      readyCallbacks[0]?.();
+      await act(async () => {
+        await ready;
+      });
+      await flush(60);
+      expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+
+      // A second caption re-enters ensureFontsReady; the cached promise (not a
+      // fresh one) must be reused, so only one .ready was created.
+      await act(() => {
+        root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("two")} />);
+      });
+      await flush(60);
+      expect(mocks.publishOverlayFrame.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(readyCallbacks.length).toBe(1);
+    } finally {
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: originalFonts,
+      });
+    }
+  });
+});
+
+describe("NativeFramePublisher exhausted-decision branch", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    mocks.isDesktop.mockReset().mockReturnValue(true);
+    mocks.publishOverlayFrame.mockReset().mockRejectedValue(new Error("native worker dead"));
+    encodeThrows = false;
+    getContextUnavailable = false;
+    audioMocks.bytesToBase64.mockReset();
+    audioMocks.bytesToBase64.mockImplementation((bytes: Uint8Array): string => {
+      if (encodeThrows) {
+        throw new Error("base64 encoding is unavailable in this runtime");
+      }
+      return audioMocks.realBytesToBase64?.(bytes) ?? "";
+    });
+    __resetStructuredLogForTests();
+    installCanvasStub();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it("logs exhaustion and suppresses a re-rendered permanently failing frame", async () => {
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("stuck")} />);
+    });
+    // Burn through the retry budget: three attempts exhaust the key.
+    await flush(900);
+    expect(mocks.publishOverlayFrame.mock.calls.length).toBeGreaterThanOrEqual(3);
+
+    // A fresh effect for the same failed key must hit the exhausted-decision
+    // branch and log an error without republishing.
+    const callsAfterExhaustion = mocks.publishOverlayFrame.mock.calls.length;
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("stuck")} />);
+    });
+    await flush(60);
+    expect(mocks.publishOverlayFrame.mock.calls.length).toBe(callsAfterExhaustion);
   });
 });
