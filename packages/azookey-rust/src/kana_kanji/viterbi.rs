@@ -614,6 +614,14 @@ pub fn convert_with_dictionary(
                 if one_kana_suffix_shadowed_by_longer_entry(dictionary, &state, entry) {
                     continue;
                 }
+                // A DEFAULT_CID row that is value-dominated by a same-surface
+                // specific-CID sibling inherits a cheap connection that can
+                // overturn the better-ranked spelling (`腫れ` over `晴れ`).
+                // Drop only that dominated DEFAULT edge; the specific sibling
+                // (and DEFAULT rows that remain best for their surface) stay.
+                if default_cid_dominated_by_same_surface(dictionary, entry) {
+                    continue;
+                }
                 let (connection, clause_mid, clause_has_word, meaning_delta) =
                     transition_score(dictionary, &state, entry, options.preceding);
                 let surface = dictionary_surface_for_source(entry, &source_chars[start..end]);
@@ -814,6 +822,45 @@ fn model_metadata_penalty(dictionary: &AzooKeyDictionary, entry: &DictionaryEntr
         penalty += MODEL_DEFAULT_MID_PENALTY;
     }
     penalty
+}
+
+/// True when a DEFAULT_CID row should leave the lattice because it is both
+/// value-dominated by a same-surface specific-CID sibling and lexically
+/// dominated by a different-surface kanji for the same reading.
+///
+/// Cheap DEFAULT_CID transitions otherwise let a low-frequency spelling such
+/// as `腫れ` overturn `晴れ`. Dropping every same-surface-dominated DEFAULT
+/// row is too broad: `駅` keeps a DEFAULT_CID row whose value still beats
+/// every other surface (`易`/`益`/...), and removing it regresses `えきへの`.
+/// Requiring a better-valued *different* surface limits the filter to the
+/// overturned-homophone case.
+fn default_cid_dominated_by_same_surface(
+    dictionary: &AzooKeyDictionary,
+    entry: &DictionaryEntry,
+) -> bool {
+    if !dictionary.has_system_dictionary()
+        || entry.lcid != DEFAULT_CID
+        || entry.rcid != DEFAULT_CID
+        || !contains_kanji(&entry.surface)
+    {
+        return false;
+    }
+    let alternatives = dictionary.lookup_exact(&entry.reading).unwrap_or_default();
+    let dominated_by_same_surface = alternatives.iter().any(|candidate| {
+        candidate.surface == entry.surface
+            && candidate.lcid != DEFAULT_CID
+            && candidate.rcid != DEFAULT_CID
+            && contains_kanji(&candidate.surface)
+            && candidate.value > entry.value
+    });
+    if !dominated_by_same_surface {
+        return false;
+    }
+    alternatives.iter().any(|candidate| {
+        candidate.surface != entry.surface
+            && contains_kanji(&candidate.surface)
+            && candidate.value > entry.value
+    })
 }
 
 /// A function-word identity row is a useful grammatical continuation after

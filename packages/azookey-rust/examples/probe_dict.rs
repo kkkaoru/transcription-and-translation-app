@@ -11,7 +11,9 @@
 //! (log-probability-like; higher is better), and whether the surface is a
 //! raw-ruby identity row.
 
-use caption_bridge_azookey_rust::{AzooKeyDictionary, DictionaryPaths};
+use caption_bridge_azookey_rust::{
+    convert_with_dictionary, AzooKeyDictionary, ConversionOptions, DictionaryPaths,
+};
 use std::path::PathBuf;
 
 fn main() {
@@ -98,6 +100,24 @@ fn main() {
                 entry.mid,
                 entry.surface,
                 entry.raw_ruby_identity,
+            );
+        }
+        println!("  --- Viterbi n-best ---");
+        for (index, candidate) in convert_with_dictionary(
+            reading,
+            &dictionary,
+            ConversionOptions::default(),
+        )
+        .iter()
+        .take(8)
+        .enumerate()
+        {
+            println!(
+                "  {:>2}. score={:>9.3} text={:?} trailing={:?}",
+                index + 1,
+                candidate.score,
+                candidate.text,
+                candidate.trailing,
             );
         }
     }
