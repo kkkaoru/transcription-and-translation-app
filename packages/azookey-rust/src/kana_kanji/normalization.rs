@@ -184,6 +184,9 @@ const JAPANESE_NUMERAL_COUNTERS: &[(&str, &str)] = &[
     ("にち", "日"),
     ("にん", "人"),
     ("じ", "時"),
+    // Spoken clock readings contract `時半` as `じはん`; consume the
+    // compound counter so `しちじはん` does not rank `7時` + `反` first.
+    ("じはん", "時半"),
     ("ふん", "分"),
     ("ぷん", "分"),
     ("びょう", "秒"),
@@ -391,6 +394,8 @@ mod tests {
         assert_eq!(numeric_counter_surface(&currency_suffix), Some((2, "円".to_string())));
         let people_suffix = "にんいる".chars().collect::<Vec<_>>();
         assert_eq!(numeric_counter_surface(&people_suffix), Some((2, "人".to_string())));
+        let half_time_suffix = "じはんです".chars().collect::<Vec<_>>();
+        assert_eq!(numeric_counter_surface(&half_time_suffix), Some((3, "時半".to_string())));
         let separated = "いち、に".chars().collect::<Vec<_>>();
         assert_eq!(numeric_surface_prefix(&separated), Some((2, "1".to_string())));
     }
