@@ -356,3 +356,52 @@ fn two_utterance_sequence_splits_after_genuine_end_silence_at_grammar_normal_end
     );
     assert_eq!(runtime.turn_store.open_turn_id, None);
 }
+
+#[test]
+fn three_utterance_sequence_splits_each_after_genuine_end_silence_at_grammar_normal_end() {
+    // The two-utterance integration test proved utterance 2 no longer merges
+    // into utterance 1. The same boundary policy must hold for N >= 3: each
+    // utterance finalizes as its own turn, so the live caption slot keeps one
+    // utterance per caption instead of re-merging once a third utterance
+    // arrives (a state the previous code could reach if utterance 2's
+    // completion was still attached to turn 1).
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .segment_start_speech_ms(1)
+        .interim_display(false)
+        .scripted_asr_texts(Vec::new());
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let utterances = ["あしたははれ", "あさってはあめ", "しあさってはくもり"];
+    let mut expected = Vec::new();
+    for (index, text) in utterances.iter().enumerate() {
+        let turn_id = u64::try_from(index + 1).expect("test turn id should fit u64");
+        let start = u64::try_from(index * 7).expect("test audio offset should fit u64");
+        let audio = vec![1.0; 7];
+        let vad_results =
+            vec![vad(true), vad(true), vad(true), vad(true), vad(false), vad(false), vad(false)];
+        let turn = recognized_turn_with_boundary_candidates(
+            turn_id,
+            text,
+            &audio,
+            &vad_results,
+            vec![boundary_candidate(text, 7, 7, 7, GrammarBoundaryClass::NormalEnd)],
+        );
+        runtime_state(&mut runtime).turn(turn_id, turn).turn_audio_range(turn_id, start..start + 7);
+        runtime.process_grammar_boundaries_after_rerecognition(turn_id);
+        expected.push(output_snapshot(format!("{text}。"), true, turn_id, turn_id));
+        assert_eq!(
+            runtime.turn_store.open_turn_id,
+            None,
+            "utterance {} must close the open turn so the next utterance cannot attach",
+            index + 1
+        );
+    }
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        expected,
+        "each of the three utterances must finalize as its own caption"
+    );
+}
