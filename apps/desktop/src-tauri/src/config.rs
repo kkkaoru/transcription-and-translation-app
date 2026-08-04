@@ -175,6 +175,16 @@ pub const DEFAULT_BROWSER_SOURCE_PORT: u16 = 1421;
 pub const BROWSER_SOURCE_PORT_MIN: u16 = 1024;
 pub const BROWSER_SOURCE_PORT_MAX: u16 = 65_535;
 
+/// Per-row caption line character budgets. Kept in sync with the frontend
+/// `apps/desktop/src/core/defaults.ts` (`SOURCE_CAPTION_MAX_CHARS`,
+/// `TRANSLATION_CAPTION_MAX_CHARS`, `CAPTION_MAX_CHARS_MIN/MAX`). These are
+/// readability budgets, not truncation limits: the segmenter only inserts line
+/// breaks and never drops characters.
+pub const DEFAULT_SOURCE_CAPTION_MAX_CHARS: u32 = 28;
+pub const DEFAULT_TRANSLATION_CAPTION_MAX_CHARS: u32 = 48;
+pub const CAPTION_MAX_CHARS_MIN: u32 = 4;
+pub const CAPTION_MAX_CHARS_MAX: u32 = 200;
+
 /// The bundled Syphon.framework is a universal build whose Metal server
 /// classes back the native macOS lane; the loopback Browser Source stays
 /// enabled on every fresh macOS configuration as an OBS fallback. An explicit
@@ -211,6 +221,35 @@ impl Default for BrowserSourceConfig {
     }
 }
 
+/// User-adjustable per-row caption line character budgets. Source and
+/// translation are separate because a Japanese source line and a Latin
+/// translation line hold very different character counts at the same width.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionMaxCharsConfig {
+    #[serde(default = "default_source_caption_max_chars")]
+    pub source: u32,
+    #[serde(default = "default_translation_caption_max_chars")]
+    pub translation: u32,
+}
+
+fn default_source_caption_max_chars() -> u32 {
+    DEFAULT_SOURCE_CAPTION_MAX_CHARS
+}
+
+fn default_translation_caption_max_chars() -> u32 {
+    DEFAULT_TRANSLATION_CAPTION_MAX_CHARS
+}
+
+impl Default for CaptionMaxCharsConfig {
+    fn default() -> Self {
+        Self {
+            source: default_source_caption_max_chars(),
+            translation: default_translation_caption_max_chars(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayConfig {
@@ -229,6 +268,8 @@ pub struct OverlayConfig {
     pub translation: CaptionTextStyle,
     #[serde(default)]
     pub browser_source: BrowserSourceConfig,
+    #[serde(default)]
+    pub caption_max_chars: CaptionMaxCharsConfig,
 }
 
 fn default_caption_x_percent() -> f32 {
@@ -324,6 +365,7 @@ impl Default for AppConfig {
                 source: CaptionTextStyle::default_source(),
                 translation: CaptionTextStyle::default_translation(),
                 browser_source: BrowserSourceConfig::default(),
+                caption_max_chars: CaptionMaxCharsConfig::default(),
             },
             debug: DebugConfig::default(),
         }
@@ -413,6 +455,13 @@ impl AppConfig {
             .contains(&self.overlay.browser_source.port)
         {
             return Err("browser source port is outside the supported range".to_string());
+        }
+        let caption_max_chars = &self.overlay.caption_max_chars;
+        if !(CAPTION_MAX_CHARS_MIN..=CAPTION_MAX_CHARS_MAX).contains(&caption_max_chars.source)
+            || !(CAPTION_MAX_CHARS_MIN..=CAPTION_MAX_CHARS_MAX)
+                .contains(&caption_max_chars.translation)
+        {
+            return Err("caption line character budget is outside the supported range".to_string());
         }
         Ok(())
     }
@@ -1085,5 +1134,76 @@ mod tests {
             config.validate(),
             Err("browser source port is outside the supported range".to_string())
         );
+    }
+
+    #[test]
+    fn caption_max_chars_defaults_match_the_frontend_budgets() {
+        let config = AppConfig::default();
+        assert_eq!(
+            config.overlay.caption_max_chars.source,
+            super::DEFAULT_SOURCE_CAPTION_MAX_CHARS
+        );
+        assert_eq!(
+            config.overlay.caption_max_chars.translation,
+            super::DEFAULT_TRANSLATION_CAPTION_MAX_CHARS
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn caption_max_chars_round_trips_with_camel_case_storage_names() {
+        let mut config = AppConfig::default();
+        config.overlay.caption_max_chars.source = 16;
+        config.overlay.caption_max_chars.translation = 60;
+
+        let value = serde_json::to_value(&config).expect("desktop config should serialize");
+        assert_eq!(value["overlay"]["captionMaxChars"]["source"], 16);
+        assert_eq!(value["overlay"]["captionMaxChars"]["translation"], 60);
+        assert!(!value["overlay"].as_object().unwrap().contains_key("caption_max_chars"));
+
+        let roundtrip: AppConfig =
+            serde_json::from_value(value).expect("desktop config should deserialize");
+        assert_eq!(roundtrip.overlay.caption_max_chars.source, 16);
+        assert_eq!(roundtrip.overlay.caption_max_chars.translation, 60);
+    }
+
+    #[test]
+    fn legacy_overlay_without_caption_max_chars_uses_defaults() {
+        // A config persisted before the adjustable budget has no
+        // `captionMaxChars` key at all; serde must fall back per field.
+        let mut legacy = serde_json::to_value(AppConfig::default()).expect("serialize default");
+        legacy["overlay"].as_object_mut().expect("overlay object").remove("captionMaxChars");
+        let config: AppConfig =
+            serde_json::from_value(legacy).expect("legacy overlay should deserialize");
+        assert_eq!(
+            config.overlay.caption_max_chars.source,
+            super::DEFAULT_SOURCE_CAPTION_MAX_CHARS
+        );
+        assert_eq!(
+            config.overlay.caption_max_chars.translation,
+            super::DEFAULT_TRANSLATION_CAPTION_MAX_CHARS
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn caption_max_chars_outside_the_supported_range_is_rejected() {
+        let mut config = AppConfig::default();
+        config.overlay.caption_max_chars.source = super::CAPTION_MAX_CHARS_MIN - 1;
+        assert_eq!(
+            config.validate(),
+            Err("caption line character budget is outside the supported range".to_string())
+        );
+
+        config.overlay.caption_max_chars.source = super::CAPTION_MAX_CHARS_MIN;
+        config.overlay.caption_max_chars.translation = super::CAPTION_MAX_CHARS_MAX + 1;
+        assert_eq!(
+            config.validate(),
+            Err("caption line character budget is outside the supported range".to_string())
+        );
+
+        config.overlay.caption_max_chars.source = super::CAPTION_MAX_CHARS_MIN;
+        config.overlay.caption_max_chars.translation = super::CAPTION_MAX_CHARS_MAX;
+        assert!(config.validate().is_ok(), "range bounds must be inclusive");
     }
 }

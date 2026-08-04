@@ -1,6 +1,7 @@
 import type {
   AppConfig,
   BrowserSourceConfig,
+  CaptionMaxCharsConfig,
   CaptionTextStyle,
   ModelCatalog,
   ModelInfo,
@@ -8,6 +9,57 @@ import type {
   RuntimeStatus,
 } from "./types";
 import { isWebSpeechRecognitionSupported } from "./webSpeechRecognition";
+
+/**
+ * Character budget for one logical caption line, per caption row.
+ *
+ * These are readability budgets rather than hard truncation limits: the
+ * segmenter preserves every character and only inserts line breaks.  The
+ * source budget is tuned for the default 36px Japanese style; the wider
+ * translation budget accounts for smaller Latin glyphs at the default 29px
+ * style.  Both are user-adjustable via `overlay.captionMaxChars`.
+ */
+export const SOURCE_CAPTION_MAX_CHARS = 28;
+export const TRANSLATION_CAPTION_MAX_CHARS = 48;
+/**
+ * Bounds for the adjustable budget. Four characters is the narrowest useful
+ * line; the upper bound keeps one logical line from growing past what the
+ * widest supported canvas can paint before pixel wrapping takes over.
+ */
+export const CAPTION_MAX_CHARS_MIN = 4;
+export const CAPTION_MAX_CHARS_MAX = 200;
+
+/** Per-row fallback used whenever a configured budget is missing or unusable. */
+export const defaultCaptionMaxChars = (key: keyof CaptionMaxCharsConfig): number =>
+  key === "source" ? SOURCE_CAPTION_MAX_CHARS : TRANSLATION_CAPTION_MAX_CHARS;
+
+/**
+ * Clamp one caption budget into the supported range.
+ *
+ * The Rust `save_config` command rejects the whole config when a budget falls
+ * outside `CAPTION_MAX_CHARS_MIN..=CAPTION_MAX_CHARS_MAX`, so an unclamped
+ * value typed into the settings input would block saving every other setting
+ * too. Clamp on the way in — like `mergeBrowserSource` does for the browser
+ * source port — and keep the backend check as a backstop.
+ */
+export const clampCaptionMaxChars = (value: unknown, key: keyof CaptionMaxCharsConfig): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return defaultCaptionMaxChars(key);
+  }
+  return Math.min(CAPTION_MAX_CHARS_MAX, Math.max(CAPTION_MAX_CHARS_MIN, Math.floor(value)));
+};
+
+/**
+ * Resolve both budgets from a possibly absent or partial persisted value.
+ * Legacy configs predate `overlay.captionMaxChars` entirely.
+ */
+export const mergeCaptionMaxChars = (
+  base: CaptionMaxCharsConfig | undefined,
+  input: Partial<CaptionMaxCharsConfig> | undefined,
+): CaptionMaxCharsConfig => ({
+  source: clampCaptionMaxChars(input?.source ?? base?.source, "source"),
+  translation: clampCaptionMaxChars(input?.translation ?? base?.translation, "translation"),
+});
 
 /** Fixed loopback port for the OBS Browser Source fallback (macOS arm64). */
 export const DEFAULT_BROWSER_SOURCE_PORT = 1_421;
@@ -272,6 +324,10 @@ export const createDefaultConfig = (): AppConfig => ({
       enabled: false,
       port: DEFAULT_BROWSER_SOURCE_PORT,
     },
+    captionMaxChars: {
+      source: SOURCE_CAPTION_MAX_CHARS,
+      translation: TRANSLATION_CAPTION_MAX_CHARS,
+    },
   },
   debug: {
     verboseLogging: false,
@@ -469,6 +525,10 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
       source: { ...base.overlay.source, ...input.overlay?.source },
       translation: { ...base.overlay.translation, ...input.overlay?.translation },
       browserSource: mergeBrowserSource(base.overlay.browserSource, input.overlay?.browserSource),
+      captionMaxChars: mergeCaptionMaxChars(
+        base.overlay.captionMaxChars,
+        input.overlay?.captionMaxChars,
+      ),
     },
     debug: { ...base.debug, ...input.debug },
   };

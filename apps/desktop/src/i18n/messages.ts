@@ -152,6 +152,10 @@ const ja = {
   "settings.captionXHint": "0=左、50=中央、100=右",
   "settings.captionY": "字幕ブロック Y %",
   "settings.captionYHint": "0=上、100=下",
+  "settings.sourceMaxChars": "日本語字幕の1行あたり文字数",
+  "settings.sourceMaxCharsHint": "この文字数を目安に改行します（4〜200）",
+  "settings.translationMaxChars": "翻訳字幕の1行あたり文字数",
+  "settings.translationMaxCharsHint": "この文字数を目安に改行します（4〜200）",
   "settings.browserSourceLabel": "OBS Browser Source（字幕のみ）",
   "settings.browserSourceHint":
     "macOSでSyphon/Spout2が使えない場合の代替です。ループバックの字幕ページとJSONフィードを提供します。",
@@ -584,6 +588,10 @@ const en: Record<MessageKey, string> = {
   "settings.captionXHint": "0=left, 50=center, 100=right",
   "settings.captionY": "Caption block Y %",
   "settings.captionYHint": "0=top, 100=bottom",
+  "settings.sourceMaxChars": "Japanese caption characters per line",
+  "settings.sourceMaxCharsHint": "Target width before a line breaks (4-200)",
+  "settings.translationMaxChars": "Translation caption characters per line",
+  "settings.translationMaxCharsHint": "Target width before a line breaks (4-200)",
   "settings.browserSourceLabel": "OBS Browser Source (captions only)",
   "settings.browserSourceHint":
     "Fallback where Syphon/Spout2 are unavailable on macOS. Serves a caption-only page and JSON feed over loopback.",

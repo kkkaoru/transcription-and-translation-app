@@ -3,7 +3,7 @@ import { bytesToBase64 } from "../core/audio";
 import { bridge, formatBridgeError } from "../core/bridge";
 import { appendStructuredLog } from "../core/structuredLog";
 import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types";
-import { captionItems } from "./captions";
+import { captionItems, captionTextLines } from "./captions";
 
 const hexToRgba = (value: string, alpha: number): string => {
   const match = /^#([\da-f]{6})$/i.exec(value);
@@ -282,7 +282,16 @@ export const renderNativeFrame = (
         blockWidth * (boundedNumber(style.maxWidthPercent, 1, 100, 86) / 100),
         Math.max(1, blockWidth - paddingX * 2),
       );
-      const layout = measureNativeCaption(context, item.text, style, lineWidth);
+      // Apply the configured character budget before pixel wrapping so the
+      // native/Syphon output breaks lines where the DOM overlay does.
+      // `wrapNativeText` treats the inserted newlines as hard breaks and still
+      // wraps any segment that remains too wide for `lineWidth`.
+      const layout = measureNativeCaption(
+        context,
+        captionTextLines(item).join("\n"),
+        style,
+        lineWidth,
+      );
       return {
         layout,
         lineWidth,

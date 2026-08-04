@@ -9,7 +9,7 @@
 //! loopback only, and any bind failure degrades to a logged warning instead of
 //! failing app startup.
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, CAPTION_MAX_CHARS_MAX, CAPTION_MAX_CHARS_MIN};
 use crate::pipeline::CaptionPayload;
 use crate::state::AppState;
 use serde::Serialize;
@@ -241,7 +241,95 @@ fn feed(app: &AppHandle) -> BrowserSourceFeed {
 
 fn feed_from_parts(config: &AppConfig, caption: Option<&CaptionPayload>) -> BrowserSourceFeed {
     let overlay = serde_json::to_value(&config.overlay).unwrap_or_else(|_| serde_json::json!({}));
-    BrowserSourceFeed { caption: caption.map(CaptionFeed::from), overlay }
+    let budgets = config.overlay.caption_max_chars;
+    let caption = caption.map(|payload| CaptionFeed {
+        source: segment_caption_line(&payload.source_text, budgets.source),
+        translation: segment_caption_line(&payload.translation_text, budgets.translation),
+    });
+    BrowserSourceFeed { caption, overlay }
+}
+
+/// Clamp a configured budget into the supported range. Legacy or hand-edited
+/// configs can carry an out-of-range value; keep parity with the frontend
+/// `resolveCaptionMaxChars` so both outputs break lines identically.
+fn resolve_caption_max_chars(value: u32) -> usize {
+    value.clamp(CAPTION_MAX_CHARS_MIN, CAPTION_MAX_CHARS_MAX) as usize
+}
+
+/// Pre-segment one caption row into logical lines joined by `\n`. The served
+/// page renders with `white-space: pre-wrap`, so the browser source breaks
+/// lines where the DOM overlay and native canvas do.
+fn segment_caption_line(text: &str, max_chars: u32) -> String {
+    segment_caption_text(text, resolve_caption_max_chars(max_chars)).join("\n")
+}
+
+/// Punctuation the segmenter prefers to break after. Kept in sync with the
+/// frontend `preferredBreak` regex in `apps/desktop/src/overlay/captions.ts`.
+fn is_preferred_break(character: char) -> bool {
+    matches!(
+        character,
+        '。' | '．' | '！' | '？' | '!' | '?' | '、' | ',' | '，' | '；' | ';' | '：' | ':'
+    )
+}
+
+/// Find the preferred break index within `(lower..=max_chars]`, scanning from
+/// the limit downward so Japanese clauses and Latin words stay together. The
+/// scan never goes below half a line, so a very long clause still makes
+/// forward progress. Returns `max_chars` when no preferred break exists.
+fn preferred_break_index(remaining: &[char], max_chars: usize) -> usize {
+    // Clamp the lower bound to 1 so `remaining[index - 1]` never underflows.
+    let lower = (max_chars / 2).max(1);
+    for index in (lower..=max_chars).rev() {
+        let character = remaining[index - 1];
+        if is_preferred_break(character) || character.is_whitespace() {
+            return index;
+        }
+    }
+    max_chars
+}
+
+/// Port of `splitLongLine` from `apps/desktop/src/overlay/captions.ts`.
+fn split_long_line(line: &str, max_chars: usize) -> Vec<String> {
+    let characters: Vec<char> = line.chars().collect();
+    if characters.len() <= max_chars {
+        return vec![line.to_string()];
+    }
+
+    let mut segments: Vec<String> = Vec::new();
+    let mut remaining: Vec<char> = characters;
+    while remaining.len() > max_chars {
+        let break_at = preferred_break_index(&remaining, max_chars);
+        let segment: String = remaining[..break_at].iter().collect::<String>().trim().to_string();
+        if !segment.is_empty() {
+            segments.push(segment);
+        }
+        let rest: String = remaining[break_at..].iter().collect();
+        remaining = rest.trim_start().chars().collect();
+    }
+    if !remaining.is_empty() {
+        segments.push(remaining.iter().collect::<String>().trim().to_string());
+    }
+    if segments.is_empty() {
+        vec![line.trim().to_string()]
+    } else {
+        segments
+    }
+}
+
+/// Port of `segmentCaptionText` from `apps/desktop/src/overlay/captions.ts`.
+/// Splits caption text into readable logical lines without dropping content.
+fn segment_caption_text(text: &str, max_chars: usize) -> Vec<String> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+    let safe_max_chars = max_chars.max(1);
+    normalized
+        .split('\n')
+        .flat_map(|line| split_long_line(line.trim(), safe_max_chars))
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,14 +343,10 @@ pub struct BrowserSourceFeed {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptionFeed {
+    /// Logical caption lines joined by `\n`; the served page renders with
+    /// `white-space: pre-wrap` so these breaks paint like the DOM overlay.
     pub source: String,
     pub translation: String,
-}
-
-impl From<&CaptionPayload> for CaptionFeed {
-    fn from(caption: &CaptionPayload) -> Self {
-        Self { source: caption.source_text.clone(), translation: caption.translation_text.clone() }
-    }
 }
 
 /// Keep request handling off the accept loop. A Browser Source client can stop
@@ -1002,5 +1086,49 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(25));
         }
+    }
+
+    #[test]
+    fn feed_pre_segments_caption_rows_using_the_configured_budget() {
+        let mut config = AppConfig::default();
+        config.overlay.caption_max_chars.source = 4;
+        config.overlay.caption_max_chars.translation = 5;
+
+        let mut caption = sample_caption();
+        caption.source_text = "あ".repeat(12);
+        caption.translation_text = "b".repeat(12);
+
+        let feed = feed_from_parts(&config, Some(&caption));
+        let json: serde_json::Value =
+            serde_json::from_str(&feed_json(&feed)).expect("feed is valid JSON");
+
+        let source = json["caption"]["source"].as_str().expect("source string");
+        let translation = json["caption"]["translation"].as_str().expect("translation string");
+
+        // A shrunk budget breaks the row into logical lines joined by `\n`.
+        assert_eq!(source, "ああああ\nああああ\nああああ");
+        assert_eq!(translation, "bbbbb\nbbbbb\nbb");
+        // Segmentation only inserts breaks; no character is dropped.
+        assert_eq!(source.replace('\n', ""), "あ".repeat(12));
+        assert_eq!(translation.replace('\n', ""), "b".repeat(12));
+    }
+
+    #[test]
+    fn feed_clamps_an_out_of_range_persisted_budget_before_segmenting() {
+        // A hand-edited config can carry a budget below the supported minimum;
+        // the feed must clamp it rather than degenerate to empty/one-char lines.
+        let mut config = AppConfig::default();
+        config.overlay.caption_max_chars.source = 0;
+
+        let mut caption = sample_caption();
+        caption.source_text = "あ".repeat(8);
+
+        let feed = feed_from_parts(&config, Some(&caption));
+        let json: serde_json::Value =
+            serde_json::from_str(&feed_json(&feed)).expect("feed is valid JSON");
+        let source = json["caption"]["source"].as_str().expect("source string");
+
+        // Clamped up to CAPTION_MAX_CHARS_MIN (4): 8 graphemes -> two lines.
+        assert_eq!(source, "ああああ\nああああ");
     }
 }

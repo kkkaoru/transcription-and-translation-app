@@ -7,8 +7,11 @@ import {
   AUDIO_CHUNK_STEP_MS,
   BROWSER_SOURCE_PORT_MAX,
   BROWSER_SOURCE_PORT_MIN,
+  CAPTION_MAX_CHARS_MAX,
+  CAPTION_MAX_CHARS_MIN,
   CAPTION_POSITION_MAX_PERCENT,
   CAPTION_POSITION_MIN_PERCENT,
+  clampCaptionMaxChars,
   DEFAULT_ADAPTIVE_NOISE_FLOOR,
   DEFAULT_AUDIO_CHUNK_MS,
   DEFAULT_BROWSER_SOURCE_PORT,
@@ -50,6 +53,7 @@ import type {
 } from "../core/types";
 import { isWebSpeechRecognitionSupported } from "../core/webSpeechRecognition";
 import { useI18n } from "../i18n/I18nProvider";
+import { resolveCaptionMaxChars } from "../overlay/captions";
 import { DebugPanel } from "./DebugPanel";
 import { ModelCard } from "./ModelCard";
 import { ModelManagementCard } from "./ModelManagementCard";
@@ -586,6 +590,44 @@ export const SettingsView = ({
               max={OVERLAY_SAFE_AREA_MAX_PX}
               value={config.overlay.safeAreaPx}
               onChange={(event) => setOverlay({ safeAreaPx: Number(event.target.value) })}
+            />
+          </Field>
+          <Field label={t("settings.sourceMaxChars")} hint={t("settings.sourceMaxCharsHint")}>
+            <input
+              type="number"
+              min={CAPTION_MAX_CHARS_MIN}
+              max={CAPTION_MAX_CHARS_MAX}
+              value={resolveCaptionMaxChars(config, "source")}
+              onChange={(event) =>
+                setOverlay({
+                  captionMaxChars: {
+                    // `min`/`max` do not stop a typed or pasted value, and the
+                    // backend rejects the whole config when a budget is out of
+                    // range. Clamp here so one bad keystroke cannot block saving.
+                    source: clampCaptionMaxChars(Number(event.target.value), "source"),
+                    translation: resolveCaptionMaxChars(config, "translation"),
+                  },
+                })
+              }
+            />
+          </Field>
+          <Field
+            label={t("settings.translationMaxChars")}
+            hint={t("settings.translationMaxCharsHint")}
+          >
+            <input
+              type="number"
+              min={CAPTION_MAX_CHARS_MIN}
+              max={CAPTION_MAX_CHARS_MAX}
+              value={resolveCaptionMaxChars(config, "translation")}
+              onChange={(event) =>
+                setOverlay({
+                  captionMaxChars: {
+                    source: resolveCaptionMaxChars(config, "source"),
+                    translation: clampCaptionMaxChars(Number(event.target.value), "translation"),
+                  },
+                })
+              }
             />
           </Field>
           <Field label={t("settings.captionX")} hint={t("settings.captionXHint")}>

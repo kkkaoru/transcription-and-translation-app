@@ -1,15 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+  CAPTION_MAX_CHARS_MAX,
+  CAPTION_MAX_CHARS_MIN,
   captionItems,
   captionTextLines,
   createEmptyCaption,
   createPreviewCaption,
+  resolveCaptionMaxChars,
   SOURCE_CAPTION_MAX_CHARS,
   segmentCaptionText,
   TRANSLATION_CAPTION_MAX_CHARS,
 } from "../overlay/captions";
 import { mergeCaptionPayload } from "./caption-updates";
-import { createDefaultConfig } from "./defaults";
+import {
+  clampCaptionMaxChars,
+  createDefaultConfig,
+  mergeCaptionMaxChars,
+  mergeConfig,
+} from "./defaults";
+import type { AppConfig } from "./types";
 
 describe("caption preview content", () => {
   it("uses live caption text by default so the in-app stage can show recognition without OBS", () => {
@@ -125,5 +134,119 @@ describe("caption preview content", () => {
     expect(
       translationLines.every((line) => Array.from(line).length <= TRANSLATION_CAPTION_MAX_CHARS),
     ).toBe(true);
+  });
+});
+
+describe("configurable caption line budget", () => {
+  const withBudget = (source: number, translation: number): AppConfig => {
+    const config = createDefaultConfig();
+    config.overlay.captionMaxChars = { source, translation };
+    return config;
+  };
+
+  it("defaults each row to its own budget", () => {
+    const config = createDefaultConfig();
+
+    expect(config.overlay.captionMaxChars).toEqual({
+      source: SOURCE_CAPTION_MAX_CHARS,
+      translation: TRANSLATION_CAPTION_MAX_CHARS,
+    });
+    expect(resolveCaptionMaxChars(config, "source")).toBe(SOURCE_CAPTION_MAX_CHARS);
+    expect(resolveCaptionMaxChars(config, "translation")).toBe(TRANSLATION_CAPTION_MAX_CHARS);
+  });
+
+  it("clamps out-of-range and non-finite budgets instead of passing them to the segmenter", () => {
+    expect(clampCaptionMaxChars(1, "source")).toBe(CAPTION_MAX_CHARS_MIN);
+    expect(clampCaptionMaxChars(10_000, "translation")).toBe(CAPTION_MAX_CHARS_MAX);
+    expect(clampCaptionMaxChars(12.9, "source")).toBe(12);
+    expect(clampCaptionMaxChars(Number.NaN, "source")).toBe(SOURCE_CAPTION_MAX_CHARS);
+    expect(clampCaptionMaxChars(Number.POSITIVE_INFINITY, "translation")).toBe(
+      TRANSLATION_CAPTION_MAX_CHARS,
+    );
+    expect(clampCaptionMaxChars("30", "source")).toBe(SOURCE_CAPTION_MAX_CHARS);
+    expect(clampCaptionMaxChars(undefined, "translation")).toBe(TRANSLATION_CAPTION_MAX_CHARS);
+
+    expect(resolveCaptionMaxChars(withBudget(1, 10_000), "source")).toBe(CAPTION_MAX_CHARS_MIN);
+    expect(resolveCaptionMaxChars(withBudget(1, 10_000), "translation")).toBe(
+      CAPTION_MAX_CHARS_MAX,
+    );
+  });
+
+  it("falls back to the per-row defaults for a legacy config without the field", () => {
+    const legacy = createDefaultConfig();
+    // Legacy persisted configs predate `overlay.captionMaxChars` entirely.
+    legacy.overlay.captionMaxChars = undefined;
+
+    expect(resolveCaptionMaxChars(legacy, "source")).toBe(SOURCE_CAPTION_MAX_CHARS);
+    expect(resolveCaptionMaxChars(legacy, "translation")).toBe(TRANSLATION_CAPTION_MAX_CHARS);
+    // Items built without a resolved budget keep the per-row default too.
+    expect(captionTextLines({ key: "source", text: "あ".repeat(40) })).toEqual(
+      captionTextLines({
+        key: "source",
+        text: "あ".repeat(40),
+        maxChars: SOURCE_CAPTION_MAX_CHARS,
+      }),
+    );
+  });
+
+  it("restores a missing, partial, or out-of-range budget when merging a persisted config", () => {
+    const legacy = mergeConfig({
+      overlay: { ...createDefaultConfig().overlay, captionMaxChars: undefined },
+    });
+    expect(legacy.overlay.captionMaxChars).toEqual({
+      source: SOURCE_CAPTION_MAX_CHARS,
+      translation: TRANSLATION_CAPTION_MAX_CHARS,
+    });
+
+    const partial = mergeConfig({
+      overlay: { ...createDefaultConfig().overlay, captionMaxChars: { source: 16 } as never },
+    });
+    expect(partial.overlay.captionMaxChars).toEqual({
+      source: 16,
+      translation: TRANSLATION_CAPTION_MAX_CHARS,
+    });
+
+    // The backend rejects the entire config when a budget is out of range, so
+    // the merge must clamp rather than persist an unsavable value.
+    const hostile = mergeConfig({
+      overlay: {
+        ...createDefaultConfig().overlay,
+        captionMaxChars: { source: 0, translation: 5_000 },
+      },
+    });
+    expect(hostile.overlay.captionMaxChars).toEqual({
+      source: CAPTION_MAX_CHARS_MIN,
+      translation: CAPTION_MAX_CHARS_MAX,
+    });
+
+    expect(mergeCaptionMaxChars(undefined, undefined)).toEqual({
+      source: SOURCE_CAPTION_MAX_CHARS,
+      translation: TRANSLATION_CAPTION_MAX_CHARS,
+    });
+    expect(mergeCaptionMaxChars({ source: 12, translation: 20 }, undefined)).toEqual({
+      source: 12,
+      translation: 20,
+    });
+  });
+
+  it("changes the rendered line split when the configured budget changes", () => {
+    const text = "あ".repeat(24);
+    const caption = { ...createPreviewCaption(), sourceText: text, translationText: text };
+
+    const wide = captionItems(withBudget(24, 24), caption).find((item) => item.key === "source");
+    const narrow = captionItems(withBudget(6, 6), caption).find((item) => item.key === "source");
+    if (!wide || !narrow) {
+      throw new Error("caption items must include the source row");
+    }
+
+    expect(captionTextLines(wide)).toEqual([text]);
+    expect(captionTextLines(narrow)).toEqual([
+      "あ".repeat(6),
+      "あ".repeat(6),
+      "あ".repeat(6),
+      "あ".repeat(6),
+    ]);
+    // Every grapheme survives at both budgets; only breaks are inserted.
+    expect(captionTextLines(narrow).join("")).toBe(text);
   });
 });

@@ -108,6 +108,19 @@ export interface BrowserSourceConfig {
   port: number;
 }
 
+/**
+ * Character budget for one logical caption line, per caption row.
+ *
+ * These are readability budgets rather than truncation limits: the segmenter
+ * preserves every character and only inserts line breaks.  Source and
+ * translation are separate because a Japanese source line and a Latin
+ * translation line hold very different character counts at the same width.
+ */
+export interface CaptionMaxCharsConfig {
+  source: number;
+  translation: number;
+}
+
 export interface OverlayConfig {
   width: number;
   height: number;
@@ -122,6 +135,8 @@ export interface OverlayConfig {
   translation: CaptionTextStyle;
   /** Optional so legacy configs (and their fixtures) keep parsing. */
   browserSource?: BrowserSourceConfig;
+  /** Optional so legacy configs (and their fixtures) keep parsing. */
+  captionMaxChars?: CaptionMaxCharsConfig;
 }
 
 /** Structured debug log severity (frontend ring buffer + backend filtering). */

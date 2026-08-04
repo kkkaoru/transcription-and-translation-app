@@ -1,21 +1,45 @@
+import {
+  CAPTION_MAX_CHARS_MAX,
+  CAPTION_MAX_CHARS_MIN,
+  clampCaptionMaxChars,
+  defaultCaptionMaxChars,
+  SOURCE_CAPTION_MAX_CHARS,
+  TRANSLATION_CAPTION_MAX_CHARS,
+} from "../core/defaults";
 import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types";
+
+/**
+ * The caption budgets live in `core/defaults` so the config defaults can use
+ * them without the core layer importing the overlay. Re-exported here because
+ * this module is the caption segmentation entry point.
+ */
+export {
+  CAPTION_MAX_CHARS_MAX,
+  CAPTION_MAX_CHARS_MIN,
+  SOURCE_CAPTION_MAX_CHARS,
+  TRANSLATION_CAPTION_MAX_CHARS,
+};
 
 export interface CaptionItem {
   key: "source" | "translation";
   text: string;
   style: CaptionTextStyle;
+  /** Resolved per-row character budget for one logical line. */
+  maxChars: number;
 }
 
 /**
- * Keep one logical subtitle line readable before the browser/canvas performs
- * width-based wrapping.  These are character budgets rather than hard
- * truncation limits: `segmentCaptionText` preserves every character and only
- * inserts line breaks.  The source budget is tuned for the default 36px
- * Japanese style; the wider translation budget accounts for smaller Latin
- * glyphs at the default 29px style.
+ * Resolve the configured budget for one caption row.
+ *
+ * A legacy config has no `captionMaxChars` at all, and a hand-edited config
+ * can carry a non-finite or out-of-range number. `clampCaptionMaxChars` folds
+ * both cases back into the supported range so an unusable value never reaches
+ * the segmenter.
  */
-export const SOURCE_CAPTION_MAX_CHARS = 28;
-export const TRANSLATION_CAPTION_MAX_CHARS = 48;
+export const resolveCaptionMaxChars = (
+  config: Pick<AppConfig, "overlay">,
+  key: CaptionItem["key"],
+): number => clampCaptionMaxChars(config.overlay.captionMaxChars?.[key], key);
 
 const preferredBreak = /[。．！？!?、,，；;：:]/u;
 
@@ -65,11 +89,19 @@ export const segmentCaptionText = (text: string, maxChars: number): string[] => 
     .filter(Boolean);
 };
 
-/** Logical lines used by both the DOM overlay and the native canvas output. */
-export const captionTextLines = (item: Pick<CaptionItem, "key" | "text">): string[] =>
+/**
+ * Logical lines used by both the DOM overlay and the native canvas output.
+ *
+ * The budget rides on the item so every consumer honours the configured
+ * value without threading the config through its own call sites. Items built
+ * outside {@link captionItems} (older fixtures) keep the per-row default.
+ */
+export const captionTextLines = (
+  item: Pick<CaptionItem, "key" | "text"> & Partial<Pick<CaptionItem, "maxChars">>,
+): string[] =>
   segmentCaptionText(
     item.text,
-    item.key === "source" ? SOURCE_CAPTION_MAX_CHARS : TRANSLATION_CAPTION_MAX_CHARS,
+    typeof item.maxChars === "number" ? item.maxChars : defaultCaptionMaxChars(item.key),
   );
 
 export const createPreviewCaption = (): CaptionPayload => {
@@ -110,11 +142,13 @@ export const captionItems = (
     key: "source",
     text: placeholder ? "日本語の音声認識結果がここに表示されます" : caption.sourceText,
     style: config.overlay.source,
+    maxChars: resolveCaptionMaxChars(config, "source"),
   };
   const translation: CaptionItem = {
     key: "translation",
     text: placeholder ? "English translation will appear here" : caption.translationText,
     style: config.overlay.translation,
+    maxChars: resolveCaptionMaxChars(config, "translation"),
   };
   return config.overlay.order === "source-first" ? [source, translation] : [translation, source];
 };
