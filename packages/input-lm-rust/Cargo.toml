@@ -6,5 +6,23 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
+rsmarisa = { version = "0.4.2", features = ["mmap"], optional = true }
 
 [dev-dependencies]
+
+[features]
+# Off by default: the core crate stays dependency-free, and only this feature
+# pulls in a MARISA reader.
+rsmarisa = ["dep:rsmarisa"]
+
+[[example]]
+name = "probe_model"
+required-features = ["rsmarisa"]
+
+[[example]]
+name = "dump_keys"
+required-features = ["rsmarisa"]
+
+[[example]]
+name = "check_consistency"
+required-features = ["rsmarisa"]

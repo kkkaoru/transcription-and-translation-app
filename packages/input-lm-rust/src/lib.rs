@@ -31,6 +31,8 @@
 //! ```
 
 pub mod codec;
+#[cfg(feature = "rsmarisa")]
+pub mod marisa;
 pub mod model;
 pub mod trie;
 

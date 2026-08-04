@@ -18,13 +18,65 @@ pub struct NgramParams {
     /// Token count of the tokenizer backing the model.
     pub vocab_size: usize,
     /// Token used to left-pad a context shorter than `n - 1`.
+    ///
+    /// For `input_n5_lm_v1` this is `<s>` = 2. Note that 0 is `[UNK]`, so
+    /// leaving this at zero would silently pad with unknown tokens.
     pub start_token_id: usize,
 }
 
 impl Default for NgramParams {
     fn default() -> Self {
-        Self { n: 5, d: 0.75, vocab_size: 6000, start_token_id: 0 }
+        Self { n: 5, d: 0.75, vocab_size: 6000, start_token_id: 2 }
     }
+}
+
+/// Reads the single value stored under an exact key, or 0 when absent.
+pub fn lookup_value<T: NgramTrie>(trie: &T, key: &[usize]) -> u32 {
+    let prefix = point_prefix(key);
+    for entry in trie.predictive_search(&prefix) {
+        if entry.len() < prefix.len() {
+            continue;
+        }
+        if let Some(value) = decode_value(&entry[prefix.len()..]) {
+            return value;
+        }
+    }
+    0
+}
+
+/// Reads every one-token continuation of `key`, plus their total.
+///
+/// The returned vector is indexed by token id and is `vocab_size` long.
+pub fn lookup_continuations<T: NgramTrie>(
+    trie: &T,
+    key: &[usize],
+    vocab_size: usize,
+) -> (Vec<u32>, u32) {
+    let prefix = predictive_prefix(key);
+    let mut values = vec![0u32; vocab_size];
+    let mut sum: u32 = 0;
+    for entry in trie.predictive_search(&prefix) {
+        if entry.len() < prefix.len() {
+            continue;
+        }
+        let suffix = &entry[prefix.len()..];
+        // Two digits of token, the delimiter, then the value.
+        if suffix.len() < 3 {
+            continue;
+        }
+        if suffix[2] != KEY_VALUE_DELIMITER {
+            continue;
+        }
+        let Some(value) = decode_value(&suffix[3..]) else {
+            continue;
+        };
+        let word = decode_key(suffix[0], suffix[1]);
+        if word < values.len() {
+            values[word] = value;
+            sum = sum.saturating_add(value);
+        }
+    }
+    (values, sum)
 }
 
 /// One lower-order term of the interpolated back-off chain.
@@ -54,51 +106,6 @@ impl<T: NgramTrie> EfficientNGram<T> {
     /// The hyperparameters this model was built with.
     pub fn params(&self) -> NgramParams {
         self.params
-    }
-
-    /// Reads the single value stored under an exact key.
-    fn get_value(trie: &T, key: &[usize]) -> u32 {
-        let prefix = point_prefix(key);
-        for entry in trie.predictive_search(&prefix) {
-            if entry.len() < prefix.len() {
-                continue;
-            }
-            if let Some(value) = decode_value(&entry[prefix.len()..]) {
-                return value;
-            }
-        }
-        0
-    }
-
-    /// Reads every one-token continuation of `key`, plus their total.
-    ///
-    /// The returned vector is indexed by token id and is `vocab_size` long.
-    fn bulk_get_value_with_sum(&self, trie: &T, key: &[usize]) -> (Vec<u32>, u32) {
-        let prefix = predictive_prefix(key);
-        let mut values = vec![0u32; self.params.vocab_size];
-        let mut sum: u32 = 0;
-        for entry in trie.predictive_search(&prefix) {
-            if entry.len() < prefix.len() {
-                continue;
-            }
-            let suffix = &entry[prefix.len()..];
-            // Two digits of token, the delimiter, then the value.
-            if suffix.len() < 3 {
-                continue;
-            }
-            if suffix[2] != KEY_VALUE_DELIMITER {
-                continue;
-            }
-            let Some(value) = decode_value(&suffix[3..]) else {
-                continue;
-            };
-            let word = decode_key(suffix[0], suffix[1]);
-            if word < values.len() {
-                values[word] = value;
-                sum = sum.saturating_add(value);
-            }
-        }
-        (values, sum)
     }
 
     /// Interpolated Kneser-Ney probability of one token.
@@ -156,14 +163,15 @@ impl<T: NgramTrie> EfficientNGram<T> {
             padded
         };
 
-        let u_abx_ab = Self::get_value(&self.u_abx, &ab);
-        let (c_abc_abc, c_abx_ab) = self.bulk_get_value_with_sum(&self.c_abc, &ab);
+        let vocab_size = self.params.vocab_size;
+        let u_abx_ab = lookup_value(&self.u_abx, &ab);
+        let (c_abc_abc, c_abx_ab) = lookup_continuations(&self.c_abc, &ab, vocab_size);
 
         let mut plf_items = Vec::with_capacity(wanted.saturating_sub(1));
         for i in 1..wanted {
             let tail = &ab[i..];
-            let r_xbx_ab = Self::get_value(&self.r_xbx, tail);
-            let (u_xbc_abc, u_xbx_ab) = self.bulk_get_value_with_sum(&self.u_xbc, tail);
+            let r_xbx_ab = lookup_value(&self.r_xbx, tail);
+            let (u_xbc_abc, u_xbx_ab) = lookup_continuations(&self.u_xbc, tail, vocab_size);
             plf_items.push(PlfItem { u_xbc_abc, u_xbx_ab, r_xbx_ab });
         }
 
@@ -314,11 +322,59 @@ mod tests {
     }
 
     #[test]
+    fn consistent_counts_sum_to_exactly_one() {
+        // Kneser-Ney is a proper distribution when the stored distinct-
+        // continuation counts agree with the continuations actually present:
+        // u_abx == |{w : c(abw) > 0}| and r_xbx == |{w : u_xbc(bw) > 0}|.
+        // This pins the discount and both interpolation weights at once — get
+        // any of them wrong and the total drifts off 1.
+        let mut c_abc = MemoryTrie::new();
+        c_abc.insert_predictive(&[1, 2, 1], 3);
+        c_abc.insert_predictive(&[1, 2, 3], 5);
+        let mut u_abx = MemoryTrie::new();
+        u_abx.insert_point(&[1, 2], 2); // two distinct continuations
+
+        let mut u_xbc = MemoryTrie::new();
+        u_xbc.insert_predictive(&[2, 1], 1);
+        u_xbc.insert_predictive(&[2, 3], 1);
+        let mut r_xbx = MemoryTrie::new();
+        r_xbx.insert_point(&[2], 2); // two distinct continuations
+
+        let model = EfficientNGram::new(toy_params(), c_abc, u_abx, u_xbc, r_xbx);
+        let total: f64 = model.bulk_predict(&[1, 2]).iter().sum();
+        assert!((total - 1.0).abs() < EPS, "summed to {total}");
+    }
+
+    #[test]
+    fn an_inflated_distinct_count_pushes_the_total_above_one() {
+        // This is the shape of the shipped input_n5_lm_v1 tries: c_abc was
+        // pruned, so u_abx reports more distinct continuations than survive.
+        // The result is a slightly over-weighted back-off and a total above 1.
+        let mut c_abc = MemoryTrie::new();
+        c_abc.insert_predictive(&[1, 2, 1], 3);
+        c_abc.insert_predictive(&[1, 2, 3], 5);
+        let mut u_abx = MemoryTrie::new();
+        u_abx.insert_point(&[1, 2], 6); // claims 6, only 2 survive
+
+        let mut u_xbc = MemoryTrie::new();
+        u_xbc.insert_predictive(&[2, 1], 1);
+        u_xbc.insert_predictive(&[2, 3], 1);
+        let mut r_xbx = MemoryTrie::new();
+        r_xbx.insert_point(&[2], 2);
+
+        let model = EfficientNGram::new(toy_params(), c_abc, u_abx, u_xbc, r_xbx);
+        let total: f64 = model.bulk_predict(&[1, 2]).iter().sum();
+        assert!(total > 1.0, "expected an inflated total, got {total}");
+    }
+
+    #[test]
     fn default_params_match_the_shipped_azookey_configuration() {
         let params = NgramParams::default();
         assert_eq!(params.n, 5);
         assert!((params.d - 0.75).abs() < EPS);
         assert_eq!(params.vocab_size, 6000);
+        // <s> in the shipped GPT2 tokenizer; 0 would be [UNK].
+        assert_eq!(params.start_token_id, 2);
     }
 
     #[test]
