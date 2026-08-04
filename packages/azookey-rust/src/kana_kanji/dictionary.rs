@@ -520,7 +520,7 @@ impl SystemDictionary {
             .read(&path)
             .and_then(|bytes| read_loudstxt3_entry_bytes(&bytes, local_index))
         {
-            Ok(entries) => Ok(entries.into_iter().filter(system_entry_is_usable).collect()),
+            Ok(entries) => Ok(filter_system_entries(entries)),
             Err(_) => Ok(Vec::new()),
         }
     }
@@ -939,20 +939,99 @@ fn prediction_usable_rcid(rcid: u16) -> bool {
 /// `shouldBeRemoved` threshold. Prediction-only CID usability must not run
 /// here: inflectional and one-kana lexical rows are needed by the full
 /// Viterbi lattice.
+///
+/// Multi-kana hiragana identity rows are filtered by default so they do not
+/// outrank ordinary kanji conversions without neural re-ranking. Sibling
+/// filtering in [`filter_system_entries`] reintroduces them when the reading
+/// has no competitive converted surface (rare orthography only).
 fn system_entry_is_usable(entry: &DictionaryEntry) -> bool {
+    // Multi-kana hiragana identity rows are not lexical conversions, but a
+    // one-kana non-identity row can be a real lexical word (き -> 木).
+    if is_multi_kana_hiragana_identity(entry) {
+        return false;
+    }
+    system_entry_passes_quality_threshold(entry)
+}
+
+/// Apply the full-conversion quality filter, then restore multi-kana hiragana
+/// identity rows only when no competitive converted surface exists for the
+/// same reading.
+///
+/// Without this sibling pass, a reading such as `とても` keeps only the rare
+/// dictionary row `迚も` (near the quality floor) because the common kana
+/// identity was dropped. Upstream AzooKey still exposes the identity path;
+/// reintroducing it when every converted surface is rare recovers natural
+/// orthography without resurrecting identity rows for ordinary words such as
+/// `とうきょう` → `東京`.
+fn filter_system_entries(entries: Vec<DictionaryEntry>) -> Vec<DictionaryEntry> {
+    let quality_entries = entries
+        .into_iter()
+        .filter(|entry| {
+            system_entry_is_usable(entry)
+                || (is_multi_kana_hiragana_identity(entry)
+                    && system_entry_passes_quality_threshold(entry))
+        })
+        .collect::<Vec<_>>();
+    let has_competitive_converted =
+        quality_entries.iter().any(is_competitive_converted_system_entry);
+    quality_entries
+        .into_iter()
+        .filter(|entry| !is_multi_kana_hiragana_identity(entry) || !has_competitive_converted)
+        .collect()
+}
+
+fn system_entry_passes_quality_threshold(entry: &DictionaryEntry) -> bool {
     if !entry.value.is_finite() {
         return false;
     }
-    let ruby_count = entry.reading.chars().count();
-    let is_hiragana_identity = entry.surface == entry.reading;
-    // Multi-kana hiragana identity rows are not lexical conversions, but a
-    // one-kana non-identity row can be a real lexical word (き -> 木).
-    if ruby_count >= 2 && is_hiragana_identity {
-        return false;
-    }
+    let ruby_count = entry.reading.chars().count().max(1);
     let minimum =
         SYSTEM_DICTIONARY_VALUE_THRESHOLD + SYSTEM_DICTIONARY_LENGTH_MARGIN / ruby_count as f32;
     entry.value >= minimum
+}
+
+fn is_multi_kana_hiragana_identity(entry: &DictionaryEntry) -> bool {
+    entry.reading.chars().count() >= 2 && entry.surface == entry.reading
+}
+
+/// A converted system surface is competitive when it is a real orthographic
+/// alternative (kanji and/or katakana) with enough frequency that it should
+/// suppress the multi-kana hiragana identity row.
+///
+/// Near-floor rare kanji such as `迚も` (≈ -15) stay non-competitive so the
+/// identity `とても` can win. Ordinary entries such as `東京` remain above the
+/// floor and keep identity suppressed.
+fn is_competitive_converted_system_entry(entry: &DictionaryEntry) -> bool {
+    if is_multi_kana_hiragana_identity(entry) {
+        return false;
+    }
+    // Raw-ruby identity rows omit an explicit surface and keep the katakana
+    // ruby (for example `すーぷ` → `スープ`). Those are real orthographic
+    // conversions and must suppress multi-kana hiragana identity the same way
+    // ordinary kanji/katakana rows do.
+    let has_converted_script = entry
+        .surface
+        .chars()
+        .any(|character| is_kanji_char(character) || is_katakana_char(character));
+    has_converted_script && entry.value >= COMPETITIVE_CONVERTED_VALUE_FLOOR
+}
+
+/// Converted surfaces at or above this value suppress multi-kana hiragana
+/// identity rows. The public dictionary places rare orthography such as
+/// `迚も` well below this floor while common kanji/katakana spellings sit
+/// above it.
+const COMPETITIVE_CONVERTED_VALUE_FLOOR: f32 = -12.5;
+
+fn is_kanji_char(character: char) -> bool {
+    let code = character as u32;
+    (0x3400..=0x4dbf).contains(&code)
+        || (0x4e00..=0x9fff).contains(&code)
+        || (0xf900..=0xfaff).contains(&code)
+}
+
+fn is_katakana_char(character: char) -> bool {
+    let code = character as u32;
+    (0x30a0..=0x30ff).contains(&code) || character == 'ー'
 }
 
 #[derive(Debug, Clone)]
@@ -1642,9 +1721,9 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
 #[cfg(test)]
 mod tests {
     use super::{
-        escaped_identifier, parse_loudstxt3_record, prediction_usable_rcid, system_entry_is_usable,
-        word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths, WordType, BOS_CID, EOS_CID,
-        MID_COUNT, PORTABLE_DICTIONARY_MAGIC,
+        escaped_identifier, filter_system_entries, parse_loudstxt3_record, prediction_usable_rcid,
+        system_entry_is_usable, word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths,
+        WordType, BOS_CID, EOS_CID, MID_COUNT, PORTABLE_DICTIONARY_MAGIC,
     };
 
     #[test]
@@ -1733,6 +1812,66 @@ mod tests {
         assert!(system_entry_is_usable(&katakana_surface));
         assert!(system_entry_is_usable(&contraction));
         assert!(system_entry_is_usable(&inflection_tail));
+    }
+
+    #[test]
+    fn restores_multi_kana_identity_when_only_rare_kanji_exists() {
+        let rare_kanji = DictionaryEntry::plain("とても", "迚も", -15.1);
+        let identity = DictionaryEntry::plain("とても", "とても", -5.8);
+        let filtered = filter_system_entries(vec![rare_kanji.clone(), identity.clone()]);
+        assert!(
+            filtered.iter().any(|entry| entry.surface == "とても"),
+            "rare-only kanji must not suppress the common kana identity"
+        );
+        assert!(
+            filtered.iter().any(|entry| entry.surface == "迚も"),
+            "rare kanji remains available as an n-best alternative"
+        );
+    }
+
+    #[test]
+    fn suppresses_multi_kana_identity_when_competitive_kanji_exists() {
+        let common_kanji = DictionaryEntry::plain("とうきょう", "東京", -6.0);
+        let identity = DictionaryEntry::plain("とうきょう", "とうきょう", -2.0);
+        let filtered = filter_system_entries(vec![common_kanji.clone(), identity]);
+        assert!(filtered.iter().any(|entry| entry.surface == "東京"), "common kanji must remain");
+        assert!(
+            filtered.iter().all(|entry| entry.surface != "とうきょう"),
+            "multi-kana identity must stay suppressed when a competitive kanji exists"
+        );
+    }
+
+    #[test]
+    fn suppresses_multi_kana_identity_when_competitive_katakana_exists() {
+        let mut loanword = DictionaryEntry::plain("すーぷ", "スープ", -9.9);
+        loanword.raw_ruby_identity = true;
+        let identity = DictionaryEntry::plain("すーぷ", "すーぷ", -15.0);
+        let filtered = filter_system_entries(vec![loanword.clone(), identity]);
+        assert!(filtered.iter().any(|entry| entry.surface == "スープ"));
+        assert!(
+            filtered.iter().all(|entry| entry.surface != "すーぷ"),
+            "katakana loanword rows must suppress multi-kana hiragana identity"
+        );
+    }
+
+    #[test]
+    fn public_dictionary_keeps_totemo_identity_against_rare_kanji() {
+        let root = super::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        let entries = dictionary.lookup_exact("とても").expect("lookup should complete");
+        assert!(
+            entries.iter().any(|entry| entry.surface == "とても"),
+            "public dictionary must expose the kana identity for とても; got {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|entry| entry.surface == "迚も"),
+            "rare 迚も should remain available; got {entries:?}"
+        );
     }
 
     #[test]

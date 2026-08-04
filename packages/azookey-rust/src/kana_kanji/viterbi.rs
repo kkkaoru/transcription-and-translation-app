@@ -1795,6 +1795,47 @@ mod tests {
     }
 
     #[test]
+    fn prefers_natural_orthography_for_totemo_and_soup_particle_tails() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        assert!(
+            dictionary.has_system_dictionary(),
+            "quality test requires the official dictionary"
+        );
+        for (input, expected) in [
+            // Rare dictionary row 迚も must not beat the common kana form.
+            ("とても", "とても"),
+            ("とてもおいしい", "とても美味しい"),
+            // Particle は after a loanword must stay a particle, not 歯/端/派.
+            ("すーぷは", "スープは"),
+            ("あついすーぷは", "熱いスープは"),
+            ("おいしいすーぷは", "美味しいスープは"),
+            // Short ASR fragments ending in particles.
+            ("きょうは", "今日は"),
+            ("てんきは", "天気は"),
+            ("は", "は"),
+            ("すーぷ", "スープ"),
+        ] {
+            let candidates =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default());
+            let top = candidates.first().expect("public conversion should produce a candidate");
+            assert_eq!(top.text, expected, "input: {input}");
+            assert!(
+                !top.text.contains('歯'),
+                "particle-tail conversion must not yield 歯 for {input}: {:?}",
+                top.text
+            );
+            assert_ne!(top.text, "迚も", "input: {input}");
+            assert!(!top.text.starts_with("撮ても"), "input: {input}");
+        }
+    }
+
+    #[test]
     fn converts_requested_weather_and_soup_sentences_with_public_dictionary() {
         let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
