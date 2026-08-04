@@ -92,4 +92,33 @@ describe("DOM overlay honours the configured caption line budget", () => {
     // 24 graphemes fit inside the default 28-character source budget.
     expect(lineTextOf("source")).toBe(SOURCE_TEXT);
   });
+
+  it("re-wraps an already-visible caption when the budget changes mid-session", () => {
+    // The live overlay keeps one caption visible across settings saves. A
+    // budget-only change must re-wrap the SAME text already on screen, not
+    // wait for the next utterance. This pins the mid-session repaint path.
+    renderWith(configWithBudget(24, 24));
+    expect(lineTextOf("source").split("\n")).toHaveLength(1);
+
+    renderWith(configWithBudget(6, 8));
+
+    const source = lineTextOf("source");
+    const translation = lineTextOf("translation");
+    expect(source.split("\n")).toEqual(Array.from({ length: 4 }, () => "あ".repeat(6)));
+    expect(translation.split("\n")).toEqual(Array.from({ length: 3 }, () => "b".repeat(8)));
+  });
+
+  it("keeps a re-wrapped caption identical to a fresh render at the same budget", () => {
+    renderWith(configWithBudget(6, 8));
+    const firstPass = {
+      source: lineTextOf("source"),
+      translation: lineTextOf("translation"),
+    };
+
+    renderWith(configWithBudget(24, 24));
+    renderWith(configWithBudget(6, 8));
+
+    expect(lineTextOf("source")).toBe(firstPass.source);
+    expect(lineTextOf("translation")).toBe(firstPass.translation);
+  });
 });
