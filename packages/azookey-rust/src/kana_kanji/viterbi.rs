@@ -592,8 +592,12 @@ pub fn convert_with_dictionary(
                 {
                     continue;
                 }
+                // Numeric dictionary rows such as `ついたち -> 1日` are
+                // intentional kana-to-digit spellings. Reject only Latin
+                // transliterations here, leaving those numeric rows available
+                // when the generic spoken-number parser has no special form.
                 if source_is_hiragana_surface(&source_chars[start..end])
-                    && contains_ascii_alphanumeric(&entry.surface)
+                    && entry.surface.chars().any(|character| character.is_ascii_alphabetic())
                 {
                     continue;
                 }
@@ -1615,6 +1619,10 @@ mod tests {
             ("ごねん", "5年"),
             ("しがつ", "4月"),
             ("じゅう、", "10、"),
+            ("よっか", "4日"),
+            ("さんがつついたち", "3月1日"),
+            ("しちじはん", "7時半"),
+            ("ごじはん", "5時半"),
         ] {
             let candidate = convert_with_dictionary(
                 input,
