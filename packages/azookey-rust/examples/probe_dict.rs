@@ -17,9 +17,7 @@ use std::path::PathBuf;
 fn main() {
     let root = std::env::var_os("AZOOKEY_DICTIONARY_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from("../../submodules/azooKey_dictionary_storage/Dictionary")
-        });
+        .unwrap_or_else(|| PathBuf::from("../../submodules/azooKey_dictionary_storage/Dictionary"));
     let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
         system: Some(root),
         ..DictionaryPaths::default()
