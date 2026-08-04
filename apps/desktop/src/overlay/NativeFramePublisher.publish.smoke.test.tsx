@@ -222,11 +222,11 @@ describe("NativeFramePublisher publish failures", () => {
   });
 
   it("ignores a rejected native call that settles after the publisher unmounts", async () => {
-    let rejectSecond: ((error: unknown) => void) | null = null;
+    const pending = { reject: null as ((error: unknown) => void) | null };
     mocks.publishOverlayFrame.mockImplementationOnce(
       () =>
         new Promise<void>((_resolve, reject) => {
-          rejectSecond = reject;
+          pending.reject = reject;
         }),
     );
 
@@ -239,7 +239,7 @@ describe("NativeFramePublisher publish failures", () => {
     await act(() => {
       root.unmount();
     });
-    rejectSecond?.(new Error("webview closed"));
+    pending.reject?.(new Error("webview closed"));
     await flush(60);
 
     expect(getStructuredLogs().filter((entry) => entry.stage === "native-output")).toHaveLength(0);
