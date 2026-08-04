@@ -1,0 +1,10 @@
+[package]
+name = "caption-bridge-input-lm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]

@@ -14,6 +14,7 @@ apps/desktop/src-tauri/target
 packages/vibrato-wasm/target
 packages/azookey-rust/target
 packages/azookey-wasm/target
+packages/input-lm-rust/target
 apps/desktop/src-tauri/gen
 .tools
 .codex/
