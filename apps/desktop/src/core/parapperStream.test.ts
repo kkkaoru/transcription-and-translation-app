@@ -535,6 +535,41 @@ describe("ParapperRecognitionStream", () => {
     closeFailure.stream.cancel();
   });
 
+  it("does not double-report a transport failure while stopping", async () => {
+    const errors: Error[] = [];
+    const { stream, socket } = await createReadyStream({
+      onError: (error) => errors.push(error),
+    });
+    const stopping = stream.stop();
+    socket.closeReason = "closed while stopping";
+    socket.close();
+    await expect(stopping).rejects.toThrow("closed while stopping");
+    expect(errors).toEqual([]);
+  });
+
+  it("resolves a stop for an already-closed socket and blocks PCM during drain", async () => {
+    const draining = await createReadyStream();
+    const stopping = draining.stream.stop();
+    expect(() => draining.stream.sendPcm16(new Uint8Array([1, 2]))).toThrow(
+      "recognition session is not ready",
+    );
+    draining.socket.message({ version: 1, type: "session.done", session_id: draining.stream.id });
+    await expect(stopping).resolves.toBeUndefined();
+
+    const closed = await createReadyStream();
+    closed.socket.readyState = 3;
+    await expect(closed.stream.stop()).resolves.toBeUndefined();
+  });
+
+  it("does not restart a terminal stream", async () => {
+    const stream = new ParapperRecognitionStream({
+      url: "ws://127.0.0.1:18082/ws/recognition",
+      webSocketConstructor: FakeSocket as never,
+    });
+    await expect(stream.stop()).resolves.toBeUndefined();
+    await expect(stream.start()).rejects.toThrow(/settled/);
+  });
+
   it("cancels an unresolved start for both cancel and stop", async () => {
     FakeSocket.instances = [];
     const cancelled = new ParapperRecognitionStream({

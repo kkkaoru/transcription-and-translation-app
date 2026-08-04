@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GatewayConfig } from "./config.js";
 import {
+  correlationHeadersFromRequest,
   createGatewayFetchHandler,
   GatewayError,
   MAX_AUDIO_BYTES,
@@ -110,6 +111,21 @@ describe("portable inference gateway HTTP contract", () => {
       text: "",
     });
     expect(transcribe).toHaveBeenCalledTimes(2);
+  });
+
+  it("trims and bounds forwarded correlation headers", () => {
+    const requestId = "r".repeat(300);
+    expect(
+      correlationHeadersFromRequest(
+        new Request("https://gateway.example", {
+          headers: {
+            "x-request-id": `  ${requestId}  `,
+            authorization: "Bearer secret",
+          },
+        }),
+      ),
+    ).toEqual({ "x-request-id": requestId.slice(0, 256) });
+    expect(correlationHeadersFromRequest()).toEqual({});
   });
 
   it("forwards bounded correlation headers to ASR and chat adapters", async () => {

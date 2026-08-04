@@ -230,6 +230,11 @@ export class ParapperRecognitionStream {
   }
 
   public start(): Promise<void> {
+    if (this.settled) {
+      return Promise.reject(
+        streamError("Parapper recognition session has already ended", "settled"),
+      );
+    }
     if (this.started) {
       return this.startPromise ?? Promise.resolve();
     }
@@ -405,11 +410,16 @@ export class ParapperRecognitionStream {
       this.closeSocket();
       return Promise.resolve();
     }
-    if (!socket || this.settled) {
+    if (!socket || socket.readyState !== SOCKET_OPEN || this.settled || this.activeErrorReported) {
+      this.settled = true;
       this.closeSocket();
       return Promise.resolve();
     }
     this.stopPromise = new Promise<void>((resolve, reject) => {
+      // Mark the stream terminal before installing the stop handlers. This
+      // prevents the original error/close handlers from reporting a second
+      // active-session failure while the graceful stop is draining.
+      this.settled = true;
       let timer: ReturnType<typeof setTimeout> | undefined;
       let finished = false;
       const finish = (error?: Error): void => {
