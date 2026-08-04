@@ -21,6 +21,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Serve-loop poll interval; a clean stop is observed within this window.
 const RECV_TIMEOUT: Duration = Duration::from_millis(250);
@@ -272,16 +273,23 @@ fn is_preferred_break(character: char) -> bool {
     )
 }
 
+fn is_breakable_grapheme(grapheme: &str) -> bool {
+    let mut chars = grapheme.chars();
+    match (chars.next(), chars.next()) {
+        (Some(character), None) => is_preferred_break(character) || character.is_whitespace(),
+        _ => grapheme.chars().all(char::is_whitespace),
+    }
+}
+
 /// Find the preferred break index within `(lower..=max_chars]`, scanning from
 /// the limit downward so Japanese clauses and Latin words stay together. The
 /// scan never goes below half a line, so a very long clause still makes
 /// forward progress. Returns `max_chars` when no preferred break exists.
-fn preferred_break_index(remaining: &[char], max_chars: usize) -> usize {
+fn preferred_break_index(remaining: &[String], max_chars: usize) -> usize {
     // Clamp the lower bound to 1 so `remaining[index - 1]` never underflows.
     let lower = (max_chars / 2).max(1);
     for index in (lower..=max_chars).rev() {
-        let character = remaining[index - 1];
-        if is_preferred_break(character) || character.is_whitespace() {
+        if is_breakable_grapheme(&remaining[index - 1]) {
             return index;
         }
     }
@@ -289,25 +297,38 @@ fn preferred_break_index(remaining: &[char], max_chars: usize) -> usize {
 }
 
 /// Port of `splitLongLine` from `apps/desktop/src/overlay/captions.ts`.
+/// Counts user-visible grapheme clusters, not Unicode scalar values, so ZWJ
+/// emoji and combining marks stay intact across the configured budget.
 fn split_long_line(line: &str, max_chars: usize) -> Vec<String> {
-    let characters: Vec<char> = line.chars().collect();
+    // Clusters are owned: each pass rebuilds `remaining` from a temporary that
+    // dies at the end of the iteration, so borrowing `line` here would not
+    // outlive the loop.
+    let graphemes =
+        |text: &str| -> Vec<String> { text.graphemes(true).map(str::to_string).collect() };
+
+    let characters = graphemes(line);
     if characters.len() <= max_chars {
         return vec![line.to_string()];
     }
 
     let mut segments: Vec<String> = Vec::new();
-    let mut remaining: Vec<char> = characters;
+    let mut remaining = characters;
     while remaining.len() > max_chars {
         let break_at = preferred_break_index(&remaining, max_chars);
-        let segment: String = remaining[..break_at].iter().collect::<String>().trim().to_string();
+        let segment = remaining[..break_at].concat();
+        let segment = segment.trim();
         if !segment.is_empty() {
-            segments.push(segment);
+            segments.push(segment.to_string());
         }
-        let rest: String = remaining[break_at..].iter().collect();
-        remaining = rest.trim_start().chars().collect();
+        let rest = remaining[break_at..].concat();
+        remaining = graphemes(rest.trim_start());
     }
     if !remaining.is_empty() {
-        segments.push(remaining.iter().collect::<String>().trim().to_string());
+        let tail = remaining.concat();
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            segments.push(tail.to_string());
+        }
     }
     if segments.is_empty() {
         vec![line.trim().to_string()]
@@ -644,7 +665,7 @@ mod tests {
         feed_from_parts, feed_json, html_page, serve, spawn_feed, stop_running,
         BrowserSourceRuntime, RunningServer, RECV_TIMEOUT, STOP_JOIN_TIMEOUT,
     };
-    use crate::config::AppConfig;
+    use crate::config::{AppConfig, CAPTION_MAX_CHARS_MIN};
     use crate::output::OutputStatus;
     use crate::pipeline::CaptionPayload;
     use crate::state::AppState;
@@ -655,6 +676,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
     use tiny_http::{ListenAddr, Server};
+    use unicode_segmentation::UnicodeSegmentation;
 
     fn sample_caption() -> CaptionPayload {
         CaptionPayload {
@@ -1130,5 +1152,40 @@ mod tests {
 
         // Clamped up to CAPTION_MAX_CHARS_MIN (4): 8 graphemes -> two lines.
         assert_eq!(source, "ああああ\nああああ");
+    }
+
+    #[test]
+    fn feed_keeps_zwj_emoji_and_combining_marks_inside_the_budget() {
+        // The budget is the clamp floor, so a split is actually forced here
+        // rather than silently skipped.
+        let budget = CAPTION_MAX_CHARS_MIN as usize;
+        let mut config = AppConfig::default();
+        config.overlay.caption_max_chars.source = CAPTION_MAX_CHARS_MIN;
+        config.overlay.caption_max_chars.translation = CAPTION_MAX_CHARS_MIN;
+
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let combining =
+            "\u{304B}\u{3099}\u{304D}\u{3099}\u{304F}\u{3099}\u{3051}\u{3099}\u{3053}\u{3099}";
+        let mut caption = sample_caption();
+        caption.source_text = family.repeat(6);
+        caption.translation_text = combining.to_string();
+
+        let feed = feed_from_parts(&config, Some(&caption));
+        let json: serde_json::Value =
+            serde_json::from_str(&feed_json(&feed)).expect("feed is valid JSON");
+        let source = json["caption"]["source"].as_str().expect("source string");
+        let translation = json["caption"]["translation"].as_str().expect("translation string");
+
+        // Six clusters at a budget of four: split, but only between clusters.
+        assert_eq!(source, format!("{}\n{}", family.repeat(4), family.repeat(2)));
+        assert_eq!(source.replace('\n', ""), family.repeat(6));
+        assert!(!source.lines().any(|line| line.starts_with('\u{200D}')));
+        assert!(!source.lines().any(|line| line.ends_with('\u{200D}')));
+
+        assert_eq!(translation.replace('\n', ""), combining);
+        assert!(!translation.lines().any(|line| line.starts_with('\u{3099}')));
+        for line in source.lines().chain(translation.lines()) {
+            assert!(line.graphemes(true).count() <= budget, "line too long: {line:?}");
+        }
     }
 }

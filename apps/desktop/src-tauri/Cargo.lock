@@ -1815,6 +1815,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tiny_http",
  "tokio",
+ "unicode-segmentation",
  "url",
  "uuid",
 ]
