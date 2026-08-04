@@ -2473,7 +2473,16 @@ fn turn_runtime_timeout_after_namo_continue_rerecognizes_then_finalizes() {
 }
 
 #[test]
-fn turn_runtime_activity_after_namo_continue_delays_timeout() {
+fn turn_runtime_mid_phrase_breath_after_namo_continue_keeps_turn_open_and_delays_timeout() {
+    // Mid-phrase breath: after a grammar-incomplete phrase ("東京駅から" ends
+    // with the connective particle から, so grammar has no completing boundary
+    // at the text end), the completion check reaches the `DecideWithNamo`
+    // fallback. Namo may vote "continue" and keep the turn open so the next
+    // speech attaches to the same turn, delaying the open-turn timeout. This
+    // is the retained Namo-continuation path for mid-phrase breath, distinct
+    // from the split-after-genuine-end-silence policy that finalizes a turn
+    // at a grammar `NormalEnd` after a genuine end silence (see
+    // `two_utterance_sequence_splits_after_genuine_end_silence_at_grammar_normal_end`).
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)
         .vad_interval_ms(32)
@@ -2497,7 +2506,7 @@ fn turn_runtime_activity_after_namo_continue_delays_timeout() {
         .clone()
         .expect("first segment should dispatch completion ASR");
     assert_eq!(completion.kind, AsrTaskKind::CompletionCheck);
-    asr_handle.complete_request_with_text(&completion, "東京駅");
+    asr_handle.complete_request_with_text(&completion, "東京駅から");
     runtime.step();
     let rerecognition = runtime
         .requests
@@ -2505,7 +2514,7 @@ fn turn_runtime_activity_after_namo_continue_delays_timeout() {
         .clone()
         .expect("completion result should dispatch rerecognition");
     assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
-    asr_handle.complete_request_with_text(&rerecognition, "東京駅");
+    asr_handle.complete_request_with_text(&rerecognition, "東京駅から");
     runtime.step();
 
     replay_vad_frames_for_runtime(
@@ -2521,10 +2530,80 @@ fn turn_runtime_activity_after_namo_continue_delays_timeout() {
     assert_eq!(
         next_completion.target.turn_id,
         TurnId(1),
-        "the segment after Namo Continue must stay attached to the open turn"
+        "the segment after Namo Continue must stay attached to the open turn for a mid-phrase breath"
     );
     assert_eq!(runtime.turn_store.open_turn_id, Some(1));
     assert_eq!(*outputs.lock().expect("outputs should be readable"), Vec::<OutputSnapshot>::new());
+}
+#[test]
+fn turn_runtime_integrated_two_utterance_sequence_splits_after_genuine_end_silence() {
+    // Full two-utterance reproduction of the field-reported caption merge.
+    // Utterance 1 ("あしたのてんきははれ") is followed by a genuine end silence
+    // (the trailing vad(false) frames that reached `turn_check_silence_ms`).
+    // On the completion-ASR text end the Japanese grammar boundary analyzer
+    // finds a `NormalEnd` (terminal noun 晴れ). Under the
+    // split-after-genuine-end-silence policy this `NormalEnd` finalizes the
+    // turn without asking Namo (Namo previously vetoed it with a low-confidence
+    // "continue" and the following utterance attached to the same turn, merging
+    // two utterances into one caption). Utterance 2 ("あさってのてんきはあめです")
+    // must therefore start a new turn and finalize independently.
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .segment_start_speech_ms(1)
+        .interim_display(false)
+        .scripted_asr_texts(Vec::new());
+    let _ = builder.use_scripted_decisions(vec![
+        // Namo votes "continue" (the breath hypothesis), but the
+        // genuine-end-silence policy must split regardless of Namo's veto.
+        TurnDecision { is_end_of_turn: false, confidence: 0.01 },
+    ]);
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let utterance1 = recognized_turn_with_boundary_candidates(
+        1,
+        "あしたのてんきははれ",
+        &[1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0],
+        &[vad(true), vad(true), vad(true), vad(true), vad(false), vad(false), vad(false)],
+        vec![boundary_candidate("あしたのてんきははれ", 7, 7, 7, GrammarBoundaryClass::NormalEnd)],
+    );
+    runtime_state(&mut runtime).turn(1, utterance1).turn_audio_range(1, 0..7);
+
+    runtime.process_grammar_boundaries_after_rerecognition(1);
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("あしたのてんきははれ。", true, 1, 1)],
+        "a grammar NormalEnd at the completion text end must finalize turn 1 after genuine end silence"
+    );
+    assert_eq!(runtime.turn_store.open_turn_id, None);
+
+    let utterance2 = recognized_turn_with_boundary_candidates(
+        2,
+        "あさってのてんきはあめです",
+        &[5.0, 6.0, 7.0, 8.0, 0.0, 0.0, 0.0],
+        &[vad(true), vad(true), vad(true), vad(true), vad(false), vad(false), vad(false)],
+        vec![boundary_candidate(
+            "あさってのてんきはあめです",
+            7,
+            7,
+            7,
+            GrammarBoundaryClass::NormalEnd,
+        )],
+    );
+    runtime_state(&mut runtime).turn(2, utterance2).turn_audio_range(2, 7..14);
+
+    runtime.process_grammar_boundaries_after_rerecognition(2);
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("あしたのてんきははれ。", true, 1, 1),
+            output_snapshot("あさってのてんきはあめです。", true, 2, 2),
+        ],
+        "each utterance must finalize as its own caption after a genuine end silence, never as the merged 'あしたのてんきははれあさってのてんきはあめです。'"
+    );
+    assert_eq!(runtime.turn_store.open_turn_id, None);
 }
 
 #[test]

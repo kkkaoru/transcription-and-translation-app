@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use crate::{
     audio::ASR_SAMPLE_RATE,
     config::AsrLanguage,
@@ -154,7 +152,8 @@ fn seconds_to_sample(seconds: f32, audio_len: usize) -> usize {
     (seconds * ASR_SAMPLE_RATE as f32).round().clamp(0.0, audio_len as f32) as usize
 }
 
-pub(crate) fn slice_chars(text: &str, range: Range<usize>) -> String {
+#[cfg(test)]
+pub(crate) fn slice_chars(text: &str, range: std::ops::Range<usize>) -> String {
     text.chars().skip(range.start).take(range.end.saturating_sub(range.start)).collect()
 }
 

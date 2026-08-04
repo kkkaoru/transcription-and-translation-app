@@ -52,10 +52,6 @@ impl TurnDetector {
         matches!(self, Self::Namo | Self::Morph)
     }
 
-    pub fn confirms_normal_end_with_namo(self) -> bool {
-        matches!(self, Self::Namo)
-    }
-
     pub fn uses_deferred_turn_completion(self) -> bool {
         !matches!(self, Self::Simple)
     }

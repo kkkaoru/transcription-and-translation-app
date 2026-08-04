@@ -15,7 +15,8 @@
 ## Recognition / Turn 周りの注意
 
 - `segment_split_silence_ms` は途中経過表示用の短い無音であり、Turn を分割する条件ではない。
-- `turn_check_silence_ms` は Turn 完了判定に進むための無音であり、Namo が Continue と判断した場合は open turn として保持する。
+- `turn_check_silence_ms` は Turn 完了判定に進むための無音 (genuine end silence)。grammar 境界判定はこの無音の後にだけ呼ばれ、completion-ASR テキスト末尾の grammar `NormalEnd` (例: 終止形名詞「晴れ」) は明示的に Turn を確定させる (split-after-genuine-end-silence)。Namo はこの `NormalEnd` を veto しない。veto すると次発話が同じ Turn に連結され、2 発話が1つの字幕にマージされる (`あしたのてんきははれ` + `あさってのてんきはあめです` が `あしたのてんきははれあさってのてんきはあめです。` になる)。
+- Namo Continue は mid-phrase breath (grammar に確定境界がなく `DecideWithNamo` fallback に至る場合) だけに保持する。Namo が Continue と判断した場合は open turn として保持する。
 - Namo Continue 後に発話が続いた場合、次の `SegmentClosed` は同じ Turn に連結されるべき。
 - Namo Continue 後、次の発話が active な間は timeout final してはいけない。`SegmentStarted` / `SegmentExtended` の activity で open turn の timeout 起点を更新する必要がある。
 - Namo Continue 後に次の Segment activity が来ない場合だけ、`turn_check_silence_ms * 2` の timeout で final に倒す。

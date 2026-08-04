@@ -208,6 +208,14 @@ pub const MAX_VAD_INTERVAL_MS: u32 = 128;
 pub const VAD_INTERVAL_STEP_MS: u32 = 16;
 pub const DEFAULT_VAD_THRESHOLD: f32 = 0.5;
 
+/// Turn boundary configuration.
+///
+/// `turn_check_silence_ms` is the configurable end-of-utterance gap
+/// threshold: when inter-utterance silence reaches it, the completion check
+/// runs and a grammar `NormalEnd` at the completion-ASR text end finalizes the
+/// turn (split-after-genuine-end-silence). Shorter mid-phrase breaths stay
+/// inside the turn and may still call Namo to decide continuation. See
+/// `recognition/turn/boundary_flow.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct TurnConfig {
@@ -217,6 +225,9 @@ pub struct TurnConfig {
     pub interim_result_enabled: bool,
     #[serde(rename = "interim_result_silence_ms")]
     pub interim_result_silence_ms: u32,
+    /// End-of-utterance gap threshold in milliseconds. Silence exceeding this
+    /// marks a genuine utterance end; a grammar `NormalEnd` at the completion
+    /// text end then splits the turn unconditionally (Namo cannot veto it).
     #[serde(rename = "turn_check_silence_ms")]
     pub check_silence_ms: u32,
     #[serde(rename = "namo_turn_confidence_threshold")]
@@ -429,10 +440,6 @@ impl ParapperConfig {
 
     pub fn uses_morph_turn_boundary(&self) -> bool {
         self.turn.detector.uses_morph_boundary()
-    }
-
-    pub fn confirms_normal_end_with_namo(&self) -> bool {
-        self.turn.detector.confirms_normal_end_with_namo()
     }
 
     pub fn uses_deferred_turn_completion(&self) -> bool {

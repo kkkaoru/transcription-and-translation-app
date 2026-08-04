@@ -1,6 +1,6 @@
 use crate::recognition::{
     control::RecognitionSession,
-    turn::{GrammarBoundaryClass, TurnBoundaryCandidate, boundary::slice_chars, policy::grammar},
+    turn::{GrammarBoundaryClass, TurnBoundaryCandidate, policy::grammar},
 };
 
 impl RecognitionSession {
@@ -45,29 +45,23 @@ impl RecognitionSession {
         } else {
             grammar::NoCandidateAction::ContinueOpen
         };
-        let confirm_normal_end_with_namo = self.config.confirms_normal_end_with_namo();
-        let mut combined_text_for_namo = None;
         let mut evaluated = Vec::with_capacity(candidates.len());
         for candidate in candidates {
             let is_at_text_end = candidate.char_end >= text_len;
+            // Explicit split-after-genuine-end-silence policy: this grammar
+            // decision is reached only after the turn-check silence
+            // (`turn_check_silence_ms`) that marks a genuine utterance end, so
+            // a grammar `NormalEnd` at the completion-ASR text end (e.g. a
+            // terminal noun such as 晴れ) is treated as a confirmed utterance
+            // end and finalizes the turn. Namo is no longer allowed to veto
+            // that boundary: the veto kept the turn open and let the
+            // following utterance attach to the same turn, merging two
+            // utterances into one caption. Namo continuation is still
+            // retained for mid-phrase breath, where grammar has no completing
+            // boundary at the text end and the `DecideWithNamo` fallback
+            // above asks Namo on the full text.
             let normal_end_is_confirmed =
-                if is_at_text_end && matches!(candidate.class, GrammarBoundaryClass::NormalEnd) {
-                    if confirm_normal_end_with_namo {
-                        let combined_text = combined_text_for_namo.get_or_insert_with(|| {
-                            self.turn_store
-                                .turns
-                                .get(&turn_id)
-                                .map(|turn| turn.draft().combined_text.clone())
-                                .unwrap_or_default()
-                        });
-                        let text = slice_chars(combined_text, 0..candidate.char_end);
-                        self.namo_final_decision_for_text(turn_id, &text)
-                    } else {
-                        true
-                    }
-                } else {
-                    false
-                };
+                is_at_text_end && matches!(candidate.class, GrammarBoundaryClass::NormalEnd);
             evaluated.push(grammar::Candidate {
                 class: candidate.class,
                 is_at_text_end,
