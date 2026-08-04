@@ -17,3 +17,7 @@ pub use viterbi::{
     convert_kana_to_kanji, convert_kana_to_kanji_with_dictionary, convert_kana_to_kanji_with_paths,
     convert_with_dictionary, ConversionCandidate, ConversionOptions,
 };
+
+#[cfg(test)]
+#[path = "kana_kanji/accuracy_corpus.rs"]
+mod accuracy_corpus;
