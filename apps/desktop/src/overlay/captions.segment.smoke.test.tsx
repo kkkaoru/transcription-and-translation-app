@@ -26,6 +26,26 @@ describe("segmentCaptionText edge cases", () => {
   it("keeps a single short line intact", () => {
     expect(segmentCaptionText("こんにちは", 10)).toEqual(["こんにちは"]);
   });
+
+  it("does not split ZWJ emoji or combining marks across the character budget", () => {
+    // Caption budgets are user-visible characters. Splitting a ZWJ family
+    // sequence or a dakuten combining mark mid-cluster paints broken glyphs.
+    const graphemesOf = (text: string): string[] =>
+      [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(
+        (part) => part.segment,
+      );
+    const family = "👨‍👩‍👧";
+    const familyLines = segmentCaptionText(family.repeat(3), 2);
+    expect(familyLines.flatMap(graphemesOf)).toEqual([family, family, family]);
+    expect(familyLines.every((line) => graphemesOf(line).length <= 2)).toBe(true);
+    expect(familyLines.some((line) => line.startsWith("\u200D"))).toBe(false);
+
+    const combining = "か\u3099き\u3099く\u3099け\u3099こ\u3099";
+    const combiningLines = segmentCaptionText(combining, 2);
+    expect(combiningLines.flatMap(graphemesOf).join("")).toBe(combining);
+    expect(combiningLines.every((line) => graphemesOf(line).length <= 2)).toBe(true);
+    expect(combiningLines.some((line) => line.startsWith("\u3099"))).toBe(false);
+  });
 });
 
 describe("captionTextLines and captionItems", () => {

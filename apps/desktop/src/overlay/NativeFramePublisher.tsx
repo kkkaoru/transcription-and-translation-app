@@ -3,7 +3,7 @@ import { bytesToBase64 } from "../core/audio";
 import { bridge, formatBridgeError } from "../core/bridge";
 import { appendStructuredLog } from "../core/structuredLog";
 import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types";
-import { captionItems, captionTextLines } from "./captions";
+import { captionGraphemes, captionItems, captionTextLines } from "./captions";
 
 const hexToRgba = (value: string, alpha: number): string => {
   const match = /^#([\da-f]{6})$/i.exec(value);
@@ -55,7 +55,7 @@ const measureNativeTextWidth = (
   text: string,
   letterSpacing: number,
 ): number => {
-  const characters = Array.from(text);
+  const characters = captionGraphemes(text);
   if (characters.length === 0) {
     return 0;
   }
@@ -85,7 +85,7 @@ export const wrapNativeText = (
   const boundedWidth = Math.max(1, finiteNumber(maxWidth, 1));
   const spacing = finiteNumber(letterSpacing, 0);
   const widthOf = (value: string): number => {
-    const characters = Array.from(value);
+    const characters = captionGraphemes(value);
     if (characters.length === 0) {
       return 0;
     }
@@ -105,7 +105,7 @@ export const wrapNativeText = (
     current = [];
   };
 
-  for (const character of Array.from(normalizedText)) {
+  for (const character of captionGraphemes(normalizedText)) {
     if (character === "\n") {
       flush();
       continue;
@@ -190,7 +190,7 @@ const drawNativeCaption = (
   context.lineJoin = "round";
 
   const drawLine = (textLine: string, lineY: number, operation: "fill" | "stroke"): void => {
-    const characters = Array.from(textLine);
+    const characters = captionGraphemes(textLine);
     const characterWidths = characters.map((character) => context.measureText(character).width);
     const rawWidth = measureNativeTextWidth(context, textLine, letterSpacing);
     // A single glyph can still exceed a very narrow configured width. Scale

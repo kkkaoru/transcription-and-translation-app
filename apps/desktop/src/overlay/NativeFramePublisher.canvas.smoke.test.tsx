@@ -282,6 +282,18 @@ describe("wrapNativeText edge cases", () => {
     expect(lines.join("")).toBe("aaaaaa");
     expect(lines.length).toBeGreaterThan(1);
   });
+
+  it("does not split a ZWJ emoji sequence when wrapping by width", () => {
+    const family = "👨‍👩‍👧";
+    const measure = (text: string): number =>
+      [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].length * 10;
+    // Two family emoji are 20px; a 15px width must wrap between clusters, never
+    // inside the ZWJ sequence.
+    const lines = wrapNativeText(family.repeat(2), 15, measure);
+    expect(lines.join("")).toBe(family.repeat(2));
+    expect(lines).toEqual([family, family]);
+    expect(lines.some((line) => line.startsWith("\u200D"))).toBe(false);
+  });
 });
 
 describe("native publish gate edge branches", () => {

@@ -43,16 +43,33 @@ export const resolveCaptionMaxChars = (
 
 const preferredBreak = /[。．！？!?、,，；;：:]/u;
 
+/**
+ * User-visible characters for caption budgets.
+ *
+ * `Array.from` / UTF-16 code points split ZWJ emoji and combining marks. The
+ * overlay budget is a human character count, so wrap on grapheme clusters
+ * whenever `Intl.Segmenter` is available and fall back to code points only in
+ * runtimes that still lack it.
+ */
+export const captionGraphemes = (text: string): string[] => {
+  if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
+    return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(
+      (part) => part.segment,
+    );
+  }
+  return Array.from(text);
+};
+
 const splitLongLine = (line: string, maxChars: number): string[] => {
-  const characters = Array.from(line);
+  const characters = captionGraphemes(line);
   if (characters.length <= maxChars) {
     return [line];
   }
 
   const segments: string[] = [];
   let remaining = line;
-  while (Array.from(remaining).length > maxChars) {
-    const charactersLeft = Array.from(remaining);
+  while (captionGraphemes(remaining).length > maxChars) {
+    const charactersLeft = captionGraphemes(remaining);
     let breakAt = maxChars;
     // Prefer punctuation/whitespace near the limit so Japanese clauses and
     // Latin words stay together where possible. Never scan below half a line;
