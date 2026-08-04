@@ -1723,7 +1723,8 @@ mod tests {
     use super::{
         escaped_identifier, filter_system_entries, parse_loudstxt3_record, prediction_usable_rcid,
         system_entry_is_usable, word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths,
-        WordType, BOS_CID, EOS_CID, MID_COUNT, PORTABLE_DICTIONARY_MAGIC,
+        WordType, BOS_CID, COMPETITIVE_CONVERTED_VALUE_FLOOR, EOS_CID, MID_COUNT,
+        PORTABLE_DICTIONARY_MAGIC,
     };
 
     #[test]
@@ -1816,6 +1817,7 @@ mod tests {
 
     #[test]
     fn restores_multi_kana_identity_when_only_rare_kanji_exists() {
+        // Sibling rule: rare-only kanji sibling ⇒ identity kept.
         let rare_kanji = DictionaryEntry::plain("とても", "迚も", -15.1);
         let identity = DictionaryEntry::plain("とても", "とても", -5.8);
         let filtered = filter_system_entries(vec![rare_kanji.clone(), identity.clone()]);
@@ -1827,17 +1829,34 @@ mod tests {
             filtered.iter().any(|entry| entry.surface == "迚も"),
             "rare kanji remains available as an n-best alternative"
         );
+        // Just below the competitive floor: still treated as rare.
+        let near_floor_rare =
+            DictionaryEntry::plain("とても", "迚も", COMPETITIVE_CONVERTED_VALUE_FLOOR - 0.01);
+        let filtered_near = filter_system_entries(vec![near_floor_rare, identity.clone()]);
+        assert!(
+            filtered_near.iter().any(|entry| entry.surface == "とても"),
+            "kanji just below the competitive floor must keep identity"
+        );
     }
 
     #[test]
     fn suppresses_multi_kana_identity_when_competitive_kanji_exists() {
+        // Sibling rule: competitive kanji sibling ⇒ identity dropped.
         let common_kanji = DictionaryEntry::plain("とうきょう", "東京", -6.0);
         let identity = DictionaryEntry::plain("とうきょう", "とうきょう", -2.0);
-        let filtered = filter_system_entries(vec![common_kanji.clone(), identity]);
+        let filtered = filter_system_entries(vec![common_kanji.clone(), identity.clone()]);
         assert!(filtered.iter().any(|entry| entry.surface == "東京"), "common kanji must remain");
         assert!(
             filtered.iter().all(|entry| entry.surface != "とうきょう"),
             "multi-kana identity must stay suppressed when a competitive kanji exists"
+        );
+        // At the competitive floor: treated as competitive.
+        let at_floor =
+            DictionaryEntry::plain("とうきょう", "東京", COMPETITIVE_CONVERTED_VALUE_FLOOR);
+        let filtered_floor = filter_system_entries(vec![at_floor, identity]);
+        assert!(
+            filtered_floor.iter().all(|entry| entry.surface != "とうきょう"),
+            "kanji at the competitive floor must suppress multi-kana identity"
         );
     }
 

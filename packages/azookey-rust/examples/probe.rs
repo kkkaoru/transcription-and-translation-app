@@ -3,27 +3,34 @@ use caption_bridge_azookey_rust::{
 };
 
 fn main() {
-    let samples = [
-        "とても",
-        "とてもおいしい",
-        "すーぷは",
-        "は",
-        "すーぷ",
-        "きょうは",
-        "てんきは",
-        "あついすーぷは",
-        "おいしいすーぷは",
-        "あついすーぷはたべたくない",
-        "きょうはとてもさむい",
-        "と",
-        "とて",
-        "とてもお",
-        "すーぷはおいしい",
-    ];
+    let cli = std::env::args().skip(1).collect::<Vec<_>>();
+    let samples: Vec<String> = if cli.is_empty() {
+        [
+            "とても",
+            "とてもおいしい",
+            "すーぷは",
+            "すーぷはください",
+            "すーぷはのみたい",
+            "は",
+            "すーぷ",
+            "きょうは",
+            "てんきは",
+            "あついすーぷは",
+            "おいしいすーぷは",
+            "あついすーぷはたべたくない",
+            "きょうはとてもさむい",
+            "すーぷはおいしい",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    } else {
+        cli
+    };
     let dictionary =
         AzooKeyDictionary::from_paths(&DictionaryPaths::default()).expect("dictionary should load");
     for s in samples {
-        let candidates = convert_with_dictionary(s, &dictionary, ConversionOptions::default());
+        let candidates = convert_with_dictionary(&s, &dictionary, ConversionOptions::default());
         println!("{s:?}:");
         for (rank, candidate) in candidates.iter().take(10).enumerate() {
             println!(

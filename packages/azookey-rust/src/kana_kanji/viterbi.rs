@@ -36,6 +36,10 @@ const MODEL_DEFAULT_MID_PENALTY: f32 = -2.5;
 const COPULAR_CONTINUATION_PENALTY: f32 = -6.0;
 const GRAMMATICAL_CONTEXT_BONUS: f32 = 4.0;
 const CONTEXTUAL_ENTRY_BONUS: f32 = 4.5;
+/// After a particle, prefer a strictly longer converted content word over one
+/// of its dictionary prefixes (`は` + `のみたい` → `飲みたい` rather than
+/// `のみ`/`の味` + `たい`/`体`). Soft penalty keeps the prefix in n-best.
+const PARTICLE_FOLLOWING_SHORTER_PREFIX_PENALTY: f32 = -2.5;
 const MIN_IDENTITY_FALLBACK_CHARS: usize = 2;
 const INFLECTIONAL_IDENTITY_FALLBACK_VALUE: f32 = -3.0;
 const PARTICLE_IDENTITY_FALLBACK_VALUE: f32 = -1.0;
@@ -550,18 +554,41 @@ pub fn convert_with_dictionary(
                 {
                     continue;
                 }
-                // Existing Kanji marks a hard semantic boundary for the
-                // lightweight converter. A full system entry beginning with a
-                // particle can otherwise consume the particle and the next
-                // verb (`東京へいきます` -> `東京平気ます`). Keep the
-                // particle edge and let the following kana word be scored on
-                // its own. Identity particles remain available for grammar
-                // context; Kanji homophones are blocked even when the particle
-                // itself is only one kana (for example `今日は...`).
-                if start > 0
-                    && is_kanji(source_chars[start - 1])
-                    && is_particle(chars[start])
-                    && contains_kanji(&entry.surface)
+                // Particle-position guards. Two different failure modes share
+                // the "starts at a particle kana" lattice slot:
+                //
+                // 1) Short particle Kanji homophones (`は` → `端`/`歯`) after a
+                //    converted content word. Source Kanji catches mixed script
+                //    (`東京は`); path state catches pure-hiragana ASR loanwords
+                //    (`すーぷは` → `スープ` then `端`).
+                // 2) Multi-kana entries that swallow particle + following stem
+                //    after source Kanji (`東京へいきます` → `東京平気ます`).
+                //    Do NOT apply this broader block from path state alone:
+                //    that would reject legitimate words that merely begin with
+                //    a particle mora (`もよう` → `模様`, `はれる` → `晴れる`).
+                if is_particle(chars[start]) && contains_kanji(&entry.surface) {
+                    let after_source_kanji = start > 0 && is_kanji(source_chars[start - 1]);
+                    let after_converted_content =
+                        preceding_converted_content_word(&state, &source_chars, start);
+                    let short_particle_homophone = is_particle_reading(&entry.reading);
+                    if short_particle_homophone && (after_source_kanji || after_converted_content)
+                        || (!short_particle_homophone && after_source_kanji)
+                    {
+                        continue;
+                    }
+                }
+                // After a particle, a following one-kana particle is often the
+                // first mora of a verb (`はのみたい` → `は` + `飲みたい`), not a
+                // genitive chain (`は` + `の` + `味体`). Suppress the short
+                // particle edge when a longer converted lexical word starts
+                // here. Compound sequences such as `での`/`への` remain when no
+                // longer content word covers the same start.
+                if is_short_particle_lattice_entry(entry)
+                    && state
+                        .last
+                        .as_ref()
+                        .is_some_and(|former| is_particle_reading(&former.reading))
+                    && entries.iter().any(is_longer_lexical_content_entry)
                 {
                     continue;
                 }
@@ -608,6 +635,7 @@ pub fn convert_with_dictionary(
                             + model_metadata_penalty(dictionary, entry)
                             + grammatical_context_bonus(&state, entry)
                             + copular_continuation_penalty(&state, entry)
+                            + particle_following_shorter_prefix_penalty(&state, entry, &entries)
                             + contextual_entry_bonus(
                                 dictionary,
                                 &chars,
@@ -841,6 +869,87 @@ fn is_particle_reading(reading: &str) -> bool {
             | "けど"
             | "けれど"
     )
+}
+
+/// True when the lattice path has a converted content word immediately before
+/// `start` (pure-hiragana ASR loanwords such as `すーぷ` → `スープ`).
+///
+/// Punctuation boundaries and prior particles are not content anchors: a
+/// following word may legitimately start with a particle mora
+/// (`、もよう`, `は` + `はれる`).
+fn preceding_converted_content_word(
+    state: &PathState,
+    source_chars: &[char],
+    start: usize,
+) -> bool {
+    if start == 0 || is_boundary(source_chars[start - 1]) {
+        return false;
+    }
+    let Some(former) = state.last.as_ref() else {
+        return false;
+    };
+    // A prior particle, or a compound surface that already ends in a particle
+    // (`明日は`), means this position starts a new word rather than a
+    // particle-homophone attachment to content.
+    if is_particle_reading(&former.reading)
+        || former.reading.chars().last().is_some_and(is_particle)
+        || former.surface.chars().last().is_some_and(is_particle)
+    {
+        return false;
+    }
+    if former.raw_ruby_identity {
+        return true;
+    }
+    former
+        .surface
+        .chars()
+        .any(|character| is_kanji(character) || is_katakana(&character) || character == 'ー')
+}
+
+fn is_short_particle_lattice_entry(entry: &DictionaryEntry) -> bool {
+    is_particle_reading(&entry.reading) && entry.reading.chars().count() == 1
+}
+
+/// True when `entry` is a multi-kana converted content word.
+///
+/// Used to keep the first mora of verbs such as `のみたい` from being stolen
+/// by a following short particle after `は`/`を`/`が`.
+fn is_longer_lexical_content_entry(entry: &DictionaryEntry) -> bool {
+    let len = entry.reading.chars().count();
+    len >= MIN_LEXICAL_ENTRY_CHARS
+        && !is_particle_reading(&entry.reading)
+        && (contains_kanji(&entry.surface)
+            || entry.surface.chars().any(|character| is_katakana(&character))
+            || entry.raw_ruby_identity)
+}
+
+/// Soft prior: after a particle, a dictionary prefix of a longer converted
+/// content word is usually the wrong segmentation
+/// (`のみ`/`の味` before `飲みたい`). Do not apply outside particle context so
+/// ordinary noun boundaries such as `東京`/`東京都` stay score-driven.
+fn particle_following_shorter_prefix_penalty(
+    state: &PathState,
+    entry: &DictionaryEntry,
+    entries: &[DictionaryEntry],
+) -> f32 {
+    if !state.last.as_ref().is_some_and(|former| is_particle_reading(&former.reading)) {
+        return NO_SCORE;
+    }
+    let len = entry.reading.chars().count();
+    if len == 0 {
+        return NO_SCORE;
+    }
+    let has_strictly_longer_content = entries.iter().any(|other| {
+        let other_len = other.reading.chars().count();
+        other_len > len
+            && other.reading.starts_with(&entry.reading)
+            && is_longer_lexical_content_entry(other)
+    });
+    if has_strictly_longer_content {
+        PARTICLE_FOLLOWING_SHORTER_PREFIX_PENALTY
+    } else {
+        NO_SCORE
+    }
 }
 
 fn transition_score(
@@ -1826,12 +1935,62 @@ mod tests {
             let top = candidates.first().expect("public conversion should produce a candidate");
             assert_eq!(top.text, expected, "input: {input}");
             assert!(
-                !top.text.contains('歯'),
-                "particle-tail conversion must not yield 歯 for {input}: {:?}",
+                !top.text.contains('歯') && !top.text.contains('端'),
+                "particle-tail conversion must not yield 歯/端 for {input}: {:?}",
                 top.text
             );
             assert_ne!(top.text, "迚も", "input: {input}");
+            assert!(!top.text.starts_with('迚'), "input: {input}");
             assert!(!top.text.starts_with("撮ても"), "input: {input}");
+        }
+    }
+
+    #[test]
+    fn keeps_particle_after_loanword_when_a_verb_follows() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        assert!(
+            dictionary.has_system_dictionary(),
+            "quality test requires the official dictionary"
+        );
+        for (input, expected_prefix, forbidden_substrings) in [
+            ("すーぷはください", "スープは", &["スープ端", "スープ歯", "スープ派下さい"][..]),
+            ("すーぷはのみたい", "スープは", &["スープ端", "スープ歯", "端の味", "歯の"][..]),
+            ("すーぷはたべたい", "スープは食べ", &["スープ端", "スープ歯"][..]),
+            ("あついすーぷはたべたくない", "熱いスープは食べ", &["スープ端", "スープ歯"][..]),
+        ] {
+            let candidates =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default());
+            let top = candidates.first().expect("public conversion should produce a candidate");
+            assert!(
+                top.text.starts_with(expected_prefix),
+                "input {input}: expected prefix {expected_prefix:?}, got {:?}",
+                top.text
+            );
+            assert!(
+                top.text.contains('は'),
+                "particle は must survive for {input}: {:?}",
+                top.text
+            );
+            for forbidden in forbidden_substrings {
+                assert!(
+                    !top.text.contains(forbidden),
+                    "input {input}: must not contain {forbidden:?}, got {:?}",
+                    top.text
+                );
+            }
+            // Exact preferred surfaces for the two user-reported regressions.
+            if input == "すーぷはください" {
+                assert_eq!(top.text, "スープは下さい", "input: {input}");
+            }
+            if input == "すーぷはのみたい" {
+                assert_eq!(top.text, "スープは飲みたい", "input: {input}");
+            }
         }
     }
 
