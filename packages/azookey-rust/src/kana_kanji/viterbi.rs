@@ -31,6 +31,10 @@ const UNKNOWN_SPAN_PENALTY: f32 = -14.5;
 const INFLECTIONAL_SURFACE_PENALTY: f32 = -10.0;
 const ORTHOGRAPHIC_SURFACE_PENALTY: f32 = -3.0;
 const IDENTITY_SURFACE_PENALTY: f32 = -1.5;
+// A long identity row can hide a conventional multi-word Kanji segmentation
+// when the system dictionary has no full-span Kanji row. Keep short function
+// words and single lexical segments untouched.
+const IDENTITY_SEGMENTATION_PENALTY: f32 = -4.0;
 const MODEL_DEFAULT_METADATA_PENALTY: f32 = -2.0;
 const MODEL_DEFAULT_MID_PENALTY: f32 = -2.5;
 const COPULAR_CONTINUATION_PENALTY: f32 = -6.0;
@@ -644,6 +648,12 @@ pub fn convert_with_dictionary(
                                 &source_chars[start..end],
                                 entry,
                             )
+                            + identity_segmentation_penalty(
+                                dictionary,
+                                &chars[start..end],
+                                entry,
+                                bounded_dictionary_word_chars(options.max_dictionary_word_chars),
+                            )
                             + model_metadata_penalty(dictionary, entry)
                             + grammatical_context_bonus(&state, entry)
                             + copular_continuation_penalty(&state, entry)
@@ -779,6 +789,71 @@ fn identity_surface_penalty(
     } else {
         NO_SCORE
     }
+}
+
+/// Prefer a segmented Kanji path over a long system-dictionary identity row
+/// when the dictionary has no full-span Kanji alternative. This is deliberately
+/// a lattice-coverage check: it does not encode a phrase or a surface pair.
+fn identity_segmentation_penalty(
+    dictionary: &AzooKeyDictionary,
+    reading: &[char],
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if !dictionary.has_system_dictionary() || entry.surface != entry.reading || reading.len() < 2 {
+        return NO_SCORE;
+    }
+    let has_full_kanji_alternative = dictionary
+        .lookup_exact(&entry.reading)
+        .unwrap_or_default()
+        .iter()
+        .any(|candidate| contains_kanji(&candidate.surface));
+    if has_full_kanji_alternative
+        || !has_multi_kanji_segmentation(dictionary, reading, max_dictionary_word_chars)
+    {
+        NO_SCORE
+    } else {
+        IDENTITY_SEGMENTATION_PENALTY
+    }
+}
+
+fn has_multi_kanji_segmentation(
+    dictionary: &AzooKeyDictionary,
+    reading: &[char],
+    max_dictionary_word_chars: usize,
+) -> bool {
+    // State bits: number of covered edges (0, 1, or 2+) and Kanji edges
+    // (0, 1, or 2+), both capped at two because only the existence of a
+    // multi-Kanji segmentation matters here.
+    let mut reachable = vec![[false; 9]; reading.len() + 1];
+    reachable[0][0] = true;
+    for start in 0..reading.len() {
+        let entries = dictionary
+            .entries_starting_at(reading, start, max_dictionary_word_chars)
+            .unwrap_or_default();
+        for state in 0..9 {
+            if !reachable[start][state] {
+                continue;
+            }
+            let edge_count = state / 3;
+            let kanji_count = state % 3;
+            for candidate in &entries {
+                let candidate_len = candidate.reading.chars().count();
+                let end = start + candidate_len;
+                if candidate_len == 0
+                    || end > reading.len()
+                    || reading[start..end].iter().collect::<String>() != candidate.reading
+                {
+                    continue;
+                }
+                let next_edge_count = (edge_count + 1).min(2);
+                let next_kanji_count =
+                    (kanji_count + usize::from(contains_kanji(&candidate.surface))).min(2);
+                reachable[end][next_edge_count * 3 + next_kanji_count] = true;
+            }
+        }
+    }
+    reachable[reading.len()][2 * 3 + 2]
 }
 
 /// Avoid letting a generic/default metadata row beat a more specific system

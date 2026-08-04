@@ -28,32 +28,29 @@ fn main() {
 
     let readings: Vec<String> = if std::env::args().len() == 1 {
         [
-            // kana-should-win failures
+            // current accuracy failures
+            "みている",
+            "みて",
+            "はれ",
+            "きょうははれです",
             "いただきます",
-            "ください",
             "さます",
-            "ます",
-            "はん",
-            "より",
-            // kanji-should-win failures
             "おつかれさまでした",
-            "ふります",
-            "がくせい",
+            "りょうりがあついのでさます",
             // already-fixed (must not regress)
             "とても",
+            "すーぷはください",
             "すーぷはのみたい",
-            // numeric failures
+            "かせん",
+            "かこう",
+            "かわべ",
+            "えきへの",
+            // numeric / related
             "よっか",
-            "ついたち",
-            // partial readings for context
-            "いただく",
-            "くださる",
-            "さめる",
-            "ふる",
-            "がく",
-            "せい",
+            "ください",
             "おつかれ",
             "さま",
+            "いただく",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -103,14 +100,11 @@ fn main() {
             );
         }
         println!("  --- Viterbi n-best ---");
-        for (index, candidate) in convert_with_dictionary(
-            reading,
-            &dictionary,
-            ConversionOptions::default(),
-        )
-        .iter()
-        .take(8)
-        .enumerate()
+        for (index, candidate) in
+            convert_with_dictionary(reading, &dictionary, ConversionOptions::default())
+                .iter()
+                .take(8)
+                .enumerate()
         {
             println!(
                 "  {:>2}. score={:>9.3} text={:?} trailing={:?}",
