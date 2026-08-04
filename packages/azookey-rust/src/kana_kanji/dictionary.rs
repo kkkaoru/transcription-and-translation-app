@@ -1030,7 +1030,15 @@ fn is_competitive_converted_system_entry(
 
 /// Maximum score gap from the best sibling for a converted surface to suppress
 /// a multi-kana hiragana identity row.
-const COMPETITIVE_CONVERTED_VALUE_MARGIN: f32 = 4.0;
+///
+/// Calibrated against the accuracy corpus: a margin of 1.0 keeps the kana
+/// identity for readings where hiragana is the dominant spelling (`ください`
+/// identity -3.41 vs `下さい` -4.88, gap 1.48) while still suppressing it for
+/// ordinary words where the kanji surface is more frequent (`とうきょう` vs
+/// `東京`). A wider margin (4.0) lets `下さい` become competitive and suppress
+/// `ください`, regressing `スープはください`; a margin below 1.0 begins to lose
+/// should-convert words whose kanji surface is only slightly below the identity.
+const COMPETITIVE_CONVERTED_VALUE_MARGIN: f32 = 1.0;
 
 fn is_kanji_char(character: char) -> bool {
     let code = character as u32;
@@ -1855,8 +1863,9 @@ mod tests {
 
     #[test]
     fn suppresses_multi_kana_identity_when_competitive_kanji_exists() {
-        // Sibling rule: competitive kanji sibling ⇒ identity dropped.
-        let common_kanji = DictionaryEntry::plain("とうきょう", "東京", -6.0);
+        // Sibling rule: a competitive kanji sibling (within the relative margin)
+        // suppresses the identity row.
+        let common_kanji = DictionaryEntry::plain("とうきょう", "東京", -1.5);
         let identity = DictionaryEntry::plain("とうきょう", "とうきょう", -2.0);
         let filtered = filter_system_entries(vec![common_kanji.clone(), identity.clone()]);
         assert!(filtered.iter().any(|entry| entry.surface == "東京"), "common kanji must remain");

@@ -1986,7 +1986,7 @@ mod tests {
             }
             // Exact preferred surfaces for the two user-reported regressions.
             if input == "すーぷはください" {
-                assert_eq!(top.text, "スープは下さい", "input: {input}");
+                assert_eq!(top.text, "スープはください", "input: {input}");
             }
             if input == "すーぷはのみたい" {
                 assert_eq!(top.text, "スープは飲みたい", "input: {input}");
