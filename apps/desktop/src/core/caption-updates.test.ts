@@ -58,8 +58,38 @@ describe("mergeCaptionPayload", () => {
       startedAt: 10,
       receivedAt: 10,
     });
-
     expect(mergeCaptionPayload(previous, sourceOnly)).toEqual(sourceOnly);
+  });
+
+  it("drops a finalized cross-id utterance with close timing but no lexical relation", () => {
+    // Two finalized Parapper turns where the first ends with a particle (は)
+    // and the second arrives within the rolling-context window. With no lexical
+    // overlap/prefix and the first turn finished, the second must replace the
+    // visible slot instead of appending to the completed utterance.
+    const current = caption({
+      id: "turn-101",
+      sourceText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const next = caption({
+      id: "turn-102",
+      sourceText: "晴れでしょう",
+      startedAt: 2_000,
+      receivedAt: 2_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, next)).toMatchObject({
+      id: "turn-102",
+      sourceText: "晴れでしょう",
+      translationText: "",
+    });
   });
 
   it("continues a rolling-context source suffix across backend caption ids", () => {
@@ -340,6 +370,29 @@ describe("mergeCaptionPayload", () => {
     });
 
     expect(mergeCaptionPayload(previous, next)?.sourceText).toBe("今日は晴れ");
+  });
+
+  it("does not append a new source that overlaps a finalized prior caption", () => {
+    const previous = caption({
+      id: "turn-1",
+      sourceText: "明日の天気です。",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const next = caption({
+      id: "turn-2",
+      sourceText: "です。今日は晴れ",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(previous, next)?.sourceText).toBe("です。今日は晴れ");
   });
 
   it("drops a late translation for the prior rolling-context chunk", () => {

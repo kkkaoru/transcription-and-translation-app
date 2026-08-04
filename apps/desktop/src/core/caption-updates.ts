@@ -279,8 +279,11 @@ const mergeSourceText = (
   return `${currentText}${separator}${nextText}`;
 };
 
-const mergeCrossIdSourceText = (current: CaptionPayload, next: CaptionPayload): string =>
-  mergeSourceText(current, next, true);
+const mergeCrossIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {
+  // A finalized turn is a hard caption boundary. Do not let a repeated suffix
+  // from a genuinely new turn reopen it through the lexical-overlap path.
+  return current.isFinal === true ? trim(next.sourceText) : mergeSourceText(current, next, true);
+};
 
 /**
  * A Parapper turn usually preserves `id` across interim/final revisions, but
