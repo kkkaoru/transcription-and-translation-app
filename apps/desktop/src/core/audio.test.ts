@@ -66,6 +66,8 @@ describe("audio conversion", () => {
     expect(shouldFlushPartialAudio(7_680, 48_000)).toBe(true);
     expect(shouldFlushPartialAudio(1, 0)).toBe(false);
     expect(shouldFlushPartialAudio(0, 16_000)).toBe(false);
+    // Malformed per-call thresholds must fail back to the safe production minimum.
+    expect(shouldFlushPartialAudio(2_560, 16_000, Number.NaN)).toBe(true);
   });
 
   it("uses bounded worklet batches and an explicit script-processor fallback size", () => {
@@ -158,6 +160,19 @@ describe("audio conversion", () => {
 
     // A sample-rate switch cannot safely reuse a sample-count overlap.
     expect(context.append(new Float32Array(320).fill(0.3), 500)).toHaveLength(320);
+    expect(context.getSilenceMs()).toBe(0);
+  });
+
+  it("uses a safe sample rate and caps an oversized rolling window", () => {
+    const context = createRollingAudioContext({ overlapMs: 100, maxDurationMs: 100 });
+    const oversized = new Float32Array(3_200).fill(0.25);
+
+    const bounded = context.append(oversized, Number.NaN);
+
+    expect(context.getSampleRate()).toBe(TARGET_SAMPLE_RATE);
+    expect(bounded).toHaveLength(1_600);
+    expect(context.hasContext()).toBe(true);
+    context.markSilence(Number.NaN);
     expect(context.getSilenceMs()).toBe(0);
   });
 
@@ -825,6 +840,49 @@ describe("audio conversion", () => {
     ).toMatch(
       /muteEvents=1.*deviceChanges=2.*contextChanges=3.*contextRecovery=1.*streamDropped=4/,
     );
+  });
+
+  it("formats all active capture diagnostics fields for the debug panel", () => {
+    const snapshot = getLastAudioCaptureDiagnostics();
+    const detail = formatAudioCaptureDiagnostics({
+      ...snapshot,
+      active: true,
+      captureMode: "worklet",
+      constraintMode: "default",
+      contextState: "running",
+      sampleRate: 48_000,
+      trackReadyState: "live",
+      trackLabel: "Built-in Mic",
+      trackMuted: true,
+      trackMuteEvents: 1,
+      deviceChangeEvents: 1,
+      contextStateChanges: 1,
+      contextRecoveryAttempts: 1,
+      lastRmsDb: -42.5,
+      lastAcceptedRmsDb: -38.5,
+      lastAcceptedGain: 2,
+      chunksAccepted: 1,
+      chunksDroppedSilent: 1,
+      absoluteFloorDrops: 1,
+      consecutiveAbsoluteFloorDrops: 1,
+      streamFramesDropped: 1,
+      gateMode: "adaptive",
+      adaptiveFloorDb: null,
+    });
+
+    expect(detail).toContain("track=live");
+    expect(detail).toContain("muted");
+    expect(detail).toContain("muteEvents=1");
+    expect(detail).toContain("deviceChanges=1");
+    expect(detail).toContain("contextChanges=1");
+    expect(detail).toContain("contextRecovery=1");
+    expect(detail).toContain("acceptedRms=-38.5dB");
+    expect(detail).toContain("gain=2.00x");
+    expect(detail).toContain("silent=1");
+    expect(detail).toContain("floorDrops=1");
+    expect(detail).toContain("floorStreak=1");
+    expect(detail).toContain("streamDropped=1");
+    expect(detail).toContain("gate=adaptive");
   });
 
   it("only allocates verbose chunk logs when pipeline logging is enabled", () => {

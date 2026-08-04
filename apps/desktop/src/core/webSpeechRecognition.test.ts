@@ -625,6 +625,11 @@ describe("WebSpeechRecognitionStream", () => {
     recognition.emitEnd();
     expect(recognition.startCalls).toBe(1);
 
+    // A manual start during the grace window must wait so a delayed final is
+    // not lost when WebKit delivers it after onend.
+    stream.start();
+    expect(recognition.startCalls).toBe(1);
+
     // WebKit can queue this callback after onend. It must still reach the
     // consumer before the replacement recognition session starts.
     recognition.emitResult(resultEvent([{ transcript: "明日の天気", isFinal: true }]));

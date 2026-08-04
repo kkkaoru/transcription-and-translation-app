@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MessageKey } from "../i18n/messages";
-import { AudioCaptureError } from "./audio";
+import { AudioCaptureError, MicrophoneCapture } from "./audio";
 import { isNoSpeechBridgeError } from "./bridge";
 import {
   isTransientAudioNotice,
@@ -172,5 +172,33 @@ describe("notice helpers", () => {
 
   it("keeps diagnostics that already start at mode=", () => {
     expect(sanitizeNoSpeechDetail("mode=worklet · rms=-54.2dB")).toBe("mode=worklet · rms=-54.2dB");
+  });
+
+  it("keeps diagnostics that do not include a mode prefix", () => {
+    expect(sanitizeNoSpeechDetail("rms=-54.2dB · chunks=8")).toBe("rms=-54.2dB · chunks=8");
+  });
+
+  it("keeps a malformed rejection on the fallback key without fabricated detail", () => {
+    expect(noticeFromError(null, FALLBACK)).toEqual({ key: FALLBACK });
+  });
+
+  it("uses the latest capture diagnostics for no-speech and mapped DOM errors", () => {
+    const capture = new MicrophoneCapture();
+    const publishDiagnostics = (
+      capture as unknown as {
+        publishDiagnostics: (error: AudioCaptureError | null) => void;
+      }
+    ).publishDiagnostics.bind(capture);
+    publishDiagnostics(new AudioCaptureError("microphone-track-muted"));
+
+    const noSpeech = noticeForNoSpeech();
+    expect(noSpeech.key).toBe("message.noSpeechDetected");
+    expect(noSpeech.detail).toContain("error=microphone-track-muted");
+
+    const denied = noticeFromError(new DOMException("denied", "NotAllowedError"), FALLBACK);
+    expect(denied.key).toBe("message.microphonePermissionDenied");
+    expect(denied.detail).toContain("error=microphone-track-muted");
+
+    publishDiagnostics(null);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  compareParapperTurnCursor,
   createParapperOutputQueue,
   PARAPPER_OUTPUT_QUEUE_MAX_PENDING,
   PARAPPER_OUTPUT_QUEUE_MAX_TRACKED_TURNS,
@@ -161,6 +162,42 @@ describe("Parapper output coalescing queue", () => {
     expect(queue.getStats()).toMatchObject({ droppedPartials: 1, droppedFinals: 0 });
   });
 
+  it("orders cursors, drops stale finals, and keeps a different turn", async () => {
+    expect(
+      compareParapperTurnCursor({ isFinal: true, revision: 2 }, { isFinal: false, revision: 1 }),
+    ).toBe(1);
+    expect(
+      compareParapperTurnCursor(
+        { isFinal: false, outputSequence: 1 },
+        { isFinal: false, outputSequence: 2 },
+      ),
+    ).toBe(-1);
+
+    const processed: string[] = [];
+    const queue = createParapperOutputQueue<Item>((next) => {
+      processed.push(next.id);
+    });
+    const firstTurn = {
+      sessionId: "socket-1",
+      turnSessionId: 1,
+      turnId: 1,
+    };
+    queue.enqueue({ id: "new-final", isFinal: true, revision: 2, ...firstTurn });
+    queue.enqueue({ id: "old-final", isFinal: true, revision: 1, ...firstTurn });
+    queue.enqueue({
+      id: "other-turn-partial",
+      isFinal: false,
+      revision: 0,
+      ...firstTurn,
+      turnId: 2,
+    });
+
+    await queue.whenIdle();
+
+    expect(processed).toEqual(["new-final", "other-turn-partial"]);
+    expect(queue.getStats()).toMatchObject({ droppedFinals: 1, droppedPartials: 0 });
+  });
+
   it("does not let an older final remove a newer turn's pending partial", async () => {
     const started: string[] = [];
     const release: Array<() => void> = [];
@@ -243,6 +280,42 @@ describe("Parapper output coalescing queue", () => {
     queue.close();
   });
 
+  it("bounds queued partials from distinct turns while normalization is blocked", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queue = createParapperOutputQueue<Item>(() => blocked);
+    queue.enqueue({
+      id: "active",
+      isFinal: false,
+      sessionId: "socket-1",
+      turnSessionId: 1,
+      turnId: 0,
+      revision: 0,
+    });
+    await flush();
+
+    for (let turnId = 1; turnId <= PARAPPER_OUTPUT_QUEUE_MAX_PENDING + 4; turnId += 1) {
+      queue.enqueue({
+        id: `partial-${turnId}`,
+        isFinal: false,
+        sessionId: "socket-1",
+        turnSessionId: 1,
+        turnId,
+        revision: 1,
+      });
+    }
+
+    expect(queue.getStats()).toMatchObject({
+      pending: PARAPPER_OUTPUT_QUEUE_MAX_PENDING,
+      droppedPartials: 4,
+      droppedFinals: 0,
+    });
+    release();
+    queue.close();
+  });
+
   it("settles whenIdle after its finite timeout when a normalizer never returns", async () => {
     vi.useFakeTimers();
     const queue = createParapperOutputQueue<Item>(() => new Promise<void>(() => undefined));
@@ -250,6 +323,19 @@ describe("Parapper output coalescing queue", () => {
     const idle = queue.whenIdle(25);
     vi.advanceTimersByTime(25);
     await expect(idle).rejects.toThrow(/did not become idle/i);
+    queue.close();
+  });
+
+  it("uses the default and minimum idle timeout for malformed timeout values", async () => {
+    vi.useFakeTimers();
+    const queue = createParapperOutputQueue<Item>(() => new Promise<void>(() => undefined));
+    queue.enqueue(item("stuck"));
+    const defaultTimeout = queue.whenIdle(Number.NaN);
+    const minimumTimeout = queue.whenIdle(0);
+
+    vi.advanceTimersByTime(8_000);
+    await expect(defaultTimeout).rejects.toThrow(/did not become idle/i);
+    await expect(minimumTimeout).rejects.toThrow(/did not become idle/i);
     queue.close();
   });
 });

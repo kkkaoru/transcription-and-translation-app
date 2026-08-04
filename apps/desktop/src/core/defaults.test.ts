@@ -17,6 +17,7 @@ import {
   DEFAULT_VAD_THRESHOLD,
   getDefaultRecognitionMode,
   isRecognitionMode,
+  mergeBrowserSource,
   mergeConfig,
   migrateSilenceGateDb,
   normalizeVadIntervalMs,
@@ -132,6 +133,19 @@ describe("default configuration", () => {
       overlay: { browserSource: { enabled: "yes" as never, port: "1421" as never } },
     });
     expect(merged.overlay.browserSource).toEqual({ enabled: false, port: 1_421 });
+  });
+
+  it("normalizes a missing browser source block without a base config", () => {
+    expect(mergeBrowserSource(undefined, undefined)).toEqual({
+      enabled: false,
+      port: DEFAULT_BROWSER_SOURCE_PORT,
+    });
+    expect(mergeBrowserSource(undefined, { enabled: true, port: BROWSER_SOURCE_PORT_MIN })).toEqual(
+      {
+        enabled: true,
+        port: BROWSER_SOURCE_PORT_MIN,
+      },
+    );
   });
 
   it("resolves the effective silence gate without treating an adaptive fallback as active", () => {

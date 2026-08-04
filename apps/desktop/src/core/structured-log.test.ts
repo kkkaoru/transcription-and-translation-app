@@ -252,4 +252,48 @@ describe("structuredLog", () => {
     expect(record.epochMs).toBe(0);
     expect(record.at).toBe("1970-01-01T00:00:00.000Z");
   });
+
+  it("keeps malformed runtime values safe and JSON-compatible", () => {
+    const throwingValue = {
+      toString: () => {
+        throw new Error("cannot stringify");
+      },
+    };
+    const record = appendStructuredLog({
+      level: "info",
+      message: throwingValue as never,
+      fields: { nested: { token: "secret" } as never },
+    });
+
+    expect(record.message).toBe("(empty)");
+    expect(record.fields["nested"]).toBe("[REDACTED]");
+    expect(redactSensitiveText(throwingValue as never)).toBeNull();
+  });
+
+  it("isolates subscriber and console transport failures", () => {
+    const first = vi.fn(() => {
+      throw new Error("subscriber failed");
+    });
+    const second = vi.fn();
+    subscribeStructuredLogs(first);
+    subscribeStructuredLogs(second);
+    setLogLevel("info");
+    expect(first).toHaveBeenCalled();
+    expect(second).toHaveBeenCalled();
+
+    vi.spyOn(console, "info").mockImplementation(() => {
+      throw new Error("console unavailable");
+    });
+    const record = appendStructuredLog({ level: "info", message: "still stored" });
+    expect(getStructuredLogs()[0]).toEqual(record);
+  });
+
+  it("keeps the selected level when localStorage rejects a preference write", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("private mode");
+    });
+
+    expect(setLogLevel("debug")).toBe("debug");
+    expect(getLogLevel()).toBe("debug");
+  });
 });
