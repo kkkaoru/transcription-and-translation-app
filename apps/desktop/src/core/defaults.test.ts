@@ -343,6 +343,48 @@ describe("default configuration", () => {
     expect(merged.overlay.translation.fontSizePx).toBe(29); // default preserved
   });
 
+  it("mergeConfig normalizes non-finite/null/undefined overlay layout numerics to defaults", () => {
+    // Legacy persisted configs may carry null (JSON) or NaN/Infinity for layout
+    // numerics. The overlay spread must not copy those straight through or the
+    // DOM/native renderer would paint at 0% / NaNpx instead of the documented
+    // defaults.
+    const merged = mergeConfig({
+      overlay: {
+        captionXPercent: null as never,
+        captionYPercent: Number.NaN,
+        gapPx: undefined,
+        safeAreaPx: Number.POSITIVE_INFINITY,
+        width: Number.NaN,
+        height: null as never,
+      },
+    });
+    expect(merged.overlay.captionXPercent).toBe(50);
+    expect(merged.overlay.captionYPercent).toBe(88);
+    expect(merged.overlay.gapPx).toBe(14);
+    expect(merged.overlay.safeAreaPx).toBe(42);
+    expect(merged.overlay.width).toBe(1_280);
+    expect(merged.overlay.height).toBe(720);
+  });
+
+  it("mergeConfig preserves finite overlay layout values", () => {
+    const merged = mergeConfig({
+      overlay: {
+        captionXPercent: 35,
+        captionYPercent: 80,
+        gapPx: 20,
+        safeAreaPx: 60,
+        width: 1_920,
+        height: 1_080,
+      },
+    });
+    expect(merged.overlay.captionXPercent).toBe(35);
+    expect(merged.overlay.captionYPercent).toBe(80);
+    expect(merged.overlay.gapPx).toBe(20);
+    expect(merged.overlay.safeAreaPx).toBe(60);
+    expect(merged.overlay.width).toBe(1_920);
+    expect(merged.overlay.height).toBe(1_080);
+  });
+
   it("isRecognitionMode validates mode values", () => {
     expect(isRecognitionMode("parapper-raw")).toBe(true);
     expect(isRecognitionMode("web-speech")).toBe(true);

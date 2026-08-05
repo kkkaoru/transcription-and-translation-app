@@ -486,6 +486,18 @@ export const mergeBrowserSource = (
   };
 };
 
+/**
+ * Normalize a numeric overlay layout value to a finite default at merge time.
+ *
+ * Legacy persisted configs may carry `null` (JSON) or non-finite `NaN`/
+ * `Infinity` for layout numerics. Copying those through the overlay spread
+ * would make the DOM overlay paint at `0%` / `NaNpx` and the native frame
+ * renderer fall back to its own per-field defaults, diverging from the merged
+ * config. Any value that is not a finite number collapses to the default.
+ */
+export const normalizeLayoutNumber = (value: unknown, defaultValue: number): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : defaultValue;
+
 export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   const base = createDefaultConfig();
   const input = candidate;
@@ -522,6 +534,20 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
     overlay: {
       ...base.overlay,
       ...input.overlay,
+      width: normalizeLayoutNumber(input.overlay?.width, base.overlay.width),
+      height: normalizeLayoutNumber(input.overlay?.height, base.overlay.height),
+      x: normalizeLayoutNumber(input.overlay?.x, base.overlay.x),
+      y: normalizeLayoutNumber(input.overlay?.y, base.overlay.y),
+      gapPx: normalizeLayoutNumber(input.overlay?.gapPx, base.overlay.gapPx),
+      safeAreaPx: normalizeLayoutNumber(input.overlay?.safeAreaPx, base.overlay.safeAreaPx),
+      captionXPercent: normalizeLayoutNumber(
+        input.overlay?.captionXPercent,
+        base.overlay.captionXPercent,
+      ),
+      captionYPercent: normalizeLayoutNumber(
+        input.overlay?.captionYPercent,
+        base.overlay.captionYPercent,
+      ),
       source: { ...base.overlay.source, ...input.overlay?.source },
       translation: { ...base.overlay.translation, ...input.overlay?.translation },
       browserSource: mergeBrowserSource(base.overlay.browserSource, input.overlay?.browserSource),
