@@ -438,6 +438,54 @@ pub async fn transcribe_audio_chunk(
 /// ASR; this command uses the sidecar's explicit AzooKey input when present and
 /// otherwise falls back to the protocol text, then reuses the same cached
 /// normalizer and translation stages as HTTP callers.
+///
+/// Route a normalized Parapper caption to the publish channel that matches the
+/// producer's generation contract, mirroring `publish_source_caption_gated`.
+///
+/// A legacy no-generation producer is never generation-fenced
+/// (`parapper_output_generation_is_current` treats `None` as unconditionally
+/// current and `normalize_parapper_output` counts it as an unfenced accept), so
+/// its caption publishes under the status-only contract: only capture activity
+/// qualifies it, and a Stop+Start that supersedes `fresh_generation` (the
+/// command's read at processing start) must not silently drop it. A stamped
+/// producer stays behind the generation gate (`publish_caption_for_generation`)
+/// so a superseded enqueue-time generation is dropped at publish time exactly
+/// as the frontend queue expects.
+///
+/// The `fresh_generation` parameter (the command's read at processing start) is
+/// retained so the legacy branch is testably distinguishable from the historical
+/// buggy behavior that routed it through the generation gate under that read —
+/// which dropped the caption when a Stop+Start superseded it. The fixed legacy
+/// branch ignores it by design (never generation-fenced); the parameter exists
+/// for the revert-check test and to document the interleaving it prevents.
+fn publish_parapper_caption(
+    state: &AppState,
+    enqueued_generation: Option<u64>,
+    _fresh_generation: u64,
+    caption: &CaptionPayload,
+    emit: impl FnOnce(&CaptionPayload),
+) -> bool {
+    match enqueued_generation {
+        // A stamped producer keeps the generation gate.
+        Some(generation) => state.publish_caption_for_generation(generation, caption, emit),
+        // A legacy producer is never generation-fenced: publish under the
+        // status-only contract (hold the status lock through record + emit so
+        // `stop_capture`'s idle transition stays ordered after an accepted
+        // caption, same contract as `emit_caption_update`).
+        None => {
+            let Ok(status) = state.status.lock() else {
+                return false;
+            };
+            if !capture_is_active(status.status.as_str()) {
+                return false;
+            }
+            state.record_latest_caption(caption);
+            emit(caption);
+            true
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn normalize_parapper_output(
     app: AppHandle,
@@ -486,8 +534,27 @@ pub async fn normalize_parapper_output(
         emit_pipeline_stage(&app_for_stages, &config_for_stages, stage, capture_generation);
     };
     let app_for_captions = app.clone();
+    let enqueued_generation = output.capture_generation;
     let mut on_caption = move |caption: &CaptionPayload| {
-        emit_caption_update_for_generation(&app_for_captions, caption, capture_generation);
+        // Legacy producers (enqueued_generation == None) publish under the
+        // status-only contract and are deliberately never generation-fenced:
+        // a Stop+Start that supersedes this command's fresh-read generation
+        // must not silently drop their legitimate caption (the gate already
+        // blessed them as unconditionally current and counted them as unfenced
+        // accepts). Stamped producers keep the generation gate so a superseded
+        // enqueue-time generation is dropped at publish time.
+        let Some(state) = app_for_captions.try_state::<AppState>() else {
+            return;
+        };
+        publish_parapper_caption(
+            &state,
+            enqueued_generation,
+            capture_generation,
+            caption,
+            |payload| {
+                emit_caption_event(&app_for_captions, payload);
+            },
+        );
     };
     match state
         .pipeline
@@ -1413,13 +1480,14 @@ mod tests {
     use super::{
         capture_is_active, ensure_overlay_window, observe_http_empty_asr,
         parapper_output_generation_is_current, persistent_asr_loss_message,
-        publish_source_caption_gated, redact_runtime_text, sanitize_debug_json,
-        sanitize_export_body, source_caption_payload, stop_generation_is_current,
-        validate_overlay_frame_dimensions, NativeOverlayFrame, SourceCaptionInput,
+        publish_parapper_caption, publish_source_caption_gated, redact_runtime_text,
+        sanitize_debug_json, sanitize_export_body, source_caption_payload,
+        stop_generation_is_current, validate_overlay_frame_dimensions, NativeOverlayFrame,
+        SourceCaptionInput,
     };
     use crate::config::AppConfig;
     use crate::output::OutputStatus;
-    use crate::pipeline::ParapperRecognitionInput;
+    use crate::pipeline::{CaptionPayload, ParapperRecognitionInput};
     use crate::state::{AppState, ExpectedEmptyAsrResult, ASR_EMPTY_RESULT_WINDOW};
     use base64::Engine;
 
@@ -1753,6 +1821,179 @@ mod tests {
         state.record_parapper_output_superseded();
 
         assert_eq!(state.parapper_output_superseded_count(), 1);
+    }
+
+    #[test]
+    fn legacy_parapper_output_always_publishes_unfenced_even_after_a_stop_start() {
+        // A legacy producer never captures an enqueue-time generation, so the
+        // gate treats its output as unconditionally current. Its caption publish
+        // must therefore take the status-only route (`publish_parapper_caption`
+        // with `None`), never the generation-fenced one. Before the fix, the
+        // caption was routed through `emit_caption_update_for_generation` with
+        // the command's fresh-read generation; a Stop+Start landing between that
+        // read and the normalizer's on_caption made
+        // `publish_caption_for_generation` reject it — silently dropping a
+        // legitimate caption despite the documented "legacy never fenced"
+        // contract.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+            status.backend_reachable = true;
+            status.last_error = None;
+        }
+        // The command reads the generation at processing start, then a Stop+Start
+        // bumps it before the caption is emitted.
+        let fresh_generation = state.current_capture_generation();
+        assert_eq!(fresh_generation, 1);
+        state.begin_capture_generation();
+        assert_ne!(state.current_capture_generation(), fresh_generation);
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+        }
+
+        let caption = CaptionPayload {
+            id: "parapper-legacy".to_string(),
+            source_text: "レガシー出力".to_string(),
+            azookey_input_text: None,
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+        };
+        let mut emitted = 0;
+
+        // Demonstrates the drop the fix eliminates: publishing under the stale
+        // fresh-read generation (the old route) is rejected.
+        assert!(!state.publish_caption_for_generation(fresh_generation, &caption, |_| {
+            emitted += 1;
+        }));
+        assert_eq!(emitted, 0, "the stale generation gate must not be the legacy route");
+
+        // The fix: `None` (legacy) selects the status-only publish, which
+        // records the replay slot and emits while status is still active, even
+        // though `fresh_generation` was superseded by the Stop+Start.
+        let published =
+            publish_parapper_caption(&state, None, fresh_generation, &caption, |_| emitted += 1);
+        assert!(published);
+        assert_eq!(emitted, 1, "a legacy caption must survive a Stop+Start interleave");
+        assert_eq!(
+            state.latest_caption(),
+            Some(caption),
+            "a legacy caption must still reach the replay slot"
+        );
+    }
+
+    #[test]
+    fn legacy_route_is_status_only_and_never_generation_fenced() {
+        // Pins the routing contract `normalize_parapper_output` now applies:
+        // the absence of an enqueue-time generation selects the status-only
+        // publish, and a stamped generation — current or not — stays on the
+        // generation-fenced emit.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        let enqueued_generation = state.current_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+        }
+        let caption = CaptionPayload {
+            id: "parapper-route".to_string(),
+            source_text: "ルーティング".to_string(),
+            azookey_input_text: None,
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+        };
+
+        let mut emitted = 0;
+        assert!(
+            publish_parapper_caption(
+                &state,
+                Some(enqueued_generation),
+                enqueued_generation,
+                &caption.clone(),
+                |_| emitted += 1,
+            ),
+            "a still-current stamped generation publishes through the gate"
+        );
+        assert_eq!(emitted, 1);
+        assert_eq!(state.latest_caption(), Some(caption.clone()));
+
+        // After a Stop+Start the stamped generation is superseded and must be
+        // dropped, while the legacy route still publishes.
+        state.begin_capture_generation();
+        let live_generation = state.current_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "capturing".to_string();
+        }
+        let mut emitted_stale = 0;
+        assert!(!publish_parapper_caption(
+            &state,
+            Some(enqueued_generation),
+            live_generation,
+            &caption,
+            |_| emitted_stale += 1,
+        ));
+        assert_eq!(
+            emitted_stale, 0,
+            "a superseded stamped generation must never publish into the newer session"
+        );
+        let mut emitted_legacy = 0;
+        assert!(publish_parapper_caption(&state, None, live_generation, &caption, |_| {
+            emitted_legacy += 1
+        },));
+        assert_eq!(emitted_legacy, 1, "a legacy producer is never generation-fenced");
+    }
+
+    #[test]
+    fn legacy_route_rejects_when_capture_is_idle() {
+        // Status-only means exactly that: an idle session rejects even a legacy
+        // caption, matching the `publish_source_caption_gated(None)` contract.
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        state.begin_capture_generation();
+        {
+            let mut status = state.status.lock().expect("status lock");
+            status.status = "idle".to_string();
+        }
+        let caption = CaptionPayload {
+            id: "parapper-idle".to_string(),
+            source_text: "停止中".to_string(),
+            azookey_input_text: None,
+            translation_text: String::new(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+        };
+        let mut emitted = 0;
+        assert!(
+            !publish_parapper_caption(&state, None, 1, &caption, |_| emitted += 1),
+            "an idle session must not emit a caption"
+        );
+        assert_eq!(emitted, 0);
+        assert_eq!(state.latest_caption(), None);
     }
 
     fn source_caption_with_generation(id: &str) -> (AppState, crate::pipeline::CaptionPayload) {
