@@ -514,6 +514,43 @@ fn is_sane_output(original: &str, original_chars: &HashSet<char>, candidate: &st
     true
 }
 
+/// Descending combined-score ordering with NaN ranked *last*.
+///
+/// `f64::total_cmp` orders NaN as the greatest value, so a descending
+/// `sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score))` puts a NaN
+/// candidate at rank 0 -- exactly where a caller takes "the winner". That can
+/// happen in practice: `lm_weight = 0.0` times a `-inf` LM score is `NaN` in
+/// IEEE-754, as is any `NaN` weight or `NaN` LM score. A NaN combined score
+/// carries no information and must never out-rank a real candidate, so NaN is
+/// pinned to the bottom of the ranking here. Identical to `total_cmp` for
+/// every all-finite input, which is how the 1-best path keeps byte-identical
+/// behavior on existing inputs.
+fn combined_score_cmp(a: f64, b: f64) -> std::cmp::Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => b.total_cmp(&a),
+    }
+}
+
+/// True when `candidate`'s acoustic score should displace `current` as the
+/// ASR 1-best reference.
+///
+/// A NaN acoustic score (from a malformed upstream N-best entry) never
+/// displaces a finite one, so a corrupted NaN-score candidate can never
+/// become "the original" -- which would otherwise let an empty NaN-acoustic
+/// candidate disable the sanity guard and drop the caption. Ties keep the
+/// earlier-listed candidate, matching the ASR decoder's own rank order and
+/// the stable sort used elsewhere.
+fn acoustic_beats(candidate: f64, current: f64) -> bool {
+    match (candidate.is_nan(), current.is_nan()) {
+        (false, true) => true,
+        (true, _) => false,
+        _ => candidate > current,
+    }
+}
+
 impl<S: CandidateScorer> Rescorer<S> {
     /// Creates a rescorer with default weights.
     pub fn new(scorer: S, rules: AsrConfusionRules) -> Self {
@@ -557,7 +594,7 @@ impl<S: CandidateScorer> Rescorer<S> {
                 }
             })
             .collect();
-        ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
+        ranked.sort_by(|a, b| combined_score_cmp(a.combined_score, b.combined_score));
         ranked
     }
 
@@ -582,7 +619,14 @@ impl<S: CandidateScorer> Rescorer<S> {
 
         match (top_sane, original_score) {
             (Some(top), Some(original_score)) => {
-                if top.combined_score - original_score >= self.overcorrection_margin {
+                // `is_finite` guards the gate math itself: with a NaN
+                // combined score (e.g. from a NaN `lm_weight`) the difference
+                // is NaN and `>=` is silently always-false. Fail-open means
+                // that fallback must be explicit, not accidental.
+                if top.combined_score.is_finite()
+                    && original_score.is_finite()
+                    && top.combined_score - original_score >= self.overcorrection_margin
+                {
                     top.text.clone()
                 } else {
                     hypothesis.to_string()
@@ -638,7 +682,7 @@ impl<S: CandidateScorer> Rescorer<S> {
     /// ```
     pub fn rerank_nbest(&self, candidates: &[NbestCandidate]) -> Vec<RankedNbestCandidate> {
         let mut ranked = self.score_nbest(candidates);
-        ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
+        ranked.sort_by(|a, b| combined_score_cmp(a.combined_score, b.combined_score));
         ranked
     }
 
@@ -689,13 +733,13 @@ impl<S: CandidateScorer> Rescorer<S> {
         }
 
         // The ASR 1-best: the candidate with the highest acoustic score,
-        // first-listed wins ties. `total_cmp` gives a full order (including
-        // NaN) so this never panics and never gets "stuck" on a NaN score.
+        // first-listed wins ties. `acoustic_beats` treats a NaN acoustic
+        // score as the worst value, so a malformed NaN-score candidate can
+        // never become "the original" (which would otherwise disable the
+        // sanity guard and could drop the caption).
         let mut original_idx = 0usize;
         for (i, c) in candidates.iter().enumerate().skip(1) {
-            if c.acoustic_score.total_cmp(&candidates[original_idx].acoustic_score)
-                == std::cmp::Ordering::Greater
-            {
+            if acoustic_beats(c.acoustic_score, candidates[original_idx].acoustic_score) {
                 original_idx = i;
             }
         }
@@ -708,14 +752,24 @@ impl<S: CandidateScorer> Rescorer<S> {
         let original_score = scored[original_idx].combined_score;
 
         let mut ranked = scored;
-        ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
+        ranked.sort_by(|a, b| combined_score_cmp(a.combined_score, b.combined_score));
 
         let original_chars: HashSet<char> = original_text.chars().collect();
         let top_sane =
             ranked.iter().find(|c| is_sane_output(&original_text, &original_chars, &c.text));
 
         match top_sane {
-            Some(top) if top.combined_score - original_score >= self.overcorrection_margin => {
+            // `is_finite` guards the gate math itself: a NaN combined score
+            // (e.g. from a NaN weight or a -inf LM score times weight 0)
+            // makes the difference NaN, which would silently keep the gate
+            // from ever passing. Fail-open demands the opposite of silence:
+            // when the scores carry no information, fall back to the ASR
+            // 1-best rather than promoting a NaN-scored candidate.
+            Some(top)
+                if top.combined_score.is_finite()
+                    && original_score.is_finite()
+                    && top.combined_score - original_score >= self.overcorrection_margin =>
+            {
                 top.text.clone()
             }
             _ => original_text,
@@ -2058,6 +2112,77 @@ mod tests {
         // for every candidate, so every margin check is false and the
         // acoustic top (かいしゃ) is returned.
         assert_eq!(best, "かいしゃ");
+    }
+    /// A scorer that returns -inf for one specific text and a realistic
+    /// negative score for everything else.
+    struct InfForOneText {
+        inf_text: &'static str,
+    }
+    impl CandidateScorer for InfForOneText {
+        fn score(&self, text: &str) -> f64 {
+            if text == self.inf_text {
+                f64::NEG_INFINITY
+            } else {
+                -10.0
+            }
+        }
+    }
+
+    #[test]
+    fn best_nbest_nan_acoustic_is_never_chosen_as_the_original() {
+        // A malformed candidate with a NaN acoustic score must never be
+        // treated as the ASR 1-best reference. `f64::total_cmp` orders NaN
+        // as the *greatest* value, so without a guard the empty "" candidate
+        // below would be selected as the "original", and because its text is
+        // empty the sanity guard would be disabled (empty original -> accept
+        // anything). The rescorer would then *drop* the caption, returning
+        // "". Fail-open demands the opposite: a NaN acoustic score ranks
+        // last, the finite-acoustic candidate is the original, and the
+        // caption is never dropped.
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "".into(), acoustic_score: f64::NAN },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "かいしゃ", "a NaN-acoustic empty candidate must never drop the caption");
+    }
+
+    #[test]
+    fn rerank_nbest_sorts_nan_combined_scores_below_finite_scores() {
+        // With lm_weight = 0.0, a -inf LM score yields 0.0 * -inf = NaN for
+        // that candidate's combined score. A NaN combined score must sort
+        // *below* every finite score, never to the top, so a NaN candidate
+        // can never occupy ranked[0].
+        let scorer = InfForOneText { inf_text: "がいしゃ" };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(0.0);
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -2.0 },
+        ];
+        let ranked = rescorer.rerank_nbest(&candidates);
+        assert_eq!(ranked.len(), 2);
+        // かいしゃ: combined = -3.0 + 0.0 * -10 = -3.0 (finite)
+        // がいしゃ: combined = -2.0 + 0.0 * -inf = NaN
+        assert!(!ranked[0].combined_score.is_nan(), "NaN must never rank first");
+        assert!(ranked[1].combined_score.is_nan());
+        assert_eq!(ranked[0].text, "かいしゃ");
+    }
+
+    #[test]
+    fn nan_lm_weight_fails_open_to_the_acoustic_top() {
+        // A NaN lm_weight makes every combined score NaN. The gate must not
+        // panic and must fail open toward the ASR 1-best (the finite-acoustic
+        // top) instead of promoting a NaN-scored candidate.
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(f64::NAN);
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -2.0 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "がいしゃ", "NaN lm_weight must fail open to the acoustic top");
     }
 
     // -------------------------------------------------------------------
