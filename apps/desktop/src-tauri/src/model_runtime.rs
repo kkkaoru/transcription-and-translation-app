@@ -279,11 +279,97 @@ pub fn gateway_routes() -> Value {
     Value::Object(models)
 }
 
+/// Distribution metadata for a multi-file archive model.
+///
+/// Unlike [`ModelRuntimeSpec`] (a single GGUF file fetched for a sidecar
+/// server), an `ArchiveModelSpec` describes a ZIP that is downloaded, SHA-256
+/// verified, and Zip-Slip-safe extracted to a cache directory. The existing
+/// single-file GGUF download path is untouched — this struct is an additive
+/// parallel path for archive models such as the input-LM N-gram tries.
+//
+// Not yet wired into a Tauri command (that requires editing lib.rs).
+// Tested and ready; remove `allow(dead_code)` once registered.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchiveModelSpec {
+    /// Short stable identifier (used in logs and status keys).
+    pub id: &'static str,
+    pub hf_repo: &'static str,
+    /// Pinned Hugging Face revision (commit SHA).
+    pub hf_revision: &'static str,
+    /// File name within the HF repo (must be a `.zip`).
+    pub hf_file: &'static str,
+    /// Expected byte count of the archive.
+    pub expected_bytes: u64,
+    /// Expected SHA-256 of the archive, lowercase hex.
+    pub expected_sha256: &'static str,
+    /// Subdirectory under the cache root where the archive is extracted.
+    pub extract_subdir: &'static str,
+    /// Files that must exist after extraction (relative to `extract_subdir`).
+    pub expected_files: &'static [&'static str],
+}
+
+/// The input-LM N-gram model distributed as a 120 MB ZIP at
+/// `Miwa-Keita/input_n5_lm_v1`. The four `.marisa` tries are loaded in-process
+/// by [`crate::pipeline::Pipeline`] via `caption_bridge_input_lm::marisa::open_model`.
+/// When the archive is absent or extraction fails, the pipeline stays
+/// fail-open: `open_model` returns an error and the rescorer falls back to the
+/// original ASR reading (see `Pipeline::rescore_reading`).
+#[allow(dead_code)]
+pub const INPUT_LM_ARCHIVE_SPEC: ArchiveModelSpec = ArchiveModelSpec {
+    id: "input-n5-lm-v1",
+    hf_repo: "Miwa-Keita/input_n5_lm_v1",
+    hf_revision: "6153c4693ee202049b6cb834396e658562c147b3",
+    hf_file: "input_n5_lm_v1.zip",
+    expected_bytes: 120_372_659,
+    expected_sha256: "0aaf326140a92d577b2020905346672b8cc4c47e63516328add0f197568aaf7a",
+    extract_subdir: "input_n5_lm_v1",
+    expected_files: &["lm_c_abc.marisa", "lm_u_abx.marisa", "lm_u_xbc.marisa", "lm_r_xbx.marisa"],
+};
+
+/// Hugging Face resolve URL for an archive model, pinned to `spec.hf_revision`.
+#[allow(dead_code)]
+pub fn archive_download_url(spec: &ArchiveModelSpec) -> String {
+    format!(
+        "https://huggingface.co/{}/resolve/{}/{}?download=true",
+        spec.hf_repo, spec.hf_revision, spec.hf_file
+    )
+}
+
+/// Default cache root for the input-LM model: `$HOME/.cache/caption-bridge-input-lm`.
+/// Matches the path used by `Pipeline::default_model_path` so the extracted
+/// files land exactly where `open_model` expects them.
+#[allow(dead_code)]
+pub fn input_lm_cache_root() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".cache").join("caption-bridge-input-lm")
+}
+
+/// Directory where `spec` is extracted under `cache_root`.
+#[allow(dead_code)]
+pub fn archive_extract_dir(cache_root: &Path, spec: &ArchiveModelSpec) -> PathBuf {
+    cache_root.join(spec.extract_subdir)
+}
+
+/// Model path stem for `open_model` (e.g. `.../input_n5_lm_v1/lm`). The `.marisa`
+/// suffix is appended by `open_model` per-trie.
+#[allow(dead_code)]
+pub fn archive_model_path(cache_root: &Path, spec: &ArchiveModelSpec) -> PathBuf {
+    archive_extract_dir(cache_root, spec).join("lm")
+}
+
+/// Returns `true` when every file in `spec.expected_files` exists under `extract_dir`.
+#[allow(dead_code)]
+pub fn archive_model_extracted(extract_dir: &Path, spec: &ArchiveModelSpec) -> bool {
+    spec.expected_files.iter().all(|file| extract_dir.join(file).is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        download_url, ensure_downloaded, gateway_routes, model_path, selected_specs,
-        sidecar_arguments, spec, ModelServer,
+        archive_download_url, archive_extract_dir, archive_model_extracted, archive_model_path,
+        download_url, ensure_downloaded, gateway_routes, input_lm_cache_root, model_path,
+        selected_specs, sidecar_arguments, spec, ModelServer, INPUT_LM_ARCHIVE_SPEC,
     };
     use crate::config::AppConfig;
     use std::path::Path;
@@ -367,5 +453,82 @@ mod tests {
         );
 
         tokio::fs::remove_dir_all(&models_dir).await.expect("remove downloaded test model");
+    }
+
+    #[test]
+    fn archive_download_url_is_pinned_to_the_reviewed_revision() {
+        assert_eq!(
+            archive_download_url(&INPUT_LM_ARCHIVE_SPEC),
+            "https://huggingface.co/Miwa-Keita/input_n5_lm_v1/resolve/6153c4693ee202049b6cb834396e658562c147b3/input_n5_lm_v1.zip?download=true"
+        );
+    }
+
+    #[test]
+    fn archive_spec_lists_the_four_tries_open_model_loads() {
+        // `open_model` reads exactly these four tries (see TRIE_SUFFIXES in
+        // caption-bridge-input-lm). The spec must list all of them so the
+        // post-extraction verification catches an incomplete archive.
+        assert_eq!(
+            INPUT_LM_ARCHIVE_SPEC.expected_files,
+            &["lm_c_abc.marisa", "lm_u_abx.marisa", "lm_u_xbc.marisa", "lm_r_xbx.marisa"]
+        );
+    }
+
+    #[test]
+    fn archive_paths_resolve_under_the_cache_root() {
+        let root = Path::new("/tmp/kotoba-test-cache");
+        assert_eq!(
+            archive_extract_dir(root, &INPUT_LM_ARCHIVE_SPEC),
+            Path::new("/tmp/kotoba-test-cache/input_n5_lm_v1")
+        );
+        assert_eq!(
+            archive_model_path(root, &INPUT_LM_ARCHIVE_SPEC),
+            Path::new("/tmp/kotoba-test-cache/input_n5_lm_v1/lm")
+        );
+    }
+
+    #[test]
+    fn archive_model_extracted_is_true_only_when_every_expected_file_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-archive-extracted-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let extract_dir = archive_extract_dir(&root, &INPUT_LM_ARCHIVE_SPEC);
+        std::fs::create_dir_all(&extract_dir).unwrap();
+
+        assert!(
+            !archive_model_extracted(&extract_dir, &INPUT_LM_ARCHIVE_SPEC),
+            "empty directory must not count as extracted"
+        );
+
+        // Add files one by one — only the last one should flip to true.
+        let total = INPUT_LM_ARCHIVE_SPEC.expected_files.len();
+        for (i, file) in INPUT_LM_ARCHIVE_SPEC.expected_files.iter().enumerate() {
+            std::fs::write(extract_dir.join(file), b"dummy").unwrap();
+            assert_eq!(
+                archive_model_extracted(&extract_dir, &INPUT_LM_ARCHIVE_SPEC),
+                i + 1 == total,
+                "extraction check must be false until every expected file is present"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn input_lm_cache_root_matches_pipeline_default_model_path() {
+        // The cache root + extract_subdir + "lm" must equal the path that
+        // Pipeline::default_model_path() returns, so the downloaded files
+        // land exactly where open_model expects them.
+        let root = input_lm_cache_root();
+        let model_stem = archive_model_path(&root, &INPUT_LM_ARCHIVE_SPEC);
+        assert!(
+            model_stem.ends_with(std::path::Path::new(
+                ".cache/caption-bridge-input-lm/input_n5_lm_v1/lm"
+            )),
+            "model stem must match the pipeline default: {}",
+            model_stem.display()
+        );
     }
 }

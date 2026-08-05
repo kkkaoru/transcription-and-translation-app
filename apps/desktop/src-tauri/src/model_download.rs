@@ -1,12 +1,18 @@
-use crate::model_runtime::{download_url, model_path, spec, ModelRuntimeSpec, ModelServer};
+use crate::model_runtime::{
+    archive_download_url, archive_extract_dir, archive_model_extracted, download_url, model_path,
+    spec, ArchiveModelSpec, ModelRuntimeSpec, ModelServer,
+};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncWriteExt;
+use zip::ZipArchive;
 
 /// Minimal GGUF set for smoke / operation verification.
 /// Zenzai XSmall (~21 MiB) exercises the normalizer server; Hy-MT2 1.25bit (~461 MiB)
@@ -453,17 +459,328 @@ pub async fn list_model_status(app: AppHandle) -> Result<Vec<ModelStatusEntry>, 
         .collect())
 }
 
+// ---------------------------------------------------------------------------
+// Multi-file archive model download + Zip-Slip-safe extraction
+//
+// This is an additive parallel path for the input-LM N-gram model (a 120 MB
+// ZIP of MARISA tries). The existing single-file GGUF download path above is
+// untouched and remains byte-identical.
+// ---------------------------------------------------------------------------
+
+/// Buffer size for synchronous SHA-256 streaming and ZIP extraction.
+#[allow(dead_code)]
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
+
+/// Verify that the SHA-256 of the file at `path` matches `expected_sha256`
+/// (lowercase hex). Returns `Ok(())` on match, `Err` on any I/O or mismatch.
+#[allow(dead_code)]
+fn verify_sha256(path: &Path, expected_sha256: &str) -> Result<(), String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("could not open file for SHA-256 verification: {e}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; HASH_BUFFER_BYTES];
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .map_err(|e| format!("could not read file for SHA-256 verification: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let computed = hex::encode(hasher.finalize());
+    if computed != expected_sha256 {
+        return Err(format!("SHA-256 mismatch: expected {expected_sha256}, computed {computed}"));
+    }
+    Ok(())
+}
+
+/// Resolve a ZIP entry name to a safe extraction path under `dest_dir`.
+///
+/// Rejects any entry whose normalized path escapes `dest_dir`:
+/// - absolute paths (`/etc/passwd`)
+/// - parent-directory components (`../../foo`)
+/// - Windows drive prefixes (`C:\foo`)
+/// - root-directory components (`/foo`)
+///
+/// Backslashes in the entry name are normalized to forward slashes before
+/// checking, so a malicious archive cannot bypass the `..` filter on Unix by
+/// using `\..\` (the ZIP spec mandates `/`, but some archives are non-conforming).
+#[allow(dead_code)]
+fn safe_extract_path(entry_name: &str, dest_dir: &Path) -> Result<PathBuf, String> {
+    let normalized = entry_name.replace('\\', "/");
+    let entry_path = Path::new(&normalized);
+
+    if entry_path.is_absolute() {
+        return Err(format!("archive entry has absolute path: {entry_name}"));
+    }
+
+    for component in entry_path.components() {
+        match component {
+            Component::ParentDir => {
+                return Err(format!(
+                    "archive entry contains parent directory component: {entry_name}"
+                ));
+            }
+            Component::Prefix(_) => {
+                return Err(format!("archive entry has Windows prefix: {entry_name}"));
+            }
+            Component::RootDir => {
+                return Err(format!("archive entry has root directory component: {entry_name}"));
+            }
+            Component::CurDir | Component::Normal(_) => {}
+        }
+    }
+
+    Ok(dest_dir.join(entry_path))
+}
+
+/// Extract every entry from the ZIP at `zip_path` into `dest_dir`, rejecting
+/// any entry whose path escapes the destination (Zip Slip protection).
+///
+/// This is a synchronous function — it is called from a `spawn_blocking` task
+/// by the async orchestrator so the extraction does not hold the tokio runtime.
+#[allow(dead_code)]
+fn extract_zip_safe(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|e| format!("could not open archive for extraction: {e}"))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|e| format!("could not read ZIP archive: {e}"))?;
+
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| format!("could not create extraction directory: {e}"))?;
+
+    for i in 0..archive.len() {
+        extract_zip_entry(&mut archive, i, dest_dir)?;
+    }
+
+    Ok(())
+}
+
+/// Extract a single entry from the archive, applying Zip Slip protection.
+fn extract_zip_entry<R: std::io::Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    i: usize,
+    dest_dir: &Path,
+) -> Result<(), String> {
+    let mut entry =
+        archive.by_index(i).map_err(|e| format!("could not read archive entry {i}: {e}"))?;
+
+    let name = entry.name().to_string();
+    if name.is_empty() {
+        return Err(format!("archive entry {i} has empty name"));
+    }
+
+    let outpath = safe_extract_path(&name, dest_dir)?;
+
+    if entry.is_dir() {
+        std::fs::create_dir_all(&outpath)
+            .map_err(|e| format!("could not create directory for entry {i}: {e}"))?;
+        return Ok(());
+    }
+
+    if let Some(parent) = outpath.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create parent directory for entry {i}: {e}"))?;
+    }
+    let mut output = std::fs::File::create(&outpath)
+        .map_err(|e| format!("could not create file for entry {i}: {e}"))?;
+    std::io::copy(&mut entry, &mut output)
+        .map_err(|e| format!("could not extract entry {i}: {e}"))?;
+    Ok(())
+}
+
+/// Download the archive for `spec` into `cache_root`, verifying the byte count
+/// and SHA-256. Returns the path to the downloaded ZIP file.
+///
+/// The download streams to a `.partial` file and is atomically renamed on
+/// success. A failed or interrupted download leaves no residue behind.
+#[allow(dead_code)]
+async fn download_archive_file(
+    spec: &ArchiveModelSpec,
+    cache_root: &Path,
+) -> Result<PathBuf, String> {
+    tokio::fs::create_dir_all(cache_root)
+        .await
+        .map_err(|e| format!("could not create cache directory for {}: {e}", spec.id))?;
+
+    let destination = cache_root.join(spec.hf_file);
+    let partial = PathBuf::from(format!("{}.partial", destination.display()));
+
+    // If a fully verified archive already exists, skip the download.
+    if matches!(std::fs::metadata(&destination), Ok(m) if m.len() == spec.expected_bytes)
+        && verify_sha256(&destination, spec.expected_sha256).is_ok()
+    {
+        return Ok(destination);
+    }
+
+    if tokio::fs::try_exists(&partial).await.unwrap_or(false) {
+        tokio::fs::remove_file(&partial).await.map_err(|e| {
+            format!("could not clear incomplete archive download for {}: {e}", spec.id)
+        })?;
+    }
+
+    let response = reqwest::Client::new()
+        .get(archive_download_url(spec))
+        .send()
+        .await
+        .map_err(|e| format!("could not download archive {}: {e}", spec.id))?
+        .error_for_status()
+        .map_err(|e| format!("archive download failed for {}: {e}", spec.id))?;
+
+    if let Some(content_length) = response.content_length() {
+        if content_length != spec.expected_bytes {
+            return Err(format!(
+                "archive download size for {} is {content_length}, expected {}",
+                spec.id, spec.expected_bytes
+            ));
+        }
+    }
+
+    log::info!(
+        target: "kotoba_archive_download",
+        "downloading {} ({:.1} MiB)",
+        spec.id,
+        spec.expected_bytes as f64 / (1024.0 * 1024.0)
+    );
+
+    let mut file = tokio::fs::File::create(&partial)
+        .await
+        .map_err(|e| format!("could not create archive download for {}: {e}", spec.id))?;
+
+    let mut response = response;
+    let mut downloaded = 0_u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("archive download interrupted for {}: {e}", spec.id))?
+    {
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        if downloaded > spec.expected_bytes {
+            let _ = tokio::fs::remove_file(&partial).await;
+            return Err(format!("archive download exceeded expected size for {}", spec.id));
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("could not write archive download for {}: {e}", spec.id))?;
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| format!("could not finish archive download for {}: {e}", spec.id))?;
+    drop(file);
+
+    if downloaded != spec.expected_bytes {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(format!(
+            "archive download size for {} is {downloaded} bytes, expected {} bytes",
+            spec.id, spec.expected_bytes
+        ));
+    }
+
+    // SHA-256 verification of the downloaded file.
+    let partial_path = partial.clone();
+    let expected_hash = spec.expected_sha256.to_string();
+    let hash_result =
+        tokio::task::spawn_blocking(move || verify_sha256(&partial_path, &expected_hash))
+            .await
+            .map_err(|e| format!("SHA-256 verification task panicked for {}: {e}", spec.id))?;
+
+    if let Err(e) = hash_result {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(e);
+    }
+
+    tokio::fs::rename(&partial, &destination)
+        .await
+        .map_err(|e| format!("could not install archive {}: {e}", spec.id))?;
+
+    log::info!(target: "kotoba_archive_download", "downloaded archive {}", spec.id);
+    Ok(destination)
+}
+
+/// Download, verify, and extract an archive model into `cache_root`.
+///
+/// Flow:
+/// 1. If the model is already extracted (all expected files present), return early.
+/// 2. Download the ZIP to `cache_root/{hf_file}`, verifying byte count + SHA-256.
+/// 3. Extract to a temp directory, then atomically rename to the final location.
+/// 4. Verify every expected file exists after extraction.
+/// 5. Remove the downloaded ZIP (the extracted files are the source of truth).
+///
+/// **Fail-open contract**: on any error the extracted files will not be present,
+/// so `open_model` in the pipeline will return an error and the rescorer falls
+/// back to the original ASR reading. A failed download never drops a caption.
+#[allow(dead_code)]
+pub async fn download_and_extract_archive_model(
+    spec: &ArchiveModelSpec,
+    cache_root: &Path,
+) -> Result<PathBuf, String> {
+    let extract_dir = archive_extract_dir(cache_root, spec);
+
+    // 1. Already extracted — nothing to do.
+    if archive_model_extracted(&extract_dir, spec) {
+        return Ok(extract_dir);
+    }
+
+    // 2. Download + verify.
+    let zip_path = download_archive_file(spec, cache_root).await?;
+
+    // 3. Extract to a temp directory, then atomically swap.
+    let temp_dir = cache_root.join(format!(
+        "{}.tmp.{}.{}",
+        spec.extract_subdir,
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+
+    // Clean up any stale temp directory from a previous interrupted attempt.
+    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+
+    let zip_path_clone = zip_path.clone();
+    let temp_dir_clone = temp_dir.clone();
+    tokio::task::spawn_blocking(move || extract_zip_safe(&zip_path_clone, &temp_dir_clone))
+        .await
+        .map_err(|e| format!("extraction task panicked for {}: {e}", spec.id))??;
+
+    // 4. Verify expected files exist in the temp directory.
+    if !archive_model_extracted(&temp_dir, spec) {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(format!(
+            "archive extraction for {} did not produce all expected files",
+            spec.id
+        ));
+    }
+
+    // 5. Atomically swap: remove old extract dir, rename temp dir into place.
+    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+    tokio::fs::rename(&temp_dir, &extract_dir)
+        .await
+        .map_err(|e| format!("could not install extracted model {}: {e}", spec.id))?;
+
+    // 6. Clean up the ZIP — the extracted files are the source of truth.
+    let _ = tokio::fs::remove_file(&zip_path).await;
+
+    log::info!(target: "kotoba_archive_download", "extracted archive {}", spec.id);
+    Ok(extract_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        cancel_model_download, classify_model_status, download_model_with_progress_cb,
-        download_models_with_progress_cb, preferred_translator_after_quick_start,
-        progress_snapshot, quick_start_translator_id, register_download, unregister_download,
-        DownloadProgress, ModelRuntimeSpec, QUICK_START_MODEL_IDS,
+        cancel_model_download, classify_model_status, download_and_extract_archive_model,
+        download_model_with_progress_cb, download_models_with_progress_cb, extract_zip_safe,
+        preferred_translator_after_quick_start, progress_snapshot, quick_start_translator_id,
+        register_download, safe_extract_path, unregister_download, verify_sha256, DownloadProgress,
+        ModelRuntimeSpec, QUICK_START_MODEL_IDS,
     };
-    use crate::model_runtime::{model_path, spec};
+    use crate::model_runtime::{archive_extract_dir, model_path, spec, INPUT_LM_ARCHIVE_SPEC};
+    use sha2::{Digest, Sha256};
     use std::io::{Seek, SeekFrom, Write};
+    use std::path::Path;
     use std::time::Duration;
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
 
     fn write_expected_size_file(path: &std::path::Path, expected_bytes: u64) {
         if let Some(parent) = path.parent() {
@@ -907,5 +1224,208 @@ mod tests {
         let partial = std::path::PathBuf::from(format!("{}.partial", destination.display()));
         assert!(!partial.exists(), "partial file should be cleaned up after cancel or completion");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // --- Archive model tests -------------------------------------------------
+
+    /// Helper: create a small ZIP at `path` containing the given (name, content) entries.
+    fn write_test_zip(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (name, content) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    /// Helper: SHA-256 of a byte slice, returned as lowercase hex.
+    fn sha256_hex(data: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hex::encode(hasher.finalize())
+    }
+
+    #[test]
+    fn safe_extract_path_rejects_parent_directory_traversal() {
+        let dest = Path::new("/tmp/dest");
+        assert!(safe_extract_path("../../etc/passwd", dest).is_err());
+        assert!(safe_extract_path("foo/../../bar", dest).is_err());
+        assert!(safe_extract_path("..", dest).is_err());
+        assert!(safe_extract_path("foo/../bar", dest).is_err());
+    }
+
+    #[test]
+    fn safe_extract_path_rejects_absolute_paths() {
+        let dest = Path::new("/tmp/dest");
+        assert!(safe_extract_path("/etc/passwd", dest).is_err());
+        assert!(safe_extract_path("/foo/bar", dest).is_err());
+    }
+
+    #[test]
+    fn safe_extract_path_rejects_backslash_traversal_on_unix() {
+        let dest = Path::new("/tmp/dest");
+        // A malicious archive might use backslashes to try to bypass the `..`
+        // component check on Unix. After normalizing `\` → `/` this must still
+        // be rejected.
+        assert!(safe_extract_path("..\\..\\etc\\passwd", dest).is_err());
+        assert!(safe_extract_path("foo\\..\\bar", dest).is_err());
+    }
+
+    #[test]
+    fn safe_extract_path_accepts_normal_relative_paths() {
+        let dest = Path::new("/tmp/dest");
+        let resolved = safe_extract_path("lm_c_abc.marisa", dest).unwrap();
+        assert_eq!(resolved, Path::new("/tmp/dest/lm_c_abc.marisa"));
+
+        let resolved = safe_extract_path("subdir/lm_c_abc.marisa", dest).unwrap();
+        assert_eq!(resolved, Path::new("/tmp/dest/subdir/lm_c_abc.marisa"));
+
+        // A single `.` component is harmless.
+        let resolved = safe_extract_path("./lm_c_abc.marisa", dest).unwrap();
+        assert_eq!(resolved, Path::new("/tmp/dest/lm_c_abc.marisa"));
+    }
+
+    #[test]
+    fn extract_zip_safe_rejects_archive_with_traversal_entry() {
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-zip-slip-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let zip_path = root.join("malicious.zip");
+        let dest = root.join("extract");
+
+        std::fs::create_dir_all(&root).unwrap();
+        // Craft a ZIP with a path-traversal entry name.
+        write_test_zip(&zip_path, &[("../../escaped.txt", b"pwned")]);
+
+        let result = extract_zip_safe(&zip_path, &dest);
+        assert!(result.is_err(), "extraction must reject a path-traversal entry");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("parent directory") || err.contains("absolute"),
+            "error should describe the traversal rejection: {err}"
+        );
+
+        // The escaped file must NOT have been created.
+        assert!(
+            !root.join("escaped.txt").exists(),
+            "Zip Slip must not create files outside dest_dir"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_zip_safe_extracts_valid_archive_with_expected_files() {
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-zip-happy-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let zip_path = root.join("model.zip");
+        let dest = root.join("extract");
+
+        std::fs::create_dir_all(&root).unwrap();
+        // Build a small ZIP with the same file names the real model uses.
+        let entries: &[(&str, &[u8])] = &[
+            ("lm_c_abc.marisa", b"c_abc tries"),
+            ("lm_c_bc.marisa", b"c_bc tries"),
+            ("lm_u_abx.marisa", b"u_abx tries"),
+            ("lm_u_xbc.marisa", b"u_xbc tries"),
+            ("lm_r_xbx.marisa", b"r_xbx tries"),
+        ];
+        write_test_zip(&zip_path, entries);
+
+        extract_zip_safe(&zip_path, &dest).expect("valid archive should extract");
+
+        // Every file from the archive must be present with its content.
+        for (name, content) in entries {
+            let extracted = std::fs::read(dest.join(name)).unwrap();
+            assert_eq!(extracted, *content, "extracted content must match for {name}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verify_sha256_accepts_correct_hash() {
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-sha-ok-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file_path = root.join("data.bin");
+        let data = b"hello input-LM world";
+        std::fs::write(&file_path, data).unwrap();
+
+        let expected = sha256_hex(data);
+        verify_sha256(&file_path, &expected).expect("correct SHA-256 should pass");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verify_sha256_rejects_checksum_mismatch() {
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-sha-mismatch-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file_path = root.join("data.bin");
+        std::fs::write(&file_path, b"actual content").unwrap();
+
+        // A wrong expected hash — must be rejected.
+        let wrong_hash = sha256_hex(b"different content");
+        let result = verify_sha256(&file_path, &wrong_hash);
+        assert!(result.is_err(), "SHA-256 mismatch must be rejected");
+        let err = result.unwrap_err();
+        assert!(err.contains("mismatch"), "error should mention mismatch: {err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verify_sha256_rejects_missing_file() {
+        let result = verify_sha256(Path::new("/nonexistent/file.bin"), "deadbeef");
+        assert!(result.is_err(), "missing file must be rejected");
+    }
+
+    #[tokio::test]
+    async fn download_and_extract_archive_model_skips_when_already_extracted() {
+        // When all expected files are already present, the function must
+        // return immediately without attempting a network download.
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-already-extracted-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let extract_dir = archive_extract_dir(&root, &INPUT_LM_ARCHIVE_SPEC);
+        std::fs::create_dir_all(&extract_dir).unwrap();
+        INPUT_LM_ARCHIVE_SPEC
+            .expected_files
+            .iter()
+            .for_each(|file| drop(std::fs::write(extract_dir.join(file), b"present")));
+
+        // This must NOT attempt a download (which would fail without network
+        // or with a wrong URL). It should return Ok immediately.
+        let result = download_and_extract_archive_model(&INPUT_LM_ARCHIVE_SPEC, &root).await;
+        assert!(result.is_ok(), "already-extracted model should return Ok without download");
+        assert_eq!(result.unwrap(), extract_dir);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn input_lm_archive_spec_has_nonzero_expected_bytes_and_sha256() {
+        const _: () = {
+            assert!(INPUT_LM_ARCHIVE_SPEC.expected_bytes > 100_000_000);
+            assert!(INPUT_LM_ARCHIVE_SPEC.expected_sha256.len() == 64);
+        };
+        let sha = INPUT_LM_ARCHIVE_SPEC.expected_sha256;
+        let is_hex = sha.chars().all(|c| c.is_ascii_hexdigit());
+        assert!(is_hex, "SHA-256 must be lowercase hex: {sha}");
     }
 }

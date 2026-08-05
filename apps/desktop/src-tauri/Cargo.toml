@@ -34,6 +34,12 @@ tokio = { version = "1.44", features = ["fs", "io-util", "macros", "rt-multi-thr
 unicode-segmentation = "1.12"
 uuid = { version = "1.16", features = ["v4", "fast-rng", "serde"] }
 url = "2.5"
+# Multi-file archive model download (input-LM ZIP). `deflate-flate2` reuses
+# the existing `flate2` dependency rather than pulling in a separate deflate
+# backend; default features are off to avoid bzip2/lzma/zstd/xz/aes.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+sha2 = "0.10"
+hex = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 spout2-rs = "0.1.1"
