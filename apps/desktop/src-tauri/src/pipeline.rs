@@ -1419,10 +1419,10 @@ fn resolve_utterance_id(provided: Option<&str>) -> String {
 mod tests {
     use super::{
         clean_model_text, is_no_speech_response, normalize_azookey, normalize_azookey_with_cache,
-        record_stage, resolve_utterance_id, run_rescore_with_timeout, snippet,
-        source_ready_caption, stage_event, stage_event_with_surface, with_translation, zenz_prompt,
-        CaptionPayload, NormalizeOutcome, ParapperRecognitionInput, Pipeline, PipelineStageEvent,
-        STAGE_SNIPPET_CHARS,
+        record_stage, resolve_utterance_id, run_rescore_with_timeout, snippet, source_ready_caption,
+        source_ready_caption_with_input, stage_event, stage_event_with_surface, with_translation,
+        zenz_prompt, CaptionPayload, NormalizeOutcome, ParapperRecognitionInput, Pipeline,
+        PipelineStageEvent, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;
@@ -1868,6 +1868,37 @@ mod tests {
     #[test]
     fn clean_model_text_strips_wrappers() {
         assert_eq!(clean_model_text("  `Hello`  "), "Hello");
+    }
+
+    /// The deferred caption-publication path (`complete_translation` →
+    /// `with_translation`) must preserve the caption-merge key. The Parapper
+    /// producer sets a non-None `azookey_input_text` (the ORIGINAL unrescored
+    /// ASR reading); a translation that drops it would turn the merge key into
+    /// `None`, silently disabling the frontend's replace-in-place caption merge
+    /// for every translated caption even though the source stage carried it.
+    #[test]
+    fn deferred_translation_preserves_the_caption_merge_key() {
+        let config = AppConfig::default();
+        let partial = source_ready_caption_with_input(
+            &config,
+            "今日は配信です".into(),
+            42,
+            "utt-keeps-key".into(),
+            Some("きょうははいしんです".into()),
+        );
+        assert_eq!(partial.azookey_input_text.as_deref(), Some("きょうははいしんです"));
+
+        let final_caption = with_translation(partial.clone(), "  Hello  ", 99);
+        // The merge key must survive the deferred translation intact.
+        assert_eq!(
+            final_caption.azookey_input_text.as_deref(),
+            Some("きょうははいしんです"),
+            "with_translation must preserve azookey_input_text across deferred publication"
+        );
+        assert_eq!(final_caption.id, partial.id);
+        assert_eq!(final_caption.stage, "translation");
+        assert_eq!(final_caption.sequence, 1);
+        assert!(final_caption.is_final);
     }
 
     #[test]
