@@ -2185,6 +2185,48 @@ mod tests {
         assert_eq!(best, "がいしゃ", "NaN lm_weight must fail open to the acoustic top");
     }
 
+    #[test]
+    fn rerank_nbest_all_nan_combined_scores_stay_deterministic() {
+        // When every combined score is NaN (e.g. a NaN lm_weight), the sort
+        // must still produce a stable, deterministic order and never panic.
+        // The input order is preserved (stable sort, all-equal NaN key).
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(f64::NAN);
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -2.0 },
+            NbestCandidate { text: "しゃかい".into(), acoustic_score: -9.0 },
+        ];
+        let expected_texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        for _ in 0..5 {
+            let ranked = rescorer.rerank_nbest(&candidates);
+            let texts: Vec<&str> = ranked.iter().map(|c| c.text.as_str()).collect();
+            assert_eq!(texts, expected_texts, "all-NaN reranking must preserve input order");
+            assert!(
+                ranked.iter().all(|c| c.combined_score.is_nan()),
+                "all combined scores must remain NaN (honest, not sanitized)"
+            );
+        }
+    }
+
+    #[test]
+    fn best_nbest_never_selects_a_nan_scored_candidate_when_a_finite_one_exists() {
+        // The strongest selection guarantee: even if an adversarial caller
+        // feeds the scorer a NaN-emitting weight, a NaN combined score must
+        // never be surfaced as "the best" when any finite candidate exists.
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(f64::NAN);
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -2.0 },
+        ];
+        // Both candidates are sane, but NaN-weighted combined scores make the
+        // gate ineligible, so the acoustic top "がいしゃ" is returned
+        // regardless of the input order.
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "がいしゃ");
+    }
+
     // -------------------------------------------------------------------
     // Adversarial hardening: weight boundaries (0.0, 1.0, out-of-range)
     // -------------------------------------------------------------------
