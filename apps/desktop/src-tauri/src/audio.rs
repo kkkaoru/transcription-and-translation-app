@@ -145,4 +145,70 @@ mod tests {
         .expect("audio chunk with utterance id should deserialize");
         assert_eq!(with_id.utterance_id.as_deref(), Some("chunk-7"));
     }
+
+    #[test]
+    fn rejects_non_mono_audio() {
+        let stereo = AudioChunk {
+            pcm_base64: base64::engine::general_purpose::STANDARD.encode([0_u8; 4]),
+            sample_rate: 16_000,
+            channels: 2,
+            duration_ms: 100,
+            utterance_id: None,
+        };
+        assert!(pcm_base64_to_wav(&stereo).is_err());
+    }
+
+    #[test]
+    fn rejects_sample_rates_outside_the_supported_range() {
+        let too_low = AudioChunk {
+            pcm_base64: base64::engine::general_purpose::STANDARD.encode([0_u8; 4]),
+            sample_rate: 7_999,
+            channels: 1,
+            duration_ms: 100,
+            utterance_id: None,
+        };
+        let too_high = AudioChunk {
+            pcm_base64: base64::engine::general_purpose::STANDARD.encode([0_u8; 4]),
+            sample_rate: 96_001,
+            channels: 1,
+            duration_ms: 100,
+            utterance_id: None,
+        };
+        assert!(pcm_base64_to_wav(&too_low).is_err());
+        assert!(pcm_base64_to_wav(&too_high).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_base64_and_odd_byte_pcm() {
+        let bad_base64 = AudioChunk {
+            pcm_base64: "!!!not-base64!!!".to_string(),
+            sample_rate: 16_000,
+            channels: 1,
+            duration_ms: 100,
+            utterance_id: None,
+        };
+        assert!(pcm_base64_to_wav(&bad_base64).is_err());
+
+        // base64 of a single byte (0x00) → "AA==", which decodes to 1 byte.
+        let odd_byte = AudioChunk {
+            pcm_base64: "AA==".to_string(),
+            sample_rate: 16_000,
+            channels: 1,
+            duration_ms: 100,
+            utterance_id: None,
+        };
+        assert!(pcm_base64_to_wav(&odd_byte).is_err());
+    }
+
+    #[test]
+    fn rejects_excessive_duration() {
+        let too_long = AudioChunk {
+            pcm_base64: base64::engine::general_purpose::STANDARD.encode([0_u8; 4]),
+            sample_rate: 16_000,
+            channels: 1,
+            duration_ms: 10_001,
+            utterance_id: None,
+        };
+        assert!(pcm_base64_to_wav(&too_long).is_err());
+    }
 }
