@@ -18,6 +18,11 @@ export type AzookeyResultVibratoStage =
   | typeof VIBRATO_NOT_REQUESTED;
 export const AZOOKEY_MAX_TEXT_BYTES = 4_096;
 export const AZOOKEY_MAX_MESSAGE_BYTES = 8_192;
+/** Upper bound for the whole upstream Vibrato JSON body before it is parsed.
+ * The text field itself is capped at AZOOKEY_MAX_TEXT_BYTES; this leaves room
+ * for the JSON envelope while refusing a body that would otherwise allocate
+ * unboundedly before the output check runs. */
+export const VIBRATO_MAX_RESPONSE_BYTES = AZOOKEY_MAX_TEXT_BYTES * 4;
 export const AZOOKEY_MAX_ID_BYTES = 128;
 export const AZOOKEY_MAX_LANGUAGE_BYTES = 64;
 export const AZOOKEY_AUTH_TOKEN_MAX_ID_MULTIPLIER = 4;
@@ -86,13 +91,18 @@ export interface AzookeyWasmExports {
   azookey_dictionary_init_owned: (pointer: number, length: number) => number;
 }
 
-export type AzookeyConverter = ((text: string) => string | Promise<string>) & {
+export type AzookeyConverter = ((
+  text: string,
+  signal?: AbortSignal,
+) => string | Promise<string>) & {
   /** Optional cold-start hook used by the WebSocket upgrade path. */
   warmup?: () => Promise<void>;
 };
+
 export type AzookeyVibratoConverter = ((
   text: string,
   language: string,
+  signal?: AbortSignal,
 ) => string | Promise<string>) & {
   /** Optional cold-start hook used by the WebSocket upgrade path. */
   warmup?: () => Promise<void>;
@@ -732,7 +742,7 @@ export const createVibratoHttpConverter = (
     throw new Error("VIBRATO_UPSTREAM_URL must be an http:// or https:// URL");
   }
   const token = env.VIBRATO_API_TOKEN?.trim();
-  return async (text: string, language: string): Promise<string> => {
+  return async (text: string, language: string, signal?: AbortSignal): Promise<string> => {
     let response: Response;
     try {
       response = await fetcher(upstreamUrl, {
@@ -742,6 +752,7 @@ export const createVibratoHttpConverter = (
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({ text, language }),
+        ...(signal ? { signal } : {}),
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "connection failed";
@@ -750,10 +761,27 @@ export const createVibratoHttpConverter = (
     if (!response.ok) {
       throw new Error(`Vibrato upstream returned ${response.status}`);
     }
+    if (!response.body) {
+      throw new Error("Vibrato upstream response has no body");
+    }
     let payload: unknown;
     try {
-      payload = await response.json();
-    } catch {
+      const bounded = response.body.pipeThrough(
+        byteLimitTransform(
+          VIBRATO_MAX_RESPONSE_BYTES,
+          "Vibrato upstream response exceeds the byte limit",
+        ),
+      );
+      payload = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(await collectStream(bounded)),
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "Vibrato upstream response exceeds the byte limit"
+      ) {
+        throw error;
+      }
       throw new Error("Vibrato upstream returned invalid JSON");
     }
     if (!isRecord(payload)) {
@@ -840,16 +868,20 @@ export const createVibratoWasmConverter = (
   return converter;
 };
 
-const withTimeout = async <T>(operation: () => T | Promise<T>, timeoutMs: number): Promise<T> => {
+const withTimeout = async <T>(
+  operation: (signal: AbortSignal) => T | Promise<T>,
+  timeoutMs: number,
+): Promise<T> => {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      Promise.resolve().then(operation),
+      Promise.resolve().then(() => operation(controller.signal)),
       new Promise<T>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new AzookeyProtocolError("conversion_timeout", "conversion timed out")),
-          timeoutMs,
-        );
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new AzookeyProtocolError("conversion_timeout", "conversion timed out"));
+        }, timeoutMs);
       }),
     ]);
   } finally {
@@ -863,7 +895,11 @@ export const convertAzookeyMessage = async (
   message: AzookeyMessage,
   runtime: AzookeyRuntime,
 ): Promise<AzookeyResultMessage> => {
+  const deadlineMs = runtime.timeoutMs;
   const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const nowMs = (): number => (typeof performance !== "undefined" ? performance.now() : Date.now());
+  const remainingMs = (): number => Math.max(0, deadlineMs - (nowMs() - startedAt));
+  const deadlineExpired = (): boolean => remainingMs() <= 0;
   const vibratoExecution = message.vibratoExecution ?? VIBRATO_NOT_REQUESTED;
   const vibratoStage: AzookeyResultVibratoStage =
     message.vibratoExecution === WORKER_VIBRATO_EXECUTION
@@ -881,10 +917,24 @@ export const convertAzookeyMessage = async (
       );
     }
     try {
+      if (remainingMs() <= 0) {
+        throw new AzookeyProtocolError(
+          "vibrato_timeout",
+          "Worker Vibrato conversion timed out",
+          message.requestId,
+        );
+      }
       const vibratoOutput = await withTimeout(
-        () => runtime.vibrato?.(message.sourceText, message.language),
-        runtime.timeoutMs,
+        (signal) => runtime.vibrato?.(message.sourceText, message.language, signal),
+        remainingMs(),
       );
+      if (deadlineExpired()) {
+        throw new AzookeyProtocolError(
+          "vibrato_timeout",
+          "Worker Vibrato conversion timed out",
+          message.requestId,
+        );
+      }
       if (typeof vibratoOutput !== "string" || vibratoOutput.trim().length === 0) {
         throw new Error("Worker Vibrato adapter returned no text");
       }
@@ -893,7 +943,10 @@ export const convertAzookeyMessage = async (
       }
       conversionInput = vibratoOutput;
     } catch (error) {
-      if (error instanceof AzookeyProtocolError && error.code === "conversion_timeout") {
+      if (
+        error instanceof AzookeyProtocolError &&
+        (error.code === "conversion_timeout" || error.code === "vibrato_timeout")
+      ) {
         throw new AzookeyProtocolError(
           "vibrato_timeout",
           "Worker Vibrato conversion timed out",
@@ -906,15 +959,38 @@ export const convertAzookeyMessage = async (
         message.requestId,
       );
     }
+  } else if (deadlineExpired()) {
+    throw new AzookeyProtocolError("conversion_timeout", "conversion timed out", message.requestId);
   }
   let converted: string;
   try {
+    if (remainingMs() <= 0) {
+      throw new AzookeyProtocolError(
+        "conversion_timeout",
+        "conversion timed out",
+        message.requestId,
+      );
+    }
     const candidate = await withTimeout(
-      () => runtime.converter(conversionInput),
-      runtime.timeoutMs,
+      (signal) => runtime.converter(conversionInput, signal),
+      remainingMs(),
     );
+    if (deadlineExpired()) {
+      throw new AzookeyProtocolError(
+        "conversion_timeout",
+        "conversion timed out",
+        message.requestId,
+      );
+    }
     if (typeof candidate !== "string") {
       throw new AzookeyProtocolError("conversion_failed", "AzooKey conversion returned no text");
+    }
+    if (encoder.encode(candidate).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+      throw new AzookeyProtocolError(
+        "conversion_failed",
+        "AzooKey conversion output exceeds the text byte limit",
+        message.requestId,
+      );
     }
     converted = candidate;
   } catch (error) {
@@ -931,9 +1007,6 @@ export const convertAzookeyMessage = async (
     );
   }
   const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
-  if (elapsed > runtime.timeoutMs) {
-    throw new AzookeyProtocolError("conversion_timeout", "conversion timed out", message.requestId);
-  }
   return {
     type: "azookey.result",
     requestId: message.requestId,
@@ -1214,7 +1287,7 @@ export const openAzookeySocket = async (
     );
   }
   const timeoutMs = azookeyTimeoutMs(env);
-  if (vibratoConverter?.warmup && vibratoConverter !== converter) {
+  if (vibratoConverter?.warmup && (vibratoConverter as unknown) !== converter) {
     try {
       await vibratoConverter.warmup();
     } catch {

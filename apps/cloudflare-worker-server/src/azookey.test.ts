@@ -16,6 +16,7 @@ import {
   openAzookeySocket,
   parseAzookeyMessage,
   readyAzookeyMessage,
+  VIBRATO_MAX_RESPONSE_BYTES,
 } from "./azookey.js";
 
 class FakeSocket extends EventTarget {
@@ -206,6 +207,169 @@ describe("AzooKey Worker text contract", () => {
       async () => new Response(JSON.stringify({ nope: "not-reading" }), { status: 200 }),
     );
     await expect(invalidResponse?.("入力", "ja")).rejects.toThrow("no non-empty text");
+  });
+
+  it("aborts the HTTP Vibrato upstream when the conversion deadline expires", async () => {
+    let seenSignal: AbortSignal | undefined;
+    const upstream = vi.fn(
+      (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          seenSignal = init?.signal ?? undefined;
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    );
+    const convert = createVibratoHttpConverter(
+      { VIBRATO_UPSTREAM_URL: "https://vibrato.example/v1/convert" },
+      upstream as unknown as typeof fetch,
+    );
+    expect(convert).toBeDefined();
+    await expect(
+      convertAzookeyMessage(
+        parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
+        {
+          timeoutMs: 25,
+          vibrato: convert as Exclude<typeof convert, undefined>,
+          converter: (text) => text,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "vibrato_timeout", requestId: "req-1" });
+    expect(upstream).toHaveBeenCalledTimes(1);
+    expect(seenSignal?.aborted).toBe(true);
+  });
+
+  it("rejects an oversized HTTP Vibrato response before parsing it", async () => {
+    const oversized = "あ".repeat(VIBRATO_MAX_RESPONSE_BYTES + 1);
+    const fetcher = vi.fn(async () => new Response(oversized, { status: 200 }));
+    const convert = createVibratoHttpConverter(
+      { VIBRATO_UPSTREAM_URL: "https://vibrato.example/v1/convert" },
+      fetcher,
+    );
+    await expect(convert?.("入力", "ja")).rejects.toThrow("exceeds the byte limit");
+  });
+
+  it("enforces the converter output byte limit before building the result", async () => {
+    const oversized = "あ".repeat(AZOOKEY_MAX_TEXT_BYTES + 1);
+    await expect(
+      convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+        timeoutMs: 250,
+        converter: () => oversized,
+      }),
+    ).rejects.toMatchObject({ code: "conversion_failed", requestId: "req-1" });
+  });
+
+  it("rejects the Vibrato stage immediately when its deadline is already spent", async () => {
+    vi.stubGlobal("performance", {
+      now: vi
+        .fn()
+        .mockReturnValueOnce(0) // startedAt
+        .mockReturnValueOnce(25), // pre-vibrato remaining check (budget spent)
+    });
+    const vibrato = vi.fn((text: string) => text);
+    await expect(
+      convertAzookeyMessage(
+        parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
+        {
+          timeoutMs: 25,
+          vibrato,
+          converter: (text) => text,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "vibrato_timeout", requestId: "req-1" });
+    expect(vibrato).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects immediately when the deadline is already exhausted before conversion", async () => {
+    vi.stubGlobal("performance", {
+      now: vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(25),
+    });
+    const converter = vi.fn((text: string) => text);
+    await expect(
+      convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+        timeoutMs: 25,
+        converter,
+      }),
+    ).rejects.toMatchObject({ code: "conversion_timeout", requestId: "req-1" });
+    expect(converter).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects the AzooKey stage when the deadline expired during conversion", async () => {
+    vi.stubGlobal("performance", {
+      now: vi
+        .fn()
+        .mockReturnValueOnce(0) // startedAt
+        .mockReturnValueOnce(0) // pre-vibrato remaining check
+        .mockReturnValueOnce(0) // withTimeout vibrato budget
+        .mockReturnValueOnce(5) // post-vibrato deadline check (within budget)
+        .mockReturnValueOnce(5) // pre-converter remaining check
+        .mockReturnValueOnce(20) // withTimeout converter budget (within budget)
+        .mockReturnValueOnce(25), // post-converter deadline check (budget exhausted)
+    });
+    const converter = vi.fn((text: string) => text);
+    await expect(
+      convertAzookeyMessage(
+        parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
+        {
+          timeoutMs: 25,
+          vibrato: (text) => text,
+          converter,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "conversion_timeout", requestId: "req-1" });
+    expect(converter).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects before the AzooKey stage runs when its deadline is already spent", async () => {
+    vi.stubGlobal("performance", {
+      now: vi
+        .fn()
+        .mockReturnValueOnce(0) // startedAt
+        .mockReturnValueOnce(0) // pre-vibrato remaining check
+        .mockReturnValueOnce(0) // withTimeout vibrato budget
+        .mockReturnValueOnce(20) // post-vibrato deadline check (within budget)
+        .mockReturnValueOnce(25), // pre-converter remaining check (budget spent)
+    });
+    const converter = vi.fn((text: string) => text);
+    await expect(
+      convertAzookeyMessage(
+        parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
+        {
+          timeoutMs: 25,
+          vibrato: (text) => text,
+          converter,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "conversion_timeout", requestId: "req-1" });
+    expect(converter).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("shares one absolute deadline: vibrato exhaustion skips the AzooKey stage", async () => {
+    vi.stubGlobal("performance", {
+      now: vi
+        .fn()
+        .mockReturnValueOnce(0) // startedAt
+        .mockReturnValueOnce(0) // pre-vibrato remaining check
+        .mockReturnValueOnce(0) // withTimeout vibrato budget
+        .mockReturnValueOnce(25), // post-vibrato deadline check (budget exhausted)
+    });
+    const converter = vi.fn((text: string) => text);
+    await expect(
+      convertAzookeyMessage(
+        parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
+        {
+          timeoutMs: 25,
+          vibrato: (text) => text,
+          converter,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "vibrato_timeout", requestId: "req-1" });
+    expect(converter).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it("maps converter failures, non-string output, and elapsed timeout to protocol errors", async () => {
