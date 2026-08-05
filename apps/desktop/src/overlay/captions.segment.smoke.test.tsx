@@ -28,6 +28,19 @@ describe("segmentCaptionText edge cases", () => {
     expect(segmentCaptionText("こんにちは", 10)).toEqual(["こんにちは"]);
   });
 
+  it("breaks after a preferred-break punctuation that carries a combining mark", () => {
+    // The budget is a user-visible grapheme count. A full-width punctuation that
+    // forms one multi-codepoint grapheme with a trailing combining mark is still
+    // a preferred break site; the OBS browser source (browser_source.rs) must
+    // break at the same boundary. This pins the DOM/native reference output so
+    // the Rust port can be checked against it.
+    const punct = "ああああ！\u0301あああああ";
+    expect(segmentCaptionText(punct, 8)).toEqual(["ああああ！\u0301", "あああああ"]);
+
+    const spaced = "ああああ \u0301あああああ";
+    expect(segmentCaptionText(spaced, 8)).toEqual(["ああああ \u0301", "あああああ"]);
+  });
+
   it("does not split ZWJ emoji or combining marks across the character budget", () => {
     // Caption budgets are user-visible characters. Splitting a ZWJ family
     // sequence or a dakuten combining mark mid-cluster paints broken glyphs.

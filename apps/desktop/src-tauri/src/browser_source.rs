@@ -274,11 +274,16 @@ fn is_preferred_break(character: char) -> bool {
 }
 
 fn is_breakable_grapheme(grapheme: &str) -> bool {
-    let mut chars = grapheme.chars();
-    match (chars.next(), chars.next()) {
-        (Some(character), None) => is_preferred_break(character) || character.is_whitespace(),
-        _ => grapheme.chars().all(char::is_whitespace),
-    }
+    // Faithful port of the frontend `preferredBreak.test(character) ||
+    // /\s/u.test(character)` in `apps/desktop/src/overlay/captions.ts`, where
+    // `character` is one grapheme cluster. The DOM overlay matches when ANY
+    // code point in the cluster is a preferred break or whitespace, so a
+    // multi-codepoint cluster such as `！\u{301}` (punctuation + combining mark)
+    // or ` \u{301}` is still a break site. The old `all(char::is_whitespace)`
+    // fallback only matched clusters that were entirely whitespace, so the
+    // browser source diverged from the DOM/native output for combining-mark
+    // clusters by breaking at the full budget instead of at the punctuation.
+    grapheme.chars().any(|character| is_preferred_break(character) || character.is_whitespace())
 }
 
 /// Find the preferred break index within `(lower..=max_chars]`, scanning from
@@ -1152,6 +1157,32 @@ mod tests {
 
         // Clamped up to CAPTION_MAX_CHARS_MIN (4): 8 graphemes -> two lines.
         assert_eq!(source, "ああああ\nああああ");
+    }
+
+    #[test]
+    fn feed_breaks_after_preferred_punctuation_that_carries_a_combining_mark() {
+        // A full-width punctuation that forms one multi-codepoint grapheme with a
+        // trailing combining mark is still a preferred break site. This must match
+        // the DOM/native reference (captions.segment.smoke.test.tsx), where the
+        // frontend matches the punctuation inside the cluster. The old
+        // `all(char::is_whitespace)` fallback only matched fully-whitespace
+        // clusters, so the browser source diverged by breaking at the full budget.
+        let mut config = AppConfig::default();
+        config.overlay.caption_max_chars.source = 8;
+        config.overlay.caption_max_chars.translation = 8;
+
+        let mut caption = sample_caption();
+        caption.source_text = "ああああ！\u{301}あああああ".to_string();
+
+        let feed = feed_from_parts(&config, Some(&caption));
+        let json: serde_json::Value =
+            serde_json::from_str(&feed_json(&feed)).expect("feed is valid JSON");
+        let source = json["caption"]["source"].as_str().expect("source string");
+
+        // Break after the punctuation cluster, exactly like the DOM/native output,
+        // not at the full budget.
+        assert_eq!(source, "ああああ！\u{301}\nあああああ");
+        assert_eq!(source.replace('\n', ""), "ああああ！\u{301}あああああ");
     }
 
     #[test]
