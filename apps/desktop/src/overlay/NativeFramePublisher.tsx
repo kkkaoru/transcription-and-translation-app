@@ -272,7 +272,7 @@ export const renderNativeFrame = (
     width - Math.max(0, finiteNumber(config.overlay.safeAreaPx, 42)) * 2,
   );
   const blockX = (width * boundedNumber(config.overlay.captionXPercent, 0, 100, 50)) / 100;
-  const blockY = (height * boundedNumber(config.overlay.captionYPercent, 0, 100, 86)) / 100;
+  const blockY = (height * boundedNumber(config.overlay.captionYPercent, 0, 100, 88)) / 100;
   const rows = captionItems(config, caption)
     .filter((item) => item.text.trim().length > 0)
     .map((item) => {
@@ -303,7 +303,9 @@ export const renderNativeFrame = (
         ),
       };
     });
-  const gap = Math.max(0, finiteNumber(config.overlay.gapPx, 8));
+  // DOM overlay and OBS page both render `gap: max(10, gapPx)`; keep the
+  // native/Syphon output spacing-identical, including the sub-10px clamp.
+  const gap = Math.max(10, finiteNumber(config.overlay.gapPx, 14));
   const totalHeight =
     rows.reduce((total, row) => total + row.height, 0) + gap * Math.max(0, rows.length - 1);
   let rowY = blockY - totalHeight / 2;

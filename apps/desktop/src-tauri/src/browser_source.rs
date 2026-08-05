@@ -558,8 +558,8 @@ const HTML_TEMPLATE: &str = r#"<!doctype html>
   #lines { position: absolute; box-sizing: border-box; overflow: visible;
     display: flex; flex-direction: column; align-items: center;
     justify-content: flex-end; pointer-events: none; }
-  #lines .line { white-space: pre-wrap; box-decoration-break: clone;
-    -webkit-box-decoration-break: clone; }
+  #lines .line { white-space: pre-wrap; overflow-wrap: anywhere;
+    box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 </style>
 </head>
 <body>
@@ -767,6 +767,22 @@ mod tests {
         let page = html_page(&feed_from_parts(&config, Some(&caption)));
         assert!(page.contains("before\\u2028\\u2029after"));
         assert!(!page.contains("before\u{2028}\u{2029}after"));
+    }
+
+    #[test]
+    fn page_line_box_wraps_long_tokens_like_the_dom_overlay() {
+        // The DOM `.caption-line` (apps/desktop/src/styles.css) declares
+        // `overflow-wrap: anywhere` so a single long Latin token wraps instead
+        // of overflowing the max-width plate. The OBS page must render the
+        // same way; without the declaration the browser source breaks after
+        // punctuation/whitespace only and long tokens overflow.
+        let config = AppConfig::default();
+        let feed = feed_from_parts(&config, Some(&sample_caption()));
+        let page = html_page(&feed);
+        assert!(
+            page.contains("#lines .line { white-space: pre-wrap; overflow-wrap: anywhere;"),
+            "OBS line box must wrap over-long tokens exactly like the DOM overlay"
+        );
     }
 
     #[test]

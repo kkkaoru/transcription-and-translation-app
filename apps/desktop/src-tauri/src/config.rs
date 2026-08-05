@@ -277,7 +277,7 @@ fn default_caption_x_percent() -> f32 {
 }
 
 fn default_caption_y_percent() -> f32 {
-    86.0
+    88.0
 }
 
 fn default_log_level() -> String {
@@ -358,7 +358,7 @@ impl Default for AppConfig {
                 x: 0,
                 y: 0,
                 order: "source-first".to_string(),
-                gap_px: 8.0,
+                gap_px: 14.0,
                 safe_area_px: 42.0,
                 caption_x_percent: default_caption_x_percent(),
                 caption_y_percent: default_caption_y_percent(),
@@ -1146,6 +1146,22 @@ mod tests {
         assert_eq!(
             config.overlay.caption_max_chars.translation,
             super::DEFAULT_TRANSLATION_CAPTION_MAX_CHARS
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn overlay_layout_defaults_match_the_frontend_canonical_values() {
+        // The DOM overlay and the in-app preview stage are the user-facing
+        // reference (`createDefaultConfig` in apps/desktop/src/core/defaults.ts
+        // uses gapPx 14 and captionYPercent 88). The native Syphon and OBS
+        // renderers must break/spacing-match the DOM by default, so the Rust
+        // defaults must equal the frontend canonical values rather than drift.
+        let config = AppConfig::default();
+        assert_eq!(config.overlay.gap_px, 14.0, "gap_px default must match frontend gapPx (14)");
+        assert_eq!(
+            config.overlay.caption_y_percent, 88.0,
+            "caption_y_percent default must match frontend captionYPercent (88)"
         );
         assert!(config.validate().is_ok());
     }

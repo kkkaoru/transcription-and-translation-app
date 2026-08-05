@@ -107,4 +107,80 @@ describe("configurable budget changes the native/Syphon line split", () => {
 
     expect(framePaintKey(base, caption)).toBe(framePaintKey({ ...base }, caption));
   });
+
+  it("applies the DOM gap floor and frontend fallbacks so the native frame matches", () => {
+    // The DOM overlay and OBS page render `gap: max(10, gapPx)`; the native
+    // canvas must use the same floor so a user setting gapPx < 10 does not
+    // collapse spacing in one renderer only. It must also fall back to the
+    // canonical frontend values (gap 14, y 88) for non-finite input like the
+    // DOM reference instead of an internal stale default.
+    const harness = createWideCanvasHarness();
+    const config = withBudget(48, 48);
+    config.overlay.width = 6_000;
+    config.overlay.height = 400;
+    config.overlay.safeAreaPx = 0;
+    config.overlay.source.fontSizePx = 20;
+    config.overlay.translation.fontSizePx = 20;
+    config.overlay.source.maxWidthPercent = 100;
+    config.overlay.translation.maxWidthPercent = 100;
+    config.overlay.source.paddingX = 0;
+    config.overlay.source.paddingY = 0;
+    config.overlay.translation.paddingX = 0;
+    config.overlay.translation.paddingY = 0;
+    config.overlay.source.lineHeight = 1;
+    config.overlay.translation.lineHeight = 1;
+    config.overlay.gapPx = 4; // below the DOM floor
+    config.overlay.captionYPercent = 88;
+    const caption: CaptionPayload = {
+      ...createPreviewCaption(),
+      sourceText: "ああああ",
+      translationText: "b",
+    };
+
+    expect(renderNativeFrame(harness.canvas, config, caption)).not.toBeNull();
+    const rowsY = [...new Set(harness.fillCalls.map((call) => call.y))].sort(
+      (a, b) => a - b,
+    );
+    // Two single-line rows with zero padding: each row is one lineHeight (20px)
+    // and the baseline delta includes that line-height plus the gap floored to
+    // 10px -> 30px apart, proving max(10, gapPx).
+    expect(rowsY).toHaveLength(2);
+    expect((rowsY[1] ?? 0) - (rowsY[0] ?? 0)).toBe(30);
+
+    // Non-finite gap and y must fall back to the frontend canonical values.
+    const fallbackHarness = createWideCanvasHarness();
+    const fallbackConfig = withBudget(48, 48);
+    fallbackConfig.overlay.width = 6_000;
+    fallbackConfig.overlay.height = 400;
+    fallbackConfig.overlay.safeAreaPx = 0;
+    fallbackConfig.overlay.source.fontSizePx = 20;
+    fallbackConfig.overlay.translation.fontSizePx = 20;
+    fallbackConfig.overlay.source.maxWidthPercent = 100;
+    fallbackConfig.overlay.translation.maxWidthPercent = 100;
+    fallbackConfig.overlay.source.paddingX = 0;
+    fallbackConfig.overlay.source.paddingY = 0;
+    fallbackConfig.overlay.translation.paddingX = 0;
+    fallbackConfig.overlay.translation.paddingY = 0;
+    fallbackConfig.overlay.source.lineHeight = 1;
+    fallbackConfig.overlay.translation.lineHeight = 1;
+    // Poison the values the native canvas must fold back from.
+    fallbackConfig.overlay.gapPx = Number.NaN;
+    fallbackConfig.overlay.captionYPercent = Number.NaN;
+    const fallbackCaption: CaptionPayload = {
+      ...createPreviewCaption(),
+      sourceText: "ああああ",
+      translationText: "b",
+    };
+    expect(renderNativeFrame(fallbackHarness.canvas, fallbackConfig, fallbackCaption)).not.toBeNull();
+
+    // With NaN gap the fallback is 14 (>= floor), and the baseline delta is
+    // lineHeight + max(10, 14) = 20 + 14 = 34.
+    const fallbackRowsY = [...new Set(fallbackHarness.fillCalls.map((call) => call.y))].sort(
+      (a, b) => a - b,
+    );
+    expect((fallbackRowsY[1] ?? 0) - (fallbackRowsY[0] ?? 0)).toBe(34);
+    const maxY = Math.max(...fallbackHarness.fillCalls.map((call) => call.y));
+    expect(maxY).toBeGreaterThan(340);
+    expect(maxY).toBeLessThan(370);
+  });
 });
