@@ -87,6 +87,9 @@ jobs:
       - run: bun run rust:azookey:fmt
       - run: bun run rust:azookey:lint
       - run: bun run rust:azookey:test
+      - run: bun run rust:input-lm:fmt
+      - run: bun run rust:input-lm:lint
+      - run: bun run rust:input-lm:test
       - run: bun run rust:vibrato:fmt
       - run: bun run rust:vibrato:lint
       - run: bun run rust:vibrato:test
