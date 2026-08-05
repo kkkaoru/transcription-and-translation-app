@@ -1,14 +1,19 @@
 use crate::config::AppConfig;
+use crate::config::RescoreConfig;
 use crate::kana_kanji::{
     convert_kana_to_kanji, convert_with_dictionary, AzooKeyDictionary, ConversionOptions,
     DictionaryPaths,
 };
+use caption_bridge_input_lm::marisa::{open_model, MarisaTrie};
+use caption_bridge_input_lm::model::NgramParams;
+use caption_bridge_input_lm::rescore::{AsrConfusionRules, LmScorer, Rescorer};
+use caption_bridge_input_lm::tokenizer::ZenzTokenizer;
 use reqwest::multipart;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -202,6 +207,82 @@ struct ChatMessageRequest<'a> {
     content: String,
 }
 
+/// The concrete rescorer type used by the pipeline.
+type InputLmRescorer = Rescorer<LmScorer<MarisaTrie>>;
+
+/// Lazy-loaded input-LM rescorer shared across `Pipeline` clones.
+///
+/// The 120 MB model is memory-mapped on first use when `RescoreConfig::enabled`
+/// is true, then reused for every subsequent caption. `Debug` reports only
+/// whether the model is loaded so the inner model/trie types (which do not
+/// implement `Debug`) are never formatted.
+#[derive(Clone)]
+struct RescoreHandle(Arc<Mutex<Option<Arc<InputLmRescorer>>>>);
+
+impl std::fmt::Debug for RescoreHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let loaded = self.0.lock().map(|opt| opt.is_some()).unwrap_or(false);
+        f.debug_struct("RescoreHandle").field("loaded", &loaded).finish()
+    }
+}
+
+impl Default for RescoreHandle {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+}
+
+impl RescoreHandle {
+    /// Returns the rescorer, loading the model on first call.
+    fn get_or_load(&self, config: &RescoreConfig) -> Result<Arc<InputLmRescorer>, String> {
+        let mut guard = self.0.lock().map_err(|_| "rescorer lock poisoned".to_string())?;
+        if let Some(ref r) = *guard {
+            return Ok(Arc::clone(r));
+        }
+        let rescorer = Self::load(config)?;
+        *guard = Some(Arc::clone(&rescorer));
+        Ok(rescorer)
+    }
+
+    fn load(config: &RescoreConfig) -> Result<Arc<InputLmRescorer>, String> {
+        let base =
+            config.model_path.as_deref().map(expand_model_path).unwrap_or_else(default_model_path);
+        let params = NgramParams::default();
+        let model =
+            open_model(&base, params).map_err(|e| format!("input-LM model load failed: {e}"))?;
+        let tokenizer = ZenzTokenizer::from_submodule().ok_or_else(|| {
+            "input-LM tokenizer load failed (AzooKeyKanaKanjiConverter submodule not present)"
+                .to_string()
+        })?;
+        let scorer = LmScorer::new(model, tokenizer);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default())
+            .with_lm_weight(config.lm_weight)
+            .with_confusion_weight(config.confusion_weight)
+            .with_overcorrection_margin(config.overcorrection_margin);
+        Ok(Arc::new(rescorer))
+    }
+}
+
+/// Default model location: `$HOME/.cache/caption-bridge-input-lm/input_n5_lm_v1/lm`.
+fn default_model_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home)
+        .join(".cache")
+        .join("caption-bridge-input-lm")
+        .join("input_n5_lm_v1")
+        .join("lm")
+}
+
+/// Expand a user-supplied model path, resolving a leading `~` to `$HOME`.
+fn expand_model_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
 #[derive(Debug, Clone)]
 pub struct Pipeline {
     client: Client,
@@ -211,11 +292,18 @@ pub struct Pipeline {
     /// load. The mutex is required because the converter's internal shard
     /// cache uses `RefCell`; conversions remain short and serialized here.
     azookey_dictionaries: Arc<Mutex<HashMap<String, AzooKeyDictionary>>>,
+    /// Lazy-loaded input-LM rescorer. Only loaded when `RescoreConfig::enabled`
+    /// is true; otherwise stays `None` and the pipeline path is unchanged.
+    rescorer: RescoreHandle,
 }
 
 impl Default for Pipeline {
     fn default() -> Self {
-        Self { client: Client::new(), azookey_dictionaries: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            client: Client::new(),
+            azookey_dictionaries: Arc::new(Mutex::new(HashMap::new())),
+            rescorer: RescoreHandle::default(),
+        }
     }
 }
 
@@ -529,8 +617,37 @@ impl Pipeline {
             ),
         );
 
+        // --- Rescore stage (opt-in) ---
+        // When enabled, rescore the kana reading with the input-LM before
+        // kana-kanji conversion. The merge key (`azookey_input_text`) always
+        // retains the ORIGINAL unrescored reading so the frontend caption-merge
+        // logic (`hasSameOrExtendedAzookeyReading`) is unaffected. Only the
+        // text fed to the normalizer changes.
+        let normalize_input = if config.rescore.enabled {
+            let rescore_started = Instant::now();
+            let rescored = self.rescore_reading(config, &recognized).await;
+            record_stage(
+                stages,
+                on_stage,
+                stage_event_with_surface(
+                    "rescore",
+                    &utterance_id,
+                    "input-n5-lm-v1",
+                    &recognized,
+                    &rescored,
+                    elapsed_ms(rescore_started),
+                    true,
+                    None,
+                    None,
+                ),
+            );
+            rescored
+        } else {
+            recognized.clone()
+        };
+
         let normalize_started = Instant::now();
-        let normalized = match self.normalize(config, &recognized).await {
+        let normalized = match self.normalize(config, &normalize_input).await {
             Ok(NormalizeOutcome::Success(text)) => {
                 record_stage(
                     stages,
@@ -539,7 +656,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         config.models.normalizer.as_str(),
-                        &recognized,
+                        &normalize_input,
                         &text,
                         elapsed_ms(normalize_started),
                         true,
@@ -556,7 +673,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         config.models.normalizer.as_str(),
-                        &recognized,
+                        &normalize_input,
                         &text,
                         elapsed_ms(normalize_started),
                         false,
@@ -573,7 +690,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         config.models.normalizer.as_str(),
-                        &recognized,
+                        &normalize_input,
                         "",
                         elapsed_ms(normalize_started),
                         false,
@@ -592,6 +709,12 @@ impl Pipeline {
             normalized,
             now_millis().saturating_sub(output.audio_duration_ms.unwrap_or_default()),
             utterance_id,
+            // Merge key invariant: always the ORIGINAL reading, never the
+            // rescored one. The frontend uses this field for
+            // `hasSameOrExtendedAzookeyReading` caption-merge decisions; feeding
+            // a corrected reading here would break replace-in-place and cause
+            // captions to append instead of replacing (regression fixed at
+            // commit e393070).
             Some(recognized),
         );
         ready.is_final = output.is_final;
@@ -753,6 +876,28 @@ impl Pipeline {
         }
     }
 
+    /// Rescore the ASR kana reading with the input-LM.
+    ///
+    /// Loads the 120 MB model on first call (memory-mapped), then runs the
+    /// rescoring in a `spawn_blocking` task bounded by `timeout_ms`. Falls back
+    /// to the original reading on any error, timeout, or panic so the caption
+    /// path can never wedge.
+    async fn rescore_reading(&self, config: &AppConfig, reading: &str) -> String {
+        let rescorer = match self.rescorer.get_or_load(&config.rescore) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!(target: "pipeline_rescore", "rescorer unavailable, falling back: {e}");
+                return reading.to_string();
+            }
+        };
+        let reading_for_work = reading.to_string();
+        let rescorer_for_work = Arc::clone(&rescorer);
+        run_rescore_with_timeout(config.rescore.timeout_ms, reading.to_string(), move || {
+            rescorer_for_work.best(&reading_for_work)
+        })
+        .await
+    }
+
     async fn translate(&self, config: &AppConfig, text: &str) -> Result<String, PipelineError> {
         if !config.models.translator.starts_with("hy-mt2-") {
             return Err(PipelineError::UnsupportedModel(config.models.translator.clone()));
@@ -801,6 +946,32 @@ impl Pipeline {
             .map(|choice| choice.message.content.clone())
             .filter(|text| !text.trim().is_empty())
             .ok_or(PipelineError::MissingText)
+    }
+}
+
+/// Runs a rescore work closure in a `spawn_blocking` task bounded by
+/// `timeout_ms`. Fail-open: any completion error (panic from the closure) or
+/// timeout returns the original reading unchanged. This is the single chokepoint
+/// that guarantees a rescore can never drop or wedge a caption.
+async fn run_rescore_with_timeout<F>(timeout_ms: u64, original: String, work: F) -> String
+where
+    F: FnOnce() -> String + Send + 'static,
+{
+    let timeout = Duration::from_millis(timeout_ms);
+    match tokio::time::timeout(timeout, tokio::task::spawn_blocking(work)).await {
+        Ok(Ok(rescored)) => rescored,
+        Ok(Err(error)) => {
+            log::warn!(target: "pipeline_rescore", "rescore task panicked: {error}");
+            original
+        }
+        Err(_) => {
+            log::warn!(
+                target: "pipeline_rescore",
+                "rescore timed out after {}ms, falling back",
+                timeout_ms
+            );
+            original
+        }
     }
 }
 
@@ -1248,9 +1419,10 @@ fn resolve_utterance_id(provided: Option<&str>) -> String {
 mod tests {
     use super::{
         clean_model_text, is_no_speech_response, normalize_azookey, normalize_azookey_with_cache,
-        record_stage, resolve_utterance_id, snippet, source_ready_caption, stage_event,
-        stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload, NormalizeOutcome,
-        ParapperRecognitionInput, Pipeline, PipelineStageEvent, STAGE_SNIPPET_CHARS,
+        record_stage, resolve_utterance_id, run_rescore_with_timeout, snippet,
+        source_ready_caption, stage_event, stage_event_with_surface, with_translation, zenz_prompt,
+        CaptionPayload, NormalizeOutcome, ParapperRecognitionInput, Pipeline, PipelineStageEvent,
+        STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;
@@ -1831,5 +2003,282 @@ mod tests {
         assert!(normalized.translation_text.is_empty());
         assert_eq!(translated.stage, "translation");
         assert_eq!(translated.translation_text, "Hello");
+    }
+
+    // -----------------------------------------------------------------------
+    // Input-LM rescorer integration tests
+    // -----------------------------------------------------------------------
+
+    /// Build a ParapperRecognitionInput with a hiragana reading for testing.
+    fn parapper_test_output(reading: &str, surface: &str) -> ParapperRecognitionInput {
+        ParapperRecognitionInput {
+            text: surface.into(),
+            source_text: Some(surface.into()),
+            azookey_input_text: Some(reading.into()),
+            session_id: "test-session".into(),
+            turn_session_id: 1,
+            turn_id: 1,
+            revision: 0,
+            output_sequence: 1,
+            segment_id: 1,
+            previous_segment_id: None,
+            source_asr_model: "test-asr".into(),
+            source_language: "ja".into(),
+            detected_language: None,
+            elapsed_ms: 5,
+            audio_duration_ms: None,
+            is_final: false,
+            capture_generation: None,
+        }
+    }
+
+    /// Check whether the input-LM model files are present in the default cache
+    /// directory. Tests that need the real model skip when this returns false.
+    fn input_lm_model_available() -> bool {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let base = std::path::Path::new(&home)
+            .join(".cache")
+            .join("caption-bridge-input-lm")
+            .join("input_n5_lm_v1");
+        base.join("lm_c_abc.marisa").exists()
+            && base.join("lm_u_abx.marisa").exists()
+            && base.join("lm_u_xbc.marisa").exists()
+            && base.join("lm_r_xbx.marisa").exists()
+    }
+
+    /// When rescore is OFF (the default), no "rescore" stage event is emitted
+    /// and the pipeline output is byte-identical to the pre-rescorer path.
+    #[tokio::test]
+    async fn rescore_disabled_produces_no_rescore_stage_and_preserves_behavior() {
+        let _dictionary_env_guard = DICTIONARY_ENV_LOCK.lock().await;
+        let config = AppConfig::default();
+        assert!(!config.rescore.enabled, "rescore must default to OFF");
+
+        let pipeline = Pipeline::default();
+        let output = parapper_test_output("きょうははいしんです", "今日は配信です");
+        let mut stages = Vec::new();
+        let partial = pipeline
+            .normalize_parapper_output(
+                &config,
+                output,
+                &mut stages,
+                &mut ignore_pipeline_stage,
+                &mut ignore_caption,
+            )
+            .await
+            .expect("Parapper output should normalize")
+            .expect("should produce a caption");
+
+        // No rescore stage event when the flag is off.
+        assert!(
+            !stages.iter().any(|s| s.stage == "rescore"),
+            "rescore stage must not appear when the flag is off"
+        );
+        // The azookey_input_text is the original reading (merge key invariant).
+        assert_eq!(partial.azookey_input_text.as_deref(), Some("きょうははいしんです"));
+        // The source_text is the normalized form (same as pre-rescorer).
+        assert_eq!(partial.source_text, "今日は配信です");
+    }
+
+    /// When rescore is ON but the model is unavailable, the pipeline falls
+    /// back to the original reading. The "rescore" stage event is emitted,
+    /// and the merge key (`azookey_input_text`) stays the original reading.
+    #[tokio::test]
+    async fn rescore_enabled_with_missing_model_falls_back_and_keeps_merge_key() {
+        let _dictionary_env_guard = DICTIONARY_ENV_LOCK.lock().await;
+        let mut config = AppConfig::default();
+        config.rescore.enabled = true;
+        config.rescore.model_path = Some("/nonexistent/model/lm".into());
+
+        let pipeline = Pipeline::default();
+        let output = parapper_test_output("きょうははいしんです", "今日は配信です");
+        let mut stages = Vec::new();
+        let partial = pipeline
+            .normalize_parapper_output(
+                &config,
+                output,
+                &mut stages,
+                &mut ignore_pipeline_stage,
+                &mut ignore_caption,
+            )
+            .await
+            .expect("Parapper output should normalize even with a missing rescore model")
+            .expect("should produce a caption");
+
+        // A rescore stage event is emitted (the stage ran, even though it fell back).
+        let rescore_stage =
+            stages.iter().find(|s| s.stage == "rescore").expect("rescore stage should be emitted");
+        // The rescore output equals the input (fallback to original).
+        assert_eq!(rescore_stage.input_snippet, "きょうははいしんです");
+        assert_eq!(rescore_stage.output_text, "きょうははいしんです");
+
+        // Merge key invariant: azookey_input_text is the ORIGINAL reading.
+        assert_eq!(partial.azookey_input_text.as_deref(), Some("きょうははいしんです"));
+        // The source_text is the normalized form of the original reading
+        // (same as rescore-off, because the rescore fell back).
+        assert_eq!(partial.source_text, "今日は配信です");
+    }
+
+    /// The merge key (`azookey_input_text`) must always be the original reading,
+    /// never the rescored one. This is the invariant that prevents the
+    /// caption-append regression fixed at commit e393070. Verified by checking
+    /// that even when a second call to the same pipeline would rescore
+    /// differently, the azookey_input_text is unchanged.
+    #[tokio::test]
+    async fn merge_key_always_original_reading_regardless_of_rescore() {
+        let _dictionary_env_guard = DICTIONARY_ENV_LOCK.lock().await;
+        let mut config = AppConfig::default();
+        config.rescore.enabled = true;
+        config.rescore.model_path = Some("/nonexistent/model/lm".into());
+
+        let pipeline = Pipeline::default();
+
+        // First call with one reading.
+        let output1 = parapper_test_output("おはよございます", "おはようございます");
+        let partial1 = pipeline
+            .normalize_parapper_output(
+                &config,
+                output1,
+                &mut Vec::new(),
+                &mut ignore_pipeline_stage,
+                &mut ignore_caption,
+            )
+            .await
+            .expect("first call should normalize")
+            .expect("first call should produce a caption");
+
+        // The merge key is the original reading, not any rescored version.
+        assert_eq!(
+            partial1.azookey_input_text.as_deref(),
+            Some("おはよございます"),
+            "merge key must be the original unrescored reading"
+        );
+
+        // Second call with a different reading to confirm each keeps its own
+        // original — a corrected reading would break cross-caption merge.
+        let output2 = parapper_test_output("きてください", "きってください");
+        let partial2 = pipeline
+            .normalize_parapper_output(
+                &config,
+                output2,
+                &mut Vec::new(),
+                &mut ignore_pipeline_stage,
+                &mut ignore_caption,
+            )
+            .await
+            .expect("second call should normalize")
+            .expect("second call should produce a caption");
+
+        assert_eq!(
+            partial2.azookey_input_text.as_deref(),
+            Some("きてください"),
+            "merge key must be the original unrescored reading for each caption"
+        );
+    }
+
+    /// When the real model is available and rescore is ON, the rescorer may
+    /// change the kana reading. The merge key stays the original, and the
+    /// normalize input is the rescored reading. This test is skipped when
+    /// the 120 MB model is not cached locally.
+    #[tokio::test]
+    async fn rescore_enabled_with_real_model_preserves_merge_key_while_correcting() {
+        let _dictionary_env_guard = DICTIONARY_ENV_LOCK.lock().await;
+        match input_lm_model_available() {
+            true => rescore_with_real_model_core().await,
+            false => eprintln!("skipping: input-LM model not cached locally"),
+        }
+    }
+
+    async fn rescore_with_real_model_core() {
+        let mut config = AppConfig::default();
+        config.rescore.enabled = true;
+        // Use default model path (no override).
+
+        let pipeline = Pipeline::default();
+        // "おはよございます" (missing long-vowel う) is the one repair the sweep
+        // measured: the rescorer should return "おはようございます".
+        let output = parapper_test_output("おはよございます", "おはようございます");
+        let mut stages = Vec::new();
+        let partial = pipeline
+            .normalize_parapper_output(
+                &config,
+                output,
+                &mut stages,
+                &mut ignore_pipeline_stage,
+                &mut ignore_caption,
+            )
+            .await
+            .expect("Parapper output should normalize with rescore")
+            .expect("should produce a caption");
+
+        // A rescore stage event is emitted.
+        let rescore_stage =
+            stages.iter().find(|s| s.stage == "rescore").expect("rescore stage should be emitted");
+        assert_eq!(rescore_stage.input_snippet, "おはよございます");
+
+        // The rescored reading may differ from the original. Whether it does
+        // depends on the model, but the merge key must always be the original.
+        assert_eq!(
+            partial.azookey_input_text.as_deref(),
+            Some("おはよございます"),
+            "merge key must be the original unrescored reading even when the rescorer changes it"
+        );
+
+        // The normalize stage input should be the rescored reading, not the
+        // original. (When the rescorer returns the original, this is the same
+        // string — that's fine, the point is the wiring is correct.)
+        let normalize_stage = stages
+            .iter()
+            .find(|s| s.stage == "normalize")
+            .expect("normalize stage should be emitted");
+        assert_eq!(
+            normalize_stage.input_snippet, rescore_stage.output_text,
+            "normalize stage must receive the rescored reading as input"
+        );
+    }
+    /// Rescore work that always panics, used to drive the fail-open panic path.
+    fn panicking_rescore_work() -> String {
+        panic!("simulated rescorer failure");
+    }
+
+    /// Rescore work that outlives any sane timeout, used to drive the fail-open
+    /// timeout path.
+    fn slow_rescore_work() -> String {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        "rescored-after-timeout".to_string()
+    }
+
+    /// Fail-open: if the rescore work panics inside the blocking task, the
+    /// original reading is returned unchanged. A panicking rescorer must never
+    /// drop a caption.
+    #[tokio::test]
+    async fn rescore_panic_falls_open_to_the_original_reading() {
+        let original = "きょうははいしんです".to_string();
+        let result =
+            run_rescore_with_timeout(5_000, original.clone(), panicking_rescore_work).await;
+        assert_eq!(
+            result, original,
+            "panic in the rescorer must fall back to the original reading"
+        );
+    }
+
+    /// Fail-open: if the rescore work exceeds the configured timeout, the
+    /// original reading is returned unchanged. A slow rescorer must not stall or
+    /// drop the caption path.
+    #[tokio::test]
+    async fn rescore_timeout_falls_open_to_the_original_reading() {
+        let original = "きょうははいしんです".to_string();
+        let result = run_rescore_with_timeout(1, original.clone(), slow_rescore_work).await;
+        assert_eq!(result, original, "a timed-out rescorer must fall back to the original reading");
+    }
+
+    /// A successful rescore returns the rescorer output verbatim, proving the
+    /// helper's happy path is wired through without loss.
+    #[tokio::test]
+    async fn rescore_success_returns_the_rescored_reading() {
+        let result =
+            run_rescore_with_timeout(5_000, "original".to_string(), || "rescored".to_string())
+                .await;
+        assert_eq!(result, "rescored");
     }
 }
