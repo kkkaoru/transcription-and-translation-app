@@ -21,3 +21,7 @@ pub use viterbi::{
 #[cfg(test)]
 #[path = "kana_kanji/accuracy_corpus.rs"]
 mod accuracy_corpus;
+
+#[cfg(test)]
+#[path = "kana_kanji/adversarial_corpus.rs"]
+mod adversarial_corpus;
