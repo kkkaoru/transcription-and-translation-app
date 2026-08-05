@@ -138,9 +138,7 @@ describe("configurable budget changes the native/Syphon line split", () => {
     };
 
     expect(renderNativeFrame(harness.canvas, config, caption)).not.toBeNull();
-    const rowsY = [...new Set(harness.fillCalls.map((call) => call.y))].sort(
-      (a, b) => a - b,
-    );
+    const rowsY = [...new Set(harness.fillCalls.map((call) => call.y))].sort((a, b) => a - b);
     // Two single-line rows with zero padding: each row is one lineHeight (20px)
     // and the baseline delta includes that line-height plus the gap floored to
     // 10px -> 30px apart, proving max(10, gapPx).
@@ -171,7 +169,9 @@ describe("configurable budget changes the native/Syphon line split", () => {
       sourceText: "ああああ",
       translationText: "b",
     };
-    expect(renderNativeFrame(fallbackHarness.canvas, fallbackConfig, fallbackCaption)).not.toBeNull();
+    expect(
+      renderNativeFrame(fallbackHarness.canvas, fallbackConfig, fallbackCaption),
+    ).not.toBeNull();
 
     // With NaN gap the fallback is 14 (>= floor), and the baseline delta is
     // lineHeight + max(10, 14) = 20 + 14 = 34.
