@@ -370,10 +370,6 @@ export const appendStructuredLog = (input: StructuredLogInput): StructuredLogRec
   return record;
 };
 
-/** Convenience wrapper used by app code. */
-export const logStructured = (input: StructuredLogInput): StructuredLogRecord =>
-  appendStructuredLog(input);
-
 /**
  * Convert a pipeline stage event into a structured log row.
  * Failures → warn/error; successes → info (so per-stage activity is visible at default level).
