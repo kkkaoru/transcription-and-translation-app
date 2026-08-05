@@ -16,6 +16,7 @@ tauri-build = { version = "2.0.0", features = [] }
 [dependencies]
 base64 = "0.22"
 caption-bridge-azookey-rust = { path = "../../../packages/azookey-rust" }
+caption-bridge-input-lm = { path = "../../../packages/input-lm-rust", features = ["rsmarisa"] }
 flate2 = "1.1"
 log = "0.4"
 libc = "0.2"

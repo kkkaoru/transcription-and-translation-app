@@ -301,6 +301,76 @@ impl Default for DebugConfig {
     }
 }
 
+/// Configuration for the input-LM rescorer stage.
+///
+/// When enabled, the pipeline rescores the ASR kana reading with the
+/// `input_n5_lm_v1` N-gram model before AzooKey kana-kanji conversion. The
+/// merge key (`azookey_input_text`) always retains the original unrescored
+/// reading so the frontend caption-merge logic (`hasSameOrExtendedAzookeyReading`
+/// in `caption-updates.ts`) is unaffected.
+///
+/// Defaults to OFF to preserve existing behavior. The measured best parameters
+/// (commit `22ab7c2`) are `lm_weight=0.5, confusion_weight=0.5, margin=2.0`;
+/// the library defaults (`1.0 / 1.0 / 0.0`) score 9/14 while the recommended
+/// combo scores 10/14 on the fixed eval set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RescoreConfig {
+    /// Opt-in flag. When false, the rescorer is never loaded or invoked and
+    /// pipeline behavior is byte-identical to the pre-rescorer path.
+    #[serde(default)]
+    pub enabled: bool,
+    /// LM weight in the combined score `lm_weight * lm_score - confusion_weight * confusion_cost`.
+    #[serde(default = "default_rescore_lm_weight")]
+    pub lm_weight: f64,
+    /// Confusion weight in the combined score.
+    #[serde(default = "default_rescore_confusion_weight")]
+    pub confusion_weight: f64,
+    /// Overcorrection prevention margin. Only replace the original hypothesis
+    /// if the best candidate's combined score exceeds the original's by at
+    /// least this margin. Must be >= 2.0 per the measured sweep.
+    #[serde(default = "default_rescore_overcorrection_margin")]
+    pub overcorrection_margin: f64,
+    /// Maximum wall-clock milliseconds for a rescore call. Falls back to the
+    /// original reading on timeout.
+    #[serde(default = "default_rescore_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Optional model path override (directory containing `lm_c_abc.marisa`
+    /// and friends, without the suffix). When `None`, uses the default cache
+    /// directory (`$HOME/.cache/caption-bridge-input-lm/input_n5_lm_v1/lm`).
+    #[serde(default)]
+    pub model_path: Option<String>,
+}
+
+fn default_rescore_lm_weight() -> f64 {
+    0.5
+}
+
+fn default_rescore_confusion_weight() -> f64 {
+    0.5
+}
+
+fn default_rescore_overcorrection_margin() -> f64 {
+    2.0
+}
+
+fn default_rescore_timeout_ms() -> u64 {
+    200
+}
+
+impl Default for RescoreConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            lm_weight: default_rescore_lm_weight(),
+            confusion_weight: default_rescore_confusion_weight(),
+            overcorrection_margin: default_rescore_overcorrection_margin(),
+            timeout_ms: default_rescore_timeout_ms(),
+            model_path: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -315,6 +385,8 @@ pub struct AppConfig {
     pub overlay: OverlayConfig,
     #[serde(default)]
     pub debug: DebugConfig,
+    #[serde(default)]
+    pub rescore: RescoreConfig,
 }
 
 impl Default for AppConfig {
@@ -368,6 +440,7 @@ impl Default for AppConfig {
                 caption_max_chars: CaptionMaxCharsConfig::default(),
             },
             debug: DebugConfig::default(),
+            rescore: RescoreConfig::default(),
         }
     }
 }
@@ -463,6 +536,9 @@ impl AppConfig {
         {
             return Err("caption line character budget is outside the supported range".to_string());
         }
+        if self.rescore.enabled {
+            validate_rescore_config(&self.rescore)?;
+        }
         Ok(())
     }
 }
@@ -526,6 +602,21 @@ fn validate_text_style(label: &str, style: &CaptionTextStyle) -> Result<(), Stri
 fn validate_finite_range(name: &str, value: f32, minimum: f32, maximum: f32) -> Result<(), String> {
     if !value.is_finite() || value < minimum || value > maximum {
         return Err(format!("{name} is outside the supported range"));
+    }
+    Ok(())
+}
+
+fn validate_rescore_config(rescore: &RescoreConfig) -> Result<(), String> {
+    validate_finite_range("rescore lm weight", rescore.lm_weight as f32, 0.0, 100.0)?;
+    validate_finite_range("rescore confusion weight", rescore.confusion_weight as f32, 0.0, 100.0)?;
+    validate_finite_range(
+        "rescore overcorrection margin",
+        rescore.overcorrection_margin as f32,
+        0.0,
+        100.0,
+    )?;
+    if !(1..=10_000).contains(&rescore.timeout_ms) {
+        return Err("rescore timeout is outside the supported range".to_string());
     }
     Ok(())
 }
