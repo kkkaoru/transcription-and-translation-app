@@ -249,6 +249,8 @@ INPUT_LM_MODEL_BASE=~/.cache/caption-bridge-input-lm/input_n5_lm_v1/lm \
 cargo run --release --features rsmarisa --example probe_model -- <base>
 cargo run --release --features rsmarisa --example dump_keys -- <trie.marisa>
 cargo run --release --features rsmarisa --example check_consistency -- <base>
+cargo run --release --features rsmarisa --example rescore_measure -- <base>
+cargo run --release --features rsmarisa --example rescore_sweep -- <base>
 ```
 
 ## Remaining work
@@ -280,6 +282,27 @@ cargo run --release --features rsmarisa --example check_consistency -- <base>
    so a better-suited LM can be dropped in if discrimination is insufficient
    for specific confusion patterns. See `examples/rescore_measure.rs` for
    the standalone measurement program.
+
+   **Parameter sweep (`examples/rescore_sweep.rs`, against the real model):**
+   on a fixed 14-case eval set (5 rule-covered repairs + 9 correct-form
+   holds), the shipped defaults `lm_weight=1.0`, `confusion_weight=1.0`,
+   `overcorrection_margin=0.0` score combined 9/14 (repairs 1/5, holds 8/9).
+   The single overcorrected hold is the *correct geminated* `きってください`,
+   which the default weights rewrite to `きてください` because the LM
+   systematically prefers the shorter/bare form. Every combination with
+   `overcorrection_margin >= 2.0` reclaims that hold and scores 10/14 without
+   losing the one real repair (e.g. `lm_weight=0.5 conf_w=0.5 margin=2.0`).
+   No combination fixes more than 1 repair, because the LM's discrimination is
+   direction-biased: it only rewards *removing* length / moving toward the
+   more-frequent form. Measured per-repair LM differences: `おはよございます`
+   → `おはようございます` +5.09 (repairs), `せんせ` → `せんせい` −0.09,
+   `おはよ` → `おはよう` −0.23, `がいしゃ` → `かいしゃ` −0.65, `がいとうした`
+   → `かいとうした` +0.76 (the last clears its 1.0 voicing cost iff weights
+   favor the LM enough). There is no weight where repairing the せんせ/おはよ
+   short-phrase pairs becomes *possible* — the model genuinely scores the worn
+   forms higher. Recommendation: raise `overcorrection_margin` to a positive
+   value (>= 2.0) when wiring the rescorer in; keep the weights near 1.0/1.0.
+   The defaults are *functional but not optimal* on this eval set.
 3. **`lm_c_bc.marisa` is unused.** `Inference.swift` loads only four tries; the
    46 MB `c_bc` file is not among them. Worth understanding before shipping.
 4. **Tokenizer portability.** The tokenizer reads the submodule's `vocab.json`

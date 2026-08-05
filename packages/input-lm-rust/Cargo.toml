@@ -34,3 +34,7 @@ required-features = ["rsmarisa"]
 [[example]]
 name = "rescore_measure"
 required-features = ["rsmarisa"]
+
+[[example]]
+name = "rescore_sweep"
+required-features = ["rsmarisa"]
