@@ -60,6 +60,35 @@ export const captionGraphemes = (text: string): string[] => {
   return Array.from(text);
 };
 
+/**
+ * A grapheme cluster is whitespace-only when it trims to an empty string.
+ * A cluster like U+0020 + U+0301 (space + combining acute) is one grapheme
+ * that is NOT whitespace-only, so it must never be stripped by a boundary trim.
+ */
+const isWhitespaceGrapheme = (grapheme: string): boolean => grapheme.trim() === "";
+
+/** Remove leading and trailing whitespace grapheme clusters from an array. */
+const trimGraphemes = (graphemes: string[]): string[] => {
+  let start = 0;
+  let end = graphemes.length;
+  while (start < end && isWhitespaceGrapheme(graphemes[start] as string)) {
+    start += 1;
+  }
+  while (end > start && isWhitespaceGrapheme(graphemes[end - 1] as string)) {
+    end -= 1;
+  }
+  return graphemes.slice(start, end);
+};
+
+/** Remove leading whitespace grapheme clusters from an array. */
+const trimStartGraphemes = (graphemes: string[]): string[] => {
+  let start = 0;
+  while (start < graphemes.length && isWhitespaceGrapheme(graphemes[start] as string)) {
+    start += 1;
+  }
+  return graphemes.slice(start);
+};
+
 const splitLongLine = (line: string, maxChars: number): string[] => {
   const characters = captionGraphemes(line);
   if (characters.length <= maxChars) {
@@ -67,28 +96,32 @@ const splitLongLine = (line: string, maxChars: number): string[] => {
   }
 
   const segments: string[] = [];
-  let remaining = line;
-  while (captionGraphemes(remaining).length > maxChars) {
-    const charactersLeft = captionGraphemes(remaining);
+  let remaining = characters;
+  while (remaining.length > maxChars) {
     let breakAt = maxChars;
     // Prefer punctuation/whitespace near the limit so Japanese clauses and
     // Latin words stay together where possible. Never scan below half a line;
     // a very long clause should still make forward progress.
     for (let index = maxChars; index >= Math.floor(maxChars / 2); index -= 1) {
-      const character = charactersLeft[index - 1];
+      const character = remaining[index - 1];
       if (character && (preferredBreak.test(character) || /\s/u.test(character))) {
         breakAt = index;
         break;
       }
     }
-    const segment = charactersLeft.slice(0, breakAt).join("").trim();
+    // Trim at the grapheme-cluster level, not on the joined string: a cluster
+    // like U+0020 + U+0301 is one grapheme, and String.prototype.trimStart
+    // would strip the space and leave a bare combining mark at the start of
+    // the next line.
+    const segment = trimGraphemes(remaining.slice(0, breakAt)).join("");
     if (segment) {
       segments.push(segment);
     }
-    remaining = charactersLeft.slice(breakAt).join("").trimStart();
+    remaining = trimStartGraphemes(remaining.slice(breakAt));
   }
-  if (remaining) {
-    segments.push(remaining.trim());
+  const tail = trimGraphemes(remaining).join("");
+  if (tail) {
+    segments.push(tail);
   }
   return segments.length > 0 ? segments : [line.trim()];
 };

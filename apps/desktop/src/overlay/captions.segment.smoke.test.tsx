@@ -61,6 +61,32 @@ describe("segmentCaptionText edge cases", () => {
     expect(combiningLines.some((line) => line.startsWith("\u3099"))).toBe(false);
   });
 
+  it("does not split a whitespace grapheme cluster when trimming the remaining tail", () => {
+    // A space plus a combining mark (U+0020 + U+0301) is one grapheme cluster.
+    // When the hard break falls *before* it, String.prototype.trimStart on the
+    // joined remaining would strip the space and leave a bare combining mark
+    // at the start of the next line. The segmenter must trim whole clusters.
+    const graphemesOf = (text: string): string[] =>
+      [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(
+        (part) => part.segment,
+      );
+    const text = "\u3042\u3042\u3042 \u0301\u3042\u3042\u3042";
+    const lines = segmentCaptionText(text, 3);
+    expect(lines.some((line) => line.startsWith("\u0301"))).toBe(false);
+    expect(lines.flatMap(graphemesOf).join("")).toBe(text);
+  });
+
+  it("consumes pure-whitespace grapheme clusters at break boundaries", () => {
+    // A pure space at the break point is consumed: it is trimmed from the
+    // segment tail (trimGraphemes) and from the remaining head
+    // (trimStartGraphemes). No caption line should start or end with a bare
+    // space, and the non-whitespace content is preserved.
+    const text = "\u3042\u3042 \u3042\u3042\u3042  \u3042\u3042\u3042";
+    const lines = segmentCaptionText(text, 3);
+    expect(lines.every((line) => !line.startsWith(" ") && !line.endsWith(" "))).toBe(true);
+    expect(lines.join("")).toBe(text.replace(/\s/gu, ""));
+  });
+
   it("falls back to code-point splitting when Intl.Segmenter is unavailable", () => {
     // Some embedded WebViews still lack Intl.Segmenter. The fallback splits by
     // code points (Array.from) instead of grapheme clusters; it is less
