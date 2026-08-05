@@ -121,4 +121,44 @@ describe("DOM overlay honours the configured caption line budget", () => {
     expect(lineTextOf("source")).toBe(firstPass.source);
     expect(lineTextOf("translation")).toBe(firstPass.translation);
   });
+  it("counts the budget in grapheme clusters, not code points, in the DOM rows", () => {
+    // The budget is a user-visible character count. A ZWJ family emoji is one
+    // grapheme (several code points) and a dakuten combining mark shares a
+    // single grapheme with its base kana. Breaking mid-cluster would either
+    // split the budget across isolated ZWJ/marks or paint broken glyphs. The
+    // shared segmenter already guarantees this; this pins it through the DOM
+    // overlay render at a configured budget.
+    const family = "👨‍👩‍👧"; // one grapheme, multiple code points
+    const combining = "か\u3099"; // kana + combining dakuten, one grapheme
+    const text = family + combining + family + combining;
+    const graphemesOf = (input: string): string[] =>
+      [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(input)].map(
+        (part) => part.segment,
+      );
+    const budget = { source: 2, translation: 2 };
+    const config = configWithBudget(2, 2);
+    config.overlay.captionMaxChars = budget;
+    const graphemeCaption: CaptionPayload = {
+      ...createPreviewCaption(),
+      sourceText: text,
+      translationText: text,
+    };
+
+    act(() => {
+      root.render(<CaptionLines config={config} caption={graphemeCaption} />);
+    });
+
+    const source = lineTextOf("source");
+    const renderedGraphemes = graphemesOf(source);
+
+    // No line starts with a dangling ZWJ or combining mark, and every line
+    // stays within the 2-grapheme budget.
+    expect(source.startsWith("\u200D")).toBe(false);
+    expect(renderedGraphemes.some((cluster) => cluster.startsWith("\u3099"))).toBe(false);
+    expect(renderedGraphemes.map((cluster) => graphemesOf(cluster).length)).toEqual(
+      renderedGraphemes.map(() => 1),
+    );
+    expect(renderedGraphemes.length).toBe(4);
+    expect(renderedGraphemes.join("")).toBe(text);
+  });
 });

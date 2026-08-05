@@ -183,4 +183,42 @@ describe("configurable budget changes the native/Syphon line split", () => {
     expect(maxY).toBeGreaterThan(340);
     expect(maxY).toBeLessThan(370);
   });
+
+  it("counts the budget in grapheme clusters, not code points, on the native canvas", () => {
+    // Mirrors the DOM grapheme test: a ZWJ family emoji is one grapheme and a
+    // dakuten combining mark shares a grapheme with its base kana. The budget
+    // must count clusters, so the native/Syphon canvas never paints a dangling
+    // ZWJ or combining mark at the start of a line. The shared segmenter
+    // guarantees this; this pins it through the native render path.
+    const family = "👨‍👩‍👧"; // one grapheme, multiple code points
+    const combining = "か\u3099"; // kana + combining dakuten, one grapheme
+    const text = family + combining + family + combining;
+    const graphemesOf = (input: string): string[] =>
+      [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(input)].map(
+        (part) => part.segment,
+      );
+
+    const config = withBudget(2, 2);
+    config.overlay.width = 6_000;
+    config.overlay.height = 400;
+    config.overlay.safeAreaPx = 0;
+    config.overlay.source.fontSizePx = 20;
+    config.overlay.source.maxWidthPercent = 100;
+    config.overlay.source.paddingX = 0;
+    const caption: CaptionPayload = {
+      ...createPreviewCaption(),
+      sourceText: text,
+      translationText: "",
+    };
+    const { canvas, fillCalls } = createWideCanvasHarness();
+
+    expect(renderNativeFrame(canvas, config, caption)).not.toBeNull();
+
+    const painted = fillCalls.map((call) => call.text).join("");
+    const paintedGraphemes = graphemesOf(painted);
+    expect(painted).toBe(text);
+    expect(fillCalls.some((call) => call.text.startsWith("\u200D"))).toBe(false);
+    expect(paintedGraphemes.some((cluster) => cluster.startsWith("\u3099"))).toBe(false);
+    expect(paintedGraphemes.length).toBe(4);
+  });
 });
