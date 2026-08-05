@@ -366,6 +366,55 @@ mod tests {
         let total: f64 = model.bulk_predict(&[1, 2]).iter().sum();
         assert!(total > 1.0, "expected an inflated total, got {total}");
     }
+    // --- Malformed-entry branches (decode None / short-suffix paths) ---
+
+    fn malformed_trie() -> MemoryTrie {
+        // Deliberately malformed entries: too-short keys, a non-KV digit where
+        // the delimiter should be, and a value shorter than VALUE_LEN.
+        let mut trie = MemoryTrie::new();
+        trie.insert_raw(vec![]); // entry shorter than the point prefix
+        trie.insert_raw(vec![crate::codec::KEY_VALUE_DELIMITER]); // empty value
+        trie.insert_raw(vec![crate::codec::PREDICTIVE_DELIMITER, 1, 2, 3]); // no KV delim at suffix[2]
+        trie.insert_raw(vec![
+            crate::codec::PREDICTIVE_DELIMITER,
+            1,
+            2,
+            crate::codec::KEY_VALUE_DELIMITER,
+            1,
+            1,
+        ]); // value too short
+        trie
+    }
+
+    #[test]
+    fn lookup_value_skips_malformed_entries_and_returns_zero() {
+        // Every entry is malformed, so lookup falls through to 0 without
+        // panicking. This pins the `entry.len() < prefix.len()` and
+        // `decode_value(...) == None` branches.)
+        let trie = malformed_trie();
+        assert_eq!(lookup_value(&trie, &[]), 0);
+        assert_eq!(lookup_value(&trie, &[1, 2]), 0);
+    }
+
+    #[test]
+    fn lookup_continuations_skips_malformed_entries() {
+        let trie = malformed_trie();
+        let (values, sum) = lookup_continuations(&trie, &[1], 4);
+        assert_eq!(values, vec![0u32; 4]);
+        assert_eq!(sum, 0);
+    }
+
+    #[test]
+    fn lookup_value_returns_the_first_valid_entry() {
+        // A healthy entry alongside the malformed ones must still be found.
+        let pieces = malformed_trie();
+        let mut trie = MemoryTrie::new();
+        for entry in pieces.predictive_search(&[]) {
+            trie.insert_raw(entry);
+        }
+        trie.insert_point(&[1, 2], 42);
+        assert_eq!(lookup_value(&trie, &[1, 2]), 42);
+    }
 
     #[test]
     fn default_params_match_the_shipped_azookey_configuration() {

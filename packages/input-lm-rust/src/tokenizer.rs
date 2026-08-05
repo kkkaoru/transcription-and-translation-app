@@ -350,6 +350,19 @@ mod tests {
         ZenzTokenizer::from_submodule()
     }
 
+    /// Creates a unique throwaway directory under the system temp dir. Callers
+    /// write asset files into it, then `remove_dir_all` it. Unique per call so
+    /// parallel tests never clobber each other.
+    fn temp_asset_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "caption-bridge-input-lm-test-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed").replace(':', "_")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn byte_table_covers_256_entries_and_round_trips() {
         let table = byte_to_unicode();
@@ -503,6 +516,75 @@ mod tests {
         assert!(ZenzTokenizer::from_dir(std::path::Path::new("/nonexistent/xyz")).is_none());
         assert!(unicode_to_byte('\u{0}').is_none());
         assert_eq!(unicode_str_to_utf8(""), "");
+    }
+    #[test]
+    fn oversized_vocab_is_an_absence_not_a_panic() {
+        // A vocab.json with the wrong entry count must yield None (typed
+        // absence), covering the `token_to_id.len() != 6000` guard.
+        let dir = temp_asset_dir();
+        std::fs::write(dir.join("vocab.json"), r#"{"a": 0, "b": 1}"#).unwrap();
+        assert!(BpeTables::from_dir(&dir).is_none());
+        assert!(ZenzTokenizer::from_dir(&dir).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn malformed_merges_line_is_skipped_not_fatal() {
+        // One broken merge line (no space between pair tokens) must not poison
+        // the table; the malformed line takes the `else { continue }` path.
+        // The vocab must hold exactly 6000 entries for from_dir to accept it.
+        let dir = temp_asset_dir();
+        let mut vocab = String::from("{");
+        for id in 0..6000 {
+            if id > 0 {
+                vocab.push(',');
+            }
+            vocab.push_str(&format!("\"tok{id}\":{id}"));
+        }
+        vocab.push('}');
+        std::fs::write(dir.join("vocab.json"), vocab).unwrap();
+        std::fs::write(dir.join("merges.txt"), "tok0 tok1\nbrokenline\n# comment\n\n").unwrap();
+        let tables = BpeTables::from_dir(&dir).unwrap();
+        // The valid pair tok0+tok1 is ranked 0; the malformed line and
+        // comments are ignored entirely.
+        assert_eq!(tables.ranks.get(&("tok0".to_string(), "tok1".to_string())), Some(&0));
+        assert_eq!(tables.ranks.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn byte_level_bpe_with_no_ranks_falls_back_to_a_direct_vocab_lookup() {
+        // The `tables.ranks.is_empty()` fast path: with no merges, every
+        // character of the byte-mapped string maps straight to its vocab id
+        // (or UNK). `あ`/`い` each become several byte-level characters, and
+        // the fallback looks up each one individually in order.
+        let a_byte = scalar_to_unicode_str('あ');
+        let i_byte = scalar_to_unicode_str('い');
+        let bytes: String = format!("{a_byte}{i_byte}");
+        let byte_chars: Vec<char> = bytes.chars().collect();
+        let mut token_to_id = HashMap::new();
+        for (rank, ch) in byte_chars.iter().enumerate() {
+            token_to_id.insert(ch.to_string(), 100 + rank);
+        }
+        let tables =
+            BpeTables { token_to_id, id_to_token: vec![String::new(); 106], ranks: HashMap::new() };
+        // Every byte-char in the string has a vocab entry, so the fallback
+        // returns their ids in exact byte-char lookup order. The byte-map of
+        // あ and い SHARE their leading byte-chars, so the ids repeat where the
+        // chars repeat — exactly what the function's per-char lookup yields.
+        let want: Vec<usize> = byte_chars
+            .iter()
+            .map(|ch| tables.token_to_id.get(&ch.to_string()).copied().unwrap())
+            .collect();
+        assert_eq!(byte_level_bpe(&bytes, &tables), want);
+        // A scalar with no vocab coverage maps each byte-char to UNK = 0.
+        let empty = BpeTables {
+            token_to_id: HashMap::new(),
+            id_to_token: vec![String::new(); 1],
+            ranks: HashMap::new(),
+        };
+        let bytes_x: String = scalar_to_unicode_str('漢').chars().collect();
+        assert!(byte_level_bpe(&bytes_x, &empty).iter().all(|&id| id == 0));
     }
 
     #[test]

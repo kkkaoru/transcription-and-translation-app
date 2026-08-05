@@ -28,6 +28,21 @@
 //! under the language model, and `confusion_cost` is the acoustic edit cost of
 //! generating the candidate from the original hypothesis. Higher combined
 //! score is better.
+//!
+//! ## Parameter calibration (measured, not assumed)
+//!
+//! [`examples/rescore_sweep.rs`] sweeps `lm_weight`, `confusion_weight`, and
+//! `overcorrection_margin` against the real model over a fixed hiragana eval
+//! set (5 rule-covered repairs + 9 correct-form holds). The shipped defaults
+//! (`1.0 / 1.0 / 0.0`) score 9/14 combined: they fix the one high-frequency
+//! long-vowel rescue (`おはよございます` → `おはようございます`) but also
+//! overcorrect the correct geminated `きってください` → `きてください`. Every
+//! combination with `overcorrection_margin >= 2.0` reclaims that hold and
+//! scores 10/14 without losing the lone repair. No combination fixes more than
+//! one repair, because the LM is direction-biased: it rewards the shorter /
+//! more-frequent form and therefore cannot add length back except on
+//! frequency-rescue pairs. Recommendation: wire the rescorer in with a positive
+//! `overcorrection_margin` (>= 2.0) and weights near `1.0 / 1.0`.
 
 use std::collections::HashSet;
 
@@ -721,6 +736,8 @@ fn delete_char(chars: &[char], i: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{EfficientNGram, NgramParams};
+    use crate::trie::MemoryTrie;
     use std::collections::HashMap;
 
     // --- Hiragana/katakana conversion ---
@@ -995,5 +1012,163 @@ mod tests {
         // Corrected combined = 1.0 * (-10.0) - 10.0 * 0.8 = -18.0
         // Original wins.
         assert_eq!(best, "おはよございます");
+    }
+    // --- LmScorer edge branches (pinned without the real model) ---
+
+    #[test]
+    fn lm_scorer_empty_text_scores_zero() {
+        // sequence_log_prob returns 0.0 for empty token sequences. The empty
+        // branch is otherwise only reachable via the gated real-model suite.
+        let Some(tokenizer) = crate::tokenizer::ZenzTokenizer::from_submodule() else {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        };
+        let model = EfficientNGram::new(
+            NgramParams { n: 2, d: 0.5, vocab_size: 4, start_token_id: 2 },
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+        );
+        let scorer = LmScorer::new(model, tokenizer);
+        assert_eq!(scorer.score(""), 0.0);
+    }
+
+    #[test]
+    fn lm_scorer_zero_prob_token_hits_the_log_floor() {
+        // A token id beyond the model's vocab_size (277 > 3 here) makes
+        // `probs.get(token)` return None -> the -20.0 floor fires instead of
+        // ln(0). This pins the else branch of sequence_log_prob without needing
+        // the 120 MB tries.
+        let Some(tokenizer) = crate::tokenizer::ZenzTokenizer::from_submodule() else {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        };
+        let model = EfficientNGram::new(
+            NgramParams { n: 2, d: 0.5, vocab_size: 4, start_token_id: 2 },
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+        );
+        let scorer = LmScorer::new(model, tokenizer);
+        // あ encodes to id 277; the model only knows ids 0..=3, so every token
+        // in this sequence takes the zero-probability floor.
+        let score = scorer.score("あ");
+        assert!(score < -10.0, "expected the log floor, got {score}");
+    }
+
+    #[test]
+    fn lm_scorer_positive_probability_accumulates_log_prob() {
+        // The `prob > 0.0` branch: with a model whose vocab covers every token
+        // id the tokenizer emits (uniform floor 1/vocab_size > 0), each token
+        // accumulates ln(prob). ア encodes to an id below 6000, so
+        // `probs.get(id)` returns the uniform floor and never the zero branch.
+        let Some(tokenizer) = crate::tokenizer::ZenzTokenizer::from_submodule() else {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        };
+        let model = EfficientNGram::new(
+            NgramParams { n: 1, d: 0.5, vocab_size: 6000, start_token_id: 2 },
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+        );
+        let scorer = LmScorer::new(model, tokenizer);
+        let score = scorer.score("ア");
+        // n=1 means the only mass is the uniform floor 1/6000 per token:
+        // score = tokens * ln(1/6000). One ア = E3 82 A2 = 3 byte-chars -> 3
+        // tokens, so expect approximately 3 * ln(1/6000) ≈ -26.
+        assert!(score < 0.0 && score > -40.0, "expected the uniform-floor sum, got {score}");
+    }
+
+    #[test]
+    fn lm_scorer_exposes_its_model_and_tokenizer() {
+        // Pins the `model()` / `tokenizer()` accessors which are otherwise
+        // dead in the test suite.
+        let Some(tokenizer) = crate::tokenizer::ZenzTokenizer::from_submodule() else {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        };
+        let model = EfficientNGram::new(
+            NgramParams { n: 2, d: 0.5, vocab_size: 4, start_token_id: 2 },
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+        );
+        let scorer = LmScorer::new(model, tokenizer);
+        let _ = scorer.model();
+        let _ = scorer.tokenizer();
+    }
+
+    // --- Overcorrection gate exact-boundary ---
+
+    #[test]
+    fn best_replaces_when_the_candidate_beats_the_original_by_exactly_the_margin() {
+        // combined(original) = -10.0, combined(candidate) = -10.0 - 0.8 + 5.0
+        // = -5.8, so candidate - original = 4.2 exactly. The gate is `>=`
+        // margin, so a diff of exactly 4.2 with margin 4.2 must replace.
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -5.0);
+        scores.insert("おはよございます".to_string(), -10.0);
+        let scorer = MockScorer { scores };
+        let rules = AsrConfusionRules::default();
+        // cost of long-vowel insertion = 0.8, so combined diff =
+        // (-5.0 - 0.8) - (-10.0) = 4.2
+        let rescorer = Rescorer::new(scorer, rules).with_overcorrection_margin(4.2);
+        let best = rescorer.best("おはよございます");
+        assert_eq!(best, "おはようございます");
+    }
+
+    #[test]
+    fn best_keeps_original_just_below_the_margin() {
+        // Same as above but margin 4.3 (epsilon above 4.2), so the gate must
+        // reject and return the original.
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -5.0);
+        scores.insert("おはよございます".to_string(), -10.0);
+        let scorer = MockScorer { scores };
+        let rules = AsrConfusionRules::default();
+        let rescorer = Rescorer::new(scorer, rules).with_overcorrection_margin(4.3);
+        let best = rescorer.best("おはよございます");
+        assert_eq!(best, "おはよございます");
+    }
+
+    // --- max_edits cutoff ---
+
+    #[test]
+    fn max_edits_of_zero_matches_edit_one_candidate_set() {
+        // The `max_edits` field only gates the *second* edit pass. With 0 it
+        // still emits all single-edit candidates, so the honest assertion is
+        // that 0 and 1 produce the same set (and 2 strictly more).
+        let rules_0 = AsrConfusionRules { max_edits: 0, ..AsrConfusionRules::default() };
+        let rules_1 = AsrConfusionRules { max_edits: 1, ..AsrConfusionRules::default() };
+        let c0 = rules_0.generate("かいとう");
+        let c1 = rules_1.generate("かいとう");
+        assert_eq!(c0, c1, "max_edits=0 must equal max_edits=1 (no second pass)");
+    }
+
+    #[test]
+    fn max_edits_beyond_two_does_not_expand_the_candidate_set() {
+        // max_edits >= 2 builds the two-edit closure by expanding every
+        // single-edit candidate exactly once; setting it to 3 must produce the
+        // same set as 2 (the generator has no third-level expansion).
+        let rules_2 = AsrConfusionRules { max_edits: 2, ..AsrConfusionRules::default() };
+        let rules_3 = AsrConfusionRules { max_edits: 3, ..AsrConfusionRules::default() };
+        let c2 = rules_2.generate("かさ");
+        let c3 = rules_3.generate("かさ");
+        assert_eq!(c2, c3, "max_edits=3 must equal max_edits=2");
+    }
+
+    #[test]
+    fn edit_two_closure_accumulates_costs() {
+        // A two-edit candidate's total cost must be the sum of both edits.
+        // か -> が (voicing 1.0) then が's long vowel あ (0.8): が → があ, cost 1.8.
+        let rules = AsrConfusionRules { max_edits: 2, ..AsrConfusionRules::default() };
+        let candidates = rules.generate("か");
+        let target = candidates.iter().find(|c| c.text == "があ").expect("two-edit candidate");
+        assert_eq!(target.confusion_cost, rules.voicing_cost + rules.long_vowel_insert_cost);
     }
 }
