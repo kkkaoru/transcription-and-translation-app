@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "test": "cargo test -p parapper",
     "test:ui": "vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --coverage --config vitest.config.ts",
     "check": "bun run typecheck && bun run lint && bun run rust:fmt && bun run rust:lint && bun run test && bun run test:ui",
     "format": "prettier --write \"./src/**/*.{ts,tsx,js,json}\" \"./*.json\"",
     "lint": "eslint ./src",
@@ -52,6 +53,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "^8.59.0",
     "unplugin-icons": "^23.0.1",
+    "@vitest/coverage-v8": "^3.2.4",
     "vite": "4.5.14",
     "vitest": "^3.2.4"
   }

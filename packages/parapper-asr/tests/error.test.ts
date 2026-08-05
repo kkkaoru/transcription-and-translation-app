@@ -1,9 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { showNotifications } = vi.hoisted(() => ({
+  showNotifications: vi.fn(),
+}));
+
+vi.mock("@mantine/notifications", () => ({
+  notifications: { show: showNotifications },
+}));
 
 import {
   errorColor,
   getParapperErrorMessage,
   normalizeParapperErrorPayload,
+  notifyParapperIssue,
 } from "../src/lib/error";
 import { notificationColor } from "../src/lib/theme";
 import type { ParapperErrorPayload, ParapperErrorType } from "../src/lib/types";
@@ -167,5 +176,59 @@ describe("errorColor", () => {
 
   it("returns the error color for fatal severity", () => {
     expect(errorColor("fatal")).toBe(notificationColor.error);
+  });
+});
+
+describe("notifyParapperIssue", () => {
+  it("shows a warning notification without a detail line", () => {
+    showNotifications.mockClear();
+    notifyParapperIssue({
+      errorType: "VAD",
+      severity: "warning",
+      detail: null,
+    });
+
+    expect(showNotifications).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "警告",
+        message: "音声区間の判定に失敗しました。",
+        color: notificationColor.warn,
+      }),
+    );
+  });
+
+  it("includes the detail line and logs it for a fatal issue", () => {
+    showNotifications.mockClear();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      notifyParapperIssue({
+        errorType: "ASR",
+        severity: "fatal",
+        detail: "model not found",
+      });
+
+      expect(showNotifications).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "エラー",
+          message: "音声認識に失敗しました。\nmodel not found",
+          color: notificationColor.error,
+        }),
+      );
+      expect(consoleError).toHaveBeenCalledWith("model not found");
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("returns the message", () => {
+    showNotifications.mockClear();
+    const message = notifyParapperIssue({
+      errorType: "CONFIG",
+      severity: "fatal",
+      detail: null,
+    });
+    expect(message).toBe("設定の読み書きに失敗しました。");
   });
 });
