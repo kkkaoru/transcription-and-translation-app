@@ -105,6 +105,9 @@ const ja = {
   "settings.azooPathPlaceholder": "例: /models/azookey-dict",
   "settings.modelsNote":
     "初期構成は Parapper → Rust版AzooKey/zenz → Hy-MT2 です。モデルは推論ゲートウェイ側でロードし、ここではルーティングだけを切り替えます。",
+  "settings.rescoreLabel": "かな読み補正（Input N5 LM rescore）",
+  "settings.rescoreHint":
+    "オプションの N-gram 言語モデルで ASR のかな読みを再スコアリングします。有効には Input N5 LM のダウンロードが先に必要です。既定ではオフです。",
   "settings.audioEyebrow": "AUDIO",
   "settings.audioTitle": "音声入力",
   "settings.audioPipelineHint":
@@ -264,7 +267,7 @@ const ja = {
   "model.statusDownloading": "ダウンロード中",
   "model.statusError": "エラー",
   "model.inputLmNote":
-    "Input N5 LM はかな読み補正（rescore）用の N-gram モデルです。ダウンロード後に rescore 設定を有効化すると使用できます（約 120 MB、ユーザー操作でのみダウンロード）。",
+    "Input N5 LM はかな読み補正（rescore）用の N-gram モデルです。ダウンロード後に設定タブの「かな読み補正（Input N5 LM rescore）」を有効化すると使用できます（約 120 MB、ユーザー操作でのみダウンロード）。",
   "debug.title": "デバッグ情報",
   "debug.eyebrow": "DEVELOPER TOOLS",
   "debug.lead":
@@ -543,6 +546,9 @@ const en: Record<MessageKey, string> = {
   "settings.azooPathPlaceholder": "Example: /models/azookey-dict",
   "settings.modelsNote":
     "The default pipeline is Parapper → Rust AzooKey/zenz → Hy-MT2. Models are loaded by the inference gateway; this screen controls routing.",
+  "settings.rescoreLabel": "Kana-reading rescoring (Input N5 LM)",
+  "settings.rescoreHint":
+    "Optionally rescore the ASR kana reading with an N-gram language model. Requires the Input N5 LM download first. Defaults to off.",
   "settings.audioEyebrow": "AUDIO",
   "settings.audioTitle": "Audio input",
   "settings.audioPipelineHint":
@@ -700,7 +706,7 @@ const en: Record<MessageKey, string> = {
   "model.statusDownloading": "Downloading",
   "model.statusError": "Error",
   "model.inputLmNote":
-    "Input N5 LM is an N-gram model for kana-reading rescoring. After downloading, enable the rescore setting to use it (~120 MB, user-triggered download only).",
+    'Input N5 LM is an N-gram model for kana-reading rescoring. After downloading, enable "Kana-reading rescoring (Input N5 LM)" in the Settings tab to use it (~120 MB, user-triggered download only).',
   "debug.title": "Debug info",
   "debug.eyebrow": "DEVELOPER TOOLS",
   "debug.lead":

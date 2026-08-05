@@ -111,6 +111,8 @@ export const SettingsView = ({
     onConfigChange({ ...config, overlay: { ...config.overlay, ...patch } });
   const setAudio = (patch: Partial<AppConfig["audio"]>) =>
     onConfigChange({ ...config, audio: { ...config.audio, ...patch } });
+  const setRescore = (patch: Partial<AppConfig["rescore"]>) =>
+    onConfigChange({ ...config, rescore: { ...config.rescore, ...patch } });
   const vadIntervalMs = Number.isFinite(config.audio.vadIntervalMs)
     ? config.audio.vadIntervalMs
     : DEFAULT_VAD_INTERVAL_MS;
@@ -319,6 +321,18 @@ export const SettingsView = ({
           />
         </div>
         <p className="section-note">{t("settings.modelsNote")}</p>
+        <Field label={t("settings.rescoreLabel")} hint={t("settings.rescoreHint")}>
+          <label className="checkbox-field">
+            <input
+              id="rescore-enabled"
+              type="checkbox"
+              data-testid="rescore-enabled"
+              checked={config.rescore.enabled}
+              onChange={(event) => setRescore({ enabled: event.currentTarget.checked })}
+            />
+            <span>{t("settings.rescoreLabel")}</span>
+          </label>
+        </Field>
       </section>
 
       <ModelManagementCard />

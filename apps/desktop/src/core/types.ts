@@ -152,6 +152,26 @@ export interface DebugConfig {
   logLevel: LogLevel;
 }
 
+/**
+ * Opt-in input-LM rescoring of the ASR kana reading before kana-kanji
+ * conversion. Mirrors `RescoreConfig` in the Rust backend so the settings
+ * save/load path round-trips every field.
+ */
+export interface RescoreConfig {
+  /** When false the rescorer is never loaded or invoked. Defaults to off. */
+  enabled: boolean;
+  /** LM weight in the combined score. */
+  lmWeight: number;
+  /** Confusion weight in the combined score. */
+  confusionWeight: number;
+  /** Only replace the hypothesis when the best candidate beats it by this margin. */
+  overcorrectionMargin: number;
+  /** Wall-clock budget (ms) for one rescore call before falling back. */
+  timeoutMs: number;
+  /** Optional model path override (directory of `*.marisa` tries). */
+  modelPath: string | null;
+}
+
 export interface AppConfig {
   schemaVersion: 1;
   /** Recognition path selected for live/debug capture. */
@@ -162,6 +182,8 @@ export interface AppConfig {
   audio: AudioConfig;
   overlay: OverlayConfig;
   debug: DebugConfig;
+  /** Opt-in input-LM kana-reading rescoring. Defaults to off. */
+  rescore: RescoreConfig;
 }
 
 export type ModelFamily = "asr" | "normalizer" | "translator";

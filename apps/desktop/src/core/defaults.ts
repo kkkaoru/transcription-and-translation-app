@@ -110,6 +110,7 @@ export interface PartialAppConfig {
     translation?: Partial<CaptionTextStyle>;
   };
   debug?: Partial<AppConfig["debug"]>;
+  rescore?: Partial<AppConfig["rescore"]>;
 }
 
 export const DEFAULT_FONT_FAMILY = '"Noto Sans JP Variable", "Noto Sans JP", sans-serif';
@@ -332,6 +333,14 @@ export const createDefaultConfig = (): AppConfig => ({
   debug: {
     verboseLogging: false,
     logLevel: "info",
+  },
+  rescore: {
+    enabled: false,
+    lmWeight: 0.5,
+    confusionWeight: 0.5,
+    overcorrectionMargin: 2.0,
+    timeoutMs: 200,
+    modelPath: null,
   },
 });
 
@@ -557,5 +566,6 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
       ),
     },
     debug: { ...base.debug, ...input.debug },
+    rescore: { ...base.rescore, ...input.rescore },
   };
 };

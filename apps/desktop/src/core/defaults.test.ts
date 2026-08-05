@@ -395,3 +395,54 @@ describe("default configuration", () => {
     expect(isRecognitionMode(undefined)).toBe(false);
   });
 });
+
+describe("input-LM rescore configuration", () => {
+  it("defaults the rescorer off with the measured recommended parameters", () => {
+    const config = createDefaultConfig();
+    expect(config.rescore.enabled).toBe(false);
+    expect(config.rescore.lmWeight).toBe(0.5);
+    expect(config.rescore.confusionWeight).toBe(0.5);
+    expect(config.rescore.overcorrectionMargin).toBe(2.0);
+    expect(config.rescore.timeoutMs).toBe(200);
+    expect(config.rescore.modelPath).toBeNull();
+  });
+
+  it("keeps the rescorer off when a persisted config has no rescore block", () => {
+    // A config written before the rescorer existed must load exactly as it
+    // does today: rescore stays off and not present.
+    const merged = mergeConfig({ recognitionMode: "parapper-azookey" });
+    expect(merged.rescore.enabled).toBe(false);
+    expect(merged.rescore.modelPath).toBeNull();
+  });
+
+  it("preserves an explicit rescore toggle through merge", () => {
+    const merged = mergeConfig({ rescore: { enabled: true } });
+    expect(merged.rescore.enabled).toBe(true);
+    // Untouched parameters keep the recommended defaults.
+    expect(merged.rescore.lmWeight).toBe(0.5);
+    expect(merged.rescore.confusionWeight).toBe(0.5);
+    expect(merged.rescore.overcorrectionMargin).toBe(2.0);
+    expect(merged.rescore.timeoutMs).toBe(200);
+  });
+
+  it("round-trips a custom rescore block through merge", () => {
+    const merged = mergeConfig({
+      rescore: {
+        enabled: true,
+        lmWeight: 0.7,
+        confusionWeight: 0.3,
+        overcorrectionMargin: 2.5,
+        timeoutMs: 350,
+        modelPath: "/tmp/input-lm/lm",
+      },
+    });
+    expect(merged.rescore).toEqual({
+      enabled: true,
+      lmWeight: 0.7,
+      confusionWeight: 0.3,
+      overcorrectionMargin: 2.5,
+      timeoutMs: 350,
+      modelPath: "/tmp/input-lm/lm",
+    });
+  });
+});
