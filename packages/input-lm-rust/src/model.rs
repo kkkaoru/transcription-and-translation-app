@@ -405,6 +405,31 @@ mod tests {
     }
 
     #[test]
+    fn lookup_continuations_skips_boundary_malformed_suffixes() {
+        // Entries that *do* start with the predictive prefix but whose suffix
+        // is malformed: equal-to-prefix (empty suffix), a short suffix, and a
+        // suffix whose third byte is not the value delimiter. Each trips its
+        // own `continue` path in lookup_continuations.
+        use crate::codec::{KEY_VALUE_DELIMITER, PREDICTIVE_DELIMITER};
+        let mut trie = MemoryTrie::new();
+        // predictive_prefix(&[1]) = encode_key(&[1]) + PRED = [1,2,PRED]; an
+        // entry equal to it leaves a zero-length suffix, so `suffix.len() < 3`
+        // continues.
+        trie.insert_raw(vec![1, 2, PREDICTIVE_DELIMITER]);
+        // One token past the prefix but no value delimiter at suffix[2].
+        trie.insert_raw(vec![1, 2, PREDICTIVE_DELIMITER, 1, 2, 9]);
+        // Delimiter present but the value part is empty, so decode_value is
+        // None and the entry is skipped too.
+        trie.insert_raw(vec![1, 2, PREDICTIVE_DELIMITER, 1, 2, KEY_VALUE_DELIMITER]);
+        // All three entries start with the searched prefix, so the loop walks
+        // them all (this guards the reachability of the three `continue`s).
+        assert_eq!(trie.predictive_search(&crate::codec::predictive_prefix(&[1])).len(), 3);
+        let (values, sum) = lookup_continuations(&trie, &[1], 4);
+        assert_eq!(values, vec![0u32; 4]);
+        assert_eq!(sum, 0);
+    }
+
+    #[test]
     fn lookup_value_returns_the_first_valid_entry() {
         // A healthy entry alongside the malformed ones must still be found.
         let pieces = malformed_trie();
@@ -414,6 +439,19 @@ mod tests {
         }
         trie.insert_point(&[1, 2], 42);
         assert_eq!(lookup_value(&trie, &[1, 2]), 42);
+    }
+
+    #[test]
+    fn params_returns_the_owned_hyperparameters() {
+        // Pins the `EfficientNGram::params()` accessor, which no test calls.
+        let model = EfficientNGram::new(
+            toy_params(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+            MemoryTrie::new(),
+        );
+        assert_eq!(model.params(), toy_params());
     }
 
     #[test]

@@ -1171,4 +1171,205 @@ mod tests {
         let target = candidates.iter().find(|c| c.text == "があ").expect("two-edit candidate");
         assert_eq!(target.confusion_cost, rules.voicing_cost + rules.long_vowel_insert_cost);
     }
+    // --- Data-table arm coverage (table-driven over every entry) ---
+
+    #[test]
+    fn voicing_pair_maps_every_row_in_both_directions() {
+        // Every `Some` arm of voicing_pair, in the same two-column layout as
+        // the source. Walking the full mapping pins the voiced/unvoiced data
+        // the generator relies on and covers every match arm in one pass.
+        let rows: &[(char, char)] = &[
+            ('か', 'が'),
+            ('き', 'ぎ'),
+            ('く', 'ぐ'),
+            ('け', 'げ'),
+            ('こ', 'ご'),
+            ('さ', 'ざ'),
+            ('し', 'じ'),
+            ('す', 'ず'),
+            ('せ', 'ぜ'),
+            ('そ', 'ぞ'),
+            ('た', 'だ'),
+            ('ち', 'ぢ'),
+            ('つ', 'づ'),
+            ('て', 'で'),
+            ('と', 'ど'),
+            ('は', 'ば'),
+            ('ひ', 'び'),
+            ('ふ', 'ぶ'),
+            ('へ', 'べ'),
+            ('ほ', 'ぼ'),
+            ('が', 'か'),
+            ('ぎ', 'き'),
+            ('ぐ', 'く'),
+            ('げ', 'け'),
+            ('ご', 'こ'),
+            ('ざ', 'さ'),
+            ('じ', 'し'),
+            ('ず', 'す'),
+            ('ぜ', 'せ'),
+            ('ぞ', 'そ'),
+            ('だ', 'た'),
+            ('ぢ', 'ち'),
+            ('づ', 'つ'),
+            ('で', 'て'),
+            ('ど', 'と'),
+            ('ば', 'は'),
+            ('び', 'ひ'),
+            ('ぶ', 'ふ'),
+            ('べ', 'へ'),
+            ('ぼ', 'ほ'),
+        ];
+        for &(unvoiced, voiced) in rows {
+            assert_eq!(voicing_pair(unvoiced), Some(voiced), "{unvoiced} -> {voiced}");
+            assert_eq!(voicing_pair(voiced), Some(unvoiced), "{voiced} -> {unvoiced}");
+        }
+        assert_eq!(voicing_pair('ゐ'), None);
+    }
+
+    #[test]
+    fn semi_voicing_pair_maps_every_row_in_both_directions() {
+        let rows: &[(char, char)] = &[
+            ('は', 'ぱ'),
+            ('ひ', 'ぴ'),
+            ('ふ', 'ぷ'),
+            ('へ', 'ぺ'),
+            ('ほ', 'ぽ'),
+            ('ぱ', 'は'),
+            ('ぴ', 'ひ'),
+            ('ぷ', 'ふ'),
+            ('ぺ', 'へ'),
+            ('ぽ', 'ほ'),
+        ];
+        for &(plain, handakuon) in rows {
+            assert_eq!(semi_voicing_pair(plain), Some(handakuon), "{plain} -> {handakuon}");
+            assert_eq!(semi_voicing_pair(handakuon), Some(plain), "{handakuon} -> {plain}");
+        }
+        assert_eq!(semi_voicing_pair('か'), None);
+    }
+
+    #[test]
+    fn similar_moras_walks_every_acoustic_pair() {
+        // The exact `::similar_moras` tables, asserted verbatim so a swapped
+        // or dropped arm shows up as a live behavioral failure.
+        let rows: &[(char, &[char])] = &[
+            ('し', &['い']),
+            ('い', &['し', 'り']),
+            ('ち', &['し', 'つ']),
+            ('り', &['い']),
+            ('る', &['う', 'ろ']),
+            ('う', &['る']),
+            ('む', &['ん']),
+            ('ん', &['む']),
+            ('な', &['ら', 'だ']),
+            ('ら', &['な']),
+            ('お', &['う']),
+        ];
+        for &(ch, expected) in rows {
+            assert_eq!(similar_moras(ch), expected, "similar moras for {ch}");
+        }
+        assert!(similar_moras('あ').is_empty());
+        assert!(similar_moras('漢').is_empty());
+    }
+
+    #[test]
+    fn mora_vowel_walks_the_full_gojuon_mapping() {
+        // Every `Some` arm of mora_vowel, row by row as written in the source:
+        // the five bare vowels, then each consonant row (k/g/s/z/t/d/n/h/b/p/m
+        // /y/r/w) in /a i u e o/ order, plus the special final ん.
+        let rows: &[(char, char)] = &[
+            ('あ', 'あ'),
+            ('い', 'い'),
+            ('う', 'う'),
+            ('え', 'え'),
+            ('お', 'お'),
+            ('か', 'あ'),
+            ('き', 'い'),
+            ('く', 'う'),
+            ('け', 'え'),
+            ('こ', 'お'),
+            ('が', 'あ'),
+            ('ぎ', 'い'),
+            ('ぐ', 'う'),
+            ('げ', 'え'),
+            ('ご', 'お'),
+            ('さ', 'あ'),
+            ('し', 'い'),
+            ('す', 'う'),
+            ('せ', 'え'),
+            ('そ', 'お'),
+            ('ざ', 'あ'),
+            ('じ', 'い'),
+            ('ず', 'う'),
+            ('ぜ', 'え'),
+            ('ぞ', 'お'),
+            ('た', 'あ'),
+            ('ち', 'い'),
+            ('つ', 'う'),
+            ('て', 'え'),
+            ('と', 'お'),
+            ('だ', 'あ'),
+            ('ぢ', 'い'),
+            ('づ', 'う'),
+            ('で', 'え'),
+            ('ど', 'お'),
+            ('な', 'あ'),
+            ('に', 'い'),
+            ('ぬ', 'う'),
+            ('ね', 'え'),
+            ('の', 'お'),
+            ('は', 'あ'),
+            ('ひ', 'い'),
+            ('ふ', 'う'),
+            ('へ', 'え'),
+            ('ほ', 'お'),
+            ('ば', 'あ'),
+            ('び', 'い'),
+            ('ぶ', 'う'),
+            ('べ', 'え'),
+            ('ぼ', 'お'),
+            ('ぱ', 'あ'),
+            ('ぴ', 'い'),
+            ('ぷ', 'う'),
+            ('ぺ', 'え'),
+            ('ぽ', 'お'),
+            ('ま', 'あ'),
+            ('み', 'い'),
+            ('む', 'う'),
+            ('め', 'え'),
+            ('も', 'お'),
+            ('や', 'あ'),
+            ('ゆ', 'う'),
+            ('よ', 'お'),
+            ('ら', 'あ'),
+            ('り', 'い'),
+            ('る', 'う'),
+            ('れ', 'え'),
+            ('ろ', 'お'),
+            ('わ', 'あ'),
+            ('を', 'お'),
+            ('ん', 'ん'),
+        ];
+        for &(mora, vowel) in rows {
+            assert_eq!(mora_vowel(mora), Some(vowel), "vowel of {mora}");
+        }
+        assert_eq!(mora_vowel('ー'), None);
+        assert_eq!(mora_vowel('っ'), None);
+    }
+
+    #[test]
+    fn can_geminate_accepts_only_the_unvoiced_consonant_rows() {
+        // The `matches!` table: every k/s/t/h + p row syllable permits an
+        // inserted っ. Voiced rows, vowels, and non-mora characters do not.
+        let geminatable: &[char] = &[
+            'か', 'き', 'く', 'け', 'こ', 'さ', 'し', 'す', 'せ', 'そ', 'た', 'ち', 'つ', 'て',
+            'と', 'は', 'ひ', 'ふ', 'へ', 'ほ', 'ぱ', 'ぴ', 'ぷ', 'ぺ', 'ぽ',
+        ];
+        for &ch in geminatable {
+            assert!(can_geminate(ch), "expected {ch} to allow gemination");
+        }
+        for ch in ['が', 'ざ', 'だ', 'ば', 'あ', 'ん', 'ー', '漢'] {
+            assert!(!can_geminate(ch), "did not expect {ch} to allow gemination");
+        }
+    }
 }

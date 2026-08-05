@@ -517,6 +517,7 @@ describe("AzooKey Worker text contract", () => {
             azookey_alloc: alloc,
             azookey_dealloc: dealloc,
             azookey_convert: convert,
+            azookey_abi_version: vi.fn(() => 2),
           },
         }) as unknown as WebAssembly.Instance,
     );
@@ -536,6 +537,29 @@ describe("AzooKey Worker text contract", () => {
     convert.mockReturnValueOnce((1n << 32n) | 70_000n);
     expect(() => converter("入力")).toThrow("invalid output range");
     instance.mockRestore();
+  });
+
+  it("rejects a Wasm module whose ABI version mismatches even without a dictionary", () => {
+    const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const instance = vi.spyOn(WebAssembly, "Instance");
+    try {
+      instance.mockImplementation(
+        () =>
+          ({
+            exports: {
+              memory,
+              azookey_alloc: vi.fn(() => 8),
+              azookey_dealloc: vi.fn(),
+              azookey_convert: vi.fn(() => 1n),
+              azookey_abi_version: vi.fn(() => 99),
+            },
+          }) as unknown as WebAssembly.Instance,
+      );
+      expect(() => createWasmConverter(emptyModule)).toThrow("ABI version mismatch");
+    } finally {
+      instance.mockRestore();
+    }
   });
 
   it("authenticates browser frames and keeps malformed frames on the socket", async () => {

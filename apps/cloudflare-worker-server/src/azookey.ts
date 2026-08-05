@@ -459,12 +459,16 @@ const instantiateWasmConverter = (
     throw new Error("AzooKey Wasm module is missing the required raw ABI");
   }
   const checkedExports = exports as AzookeyWasmExports;
+  if (
+    typeof exports.azookey_abi_version !== "function" ||
+    exports.azookey_abi_version() !== AZOOKEY_WASM_ABI_VERSION
+  ) {
+    throw new Error(
+      `AzooKey Wasm module ABI version mismatch: expected ${AZOOKEY_WASM_ABI_VERSION}`,
+    );
+  }
   if (dictionary) {
-    if (
-      typeof exports.azookey_abi_version !== "function" ||
-      exports.azookey_abi_version() !== AZOOKEY_WASM_ABI_VERSION ||
-      typeof exports.azookey_dictionary_init_owned !== "function"
-    ) {
+    if (typeof exports.azookey_dictionary_init_owned !== "function") {
       throw new Error("AzooKey Wasm module does not support portable dictionaries");
     }
     initializeWasmDictionary(checkedExports, dictionary);

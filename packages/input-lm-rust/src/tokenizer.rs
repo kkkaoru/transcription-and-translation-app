@@ -350,6 +350,18 @@ mod tests {
         ZenzTokenizer::from_submodule()
     }
 
+    /// Binds `fixture()` or skips the test. One shared definition keeps the
+    /// asset-missing guard in a single place; the suite depends on the
+    /// submodule assets, so the guard only fires when they are absent.
+    macro_rules! fixture_or_skip {
+        ($pat:pat = $e:expr) => {
+            let Some($pat) = $e else {
+                eprintln!("skipping: submodule assets not present");
+                return;
+            };
+        };
+    }
+
     /// Creates a unique throwaway directory under the system temp dir. Callers
     /// write asset files into it, then `remove_dir_all` it. Unique per call so
     /// parallel tests never clobber each other.
@@ -395,19 +407,13 @@ mod tests {
 
     #[test]
     fn merge_tables_hold_5764_ranks() {
-        let Some(t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(t = fixture());
         assert_eq!(t.tables.ranks.len(), 5764, "expected 5764 merge pairs");
     }
 
     #[test]
     fn fast_and_slow_paths_agree_and_decode_round_trips_japanese() {
-        let Some(mut t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(mut t = fixture());
         for text in [
             "あしたのてんきははれ",
             "とても",
@@ -429,10 +435,7 @@ mod tests {
 
     #[test]
     fn spaces_encode_to_unk_like_the_swift_fast_path() {
-        let Some(mut t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(mut t = fixture());
         // The ASCII space byte 0x20 maps to '\u{0120}', which is not a vocab
         // token. The reference fast path (`encodeFastByUnicodeScalar`) runs
         // full BPE per scalar and falls back to [UNK] = 0, and so does encode.
@@ -444,10 +447,7 @@ mod tests {
 
     #[test]
     fn known_ids_pin_character_encoding() {
-        let Some(mut t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(mut t = fixture());
         // From the Python cross-check: あ=277, し=244, た=249, の=240.
         assert_eq!(t.encode("あ"), vec![277]);
         assert_eq!(t.encode("し"), vec![244]);
@@ -460,10 +460,7 @@ mod tests {
 
     #[test]
     fn an_emoji_scalar_splits_into_four_byte_tokens() {
-        let Some(mut t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(mut t = fixture());
         // 😀 = U+1F600 = bytes F0 9F 98 80 -> 'ðŁĺĢ', which IS a single vocab
         // token (5247) because the training data included it. So it encodes to
         // exactly one id and decodes back to the emoji.
@@ -473,10 +470,7 @@ mod tests {
 
     #[test]
     fn space_and_punctuation_round_trip() {
-        let Some(mut t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(mut t = fixture());
         // Punctuation scalars are in the vocab and round-trip; an ASCII space
         // has no single-token entry (per-scalar fast path), so it maps to UNK
         // exactly like the Swift fast path.
@@ -488,10 +482,7 @@ mod tests {
 
     #[test]
     fn cache_and_uncached_results_are_identical() {
-        let Some(mut t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(mut t = fixture());
         let first = t.encode("あいうえお");
         t.clear_cache();
         let second = t.encode("あいうえお");
@@ -501,11 +492,19 @@ mod tests {
     }
 
     #[test]
+    fn tables_and_unk_id_accessors_expose_the_loaded_tables() {
+        // Pins the `ZenzTokenizer::tables()` and `BpeTables::unk_id()`
+        // accessors, which are otherwise unreferenced by the suite.
+        fixture_or_skip!(t = fixture());
+        let tables = t.tables();
+        assert_eq!(tables.unk_id(), 0);
+        assert_eq!(tables.token_to_id.get("[UNK]"), Some(&0));
+        assert_eq!(t.tables().ranks.len(), 5764);
+    }
+
+    #[test]
     fn start_and_end_token_ids_match_the_reference() {
-        let Some(t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(t = fixture());
         assert_eq!(t.start_token_id(), 2); // <s>
         assert_eq!(t.end_token_id(), 3); // </s>
         assert_eq!(t.vocab_size(), 6000);
@@ -589,10 +588,7 @@ mod tests {
 
     #[test]
     fn empty_text_encodes_to_empty() {
-        let Some(mut t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(mut t = fixture());
         assert!(t.encode("").is_empty());
         assert!(t.encode_slow("").is_empty());
     }
@@ -601,19 +597,13 @@ mod tests {
     fn newline_scalar_maps_to_unk() {
         // '\n' = byte 0x0A, whose byte-char has no single-char vocab entry, so
         // the fast path emits [UNK] rather than byte-falling back.
-        let Some(mut t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(mut t = fixture());
         assert_eq!(t.encode("\n"), vec![0]);
     }
 
     #[test]
     fn all_6000_vocab_tokens_are_placeholders() {
-        let Some(t) = fixture() else {
-            eprintln!("skipping: submodule assets not present");
-            return;
-        };
+        fixture_or_skip!(t = fixture());
         assert_eq!(t.tables.id_to_token.len(), 6000);
         for (i, tok) in t.tables.id_to_token.iter().enumerate() {
             assert!(!tok.is_empty(), "id {i} has empty token");
