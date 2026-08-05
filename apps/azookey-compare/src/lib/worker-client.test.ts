@@ -742,4 +742,15 @@ describe("AzooKey Worker client connection lifecycle", () => {
       "worker-transport",
     );
   });
+
+  it("classifies Vibrato pre-pass refusals as before-converter rejections", () => {
+    // The Worker emits these codes when the Vibrato pre-pass failed before the
+    // AzooKey converter was invoked. They are definite refusals, not ambiguous
+    // transport outcomes, and must never claim that conversion ran.
+    for (const code of ["vibrato_unavailable", "vibrato_timeout", "vibrato_failed"]) {
+      const rejection = new AzooKeyWorkerError("pre-pass failed", code);
+      expect(workerErrorReachedConverter(rejection)).toBe(false);
+      expect(workerErrorStage(rejection)).toBe("worker-request");
+    }
+  });
 });

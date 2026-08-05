@@ -178,6 +178,8 @@ const PRE_CONVERTER_ERROR_CODES: ReadonlySet<string> = new Set([
   "invalid_contract",
   "unsupported_mode",
   "vibrato_unavailable",
+  "vibrato_timeout",
+  "vibrato_failed",
   "unauthorized",
   "busy",
   "converter_unavailable",
@@ -189,7 +191,9 @@ export type WorkerErrorStage = "worker-request" | "worker-transport" | "worker";
  * Classify a Worker rejection without claiming that an uncertain request ran.
  *
  * The Worker emits `conversion_*` only from the converter path. Known protocol
- * refusal codes are returned before conversion. A plain transport error or an
+ * refusal codes are returned before conversion, including the Vibrato pre-pass
+ * refusals (`vibrato_unavailable`, `vibrato_timeout`, `vibrato_failed`) which
+ * fail before the AzooKey converter ever runs. A plain transport error or an
  * unknown protocol code cannot prove either outcome, so it gets its own stage.
  */
 export const workerErrorStage = (error: unknown): WorkerErrorStage => {
