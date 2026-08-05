@@ -30,7 +30,10 @@ const MODEL_NAMES: Record<string, string> = {
   "hy-mt2-1.8b-2bit-gguf": "Hy-MT2 1.8B 2-bit",
   "hy-mt2-1.8b-1.25bit-gguf": "Hy-MT2 1.8B 1.25-bit",
   "hy-mt2-7b-gguf": "Hy-MT2 7B",
+  "input-n5-lm-v1": "Input N5 LM v1",
 };
+
+const INPUT_LM_MODEL_ID = "input-n5-lm-v1";
 
 const statusLabel = (status: string, t: ReturnType<typeof useI18n>["t"]): string => {
   switch (status) {
@@ -134,7 +137,13 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
         },
       }));
       pushDiagnosticEvent("download", `Download requested: ${modelId}`);
-      await bridge.downloadModel(modelId);
+      // The input-LM rescorer model is an archive (ZIP), not a single GGUF file,
+      // so it uses a dedicated download command that downloads + extracts.
+      if (modelId === INPUT_LM_MODEL_ID) {
+        await bridge.downloadInputLmModel();
+      } else {
+        await bridge.downloadModel(modelId);
+      }
       setMessage(t("model.downloadComplete", { id: MODEL_NAMES[modelId] ?? modelId }));
       refresh();
       onModelDownloaded?.();
@@ -313,6 +322,10 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
           );
         })}
       </div>
+
+      {desktop && models.some((m) => m.modelId === INPUT_LM_MODEL_ID) ? (
+        <p className="download-section-note">{t("model.inputLmNote")}</p>
+      ) : null}
     </section>
   );
 };

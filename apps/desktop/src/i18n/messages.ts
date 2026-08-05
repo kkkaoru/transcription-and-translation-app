@@ -263,6 +263,8 @@ const ja = {
   "model.statusCorrupt": "破損",
   "model.statusDownloading": "ダウンロード中",
   "model.statusError": "エラー",
+  "model.inputLmNote":
+    "Input N5 LM はかな読み補正（rescore）用の N-gram モデルです。ダウンロード後に rescore 設定を有効化すると使用できます（約 120 MB、ユーザー操作でのみダウンロード）。",
   "debug.title": "デバッグ情報",
   "debug.eyebrow": "DEVELOPER TOOLS",
   "debug.lead":
@@ -697,6 +699,8 @@ const en: Record<MessageKey, string> = {
   "model.statusCorrupt": "Corrupt",
   "model.statusDownloading": "Downloading",
   "model.statusError": "Error",
+  "model.inputLmNote":
+    "Input N5 LM is an N-gram model for kana-reading rescoring. After downloading, enable the rescore setting to use it (~120 MB, user-triggered download only).",
   "debug.title": "Debug info",
   "debug.eyebrow": "DEVELOPER TOOLS",
   "debug.lead":

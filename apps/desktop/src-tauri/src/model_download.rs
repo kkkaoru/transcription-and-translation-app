@@ -1,6 +1,7 @@
 use crate::model_runtime::{
-    archive_download_url, archive_extract_dir, archive_model_extracted, download_url, model_path,
-    spec, ArchiveModelSpec, ModelRuntimeSpec, ModelServer,
+    archive_download_url, archive_extract_dir, archive_model_extracted, download_url,
+    input_lm_cache_root, model_path, spec, ArchiveModelSpec, ModelRuntimeSpec, ModelServer,
+    INPUT_LM_ARCHIVE_SPEC,
 };
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -453,10 +454,69 @@ pub async fn download_quick_start(
 #[tauri::command]
 pub async fn list_model_status(app: AppHandle) -> Result<Vec<ModelStatusEntry>, String> {
     let models_dir = crate::model_runtime::model_runtime_dir(&app)?;
-    Ok(crate::model_runtime::all_specs()
+    let mut entries: Vec<ModelStatusEntry> = crate::model_runtime::all_specs()
         .iter()
         .map(|runtime| classify_model_status(&models_dir, runtime))
-        .collect())
+        .collect();
+    // Also report the input-LM archive model so the UI can show whether the
+    // rescorer model is installed.
+    let cache_root = input_lm_cache_root();
+    entries.push(classify_archive_model_status(&cache_root, &INPUT_LM_ARCHIVE_SPEC));
+    Ok(entries)
+}
+
+/// Classify install state for an archive model under `cache_root`.
+///
+/// Unlike [`classify_model_status`] (which checks a single GGUF file), this
+/// checks whether every expected file in `spec.expected_files` exists under
+/// the extraction directory. The `installed_bytes` field reports the archive
+/// size when ready, matching the GGUF convention.
+pub fn classify_archive_model_status(
+    cache_root: &Path,
+    spec: &ArchiveModelSpec,
+) -> ModelStatusEntry {
+    let extract_dir = archive_extract_dir(cache_root, spec);
+    if archive_model_extracted(&extract_dir, spec) {
+        ModelStatusEntry {
+            model_id: spec.id.to_string(),
+            status: "ready".to_string(),
+            installed_bytes: Some(spec.expected_bytes),
+            expected_bytes: spec.expected_bytes,
+            last_error: None,
+        }
+    } else {
+        ModelStatusEntry {
+            model_id: spec.id.to_string(),
+            status: "missing".to_string(),
+            installed_bytes: None,
+            expected_bytes: spec.expected_bytes,
+            last_error: None,
+        }
+    }
+}
+
+/// Download and extract the input-LM N-gram model.
+///
+/// This is a user-triggered, explicit download — the 120 MB archive is never
+/// fetched automatically. The command emits `model:download:progress` events
+/// (same channel as the GGUF downloads) so the existing UI progress bars work
+/// without modification. Cancellation is handled through `cancel_model_download`
+/// with the model id `input-n5-lm-v1`.
+///
+/// **Fail-open**: if the download fails or is cancelled, the pipeline rescorer
+/// simply stays inactive — no caption is ever dropped.
+#[tauri::command]
+pub async fn download_input_lm_model(app: AppHandle) -> Result<String, String> {
+    let cache_root = input_lm_cache_root();
+    let spec = &INPUT_LM_ARCHIVE_SPEC;
+    let cancel = register_download(spec.id)?;
+    let result = download_and_extract_archive_model(spec, &cache_root, &cancel, |progress| {
+        let _ = app.emit("model:download:progress", progress);
+    })
+    .await;
+    unregister_download(spec.id);
+    let extract_dir = result?;
+    Ok(extract_dir.display().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -468,12 +528,10 @@ pub async fn list_model_status(app: AppHandle) -> Result<Vec<ModelStatusEntry>, 
 // ---------------------------------------------------------------------------
 
 /// Buffer size for synchronous SHA-256 streaming and ZIP extraction.
-#[allow(dead_code)]
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Verify that the SHA-256 of the file at `path` matches `expected_sha256`
 /// (lowercase hex). Returns `Ok(())` on match, `Err` on any I/O or mismatch.
-#[allow(dead_code)]
 fn verify_sha256(path: &Path, expected_sha256: &str) -> Result<(), String> {
     let mut file = std::fs::File::open(path)
         .map_err(|e| format!("could not open file for SHA-256 verification: {e}"))?;
@@ -506,7 +564,6 @@ fn verify_sha256(path: &Path, expected_sha256: &str) -> Result<(), String> {
 /// Backslashes in the entry name are normalized to forward slashes before
 /// checking, so a malicious archive cannot bypass the `..` filter on Unix by
 /// using `\..\` (the ZIP spec mandates `/`, but some archives are non-conforming).
-#[allow(dead_code)]
 fn safe_extract_path(entry_name: &str, dest_dir: &Path) -> Result<PathBuf, String> {
     let normalized = entry_name.replace('\\', "/");
     let entry_path = Path::new(&normalized);
@@ -540,7 +597,6 @@ fn safe_extract_path(entry_name: &str, dest_dir: &Path) -> Result<PathBuf, Strin
 ///
 /// This is a synchronous function — it is called from a `spawn_blocking` task
 /// by the async orchestrator so the extraction does not hold the tokio runtime.
-#[allow(dead_code)]
 fn extract_zip_safe(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
     let file = std::fs::File::open(zip_path)
         .map_err(|e| format!("could not open archive for extraction: {e}"))?;
@@ -595,10 +651,13 @@ fn extract_zip_entry<R: std::io::Read + std::io::Seek>(
 ///
 /// The download streams to a `.partial` file and is atomically renamed on
 /// success. A failed or interrupted download leaves no residue behind.
-#[allow(dead_code)]
+/// Progress events are emitted through `on_progress` roughly every 250 ms,
+/// and `cancel` is checked between chunks so a user can abort the download.
 async fn download_archive_file(
     spec: &ArchiveModelSpec,
     cache_root: &Path,
+    cancel: &AtomicBool,
+    on_progress: &mut impl FnMut(&DownloadProgress),
 ) -> Result<PathBuf, String> {
     tokio::fs::create_dir_all(cache_root)
         .await
@@ -612,6 +671,10 @@ async fn download_archive_file(
         && verify_sha256(&destination, spec.expected_sha256).is_ok()
     {
         return Ok(destination);
+    }
+
+    if cancel.load(Ordering::SeqCst) {
+        return Err(format!("archive download cancelled for {}", spec.id));
     }
 
     if tokio::fs::try_exists(&partial).await.unwrap_or(false) {
@@ -648,6 +711,8 @@ async fn download_archive_file(
         .await
         .map_err(|e| format!("could not create archive download for {}: {e}", spec.id))?;
 
+    let start = std::time::Instant::now();
+    let mut last_emit = start;
     let mut response = response;
     let mut downloaded = 0_u64;
     while let Some(chunk) = response
@@ -655,6 +720,10 @@ async fn download_archive_file(
         .await
         .map_err(|e| format!("archive download interrupted for {}: {e}", spec.id))?
     {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = tokio::fs::remove_file(&partial).await;
+            return Err(format!("archive download cancelled for {}", spec.id));
+        }
         downloaded = downloaded.saturating_add(chunk.len() as u64);
         if downloaded > spec.expected_bytes {
             let _ = tokio::fs::remove_file(&partial).await;
@@ -663,6 +732,19 @@ async fn download_archive_file(
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("could not write archive download for {}: {e}", spec.id))?;
+
+        let now = std::time::Instant::now();
+        if now.duration_since(last_emit).as_millis() >= 250 {
+            let progress = progress_snapshot(
+                spec.id,
+                downloaded,
+                spec.expected_bytes,
+                now.duration_since(start),
+                false,
+            );
+            on_progress(&progress);
+            last_emit = now;
+        }
     }
 
     file.flush()
@@ -711,10 +793,11 @@ async fn download_archive_file(
 /// **Fail-open contract**: on any error the extracted files will not be present,
 /// so `open_model` in the pipeline will return an error and the rescorer falls
 /// back to the original ASR reading. A failed download never drops a caption.
-#[allow(dead_code)]
 pub async fn download_and_extract_archive_model(
     spec: &ArchiveModelSpec,
     cache_root: &Path,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(&DownloadProgress),
 ) -> Result<PathBuf, String> {
     let extract_dir = archive_extract_dir(cache_root, spec);
 
@@ -724,7 +807,7 @@ pub async fn download_and_extract_archive_model(
     }
 
     // 2. Download + verify.
-    let zip_path = download_archive_file(spec, cache_root).await?;
+    let zip_path = download_archive_file(spec, cache_root, cancel, &mut on_progress).await?;
 
     // 3. Extract to a temp directory, then atomically swap.
     let temp_dir = cache_root.join(format!(
@@ -761,6 +844,15 @@ pub async fn download_and_extract_archive_model(
     // 6. Clean up the ZIP — the extracted files are the source of truth.
     let _ = tokio::fs::remove_file(&zip_path).await;
 
+    // Emit 100% so the frontend can clear the progress bar and refresh status.
+    on_progress(&progress_snapshot(
+        spec.id,
+        spec.expected_bytes,
+        spec.expected_bytes,
+        std::time::Duration::from_millis(0),
+        true,
+    ));
+
     log::info!(target: "kotoba_archive_download", "extracted archive {}", spec.id);
     Ok(extract_dir)
 }
@@ -768,16 +860,18 @@ pub async fn download_and_extract_archive_model(
 #[cfg(test)]
 mod tests {
     use super::{
-        cancel_model_download, classify_model_status, download_and_extract_archive_model,
-        download_model_with_progress_cb, download_models_with_progress_cb, extract_zip_safe,
-        preferred_translator_after_quick_start, progress_snapshot, quick_start_translator_id,
-        register_download, safe_extract_path, unregister_download, verify_sha256, DownloadProgress,
-        ModelRuntimeSpec, QUICK_START_MODEL_IDS,
+        cancel_model_download, classify_archive_model_status, classify_model_status,
+        download_and_extract_archive_model, download_model_with_progress_cb,
+        download_models_with_progress_cb, extract_zip_safe, preferred_translator_after_quick_start,
+        progress_snapshot, quick_start_translator_id, register_download, safe_extract_path,
+        unregister_download, verify_sha256, DownloadProgress, ModelRuntimeSpec,
+        QUICK_START_MODEL_IDS,
     };
     use crate::model_runtime::{archive_extract_dir, model_path, spec, INPUT_LM_ARCHIVE_SPEC};
     use sha2::{Digest, Sha256};
     use std::io::{Seek, SeekFrom, Write};
     use std::path::Path;
+    use std::sync::atomic::AtomicBool;
     use std::time::Duration;
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
@@ -843,6 +937,27 @@ mod tests {
     ) -> Result<std::path::PathBuf, String> {
         download_model_with_progress_cb(runtime, root, |progress| {
             percents.push(progress.percent);
+        })
+        .await
+    }
+
+    /// Wrap the archive download in a helper so the closure does not push the
+    /// test body past the clippy excessive-nesting threshold.
+    async fn download_and_extract_pre_cancelled(
+        root: &std::path::Path,
+    ) -> Result<std::path::PathBuf, String> {
+        let cancel = AtomicBool::new(true);
+        download_and_extract_archive_model(&INPUT_LM_ARCHIVE_SPEC, root, &cancel, |_| {}).await
+    }
+
+    /// Same as above, but tracks whether any progress callback fired.
+    async fn download_and_extract_checking_progress(
+        root: &std::path::Path,
+        progress_seen: &mut bool,
+    ) -> Result<std::path::PathBuf, String> {
+        let cancel = AtomicBool::new(false);
+        download_and_extract_archive_model(&INPUT_LM_ARCHIVE_SPEC, root, &cancel, |_| {
+            *progress_seen = true;
         })
         .await
     }
@@ -1193,6 +1308,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn classify_archive_model_status_reports_missing_when_not_extracted() {
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-archive-status-missing-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let entry = classify_archive_model_status(&root, &INPUT_LM_ARCHIVE_SPEC);
+        assert_eq!(entry.model_id, "input-n5-lm-v1");
+        assert_eq!(entry.status, "missing");
+        assert!(entry.installed_bytes.is_none());
+        assert_eq!(entry.expected_bytes, INPUT_LM_ARCHIVE_SPEC.expected_bytes);
+        assert!(entry.last_error.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn classify_archive_model_status_reports_ready_when_all_files_present() {
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-archive-status-ready-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let extract_dir = archive_extract_dir(&root, &INPUT_LM_ARCHIVE_SPEC);
+        std::fs::create_dir_all(&extract_dir).unwrap();
+        INPUT_LM_ARCHIVE_SPEC
+            .expected_files
+            .iter()
+            .for_each(|file| drop(std::fs::write(extract_dir.join(file), b"present")));
+
+        let entry = classify_archive_model_status(&root, &INPUT_LM_ARCHIVE_SPEC);
+        assert_eq!(entry.model_id, "input-n5-lm-v1");
+        assert_eq!(entry.status, "ready");
+        assert_eq!(entry.installed_bytes, Some(INPUT_LM_ARCHIVE_SPEC.expected_bytes));
+        assert_eq!(entry.expected_bytes, INPUT_LM_ARCHIVE_SPEC.expected_bytes);
+        assert!(entry.last_error.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn download_and_extract_archive_model_returns_cancelled_when_cancel_flag_set() {
+        // When the cancel flag is already set before the download starts, the
+        // function must return a cancellation error without attempting a
+        // network request. The already-extracted check runs first, so we use
+        // an empty cache root (nothing extracted).
+        let root = std::env::temp_dir().join(format!(
+            "kotoba-archive-cancel-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let result = download_and_extract_pre_cancelled(&root).await;
+        assert!(result.is_err(), "pre-cancelled download must return an error");
+        let err = result.unwrap_err();
+        assert!(err.contains("cancelled"), "error should mention cancellation: {err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     #[ignore = "starts a real HF download then cancels; run explicitly"]
     async fn cancel_aborts_in_flight_xsmall_download() {
@@ -1411,9 +1593,11 @@ mod tests {
 
         // This must NOT attempt a download (which would fail without network
         // or with a wrong URL). It should return Ok immediately.
-        let result = download_and_extract_archive_model(&INPUT_LM_ARCHIVE_SPEC, &root).await;
+        let mut progress_seen = false;
+        let result = download_and_extract_checking_progress(&root, &mut progress_seen).await;
         assert!(result.is_ok(), "already-extracted model should return Ok without download");
         assert_eq!(result.unwrap(), extract_dir);
+        assert!(!progress_seen, "already-extracted model must not emit progress events");
 
         let _ = std::fs::remove_dir_all(&root);
     }

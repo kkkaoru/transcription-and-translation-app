@@ -105,6 +105,7 @@ pub fn run() {
             model_download::download_quick_start,
             model_download::cancel_model_download,
             model_download::list_model_status,
+            model_download::download_input_lm_model,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Kotoba Beacon");

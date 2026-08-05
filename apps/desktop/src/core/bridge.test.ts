@@ -346,3 +346,31 @@ describe("publishSourceCaption generation fencing", () => {
     ).toBeNull();
   });
 });
+
+describe("input-LM model download bridge", () => {
+  const withTauriRuntime = async (run: () => Promise<void>): Promise<void> => {
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    try {
+      await run();
+    } finally {
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = undefined;
+    }
+  };
+
+  it("rejects outside Tauri runtime", async () => {
+    await expect(bridge.downloadInputLmModel()).rejects.toThrow(
+      "Model download is only available in the desktop app.",
+    );
+  });
+
+  it("invokes download_input_lm_model in Tauri runtime", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue("/cache/input_n5_lm_v1");
+    await withTauriRuntime(async () => {
+      const result = await bridge.downloadInputLmModel();
+      expect(result).toBe("/cache/input_n5_lm_v1");
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("download_input_lm_model");
+    });
+    vi.mocked(invoke).mockReset();
+  });
+});

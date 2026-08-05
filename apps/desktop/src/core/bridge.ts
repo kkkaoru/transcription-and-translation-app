@@ -717,6 +717,19 @@ export const bridge = {
     return invoke<void>("cancel_model_download", { modelId });
   },
 
+  /**
+   * Download and extract the input-LM N-gram rescorer model (120 MB ZIP).
+   * User-triggered only — never auto-downloaded. Emits `model:download:progress`
+   * events on the same channel as GGUF downloads. Cancellable via
+   * `cancelModelDownload("input-n5-lm-v1")`.
+   */
+  downloadInputLmModel(): Promise<string> {
+    if (!isTauriRuntime()) {
+      return Promise.reject(new Error("Model download is only available in the desktop app."));
+    }
+    return invoke<string>("download_input_lm_model");
+  },
+
   listModelStatus(): Promise<ModelStatusEntry[]> {
     if (!isTauriRuntime()) {
       return Promise.resolve([]);

@@ -287,9 +287,6 @@ pub fn gateway_routes() -> Value {
 /// single-file GGUF download path is untouched — this struct is an additive
 /// parallel path for archive models such as the input-LM N-gram tries.
 //
-// Not yet wired into a Tauri command (that requires editing lib.rs).
-// Tested and ready; remove `allow(dead_code)` once registered.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArchiveModelSpec {
     /// Short stable identifier (used in logs and status keys).
@@ -315,7 +312,6 @@ pub struct ArchiveModelSpec {
 /// When the archive is absent or extraction fails, the pipeline stays
 /// fail-open: `open_model` returns an error and the rescorer falls back to the
 /// original ASR reading (see `Pipeline::rescore_reading`).
-#[allow(dead_code)]
 pub const INPUT_LM_ARCHIVE_SPEC: ArchiveModelSpec = ArchiveModelSpec {
     id: "input-n5-lm-v1",
     hf_repo: "Miwa-Keita/input_n5_lm_v1",
@@ -328,7 +324,6 @@ pub const INPUT_LM_ARCHIVE_SPEC: ArchiveModelSpec = ArchiveModelSpec {
 };
 
 /// Hugging Face resolve URL for an archive model, pinned to `spec.hf_revision`.
-#[allow(dead_code)]
 pub fn archive_download_url(spec: &ArchiveModelSpec) -> String {
     format!(
         "https://huggingface.co/{}/resolve/{}/{}?download=true",
@@ -339,27 +334,27 @@ pub fn archive_download_url(spec: &ArchiveModelSpec) -> String {
 /// Default cache root for the input-LM model: `$HOME/.cache/caption-bridge-input-lm`.
 /// Matches the path used by `Pipeline::default_model_path` so the extracted
 /// files land exactly where `open_model` expects them.
-#[allow(dead_code)]
 pub fn input_lm_cache_root() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(home).join(".cache").join("caption-bridge-input-lm")
 }
 
 /// Directory where `spec` is extracted under `cache_root`.
-#[allow(dead_code)]
 pub fn archive_extract_dir(cache_root: &Path, spec: &ArchiveModelSpec) -> PathBuf {
     cache_root.join(spec.extract_subdir)
 }
 
 /// Model path stem for `open_model` (e.g. `.../input_n5_lm_v1/lm`). The `.marisa`
 /// suffix is appended by `open_model` per-trie.
+//
+// Not called from the download command path (which uses `archive_extract_dir`
+// directly), but kept for tests that verify the pipeline default path contract.
 #[allow(dead_code)]
 pub fn archive_model_path(cache_root: &Path, spec: &ArchiveModelSpec) -> PathBuf {
     archive_extract_dir(cache_root, spec).join("lm")
 }
 
 /// Returns `true` when every file in `spec.expected_files` exists under `extract_dir`.
-#[allow(dead_code)]
 pub fn archive_model_extracted(extract_dir: &Path, spec: &ArchiveModelSpec) -> bool {
     spec.expected_files.iter().all(|file| extract_dir.join(file).is_file())
 }
