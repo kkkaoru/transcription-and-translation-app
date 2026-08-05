@@ -2002,6 +2002,41 @@ mod tests {
     }
 
     #[test]
+    fn is_sane_output_does_not_over_reject_non_kana_already_in_the_original() {
+        // The guard's contract is "kana text in, kana text out", but that
+        // must not mean it rejects an original that legitimately carries
+        // digits, Latin, or punctuation. Non-kana characters that already
+        // appear in the original are allowed through; only *new* non-kana
+        // characters are blocked. This pins the answer to the question
+        // "does the guard over-reject when the original contains non-kana?":
+        // it does not -- existing non-kana survives unchanged.
+        let chars: HashSet<char> = "おはよう3時、ABC".chars().collect();
+        // Identity (all existing non-kana preserved) passes.
+        assert!(is_sane_output("おはよう3時、ABC", &chars, "おはよう3時、ABC"));
+
+        // A kana edit alongside preserved digits/Latin/punctuation passes:
+        // the correction is a kana substitution, and every non-kana char is
+        // already present in the original.
+        assert!(is_sane_output("おはよう3時、ABC", &chars, "がはよう3時、ABC"));
+
+        // A candidate that deletes a non-kana char from a kana-and-non-kana
+        // original is *allowed* -- the guard only blocks blank-out, wild
+        // length swings, and genuinely new foreign characters. Deleting "AB"
+        // still leaves the remaining "C" (a non-kana char already present in
+        // the original), so it passes; the guard is deliberately generous and
+        // does not police content-preservation beyond the empty/blank case.
+        assert!(is_sane_output("おはよう3時、ABC", &chars, "おはよう3時、AB"));
+
+        // A candidate that introduces a genuinely *new* non-kana char (a digit
+        // the original never had, e.g. an ASR N-best alternative changing
+        // 3 -> 4) is rejected. That is a deliberate, documented contract
+        // boundary, not an over-rejection of existing content.
+        assert!(!is_sane_output("おはよう3時、ABC", &chars, "おはよう4時、ABC"));
+
+        // Punctuation-only characters are preserved too.
+        let punct: HashSet<char> = "！？.".chars().collect();
+        assert!(is_sane_output("おはよう！？.", &punct, "おはよう！？."));
+    }
     fn best_never_returns_empty_when_the_only_reachable_candidate_is_a_deletion() {
         // A single gemination character has exactly one confusion-rule
         // candidate: deleting it, producing "". Regression for the concrete
@@ -2024,6 +2059,26 @@ mod tests {
         ];
         let best = rescorer.best_nbest(&candidates);
         assert_eq!(best, "おはようございます");
+    }
+
+    #[test]
+    fn best_nbest_never_promotes_nonblank_text_from_a_whitespace_only_original() {
+        // Reachability of the blank-original path in `best_nbest`: when the
+        // acoustic top (the "original" this path compares against) is a
+        // whitespace-only reading, the sanity guard must never let a
+        // fabricated non-blank candidate -- however strongly the LM favors it
+        // -- invent caption text. Only a blank candidate (the identity) is
+        // acceptable; fail-open here means keep the blank original, never
+        // ship text the ASR never voiced.
+        let scorer =
+            FavorsOneText { favored: "かくれんぼ", favored_score: 0.0, other_score: -20.0 };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "  ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "かくれんぼ".into(), acoustic_score: -5.0 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "  ");
     }
 
     #[test]
