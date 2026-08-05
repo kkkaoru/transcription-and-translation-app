@@ -4,6 +4,7 @@ import { advanceRecognitionGeneration } from "../src/hooks/use-app-state";
 import {
   recognitionTextEventKey,
   recognitionTurnKey,
+  sameRecognitionSource,
   trimRecognitionLogRows,
   translationTextEventKey,
   upsertRecognizedText,
@@ -454,5 +455,69 @@ describe("generation-aware Parapper display state", () => {
   it("clamps the bounded count to at least one row", () => {
     const rows = Array.from({ length: 12 }, (_, index) => index);
     expect(trimRecognitionLogRows(rows, 0)).toEqual([rows[11]]);
+  });
+
+  it("merges a replacement into a non-first recognized row", () => {
+    const first = recognized("turn-7-3-0", "first", {
+      update_mode: "replace",
+      is_final: true,
+      outputSequence: 1,
+      turn: 3,
+    });
+    const second = recognized("turn-7-1-0", "second", {
+      update_mode: "replace",
+      is_final: true,
+      outputSequence: 1,
+      turn: 1,
+    });
+    const replacement = {
+      ...second,
+      id: "turn-7-1-1",
+      text: "replaced",
+    };
+    const merged = upsertRecognizedText([first, second], replacement);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((event) => event.text)).toEqual(["first", "replaced"]);
+  });
+
+  it("replaces a partial with a distinct newer partial at the same revision and sequence", () => {
+    const partial = recognized("turn-7-1-0", "途中", {
+      update_mode: "replace",
+      is_final: false,
+      revision: 0,
+      outputSequence: 1,
+    });
+    const distinct = recognized("turn-7-1-1", "途中 更新", {
+      update_mode: "replace",
+      is_final: false,
+      revision: 0,
+      outputSequence: 1,
+    });
+    const existing = [partial];
+    const merged = upsertRecognizedText(existing, distinct);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.text).toBe("途中 更新");
+  });
+
+  it("compares bare two-field source identities without a generation", () => {
+    const identity = { turn_session_id: 7, turn_id: 2 };
+    expect(
+      sameRecognitionSource(identity, { turn_session_id: 7, turn_id: 2 }),
+    ).toBe(true);
+    expect(
+      sameRecognitionSource(identity, { turn_session_id: 8, turn_id: 1 }),
+    ).toBe(false);
+  });
+
+  it("keeps a replace translation key independent of append payload fields", () => {
+    const replace = translated("turn-7-1-0|en", "final", {
+      update_mode: "replace",
+      is_final: true,
+      outputSequence: 2,
+    });
+    const key = translationTextEventKey(replace);
+    expect(key).toBe("0|7|1|7|1|0|2|1||en|replace|turn-7-1-0|en|");
+    expect(key).not.toContain("final");
+    expect(key).not.toContain("|success|");
   });
 });
