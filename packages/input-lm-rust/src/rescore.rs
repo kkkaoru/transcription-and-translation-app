@@ -472,29 +472,40 @@ fn is_kana_like(c: char) -> bool {
 ///   `original` carried real content.
 /// - **Wild length mismatch**: `candidate` is drastically shorter or longer
 ///   than `original`. The bound is deliberately generous -- the default
-///   confusion rules move length by at most `max_edits` characters (2 by
-///   default), and legitimate ASR N-best alternatives for the same audio
-///   segment stay within the same order of magnitude -- but it stops a
-///   scoring quirk (or a malformed upstream candidate) from swapping in
-///   something absurd.
+///   confusion rules move length by at most `max_edits` characters (1 by
+///   default; 2 when that field is raised), and legitimate ASR N-best
+///   alternatives for the same audio segment stay within the same order of
+///   magnitude -- but it stops a scoring quirk (or a malformed upstream
+///   candidate) from swapping in something absurd.
 /// - **Foreign contamination**: `candidate` contains a character that is
-///   neither kana-like nor already present in `original`. Every character
-///   the confusion rules can introduce is kana, so this never rejects a
-///   1-best candidate; it exists to catch a corrupted or out-of-contract
-///   N-best candidate supplied by the caller.
+///   neither kana-like nor already present in `original`. Digits, Latin,
+///   and punctuation that already appear in `original` are therefore
+///   allowed (they are not over-rejected); only *new* non-kana characters
+///   are blocked. Every character the confusion rules can introduce is
+///   kana, so this never rejects a legitimate 1-best edit; it exists to
+///   catch a corrupted or out-of-contract N-best candidate supplied by the
+///   caller.
 ///
-/// `original` itself always passes: an identical-text candidate trivially
-/// satisfies every check above, so this guard can never leave `best`/
-/// `best_nbest` without a safe fallback.
+/// Blank originals (empty or whitespace-only) are a special case: there is
+/// no real caption content to protect, but accepting *any* candidate would
+/// invent text from silence (for example promoting a corrupted N-best entry
+/// over an empty acoustic top). Only a blank candidate is accepted then.
+///
+/// A non-blank `original` always passes when compared to itself: an
+/// identical-text candidate trivially satisfies every check above, so this
+/// guard can never leave `best`/`best_nbest` without a safe fallback.
 fn is_sane_output(original: &str, original_chars: &HashSet<char>, candidate: &str) -> bool {
     let orig_len = original.chars().count();
     if orig_len == 0 {
-        // Nothing to lose -- any candidate (including empty) is acceptable.
-        return true;
+        // Empty original: only empty is a sane replacement. Accepting any
+        // non-empty candidate invents content from silence.
+        return candidate.is_empty();
     }
     if original.trim().is_empty() {
-        // The original itself was blank; there is no real content to guard.
-        return true;
+        // Whitespace-only original: nothing real to protect, but inventing
+        // non-blank content is still garbage. Accept only blank candidates
+        // (including the identity and the empty string).
+        return candidate.trim().is_empty();
     }
     if candidate.trim().is_empty() {
         return false;
@@ -507,6 +518,9 @@ fn is_sane_output(original: &str, original_chars: &HashSet<char>, candidate: &st
         return false;
     }
 
+    // Non-kana characters that already appear in the original (digits,
+    // Latin letters, punctuation, etc.) are allowed. Only foreign
+    // non-kana characters are rejected.
     if candidate.chars().any(|c| !is_kana_like(c) && !original_chars.contains(&c)) {
         return false;
     }
@@ -552,9 +566,30 @@ fn acoustic_beats(candidate: f64, current: f64) -> bool {
 }
 
 impl<S: CandidateScorer> Rescorer<S> {
-    /// Creates a rescorer with default weights.
+    /// Creates a rescorer with default weights (`lm_weight=1.0`,
+    /// `confusion_weight=1.0`, `overcorrection_margin=0.0`).
+    ///
+    /// These defaults are functional but not optimal on the measured eval
+    /// set; see [`Self::with_recommended_weights`] for the production-tuned
+    /// values. Existing callers that rely on the zero-margin default keep
+    /// byte-identical behavior.
     pub fn new(scorer: S, rules: AsrConfusionRules) -> Self {
         Self { scorer, rules, lm_weight: 1.0, confusion_weight: 1.0, overcorrection_margin: 0.0 }
+    }
+
+    /// Creates a rescorer with the measured-recommended production weights.
+    ///
+    /// From `examples/rescore_sweep.rs` against the real model on a fixed
+    /// 14-case eval set: `lm_weight=0.5`, `confusion_weight=0.5`,
+    /// `overcorrection_margin=2.0` scores 10/14 (vs 9/14 at the
+    /// [`Self::new`] defaults) by reclaiming the correct geminated hold
+    /// without losing the long-vowel repair. Additive API: does not change
+    /// [`Self::new`].
+    pub fn with_recommended_weights(scorer: S, rules: AsrConfusionRules) -> Self {
+        Self::new(scorer, rules)
+            .with_lm_weight(0.5)
+            .with_confusion_weight(0.5)
+            .with_overcorrection_margin(2.0)
     }
 
     /// Sets the LM weight. The combined score is
@@ -640,6 +675,15 @@ impl<S: CandidateScorer> Rescorer<S> {
     // -----------------------------------------------------------------------
     // N-best re-ranking
     // -----------------------------------------------------------------------
+    //
+    // Status: library API ready, intentionally dormant in the production
+    // pipeline. Desktop currently feeds the 1-best kana reading into
+    // `best()` only; Parapper does not yet expose N-best hypotheses with
+    // acoustic scores. Wiring `best_nbest` into the app would change output
+    // only when N-best input is supplied, so it is safe to keep as an
+    // additive surface until that upstream path exists. Do not call it from
+    // the 1-best path as a "smarter" alternative — that would rewrite
+    // existing captions.
 
     /// Re-ranks ASR N-best candidates by combining acoustic and LM scores.
     ///
@@ -653,6 +697,11 @@ impl<S: CandidateScorer> Rescorer<S> {
     /// produced these hypotheses, so `confusion_weight` and `confusion_cost`
     /// do not apply. Candidates are returned sorted by combined score,
     /// descending.
+    ///
+    /// **Production status:** intentionally dormant. The caption pipeline
+    /// only calls [`Self::best`] today. Use this when the ASR stage can
+    /// supply a real N-best list; do not invent N-best from the 1-best
+    /// hypothesis alone.
     ///
     /// # Example
     ///
