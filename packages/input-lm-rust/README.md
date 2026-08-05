@@ -257,10 +257,29 @@ cargo run --release --features rsmarisa --example check_consistency -- <base>
    `predictive_search` allocates a `Vec` per hit. `tmp/plan.md` cites a p90 of
    ~18 ms for the Swift implementation; this port has not been benchmarked.
    Memory-mapping means first access to a cold trie also pays page-fault cost.
-2. **Integration.** Per `tmp/plan.md`, the intended use is re-scoring kana
-   N-best candidates between ASR output and kana-kanji conversion, driven by
-   ASR-specific confusion rules rather than the keyboard-typo error model the
-   upstream model shipped with. That stage does not exist yet.
+2. **Integration.** The [`rescore`] module implements the ASR-specific
+   rescoring stage described in `tmp/plan.md`: it generates correction
+   candidates using acoustic confusion rules (voiced/unvoiced substitution,
+   similar mora substitution, long vowel insertion/deletion, gemination
+   insertion/deletion), scores them with a pluggable `CandidateScorer`, and
+   re-ranks them. The default `LmScorer` normalizes hiragana to katakana
+   before tokenizing, because the published model was trained on
+   katakana/romaji data and raw hiragana token ids have zero counts in the
+   tries.
+
+   **Empirical finding (measured against the real model):** the LM *can*
+   discriminate between hiragana ASR candidates when they are normalized to
+   katakana before scoring. All three tested candidate pairs showed score
+   differences of 3.5–5.1 nats. End-to-end rescoring of `おはよございます`
+   correctly selects `おはようございます` (LM score diff 5.09 > confusion cost
+   0.80). For gemination and voicing cases, the LM prefers the original
+   hypothesis, so the overcorrection gate keeps it — conservative but correct.
+   Raw hiragana (without katakana normalization) yields a uniform
+   distribution and cannot discriminate; this is why the `LmScorer` always
+   normalizes. The scoring interface is pluggable (`CandidateScorer` trait)
+   so a better-suited LM can be dropped in if discrimination is insufficient
+   for specific confusion patterns. See `examples/rescore_measure.rs` for
+   the standalone measurement program.
 3. **`lm_c_bc.marisa` is unused.** `Inference.swift` loads only four tries; the
    46 MB `c_bc` file is not among them. Worth understanding before shipping.
 4. **Tokenizer portability.** The tokenizer reads the submodule's `vocab.json`
