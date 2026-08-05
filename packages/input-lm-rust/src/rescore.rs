@@ -2037,6 +2037,8 @@ mod tests {
         let punct: HashSet<char> = "！？.".chars().collect();
         assert!(is_sane_output("おはよう！？.", &punct, "おはよう！？."));
     }
+
+    #[test]
     fn best_never_returns_empty_when_the_only_reachable_candidate_is_a_deletion() {
         // A single gemination character has exactly one confusion-rule
         // candidate: deleting it, producing "". Regression for the concrete
