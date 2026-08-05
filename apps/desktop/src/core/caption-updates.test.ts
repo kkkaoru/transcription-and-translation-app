@@ -1556,6 +1556,38 @@ describe("mergeCaptionPayload", () => {
       translationText: "",
     });
   });
+  it("keeps two different Parapper turns separate even when a reading extends the prior turn", () => {
+    // Two distinct Parapper turns: the first reads 「あしたは」 and is still
+    // non-final, the second reads 「はれ」 whose AzooKey reading strictly
+    // extends the first turn's reading. Reading-prefix matching plus close
+    // timing must not concatenate two different utterances; because the ids
+    // are different Parapper turns, the second must replace the visible slot
+    // instead of merging into the unfinished first turn.
+    const current = caption({
+      id: "parapper:0:0:1",
+      sourceText: "あしたは",
+      azookeyInputText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const nextTurn = caption({
+      id: "parapper:0:0:2",
+      sourceText: "はれ",
+      azookeyInputText: "あしたははれ",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    // The two turns must stay separate: the second turn's text replaces the
+    // first turn's slot rather than being appended to it.
+    expect(mergeCaptionPayload(current, nextTurn)?.sourceText).toBe("はれ");
+  });
 
   it("keeps same-start semantic source corrections as replacements", () => {
     const current = caption({

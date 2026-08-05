@@ -389,13 +389,21 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
  */
 const canMergeCrossIdSource = (current: CaptionPayload, next: CaptionPayload): boolean => {
   const bothUnset = startedAtOf(current) === NO_TIME_MS && startedAtOf(next) === NO_TIME_MS;
+  const bothParapperTurns = current.id.startsWith("parapper:") && next.id.startsWith("parapper:");
   const related =
     hasLexicalSourceContinuation(current, next) || hasSameOrExtendedAzookeyReading(current, next);
+  if (related && bothParapperTurns) {
+    // Parapper turn ids are stable per utterance, so two different Parapper
+    // ids are two distinct utterances. A reading/lexical relation plus close
+    // timing is still not enough to concatenate them: the exact-reading
+    // same-utterance id-rotation path is handled earlier via
+    // isLikelyCrossIdSourceRevision, and everything else must stay separate.
+    return false;
+  }
   if (related) {
     return hasCloseSourceTiming(current, next) || bothUnset;
   }
 
-  const bothParapperTurns = current.id.startsWith("parapper:") && next.id.startsWith("parapper:");
   if (bothParapperTurns) {
     return false;
   }
