@@ -512,7 +512,7 @@ const initializeWasmDictionary = (exports: AzookeyWasmExports, dictionary: Uint8
   }
 };
 
-const byteLimitTransform = (
+export const byteLimitTransform = (
   limit: number,
   message: string,
 ): TransformStream<Uint8Array, Uint8Array> => {
@@ -529,7 +529,7 @@ const byteLimitTransform = (
   });
 };
 
-const collectStream = async (stream: ReadableStream<Uint8Array>): Promise<Uint8Array> => {
+export const collectStream = async (stream: ReadableStream<Uint8Array>): Promise<Uint8Array> => {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;

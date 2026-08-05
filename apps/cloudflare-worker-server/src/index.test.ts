@@ -623,13 +623,41 @@ describe("Cloudflare Worker inference adapter", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { code: "asr_unavailable" } });
   });
 
-  it("turns an upstream JSON decoding failure into an internal error", async () => {
+  it("turns an upstream JSON decoding failure into a bad-gateway error", async () => {
     const response = await createWorker(async () => new Response("not-json")).fetch(
       asWorkerRequest(transcriptionRequest()),
       { ...env, ASR_UPSTREAM_URL: "https://asr.example/transcribe" },
     );
-    expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toMatchObject({ error: { code: "internal_error" } });
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "asr_invalid_response", message: "ASR upstream response was not valid JSON" },
+    });
+  });
+
+  it("rejects an oversized ASR upstream response body before JSON parsing", async () => {
+    const oversized = new Uint8Array(65_537);
+    const response = await createWorker(async () => new Response(oversized)).fetch(
+      asWorkerRequest(transcriptionRequest()),
+      { ...env, ASR_UPSTREAM_URL: "https://asr.example/transcribe" },
+    );
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "asr_invalid_response",
+        message: "ASR upstream response exceeds the byte limit",
+      },
+    });
+  });
+
+  it("rejects an ASR upstream response with no body", async () => {
+    const response = await createWorker(async () => new Response(null, { status: 200 })).fetch(
+      asWorkerRequest(transcriptionRequest()),
+      { ...env, ASR_UPSTREAM_URL: "https://asr.example/transcribe" },
+    );
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "asr_invalid_response", message: "ASR upstream response has no body" },
+    });
   });
 
   it("uses a safe fallback message for non-Error configuration failures", async () => {

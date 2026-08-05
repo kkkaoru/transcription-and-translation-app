@@ -18,6 +18,8 @@ import {
   azookeyDictionaryTimeoutMs,
   azookeyTimeoutMs,
   BROWSER_VIBRATO_MODE,
+  byteLimitTransform,
+  collectStream,
   HTTP_METHOD_NOT_ALLOWED,
   HTTP_SWITCHING_PROTOCOLS,
   openAzookeySocket,
@@ -58,6 +60,8 @@ const HTTP_INTERNAL_SERVER_ERROR = 500;
 const LOCAL_GATEWAY_HOST = "127.0.0.1";
 const LOCAL_GATEWAY_PORT = 8765;
 const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
+/** Upper bound for the parapper ASR upstream JSON body before it is parsed. */
+const ASR_MAX_RESPONSE_BYTES = 65_536;
 // Keep entrypoint exports limited to the Worker handler/function shapes that
 // workerd accepts. Tests use the protocol path literal instead of exporting a
 // string binding from the module entrypoint.
@@ -187,7 +191,34 @@ const upstreamTranscriber = (
         `ASR upstream returned ${response.status}`,
       );
     }
-    const payload: unknown = await response.json();
+    if (!response.body) {
+      throw new GatewayError(
+        HTTP_BAD_GATEWAY,
+        "asr_invalid_response",
+        "ASR upstream response has no body",
+      );
+    }
+    let payload: unknown;
+    try {
+      const bounded = response.body.pipeThrough(
+        byteLimitTransform(ASR_MAX_RESPONSE_BYTES, "ASR upstream response exceeds the byte limit"),
+      );
+      payload = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(await collectStream(bounded)),
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "ASR upstream response exceeds the byte limit"
+      ) {
+        throw new GatewayError(HTTP_BAD_GATEWAY, "asr_invalid_response", error.message);
+      }
+      throw new GatewayError(
+        HTTP_BAD_GATEWAY,
+        "asr_invalid_response",
+        "ASR upstream response was not valid JSON",
+      );
+    }
     if (
       !payload ||
       typeof payload !== "object" ||
