@@ -1704,7 +1704,12 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn converts_known_readings_with_the_builtin_dictionary() {
+    fn converts_known_readings_through_the_convenience_api() {
+        // `convert_kana_to_kanji` honors `AZOOKEY_DICTIONARY_ROOT` and resolves
+        // the real LOUDS dictionary when the gate provides a resolvable path;
+        // with no dictionary configured it falls back to the built-in lexicon.
+        // This assertion holds in both modes, verifying the convenience API
+        // end-to-end rather than only the built-in fallback.
         assert_eq!(convert_kana_to_kanji("きょうははいしんです"), "今日は配信です");
     }
 

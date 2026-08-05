@@ -168,6 +168,13 @@ pub(crate) fn test_system_dictionary_path() -> PathBuf {
 /// - a TSV file
 /// - `.../Dictionary` (contains `louds/charID.chid`)
 /// - `.../azooKey_dictionary_storage` (auto-selects `Dictionary/`)
+///
+/// Relative paths that do not resolve from the process working directory are
+/// additionally tried against the repository root (`CARGO_MANIFEST_DIR/../..`)
+/// so that the workspace test gate's `submodules/...` form works regardless of
+/// the cargo test binary's CWD. Absolute paths and paths that already resolve
+/// from CWD are unaffected; an unresolvable path is returned as-is so the
+/// caller can fall back to the built-in lexicon.
 pub fn resolve_system_dictionary_root(path: &Path) -> PathBuf {
     if path.is_file() || system_dictionary_present(path) {
         return path.to_path_buf();
@@ -175,6 +182,17 @@ pub fn resolve_system_dictionary_root(path: &Path) -> PathBuf {
     let nested = path.join("Dictionary");
     if system_dictionary_present(&nested) {
         return nested;
+    }
+    if !path.is_absolute() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let anchored = repo_root.join(path);
+        if anchored.is_file() || system_dictionary_present(&anchored) {
+            return anchored;
+        }
+        let nested_anchored = anchored.join("Dictionary");
+        if system_dictionary_present(&nested_anchored) {
+            return nested_anchored;
+        }
     }
     path.to_path_buf()
 }
