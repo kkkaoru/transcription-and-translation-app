@@ -1727,12 +1727,26 @@ mod tests {
 
     #[test]
     fn converts_high_frequency_caption_vocabulary() {
-        assert_eq!(convert_kana_to_kanji("かんじのしょりをかいぜん"), "漢字の処理を改善");
-        assert_eq!(convert_kana_to_kanji("おつかれさまです"), "お疲れ様です");
-        assert_eq!(convert_kana_to_kanji("おつかれさまでした"), "お疲れ様でした");
-        assert_eq!(convert_kana_to_kanji("いきます"), "行きます");
-        assert_eq!(convert_kana_to_kanji("ねん"), "年");
-        assert_eq!(convert_kana_to_kanji("おんりょうをちょうせい"), "音量を調整");
+        // This test asserts the compact built-in lexicon, so it must not pick
+        // up a system dictionary configured via `AZOOKEY_DICTIONARY_ROOT`.
+        // `convert_kana_to_kanji` honors that environment variable, which makes
+        // a bare homophone such as `ねん` resolve against the official LOUDS
+        // dictionary (`念`) instead of the compact lexicon (`年`). Using the
+        // default dictionary explicitly keeps the assertion deterministic.
+        let dictionary = AzooKeyDictionary::default();
+        let convert = |input: &str| {
+            convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .map(|candidate| candidate.text)
+                .unwrap_or_else(|| input.trim().to_string())
+        };
+        assert_eq!(convert("かんじのしょりをかいぜん"), "漢字の処理を改善");
+        assert_eq!(convert("おつかれさまです"), "お疲れ様です");
+        assert_eq!(convert("おつかれさまでした"), "お疲れ様でした");
+        assert_eq!(convert("いきます"), "行きます");
+        assert_eq!(convert("ねん"), "年");
+        assert_eq!(convert("おんりょうをちょうせい"), "音量を調整");
     }
 
     #[test]
