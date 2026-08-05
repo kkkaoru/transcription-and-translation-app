@@ -133,7 +133,16 @@ pub unsafe extern "C" fn azookey_convert(pointer: *const u8, length: usize) -> u
         // bytes and `output_bytes` is valid for the same number of bytes.
         std::ptr::copy_nonoverlapping(output_bytes.as_ptr(), output_pointer, output_length);
     }
-    ((output_pointer as u32 as u64) << 32) | output_length as u64
+    pack_output(output_pointer as usize, output_length)
+}
+
+/// Pack a conversion output into the raw ABI return value.
+///
+/// The high 32 bits carry the output pointer (truncated to the Wasm32 address
+/// space) and the low 32 bits carry the output byte length. Kept as a pure
+/// helper so host tests can pin the boundary math without a Wasm runtime.
+fn pack_output(pointer: usize, length: usize) -> u64 {
+    ((pointer as u32 as u64) << 32) | length as u64
 }
 
 fn convert_with_active_dictionary(input: &str) -> String {
@@ -152,7 +161,10 @@ fn convert_with_active_dictionary(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{azookey_alloc, azookey_convert, azookey_dealloc, azookey_dictionary_init_owned};
+    use super::{
+        azookey_alloc, azookey_convert, azookey_dealloc, azookey_dictionary_init_owned,
+        convert_with_active_dictionary, pack_output, ACTIVE_DICTIONARY,
+    };
 
     #[cfg(target_arch = "wasm32")]
     #[test]
@@ -166,6 +178,45 @@ mod tests {
         let output = unsafe { std::slice::from_raw_parts(pointer, length) };
         assert_eq!(std::str::from_utf8(output), Ok("今日は配信です"));
         unsafe { azookey_dealloc(pointer, length) };
+    }
+
+    #[test]
+    fn output_packing_pins_the_wasm32_abi_boundaries() {
+        // High 32 bits carry the pointer (the Wasm32 address space truncates
+        // to u32), low 32 bits carry the byte length.
+        assert_eq!(pack_output(0, 0), 0);
+        assert_eq!(pack_output(0xff00_0000, 7), (0xff00_0000u64 << 32) | 7);
+        assert_eq!(pack_output(usize::MAX, u32::MAX as usize), 0xffff_ffff_ffff_ffff);
+        // A host-width pointer truncates to its low 32 bits, exactly as the
+        // Worker observes a Wasm32 output pointer. A pointer whose contents
+        // live only in the high word of a host address collapses to zero.
+        assert_eq!(pack_output(0x0000_0001_0000_0000, 0), 0);
+        assert_eq!(pack_output(0x0000_0001_0000_4321, 4), 0x0000_4321_0000_0004);
+    }
+
+    #[test]
+    fn conversion_falls_back_to_the_builtin_converter_when_no_dictionary_is_active() {
+        // A fresh ABI (no dictionary initialized) must still convert using the
+        // crate's built-in lexicon instead of returning empty output.
+        let result = convert_with_active_dictionary("きょうははいしんです");
+        assert!(!result.is_empty(), "fallback converter returned empty output");
+        assert_eq!(result, "今日は配信です");
+    }
+
+    #[test]
+    fn conversion_falls_back_to_the_builtin_converter_when_the_dictionary_lock_is_poisoned() {
+        // A panicked holder must not make every subsequent conversion fail:
+        // the boundary stays usable through the built-in fallback path.
+        std::thread::spawn(|| {
+            let _guard = ACTIVE_DICTIONARY.lock().expect("test holds the dictionary lock");
+            panic!("poison the active dictionary lock on purpose");
+        })
+        .join()
+        .expect_err("the spawned test thread panics by design");
+
+        let result = convert_with_active_dictionary("きょうははいしんです");
+        assert!(!result.is_empty(), "poisoned-lock fallback returned empty output");
+        assert_eq!(result, "今日は配信です");
     }
 
     #[test]
