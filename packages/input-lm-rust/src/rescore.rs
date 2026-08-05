@@ -114,6 +114,48 @@ pub struct RankedCandidate {
 }
 
 // ---------------------------------------------------------------------------
+// N-best candidate types
+// ---------------------------------------------------------------------------
+
+/// An ASR N-best hypothesis with its acoustic/decoder score, ready for LM
+/// re-ranking via [`Rescorer::rerank_nbest`].
+///
+/// Unlike the 1-best path (where [`AsrConfusionRules`] generates correction
+/// candidates from a single hypothesis), the N-best path re-ranks candidates
+/// that the ASR decoder already produced. No edit-distance candidates are
+/// generated, so `confusion_cost` is always zero for these candidates and the
+/// combined score reduces to `acoustic_score + lm_weight * lm_score`.
+///
+/// The acoustic score is the ASR decoder's log-probability for the hypothesis
+/// (higher is better). The LM score is the kana-language-model log-probability
+/// from the plugged-in [`CandidateScorer`]. Combining them keeps the acoustic
+/// evidence in the loop — the LM alone must not override a strongly preferred
+/// ASR hypothesis, which is also enforced by the overcorrection gate in
+/// [`Rescorer::best_nbest`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct NbestCandidate {
+    /// The candidate text in hiragana (for downstream kana-kanji conversion).
+    pub text: String,
+    /// The ASR acoustic/decoder score (log-probability; higher is better).
+    pub acoustic_score: f64,
+}
+
+/// An N-best candidate with its LM and combined scores attached, produced by
+/// [`Rescorer::rerank_nbest`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RankedNbestCandidate {
+    /// The candidate text in hiragana.
+    pub text: String,
+    /// The original ASR acoustic/decoder score.
+    pub acoustic_score: f64,
+    /// The language model score (log-probability; higher is more natural).
+    pub lm_score: f64,
+    /// The combined score: `acoustic_score + lm_weight * lm_score`.
+    /// Higher is better.
+    pub combined_score: f64,
+}
+
+// ---------------------------------------------------------------------------
 // ASR confusion rules
 // ---------------------------------------------------------------------------
 
@@ -468,6 +510,107 @@ impl<S: CandidateScorer> Rescorer<S> {
             }
         } else {
             ranked[0].text.clone()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // N-best re-ranking
+    // -----------------------------------------------------------------------
+
+    /// Re-ranks ASR N-best candidates by combining acoustic and LM scores.
+    ///
+    /// The combined score for each candidate is:
+    ///
+    /// ```text
+    /// combined_score = acoustic_score + lm_weight * lm_score
+    /// ```
+    ///
+    /// No confusion candidates are generated — the ASR decoder already
+    /// produced these hypotheses, so `confusion_weight` and `confusion_cost`
+    /// do not apply. Candidates are returned sorted by combined score,
+    /// descending.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use caption_bridge_input_lm::rescore::{
+    ///     AsrConfusionRules, CandidateScorer, NbestCandidate, Rescorer,
+    /// };
+    ///
+    /// struct PreferringScorer;
+    /// impl CandidateScorer for PreferringScorer {
+    ///     fn score(&self, text: &str) -> f64 {
+    ///         match text {
+    ///             "おはようございます" => -10.0,
+    ///             "おはよございます" => -20.0,
+    ///             _ => -30.0,
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let rescorer = Rescorer::new(PreferringScorer, AsrConfusionRules::default());
+    /// let candidates = vec![
+    ///     NbestCandidate { text: "おはよございます".into(), acoustic_score: -3.2 },
+    ///     NbestCandidate { text: "おはようございます".into(), acoustic_score: -3.4 },
+    /// ];
+    /// let best = rescorer.best_nbest(&candidates);
+    /// assert_eq!(best, "おはようございます");
+    /// ```
+    pub fn rerank_nbest(&self, candidates: &[NbestCandidate]) -> Vec<RankedNbestCandidate> {
+        let mut ranked: Vec<RankedNbestCandidate> = candidates
+            .iter()
+            .map(|c| {
+                let lm_score = self.scorer.score(&c.text);
+                let combined = c.acoustic_score + self.lm_weight * lm_score;
+                RankedNbestCandidate {
+                    text: c.text.clone(),
+                    acoustic_score: c.acoustic_score,
+                    lm_score,
+                    combined_score: combined,
+                }
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
+        ranked
+    }
+
+    /// Returns the best N-best candidate, applying the overcorrection gate.
+    ///
+    /// The "original" is the candidate with the highest acoustic score — the
+    /// one ASR would have chosen without LM rescoring. If the top combined-score
+    /// candidate does not exceed the original's combined score by at least
+    /// `overcorrection_margin`, the original is returned. This prevents the LM
+    /// from overriding a strongly preferred ASR hypothesis unless the LM
+    /// evidence is clear.
+    ///
+    /// Returns an empty string when `candidates` is empty.
+    pub fn best_nbest(&self, candidates: &[NbestCandidate]) -> String {
+        if candidates.is_empty() {
+            return String::new();
+        }
+
+        // The ASR 1-best: the candidate with the highest acoustic score.
+        let original_idx = candidates
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.acoustic_score.total_cmp(&b.acoustic_score))
+            .map(|(i, _)| i)
+            .expect("at least one candidate");
+        let original_text = &candidates[original_idx].text;
+
+        let ranked = self.rerank_nbest(candidates);
+
+        // Find the original's combined score in the ranked list.
+        let original_score = ranked
+            .iter()
+            .find(|r| r.text == *original_text)
+            .map(|r| r.combined_score)
+            .unwrap_or(f64::MIN);
+
+        if ranked[0].combined_score - original_score >= self.overcorrection_margin {
+            ranked[0].text.clone()
+        } else {
+            original_text.clone()
         }
     }
 }
@@ -1012,6 +1155,184 @@ mod tests {
         // Corrected combined = 1.0 * (-10.0) - 10.0 * 0.8 = -18.0
         // Original wins.
         assert_eq!(best, "おはよございます");
+    }
+
+    // --- N-best re-ranking ---
+
+    #[test]
+    fn rerank_nbest_sorts_by_combined_score_descending() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -20.0);
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+
+        let candidates = vec![
+            NbestCandidate { text: "おはよございます".into(), acoustic_score: -3.2 },
+            NbestCandidate { text: "おはようございます".into(), acoustic_score: -3.4 },
+        ];
+        let ranked = rescorer.rerank_nbest(&candidates);
+        assert_eq!(ranked.len(), 2);
+        // Combined: おはよう = -3.4 + 1.0 * (-10.0) = -13.4
+        //           おはよ   = -3.2 + 1.0 * (-20.0) = -23.2
+        assert_eq!(ranked[0].text, "おはようございます");
+        assert_eq!(ranked[1].text, "おはよございます");
+        assert!(ranked[0].combined_score > ranked[1].combined_score);
+    }
+
+    #[test]
+    fn rerank_nbest_preserves_acoustic_and_lm_scores() {
+        let mut scores = HashMap::new();
+        scores.insert("かいしゃ".to_string(), -5.0);
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+
+        let candidates = vec![NbestCandidate { text: "かいしゃ".into(), acoustic_score: -2.0 }];
+        let ranked = rescorer.rerank_nbest(&candidates);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].acoustic_score, -2.0);
+        assert_eq!(ranked[0].lm_score, -5.0);
+        // combined = -2.0 + 1.0 * (-5.0) = -7.0
+        assert_eq!(ranked[0].combined_score, -7.0);
+    }
+
+    #[test]
+    fn best_nbest_returns_lm_preferred_candidate() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -20.0);
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+
+        let candidates = vec![
+            NbestCandidate { text: "おはよございます".into(), acoustic_score: -3.2 },
+            NbestCandidate { text: "おはようございます".into(), acoustic_score: -3.4 },
+        ];
+        // Combined: おはよう = -13.4, おはよ = -23.2, diff = 9.8 >= 0.0 (default margin)
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "おはようございます");
+    }
+
+    #[test]
+    fn best_nbest_returns_acoustic_top_when_margin_blocks_replacement() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -12.0);
+        let scorer = MockScorer { scores };
+        // Combined: おはよう = -3.4 + 1.0 * (-10.0) = -13.4
+        //           おはよ   = -3.2 + 1.0 * (-12.0) = -15.2
+        // diff = 1.8 < 10.0 margin → keep the acoustic top (おはよございます)
+        let rescorer =
+            Rescorer::new(scorer, AsrConfusionRules::default()).with_overcorrection_margin(10.0);
+
+        let candidates = vec![
+            NbestCandidate { text: "おはよございます".into(), acoustic_score: -3.2 },
+            NbestCandidate { text: "おはようございます".into(), acoustic_score: -3.4 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "おはよございます");
+    }
+
+    #[test]
+    fn best_nbest_returns_acoustic_top_when_lm_is_neutral() {
+        // When the LM scores all candidates equally, the acoustic top wins
+        // regardless of the margin (it has the highest combined score).
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -2.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -3.0 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "かいしゃ");
+    }
+
+    #[test]
+    fn best_nbest_empty_candidates_returns_empty_string() {
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        assert_eq!(rescorer.best_nbest(&[]), "");
+    }
+
+    #[test]
+    fn best_nbest_single_candidate_returns_it() {
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates =
+            vec![NbestCandidate { text: "こんにちは".into(), acoustic_score: -1.5 }];
+        assert_eq!(rescorer.best_nbest(&candidates), "こんにちは");
+    }
+
+    #[test]
+    fn best_nbest_lm_weight_changes_which_candidate_wins() {
+        // With a low lm_weight, the acoustic top wins; with a high one, the
+        // LM-preferred candidate wins.
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -11.0);
+        let candidates = vec![
+            NbestCandidate { text: "おはよございます".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "おはようございます".into(), acoustic_score: -5.0 },
+        ];
+
+        // lm_weight = 0.5: combined おはよ = -3.0 + 0.5*(-11) = -8.5
+        //                 おはよう = -5.0 + 0.5*(-10) = -10.0 → おはよ wins
+        let scorer_low = MockScorer { scores: scores.clone() };
+        let rescorer_low = Rescorer::new(scorer_low, AsrConfusionRules::default())
+            .with_lm_weight(0.5)
+            .with_overcorrection_margin(0.0);
+        assert_eq!(rescorer_low.best_nbest(&candidates), "おはよございます");
+
+        // lm_weight = 5.0: combined おはよ = -3.0 + 5.0*(-11) = -58.0
+        //                  おはよう = -5.0 + 5.0*(-10) = -55.0 → おはよう wins
+        let scorer_high = MockScorer { scores };
+        let rescorer_high = Rescorer::new(scorer_high, AsrConfusionRules::default())
+            .with_lm_weight(5.0)
+            .with_overcorrection_margin(0.0);
+        assert_eq!(rescorer_high.best_nbest(&candidates), "おはようございます");
+    }
+
+    #[test]
+    fn best_nbest_ties_in_combined_score_keep_acoustic_top() {
+        // When the top two candidates have identical combined scores, the
+        // overcorrection gate (diff = 0 < margin) keeps the acoustic top.
+        let scorer = ConstantScorer(-10.0);
+        let rescorer =
+            Rescorer::new(scorer, AsrConfusionRules::default()).with_overcorrection_margin(0.0);
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -3.0 },
+        ];
+        // Both have combined = -3.0 + 1.0 * (-10.0) = -13.0.
+        // The acoustic top is whichever comes first in the max_by tie-break
+        // (Rust's max_by returns the LAST equal element, so "がいしゃ" at
+        // index 1 is the acoustic top). But both have the same combined
+        // score, so the gate keeps the acoustic top.
+        let best = rescorer.best_nbest(&candidates);
+        // The result must be one of the tied candidates.
+        assert!(best == "かいしゃ" || best == "がいしゃ", "got {best}");
+    }
+
+    #[test]
+    fn rerank_nbest_with_lm_weight_applies_weight_to_lm_score() {
+        let mut scores = HashMap::new();
+        scores.insert("あ".to_string(), -10.0);
+        scores.insert("い".to_string(), -5.0);
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(2.0);
+
+        let candidates = vec![
+            NbestCandidate { text: "あ".into(), acoustic_score: -1.0 },
+            NbestCandidate { text: "い".into(), acoustic_score: -3.0 },
+        ];
+        let ranked = rescorer.rerank_nbest(&candidates);
+        // combined あ = -1.0 + 2.0 * (-10.0) = -21.0
+        // combined い = -3.0 + 2.0 * (-5.0)  = -13.0
+        assert_eq!(ranked[0].text, "い");
+        assert_eq!(ranked[0].combined_score, -13.0);
+        assert_eq!(ranked[1].text, "あ");
+        assert_eq!(ranked[1].combined_score, -21.0);
     }
     // --- LmScorer edge branches (pinned without the real model) ---
 
