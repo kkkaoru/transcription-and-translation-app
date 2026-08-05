@@ -1,0 +1,999 @@
+//! ASR-specific rescoring stage for kana N-best candidates.
+//!
+//! Sits between ASR output and kana-kanji conversion. Generates correction
+//! candidates using ASR-specific acoustic confusion rules (not the keyboard-typo
+//! error model the published `input_n5_lm_v1` model shipped with), scores them
+//! with a pluggable language model, and re-ranks them.
+//!
+//! ## Hiragana to katakana normalization
+//!
+//! The published model was trained on katakana/romaji-flavored data. Hiragana
+//! token ids have zero counts in the tries, so feeding raw hiragana yields a
+//! uniform distribution that cannot discriminate between candidates (measured
+//! empirically; see `examples/rescore_measure.rs`). However, normalizing
+//! hiragana to katakana before tokenizing maps to token ids the model *does*
+//! have counts for. [`LmScorer`] therefore normalizes all input to katakana
+//! before scoring, and the rescoring pipeline keeps the original hiragana text
+//! for downstream kana-kanji conversion.
+//!
+//! ## Scoring formula
+//!
+//! The combined score for each candidate is:
+//!
+//! ```text
+//! combined_score = lm_weight * lm_score - confusion_weight * confusion_cost
+//! ```
+//!
+//! Where `lm_score` is the log-probability of the katakana-normalized candidate
+//! under the language model, and `confusion_cost` is the acoustic edit cost of
+//! generating the candidate from the original hypothesis. Higher combined
+//! score is better.
+
+use std::collections::HashSet;
+
+use crate::model::EfficientNGram;
+use crate::tokenizer::ZenzTokenizer;
+use crate::trie::NgramTrie;
+
+// ---------------------------------------------------------------------------
+// Hiragana / katakana conversion
+// ---------------------------------------------------------------------------
+
+/// Converts hiragana to katakana by adding 0x60 to each codepoint in the
+/// U+3041 to U+309E range. Non-hiragana characters pass through unchanged.
+pub fn hiragana_to_katakana(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let code = c as u32;
+            if (0x3041..=0x309E).contains(&code) {
+                char::from_u32(code + 0x60).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Converts katakana to hiragana by subtracting 0x60 from each codepoint in the
+/// U+30A1 to U+30FE range. Non-katakana characters pass through unchanged.
+pub fn katakana_to_hiragana(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            let code = c as u32;
+            if (0x30A1..=0x30FE).contains(&code) {
+                char::from_u32(code - 0x60).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Candidate types
+// ---------------------------------------------------------------------------
+
+/// A candidate correction generated from an ASR hypothesis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RescoreCandidate {
+    /// The candidate text in hiragana (for downstream kana-kanji conversion).
+    pub text: String,
+    /// The acoustic confusion cost of generating this candidate from the
+    /// original hypothesis. Zero means the candidate is identical to the
+    /// original. Lower is better.
+    pub confusion_cost: f64,
+}
+
+/// A candidate with its scores attached, produced by [`Rescorer::rescore`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RankedCandidate {
+    /// The candidate text in hiragana.
+    pub text: String,
+    /// The language model score (log-probability; higher is more natural).
+    pub lm_score: f64,
+    /// The confusion cost of generating this candidate (lower is better).
+    pub confusion_cost: f64,
+    /// The combined score: `lm_weight * lm_score - confusion_weight * confusion_cost`.
+    /// Higher is better.
+    pub combined_score: f64,
+}
+
+// ---------------------------------------------------------------------------
+// ASR confusion rules
+// ---------------------------------------------------------------------------
+
+/// ASR-specific acoustic confusion rules for candidate generation.
+///
+/// Unlike the keyboard-typo error model the published model shipped with
+/// (which uses QWERTY adjacency or iOS flick input groups), these rules model
+/// acoustic confusions that occur in speech recognition:
+///
+/// - **Voiced/unvoiced consonant substitution**: か to が, た to だ, etc.
+/// - **Acoustically similar mora substitution**: し to い, ち to し, etc.
+/// - **Long vowel insertion/deletion**: おはよ to おはよう (missing う)
+/// - **Gemination (っ) insertion/deletion**: きて to きって (missing っ)
+///
+/// Each operation has an associated cost. The candidate generation is a
+/// bounded edit-distance search: at each position, each applicable operation
+/// produces a new candidate.
+#[derive(Debug, Clone)]
+pub struct AsrConfusionRules {
+    /// Cost of substituting a consonant with its voiced/unvoiced equivalent.
+    pub voicing_cost: f64,
+    /// Cost of substituting acoustically similar moras.
+    pub mora_substitution_cost: f64,
+    /// Cost of inserting a long vowel.
+    pub long_vowel_insert_cost: f64,
+    /// Cost of deleting a long vowel.
+    pub long_vowel_delete_cost: f64,
+    /// Cost of inserting a gemination (っ).
+    pub gemination_insert_cost: f64,
+    /// Cost of deleting a gemination (っ).
+    pub gemination_delete_cost: f64,
+    /// Maximum number of edits from the original hypothesis.
+    pub max_edits: usize,
+}
+
+impl Default for AsrConfusionRules {
+    fn default() -> Self {
+        Self {
+            voicing_cost: 1.0,
+            mora_substitution_cost: 1.5,
+            long_vowel_insert_cost: 0.8,
+            long_vowel_delete_cost: 0.8,
+            gemination_insert_cost: 0.9,
+            gemination_delete_cost: 0.9,
+            max_edits: 1,
+        }
+    }
+}
+
+impl AsrConfusionRules {
+    /// Generates correction candidates for `hypothesis`.
+    ///
+    /// The original hypothesis is always included with cost 0. All other
+    /// candidates are generated by applying the confusion rules at each
+    /// position, up to `max_edits` edits away. Candidates are deduplicated
+    /// by text, keeping the lowest cost.
+    pub fn generate(&self, hypothesis: &str) -> Vec<RescoreCandidate> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut candidates: Vec<RescoreCandidate> = Vec::new();
+
+        // The original is always a candidate.
+        candidates.push(RescoreCandidate { text: hypothesis.to_string(), confusion_cost: 0.0 });
+        seen.insert(hypothesis.to_string());
+
+        // Edit-1 candidates.
+        let edit_1 = self.edit_1_candidates(hypothesis);
+        for c in edit_1 {
+            if seen.insert(c.text.clone()) {
+                candidates.push(c);
+            }
+        }
+
+        // Edit-2 candidates (if enabled).
+        if self.max_edits >= 2 {
+            let edit_1_only: Vec<RescoreCandidate> =
+                candidates.iter().filter(|c| c.text != hypothesis).cloned().collect();
+            for parent in &edit_1_only {
+                let edit_2 = self.edit_1_candidates(&parent.text);
+                for c in edit_2 {
+                    let total_cost = parent.confusion_cost + c.confusion_cost;
+                    if seen.insert(c.text.clone()) {
+                        candidates
+                            .push(RescoreCandidate { text: c.text, confusion_cost: total_cost });
+                    }
+                }
+            }
+        }
+
+        candidates
+    }
+
+    /// Generates all single-edit candidates from `text`.
+    fn edit_1_candidates(&self, text: &str) -> Vec<RescoreCandidate> {
+        let mut out = Vec::new();
+        let chars: Vec<char> = text.chars().collect();
+
+        // --- Substitutions: voicing, semi-voicing, similar mora ---
+        for (i, &ch) in chars.iter().enumerate() {
+            if let Some(replacement) = voicing_pair(ch) {
+                out.push(RescoreCandidate {
+                    text: substitute_char(&chars, i, replacement),
+                    confusion_cost: self.voicing_cost,
+                });
+            }
+            if let Some(replacement) = semi_voicing_pair(ch) {
+                out.push(RescoreCandidate {
+                    text: substitute_char(&chars, i, replacement),
+                    confusion_cost: self.voicing_cost,
+                });
+            }
+            for &replacement in similar_moras(ch) {
+                out.push(RescoreCandidate {
+                    text: substitute_char(&chars, i, replacement),
+                    confusion_cost: self.mora_substitution_cost,
+                });
+            }
+        }
+
+        // --- Insertions: long vowel, gemination ---
+        for i in 0..=chars.len() {
+            // Long vowel insertion: insert the extending vowel after position i-1.
+            if i > 0 {
+                if let Some(vowel) = long_vowel_for(chars[i - 1]) {
+                    out.push(RescoreCandidate {
+                        text: insert_char(&chars, i, vowel),
+                        confusion_cost: self.long_vowel_insert_cost,
+                    });
+                }
+            }
+            // Gemination insertion: insert っ before certain consonants.
+            if i < chars.len() && can_geminate(chars[i]) {
+                out.push(RescoreCandidate {
+                    text: insert_char(&chars, i, 'っ'),
+                    confusion_cost: self.gemination_insert_cost,
+                });
+            }
+        }
+
+        // --- Deletions: long vowel, gemination ---
+        for (i, &ch) in chars.iter().enumerate() {
+            // Long vowel deletion: remove a vowel that extends the previous one.
+            if i > 0 && is_long_vowel(chars[i - 1], ch) {
+                out.push(RescoreCandidate {
+                    text: delete_char(&chars, i),
+                    confusion_cost: self.long_vowel_delete_cost,
+                });
+            }
+            // Gemination deletion: remove っ.
+            if ch == 'っ' {
+                out.push(RescoreCandidate {
+                    text: delete_char(&chars, i),
+                    confusion_cost: self.gemination_delete_cost,
+                });
+            }
+        }
+
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pluggable scorer
+// ---------------------------------------------------------------------------
+
+/// Pluggable scoring interface for candidate ranking.
+///
+/// The default implementation, [`LmScorer`], uses [`EfficientNGram`] to score
+/// the naturalness of a kana string. Because the published model was trained
+/// on katakana/romaji-flavored data, the scorer normalizes hiragana to
+/// katakana before tokenizing. A better-suited LM can be dropped in by
+/// implementing this trait.
+pub trait CandidateScorer {
+    /// Returns a score representing the naturalness of the kana string.
+    /// Higher is better.
+    fn score(&self, text: &str) -> f64;
+}
+
+/// Language-model-based scorer that normalizes hiragana to katakana before
+/// tokenizing and scoring.
+///
+/// Because the published `input_n5_lm_v1` was trained on katakana/romaji data,
+/// feeding raw hiragana yields uniform, non-discriminating distributions.
+/// Normalizing to katakana first maps to token ids the model actually has
+/// counts for.
+///
+/// The score is the total log-probability of the sequence:
+///
+/// ```text
+/// score(text) = sum of log P(token[i] | token[0..i-1])
+/// ```
+///
+/// where tokens are produced by encoding the katakana-normalized text with
+/// the GPT-2 byte-level BPE tokenizer. Higher (less negative) is better.
+pub struct LmScorer<T: NgramTrie> {
+    model: EfficientNGram<T>,
+    tokenizer: ZenzTokenizer,
+}
+
+impl<T: NgramTrie> LmScorer<T> {
+    /// Creates a scorer from a model and tokenizer.
+    pub fn new(model: EfficientNGram<T>, tokenizer: ZenzTokenizer) -> Self {
+        Self { model, tokenizer }
+    }
+
+    /// Computes the log-probability of the sequence `text` (normalized to
+    /// katakana) under the language model.
+    fn sequence_log_prob(&self, text: &str) -> f64 {
+        let katakana = hiragana_to_katakana(text);
+        let tokens = self.tokenizer.encode_slow(&katakana);
+
+        if tokens.is_empty() {
+            return 0.0;
+        }
+
+        let mut log_prob = 0.0;
+        for i in 0..tokens.len() {
+            let context = &tokens[..i];
+            let probs = self.model.bulk_predict(context);
+            let prob = probs.get(tokens[i]).copied().unwrap_or(0.0);
+            if prob > 0.0 {
+                log_prob += prob.ln();
+            } else {
+                // Floor: log of a very small probability for zero-prob tokens.
+                log_prob -= 20.0;
+            }
+        }
+        log_prob
+    }
+
+    /// The underlying model.
+    pub fn model(&self) -> &EfficientNGram<T> {
+        &self.model
+    }
+
+    /// The underlying tokenizer.
+    pub fn tokenizer(&self) -> &ZenzTokenizer {
+        &self.tokenizer
+    }
+}
+
+impl<T: NgramTrie> CandidateScorer for LmScorer<T> {
+    fn score(&self, text: &str) -> f64 {
+        self.sequence_log_prob(text)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rescorer
+// ---------------------------------------------------------------------------
+
+/// The rescoring stage.
+///
+/// Combines ASR confusion rules with a pluggable scorer to re-rank kana
+/// N-best candidates from ASR output.
+///
+/// # Example
+///
+/// ```
+/// use caption_bridge_input_lm::rescore::{
+///     AsrConfusionRules, CandidateScorer, Rescorer,
+/// };
+///
+/// // A mock scorer that prefers the long-vowel-corrected candidate.
+/// struct PreferringScorer;
+/// impl CandidateScorer for PreferringScorer {
+///     fn score(&self, text: &str) -> f64 {
+///         match text {
+///             "おはようございます" => -10.0,
+///             "おはよございます" => -20.0,
+///             _ => -30.0,
+///         }
+///     }
+/// }
+///
+/// let rescorer = Rescorer::new(PreferringScorer, AsrConfusionRules::default());
+/// let best = rescorer.best("おはよございます");
+/// assert_eq!(best, "おはようございます");
+/// ```
+pub struct Rescorer<S: CandidateScorer> {
+    scorer: S,
+    rules: AsrConfusionRules,
+    lm_weight: f64,
+    confusion_weight: f64,
+    overcorrection_margin: f64,
+}
+
+impl<S: CandidateScorer> Rescorer<S> {
+    /// Creates a rescorer with default weights.
+    pub fn new(scorer: S, rules: AsrConfusionRules) -> Self {
+        Self { scorer, rules, lm_weight: 1.0, confusion_weight: 1.0, overcorrection_margin: 0.0 }
+    }
+
+    /// Sets the LM weight. The combined score is
+    /// `lm_weight * lm_score - confusion_weight * confusion_cost`.
+    pub fn with_lm_weight(mut self, w: f64) -> Self {
+        self.lm_weight = w;
+        self
+    }
+
+    /// Sets the confusion weight.
+    pub fn with_confusion_weight(mut self, w: f64) -> Self {
+        self.confusion_weight = w;
+        self
+    }
+
+    /// Sets the overcorrection prevention margin. Only replace the original
+    /// hypothesis if the best candidate's combined score exceeds the
+    /// original's by at least this margin.
+    pub fn with_overcorrection_margin(mut self, m: f64) -> Self {
+        self.overcorrection_margin = m;
+        self
+    }
+
+    /// Re-scores all candidates and returns them ranked best-first.
+    pub fn rescore(&self, hypothesis: &str) -> Vec<RankedCandidate> {
+        let candidates = self.rules.generate(hypothesis);
+        let mut ranked: Vec<RankedCandidate> = candidates
+            .iter()
+            .map(|c| {
+                let lm_score = self.scorer.score(&c.text);
+                let combined = self.lm_weight * lm_score - self.confusion_weight * c.confusion_cost;
+                RankedCandidate {
+                    text: c.text.clone(),
+                    lm_score,
+                    confusion_cost: c.confusion_cost,
+                    combined_score: combined,
+                }
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
+        ranked
+    }
+
+    /// Returns the best candidate, applying the overcorrection gate.
+    ///
+    /// If no candidate's combined score exceeds the original hypothesis's
+    /// by at least `overcorrection_margin`, the original is returned.
+    pub fn best(&self, hypothesis: &str) -> String {
+        let ranked = self.rescore(hypothesis);
+        if ranked.is_empty() {
+            return hypothesis.to_string();
+        }
+
+        let original_score = ranked.iter().find(|c| c.text == hypothesis).map(|c| c.combined_score);
+
+        if let Some(original_score) = original_score {
+            let best = &ranked[0];
+            if best.combined_score - original_score >= self.overcorrection_margin {
+                best.text.clone()
+            } else {
+                hypothesis.to_string()
+            }
+        } else {
+            ranked[0].text.clone()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Confusion rule data (internal)
+// ---------------------------------------------------------------------------
+
+/// Returns the voiced counterpart of an unvoiced mora, or vice versa.
+fn voicing_pair(ch: char) -> Option<char> {
+    match ch {
+        'か' => Some('が'),
+        'き' => Some('ぎ'),
+        'く' => Some('ぐ'),
+        'け' => Some('げ'),
+        'こ' => Some('ご'),
+        'さ' => Some('ざ'),
+        'し' => Some('じ'),
+        'す' => Some('ず'),
+        'せ' => Some('ぜ'),
+        'そ' => Some('ぞ'),
+        'た' => Some('だ'),
+        'ち' => Some('ぢ'),
+        'つ' => Some('づ'),
+        'て' => Some('で'),
+        'と' => Some('ど'),
+        'は' => Some('ば'),
+        'ひ' => Some('び'),
+        'ふ' => Some('ぶ'),
+        'へ' => Some('べ'),
+        'ほ' => Some('ぼ'),
+        'が' => Some('か'),
+        'ぎ' => Some('き'),
+        'ぐ' => Some('く'),
+        'げ' => Some('け'),
+        'ご' => Some('こ'),
+        'ざ' => Some('さ'),
+        'じ' => Some('し'),
+        'ず' => Some('す'),
+        'ぜ' => Some('せ'),
+        'ぞ' => Some('そ'),
+        'だ' => Some('た'),
+        'ぢ' => Some('ち'),
+        'づ' => Some('つ'),
+        'で' => Some('て'),
+        'ど' => Some('と'),
+        'ば' => Some('は'),
+        'び' => Some('ひ'),
+        'ぶ' => Some('ふ'),
+        'べ' => Some('へ'),
+        'ぼ' => Some('ほ'),
+        _ => None,
+    }
+}
+
+/// Returns the semi-voiced (handakuon) counterpart of a mora, or vice versa.
+fn semi_voicing_pair(ch: char) -> Option<char> {
+    match ch {
+        'は' => Some('ぱ'),
+        'ひ' => Some('ぴ'),
+        'ふ' => Some('ぷ'),
+        'へ' => Some('ぺ'),
+        'ほ' => Some('ぽ'),
+        'ぱ' => Some('は'),
+        'ぴ' => Some('ひ'),
+        'ぷ' => Some('ふ'),
+        'ぺ' => Some('へ'),
+        'ぽ' => Some('ほ'),
+        _ => None,
+    }
+}
+
+/// Returns acoustically similar moras for `ch`.
+///
+/// These model ASR-specific acoustic confusions that are NOT already covered
+/// by the voiced/unvoiced or semi-voiced substitution rules.
+fn similar_moras(ch: char) -> &'static [char] {
+    match ch {
+        'し' => &['い'],       // しち -> いち
+        'い' => &['し', 'り'], // いち -> しち, り->い confusion
+        'ち' => &['し', 'つ'], // ち->し, ち->つ
+        'り' => &['い'],       // り->い
+        'る' => &['う', 'ろ'], // る->う, る->ろ
+        'う' => &['る'],       // う->る
+        'む' => &['ん'],       // む->ん
+        'ん' => &['む'],       // ん->む
+        'な' => &['ら', 'だ'], // な->ら, な->だ
+        'ら' => &['な'],       // ら->な
+        'お' => &['う'],       // お->う (acoustic, not long-vowel insertion)
+        _ => &[],
+    }
+}
+
+/// Returns the extending vowel for a long vowel after `ch`, if any.
+///
+/// In Japanese, long vowels are formed by inserting a specific vowel:
+/// - o-ending moras are extended with う (e.g., おはよう)
+/// - e-ending moras are extended with い (e.g., せんせい)
+/// - u-ending moras are extended with う
+/// - a-ending moras are extended with あ
+/// - i-ending moras are extended with い
+fn long_vowel_for(ch: char) -> Option<char> {
+    let vowel = mora_vowel(ch)?;
+    match vowel {
+        'あ' => Some('あ'),
+        'い' => Some('い'),
+        'う' => Some('う'),
+        'え' => Some('い'), // え is extended with い
+        'お' => Some('う'), // お is extended with う
+        _ => None,
+    }
+}
+
+/// Returns true if `ch` is a long-vowel extension of `prev`.
+fn is_long_vowel(prev: char, ch: char) -> bool {
+    long_vowel_for(prev) == Some(ch)
+}
+
+/// Returns the vowel of a mora, or None for non-mora characters.
+fn mora_vowel(ch: char) -> Option<char> {
+    match ch {
+        // Vowels
+        'あ' => Some('あ'),
+        'い' => Some('い'),
+        'う' => Some('う'),
+        'え' => Some('え'),
+        'お' => Some('お'),
+        // k
+        'か' => Some('あ'),
+        'き' => Some('い'),
+        'く' => Some('う'),
+        'け' => Some('え'),
+        'こ' => Some('お'),
+        'が' => Some('あ'),
+        'ぎ' => Some('い'),
+        'ぐ' => Some('う'),
+        'げ' => Some('え'),
+        'ご' => Some('お'),
+        // s
+        'さ' => Some('あ'),
+        'し' => Some('い'),
+        'す' => Some('う'),
+        'せ' => Some('え'),
+        'そ' => Some('お'),
+        'ざ' => Some('あ'),
+        'じ' => Some('い'),
+        'ず' => Some('う'),
+        'ぜ' => Some('え'),
+        'ぞ' => Some('お'),
+        // t
+        'た' => Some('あ'),
+        'ち' => Some('い'),
+        'つ' => Some('う'),
+        'て' => Some('え'),
+        'と' => Some('お'),
+        'だ' => Some('あ'),
+        'ぢ' => Some('い'),
+        'づ' => Some('う'),
+        'で' => Some('え'),
+        'ど' => Some('お'),
+        // n
+        'な' => Some('あ'),
+        'に' => Some('い'),
+        'ぬ' => Some('う'),
+        'ね' => Some('え'),
+        'の' => Some('お'),
+        // h
+        'は' => Some('あ'),
+        'ひ' => Some('い'),
+        'ふ' => Some('う'),
+        'へ' => Some('え'),
+        'ほ' => Some('お'),
+        'ば' => Some('あ'),
+        'び' => Some('い'),
+        'ぶ' => Some('う'),
+        'べ' => Some('え'),
+        'ぼ' => Some('お'),
+        'ぱ' => Some('あ'),
+        'ぴ' => Some('い'),
+        'ぷ' => Some('う'),
+        'ぺ' => Some('え'),
+        'ぽ' => Some('お'),
+        // m
+        'ま' => Some('あ'),
+        'み' => Some('い'),
+        'む' => Some('う'),
+        'め' => Some('え'),
+        'も' => Some('お'),
+        // y
+        'や' => Some('あ'),
+        'ゆ' => Some('う'),
+        'よ' => Some('お'),
+        // r
+        'ら' => Some('あ'),
+        'り' => Some('い'),
+        'る' => Some('う'),
+        'れ' => Some('え'),
+        'ろ' => Some('お'),
+        // w
+        'わ' => Some('あ'),
+        'を' => Some('お'),
+        // final n
+        'ん' => Some('ん'),
+        _ => None,
+    }
+}
+
+/// Returns true if a gemination (っ) can be inserted before `ch`.
+///
+/// Gemination occurs before unvoiced consonant moras: k, s, t, h, p rows.
+fn can_geminate(ch: char) -> bool {
+    matches!(
+        ch,
+        'か' | 'き'
+            | 'く'
+            | 'け'
+            | 'こ'
+            | 'さ'
+            | 'し'
+            | 'す'
+            | 'せ'
+            | 'そ'
+            | 'た'
+            | 'ち'
+            | 'つ'
+            | 'て'
+            | 'と'
+            | 'は'
+            | 'ひ'
+            | 'ふ'
+            | 'へ'
+            | 'ほ'
+            | 'ぱ'
+            | 'ぴ'
+            | 'ぷ'
+            | 'ぺ'
+            | 'ぽ'
+    )
+}
+
+// --- String operations on char vectors ---
+
+fn substitute_char(chars: &[char], i: usize, replacement: char) -> String {
+    let mut result: Vec<char> = chars.to_vec();
+    result[i] = replacement;
+    result.iter().collect()
+}
+
+fn insert_char(chars: &[char], i: usize, ch: char) -> String {
+    let mut result: Vec<char> = chars[..i].to_vec();
+    result.push(ch);
+    result.extend_from_slice(&chars[i..]);
+    result.iter().collect()
+}
+
+fn delete_char(chars: &[char], i: usize) -> String {
+    let mut result: Vec<char> = chars[..i].to_vec();
+    result.extend_from_slice(&chars[i + 1..]);
+    result.iter().collect()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // --- Hiragana/katakana conversion ---
+
+    #[test]
+    fn hiragana_round_trips_to_katakana_and_back() {
+        let hiragana = "あしたのてんきははれ";
+        let katakana = hiragana_to_katakana(hiragana);
+        assert_eq!(katakana, "アシタノテンキハハレ");
+        assert_eq!(katakana_to_hiragana(&katakana), hiragana);
+    }
+
+    #[test]
+    fn non_kana_characters_pass_through_conversion() {
+        assert_eq!(hiragana_to_katakana("abc123"), "abc123");
+        assert_eq!(katakana_to_hiragana("ABC"), "ABC");
+    }
+
+    #[test]
+    fn empty_string_converts_to_empty() {
+        assert_eq!(hiragana_to_katakana(""), "");
+        assert_eq!(katakana_to_hiragana(""), "");
+    }
+
+    #[test]
+    fn dakuten_handakuten_round_trip() {
+        assert_eq!(hiragana_to_katakana("がぱ"), "ガパ");
+        assert_eq!(katakana_to_hiragana("ガパ"), "がぱ");
+    }
+
+    // --- Confusion rule: candidate generation ---
+
+    #[test]
+    fn voicing_substitution_generates_voiced_counterpart() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("かいとう");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"がいとう"), "voicing か->が missing from {texts:?}");
+        assert!(texts.contains(&"かいどう"), "voicing と->ど missing from {texts:?}");
+    }
+
+    #[test]
+    fn voicing_substitution_works_both_directions() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("がいとう");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"かいとう"), "voicing が->か missing from {texts:?}");
+    }
+
+    #[test]
+    fn semi_voicing_substitution_generates_handakuon() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("はな");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"ぱな"), "semi-voicing は->ぱ missing from {texts:?}");
+    }
+
+    #[test]
+    fn similar_mora_substitution_generates_acoustic_pairs() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("しち");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"いち"), "し->い substitution missing from {texts:?}");
+    }
+
+    #[test]
+    fn long_vowel_insertion_generates_extending_vowel() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("おはよ");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"おはよう"), "long vowel う insertion missing from {texts:?}");
+    }
+
+    #[test]
+    fn long_vowel_deletion_removes_extending_vowel() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("おはよう");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"おはよ"), "long vowel う deletion missing from {texts:?}");
+    }
+
+    #[test]
+    fn gemination_insertion_generates_small_tu() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("きて");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"きって"), "gemination っ insertion missing from {texts:?}");
+    }
+
+    #[test]
+    fn gemination_deletion_removes_small_tu() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("きって");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"きて"), "gemination っ deletion missing from {texts:?}");
+    }
+
+    #[test]
+    fn original_hypothesis_is_always_included() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("おはようございます");
+        assert!(candidates
+            .iter()
+            .any(|c| c.text == "おはようございます" && c.confusion_cost == 0.0));
+    }
+
+    #[test]
+    fn empty_input_yields_single_candidate() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].text, "");
+        assert_eq!(candidates[0].confusion_cost, 0.0);
+    }
+
+    #[test]
+    fn single_char_generates_expected_candidates() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("か");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        // Original
+        assert!(texts.contains(&"か"));
+        // Voicing: か -> が
+        assert!(texts.contains(&"が"));
+        // Long vowel insertion: か + あ (a-ending)
+        assert!(texts.contains(&"かあ"));
+    }
+
+    #[test]
+    fn candidates_are_deduplicated() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("はは");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        // Each candidate text should appear exactly once.
+        let mut sorted = texts.clone();
+        sorted.sort();
+        let dedup_count = sorted.iter().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(dedup_count, texts.len(), "duplicate texts in {texts:?}");
+    }
+
+    #[test]
+    fn max_edits_two_generates_more_candidates() {
+        let rules_1 = AsrConfusionRules::default();
+        let rules_2 = AsrConfusionRules { max_edits: 2, ..Default::default() };
+        let c1 = rules_1.generate("かさ");
+        let c2 = rules_2.generate("かさ");
+        assert!(c2.len() > c1.len(), "max_edits=2 should generate more candidates");
+    }
+
+    #[test]
+    fn confusion_costs_are_associated_correctly() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("か");
+        let ga = candidates.iter().find(|c| c.text == "が").unwrap();
+        assert_eq!(ga.confusion_cost, rules.voicing_cost);
+    }
+
+    // --- Scoring/ranking with mock scorer ---
+
+    /// A mock scorer that returns scores from a lookup table.
+    struct MockScorer {
+        scores: HashMap<String, f64>,
+    }
+
+    impl CandidateScorer for MockScorer {
+        fn score(&self, text: &str) -> f64 {
+            self.scores.get(text).copied().unwrap_or(-100.0)
+        }
+    }
+
+    /// A scorer that always returns the same value (for tie tests).
+    struct ConstantScorer(f64);
+
+    impl CandidateScorer for ConstantScorer {
+        fn score(&self, _text: &str) -> f64 {
+            self.0
+        }
+    }
+
+    #[test]
+    fn rescore_ranks_by_combined_score() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -20.0);
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let ranked = rescorer.rescore("おはよございます");
+        assert!(!ranked.is_empty());
+        // The best candidate has the highest combined score.
+        assert!(ranked[0].combined_score >= ranked[ranked.len() - 1].combined_score);
+    }
+
+    #[test]
+    fn best_returns_corrected_candidate_when_lm_prefers_it() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -20.0);
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let best = rescorer.best("おはよございます");
+        assert_eq!(best, "おはようございます");
+    }
+
+    #[test]
+    fn best_returns_original_when_overcorrection_margin_blocks_replacement() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -20.0);
+        let scorer = MockScorer { scores };
+        let rules = AsrConfusionRules::default();
+        // The corrected candidate wins on combined score:
+        //   corrected  = 1.0 * (-10.0) - 1.0 * 0.8 = -10.8
+        //   original   = 1.0 * (-20.0) - 1.0 * 0.0 = -20.0
+        // But the margin of 10.0 blocks it (difference 9.2 < 10.0).
+        let rescorer = Rescorer::new(scorer, rules).with_overcorrection_margin(10.0);
+        let best = rescorer.best("おはよございます");
+        assert_eq!(best, "おはよございます");
+    }
+
+    #[test]
+    fn tie_prefers_original_when_all_scores_are_equal() {
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let best = rescorer.best("おはようございます");
+        // All candidates have the same lm_score; the original has cost 0,
+        // so it has the highest combined score.
+        assert_eq!(best, "おはようございます");
+    }
+
+    #[test]
+    fn empty_input_returns_original() {
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        assert_eq!(rescorer.best(""), "");
+        let ranked = rescorer.rescore("");
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].text, "");
+    }
+
+    #[test]
+    fn single_candidate_input_returns_itself() {
+        // A single-char string with no applicable confusion rules.
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let best = rescorer.best("ん");
+        assert_eq!(best, "ん");
+    }
+
+    #[test]
+    fn all_equal_scores_keeps_original() {
+        let scorer = ConstantScorer(-5.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let ranked = rescorer.rescore("かさ");
+        // The original has cost 0, so it should rank first.
+        assert_eq!(ranked[0].text, "かさ");
+        assert_eq!(ranked[0].confusion_cost, 0.0);
+    }
+
+    #[test]
+    fn lm_weight_and_confusion_weight_affect_ranking() {
+        // With high confusion weight, the original (cost 0) wins even if the
+        // LM prefers the correction.
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -15.0);
+        let scorer = MockScorer { scores };
+        let rules = AsrConfusionRules::default();
+        let rescorer = Rescorer::new(scorer, rules).with_lm_weight(1.0).with_confusion_weight(10.0);
+        let best = rescorer.best("おはよございます");
+        // LM diff = 5.0, confusion cost = 0.8 * 10 = 8.0
+        // Original combined = 1.0 * (-15.0) - 10.0 * 0 = -15.0
+        // Corrected combined = 1.0 * (-10.0) - 10.0 * 0.8 = -18.0
+        // Original wins.
+        assert_eq!(best, "おはよございます");
+    }
+}

@@ -34,6 +34,7 @@ pub mod codec;
 #[cfg(feature = "rsmarisa")]
 pub mod marisa;
 pub mod model;
+pub mod rescore;
 pub mod tokenizer;
 pub mod trie;
 
