@@ -6,6 +6,10 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
+# Only pulled for parsing `vocab.json` at runtime or at compile time when the
+# embedded-vocab feature is on. `merges.txt` and the byte table are handled
+# without any crate. The OS default is dependency-free apart from this.
+serde_json = "1"
 rsmarisa = { version = "0.4.2", features = ["mmap"], optional = true }
 
 [dev-dependencies]

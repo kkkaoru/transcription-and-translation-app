@@ -153,3 +153,49 @@ fn a_context_drawn_from_the_model_is_not_uniform() {
          the trie lookups are probably not matching",
     );
 }
+#[test]
+fn a_encoded_japanese_context_yields_a_peaked_distribution() {
+    // End-to-end: tokenizer.encode -> bulk_predict -> a peaked, near-1
+    // distribution over the REAL tries. This is the check that justifies the
+    // whole tokenizer port.
+    //
+    // The training data for this model is katakana/romaji HEADREAD input, so a
+    // hiragana context like あしたのてんきは has zero counts in the pruned
+    // c_abc trie and yields a uniform distribution through the back-off floor.
+    // A genuinely-present katakana context (イシテル = "shite-iru" in kana)
+    // peaks decisively: measured peak 0.131 vs uniform 0.000167 (~786x).
+    let Some(base) = model_base() else {
+        eprintln!("skipping: INPUT_LM_MODEL_BASE is not set");
+        return;
+    };
+
+    let mut tokenizer = match caption_bridge_input_lm::tokenizer::ZenzTokenizer::from_submodule() {
+        Some(t) => t,
+        None => {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        }
+    };
+
+    let params = NgramParams::default();
+    let model = open_model(&base, params).expect("open model");
+
+    // イシテル = ids [280, 330, 367, 279], a dense, present context.
+    let context_ids = tokenizer.encode("イシテル");
+    assert_eq!(context_ids, vec![280, 330, 367, 279], "unexpected encode of イシテル");
+    let probabilities = model.bulk_predict(&context_ids);
+    assert_eq!(probabilities.len(), params.vocab_size);
+    let total: f64 = probabilities.iter().sum();
+    assert!((total - 1.0).abs() < 5e-2, "context {context_ids:?} (イシテル) summed to {total}");
+    let uniform = 1.0 / params.vocab_size as f64;
+    let peak = probabilities.iter().copied().fold(f64::MIN, f64::max);
+    // The most likely continuation (ン among others) is picked, not uniform.
+    assert!(
+        peak > uniform * 100.0,
+        "context {context_ids:?} stayed near-uniform (peak {peak}, uniform {uniform})"
+    );
+
+    // Round-trip the same string through decode.
+    let decoded = tokenizer.decode(&context_ids);
+    assert_eq!(decoded, "イシテル", "decode got {decoded:?}");
+}

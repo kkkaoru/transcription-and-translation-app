@@ -5,11 +5,11 @@ n-gram language model stored as MARISA tries.
 
 ## Status
 
-**Working against the real model.** The codec, the Kneser-Ney smoothing, and a
-MARISA reader are all in place, and the crate produces peaked, near-normalised
-distributions from the published `input_n5_lm_v1` tries. What is *not* here is
-the tokenizer and any integration into the caption pipeline; see
-[Remaining work](#remaining-work).
+**Working against the real model.** The codec, the Kneser-Ney smoothing, a
+MARISA reader, and the GPT-2 byte-level BPE tokenizer are all in place, and the
+crate produces peaked, near-normalised distributions from the published
+`input_n5_lm_v1` tries. The remaining gap is integration into the caption
+pipeline; see [Remaining work](#remaining-work).
 
 This crate is deliberately standalone. It is **not** wired into the caption
 pipeline and changes no existing behavior. It is **not** a dependency of
@@ -25,6 +25,7 @@ Ported from the vendored Swift source at
 | --- | --- |
 | `Trainer.swift` | Key/value codec and delimiters → [`codec`] |
 | `Inference.swift` | `predict`, `bulkPredict` → [`model`] |
+| `Tokenizer.swift` | GPT-2 byte-level BPE fast path → [`tokenizer`] |
 
 ## Target model
 
@@ -82,6 +83,74 @@ last token puts every continuation of `prefix` under the common prefix
 `encode_key(prefix) ++ [PRED]`. The distinct delimiters also keep the two
 entry families from matching each other's searches.
 
+## Tokenizer
+
+The model's input vocabulary comes from a **GPT-2 byte-level BPE tokenizer**
+(`ku-nlp/gpt2-small-japanese-char`), whose assets are vendored in
+`submodules/AzooKeyKanaKanjiConverter/Sources/EfficientNGram/tokenizer/`
+(`vocab.json` = 6000 tokens, `merges.txt` = 5764 merges, both loaded at
+runtime from the submodule; the byte-to-unicode table is generated in Rust — no
+JSON or crate copies). The port lives in `src/tokenizer.rs` and mirrors the
+public surface of `ZenzTokenizer` in `Tokenizer.swift`: `encode` (the per-scalar
+fast path), `encode_slow` (whole-string BPE), `decode`, `start_token_id` (2),
+`end_token_id` (3), and `vocab_size` (6000).
+
+### Is full BPE needed, or is per-scalar encoding faithful?
+
+**Per-scalar encoding (the Swift fast path) is byte-for-byte identical to full
+BPE for this model, so full cross-scalar merging is *not* needed.** This was not
+assumed — it was decided from the actual assets, on two structural facts plus an
+empirical sweep:
+
+1. The GPT-2 byte-map sends every UTF-8 byte above `0x7F` to a Latin-1 char in
+   `[0xC0, 0xFF]`. Every byte in `[0xC0, 0xDF]` (possible *middle* bytes of a
+   multi-byte scalar) has **no single-char vocabulary entry**, so it can never
+   terminate a merge by itself.
+2. A multi-byte scalar's byte-map always starts with `ã` (3-byte scalars) or
+   `â`/`Ä`/`Ă` (2-byte). Checking all **5764** merges: **no merge pair has a
+   lead-byte char as its second half** (empirically verified against
+   `merges.txt`), so no merge can swallow the first byte of the *following*
+   scalar while the current scalar is mid-merge.
+
+Consequences:
+
+- The byte-level BPE never straddles a Unicode scalar boundary, so
+  `encode("あしたのてんきははれ") == encode_slow(...)` for every Japanese /
+  kana / kanji / romaji string that only uses scalars present in the vocab.
+- A scalar that is *not* in the vocab (e.g. an ASCII space, byte 0x20 maps to
+  `\u{0120}` which has no token) becomes `[UNK]` = 0 on both paths — exactly
+  the reference fast path behavior. `decode([0])` yields the literal
+  `"[UNK]"`, as the Swift decoder does.
+- The fast path caches one `Vec<id>` per scalar, identical to the Swift
+  `FastTokenizerPathState`.
+
+This decision is pinned in tests `fast_and_slow_paths_agree_*` and
+`known_ids_pin_character_encoding` (kana → expected ids 277/244/249/240), and
+end-to-end in `tests/real_model.rs`: encoding `イシテル` and feeding it to
+`bulk_predict` yields a peaked distribution (peak ≈ 0.131 vs uniform 0.000167,
+~786×) whose total sums to ≈ 1.005.
+
+A note on data: the pruned `c_abc` trie has **no counts** for many common
+*kana* sequences (e.g. `あした`, `今日`), because the training corpus was ASCII
+romaji / katakana-leaning input, not kana prose. `イシテル` is a genuine,
+dense context; `あしたのてんきははれ` back-ends to the uniform floor (exactly
+as the upstream model does). The tokenizer itself is correct regardless — the
+absence of a count is a model-data property, not a tokenizer bug.
+
+### Asset strategy
+
+`vocab.json` and `merges.txt` are read from the git submodule path at runtime
+(`../../submodules/.../tokenizer` relative to `CARGO_MANIFEST_DIR`). If the
+submodule is not checked out, `ZenzTokenizer::from_submodule()` returns `None`
+(a typed absence) and callers fall back to `from_dir` with their own copy or an
+embedded loader. This avoids copying ~460 KB of JSON into the repo while keeping
+the failure mode explicit and panic-free. The only new dependency is
+`serde_json` (for parsing `vocab.json`); the byte table and BPE merge are
+hand-rolled.
+
+## Design
+
+Trie access is abstracted behind [`NgramTrie`], whose only operation is
 ## Design
 
 Trie access is abstracted behind [`NgramTrie`], whose only operation is
@@ -144,17 +213,24 @@ pinned alongside it.
 
 ## Tests
 
-28 unit tests plus a doctest, all with no model file required. Kneser-Ney
+43 unit tests plus a doctest, all with no model file required. Kneser-Ney
 probabilities are pinned against values computed by hand from the Swift formula
-rather than from this implementation's own output.
+rather than from this implementation's own output. The tokenizer suite pins the
+GPT-2 byte table (all 256 bytes round-trip), the per-scalar fast path vs the
+whole-string BPE slow path (equal on Japanese), kana → expected ids
+(あ=277, し=244, た=249, の=240), decode round-trips, `[UNK]` handling, and
+the cache.
 
-Three breaks were injected and confirmed to fail the suite:
+Three breaks were injected and confirmed to fail the suite, plus two
+tokenizer-specific ones:
 
 | Injected break | Tests that caught it |
 | --- | --- |
 | Predictive delimiter moved one digit right | 9 |
 | Interpolation weight `gamma` halved | 3 |
 | Query buffer dropped before search (the pointer hazard above) | 2 real-model |
+| Fast path changed from per-scalar BPE to per-byte lookup | 3 (`known_ids_pin_character_encoding`, `fast_and_slow_paths_agree_*`, `an_emoji_scalar_*`) |
+| Byte table corrupted (space byte forced to `' '`) | 2 (`known_ids_pin_character_encoding`, `an_emoji_scalar_*`) |
 
 ```sh
 cargo test
@@ -177,22 +253,22 @@ cargo run --release --features rsmarisa --example check_consistency -- <base>
 
 ## Remaining work
 
-1. **Tokenizer.** `ZenzTokenizer` is a GPT-2 BPE tokenizer; its assets are
-   vendored at `submodules/.../EfficientNGram/tokenizer/`. Without it, callers
-   must supply token ids directly. Upstream hardcodes `vocabSize = 6000` behind
-   a `// FIXME` rather than reading it from the tokenizer; `vocab.json` does in
-   fact hold exactly 6000 entries (ids 0–5999), so the constant is correct
-   today but is not self-maintaining.
-2. **Performance.** `bulk_predict` scores all 6000 tokens per call and
+1. **Performance.** `bulk_predict` scores all 6000 tokens per call and
    `predictive_search` allocates a `Vec` per hit. `tmp/plan.md` cites a p90 of
    ~18 ms for the Swift implementation; this port has not been benchmarked.
    Memory-mapping means first access to a cold trie also pays page-fault cost.
-3. **Integration.** Per `tmp/plan.md`, the intended use is re-scoring kana
+2. **Integration.** Per `tmp/plan.md`, the intended use is re-scoring kana
    N-best candidates between ASR output and kana-kanji conversion, driven by
    ASR-specific confusion rules rather than the keyboard-typo error model the
    upstream model shipped with. That stage does not exist yet.
-4. **`lm_c_bc.marisa` is unused.** `Inference.swift` loads only four tries; the
+3. **`lm_c_bc.marisa` is unused.** `Inference.swift` loads only four tries; the
    46 MB `c_bc` file is not among them. Worth understanding before shipping.
+4. **Tokenizer portability.** The tokenizer reads the submodule's `vocab.json`
+   and `merges.txt` at runtime. If this crate is ever published without the
+   submodule, callers will need `from_dir` against their own copy or an
+   embedded-loading variant; that is a deployment decision, not a code change.
+   Also, `vocabSize` is still the upstream `// FIXME` constant 6000 (today
+   correct; the loader already insists on exactly 6000 entries).
 
 ### Integration hazard
 
