@@ -301,39 +301,66 @@ fn preferred_break_index(remaining: &[String], max_chars: usize) -> usize {
     max_chars
 }
 
+/// A grapheme cluster is whitespace-only when it trims to an empty string.
+/// A cluster like U+0020 + U+0301 (space + combining acute) is one grapheme
+/// that is NOT whitespace-only, so it must never be stripped by a boundary
+/// trim. Port of the frontend `isWhitespaceGrapheme` in `captions.ts`.
+fn is_whitespace_grapheme(grapheme: &str) -> bool {
+    grapheme.trim().is_empty()
+}
+
+/// Remove leading and trailing whitespace grapheme clusters from a slice.
+/// Port of the frontend `trimGraphemes` in `captions.ts`.
+fn trim_graphemes(graphemes: &[String]) -> &[String] {
+    let mut start = 0;
+    let mut end = graphemes.len();
+    while start < end && is_whitespace_grapheme(&graphemes[start]) {
+        start += 1;
+    }
+    while end > start && is_whitespace_grapheme(&graphemes[end - 1]) {
+        end -= 1;
+    }
+    &graphemes[start..end]
+}
+
+/// Remove leading whitespace grapheme clusters from a slice.
+/// Port of the frontend `trimStartGraphemes` in `captions.ts`.
+fn trim_start_graphemes(graphemes: &[String]) -> &[String] {
+    let mut start = 0;
+    while start < graphemes.len() && is_whitespace_grapheme(&graphemes[start]) {
+        start += 1;
+    }
+    &graphemes[start..]
+}
+
 /// Port of `splitLongLine` from `apps/desktop/src/overlay/captions.ts`.
 /// Counts user-visible grapheme clusters, not Unicode scalar values, so ZWJ
-/// emoji and combining marks stay intact across the configured budget.
+/// emoji and combining marks stay intact across the configured budget. Trims
+/// at the grapheme-cluster level — not on the joined string — so a cluster
+/// like U+0020 + U+0301 is never split by a boundary trim.
 fn split_long_line(line: &str, max_chars: usize) -> Vec<String> {
-    // Clusters are owned: each pass rebuilds `remaining` from a temporary that
-    // dies at the end of the iteration, so borrowing `line` here would not
-    // outlive the loop.
-    let graphemes =
-        |text: &str| -> Vec<String> { text.graphemes(true).map(str::to_string).collect() };
-
-    let characters = graphemes(line);
+    let characters: Vec<String> = line.graphemes(true).map(str::to_string).collect();
     if characters.len() <= max_chars {
         return vec![line.to_string()];
     }
 
     let mut segments: Vec<String> = Vec::new();
-    let mut remaining = characters;
+    let mut remaining: &[String] = &characters;
     while remaining.len() > max_chars {
-        let break_at = preferred_break_index(&remaining, max_chars);
-        let segment = remaining[..break_at].concat();
-        let segment = segment.trim();
+        let break_at = preferred_break_index(remaining, max_chars);
+        // Trim at the grapheme-cluster level, not on the joined string: a
+        // cluster like U+0020 + U+0301 is one grapheme, and str::trim_start
+        // would strip the space and leave a bare combining mark at the start
+        // of the next line.
+        let segment = trim_graphemes(&remaining[..break_at]).concat();
         if !segment.is_empty() {
-            segments.push(segment.to_string());
+            segments.push(segment);
         }
-        let rest = remaining[break_at..].concat();
-        remaining = graphemes(rest.trim_start());
+        remaining = trim_start_graphemes(&remaining[break_at..]);
     }
-    if !remaining.is_empty() {
-        let tail = remaining.concat();
-        let tail = tail.trim();
-        if !tail.is_empty() {
-            segments.push(tail.to_string());
-        }
+    let tail = trim_graphemes(remaining).concat();
+    if !tail.is_empty() {
+        segments.push(tail);
     }
     if segments.is_empty() {
         vec![line.trim().to_string()]
@@ -1234,5 +1261,41 @@ mod tests {
         for line in source.lines().chain(translation.lines()) {
             assert!(line.graphemes(true).count() <= budget, "line too long: {line:?}");
         }
+    }
+
+    #[test]
+    fn segment_caption_text_does_not_split_a_whitespace_grapheme_cluster_when_trimming() {
+        // A space plus a combining mark (U+0020 + U+0301) is one grapheme cluster.
+        // When the hard break falls *before* it, str::trim_start on the joined
+        // remaining would strip the space and leave a bare combining mark at the
+        // start of the next line. The segmenter must trim whole clusters.
+        // Mirrors the TS test `does not split a whitespace grapheme cluster when
+        // trimming the remaining tail` in captions.segment.smoke.test.tsx.
+        let text = "\u{3042}\u{3042}\u{3042} \u{301}\u{3042}\u{3042}\u{3042}";
+        let lines = super::segment_caption_text(text, 3);
+        assert!(
+            !lines.iter().any(|line| line.starts_with('\u{301}')),
+            "no line should start with a bare combining mark: {lines:?}"
+        );
+        let rejoined: String =
+            lines.iter().flat_map(|line| line.graphemes(true)).collect::<String>();
+        assert_eq!(rejoined, text, "grapheme content must be preserved");
+    }
+
+    #[test]
+    fn segment_caption_text_consumes_pure_whitespace_grapheme_clusters_at_break_boundaries() {
+        // A pure space at the break point is consumed: it is trimmed from the
+        // segment tail (trim_graphemes) and from the remaining head
+        // (trim_start_graphemes). No caption line should start or end with a
+        // bare space, and the non-whitespace content is preserved. Mirrors the
+        // TS test `consumes pure-whitespace grapheme clusters at break
+        // boundaries` in captions.segment.smoke.test.tsx.
+        let text = "\u{3042}\u{3042} \u{3042}\u{3042}\u{3042}  \u{3042}\u{3042}\u{3042}";
+        let lines = super::segment_caption_text(text, 3);
+        assert!(
+            lines.iter().all(|line| !line.starts_with(' ') && !line.ends_with(' ')),
+            "no line should start or end with a bare space: {lines:?}"
+        );
+        assert_eq!(lines.join(""), text.replace(' ', ""),);
     }
 }
