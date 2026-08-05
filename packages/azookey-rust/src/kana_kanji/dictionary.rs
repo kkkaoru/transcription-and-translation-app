@@ -954,8 +954,8 @@ fn system_entry_is_usable(entry: &DictionaryEntry) -> bool {
 }
 
 /// Apply the full-conversion quality filter, then restore multi-kana hiragana
-/// identity rows only when no competitive converted surface exists for the
-/// same reading.
+/// identity rows when they carry a preferred morphology-specific sibling or
+/// when no competitive converted surface exists for the same reading.
 ///
 /// Without this sibling pass, a reading such as `とても` keeps only the rare
 /// dictionary row `迚も` (near the quality floor) because the common kana
@@ -976,8 +976,13 @@ fn filter_system_entries(entries: Vec<DictionaryEntry>) -> Vec<DictionaryEntry> 
         .iter()
         .any(|entry| is_competitive_converted_system_entry(entry, &quality_entries));
     quality_entries
-        .into_iter()
-        .filter(|entry| !is_multi_kana_hiragana_identity(entry) || !has_competitive_converted)
+        .iter()
+        .filter(|entry| {
+            !is_multi_kana_hiragana_identity(entry)
+                || !has_competitive_converted
+                || has_preferred_metadata_identity_sibling(entry, &quality_entries)
+        })
+        .cloned()
         .collect()
 }
 
@@ -993,6 +998,29 @@ fn system_entry_passes_quality_threshold(entry: &DictionaryEntry) -> bool {
 
 fn is_multi_kana_hiragana_identity(entry: &DictionaryEntry) -> bool {
     entry.reading.chars().count() >= 2 && entry.surface == entry.reading
+}
+
+/// Preserve an identity row when a converted sibling has the exact same
+/// morphology metadata but a no-better dictionary value. This retains real
+/// inflected/formal rows such as `いただきます` and `さます`, while avoiding
+/// generic stem identities such as `ふり` and `よく` that only compete with a
+/// better converted sibling in a larger clause.
+fn has_preferred_metadata_identity_sibling(
+    entry: &DictionaryEntry,
+    siblings: &[DictionaryEntry],
+) -> bool {
+    if entry.lcid == DEFAULT_CID && entry.rcid == DEFAULT_CID {
+        return false;
+    }
+    siblings.iter().any(|candidate| {
+        candidate.surface != entry.surface
+            && candidate.lcid == entry.lcid
+            && candidate.rcid == entry.rcid
+            && candidate.mid == entry.mid
+            && candidate.surface != candidate.reading
+            && candidate.surface.chars().any(is_kanji_char)
+            && entry.value >= candidate.value
+    })
 }
 
 /// A converted system surface is competitive when it is a real orthographic
@@ -1883,6 +1911,30 @@ mod tests {
         assert!(
             filtered_floor.iter().all(|entry| entry.surface != "とうきょう"),
             "kanji at the competitive floor must suppress multi-kana identity"
+        );
+    }
+
+    #[test]
+    fn restores_identity_for_a_preferred_morphology_metadata_sibling() {
+        let mut identity = DictionaryEntry::plain("いただきます", "いただきます", -9.0);
+        identity.lcid = 981;
+        identity.rcid = 491;
+        identity.mid = 17;
+        let mut kanji = identity.clone();
+        kanji.surface = "頂きます".into();
+        kanji.value = -9.5;
+
+        let filtered = filter_system_entries(vec![identity.clone(), kanji.clone()]);
+        assert!(
+            filtered.iter().any(|entry| entry.surface == identity.surface),
+            "a better-valued identity row with matching morphology must survive"
+        );
+
+        kanji.value = -8.5;
+        let filtered_with_better_kanji = filter_system_entries(vec![identity, kanji]);
+        assert!(
+            filtered_with_better_kanji.iter().all(|entry| entry.surface != "いただきます"),
+            "identity must remain suppressed when its matching Kanji sibling is better"
         );
     }
 

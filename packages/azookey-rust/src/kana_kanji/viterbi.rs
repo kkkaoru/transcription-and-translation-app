@@ -775,7 +775,15 @@ fn identity_surface_penalty(
     source: &[char],
     entry: &DictionaryEntry,
 ) -> f32 {
-    if !source_is_hiragana_surface(source) || entry.surface != entry.reading {
+    if !source_is_hiragana_surface(source)
+        || entry.surface != entry.reading
+        // A non-default CID identifies a morphology-bearing identity row
+        // (for example an inflected verb or auxiliary compound). Its value
+        // already models the orthographic choice; applying the generic
+        // same-POS kana penalty would erase that upstream lattice edge.
+        || entry.lcid != DEFAULT_CID
+        || entry.rcid != DEFAULT_CID
+    {
         return NO_SCORE;
     }
     let has_kanji_alternative =
@@ -2226,9 +2234,30 @@ mod tests {
         .into_iter()
         .next()
         .expect("public conversion should produce a candidate");
-        // A bounded unknown-kana edge may preserve an unresolved particle, but
-        // it must not consume the following dictionary word wholesale.
-        assert_ne!(candidate.text, "料理が暑いのでさます");
+        // The morphology-specific identity row is the valid kana continuation
+        // after the particle sequence; it must not be replaced by a homonym.
+        assert_eq!(candidate.text, "料理が暑いのでさます");
+    }
+
+    #[test]
+    fn keeps_preferred_morphology_identity_for_formal_kana() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        for (input, expected) in [
+            ("いただきます", "いただきます"),
+            ("りょうりがあついのでさます", "料理が暑いのでさます"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
     }
 
     #[test]
