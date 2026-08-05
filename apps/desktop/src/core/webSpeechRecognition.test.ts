@@ -468,6 +468,40 @@ describe("WebSpeechRecognitionStream", () => {
     expect(recognition).toBeDefined();
   });
 
+  it("prunes oldest final slots when a resend exceeds the tracked limit and re-emits them", () => {
+    // Some engines resend the entire cumulative result list with resultIndex=0.
+    // After the slot count exceeds MAX_TRACKED_RESULTS (256), the oldest finals
+    // are pruned to bound memory. On the next resend those pruned slots are
+    // treated as new and re-emitted — a deliberate tradeoff that keeps the
+    // result map bounded for very long sessions.
+    const recognition = new FakeRecognition();
+    const finals: string[] = [];
+    const stream = new WebSpeechRecognitionStream({
+      recognition,
+      onResult: (value) => {
+        if (value.isFinal) {
+          finals.push(value.transcript);
+        }
+      },
+    });
+    stream.start();
+
+    const allResults = Object.assign(
+      Array.from({ length: 260 }, (_, index) => result(`語${index}`, true)),
+      { length: 260 },
+    );
+
+    // First event: all 260 finals are new and emitted.
+    recognition.emitResult({ resultIndex: 0, results: allResults });
+    expect(finals).toHaveLength(260);
+
+    // Second identical event: pruneResultSlots(0) finds 260 > 256, deletes the
+    // 4 oldest indices (0-3), then the loop re-emits only those 4.
+    recognition.emitResult({ resultIndex: 0, results: allResults });
+    expect(finals).toHaveLength(264);
+    expect(finals.slice(260)).toEqual(["語0", "語1", "語2", "語3"]);
+  });
+
   it("automatically restarts after onend until stop or cancel is requested", () => {
     vi.useFakeTimers();
     const recognition = new FakeRecognition();

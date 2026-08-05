@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "../core/defaults";
 import {
+  captionGraphemes,
   captionItems,
   captionTextLines,
   createPreviewCaption,
@@ -45,6 +46,21 @@ describe("segmentCaptionText edge cases", () => {
     expect(combiningLines.flatMap(graphemesOf).join("")).toBe(combining);
     expect(combiningLines.every((line) => graphemesOf(line).length <= 2)).toBe(true);
     expect(combiningLines.some((line) => line.startsWith("\u3099"))).toBe(false);
+  });
+
+  it("falls back to code-point splitting when Intl.Segmenter is unavailable", () => {
+    // Some embedded WebViews still lack Intl.Segmenter. The fallback splits by
+    // code points (Array.from) instead of grapheme clusters; it is less
+    // accurate for ZWJ emoji but keeps caption segmentation functional.
+    const originalSegmenter = Intl.Segmenter;
+    const intl = Intl as { Segmenter?: typeof Intl.Segmenter };
+    delete intl.Segmenter;
+    try {
+      expect(captionGraphemes("abc")).toEqual(["a", "b", "c"]);
+      expect(captionGraphemes("\u3042\u3044\u3046")).toEqual(["\u3042", "\u3044", "\u3046"]);
+    } finally {
+      intl.Segmenter = originalSegmenter;
+    }
   });
 });
 

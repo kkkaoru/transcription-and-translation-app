@@ -372,6 +372,33 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(previous, next)?.sourceText).toBe("今日は晴れ");
   });
 
+  it("starts a new caption when a non-final source ends with sentence punctuation", () => {
+    // Unlike the finalized case above, the prior chunk is still non-final.
+    // The output queue can interleave a newer turn ahead of an older turn's
+    // final, so a non-final source ending with terminal punctuation must
+    // still start a fresh caption rather than appending the next utterance.
+    const previous = caption({
+      id: "chunk-1",
+      sourceText: "おはようございます。",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const next = caption({
+      id: "chunk-2",
+      sourceText: "こんにちは",
+      startedAt: 1_640,
+      receivedAt: 1_640,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(previous, next)?.sourceText).toBe("こんにちは");
+  });
+
   it("does not append a new source that overlaps a finalized prior caption", () => {
     const previous = caption({
       id: "turn-1",

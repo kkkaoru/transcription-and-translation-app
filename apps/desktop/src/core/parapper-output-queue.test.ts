@@ -338,4 +338,13 @@ describe("Parapper output coalescing queue", () => {
     await expect(minimumTimeout).rejects.toThrow(/did not become idle/i);
     queue.close();
   });
+
+  it("resolves immediately when whenIdle is called on an already-idle queue", async () => {
+    const queue = createParapperOutputQueue<Item>(() => Promise.resolve());
+    // An idle queue with no pending or in-flight work must resolve without
+    // installing a timer or waiting for the event loop.
+    await expect(queue.whenIdle()).resolves.toBeUndefined();
+    await expect(queue.whenIdle(5)).resolves.toBeUndefined();
+    queue.close();
+  });
 });

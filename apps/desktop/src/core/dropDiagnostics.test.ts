@@ -51,6 +51,15 @@ describe("pipeline drop diagnostics", () => {
     expect(snapshot.signals.length).toBe(MAX_PIPELINE_DROP_BUCKETS);
   });
 
+  it("normalizes whitespace-only labels to their fallback defaults", () => {
+    recordPipelineDrop("   ", 1, "   ");
+    expect(snapshotPipelineDrops()).toMatchObject({
+      total: 1,
+      bySource: { unknown: 1 },
+      byReason: { unspecified: 1 },
+    });
+  });
+
   it("keeps the aggregate when a diagnostic subscriber throws", () => {
     const push = vi.spyOn(diagnostics, "pushDiagnosticEvent").mockImplementation(() => {
       throw new Error("diagnostic unavailable");
