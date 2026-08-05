@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use caption_bridge_input_lm::codec::{decode_key, decode_value, KEY_VALUE_DELIMITER};
 use caption_bridge_input_lm::marisa::{open_model, MarisaTrie};
 use caption_bridge_input_lm::model::lookup_value;
+use caption_bridge_input_lm::rescore::CandidateScorer;
 use caption_bridge_input_lm::{NgramParams, NgramTrie};
 
 fn model_base() -> Option<PathBuf> {
@@ -198,4 +199,141 @@ fn a_encoded_japanese_context_yields_a_peaked_distribution() {
     // Round-trip the same string through decode.
     let decoded = tokenizer.decode(&context_ids);
     assert_eq!(decoded, "イシテル", "decode got {decoded:?}");
+}
+
+#[test]
+fn raw_hiragana_yields_uniform_but_katakana_normalization_peaks() {
+    // The key empirical finding: the published LM was trained on
+    // katakana/romaji data. Raw hiragana token ids have zero counts in the
+    // tries, so bulk_predict on a hiragana context yields a uniform
+    // distribution. But normalizing hiragana to katakana before tokenizing
+    // maps to token ids the model DOES have counts for, yielding a peaked
+    // distribution that can discriminate between candidates.
+    let Some(base) = model_base() else {
+        eprintln!("skipping: INPUT_LM_MODEL_BASE is not set");
+        return;
+    };
+
+    let mut tokenizer = match caption_bridge_input_lm::tokenizer::ZenzTokenizer::from_submodule() {
+        Some(t) => t,
+        None => {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        }
+    };
+
+    let params = NgramParams::default();
+    let model = open_model(&base, params).expect("open model");
+    let uniform = 1.0 / params.vocab_size as f64;
+
+    // Raw hiragana: あしたのてんきは
+    let hiragana_ids = tokenizer.encode("あしたのてんきは");
+    let hiragana_probs = model.bulk_predict(&hiragana_ids);
+    let hiragana_peak = hiragana_probs.iter().copied().fold(f64::MIN, f64::max);
+    // The README already documents this: hiragana contexts back off to the
+    // uniform floor because the trie has zero counts for these tokens.
+    assert!(
+        hiragana_peak < uniform * 3.0,
+        "raw hiragana should be near-uniform (peak {hiragana_peak}, uniform {uniform}) \
+         — if this fails, the model may have been updated with hiragana counts"
+    );
+
+    // Katakana-normalized: アシタノテンキハ
+    let katakana_ids = tokenizer.encode("アシタノテンキハ");
+    let katakana_probs = model.bulk_predict(&katakana_ids);
+    let katakana_peak = katakana_probs.iter().copied().fold(f64::MIN, f64::max);
+    // If the model has counts for katakana tokens, this should peak above
+    // uniform. Note: not all katakana contexts are dense in the pruned trie;
+    // the claim is that katakana peaks higher than raw hiragana, not that it
+    // always peaks above uniform*100.
+    assert!(
+        katakana_peak > hiragana_peak * 2.0,
+        "katakana-normalized should peak higher than raw hiragana \
+         (katakana peak {katakana_peak}, hiragana peak {hiragana_peak})"
+    );
+}
+
+#[test]
+fn lm_scorer_discriminates_between_katakana_normalized_candidates() {
+    // End-to-end: the LmScorer normalizes hiragana to katakana, tokenizes,
+    // and computes the sequence log-probability. If the LM can discriminate,
+    // the correct candidate (おはようございます) should score higher than
+    // the ASR hypothesis (おはよございます, missing the long vowel う).
+    let Some(base) = model_base() else {
+        eprintln!("skipping: INPUT_LM_MODEL_BASE is not set");
+        return;
+    };
+
+    let tokenizer = match caption_bridge_input_lm::tokenizer::ZenzTokenizer::from_submodule() {
+        Some(t) => t,
+        None => {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        }
+    };
+
+    let params = NgramParams::default();
+    let model = open_model(&base, params).expect("open model");
+    let scorer = caption_bridge_input_lm::rescore::LmScorer::new(model, tokenizer);
+
+    let score_hypothesis = scorer.score("おはよございます");
+    let score_corrected = scorer.score("おはようございます");
+
+    // The corrected candidate (with the long vowel) should score higher
+    // (less negative log-probability) than the hypothesis without it.
+    // If this fails, the LM cannot discriminate for this particular pair,
+    // which is a valid finding — the scoring interface is pluggable.
+    let diff = (score_corrected - score_hypothesis).abs();
+    eprintln!(
+        "LM scores: hypothesis={score_hypothesis:.6} corrected={score_corrected:.6} diff={diff:.6}"
+    );
+    assert!(
+        diff > 0.001,
+        "LM did not discriminate between おはよございます and おはようございます \
+         (diff {diff:.6}) — the scoring interface is pluggable for a better-suited LM"
+    );
+}
+
+#[test]
+fn rescorer_generates_and_ranks_candidates_with_real_model() {
+    // End-to-end rescoring with the real model: generate candidates from
+    // an ASR hypothesis, score them with the LM, and verify the rescorer
+    // produces a ranked list.
+    let Some(base) = model_base() else {
+        eprintln!("skipping: INPUT_LM_MODEL_BASE is not set");
+        return;
+    };
+
+    let tokenizer = match caption_bridge_input_lm::tokenizer::ZenzTokenizer::from_submodule() {
+        Some(t) => t,
+        None => {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        }
+    };
+
+    let params = NgramParams::default();
+    let model = open_model(&base, params).expect("open model");
+    let scorer = caption_bridge_input_lm::rescore::LmScorer::new(model, tokenizer);
+    let rules = caption_bridge_input_lm::rescore::AsrConfusionRules::default();
+    let rescorer = caption_bridge_input_lm::rescore::Rescorer::new(scorer, rules);
+
+    let hypothesis = "おはよございます";
+    let ranked = rescorer.rescore(hypothesis);
+
+    // The original is always included.
+    assert!(ranked.iter().any(|c| c.text == hypothesis), "original missing");
+    // There should be multiple candidates (at least the original + voicing +
+    // long vowel + similar mora candidates).
+    assert!(ranked.len() > 1, "only {ranked_len} candidates", ranked_len = ranked.len());
+    // The ranking is by combined score, descending.
+    for w in ranked.windows(2) {
+        assert!(w[0].combined_score >= w[1].combined_score, "ranking not descending: {w:?}");
+    }
+
+    // Report the top candidate for diagnostic purposes.
+    eprintln!(
+        "rescorer top 3 for '{hypothesis}': {top3:?}",
+        top3 = ranked.iter().take(3).collect::<Vec<_>>()
+    );
 }

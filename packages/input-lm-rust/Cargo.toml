@@ -30,3 +30,7 @@ required-features = ["rsmarisa"]
 [[example]]
 name = "check_consistency"
 required-features = ["rsmarisa"]
+
+[[example]]
+name = "rescore_measure"
+required-features = ["rsmarisa"]
