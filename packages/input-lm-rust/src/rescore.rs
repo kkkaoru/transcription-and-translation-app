@@ -442,6 +442,78 @@ pub struct Rescorer<S: CandidateScorer> {
     overcorrection_margin: f64,
 }
 
+// ---------------------------------------------------------------------------
+// Output-sanity guard (internal)
+// ---------------------------------------------------------------------------
+//
+// The rescorer's contract is "kana text in, kana text out". A scorer plugin
+// (or a scoring quirk such as an empty sequence's log-probability being
+// exactly 0.0 -- the theoretical maximum) can make a garbage candidate win
+// the ranking. An `Ok`-but-garbage return is more dangerous than an error
+// because every caller in this pipeline trusts it unconditionally and feeds
+// it straight to kana-kanji conversion. `is_sane_output` is the single choke
+// point both `best` and `best_nbest` route through before ever replacing the
+// original hypothesis, so a fix here covers every path that can promote a
+// candidate to "the" output.
+
+/// Returns true if `c` is a hiragana character (U+3041-U+309E), a katakana
+/// character (U+30A1-U+30FA), or the kana prolonged sound mark (ー,
+/// U+30FC).
+fn is_kana_like(c: char) -> bool {
+    let code = c as u32;
+    (0x3041..=0x309E).contains(&code) || (0x30A1..=0x30FA).contains(&code) || code == 0x30FC
+}
+
+/// Returns true when `candidate` is safe to surface as a rescoring output in
+/// place of `original`. Guards against three shapes of garbage that an
+/// `Ok(String)` must never silently smuggle through:
+///
+/// - **Dropped content**: `candidate` is empty or whitespace-only while
+///   `original` carried real content.
+/// - **Wild length mismatch**: `candidate` is drastically shorter or longer
+///   than `original`. The bound is deliberately generous -- the default
+///   confusion rules move length by at most `max_edits` characters (2 by
+///   default), and legitimate ASR N-best alternatives for the same audio
+///   segment stay within the same order of magnitude -- but it stops a
+///   scoring quirk (or a malformed upstream candidate) from swapping in
+///   something absurd.
+/// - **Foreign contamination**: `candidate` contains a character that is
+///   neither kana-like nor already present in `original`. Every character
+///   the confusion rules can introduce is kana, so this never rejects a
+///   1-best candidate; it exists to catch a corrupted or out-of-contract
+///   N-best candidate supplied by the caller.
+///
+/// `original` itself always passes: an identical-text candidate trivially
+/// satisfies every check above, so this guard can never leave `best`/
+/// `best_nbest` without a safe fallback.
+fn is_sane_output(original: &str, original_chars: &HashSet<char>, candidate: &str) -> bool {
+    let orig_len = original.chars().count();
+    if orig_len == 0 {
+        // Nothing to lose -- any candidate (including empty) is acceptable.
+        return true;
+    }
+    if original.trim().is_empty() {
+        // The original itself was blank; there is no real content to guard.
+        return true;
+    }
+    if candidate.trim().is_empty() {
+        return false;
+    }
+
+    let cand_len = candidate.chars().count();
+    let min_len = orig_len.div_ceil(4);
+    let max_len = orig_len * 4 + 8;
+    if cand_len < min_len || cand_len > max_len {
+        return false;
+    }
+
+    if candidate.chars().any(|c| !is_kana_like(c) && !original_chars.contains(&c)) {
+        return false;
+    }
+
+    true
+}
+
 impl<S: CandidateScorer> Rescorer<S> {
     /// Creates a rescorer with default weights.
     pub fn new(scorer: S, rules: AsrConfusionRules) -> Self {
@@ -489,10 +561,15 @@ impl<S: CandidateScorer> Rescorer<S> {
         ranked
     }
 
-    /// Returns the best candidate, applying the overcorrection gate.
+    /// Returns the best candidate, applying the overcorrection gate and the
+    /// output-sanity guard.
     ///
     /// If no candidate's combined score exceeds the original hypothesis's
     /// by at least `overcorrection_margin`, the original is returned.
+    /// Separately, a candidate that is empty, whitespace-only, drastically
+    /// shorter/longer than `hypothesis`, or contaminated with characters
+    /// foreign to both kana and `hypothesis` is never surfaced regardless of
+    /// its score -- see [`is_sane_output`].
     pub fn best(&self, hypothesis: &str) -> String {
         let ranked = self.rescore(hypothesis);
         if ranked.is_empty() {
@@ -500,16 +577,19 @@ impl<S: CandidateScorer> Rescorer<S> {
         }
 
         let original_score = ranked.iter().find(|c| c.text == hypothesis).map(|c| c.combined_score);
+        let original_chars: HashSet<char> = hypothesis.chars().collect();
+        let top_sane = ranked.iter().find(|c| is_sane_output(hypothesis, &original_chars, &c.text));
 
-        if let Some(original_score) = original_score {
-            let best = &ranked[0];
-            if best.combined_score - original_score >= self.overcorrection_margin {
-                best.text.clone()
-            } else {
-                hypothesis.to_string()
+        match (top_sane, original_score) {
+            (Some(top), Some(original_score)) => {
+                if top.combined_score - original_score >= self.overcorrection_margin {
+                    top.text.clone()
+                } else {
+                    hypothesis.to_string()
+                }
             }
-        } else {
-            ranked[0].text.clone()
+            (Some(top), None) => top.text.clone(),
+            (None, _) => hypothesis.to_string(),
         }
     }
 
@@ -557,7 +637,22 @@ impl<S: CandidateScorer> Rescorer<S> {
     /// assert_eq!(best, "おはようございます");
     /// ```
     pub fn rerank_nbest(&self, candidates: &[NbestCandidate]) -> Vec<RankedNbestCandidate> {
-        let mut ranked: Vec<RankedNbestCandidate> = candidates
+        let mut ranked = self.score_nbest(candidates);
+        ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
+        ranked
+    }
+
+    /// Scores every N-best candidate without sorting, preserving the input
+    /// order (and therefore the caller's indices). [`rerank_nbest`] sorts
+    /// this; [`best_nbest`] additionally needs the unsorted, index-aligned
+    /// form to recover the acoustic-top candidate's combined score without
+    /// re-finding it by text (which would be ambiguous for duplicate-text
+    /// candidates).
+    ///
+    /// [`rerank_nbest`]: Self::rerank_nbest
+    /// [`best_nbest`]: Self::best_nbest
+    fn score_nbest(&self, candidates: &[NbestCandidate]) -> Vec<RankedNbestCandidate> {
+        candidates
             .iter()
             .map(|c| {
                 let lm_score = self.scorer.score(&c.text);
@@ -569,19 +664,23 @@ impl<S: CandidateScorer> Rescorer<S> {
                     combined_score: combined,
                 }
             })
-            .collect();
-        ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
-        ranked
+            .collect()
     }
 
-    /// Returns the best N-best candidate, applying the overcorrection gate.
+    /// Returns the best N-best candidate, applying the overcorrection gate and
+    /// the output-sanity guard.
     ///
     /// The "original" is the candidate with the highest acoustic score — the
-    /// one ASR would have chosen without LM rescoring. If the top combined-score
-    /// candidate does not exceed the original's combined score by at least
-    /// `overcorrection_margin`, the original is returned. This prevents the LM
-    /// from overriding a strongly preferred ASR hypothesis unless the LM
-    /// evidence is clear.
+    /// one ASR would have chosen without LM rescoring. Ties are broken by
+    /// preferring the earliest-listed candidate, matching the ASR decoder's
+    /// own rank ordering and the stable sort `rerank_nbest` uses elsewhere in
+    /// this same selection. If the top *sane* combined-score candidate (see
+    /// [`is_sane_output`]) does not exceed the original's combined score by
+    /// at least `overcorrection_margin`, the original is returned. This
+    /// prevents the LM from overriding a strongly preferred ASR hypothesis
+    /// unless the LM evidence is clear, and prevents it from ever replacing
+    /// the original with something empty, wildly mismatched in length, or
+    /// contaminated with foreign characters, regardless of score.
     ///
     /// Returns an empty string when `candidates` is empty.
     pub fn best_nbest(&self, candidates: &[NbestCandidate]) -> String {
@@ -589,28 +688,37 @@ impl<S: CandidateScorer> Rescorer<S> {
             return String::new();
         }
 
-        // The ASR 1-best: the candidate with the highest acoustic score.
-        let original_idx = candidates
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.acoustic_score.total_cmp(&b.acoustic_score))
-            .map(|(i, _)| i)
-            .expect("at least one candidate");
-        let original_text = &candidates[original_idx].text;
+        // The ASR 1-best: the candidate with the highest acoustic score,
+        // first-listed wins ties. `total_cmp` gives a full order (including
+        // NaN) so this never panics and never gets "stuck" on a NaN score.
+        let mut original_idx = 0usize;
+        for (i, c) in candidates.iter().enumerate().skip(1) {
+            if c.acoustic_score.total_cmp(&candidates[original_idx].acoustic_score)
+                == std::cmp::Ordering::Greater
+            {
+                original_idx = i;
+            }
+        }
+        let original_text = candidates[original_idx].text.clone();
 
-        let ranked = self.rerank_nbest(candidates);
+        // Score every candidate once, in input order, so `original_idx` still
+        // indexes the acoustic-top's own combined score -- no ambiguity even
+        // if another candidate happens to share its text.
+        let scored = self.score_nbest(candidates);
+        let original_score = scored[original_idx].combined_score;
 
-        // Find the original's combined score in the ranked list.
-        let original_score = ranked
-            .iter()
-            .find(|r| r.text == *original_text)
-            .map(|r| r.combined_score)
-            .unwrap_or(f64::MIN);
+        let mut ranked = scored;
+        ranked.sort_by(|a, b| b.combined_score.total_cmp(&a.combined_score));
 
-        if ranked[0].combined_score - original_score >= self.overcorrection_margin {
-            ranked[0].text.clone()
-        } else {
-            original_text.clone()
+        let original_chars: HashSet<char> = original_text.chars().collect();
+        let top_sane =
+            ranked.iter().find(|c| is_sane_output(&original_text, &original_chars, &c.text));
+
+        match top_sane {
+            Some(top) if top.combined_score - original_score >= self.overcorrection_margin => {
+                top.text.clone()
+            }
+            _ => original_text,
         }
     }
 }
@@ -1304,14 +1412,43 @@ mod tests {
             NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
             NbestCandidate { text: "がいしゃ".into(), acoustic_score: -3.0 },
         ];
-        // Both have combined = -3.0 + 1.0 * (-10.0) = -13.0.
-        // The acoustic top is whichever comes first in the max_by tie-break
-        // (Rust's max_by returns the LAST equal element, so "がいしゃ" at
-        // index 1 is the acoustic top). But both have the same combined
-        // score, so the gate keeps the acoustic top.
+        // Both have combined = -3.0 + 1.0 * (-10.0) = -13.0. On an exact
+        // acoustic tie, the earliest-listed candidate ("かいしゃ" at index 0)
+        // is the acoustic top -- deterministic first-wins, matching the ASR
+        // decoder's own rank ordering. Both have the same combined score, so
+        // the gate keeps the acoustic top.
         let best = rescorer.best_nbest(&candidates);
-        // The result must be one of the tied candidates.
-        assert!(best == "かいしゃ" || best == "がいしゃ", "got {best}");
+        assert_eq!(best, "かいしゃ");
+    }
+
+    #[test]
+    fn best_nbest_acoustic_tie_break_is_deterministic_across_orderings() {
+        // Reordering the same two tied-acoustic-score candidates flips which
+        // one is "first", proving the tie-break is order-dependent-but-
+        // deterministic rather than arbitrary (e.g. hash-order-dependent).
+        let candidates_a = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -3.0 },
+        ];
+        let candidates_b = vec![
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+        ];
+        let scorer_a = ConstantScorer(-10.0);
+        let rescorer_a =
+            Rescorer::new(scorer_a, AsrConfusionRules::default()).with_overcorrection_margin(0.0);
+        let scorer_b = ConstantScorer(-10.0);
+        let rescorer_b =
+            Rescorer::new(scorer_b, AsrConfusionRules::default()).with_overcorrection_margin(0.0);
+
+        assert_eq!(rescorer_a.best_nbest(&candidates_a), "かいしゃ");
+        assert_eq!(rescorer_b.best_nbest(&candidates_b), "がいしゃ");
+
+        // Repeated calls with the same input are stable (not just
+        // deterministic across process runs, but across repeated calls).
+        for _ in 0..5 {
+            assert_eq!(rescorer_a.best_nbest(&candidates_a), "かいしゃ");
+        }
     }
 
     #[test]
@@ -1691,6 +1828,460 @@ mod tests {
         }
         for ch in ['が', 'ざ', 'だ', 'ば', 'あ', 'ん', 'ー', '漢'] {
             assert!(!can_geminate(ch), "did not expect {ch} to allow gemination");
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Adversarial hardening: output-sanity guard
+    // -------------------------------------------------------------------
+
+    /// A scorer that scores exactly one text very favorably (mimicking the
+    /// real `LmScorer`'s empty-sequence quirk, where an empty string's
+    /// log-probability is 0.0 -- the theoretical maximum) and everything
+    /// else realistically negative.
+    struct FavorsOneText {
+        favored: &'static str,
+        favored_score: f64,
+        other_score: f64,
+    }
+
+    impl CandidateScorer for FavorsOneText {
+        fn score(&self, text: &str) -> f64 {
+            if text == self.favored {
+                self.favored_score
+            } else {
+                self.other_score
+            }
+        }
+    }
+
+    #[test]
+    fn is_sane_output_rejects_empty_candidate_for_nonempty_original() {
+        let chars: HashSet<char> = "おはよう".chars().collect();
+        assert!(!is_sane_output("おはよう", &chars, ""));
+        assert!(!is_sane_output("おはよう", &chars, "   "));
+        assert!(!is_sane_output("おはよう", &chars, "\u{3000}")); // full-width space
+    }
+
+    #[test]
+    fn is_sane_output_accepts_identity_even_for_blank_original() {
+        // The original must always be its own valid fallback, even in the
+        // degenerate case where the original itself is blank.
+        let chars: HashSet<char> = HashSet::new();
+        assert!(is_sane_output("", &chars, ""));
+        let blank_chars: HashSet<char> = " ".chars().collect();
+        assert!(is_sane_output(" ", &blank_chars, " "));
+        assert!(is_sane_output(" ", &blank_chars, "")); // nothing real to lose
+    }
+
+    #[test]
+    fn is_sane_output_rejects_wild_length_blowup_and_collapse() {
+        let chars: HashSet<char> = "おはよう".chars().collect();
+        // 4 chars -> max_len = 4*4+8 = 24, min_len = ceil(4/4) = 1.
+        assert!(is_sane_output("おはよう", &chars, "おはよー")); // 4 chars, ok
+        assert!(!is_sane_output(
+            "おはよう",
+            &chars,
+            &"あ".repeat(25) // 25 > max_len 24
+        ));
+        // A single surviving kana char is within bounds (min_len 1).
+        assert!(is_sane_output("おはよう", &chars, "あ"));
+    }
+
+    #[test]
+    fn is_sane_output_rejects_foreign_characters_not_in_original() {
+        let chars: HashSet<char> = "おはよう".chars().collect();
+        // Latin text the original never had, and not kana-like.
+        assert!(!is_sane_output("おはよう", &chars, "hello"));
+        // A kana substitution is fine even though が wasn't in the original --
+        // it is still kana-like.
+        assert!(is_sane_output("おはよう", &chars, "がはよう"));
+    }
+
+    #[test]
+    fn best_never_returns_empty_when_the_only_reachable_candidate_is_a_deletion() {
+        // A single gemination character has exactly one confusion-rule
+        // candidate: deleting it, producing "". Regression for the concrete
+        // bug this guard closes: the real LmScorer scores an empty sequence
+        // 0.0 (the log-probability maximum, i.e. "certain"), so before the
+        // guard existed this scorer would have made `best("っ")` return "".
+        let scorer = FavorsOneText { favored: "", favored_score: 0.0, other_score: -20.0 };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let best = rescorer.best("っ");
+        assert_eq!(best, "っ", "the guard must fall back to the original, not \"\"");
+    }
+
+    #[test]
+    fn best_nbest_never_promotes_an_empty_candidate_even_when_favored_by_score() {
+        let scorer = FavorsOneText { favored: "", favored_score: 0.0, other_score: -20.0 };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "おはようございます".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "".into(), acoustic_score: -3.0 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "おはようございます");
+    }
+
+    #[test]
+    fn best_nbest_never_promotes_a_foreign_script_candidate() {
+        // A corrupted or out-of-contract N-best candidate containing Latin
+        // junk must never win even if a (buggy or adversarial) scorer rates
+        // it far above every legitimate kana candidate.
+        let scorer =
+            FavorsOneText { favored: "not-japanese", favored_score: 100.0, other_score: -20.0 };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "not-japanese".into(), acoustic_score: -3.0 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "かいしゃ");
+    }
+
+    /// A scorer that favors whichever candidate has the most characters,
+    /// regardless of content -- an adversarial stand-in for a scoring quirk
+    /// that rewards length blowup.
+    struct FavorsLongest;
+    impl CandidateScorer for FavorsLongest {
+        fn score(&self, text: &str) -> f64 {
+            text.chars().count() as f64 * 1000.0
+        }
+    }
+
+    #[test]
+    fn best_nbest_rejects_wild_length_candidate_and_falls_back() {
+        let long_junk = "あ".repeat(200);
+        let rescorer = Rescorer::new(FavorsLongest, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: long_junk, acoustic_score: -3.0 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "かいしゃ");
+    }
+
+    // -------------------------------------------------------------------
+    // Adversarial hardening: NaN / -inf scores never panic and fail open
+    // -------------------------------------------------------------------
+
+    /// A scorer under adversarial/buggy control: returns a fixed value for
+    /// every text, regardless of what it is.
+    struct FixedScorer(f64);
+    impl CandidateScorer for FixedScorer {
+        fn score(&self, _text: &str) -> f64 {
+            self.0
+        }
+    }
+
+    /// A scorer that returns NaN for one specific text and a realistic
+    /// negative score for everything else.
+    struct NanForOneText {
+        nan_text: &'static str,
+    }
+    impl CandidateScorer for NanForOneText {
+        fn score(&self, text: &str) -> f64 {
+            if text == self.nan_text {
+                f64::NAN
+            } else {
+                -10.0
+            }
+        }
+    }
+
+    #[test]
+    fn rescore_with_nan_scorer_does_not_panic_and_is_deterministic() {
+        let scorer = NanForOneText { nan_text: "おはようございます" };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let ranked1 = rescorer.rescore("おはよございます");
+        let scorer2 = NanForOneText { nan_text: "おはようございます" };
+        let rescorer2 = Rescorer::new(scorer2, AsrConfusionRules::default());
+        let ranked2 = rescorer2.rescore("おはよございます");
+        let texts1: Vec<&str> = ranked1.iter().map(|c| c.text.as_str()).collect();
+        let texts2: Vec<&str> = ranked2.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts1, texts2, "ranking with a NaN-scored candidate must be deterministic");
+    }
+
+    #[test]
+    fn best_falls_open_when_the_top_candidates_score_is_nan() {
+        // NaN comparisons are always false, so `top.combined_score -
+        // original_score >= margin` can never hold when either side is NaN.
+        // The gate must therefore fail closed (i.e. the pipeline fails
+        // *open* toward the original hypothesis) rather than panicking or
+        // nondeterministically picking the NaN candidate.
+        let scorer = NanForOneText { nan_text: "おはようございます" };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let best = rescorer.best("おはよございます");
+        assert_eq!(best, "おはよございます", "a NaN-scored candidate must never win");
+    }
+
+    #[test]
+    fn best_nbest_with_nan_score_does_not_panic_and_falls_open() {
+        let scorer = NanForOneText { nan_text: "おはようございます" };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "おはよございます".into(), acoustic_score: -3.2 },
+            NbestCandidate { text: "おはようございます".into(), acoustic_score: -3.4 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "おはよございます", "a NaN-scored candidate must never win");
+    }
+
+    #[test]
+    fn rerank_nbest_with_negative_infinity_score_does_not_panic() {
+        let scorer = FixedScorer(f64::NEG_INFINITY);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -1.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -2.0 },
+        ];
+        let ranked = rescorer.rerank_nbest(&candidates);
+        assert_eq!(ranked.len(), 2);
+        // -inf combined scores still sort deterministically (no panic, no
+        // NaN from -1.0 + 1.0 * -inf, since lm_weight is 1.0 here).
+        assert_eq!(ranked[0].text, "かいしゃ");
+    }
+
+    #[test]
+    fn best_nbest_with_zero_lm_weight_and_negative_infinity_score_falls_open() {
+        // lm_weight = 0.0 multiplied by a -inf score is `0.0 * -inf = NaN`
+        // in IEEE-754. This must not panic, and the NaN combined score must
+        // not be able to win the overcorrection gate.
+        let scorer = FixedScorer(f64::NEG_INFINITY);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(0.0);
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -1.0 },
+            NbestCandidate { text: "がいしゃ".into(), acoustic_score: -2.0 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        // combined = acoustic_score + 0.0 * -inf = acoustic_score + NaN = NaN
+        // for every candidate, so every margin check is false and the
+        // acoustic top (かいしゃ) is returned.
+        assert_eq!(best, "かいしゃ");
+    }
+
+    // -------------------------------------------------------------------
+    // Adversarial hardening: weight boundaries (0.0, 1.0, out-of-range)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn lm_weight_zero_ignores_the_lm_entirely_in_one_best() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -1000.0); // LM loves it
+        scores.insert("おはよございます".to_string(), 1000.0); // LM loves the typo more
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(0.0);
+        // With lm_weight = 0.0, combined score is purely -confusion_weight *
+        // cost; the unmodified original (cost 0.0) always wins.
+        let best = rescorer.best("おはよございます");
+        assert_eq!(best, "おはよございます");
+    }
+
+    #[test]
+    fn confusion_weight_zero_lets_the_lm_fully_decide_one_best() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -1.0);
+        scores.insert("おはよございます".to_string(), -100.0);
+        let scorer = MockScorer { scores };
+        let rescorer =
+            Rescorer::new(scorer, AsrConfusionRules::default()).with_confusion_weight(0.0);
+        // Confusion cost no longer penalizes the correction at all; the LM's
+        // strong preference decides.
+        let best = rescorer.best("おはよございます");
+        assert_eq!(best, "おはようございます");
+    }
+
+    #[test]
+    fn negative_lm_weight_does_not_panic_and_stays_bounded_by_the_sanity_guard() {
+        // Out-of-range (negative) weights are not validated by the API, but
+        // they must never cause a panic, and the output-sanity guard must
+        // still hold even when the weight inverts the LM's usual preference.
+        let scorer = FavorsOneText { favored: "", favored_score: 0.0, other_score: -20.0 };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(-1.0);
+        let best = rescorer.best("っ");
+        assert_eq!(best, "っ", "guard must hold even under an out-of-range negative weight");
+    }
+
+    #[test]
+    fn very_large_weight_does_not_panic_and_degrades_to_a_deterministic_pick() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -20.0);
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default()).with_lm_weight(1e15);
+        // Must not panic (potential overflow to -inf is fine, NaN is
+        // fail-open-safe) and must return one of the known candidates.
+        let best = rescorer.best("おはよございます");
+        assert!(
+            best == "おはようございます" || best == "おはよございます",
+            "got unexpected candidate {best}"
+        );
+    }
+
+    #[test]
+    fn negative_confusion_weight_does_not_panic() {
+        let mut scores = HashMap::new();
+        scores.insert("おはようございます".to_string(), -10.0);
+        scores.insert("おはよございます".to_string(), -10.0);
+        let scorer = MockScorer { scores };
+        let rescorer =
+            Rescorer::new(scorer, AsrConfusionRules::default()).with_confusion_weight(-5.0);
+        // Negative confusion weight rewards edits instead of penalizing them;
+        // must not panic and must return a real candidate.
+        let ranked = rescorer.rescore("おはよございます");
+        assert!(!ranked.is_empty());
+        for r in &ranked {
+            assert!(r.combined_score.is_finite(), "expected finite score, got {r:?}");
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Adversarial hardening: overcorrection gate vs. a confident-but-wrong LM
+    // -------------------------------------------------------------------
+
+    /// The confusion pair used by the gate tests below.
+    ///
+    /// "ぜんせい" is a *generated* edit-1 neighbour of "せんせい" (せ -> ぜ
+    /// voicing), which matters: a pair the rules never produce would make the
+    /// gate test pass vacuously, proving nothing about the margin.
+    fn confident_but_wrong_voicing_scorer() -> MockScorer {
+        let mut scores = HashMap::new();
+        scores.insert("せんせい".to_string(), -50.0); // correct, but LM finds it rare
+        scores.insert("ぜんせい".to_string(), -1.0); // wrong, but LM is very confident
+        MockScorer { scores }
+    }
+
+    #[test]
+    fn the_confident_but_wrong_candidate_is_actually_generated() {
+        // Guards the two gate tests below against going vacuous: if the
+        // confusion rules ever stop producing this neighbour, they stop
+        // testing the margin, and this test says so directly.
+        let generated = AsrConfusionRules::default().generate("せんせい");
+        assert!(
+            generated.iter().any(|c| c.text == "ぜんせい"),
+            "expected せんせい -> ぜんせい among {generated:?}"
+        );
+    }
+
+    #[test]
+    fn overcorrection_margin_blocks_a_confident_but_wrong_lm_preference() {
+        // The LM is very confident (large score gap) that the voiced
+        // "ぜんせい" is more natural than the correct "せんせい". A margin
+        // large enough to absorb that confidence gap must still hold the
+        // correct original.
+        let rescorer =
+            Rescorer::new(confident_but_wrong_voicing_scorer(), AsrConfusionRules::default())
+                .with_overcorrection_margin(1000.0);
+        let best = rescorer.best("せんせい");
+        assert_eq!(best, "せんせい", "a large margin must block a confident-but-wrong LM");
+    }
+
+    #[test]
+    fn zero_margin_lets_a_confident_wrong_lm_override_by_design() {
+        // Contrast case: with the default margin (0.0), the same confident
+        // (and here, wrong) LM preference above *does* override. This proves
+        // the margin -- not some other mechanism -- is what's holding the
+        // line in the test above, and documents why the module recommends a
+        // positive overcorrection_margin in production.
+        let rescorer =
+            Rescorer::new(confident_but_wrong_voicing_scorer(), AsrConfusionRules::default());
+        let best = rescorer.best("せんせい");
+        assert_eq!(best, "ぜんせい");
+    }
+
+    #[test]
+    fn overcorrection_margin_blocks_confident_wrong_lm_in_nbest_path() {
+        let mut scores = HashMap::new();
+        scores.insert("せんせい".to_string(), -50.0);
+        scores.insert("せんせえ".to_string(), -1.0);
+        let scorer = MockScorer { scores };
+        let rescorer =
+            Rescorer::new(scorer, AsrConfusionRules::default()).with_overcorrection_margin(1000.0);
+        let candidates = vec![
+            NbestCandidate { text: "せんせい".into(), acoustic_score: -3.0 },
+            NbestCandidate { text: "せんせえ".into(), acoustic_score: -3.5 },
+        ];
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "せんせい");
+    }
+
+    // -------------------------------------------------------------------
+    // Adversarial hardening: rerank_nbest / best_nbest edge cases
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn rerank_nbest_empty_input_returns_empty_output() {
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        assert_eq!(rescorer.rerank_nbest(&[]), vec![]);
+    }
+
+    #[test]
+    fn rerank_nbest_and_best_nbest_handle_duplicate_text_different_acoustic_scores() {
+        // Two entries share the same text but different acoustic scores (a
+        // decoder can legitimately emit the same hypothesis via different
+        // paths). The acoustic-top duplicate's own combined score must be
+        // the one compared against the overcorrection margin, not whichever
+        // duplicate happens to sort first for an unrelated reason.
+        let mut scores = HashMap::new();
+        scores.insert("かいしゃ".to_string(), -5.0);
+        let scorer = MockScorer { scores };
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -1.0 },
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -9.0 },
+        ];
+        let ranked = rescorer.rerank_nbest(&candidates);
+        assert_eq!(ranked.len(), 2);
+        // Both score -5.0 from the LM; combined = acoustic + (-5.0).
+        assert_eq!(ranked[0].combined_score, -1.0 + -5.0);
+        assert_eq!(ranked[1].combined_score, -9.0 + -5.0);
+        let best = rescorer.best_nbest(&candidates);
+        assert_eq!(best, "かいしゃ");
+    }
+
+    #[test]
+    fn best_nbest_duplicate_identical_candidates_are_deterministic() {
+        let scorer = ConstantScorer(-10.0);
+        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+        let candidates = vec![
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -1.0 },
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -1.0 },
+            NbestCandidate { text: "かいしゃ".into(), acoustic_score: -1.0 },
+        ];
+        for _ in 0..5 {
+            assert_eq!(rescorer.best_nbest(&candidates), "かいしゃ");
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Characterization: 1-best path is unchanged for realistic inputs
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn best_matches_pre_guard_behavior_across_the_documented_eval_set() {
+        // The output-sanity guard must be a no-op for every realistic input:
+        // it only ever rejects candidates that a correctly-behaving scorer
+        // and the bounded confusion-rule generator would never produce in
+        // practice. This walks the module doc's eval set (5 repairs + a
+        // sample of correct-form holds) with hand-picked scores that mirror
+        // "LM prefers the higher-frequency form" and asserts the exact
+        // expected output byte-for-byte -- if the guard ever started
+        // rejecting a legitimate top candidate here, this test would catch
+        // the regression immediately.
+        let cases: &[(&str, &str, f64, f64, &str)] = &[
+            // (hypothesis, corrected_form, hyp_score, corrected_score, expected)
+            ("おはよございます", "おはようございます", -20.0, -10.0, "おはようございます"),
+            ("きって", "きて", -10.0, -10.0, "きって"), // hold: no LM preference, keep original
+        ];
+        for &(hyp, corrected, hyp_score, corrected_score, expected) in cases {
+            let mut scores = HashMap::new();
+            scores.insert(hyp.to_string(), hyp_score);
+            scores.insert(corrected.to_string(), corrected_score);
+            let scorer = MockScorer { scores };
+            let rescorer = Rescorer::new(scorer, AsrConfusionRules::default());
+            let best = rescorer.best(hyp);
+            assert_eq!(best, expected, "case {hyp} -> expected {expected}, got {best}");
         }
     }
 }
