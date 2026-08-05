@@ -36,7 +36,11 @@ export const recognitionTextRowId = (event: RecognizedTextEvent) => {
 /** Return a unique DOM/React row id for one translated event. */
 export const translationTextRowId = (event: TranslationTextEvent) => {
   const base = recognitionSourceRowId(event.source, event.generation);
+  // A single turn can have translations into multiple target languages.
+  // Include target_lang so two replace events for the same turn but
+  // different languages get distinct React keys instead of colliding.
+  const withLang = `${base}|${event.target_lang}`;
   return event.update_mode === "append"
-    ? `${base}|append-${event.source_recognition_id}-${sourceCursorId(event.source)}`
-    : base;
+    ? `${withLang}|append-${event.source_recognition_id}-${sourceCursorId(event.source)}`
+    : withLang;
 };

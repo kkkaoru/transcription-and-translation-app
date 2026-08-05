@@ -196,11 +196,11 @@ describe("recognitionTextRowId", () => {
 });
 
 describe("translationTextRowId", () => {
-  it("returns the base row id for replace events", () => {
+  it("returns the base row id with target_lang for replace events", () => {
     const event = translated("turn-7-3-0|en", "translation", {
       update_mode: "replace",
     });
-    expect(translationTextRowId(event)).toBe("turn-0-7-3");
+    expect(translationTextRowId(event)).toBe("turn-0-7-3|en");
   });
 
   it("appends the source recognition id and source cursor for append events", () => {
@@ -210,7 +210,7 @@ describe("translationTextRowId", () => {
       source: source({ output_sequence: 1 }),
     });
     expect(translationTextRowId(event)).toBe(
-      "turn-0-7-3|append-turn-7-3-0-0-1-3-",
+      "turn-0-7-3|en|append-turn-7-3-0-0-1-3-",
     );
   });
 
@@ -238,7 +238,33 @@ describe("translationTextRowId", () => {
     expect(translationTextRowId(first)).not.toBe(translationTextRowId(second));
   });
 
-  it("produces the same row id for two replace events in the same turn and generation", () => {
+  it("produces distinct row ids for replace events with different target languages", () => {
+    const en = translated("turn-7-3-0|en", "english", {
+      update_mode: "replace",
+    });
+    const ja = translated("turn-7-3-0|ja", "japanese", {
+      update_mode: "replace",
+      target_lang: "ja",
+    });
+    expect(translationTextRowId(en)).not.toBe(translationTextRowId(ja));
+    expect(translationTextRowId(en)).toBe("turn-0-7-3|en");
+    expect(translationTextRowId(ja)).toBe("turn-0-7-3|ja");
+  });
+
+  it("produces distinct row ids for append events with the same source recognition id but different target languages", () => {
+    const en = translated("turn-7-3-0|en", "english", {
+      update_mode: "append",
+      source_recognition_id: "turn-7-3-0",
+    });
+    const ja = translated("turn-7-3-0|ja", "japanese", {
+      update_mode: "append",
+      source_recognition_id: "turn-7-3-0",
+      target_lang: "ja",
+    });
+    expect(translationTextRowId(en)).not.toBe(translationTextRowId(ja));
+  });
+
+  it("produces the same row id for two replace events in the same turn, generation, and target language", () => {
     const partial = translated("turn-7-3-0|en", "partial", {
       update_mode: "replace",
       is_final: false,
