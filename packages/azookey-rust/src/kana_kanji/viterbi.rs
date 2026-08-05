@@ -605,8 +605,21 @@ pub fn convert_with_dictionary(
                 {
                     continue;
                 }
+                // A kana-only span adjacent to a prolonged mark is normally a
+                // loanword whose dictionary spelling is Katakana (`すーぷ` ->
+                // `スープ`).  Suppress the hiragana identity so the Ruby-ID
+                // loanword surface can win.  But interjections and fillers
+                // (`えーっと`, `あのー`, `そのー`, `うーん`) are stored as
+                // hiragana identity rows with a non-default CID, and their
+                // natural spelling is that hiragana - converting just the
+                // leading mora (`絵ーっと`) or emitting a Katakana fragment
+                // (`エーッと`) is spurious.  Key the suppression on the
+                // DEFAULT_CID loanword orthography so genuine loanwords keep
+                // converting while morphology-bearing filler identities stay.
                 if prolonged_mark_adjacent_to_span(&source_chars, &chars, start, end)
                     && !entry.surface.chars().any(|character| is_katakana(&character))
+                    && entry.lcid == DEFAULT_CID
+                    && entry.rcid == DEFAULT_CID
                 {
                     continue;
                 }

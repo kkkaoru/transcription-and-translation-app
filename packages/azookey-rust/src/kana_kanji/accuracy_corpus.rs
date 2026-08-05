@@ -72,6 +72,36 @@ const CORPUS: &[CorpusCase] = &[
         expected: "スープはください",
     },
     // -----------------------------------------------------------------------
+    // Fillers / interjections — hesitation sounds that must stay hiragana.
+    //
+    // These share the prolonged sound mark `ー` with loanwords above, but
+    // their dictionary identity rows carry a non-default CID.  Converting the
+    // leading mora (`絵ーっと`) or emitting a katakana fragment (`エーッと`)
+    // is spurious, so the katakana-preferring guard must not reach them.
+    // -----------------------------------------------------------------------
+    CorpusCase {
+        category: "fillers_interjections", input: "えーっと", expected: "えーっと"
+    },
+    CorpusCase { category: "fillers_interjections", input: "えーと", expected: "えーと" },
+    CorpusCase { category: "fillers_interjections", input: "あのー", expected: "あのー" },
+    CorpusCase { category: "fillers_interjections", input: "そのー", expected: "そのー" },
+    CorpusCase { category: "fillers_interjections", input: "うーん", expected: "うーん" },
+    // Loanword counterpart: the same prolonged mark must still convert, so an
+    // over-broad relaxation of the guard fails here instead of passing quietly.
+    CorpusCase { category: "fillers_interjections", input: "すーぷ", expected: "スープ" },
+    // -----------------------------------------------------------------------
+    // Single-mora lexical conversions — one-character readings that do have a
+    // legitimate kanji spelling, guarding against the filler fix suppressing
+    // genuine short conversions.
+    //
+    // `ひ` is deliberately not pinned here: its homophones (`火`/`日`/`非`)
+    // are all frequent and context-free ranking currently yields `非`, so an
+    // expectation either way would encode ranking noise rather than a
+    // requirement.
+    // -----------------------------------------------------------------------
+    CorpusCase { category: "single_mora_kanji", input: "き", expected: "木" },
+    CorpusCase { category: "single_mora_kanji", input: "て", expected: "手" },
+    // -----------------------------------------------------------------------
     // Numbers / counters — spoken numerals followed by counters.
     // -----------------------------------------------------------------------
     CorpusCase { category: "numbers_counters", input: "ごねん", expected: "5年" },
@@ -328,6 +358,63 @@ const CORPUS: &[CorpusCase] = &[
         expected: "今日は配信です",
     },
 ];
+
+/// Cases that must convert exactly, not merely often enough.
+///
+/// `accuracy_corpus_report` only enforces an aggregate pass rate, so a
+/// handful of broken cases can hide inside a healthy percentage.  These pairs
+/// encode the two halves of one invariant and are asserted individually:
+///
+/// * hesitation fillers keep their natural hiragana spelling, and
+/// * loanwords sharing the same prolonged sound mark still become katakana.
+///
+/// Suppressing the hiragana identity of a `ー` span is what makes `すーぷ`
+/// convert to `スープ`; keying that suppression too broadly is what turned
+/// `えーっと` into `エーッと`.  Breaking either direction fails here loudly.
+const EXACT_CONVERSIONS: &[(&str, &str)] = &[
+    // Fillers must not gain a stray conversion.
+    ("えーっと", "えーっと"),
+    ("えーと", "えーと"),
+    ("あのー", "あのー"),
+    ("そのー", "そのー"),
+    ("うーん", "うーん"),
+    // Loanwords with the same prolonged mark must still convert.
+    ("すーぷ", "スープ"),
+    ("でーた", "データ"),
+    // Genuine single-mora conversions must survive.
+    ("き", "木"),
+    ("て", "手"),
+];
+
+#[test]
+fn exact_conversions_hold() {
+    let root = crate::dictionary::test_system_dictionary_path();
+    let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(root),
+        ..DictionaryPaths::default()
+    })
+    .expect("official AzooKey dictionary should load");
+
+    let mut mismatches: Vec<String> = Vec::new();
+    for (input, expected) in EXACT_CONVERSIONS {
+        let actual = convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+            .into_iter()
+            .next()
+            .map(|candidate| candidate.text)
+            .unwrap_or_default();
+        if actual != *expected {
+            mismatches.push(format!("{input:?} -> expected {expected:?}, got {actual:?}"));
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "{} of {} exact conversions regressed:\n  {}",
+        mismatches.len(),
+        EXACT_CONVERSIONS.len(),
+        mismatches.join("\n  "),
+    );
+}
 
 #[test]
 fn accuracy_corpus_report() {
