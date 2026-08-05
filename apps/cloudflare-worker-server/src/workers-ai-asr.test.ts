@@ -4,6 +4,7 @@ import {
   WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS,
   WORKERS_AI_ASR_LANGUAGE,
   WORKERS_AI_ASR_MAX_PCM_BYTES,
+  WORKERS_AI_ASR_MAX_RESPONSE_BYTES,
   WORKERS_AI_ASR_MAX_TIMEOUT_MS,
   WORKERS_AI_ASR_MIN_TIMEOUT_MS,
   WORKERS_AI_ASR_MODEL,
@@ -125,6 +126,28 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     ).rejects.toMatchObject({
       status: 502,
       code: "asr_workers_ai_failed",
+    });
+  });
+
+  it("rejects an oversized raw Response body and a Response with no body", async () => {
+    const oversized = new Uint8Array(WORKERS_AI_ASR_MAX_RESPONSE_BYTES + 1);
+    await expect(
+      createWorkersAiAsrTranscriber({}, () =>
+        Promise.resolve(new Response(oversized, { status: 200 })),
+      )(pcm()),
+    ).rejects.toMatchObject({
+      status: 502,
+      code: "asr_workers_ai_invalid_response",
+      message: "Workers AI ASR response exceeds the byte limit",
+    });
+    await expect(
+      createWorkersAiAsrTranscriber({}, () => Promise.resolve(new Response(null, { status: 200 })))(
+        pcm(),
+      ),
+    ).rejects.toMatchObject({
+      status: 502,
+      code: "asr_workers_ai_invalid_response",
+      message: "Workers AI ASR response has no body",
     });
   });
 

@@ -1,4 +1,5 @@
 import { GatewayError, MAX_AUDIO_BYTES, pcm16ToWav } from "@caption-bridge/inference-server-core";
+import { byteLimitTransform, collectStream } from "./azookey.js";
 
 /** The Workers AI partner model used only by the explicit `workers-ai` route. */
 export const WORKERS_AI_ASR_MODEL = "@cf/deepgram/nova-3" as const;
@@ -15,6 +16,8 @@ export const WORKERS_AI_ASR_MAX_PCM_BYTES = MAX_AUDIO_BYTES - WORKERS_AI_ASR_WAV
 export const WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS = 15_000;
 export const WORKERS_AI_ASR_MIN_TIMEOUT_MS = 100;
 export const WORKERS_AI_ASR_MAX_TIMEOUT_MS = 30_000;
+/** Upper bound for the Workers AI raw Response body before it is parsed. */
+export const WORKERS_AI_ASR_MAX_RESPONSE_BYTES = 65_536;
 
 type WorkersAiAsrInput = {
   audio: {
@@ -129,9 +132,30 @@ const resultFromRawResponse = async (response: Response): Promise<unknown> => {
       `Workers AI returned ${response.status}`,
     );
   }
+  if (!response.body) {
+    throw new GatewayError(
+      HTTP_BAD_GATEWAY,
+      "asr_workers_ai_invalid_response",
+      "Workers AI ASR response has no body",
+    );
+  }
   try {
-    return await response.json();
-  } catch {
+    const bounded = response.body.pipeThrough(
+      byteLimitTransform(
+        WORKERS_AI_ASR_MAX_RESPONSE_BYTES,
+        "Workers AI ASR response exceeds the byte limit",
+      ),
+    );
+    return JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(await collectStream(bounded)),
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "Workers AI ASR response exceeds the byte limit"
+    ) {
+      throw new GatewayError(HTTP_BAD_GATEWAY, "asr_workers_ai_invalid_response", error.message);
+    }
     throw new GatewayError(
       HTTP_BAD_GATEWAY,
       "asr_workers_ai_invalid_response",
