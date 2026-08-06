@@ -1,4 +1,5 @@
 import type { CaptionPayload } from "./types";
+import { collapseRunawayGraphemeRuns } from "../overlay/captions";
 
 const NO_TIME_MS = 0;
 const SOURCE_SEQUENCE = 0;
@@ -236,6 +237,9 @@ const hasCloseSourceTiming = (current: CaptionPayload, next: CaptionPayload): bo
  * forward. Same-id revisions only use the no-overlap suffix path when their
  * audio start advances, so equal-start semantic corrections still replace the
  * old text (for example `雨` → `晴れ`).
+ *
+ * Every accepted join is run through Kanji-stutter collapse so a rolling
+ * `為` → `為為` → `為為為…` revision cannot accumulate on screen.
  */
 const mergeSourceText = (
   current: CaptionPayload,
@@ -245,24 +249,24 @@ const mergeSourceText = (
   const currentText = trim(current.sourceText);
   const nextText = trim(next.sourceText);
   if (!currentText || !nextText) {
-    return nextText || currentText;
+    return collapseRunawayGraphemeRuns(nextText || currentText);
   }
   // Resolve lexical prefix/overlap first. This preserves a complete current
   // source when a later contextual revision is only a shorter prefix.
   if (nextText.startsWith(currentText)) {
-    return nextText;
+    return collapseRunawayGraphemeRuns(nextText);
   }
   if (currentText.startsWith(nextText)) {
-    return currentText;
+    return collapseRunawayGraphemeRuns(currentText);
   }
   const overlap = sourceOverlapLength(currentText, nextText);
   if (overlap > NO_TIME_MS) {
-    return `${currentText}${nextText.slice(overlap)}`;
+    return collapseRunawayGraphemeRuns(`${currentText}${nextText.slice(overlap)}`);
   }
   // A completed prior chunk starts a new caption when there is no lexical
   // relation; otherwise a no-overlap suffix may continue an incomplete phrase.
   if (sourceBoundary.test(currentText)) {
-    return nextText;
+    return collapseRunawayGraphemeRuns(nextText);
   }
   if (
     !allowNoOverlapSuffix ||
@@ -270,7 +274,7 @@ const mergeSourceText = (
       !isShortJapaneseContinuation(current, next) &&
       !isAdvancingSameIdSource(current, next))
   ) {
-    return nextText;
+    return collapseRunawayGraphemeRuns(nextText);
   }
   // With no lexical overlap, only append when the two source events are close
   // enough to plausibly be adjacent rolling windows. Japanese does not need a
@@ -278,10 +282,10 @@ const mergeSourceText = (
   const separator = /[A-Za-z0-9]$/u.test(currentText) && /^[A-Za-z0-9]/u.test(nextText) ? " " : "";
   const joined = `${currentText}${separator}${nextText}`;
   // Guard against pathological single-grapheme stutter appends (為為為…).
-  if ([...nextText].length === 1 && currentText.endsWith(nextText.repeat(2))) {
-    return currentText;
+  if ([...nextText].length === 1 && currentText.endsWith(nextText)) {
+    return collapseRunawayGraphemeRuns(currentText);
   }
-  return joined;
+  return collapseRunawayGraphemeRuns(joined);
 };
 
 const mergeCrossIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {
@@ -651,20 +655,28 @@ export const mergeCaptionPayload = (
     return current;
   }
 
+  const resolveMergedSourceText = (): string => {
+    if (!hasIncomingSource) {
+      return current.sourceText;
+    }
+    if (sameChunk) {
+      return mergeSameIdSourceText(current, incoming);
+    }
+    if (isSourceStagePayload(incoming) && isLikelyCrossIdSourceRevision(current, incoming)) {
+      return collapseRunawayGraphemeRuns(trim(incoming.sourceText));
+    }
+    if (isSourceStagePayload(incoming) && canMergeCrossIdSource(current, incoming)) {
+      return mergeCrossIdSourceText(current, incoming);
+    }
+    return collapseRunawayGraphemeRuns(incoming.sourceText);
+  };
+
   const currentWithoutProvisional = { ...current };
   delete currentWithoutProvisional.provisional;
   const merged: CaptionPayload = {
     ...currentWithoutProvisional,
     ...incoming,
-    sourceText: hasIncomingSource
-      ? sameChunk
-        ? mergeSameIdSourceText(current, incoming)
-        : isSourceStagePayload(incoming) && isLikelyCrossIdSourceRevision(current, incoming)
-          ? trim(incoming.sourceText)
-          : isSourceStagePayload(incoming) && canMergeCrossIdSource(current, incoming)
-            ? mergeCrossIdSourceText(current, incoming)
-            : incoming.sourceText
-      : current.sourceText,
+    sourceText: resolveMergedSourceText(),
     translationText: sameChunk
       ? hasIncomingTranslation
         ? incoming.translationText

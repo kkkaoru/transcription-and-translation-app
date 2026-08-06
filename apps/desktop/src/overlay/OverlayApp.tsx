@@ -60,11 +60,15 @@ export const OverlayApp = () => {
   useEffect(() => {
     document.documentElement.classList.add("overlay-document");
     document.body.classList.add("overlay-document");
+    if (transparentCapture) {
+      document.documentElement.classList.add("overlay-document--window");
+      document.body.classList.add("overlay-document--window");
+    }
     return () => {
-      document.documentElement.classList.remove("overlay-document");
-      document.body.classList.remove("overlay-document");
+      document.documentElement.classList.remove("overlay-document", "overlay-document--window");
+      document.body.classList.remove("overlay-document", "overlay-document--window");
     };
-  }, []);
+  }, [transparentCapture]);
 
   useEffect(() => {
     let mounted = true;

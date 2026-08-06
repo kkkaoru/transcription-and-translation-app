@@ -1208,9 +1208,8 @@ pub(crate) const TRANSPARENT_CAPTURE_LABEL: &str = "transparent";
 
 /// Create a caption surface window.
 ///
-/// Off-screen Syphon/Spout publisher stays out of the way; the user-facing
-/// transparent capture window must behave like a normal desktop window so
-/// it does not steal focus or block interaction with other apps (`always_on_top`).
+/// Off-screen Syphon/Spout publisher stays out of the way. The user-facing
+/// caption window is a normal decorated desktop window sized from settings.
 fn create_caption_surface_window(
     app: &AppHandle,
     config: &AppConfig,
@@ -1231,16 +1230,17 @@ fn create_caption_surface_window(
     } else {
         config.overlay.y as f64
     };
+    let user_facing = !offscreen && !always_on_top;
     let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
         .title(title)
         .inner_size(config.overlay.width as f64, config.overlay.height as f64)
         .position(x, y)
-        .decorations(false)
-        .transparent(true)
+        // User-facing caption display is a normal window (title bar / chrome).
+        // Off-screen native publishers stay undecorated and click-through.
+        .decorations(user_facing)
+        .transparent(!user_facing)
         .always_on_top(always_on_top)
-        // Keep the off-screen native publisher off the taskbar/Dock. The
-        // transparent capture surface is a normal window users can switch to.
-        .skip_taskbar(offscreen || always_on_top)
+        .skip_taskbar(!user_facing)
         .visible(visible)
         // Output dimensions are configured numerically. Keeping the surface fixed
         // prevents a user resize from desynchronizing the window and the native
@@ -1248,11 +1248,12 @@ fn create_caption_surface_window(
         .resizable(false)
         .build()
         .map_err(|error| format!("could not create {label} window: {error}"))?;
-    // Caption surfaces span the configured output resolution. They are display
-    // only, so they must never consume clicks intended for the app beneath them.
-    window
-        .set_ignore_cursor_events(true)
-        .map_err(|error| format!("could not make {label} click-through: {error}"))?;
+    if !user_facing {
+        // Off-screen native publishers must never steal clicks.
+        window
+            .set_ignore_cursor_events(true)
+            .map_err(|error| format!("could not make {label} click-through: {error}"))?;
+    }
     if visible {
         // Some platforms create the builder as ordered-back; force a show so the
         // webview compositor starts and NativeFramePublisher can paint.
@@ -1333,35 +1334,44 @@ pub(crate) fn ensure_native_renderer(
     )
 }
 
-/// Open the dedicated transparent capture window (Window Capture / non-Syphon path).
+/// Open the dedicated caption display window (Window Capture / non-Syphon path).
 ///
 /// This never mounts or shows the native Syphon/Spout renderer. When Spout2 or
 /// Syphon is active, captions already flow through `native-renderer` regardless
 /// of whether this optional surface is open.
 ///
-/// The surface stays transparent for OBS Window Capture, but it is a normal
-/// (not always-on-top) window so the rest of the desktop remains usable.
+/// The window is a normal decorated desktop window sized from
+/// `overlay.width` × `overlay.height` (and positioned at `overlay.x`/`y`).
 #[tauri::command]
 pub fn open_transparent_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     if let Some(window) = app.get_webview_window(TRANSPARENT_CAPTURE_LABEL) {
         window
-            .set_always_on_top(false)
-            .map_err(|error| format!("could not clear transparent capture always-on-top: {error}"))?;
+            .set_size(LogicalSize::new(config.overlay.width as f64, config.overlay.height as f64))
+            .map_err(|error| format!("could not resize caption window: {error}"))?;
         window
-            .set_ignore_cursor_events(true)
-            .map_err(|error| format!("could not make transparent capture click-through: {error}"))?;
+            .set_position(LogicalPosition::new(config.overlay.x as f64, config.overlay.y as f64))
+            .map_err(|error| format!("could not move caption window: {error}"))?;
+        window
+            .set_always_on_top(false)
+            .map_err(|error| format!("could not clear caption window always-on-top: {error}"))?;
+        window
+            .set_decorations(true)
+            .map_err(|error| format!("could not enable caption window decorations: {error}"))?;
+        window
+            .set_ignore_cursor_events(false)
+            .map_err(|error| format!("could not enable caption window interaction: {error}"))?;
         window
             .show()
-            .map_err(|error| format!("could not show transparent capture: {error}"))?;
+            .map_err(|error| format!("could not show caption window: {error}"))?;
         return Ok(());
     }
-    let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     create_caption_surface_window(
         &app,
         &config,
         TRANSPARENT_CAPTURE_LABEL,
         "index.html?transparent=1",
-        "Kotoba Beacon Transparent Capture",
+        "Kotoba Beacon Captions",
         true,
         false,
         false,

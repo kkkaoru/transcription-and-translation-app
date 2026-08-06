@@ -58,11 +58,24 @@ body.overlay-document {
   background: transparent;
 }
 
+/* User-facing caption window (decorated) needs an opaque plate so it reads as
+   a normal desktop window. Native Syphon/Spout publishers stay transparent. */
+html.overlay-document.overlay-document--window,
+body.overlay-document.overlay-document--window {
+  background: #0b1218;
+}
+
 html.overlay-document #root,
 body.overlay-document #root {
   height: auto;
   max-height: none;
   overflow: visible;
+}
+
+html.overlay-document.overlay-document--window #root,
+body.overlay-document.overlay-document--window #root {
+  background: #0b1218;
+  min-height: 100vh;
 }
 
 button,
@@ -1241,8 +1254,8 @@ button:disabled {
   font-size: 13px;
   line-height: 1.35;
   background: var(--panel-muted);
-  overflow-wrap: anywhere;
-  white-space: normal;
+  /* Keep native option layout single-line so WebView dropdowns stay clickable. */
+  white-space: nowrap;
 }
 
 /* Higher specificity than `.model-card p` so no !important is needed. */
@@ -1276,7 +1289,8 @@ button:disabled {
   gap: 5px;
 }
 
-.model-card .field input {
+.model-card .field input,
+.model-card .field select {
   min-width: 0;
   max-width: 100%;
   padding: 8px;
@@ -1286,10 +1300,25 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.model-card .field select {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  padding-right: 28px;
+}
+
 .model-card .field small {
   display: block;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.model-card .section-note {
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .section-note {
