@@ -547,6 +547,26 @@ export const SettingsView = ({
               <span>{t("settings.noiseSuppressionOn")}</span>
             </label>
           </Field>
+          <Field
+            label={t("settings.autoGainControl")}
+            hint={audioPipelineHint(t("settings.autoGainControlHint"))}
+          >
+            <label className="checkbox-field">
+              <input
+                id="audio-auto-gain-control"
+                type="checkbox"
+                checked={config.audio.autoGainControl !== false}
+                onChange={(event) =>
+                  onConfigChange({
+                    ...config,
+                    audio: { ...config.audio, autoGainControl: event.target.checked },
+                  })
+                }
+                disabled={audioPipelineControlsDisabled}
+              />
+              <span>{t("settings.autoGainControlOn")}</span>
+            </label>
+          </Field>
         </div>
       </section>
 
@@ -575,6 +595,22 @@ export const SettingsView = ({
               step={OVERLAY_DIMENSION_STEP_PX}
               value={config.overlay.height}
               onChange={(event) => setOverlay({ height: Number(event.target.value) })}
+            />
+          </Field>
+          <Field label={t("settings.windowX")}>
+            <input
+              type="number"
+              step={1}
+              value={config.overlay.x}
+              onChange={(event) => setOverlay({ x: Math.round(Number(event.target.value)) })}
+            />
+          </Field>
+          <Field label={t("settings.windowY")}>
+            <input
+              type="number"
+              step={1}
+              value={config.overlay.y}
+              onChange={(event) => setOverlay({ y: Math.round(Number(event.target.value)) })}
             />
           </Field>
           <Field label={t("settings.order")}>

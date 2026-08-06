@@ -37,14 +37,24 @@ const disposeSafely = (dispose: () => void): void => {
   }
 };
 
-const isNativeOverlayRoute = (): boolean =>
-  new URLSearchParams(window.location.search).get("native") === "1";
+const isNativeRendererRoute = (): boolean => {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("native") === "1";
+};
+
+const isTransparentCaptureRoute = (): boolean => {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("transparent") === "1" || params.get("overlay") === "1";
+};
 
 export const OverlayApp = () => {
-  const nativeOverlay = isNativeOverlayRoute();
+  const nativeRenderer = isNativeRendererRoute();
+  const transparentCapture = isTransparentCaptureRoute() && !nativeRenderer;
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
+  // Syphon/Spout2 (native-renderer) starts with sample copy so OBS can frame
+  // the layout before the first recognition. Window Capture stays blank until live text.
   const [caption, setCaption] = useState<CaptionPayload>(() =>
-    nativeOverlay ? createEmptyCaption() : createPreviewCaption(),
+    transparentCapture ? createEmptyCaption() : createPreviewCaption(),
   );
 
   useEffect(() => {
@@ -157,7 +167,9 @@ export const OverlayApp = () => {
             idle = false;
           }
           if (idle && !status.lastError) {
-            setCaption(createEmptyCaption());
+            // Native Syphon/Spout path restores sample text for OBS layout checks.
+            // Transparent Window Capture clears so a stopped session does not look live.
+            setCaption(nativeRenderer ? createPreviewCaption() : createEmptyCaption());
           }
         })
         .then((dispose) => {
@@ -180,7 +192,7 @@ export const OverlayApp = () => {
   return (
     <>
       <OverlayView config={config} caption={caption} />
-      <NativeFramePublisher config={config} caption={caption} />
+      {nativeRenderer ? <NativeFramePublisher config={config} caption={caption} /> : null}
     </>
   );
 };

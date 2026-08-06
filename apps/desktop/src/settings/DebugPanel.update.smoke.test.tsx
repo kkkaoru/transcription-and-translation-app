@@ -33,6 +33,7 @@ vi.mock("../core/bridge", () => ({
         sampleRate: 16000,
         inputDeviceId: "default",
         noiseSuppression: true,
+        autoGainControl: true,
         adaptiveNoiseFloor: true,
       },
       overlay: {

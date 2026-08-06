@@ -519,86 +519,213 @@ export type CreateMicrophoneConstraintsOptions = {
   /** Omit echoCancellation/noiseSuppression/autoGainControl overrides. */
   relaxProcessing?: boolean;
   /**
-   * When true (default), enable browser noiseSuppression + echoCancellation + AGC.
-   * When false, disable NS/AEC but keep AGC so quiet mics stay above the silence floor.
+   * When true (default), enable browser noiseSuppression + echoCancellation.
+   * When false, disable NS/AEC. AGC is controlled separately via autoGainControl.
    */
   noiseSuppression?: boolean;
+  /**
+   * When true (default), enable browser autoGainControl.
+   * Independent from noiseSuppression so settings can toggle each feature.
+   */
+  autoGainControl?: boolean;
+  /**
+   * Optional allow-list from `mediaDevices.getSupportedConstraints()`.
+   * Unsupported keys are omitted from the *initial* getUserMedia call — WKWebView
+   * rejects unknown keys with "Invalid constraint". After permission is granted,
+   * {@link applyMicrophoneProcessing} still tries to enable NS/AGC via applyConstraints.
+   * `null` means "support unknown; include processing flags and rely on the fallback ladder".
+   */
+  supportedConstraints?: ReadonlySet<string> | null;
+};
+
+/** User-facing browser processing toggles (both default on). */
+export type MicrophoneProcessingSettings = {
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
 };
 
 /**
- * Build getUserMedia constraints. Prefer mono capture; apply browser processing when
- * noiseSuppression is on. Callers should progressively fall back via
- * {@link openMicrophoneStream}.
+ * Normalize a boolean legacy arg or partial settings into explicit NS/AGC flags.
+ * Missing values default to enabled — permission-path filtering must not clear
+ * the user's settings intent.
+ */
+export const resolveMicrophoneProcessing = (
+  input?: Partial<MicrophoneProcessingSettings> | boolean | null,
+): MicrophoneProcessingSettings => {
+  if (typeof input === "boolean") {
+    return { noiseSuppression: input, autoGainControl: true };
+  }
+  return {
+    noiseSuppression: input?.noiseSuppression !== false,
+    autoGainControl: input?.autoGainControl !== false,
+  };
+};
+
+/** Read the browser's supported MediaTrackConstraints keys when available. */
+export const readSupportedAudioConstraintKeys = (): ReadonlySet<string> | null => {
+  try {
+    const supported = navigator.mediaDevices?.getSupportedConstraints?.();
+    if (!supported || typeof supported !== "object") {
+      return null;
+    }
+    return new Set(
+      Object.entries(supported as Record<string, boolean>)
+        .filter(([, enabled]) => enabled)
+        .map(([key]) => key),
+    );
+  } catch {
+    return null;
+  }
+};
+
+const assignProcessingConstraint = (
+  audio: MediaTrackConstraints,
+  key: "echoCancellation" | "noiseSuppression" | "autoGainControl",
+  value: boolean,
+  supported: ReadonlySet<string> | null | undefined,
+): void => {
+  // Known-unsupported keys must never be sent: WebKit throws TypeError
+  // "Invalid constraint" instead of ignoring them.
+  if (supported && !supported.has(key)) {
+    return;
+  }
+  audio[key] = value;
+};
+
+/**
+ * Desired browser processing flags from the app settings.
+ * Both noiseSuppression and autoGainControl stay conceptually enabled when
+ * their settings are on; the permission / applyConstraints path only skips
+ * keys the WebView cannot accept.
+ */
+export const desiredAudioProcessingConstraints = (
+  input?: Partial<MicrophoneProcessingSettings> | boolean | null,
+): Pick<MediaTrackConstraints, "echoCancellation" | "noiseSuppression" | "autoGainControl"> => {
+  const processing = resolveMicrophoneProcessing(input);
+  return {
+    // Echo cancellation follows the noise-suppression setting (one UI toggle).
+    echoCancellation: processing.noiseSuppression,
+    noiseSuppression: processing.noiseSuppression,
+    autoGainControl: processing.autoGainControl,
+  };
+};
+
+/**
+ * Build getUserMedia constraints. Apply browser processing when noiseSuppression
+ * is on. Callers should progressively fall back via {@link openMicrophoneStream}.
+ *
+ * Never set `channelCount`: WebKit/WKWebView does not support it and rejects the
+ * request with "Invalid constraint". Mono is enforced later in the PCM path.
+ *
+ * Processing flags may be filtered for the *permission* request; after the stream
+ * opens, {@link applyMicrophoneProcessing} re-applies NS/AGC when possible.
  */
 export const createMicrophoneConstraints = (
   deviceId: string,
   options: CreateMicrophoneConstraintsOptions = {},
 ): MediaStreamConstraints => {
-  const audio: MediaTrackConstraints = {
-    channelCount: { ideal: 1 },
-  };
+  const audio: MediaTrackConstraints = {};
 
   if (deviceId && deviceId !== "default") {
     audio.deviceId = options.idealDevice ? { ideal: deviceId } : { exact: deviceId };
   }
 
   if (!options.relaxProcessing) {
-    const noiseSuppression = options.noiseSuppression !== false;
-    // Some WebViews reject these flags — callers must fall back with
-    // relaxProcessing: true on OverconstrainedError.
-    audio.echoCancellation = noiseSuppression;
-    audio.noiseSuppression = noiseSuppression;
-    // Always keep AGC so quiet mics are not stuck near the silence floor
-    // (~-54 dBFS ambient → Parapper transcript_missing).
-    audio.autoGainControl = true;
+    const desired = desiredAudioProcessingConstraints({
+      noiseSuppression: options.noiseSuppression,
+      autoGainControl: options.autoGainControl,
+    });
+    const supported = options.supportedConstraints;
+    assignProcessingConstraint(
+      audio,
+      "echoCancellation",
+      desired.echoCancellation === true,
+      supported,
+    );
+    assignProcessingConstraint(
+      audio,
+      "noiseSuppression",
+      desired.noiseSuppression === true,
+      supported,
+    );
+    assignProcessingConstraint(
+      audio,
+      "autoGainControl",
+      desired.autoGainControl === true,
+      supported,
+    );
   }
 
   return {
-    audio,
-    video: false,
+    // Empty audio object is invalid in some WebViews; use `true` when no
+    // device/processing keys were set (fully relaxed default mic).
+    // Do not set `video: false`: some WKWebView builds reject the combined
+    // audio+video constraint object with "Invalid constraint".
+    audio: Object.keys(audio).length > 0 ? audio : true,
   };
 };
+
+/** Bare permission request that WKWebView / Tauri must accept to show the mic prompt. */
+export const MICROPHONE_PERMISSION_CONSTRAINTS: MediaStreamConstraints = { audio: true };
 
 /** Ordered constraint strategies used when opening a microphone. */
 export const microphoneConstraintStrategies = (
   deviceId: string,
-  noiseSuppression = true,
+  processingInput: Partial<MicrophoneProcessingSettings> | boolean = true,
+  supportedConstraints: ReadonlySet<string> | null = readSupportedAudioConstraintKeys(),
 ): Array<{ mode: MicrophoneConstraintMode; constraints: MediaStreamConstraints }> => {
   const strategies: Array<{ mode: MicrophoneConstraintMode; constraints: MediaStreamConstraints }> =
     [];
-  const processing = { noiseSuppression };
+  const processing = resolveMicrophoneProcessing(processingInput);
+  const processingOptions = { ...processing, supportedConstraints };
   if (deviceId && deviceId !== "default") {
     strategies.push({
       mode: "exact-device",
-      constraints: createMicrophoneConstraints(deviceId, processing),
+      constraints: createMicrophoneConstraints(deviceId, processingOptions),
     });
     strategies.push({
-      // Preserve the explicit device pin while relaxing browser processing
-      // flags. Falling back to { ideal } or default here can silently switch
-      // to a different microphone, which is worse than a visible failure.
       mode: "exact-device-relaxed",
       constraints: createMicrophoneConstraints(deviceId, {
         relaxProcessing: true,
-        ...processing,
+        ...processingOptions,
       }),
     });
-    return strategies;
+    strategies.push({
+      mode: "ideal-device",
+      constraints: createMicrophoneConstraints(deviceId, {
+        idealDevice: true,
+        relaxProcessing: true,
+        ...processingOptions,
+      }),
+    });
+  } else {
+    strategies.push({
+      mode: "default",
+      constraints: createMicrophoneConstraints("default", processingOptions),
+    });
   }
-  strategies.push({
-    mode: "default",
-    constraints: createMicrophoneConstraints("default", processing),
-  });
+  // Always finish with the permission-only request so a WKWebView that rejects
+  // every typed constraint can still show the OS microphone prompt.
   strategies.push({
     mode: "default-relaxed",
-    constraints: createMicrophoneConstraints("default", {
-      relaxProcessing: true,
-      noiseSuppression,
-    }),
+    constraints: MICROPHONE_PERMISSION_CONSTRAINTS,
   });
   return strategies;
 };
 
+const errorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return typeof error === "string" ? error : "";
+};
+
 const isConstraintFailure = (error: unknown): boolean => {
+  // WKWebView may surface unsupported constraint keys as TypeError, DOMException,
+  // or a plain Error whose message is only "Invalid constraint".
+  if (/invalid constraint/i.test(errorMessage(error))) {
+    return true;
+  }
   if (typeof DOMException !== "undefined" && error instanceof DOMException) {
     return (
       error.name === "OverconstrainedError" ||
@@ -611,42 +738,136 @@ const isConstraintFailure = (error: unknown): boolean => {
 };
 
 /**
- * Open a microphone with progressive constraint relaxation so stale deviceIds and
- * unsupported raw-audio flags do not hard-fail capture on Tauri/WKWebView.
+ * After microphone permission is granted, enable the configured processing
+ * features (noise suppression / AGC / echo cancellation) on the live track.
+ *
+ * WKWebView often rejects these keys on the initial getUserMedia call. Opening
+ * with a permission-safe constraint first, then applying them here, keeps the
+ * features enabled in settings without hard-failing startup. Each key is
+ * applied individually so one unsupported flag cannot block the others.
+ */
+export const applyMicrophoneProcessing = async (
+  stream: MediaStream,
+  processingInput: Partial<MicrophoneProcessingSettings> | boolean = true,
+): Promise<MediaTrackConstraints> => {
+  const track = stream.getAudioTracks()[0];
+  const desired = desiredAudioProcessingConstraints(processingInput);
+  const applied: MediaTrackConstraints = {};
+  if (!track || typeof track.applyConstraints !== "function") {
+    return applied;
+  }
+
+  const candidates: Array<["echoCancellation" | "noiseSuppression" | "autoGainControl", boolean]> =
+    [
+      ["echoCancellation", desired.echoCancellation === true],
+      ["noiseSuppression", desired.noiseSuppression === true],
+      ["autoGainControl", desired.autoGainControl === true],
+    ];
+
+  for (const [key, value] of candidates) {
+    try {
+      await track.applyConstraints({ [key]: value });
+      applied[key] = value;
+    } catch {
+      // One unsupported key must not block the others.
+    }
+  }
+  return applied;
+};
+
+/**
+ * Open a microphone, prioritizing a successful permission grant on WKWebView.
+ *
+ * Flow:
+ * 1. Always request `{ audio: true }` first so the OS mic prompt can appear.
+ * 2. Retarget to the selected device when possible (non-fatal).
+ * 3. Apply noiseSuppression / AGC from settings on the live track afterward.
  */
 export const openMicrophoneStream = async (
   deviceId: string,
-  noiseSuppression = true,
+  processingInput: Partial<MicrophoneProcessingSettings> | boolean = true,
 ): Promise<{ stream: MediaStream; mode: MicrophoneConstraintMode }> => {
   if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
     throw new AudioCaptureError("microphone-unavailable");
   }
 
-  const strategies = microphoneConstraintStrategies(deviceId, noiseSuppression);
-  let lastError: unknown;
+  const processing = resolveMicrophoneProcessing(processingInput);
+  let opened: { stream: MediaStream; mode: MicrophoneConstraintMode };
 
-  for (let index = 0; index < strategies.length; index += 1) {
-    const strategy = strategies[index];
-    if (!strategy) {
-      continue;
+  try {
+    // Permission-first: never send processing flags or `video: false` here.
+    // WKWebView rejects unsupported keys with "Invalid constraint" and that
+    // previously blocked the OS microphone prompt entirely.
+    const stream = await navigator.mediaDevices.getUserMedia(MICROPHONE_PERMISSION_CONSTRAINTS);
+    opened = { stream, mode: "default-relaxed" };
+  } catch (error) {
+    // Do not retry after an explicit denial — a second prompt will not help.
+    if (
+      typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      (error.name === "NotAllowedError" || error.name === "SecurityError")
+    ) {
+      throw error;
     }
+    // Absolute last chance: empty audio object (some WebViews accept this).
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(strategy.constraints);
-      return { stream, mode: strategy.mode };
-    } catch (error) {
-      lastError = error;
-      const hasMore = index < strategies.length - 1;
-      // Permission / busy failures must surface immediately — further strategies
-      // will not help and may re-prompt or hang.
-      if (!hasMore || !isConstraintFailure(error)) {
-        throw error;
-      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: {} });
+      opened = { stream, mode: "default-relaxed" };
+    } catch {
+      throw error;
     }
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new AudioCaptureError("microphone-unavailable", lastError);
+  if (deviceId && deviceId !== "default") {
+    for (const attempt of [
+      { mode: "exact-device-relaxed" as const, audio: { deviceId: { exact: deviceId } } },
+      { mode: "ideal-device" as const, audio: { deviceId: { ideal: deviceId } } },
+      { mode: "ideal-device" as const, audio: { deviceId } },
+    ]) {
+      try {
+        const next = await navigator.mediaDevices.getUserMedia({ audio: attempt.audio });
+        for (const track of opened.stream.getTracks()) {
+          try {
+            track.stop();
+          } catch {
+            // ignore
+          }
+        }
+        opened = { stream: next, mode: attempt.mode };
+        break;
+      } catch {
+        // Keep the already-granted permission stream.
+      }
+    }
+  } else {
+    // Optional upgrade: try the configured processing flags on a fresh open.
+    // Failure is ignored — we already hold a working permission stream.
+    try {
+      const upgraded = await navigator.mediaDevices.getUserMedia(
+        createMicrophoneConstraints("default", {
+          ...processing,
+          supportedConstraints: readSupportedAudioConstraintKeys(),
+        }),
+      );
+      for (const track of opened.stream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      }
+      opened = { stream: upgraded, mode: "default" };
+    } catch {
+      // Keep permission-only stream.
+    }
+  }
+
+  try {
+    await applyMicrophoneProcessing(opened.stream, processing);
+  } catch {
+    // Processing is best-effort; capture must continue with the granted mic.
+  }
+  return opened;
 };
 
 export type AudioCaptureErrorCode =
@@ -885,21 +1106,37 @@ export type PcmStreamHandler = (frame: Uint8Array) => void;
 type CaptureErrorHandler = (error: AudioCaptureError) => void;
 type LevelHandler = (rmsDb: number) => void;
 
-const toCaptureError = (error: unknown): AudioCaptureError => {
-  if (error instanceof AudioCaptureError) {
-    return error;
-  }
-  const micFailure =
-    typeof DOMException !== "undefined" &&
-    error instanceof DOMException &&
-    (error.name === "NotAllowedError" ||
+const isMicrophoneConstraintError = (error: unknown): boolean => {
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    return (
+      error.name === "NotAllowedError" ||
       error.name === "SecurityError" ||
       error.name === "NotFoundError" ||
       error.name === "NotReadableError" ||
       error.name === "OverconstrainedError" ||
-      error.name === "AbortError");
+      error.name === "AbortError" ||
+      // WKWebView rejects unsupported MediaTrackConstraints with TypeError.
+      error.name === "TypeError"
+    );
+  }
+  if (error instanceof TypeError) {
+    return true;
+  }
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  return /invalid constraint/i.test(message);
+};
+
+const toCaptureError = (error: unknown): AudioCaptureError => {
+  if (error instanceof AudioCaptureError) {
+    return error;
+  }
   return new AudioCaptureError(
-    micFailure ? "microphone-unavailable" : "audio-context-failed",
+    isMicrophoneConstraintError(error) ? "microphone-unavailable" : "audio-context-failed",
     error,
   );
 };
@@ -955,7 +1192,10 @@ export class MicrophoneCapture {
   private levelHandler: LevelHandler | null = null;
   private chunkMs = DEFAULT_AUDIO_CHUNK_MS;
   private silenceGateDb = DEFAULT_SILENCE_GATE_DB;
-  private noiseSuppression = true;
+  private processing: MicrophoneProcessingSettings = {
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
   private gateMode: SilenceGateMode = "adaptive";
   private adaptiveGate: AdaptiveSilenceGateState = createAdaptiveSilenceGate();
   private captureMode: AudioCaptureMode = "none";
@@ -1052,12 +1292,16 @@ export class MicrophoneCapture {
    * Open the microphone and ensure AudioContext is running. Safe to call after
    * releasing a previous capture session; may be overlapped with backend prep.
    */
-  public async prepareInput(deviceId: string, noiseSuppression = true): Promise<void> {
+  public async prepareInput(
+    deviceId: string,
+    processingInput: Partial<MicrophoneProcessingSettings> | boolean = true,
+  ): Promise<void> {
     this.disposed = false;
     const previousDeviceId = this.deviceIdRequested;
-    const previousNoiseSuppression = this.noiseSuppression;
+    const previousProcessing = this.processing;
+    const processing = resolveMicrophoneProcessing(processingInput);
     this.deviceIdRequested = deviceId;
-    this.noiseSuppression = noiseSuppression;
+    this.processing = processing;
 
     try {
       this.primeAudioContext();
@@ -1069,7 +1313,8 @@ export class MicrophoneCapture {
         this.stream !== null &&
         liveTrack?.readyState === "live" &&
         previousDeviceId === deviceId &&
-        previousNoiseSuppression === noiseSuppression;
+        previousProcessing.noiseSuppression === processing.noiseSuppression &&
+        previousProcessing.autoGainControl === processing.autoGainControl;
       if (!reusable) {
         // Drop any stale stream before requesting a new one.
         this.unbindTrackEnded();
@@ -1083,7 +1328,7 @@ export class MicrophoneCapture {
         this.stream = null;
         this.hardwareReady = false;
 
-        const opened = await openMicrophoneStream(deviceId, noiseSuppression);
+        const opened = await openMicrophoneStream(deviceId, processing);
         if (this.disposed) {
           for (const track of opened.stream.getTracks()) {
             try {
@@ -1122,10 +1367,11 @@ export class MicrophoneCapture {
     handler: ChunkHandler | null,
     onError?: CaptureErrorHandler,
     onLevel?: LevelHandler,
-    noiseSuppression = true,
+    processingInput: Partial<MicrophoneProcessingSettings> | boolean = true,
     options?: StartCaptureOptions,
   ): Promise<void> {
-    const previousNoiseSuppression = this.noiseSuppression;
+    const previousProcessing = this.processing;
+    const processing = resolveMicrophoneProcessing(processingInput);
     this.disposed = false;
     this.handler = handler;
     this.streamPcmHandler = options?.streamPcmHandler ?? null;
@@ -1134,7 +1380,7 @@ export class MicrophoneCapture {
     this.chunkMs = resolveChunkMs(chunkMs);
     const resolvedGate = resolveSilenceGate(options?.adaptiveGate, silenceGateDb);
     this.silenceGateDb = resolvedGate.fixedGateDb ?? DEFAULT_SILENCE_GATE_DB;
-    this.noiseSuppression = noiseSuppression;
+    this.processing = processing;
     // Adaptive noise-floor gating is the default; use the shared resolver so
     // persisted settings and live capture cannot disagree on the active policy.
     this.gateMode = resolvedGate.mode;
@@ -1169,13 +1415,14 @@ export class MicrophoneCapture {
         this.context.state !== "closed" &&
         liveTrack?.readyState === "live" &&
         this.deviceIdRequested === deviceId &&
-        previousNoiseSuppression === noiseSuppression;
+        previousProcessing.noiseSuppression === processing.noiseSuppression &&
+        previousProcessing.autoGainControl === processing.autoGainControl;
 
       if (!prepared) {
         // Standalone start() path (tests / callers that skip prepareInput).
         this.teardownGraphNodes();
         this.source = null;
-        await this.prepareInput(deviceId, noiseSuppression);
+        await this.prepareInput(deviceId, processing);
       } else {
         // Reuse hardware from prepareInput; clear any half-wired graph.
         this.teardownGraphNodes();

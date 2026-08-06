@@ -53,8 +53,9 @@ describe("default configuration", () => {
     expect(config.audio.silenceGateDb).toBe(-50);
     expect(config.audio.vadIntervalMs).toBe(DEFAULT_VAD_INTERVAL_MS);
     expect(config.audio.vadThreshold).toBe(DEFAULT_VAD_THRESHOLD);
-    // Noise cancelling on by default; user can toggle off in Settings.
+    // Noise cancelling / AGC on by default; user can toggle each in Settings.
     expect(config.audio.noiseSuppression).toBe(true);
+    expect(config.audio.autoGainControl).toBe(true);
     // Adaptive noise-floor gate is the default; silenceGateDb is the fallback.
     expect(config.audio.adaptiveNoiseFloor).toBe(true);
     expect(config.debug.verboseLogging).toBe(false);
@@ -88,11 +89,13 @@ describe("default configuration", () => {
     );
   });
 
-  it("defaults missing noiseSuppression to true when merging legacy config", () => {
+  it("defaults missing noiseSuppression and autoGainControl to true when merging legacy config", () => {
     const merged = mergeConfig({ audio: { chunkMs: 1000 } });
     expect(merged.audio.noiseSuppression).toBe(true);
-    const off = mergeConfig({ audio: { noiseSuppression: false } });
+    expect(merged.audio.autoGainControl).toBe(true);
+    const off = mergeConfig({ audio: { noiseSuppression: false, autoGainControl: false } });
     expect(off.audio.noiseSuppression).toBe(false);
+    expect(off.audio.autoGainControl).toBe(false);
   });
 
   it("defaults missing adaptiveNoiseFloor to true when merging legacy config", () => {
@@ -282,11 +285,13 @@ describe("default configuration", () => {
     const allFalsy = mergeConfig({
       audio: {
         noiseSuppression: false,
+        autoGainControl: false,
         adaptiveNoiseFloor: false,
         silenceGateDb: 0,
       },
     });
     expect(allFalsy.audio.noiseSuppression).toBe(false);
+    expect(allFalsy.audio.autoGainControl).toBe(false);
     expect(allFalsy.audio.adaptiveNoiseFloor).toBe(false);
     expect(allFalsy.audio.silenceGateDb).toBe(0);
   });
@@ -324,6 +329,7 @@ describe("default configuration", () => {
     expect(config.audio.vadIntervalMs).toBe(32);
     expect(config.audio.vadThreshold).toBe(0.5);
     expect(config.audio.noiseSuppression).toBe(true);
+    expect(config.audio.autoGainControl).toBe(true);
     expect(config.audio.adaptiveNoiseFloor).toBe(true);
   });
 

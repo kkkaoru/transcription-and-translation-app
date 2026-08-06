@@ -48,6 +48,18 @@ spout2-rs = "0.1.1"
 # Metal server classes, so every macOS target links it.
 [target.'cfg(target_os = "macos")'.dependencies]
 syphon-rs = "0.1.1"
+# Direct Metal/ObjC bindings for examples such as `syphon_inspect` (CPU readback).
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSRunLoop", "NSDate"] }
+objc2-metal = { version = "0.3", features = [
+  "MTLCommandBuffer",
+  "MTLCommandQueue",
+  "MTLDevice",
+  "MTLPixelFormat",
+  "MTLResource",
+  "MTLTexture",
+  "MTLTypes",
+] }
 
 [features]
 default = ["native-output"]

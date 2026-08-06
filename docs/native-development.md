@@ -41,6 +41,16 @@ default OBS path remains the caption-only Browser Source at
 before adding it to OBS. The main settings window must never be visible in the
 captured output.
 
+Before involving OBS, `cargo run --example syphon_probe` (from
+`apps/desktop/src-tauri`) starts a real `syphon_rs::Server` the same way
+`native_output::start_syphon` does and confirms the process can see its own
+announcement. A failure there (missing/wrong-arch framework, a
+`FrameworkUnavailable` error, or a build error) reproduces the same root cause
+that would otherwise only show up as OBS silently listing no Syphon source; a
+success narrows a still-missing OBS source down to code signing (Library
+Validation under Hardened Runtime — see the `Entitlements.plist` note below)
+or an OBS-side/App-Translocation issue instead of the publish path itself.
+
 ### Update hand-off and single-instance behavior
 
 The release bundle keeps one stable bundle identifier (`com.kotobabeacon.desktop`).
@@ -139,8 +149,16 @@ current bundle version is **0.1.1**; every published feed entry must be greater
 than the installed version and must use the matching archive `.sig`.
 
 The main app declares `Entitlements.plist` with the
-`com.apple.security.device.audio-input` entitlement and `Info.plist` contains
-the user-facing microphone/system-audio usage strings. Developer ID signing
+`com.apple.security.device.audio-input` and
+`com.apple.security.cs.disable-library-validation` entitlements, and
+`Info.plist` contains the user-facing microphone/system-audio usage strings.
+Library Validation is part of Hardened Runtime and normally refuses to load
+code that is not signed by Apple or by the app's own Team ID; the vendored
+`Syphon.framework` is signed by its upstream vendor, so any release step that
+does not re-sign it with this app's identity (or a local ad-hoc/unsigned dev
+build) would otherwise make `syphon_rs::Server::new` fail with
+`FrameworkUnavailable`, silently falling back to "transparent-window" output
+that OBS cannot discover. Developer ID signing
 and notarization still require Apple credentials that cannot be checked into
 this repository. CI runs `bun run check:macos-signing` and records an explicit
 `SKIP` for pull requests without those secrets; a trusted release job must set

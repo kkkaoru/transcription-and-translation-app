@@ -35,6 +35,7 @@ const createCanvasHarness = (): CanvasHarness => {
     clearRect: () => undefined,
     closePath: () => undefined,
     fill: () => undefined,
+    fillRect: () => undefined,
     fillText: (text: string, x: number, y: number) => fillCalls.push({ text, x, y }),
     getImageData: () =>
       ({ data: new Uint8ClampedArray(canvas.width * canvas.height * 4) }) as ImageData,
@@ -44,6 +45,7 @@ const createCanvasHarness = (): CanvasHarness => {
     quadraticCurveTo: () => undefined,
     restore: () => undefined,
     save: () => undefined,
+    setTransform: () => undefined,
     strokeText: () => undefined,
     set textBaseline(_value: string) {
       /* no-op */
@@ -58,6 +60,9 @@ const createCanvasHarness = (): CanvasHarness => {
       /* no-op */
     },
     set globalAlpha(_value: number) {
+      /* no-op */
+    },
+    set globalCompositeOperation(_value: string) {
       /* no-op */
     },
     set lineWidth(_value: number) {
@@ -79,7 +84,15 @@ const createCanvasHarness = (): CanvasHarness => {
       /* no-op */
     },
   } as unknown as CanvasRenderingContext2D;
-  Object.defineProperty(canvas, "getContext", { configurable: true, value: () => context });
+  Object.defineProperty(canvas, "getContext", {
+    configurable: true,
+    value: (_type: string, options?: CanvasRenderingContext2DSettings) => {
+      // Pin the native path to an alpha-capable context; opaque canvases are
+      // what produced solid black Syphon/Spout plates in OBS.
+      expect(options?.alpha).toBe(true);
+      return context;
+    },
+  });
   return { canvas, fillCalls, fillStyleValues };
 };
 
@@ -202,6 +215,7 @@ describe("native caption canvas edge rendering", () => {
       clearRect: () => undefined,
       closePath: () => undefined,
       fill: () => undefined,
+      fillRect: () => undefined,
       fillText: () => undefined,
       getImageData: () => ({ data: new Uint8ClampedArray(320 * 240 * 4) }) as ImageData,
       lineTo: () => undefined,
@@ -210,6 +224,7 @@ describe("native caption canvas edge rendering", () => {
       quadraticCurveTo: () => undefined,
       restore: () => undefined,
       save: () => undefined,
+      setTransform: () => undefined,
       strokeText: () => {
         strokeCount += 1;
       },
@@ -226,6 +241,9 @@ describe("native caption canvas edge rendering", () => {
         /* no-op */
       },
       set globalAlpha(_v: number) {
+        /* no-op */
+      },
+      set globalCompositeOperation(_v: string) {
         /* no-op */
       },
       set lineWidth(_v: number) {
@@ -407,5 +425,29 @@ describe("native publish gate edge branches", () => {
     };
     expect(completeNativePublishSuccess(gate, "known")).toBeNull();
     expect(gate.lastSuccessfulKey).toBe("known");
+  });
+});
+
+describe("premultiplyStraightRgba for Syphon/Spout transparency", () => {
+  it("forces zero-alpha pixels to transparent black and premultiplies partial alpha", async () => {
+    const { premultiplyStraightRgba } = await import("./NativeFramePublisher");
+    const pixels = Uint8ClampedArray.from([
+      10,
+      20,
+      30,
+      0, // must become fully transparent, not opaque black
+      255,
+      128,
+      64,
+      128, // half alpha → half RGB
+      200,
+      200,
+      200,
+      255, // opaque unchanged
+    ]);
+    const out = premultiplyStraightRgba(pixels);
+    expect([...out.slice(0, 4)]).toEqual([0, 0, 0, 0]);
+    expect([...out.slice(4, 8)]).toEqual([128, 64, 32, 128]);
+    expect([...out.slice(8, 12)]).toEqual([200, 200, 200, 255]);
   });
 });

@@ -1,7 +1,6 @@
 #[cfg(any(windows, target_os = "macos", test))]
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-#[cfg(any(windows, target_os = "macos", test))]
 use std::time::Duration;
 
 pub struct OverlayFrame {
@@ -123,27 +122,18 @@ fn report_replacement(replacements: u64) {
 
 /// Drain the latest-wins mailbox into a native transport (Spout/Syphon).
 ///
-/// On the first transport error the mailbox is closed so subsequent
-/// `NativeOutputHandle::publish` calls return an error instead of enqueueing
-/// frames that can never reach OBS. Without this, a runtime Spout/Syphon
-/// failure left the mailbox open, the renderer believed publish succeeded, and
-/// OBS froze on a stale texture with no status surface.
+/// Frame dimensions are the configured overlay resolution from the publisher.
+/// Transports that fix size at construction (Syphon) recreate when the frame
+/// size changes so clients always see the settings resolution, not a stale
+/// plate from an earlier config. On the first transport error the mailbox is
+/// closed so subsequent `NativeOutputHandle::publish` calls return an error
+/// instead of enqueueing frames that can never reach OBS.
 #[cfg(any(windows, target_os = "macos", test))]
-fn pump_native_frames<F>(receiver: &LatestFrameSender, width: u32, height: u32, mut send: F)
+fn pump_native_frames<F>(receiver: &LatestFrameSender, mut send: F)
 where
     F: FnMut(&OverlayFrame) -> Result<(), String>,
 {
     while let Some(frame) = receiver.receive() {
-        if frame.width != width || frame.height != height {
-            log::warn!(
-                "native output dropping frame with unexpected dimensions {}x{} (expected {}x{})",
-                frame.width,
-                frame.height,
-                width,
-                height
-            );
-            continue;
-        }
         if let Err(error) = send(&frame) {
             log::error!(
                 "native output transport failed: {error}; closing mailbox so publishers surface the failure"
@@ -211,15 +201,25 @@ fn await_ready_or_close(
     }
 }
 
+/// How long teardown waits for the Syphon/Spout worker to observe mailbox
+/// close, drop the native server (`SyphonMetalServer::stop` / Spout sender),
+/// and exit. Longer than a single video frame so a clean app quit unregisters
+/// the server from the Syphon directory before the process disappears.
+const WORKER_JOIN_TIMEOUT: Duration = Duration::from_millis(2_000);
+
 /// Close the worker's mailbox and wait briefly for the worker thread to exit.
 /// A worker stuck inside a blocking constructor (e.g. SyphonServer::new or
 /// D3D11 device creation hanging) must never block teardown indefinitely, so
 /// the wait is bounded and the thread is detached when it does not finish.
 fn join_worker(worker: NativeOutputWorker) {
     worker.sender.close();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let deadline = std::time::Instant::now() + WORKER_JOIN_TIMEOUT;
     while !worker.join_handle.is_finished() {
         if std::time::Instant::now() >= deadline {
+            log::warn!(
+                "native output worker did not exit within {}ms; detaching so app shutdown can continue",
+                WORKER_JOIN_TIMEOUT.as_millis()
+            );
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -230,14 +230,20 @@ fn join_worker(worker: NativeOutputWorker) {
 pub struct NativeOutputHandle {
     worker: Option<NativeOutputWorker>,
     kind: String,
+    width: u32,
+    height: u32,
 }
 
 impl NativeOutputHandle {
     pub fn new(width: u32, height: u32) -> Self {
-        let _ = (width, height);
         #[cfg(windows)]
         if let Some(worker) = start_spout(width, height) {
-            return Self { worker: Some(worker), kind: "spout2".to_string() };
+            return Self {
+                worker: Some(worker),
+                kind: "spout2".to_string(),
+                width,
+                height,
+            };
         }
 
         // The vendored Syphon.framework is a universal build with the Metal
@@ -248,14 +254,45 @@ impl NativeOutputHandle {
         // default-enabled as an OBS fallback.
         #[cfg(all(target_os = "macos", not(test)))]
         if let Some(worker) = start_syphon(width, height) {
-            return Self { worker: Some(worker), kind: "syphon".to_string() };
+            return Self {
+                worker: Some(worker),
+                kind: "syphon".to_string(),
+                width,
+                height,
+            };
         }
 
-        Self { worker: None, kind: "transparent-window".to_string() }
+        Self { worker: None, kind: "transparent-window".to_string(), width, height }
+    }
+
+    /// Idle handle used during app teardown. Dropping a previous handle stops
+    /// Syphon/Spout; this placeholder keeps the managed mutex occupied without
+    /// re-registering a native server.
+    pub fn inactive() -> Self {
+        Self { worker: None, kind: "stopped".to_string(), width: 0, height: 0 }
     }
 
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Build a handle reporting an arbitrary kind without starting a real
+    /// transport. `NativeOutputHandle::new` cannot produce "spout2"/"syphon"
+    /// in test builds (the real transports are gated `not(test)`), so callers
+    /// outside this module that need to exercise a native-output-active code
+    /// path in their own unit tests construct one through this helper instead
+    /// of reaching into private fields.
+    #[cfg(test)]
+    pub(crate) fn for_test_kind(kind: &str) -> Self {
+        Self { worker: None, kind: kind.to_string(), width: 0, height: 0 }
     }
 
     pub fn publish(&self, frame: OverlayFrame) -> Result<(), String> {
@@ -298,11 +335,13 @@ impl Drop for NativeOutputHandle {
 ///
 /// Spout's shared texture defaults to `DXGI_FORMAT_B8G8R8A8_UNORM` and
 /// `spout2::dx::Sender::send_image` uploads CPU pixels verbatim with no channel
-/// conversion, while the overlay canvas (`CanvasRenderingContext2D::getImageData`)
-/// produces RGBA bytes. Without this swap the bytes would not match the texture
-/// format and OBS would render captions with red and blue exchanged. The buffer
-/// is reused across frames so the native worker thread does not allocate per
-/// frame.
+/// conversion, while the overlay canvas produces premultiplied RGBA bytes
+/// (`premultiplyStraightRgba` in NativeFramePublisher). Without this swap the
+/// bytes would not match the texture format and OBS would render captions with
+/// red and blue exchanged. Premultiplied alpha is preserved so transparent
+/// regions stay see-through when the Spout source allows transparency. The
+/// buffer is reused across frames so the native worker thread does not allocate
+/// per frame.
 #[cfg(any(windows, test))]
 fn prepare_spout_bgra(
     rgba: &[u8],
@@ -347,7 +386,8 @@ fn start_spout(width: u32, height: u32) -> Option<NativeOutputWorker> {
                 // see red/blue swapped.
                 let mut sender = match spout2::dx::Sender::new("Kotoba Beacon") {
                     Ok(sender) => sender,
-                    Err(_) => {
+                    Err(error) => {
+                        eprintln!("[native-output] Spout2 sender failed to start: {error}");
                         let _ = ready_sender.send(false);
                         return;
                     }
@@ -370,7 +410,20 @@ fn start_spout(width: u32, height: u32) -> Option<NativeOutputWorker> {
                     return;
                 }
                 let _ = ready_sender.send(true);
-                pump_native_frames(&body_receiver, width, height, |frame| {
+                let mut current_width = width;
+                let mut current_height = height;
+                pump_native_frames(&body_receiver, |frame| {
+                    // Spout accepts per-frame dimensions; keep the reusable
+                    // BGRA buffer matched to the configured overlay resolution
+                    // the publisher sends (settings width×height).
+                    if frame.width != current_width || frame.height != current_height {
+                        eprintln!(
+                            "[native-output] Spout2 resizing {}x{} -> {}x{}",
+                            current_width, current_height, frame.width, frame.height
+                        );
+                        current_width = frame.width;
+                        current_height = frame.height;
+                    }
                     prepare_spout_bgra(&frame.rgba, frame.width, frame.height, &mut bgra)?;
                     sender
                         .send_image(&bgra, frame.width, frame.height)
@@ -403,11 +456,18 @@ fn start_syphon(width: u32, height: u32) -> Option<NativeOutputWorker> {
             std::panic::AssertUnwindSafe(move || {
                 let mut server = match syphon_rs::Server::new("Kotoba Beacon", width, height) {
                     Ok(server) => server,
-                    Err(_) => {
+                    Err(error) => {
+                        // Surface the concrete failure (missing Metal class,
+                        // wrong-arch framework, device unavailable) so a silent
+                        // fallback to transparent-window is diagnosable in logs.
+                        eprintln!("[native-output] Syphon server failed to start: {error:?}");
                         let _ = ready_sender.send(false);
                         return;
                     }
                 };
+                eprintln!(
+                    "[native-output] Syphon server ready: name=Kotoba Beacon size={width}x{height}"
+                );
                 // Publish an initial transparent frame so Syphon clients can
                 // render a valid texture immediately after discovery, before the
                 // overlay webview sends its first caption frame.
@@ -421,12 +481,15 @@ fn start_syphon(width: u32, height: u32) -> Option<NativeOutputWorker> {
                 let initial_frame = vec![0u8; initial_len];
                 server.send_frame(&initial_frame);
                 let _ = ready_sender.send(true);
-                // syphon-rs::Server::send_frame returns () and can only fail open
-                // inside the crate (e.g. missing Metal command buffer). Validate the
-                // buffer length here and route through pump_native_frames so a length
-                // mismatch — or a future fallible transport — closes the mailbox
-                // instead of leaving publishers believing frames are still flowing.
-                pump_native_frames(&body_receiver, width, height, |frame| {
+                // syphon-rs fixes Metal texture size at Server::new. When the
+                // publisher switches to a new settings resolution, recreate the
+                // server so clients observe the configured width×height instead
+                // of a stale plate (dropping mismatched frames would leave the
+                // old size visible forever).
+                let mut current_width = width;
+                let mut current_height = height;
+                let mut server = Some(server);
+                pump_native_frames(&body_receiver, |frame| {
                     let expected = (frame.width as usize)
                         .checked_mul(frame.height as usize)
                         .and_then(|pixels| pixels.checked_mul(4))
@@ -439,7 +502,25 @@ fn start_syphon(width: u32, height: u32) -> Option<NativeOutputWorker> {
                             frame.height
                         ));
                     }
-                    server.send_frame(&frame.rgba);
+                    if frame.width != current_width || frame.height != current_height {
+                        eprintln!(
+                            "[native-output] Syphon resizing {}x{} -> {}x{} (settings resolution)",
+                            current_width, current_height, frame.width, frame.height
+                        );
+                        // Drop calls SyphonMetalServer::stop and removes the
+                        // directory entry before the replacement registers.
+                        server = None;
+                        server = Some(
+                            syphon_rs::Server::new("Kotoba Beacon", frame.width, frame.height)
+                                .map_err(|error| format!("syphon resize failed: {error:?}"))?,
+                        );
+                        current_width = frame.width;
+                        current_height = frame.height;
+                    }
+                    let active = server
+                        .as_mut()
+                        .ok_or_else(|| "syphon server missing after resize".to_string())?;
+                    active.send_frame(&frame.rgba);
                     Ok(())
                 });
             }),
@@ -511,7 +592,7 @@ mod tests {
         assert!(matches!(sender.send_latest(frame(1)), Ok(super::EnqueueOutcome::Enqueued)));
 
         let pump = std::thread::spawn(move || {
-            super::pump_native_frames(&worker, 1, 1, |_frame| {
+            super::pump_native_frames(&worker, |_frame| {
                 Err("simulated spout/syphon failure".to_string())
             });
         });
@@ -541,7 +622,7 @@ mod tests {
         let (done_sender, done_receiver) = std::sync::mpsc::channel();
         let pump = std::thread::spawn(move || {
             let mut sent = Vec::new();
-            super::pump_native_frames(&worker, 1, 1, |frame| {
+            super::pump_native_frames(&worker, |frame| {
                 sent.push(frame.rgba[0]);
                 let _ = done_sender.send(sent.len());
                 Ok(())
@@ -620,7 +701,7 @@ mod tests {
             super::run_worker(
                 worker,
                 std::panic::AssertUnwindSafe(move || {
-                    super::pump_native_frames(&body_receiver, 1, 1, |_frame| {
+                    super::pump_native_frames(&body_receiver, |_frame| {
                         panic!("simulated native transport panic");
                     });
                 }),
@@ -727,7 +808,7 @@ mod tests {
     /// A worker stuck inside a blocking transport call (e.g. a hung
     /// Spout/Syphon constructor or send) must not block teardown
     /// indefinitely: `join_worker` closes the mailbox, waits a bounded
-    /// 500 ms, and detaches the thread when it cannot finish. `Drop` for
+    /// timeout, and detaches the thread when it cannot finish. `Drop` for
     /// `NativeOutputHandle` — and therefore `save_config` replacement and app
     /// shutdown — depends on this bound.
     #[test]
@@ -756,7 +837,7 @@ mod tests {
         let began = std::time::Instant::now();
         super::join_worker(output);
         assert!(
-            began.elapsed() < std::time::Duration::from_secs(2),
+            began.elapsed() < std::time::Duration::from_secs(5),
             "join_worker must not block teardown indefinitely on a stuck worker"
         );
         assert!(matches!(
@@ -786,6 +867,8 @@ mod tests {
         let output = super::NativeOutputHandle {
             worker: Some(super::NativeOutputWorker { sender: sender.clone(), join_handle: handle }),
             kind: "test".to_string(),
+            width: 1,
+            height: 1,
         };
         drop(output);
         assert!(matches!(

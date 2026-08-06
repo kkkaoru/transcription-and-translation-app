@@ -45,6 +45,10 @@ fn default_noise_suppression() -> bool {
     true
 }
 
+fn default_auto_gain_control() -> bool {
+    true
+}
+
 fn default_adaptive_noise_floor() -> bool {
     true
 }
@@ -84,6 +88,9 @@ pub struct AudioConfig {
     /// Browser getUserMedia noise suppression / echo cancellation (frontend applies).
     #[serde(default = "default_noise_suppression")]
     pub noise_suppression: bool,
+    /// Browser getUserMedia auto-gain control (frontend applies; independent of NS).
+    #[serde(default = "default_auto_gain_control")]
+    pub auto_gain_control: bool,
     /// Adaptive noise-floor gate (default). When false, the frontend falls back
     /// to the fixed silence_gate_db threshold.
     #[serde(default = "default_adaptive_noise_floor")]
@@ -421,6 +428,8 @@ impl Default for AppConfig {
                 vad_threshold: DEFAULT_VAD_THRESHOLD,
                 // Match frontend: noise cancelling on by default.
                 noise_suppression: true,
+                // Match frontend: AGC on by default (independent of NS).
+                auto_gain_control: true,
                 // Match frontend DEFAULT_ADAPTIVE_NOISE_FLOOR: adaptive floor gate on.
                 adaptive_noise_floor: true,
             },

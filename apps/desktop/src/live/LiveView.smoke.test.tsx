@@ -270,4 +270,74 @@ describe("LiveView in-app preview scaling", () => {
     expect(container.querySelector<HTMLSelectElement>("select")?.disabled).toBe(false);
     expect(container.querySelector<HTMLButtonElement>(".text-button")?.disabled).toBe(false);
   });
+
+  it("keeps an explicit hide action reachable beside the transparent capture action", async () => {
+    const onOpenOverlay = vi.fn();
+    const onCloseOverlay = vi.fn();
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={createDefaultConfig()}
+            status={DEFAULT_RUNTIME_STATUS}
+            caption={createPreviewCaption()}
+            devices={[]}
+            message={null}
+            onToggleCapture={() => {}}
+            onOpenOverlay={onOpenOverlay}
+            onCloseOverlay={onCloseOverlay}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    const buttons = [...container.querySelectorAll("button")];
+    const openButton = buttons.find((button) => button.textContent?.includes("透過取り込みを開く"));
+    const hideButton = buttons.find((button) => button.textContent?.includes("透過取り込みを隠す"));
+    expect(openButton).toBeDefined();
+    expect(hideButton).toBeDefined();
+
+    act(() => {
+      openButton?.click();
+      hideButton?.click();
+    });
+    expect(onOpenOverlay).toHaveBeenCalledOnce();
+    expect(onCloseOverlay).toHaveBeenCalledOnce();
+  });
+
+  it("hides transparent capture controls when Syphon/Spout is the live transport", async () => {
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={createDefaultConfig()}
+            status={{ ...DEFAULT_RUNTIME_STATUS, nativeOutput: "syphon" }}
+            caption={createPreviewCaption()}
+            devices={[]}
+            message={null}
+            onToggleCapture={() => {}}
+            onOpenOverlay={() => {}}
+            onCloseOverlay={() => {}}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="native-always-on"]')?.textContent).toContain(
+      "常時配信",
+    );
+    expect(
+      [...container.querySelectorAll("button")].some((button) =>
+        button.textContent?.includes("透過取り込み"),
+      ),
+    ).toBe(false);
+  });
 });

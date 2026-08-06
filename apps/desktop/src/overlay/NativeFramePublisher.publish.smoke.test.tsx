@@ -68,6 +68,7 @@ const installCanvasStub = (): void => {
     clearRect: () => undefined,
     closePath: () => undefined,
     fill: () => undefined,
+    fillRect: () => undefined,
     fillText: () => undefined,
     getImageData: () => ({ data: new Uint8ClampedArray(64 * 36 * 4) }) as ImageData,
     lineTo: () => undefined,
@@ -77,7 +78,11 @@ const installCanvasStub = (): void => {
     quadraticCurveTo: () => undefined,
     restore: () => undefined,
     save: () => undefined,
+    setTransform: () => undefined,
     strokeText: () => undefined,
+    set globalCompositeOperation(_value: string) {
+      /* no-op */
+    },
   };
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() =>
     getContextUnavailable ? null : (context as unknown as CanvasRenderingContext2D),

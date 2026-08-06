@@ -109,8 +109,8 @@ describe("App routes", () => {
     ).toHaveLength(1);
   });
 
-  it("renders only the transparent caption route for overlay windows", async () => {
-    window.history.replaceState({}, "", "/?overlay=1");
+  it("renders the transparent capture route without the main workspace chrome", async () => {
+    window.history.replaceState({}, "", "/?transparent=1");
     await act(async () => {
       root.render(<App />);
       await Promise.resolve();
@@ -122,7 +122,7 @@ describe("App routes", () => {
     expect(container.textContent).not.toContain("設定を保存");
     expect(container.textContent).not.toContain("Save settings");
     expect(document.body.classList.contains("overlay-document")).toBe(true);
-    expect(container.textContent).toContain("これはプレビュー用の字幕です。");
-    expect(container.textContent).toContain("This is a preview caption.");
+    // Live capture starts empty; preview copy is reserved for non-capture surfaces.
+    expect(container.querySelector(".caption-lines")).not.toBeNull();
   });
 });

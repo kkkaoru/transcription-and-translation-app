@@ -17,6 +17,73 @@ const hexToRgba = (value: string, alpha: number): string => {
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 };
 
+/**
+ * WKWebView/Tauri must get an explicit alpha-capable context. Omitting
+ * `{ alpha: true }` has left some webviews with an opaque backing store, so
+ * `clearRect` produced solid black (0,0,0,255) and Syphon/Spout clients showed
+ * a black plate instead of text-on-transparent.
+ */
+export const NATIVE_FRAME_CONTEXT_OPTIONS: CanvasRenderingContext2DSettings = {
+  alpha: true,
+  willReadFrequently: true,
+};
+
+/** Acquire the 2D context used for native Syphon/Spout caption frames. */
+export const acquireNativeFrameContext = (
+  canvas: HTMLCanvasElement,
+): CanvasRenderingContext2D | null => canvas.getContext("2d", NATIVE_FRAME_CONTEXT_OPTIONS);
+
+/**
+ * Force every pixel to straight transparent black.
+ *
+ * `clearRect` alone is not enough on an accidentally-opaque canvas. The `copy`
+ * composite writes `rgba(0,0,0,0)` into the buffer regardless of prior contents
+ * when the context actually supports alpha.
+ */
+export const clearNativeFrameToTransparent = (
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): void => {
+  context.save();
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "copy";
+  context.fillStyle = "rgba(0, 0, 0, 0)";
+  context.fillRect(0, 0, width, height);
+  context.restore();
+};
+
+/**
+ * Convert canvas straight-alpha RGBA into premultiplied RGBA for GPU clients.
+ *
+ * Syphon, Spout2, and OBS composite video textures as premultiplied. Leaving
+ * straight alpha makes transparent regions read as opaque black (RGB=0,A=255
+ * after an opaque clear, or non-zero RGB with A=0 that some clients ignore).
+ * Zero-alpha pixels are forced to RGB 0 so the plate stays fully transparent.
+ */
+export const premultiplyStraightRgba = (
+  pixels: Uint8ClampedArray | Uint8Array,
+): Uint8Array => {
+  const data = new Uint8Array(pixels);
+  for (let index = 0; index < data.length; index += 4) {
+    const alpha = data[index + 3] ?? 0;
+    if (alpha === 0) {
+      data[index] = 0;
+      data[index + 1] = 0;
+      data[index + 2] = 0;
+      continue;
+    }
+    if (alpha === 255) {
+      continue;
+    }
+    data[index] = Math.round(((data[index] ?? 0) * alpha) / 255);
+    data[index + 1] = Math.round(((data[index + 1] ?? 0) * alpha) / 255);
+    data[index + 2] = Math.round(((data[index + 2] ?? 0) * alpha) / 255);
+  }
+  return data;
+};
+
 const finiteNumber = (value: number, fallback: number): number =>
   Number.isFinite(value) ? value : fallback;
 
@@ -256,16 +323,18 @@ export const renderNativeFrame = (
 ): { height: number; pixels: Uint8Array; width: number } | null => {
   const width = Math.max(1, Math.round(finiteNumber(config.overlay.width, 1_280)));
   const height = Math.max(1, Math.round(finiteNumber(config.overlay.height, 720)));
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return null;
-  }
   // Caller may already size the canvas; only resize when dimensions change.
+  // Resize before acquiring the context so the first getContext sees the final
+  // buffer size, and always pass alpha:true (see NATIVE_FRAME_CONTEXT_OPTIONS).
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
   }
-  context.clearRect(0, 0, width, height);
+  const context = acquireNativeFrameContext(canvas);
+  if (!context) {
+    return null;
+  }
+  clearNativeFrameToTransparent(context, width, height);
 
   const blockWidth = Math.max(
     1,
@@ -352,22 +421,38 @@ export const renderNativeFrame = (
 
   return {
     height,
-    pixels: new Uint8Array(context.getImageData(0, 0, width, height).data),
+    pixels: premultiplyStraightRgba(context.getImageData(0, 0, width, height).data),
     width,
   };
 };
 
 /** Cache fonts.ready so caption updates do not re-await every paint. */
 let fontsReady: Promise<void> | null = null;
-const ensureFontsReady = (): Promise<void> => {
+
+/**
+ * Wait for webfonts, but never block native Syphon/Spout publishing forever.
+ *
+ * Off-screen / occluded WKWebViews have been observed to leave
+ * `document.fonts.ready` pending indefinitely. Without a deadline the native
+ * publisher never calls `publishOverlayFrame`, so Syphon clients only ever see
+ * the initial transparent plate.
+ */
+export const NATIVE_FONTS_READY_TIMEOUT_MS = 500;
+
+export const ensureFontsReady = (): Promise<void> => {
   if (typeof document === "undefined" || !document.fonts?.ready) {
     return Promise.resolve();
   }
   if (!fontsReady) {
-    fontsReady = document.fonts.ready.then(
-      () => undefined,
-      () => undefined,
-    );
+    fontsReady = Promise.race([
+      document.fonts.ready.then(
+        () => undefined,
+        () => undefined,
+      ),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, NATIVE_FONTS_READY_TIMEOUT_MS);
+      }),
+    ]);
   }
   return fontsReady;
 };
@@ -609,7 +694,8 @@ export const NativeFramePublisher = ({
 
           const width = Math.max(1, Math.round(currentConfig.overlay.width));
           const height = Math.max(1, Math.round(currentConfig.overlay.height));
-          // Avoid resetting the bitmap when only text changes (cheaper clearRect path).
+          // Avoid resetting the bitmap when only text changes (transparent clear
+          // still runs inside renderNativeFrame).
           if (lastSizeRef.current.width !== width || lastSizeRef.current.height !== height) {
             canvas.width = width;
             canvas.height = height;

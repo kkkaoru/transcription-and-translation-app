@@ -174,6 +174,7 @@ describe("SettingsView audio tuning", () => {
     const gate = container.querySelector<HTMLInputElement>("#audio-silence-gate-db");
     const adaptiveToggle = container.querySelector<HTMLInputElement>("#audio-adaptive-noise-floor");
     const noiseSuppression = container.querySelector<HTMLInputElement>("#audio-noise-suppression");
+    const autoGainControl = container.querySelector<HTMLInputElement>("#audio-auto-gain-control");
     const audioReset = container.querySelector<HTMLButtonElement>(
       '[data-testid="audio-tuning-reset"]',
     );
@@ -187,6 +188,7 @@ describe("SettingsView audio tuning", () => {
     expect(gate?.disabled).toBe(true);
     expect(adaptiveToggle?.disabled).toBe(true);
     expect(noiseSuppression?.disabled).toBe(true);
+    expect(autoGainControl?.disabled).toBe(true);
     expect(audioReset?.disabled).toBe(true);
     expect(rangeResets[0]?.disabled).toBe(true);
     expect(rangeResets[1]?.disabled).toBe(true);
@@ -200,6 +202,7 @@ describe("SettingsView audio tuning", () => {
     expect(chunk?.disabled).toBe(false);
     expect(adaptiveToggle?.disabled).toBe(false);
     expect(noiseSuppression?.disabled).toBe(false);
+    expect(autoGainControl?.disabled).toBe(false);
     expect(audioReset?.disabled).toBe(false);
     expect(rangeResets[0]?.disabled).toBe(false);
     expect(rangeResets[1]?.disabled).toBe(false);

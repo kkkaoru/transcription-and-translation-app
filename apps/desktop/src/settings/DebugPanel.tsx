@@ -2163,6 +2163,10 @@ export function DebugPanel() {
                       {pick(audioConfig, "noiseSuppression") === false
                         ? t("debug.off")
                         : t("debug.on")}{" "}
+                      · {t("debug.autoGainControl")}:{" "}
+                      {pick(audioConfig, "autoGainControl") === false
+                        ? t("debug.off")
+                        : t("debug.on")}{" "}
                       · sampleRate={asString(pick(audioConfig, "sampleRate"))} · device=
                       {selectedDeviceId}
                     </code>

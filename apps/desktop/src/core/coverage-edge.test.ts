@@ -492,10 +492,12 @@ describe("coverage edge cases for small pure helpers", () => {
     const merged = mergeConfig({
       audio: {
         noiseSuppression: "legacy" as unknown as boolean,
+        autoGainControl: "legacy" as unknown as boolean,
         adaptiveNoiseFloor: 1 as unknown as boolean,
       },
     });
     expect(merged.audio.noiseSuppression).toBe(true);
+    expect(merged.audio.autoGainControl).toBe(true);
     expect(merged.audio.adaptiveNoiseFloor).toBe(true);
   });
 

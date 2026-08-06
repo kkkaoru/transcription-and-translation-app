@@ -62,9 +62,14 @@ export interface AudioConfig {
   silenceGateDb: number;
   /**
    * Browser noise suppression / echo cancellation for getUserMedia.
-   * Default true; set false for unprocessed "raw" capture (AGC still on).
+   * Default true; set false for unprocessed capture (AGC is independent).
    */
   noiseSuppression: boolean;
+  /**
+   * Browser auto-gain control for getUserMedia. Default true so quiet mics
+   * stay above the silence floor; independently controllable from settings.
+   */
+  autoGainControl: boolean;
   /**
    * Adaptive noise-floor gate: chunk passes when it exceeds the rolling
    * ambient floor estimate by a margin. Default true; silenceGateDb is the

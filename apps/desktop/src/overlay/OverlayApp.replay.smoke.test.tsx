@@ -242,7 +242,7 @@ describe("OverlayApp caption replay", () => {
     container.remove();
   });
 
-  it("starts the hidden native-renderer route without preview text", async () => {
+  it("starts the native-renderer route with preview text for OBS layout", async () => {
     history.pushState({}, "", "/?overlay=1&native=1");
     mocks.getLatestCaption.mockResolvedValue(null);
 
@@ -252,8 +252,54 @@ describe("OverlayApp caption replay", () => {
     });
     await flush();
 
-    expect(container.querySelector(".caption-line-source")).toBeNull();
-    expect(container.querySelector(".caption-line-translation")).toBeNull();
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe(
+      "これはプレビュー用の字幕です。",
+    );
+    expect(container.querySelector(".caption-line-translation")?.textContent).toBe(
+      "This is a preview caption.",
+    );
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    history.replaceState({}, "", "/");
+    container.remove();
+  });
+
+  it("replaces native preview text with the first live caption", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe(
+      "これはプレビュー用の字幕です。",
+    );
+
+    await act(async () => {
+      captionListener?.(sourceCaption());
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("正規化された字幕");
+
+    await act(async () => {
+      runtimeListener?.({
+        status: "idle",
+        platform: "macos",
+        backendReachable: true,
+        nativeOutput: "syphon",
+        lastError: null,
+      });
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe(
+      "これはプレビュー用の字幕です。",
+    );
 
     await act(async () => {
       root.unmount();

@@ -1589,6 +1589,106 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, nextTurn)?.sourceText).toBe("はれ");
   });
 
+  it("keeps independent Parapper turns separate when the second reading has the first as a prefix", () => {
+    const current = caption({
+      id: "parapper:0:0:10",
+      sourceText: "明日",
+      azookeyInputText: "あした",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const nextTurn = caption({
+      id: "parapper:0:0:11",
+      sourceText: "明日の予定",
+      azookeyInputText: "あしたのよてい",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, nextTurn)?.sourceText).toBe("明日の予定");
+  });
+
+  it("keeps independent Parapper turns separate when readings are blank or whitespace", () => {
+    const current = caption({
+      id: "parapper:0:0:20",
+      sourceText: "明日は",
+      azookeyInputText: " ",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const nextTurn = caption({
+      id: "parapper:0:0:21",
+      sourceText: "今日は雨",
+      azookeyInputText: "",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, nextTurn)?.sourceText).toBe("今日は雨");
+  });
+
+  it("keeps independent Parapper turns separate when they have the same short reading", () => {
+    const current = caption({
+      id: "parapper:0:0:30",
+      sourceText: "橋",
+      azookeyInputText: "はし",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const nextTurn = caption({
+      id: "parapper:0:0:31",
+      sourceText: "箸",
+      azookeyInputText: "はし",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, nextTurn)?.sourceText).toBe("箸");
+  });
+
+  it("still replaces an extended reading within one Parapper turn", () => {
+    const current = caption({
+      id: "parapper:0:0:40",
+      sourceText: "明日は",
+      azookeyInputText: "あしたは",
+      startedAt: 1_000,
+      receivedAt: 1_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const revision = caption({
+      id: "parapper:0:0:40",
+      sourceText: "明日は晴れ",
+      azookeyInputText: "あしたははれ",
+      startedAt: 1_500,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, revision)?.sourceText).toBe("明日は晴れ");
+  });
+
   it("keeps same-start semantic source corrections as replacements", () => {
     const current = caption({
       id: "u-1",

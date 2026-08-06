@@ -931,7 +931,7 @@ else if actionName is "live" then
 else if actionName is "debug" then
   return clickNamed({"デバッグ", "Debug"})
 else if actionName is "overlay" then
-  return clickNamed({"オーバーレイを開く", "Open overlay", "Overlay"})
+  return clickNamed({"透過取り込みを開く", "Open transparent capture", "Transparent capture", "オーバーレイを開く", "Open overlay", "Overlay"})
 else if actionName is "stop" then
   return clickNamed({"停止", "Stop"})
 else if actionName is "start" then
@@ -1014,12 +1014,15 @@ const uiSmoke = async () => {
   await sleep(900);
   const overlayCapture = await captureWindow("ui-overlay.png");
   const overlayWindows = overlayCapture.windows.filter(
-    (window) => window.layer === 0 && window.title.toLowerCase().includes("overlay"),
+    (window) =>
+      window.layer === 0 &&
+      (window.title.toLowerCase().includes("transparent") ||
+        window.title.toLowerCase().includes("overlay")),
   );
   check(
-    "overlay opened as a second same-process window",
+    "transparent capture opened as a second same-process window",
     overlayPressed && overlayWindows.length >= 1,
-    overlayPressed ? JSON.stringify(overlayWindows) : "AX overlay action was not verified",
+    overlayPressed ? JSON.stringify(overlayWindows) : "AX transparent-capture action was not verified",
   );
   if (exerciseCapture) {
     const stopped = await pressAx("stop");

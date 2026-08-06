@@ -7,6 +7,8 @@
 //! key is only read by the release build process and is never stored here.
 
 use crate::gateway;
+use crate::native_output::NativeOutputHandle;
+use crate::state::AppState;
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager};
@@ -403,8 +405,18 @@ async fn install_pending_inner(app: &AppHandle, update: Update) -> Result<(), St
         return Ok(());
     }
 
-    // Stop all bundled processes before replacing the bundle. This is needed
-    // even on platforms where the updater exits without delivering RunEvent::Exit.
+    // Stop Syphon/Spout and bundled sidecars before replacing the bundle. This
+    // is needed even when the updater exits without delivering RunEvent::Exit.
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut output) = state.native_output.lock() {
+            *output = NativeOutputHandle::inactive();
+        }
+    }
+    for label in ["native-renderer", "transparent"] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+        }
+    }
     gateway::shutdown(app);
     if let Err(error) = update.install(bytes) {
         // Keep the running app usable when the signed bundle cannot be

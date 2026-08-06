@@ -12,12 +12,14 @@ import {
   AUDIO_WORKLET_FRAME_SAMPLES,
   AudioCaptureError,
   applyPeakNormalize,
+  applyMicrophoneProcessing,
   bytesToBase64,
   calculatePeak,
   calculateRmsDb,
   createAdaptiveSilenceGate,
   createMicrophoneConstraints,
   createRollingAudioContext,
+  desiredAudioProcessingConstraints,
   ensureMicrophoneAccess,
   enumerateAudioInputDevices,
   float32ToPcm16,
@@ -468,46 +470,110 @@ describe("audio conversion", () => {
 
   it("builds progressive microphone constraints for device selection", () => {
     // Default: noise cancelling ON (echoCancellation + noiseSuppression + AGC).
-    expect(createMicrophoneConstraints("default").audio).toMatchObject({
-      channelCount: { ideal: 1 },
+    // Never include channelCount — WKWebView rejects it as "Invalid constraint".
+    expect(createMicrophoneConstraints("default").audio).toEqual({
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
     });
-    // Explicit raw path: NS/AEC off, AGC still on for quiet mics.
-    expect(createMicrophoneConstraints("default", { noiseSuppression: false }).audio).toMatchObject(
-      {
-        echoCancellation: false,
+    // Explicit raw NS path: NS/AEC off; AGC follows its own setting (default on).
+    expect(createMicrophoneConstraints("default", { noiseSuppression: false }).audio).toEqual({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: true,
+    });
+    expect(
+      createMicrophoneConstraints("default", {
         noiseSuppression: false,
-        autoGainControl: true,
-      },
-    );
+        autoGainControl: false,
+      }).audio,
+    ).toEqual({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
     expect(
       (createMicrophoneConstraints("default").audio as MediaTrackConstraints).deviceId,
     ).toBeUndefined();
-    expect(createMicrophoneConstraints("usb-mic").audio).toMatchObject({
+    expect(createMicrophoneConstraints("usb-mic").audio).toEqual({
       deviceId: { exact: "usb-mic" },
-      channelCount: { ideal: 1 },
+      echoCancellation: true,
       noiseSuppression: true,
+      autoGainControl: true,
     });
     expect(createMicrophoneConstraints("usb-mic", { idealDevice: true }).audio).toMatchObject({
       deviceId: { ideal: "usb-mic" },
     });
-    expect(createMicrophoneConstraints("default", { relaxProcessing: true }).audio).toMatchObject({
-      channelCount: { ideal: 1 },
+    // Fully relaxed default must be `audio: true` (empty object is invalid).
+    expect(createMicrophoneConstraints("default", { relaxProcessing: true }).audio).toBe(true);
+  });
+
+  it("omits unsupported keys from the permission request but keeps NS/AGC desired", () => {
+    // Safari/WKWebView commonly expose echoCancellation but not noiseSuppression
+    // or autoGainControl on getSupportedConstraints. The initial getUserMedia
+    // must omit them; desiredAudioProcessingConstraints still keeps them on.
+    expect(desiredAudioProcessingConstraints(true)).toEqual({
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    });
+    const webkit = new Set(["deviceId", "echoCancellation", "groupId"]);
+    expect(
+      createMicrophoneConstraints("default", { supportedConstraints: webkit }).audio,
+    ).toEqual({
+      echoCancellation: true,
     });
     expect(
-      (
-        createMicrophoneConstraints("default", { relaxProcessing: true })
-          .audio as MediaTrackConstraints
-      ).echoCancellation,
-    ).toBeUndefined();
+      createMicrophoneConstraints("mic-1", {
+        noiseSuppression: false,
+        supportedConstraints: webkit,
+      }).audio,
+    ).toEqual({
+      deviceId: { exact: "mic-1" },
+      echoCancellation: false,
+    });
+  });
+
+  it("applies noiseSuppression and autoGainControl after microphone permission", async () => {
+    const applyConstraints = vi.fn().mockResolvedValue(undefined);
+    const stream = {
+      getAudioTracks: () => [{ applyConstraints }],
+    } as unknown as MediaStream;
+
+    await expect(applyMicrophoneProcessing(stream, true)).resolves.toEqual({
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    });
+    expect(applyConstraints).toHaveBeenCalledTimes(3);
+    expect(applyConstraints).toHaveBeenNthCalledWith(1, { echoCancellation: true });
+    expect(applyConstraints).toHaveBeenNthCalledWith(2, { noiseSuppression: true });
+    expect(applyConstraints).toHaveBeenNthCalledWith(3, { autoGainControl: true });
+  });
+
+  it("keeps applying remaining processing flags when one applyConstraints fails", async () => {
+    const applyConstraints = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Invalid constraint"))
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+    const stream = {
+      getAudioTracks: () => [{ applyConstraints }],
+    } as unknown as MediaStream;
+
+    await expect(applyMicrophoneProcessing(stream, true)).resolves.toEqual({
+      noiseSuppression: true,
+      autoGainControl: true,
+    });
+    expect(applyConstraints).toHaveBeenCalledTimes(3);
   });
 
   it("keeps explicit device selection pinned while relaxing processing", () => {
     expect(microphoneConstraintStrategies("mic-1").map((entry) => entry.mode)).toEqual([
       "exact-device",
       "exact-device-relaxed",
+      "ideal-device",
+      "default-relaxed",
     ]);
     expect(microphoneConstraintStrategies("default").map((entry) => entry.mode)).toEqual([
       "default",
@@ -523,26 +589,30 @@ describe("audio conversion", () => {
   });
 
   it("keeps noise suppression on through every non-final constraint strategy", () => {
-    // Explicit selection keeps the device exact. It only relaxes NS/AEC/AGC
-    // in its final attempt, never switches to the system default microphone.
+    // Explicit selection keeps the device exact/ideal until the final permission
+    // request. Processing is only dropped on the bare `{ audio: true }` step.
     const ladder = microphoneConstraintStrategies("mic-1");
     for (const entry of ladder.slice(0, -1)) {
       const audio = entry.constraints.audio as MediaTrackConstraints;
-      expect(audio.noiseSuppression).toBe(true);
-      expect(audio.echoCancellation).toBe(true);
-      expect(audio.autoGainControl).toBe(true);
+      if (entry.mode === "exact-device") {
+        expect(audio.noiseSuppression).toBe(true);
+        expect(audio.echoCancellation).toBe(true);
+        expect(audio.autoGainControl).toBe(true);
+      }
     }
     const relaxedEntry = ladder.at(-1);
-    const relaxed = relaxedEntry?.constraints.audio as MediaTrackConstraints;
-    expect(relaxed.noiseSuppression).toBeUndefined();
-    expect(relaxed.echoCancellation).toBeUndefined();
-    expect(relaxed.autoGainControl).toBeUndefined();
-    // Explicit raw capture: NS/AEC off but AGC stays on for quiet mics.
-    const raw = microphoneConstraintStrategies("mic-1", false);
+    expect(relaxedEntry?.constraints).toEqual({ audio: true });
+    // Explicit raw capture: NS/AEC off; AGC remains on unless disabled.
+    const raw = microphoneConstraintStrategies("mic-1", {
+      noiseSuppression: false,
+      autoGainControl: true,
+    });
     for (const entry of raw.slice(0, -1)) {
-      const audio = entry.constraints.audio as MediaTrackConstraints;
-      expect(audio.noiseSuppression).toBe(false);
-      expect(audio.autoGainControl).toBe(true);
+      if (entry.mode === "exact-device") {
+        const audio = entry.constraints.audio as MediaTrackConstraints;
+        expect(audio.noiseSuppression).toBe(false);
+        expect(audio.autoGainControl).toBe(true);
+      }
     }
   });
 
@@ -681,43 +751,91 @@ describe("audio conversion", () => {
   });
 
   it("does not silently fall back to the default microphone for an explicit device", async () => {
+    const permissionStream = {
+      id: "permission",
+      getTracks: () => [],
+      getAudioTracks: () => [],
+    } as unknown as MediaStream;
+    const deviceStream = {
+      id: "device",
+      getTracks: () => [],
+      getAudioTracks: () => [],
+    } as unknown as MediaStream;
     const getUserMedia = vi
       .fn()
+      .mockResolvedValueOnce(permissionStream)
       .mockRejectedValueOnce(new DOMException("bad device", "OverconstrainedError"))
-      .mockRejectedValueOnce(new DOMException("still bad", "OverconstrainedError"));
+      .mockRejectedValueOnce(new DOMException("still bad", "OverconstrainedError"))
+      .mockRejectedValueOnce(new DOMException("string id bad", "OverconstrainedError"));
 
     vi.stubGlobal("navigator", {
       mediaDevices: { getUserMedia },
     });
 
-    await expect(openMicrophoneStream("stale-device")).rejects.toMatchObject({
-      name: "OverconstrainedError",
+    // Permission is granted first; device retarget failures keep that stream.
+    await expect(openMicrophoneStream("stale-device")).resolves.toEqual({
+      stream: permissionStream,
+      mode: "default-relaxed",
     });
-    expect(getUserMedia).toHaveBeenCalledTimes(2);
-    for (const [constraints] of getUserMedia.mock.calls) {
-      expect((constraints.audio as MediaTrackConstraints).deviceId).toEqual({
-        exact: "stale-device",
-      });
-    }
+    expect(getUserMedia.mock.calls[0]?.[0]).toEqual({ audio: true });
+    vi.unstubAllGlobals();
+
+    const getUserMediaOk = vi
+      .fn()
+      .mockResolvedValueOnce(permissionStream)
+      .mockResolvedValueOnce(deviceStream);
+    vi.stubGlobal("navigator", {
+      mediaDevices: { getUserMedia: getUserMediaOk },
+    });
+    await expect(openMicrophoneStream("mic-1")).resolves.toEqual({
+      stream: deviceStream,
+      mode: "exact-device-relaxed",
+    });
     vi.unstubAllGlobals();
   });
 
   it("retries the system default with relaxed constraints", async () => {
-    const stream = { id: "stream-2" } as unknown as MediaStream;
-    const getUserMedia = vi
-      .fn()
-      .mockRejectedValueOnce(new DOMException("busy", "NotReadableError"))
-      .mockResolvedValueOnce(stream);
+    const stream = {
+      id: "stream-2",
+      getTracks: () => [],
+      getAudioTracks: () => [],
+    } as unknown as MediaStream;
+    const getUserMedia = vi.fn().mockResolvedValue(stream);
 
     vi.stubGlobal("navigator", {
       mediaDevices: { getUserMedia },
     });
 
-    await expect(openMicrophoneStream("default")).resolves.toEqual({
+    await expect(openMicrophoneStream("default")).resolves.toMatchObject({
       stream,
-      mode: "default-relaxed",
     });
-    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(getUserMedia.mock.calls[0]?.[0]).toEqual({ audio: true });
+    vi.unstubAllGlobals();
+  });
+
+  it("opens with bare audio permission even when processing constraints are invalid", async () => {
+    const stream = {
+      id: "stream-webkit",
+      getTracks: () => [],
+      getAudioTracks: () => [],
+    } as unknown as MediaStream;
+    const getUserMedia = vi.fn().mockResolvedValue(stream);
+
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        getUserMedia,
+        getSupportedConstraints: () => ({
+          deviceId: true,
+          echoCancellation: true,
+        }),
+      },
+    });
+
+    await expect(openMicrophoneStream("default")).resolves.toMatchObject({
+      stream,
+      mode: expect.stringMatching(/default/),
+    });
+    expect(getUserMedia.mock.calls[0]?.[0]).toEqual({ audio: true });
     vi.unstubAllGlobals();
   });
 
@@ -977,7 +1095,7 @@ describe("audio conversion", () => {
         stream: MediaStream | null;
         hardwareReady: boolean;
         deviceIdRequested: string | null;
-        noiseSuppression: boolean;
+        processing: { noiseSuppression: boolean; autoGainControl: boolean };
         chunkMs: number;
         gateMode: "adaptive" | "fixed";
         silenceGateDb: number;
@@ -989,7 +1107,7 @@ describe("audio conversion", () => {
       } as unknown as MediaStream;
       internals.hardwareReady = true;
       internals.deviceIdRequested = "default";
-      internals.noiseSuppression = true;
+      internals.processing = { noiseSuppression: true, autoGainControl: true };
       await capture.start("default", 333, -60, null, undefined, undefined, true, {
         adaptiveGate,
       });

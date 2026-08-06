@@ -100,6 +100,7 @@ export const LiveView = ({
   message,
   onToggleCapture,
   onOpenOverlay,
+  onCloseOverlay = () => {},
   onDeviceChange,
   onRefreshDevices,
   onCloseMessage,
@@ -111,6 +112,7 @@ export const LiveView = ({
   message: string | null;
   onToggleCapture: () => void;
   onOpenOverlay: () => void;
+  onCloseOverlay?: () => void;
   onDeviceChange: ChangeEventHandler<HTMLSelectElement>;
   onRefreshDevices: () => void;
   onCloseMessage: () => void;
@@ -203,6 +205,9 @@ export const LiveView = ({
     return () => observer.disconnect();
   }, [overlayHeight, overlayWidth]);
 
+  const usesNativeTransport =
+    status.nativeOutput === "syphon" || status.nativeOutput === "spout2";
+
   return (
     <>
       <div className="content-heading">
@@ -211,9 +216,20 @@ export const LiveView = ({
           <h2>{t("live.title")}</h2>
         </div>
         <div className="heading-actions">
-          <button className="secondary-button" type="button" onClick={onOpenOverlay}>
-            {t("live.openOverlay")}
-          </button>
+          {usesNativeTransport ? (
+            <span className="live-badge" data-testid="native-always-on">
+              {t("live.nativeAlwaysOn")}
+            </span>
+          ) : (
+            <>
+              <button className="secondary-button" type="button" onClick={onOpenOverlay}>
+                {t("live.openTransparentCapture")}
+              </button>
+              <button className="secondary-button" type="button" onClick={onCloseOverlay}>
+                {t("live.hideTransparentCapture")}
+              </button>
+            </>
+          )}
           <button
             className={`primary-button ${capturing ? "danger" : ""}`}
             type="button"

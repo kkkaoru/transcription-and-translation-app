@@ -516,16 +516,26 @@ export const bridge = {
     return demoCaption();
   },
 
-  async openOverlay(): Promise<void> {
+  async openTransparentCapture(): Promise<void> {
     if (isTauriRuntime()) {
-      await invoke("open_overlay");
+      await invoke("open_transparent_capture");
     }
   },
 
-  async closeOverlay(): Promise<void> {
+  async closeTransparentCapture(): Promise<void> {
     if (isTauriRuntime()) {
-      await invoke("close_overlay");
+      await invoke("close_transparent_capture");
     }
+  },
+
+  /** @deprecated Use openTransparentCapture — opens the Window Capture plate only. */
+  async openOverlay(): Promise<void> {
+    await this.openTransparentCapture();
+  },
+
+  /** @deprecated Use closeTransparentCapture — never stops Syphon/Spout publishing. */
+  async closeOverlay(): Promise<void> {
+    await this.closeTransparentCapture();
   },
 
   listenCaptions(callback: (caption: CaptionPayload) => void): Promise<UnlistenFn> {

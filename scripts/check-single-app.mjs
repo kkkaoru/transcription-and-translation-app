@@ -56,19 +56,20 @@ check(
   `label=${windows[0]?.label}`,
 );
 
-// --- 2. Overlay is an auxiliary, taskbar-skipping same-process window ---------
+// --- 2. Caption surfaces are auxiliary, taskbar-skipping same-process windows -
 const commands = read("apps/desktop/src-tauri/src/commands.rs");
 const builderCount = (commands.match(/WebviewWindowBuilder::new/g) ?? []).length;
 check(
-  "commands.rs builds exactly one runtime window (the overlay)",
+  "commands.rs builds caption surfaces through one shared window helper",
   builderCount === 1,
   `found ${builderCount} WebviewWindowBuilder::new calls`,
 );
 check(
-  'the overlay window is labelled "overlay"',
-  /WebviewWindowBuilder::new\(\s*&?app,\s*"overlay"/.test(commands),
+  "native-renderer and transparent capture window labels are defined",
+  /NATIVE_RENDERER_LABEL:\s*&str\s*=\s*"native-renderer"/.test(commands) &&
+    /TRANSPARENT_CAPTURE_LABEL:\s*&str\s*=\s*"transparent"/.test(commands),
 );
-check("the overlay window skips the taskbar/Dock", /\.skip_taskbar\(true\)/.test(commands));
+check("caption surface windows skip the taskbar/Dock", /\.skip_taskbar\(true\)/.test(commands));
 
 // --- 3. One unified launch entry point in the root scripts --------------------
 const rootPkg = readJson("package.json");
