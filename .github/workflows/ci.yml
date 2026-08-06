@@ -74,7 +74,16 @@ jobs:
       - run: bun run assets:verify
       - run: cargo build --locked --manifest-path packages/azookey-wasm/Cargo.toml --target wasm32-unknown-unknown --release
       - run: cargo build --locked --manifest-path packages/vibrato-wasm/Cargo.toml --target wasm32-unknown-unknown --release
+      # WASM crate gates (fmt/clippy/test) sit beside the release build above so
+      # a green quality job still proves the Worker ABI wrapper is clean.
+      - run: bun run rust:wasm:fmt
+      - run: bun run rust:wasm:lint
+      - run: bun run rust:wasm:test
       - run: bun run parapper:lint
+      # Parapper TypeScript gates are independent of the tao mock-app constraint
+      # that blocks Rust UI tests on Linux; typecheck + vitest run here.
+      - run: bun run parapper:typecheck
+      - run: bun run parapper:test:ui
       # The quality action exports RUSTUP_TOOLCHAIN=1.97.1. Clear it for the
       # nested fork so its checked-in 1.90.0 pin is actually honored.
       - run: env -u RUSTUP_TOOLCHAIN bun run parapper:rust:fmt
