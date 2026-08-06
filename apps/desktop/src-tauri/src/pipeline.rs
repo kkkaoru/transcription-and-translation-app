@@ -4,6 +4,7 @@ use crate::kana_kanji::{
     convert_kana_to_kanji, convert_with_dictionary, AzooKeyDictionary, ConversionOptions,
     DictionaryPaths,
 };
+use crate::vibrato_runtime::{contains_kanji, VibratoReader};
 use caption_bridge_input_lm::marisa::{open_model, MarisaTrie};
 use caption_bridge_input_lm::model::NgramParams;
 use caption_bridge_input_lm::rescore::{AsrConfusionRules, LmScorer, Rescorer};
@@ -312,6 +313,8 @@ pub struct Pipeline {
     /// Lazy-loaded input-LM rescorer. Only loaded when `RescoreConfig::enabled`
     /// is true; otherwise stays `None` and the pipeline path is unchanged.
     rescorer: RescoreHandle,
+    /// Lazy-loaded Vibrato IPADIC reader for kanji → hiragana before AzooKey.
+    vibrato: Arc<Mutex<Option<Arc<VibratoReader>>>>,
 }
 
 impl Default for Pipeline {
@@ -320,6 +323,7 @@ impl Default for Pipeline {
             client: Client::new(),
             azookey_dictionaries: Arc::new(Mutex::new(HashMap::new())),
             rescorer: RescoreHandle::default(),
+            vibrato: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -329,6 +333,47 @@ impl Pipeline {
     /// model, tokenizer, and weights from the current `RescoreConfig`.
     pub fn invalidate_rescorer(&self) {
         self.rescorer.clear();
+    }
+
+    /// Convert kanji-bearing text to hiragana via Vibrato before AzooKey.
+    ///
+    /// Pure kana input is returned unchanged. On dictionary load failure the
+    /// original text is returned (fail-open) so captions keep flowing.
+    fn ensure_azookey_reading(&self, text: &str) -> String {
+        if !contains_kanji(text) {
+            return text.to_string();
+        }
+        let reader = {
+            let mut guard = match self.vibrato.lock() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    log::warn!(
+                        target: "pipeline_vibrato",
+                        "vibrato lock poisoned, falling back: {error}"
+                    );
+                    return text.to_string();
+                }
+            };
+            if let Some(ref reader) = *guard {
+                Arc::clone(reader)
+            } else {
+                match crate::vibrato_runtime::try_default() {
+                    Some(reader) => {
+                        let reader = Arc::new(reader);
+                        *guard = Some(Arc::clone(&reader));
+                        reader
+                    }
+                    None => {
+                        log::warn!(
+                            target: "pipeline_vibrato",
+                            "vibrato dictionary unavailable, falling back to raw text"
+                        );
+                        return text.to_string();
+                    }
+                }
+            }
+        };
+        reader.reading_for_azookey(text)
     }
 
     /// Load the selected AzooKey dictionary before the microphone starts.
@@ -484,8 +529,28 @@ impl Pipeline {
         // source of truth for user-facing Japanese, so do not emit raw ASR text
         // while it is still running. The completed stage below is emitted before
         // the command returns, allowing the frontend to measure normalize→paint.
+        // Kanji-bearing ASR output is converted to hiragana via Vibrato first so
+        // AzooKey receives a phonetic reading.
+        let vibrato_started = Instant::now();
+        let reading = self.ensure_azookey_reading(&recognized);
+        if reading != recognized || contains_kanji(&recognized) {
+            record_stage(
+                stages,
+                on_stage,
+                stage_event(
+                    "vibrato",
+                    &utterance_id,
+                    "vibrato-ipadic",
+                    &recognized,
+                    &reading,
+                    elapsed_ms(vibrato_started),
+                    true,
+                    None,
+                ),
+            );
+        }
         let normalize_started = Instant::now();
-        let normalized = match self.normalize(config, &recognized).await {
+        let normalized = match self.normalize(config, &reading).await {
             Ok(NormalizeOutcome::Success(text)) => {
                 record_stage(
                     stages,
@@ -494,7 +559,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         normalize_model,
-                        &recognized,
+                        &reading,
                         &text,
                         elapsed_ms(normalize_started),
                         true,
@@ -517,7 +582,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         normalize_model,
-                        &recognized,
+                        &reading,
                         &text,
                         elapsed_ms(normalize_started),
                         false,
@@ -534,7 +599,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         normalize_model,
-                        &recognized,
+                        &reading,
                         "",
                         elapsed_ms(normalize_started),
                         false,
@@ -640,15 +705,40 @@ impl Pipeline {
             ),
         );
 
+        // --- Vibrato pre-pass (kanji → hiragana) ---
+        // AzooKey expects a phonetic reading. When Parapper/ASR still carries
+        // kanji, Vibrato IPADIC F[7] supplies hiragana before rescore/normalize.
+        // Pure kana passes through unchanged. Merge key below is this reading
+        // (post-vibrato, pre-rescore), not the original kanji surface.
+        let vibrato_started = Instant::now();
+        let reading = self.ensure_azookey_reading(&recognized);
+        if reading != recognized || contains_kanji(&recognized) {
+            record_stage(
+                stages,
+                on_stage,
+                stage_event_with_surface(
+                    "vibrato",
+                    &utterance_id,
+                    "vibrato-ipadic",
+                    &recognized,
+                    &reading,
+                    elapsed_ms(vibrato_started),
+                    true,
+                    None,
+                    None,
+                ),
+            );
+        }
+
         // --- Rescore stage (opt-in) ---
         // When enabled, rescore the kana reading with the input-LM before
         // kana-kanji conversion. The merge key (`azookey_input_text`) always
-        // retains the ORIGINAL unrescored reading so the frontend caption-merge
-        // logic (`hasSameOrExtendedAzookeyReading`) is unaffected. Only the
-        // text fed to the normalizer changes.
+        // retains the post-vibrato, unrescored reading so the frontend
+        // caption-merge logic (`hasSameOrExtendedAzookeyReading`) is unaffected.
+        // Only the text fed to the normalizer changes.
         let normalize_input = if config.rescore.enabled {
             let rescore_started = Instant::now();
-            let rescored = self.rescore_reading(config, &recognized).await;
+            let rescored = self.rescore_reading(config, &reading).await;
             record_stage(
                 stages,
                 on_stage,
@@ -656,7 +746,7 @@ impl Pipeline {
                     "rescore",
                     &utterance_id,
                     "input-n5-lm-v1",
-                    &recognized,
+                    &reading,
                     &rescored,
                     elapsed_ms(rescore_started),
                     true,
@@ -666,7 +756,7 @@ impl Pipeline {
             );
             rescored
         } else {
-            recognized.clone()
+            reading.clone()
         };
 
         let normalize_started = Instant::now();
@@ -732,13 +822,14 @@ impl Pipeline {
             normalized,
             now_millis().saturating_sub(output.audio_duration_ms.unwrap_or_default()),
             utterance_id,
-            // Merge key invariant: always the ORIGINAL reading, never the
-            // rescored one. The frontend uses this field for
+            // Merge key invariant: post-vibrato reading, never the rescored
+            // one. The frontend uses this field for
             // `hasSameOrExtendedAzookeyReading` caption-merge decisions; feeding
             // a corrected reading here would break replace-in-place and cause
             // captions to append instead of replacing (regression fixed at
-            // commit e393070).
-            Some(recognized),
+            // commit e393070). When the ASR surface had kanji, this is the
+            // Vibrato hiragana reading (stable phonetic merge key).
+            Some(reading),
         );
         ready.is_final = output.is_final;
         on_caption(&ready);
@@ -1075,25 +1166,12 @@ fn azookey_dictionary_cache_key(paths: &DictionaryPaths) -> String {
 }
 
 fn azookey_dictionary_paths(config: &AppConfig) -> DictionaryPaths {
+    use crate::dictionary_resolve::configured_or_resolved_path;
+
     DictionaryPaths {
-        system: config
-            .models
-            .paths
-            .get("azookey-rust")
-            .filter(|path| !path.trim().is_empty())
-            .map(Into::into),
-        user: config
-            .models
-            .paths
-            .get("azookey-user-dictionary")
-            .filter(|path| !path.trim().is_empty())
-            .map(Into::into),
-        memory: config
-            .models
-            .paths
-            .get("azookey-learning-memory")
-            .filter(|path| !path.trim().is_empty())
-            .map(Into::into),
+        system: configured_or_resolved_path(config, "azookey-rust"),
+        user: configured_or_resolved_path(config, "azookey-user-dictionary"),
+        memory: configured_or_resolved_path(config, "azookey-learning-memory"),
     }
     .with_defaults()
 }

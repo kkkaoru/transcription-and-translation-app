@@ -3,6 +3,7 @@
 mod audio;
 mod azookey_runtime;
 mod browser_source;
+mod dictionary_resolve;
 mod commands;
 mod config;
 mod gateway;
@@ -15,6 +16,7 @@ mod output;
 mod pipeline;
 mod state;
 mod updater;
+mod vibrato_runtime;
 
 pub use caption_bridge_azookey_rust as kana_kanji;
 

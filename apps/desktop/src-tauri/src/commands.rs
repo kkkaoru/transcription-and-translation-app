@@ -249,9 +249,15 @@ async fn prepare_azookey_capture(
     state: &AppState,
     config: &mut AppConfig,
 ) -> Result<(), String> {
+    // HTTPS dictionary URLs stay in the user-facing path keys for Settings.
+    // Resolve them into sibling `*-resolved` local cache paths before warm /
+    // normalize so the sync pipeline never treats a URL as a filesystem path.
+    crate::dictionary_resolve::resolve_dictionary_urls_in_config(app, config).await?;
+
     // AzooKey's compact fallback is intentionally tiny. Provision the pinned
     // public LOUDS dictionary once, then pass its root through the existing
     // `models.paths` route; the selected normalizer remains `azookey-rust`.
+    let mut emit_config_update = false;
     if let Some(dictionary_root) =
         crate::azookey_runtime::ensure_system_dictionary(app, config).await
     {
@@ -259,13 +265,19 @@ async fn prepare_azookey_capture(
             .models
             .paths
             .insert("azookey-rust".to_string(), dictionary_root.to_string_lossy().into_owned());
-        *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
-        let _ = app.emit("config:update", &*config);
+        emit_config_update = true;
         log::info!(
             target: "kotoba_azookey",
             "using public AzooKey dictionary root {}",
             dictionary_root.display()
         );
+    }
+    // Keep resolved cache paths in the live in-memory config for this capture
+    // session. Avoid emitting URL→local rewrites so Settings still shows the
+    // HTTPS values the user entered; only surface auto-provisioned roots.
+    *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
+    if emit_config_update {
+        let _ = app.emit("config:update", &*config);
     }
     // Warm the dictionary while the capture command is already waiting for
     // native services. The first audio chunk can then go straight to Viterbi

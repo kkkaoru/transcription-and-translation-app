@@ -163,7 +163,7 @@ async fn download_and_extract(destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn unpack_archive(bytes: &[u8], destination: &Path) -> Result<(), String> {
+pub(crate) fn unpack_archive(bytes: &[u8], destination: &Path) -> Result<(), String> {
     let decoder = GzDecoder::new(Cursor::new(bytes));
     let mut archive = tar::Archive::new(decoder);
     archive
