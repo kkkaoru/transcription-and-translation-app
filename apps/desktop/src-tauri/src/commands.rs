@@ -1206,6 +1206,11 @@ pub(crate) const NATIVE_RENDERER_LABEL: &str = "native-renderer";
 /// Desktop transparent surface for OBS Window Capture where Syphon/Spout2 are unavailable.
 pub(crate) const TRANSPARENT_CAPTURE_LABEL: &str = "transparent";
 
+/// Create a caption surface window.
+///
+/// Off-screen Syphon/Spout publisher stays out of the way; the user-facing
+/// transparent capture window must behave like a normal desktop window so
+/// it does not steal focus or block interaction with other apps (`always_on_top`).
 fn create_caption_surface_window(
     app: &AppHandle,
     config: &AppConfig,
@@ -1214,6 +1219,7 @@ fn create_caption_surface_window(
     title: &str,
     visible: bool,
     offscreen: bool,
+    always_on_top: bool,
 ) -> Result<(), String> {
     let x = if offscreen {
         NATIVE_RENDERER_OFFSCREEN_X
@@ -1231,8 +1237,10 @@ fn create_caption_surface_window(
         .position(x, y)
         .decorations(false)
         .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
+        .always_on_top(always_on_top)
+        // Keep the off-screen native publisher off the taskbar/Dock. The
+        // transparent capture surface is a normal window users can switch to.
+        .skip_taskbar(offscreen || always_on_top)
         .visible(visible)
         // Output dimensions are configured numerically. Keeping the surface fixed
         // prevents a user resize from desynchronizing the window and the native
@@ -1321,6 +1329,7 @@ pub(crate) fn ensure_native_renderer(
         "Kotoba Beacon Native Output",
         true,
         true,
+        true,
     )
 }
 
@@ -1329,9 +1338,15 @@ pub(crate) fn ensure_native_renderer(
 /// This never mounts or shows the native Syphon/Spout renderer. When Spout2 or
 /// Syphon is active, captions already flow through `native-renderer` regardless
 /// of whether this optional surface is open.
+///
+/// The surface stays transparent for OBS Window Capture, but it is a normal
+/// (not always-on-top) window so the rest of the desktop remains usable.
 #[tauri::command]
 pub fn open_transparent_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(TRANSPARENT_CAPTURE_LABEL) {
+        window
+            .set_always_on_top(false)
+            .map_err(|error| format!("could not clear transparent capture always-on-top: {error}"))?;
         window
             .set_ignore_cursor_events(true)
             .map_err(|error| format!("could not make transparent capture click-through: {error}"))?;
@@ -1348,6 +1363,7 @@ pub fn open_transparent_capture(app: AppHandle, state: State<'_, AppState>) -> R
         "index.html?transparent=1",
         "Kotoba Beacon Transparent Capture",
         true,
+        false,
         false,
     )
 }
