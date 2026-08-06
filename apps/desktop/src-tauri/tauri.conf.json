@@ -56,6 +56,7 @@
       "resources/parapper-runtime": "parapper-runtime",
       "resources/zenz-runtime": "zenz-runtime",
       "resources/llama-runtime": "llama-runtime",
+      "resources/input-lm-tokenizer": "input-lm-tokenizer",
       "third-party/llama.cpp-MIT.txt": "third-party/llama.cpp-MIT.txt",
       "third-party/model-runtime-notice.md": "third-party/model-runtime-notice.md",
       "../../../packages/parapper-asr/LICENSE": "third-party/Parapper-ASR-LICENSE",

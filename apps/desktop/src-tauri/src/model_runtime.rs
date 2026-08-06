@@ -339,6 +339,16 @@ pub fn input_lm_cache_root() -> PathBuf {
     PathBuf::from(home).join(".cache").join("caption-bridge-input-lm")
 }
 
+/// Directory that holds `vocab.json` / `merges.txt` for the input-LM tokenizer.
+///
+/// The packaged app cannot rely on `ZenzTokenizer::from_submodule()` (that path
+/// is baked to the build machine's source tree). The download / setup path
+/// copies the bundled tokenizer resources here so rescoring works after
+/// install.
+pub fn input_lm_tokenizer_cache_dir() -> PathBuf {
+    input_lm_cache_root().join("tokenizer")
+}
+
 /// Directory where `spec` is extracted under `cache_root`.
 pub fn archive_extract_dir(cache_root: &Path, spec: &ArchiveModelSpec) -> PathBuf {
     cache_root.join(spec.extract_subdir)

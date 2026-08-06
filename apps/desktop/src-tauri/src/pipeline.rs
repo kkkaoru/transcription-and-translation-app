@@ -250,17 +250,34 @@ impl RescoreHandle {
         let params = NgramParams::default();
         let model =
             open_model(&base, params).map_err(|e| format!("input-LM model load failed: {e}"))?;
-        let tokenizer = ZenzTokenizer::from_submodule().ok_or_else(|| {
-            "input-LM tokenizer load failed (AzooKeyKanaKanjiConverter submodule not present)"
-                .to_string()
-        })?;
+        let tokenizer = load_input_lm_tokenizer()?;
         let scorer = LmScorer::new(model, tokenizer);
-        let rescorer = Rescorer::new(scorer, AsrConfusionRules::default())
+        let rescorer = Rescorer::with_recommended_weights(scorer, AsrConfusionRules::default())
             .with_lm_weight(config.lm_weight)
             .with_confusion_weight(config.confusion_weight)
             .with_overcorrection_margin(config.overcorrection_margin);
         Ok(Arc::new(rescorer))
     }
+
+    /// Drop a cached rescorer so the next enabled call reloads model + weights.
+    fn clear(&self) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = None;
+        }
+    }
+}
+
+/// Prefer the user-cache tokenizer (copied from the app bundle / download),
+/// then fall back to the source-tree submodule for developer builds.
+fn load_input_lm_tokenizer() -> Result<ZenzTokenizer, String> {
+    let cache = crate::model_runtime::input_lm_tokenizer_cache_dir();
+    if let Some(tokenizer) = ZenzTokenizer::from_dir(&cache) {
+        return Ok(tokenizer);
+    }
+    ZenzTokenizer::from_submodule().ok_or_else(|| {
+        "input-LM tokenizer load failed (install Input N5 LM or keep the AzooKey submodule checked out)"
+            .to_string()
+    })
 }
 
 /// Default model location: `$HOME/.cache/caption-bridge-input-lm/input_n5_lm_v1/lm`.
@@ -308,6 +325,12 @@ impl Default for Pipeline {
 }
 
 impl Pipeline {
+    /// Drop a cached input-LM rescorer so the next enabled caption reloads the
+    /// model, tokenizer, and weights from the current `RescoreConfig`.
+    pub fn invalidate_rescorer(&self) {
+        self.rescorer.clear();
+    }
+
     /// Load the selected AzooKey dictionary before the microphone starts.
     /// Public LOUDS files are intentionally loaded once on the capture
     /// boundary; otherwise the first 640ms chunk would pay the disk/matrix
@@ -1419,10 +1442,10 @@ fn resolve_utterance_id(provided: Option<&str>) -> String {
 mod tests {
     use super::{
         clean_model_text, is_no_speech_response, normalize_azookey, normalize_azookey_with_cache,
-        record_stage, resolve_utterance_id, run_rescore_with_timeout, snippet, source_ready_caption,
-        source_ready_caption_with_input, stage_event, stage_event_with_surface, with_translation,
-        zenz_prompt, CaptionPayload, NormalizeOutcome, ParapperRecognitionInput, Pipeline,
-        PipelineStageEvent, STAGE_SNIPPET_CHARS,
+        record_stage, resolve_utterance_id, run_rescore_with_timeout, snippet,
+        source_ready_caption, source_ready_caption_with_input, stage_event,
+        stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload, NormalizeOutcome,
+        ParapperRecognitionInput, Pipeline, PipelineStageEvent, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;

@@ -1,7 +1,7 @@
 use crate::model_runtime::{
-    archive_download_url, archive_extract_dir, archive_model_extracted, download_url,
-    input_lm_cache_root, model_path, spec, ArchiveModelSpec, ModelRuntimeSpec, ModelServer,
-    INPUT_LM_ARCHIVE_SPEC,
+    archive_download_url, archive_extract_dir, archive_model_extracted, archive_model_path,
+    download_url, input_lm_cache_root, input_lm_tokenizer_cache_dir, model_path, spec,
+    ArchiveModelSpec, ModelRuntimeSpec, ModelServer, INPUT_LM_ARCHIVE_SPEC,
 };
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -516,7 +516,67 @@ pub async fn download_input_lm_model(app: AppHandle) -> Result<String, String> {
     .await;
     unregister_download(spec.id);
     let extract_dir = result?;
+    // Packaged builds cannot resolve the AzooKey submodule tokenizer path.
+    // Copy the bundled vocab/merges next to the model so rescoring can load.
+    if let Err(error) = ensure_input_lm_tokenizer_installed(&app) {
+        log::warn!("input-LM tokenizer install skipped: {error}");
+    }
+    let model_stem = archive_model_path(&cache_root, spec);
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut config) = state.config.lock() {
+            config.rescore.model_path = Some(model_stem.display().to_string());
+            let config_path = app
+                .path()
+                .app_config_dir()
+                .map(|dir| dir.join("config.json"))
+                .ok();
+            if let Some(path) = config_path {
+                if let Ok(payload) = serde_json::to_vec_pretty(&*config) {
+                    let _ = std::fs::write(path, payload);
+                }
+            }
+            let _ = app.emit("config:update", &*config);
+        }
+        state.pipeline.invalidate_rescorer();
+    }
     Ok(extract_dir.display().to_string())
+}
+
+/// Ensure `vocab.json` / `merges.txt` exist under the input-LM tokenizer cache.
+///
+/// Prefers the bundled app resource (`input-lm-tokenizer/`). Falls back to the
+/// source-tree submodule path used by developer builds.
+pub fn ensure_input_lm_tokenizer_installed(app: &AppHandle) -> Result<PathBuf, String> {
+    let dest = input_lm_tokenizer_cache_dir();
+    let vocab = dest.join("vocab.json");
+    let merges = dest.join("merges.txt");
+    if vocab.is_file() && merges.is_file() {
+        return Ok(dest);
+    }
+    std::fs::create_dir_all(&dest)
+        .map_err(|error| format!("could not create input-LM tokenizer cache: {error}"))?;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("input-lm-tokenizer"));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/input-lm-tokenizer"),
+    );
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../../submodules/AzooKeyKanaKanjiConverter/Sources/EfficientNGram/tokenizer",
+    ));
+
+    let Some(source) = candidates.into_iter().find(|dir| {
+        dir.join("vocab.json").is_file() && dir.join("merges.txt").is_file()
+    }) else {
+        return Err("input-LM tokenizer resources were not found".to_string());
+    };
+    std::fs::copy(source.join("vocab.json"), &vocab)
+        .map_err(|error| format!("could not copy vocab.json: {error}"))?;
+    std::fs::copy(source.join("merges.txt"), &merges)
+        .map_err(|error| format!("could not copy merges.txt: {error}"))?;
+    Ok(dest)
 }
 
 // ---------------------------------------------------------------------------
