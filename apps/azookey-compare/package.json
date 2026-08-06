@@ -4,7 +4,7 @@
   "private": true,
   "description": "WebSpeech and Worker AzooKey conversion comparison UI",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1",
     "build": "node ../../scripts/clean-build-artifacts.mjs --root ../.. && next build",
     "start": "next start",
     "typecheck": "tsc --noEmit --pretty false",

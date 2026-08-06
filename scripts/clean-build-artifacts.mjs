@@ -200,15 +200,9 @@ const acquireCleanupLock = async (root) => {
   }
 };
 
-/**
- * Return active Rust build commands for this exact worktree. Cargo/rustc
- * include the absolute target path in their command line on macOS/Linux; a
- * conservative empty result on Windows avoids false positives where tasklist
- * does not expose command lines.
- */
-const activeRustProcesses = (root) => {
+const listProcessCommands = () => {
   try {
-    const output =
+    return (
       process.platform === "win32"
         ? execFileSync(
             "powershell",
@@ -219,27 +213,57 @@ const activeRustProcesses = (root) => {
             ],
             { encoding: "utf8" },
           )
-        : execFileSync("ps", ["-axo", "command="], { encoding: "utf8" });
-    const rustCommand = /(?:^|[\\/\s])(?:cargo|rustc|rustdoc)(?:\.exe)?(?:\s|$)/i;
-    const rootMarker = basename(root);
-    return output
+        : execFileSync("ps", ["-axo", "command="], { encoding: "utf8" })
+    )
       .split("\n")
       .map((line) => line.trim())
-      .filter(
-        (line) =>
-          line.length > 0 &&
-          (line.includes(root) || line.includes(`${sep}${rootMarker}${sep}`)) &&
-          rustCommand.test(line),
-      );
+      .filter((line) => line.length > 0);
   } catch {
     return [];
   }
 };
 
+const commandBelongsToRoot = (line, root) => {
+  const rootMarker = basename(root);
+  return line.includes(root) || line.includes(`${sep}${rootMarker}${sep}`);
+};
+
+/**
+ * Return active Rust build commands for this exact worktree. Cargo/rustc
+ * include the absolute target path in their command line on macOS/Linux; a
+ * conservative empty result on Windows avoids false positives where tasklist
+ * does not expose command lines.
+ */
+const activeRustProcesses = (root, commands = listProcessCommands()) => {
+  const rustCommand = /(?:^|[\\/\s])(?:cargo|rustc|rustdoc)(?:\.exe)?(?:\s|$)/i;
+  return commands.filter((line) => commandBelongsToRoot(line, root) && rustCommand.test(line));
+};
+
+/**
+ * Generated app outputs that must stay intact while a matching local server is
+ * still running. Desktop/Tauri cleanup otherwise deletes a live Next.js
+ * `.next` tree mid-request and leaves the comparison UI serving 500s.
+ */
+const liveGeneratedDirectories = (root, commands = listProcessCommands()) => {
+  const live = new Set();
+  const nextCommand = /(?:^|[\\/\s])(?:next)(?:\.exe)?(?:\s|$)/i;
+  const compareMarker = `${sep}apps${sep}azookey-compare${sep}`;
+  for (const line of commands) {
+    if (!commandBelongsToRoot(line, root)) continue;
+    if (
+      nextCommand.test(line) &&
+      (line.includes(compareMarker) || line.includes("apps/azookey-compare"))
+    ) {
+      live.add("apps/azookey-compare/.next");
+    }
+  }
+  return live;
+};
+
 /**
  * Remove stale generated outputs.
  *
- * @param {{root?: string, dryRun?: boolean, temporaryOnly?: boolean, pruneRust?: boolean, activeProcesses?: string[]}} [options]
+ * @param {{root?: string, dryRun?: boolean, temporaryOnly?: boolean, pruneRust?: boolean, activeProcesses?: string[], processCommands?: string[]}} [options]
  * @returns {Promise<{removed: string[], skipped: string[]}>}
  */
 export async function cleanBuildArtifacts(options = {}) {
@@ -254,7 +278,8 @@ export async function cleanBuildArtifacts(options = {}) {
   const releaseLock = await acquireCleanupLock(root);
 
   try {
-    const activeProcesses = options.activeProcesses ?? activeRustProcesses(root);
+    const processCommands = options.processCommands ?? listProcessCommands();
+    const activeProcesses = options.activeProcesses ?? activeRustProcesses(root, processCommands);
     if (activeProcesses.length > 0) {
       return {
         removed,
@@ -263,6 +288,10 @@ export async function cleanBuildArtifacts(options = {}) {
         ],
       };
     }
+    const preservedDirectories =
+      options.preservedDirectories instanceof Set
+        ? options.preservedDirectories
+        : liveGeneratedDirectories(root, processCommands);
     let entries;
     try {
       entries = await readdir(root, { withFileTypes: true });
@@ -282,6 +311,10 @@ export async function cleanBuildArtifacts(options = {}) {
 
     for (const directory of [...generatedDirectories, ...coverageDirectories]) {
       if (temporaryOnly) break;
+      if (preservedDirectories.has(directory)) {
+        skipped.push(`${directory} (live local server)`);
+        continue;
+      }
       const output = join(root, directory);
       let stat;
       try {

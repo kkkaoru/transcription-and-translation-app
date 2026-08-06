@@ -281,4 +281,26 @@ describe("cleanBuildArtifacts", () => {
     assert.equal(result.removed.length, 0);
     assert.match(result.skipped[0], /deferred/);
   });
+
+  it("preserves a live azookey-compare Next.js output while cleaning other artifacts", async () => {
+    const root = await createRoot();
+    const comparisonOutput = await createFile(root, "apps/azookey-compare/.next/server/app.js");
+    const frontendOutput = await createFile(root, "apps/desktop/dist/index.js");
+
+    const result = await cleanBuildArtifacts({
+      root,
+      processCommands: [
+        `node ${join(root, "apps/azookey-compare/node_modules/next/dist/bin/next")} dev --hostname 127.0.0.1`,
+      ],
+      preservedDirectories: new Set(["apps/azookey-compare/.next"]),
+    });
+
+    assert.equal(existsSync(comparisonOutput), true);
+    assert.equal(existsSync(frontendOutput), false);
+    assert.equal(result.removed.includes("apps/desktop/dist"), true);
+    assert.match(
+      result.skipped.find((entry) => entry.includes("apps/azookey-compare/.next")) ?? "",
+      /live local server/,
+    );
+  });
 });

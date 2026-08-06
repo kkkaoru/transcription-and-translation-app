@@ -20,6 +20,9 @@ bun install
 bun --cwd apps/azookey-compare dev
 ```
 
+Open the UI at `http://127.0.0.1:3000` (not `localhost`) so the Worker
+`CORS_ORIGIN` and the page origin stay aligned.
+
 ### Desktop parity checks
 
 The right-hand panel includes a **読み入力** lane that mirrors Kotoba Beacon's
