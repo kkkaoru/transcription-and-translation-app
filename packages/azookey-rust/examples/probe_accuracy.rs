@@ -13,11 +13,10 @@ use caption_bridge_azookey_rust::{
 };
 
 fn main() {
-    let root = std::env::var_os("AZOOKEY_DICTIONARY_ROOT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from("../../submodules/azooKey_dictionary_storage/Dictionary")
-        });
+    let root =
+        std::env::var_os("AZOOKEY_DICTIONARY_ROOT").map(std::path::PathBuf::from).unwrap_or_else(
+            || std::path::PathBuf::from("../../submodules/azooKey_dictionary_storage/Dictionary"),
+        );
     let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
         system: Some(root),
         ..DictionaryPaths::default()

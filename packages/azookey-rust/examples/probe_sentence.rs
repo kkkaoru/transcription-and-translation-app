@@ -21,10 +21,14 @@ fn main() {
         "しんらばんしょうをすべるかみとなる",
     ];
     for input in cases {
-        let results = convert_with_dictionary(input, &dictionary, ConversionOptions { n_best: 5, ..ConversionOptions::default() });
+        let results = convert_with_dictionary(
+            input,
+            &dictionary,
+            ConversionOptions { n_best: 5, ..ConversionOptions::default() },
+        );
         println!("=== {:?} ===", input);
         for (i, c) in results.iter().enumerate() {
-            println!("  {}. score={:.3} text={:?}", i+1, c.score, c.text);
+            println!("  {}. score={:.3} text={:?}", i + 1, c.score, c.text);
         }
     }
 }

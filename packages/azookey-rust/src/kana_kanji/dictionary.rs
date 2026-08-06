@@ -1,4 +1,4 @@
-use super::normalization::{to_hiragana, to_katakana};
+use super::normalization::{is_boundary, to_hiragana, to_katakana};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -302,7 +302,24 @@ impl AzooKeyDictionary {
     ) -> Result<Vec<DictionaryEntry>, String> {
         let end = (start + max_chars).min(chars.len());
         let mut entries = Vec::new();
+        if start >= end {
+            return Ok(entries);
+        }
+        // Punctuation is its own lattice edge. Look up only the exact
+        // one-character mark so the official CID/MID punctuation row can
+        // compete, but never continue the reading into the next clause.
+        if is_boundary(chars[start]) {
+            let reading: String = chars[start..=start].iter().collect();
+            if let Ok(matched) = self.lookup_exact(&reading) {
+                entries.extend(matched);
+            }
+            return Ok(entries);
+        }
         for finish in (start + 1)..=end {
+            // Do not look up readings that cross `、`/`。` into the next clause.
+            if is_boundary(chars[finish - 1]) {
+                break;
+            }
             let reading: String = chars[start..finish].iter().collect();
             // Never abort the whole span on a single failed optional lookup.
             if let Ok(matched) = self.lookup_exact(&reading) {

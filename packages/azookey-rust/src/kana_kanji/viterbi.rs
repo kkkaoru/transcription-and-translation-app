@@ -44,6 +44,20 @@ const CONTEXTUAL_ENTRY_BONUS: f32 = 4.5;
 /// of its dictionary prefixes (`は` + `のみたい` → `飲みたい` rather than
 /// `のみ`/`の味` + `たい`/`体`). Soft penalty keeps the prefix in n-best.
 const PARTICLE_FOLLOWING_SHORTER_PREFIX_PENALTY: f32 = -2.5;
+/// Minimum reading length of a lexical word that may suppress its own short
+/// Kanji prefixes (`き`/`機` under `きかく`/`規格`). One-kana and two-kana
+/// pieces otherwise invent non-dictionary compounds such as `機各` / `券小`.
+const MIN_SHADOWING_LEXICAL_CHARS: usize = 3;
+/// When a longer reading exists at the same start, keep at most this many
+/// one-kana Kanji rows. Standalone one-kana inputs (`き` → `木`) skip the cap
+/// so connection costs can still pick the natural orthography.
+const MAX_ONE_KANA_KANJI_ENTRIES: usize = 24;
+/// Prefer a list item that reuses Kanji from the previous comma-separated
+/// clause (`一等賞` → `懸賞` over `検証`).
+const COMMA_LIST_KANJI_OVERLAP_BONUS: f32 = 3.5;
+/// Prefer currency orthography when the next clause is a spoken yen amount
+/// (`こうか、じゅうえん` → `硬貨` over `効果`).
+const FOLLOWING_YEN_AMOUNT_BONUS: f32 = 4.0;
 const MIN_IDENTITY_FALLBACK_CHARS: usize = 2;
 const INFLECTIONAL_IDENTITY_FALLBACK_VALUE: f32 = -3.0;
 const PARTICLE_IDENTITY_FALLBACK_VALUE: f32 = -1.0;
@@ -308,13 +322,15 @@ pub fn convert_with_dictionary(
         if current.is_empty() {
             continue;
         }
-        let entries = dictionary
-            .entries_starting_at(
-                &chars,
-                start,
-                bounded_dictionary_word_chars(options.max_dictionary_word_chars),
-            )
-            .unwrap_or_default();
+        let entries = prune_short_kanji_prefix_entries(
+            dictionary
+                .entries_starting_at(
+                    &chars,
+                    start,
+                    bounded_dictionary_word_chars(options.max_dictionary_word_chars),
+                )
+                .unwrap_or_default(),
+        );
         let numeric_prefix = numeric_prefix_context(&chars, start, &entries);
         for state in current {
             // A caption can end one kana after a high-confidence lexical
@@ -385,12 +401,27 @@ pub fn convert_with_dictionary(
                     && !is_boundary(chars[start - 1])
                     && numeric.counter_has_numeric_variant
                     && (numeric.length == 1 || !numeric.counter_kanji_homophone);
+                // After short Kanji-prefix pruning, a bare number such as
+                // `せん` → `1000` can outrank the remaining longer word
+                // (`戦争`). Suppress that number when a longer converted
+                // lexical entry still covers this start.
+                let shadowed_by_longer_lexical = !state.numeric_chain
+                    && !numeric.followed_by_counter
+                    && !numeric.explicit_digit
+                    && entries.iter().any(|entry| {
+                        let len = entry.reading.chars().count();
+                        len > numeric.length
+                            && entry.surface != entry.reading
+                            && contains_kanji(&entry.surface)
+                            && !is_particle_reading(&entry.reading)
+                    });
                 if (numeric.numeric_context || start == 0)
                     && (!bare_digit_outside_chain || start == 0)
                     && !unit_only_outside_chain
                     && !shadowed_numeric_span
                     && !shadowed_single_digit_counter
                     && !shadowed_midword_counter
+                    && !shadowed_by_longer_lexical
                     && !numeric.unit_span_is_unbounded
                     && !numeric.invalid_shi_counter
                 {
@@ -530,25 +561,36 @@ pub fn convert_with_dictionary(
                 let keep_clause_context = matches!(chars[start], '、' | '。' | ',' | '.');
                 // Numeric chains are intentionally narrower than `is_boundary`:
                 // only `、`/`,` continue a chain; `。`/`.` terminate it.
-                push_state(
-                    &mut states[start + 1],
-                    PathState {
-                        text: format!("{}{}", state.text, source_chars[start]),
-                        score: state.score,
-                        meaning_score: state.meaning_score,
-                        last: keep_clause_context.then(|| state.last.clone()).flatten(),
-                        clause_mid: if keep_clause_context {
-                            state.clause_mid
-                        } else {
-                            BOS_EOS_MID
+                //
+                // When the public dictionary already exposes a one-character
+                // punctuation row for this mark, skip the free score+=0 edge.
+                // That bypass drops CID/MID transitions and lets short Kanji
+                // fragments invent compounds such as `券小` / `機各`.
+                if !has_exact_punctuation_dictionary_entry(
+                    &entries,
+                    source_chars[start],
+                    chars[start],
+                ) {
+                    push_state(
+                        &mut states[start + 1],
+                        PathState {
+                            text: format!("{}{}", state.text, source_chars[start]),
+                            score: state.score,
+                            meaning_score: state.meaning_score,
+                            last: keep_clause_context.then(|| state.last.clone()).flatten(),
+                            clause_mid: if keep_clause_context {
+                                state.clause_mid
+                            } else {
+                                BOS_EOS_MID
+                            },
+                            clause_has_word: keep_clause_context && state.clause_has_word,
+                            numeric_chain: keep_clause_context
+                                && state.numeric_chain
+                                && matches!(chars[start], '、' | ','),
                         },
-                        clause_has_word: keep_clause_context && state.clause_has_word,
-                        numeric_chain: keep_clause_context
-                            && state.numeric_chain
-                            && matches!(chars[start], '、' | ','),
-                    },
-                    width,
-                );
+                        width,
+                    );
+                }
             }
             for entry in &entries {
                 let entry_len = entry.reading.chars().count();
@@ -671,6 +713,8 @@ pub fn convert_with_dictionary(
                             + grammatical_context_bonus(&state, entry)
                             + copular_continuation_penalty(&state, entry)
                             + particle_following_shorter_prefix_penalty(&state, entry, &entries)
+                            + comma_list_kanji_overlap_bonus(&state, entry)
+                            + following_yen_amount_bonus(&chars, end, entry)
                             + contextual_entry_bonus(
                                 dictionary,
                                 &chars,
@@ -1094,6 +1138,58 @@ fn particle_following_shorter_prefix_penalty(
     });
     if has_strictly_longer_content {
         PARTICLE_FOLLOWING_SHORTER_PREFIX_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+fn comma_list_kanji_overlap_bonus(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    if !state.text.contains('、') && !state.text.contains(',') {
+        return NO_SCORE;
+    }
+    if !entry.surface.chars().any(is_kanji) {
+        return NO_SCORE;
+    }
+    let previous = state.text.trim_end_matches(['、', ',']);
+    let previous_clause =
+        previous.rsplit_once(['、', ',']).map(|(_, right)| right).unwrap_or(previous);
+    // Anchor on the final Kanji of the previous clause so `一等賞` boosts
+    // `懸賞`, without letting an earlier character in `河口` promote `河辺`
+    // over the natural `川辺`.
+    let Some(anchor) = previous_clause.chars().rev().find(|character| is_kanji(*character)) else {
+        return NO_SCORE;
+    };
+    if entry.surface.contains(anchor) {
+        COMMA_LIST_KANJI_OVERLAP_BONUS
+    } else {
+        NO_SCORE
+    }
+}
+
+fn following_yen_amount_bonus(chars: &[char], end: usize, entry: &DictionaryEntry) -> f32 {
+    // Currency orthography often carries 貨/金/幣. Prefer it when the next
+    // comma-separated clause is a short spoken yen amount (`じゅうえん`).
+    if !entry.surface.chars().any(|character| matches!(character, '貨' | '金' | '幣')) {
+        return NO_SCORE;
+    }
+    let rest = chars.get(end..).unwrap_or_default();
+    let mut clause = rest;
+    if let Some(first) = clause.first() {
+        if matches!(*first, '、' | ',') {
+            clause = &clause[1..];
+        } else {
+            return NO_SCORE;
+        }
+    } else {
+        return NO_SCORE;
+    }
+    if clause.is_empty() || clause.len() > 8 {
+        return NO_SCORE;
+    }
+    if clause.ends_with(&['え', 'ん'])
+        && clause.iter().all(|character| is_hiragana(*character) || *character == 'ー')
+    {
+        FOLLOWING_YEN_AMOUNT_BONUS
     } else {
         NO_SCORE
     }
@@ -1603,6 +1699,119 @@ fn one_kana_suffix_shadowed_by_longer_entry(
     })
 }
 
+/// Drop short Kanji dictionary pieces that are strict prefixes of a longer
+/// converted word at the same lattice start.
+///
+/// Without this, `きかく` keeps hundreds of `き`/`機` rows beside `規格`, and
+/// Viterbi invents non-dictionary surfaces such as `機各` / `券小`. Identity
+/// and particle rows stay so grammar edges remain available. When a longer
+/// reading still exists, remaining one-kana Kanji rows are value-capped so a
+/// mid-clause `き` (500+ surfaces) cannot explode captions such as
+/// `あしたのてんきははれ`.
+fn prune_short_kanji_prefix_entries(mut entries: Vec<DictionaryEntry>) -> Vec<DictionaryEntry> {
+    if entries.is_empty() {
+        return entries;
+    }
+    let has_shadowing_lexical = entries.iter().any(is_shadowing_lexical_entry);
+    if has_shadowing_lexical {
+        let snapshot = entries.clone();
+        entries.retain(|entry| !short_kanji_prefix_shadowed_by_longer_entry(entry, &snapshot));
+    }
+    cap_one_kana_kanji_entries_when_longer_readings_exist(&mut entries);
+    entries
+}
+
+fn is_shadowing_lexical_entry(entry: &DictionaryEntry) -> bool {
+    let len = entry.reading.chars().count();
+    len >= MIN_SHADOWING_LEXICAL_CHARS
+        && entry.surface != entry.reading
+        && contains_kanji(&entry.surface)
+        && !is_particle_reading(&entry.reading)
+}
+
+/// True when the lattice already has the official one-character punctuation
+/// dictionary row for this source mark. Prefer that row over a free boundary
+/// edge so CID/MID transitions stay intact across commas.
+fn has_exact_punctuation_dictionary_entry(
+    entries: &[DictionaryEntry],
+    source_char: char,
+    normalized_char: char,
+) -> bool {
+    entries.iter().any(|entry| {
+        let reading = entry.reading.chars().collect::<Vec<_>>();
+        let surface = entry.surface.chars().collect::<Vec<_>>();
+        reading.len() == 1
+            && surface.len() == 1
+            && reading[0] == normalized_char
+            && (surface[0] == source_char || surface[0] == normalized_char)
+    })
+}
+
+fn short_kanji_prefix_shadowed_by_longer_entry(
+    entry: &DictionaryEntry,
+    entries: &[DictionaryEntry],
+) -> bool {
+    let len = entry.reading.chars().count();
+    if len == 0 || len > 2 {
+        return false;
+    }
+    if is_particle_reading(&entry.reading) {
+        return false;
+    }
+    // Suppress both Kanji fragments (`機`) and short kana identities (`き`)
+    // when a longer converted word covers the same start. Leaving the identity
+    // would still invent non-dictionary compounds such as `き各`.
+    let short_piece = contains_kanji(&entry.surface) || entry.surface == entry.reading;
+    if !short_piece {
+        return false;
+    }
+    entries.iter().any(|other| {
+        let other_len = other.reading.chars().count();
+        other_len >= MIN_SHADOWING_LEXICAL_CHARS
+            && other_len > len
+            && other.reading.starts_with(&entry.reading)
+            && other.surface != other.reading
+            && contains_kanji(&other.surface)
+            && !is_particle_reading(&other.reading)
+    })
+}
+
+fn cap_one_kana_kanji_entries_when_longer_readings_exist(entries: &mut Vec<DictionaryEntry>) {
+    let max_reading_len =
+        entries.iter().map(|entry| entry.reading.chars().count()).max().unwrap_or(0);
+    // Keep the full one-kana set for standalone conversions such as `き` → `木`.
+    if max_reading_len <= 1 {
+        return;
+    }
+    let mut one_kana_kanji = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            entry.reading.chars().count() == 1
+                && entry.surface != entry.reading
+                && contains_kanji(&entry.surface)
+        })
+        .map(|(index, entry)| (index, entry.value))
+        .collect::<Vec<_>>();
+    if one_kana_kanji.len() <= MAX_ONE_KANA_KANJI_ENTRIES {
+        return;
+    }
+    one_kana_kanji.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let mut keep = vec![false; entries.len()];
+    for (index, _) in &one_kana_kanji[..MAX_ONE_KANA_KANJI_ENTRIES] {
+        keep[*index] = true;
+    }
+    let mut index = 0;
+    entries.retain(|entry| {
+        let retain = entry.reading.chars().count() != 1
+            || entry.surface == entry.reading
+            || !contains_kanji(&entry.surface)
+            || keep[index];
+        index += 1;
+        retain
+    });
+}
+
 fn prolonged_mark_adjacent_to_span(
     source: &[char],
     chars: &[char],
@@ -1782,6 +1991,66 @@ mod tests {
         .next()
         .expect("public conversion should produce a candidate");
         assert_eq!(candidate.text, "消防、消火、炎");
+    }
+
+    #[test]
+    fn prefers_dictionary_punctuation_rows_over_a_free_boundary_edge() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("public conversion dictionary should load");
+        let punctuation_entries = dictionary
+            .entries_starting_at(&['、'], 0, 4)
+            .expect("punctuation lookup should complete");
+        assert!(
+            super::has_exact_punctuation_dictionary_entry(&punctuation_entries, '、', '、'),
+            "public dictionary should expose a one-character 、 row"
+        );
+        // With the free score+=0 boundary suppressed, comma-separated captions
+        // keep CID/MID transitions and prefer real dictionary words.
+        let candidate = convert_with_dictionary(
+            "こうぎょう、きかく、とういつ",
+            &dictionary,
+            ConversionOptions { n_best: 5, ..ConversionOptions::default() },
+        )
+        .into_iter()
+        .next()
+        .expect("public conversion should produce a candidate");
+        assert_eq!(candidate.text, "工業、規格、統一");
+    }
+
+    #[test]
+    fn suppresses_invented_kanji_compounds_in_comma_lists() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("public conversion dictionary should load");
+        for (input, expected) in [
+            ("こうぎょう、きかく、とういつ", "工業、規格、統一"),
+            ("いっとうしょう、けんしょう、おうぼ", "一等賞、懸賞、応募"),
+            ("しへい、こうか、じゅうえん", "紙幣、硬貨、10円"),
+        ] {
+            let candidate = convert_with_dictionary(
+                input,
+                &dictionary,
+                ConversionOptions { n_best: 10, ..ConversionOptions::default() },
+            )
+            .into_iter()
+            .next()
+            .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+            assert!(
+                !candidate.text.contains("券小")
+                    && !candidate.text.contains("機各")
+                    && !candidate.text.contains("き各"),
+                "invented compound leaked for {input}: {}",
+                candidate.text
+            );
+        }
     }
 
     #[test]
