@@ -81,11 +81,16 @@ import {
 import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
 import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
+import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
 import { DebugPanel } from "../settings/DebugPanel";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
 
 type ActiveTab = "live" | "settings";
+
+/** Syphon/Spout2 receive frames from a canvas publisher in the main window. */
+const usesNativeFramePublisher = (nativeOutput: RuntimeStatus["nativeOutput"]): boolean =>
+  nativeOutput === "syphon" || nativeOutput === "spout2";
 
 type CapturePhase = "idle" | "starting" | "capturing" | "stopping";
 
@@ -97,6 +102,7 @@ export const captureConfigRequiresRestart = (before: AppConfig, after: AppConfig
   before.recognitionMode !== after.recognitionMode ||
   before.audio.inputDeviceId !== after.audio.inputDeviceId ||
   before.audio.noiseSuppression !== after.audio.noiseSuppression ||
+  before.audio.autoGainControl !== after.audio.autoGainControl ||
   before.audio.adaptiveNoiseFloor !== after.audio.adaptiveNoiseFloor ||
   before.audio.chunkMs !== after.audio.chunkMs ||
   before.audio.silenceGateDb !== after.audio.silenceGateDb;
@@ -986,8 +992,24 @@ export const MainApp = () => {
     };
   }, [clearCaptionState, mergeAndCommitCaption]);
 
+  const persistConfigLive = async (nextConfig: AppConfig, reason: string) => {
+    try {
+      await bridge.saveConfig(nextConfig);
+      pushDiagnosticEvent("config", reason);
+      setNotice({ key: "message.saved" });
+    } catch (error) {
+      const notice = noticeFromError(error, "message.saveFailed");
+      pushDiagnosticEvent("error", `${reason} failed`, notice.detail ?? notice.key);
+      setNotice(notice);
+    }
+  };
+
   const setModel = (family: ModelFamily, value: string) => {
-    setConfig({ ...config, models: { ...config.models, [family]: value } });
+    const next = { ...config, models: { ...config.models, [family]: value } };
+    setConfig(next);
+    // Persist and reconcile sidecars immediately so a mid-capture model swap
+    // takes effect on the next caption without Stop → Start.
+    void persistConfigLive(next, `Model applied live (${family}=${value})`);
   };
 
   const save = async () => {
@@ -1302,10 +1324,10 @@ export const MainApp = () => {
 
       // Overlap mic open with backend readiness so the first chunk is not rejected
       // for a cold gateway, without delaying getUserMedia past the user gesture.
-      const preparePromise = microphone.prepareInput(
-        captureConfig.audio.inputDeviceId,
-        captureConfig.audio.noiseSuppression !== false,
-      );
+      const preparePromise = microphone.prepareInput(captureConfig.audio.inputDeviceId, {
+        noiseSuppression: captureConfig.audio.noiseSuppression !== false,
+        autoGainControl: captureConfig.audio.autoGainControl !== false,
+      });
       const backendPromise = bridge.startCapture();
       backendStartPromise.current = backendPromise;
       const [prepareResult, backendResult] = await Promise.allSettled([
@@ -1650,7 +1672,10 @@ export const MainApp = () => {
             setInputLevelDb(rmsDb);
           }
         },
-        captureConfig.audio.noiseSuppression !== false,
+        {
+          noiseSuppression: captureConfig.audio.noiseSuppression !== false,
+          autoGainControl: captureConfig.audio.autoGainControl !== false,
+        },
         {
           adaptiveGate:
             resolveSilenceGateMode(captureConfig.audio.adaptiveNoiseFloor) === "adaptive",
@@ -1963,17 +1988,28 @@ export const MainApp = () => {
   startCaptureRef.current = startCapture;
   stopCaptureRef.current = stopCapture;
 
-  const openOverlay = async () => {
+  const openTransparentCapture = async () => {
     try {
-      await bridge.openOverlay();
+      await bridge.openTransparentCapture();
       pushDiagnosticEvent(
         "overlay",
-        "Overlay opened",
+        "Transparent capture shown",
         `${config.overlay.width}×${config.overlay.height}`,
       );
     } catch (error) {
-      const notice = noticeFromError(error, "message.overlayOpenFailed");
-      pushDiagnosticEvent("error", "Overlay open failed", notice.detail ?? notice.key);
+      const notice = noticeFromError(error, "message.transparentOpenFailed");
+      pushDiagnosticEvent("error", "Transparent capture open failed", notice.detail ?? notice.key);
+      setNotice(notice);
+    }
+  };
+
+  const closeTransparentCapture = async () => {
+    try {
+      await bridge.closeTransparentCapture();
+      pushDiagnosticEvent("overlay", "Transparent capture hidden");
+    } catch (error) {
+      const notice = noticeFromError(error, "message.transparentOpenFailed");
+      pushDiagnosticEvent("error", "Transparent capture hide failed", notice.detail ?? notice.key);
       setNotice(notice);
     }
   };
@@ -2017,6 +2053,13 @@ export const MainApp = () => {
 
   const handleConfigChange = (nextConfig: AppConfig) => {
     const captureChanged = captureConfigRequiresRestart(config, nextConfig);
+    const rescoreChanged =
+      config.rescore.enabled !== nextConfig.rescore.enabled ||
+      config.rescore.modelPath !== nextConfig.rescore.modelPath ||
+      config.rescore.lmWeight !== nextConfig.rescore.lmWeight ||
+      config.rescore.confusionWeight !== nextConfig.rescore.confusionWeight ||
+      config.rescore.overcorrectionMargin !== nextConfig.rescore.overcorrectionMargin ||
+      config.rescore.timeoutMs !== nextConfig.rescore.timeoutMs;
     setConfig(nextConfig);
     // Recognition mode, device, chunking, and gate settings change microphone
     // or stream ownership. Restart an active/starting session immediately so a
@@ -2025,6 +2068,10 @@ export const MainApp = () => {
     // sequence so rapid changes cannot attach multiple start callbacks.
     if (captureChanged && captureSessionActive) {
       captureRestartRef.current.requestRestart(nextConfig);
+    } else if (rescoreChanged) {
+      // Input-LM correction toggle/weights apply on the next caption via
+      // save_config → invalidate_rescorer; no mic restart required.
+      void persistConfigLive(nextConfig, "Rescore settings applied live");
     }
   };
 
@@ -2032,6 +2079,9 @@ export const MainApp = () => {
 
   return (
     <div className="app-shell">
+      {usesNativeFramePublisher(status.nativeOutput) ? (
+        <NativeFramePublisher config={config} caption={caption} />
+      ) : null}
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true">
@@ -2102,7 +2152,8 @@ export const MainApp = () => {
                 devices={devices}
                 message={noticeText}
                 onToggleCapture={toggleCapture}
-                onOpenOverlay={() => void openOverlay()}
+                onOpenOverlay={() => void openTransparentCapture()}
+                onCloseOverlay={() => void closeTransparentCapture()}
                 onDeviceChange={handleDeviceChange}
                 onRefreshDevices={() => void refreshDevices({ primePermission: true })}
                 onCloseMessage={() => setNotice(null)}
