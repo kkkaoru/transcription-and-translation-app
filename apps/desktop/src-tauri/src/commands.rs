@@ -75,20 +75,35 @@ pub async fn save_config(
     // overwrite the persisted config and live browser/native output state.
     let _save_guard = state.config_save_lock.lock().await;
     config.validate()?;
-    // Raw Parapper and Web Speech do not execute the local normalizer or
-    // translator. Do not make saving a mode selection depend on downloading
-    // unused GGUF assets; the normalizer path still reconciles its selected
-    // model as before.
-    if config.recognition_mode == "parapper-azookey" {
+    // Bring selected local GGUF servers up to the saved config without requiring
+    // Stop → Start. Raw Parapper never uses those sidecars; Web Speech skips
+    // them at capture start as well, so both modes stay free of download stalls
+    // when the user is only flipping recognition mode.
+    if config.recognition_mode != "parapper-raw" && config.recognition_mode != "web-speech" {
         gateway::reconcile_models(&app, &config).await?;
     }
-    if let Some(window) = app.get_webview_window("overlay") {
+    if let Some(window) = app.get_webview_window(NATIVE_RENDERER_LABEL) {
         window
             .set_size(LogicalSize::new(config.overlay.width as f64, config.overlay.height as f64))
-            .map_err(|error| format!("could not resize overlay: {error}"))?;
+            .map_err(|error| format!("could not resize native renderer: {error}"))?;
+        // Keep the Syphon/Spout painter off-screen. Applying the user's Window
+        // Capture X/Y would put a second caption surface on the desktop and is
+        // unrelated to the native texture clients consume.
+        window
+            .set_position(LogicalPosition::new(
+                NATIVE_RENDERER_OFFSCREEN_X,
+                NATIVE_RENDERER_OFFSCREEN_Y,
+            ))
+            .map_err(|error| format!("could not park native renderer off-screen: {error}"))?;
+        let _ = window.show();
+    }
+    if let Some(window) = app.get_webview_window(TRANSPARENT_CAPTURE_LABEL) {
+        window
+            .set_size(LogicalSize::new(config.overlay.width as f64, config.overlay.height as f64))
+            .map_err(|error| format!("could not resize transparent capture: {error}"))?;
         window
             .set_position(LogicalPosition::new(config.overlay.x as f64, config.overlay.y as f64))
-            .map_err(|error| format!("could not move overlay: {error}"))?;
+            .map_err(|error| format!("could not move transparent capture: {error}"))?;
     }
     let config_path = config_path(&app)?;
     if let Some(parent) = config_path.parent() {
@@ -104,6 +119,9 @@ pub async fn save_config(
     *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
     *state.native_output.lock().map_err(|_| "native output lock poisoned".to_string())? =
         native_output;
+    // Rescore toggle / weights / model path must take effect on the next
+    // caption without stopping capture. Drop any cached Input N5 LM handle.
+    state.pipeline.invalidate_rescorer();
     // The OBS Browser Source fallback is reconciled live so the settings
     // toggle applies without restarting the app. Bind failures are logged and
     // leave the previous state untouched; they never fail the save itself.
@@ -111,8 +129,8 @@ pub async fn save_config(
     // A native worker can become available after a transient startup failure.
     // Ensure the hidden publisher webview is mounted after every successful
     // native-output replacement as well as during initial app setup.
-    if let Err(error) = ensure_native_overlay(&app, &config, &native_output_kind) {
-        log::warn!("could not start hidden native overlay renderer: {error}");
+    if let Err(error) = ensure_native_renderer(&app, &config, &native_output_kind) {
+        log::warn!("could not start off-screen native caption renderer: {error}");
     }
     let next_status = {
         let mut status = state.status.lock().map_err(|_| "status lock poisoned".to_string())?;
@@ -493,7 +511,7 @@ pub async fn normalize_parapper_output(
     output: ParapperRecognitionInput,
 ) -> Result<CaptionPayload, String> {
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
-    let output_is_final = output.is_final;
+    let _output_is_final = output.is_final;
     let empty_id =
         format!("parapper:{}:{}:{}", output.session_id, output.turn_session_id, output.turn_id);
     // The frontend queue (`parapper-output-queue.ts`) keeps at most one
@@ -563,7 +581,7 @@ pub async fn normalize_parapper_output(
     {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state, capture_generation);
-            if output_is_final && state.is_capture_generation_current(capture_generation) {
+            if state.is_capture_generation_current(capture_generation) {
                 spawn_translation(
                     app.clone(),
                     config.clone(),
@@ -1161,40 +1179,101 @@ fn sanitize_jsonl_line(line: &str, parsed_any: &mut bool) -> String {
         .unwrap_or_else(|_| redact_runtime_text(line))
 }
 
-fn create_overlay_window(
+/// Hidden-from-the-user but still composited: WKWebView does not reliably paint
+/// (or fire `requestAnimationFrame`) while `visible=false`, so Syphon/Spout would
+/// keep the initial transparent plate and never receive caption glyphs.
+const NATIVE_RENDERER_OFFSCREEN_X: f64 = -20_000.0;
+const NATIVE_RENDERER_OFFSCREEN_Y: f64 = -20_000.0;
+
+/// Hidden webview that paints captions into Spout2/Syphon. Never user-toggled.
+pub(crate) const NATIVE_RENDERER_LABEL: &str = "native-renderer";
+/// Desktop transparent surface for OBS Window Capture where Syphon/Spout2 are unavailable.
+pub(crate) const TRANSPARENT_CAPTURE_LABEL: &str = "transparent";
+
+fn create_caption_surface_window(
     app: &AppHandle,
     config: &AppConfig,
+    label: &str,
+    url: &str,
+    title: &str,
     visible: bool,
-    native_renderer: bool,
+    offscreen: bool,
 ) -> Result<(), String> {
-    let url =
-        if native_renderer { "index.html?overlay=1&native=1" } else { "index.html?overlay=1" };
-    WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App(url.into()))
-        .title("Kotoba Beacon Overlay")
+    let x = if offscreen {
+        NATIVE_RENDERER_OFFSCREEN_X
+    } else {
+        config.overlay.x as f64
+    };
+    let y = if offscreen {
+        NATIVE_RENDERER_OFFSCREEN_Y
+    } else {
+        config.overlay.y as f64
+    };
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        .title(title)
         .inner_size(config.overlay.width as f64, config.overlay.height as f64)
-        .position(config.overlay.x as f64, config.overlay.y as f64)
+        .position(x, y)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(visible)
-        // Output dimensions are configured numerically. Keeping the overlay fixed
+        // Output dimensions are configured numerically. Keeping the surface fixed
         // prevents a user resize from desynchronizing the window and the native
         // Spout2/Syphon frame dimensions.
         .resizable(false)
         .build()
-        .map(|_| ())
-        .map_err(|error| format!("could not create overlay: {error}"))
+        .map_err(|error| format!("could not create {label} window: {error}"))?;
+    // Caption surfaces span the configured output resolution. They are display
+    // only, so they must never consume clicks intended for the app beneath them.
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| format!("could not make {label} click-through: {error}"))?;
+    if visible {
+        // Some platforms create the builder as ordered-back; force a show so the
+        // webview compositor starts and NativeFramePublisher can paint.
+        window
+            .show()
+            .map_err(|error| format!("could not show {label} window: {error}"))?;
+    }
+    Ok(())
 }
 
-/// Start the caption-only overlay renderer when a native transport is active.
+/// Stop Syphon/Spout2 and tear down caption surfaces during app quit.
 ///
-/// Spout2 and Syphon publish frames from the overlay webview's canvas. The
-/// native sender itself can be ready at app setup, but no caption frame can
-/// reach OBS until that webview is mounted. Keep this renderer hidden so native
-/// output does not add a desktop window; the existing Open Overlay action shows
-/// the same window when a user wants to inspect it locally.
-pub(crate) fn ensure_native_overlay(
+/// Managed `AppState` may outlive `RunEvent::Exit` long enough for Syphon
+/// clients to keep seeing a directory entry. Replacing the handle forces
+/// `SyphonMetalServer::stop` / Spout teardown now, and closing the publisher
+/// webviews stops further frame invokes.
+pub(crate) fn shutdown_native_output(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        match state.native_output.lock() {
+            Ok(mut output) => {
+                if output.kind() != "stopped" {
+                    log::info!(
+                        "stopping native output kind={} size={}x{}",
+                        output.kind(),
+                        output.width(),
+                        output.height()
+                    );
+                }
+                *output = NativeOutputHandle::inactive();
+            }
+            Err(_) => log::error!("native output lock poisoned during shutdown"),
+        }
+    }
+    for label in [NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+        }
+    }
+}
+
+/// Start the always-on caption renderer when Spout2 or Syphon is active.
+///
+/// Frames are published from this off-screen webview's canvas. User show/hide of
+/// the optional transparent capture window must never tear this down or pause it.
+pub(crate) fn ensure_native_renderer(
     app: &AppHandle,
     config: &AppConfig,
     native_output_kind: &str,
@@ -1202,29 +1281,82 @@ pub(crate) fn ensure_native_overlay(
     if !matches!(native_output_kind, "spout2" | "syphon") {
         return Ok(());
     }
-    if app.get_webview_window("overlay").is_some() {
+    if let Some(window) = app.get_webview_window(NATIVE_RENDERER_LABEL) {
+        // Keep an existing renderer composited off-screen (never at the user's
+        // Window Capture X/Y). Always match the configured overlay resolution so
+        // Syphon/Spout clients receive settings width×height, not a stale size.
+        window
+            .set_size(LogicalSize::new(config.overlay.width as f64, config.overlay.height as f64))
+            .map_err(|error| format!("could not resize native renderer: {error}"))?;
+        window
+            .set_position(LogicalPosition::new(
+                NATIVE_RENDERER_OFFSCREEN_X,
+                NATIVE_RENDERER_OFFSCREEN_Y,
+            ))
+            .map_err(|error| format!("could not park native renderer off-screen: {error}"))?;
+        let _ = window.show();
         return Ok(());
     }
-    create_overlay_window(app, config, false, true)
+    create_caption_surface_window(
+        app,
+        config,
+        NATIVE_RENDERER_LABEL,
+        "index.html?native=1",
+        "Kotoba Beacon Native Output",
+        true,
+        true,
+    )
 }
 
+/// Open the dedicated transparent capture window (Window Capture / non-Syphon path).
+///
+/// This never mounts or shows the native Syphon/Spout renderer. When Spout2 or
+/// Syphon is active, captions already flow through `native-renderer` regardless
+/// of whether this optional surface is open.
 #[tauri::command]
-pub fn open_overlay(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("overlay") {
-        window.show().map_err(|error| format!("could not show overlay: {error}"))?;
-        window.set_focus().map_err(|error| format!("could not focus overlay: {error}"))?;
+pub fn open_transparent_capture(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(TRANSPARENT_CAPTURE_LABEL) {
+        window
+            .set_ignore_cursor_events(true)
+            .map_err(|error| format!("could not make transparent capture click-through: {error}"))?;
+        window
+            .show()
+            .map_err(|error| format!("could not show transparent capture: {error}"))?;
         return Ok(());
     }
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
-    create_overlay_window(&app, &config, true, false)
+    create_caption_surface_window(
+        &app,
+        &config,
+        TRANSPARENT_CAPTURE_LABEL,
+        "index.html?transparent=1",
+        "Kotoba Beacon Transparent Capture",
+        true,
+        false,
+    )
 }
 
 #[tauri::command]
-pub fn close_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("overlay") {
-        window.close().map_err(|error| format!("could not close overlay: {error}"))?;
+pub fn close_transparent_capture(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(TRANSPARENT_CAPTURE_LABEL) {
+        window
+            .hide()
+            .map_err(|error| format!("could not hide transparent capture: {error}"))?;
     }
+    // Never touch native-renderer: Syphon/Spout caption publishing must continue.
     Ok(())
+}
+
+/// Legacy command name kept for older frontends; opens the transparent capture window only.
+#[tauri::command]
+pub fn open_overlay(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    open_transparent_capture(app, state)
+}
+
+/// Legacy command name kept for older frontends; hides the transparent capture window only.
+#[tauri::command]
+pub fn close_overlay(app: AppHandle) -> Result<(), String> {
+    close_transparent_capture(app)
 }
 
 #[tauri::command]
@@ -1233,7 +1365,7 @@ pub fn publish_overlay_frame(
     state: State<'_, AppState>,
     frame: NativeOverlayFrame,
 ) -> Result<(), String> {
-    ensure_overlay_window(window.label())?;
+    ensure_native_publisher_window(window.label())?;
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?;
     validate_overlay_frame_dimensions(
         frame.width,
@@ -1255,6 +1387,21 @@ pub fn publish_overlay_frame(
     if rgba.len() != expected {
         return Err("overlay frame byte length does not match dimensions".to_string());
     }
+    // Rate-limited content probe: Syphon clients showing a blank plate usually
+    // mean zero opaque pixels reached the worker (publisher hung) or alpha was
+    // cleared. Log enough to tell those apart without flooding at frame rate.
+    let opaque = rgba.chunks_exact(4).filter(|pixel| pixel[3] > 8).count();
+    static PUBLISH_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = PUBLISH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if count == 1 || count.is_power_of_two() {
+        log::info!(
+            target: "native_output",
+            "publish_overlay_frame #{count} from={} {}x{} opaque_pixels={opaque}",
+            window.label(),
+            frame.width,
+            frame.height
+        );
+    }
     state
         .native_output
         .lock()
@@ -1262,12 +1409,25 @@ pub fn publish_overlay_frame(
         .publish(OverlayFrame { rgba, width: frame.width, height: frame.height })
 }
 
-fn ensure_overlay_window(label: &str) -> Result<(), String> {
-    if label == "overlay" {
+fn ensure_native_publisher_window(label: &str) -> Result<(), String> {
+    // The main window is always composited, so it is the reliable Syphon/Spout
+    // publisher. `native-renderer` remains allowed for the off-screen route.
+    if label == NATIVE_RENDERER_LABEL || label == "main" {
         Ok(())
     } else {
-        Err("native output frames may only be published by the overlay window".to_string())
+        Err("native output frames may only be published by the main or native-renderer window"
+            .to_string())
     }
+}
+
+fn native_output_uses_render_publish(state: &AppState) -> Result<bool, String> {
+    let kind = state
+        .native_output
+        .lock()
+        .map_err(|_| "native output lock poisoned".to_string())?
+        .kind()
+        .to_string();
+    Ok(matches!(kind.as_str(), "spout2" | "syphon"))
 }
 
 fn validate_overlay_frame_dimensions(
@@ -1478,14 +1638,15 @@ pub async fn export_debug_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_is_active, ensure_overlay_window, observe_http_empty_asr,
-        parapper_output_generation_is_current, persistent_asr_loss_message,
+        capture_is_active, ensure_native_publisher_window, native_output_uses_render_publish,
+        observe_http_empty_asr, parapper_output_generation_is_current, persistent_asr_loss_message,
         publish_parapper_caption, publish_source_caption_gated, redact_runtime_text,
         sanitize_debug_json, sanitize_export_body, source_caption_payload,
         stop_generation_is_current, validate_overlay_frame_dimensions, NativeOverlayFrame,
-        SourceCaptionInput,
+        NATIVE_RENDERER_LABEL, SourceCaptionInput, TRANSPARENT_CAPTURE_LABEL,
     };
     use crate::config::AppConfig;
+    use crate::native_output::NativeOutputHandle;
     use crate::output::OutputStatus;
     use crate::pipeline::{CaptionPayload, ParapperRecognitionInput};
     use crate::state::{AppState, ExpectedEmptyAsrResult, ASR_EMPTY_RESULT_WINDOW};
@@ -1607,9 +1768,37 @@ mod tests {
     }
 
     #[test]
-    fn only_the_overlay_window_can_publish_a_native_frame() {
-        assert!(ensure_overlay_window("overlay").is_ok());
-        assert!(ensure_overlay_window("main").is_err());
+    fn native_output_kind_selects_hidden_renderer_requirement() {
+        let state =
+            AppState::new(AppConfig::default(), OutputStatus { platform: "test".to_string() });
+        assert!(
+            !native_output_uses_render_publish(&state).expect("lock available"),
+            "the default test transport is transparent-window, not native"
+        );
+
+        for native_kind in ["spout2", "syphon"] {
+            *state.native_output.lock().expect("native output lock") =
+                NativeOutputHandle::for_test_kind(native_kind);
+            assert!(
+                native_output_uses_render_publish(&state).expect("lock available"),
+                "{native_kind} must keep the off-screen native-renderer mounted"
+            );
+        }
+
+        *state.native_output.lock().expect("native output lock") =
+            NativeOutputHandle::for_test_kind("transparent-window");
+        assert!(
+            !native_output_uses_render_publish(&state).expect("lock available"),
+            "a non-native transport uses the optional transparent capture window instead"
+        );
+    }
+
+    #[test]
+    fn only_the_native_renderer_window_can_publish_a_native_frame() {
+        assert!(ensure_native_publisher_window(NATIVE_RENDERER_LABEL).is_ok());
+        assert!(ensure_native_publisher_window("main").is_ok());
+        assert!(ensure_native_publisher_window(TRANSPARENT_CAPTURE_LABEL).is_err());
+        assert!(ensure_native_publisher_window("overlay").is_err());
     }
 
     #[test]

@@ -68,12 +68,16 @@ pub fn run() {
             app.manage(gateway::RuntimeServices::default());
             app.manage(browser_source::BrowserSourceRuntime::default());
             // Syphon/Spout2 publish the overlay webview's caption canvas. Mount
-            // that renderer during setup (hidden) so OBS can discover the native
-            // source and receive captions without the user pressing Open Overlay.
+            // that renderer during setup (off-screen but visible to the compositor)
+            // so OBS can discover the native source and receive captions without
+            // the user pressing Open Overlay. A fully hidden webview does not paint.
             if let Err(error) =
-                commands::ensure_native_overlay(app.handle(), &config, &native_output_kind)
+                commands::ensure_native_renderer(app.handle(), &config, &native_output_kind)
             {
-                log::warn!("could not start hidden native overlay renderer: {error}");
+                log::warn!("could not start off-screen native overlay renderer: {error}");
+            }
+            if let Err(error) = model_download::ensure_input_lm_tokenizer_installed(app.handle()) {
+                log::warn!("input-LM tokenizer not ready yet: {error}");
             }
             gateway::start(app.handle(), &config)?;
             browser_source::reconcile(app.handle(), &config);
@@ -96,6 +100,8 @@ pub fn run() {
             commands::transcribe_audio_chunk,
             commands::normalize_parapper_output,
             commands::publish_source_caption,
+            commands::open_transparent_capture,
+            commands::close_transparent_capture,
             commands::open_overlay,
             commands::close_overlay,
             commands::publish_overlay_frame,
@@ -110,9 +116,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Kotoba Beacon");
     app.run(|app_handle, event| {
-        if matches!(event, tauri::RunEvent::Exit) {
-            gateway::shutdown(app_handle);
-            browser_source::shutdown(app_handle);
+        match event {
+            // Stop Syphon/Spout before other teardown so clients drop the
+            // directory entry while the process is still responding.
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                commands::shutdown_native_output(app_handle);
+                gateway::shutdown(app_handle);
+                browser_source::shutdown(app_handle);
+            }
+            _ => {}
         }
     });
 }
