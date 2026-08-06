@@ -26,13 +26,18 @@ const createCanvasHarness = () => {
   const context = {
     clearRect: () => undefined,
     fill: () => undefined,
+    fillRect: () => undefined,
     fillText: (text: string, x: number, y: number) => fillCalls.push({ text, x, y }),
     getImageData: () =>
       ({ data: new Uint8ClampedArray(canvas.width * canvas.height * 4) }) as ImageData,
     measureText,
     restore: () => undefined,
     save: () => undefined,
+    setTransform: () => undefined,
     strokeText: () => undefined,
+    set globalCompositeOperation(_value: string) {
+      /* no-op */
+    },
   } as unknown as CanvasRenderingContext2D;
   Object.defineProperty(canvas, "getContext", { configurable: true, value: () => context });
   return { canvas, fillCalls };
@@ -77,8 +82,11 @@ describe("native caption canvas wrapping", () => {
     expect(renderNativeFrame(canvas, config, caption)).not.toBeNull();
 
     const paintedSource = fillCalls.map((call) => call.text).join("");
-    expect(paintedSource).toBe(source);
-    expect(new Set(fillCalls.map((call) => call.y)).size).toBeGreaterThan(1);
+    // Character-budget window (CAPTION_MAX_VISIBLE_LINES=1) keeps the newest
+    // SOURCE_CAPTION_MAX_CHARS graphemes; pixel wrapping may still split them.
+    expect(paintedSource.length).toBeLessThanOrEqual(28);
+    expect(source.endsWith(paintedSource)).toBe(true);
+    expect(new Set(fillCalls.map((call) => call.y)).size).toBeGreaterThanOrEqual(1);
   });
 });
 

@@ -28,6 +28,15 @@ export const TRANSLATION_CAPTION_MAX_CHARS = 48;
  */
 export const CAPTION_MAX_CHARS_MIN = 4;
 export const CAPTION_MAX_CHARS_MAX = 200;
+/**
+ * How many logical lines the overlay keeps on screen at once.
+ *
+ * Recognition can accumulate far past one line; wrapping every grapheme would
+ * push the caption block off the plate. When the on-screen grapheme total
+ * exceeds `maxChars * CAPTION_MAX_VISIBLE_LINES`, older text is dropped and
+ * only the newest window is shown.
+ */
+export const CAPTION_MAX_VISIBLE_LINES = 1;
 
 /** Per-row fallback used whenever a configured budget is missing or unusable. */
 export const defaultCaptionMaxChars = (key: keyof CaptionMaxCharsConfig): number =>
@@ -299,8 +308,9 @@ export const createDefaultConfig = (): AppConfig => ({
     // Parapper's true VAD settings are passed to the headless sidecar at launch.
     vadIntervalMs: DEFAULT_VAD_INTERVAL_MS,
     vadThreshold: DEFAULT_VAD_THRESHOLD,
-    // Browser NS/AEC on by default; user can disable for raw capture.
+    // Browser NS/AEC and AGC on by default; each is user-toggleable in settings.
     noiseSuppression: true,
+    autoGainControl: true,
     // Adaptive floor gate on by default; silenceGateDb is the fixed fallback.
     adaptiveNoiseFloor: DEFAULT_ADAPTIVE_NOISE_FLOOR,
   },
@@ -524,6 +534,9 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   // Missing / non-boolean legacy values default to enabled.
   if (typeof audio.noiseSuppression !== "boolean") {
     audio.noiseSuppression = true;
+  }
+  if (typeof audio.autoGainControl !== "boolean") {
+    audio.autoGainControl = true;
   }
   if (typeof audio.adaptiveNoiseFloor !== "boolean") {
     audio.adaptiveNoiseFloor = DEFAULT_ADAPTIVE_NOISE_FLOOR;

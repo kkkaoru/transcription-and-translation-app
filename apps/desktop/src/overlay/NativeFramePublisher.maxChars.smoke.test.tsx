@@ -34,13 +34,18 @@ const createWideCanvasHarness = () => {
   const context = {
     clearRect: () => undefined,
     fill: () => undefined,
+    fillRect: () => undefined,
     fillText: (text: string, _x: number, y: number) => fillCalls.push({ text, y }),
     getImageData: () =>
       ({ data: new Uint8ClampedArray(canvas.width * canvas.height * 4) }) as ImageData,
     measureText: (text: string): TextMetrics => ({ width: Array.from(text).length }) as TextMetrics,
     restore: () => undefined,
     save: () => undefined,
+    setTransform: () => undefined,
     strokeText: () => undefined,
+    set globalCompositeOperation(_value: string) {
+      /* no-op */
+    },
   } as unknown as CanvasRenderingContext2D;
   Object.defineProperty(canvas, "getContext", { configurable: true, value: () => context });
   return { canvas, fillCalls };
@@ -72,9 +77,10 @@ describe("configurable budget changes the native/Syphon line split", () => {
     const narrowBaselines = new Set(narrow.map((call) => call.y)).size;
 
     expect(wideBaselines).toBe(1);
-    expect(narrowBaselines).toBeGreaterThan(wideBaselines);
-    // Segmentation only inserts breaks; no source graphemes are dropped.
-    expect(narrow.map((call) => call.text).join("")).toBe(sourceText);
+    // CAPTION_MAX_VISIBLE_LINES=1: a tighter budget still paints one line, but
+    // only the newest window of graphemes remains on the plate.
+    expect(narrowBaselines).toBe(1);
+    expect(narrow.map((call) => call.text).join("")).toBe("あ".repeat(10));
   });
 
   it("repaints on a budget-only change (framePaintKey and publish gate invalidate)", () => {

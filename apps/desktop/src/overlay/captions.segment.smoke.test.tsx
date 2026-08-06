@@ -113,11 +113,32 @@ describe("captionTextLines and captionItems", () => {
     expect(items[0]?.key).toBe("translation");
     expect(items[1]?.key).toBe("source");
 
-    // Long text split by the configured per-row budget.
+    // Long text is wrapped by the per-row budget, then capped to the visible
+    // window (CAPTION_MAX_VISIBLE_LINES) so the overlay plate cannot grow
+    // without bound.
     const longSource = "あ".repeat(60);
     const lines = captionTextLines({ key: "source", text: longSource, maxChars: 20 });
-    expect(lines.join("")).toBe(longSource);
-    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.join("")).toBe("あ".repeat(20));
+    expect(lines).toHaveLength(1);
+
+    const overflowing = "い".repeat(120);
+    const windowed = captionTextLines({ key: "source", text: overflowing, maxChars: 20 });
+    // CAPTION_MAX_VISIBLE_LINES=1 → keep only the newest maxChars graphemes.
+    expect(windowed.join("").length).toBe(20);
+    expect(windowed.join("")).toBe("い".repeat(20));
+  });
+
+  it("drops older recognition once the display window is exceeded", () => {
+    // With a 1-line window, 5×28 graphemes keep only the newest 28.
+    const older = "古".repeat(28);
+    const newer = "新".repeat(28);
+    const lines = captionTextLines({
+      key: "source",
+      text: `${older}${newer}`,
+      maxChars: 28,
+    });
+    expect(lines.join("")).toBe(newer);
+    expect(lines.join("")).not.toContain("古");
   });
 
   it("places placeholder copy when requested", () => {

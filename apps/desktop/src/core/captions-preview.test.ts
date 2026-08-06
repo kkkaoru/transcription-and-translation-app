@@ -114,8 +114,9 @@ describe("caption preview content", () => {
     const config = createDefaultConfig();
     const caption = {
       ...createPreviewCaption(),
-      sourceText: `一行目\r\n${"二".repeat(SOURCE_CAPTION_MAX_CHARS + 1)}`,
-      translationText: `first\n${"second ".repeat(TRANSLATION_CAPTION_MAX_CHARS)}`,
+      // Stay inside the 1-line display window so explicit breaks remain visible.
+      sourceText: "一行目\r\n二行目",
+      translationText: "first\nsecond line",
     };
     const items = captionItems(config, caption);
     const sourceItem = items[0];
@@ -127,10 +128,12 @@ describe("caption preview content", () => {
     const translationLines = captionTextLines(translationItem);
 
     expect(sourceLines[0]).toBe("一行目");
+    expect(sourceLines).toContain("二行目");
     expect(sourceLines.every((line) => Array.from(line).length <= SOURCE_CAPTION_MAX_CHARS)).toBe(
       true,
     );
     expect(translationLines[0]).toBe("first");
+    expect(translationLines).toContain("second line");
     expect(
       translationLines.every((line) => Array.from(line).length <= TRANSLATION_CAPTION_MAX_CHARS),
     ).toBe(true);
@@ -240,13 +243,8 @@ describe("configurable caption line budget", () => {
     }
 
     expect(captionTextLines(wide)).toEqual([text]);
-    expect(captionTextLines(narrow)).toEqual([
-      "あ".repeat(6),
-      "あ".repeat(6),
-      "あ".repeat(6),
-      "あ".repeat(6),
-    ]);
-    // Every grapheme survives at both budgets; only breaks are inserted.
-    expect(captionTextLines(narrow).join("")).toBe(text);
+    // CAPTION_MAX_VISIBLE_LINES=1 keeps only the newest maxChars window.
+    expect(captionTextLines(narrow)).toEqual(["あ".repeat(6)]);
+    expect(captionTextLines(narrow).join("")).toBe("あ".repeat(6));
   });
 });

@@ -1,6 +1,7 @@
 import {
   CAPTION_MAX_CHARS_MAX,
   CAPTION_MAX_CHARS_MIN,
+  CAPTION_MAX_VISIBLE_LINES,
   clampCaptionMaxChars,
   defaultCaptionMaxChars,
   SOURCE_CAPTION_MAX_CHARS,
@@ -16,6 +17,7 @@ import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types"
 export {
   CAPTION_MAX_CHARS_MAX,
   CAPTION_MAX_CHARS_MIN,
+  CAPTION_MAX_VISIBLE_LINES,
   SOURCE_CAPTION_MAX_CHARS,
   TRANSLATION_CAPTION_MAX_CHARS,
 };
@@ -126,6 +128,45 @@ const splitLongLine = (line: string, maxChars: number): string[] => {
   return segments.length > 0 ? segments : [line.trim()];
 };
 
+/**
+ * Keep only the newest grapheme window when recognition has grown past the
+ * on-screen budget (`maxChars * maxLines`).
+ *
+ * Older text is discarded entirely so the overlay / Syphon plate does not
+ * stack dozens of wrapped lines and collapse the layout. Prefer starting the
+ * window after punctuation when a nearby break exists, so a mid-clause cut is
+ * rare.
+ */
+export const trimCaptionToDisplayWindow = (
+  text: string,
+  maxChars: number,
+  maxLines: number = CAPTION_MAX_VISIBLE_LINES,
+): string => {
+  const normalized = text.replace(/\r\n?/gu, "\n").trim();
+  if (!normalized) {
+    return "";
+  }
+  const safeMaxChars = Math.max(1, Math.floor(maxChars));
+  const safeMaxLines = Math.max(1, Math.floor(maxLines));
+  const budget = safeMaxChars * safeMaxLines;
+  const graphemes = captionGraphemes(normalized);
+  if (graphemes.length <= budget) {
+    return normalized;
+  }
+  let start = graphemes.length - budget;
+  // Prefer a clause boundary near the cut so the first visible line does not
+  // begin mid-phrase when punctuation is available within half a line.
+  const searchEnd = Math.min(graphemes.length, start + Math.floor(safeMaxChars / 2));
+  for (let index = start; index < searchEnd; index += 1) {
+    const character = graphemes[index];
+    if (character && preferredBreak.test(character)) {
+      start = index + 1;
+      break;
+    }
+  }
+  return trimStartGraphemes(graphemes.slice(start)).join("");
+};
+
 /** Split caption text into readable logical lines without dropping content. */
 export const segmentCaptionText = (text: string, maxChars: number): string[] => {
   const normalized = text.replace(/\r\n?/gu, "\n").trim();
@@ -148,11 +189,11 @@ export const segmentCaptionText = (text: string, maxChars: number): string[] => 
  */
 export const captionTextLines = (
   item: Pick<CaptionItem, "key" | "text"> & Partial<Pick<CaptionItem, "maxChars">>,
-): string[] =>
-  segmentCaptionText(
-    item.text,
-    typeof item.maxChars === "number" ? item.maxChars : defaultCaptionMaxChars(item.key),
-  );
+): string[] => {
+  const maxChars =
+    typeof item.maxChars === "number" ? item.maxChars : defaultCaptionMaxChars(item.key);
+  return segmentCaptionText(trimCaptionToDisplayWindow(item.text, maxChars), maxChars);
+};
 
 export const createPreviewCaption = (): CaptionPayload => {
   const now = Date.now();
