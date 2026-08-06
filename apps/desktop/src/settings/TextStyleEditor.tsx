@@ -1,6 +1,8 @@
 import type { AppConfig, CaptionTextStyle } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
+import { FontFamilyCombobox } from "./FontFamilyCombobox";
+import { NumberSliderField } from "./NumberSliderField";
 
 const updateTextStyle = (
   config: AppConfig,
@@ -41,30 +43,27 @@ export const TextStyleEditor = ({
     max: number,
     step: number,
   ) => (
-    <label className="field compact" key={String(key)}>
-      <span>{t(labelKey)}</span>
-      <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={Number(style[key])}
-        onChange={(event) => set(key, Number(event.target.value) as CaptionTextStyle[typeof key])}
-      />
-    </label>
+    <NumberSliderField
+      key={String(key)}
+      label={t(labelKey)}
+      min={min}
+      max={max}
+      step={step}
+      value={Number(style[key])}
+      testId={`style-${kind}-${String(key)}`}
+      onChange={(next) => set(key, next as CaptionTextStyle[typeof key])}
+    />
   );
 
   return (
     <details className="style-editor" open>
       <summary>{title}</summary>
       <div className="style-grid">
-        <label className="field wide">
-          <span>{t("style.fontFamily")}</span>
-          <input
-            value={style.fontFamily}
-            onChange={(event) => set("fontFamily", event.target.value)}
-          />
-        </label>
+        <FontFamilyCombobox
+          label={t("style.fontFamily")}
+          value={style.fontFamily}
+          onChange={(next) => set("fontFamily", next)}
+        />
         {number("fontSizePx", "style.fontSize", 8, 240, 1)}
         {number("fontWeight", "style.fontWeight", 100, 900, 50)}
         {number("letterSpacingPx", "style.letterSpacing", -10, 30, 0.1)}
@@ -100,7 +99,7 @@ export const TextStyleEditor = ({
             <input
               type="checkbox"
               checked={style.cullingEnabled}
-              onChange={(event) => set("cullingEnabled", event.target.checked)}
+              onChange={(event) => set("cullingEnabled", event.currentTarget.checked)}
             />
             <span>{t("style.showOutline")}</span>
           </label>
@@ -123,7 +122,7 @@ export const TextStyleEditor = ({
             <input
               type="checkbox"
               checked={style.shadowEnabled}
-              onChange={(event) => set("shadowEnabled", event.target.checked)}
+              onChange={(event) => set("shadowEnabled", event.currentTarget.checked)}
             />
             <span>{t("style.showShadow")}</span>
           </label>
@@ -142,7 +141,7 @@ export const TextStyleEditor = ({
             <input
               type="checkbox"
               checked={style.backgroundEnabled}
-              onChange={(event) => set("backgroundEnabled", event.target.checked)}
+              onChange={(event) => set("backgroundEnabled", event.currentTarget.checked)}
             />
             <span>{t("style.showBackground")}</span>
           </label>

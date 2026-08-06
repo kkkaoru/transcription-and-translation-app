@@ -1330,6 +1330,55 @@ button:disabled {
   grid-column: span 2;
 }
 
+.number-slider-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.5rem;
+  gap: 8px;
+  align-items: center;
+}
+
+.number-slider-controls input[type="range"] {
+  width: 100%;
+}
+
+.font-family-combobox {
+  position: relative;
+}
+
+.font-family-options {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% - 2px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid rgba(134, 197, 216, 0.72);
+  border-radius: 10px;
+  background: rgba(8, 18, 28, 0.96);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+.font-family-options button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.font-family-options button[aria-selected="true"],
+.font-family-options button:hover {
+  background: rgba(134, 197, 216, 0.18);
+}
+
 .style-subsection {
   padding-top: 13px;
   border-top: 1px solid rgba(134, 197, 216, 0.72);
@@ -1470,6 +1519,12 @@ button:disabled {
   color: white;
   background: transparent;
   box-sizing: border-box;
+}
+
+/* The native window is click-through too. Keep the web surface display-only
+   so a future embedded/preview host cannot accidentally make it interactive. */
+.overlay-document .overlay-root {
+  pointer-events: none;
 }
 
 .overlay-root.overlay-preview {
