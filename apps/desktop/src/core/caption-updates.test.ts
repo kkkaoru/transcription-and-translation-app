@@ -2037,7 +2037,7 @@ describe("mergeCaptionPayload", () => {
     expect(merged?.translationText).toBe("");
   });
 
-  it("collapses runaway single-Kanji stutter instead of growing 為為為…", () => {
+  it("collapses runaway single-Kanji stutter at three or more 為", () => {
     let current = caption({
       id: "stutter",
       sourceText: "為",
@@ -2047,12 +2047,18 @@ describe("mergeCaptionPayload", () => {
       sequence: 0,
       isFinal: false,
     });
-    for (const nextText of ["為為", "為為為", "為為為為", "為為為為為"]) {
+    const steps: Array<{ next: string; expected: string }> = [
+      { next: "為為", expected: "為為" },
+      { next: "為為為", expected: "為為" },
+      { next: "為為為為", expected: "為為" },
+      { next: "為為為為為", expected: "為為" },
+    ];
+    for (const step of steps) {
       const merged = mergeCaptionPayload(
         current,
         caption({
           id: "stutter",
-          sourceText: nextText,
+          sourceText: step.next,
           startedAt: 1_000,
           receivedAt: current.receivedAt + 10,
           stage: "source",
@@ -2061,7 +2067,7 @@ describe("mergeCaptionPayload", () => {
         }),
       );
       expect(merged).not.toBeNull();
-      expect(merged?.sourceText).toBe("為為為");
+      expect(merged?.sourceText).toBe(step.expected);
       current = merged as typeof current;
     }
   });
@@ -2069,7 +2075,7 @@ describe("mergeCaptionPayload", () => {
   it("does not append another identical Kanji onto an existing stutter tail", () => {
     const current = caption({
       id: "stutter-append",
-      sourceText: "今日は為為為",
+      sourceText: "今日は為為",
       startedAt: 1_000,
       receivedAt: 1_000,
       stage: "source",
@@ -2085,6 +2091,6 @@ describe("mergeCaptionPayload", () => {
       sequence: 0,
       isFinal: false,
     });
-    expect(mergeCaptionPayload(current, next)?.sourceText).toBe("今日は為為為");
+    expect(mergeCaptionPayload(current, next)?.sourceText).toBe("今日は為為");
   });
 });

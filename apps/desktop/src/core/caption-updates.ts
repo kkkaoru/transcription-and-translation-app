@@ -239,7 +239,7 @@ const hasCloseSourceTiming = (current: CaptionPayload, next: CaptionPayload): bo
  * old text (for example `雨` → `晴れ`).
  *
  * Every accepted join is run through Kanji-stutter collapse so a rolling
- * `為` → `為為` → `為為為為…` revision cannot accumulate on screen.
+ * `為` → `為為` → `為為為…` revision cannot accumulate on screen.
  */
 const mergeSourceText = (
   current: CaptionPayload,
