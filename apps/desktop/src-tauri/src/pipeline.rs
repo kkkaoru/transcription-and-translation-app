@@ -738,7 +738,7 @@ impl Pipeline {
         // Only the text fed to the normalizer changes.
         let normalize_input = if config.rescore.enabled {
             let rescore_started = Instant::now();
-            let rescored = self.rescore_reading(config, &reading).await;
+            let (rescored, rescore_error) = self.rescore_reading(config, &reading).await;
             record_stage(
                 stages,
                 on_stage,
@@ -749,8 +749,8 @@ impl Pipeline {
                     &reading,
                     &rescored,
                     elapsed_ms(rescore_started),
-                    true,
-                    None,
+                    rescore_error.is_none(),
+                    rescore_error,
                     None,
                 ),
             );
@@ -995,21 +995,33 @@ impl Pipeline {
     /// Loads the 120 MB model on first call (memory-mapped), then runs the
     /// rescoring in a `spawn_blocking` task bounded by `timeout_ms`. Falls back
     /// to the original reading on any error, timeout, or panic so the caption
-    /// path can never wedge.
-    async fn rescore_reading(&self, config: &AppConfig, reading: &str) -> String {
+    /// path can never wedge. Returns `(reading, None)` on success or
+    /// `(original, Some(error))` when the stage had to fall back so DebugPanel
+    /// can show that Input N5 LM did not actually rewrite the hypothesis.
+    async fn rescore_reading(
+        &self,
+        config: &AppConfig,
+        reading: &str,
+    ) -> (String, Option<String>) {
         let rescorer = match self.rescorer.get_or_load(&config.rescore) {
             Ok(r) => r,
             Err(e) => {
                 log::warn!(target: "pipeline_rescore", "rescorer unavailable, falling back: {e}");
-                return reading.to_string();
+                return (reading.to_string(), Some(e));
             }
         };
         let reading_for_work = reading.to_string();
         let rescorer_for_work = Arc::clone(&rescorer);
-        run_rescore_with_timeout(config.rescore.timeout_ms, reading.to_string(), move || {
+        let timeout_ms = config.rescore.timeout_ms;
+        let original = reading.to_string();
+        match run_rescore_with_timeout(timeout_ms, original.clone(), move || {
             rescorer_for_work.best(&reading_for_work)
         })
         .await
+        {
+            Ok(rescored) => (rescored, None),
+            Err(error) => (original, Some(error)),
+        }
     }
 
     async fn translate(&self, config: &AppConfig, text: &str) -> Result<String, PipelineError> {
@@ -1067,16 +1079,17 @@ impl Pipeline {
 /// `timeout_ms`. Fail-open: any completion error (panic from the closure) or
 /// timeout returns the original reading unchanged. This is the single chokepoint
 /// that guarantees a rescore can never drop or wedge a caption.
-async fn run_rescore_with_timeout<F>(timeout_ms: u64, original: String, work: F) -> String
+async fn run_rescore_with_timeout<F>(timeout_ms: u64, original: String, work: F) -> Result<String, String>
 where
     F: FnOnce() -> String + Send + 'static,
 {
     let timeout = Duration::from_millis(timeout_ms);
     match tokio::time::timeout(timeout, tokio::task::spawn_blocking(work)).await {
-        Ok(Ok(rescored)) => rescored,
+        Ok(Ok(rescored)) => Ok(rescored),
         Ok(Err(error)) => {
             log::warn!(target: "pipeline_rescore", "rescore task panicked: {error}");
-            original
+            let _ = original;
+            Err(format!("rescore task panicked: {error}"))
         }
         Err(_) => {
             log::warn!(
@@ -1084,7 +1097,8 @@ where
                 "rescore timed out after {}ms, falling back",
                 timeout_ms
             );
-            original
+            let _ = original;
+            Err(format!("rescore timed out after {timeout_ms}ms"))
         }
     }
 }
@@ -2243,6 +2257,15 @@ mod tests {
         // The rescore output equals the input (fallback to original).
         assert_eq!(rescore_stage.input_snippet, "きょうははいしんです");
         assert_eq!(rescore_stage.output_text, "きょうははいしんです");
+        assert!(!rescore_stage.ok, "missing model must mark the rescore stage as failed");
+        assert!(
+            rescore_stage
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("input-LM") || error.contains("load")),
+            "missing model should surface a load error, got {:?}",
+            rescore_stage.error
+        );
 
         // Merge key invariant: azookey_input_text is the ORIGINAL reading.
         assert_eq!(partial.azookey_input_text.as_deref(), Some("きょうははいしんです"));
@@ -2381,27 +2404,30 @@ mod tests {
     }
 
     /// Fail-open: if the rescore work panics inside the blocking task, the
-    /// original reading is returned unchanged. A panicking rescorer must never
+    /// caller falls back to the original reading. A panicking rescorer must never
     /// drop a caption.
     #[tokio::test]
     async fn rescore_panic_falls_open_to_the_original_reading() {
         let original = "きょうははいしんです".to_string();
         let result =
             run_rescore_with_timeout(5_000, original.clone(), panicking_rescore_work).await;
-        assert_eq!(
-            result, original,
-            "panic in the rescorer must fall back to the original reading"
+        assert!(
+            result.is_err(),
+            "panic in the rescorer must surface as an error for the caller to fall back"
         );
     }
 
     /// Fail-open: if the rescore work exceeds the configured timeout, the
-    /// original reading is returned unchanged. A slow rescorer must not stall or
+    /// caller falls back to the original reading. A slow rescorer must not stall or
     /// drop the caption path.
     #[tokio::test]
     async fn rescore_timeout_falls_open_to_the_original_reading() {
         let original = "きょうははいしんです".to_string();
         let result = run_rescore_with_timeout(1, original.clone(), slow_rescore_work).await;
-        assert_eq!(result, original, "a timed-out rescorer must fall back to the original reading");
+        assert!(
+            result.is_err(),
+            "a timed-out rescorer must surface as an error for the caller to fall back"
+        );
     }
 
     /// A successful rescore returns the rescorer output verbatim, proving the
@@ -2411,6 +2437,6 @@ mod tests {
         let result =
             run_rescore_with_timeout(5_000, "original".to_string(), || "rescored".to_string())
                 .await;
-        assert_eq!(result, "rescored");
+        assert_eq!(result, Ok("rescored".to_string()));
     }
 }
