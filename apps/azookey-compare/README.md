@@ -20,6 +20,18 @@ bun install
 bun --cwd apps/azookey-compare dev
 ```
 
+### Desktop parity checks
+
+The right-hand panel includes a **読み入力** lane that mirrors Kotoba Beacon's
+Tauri path: phonetic text (`azookey_input_text`) is sent straight to the Worker
+AzooKey WASM without a browser Vibrato rewrite. Use it to confirm the same
+`azookey-rust` converter the desktop normalizer uses.
+
+Built-in fixtures cover Item 2 regressions (`とても` / `すーぷは` /
+`おつかれさまでした`) and the adversarial comma-list cases (`懸賞` / `規格` /
+`硬貨`). **全ケース実行** runs them in order and marks expected vs actual in
+the timeline.
+
 ### WebSocket endpoint
 
 Without any env override, the page defaults to the local wrangler endpoint:

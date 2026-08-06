@@ -203,6 +203,7 @@ select:focus-visible {
 
 .config-panel,
 .speech-panel,
+.desktop-panel,
 .history-panel {
   padding: 21px;
 }
@@ -600,6 +601,39 @@ select:focus-visible {
   padding: 0 3px;
   color: var(--muted);
   font-size: 11px;
+}
+
+.speech-panel,
+.desktop-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.field-label textarea {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--ink);
+  resize: vertical;
+  min-height: 72px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.row-meta-hit {
+  color: var(--teal-deep);
+}
+
+.row-meta-miss {
+  color: var(--coral);
 }
 
 .footer-spacer {

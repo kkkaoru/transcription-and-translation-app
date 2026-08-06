@@ -14,6 +14,7 @@ import {
   DEFAULT_COMPARISON_CONFIG,
   hasBrowserWasmConfiguration,
 } from "../lib/contract";
+import { DESKTOP_AZOOKEY_FIXTURES, type DesktopAzookeyFixture } from "../lib/desktop-fixtures";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import { syncSpeechLanguage } from "../lib/speech-language";
 import {
@@ -29,14 +30,18 @@ import {
 } from "../lib/worker-client";
 
 type ComparisonRowState = "queued" | "wasm" | "sending" | "done" | "error";
+type ComparisonRowOrigin = "web-speech" | "manual" | "desktop-fixture";
 
 interface ComparisonRow {
   id: string;
   sourceText: string;
   vibratoInput?: string;
   convertedText?: string;
+  expectedText?: string;
   state: ComparisonRowState;
   mode: ComparisonMode;
+  origin: ComparisonRowOrigin;
+  fixtureId?: string;
   wasmElapsedMs?: number;
   workerElapsedMs?: number;
   error?: string;
@@ -139,6 +144,9 @@ export default function ComparePage() {
   const [latestWorker, setLatestWorker] = useState<ComparisonRow | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [manualReading, setManualReading] = useState("おつかれさまでした");
+  const [selectedFixtureId, setSelectedFixtureId] = useState(DESKTOP_AZOOKEY_FIXTURES[0]?.id ?? "");
+  const [fixtureBusy, setFixtureBusy] = useState(false);
 
   const speechRef = useRef<WebSpeechController | null>(null);
   const initialSpeechLanguageRef = useRef(config.language);
@@ -237,17 +245,32 @@ export default function ComparePage() {
       wasmGlobalName: string,
       language: string,
       auth: ComparisonAuth,
+      options: {
+        origin?: ComparisonRowOrigin;
+        expectedText?: string;
+        fixtureId?: string;
+        /**
+         * When set, skip browser Vibrato and feed this string as `vibratoInput`.
+         * Desktop captions already hand AzooKey a phonetic reading, so fixture
+         * / manual checks should exercise that same path.
+         */
+        phoneticInput?: string;
+      } = {},
     ): Promise<void> => {
       const normalizedSource = sourceText.trim();
       if (!normalizedSource) {
         return;
       }
+      const origin = options.origin ?? "web-speech";
       const id = createId();
       const initialRow: ComparisonRow = {
         id,
         sourceText: normalizedSource,
         state: "queued",
         mode,
+        origin,
+        ...(options.expectedText !== undefined ? { expectedText: options.expectedText } : {}),
+        ...(options.fixtureId !== undefined ? { fixtureId: options.fixtureId } : {}),
         createdAt: Date.now(),
       };
       appendRow(initialRow);
@@ -261,7 +284,8 @@ export default function ComparePage() {
         setLatestWorker((current) => (current?.id === id ? { ...current, ...patch } : current));
       };
 
-      let vibratoInput = normalizedSource;
+      const forcedPhonetic = options.phoneticInput?.trim();
+      let vibratoInput = forcedPhonetic || normalizedSource;
       let wasmElapsedMs: number | undefined;
       // Tracks the stage in flight so a failure is attributed to the stage that
       // actually failed, rather than to whichever stage happened to run last.
@@ -270,7 +294,9 @@ export default function ComparePage() {
         if (auth.scheme === "bearer" && !auth.token?.trim()) {
           throw new Error("Bearer token を入力してください");
         }
-        if (mode === "browser-vibrato") {
+        // Desktop-style phonetic checks already supply the reading AzooKey
+        // expects, so do not rewrite them through browser Vibrato.
+        if (mode === "browser-vibrato" && !forcedPhonetic) {
           setBrowserWasmState("loading");
           patchRow({ state: "wasm" });
           stage = "browser-wasm";
@@ -321,8 +347,12 @@ export default function ComparePage() {
           language,
           sourceText: normalizedSource,
           vibratoInput,
-          mode,
-          vibratoExecution: mode === "browser-vibrato" ? "browser-wasm" : "worker",
+          mode: forcedPhonetic ? "worker-vibrato" : mode,
+          vibratoExecution: forcedPhonetic
+            ? "worker"
+            : mode === "browser-vibrato"
+              ? "browser-wasm"
+              : "worker",
           auth: authForRequest(auth),
         });
         patchRow({
@@ -358,6 +388,7 @@ export default function ComparePage() {
         config.browserWasmGlobalName ?? "",
         config.language,
         config.auth,
+        { origin: "web-speech" },
       ),
     );
     // Keep the chain alive after an unexpected observer/React failure. The
@@ -365,6 +396,105 @@ export default function ComparePage() {
     // guard prevents one rapid utterance from blocking all later finals.
     dispatchQueueRef.current = dispatch.catch(() => undefined);
     void dispatch;
+  };
+
+  const enqueueConversion = useCallback(
+    (sourceText: string, options: Parameters<typeof dispatchFinalText>[7]): void => {
+      const dispatch = dispatchQueueRef.current.then(() =>
+        dispatchFinalText(
+          sourceText,
+          config.mode,
+          config.browserWasmModuleUrl ?? "",
+          config.browserWasmDictionaryUrl ?? "",
+          config.browserWasmGlobalName ?? "",
+          config.language,
+          config.auth,
+          options,
+        ),
+      );
+      dispatchQueueRef.current = dispatch.catch(() => undefined);
+      void dispatch;
+    },
+    [
+      config.auth,
+      config.browserWasmDictionaryUrl,
+      config.browserWasmGlobalName,
+      config.browserWasmModuleUrl,
+      config.language,
+      config.mode,
+      dispatchFinalText,
+    ],
+  );
+
+  const submitManualReading = (): void => {
+    const reading = manualReading.trim();
+    if (!reading) {
+      setError("かな読みを入力してください");
+      return;
+    }
+    setNotice("デスクトップ相当の読みで Worker AzooKey を実行しています");
+    enqueueConversion(reading, {
+      origin: "manual",
+      phoneticInput: reading,
+    });
+  };
+
+  const runDesktopFixture = (fixture: DesktopAzookeyFixture): void => {
+    setNotice(`フィクスチャ「${fixture.label}」を Worker へ送信しています`);
+    enqueueConversion(fixture.reading, {
+      origin: "desktop-fixture",
+      phoneticInput: fixture.reading,
+      expectedText: fixture.expected,
+      fixtureId: fixture.id,
+    });
+  };
+
+  const runSelectedFixture = (): void => {
+    const fixture = DESKTOP_AZOOKEY_FIXTURES.find((entry) => entry.id === selectedFixtureId);
+    if (!fixture) {
+      setError("フィクスチャを選択してください");
+      return;
+    }
+    runDesktopFixture(fixture);
+  };
+
+  const runAllDesktopFixtures = async (): Promise<void> => {
+    if (fixtureBusy) {
+      return;
+    }
+    setFixtureBusy(true);
+    setNotice("デスクトップ用フィクスチャを順に実行しています");
+    try {
+      for (const fixture of DESKTOP_AZOOKEY_FIXTURES) {
+        await new Promise<void>((resolve) => {
+          const dispatch = dispatchQueueRef.current.then(() =>
+            dispatchFinalText(
+              fixture.reading,
+              config.mode,
+              config.browserWasmModuleUrl ?? "",
+              config.browserWasmDictionaryUrl ?? "",
+              config.browserWasmGlobalName ?? "",
+              config.language,
+              config.auth,
+              {
+                origin: "desktop-fixture",
+                phoneticInput: fixture.reading,
+                expectedText: fixture.expected,
+                fixtureId: fixture.id,
+              },
+            ),
+          );
+          dispatchQueueRef.current = dispatch
+            .catch(() => undefined)
+            .then(() => {
+              resolve();
+            });
+        });
+      }
+      setNotice("デスクトップ用フィクスチャの実行が完了しました");
+    } finally {
+      setFixtureBusy(false);
+    }
   };
 
   const browserWasmConfigured = hasBrowserWasmConfiguration(config);
@@ -678,6 +808,73 @@ export default function ComparePage() {
               マイク権限を許可すると、確定した発話ごとに Worker へ非同期送信します。
             </p>
           </section>
+
+          <section className="panel desktop-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">TAURI DESKTOP PARITY</p>
+                <h3>読み入力（azookey_input_text）</h3>
+              </div>
+            </div>
+            <p className="field-help">
+              Kotoba Beacon のデスクトップは ASR 読みを AzooKey に渡します。ここでも同じ読みを
+              Worker WASM（`azookey-rust`）へ直接送り、変換結果を確認できます。
+            </p>
+            <label className="field-label" htmlFor="manual-reading">
+              かな読み
+              <textarea
+                id="manual-reading"
+                rows={3}
+                value={manualReading}
+                onChange={(event) => setManualReading(event.target.value)}
+                placeholder="おつかれさまでした"
+                spellCheck={false}
+              />
+            </label>
+            <button className="button button-primary" type="button" onClick={submitManualReading}>
+              読みを変換
+            </button>
+
+            <div className="subsection fixture-settings">
+              <p className="subsection-title">デスクトップ回帰フィクスチャ</p>
+              <label className="field-label" htmlFor="desktop-fixture">
+                ケース
+                <select
+                  id="desktop-fixture"
+                  value={selectedFixtureId}
+                  onChange={(event) => setSelectedFixtureId(event.target.value)}
+                >
+                  {DESKTOP_AZOOKEY_FIXTURES.map((fixture) => (
+                    <option key={fixture.id} value={fixture.id}>
+                      {fixture.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="field-help">
+                {DESKTOP_AZOOKEY_FIXTURES.find((fixture) => fixture.id === selectedFixtureId)
+                  ?.note ?? ""}
+              </p>
+              <div className="button-row">
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  onClick={runSelectedFixture}
+                  disabled={fixtureBusy}
+                >
+                  選択ケースを実行
+                </button>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  onClick={() => void runAllDesktopFixtures()}
+                  disabled={fixtureBusy}
+                >
+                  全ケース実行
+                </button>
+              </div>
+            </div>
+          </section>
         </aside>
 
         <section className="results-stack" aria-label="比較結果">
@@ -745,39 +942,69 @@ export default function ComparePage() {
                   ◌
                 </span>
                 <p>確定発話がまだありません</p>
-                <span>認識を開始すると、Web Speech と Worker の結果を同じ行で追跡できます。</span>
+                <span>
+                  Web Speech、手動読み、またはデスクトップ用フィクスチャから Worker
+                  変換を実行できます。
+                </span>
               </div>
             ) : (
               <ol className="comparison-list">
-                {rows.map((row, index) => (
-                  <li className="comparison-row" key={row.id}>
-                    <span className="row-number">
-                      {String(rows.length - index).padStart(2, "0")}
-                    </span>
-                    <div className="row-source">
-                      <span className="row-label">Web Speech</span>
-                      <p>{row.sourceText}</p>
-                    </div>
-                    <span className="row-arrow" aria-hidden="true">
-                      →
-                    </span>
-                    <div className="row-worker">
-                      <span className={`row-state row-state-${row.state}`}>
-                        {rowStateLabel(row.state)}
+                {rows.map((row, index) => {
+                  const expectationMet =
+                    row.state === "done" &&
+                    row.expectedText !== undefined &&
+                    row.convertedText === row.expectedText;
+                  const expectationMissed =
+                    row.state === "done" &&
+                    row.expectedText !== undefined &&
+                    row.convertedText !== row.expectedText;
+                  return (
+                    <li className="comparison-row" key={row.id}>
+                      <span className="row-number">
+                        {String(rows.length - index).padStart(2, "0")}
                       </span>
-                      <p>{row.convertedText ?? row.error ?? "—"}</p>
-                      <span className="row-meta">
-                        {rowPathLabel(row.mode, row.state, row.failedStage)}
-                        {row.wasmElapsedMs !== undefined
-                          ? ` · WASM ${formatMilliseconds(row.wasmElapsedMs)}`
-                          : ""}
-                        {row.workerElapsedMs !== undefined
-                          ? ` · Worker ${formatMilliseconds(row.workerElapsedMs)}`
-                          : ""}
+                      <div className="row-source">
+                        <span className="row-label">
+                          {row.origin === "desktop-fixture"
+                            ? "Desktop fixture"
+                            : row.origin === "manual"
+                              ? "Manual reading"
+                              : "Web Speech"}
+                        </span>
+                        <p>{row.sourceText}</p>
+                        {row.vibratoInput && row.vibratoInput !== row.sourceText ? (
+                          <span className="row-meta">vibratoInput: {row.vibratoInput}</span>
+                        ) : null}
+                        {row.expectedText ? (
+                          <span
+                            className={`row-meta ${expectationMissed ? "row-meta-miss" : expectationMet ? "row-meta-hit" : ""}`}
+                          >
+                            expected: {row.expectedText}
+                            {expectationMet ? " ✓" : expectationMissed ? " ✗" : ""}
+                          </span>
+                        ) : null}
+                      </div>
+                      <span className="row-arrow" aria-hidden="true">
+                        →
                       </span>
-                    </div>
-                  </li>
-                ))}
+                      <div className="row-worker">
+                        <span className={`row-state row-state-${row.state}`}>
+                          {rowStateLabel(row.state)}
+                        </span>
+                        <p>{row.convertedText ?? row.error ?? "—"}</p>
+                        <span className="row-meta">
+                          {rowPathLabel(row.mode, row.state, row.failedStage)}
+                          {row.wasmElapsedMs !== undefined
+                            ? ` · WASM ${formatMilliseconds(row.wasmElapsedMs)}`
+                            : ""}
+                          {row.workerElapsedMs !== undefined
+                            ? ` · Worker ${formatMilliseconds(row.workerElapsedMs)}`
+                            : ""}
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
               </ol>
             )}
             {droppedRows > 0 ? (
