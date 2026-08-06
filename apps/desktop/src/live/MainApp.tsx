@@ -2090,11 +2090,6 @@ export const MainApp = () => {
           <div>
             <div className="brand-name">Kotoba Beacon</div>
             <div className="brand-caption">{t("brand.caption")}</div>
-            <div className="build-meta" data-testid="build-info">
-              <span data-testid="build-version">v{BUILD_INFO.appVersion}</span>
-              <span aria-hidden="true">·</span>
-              <span data-testid="build-id">build {BUILD_INFO.buildId}</span>
-            </div>
           </div>
         </div>
         <div className="topbar-meta">
@@ -2136,6 +2131,11 @@ export const MainApp = () => {
                 <strong>{t("sidebar.privacyTitle")}</strong>
                 <small>{t("sidebar.privacyDetail")}</small>
               </span>
+            </div>
+            <div className="build-meta" data-testid="build-info">
+              <span data-testid="build-version">v{BUILD_INFO.appVersion}</span>
+              <span aria-hidden="true">·</span>
+              <span data-testid="build-id">build {BUILD_INFO.buildId}</span>
             </div>
             <div className="version">
               Tauri 2 <span>·</span> native runtime

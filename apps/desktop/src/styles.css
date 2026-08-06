@@ -98,12 +98,12 @@ button:disabled {
   position: relative;
   z-index: 40;
   flex: 0 0 auto;
-  min-height: 76px;
+  min-height: 48px;
   height: auto;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 10px 34px;
+  gap: 12px;
+  padding: 6px 20px;
   border-bottom: 1px solid var(--line);
   /* Opaque chrome: translucent glass let scrolled content bleed under the bar. */
   background: #f0f8ff;
@@ -132,15 +132,15 @@ button:disabled {
 
 .brand-mark {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   flex: 0 0 auto;
   place-items: center;
   overflow: hidden;
   border: 1px solid rgba(134, 197, 216, 0.9);
-  border-radius: 10px;
+  border-radius: 8px;
   color: var(--teal);
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 800;
   letter-spacing: -0.08em;
   background: linear-gradient(135deg, rgba(134, 197, 216, 0.42), rgba(202, 233, 245, 0.22));
@@ -156,7 +156,7 @@ button:disabled {
 
 .brand-name {
   color: #173f5f;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 750;
   letter-spacing: 0.02em;
 }
