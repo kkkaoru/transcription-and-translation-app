@@ -220,16 +220,23 @@ export const LiveView = ({
             <span className="live-badge" data-testid="native-always-on">
               {t("live.nativeAlwaysOn")}
             </span>
-          ) : (
-            <>
-              <button className="secondary-button" type="button" onClick={onOpenOverlay}>
-                {t("live.openTransparentCapture")}
-              </button>
-              <button className="secondary-button" type="button" onClick={onCloseOverlay}>
-                {t("live.hideTransparentCapture")}
-              </button>
-            </>
-          )}
+          ) : null}
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={onOpenOverlay}
+            data-testid="open-transparent-capture"
+          >
+            {t("live.openTransparentCapture")}
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={onCloseOverlay}
+            data-testid="hide-transparent-capture"
+          >
+            {t("live.hideTransparentCapture")}
+          </button>
           <button
             className={`primary-button ${capturing ? "danger" : ""}`}
             type="button"

@@ -309,7 +309,7 @@ describe("LiveView in-app preview scaling", () => {
     expect(onCloseOverlay).toHaveBeenCalledOnce();
   });
 
-  it("hides transparent capture controls when Syphon/Spout is the live transport", async () => {
+  it("keeps transparent capture controls available even when Syphon/Spout is active", async () => {
     await act(async () => {
       root.render(
         <I18nProvider>
@@ -334,10 +334,7 @@ describe("LiveView in-app preview scaling", () => {
     expect(container.querySelector('[data-testid="native-always-on"]')?.textContent).toContain(
       "常時配信",
     );
-    expect(
-      [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("透過取り込み"),
-      ),
-    ).toBe(false);
+    expect(container.querySelector('[data-testid="open-transparent-capture"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="hide-transparent-capture"]')).not.toBeNull();
   });
 });
