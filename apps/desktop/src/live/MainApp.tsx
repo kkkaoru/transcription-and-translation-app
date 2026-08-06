@@ -2060,6 +2060,9 @@ export const MainApp = () => {
       config.rescore.confusionWeight !== nextConfig.rescore.confusionWeight ||
       config.rescore.overcorrectionMargin !== nextConfig.rescore.overcorrectionMargin ||
       config.rescore.timeoutMs !== nextConfig.rescore.timeoutMs;
+    const nativeOutputChanged =
+      (config.overlay.nativeOutputEnabled ?? false) !==
+      (nextConfig.overlay.nativeOutputEnabled ?? false);
     setConfig(nextConfig);
     // Recognition mode, device, chunking, and gate settings change microphone
     // or stream ownership. Restart an active/starting session immediately so a
@@ -2072,6 +2075,11 @@ export const MainApp = () => {
       // Input-LM correction toggle/weights apply on the next caption via
       // save_config → invalidate_rescorer; no mic restart required.
       void persistConfigLive(nextConfig, "Rescore settings applied live");
+    } else if (nativeOutputChanged) {
+      // Syphon/Spout2 start/stop is owned by save_config's NativeOutputHandle
+      // replacement. Persist immediately so the checkbox matches runtime status
+      // without requiring a separate Save click.
+      void persistConfigLive(nextConfig, "Native output setting applied live");
     }
   };
 

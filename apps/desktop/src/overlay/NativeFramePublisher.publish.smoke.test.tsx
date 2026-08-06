@@ -35,6 +35,7 @@ vi.mock("../core/audio", async (importOriginal) => {
 });
 
 import {
+  __resetNativeFontsReadyForTests,
   beginNativePublish,
   completeNativePublishSuccess,
   createNativePublishGate,
@@ -89,9 +90,26 @@ const installCanvasStub = (): void => {
   );
 };
 
+/**
+ * Drive rAF + retry setTimeouts without wall-clock sleeps.
+ * Real timers made the 200ms backoff / 3-failure paths slow and CI-flaky.
+ */
 const flush = async (ms: number): Promise<void> => {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+};
+
+const installFakeTimers = (): void => {
+  vi.useFakeTimers({
+    toFake: [
+      "setTimeout",
+      "clearTimeout",
+      "setInterval",
+      "clearInterval",
+      "requestAnimationFrame",
+      "cancelAnimationFrame",
+    ],
   });
 };
 
@@ -128,6 +146,8 @@ describe("NativeFramePublisher publish failures", () => {
   let root: Root;
 
   beforeEach(() => {
+    installFakeTimers();
+    __resetNativeFontsReadyForTests();
     mocks.isDesktop.mockReset().mockReturnValue(true);
     mocks.publishOverlayFrame.mockReset().mockResolvedValue(undefined);
     encodeThrows = false;
@@ -150,6 +170,7 @@ describe("NativeFramePublisher publish failures", () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("republishes the latest caption after cleanup cancels an unresolved invoke", async () => {
@@ -374,6 +395,8 @@ describe("NativeFramePublisher cancelled render catch", () => {
   let root: Root;
 
   beforeEach(() => {
+    installFakeTimers();
+    __resetNativeFontsReadyForTests();
     mocks.isDesktop.mockReset().mockReturnValue(true);
     mocks.publishOverlayFrame.mockReset().mockResolvedValue(undefined);
     encodeThrows = false;
@@ -396,6 +419,7 @@ describe("NativeFramePublisher cancelled render catch", () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("releases the in-flight claim when unmounted during a throwing render", async () => {
@@ -433,6 +457,8 @@ describe("NativeFramePublisher decision-skip effects", () => {
   let root: Root;
 
   beforeEach(() => {
+    installFakeTimers();
+    __resetNativeFontsReadyForTests();
     mocks.isDesktop.mockReset().mockReturnValue(true);
     mocks.publishOverlayFrame.mockReset().mockResolvedValue(undefined);
     encodeThrows = false;
@@ -455,6 +481,7 @@ describe("NativeFramePublisher decision-skip effects", () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("skips a repeat render of the same caption after it already succeeded", async () => {
@@ -479,6 +506,8 @@ describe("NativeFramePublisher coalesce and cancelled paths", () => {
   let root: Root;
 
   beforeEach(() => {
+    installFakeTimers();
+    __resetNativeFontsReadyForTests();
     mocks.isDesktop.mockReset().mockReturnValue(true);
     mocks.publishOverlayFrame.mockReset().mockResolvedValue(undefined);
     encodeThrows = false;
@@ -501,6 +530,7 @@ describe("NativeFramePublisher coalesce and cancelled paths", () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("coalesces rapid caption bursts into a single published frame", async () => {
@@ -563,6 +593,8 @@ describe("NativeFramePublisher exhausted-decision branch", () => {
   let root: Root;
 
   beforeEach(() => {
+    installFakeTimers();
+    __resetNativeFontsReadyForTests();
     mocks.isDesktop.mockReset().mockReturnValue(true);
     mocks.publishOverlayFrame.mockReset().mockRejectedValue(new Error("native worker dead"));
     encodeThrows = false;
@@ -585,6 +617,7 @@ describe("NativeFramePublisher exhausted-decision branch", () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("logs exhaustion and suppresses a re-rendered permanently failing frame", async () => {

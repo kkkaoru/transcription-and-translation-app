@@ -439,6 +439,11 @@ let fontsReady: Promise<void> | null = null;
  */
 export const NATIVE_FONTS_READY_TIMEOUT_MS = 500;
 
+/** Clear the fonts.ready cache between tests so suites cannot leak waiters. */
+export const __resetNativeFontsReadyForTests = (): void => {
+  fontsReady = null;
+};
+
 export const ensureFontsReady = (): Promise<void> => {
   if (typeof document === "undefined" || !document.fonts?.ready) {
     return Promise.resolve();

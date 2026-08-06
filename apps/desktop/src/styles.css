@@ -1609,10 +1609,10 @@ button:disabled {
 
   .topbar {
     height: auto;
-    min-height: 76px;
-    padding: 12px 20px;
+    min-height: 48px;
+    padding: 8px 16px;
     flex-wrap: wrap;
-    gap: 12px;
+    gap: 10px;
   }
 
   /* Narrow stack: sidebar above content; both share workspace scroll. */
@@ -1638,8 +1638,14 @@ button:disabled {
     overflow: visible;
   }
 
-  .sidebar-foot {
+  /* Keep build metadata reachable when the sidebar stacks. Only collapse the
+     privacy blurb so the narrow layout stays short without hiding build info. */
+  .sidebar-foot .privacy-note {
     display: none;
+  }
+
+  .sidebar-foot .build-meta {
+    display: flex;
   }
 }
 
@@ -1732,9 +1738,11 @@ summary:focus-visible {
 }
 
 .topbar {
-  min-height: 78px;
+  /* Keep the compact chrome from the base `.topbar` rule. A later theme
+     layer used to restore 78px and hide the shrink requested for Live. */
+  min-height: 48px;
   height: auto;
-  padding: 10px 36px;
+  padding: 6px 28px;
   border-color: var(--edge-light);
   /* Solid bar — window scroll no longer carries panels under chrome. */
   background: #f0f8ff;
@@ -3206,8 +3214,13 @@ summary:focus-visible {
     border-bottom: 1px solid var(--line);
   }
 
-  .sidebar-foot {
+  /* Final compact override: never hide build metadata with the foot. */
+  .sidebar-foot .privacy-note {
     display: none;
+  }
+
+  .sidebar-foot .build-meta {
+    display: flex;
   }
 
   .content {

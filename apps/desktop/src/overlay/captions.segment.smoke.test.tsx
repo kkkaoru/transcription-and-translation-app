@@ -4,9 +4,26 @@ import {
   captionGraphemes,
   captionItems,
   captionTextLines,
+  collapseRunawayGraphemeRuns,
   createPreviewCaption,
+  sanitizeCaptionDisplayText,
   segmentCaptionText,
+  stripCaptionContinuationMarker,
 } from "./captions";
+
+describe("caption display sanitization", () => {
+  it("strips trailing Parapper continuation markers without touching mid-text ellipsis", () => {
+    expect(stripCaptionContinuationMarker("今日は...")).toBe("今日は");
+    expect(stripCaptionContinuationMarker("今日は…")).toBe("今日は");
+    expect(stripCaptionContinuationMarker("待ち…ます")).toBe("待ち…ます");
+  });
+
+  it("collapses runaway single-Kanji stutter but leaves normal kana repetition alone", () => {
+    expect(collapseRunawayGraphemeRuns("為".repeat(20))).toBe("為".repeat(8));
+    expect(collapseRunawayGraphemeRuns("あ".repeat(24))).toBe("あ".repeat(24));
+    expect(sanitizeCaptionDisplayText(`${"為".repeat(12)}...`)).toBe("為".repeat(8));
+  });
+});
 
 describe("segmentCaptionText edge cases", () => {
   it("normalizes CRLF/CR line breaks and trims surrounding whitespace", () => {
