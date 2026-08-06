@@ -109,6 +109,20 @@ export const ModelCard = ({
       {family === "normalizer" && config.models.normalizer === "azookey-rust" ? (
         <>
           <Field
+            label={t("settings.azooSystemDictionary")}
+            wide
+            hint={t("settings.azooSystemDictionaryHint")}
+          >
+            <input
+              placeholder={t("settings.azooPathPlaceholder")}
+              title={
+                config.models.paths["azookey-rust"]?.trim() || t("settings.azooPathPlaceholder")
+              }
+              value={config.models.paths["azookey-rust"] ?? ""}
+              onChange={(event) => onPathChange("azookey-rust", event.target.value)}
+            />
+          </Field>
+          <Field
             label={t("settings.azooUserDictionary")}
             wide
             hint={t("settings.azooUserDictionaryHint")}

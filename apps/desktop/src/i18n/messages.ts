@@ -100,13 +100,16 @@ const ja = {
   "settings.translatorModel": "翻訳",
   "settings.modelPath": "モデルパス（任意）",
   "settings.modelPathPlaceholder": "例: /models/model.gguf",
+  "settings.azooSystemDictionary": "AzooKey システム辞書（任意）",
+  "settings.azooSystemDictionaryHint":
+    "ローカルの Dictionary ディレクトリ、または HTTPS の .tar.gz URL。URL はアプリデータにキャッシュされます。空欄なら初回キャプチャ時に公式辞書を取得します。",
   "settings.azooUserDictionary": "AzooKey ユーザー辞書（任意）",
   "settings.azooUserDictionaryHint":
-    "上流形式の user.louds / user<N>.loudstxt3 を含むディレクトリ、またはTSV。",
+    "上流形式の user.louds / user<N>.loudstxt3 を含むディレクトリ、TSV、またはそれらの HTTPS URL。ダウンロード分はキャッシュされます。",
   "settings.azooLearningMemory": "AzooKey 学習メモリ（任意）",
   "settings.azooLearningMemoryHint":
-    "上流形式の memory.louds / memory<N>.loudstxt3 を含むディレクトリ、またはTSV。",
-  "settings.azooPathPlaceholder": "例: /models/azookey-dict",
+    "上流形式の memory.louds / memory<N>.loudstxt3 を含むディレクトリ、TSV、またはそれらの HTTPS URL。ダウンロード分はキャッシュされます。",
+  "settings.azooPathPlaceholder": "例: /models/azookey-dict または https://…/dict.tar.gz",
   "settings.modelsNote":
     "初期構成は Parapper → Rust版AzooKey/zenz → Hy-MT2 です。モデルは推論ゲートウェイ側でロードし、ここではルーティングだけを切り替えます。",
   "settings.rescoreLabel": "かな読み補正（Input N5 LM rescore）",
@@ -557,13 +560,16 @@ const en: Record<MessageKey, string> = {
   "settings.translatorModel": "Translation",
   "settings.modelPath": "Model path (optional)",
   "settings.modelPathPlaceholder": "Example: /models/model.gguf",
+  "settings.azooSystemDictionary": "AzooKey system dictionary (optional)",
+  "settings.azooSystemDictionaryHint":
+    "A local Dictionary directory, or an HTTPS .tar.gz URL. URLs are cached under app data. Leave empty to fetch the official dictionary on first capture.",
   "settings.azooUserDictionary": "AzooKey user dictionary (optional)",
   "settings.azooUserDictionaryHint":
-    "A directory with upstream user.louds/user<N>.loudstxt3 files, or a TSV file.",
+    "A directory with upstream user.louds/user<N>.loudstxt3 files, a TSV file, or an HTTPS URL to either. Downloads are cached.",
   "settings.azooLearningMemory": "AzooKey learning memory (optional)",
   "settings.azooLearningMemoryHint":
-    "A directory with upstream memory.louds/memory<N>.loudstxt3 files, or a TSV file.",
-  "settings.azooPathPlaceholder": "Example: /models/azookey-dict",
+    "A directory with upstream memory.louds/memory<N>.loudstxt3 files, a TSV file, or an HTTPS URL to either. Downloads are cached.",
+  "settings.azooPathPlaceholder": "Example: /models/azookey-dict or https://…/dict.tar.gz",
   "settings.modelsNote":
     "The default pipeline is Parapper → Rust AzooKey/zenz → Hy-MT2. Models are loaded by the inference gateway; this screen controls routing.",
   "settings.rescoreLabel": "Kana-reading rescoring (Input N5 LM)",
