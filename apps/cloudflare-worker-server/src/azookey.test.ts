@@ -54,9 +54,9 @@ const valid = {
 
 describe("AzooKey Worker text contract", () => {
   it("clamps timeout configuration and publishes the ready protocol envelope", () => {
-    expect(azookeyTimeoutMs({})).toBe(1_000);
-    expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: " " })).toBe(1_000);
-    expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "not-a-number" })).toBe(1_000);
+    expect(azookeyTimeoutMs({})).toBe(2_000);
+    expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: " " })).toBe(2_000);
+    expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "not-a-number" })).toBe(2_000);
     expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "1" })).toBe(25);
     expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "250.6" })).toBe(251);
     expect(azookeyTimeoutMs({ AZOOKEY_TIMEOUT_MS: "99999" })).toBe(2_000);

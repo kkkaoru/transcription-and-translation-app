@@ -125,7 +125,7 @@ The expected production value is `true`. A `false` value means the deployment
 is still anonymous and must not be advertised as a public service.
 
 `sourceText` and `vibratoInput` are each limited to 4,096 UTF-8 bytes. A JSON
-frame is limited to 8,192 bytes. Conversion timeout defaults to 1,000 ms and can
+frame is limited to 8,192 bytes. Conversion timeout defaults to 2,000 ms and can
 be tuned with `AZOOKEY_TIMEOUT_MS` (25–2,000 ms). Invalid, oversized, binary,
 unauthenticated, and timed-out messages receive explicit error codes without
 closing a healthy session.

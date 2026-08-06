@@ -29,11 +29,13 @@ export const AZOOKEY_AUTH_TOKEN_MAX_ID_MULTIPLIER = 4;
 export const AZOOKEY_MAX_AUTH_TOKEN_BYTES =
   AZOOKEY_MAX_ID_BYTES * AZOOKEY_AUTH_TOKEN_MAX_ID_MULTIPLIER;
 // Portable AzooKey conversion is synchronous Wasm. Measurements for the
-// official dictionary put normal Japanese sentences around 300–600 ms, so a
-// 250 ms default produced false conversion_timeout errors before a result
-// could be displayed. Keep the bound finite while leaving room for a cold
-// isolate; deployments can tune it within the validated range.
-export const AZOOKEY_DEFAULT_TIMEOUT_MS = 1_000;
+// official dictionary put many Japanese captions around 300–600 ms, but
+// longer weather-style clauses such as `あしたのてんきははれ` regularly need
+// ~1.1 s even on native release builds. A 1000 ms default therefore produced
+// false conversion_timeout errors for real caption text. Keep the bound
+// finite while leaving room for those clauses and a cold isolate;
+// deployments can still tune within the validated range.
+export const AZOOKEY_DEFAULT_TIMEOUT_MS = 2_000;
 export const AZOOKEY_MIN_TIMEOUT_MS = 25;
 export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
 /** A dictionary cold load is intentionally bounded separately from conversion latency. */
