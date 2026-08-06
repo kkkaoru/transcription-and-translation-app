@@ -277,6 +277,13 @@ pub struct OverlayConfig {
     pub browser_source: BrowserSourceConfig,
     #[serde(default)]
     pub caption_max_chars: CaptionMaxCharsConfig,
+    /// When true, start Syphon (macOS) / Spout2 (Windows). Defaults to off.
+    #[serde(default = "default_native_output_enabled")]
+    pub native_output_enabled: bool,
+}
+
+fn default_native_output_enabled() -> bool {
+    false
 }
 
 fn default_caption_x_percent() -> f32 {
@@ -447,6 +454,7 @@ impl Default for AppConfig {
                 translation: CaptionTextStyle::default_translation(),
                 browser_source: BrowserSourceConfig::default(),
                 caption_max_chars: CaptionMaxCharsConfig::default(),
+                native_output_enabled: default_native_output_enabled(),
             },
             debug: DebugConfig::default(),
             rescore: RescoreConfig::default(),

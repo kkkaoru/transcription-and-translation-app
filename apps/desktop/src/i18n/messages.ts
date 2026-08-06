@@ -175,11 +175,15 @@ const ja = {
   "settings.browserSourceUrl": "OBSのBrowser Sourceに追加: http://127.0.0.1:{port}/",
   "settings.browserSourceToggle": "有効化する",
   "settings.browserSourcePort": "ポート",
+  "settings.nativeOutputLabel": "Syphon / Spout2 サーバー",
+  "settings.nativeOutputHint":
+    "macOS では Syphon、Windows では Spout2 を起動します。デフォルトはオフです。オフのときは透過取り込みウィンドウを使ってください。",
+  "settings.nativeOutputToggle": "ネイティブ出力を有効化する",
   "settings.sourceStyle": "日本語（認識結果）",
   "settings.translationStyle": "English（翻訳結果）",
   "settings.transparentTitle": "透明出力",
   "settings.transparentDetail":
-    "Syphon / Spout2 利用時は画面外の native-renderer が常時字幕を配信します。非対応環境では「透過取り込み」ウィンドウを開き、OBS の Window Capture で取り込んでください。",
+    "設定で Syphon / Spout2 を有効にすると画面外の native-renderer が字幕を配信します。無効時や非対応環境では「透過取り込み」ウィンドウを開き、OBS の Window Capture で取り込んでください。",
   "settings.autoOutput": "自動出力",
   "style.fontFamily": "Font family",
   "style.fontSize": "サイズ",
@@ -628,11 +632,15 @@ const en: Record<MessageKey, string> = {
   "settings.browserSourceUrl": "Add to OBS as a Browser Source: http://127.0.0.1:{port}/",
   "settings.browserSourceToggle": "Enable",
   "settings.browserSourcePort": "Port",
+  "settings.nativeOutputLabel": "Syphon / Spout2 server",
+  "settings.nativeOutputHint":
+    "Starts Syphon on macOS or Spout2 on Windows. Off by default; use the transparent capture window when disabled.",
+  "settings.nativeOutputToggle": "Enable native output",
   "settings.sourceStyle": "Japanese (recognition)",
   "settings.translationStyle": "English (translation)",
   "settings.transparentTitle": "Transparent output",
   "settings.transparentDetail":
-    "With Syphon/Spout2, an off-screen native-renderer always publishes captions. Without them, open the transparent capture window and use OBS Window Capture. Enable Allow Transparency on Syphon/Spout sources.",
+    "Enable Syphon/Spout2 in settings to publish captions from an off-screen native-renderer. When disabled or unsupported, open the transparent capture window and use OBS Window Capture.",
   "settings.autoOutput": "AUTO OUTPUT",
   "style.fontFamily": "Font family",
   "style.fontSize": "Font size",

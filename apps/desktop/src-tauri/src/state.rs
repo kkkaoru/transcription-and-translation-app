@@ -385,7 +385,11 @@ fn is_older_same_sequence(current: &CaptionPayload, candidate: &CaptionPayload) 
 
 impl AppState {
     pub fn new(config: AppConfig, output: OutputStatus) -> Self {
-        let native_output = NativeOutputHandle::new(config.overlay.width, config.overlay.height);
+        let native_output = NativeOutputHandle::with_native_enabled(
+            config.overlay.width,
+            config.overlay.height,
+            config.overlay.native_output_enabled,
+        );
         let native_output_kind = native_output.kind().to_string();
         Self {
             config: Mutex::new(config),

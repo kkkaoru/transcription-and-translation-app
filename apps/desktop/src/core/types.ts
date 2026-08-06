@@ -142,6 +142,12 @@ export interface OverlayConfig {
   browserSource?: BrowserSourceConfig;
   /** Optional so legacy configs (and their fixtures) keep parsing. */
   captionMaxChars?: CaptionMaxCharsConfig;
+  /**
+   * When true, start the platform Syphon/Spout2 server. Defaults to off so
+   * transparent capture / Browser Source remain the safe path until the user
+   * explicitly enables native publishing.
+   */
+  nativeOutputEnabled?: boolean;
 }
 
 /** Structured debug log severity (frontend ring buffer + backend filtering). */

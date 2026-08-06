@@ -699,6 +699,23 @@ export const SettingsView = ({
             />
           </Field>
           <Field
+            label={t("settings.nativeOutputLabel")}
+            hint={t("settings.nativeOutputHint")}
+          >
+            <label className="checkbox-field">
+              <input
+                id="overlay-native-output"
+                type="checkbox"
+                data-testid="native-output-enabled"
+                checked={config.overlay.nativeOutputEnabled ?? false}
+                onChange={(event) =>
+                  setOverlay({ nativeOutputEnabled: event.currentTarget.checked })
+                }
+              />
+              <span>{t("settings.nativeOutputToggle")}</span>
+            </label>
+          </Field>
+          <Field
             label={t("settings.browserSourceLabel")}
             hint={
               (config.overlay.browserSource?.enabled ?? false)

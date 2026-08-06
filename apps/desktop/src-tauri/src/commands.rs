@@ -114,7 +114,11 @@ pub async fn save_config(
         .map_err(|error| format!("could not serialize config: {error}"))?;
     std::fs::write(config_path, payload)
         .map_err(|error| format!("could not write config: {error}"))?;
-    let native_output = NativeOutputHandle::new(config.overlay.width, config.overlay.height);
+    let native_output = NativeOutputHandle::with_native_enabled(
+        config.overlay.width,
+        config.overlay.height,
+        config.overlay.native_output_enabled,
+    );
     let native_output_kind = native_output.kind().to_string();
     *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
     *state.native_output.lock().map_err(|_| "native output lock poisoned".to_string())? =

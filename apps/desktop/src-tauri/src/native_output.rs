@@ -235,7 +235,16 @@ pub struct NativeOutputHandle {
 }
 
 impl NativeOutputHandle {
+    /// Prefer the transparent-window lane. Syphon/Spout2 only start when the
+    /// user explicitly enables native output in settings.
     pub fn new(width: u32, height: u32) -> Self {
+        Self::transparent_window(width, height)
+    }
+
+    pub fn with_native_enabled(width: u32, height: u32, enabled: bool) -> Self {
+        if !enabled {
+            return Self::transparent_window(width, height);
+        }
         #[cfg(windows)]
         if let Some(worker) = start_spout(width, height) {
             return Self {
@@ -249,9 +258,7 @@ impl NativeOutputHandle {
         // The vendored Syphon.framework is a universal build with the Metal
         // server classes, so macOS (arm64 and x86_64) publishes captions over
         // Syphon. Test builds skip the real transport so unit tests stay
-        // hermetic (no Metal device or Syphon directory registration). The
-        // loopback Browser Source served by `browser_source.rs` remains
-        // default-enabled as an OBS fallback.
+        // hermetic (no Metal device or Syphon directory registration).
         #[cfg(all(target_os = "macos", not(test)))]
         if let Some(worker) = start_syphon(width, height) {
             return Self {
@@ -262,6 +269,10 @@ impl NativeOutputHandle {
             };
         }
 
+        Self::transparent_window(width, height)
+    }
+
+    fn transparent_window(width: u32, height: u32) -> Self {
         Self { worker: None, kind: "transparent-window".to_string(), width, height }
     }
 
