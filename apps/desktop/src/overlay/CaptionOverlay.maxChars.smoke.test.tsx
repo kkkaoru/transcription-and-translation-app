@@ -68,20 +68,20 @@ describe("DOM overlay honours the configured caption line budget", () => {
     const source = lineTextOf("source");
     const translation = lineTextOf("translation");
 
-    // Keep only the newest logical line on screen (CAPTION_MAX_VISIBLE_LINES=1).
-    expect(source.split("\n")).toEqual(["あ".repeat(6)]);
-    expect(translation.split("\n")).toEqual(["b".repeat(8)]);
-    expect(source.replaceAll("\n", "")).toBe("あ".repeat(6));
-    expect(translation.replaceAll("\n", "")).toBe("b".repeat(8));
+    // Keep only the newest logical lines on screen (CAPTION_MAX_VISIBLE_LINES=2).
+    expect(source.split("\n")).toEqual(["あ".repeat(6), "あ".repeat(6)]);
+    expect(translation.split("\n")).toEqual(["b".repeat(8), "b".repeat(8)]);
+    expect(source.replaceAll("\n", "")).toBe("あ".repeat(12));
+    expect(translation.replaceAll("\n", "")).toBe("b".repeat(16));
   });
 
   it("clamps an out-of-range persisted budget rather than rendering unusable lines", () => {
     // Below CAPTION_MAX_CHARS_MIN; must clamp up to 4 instead of degenerating.
-    // The visible window is maxChars × CAPTION_MAX_VISIBLE_LINES (4×1=4), so
-    // only the newest 4 of the 24-grapheme source remain on screen.
+    // The visible window is maxChars × CAPTION_MAX_VISIBLE_LINES (4×2=8), so
+    // only the newest 8 of the 24-grapheme source remain on screen.
     renderWith(configWithBudget(0, 0));
 
-    expect(lineTextOf("source").split("\n")).toEqual(["あ".repeat(4)]);
+    expect(lineTextOf("source").split("\n")).toEqual(["あ".repeat(4), "あ".repeat(4)]);
   });
 
   it("falls back to the built-in budgets for a legacy config without the field", () => {
@@ -104,9 +104,9 @@ describe("DOM overlay honours the configured caption line budget", () => {
 
     const source = lineTextOf("source");
     const translation = lineTextOf("translation");
-    // CAPTION_MAX_VISIBLE_LINES=1 → only the newest wrapped line remains.
-    expect(source.split("\n")).toEqual(["あ".repeat(6)]);
-    expect(translation.split("\n")).toEqual(["b".repeat(8)]);
+    // CAPTION_MAX_VISIBLE_LINES=2 → newest two wrapped lines remain.
+    expect(source.split("\n")).toEqual(["あ".repeat(6), "あ".repeat(6)]);
+    expect(translation.split("\n")).toEqual(["b".repeat(8), "b".repeat(8)]);
   });
 
   it("keeps a re-wrapped caption identical to a fresh render at the same budget", () => {
@@ -153,8 +153,8 @@ describe("DOM overlay honours the configured caption line budget", () => {
     const renderedGraphemes = graphemesOf(source);
 
     // No line starts with a dangling ZWJ or combining mark, and every line
-    // stays within the 2-grapheme budget. CAPTION_MAX_VISIBLE_LINES=1 keeps
-    // only the newest budget window on screen.
+    // stays within the 2-grapheme budget. CAPTION_MAX_VISIBLE_LINES=2 keeps
+    // up to 4 graphemes on screen (budget 2×2).
     expect(source.startsWith("\u200D")).toBe(false);
     expect(renderedGraphemes.some((cluster) => cluster.startsWith("\u3099"))).toBe(false);
     expect(renderedGraphemes.map((cluster) => graphemesOf(cluster).length)).toEqual(

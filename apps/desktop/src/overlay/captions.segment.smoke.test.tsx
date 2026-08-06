@@ -118,27 +118,28 @@ describe("captionTextLines and captionItems", () => {
     // without bound.
     const longSource = "あ".repeat(60);
     const lines = captionTextLines({ key: "source", text: longSource, maxChars: 20 });
-    expect(lines.join("")).toBe("あ".repeat(20));
-    expect(lines).toHaveLength(1);
+    expect(lines.join("")).toBe("あ".repeat(40));
+    expect(lines).toHaveLength(2);
 
     const overflowing = "い".repeat(120);
     const windowed = captionTextLines({ key: "source", text: overflowing, maxChars: 20 });
-    // CAPTION_MAX_VISIBLE_LINES=1 → keep only the newest maxChars graphemes.
-    expect(windowed.join("").length).toBe(20);
-    expect(windowed.join("")).toBe("い".repeat(20));
+    // CAPTION_MAX_VISIBLE_LINES=2 → keep the newest maxChars×2 graphemes.
+    expect(windowed.join("").length).toBe(40);
+    expect(windowed.join("")).toBe("い".repeat(40));
   });
 
   it("drops older recognition once the display window is exceeded", () => {
-    // With a 1-line window, 5×28 graphemes keep only the newest 28.
-    const older = "古".repeat(28);
-    const newer = "新".repeat(28);
+    // With a 2-line window, 5×28 graphemes keep only the newest 56.
+    // Use kana so Kanji stutter collapsing cannot interfere with the window test.
+    const older = "ふ".repeat(28);
+    const newer = "あ".repeat(56);
     const lines = captionTextLines({
       key: "source",
       text: `${older}${newer}`,
       maxChars: 28,
     });
     expect(lines.join("")).toBe(newer);
-    expect(lines.join("")).not.toContain("古");
+    expect(lines.join("")).not.toContain("ふ");
   });
 
   it("places placeholder copy when requested", () => {

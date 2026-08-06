@@ -82,9 +82,9 @@ describe("native caption canvas wrapping", () => {
     expect(renderNativeFrame(canvas, config, caption)).not.toBeNull();
 
     const paintedSource = fillCalls.map((call) => call.text).join("");
-    // Character-budget window (CAPTION_MAX_VISIBLE_LINES=1) keeps the newest
-    // SOURCE_CAPTION_MAX_CHARS graphemes; pixel wrapping may still split them.
-    expect(paintedSource.length).toBeLessThanOrEqual(28);
+    // Character-budget window (CAPTION_MAX_VISIBLE_LINES=2) keeps the newest
+    // SOURCE_CAPTION_MAX_CHARS×2 graphemes; pixel wrapping may still split them.
+    expect(paintedSource.length).toBeLessThanOrEqual(56);
     expect(source.endsWith(paintedSource)).toBe(true);
     expect(new Set(fillCalls.map((call) => call.y)).size).toBeGreaterThanOrEqual(1);
   });

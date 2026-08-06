@@ -243,8 +243,8 @@ describe("configurable caption line budget", () => {
     }
 
     expect(captionTextLines(wide)).toEqual([text]);
-    // CAPTION_MAX_VISIBLE_LINES=1 keeps only the newest maxChars window.
-    expect(captionTextLines(narrow)).toEqual(["あ".repeat(6)]);
-    expect(captionTextLines(narrow).join("")).toBe("あ".repeat(6));
+    // CAPTION_MAX_VISIBLE_LINES=2 keeps the newest maxChars×2 window.
+    expect(captionTextLines(narrow)).toEqual(["あ".repeat(6), "あ".repeat(6)]);
+    expect(captionTextLines(narrow).join("")).toBe("あ".repeat(12));
   });
 });

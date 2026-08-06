@@ -276,7 +276,12 @@ const mergeSourceText = (
   // enough to plausibly be adjacent rolling windows. Japanese does not need a
   // separator; Latin words do.
   const separator = /[A-Za-z0-9]$/u.test(currentText) && /^[A-Za-z0-9]/u.test(nextText) ? " " : "";
-  return `${currentText}${separator}${nextText}`;
+  const joined = `${currentText}${separator}${nextText}`;
+  // Guard against pathological single-grapheme stutter appends (為為為…).
+  if ([...nextText].length === 1 && currentText.endsWith(nextText.repeat(2))) {
+    return currentText;
+  }
+  return joined;
 };
 
 const mergeCrossIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {

@@ -63,6 +63,79 @@ export const captionGraphemes = (text: string): string[] => {
 };
 
 /**
+ * Vibrato/UniDic typically ends a token on these particles and auxiliaries.
+ * Prefer wrapping after them so captions switch on natural morph boundaries
+ * instead of mid-word grapheme cuts.
+ */
+const vibratoMorphBreakAfter =
+  /(?:から|まで|より|など|って|では|には|とは|のは|が|を|に|へ|で|と|も|の|や|か|は|ね|よ|な|て|た|だ|です|ます|でした|ました)$/u;
+
+/** True when the prefix ending at `endExclusive` is a Vibrato-like morph break. */
+const isVibratoMorphBreak = (graphemes: string[], endExclusive: number): boolean => {
+  if (endExclusive <= 0 || endExclusive > graphemes.length) {
+    return false;
+  }
+  const prefix = graphemes.slice(0, endExclusive).join("");
+  return vibratoMorphBreakAfter.test(prefix);
+};
+
+/**
+ * Parapper marks continuing turns with a trailing `...`. Captions should never
+ * paint that display marker; strip ASCII/fullwidth ellipsis suffixes only.
+ */
+export const stripCaptionContinuationMarker = (text: string): string =>
+  text.replace(/(?:\.{3}|…|⋯)+$/u, "").trimEnd();
+
+/**
+ * Collapse pathological single-Kanji runs (e.g. 為為為為…) that can appear
+ * when a one-character revision is appended repeatedly across rolling
+ * windows. Hiragana/katakana repetition is normal speech and is left alone.
+ */
+export const collapseRunawayGraphemeRuns = (text: string, maxRun = 8): string => {
+  const graphemes = captionGraphemes(text);
+  if (graphemes.length === 0) {
+    return "";
+  }
+  const safeMax = Math.max(1, Math.floor(maxRun));
+  const isKanji = (grapheme: string): boolean => /\p{Script=Han}/u.test(grapheme);
+  const out: string[] = [];
+  let previous = "";
+  let run = 0;
+  for (const grapheme of graphemes) {
+    if (grapheme === previous && isKanji(grapheme)) {
+      run += 1;
+      if (run <= safeMax) {
+        out.push(grapheme);
+      }
+      continue;
+    }
+    previous = grapheme;
+    run = 1;
+    out.push(grapheme);
+  }
+  return out.join("");
+};
+
+/** Sanitize caption text before segmentation / display. */
+export const sanitizeCaptionDisplayText = (text: string): string =>
+  collapseRunawayGraphemeRuns(stripCaptionContinuationMarker(text.replace(/\r\n?/gu, "\n")));
+
+/** Pick the best wrap index in `[floor, limit]` preferring morph then punctuation. */
+const preferNaturalBreakIndex = (graphemes: string[], limit: number, floor: number): number => {
+  let punctuationBreak = 0;
+  for (let index = limit; index >= floor; index -= 1) {
+    if (isVibratoMorphBreak(graphemes, index)) {
+      return index;
+    }
+    const character = graphemes[index - 1];
+    if (!punctuationBreak && character && (preferredBreak.test(character) || /\s/u.test(character))) {
+      punctuationBreak = index;
+    }
+  }
+  return punctuationBreak || limit;
+};
+
+/**
  * A grapheme cluster is whitespace-only when it trims to an empty string.
  * A cluster like U+0020 + U+0301 (space + combining acute) is one grapheme
  * that is NOT whitespace-only, so it must never be stripped by a boundary trim.
@@ -100,17 +173,11 @@ const splitLongLine = (line: string, maxChars: number): string[] => {
   const segments: string[] = [];
   let remaining = characters;
   while (remaining.length > maxChars) {
-    let breakAt = maxChars;
-    // Prefer punctuation/whitespace near the limit so Japanese clauses and
-    // Latin words stay together where possible. Never scan below half a line;
-    // a very long clause should still make forward progress.
-    for (let index = maxChars; index >= Math.floor(maxChars / 2); index -= 1) {
-      const character = remaining[index - 1];
-      if (character && (preferredBreak.test(character) || /\s/u.test(character))) {
-        breakAt = index;
-        break;
-      }
-    }
+    const breakAt = preferNaturalBreakIndex(
+      remaining,
+      maxChars,
+      Math.floor(maxChars / 2),
+    );
     // Trim at the grapheme-cluster level, not on the joined string: a cluster
     // like U+0020 + U+0301 is one grapheme, and String.prototype.trimStart
     // would strip the space and leave a bare combining mark at the start of
@@ -142,7 +209,7 @@ export const trimCaptionToDisplayWindow = (
   maxChars: number,
   maxLines: number = CAPTION_MAX_VISIBLE_LINES,
 ): string => {
-  const normalized = text.replace(/\r\n?/gu, "\n").trim();
+  const normalized = sanitizeCaptionDisplayText(text).trim();
   if (!normalized) {
     return "";
   }
@@ -154,10 +221,14 @@ export const trimCaptionToDisplayWindow = (
     return normalized;
   }
   let start = graphemes.length - budget;
-  // Prefer a clause boundary near the cut so the first visible line does not
-  // begin mid-phrase when punctuation is available within half a line.
+  // Prefer a Vibrato morph / punctuation boundary near the cut so the first
+  // visible line does not begin mid-phrase when a nearby break exists.
   const searchEnd = Math.min(graphemes.length, start + Math.floor(safeMaxChars / 2));
   for (let index = start; index < searchEnd; index += 1) {
+    if (isVibratoMorphBreak(graphemes, index)) {
+      start = index;
+      break;
+    }
     const character = graphemes[index];
     if (character && preferredBreak.test(character)) {
       start = index + 1;
@@ -169,7 +240,7 @@ export const trimCaptionToDisplayWindow = (
 
 /** Split caption text into readable logical lines without dropping content. */
 export const segmentCaptionText = (text: string, maxChars: number): string[] => {
-  const normalized = text.replace(/\r\n?/gu, "\n").trim();
+  const normalized = sanitizeCaptionDisplayText(text).trim();
   if (!normalized) {
     return [];
   }
@@ -231,13 +302,17 @@ export const captionItems = (
 ): CaptionItem[] => {
   const source: CaptionItem = {
     key: "source",
-    text: placeholder ? "日本語の音声認識結果がここに表示されます" : caption.sourceText,
+    text: placeholder
+      ? "日本語の音声認識結果がここに表示されます"
+      : sanitizeCaptionDisplayText(caption.sourceText),
     style: config.overlay.source,
     maxChars: resolveCaptionMaxChars(config, "source"),
   };
   const translation: CaptionItem = {
     key: "translation",
-    text: placeholder ? "English translation will appear here" : caption.translationText,
+    text: placeholder
+      ? "English translation will appear here"
+      : sanitizeCaptionDisplayText(caption.translationText),
     style: config.overlay.translation,
     maxChars: resolveCaptionMaxChars(config, "translation"),
   };

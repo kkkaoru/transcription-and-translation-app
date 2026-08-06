@@ -36,7 +36,7 @@ export const CAPTION_MAX_CHARS_MAX = 200;
  * exceeds `maxChars * CAPTION_MAX_VISIBLE_LINES`, older text is dropped and
  * only the newest window is shown.
  */
-export const CAPTION_MAX_VISIBLE_LINES = 1;
+export const CAPTION_MAX_VISIBLE_LINES = 2;
 
 /** Per-row fallback used whenever a configured budget is missing or unusable. */
 export const defaultCaptionMaxChars = (key: keyof CaptionMaxCharsConfig): number =>
@@ -335,6 +335,7 @@ export const createDefaultConfig = (): AppConfig => ({
       enabled: false,
       port: DEFAULT_BROWSER_SOURCE_PORT,
     },
+    nativeOutputEnabled: false,
     captionMaxChars: {
       source: SOURCE_CAPTION_MAX_CHARS,
       translation: TRANSLATION_CAPTION_MAX_CHARS,
@@ -577,6 +578,10 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
         base.overlay.captionMaxChars,
         input.overlay?.captionMaxChars,
       ),
+      nativeOutputEnabled:
+        typeof input.overlay?.nativeOutputEnabled === "boolean"
+          ? input.overlay.nativeOutputEnabled
+          : base.overlay.nativeOutputEnabled,
     },
     debug: { ...base.debug, ...input.debug },
     rescore: { ...base.rescore, ...input.rescore },

@@ -53,7 +53,11 @@ export type ParapperStreamEvent =
 export const selectParapperSurfaceText = (output: {
   text: string;
   sourceText?: string | null;
-}): string => output.sourceText?.trim() || output.text.trim();
+}): string => {
+  const raw = output.sourceText?.trim() || output.text.trim();
+  // Parapper continuing turns append `...`; never paint that on captions.
+  return raw.replace(/(?:\.{3}|…|⋯)+$/u, "").trimEnd();
+};
 
 type ServerMessage = {
   type?: unknown;

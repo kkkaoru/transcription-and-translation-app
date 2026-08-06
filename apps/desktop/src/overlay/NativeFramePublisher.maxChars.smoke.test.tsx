@@ -77,10 +77,10 @@ describe("configurable budget changes the native/Syphon line split", () => {
     const narrowBaselines = new Set(narrow.map((call) => call.y)).size;
 
     expect(wideBaselines).toBe(1);
-    // CAPTION_MAX_VISIBLE_LINES=1: a tighter budget still paints one line, but
-    // only the newest window of graphemes remains on the plate.
-    expect(narrowBaselines).toBe(1);
-    expect(narrow.map((call) => call.text).join("")).toBe("あ".repeat(10));
+    // CAPTION_MAX_VISIBLE_LINES=2: a tighter budget paints up to two lines of
+    // the newest window.
+    expect(narrowBaselines).toBe(2);
+    expect(narrow.map((call) => call.text).join("")).toBe("あ".repeat(20));
   });
 
   it("repaints on a budget-only change (framePaintKey and publish gate invalidate)", () => {
