@@ -2061,7 +2061,7 @@ describe("mergeCaptionPayload", () => {
         }),
       );
       expect(merged).not.toBeNull();
-      expect(merged?.sourceText).toBe("為為");
+      expect(merged?.sourceText).toBe("為為為");
       current = merged as typeof current;
     }
   });
@@ -2069,7 +2069,7 @@ describe("mergeCaptionPayload", () => {
   it("does not append another identical Kanji onto an existing stutter tail", () => {
     const current = caption({
       id: "stutter-append",
-      sourceText: "今日は為為",
+      sourceText: "今日は為為為",
       startedAt: 1_000,
       receivedAt: 1_000,
       stage: "source",
@@ -2085,6 +2085,6 @@ describe("mergeCaptionPayload", () => {
       sequence: 0,
       isFinal: false,
     });
-    expect(mergeCaptionPayload(current, next)?.sourceText).toBe("今日は為為");
+    expect(mergeCaptionPayload(current, next)?.sourceText).toBe("今日は為為為");
   });
 });

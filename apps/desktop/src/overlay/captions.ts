@@ -91,10 +91,10 @@ export const stripCaptionContinuationMarker = (text: string): string =>
  * when a one-character revision is appended repeatedly across rolling
  * windows. Hiragana/katakana repetition is normal speech and is left alone.
  *
- * Keep at most two identical Kanji in a row — longer runs are never valid
+ * Keep at most three identical Kanji in a row — longer runs are never valid
  * Japanese and indicate a merge/ASR stutter.
  */
-export const MAX_IDENTICAL_KANJI_RUN = 2;
+export const MAX_IDENTICAL_KANJI_RUN = 3;
 
 export const collapseRunawayGraphemeRuns = (text: string, maxRun = MAX_IDENTICAL_KANJI_RUN): string => {
   const graphemes = captionGraphemes(text);

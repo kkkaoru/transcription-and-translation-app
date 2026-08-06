@@ -19,9 +19,9 @@ describe("caption display sanitization", () => {
   });
 
   it("collapses runaway single-Kanji stutter but leaves normal kana repetition alone", () => {
-    expect(collapseRunawayGraphemeRuns("為".repeat(20))).toBe("為".repeat(2));
+    expect(collapseRunawayGraphemeRuns("為".repeat(20))).toBe("為".repeat(3));
     expect(collapseRunawayGraphemeRuns("あ".repeat(24))).toBe("あ".repeat(24));
-    expect(sanitizeCaptionDisplayText(`${"為".repeat(12)}...`)).toBe("為".repeat(2));
+    expect(sanitizeCaptionDisplayText(`${"為".repeat(12)}...`)).toBe("為".repeat(3));
   });
 });
 
