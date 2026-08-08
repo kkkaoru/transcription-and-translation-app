@@ -1220,16 +1220,8 @@ fn create_caption_surface_window(
     offscreen: bool,
     always_on_top: bool,
 ) -> Result<(), String> {
-    let x = if offscreen {
-        NATIVE_RENDERER_OFFSCREEN_X
-    } else {
-        config.overlay.x as f64
-    };
-    let y = if offscreen {
-        NATIVE_RENDERER_OFFSCREEN_Y
-    } else {
-        config.overlay.y as f64
-    };
+    let x = if offscreen { NATIVE_RENDERER_OFFSCREEN_X } else { config.overlay.x as f64 };
+    let y = if offscreen { NATIVE_RENDERER_OFFSCREEN_Y } else { config.overlay.y as f64 };
     let user_facing = !offscreen && !always_on_top;
     let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
         .title(title)
@@ -1257,9 +1249,7 @@ fn create_caption_surface_window(
     if visible {
         // Some platforms create the builder as ordered-back; force a show so the
         // webview compositor starts and NativeFramePublisher can paint.
-        window
-            .show()
-            .map_err(|error| format!("could not show {label} window: {error}"))?;
+        window.show().map_err(|error| format!("could not show {label} window: {error}"))?;
     }
     Ok(())
 }
@@ -1297,13 +1287,18 @@ pub(crate) fn shutdown_native_output(app: &AppHandle) {
 /// Start the always-on caption renderer when Spout2 or Syphon is active.
 ///
 /// Frames are published from this off-screen webview's canvas. User show/hide of
-/// the optional transparent capture window must never tear this down or pause it.
+/// the optional caption display window must never tear this down or pause it.
+/// When native output is disabled, close any leftover renderer so it cannot
+/// keep painting after Syphon/Spout has stopped.
 pub(crate) fn ensure_native_renderer(
     app: &AppHandle,
     config: &AppConfig,
     native_output_kind: &str,
 ) -> Result<(), String> {
     if !matches!(native_output_kind, "spout2" | "syphon") {
+        if let Some(window) = app.get_webview_window(NATIVE_RENDERER_LABEL) {
+            let _ = window.close();
+        }
         return Ok(());
     }
     if let Some(window) = app.get_webview_window(NATIVE_RENDERER_LABEL) {
@@ -1361,9 +1356,7 @@ pub fn open_transparent_capture(app: AppHandle, state: State<'_, AppState>) -> R
         window
             .set_ignore_cursor_events(false)
             .map_err(|error| format!("could not enable caption window interaction: {error}"))?;
-        window
-            .show()
-            .map_err(|error| format!("could not show caption window: {error}"))?;
+        window.show().map_err(|error| format!("could not show caption window: {error}"))?;
         return Ok(());
     }
     create_caption_surface_window(
@@ -1381,9 +1374,7 @@ pub fn open_transparent_capture(app: AppHandle, state: State<'_, AppState>) -> R
 #[tauri::command]
 pub fn close_transparent_capture(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(TRANSPARENT_CAPTURE_LABEL) {
-        window
-            .hide()
-            .map_err(|error| format!("could not hide transparent capture: {error}"))?;
+        window.hide().map_err(|error| format!("could not hide transparent capture: {error}"))?;
     }
     // Never touch native-renderer: Syphon/Spout caption publishing must continue.
     Ok(())
@@ -1452,8 +1443,8 @@ pub fn publish_overlay_frame(
 }
 
 fn ensure_native_publisher_window(label: &str) -> Result<(), String> {
-    // The main window is always composited, so it is the reliable Syphon/Spout
-    // publisher. `native-renderer` remains allowed for the off-screen route.
+    // Off-screen `native-renderer` is the primary Syphon/Spout publisher.
+    // The main window remains allowed as a fallback if that surface failed to mount.
     if label == NATIVE_RENDERER_LABEL || label == "main" {
         Ok(())
     } else {
@@ -1462,6 +1453,7 @@ fn ensure_native_publisher_window(label: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn native_output_uses_render_publish(state: &AppState) -> Result<bool, String> {
     let kind = state
         .native_output
@@ -1685,7 +1677,7 @@ mod tests {
         publish_parapper_caption, publish_source_caption_gated, redact_runtime_text,
         sanitize_debug_json, sanitize_export_body, source_caption_payload,
         stop_generation_is_current, validate_overlay_frame_dimensions, NativeOverlayFrame,
-        NATIVE_RENDERER_LABEL, SourceCaptionInput, TRANSPARENT_CAPTURE_LABEL,
+        SourceCaptionInput, NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL,
     };
     use crate::config::AppConfig;
     use crate::native_output::NativeOutputHandle;

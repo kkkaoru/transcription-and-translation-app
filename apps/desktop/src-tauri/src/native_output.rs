@@ -235,24 +235,13 @@ pub struct NativeOutputHandle {
 }
 
 impl NativeOutputHandle {
-    /// Prefer the transparent-window lane. Syphon/Spout2 only start when the
-    /// user explicitly enables native output in settings.
-    pub fn new(width: u32, height: u32) -> Self {
-        Self::transparent_window(width, height)
-    }
-
     pub fn with_native_enabled(width: u32, height: u32, enabled: bool) -> Self {
         if !enabled {
             return Self::transparent_window(width, height);
         }
         #[cfg(windows)]
         if let Some(worker) = start_spout(width, height) {
-            return Self {
-                worker: Some(worker),
-                kind: "spout2".to_string(),
-                width,
-                height,
-            };
+            return Self { worker: Some(worker), kind: "spout2".to_string(), width, height };
         }
 
         // The vendored Syphon.framework is a universal build with the Metal
@@ -261,12 +250,7 @@ impl NativeOutputHandle {
         // hermetic (no Metal device or Syphon directory registration).
         #[cfg(all(target_os = "macos", not(test)))]
         if let Some(worker) = start_syphon(width, height) {
-            return Self {
-                worker: Some(worker),
-                kind: "syphon".to_string(),
-                width,
-                height,
-            };
+            return Self { worker: Some(worker), kind: "syphon".to_string(), width, height };
         }
 
         Self::transparent_window(width, height)
@@ -296,7 +280,7 @@ impl NativeOutputHandle {
     }
 
     /// Build a handle reporting an arbitrary kind without starting a real
-    /// transport. `NativeOutputHandle::new` cannot produce "spout2"/"syphon"
+    /// transport. `with_native_enabled(..., false)` cannot produce "spout2"/"syphon"
     /// in test builds (the real transports are gated `not(test)`), so callers
     /// outside this module that need to exercise a native-output-active code
     /// path in their own unit tests construct one through this helper instead
@@ -807,7 +791,7 @@ mod tests {
     #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn no_transport_platforms_fall_back_to_a_noop_transparent_window_handle() {
-        let output = super::NativeOutputHandle::new(1280, 720);
+        let output = super::NativeOutputHandle::with_native_enabled(1280, 720, false);
         assert_eq!(output.kind(), "transparent-window");
         let frame = OverlayFrame { rgba: vec![0; 1280 * 720 * 4], width: 1280, height: 720 };
         assert!(

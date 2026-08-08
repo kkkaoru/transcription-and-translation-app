@@ -81,16 +81,11 @@ import {
 import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
 import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
-import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
 import { DebugPanel } from "../settings/DebugPanel";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
 
 type ActiveTab = "live" | "settings";
-
-/** Syphon/Spout2 receive frames from a canvas publisher in the main window. */
-const usesNativeFramePublisher = (nativeOutput: RuntimeStatus["nativeOutput"]): boolean =>
-  nativeOutput === "syphon" || nativeOutput === "spout2";
 
 type CapturePhase = "idle" | "starting" | "capturing" | "stopping";
 
@@ -2087,9 +2082,6 @@ export const MainApp = () => {
 
   return (
     <div className="app-shell">
-      {usesNativeFramePublisher(status.nativeOutput) ? (
-        <NativeFramePublisher config={config} caption={caption} />
-      ) : null}
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true">
