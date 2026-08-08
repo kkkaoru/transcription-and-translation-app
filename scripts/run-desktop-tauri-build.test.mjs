@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   assertNativeMacTarget,
   configPathForBuild,
+  distReleaseCargoEnv,
   isIntelMacBuild,
   resolveTauriCliEntry,
   tauriArgsForBuild,
@@ -130,6 +131,15 @@ describe("architecture-specific desktop Tauri config", () => {
       }),
       ["dev", "--config", "src-tauri/tauri.macos-intel.conf.json"],
     );
+  });
+
+  it("applies dist-profile Cargo knobs without switching off target/release", () => {
+    const env = distReleaseCargoEnv({ PATH: "/usr/bin", CARGO_PROFILE_RELEASE_LTO: "off" });
+    assert.equal(env.CARGO_PROFILE_RELEASE_LTO, "thin");
+    assert.equal(env.CARGO_PROFILE_RELEASE_CODEGEN_UNITS, "1");
+    assert.equal(env.CARGO_PROFILE_RELEASE_INCREMENTAL, "false");
+    assert.equal(env.CARGO_PROFILE_RELEASE_PANIC, "abort");
+    assert.equal(env.PATH, "/usr/bin");
   });
 
   it("places selected config before forwarded bundle arguments", () => {

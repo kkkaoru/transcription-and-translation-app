@@ -74,6 +74,9 @@ lto = false
 codegen-units = 16
 strip = "symbols"
 
+# Manual `cargo build --profile dist` escape hatch. Signed `tauri:build:release`
+# keeps Tauri's `target/release/` lookup and applies the same knobs through
+# `CARGO_PROFILE_RELEASE_*` instead of `--profile dist`.
 [profile.dist]
 inherits = "release"
 incremental = false

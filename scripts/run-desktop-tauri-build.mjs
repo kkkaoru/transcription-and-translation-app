@@ -5,6 +5,10 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  findMacosAppBundles,
+  restoreAppBundleRuntimeSymlinks,
+} from "./restore-bundle-runtime-symlinks.mjs";
 import { bundleArgsForPlatform } from "./run-tauri-build.mjs";
 
 const desktopRoot = path.resolve(
@@ -94,6 +98,19 @@ export const configPathForBuild = ({
   return release ? "src-tauri/tauri.release.conf.json" : null;
 };
 
+/**
+ * Apply `[profile.dist]` knobs to Cargo's release profile. Tauri always looks
+ * for `target/release/`, so `tauri build -- --profile dist` is unsafe; the env
+ * overrides keep the output directory while enabling thin LTO for signed builds.
+ */
+export const distReleaseCargoEnv = (env = process.env) => ({
+  ...env,
+  CARGO_PROFILE_RELEASE_LTO: "thin",
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1",
+  CARGO_PROFILE_RELEASE_INCREMENTAL: "false",
+  CARGO_PROFILE_RELEASE_PANIC: "abort",
+});
+
 export const tauriArgsForBuild = ({
   platform = process.platform,
   arch = process.arch,
@@ -137,7 +154,7 @@ const main = () => {
     command: dev ? "dev" : "build",
     extraArgs,
   });
-  const env = { ...process.env };
+  const env = { ...(release ? distReleaseCargoEnv() : process.env) };
   delete env.RUSTUP_TOOLCHAIN;
   const result = spawnSync(process.execPath, [resolveTauriCliEntry(), ...args], {
     cwd: desktopRoot,
@@ -148,7 +165,26 @@ const main = () => {
     console.error(result.error.message);
     process.exit(1);
   }
-  process.exit(result.status ?? 1);
+  if ((result.status ?? 1) !== 0) {
+    process.exit(result.status ?? 1);
+  }
+  if (process.platform === "darwin" && !dev) {
+    const tauriDir = path.join(desktopRoot, "src-tauri");
+    const targetDir = env.CARGO_TARGET_DIR || path.join(tauriDir, "target");
+    const templateResources = path.join(tauriDir, "resources");
+    for (const appBundle of findMacosAppBundles(targetDir)) {
+      const { restored, collapsed } = restoreAppBundleRuntimeSymlinks(
+        appBundle,
+        templateResources,
+      );
+      if (restored || collapsed) {
+        console.log(
+          `Restored runtime symlinks in ${appBundle} (template=${restored}, collapsed=${collapsed})`,
+        );
+      }
+    }
+  }
+  process.exit(0);
 };
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

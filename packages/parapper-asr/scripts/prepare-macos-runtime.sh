@@ -9,14 +9,10 @@ runtime_dir="src-tauri/macos-runtime"
 
 mkdir -p "$runtime_dir"
 
-for library in \
-  libsherpa-onnx-c-api.dylib \
-  libsherpa-onnx-cxx-api.dylib \
-  libonnxruntime.dylib \
-  libonnxruntime.1.24.4.dylib
-do
-  if [ -f "$runtime_dir/$library" ]; then
-    continue
+copy_runtime_library() {
+  library="$1"
+  if [ -e "$runtime_dir/$library" ]; then
+    return 0
   fi
 
   source_path=""
@@ -41,4 +37,21 @@ do
     exit 1
   fi
   cp "$source_path" "$runtime_dir/$library"
-done
+}
+
+copy_runtime_library libsherpa-onnx-c-api.dylib
+copy_runtime_library libsherpa-onnx-cxx-api.dylib
+copy_runtime_library libonnxruntime.1.24.4.dylib
+
+# Parapper links the versioned ONNX dylib. Keep the unversioned name as a
+# relative symlink so the runtime directory is not doubled (~25MB).
+onnx_unversioned="$runtime_dir/libonnxruntime.dylib"
+onnx_versioned="$runtime_dir/libonnxruntime.1.24.4.dylib"
+if [ -L "$onnx_unversioned" ]; then
+  :
+elif [ -f "$onnx_unversioned" ] && cmp -s "$onnx_unversioned" "$onnx_versioned"; then
+  rm "$onnx_unversioned"
+  ln -s libonnxruntime.1.24.4.dylib "$onnx_unversioned"
+elif [ ! -e "$onnx_unversioned" ]; then
+  ln -s libonnxruntime.1.24.4.dylib "$onnx_unversioned"
+fi

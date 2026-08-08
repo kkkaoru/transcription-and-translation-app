@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { cleanBuildArtifacts } from "./clean-build-artifacts.mjs";
+import { finalizeMacSidecarBinary } from "./macos-sidecar-binary.mjs";
 
 interface HostTarget {
   readonly bunTarget: string;
@@ -86,7 +87,15 @@ const copyDirectory = (source: string, destination: string): void => {
     throw new Error(`Expected runtime directory was not generated: ${source}`);
   }
   mkdirSync(dirname(destination), { recursive: true });
-  cpSync(source, destination, { recursive: true, dereference: false });
+  cpSync(source, destination, {
+    recursive: true,
+    dereference: false,
+    filter: (path) => {
+      if (path === source) return true;
+      const name = basename(path);
+      return name !== ".gitkeep" && name !== ".gitignore";
+    },
+  });
 };
 
 const copyParapperRuntime = (): void => {
@@ -180,24 +189,11 @@ const copyRuntimeLibraries = (sourceDirectory: string, destination: string): voi
   }
 };
 
-const configureMacRuntimeRpaths = (output: string, runtimeDirectory: string): void => {
+const finalizeMacSidecar = (output: string, runtimeDirectory = ""): void => {
   if (process.platform !== "darwin") {
     return;
   }
-  // Debug sidecars sit beside target/debug/<runtimeDirectory>. Installed apps
-  // load the same libraries from Contents/Resources/<runtimeDirectory>.
-  run("add debug llama.cpp rpath", [
-    "install_name_tool",
-    "-add_rpath",
-    `@executable_path/${runtimeDirectory}`,
-    output,
-  ]);
-  run("add bundled llama.cpp rpath", [
-    "install_name_tool",
-    "-add_rpath",
-    `@executable_path/../Resources/${runtimeDirectory}`,
-    output,
-  ]);
+  finalizeMacSidecarBinary(output, runtimeDirectory);
 };
 
 const buildLlamaSidecar = (target: HostTarget): void => {
@@ -237,7 +233,7 @@ const buildLlamaSidecar = (target: HostTarget): void => {
   if (process.platform !== "win32") {
     chmodSync(destination, 0o755);
   }
-  configureMacRuntimeRpaths(destination, "llama-runtime");
+  finalizeMacSidecar(destination, "llama-runtime");
   copyLlamaRuntime(sourceDirectory);
 };
 
@@ -308,7 +304,7 @@ const buildZenzSidecar = (target: HostTarget): void => {
   if (process.platform !== "win32") {
     chmodSync(destination, 0o755);
   }
-  configureMacRuntimeRpaths(destination, "zenz-runtime");
+  finalizeMacSidecar(destination, "zenz-runtime");
   copyRuntimeLibraries(sourceDirectory, join(resourcesDir, "zenz-runtime"));
 };
 
@@ -348,6 +344,7 @@ const buildParapperSidecar = (target: HostTarget): void => {
   if (process.platform !== "win32") {
     chmodSync(destination, 0o755);
   }
+  finalizeMacSidecar(destination, "macos-runtime");
   copyParapperRuntime();
 };
 
@@ -364,9 +361,11 @@ run("Kotoba Beacon inference gateway", [
   "build",
   "apps/inference-gateway/src/main.ts",
   "--compile",
+  "--minify",
   `--target=${target.bunTarget}`,
   `--outfile=${gatewayOutput}`,
 ]);
+finalizeMacSidecar(gatewayOutput);
 buildParapperSidecar(target);
 buildZenzSidecar(target);
 buildLlamaSidecar(target);

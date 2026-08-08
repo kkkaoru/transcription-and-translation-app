@@ -56,7 +56,9 @@ export default defineConfig(({ command }) => {
     },
     build: {
       target: "es2022",
-      sourcemap: true,
+      // Production webview does not need source maps (~2MB). Keep them off so
+      // Tauri's frontendDist copy stays small.
+      sourcemap: false,
     },
   };
 });
