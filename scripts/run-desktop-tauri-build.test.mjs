@@ -64,6 +64,8 @@ describe("architecture-specific desktop Tauri config", () => {
         "build",
         "--config",
         "src-tauri/tauri.macos-intel.conf.json",
+        "--bundles",
+        "app",
         "--target",
         "x86_64-apple-darwin",
       ],
@@ -74,7 +76,7 @@ describe("architecture-specific desktop Tauri config", () => {
         arch: "arm64",
         extraArgs: ["--target=aarch64-apple-darwin"],
       }),
-      ["build", "--target=aarch64-apple-darwin"],
+      ["build", "--bundles", "app", "--target=aarch64-apple-darwin"],
     );
   });
 

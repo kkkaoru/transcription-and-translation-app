@@ -234,16 +234,18 @@ describe("cleanBuildArtifacts", () => {
       assert.match(workspace.scripts[scriptName], new RegExp(cleanup));
     }
     assert.match(workspace.scripts["clean:build"], /--prune-rust/);
-    assert.match(workspace.scripts["sidecar:build"], /--prune-rust/);
+    assert.doesNotMatch(workspace.scripts["sidecar:build"], /--prune-rust/);
     for (const scriptName of ["build", "tauri:build", "tauri:build:release"]) {
       assert.match(desktop.scripts[scriptName], new RegExp(cleanup));
     }
-    assert.match(comparison.scripts.build, new RegExp(cleanup));
+    // azookey-compare is a standalone Next.js app; it must not run the
+    // monorepo desktop/sidecar cleanup as part of its own build.
+    assert.doesNotMatch(comparison.scripts.build, new RegExp(cleanup));
     for (const scriptName of ["build", "build:msi"]) {
       assert.match(parapper.scripts[scriptName], new RegExp(cleanup));
     }
     for (const scriptName of ["tauri:build", "tauri:build:release"]) {
-      assert.match(desktop.scripts[scriptName], /--prune-rust/);
+      assert.doesNotMatch(desktop.scripts[scriptName], /--prune-rust/);
     }
     assert.match(workspace.scripts["test:build-cleanup"], /node --test/);
   });

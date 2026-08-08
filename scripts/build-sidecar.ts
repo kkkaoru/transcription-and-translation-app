@@ -1,4 +1,15 @@
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readlinkSync,
+  readdirSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { cleanBuildArtifacts } from "./clean-build-artifacts.mjs";
 
@@ -75,7 +86,7 @@ const copyDirectory = (source: string, destination: string): void => {
     throw new Error(`Expected runtime directory was not generated: ${source}`);
   }
   mkdirSync(dirname(destination), { recursive: true });
-  cpSync(source, destination, { recursive: true });
+  cpSync(source, destination, { recursive: true, dereference: false });
 };
 
 const copyParapperRuntime = (): void => {
@@ -150,8 +161,22 @@ const copyRuntimeLibraries = (sourceDirectory: string, destination: string): voi
   if (libraries.length === 0) {
     throw new Error(`llama.cpp did not produce runtime libraries in ${sourceDirectory}`);
   }
-  for (const library of libraries) {
+  // Copy real files first, then recreate symlinks. CMake emits
+  // libfoo.dylib -> libfoo.0.dylib -> libfoo.0.0.1.dylib; flattening those
+  // into three full copies inflates the app bundle by tens of megabytes.
+  const files = libraries.filter((file) => !lstatSync(join(sourceDirectory, file)).isSymbolicLink());
+  const links = libraries.filter((file) => lstatSync(join(sourceDirectory, file)).isSymbolicLink());
+  for (const library of files) {
     copyFileSync(join(sourceDirectory, library), join(destination, library));
+  }
+  for (const library of links) {
+    const target = join(destination, library);
+    try {
+      unlinkSync(target);
+    } catch {
+      // Destination may not exist yet.
+    }
+    symlinkSync(readlinkSync(join(sourceDirectory, library)), target);
   }
 };
 

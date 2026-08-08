@@ -31,7 +31,7 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": false,
-    "targets": "all",
+    "targets": ["app"],
     "category": "Utility",
     "shortDescription": "Local bilingual live captions for OBS by Kotoba Beacon",
     "icon": [

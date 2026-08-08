@@ -112,7 +112,8 @@ export const tauriArgsForBuild = ({
   const hasBundleSelection = extraArgs.some(
     (arg) => arg === "--bundles" || arg.startsWith("--bundles="),
   );
-  const releaseBundleArgs = release && !hasBundleSelection ? bundleArgsForPlatform(platform) : [];
+  const releaseBundleArgs =
+    command !== "dev" && !hasBundleSelection ? bundleArgsForPlatform(platform) : [];
   return [
     command,
     ...(config ? ["--config", config] : []),
