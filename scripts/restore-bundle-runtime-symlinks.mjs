@@ -7,12 +7,18 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 export const RUNTIME_DIR_NAMES = ["llama-runtime", "zenz-runtime", "macos-runtime"];
+const OPTIONAL_RUNTIME_DIR_NAMES = ["parapper-runtime"];
+const JUNK_RUNTIME_NAMES = new Set([".gitkeep", ".gitignore"]);
+const LICENSE_JSON = ["Contents", "Resources", "third-party", "parapper-rust-licenses.json"];
 
 const isRuntimeLibrary = (name) =>
   name.endsWith(".dylib") ||
@@ -114,6 +120,44 @@ export const restoreAppBundleRuntimeSymlinks = (appBundle, templateResourcesDir)
     collapsed += collapseIdenticalLibraries(dest);
   }
   return { restored, collapsed };
+};
+
+export const pruneEmptyRuntimeDirectories = (appBundle) => {
+  const resources = join(appBundle, "Contents", "Resources");
+  if (!existsSync(resources)) return { removedDirs: [], removedFiles: 0 };
+  const removedDirs = [];
+  let removedFiles = 0;
+  for (const name of [...RUNTIME_DIR_NAMES, ...OPTIONAL_RUNTIME_DIR_NAMES]) {
+    const dir = join(resources, name);
+    if (!existsSync(dir)) continue;
+    for (const entry of readdirSync(dir)) {
+      if (!JUNK_RUNTIME_NAMES.has(entry)) continue;
+      unlinkSync(join(dir, entry));
+      removedFiles += 1;
+    }
+    if (readdirSync(dir).length === 0) {
+      rmSync(dir, { recursive: true, force: true });
+      removedDirs.push(name);
+    }
+  }
+  return { removedDirs, removedFiles };
+};
+
+export const compressBundledLicenseJson = (appBundle) => {
+  const jsonPath = join(appBundle, ...LICENSE_JSON);
+  if (!existsSync(jsonPath)) return { compressed: false, originalBytes: 0, gzipBytes: 0 };
+  const original = readFileSync(jsonPath);
+  const gzipped = gzipSync(original, { level: 9 });
+  writeFileSync(`${jsonPath}.gz`, gzipped);
+  unlinkSync(jsonPath);
+  return { compressed: true, originalBytes: original.length, gzipBytes: gzipped.length };
+};
+
+export const optimizeMacosAppBundle = (appBundle, templateResourcesDir) => {
+  const symlinks = restoreAppBundleRuntimeSymlinks(appBundle, templateResourcesDir);
+  const pruned = pruneEmptyRuntimeDirectories(appBundle);
+  const licenses = compressBundledLicenseJson(appBundle);
+  return { ...symlinks, ...pruned, ...licenses };
 };
 
 export const findMacosAppBundles = (tauriTargetDir) => {

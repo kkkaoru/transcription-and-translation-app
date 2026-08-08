@@ -269,7 +269,7 @@ const inspectReleaseBundle = async () => {
     "kotoba-llama-server",
     "kotoba-zenz-server",
   ];
-  const expectedResources = ["parapper-runtime", "llama-runtime", "zenz-runtime", "third-party"];
+  const expectedResources = ["macos-runtime", "llama-runtime", "zenz-runtime", "third-party"];
   const inventory = {
     appPath,
     infoPlist,
@@ -320,7 +320,9 @@ const inspectReleaseBundle = async () => {
   check(
     "release bundle embeds runtime resources and notices",
     expectedResources.every((name) => resourceFiles.includes(name)) &&
-      fs.existsSync(path.join(resources, "third-party", "model-runtime-notice.md")),
+      fs.existsSync(path.join(resources, "third-party", "model-runtime-notice.md")) &&
+      (fs.existsSync(path.join(resources, "third-party", "parapper-rust-licenses.json")) ||
+        fs.existsSync(path.join(resources, "third-party", "parapper-rust-licenses.json.gz"))),
     expectedResources.filter((name) => !resourceFiles.includes(name)).join(", ") || "all present",
   );
 };

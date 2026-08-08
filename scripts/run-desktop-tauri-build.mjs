@@ -5,10 +5,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import {
-  findMacosAppBundles,
-  restoreAppBundleRuntimeSymlinks,
-} from "./restore-bundle-runtime-symlinks.mjs";
+import { findMacosAppBundles, optimizeMacosAppBundle } from "./restore-bundle-runtime-symlinks.mjs";
 import { bundleArgsForPlatform } from "./run-tauri-build.mjs";
 
 const desktopRoot = path.resolve(
@@ -173,13 +170,16 @@ const main = () => {
     const targetDir = env.CARGO_TARGET_DIR || path.join(tauriDir, "target");
     const templateResources = path.join(tauriDir, "resources");
     for (const appBundle of findMacosAppBundles(targetDir)) {
-      const { restored, collapsed } = restoreAppBundleRuntimeSymlinks(
-        appBundle,
-        templateResources,
-      );
-      if (restored || collapsed) {
+      const result = optimizeMacosAppBundle(appBundle, templateResources);
+      if (
+        result.restored ||
+        result.collapsed ||
+        result.removedDirs.length ||
+        result.removedFiles ||
+        result.compressed
+      ) {
         console.log(
-          `Restored runtime symlinks in ${appBundle} (template=${restored}, collapsed=${collapsed})`,
+          `Optimized ${appBundle} (symlinks=${result.restored}, collapsed=${result.collapsed}, prunedDirs=${result.removedDirs.join(",") || "none"}, licenseGzip=${result.gzipBytes})`,
         );
       }
     }

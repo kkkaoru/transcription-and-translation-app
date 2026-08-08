@@ -1,12 +1,25 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, readlinkSync, lstatSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   applyTemplateSymlinks,
   collapseIdenticalLibraries,
+  compressBundledLicenseJson,
   findMacosAppBundles,
+  optimizeMacosAppBundle,
+  pruneEmptyRuntimeDirectories,
   restoreAppBundleRuntimeSymlinks,
 } from "./restore-bundle-runtime-symlinks.mjs";
 
@@ -65,5 +78,55 @@ describe("restore bundle runtime symlinks", () => {
       collapsed: 0,
     });
     assert.equal(readlinkSync(join(resources, "libllama.dylib")), "libllama.0.dylib");
+  });
+
+  it("removes empty Windows-only runtime dirs and junk placeholders", () => {
+    const app = join(tempDir(), "Kotoba Beacon.app");
+    const parapper = join(app, "Contents", "Resources", "parapper-runtime");
+    mkdirSync(parapper, { recursive: true });
+    writeFileSync(join(parapper, ".gitkeep"), "");
+    const llama = join(app, "Contents", "Resources", "llama-runtime");
+    mkdirSync(llama, { recursive: true });
+    writeFileSync(join(llama, ".gitignore"), "*");
+    writeFileSync(join(llama, "libllama.dylib"), "llama");
+
+    assert.deepEqual(pruneEmptyRuntimeDirectories(app), {
+      removedDirs: ["parapper-runtime"],
+      removedFiles: 2,
+    });
+    assert.equal(existsSync(parapper), false);
+    assert.equal(existsSync(join(llama, ".gitignore")), false);
+    assert.equal(existsSync(join(llama, "libllama.dylib")), true);
+  });
+
+  it("gzips the bundled Parapper license dump", () => {
+    const app = join(tempDir(), "Kotoba Beacon.app");
+    const thirdParty = join(app, "Contents", "Resources", "third-party");
+    mkdirSync(thirdParty, { recursive: true });
+    const jsonPath = join(thirdParty, "parapper-rust-licenses.json");
+    writeFileSync(jsonPath, `${"Apache-2.0 ".repeat(200)}end`);
+    const result = compressBundledLicenseJson(app);
+    assert.equal(result.compressed, true);
+    assert.equal(existsSync(jsonPath), false);
+    assert.equal(
+      gunzipSync(readFileSync(`${jsonPath}.gz`)).toString(),
+      `${"Apache-2.0 ".repeat(200)}end`,
+    );
+    assert.ok(result.gzipBytes < result.originalBytes);
+  });
+
+  it("runs symlink restore, prune, and license gzip together", () => {
+    const root = tempDir();
+    const app = join(root, "Kotoba Beacon.app");
+    mkdirSync(join(app, "Contents", "Resources", "parapper-runtime"), { recursive: true });
+    writeFileSync(join(app, "Contents", "Resources", "parapper-runtime", ".gitkeep"), "");
+    mkdirSync(join(app, "Contents", "Resources", "third-party"), { recursive: true });
+    writeFileSync(
+      join(app, "Contents", "Resources", "third-party", "parapper-rust-licenses.json"),
+      "license-text",
+    );
+    const result = optimizeMacosAppBundle(app, join(root, "missing-template"));
+    assert.deepEqual(result.removedDirs, ["parapper-runtime"]);
+    assert.equal(result.compressed, true);
   });
 });
