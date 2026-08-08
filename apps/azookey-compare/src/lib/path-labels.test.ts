@@ -40,7 +40,7 @@ describe("comparison path labels", () => {
     expect(attemptedPathLabel("browser-vibrato", "setup")).toBe("未実行");
     expect(attemptedPathLabel("worker-vibrato", "setup")).toBe("未実行");
     expect(attemptedPathLabel("worker-vibrato", "browser-wasm")).toBe(
-      "Worker Vibrato / AzooKey WASM（失敗）",
+      "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行",
     );
     expect(attemptedPathLabel("worker-vibrato", "worker")).toBe(
       "Worker Vibrato / AzooKey WASM（失敗）",

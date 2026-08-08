@@ -153,10 +153,22 @@ describe("browser Vibrato bridge", () => {
   it("uses a globally exposed function and measures conversion time", async () => {
     vi.stubGlobal("__AZOOKEY_VIBRATO_WASM__", (text: string) => `変換:${text}`);
     vi.stubGlobal("performance", { now: vi.fn().mockReturnValueOnce(10).mockReturnValueOnce(27) });
-    await expect(runBrowserVibrato("  きょう  ", { moduleUrl: "" })).resolves.toEqual({
-      text: "変換:きょう",
+    await expect(runBrowserVibrato("  今日  ", { moduleUrl: "" })).resolves.toEqual({
+      text: "変換:今日",
       elapsedMs: 17,
     });
+  });
+
+  it("passes pure kana through without loading Vibrato, matching Tauri", async () => {
+    const tokenizer = vi.fn();
+    vi.stubGlobal("__AZOOKEY_VIBRATO_WASM__", { VibratoTokenizer: tokenizer });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(runBrowserVibrato("  きょうははれ  ", { moduleUrl: "" })).resolves.toMatchObject({
+      text: "きょうははれ",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(tokenizer).not.toHaveBeenCalled();
   });
 
   it("ignores an inherited name that was never injected as a global", async () => {

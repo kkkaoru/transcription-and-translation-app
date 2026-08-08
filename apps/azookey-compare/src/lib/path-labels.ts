@@ -37,6 +37,9 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
   if (failedStage === "setup") {
     return "未実行";
   }
+  if (failedStage === "browser-wasm") {
+    return "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行";
+  }
   if (failedStage === "worker-connect") {
     return mode === "browser-vibrato"
       ? "Browser Vibrato WASM 完了 / Worker AzooKey WASM 未実行"
@@ -55,9 +58,7 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
   if (mode !== "browser-vibrato") {
     return "Worker Vibrato / AzooKey WASM（失敗）";
   }
-  return failedStage === "browser-wasm"
-    ? "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行"
-    : "Browser Vibrato WASM → Worker AzooKey WASM（失敗）";
+  return "Browser Vibrato WASM → Worker AzooKey WASM（失敗）";
 };
 
 /** Row states that describe work still in flight. */

@@ -44,12 +44,19 @@ describe("comparison configuration contract", () => {
     expect(comparisonConfigFieldDescriptions.mode.toLowerCase()).toContain("vibrato");
     expect(comparisonConfigFieldDescriptions.websocketUrl).toContain("8787");
     expect(comparisonConfigFieldDescriptions.language).toContain("BCP-47");
-    expect(comparisonConfigSchema.required).toEqual(["mode", "websocketUrl", "auth", "language"]);
+    expect(comparisonConfigSchema.required).toEqual([
+      "mode",
+      "converterModel",
+      "websocketUrl",
+      "auth",
+      "language",
+    ]);
     expect(DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL).toBe("ws://127.0.0.1:8787/ws/azookey");
     expect(DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL).toBe(DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL);
     expect(DEFAULT_COMPARISON_CONFIG).toEqual({
       schemaVersion: 1,
       mode: "worker-vibrato",
+      converterModel: "azookey-rust-wasm",
       websocketUrl: DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
       auth: { scheme: "none" },
       language: DEFAULT_COMPARISON_LANGUAGE,
@@ -159,6 +166,7 @@ describe("comparison configuration contract", () => {
     ).toEqual({
       schemaVersion: 1,
       mode: "worker-vibrato",
+      converterModel: "azookey-rust-wasm",
       websocketUrl: "wss://worker.example/ws",
       auth: { scheme: "none" },
       language: "ja-JP",
@@ -271,6 +279,7 @@ describe("comparison configuration contract", () => {
     ).toEqual({
       schemaVersion: 1,
       mode: "browser-vibrato",
+      converterModel: "azookey-rust-wasm",
       websocketUrl: DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL,
       auth: { scheme: "bearer", token: "secret" },
       language: "en-US",

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
+import { shouldRunBrowserVibratoPrePass } from "../lib/azookey-reading";
 import { runBrowserVibrato } from "../lib/browser-vibrato";
 import { type BrowserWasmState, browserWasmStateAfterStage } from "../lib/browser-wasm-status";
 import {
@@ -14,7 +15,11 @@ import {
   DEFAULT_COMPARISON_CONFIG,
   hasBrowserWasmConfiguration,
 } from "../lib/contract";
-import { DESKTOP_AZOOKEY_FIXTURES, type DesktopAzookeyFixture } from "../lib/desktop-fixtures";
+import {
+  AZOOKEY_CONVERSION_FIXTURES,
+  type AzookeyConversionFixture,
+} from "../lib/conversion-fixtures";
+import { converterModelOptions, isConverterModel } from "../lib/converter-models";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import { syncSpeechLanguage } from "../lib/speech-language";
 import {
@@ -30,7 +35,7 @@ import {
 } from "../lib/worker-client";
 
 type ComparisonRowState = "queued" | "wasm" | "sending" | "done" | "error";
-type ComparisonRowOrigin = "web-speech" | "manual" | "desktop-fixture";
+type ComparisonRowOrigin = "web-speech" | "manual" | "fixture";
 
 interface ComparisonRow {
   id: string;
@@ -145,7 +150,9 @@ export default function ComparePage() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [manualReading, setManualReading] = useState("おつかれさまでした");
-  const [selectedFixtureId, setSelectedFixtureId] = useState(DESKTOP_AZOOKEY_FIXTURES[0]?.id ?? "");
+  const [selectedFixtureId, setSelectedFixtureId] = useState(
+    AZOOKEY_CONVERSION_FIXTURES[0]?.id ?? "",
+  );
   const [fixtureBusy, setFixtureBusy] = useState(false);
 
   const speechRef = useRef<WebSpeechController | null>(null);
@@ -245,14 +252,15 @@ export default function ComparePage() {
       wasmGlobalName: string,
       language: string,
       auth: ComparisonAuth,
+      converterModel: string,
       options: {
         origin?: ComparisonRowOrigin;
         expectedText?: string;
         fixtureId?: string;
         /**
          * When set, skip browser Vibrato and feed this string as `vibratoInput`.
-         * Desktop captions already hand AzooKey a phonetic reading, so fixture
-         * / manual checks should exercise that same path.
+         * Manual / fixture checks already supply a phonetic reading, so they
+         * exercise the Worker AzooKey path directly.
          */
         phoneticInput?: string;
       } = {},
@@ -287,6 +295,7 @@ export default function ComparePage() {
       const forcedPhonetic = options.phoneticInput?.trim();
       let vibratoInput = forcedPhonetic || normalizedSource;
       let wasmElapsedMs: number | undefined;
+      let ranBrowserVibrato = false;
       // Tracks the stage in flight so a failure is attributed to the stage that
       // actually failed, rather than to whichever stage happened to run last.
       let stage: ConversionStage = "setup";
@@ -294,9 +303,10 @@ export default function ComparePage() {
         if (auth.scheme === "bearer" && !auth.token?.trim()) {
           throw new Error("Bearer token を入力してください");
         }
-        // Desktop-style phonetic checks already supply the reading AzooKey
-        // expects, so do not rewrite them through browser Vibrato.
-        if (mode === "browser-vibrato" && !forcedPhonetic) {
+        // Phonetic fixture/manual checks already supply the reading AzooKey
+        // expects. Worker mode still runs browser Vibrato for kanji-bearing
+        // Web Speech so mixed ASR matches Tauri when Worker Vibrato is passthrough.
+        if (shouldRunBrowserVibratoPrePass(mode, normalizedSource, forcedPhonetic)) {
           setBrowserWasmState("loading");
           patchRow({ state: "wasm" });
           stage = "browser-wasm";
@@ -308,15 +318,19 @@ export default function ComparePage() {
             });
             vibratoInput = wasmResult.text;
             wasmElapsedMs = wasmResult.elapsedMs;
+            ranBrowserVibrato = true;
             setBrowserWasmState((current) =>
               browserWasmStateAfterStage(current, "browser-wasm", true),
             );
           } catch (caught) {
-            // Only the browser stage may mark the browser WASM status failed.
-            setBrowserWasmState((current) =>
-              browserWasmStateAfterStage(current, "browser-wasm", false),
-            );
-            throw caught;
+            if (mode === "browser-vibrato") {
+              // Browser mode requires the pre-pass. Worker mode fail-opens like Tauri.
+              setBrowserWasmState((current) =>
+                browserWasmStateAfterStage(current, "browser-wasm", false),
+              );
+              throw caught;
+            }
+            vibratoInput = normalizedSource;
           }
           patchRow({ state: "sending", vibratoInput, wasmElapsedMs });
         } else {
@@ -348,9 +362,10 @@ export default function ComparePage() {
           sourceText: normalizedSource,
           vibratoInput,
           mode: forcedPhonetic ? "worker-vibrato" : mode,
+          model: converterModel,
           vibratoExecution: forcedPhonetic
             ? "worker"
-            : mode === "browser-vibrato"
+            : ranBrowserVibrato || mode === "browser-vibrato"
               ? "browser-wasm"
               : "worker",
           auth: authForRequest(auth),
@@ -388,6 +403,7 @@ export default function ComparePage() {
         config.browserWasmGlobalName ?? "",
         config.language,
         config.auth,
+        config.converterModel,
         { origin: "web-speech" },
       ),
     );
@@ -399,7 +415,7 @@ export default function ComparePage() {
   };
 
   const enqueueConversion = useCallback(
-    (sourceText: string, options: Parameters<typeof dispatchFinalText>[7]): void => {
+    (sourceText: string, options: Parameters<typeof dispatchFinalText>[8]): void => {
       const dispatch = dispatchQueueRef.current.then(() =>
         dispatchFinalText(
           sourceText,
@@ -409,6 +425,7 @@ export default function ComparePage() {
           config.browserWasmGlobalName ?? "",
           config.language,
           config.auth,
+          config.converterModel,
           options,
         ),
       );
@@ -420,6 +437,7 @@ export default function ComparePage() {
       config.browserWasmDictionaryUrl,
       config.browserWasmGlobalName,
       config.browserWasmModuleUrl,
+      config.converterModel,
       config.language,
       config.mode,
       dispatchFinalText,
@@ -432,17 +450,17 @@ export default function ComparePage() {
       setError("かな読みを入力してください");
       return;
     }
-    setNotice("デスクトップ相当の読みで Worker AzooKey を実行しています");
+    setNotice("かな読みを Worker AzooKey へ送信しています");
     enqueueConversion(reading, {
       origin: "manual",
       phoneticInput: reading,
     });
   };
 
-  const runDesktopFixture = (fixture: DesktopAzookeyFixture): void => {
+  const runConversionFixture = (fixture: AzookeyConversionFixture): void => {
     setNotice(`フィクスチャ「${fixture.label}」を Worker へ送信しています`);
     enqueueConversion(fixture.reading, {
-      origin: "desktop-fixture",
+      origin: "fixture",
       phoneticInput: fixture.reading,
       expectedText: fixture.expected,
       fixtureId: fixture.id,
@@ -450,22 +468,22 @@ export default function ComparePage() {
   };
 
   const runSelectedFixture = (): void => {
-    const fixture = DESKTOP_AZOOKEY_FIXTURES.find((entry) => entry.id === selectedFixtureId);
+    const fixture = AZOOKEY_CONVERSION_FIXTURES.find((entry) => entry.id === selectedFixtureId);
     if (!fixture) {
       setError("フィクスチャを選択してください");
       return;
     }
-    runDesktopFixture(fixture);
+    runConversionFixture(fixture);
   };
 
-  const runAllDesktopFixtures = async (): Promise<void> => {
+  const runAllConversionFixtures = async (): Promise<void> => {
     if (fixtureBusy) {
       return;
     }
     setFixtureBusy(true);
-    setNotice("デスクトップ用フィクスチャを順に実行しています");
+    setNotice("変換フィクスチャを順に実行しています");
     try {
-      for (const fixture of DESKTOP_AZOOKEY_FIXTURES) {
+      for (const fixture of AZOOKEY_CONVERSION_FIXTURES) {
         await new Promise<void>((resolve) => {
           const dispatch = dispatchQueueRef.current.then(() =>
             dispatchFinalText(
@@ -476,8 +494,9 @@ export default function ComparePage() {
               config.browserWasmGlobalName ?? "",
               config.language,
               config.auth,
+              config.converterModel,
               {
-                origin: "desktop-fixture",
+                origin: "fixture",
                 phoneticInput: fixture.reading,
                 expectedText: fixture.expected,
                 fixtureId: fixture.id,
@@ -491,7 +510,7 @@ export default function ComparePage() {
             });
         });
       }
-      setNotice("デスクトップ用フィクスチャの実行が完了しました");
+      setNotice("変換フィクスチャの実行が完了しました");
     } finally {
       setFixtureBusy(false);
     }
@@ -552,7 +571,26 @@ export default function ComparePage() {
       }
       buildVibratoWebSocketUrl(config);
       await client.connect();
-      setNotice("Worker WebSocket に接続しました");
+      let notice = "Worker WebSocket に接続しました";
+      try {
+        const healthUrl = new URL(config.websocketUrl.trim());
+        healthUrl.protocol = healthUrl.protocol === "wss:" ? "https:" : "http:";
+        healthUrl.pathname = "/v1/azookey";
+        healthUrl.search = "";
+        healthUrl.hash = "";
+        const health = await fetch(healthUrl).then(async (response) =>
+          response.ok ? ((await response.json()) as { dictionary?: { transport?: string } }) : null,
+        );
+        if (health?.dictionary?.transport === "builtin") {
+          notice =
+            "Worker は内蔵語彙のみです。AZOOKEY_DICTIONARY_URL を設定しないと Tauri より精度が落ちます";
+        } else if (health?.dictionary?.transport === "portable-wasm") {
+          notice = "Worker WebSocket に接続しました（公式 AzooKey 辞書）";
+        }
+      } catch {
+        // Health is observability only; conversion can still proceed.
+      }
+      setNotice(notice);
       setError("");
     } catch (caught) {
       setError(errorMessage(caught));
@@ -642,6 +680,36 @@ export default function ComparePage() {
               label="前処理の実行場所"
               description={selectedModeOption?.description}
             />
+
+            <label className="field-label" htmlFor="converter-model">
+              変換モデル
+              <select
+                id="converter-model"
+                data-testid="converter-model-select"
+                value={config.converterModel}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  if (isConverterModel(next)) {
+                    updateConfig("converterModel", next);
+                  }
+                }}
+                aria-describedby="converter-model-description"
+              >
+                {converterModelOptions.map((option) => (
+                  <option key={option.value} value={option.value} title={option.description}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p
+              className="field-help"
+              id="converter-model-description"
+              data-testid="converter-model-description"
+            >
+              {converterModelOptions.find((option) => option.value === config.converterModel)
+                ?.description ?? ""}
+            </p>
 
             <label className="field-label" htmlFor="worker-url">
               Worker WebSocket URL
@@ -809,16 +877,15 @@ export default function ComparePage() {
             </p>
           </section>
 
-          <section className="panel desktop-panel">
+          <section className="panel reading-panel">
             <div className="panel-heading">
               <div>
-                <p className="eyebrow">TAURI DESKTOP PARITY</p>
-                <h3>読み入力（azookey_input_text）</h3>
+                <p className="eyebrow">PHONETIC INPUT</p>
+                <h3>読み入力</h3>
               </div>
             </div>
             <p className="field-help">
-              Kotoba Beacon のデスクトップは ASR 読みを AzooKey に渡します。ここでも同じ読みを
-              Worker WASM（`azookey-rust`）へ直接送り、変換結果を確認できます。
+              かな読みを Worker の AzooKey WASM へ直接送り、変換結果を確認します。
             </p>
             <label className="field-label" htmlFor="manual-reading">
               かな読み
@@ -836,15 +903,15 @@ export default function ComparePage() {
             </button>
 
             <div className="subsection fixture-settings">
-              <p className="subsection-title">デスクトップ回帰フィクスチャ</p>
-              <label className="field-label" htmlFor="desktop-fixture">
+              <p className="subsection-title">変換フィクスチャ</p>
+              <label className="field-label" htmlFor="conversion-fixture">
                 ケース
                 <select
-                  id="desktop-fixture"
+                  id="conversion-fixture"
                   value={selectedFixtureId}
                   onChange={(event) => setSelectedFixtureId(event.target.value)}
                 >
-                  {DESKTOP_AZOOKEY_FIXTURES.map((fixture) => (
+                  {AZOOKEY_CONVERSION_FIXTURES.map((fixture) => (
                     <option key={fixture.id} value={fixture.id}>
                       {fixture.label}
                     </option>
@@ -852,7 +919,7 @@ export default function ComparePage() {
                 </select>
               </label>
               <p className="field-help">
-                {DESKTOP_AZOOKEY_FIXTURES.find((fixture) => fixture.id === selectedFixtureId)
+                {AZOOKEY_CONVERSION_FIXTURES.find((fixture) => fixture.id === selectedFixtureId)
                   ?.note ?? ""}
               </p>
               <div className="button-row">
@@ -867,7 +934,7 @@ export default function ComparePage() {
                 <button
                   className="button button-secondary"
                   type="button"
-                  onClick={() => void runAllDesktopFixtures()}
+                  onClick={() => void runAllConversionFixtures()}
                   disabled={fixtureBusy}
                 >
                   全ケース実行
@@ -943,8 +1010,7 @@ export default function ComparePage() {
                 </span>
                 <p>確定発話がまだありません</p>
                 <span>
-                  Web Speech、手動読み、またはデスクトップ用フィクスチャから Worker
-                  変換を実行できます。
+                  Web Speech、手動読み、または変換フィクスチャから Worker 変換を実行できます。
                 </span>
               </div>
             ) : (
@@ -965,8 +1031,8 @@ export default function ComparePage() {
                       </span>
                       <div className="row-source">
                         <span className="row-label">
-                          {row.origin === "desktop-fixture"
-                            ? "Desktop fixture"
+                          {row.origin === "fixture"
+                            ? "Fixture"
                             : row.origin === "manual"
                               ? "Manual reading"
                               : "Web Speech"}

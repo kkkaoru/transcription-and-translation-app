@@ -27,6 +27,8 @@ export interface AzooKeyConvertRequest {
   /** Input after the selected Vibrato stage (or the raw speech text). */
   vibratoInput: string;
   mode: ComparisonMode;
+  /** Converter model id (`azookey-rust-wasm` or a Zenzai GGUF id). */
+  model?: string;
   /** The selected UI mode, retained for observability when the wire mode is normalized. */
   comparisonMode?: ComparisonMode;
   /** Where Vibrato ran before the Worker received this frame. */
@@ -183,6 +185,7 @@ const PRE_CONVERTER_ERROR_CODES: ReadonlySet<string> = new Set([
   "unauthorized",
   "busy",
   "converter_unavailable",
+  "unsupported_model",
 ]);
 
 export type WorkerErrorStage = "worker-request" | "worker-transport" | "worker";

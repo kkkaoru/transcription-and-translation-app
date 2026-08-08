@@ -1,9 +1,11 @@
+import type { ConverterModel } from "./converter-models";
+import { CONVERTER_MODELS, DEFAULT_CONVERTER_MODEL, isConverterModel } from "./converter-models";
+
 /**
  * Configuration shared by the comparison UI and the AzooKey Worker WebSocket client.
  *
- * This contract deliberately lives under the comparison app instead of the
- * desktop app's `AppConfig`.  The desktop app has a different pipeline and
- * adding these fields there would make persisted desktop settings ambiguous.
+ * This contract lives under the standalone comparison app. It is independent of
+ * any desktop product settings.
  *
  * Historical wire labels (`worker-vibrato`, `vibratoInput`) are preserved for
  * Worker compatibility. The selected mode records where the real Vibrato
@@ -49,6 +51,8 @@ export interface ComparisonAuth {
 export interface ComparisonConfig {
   schemaVersion: typeof COMPARISON_CONFIG_SCHEMA_VERSION;
   mode: ComparisonMode;
+  /** Converter used for kana→kanji on the Worker (`azookey-rust-wasm` or Zenzai). */
+  converterModel: ConverterModel;
   websocketUrl: string;
   auth: ComparisonAuth;
   /** BCP-47 language tag for Web Speech and the convert payload. */
@@ -64,6 +68,7 @@ export interface ComparisonConfig {
 export type ComparisonConfigInput = {
   schemaVersion?: unknown;
   mode?: unknown;
+  converterModel?: unknown;
   websocketUrl?: unknown;
   auth?: unknown;
   language?: unknown;
@@ -83,22 +88,24 @@ export const comparisonModeOptions: readonly ComparisonModeOption[] = [
     value: "worker-vibrato",
     label: "Worker 上の Vibrato → AzooKey WASM",
     description:
-      "Worker に組み込んだ Vibrato WASM と標準 IPADIC 辞書で漢字混じりの入力をひらがなにし、その結果を Worker の AzooKey WASM に渡します。辞書の取得に失敗した場合は明示的に失敗します。",
+      "Tauri と同じく漢字があるときだけ Vibrato（IPADIC F[7]）を通し、ひらがなはそのまま AzooKey WASM に渡します。Worker Vibrato 未設定時はブラウザ Vibrato で漢字読みを補います。",
   },
   {
     value: "browser-vibrato",
     label: "ブラウザ Vibrato WASM → Worker",
     description:
-      "ブラウザ側の Vibrato WASM と IPADIC 辞書を先に通し、その結果を Worker の AzooKey WASM に渡します。このモードではプリパスが必須で、モジュールも辞書も見つからなければ変換は失敗します（Worker 側 Vibrato へはサイレントに落ちません）。",
+      "ブラウザ側の Vibrato WASM と IPADIC 辞書を先に通します。漢字がなければ読みはそのまま、漢字があれば F[7] でひらがな化してから Worker の AzooKey WASM に渡します。プリパス必須で、モジュールも辞書も見つからなければ失敗します（Worker 側 Vibrato へはサイレントに落ちません）。",
   },
 ] as const;
 
-/** Uppercase alias for callers that keep constants alongside desktop config names. */
+/** Uppercase alias kept for existing call sites / tests. */
 export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 
 /** Short, user-facing explanations for the fields in the settings panel. */
 export const comparisonConfigFieldDescriptions = {
   mode: "Choose whether the real Vibrato pre-pass runs through the configured Worker adapter or browser WASM; AzooKey kana→kanji always runs on the Worker.",
+  converterModel:
+    "Choose the Worker converter: built-in AzooKey WASM, or Zenzai xsmall/small when MODEL_ROUTES exposes those GGUF upstreams.",
   websocketUrl:
     "A ws:// or wss:// URL for the AzooKey Worker endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
   auth: "Optional Bearer credentials for the Worker. Keep tokens out of URLs and logs.",
@@ -153,10 +160,11 @@ export const comparisonConfigSchema = {
   title: "AzooKey comparison configuration",
   type: "object",
   additionalProperties: false,
-  required: ["mode", "websocketUrl", "auth", "language"],
+  required: ["mode", "converterModel", "websocketUrl", "auth", "language"],
   properties: {
     schemaVersion: { type: "integer", const: COMPARISON_CONFIG_SCHEMA_VERSION },
     mode: { type: "string", enum: [...COMPARISON_MODES] },
+    converterModel: { type: "string", enum: [...CONVERTER_MODELS] },
     websocketUrl: { type: "string", pattern: "^wss?://" },
     auth: {
       type: "object",
@@ -203,6 +211,7 @@ export const DEFAULT_COMPARISON_MODE: ComparisonMode = "worker-vibrato";
 export const DEFAULT_COMPARISON_CONFIG: ComparisonConfig = {
   schemaVersion: COMPARISON_CONFIG_SCHEMA_VERSION,
   mode: DEFAULT_COMPARISON_MODE,
+  converterModel: DEFAULT_CONVERTER_MODEL,
   websocketUrl: DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
   auth: { scheme: "none" },
   language: DEFAULT_COMPARISON_LANGUAGE,
@@ -338,6 +347,10 @@ export const validateComparisonConfig = (value: unknown): ComparisonConfig => {
   if (!isComparisonMode(mode)) {
     throw new Error("mode must be worker-vibrato or browser-vibrato");
   }
+  const converterModelValue = value["converterModel"] ?? DEFAULT_CONVERTER_MODEL;
+  if (!isConverterModel(converterModelValue)) {
+    throw new Error("converterModel must be azookey-rust-wasm or a supported Zenzai id");
+  }
   const browserModuleUrl = browserWasmModuleUrl(value["browserWasmModuleUrl"]);
   const browserDictionaryUrl = browserWasmDictionaryUrl(value["browserWasmDictionaryUrl"]);
   const browserGlobalName = optionalTrimmedString(
@@ -347,6 +360,7 @@ export const validateComparisonConfig = (value: unknown): ComparisonConfig => {
   return {
     schemaVersion: schemaVersion(value["schemaVersion"]),
     mode,
+    converterModel: converterModelValue,
     websocketUrl: websocketUrl(value["websocketUrl"]),
     auth: auth(value["auth"]),
     language: language(value["language"]),
@@ -369,6 +383,9 @@ const defaultWebsocketUrl = (mode: ComparisonMode): string =>
 export const mergeComparisonConfig = (value: unknown): ComparisonConfig => {
   const input = isRecord(value) ? value : {};
   const mode = isComparisonMode(input["mode"]) ? input["mode"] : DEFAULT_COMPARISON_CONFIG.mode;
+  const converterModel = isConverterModel(input["converterModel"])
+    ? input["converterModel"]
+    : DEFAULT_CONVERTER_MODEL;
   const candidateUrl = input["websocketUrl"];
   const normalizedUrl = isVibratoWebSocketUrl(candidateUrl)
     ? websocketUrl(candidateUrl)
@@ -415,6 +432,7 @@ export const mergeComparisonConfig = (value: unknown): ComparisonConfig => {
   return {
     schemaVersion: COMPARISON_CONFIG_SCHEMA_VERSION,
     mode,
+    converterModel,
     websocketUrl: normalizedUrl,
     auth: normalizedAuth,
     language: normalizedLanguage,

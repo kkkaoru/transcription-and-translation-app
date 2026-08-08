@@ -9,6 +9,7 @@
  * remains supported for deployments that host their own dictionary.
  */
 
+import { containsKanji } from "./azookey-reading";
 import {
   DEFAULT_BROWSER_WASM_DICTIONARY_URL,
   DEFAULT_BROWSER_WASM_FEATURE_INDEX,
@@ -282,6 +283,12 @@ export const runBrowserVibrato = async (
     throw new Error("変換するテキストがありません");
   }
   const startedAt = typeof performance === "undefined" ? Date.now() : performance.now();
+  // Match Tauri: pure kana is already the reading AzooKey expects. Tokenizing
+  // it through IPADIC rewrites particles (`は`→`わ`) and hurts conversion.
+  if (!containsKanji(input)) {
+    const endedAt = typeof performance === "undefined" ? Date.now() : performance.now();
+    return { text: input, elapsedMs: Math.max(MIN_ELAPSED_MS, endedAt - startedAt) };
+  }
   const converter = await loadConverter(config);
   const value = await converter(input);
   if (typeof value !== "string" || value.trim().length === 0) {

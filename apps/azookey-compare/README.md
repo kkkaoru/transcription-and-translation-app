@@ -1,87 +1,74 @@
 # AzooKey Compare
 
-An independent Next.js comparison surface for checking the browser's Web Speech
-recognition against an asynchronous AzooKey Worker WebSocket response. It is
-deliberately separate from `apps/desktop`; no desktop settings are read or
-written.
+Standalone Next.js comparison UI for Web Speech recognition vs an asynchronous
+AzooKey Cloudflare Worker WebSocket response. It does not talk to the Kotoba
+Beacon desktop app and does not read or write desktop settings.
 
-## Run
+## Run (Worker + UI only)
 
-Start the local Worker first (serves `/ws/azookey` on port 8787):
-
-```sh
-bun run --cwd apps/cloudflare-worker-server dev
-```
-
-Then start the comparison UI:
+Terminal 1 — local Worker (`/ws/azookey` on port 8787):
 
 ```sh
-bun install
-bun --cwd apps/azookey-compare dev
+bun run worker:dev
 ```
 
-Open the UI at `http://127.0.0.1:3000` (not `localhost`) so the Worker
-`CORS_ORIGIN` and the page origin stay aligned.
+Terminal 2 — comparison UI:
 
-### Desktop parity checks
+```sh
+bun run azookey-compare:dev
+```
 
-The right-hand panel includes a **読み入力** lane that mirrors Kotoba Beacon's
-Tauri path: phonetic text (`azookey_input_text`) is sent straight to the Worker
-AzooKey WASM without a browser Vibrato rewrite. Use it to confirm the same
-`azookey-rust` converter the desktop normalizer uses.
+Open `http://127.0.0.1:3000` (not `localhost`) so the Worker `CORS_ORIGIN`
+(`http://127.0.0.1:3000` via `.dev.vars`) matches the page origin.
 
-Built-in fixtures cover Item 2 regressions (`とても` / `すーぷは` /
-`おつかれさまでした`) and the adversarial comma-list cases (`懸賞` / `規格` /
-`硬貨`). **全ケース実行** runs them in order and marks expected vs actual in
-the timeline.
+Local Wrangler uses `apps/cloudflare-worker-server/.dev.vars` (copy from
+`.dev.vars.example` if missing). Auth may stay unset for local demos.
+
+### Phonetic / fixture checks
+
+The right-hand panel has a **読み入力** lane: phonetic text is sent straight to
+the Worker AzooKey WASM (no browser Vibrato rewrite). Built-in fixtures cover
+common conversion regressions. **全ケース実行** runs them in order.
 
 ### WebSocket endpoint
 
-Without any env override, the page defaults to the local wrangler endpoint:
+Default (no env override):
 
 `ws://127.0.0.1:8787/ws/azookey`
 
-Set `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` to point at a deployed Worker instead.
-The deployed Worker answers at
-`wss://kotoba-beacon-inference.kaoru.workers.dev/ws/azookey`; the default stays
-local so the app never talks to production unless you ask it to.
+Set `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` for a deployed Worker. Production
+example: `wss://kotoba-beacon-inference.kaoru.workers.dev/ws/azookey`.
+
+### Conversion models
+
+The configuration panel includes a **変換モデル** select:
+
+| Option | When it works |
+| --- | --- |
+| AzooKey WASM（Worker 内蔵） | Default. No extra model server. |
+| AzooKey Zenzai v3.2 xsmall | Worker `MODEL_ROUTES` must include `zenz-v3.2-xsmall-gguf` |
+| AzooKey Zenzai v3.2 small | Worker `MODEL_ROUTES` must include `zenz-v3.2-small-gguf` |
 
 ### Conversion modes (UI labels vs wire values)
 
-The UI toggle chooses **where** the required real Vibrato pre-pass runs. Both
-routes then send the resulting hiragana to the Worker-side AzooKey WASM:
-
 | UI label | What actually runs | Wire `mode` sent to Worker |
 | --- | --- | --- |
-| Worker 上の Vibrato → AzooKey WASM | `VIBRATO_UPSTREAM_URL` を設定した Worker の Vibrato HTTP adapter、then server-side AzooKey WASM。未設定時は公式 AzooKey の mixed-input passthrough（ready frame に明示） | `worker-vibrato` plus `vibratoExecution: "worker"` |
-| ブラウザ Vibrato WASM → Worker | Generated `VibratoTokenizer` + IPADIC dictionary (F[7]) pre-pass, then Worker AzooKey WASM | `worker-vibrato` plus `comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"` |
+| Worker 上の Vibrato → AzooKey WASM | Tauri と同じく漢字があるときだけ Vibrato（IPADIC F[7]）。Worker Vibrato 未設定時はブラウザ Vibrato で漢字読みを補い、その後 AzooKey WASM | `worker-vibrato` plus `vibratoExecution: "worker"` or `"browser-wasm"` when the client supplied the reading |
+| ブラウザ Vibrato WASM → Worker | Generated `VibratoTokenizer` + IPADIC dictionary (F[7]) pre-pass（純かなはそのまま）、then Worker AzooKey WASM | `worker-vibrato` plus `comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"` |
 
-The checked-in browser defaults use `/vibrato/vibrato_wasm.js` and
-`/vibrato/system.dic.zst`. Override them with
+Checked-in browser defaults: `/vibrato/vibrato_wasm.js` and
+`/vibrato/system.dic.zst`. Override with
 `NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL` and
-`NEXT_PUBLIC_AZOO_KEY_VIBRATO_DICTIONARY_URL` when hosting a different
-wasm-bindgen module/dictionary. The generated module exports `initSync` and
-`VibratoTokenizer`; the loader initializes it and extracts IPADIC reading F[7]
-(UniDic CWJ uses F[20]). A custom wrapper/global may instead expose
-`globalThis.__AZOOKEY_VIBRATO_WASM__` (name overridable via
-`NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL`). A custom wrapper may export
-`convert(text)`, `transform(text)`, or `tokenize(text)` and return a string
-(sync or async); a module whose default export is the function itself also
-works.
+`NEXT_PUBLIC_AZOO_KEY_VIBRATO_DICTIONARY_URL` when needed.
+
 If the module, dictionary, or injected global is unavailable, browser mode
 fails explicitly — it does not silently fall back to Worker-only conversion.
 
-The checked-in IPADIC dictionary is accompanied by `public/vibrato/COPYING` and
-`public/vibrato/NOTICE`. These files are copied from the source asset directory
-by `node scripts/build-vibrato-wasm.mjs` and are checked by
-`bun run assets:verify`.
+IPADIC attribution: `public/vibrato/COPYING` and `public/vibrato/NOTICE`
+(copied by `node scripts/build-vibrato-wasm.mjs`; verified by
+`bun run assets:verify`).
 
 ## Worker frame contract
-
-The comparison client sends one JSON text frame for each final Web Speech
-utterance that reaches the Worker. A setup failure (for example, a missing
-Bearer token) or a failed browser pre-pass aborts the request before any frame
-is sent:
 
 ```json
 {
@@ -97,15 +84,7 @@ is sent:
 }
 ```
 
-The Worker should reply with the same `requestId` and either
-`convertedText` (or the `text` alias) or an `error` object. Responses may arrive
-out of order; the UI keeps each request in its own timeline row. In the UI's
-browser pre-pass mode (`browser-vibrato` internal value), `vibratoInput` is the
-browser WASM result and the client still sends the Worker-compatible wire mode
-`worker-vibrato` with `comparisonMode: "browser-vibrato"` and
-`vibratoExecution: "browser-wasm"`. The Worker performs AzooKey conversion
-only for that browser-prepass frame; worker-mode frames invoke the configured
-HTTP Vibrato stage before AzooKey, or use the official mixed-input AzooKey path
-when no server-side Vibrato adapter is configured. The ready frame distinguishes
-these stages. Bearer tokens are sent in the JSON auth field and are never
-appended to the WebSocket URL; use `wss://` for real credentials.
+Responses share `requestId` and either `convertedText` (or `text`) or `error`.
+Browser pre-pass mode still sends wire `mode: "worker-vibrato"` with
+`comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"`.
+Bearer tokens go in the JSON `auth` field, never in the WebSocket URL.

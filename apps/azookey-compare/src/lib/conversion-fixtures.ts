@@ -1,52 +1,51 @@
 /**
- * Phonetic inputs that mirror the Tauri desktop AzooKey normalizer path
- * (`convert_with_dictionary` with `ConversionOptions::default()`).
+ * Phonetic regression fixtures for the standalone AzooKey Worker WASM path
+ * (`azookey-rust` converter + official LOUDS dictionary).
  *
- * The Worker WASM uses the same `azookey-rust` converter and official LOUDS
- * dictionary, so these cases verify that local kotoba-beacon matches the
- * caption pipeline's expected surfaces.
+ * These cases exercise the Worker / comparison stack on their own — they do
+ * not require the Kotoba Beacon desktop app.
  */
-export interface DesktopAzookeyFixture {
+export interface AzookeyConversionFixture {
   /** Stable id for UI / tests. */
   id: string;
   /** Label shown in the fixture picker. */
   label: string;
-  /** Phonetic input equivalent to desktop `azookey_input_text`. */
+  /** Phonetic (kana) input sent as vibratoInput / sourceText. */
   reading: string;
   /** Expected kana-kanji surface when the official dictionary is healthy. */
   expected: string;
-  /** Why this case matters for desktop parity. */
+  /** Why this case matters for conversion quality. */
   note: string;
 }
 
-export const DESKTOP_AZOOKEY_FIXTURES: readonly DesktopAzookeyFixture[] = [
+export const AZOOKEY_CONVERSION_FIXTURES: readonly AzookeyConversionFixture[] = [
   {
     id: "greeting-okure",
     label: "お疲れ様でした",
     reading: "おつかれさまでした",
     expected: "お疲れ様でした",
-    note: "Item 2 regression: honorific greeting must stay natural",
+    note: "Honorific greeting must stay natural",
   },
   {
     id: "totemo",
     label: "とても",
     reading: "とても",
     expected: "とても",
-    note: "Item 2 regression: must not become 迚",
+    note: "Must not become 迚",
   },
   {
     id: "soup-wa",
     label: "スープは",
     reading: "すーぷは",
     expected: "スープは",
-    note: "Item 2 regression: must not become スープ歯",
+    note: "Must not become スープ歯",
   },
   {
     id: "weather-ashita",
     label: "あしたのてんきははれ",
     reading: "あしたのてんきははれ",
     expected: "明日の天気は晴れ",
-    note: "Caption-style weather phrase used by merge audits",
+    note: "Caption-style weather phrase",
   },
   {
     id: "weather-asatte",
@@ -78,5 +77,5 @@ export const DESKTOP_AZOOKEY_FIXTURES: readonly DesktopAzookeyFixture[] = [
   },
 ];
 
-export const fixtureById = (id: string): DesktopAzookeyFixture | undefined =>
-  DESKTOP_AZOOKEY_FIXTURES.find((fixture) => fixture.id === id);
+export const fixtureById = (id: string): AzookeyConversionFixture | undefined =>
+  AZOOKEY_CONVERSION_FIXTURES.find((fixture) => fixture.id === id);

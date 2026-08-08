@@ -203,7 +203,7 @@ select:focus-visible {
 
 .config-panel,
 .speech-panel,
-.desktop-panel,
+.reading-panel,
 .history-panel {
   padding: 21px;
 }
@@ -604,7 +604,7 @@ select:focus-visible {
 }
 
 .speech-panel,
-.desktop-panel {
+.reading-panel {
   display: grid;
   gap: 14px;
 }
