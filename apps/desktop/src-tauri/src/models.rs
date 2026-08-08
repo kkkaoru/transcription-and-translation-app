@@ -54,7 +54,7 @@ pub fn catalog() -> ModelCatalog {
             model(
                 "normalizer",
                 "azookey-rust",
-                "AzooKey Rust（内蔵）",
+                "AzooKey Rust（辞書・内蔵）",
                 "AzooKeyの変換処理をRustのViterbi変換器として実行します。",
                 "内蔵辞書 / optional AzooKey dictionary",
                 &["ja"],
@@ -63,8 +63,8 @@ pub fn catalog() -> ModelCatalog {
             model(
                 "normalizer",
                 "zenz-v3.2-xsmall-gguf",
-                "zenz v3.2 xsmall",
-                "低レイテンシー向けのzenz GGUFモデルです。",
+                "AzooKey Zenzai v3.2 xsmall",
+                "AzooKey公式のニューラル変換。低レイテンシー向けのxsmall GGUFです。",
                 "ggml-model-Q5_K_M.gguf",
                 &["ja"],
                 false,
@@ -72,8 +72,8 @@ pub fn catalog() -> ModelCatalog {
             model(
                 "normalizer",
                 "zenz-v3.2-small-gguf",
-                "zenz v3.2 small",
-                "変換精度を優先するzenz GGUFモデルです。",
+                "AzooKey Zenzai v3.2 small",
+                "AzooKey公式のニューラル変換。変換精度を優先するsmall GGUFです。",
                 "ggml-model-Q5_K_M.gguf",
                 &["ja"],
                 false,
@@ -81,7 +81,7 @@ pub fn catalog() -> ModelCatalog {
             model(
                 "normalizer",
                 "zenz-v2-q5-k-m-gguf",
-                "Zenzai v2 Q5_K_M",
+                "AzooKey Zenzai v2 Q5_K_M",
                 "低メモリ環境向けのZenzai v2互換GGUFモデルです。",
                 "zenz-v2-Q5_K_M.gguf",
                 &["ja"],

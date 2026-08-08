@@ -23,9 +23,9 @@ const formatSpeed = (bps: number): string => {
 };
 
 const MODEL_NAMES: Record<string, string> = {
-  "zenz-v3.2-xsmall-gguf": "Zenzai v3.2 XSmall",
-  "zenz-v3.2-small-gguf": "Zenzai v3.2 Small",
-  "zenz-v2-q5-k-m-gguf": "Zenzai v2 Q5_K_M",
+  "zenz-v3.2-xsmall-gguf": "AzooKey Zenzai v3.2 XSmall",
+  "zenz-v3.2-small-gguf": "AzooKey Zenzai v3.2 Small",
+  "zenz-v2-q5-k-m-gguf": "AzooKey Zenzai v2 Q5_K_M",
   "hy-mt2-1.8b-gguf": "Hy-MT2 1.8B",
   "hy-mt2-1.8b-2bit-gguf": "Hy-MT2 1.8B 2-bit",
   "hy-mt2-1.8b-1.25bit-gguf": "Hy-MT2 1.8B 1.25-bit",

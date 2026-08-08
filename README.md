@@ -29,8 +29,8 @@ apps/
     src/                 UI（components, core, i18n, live, overlay, settings）
     src-tauri/           Rust アプリケーション境界
   inference-gateway/     Tauri サイドカーになる HTTP・WebSocket ゲートウェイ
-  cloudflare-worker-server/ Cloudflare Worker 用の同じ HTTP 契約と AzooKey WebSocket
-  azookey-compare/       Web Speech と Worker 変換を比較する Next.js アプリ（独立起動）
+  cloudflare-worker-server/ Cloudflare Worker（AzooKey WebSocket / HTTP。デスクトップ不要で単体起動可）
+  azookey-compare/       Web Speech と Worker 変換を比較する Next.js アプリ（デスクトップ不要で単体起動可）
 packages/
   inference-server-core/  ローカル/Worker 共通の HTTP 契約・ルーティング
   azookey-rust/          かな漢字変換の共有 Rust crate
@@ -74,6 +74,15 @@ bun run check:all
 `bun run dev` がアプリケーション起動の唯一のエントリポイントです。Vite フロントエンド・Tauri ウィンドウ・内蔵の Gateway / Parapper / model server サイドカーをすべて一括で起動し、単一のアプリ（単一の Dock アイコン）として立ち上がります。従来の `bun run tauri:dev` は `bun run dev` のエイリアスとして残しています。
 
 ブラウザだけでUIの外観を確認したいデバッグ用途には `bun run dev:web`（Vite プレビュー、`http://127.0.0.1:1420`）を使います。これはアプリ本体ではなく、Tauri コマンド・マイク取得・ネイティブオーバーレイが動作しない縮退モードです。通常の起動には `bun run dev` を使い、`dev:web` をアプリ本体の代わりに起動しないでください。
+
+AzooKey の比較検証だけを行う場合は、デスクトップを起動せずに次の2つだけで動きます。
+
+```sh
+bun run worker:dev            # Cloudflare Worker（ws://127.0.0.1:8787）
+bun run azookey-compare:dev   # Next.js UI（http://127.0.0.1:3000）
+```
+
+詳細は `apps/cloudflare-worker-server/README.md` と `apps/azookey-compare/README.md` を参照してください。
 
 配布用の本番アプリは `bun run build:app` で生成します。これは sidecar のビルドと
 Tauri の `.app` release bundle を一つの経路で実行します。DMGまで作る場合は

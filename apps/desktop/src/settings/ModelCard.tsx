@@ -1,4 +1,11 @@
+import { useState } from "react";
 import { Field } from "../components/Field";
+import {
+  OFFICIAL_AZOOKEY_DICTIONARY_URL,
+  pathForAzooKeySystemDictionarySource,
+  resolveAzooKeySystemDictionarySource,
+  type AzooKeySystemDictionarySource,
+} from "../core/azookey-dictionary";
 import type { AppConfig, ModelCatalog, ModelFamily } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
@@ -23,12 +30,15 @@ const modelCopy: Partial<
     artifact: "model.azookey.artifact",
   },
   "zenz-v3.2-xsmall-gguf": {
+    label: "model.zenzXsmall.label",
     description: "model.zenzXsmall.description",
   },
   "zenz-v3.2-small-gguf": {
+    label: "model.zenzSmall.label",
     description: "model.zenzSmall.description",
   },
   "zenz-v2-q5-k-m-gguf": {
+    label: "model.zenzV2.label",
     description: "model.zenzV2.description",
   },
   "hy-mt2-1.8b-gguf": {
@@ -73,6 +83,21 @@ export const ModelCard = ({
   const selectedTitle = selectedLabel
     ? `${selectedLabel}${selected?.recommended ? ` · ${t("common.recommended")}` : ""}`
     : undefined;
+  const systemDictionaryPath = config.models.paths["azookey-rust"] ?? "";
+  const derivedSystemDictionarySource =
+    resolveAzooKeySystemDictionarySource(systemDictionaryPath);
+  // Empty path means builtin for the pipeline, but the UI must still stay on
+  // "custom" after the user picks that preset so they can type a path/URL.
+  const [customSourceUnlocked, setCustomSourceUnlocked] = useState(false);
+  const systemDictionarySource: AzooKeySystemDictionarySource =
+    customSourceUnlocked && derivedSystemDictionarySource === "builtin"
+      ? "custom"
+      : derivedSystemDictionarySource;
+  const showAzooKeyDictionaryFields =
+    family === "normalizer" && config.models.normalizer === "azookey-rust";
+  const [customSystemDictionaryDraft, setCustomSystemDictionaryDraft] = useState(() =>
+    derivedSystemDictionarySource === "custom" ? systemDictionaryPath : "",
+  );
 
   return (
     <div className="model-card">
@@ -86,6 +111,8 @@ export const ModelCard = ({
       <select
         value={config.models[family]}
         title={selectedTitle}
+        data-testid={`${family}-model-select`}
+        aria-label={title}
         onChange={(event) => onChange(event.target.value)}
       >
         {models[family].map((entry) => {
@@ -106,22 +133,63 @@ export const ModelCard = ({
         <p className="model-recommended-hint">{t("common.recommended")}</p>
       ) : null}
       <p>{selectedDescription}</p>
-      {family === "normalizer" && config.models.normalizer === "azookey-rust" ? (
+      {showAzooKeyDictionaryFields ? (
         <>
           <Field
-            label={t("settings.azooSystemDictionary")}
+            label={t("settings.azooSystemDictionarySource")}
             wide
-            hint={t("settings.azooSystemDictionaryHint")}
+            hint={t("settings.azooSystemDictionarySourceHint")}
           >
-            <input
-              placeholder={t("settings.azooPathPlaceholder")}
-              title={
-                config.models.paths["azookey-rust"]?.trim() || t("settings.azooPathPlaceholder")
-              }
-              value={config.models.paths["azookey-rust"] ?? ""}
-              onChange={(event) => onPathChange("azookey-rust", event.target.value)}
-            />
+            <select
+              id="azookey-system-dictionary-source"
+              data-testid="azookey-system-dictionary-source"
+              aria-label={t("settings.azooSystemDictionarySource")}
+              value={systemDictionarySource}
+              onChange={(event) => {
+                const next = event.currentTarget.value as AzooKeySystemDictionarySource;
+                if (systemDictionarySource === "custom") {
+                  setCustomSystemDictionaryDraft(systemDictionaryPath);
+                }
+                setCustomSourceUnlocked(next === "custom");
+                onPathChange(
+                  "azookey-rust",
+                  pathForAzooKeySystemDictionarySource(
+                    next,
+                    next === "custom" ? customSystemDictionaryDraft : systemDictionaryPath,
+                  ),
+                );
+              }}
+            >
+              <option value="builtin">{t("settings.azooSystemDictionaryBuiltin")}</option>
+              <option value="official">{t("settings.azooSystemDictionaryOfficial")}</option>
+              <option value="custom">{t("settings.azooSystemDictionaryCustom")}</option>
+            </select>
           </Field>
+          {systemDictionarySource === "official" ? (
+            <p className="section-note" data-testid="azookey-system-dictionary-official-url">
+              {OFFICIAL_AZOOKEY_DICTIONARY_URL}
+            </p>
+          ) : null}
+          {systemDictionarySource === "custom" ? (
+            <Field
+              label={t("settings.azooSystemDictionary")}
+              wide
+              hint={t("settings.azooSystemDictionaryHint")}
+            >
+              <input
+                data-testid="azookey-system-dictionary-path"
+                placeholder={t("settings.azooPathPlaceholder")}
+                title={systemDictionaryPath.trim() || t("settings.azooPathPlaceholder")}
+                value={systemDictionaryPath}
+                onChange={(event) => {
+                  const nextPath = event.target.value;
+                  setCustomSystemDictionaryDraft(nextPath);
+                  setCustomSourceUnlocked(true);
+                  onPathChange("azookey-rust", nextPath);
+                }}
+              />
+            </Field>
+          ) : null}
           <Field
             label={t("settings.azooUserDictionary")}
             wide
