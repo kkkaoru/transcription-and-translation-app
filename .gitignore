@@ -19,6 +19,10 @@ apps/desktop/src-tauri/gen
 .tools
 .codex/
 .claude/
+.commandcode/
+.cursor/
+.direnv
+tmp/
 *.log
 .DS_Store
 *.tsbuildinfo
