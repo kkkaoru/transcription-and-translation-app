@@ -71,6 +71,11 @@ const CORPUS: &[CorpusCase] = &[
         input: "すーぷはください",
         expected: "スープはください",
     },
+    CorpusCase {
+        category: "loanword_particle", input: "ぱそこんが", expected: "パソコンが"
+    },
+    CorpusCase { category: "loanword_particle", input: "かめらで", expected: "カメラで" },
+    CorpusCase { category: "loanword_particle", input: "ほてるに", expected: "ホテルに" },
     // -----------------------------------------------------------------------
     // Fillers / interjections — hesitation sounds that must stay hiragana.
     //
@@ -104,6 +109,9 @@ const CORPUS: &[CorpusCase] = &[
     // -----------------------------------------------------------------------
     // Numbers / counters — spoken numerals followed by counters.
     // -----------------------------------------------------------------------
+    CorpusCase {
+        category: "numbers_counters", input: "いち、に、さん", expected: "1、2、3"
+    },
     CorpusCase { category: "numbers_counters", input: "ごねん", expected: "5年" },
     CorpusCase { category: "numbers_counters", input: "しがつ", expected: "4月" },
     CorpusCase { category: "numbers_counters", input: "じゅう、", expected: "10、" },
@@ -381,9 +389,20 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     // Loanwords with the same prolonged mark must still convert.
     ("すーぷ", "スープ"),
     ("でーた", "データ"),
+    // Hiragana ASR loanwords without `ー` still use the Katakana / Latin ruby.
+    ("ぱそこん", "パソコン"),
+    ("かめら", "カメラ"),
+    ("きりん", "キリン"),
+    ("あいふぉん", "iPhone"),
+    ("です", "です"),
     // Genuine single-mora conversions must survive.
     ("き", "木"),
     ("て", "手"),
+    // Official-dictionary weather / numeral lists must not fall back to kana.
+    ("はれ", "晴れ"),
+    ("はれです", "晴れです"),
+    ("はれます", "晴れます"),
+    ("いち、に、さん", "1、2、3"),
 ];
 
 #[test]
@@ -485,5 +504,65 @@ fn accuracy_corpus_report() {
         pass_rate >= MINIMUM_PASS_RATE,
         "accuracy corpus pass rate {pass_rate:.1}% is below the minimum {:.1}%",
         MINIMUM_PASS_RATE * 100.0,
+    );
+}
+
+#[test]
+fn portable_archive_matches_filesystem_on_caption_fixtures() {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let root = crate::dictionary::test_system_dictionary_path();
+    let filesystem = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(root),
+        ..DictionaryPaths::default()
+    })
+    .expect("filesystem dictionary");
+
+    let archive_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/cloudflare-worker-server/public/azookey/system.azkdict.gz");
+    assert!(archive_path.is_file(), "portable archive missing at {}", archive_path.display());
+    let output = Command::new("gzip")
+        .args(["-dc", archive_path.to_str().expect("utf-8 archive path")])
+        .output()
+        .expect("gzip");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let portable = AzooKeyDictionary::from_portable_system_dictionary(output.stdout)
+        .expect("portable dictionary");
+
+    let fixtures = [
+        "とても",
+        "すーぷは",
+        "おつかれさまでした",
+        "あしたのてんきははれ",
+        "きょうははいしんです",
+        "きょうのてんきはあつい",
+        "しへい、こうか、じゅうえん",
+        "いっとうしょう、けんしょう、おうぼ",
+        "こうぎょう、きかく、とういつ",
+    ];
+    let mut diffs = Vec::new();
+    for input in fixtures {
+        let filesystem_text =
+            convert_with_dictionary(input, &filesystem, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .map(|candidate| candidate.text)
+                .unwrap_or_default();
+        let portable_text = convert_with_dictionary(input, &portable, ConversionOptions::default())
+            .into_iter()
+            .next()
+            .map(|candidate| candidate.text)
+            .unwrap_or_default();
+        if filesystem_text != portable_text {
+            diffs.push(format!(
+                "{input:?}: filesystem={filesystem_text:?} portable={portable_text:?}"
+            ));
+        }
+    }
+    assert!(
+        diffs.is_empty(),
+        "portable dictionary drifted from filesystem:\n  {}",
+        diffs.join("\n  ")
     );
 }

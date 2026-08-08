@@ -30,6 +30,13 @@ const NUMERIC_COUNTER_SCORE_PENALTY: f32 = -0.25;
 const UNKNOWN_SPAN_PENALTY: f32 = -14.5;
 const INFLECTIONAL_SURFACE_PENALTY: f32 = -10.0;
 const ORTHOGRAPHIC_SURFACE_PENALTY: f32 = -3.0;
+/// Hiragana ASR readings without `ー` still map to Katakana ruby-id rows
+/// (`ぱそこん` → `パソコン`). Two-mora grammatical ruby such as `です` →
+/// `デス` stays source-script; those rows also lose to a stronger identity.
+const MIN_KATAKANA_RUBY_LOANWORD_CHARS: usize = 3;
+/// Closed-class personification / name suffixes. A full-span hiragana
+/// identity such as `きりんさん` should lose to `キリン` + `さん`.
+const HONORIFIC_READING_SUFFIXES: &[&str] = &["さん", "くん", "ちゃん", "さま", "たち"];
 const IDENTITY_SURFACE_PENALTY: f32 = -1.5;
 // A long identity row can hide a conventional multi-word Kanji segmentation
 // when the system dictionary has no full-span Kanji row. Keep short function
@@ -330,6 +337,7 @@ pub fn convert_with_dictionary(
                     bounded_dictionary_word_chars(options.max_dictionary_word_chars),
                 )
                 .unwrap_or_default(),
+            chars.len() - start,
         );
         let numeric_prefix = numeric_prefix_context(&chars, start, &entries);
         for state in current {
@@ -639,11 +647,13 @@ pub fn convert_with_dictionary(
                     continue;
                 }
                 // Numeric dictionary rows such as `ついたち -> 1日` are
-                // intentional kana-to-digit spellings. Reject only Latin
-                // transliterations here, leaving those numeric rows available
-                // when the generic spoken-number parser has no special form.
+                // intentional kana-to-digit spellings. Reject Latin
+                // transliterations (`des`, `Sun`, `アップroad`) while keeping
+                // mixed-case brand spellings (`iPhone`) and numeric rows
+                // available when the generic spoken-number parser has no
+                // special form.
                 if source_is_hiragana_surface(&source_chars[start..end])
-                    && entry.surface.chars().any(|character| character.is_ascii_alphabetic())
+                    && is_rejected_latin_transliteration(&entry.surface)
                 {
                     continue;
                 }
@@ -679,6 +689,23 @@ pub fn convert_with_dictionary(
                 // Drop only that dominated DEFAULT edge; the specific sibling
                 // (and DEFAULT rows that remain best for their surface) stay.
                 if default_cid_dominated_by_same_surface(dictionary, entry) {
+                    continue;
+                }
+                // A full-span hiragana identity such as `きりんさん` hides
+                // `キリン` + `さん`. Drop only those honorific compounds whose
+                // prefix already has a converted loanword or Kanji row.
+                if honorific_compound_has_converted_prefix(dictionary, &entry.reading)
+                    && entry.surface == entry.reading
+                {
+                    continue;
+                }
+                // Short ruby-id rows that would render as the hiragana source
+                // (`はれ` → `ハレ` kept as `はれ`) are fake identities. Their
+                // cheap CID can outrank the real Kanji row (`晴れ`). Keep the
+                // row only when the Katakana/Latin surface would actually emit.
+                if entry.raw_ruby_identity
+                    && !should_emit_raw_ruby_surface(entry, &source_chars[start..end])
+                {
                     continue;
                 }
                 let (connection, clause_mid, clause_has_word, meaning_delta) =
@@ -727,7 +754,14 @@ pub fn convert_with_dictionary(
                         last: Some(entry.clone()),
                         clause_mid,
                         clause_has_word,
-                        numeric_chain: false,
+                        // Official punctuation rows replace the free `、`
+                        // boundary edge. Keep a spoken-number chain alive
+                        // across those commas (`いち、に、さん` → `1、2、3`).
+                        numeric_chain: continues_numeric_chain_through_comma(
+                            &state,
+                            &surface,
+                            &entry.reading,
+                        ),
                     },
                     width,
                 );
@@ -801,12 +835,16 @@ fn inflectional_surface_penalty(entry: &DictionaryEntry) -> f32 {
 /// dictionary also exposes a Katakana homograph.  Katakana loanwords remain
 /// available when no Kanji alternative exists (for example `てすと` →
 /// `テスト`), so this is an orthographic prior rather than a word table.
+/// Raw-ruby identity rows are the dictionary's chosen loanword spelling
+/// (`きりん` → `キリン`); do not demote them toward rare Kanji homographs
+/// such as `麒麟`.
 fn orthographic_surface_penalty(
     dictionary: &AzooKeyDictionary,
     source: &[char],
     entry: &DictionaryEntry,
 ) -> f32 {
-    if !source_is_hiragana_surface(source)
+    if entry.raw_ruby_identity
+        || !source_is_hiragana_surface(source)
         || !entry.surface.chars().any(|character| is_katakana(&character))
     {
         return NO_SCORE;
@@ -880,6 +918,33 @@ fn identity_segmentation_penalty(
     } else {
         IDENTITY_SEGMENTATION_PENALTY
     }
+}
+
+fn honorific_compound_has_converted_prefix(dictionary: &AzooKeyDictionary, reading: &str) -> bool {
+    for suffix in HONORIFIC_READING_SUFFIXES {
+        let Some(prefix) = reading.strip_suffix(suffix) else {
+            continue;
+        };
+        if prefix.chars().count() < MIN_KATAKANA_RUBY_LOANWORD_CHARS {
+            continue;
+        }
+        if dictionary
+            .lookup_exact(prefix)
+            .unwrap_or_default()
+            .iter()
+            .any(is_converted_content_surface)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_converted_content_surface(entry: &DictionaryEntry) -> bool {
+    contains_kanji(&entry.surface)
+        || (entry.raw_ruby_identity && is_multi_mora_katakana_loanword_surface(&entry.surface))
+        || (entry.surface != entry.reading
+            && entry.surface.chars().any(|character| is_katakana(&character)))
 }
 
 fn has_multi_kanji_segmentation(
@@ -1419,10 +1484,11 @@ fn dictionary_surface_for_source(entry: &DictionaryEntry, source: &[char]) -> St
     // A missing loudstxt3 surface is represented by the serialized ruby.  It
     // can therefore look like a Katakana lexical row (`デス`) even though it
     // is semantically an identity edge for the normalized reading (`です`).
-    // Preserve the user's source script for these rows; otherwise the raw
-    // ruby can outrank the real hiragana identity row in the public lattice.
+    // Preserve the user's source script for short grammatical ruby; emit the
+    // Katakana surface for multi-mora loanwords (`ぱそこん` → `パソコン`) and
+    // for readings that already carry `ー` (`すーぷ` → `スープ`).
     if entry.raw_ruby_identity {
-        return if source_is_katakana_surface(source) || source.contains(&'ー') {
+        return if should_emit_raw_ruby_surface(entry, source) {
             entry.surface.clone()
         } else {
             source_surface
@@ -1436,6 +1502,58 @@ fn dictionary_surface_for_source(entry: &DictionaryEntry, source: &[char]) -> St
         return source_surface;
     }
     entry.surface.clone()
+}
+
+fn continues_numeric_chain_through_comma(state: &PathState, surface: &str, reading: &str) -> bool {
+    state.numeric_chain && is_clause_internal_comma(surface, reading)
+}
+
+fn is_clause_internal_comma(surface: &str, reading: &str) -> bool {
+    let mut surface_chars = surface.chars();
+    let mut reading_chars = reading.chars();
+    matches!(
+        (surface_chars.next(), surface_chars.next(), reading_chars.next(), reading_chars.next()),
+        (Some('、') | Some(','), None, Some('、') | Some(','), None)
+    )
+}
+
+fn should_emit_raw_ruby_surface(entry: &DictionaryEntry, source: &[char]) -> bool {
+    if source_is_katakana_surface(source) || source.contains(&'ー') {
+        return true;
+    }
+    source_is_hiragana_surface(source) && is_multi_mora_katakana_loanword_surface(&entry.surface)
+}
+
+fn is_multi_mora_katakana_loanword_surface(surface: &str) -> bool {
+    let count = surface.chars().count();
+    count >= MIN_KATAKANA_RUBY_LOANWORD_CHARS
+        && surface.chars().all(|character| is_katakana(&character) || character == 'ー')
+}
+
+fn is_rejected_latin_transliteration(surface: &str) -> bool {
+    if !surface.chars().any(|character| character.is_ascii_alphabetic()) {
+        return false;
+    }
+    if surface
+        .chars()
+        .any(|character| is_hiragana(character) || is_katakana(&character) || is_kanji(character))
+    {
+        return true;
+    }
+    !is_latin_brand_surface(surface)
+}
+
+fn is_latin_brand_surface(surface: &str) -> bool {
+    let alphabetic = surface.chars().filter(|character| character.is_ascii_alphabetic());
+    let mut count = 0usize;
+    let mut has_upper = false;
+    let mut has_lower = false;
+    for character in alphabetic {
+        count += 1;
+        has_upper |= character.is_ascii_uppercase();
+        has_lower |= character.is_ascii_lowercase();
+    }
+    count >= 4 && has_upper && has_lower
 }
 
 fn source_is_katakana_surface(source: &[char]) -> bool {
@@ -1708,14 +1826,19 @@ fn one_kana_suffix_shadowed_by_longer_entry(
 /// reading still exists, remaining one-kana Kanji rows are value-capped so a
 /// mid-clause `き` (500+ surfaces) cannot explode captions such as
 /// `あしたのてんきははれ`.
-fn prune_short_kanji_prefix_entries(mut entries: Vec<DictionaryEntry>) -> Vec<DictionaryEntry> {
+fn prune_short_kanji_prefix_entries(
+    mut entries: Vec<DictionaryEntry>,
+    remaining_chars: usize,
+) -> Vec<DictionaryEntry> {
     if entries.is_empty() {
         return entries;
     }
     let has_shadowing_lexical = entries.iter().any(is_shadowing_lexical_entry);
     if has_shadowing_lexical {
         let snapshot = entries.clone();
-        entries.retain(|entry| !short_kanji_prefix_shadowed_by_longer_entry(entry, &snapshot));
+        entries.retain(|entry| {
+            !short_kanji_prefix_shadowed_by_longer_entry(entry, &snapshot, remaining_chars)
+        });
     }
     cap_one_kana_kanji_entries_when_longer_readings_exist(&mut entries);
     entries
@@ -1750,6 +1873,7 @@ fn has_exact_punctuation_dictionary_entry(
 fn short_kanji_prefix_shadowed_by_longer_entry(
     entry: &DictionaryEntry,
     entries: &[DictionaryEntry],
+    remaining_chars: usize,
 ) -> bool {
     let len = entry.reading.chars().count();
     if len == 0 || len > 2 {
@@ -1767,8 +1891,14 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
     }
     entries.iter().any(|other| {
         let other_len = other.reading.chars().count();
+        // A longer row that leaves a single dangling mora (`晴れ間` + `す`
+        // under `はれます`) should not hide the shorter complete word
+        // (`晴れ` + `ます`).
+        let leftover = remaining_chars.saturating_sub(other_len);
         other_len >= MIN_SHADOWING_LEXICAL_CHARS
             && other_len > len
+            && other_len <= remaining_chars
+            && leftover != 1
             && other.reading.starts_with(&entry.reading)
             && other.surface != other.reading
             && contains_kanji(&other.surface)
@@ -2091,6 +2221,43 @@ mod tests {
     fn converts_common_technical_katakana_without_losing_surface_script() {
         assert_eq!(convert_kana_to_kanji("データをダウンロード"), "データをダウンロード");
         assert_eq!(convert_kana_to_kanji("せっていのアップデート"), "設定のアップデート");
+    }
+
+    #[test]
+    fn converts_hiragana_loanwords_from_official_ruby_identity() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        assert!(
+            dictionary.has_system_dictionary(),
+            "quality test requires the official dictionary"
+        );
+        for (input, expected) in [
+            ("ぱそこん", "パソコン"),
+            ("ぱそこんが", "パソコンが"),
+            ("かめらで", "カメラで"),
+            ("ほてるに", "ホテルに"),
+            ("きりん", "キリン"),
+            ("きりんさんがすきです", "キリンさんが好きです"),
+            ("あいふぉん", "iPhone"),
+            ("あいふぉんをこうにゅうする", "iPhoneを購入する"),
+            ("です", "です"),
+            ("すーぷ", "スープ"),
+            ("はれ", "晴れ"),
+            ("はれです", "晴れです"),
+            ("はれます", "晴れます"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
     }
 
     #[test]

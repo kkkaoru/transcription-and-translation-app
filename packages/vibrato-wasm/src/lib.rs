@@ -47,6 +47,25 @@ fn katakana_to_hiragana(input: &str) -> String {
         .collect()
 }
 
+fn is_kanji(character: char) -> bool {
+    let code = character as u32;
+    (0x3400..=0x4dbf).contains(&code)
+        || (0x4e00..=0x9fff).contains(&code)
+        || (0xf900..=0xfaff).contains(&code)
+}
+
+fn contains_kanji(text: &str) -> bool {
+    text.chars().any(is_kanji)
+}
+
+/// Desktop `reading_for_azookey`: skip IPADIC when the surface has no kanji.
+fn reading_for_azookey(tokenizer: &vibrato::Tokenizer, text: &str, feature_index: usize) -> String {
+    if !contains_kanji(text) {
+        return text.to_string();
+    }
+    hiragana_with_feature_index(tokenizer, text, feature_index)
+}
+
 fn hiragana_with_feature_index(
     tokenizer: &vibrato::Tokenizer,
     text: &str,
@@ -95,7 +114,7 @@ impl VibratoTokenizer {
     /// UniDic CWJ uses 20 (`kana`); IPADIC uses 7 (`reading`).
     #[wasm_bindgen(js_name = toHiragana)]
     pub fn to_hiragana(&self, text: &str, feature_index: usize) -> String {
-        hiragana_with_feature_index(&self.tokenizer, text, feature_index)
+        reading_for_azookey(&self.tokenizer, text, feature_index)
     }
 }
 
@@ -142,5 +161,18 @@ mod tests {
             super::hiragana_with_feature_index(&tokenizer, "東京都に京都", 7),
             "とうきょうとにきょうと"
         );
+    }
+
+    #[test]
+    fn reading_for_azookey_passthrough_when_no_kanji() {
+        let tokenizer = tokenizer_from_zstd(&tiny_dictionary_zstd())
+            .expect("zstd dictionary should initialize");
+        assert_eq!(super::reading_for_azookey(&tokenizer, "きょうははれ", 7), "きょうははれ");
+        assert_eq!(
+            super::reading_for_azookey(&tokenizer, "東京都に京都", 7),
+            "とうきょうとにきょうと"
+        );
+        assert!(super::contains_kanji("きょうは晴れ"));
+        assert!(!super::contains_kanji("きょうははれ"));
     }
 }
