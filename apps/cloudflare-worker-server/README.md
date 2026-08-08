@@ -1,5 +1,15 @@
 # AzooKey Cloudflare Worker API
 
+Standalone Cloudflare Worker for AzooKey text conversion (and optional HTTP
+inference adapters). It does not require the Kotoba Beacon desktop app.
+
+Local comparison stack (Worker + Next.js only):
+
+```sh
+bun run worker:dev
+bun run azookey-compare:dev
+```
+
 This Worker keeps the existing inference HTTP adapter and adds a dedicated
 AzooKey text conversion endpoint:
 
@@ -22,13 +32,14 @@ The comparison app sends one text frame per conversion.
 Wire labels `worker-vibrato` and `vibratoInput` are historical names only.
 AzooKey conversion always runs with the official portable LOUDS/MM/CID
 dictionary in the Worker when `AZOOKEY_DICTIONARY_URL` is configured, using
-`vibratoInput` as its conversion input. In worker comparison mode, a
+`vibratoInput` as its conversion input. Worker and HTTP Vibrato adapters match
+Tauri: pure kana passes through unchanged, and only kanji-bearing text is
+tokenized with IPADIC F[7]. In worker comparison mode, a
 `vibratoExecution: "worker"` frame uses the configured HTTP Vibrato adapter
-when `VIBRATO_UPSTREAM_URL` is set. Without that adapter the full AzooKey
-dictionary accepts mixed Japanese input directly; the ready frame reports this
-as `workerStage: "passthrough"` rather than claiming that Vibrato ran.
-Browser comparison mode performs the real Vibrato WASM pre-pass in the client
-and sends `vibratoExecution: "browser-wasm"`.
+when `VIBRATO_UPSTREAM_URL` is set. Without that adapter the ready frame reports
+`workerStage: "passthrough"`; the comparison UI then runs browser Vibrato for
+kanji-bearing Web Speech before AzooKey. Browser comparison mode performs the
+real Vibrato WASM pre-pass in the client and sends `vibratoExecution: "browser-wasm"`.
 
 ```json
 {

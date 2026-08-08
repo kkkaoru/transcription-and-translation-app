@@ -30,11 +30,13 @@ describe("Worker Vibrato WASM dictionary adapter", () => {
 
     await expect(converter("入力", "ja")).resolves.toBe("ひらがな");
     await expect(converter("二つ目", "ja")).resolves.toBe("ひらがな");
+    await expect(converter("きょうははれ", "ja")).resolves.toBe("きょうははれ");
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(vibratoMocks.initSync).toHaveBeenCalledWith({ module: wasmModule });
     expect(vibratoMocks.Tokenizer).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
     expect(tokenizer.toHiragana).toHaveBeenNthCalledWith(1, "入力", 7);
     expect(tokenizer.toHiragana).toHaveBeenNthCalledWith(2, "二つ目", 7);
+    expect(tokenizer.toHiragana).toHaveBeenCalledTimes(2);
   });
 
   it("rejects missing, malformed, empty, and oversized dictionaries", async () => {

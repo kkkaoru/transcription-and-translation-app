@@ -1,8 +1,17 @@
+import { containsKanji } from "./azookey-reading.js";
 import { initSync as initVibratoSync, VibratoTokenizer } from "./vibrato_wasm.js";
 
 export const AZOOKEY_WS_PATH = "/ws/azookey";
 export const AZOOKEY_PROTOCOL = "azookey.text.v1";
 export const AZOOKEY_MODEL = "azookey-rust-wasm";
+export const AZOOKEY_ZENZ_XSMALL_MODEL = "zenz-v3.2-xsmall-gguf";
+export const AZOOKEY_ZENZ_SMALL_MODEL = "zenz-v3.2-small-gguf";
+export const AZOOKEY_CONVERT_MODELS = [
+  AZOOKEY_MODEL,
+  AZOOKEY_ZENZ_XSMALL_MODEL,
+  AZOOKEY_ZENZ_SMALL_MODEL,
+] as const;
+export type AzookeyConvertModel = (typeof AZOOKEY_CONVERT_MODELS)[number];
 export const AZOOKEY_MODE = "worker-vibrato" as const;
 export const BROWSER_VIBRATO_MODE = "browser-vibrato" as const;
 /** Where the Vibrato pre-pass is executed for a comparison request. */
@@ -75,6 +84,8 @@ export interface AzookeyEnv {
   VIBRATO_DICTIONARY_URL?: string;
   /** URL of the gzip-compressed official portable AzooKey dictionary. */
   AZOOKEY_DICTIONARY_URL?: string;
+  /** JSON map of model id → `{ baseUrl, servedModel? }` for Zenzai upstreams. */
+  MODEL_ROUTES?: string;
 }
 
 export type AzookeyMode = typeof AZOOKEY_MODE | typeof BROWSER_VIBRATO_MODE;
@@ -139,6 +150,10 @@ export interface AzookeyRuntime {
   timeoutMs: number;
   expectedToken?: string;
   handshakeAuthorized?: boolean;
+  /** Optional Zenzai GGUF upstreams keyed by model id. */
+  modelRoutes?: Record<string, { baseUrl: string; servedModel?: string }>;
+  /** Fetcher used for Zenzai chat completions. */
+  fetcher?: AzookeyFetcher;
 }
 
 export interface AzookeySocketPair {
@@ -177,6 +192,8 @@ export interface AzookeyMessage {
   sourceText: string;
   vibratoInput: string;
   mode: AzookeyMode;
+  /** Converter model; defaults to the portable WASM dictionary path. */
+  model: AzookeyConvertModel;
   /** Explicitly records where the required Vibrato pre-pass ran. */
   vibratoExecution?: typeof WORKER_VIBRATO_EXECUTION | typeof BROWSER_VIBRATO_EXECUTION;
   auth?: AzookeyAuth;
@@ -200,7 +217,7 @@ export interface AzookeyResultMessage {
   convertedText: string;
   mode: typeof AZOOKEY_MODE;
   elapsedMs: number;
-  model: typeof AZOOKEY_MODEL;
+  model: AzookeyConvertModel;
 }
 
 export interface AzookeyErrorMessage {
@@ -230,7 +247,8 @@ export type AzookeyErrorCode =
   | "busy"
   | "conversion_timeout"
   | "conversion_failed"
-  | "converter_unavailable";
+  | "converter_unavailable"
+  | "unsupported_model";
 
 class AzookeyProtocolError extends Error {
   readonly code: AzookeyErrorCode;
@@ -416,6 +434,21 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
     }
     throw error;
   }
+  const modelValue = parsed["model"];
+  let model: AzookeyConvertModel = AZOOKEY_MODEL;
+  if (modelValue !== undefined) {
+    if (
+      typeof modelValue !== "string" ||
+      !(AZOOKEY_CONVERT_MODELS as readonly string[]).includes(modelValue)
+    ) {
+      throw new AzookeyProtocolError(
+        "unsupported_model",
+        "model must be azookey-rust-wasm, zenz-v3.2-xsmall-gguf, or zenz-v3.2-small-gguf",
+        requestId,
+      );
+    }
+    model = modelValue as AzookeyConvertModel;
+  }
   return {
     type: "azookey.convert",
     requestId,
@@ -424,6 +457,7 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
     sourceText,
     vibratoInput,
     mode: AZOOKEY_MODE,
+    model,
     ...(vibratoExecution === undefined ? {} : { vibratoExecution }),
     ...(auth === undefined ? {} : { auth }),
   };
@@ -749,6 +783,9 @@ export const createVibratoHttpConverter = (
   }
   const token = env.VIBRATO_API_TOKEN?.trim();
   return async (text: string, language: string, signal?: AbortSignal): Promise<string> => {
+    if (!containsKanji(text)) {
+      return text;
+    }
     let response: Response;
     try {
       response = await fetcher(upstreamUrl, {
@@ -865,6 +902,9 @@ export const createVibratoWasmConverter = (
   };
 
   const converter = (async (text: string): Promise<string> => {
+    if (!containsKanji(text)) {
+      return text;
+    }
     const tokenizer = await loadTokenizer();
     return tokenizer.toHiragana(text, VIBRATO_IPADIC_FEATURE_INDEX);
   }) as AzookeyVibratoConverter;
@@ -895,6 +935,86 @@ const withTimeout = async <T>(
       clearTimeout(timer);
     }
   }
+};
+
+const toKatakana = (input: string): string =>
+  input.replace(/[\u3041-\u3096]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0x60));
+
+export const zenzPrompt = (input: string): string => `\u{EE00}${toKatakana(input)}\u{EE01}`;
+
+export const parseModelRoutes = (
+  raw: string | undefined,
+): Record<string, { baseUrl: string; servedModel?: string }> => {
+  if (!raw?.trim()) {
+    return {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const routes: Record<string, { baseUrl: string; servedModel?: string }> = {};
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        continue;
+      }
+      const baseUrl = (value as { baseUrl?: unknown }).baseUrl;
+      if (typeof baseUrl !== "string" || !baseUrl.trim()) {
+        continue;
+      }
+      const servedModel = (value as { servedModel?: unknown }).servedModel;
+      routes[id] = {
+        baseUrl: baseUrl.trim().replace(/\/$/, ""),
+        ...(typeof servedModel === "string" && servedModel.trim()
+          ? { servedModel: servedModel.trim() }
+          : {}),
+      };
+    }
+    return routes;
+  } catch {
+    return {};
+  }
+};
+
+const convertWithZenzModel = async (
+  model: AzookeyConvertModel,
+  text: string,
+  runtime: AzookeyRuntime,
+  signal?: AbortSignal,
+): Promise<string> => {
+  const route = runtime.modelRoutes?.[model];
+  if (!route) {
+    throw new AzookeyProtocolError(
+      "unsupported_model",
+      `${model} is not configured in MODEL_ROUTES`,
+    );
+  }
+  const fetcher = runtime.fetcher ?? fetch;
+  // Zenz llama.cpp servers speak `/completion`, not OpenAI chat completions.
+  const response = await fetcher(`${route.baseUrl}/completion`, {
+    method: "POST",
+    headers: { "content-type": "application/json; charset=utf-8" },
+    body: JSON.stringify({
+      prompt: zenzPrompt(text),
+      n_predict: 256,
+      temperature: 0,
+      stream: false,
+    }),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new AzookeyProtocolError(
+      "conversion_failed",
+      `Zenzai upstream returned HTTP ${response.status}`,
+    );
+  }
+  const payload: unknown = await response.json();
+  const content =
+    payload && typeof payload === "object" ? (payload as { content?: unknown }).content : undefined;
+  if (typeof content !== "string" || !content.trim()) {
+    throw new AzookeyProtocolError("conversion_failed", "Zenzai upstream returned no text");
+  }
+  return content.trim();
 };
 
 export const convertAzookeyMessage = async (
@@ -977,10 +1097,13 @@ export const convertAzookeyMessage = async (
         message.requestId,
       );
     }
-    const candidate = await withTimeout(
-      (signal) => runtime.converter(conversionInput, signal),
-      remainingMs(),
-    );
+    const candidate =
+      message.model === AZOOKEY_MODEL
+        ? await withTimeout((signal) => runtime.converter(conversionInput, signal), remainingMs())
+        : await withTimeout(
+            (signal) => convertWithZenzModel(message.model, conversionInput, runtime, signal),
+            remainingMs(),
+          );
     if (deadlineExpired()) {
       throw new AzookeyProtocolError(
         "conversion_timeout",
@@ -1024,7 +1147,7 @@ export const convertAzookeyMessage = async (
     convertedText: converted,
     mode: AZOOKEY_MODE,
     elapsedMs: Math.max(AZOOKEY_MIN_ELAPSED_MS, Math.round(elapsed)),
-    model: AZOOKEY_MODEL,
+    model: message.model,
   };
 };
 
@@ -1114,9 +1237,13 @@ export const attachAzookeySocket = (socket: WebSocket, runtime: AzookeyRuntime):
   });
 };
 
+export type AzookeyDictionaryTransport = "portable-wasm" | "builtin";
+
 export const readyAzookeyMessage = (
   timeoutMs: number,
   workerInputStage: WorkerInputStage | boolean = "unconfigured",
+  modelRoutes: Record<string, { baseUrl: string; servedModel?: string }> = {},
+  dictionaryTransport: AzookeyDictionaryTransport = "builtin",
 ): string => {
   const normalizedStage =
     typeof workerInputStage === "boolean"
@@ -1124,10 +1251,17 @@ export const readyAzookeyMessage = (
         ? "configured"
         : "unconfigured"
       : workerInputStage;
+  const availableModels = [
+    AZOOKEY_MODEL,
+    ...AZOOKEY_CONVERT_MODELS.filter(
+      (model) => model !== AZOOKEY_MODEL && Boolean(modelRoutes[model]),
+    ),
+  ];
   return jsonMessage({
     type: "azookey.ready",
     protocol: AZOOKEY_PROTOCOL,
     model: AZOOKEY_MODEL,
+    models: availableModels,
     mode: AZOOKEY_MODE,
     browserMode: BROWSER_VIBRATO_MODE,
     vibrato: {
@@ -1135,6 +1269,10 @@ export const readyAzookeyMessage = (
       workerInput: normalizedStage === "passthrough" ? "sourceText" : "vibrato-output",
       workerPassthrough: normalizedStage === "passthrough",
       browserStage: "client",
+    },
+    dictionary: {
+      transport: dictionaryTransport,
+      configured: dictionaryTransport === "portable-wasm",
     },
     maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
     timeoutMs,
@@ -1331,9 +1469,18 @@ export const openAzookeySocket = async (
       vibratoStage: workerInputStage,
       timeoutMs,
       handshakeAuthorized,
+      modelRoutes: parseModelRoutes(env.MODEL_ROUTES),
+      fetcher: dependencies.fetcher ?? fetch,
       ...(expectedToken ? { expectedToken } : {}),
     });
-    pair.server.send(readyAzookeyMessage(timeoutMs, workerInputStage));
+    pair.server.send(
+      readyAzookeyMessage(
+        timeoutMs,
+        workerInputStage,
+        parseModelRoutes(env.MODEL_ROUTES),
+        portableDictionaryConfigured ? "portable-wasm" : "builtin",
+      ),
+    );
     return websocketUpgradeResponse(pair.client);
   } catch (error) {
     // A runtime throw after pair creation (accept/send/upgrade response) must

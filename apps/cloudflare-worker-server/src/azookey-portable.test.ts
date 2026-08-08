@@ -197,6 +197,7 @@ describe("portable official AzooKey dictionary", () => {
       type: "azookey.ready",
       mode: AZOOKEY_MODE,
       vibrato: { workerStage: "passthrough" },
+      dictionary: { transport: "portable-wasm", configured: true },
     });
   }, 20_000);
 

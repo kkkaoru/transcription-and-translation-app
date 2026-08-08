@@ -9,8 +9,9 @@
 # The comparison app's local Next.js server runs on port 3000 by default.
 CORS_ORIGIN=http://127.0.0.1:3000
 
-# Keep this `{}` unless HTTP chat routing is intentionally enabled. Any model
-# route URL must be an owned HTTPS endpoint; credentials are separate secrets.
+# Keep this `{}` unless HTTP chat / Zenzai routing is intentionally enabled.
+# Local compare defaults (desktop model_runtime ports):
+# MODEL_ROUTES={"zenz-v3.2-xsmall-gguf":{"baseUrl":"http://127.0.0.1:8081"},"zenz-v3.2-small-gguf":{"baseUrl":"http://127.0.0.1:8082"}}
 MODEL_ROUTES={}
 
 # Optional: enables remote ASR proxying. The upstream must implement
@@ -26,10 +27,9 @@ MODEL_ROUTES={}
 # ASR_PROVIDER=workers-ai
 # WORKERS_AI_ASR_TIMEOUT_MS=15000
 
-# The default Worker conversion loads the official AzooKey LOUDS/MM/CID
-# archive from /azookey/system.azkdict.gz. The deploy script regenerates this
-# asset from the pinned submodule; no phrase-specific dictionary is used.
-# AZOOKEY_DICTIONARY_URL=/azookey/system.azkdict.gz
+# Required for Tauri-parity conversion quality. Without this URL the WASM
+# converter falls back to the tiny built-in lexicon and accuracy collapses.
+AZOOKEY_DICTIONARY_URL=/azookey/system.azkdict.gz
 
 # Direct Worker Vibrato WASM is not enabled with the portable AzooKey asset:
 # the IPADIC tokenizer exceeds the Workers isolate memory limit. For a real

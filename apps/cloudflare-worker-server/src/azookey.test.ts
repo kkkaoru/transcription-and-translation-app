@@ -74,6 +74,10 @@ describe("AzooKey Worker text contract", () => {
         workerInput: "sourceText",
         workerPassthrough: true,
       },
+      dictionary: { transport: "builtin", configured: false },
+    });
+    expect(JSON.parse(readyAzookeyMessage(125, "passthrough", {}, "portable-wasm"))).toMatchObject({
+      dictionary: { transport: "portable-wasm", configured: true },
     });
   });
 
@@ -197,6 +201,7 @@ describe("AzooKey Worker text contract", () => {
       fetcher,
     );
     await expect(convert?.("漢字混じり", "ja")).resolves.toBe("かんじまじり");
+    await expect(convert?.("きょうははれ", "ja")).resolves.toBe("きょうははれ");
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(createVibratoHttpConverter({})).toBeUndefined();
     expect(() =>
@@ -227,7 +232,14 @@ describe("AzooKey Worker text contract", () => {
     expect(convert).toBeDefined();
     await expect(
       convertAzookeyMessage(
-        parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
+        parseAzookeyMessage(
+          JSON.stringify({
+            ...valid,
+            sourceText: "今日は配信です",
+            vibratoInput: "今日は配信です",
+            vibratoExecution: "worker",
+          }),
+        ),
         {
           timeoutMs: 25,
           vibrato: convert as Exclude<typeof convert, undefined>,
