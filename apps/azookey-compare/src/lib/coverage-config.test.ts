@@ -8,7 +8,7 @@ type CoverageConfig = {
 };
 
 describe("azookey-compare coverage configuration", () => {
-  it("measures library modules including the inference proxy", () => {
+  it("measures library modules including the inference proxy and Access JWT gate", () => {
     const coverage = config.test?.coverage as unknown as CoverageConfig | undefined;
     expect(coverage?.include).toEqual(["src/lib/**/*.ts"]);
     expect(coverage?.exclude).toEqual(["src/**/*.test.ts", "src/lib/vibrato-browser.ts"]);

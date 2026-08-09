@@ -1,5 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  // After Cloudflare Access is enabled, set the Access audience and team
+  // domain as Worker variables. Leave them unset until then so preview stays
+  // usable. Do not invent placeholder values here.
   "name": "azookey-compare",
   "main": "src/worker.ts",
   "compatibility_date": "2026-08-09",

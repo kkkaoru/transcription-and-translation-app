@@ -44,6 +44,11 @@ Set `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` for a deployed Worker.
 Do not point the hosted UI at the inference `workers.dev` WebSocket; that
 origin is Access-denied (or closed) and conversion is proxied in-process.
 
+Hosted compare expects Cloudflare Access. After Access is enabled, set Worker
+vars `POLICY_AUD` and `TEAM_DOMAIN` (from the Access modal, not invented) so
+`src/worker.ts` can validate `Cf-Access-Jwt-Assertion`. Leave both unset for
+local `wrangler dev`.
+
 ### Conversion models
 
 The configuration panel includes a **変換モデル** select:

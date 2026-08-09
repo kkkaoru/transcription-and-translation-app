@@ -149,9 +149,31 @@ to the `ws:`/`wss:` URL.
 `bun run access:setup` creates OTP (and Google only when
 `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` are set) plus
 self-hosted apps with `oauth_configuration.enabled`. Allow lists default to
-`kaoru@teadea.net` and `@teadea.net`. IdP write needs
-`Access: Organizations, Identity Providers, and Groups Edit`; app write needs
-`Access: Apps and Policies Edit`.
+`kaoru@teadea.net` and `@teadea.net`. Never allow `everyone` or login-method-only
+OTP. IdP write needs `Access: Organizations, Identity Providers, and Groups
+Edit`; app write needs `Access: Apps and Policies Edit`.
+
+If the API token still returns 403, enable Access from the dashboard instead:
+
+1. Sign in as `kaoru@teadea.net`.
+2. Workers & Pages → `azookey-compare` → Settings → Domains & Routes.
+3. On `workers.dev`, click **Enable Cloudflare Access**.
+4. **Manage Cloudflare Access** and restrict to `kaoru@teadea.net` plus
+   `@teadea.net`. Do not leave world-open OTP.
+5. Enable Managed OAuth on that Access app. Use OTP IdP. Create Google IdP
+   only when `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` exist.
+6. Copy the Access audience and team domain from the modal. Set them on the
+   compare Worker as `POLICY_AUD` and `TEAM_DOMAIN` (no placeholders, no git
+   commit of values), then redeploy compare from a clean UI tree.
+
+Do not re-enable inference `workers.dev`. Conversion stays on the compare
+service binding. Inference needs an Access app only if a public hostname
+returns.
+
+Compare validates `Cf-Access-Jwt-Assertion` once both Worker vars are set.
+Until then the JWT gate is a no-op so local/preview still works. After the
+vars are set, a missing or invalid assertion returns `401` with
+`WWW-Authenticate: Bearer`.
 
 ## Local development
 
