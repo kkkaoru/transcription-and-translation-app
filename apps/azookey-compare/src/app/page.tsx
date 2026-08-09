@@ -28,6 +28,7 @@ import {
   type AzookeyConversionFixture,
 } from "../lib/conversion-fixtures";
 import { runComparisonConversion } from "../lib/conversion-pipeline";
+import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
 import {
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
@@ -61,6 +62,7 @@ interface ComparisonRow {
   fixtureId?: string;
   wasmElapsedMs?: number;
   workerElapsedMs?: number;
+  totalElapsedMs?: number;
   error?: string;
   failedStage?: ConversionStage;
   createdAt: number;
@@ -122,9 +124,6 @@ const rowStateLabel = (state: ComparisonRowState): string => {
       return "失敗";
   }
 };
-
-const formatMilliseconds = (value: number | undefined): string =>
-  value === undefined ? "—" : `${Math.round(value)} ms`;
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : "予期しないエラーが発生しました";
@@ -399,6 +398,7 @@ export default function ComparePage() {
           ...(result.workerElapsedMs !== undefined || result.azookeyElapsedMs !== undefined
             ? { workerElapsedMs: result.workerElapsedMs ?? result.azookeyElapsedMs }
             : {}),
+          totalElapsedMs: result.totalElapsedMs,
         });
         if (result.modelFallback && result.requestedModel) {
           setNotice(
@@ -1104,8 +1104,11 @@ export default function ComparePage() {
                     : "")}
               </p>
               <div className="live-card-footer">
-                <span>最新レイテンシ</span>
-                <strong>{formatMilliseconds(latestWorker?.workerElapsedMs)}</strong>
+                <span>処理時間</span>
+                <strong>
+                  合計処理時間 {formatMilliseconds(latestWorker?.totalElapsedMs)} / Worker{" "}
+                  {formatMilliseconds(latestWorker?.workerElapsedMs)}
+                </strong>
               </div>
             </section>
           </div>
@@ -1176,13 +1179,8 @@ export default function ComparePage() {
                         </span>
                         <p>{row.convertedText ?? row.error ?? "—"}</p>
                         <span className="row-meta">
-                          {rowPathLabel(row.mode, row.state, row.failedStage)}
-                          {row.wasmElapsedMs !== undefined
-                            ? ` · WASM ${formatMilliseconds(row.wasmElapsedMs)}`
-                            : ""}
-                          {row.workerElapsedMs !== undefined
-                            ? ` · Worker ${formatMilliseconds(row.workerElapsedMs)}`
-                            : ""}
+                          {rowPathLabel(row.mode, row.state, row.failedStage)} ·{" "}
+                          {formatRowTiming(row)}
                         </span>
                       </div>
                     </li>

@@ -49,8 +49,10 @@ describe("comparison conversion pipeline", () => {
       usedWebSocket: false,
       ranBrowserVibrato: true,
       model: "azookey-rust-wasm",
+      wasmElapsedMs: 4,
       azookeyElapsedMs: 9,
     });
+    expect(result.totalElapsedMs).toBeGreaterThanOrEqual(0);
     expect(connectWorker).not.toHaveBeenCalled();
     expect(convertWithWorker).not.toHaveBeenCalled();
     expect(stages).toEqual(["setup", "browser-wasm", "browser-azookey"]);
@@ -91,6 +93,8 @@ describe("comparison conversion pipeline", () => {
     expect(result.usedWebSocket).toBe(false);
     expect(result.convertedText).toBe("明日の天気は晴れ");
     expect(result.vibratoInput).toBe("あしたのてんきははれ");
+    expect(result.azookeyElapsedMs).toBe(2);
+    expect(result.totalElapsedMs).toBeGreaterThanOrEqual(0);
   });
 
   it("uses the Worker path only for worker-vibrato", async () => {
@@ -118,6 +122,31 @@ describe("comparison conversion pipeline", () => {
     );
     expect(result.usedWebSocket).toBe(true);
     expect(result.convertedText).toBe("今日はいい天気");
+    expect(result.workerElapsedMs).toBe(12);
+    expect(result.totalElapsedMs).toBeGreaterThanOrEqual(0);
+
+    const zeroElapsed = await runComparisonConversion(
+      { ...baseInput, mode: "worker-vibrato", converterModel: "azookey-rust-wasm" },
+      {
+        runBrowserVibrato: vi.fn(() =>
+          Promise.resolve({ text: "きょうはいいてんき", elapsedMs: 1 }),
+        ),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker: vi.fn(() =>
+          Promise.resolve({
+            requestId: "r2-zero",
+            sourceText: "きょうはいいてんき",
+            convertedText: "今日はいい天気",
+            elapsedMs: 0,
+            receivedAt: Date.now(),
+          }),
+        ),
+      },
+    );
+    expect(zeroElapsed.convertedText).toBe("今日はいい天気");
+    expect(zeroElapsed.workerElapsedMs).toBe(0);
+    expect(zeroElapsed.totalElapsedMs).toBeGreaterThanOrEqual(0);
     expect(connectWorker).toHaveBeenCalledOnce();
     expect(convertWithWorker).toHaveBeenCalledOnce();
     expect(usesWorkerConversion("worker-vibrato")).toBe(true);
@@ -179,6 +208,8 @@ describe("comparison conversion pipeline", () => {
     );
     expect(result.vibratoInput).toBe("今日は晴れ");
     expect(result.usedWebSocket).toBe(true);
+    expect(result.workerElapsedMs).toBeUndefined();
+    expect(result.totalElapsedMs).toBeGreaterThanOrEqual(0);
 
     await expect(
       runComparisonConversion(

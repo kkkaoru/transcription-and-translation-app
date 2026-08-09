@@ -247,6 +247,54 @@ describe("AzooKey Worker client connection lifecycle", () => {
       elapsedMs: 4,
     });
 
+    const snake = client.convert(request());
+    await Promise.resolve();
+    const snakeId = (JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string }).requestId;
+    socket.message(
+      JSON.stringify({
+        requestId: snakeId,
+        convertedText: "今日はいい天気",
+        elapsed_ms: 18,
+      }),
+    );
+    await expect(snake).resolves.toMatchObject({
+      convertedText: "今日はいい天気",
+      elapsedMs: 18,
+    });
+
+    const zeroCamel = client.convert(request());
+    await Promise.resolve();
+    const zeroCamelId = (JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string }).requestId;
+    socket.message(
+      JSON.stringify({
+        requestId: zeroCamelId,
+        convertedText: "今日はいい天気",
+        elapsedMs: 0,
+      }),
+    );
+    await expect(zeroCamel).resolves.toMatchObject({
+      convertedText: "今日はいい天気",
+      elapsedMs: 0,
+    });
+
+    const nestedSnake = client.convert(request());
+    await Promise.resolve();
+    const nestedSnakeId = (JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string })
+      .requestId;
+    socket.message(
+      JSON.stringify({
+        result: {
+          requestId: nestedSnakeId,
+          convertedText: "ゼロミリ秒",
+          elapsed_ms: 0,
+        },
+      }),
+    );
+    await expect(nestedSnake).resolves.toMatchObject({
+      convertedText: "ゼロミリ秒",
+      elapsedMs: 0,
+    });
+
     const blob = client.convert(request());
     await Promise.resolve();
     const blobId = (JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string }).requestId;

@@ -271,8 +271,8 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
   const mode: ComparisonMode | undefined =
     modeValue === "worker-vibrato" || modeValue === "browser-vibrato" ? modeValue : undefined;
   const elapsedMs =
-    readNumber(payload, "elapsedMs", "durationMs", "latencyMs") ??
-    (nested ? readNumber(nested, "elapsedMs", "durationMs", "latencyMs") : undefined);
+    readNumber(payload, "elapsedMs", "elapsed_ms", "durationMs", "latencyMs") ??
+    (nested ? readNumber(nested, "elapsedMs", "elapsed_ms", "durationMs", "latencyMs") : undefined);
   const model = readString(payload, "model") ?? (nested ? readString(nested, "model") : undefined);
   const requestedModel =
     readString(payload, "requestedModel") ??

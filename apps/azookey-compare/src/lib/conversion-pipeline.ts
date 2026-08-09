@@ -9,6 +9,7 @@ import { shouldRunBrowserVibratoPrePass } from "./azookey-reading";
 import type { BrowserAzookeyResult } from "./browser-azookey";
 import type { BrowserVibratoConfig, BrowserVibratoResult } from "./browser-vibrato";
 import type { ComparisonAuth, ComparisonMode } from "./contract";
+import { elapsedSinceMs, nowMs } from "./conversion-timing";
 import type { ConverterModel } from "./converter-models";
 import { isZenzConverterModel } from "./converter-models";
 import type { ConversionStage } from "./path-labels";
@@ -37,6 +38,8 @@ export interface ConversionPipelineResult {
   wasmElapsedMs?: number;
   azookeyElapsedMs?: number;
   workerElapsedMs?: number;
+  /** Browser-side wall clock: Vibrato + AzooKey + Worker round-trip. */
+  totalElapsedMs: number;
   usedWebSocket: boolean;
   ranBrowserVibrato: boolean;
   vibratoExecution: VibratoExecution;
@@ -68,6 +71,7 @@ export const runComparisonConversion = async (
   input: ConversionPipelineInput,
   deps: ConversionPipelineDependencies,
 ): Promise<ConversionPipelineResult> => {
+  const startedAt = nowMs();
   const sourceText = input.sourceText.trim();
   const phonetic = input.phoneticInput?.trim();
   let vibratoInput = phonetic || sourceText;
@@ -120,6 +124,7 @@ export const runComparisonConversion = async (
       vibratoInput,
       wasmElapsedMs,
       azookeyElapsedMs: azookey.elapsedMs,
+      totalElapsedMs: elapsedSinceMs(startedAt),
       usedWebSocket: false,
       ranBrowserVibrato,
       vibratoExecution,
@@ -148,6 +153,7 @@ export const runComparisonConversion = async (
     vibratoInput,
     wasmElapsedMs,
     workerElapsedMs: result.elapsedMs,
+    totalElapsedMs: elapsedSinceMs(startedAt),
     usedWebSocket: true,
     ranBrowserVibrato,
     vibratoExecution,
