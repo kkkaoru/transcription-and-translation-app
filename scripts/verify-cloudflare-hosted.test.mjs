@@ -6,8 +6,11 @@ import {
   COMPARE_ORIGIN,
   evaluateHostedChecks,
   INFERENCE_ORIGIN,
+  isRecordedElapsedMs,
   isUnauthenticatedAccessStatus,
+  recordedElapsedMs,
   resolveAccessServiceToken,
+  summarizeWebsocketConversion,
 } from "./verify-cloudflare-hosted.mjs";
 
 describe("verify-cloudflare-hosted", () => {
@@ -46,7 +49,7 @@ describe("verify-cloudflare-hosted", () => {
     );
   });
 
-  it("requires unauth 401/302, ST health 200, and inference 404", () => {
+  it("requires unauth 401/302, ST health 200, inference 404, and WS conversion", () => {
     assert.deepEqual(
       evaluateHostedChecks({
         unauthenticatedHome: 302,
@@ -54,8 +57,24 @@ describe("verify-cloudflare-hosted", () => {
         authenticatedHealth: 200,
         inferenceDirect: 404,
         websocket: 101,
+        websocketConversion: {
+          ok: true,
+          input: "きょうはいいてんき",
+          convertedText: "今日はいい天気",
+          elapsedMs: 12,
+        },
       }),
-      { ok: true, failures: [], websocket: 101 },
+      {
+        ok: true,
+        failures: [],
+        websocket: 101,
+        websocketConversion: {
+          ok: true,
+          input: "きょうはいいてんき",
+          convertedText: "今日はいい天気",
+          elapsedMs: 12,
+        },
+      },
     );
     const failed = evaluateHostedChecks({
       unauthenticatedHome: 200,
@@ -65,15 +84,76 @@ describe("verify-cloudflare-hosted", () => {
     });
     assert.equal(failed.ok, false);
     assert.equal(failed.websocket, "skipped");
-    assert.equal(failed.failures.length, 3);
+    assert.equal(failed.websocketConversion, "skipped");
+    assert.equal(failed.failures.length, 4);
     assert.equal(
       evaluateHostedChecks({
         unauthenticatedHome: 302,
         unauthenticatedHealth: 401,
         inferenceDirect: 404,
         requireAuthenticatedHealth: false,
+        requireWebsocketConversion: false,
       }).ok,
       true,
+    );
+    assert.match(
+      evaluateHostedChecks({
+        unauthenticatedHome: 302,
+        unauthenticatedHealth: 401,
+        authenticatedHealth: 200,
+        inferenceDirect: 404,
+        websocketConversion: { ok: false, stage: "azookey_error", code: "unauthorized" },
+      }).failures[0],
+      /WS conversion failed/,
+    );
+    assert.match(
+      evaluateHostedChecks({
+        unauthenticatedHome: 302,
+        unauthenticatedHealth: 401,
+        authenticatedHealth: 200,
+        inferenceDirect: 404,
+        websocketConversion: { ok: true, convertedText: "今日はいい天気" },
+      }).failures[0],
+      /missing elapsedMs\/elapsed_ms/,
+    );
+    assert.equal(
+      evaluateHostedChecks({
+        unauthenticatedHome: 302,
+        unauthenticatedHealth: 401,
+        authenticatedHealth: 200,
+        inferenceDirect: 404,
+        websocketConversion: {
+          ok: true,
+          convertedText: "今日はいい天気",
+          elapsed_ms: 18,
+        },
+      }).ok,
+      true,
+    );
+  });
+
+  it("records A's elapsedMs/elapsed_ms without inventing a timer", () => {
+    assert.equal(isRecordedElapsedMs(0), true);
+    assert.equal(isRecordedElapsedMs(12), true);
+    assert.equal(isRecordedElapsedMs(undefined), false);
+    assert.equal(isRecordedElapsedMs(Number.NaN), false);
+    assert.equal(recordedElapsedMs({ elapsedMs: 12, elapsed_ms: 99 }), 12);
+    assert.equal(recordedElapsedMs({ elapsed_ms: 18 }), 18);
+    assert.equal(recordedElapsedMs({ convertedText: "今日はいい天気" }), undefined);
+    assert.deepEqual(
+      summarizeWebsocketConversion({
+        ok: true,
+        input: "きょうはいいてんき",
+        convertedText: "今日はいい天気",
+        elapsed_ms: 18,
+      }),
+      {
+        ok: true,
+        input: "きょうはいいてんき",
+        convertedText: "今日はいい天気",
+        elapsedMs: 18,
+        model: undefined,
+      },
     );
   });
 });
