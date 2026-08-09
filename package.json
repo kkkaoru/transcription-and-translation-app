@@ -4,7 +4,11 @@
   "private": true,
   "description": "Caption Bridge workspace commands",
   "packageManager": "bun@1.3.14",
-  "workspaces": [".", "apps/*", "packages/*"],
+  "workspaces": [
+    ".",
+    "apps/*",
+    "packages/*"
+  ],
   "overrides": {
     "array-includes": "3.1.8"
   },
@@ -43,6 +47,7 @@
     "azookey-compare:typecheck": "bun --filter=@caption-bridge/azookey-compare run typecheck",
     "azookey-compare:test:coverage": "node scripts/run-coverage-locked.mjs @caption-bridge/azookey-compare",
     "azookey-compare:build": "bun --filter=@caption-bridge/azookey-compare run build",
+    "azookey-compare:deploy": "bun --filter=@caption-bridge/azookey-compare run deploy",
     "check:single-app": "node scripts/check-single-app.mjs",
     "assets:verify": "node scripts/verify-generated-assets.mjs --require-tracked",
     "check:macos-autoswitch": "bash scripts/verify-macos-autoswitch.sh",

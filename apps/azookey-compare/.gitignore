@@ -1,5 +1,7 @@
 .next
+out
 coverage
 node_modules
 tsconfig.tsbuildinfo
+.wrangler
 

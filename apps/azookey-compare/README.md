@@ -36,8 +36,13 @@ Default (no env override):
 
 `ws://127.0.0.1:8787/ws/azookey`
 
-Set `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` for a deployed Worker. Production
-example: `wss://kotoba-beacon-inference.kaoru.workers.dev/ws/azookey`.
+Set `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` for a deployed Worker.
+`bun run azookey-compare:deploy` bakes the production compare URL:
+
+`wss://azookey-compare.kaoru.workers.dev/ws/azookey`
+
+Do not point the hosted UI at the inference `workers.dev` WebSocket; that
+origin is Access-denied (or closed) and conversion is proxied in-process.
 
 ### Conversion models
 
