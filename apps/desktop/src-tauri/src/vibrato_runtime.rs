@@ -46,7 +46,7 @@ impl VibratoReader {
     /// ends are unioned in so messy kana ASR (where IPADIC emits one unknown
     /// noun blob) still pages after です/ます.
     pub fn sentence_end_offsets(&self, text: &str) -> Vec<usize> {
-        crate::sentence_boundary::caption_sentence_end_offsets(&self.tokenize(text), text)
+        caption_bridge_vibrato_core::sentence_end_offsets(&self.tokenizer, text)
     }
 }
 

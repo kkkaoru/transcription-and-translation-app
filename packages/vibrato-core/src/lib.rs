@@ -107,6 +107,17 @@ pub fn reading_for_azookey(tokenizer: &Tokenizer, text: &str) -> String {
     reading_for_azookey_with_feature_index(tokenizer, text, IPADIC_READING_FEATURE_INDEX)
 }
 
+pub mod sentence_boundary;
+
+/// IPADIC POS ends unioned with plausible heuristic copulas.
+pub fn sentence_end_offsets(tokenizer: &Tokenizer, text: &str) -> Vec<usize> {
+    let tokens = tokenize(tokenizer, text)
+        .into_iter()
+        .map(|token| (token.surface, token.feature, token.char_end))
+        .collect::<Vec<_>>();
+    sentence_boundary::caption_sentence_end_offsets(&tokens, text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

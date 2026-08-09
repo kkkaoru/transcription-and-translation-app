@@ -1,5 +1,5 @@
 use caption_bridge_vibrato_core::{
-    reading_for_azookey_with_feature_index, tokenize, tokenizer_from_zstd,
+    reading_for_azookey_with_feature_index, sentence_end_offsets, tokenize, tokenizer_from_zstd,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -49,6 +49,15 @@ impl VibratoTokenizer {
     #[wasm_bindgen(js_name = toHiragana)]
     pub fn to_hiragana(&self, text: &str, feature_index: usize) -> String {
         reading_for_azookey_with_feature_index(&self.tokenizer, text, feature_index)
+    }
+
+    /// Exclusive Unicode-scalar sentence-end offsets (Tauri IPADIC POS ∪ heuristic).
+    #[wasm_bindgen(js_name = sentenceEndOffsets)]
+    pub fn sentence_end_offsets(&self, text: &str) -> Vec<u32> {
+        sentence_end_offsets(&self.tokenizer, text)
+            .into_iter()
+            .map(|offset| offset as u32)
+            .collect()
     }
 }
 
