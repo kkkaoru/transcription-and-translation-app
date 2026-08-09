@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import {
   buildCursorMcpConfig,
+  hasCloudflareCodeMode,
   parseDotEnv,
   resolveCloudflareApiToken,
   writeCursorMcpConfig,
@@ -44,23 +45,19 @@ describe("setup-cursor-cloudflare-mcp", () => {
     assert.deepEqual(resolved, { token: "dotenv-token", source: "dotenv:CLOUDFLARE_DEBUG_TOKEN" });
   });
 
-  it("writes ~/.cursor/mcp.json with Bearer headers and no token in server names", async () => {
+  it("clears Code Mode instead of registering mcp.cloudflare.com", async () => {
     const home = await mkdtemp(join(tmpdir(), "cursor-mcp-home-"));
     temporaryRoots.push(home);
-    const path = writeCursorMcpConfig({ token: "test-token", home });
+    const path = writeCursorMcpConfig({ home });
     const config = JSON.parse(await readFile(path, "utf8"));
+    assert.deepEqual(config, buildCursorMcpConfig());
+    assert.equal(config.mcpServers.cloudflare, undefined);
+    assert.equal(hasCloudflareCodeMode(config), false);
     assert.equal(
-      config.mcpServers["cloudflare-bindings"].url,
-      "https://bindings.mcp.cloudflare.com/mcp",
+      hasCloudflareCodeMode({
+        mcpServers: { cloudflare: { url: "https://mcp.cloudflare.com/mcp" } },
+      }),
+      true,
     );
-    assert.equal(
-      config.mcpServers["cloudflare-bindings"].headers.Authorization,
-      "Bearer test-token",
-    );
-    assert.equal(
-      config.mcpServers["cloudflare-observability"].headers.Authorization,
-      "Bearer test-token",
-    );
-    assert.throws(() => buildCursorMcpConfig(" "));
   });
 });
