@@ -86,7 +86,15 @@ bun run worker:dev            # Cloudflare Worker（ws://127.0.0.1:8787）
 bun run azookey-compare:dev   # Next.js UI（http://127.0.0.1:3000）
 ```
 
-詳細は `apps/cloudflare-worker-server/README.md` と `apps/azookey-compare/README.md` を参照してください。
+本番（Cloudflare Access 必須）:
+
+- UI: `https://azookey-compare.kaoru.workers.dev`
+- 変換 WS: `wss://azookey-compare.kaoru.workers.dev/ws/azookey`
+- inference 直 URL（`https://kotoba-beacon-inference.kaoru.workers.dev`）は公開しない
+
+デプロイは `bun run worker:deploy` → `bun run azookey-compare:deploy` →
+`bun run access:setup`。詳細は `docs/cloudflare-worker-deployment.md`、
+`apps/cloudflare-worker-server/README.md`、`apps/azookey-compare/README.md` を参照してください。
 
 配布用の本番アプリは `bun run build:app` で生成します。これは sidecar のビルドと
 Tauri の `.app` release bundle を一つの経路で実行します。DMGまで作る場合は
@@ -131,7 +139,7 @@ macOS配布では`Entitlements.plist`でマイク入力を宣言し、`Info.plis
 3. 「設定」で音声入力デバイス、言語コード、モデル、推論ゲートウェイURLを設定して保存します。
 4. 「マイク一覧を再取得」でデバイス権限後のマイク名を更新します。
 5. Syphon / Spout2 が使える環境では、非表示の `native-renderer` が常時字幕を配信します（表示の開閉操作は不要です）。使えない環境では「透過取り込みを開く」を押し、OBSの Window Capture で `Kotoba Beacon Transparent Capture` を追加します。
-6. OBS側のキャプチャは透明度を維持し、Caption Bridge側では背景を設定しません。
+6. OBS側のキャプチャは透明度を維持し、Caption Bridge側では窓背景を塗りません。macOS の Window Capture は **Capture Method を ScreenCaptureKit**（レガシー CGWindowList ではない）にしてください。CGWindowList はアルファを破棄して不透明に合成します。
 
 標準経路は透明ウィンドウのため、OBS側のWindow Captureだけで利用できます。WindowsのSpout2、macOSのSyphonを使う場合は、対応するOBSプラグインと下記のネイティブ出力ビルドを用います。これらの設定項目はUIには表示していません。Spout2/Syphonへ送るのは非表示の `?native=1` キャンバスだけであり、設定画面・プレビュー・ウィンドウ装飾は送信されません。ユーザーが透過取り込みを隠しても、Syphon/Spout2 への字幕配信は止まりません。
 

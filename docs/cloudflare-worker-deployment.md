@@ -12,28 +12,34 @@ checks below report the expected secret and origin.
 
 ## Cursor Cloudflare MCP (agent / CLI)
 
-Interactive `mcp_auth` OAuth only works inside the Cursor desktop IDE. Agent
-and CLI sessions should authenticate Bindings / Builds / Observability with an
-API token instead:
+Do not add Code Mode (`https://mcp.cloudflare.com/mcp`) to `.cursor/mcp.json`
+or Cursor `settings.json`. That endpoint errors in this setup.
 
-1. Put `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_DEBUG_TOKEN`) in the gitignored
-   `.env`. Copy `.env.example` if needed. Never commit the value.
-2. Run `bun run mcp:cloudflare`. It writes `~/.cursor/mcp.json` with Bearer
-   headers and does not print the token.
-3. Reload MCP servers (or restart Cursor) so `cloudflare-bindings`,
-   `cloudflare-builds`, and `cloudflare-observability` become ready.
+Use the **Cursor Cloudflare plugin** instead and authenticate these servers in
+**Settings → MCP**:
 
-The checked-in `.cursor/mcp.json` uses `${env:CLOUDFLARE_API_TOKEN}` so desktop
-Cursor can resolve the same token from the process environment. Plugin servers
-named `plugin-cloudflare-*` still require desktop OAuth; the token-backed
-servers above are the automation path.
+- `plugin-cloudflare-cloudflare-docs` (public)
+- `plugin-cloudflare-cloudflare-bindings`
+- `plugin-cloudflare-cloudflare-builds`
+- `plugin-cloudflare-cloudflare-observability`
+
+`bun run mcp:cloudflare` keeps mcp.json empty of Code Mode. Wrangler still
+uses `CLOUDFLARE_API_TOKEN` from the gitignored `.env`.
 
 ## Configuration posture
 
-- `CORS_ORIGIN` is one explicit HTTPS origin in `wrangler.jsonc`, currently the
-  Worker's own origin (`https://kotoba-beacon-inference.kaoru.workers.dev`). If
-  the HTTP adapter is called from a hosted UI, override it at deploy time with
-  `--var CORS_ORIGIN:https://<owned-origin>`.
+- Production traffic reaches AzooKey through the compare Worker, not the
+  inference `workers.dev` URL. Browser path:
+  `https://azookey-compare.kaoru.workers.dev` → service binding `INFERENCE` →
+  `kotoba-beacon-inference`. Same-origin WebSocket:
+  `wss://azookey-compare.kaoru.workers.dev/ws/azookey`.
+- Inference sets `workers_dev: false` so the public
+  `kotoba-beacon-inference.kaoru.workers.dev` hostname is removed. Direct
+  `curl` should 404; health and conversion stay on compare.
+- `CORS_ORIGIN` in `apps/cloudflare-worker-server/wrangler.jsonc` is pinned to
+  that compare origin (`https://azookey-compare.kaoru.workers.dev`). CORS is a
+  backup for any direct HTTP adapter call; Access plus the service-binding path
+  are the real controls. Do not treat CORS as authentication.
 - Never set CORS to `*`, `null`, a comma-separated list, or an origin reflected
   from the request. `example.invalid` and other placeholders are not deployment
   values.
@@ -74,9 +80,9 @@ export CLOUDFLARE_ACCOUNT_ID="<your-cloudflare-account-id>"
 wrangler deploy --config apps/cloudflare-worker-server/wrangler.jsonc
 ```
 
-The same environment variable is inherited by `bun run worker:deploy` below.
-Keep the value in your shell/CI secret store, not in `wrangler.jsonc` or a
-tracked `.env` file.
+The same environment variable is inherited by `bun run worker:deploy` and
+`bun run azookey-compare:deploy` below. Keep the value in your shell/CI secret
+store, not in `wrangler.jsonc`. A gitignored `.env` may hold it locally.
 
 ```sh
 git submodule update --init submodules/azooKey_dictionary_storage
@@ -84,6 +90,8 @@ bun run assets:verify
 cd apps/cloudflare-worker-server && bun run build:wasm && cd ../..
 wrangler secret put AZOOKEY_API_TOKEN --config apps/cloudflare-worker-server/wrangler.jsonc
 bun run worker:deploy
+bun run azookey-compare:deploy
+bun run access:setup
 ```
 
 The checked-in archive is content-addressed, so a clean clone may run
@@ -109,26 +117,41 @@ mode; do not promote it or share the WebSocket URL.
 
 ## Post-deploy checks
 
-These checks reveal status and headers only; none prints a secret:
+These checks reveal status and headers only; none prints a secret. After Access
+is enabled, unauthenticated `curl` to compare should be `302` or
+`401` with `WWW-Authenticate` (Managed OAuth). Authenticated browser checks use
+the Access session cookie or `cloudflared access`.
 
 ```sh
-curl -fsS https://kotoba-beacon-inference.kaoru.workers.dev/v1/azookey \
-  | jq '{authConfigured: .auth.configured, websocketPath: .websocketPath}'
-curl -fsS -D - -o /dev/null -X OPTIONS \
-  https://kotoba-beacon-inference.kaoru.workers.dev/v1/azookey \
-  -H 'Origin: https://<owned-origin>' \
-  -H 'Access-Control-Request-Method: GET'
+curl -sS -D - -o /dev/null https://azookey-compare.kaoru.workers.dev/
+curl -sS -D - -o /dev/null https://kotoba-beacon-inference.kaoru.workers.dev/v1/azookey
 ```
 
-Confirm `authConfigured` is `true` and the `access-control-allow-origin`
-header is the single configured origin. A `false` auth value or an old
-`example.invalid` header means the deployment still needs remediation.
+The inference public URL should be denied by Access (or otherwise unreachable).
+Health and conversion go through compare after login:
+
+```sh
+# After authenticating in a browser, or via cloudflared access:
+curl -fsS https://azookey-compare.kaoru.workers.dev/v1/azookey \
+  | jq '{authConfigured: .auth.configured, websocketPath: .websocketPath}'
+```
+
+Confirm `authConfigured` is `true`. A `false` auth value means the inference
+secret still needs remediation. Production WebSocket is
+`wss://azookey-compare.kaoru.workers.dev/ws/azookey`.
 
 For a browser WebSocket, select **Bearer token** in the comparison app and
 enter the same token. The browser sends it in the first JSON frame because the
 WebSocket API cannot attach an arbitrary `Authorization` header. Native clients
 may send the header during the upgrade instead. Tokens must never be appended
 to the `ws:`/`wss:` URL.
+
+`bun run access:setup` creates OTP (and Google only when
+`GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` are set) plus
+self-hosted apps with `oauth_configuration.enabled`. Allow lists default to
+`kaoru@teadea.net` and `@teadea.net`. IdP write needs
+`Access: Organizations, Identity Providers, and Groups Edit`; app write needs
+`Access: Apps and Policies Edit`.
 
 ## Local development
 
