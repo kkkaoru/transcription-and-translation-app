@@ -1,10 +1,9 @@
 /**
  * Sentence-end detection for live caption paging.
  *
- * Vibrato IPADIC / UniDic treat 句点・終助詞・助動詞基本形 as completing
- * boundaries. AzooKey keeps です/ます etc. on the converted surface (and on
- * `azookeyInputText`). The overlay pages to the newest sentence so captions
- * switch automatically instead of stacking two wrapped lines.
+ * Tauri `caption-bridge-vibrato-core` is the source of truth for IPADIC POS
+ * combinations. This heuristic matches that crate's copula/punctuation fallback
+ * so overlay / browser / Worker can page when WASM offsets are not yet present.
  */
 
 const SENTENCE_PUNCT = /[。．！？!?]/u;
@@ -44,7 +43,8 @@ const japaneseCopulaAllowsRemainder = (prefix: string, remainder: string): boole
   if (!next) {
     return true;
   }
-  if (SENTENCE_PUNCT.test(prefix.trimEnd().at(-1) ?? "")) {
+  const last = prefix.trimEnd().at(-1);
+  if (last !== undefined && SENTENCE_PUNCT.test(last)) {
     return true;
   }
   return STRONG_UTTERANCE_HEAD.test(next);
@@ -55,8 +55,8 @@ const startsClauseContinuation = (remainder: string, english: boolean): boolean 
   if (!next) {
     return false;
   }
-  const first = next[0] ?? "";
-  if (/\p{M}/u.test(first) || SENTENCE_PUNCT.test(first)) {
+  const first = next[0];
+  if (first !== undefined && (/\p{M}/u.test(first) || SENTENCE_PUNCT.test(first))) {
     return true;
   }
   return english ? ENGLISH_CONTINUATION.test(next) : CLAUSE_CONTINUATION.test(next);
@@ -67,7 +67,8 @@ const isJapaneseSentenceEnd = (prefix: string): boolean => {
   if (!trimmed) {
     return false;
   }
-  if (SENTENCE_PUNCT.test(trimmed.at(-1) ?? "")) {
+  const last = trimmed.at(-1);
+  if (last !== undefined && SENTENCE_PUNCT.test(last)) {
     return true;
   }
   return COPULA_END.test(trimmed) || PAST_WITH_PARTICLE.test(trimmed);
@@ -148,9 +149,12 @@ export const selectVisibleCaptionSentence = (
   if (ends.length === 0) {
     return normalized;
   }
-  const lastEnd = ends[ends.length - 1] ?? chars.length;
+  const lastEnd = ends.at(-1);
+  if (lastEnd === undefined) {
+    return normalized;
+  }
   if (lastEnd >= chars.length) {
-    const previousEnd = ends.length >= 2 ? (ends[ends.length - 2] ?? 0) : 0;
+    const previousEnd = ends.at(-2) ?? 0;
     return chars.slice(previousEnd, lastEnd).join("").trim();
   }
   return chars.slice(lastEnd).join("").trim() || normalized;

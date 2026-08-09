@@ -21,6 +21,7 @@
     "tauri:build:release": "node ../../scripts/clean-build-artifacts.mjs --root ../.. && node ../../scripts/run-desktop-tauri-build.mjs --release"
   },
   "dependencies": {
+    "@caption-bridge/sentence-boundary": "workspace:*",
     "@fontsource-variable/noto-sans-jp": "^5.3.0",
     "@tauri-apps/api": "^2.5.0",
     "react": "^19.1.0",

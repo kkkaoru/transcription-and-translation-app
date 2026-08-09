@@ -1,4 +1,8 @@
 import {
+  type CaptionSentenceHints,
+  selectVisibleCaptionSentence,
+} from "@caption-bridge/sentence-boundary";
+import {
   CAPTION_MAX_CHARS_MAX,
   CAPTION_MAX_CHARS_MIN,
   CAPTION_MAX_VISIBLE_LINES,
@@ -8,7 +12,6 @@ import {
   TRANSLATION_CAPTION_MAX_CHARS,
 } from "../core/defaults";
 import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types";
-import { type CaptionSentenceHints, selectVisibleCaptionSentence } from "./sentenceBoundary";
 
 /**
  * The caption budgets live in `core/defaults` so the config defaults can use

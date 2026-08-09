@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectCaptionSentenceEnds, selectVisibleCaptionSentence } from "./sentenceBoundary";
+import { detectCaptionSentenceEnds, selectVisibleCaptionSentence } from "./index.js";
 
 describe("Japanese sentence-end detection", () => {
   it("treats AzooKey copula endings and punctuation as completing boundaries", () => {
@@ -138,5 +138,31 @@ describe("English sentence paging", () => {
     expect(selectVisibleCaptionSentence("Hello, world.", { key: "translation" })).toBe(
       "Hello, world.",
     );
+    expect(detectCaptionSentenceEnds("Hi! yes", { key: "translation" })).toEqual([]);
+    expect(selectVisibleCaptionSentence("Hi! Yes", { key: "translation" })).toBe("Yes");
+  });
+});
+
+describe("heuristic edge cases", () => {
+  it("treats empty or whitespace captions as having no visible sentence", () => {
+    expect(detectCaptionSentenceEnds("")).toEqual([]);
+    expect(detectCaptionSentenceEnds("   ")).toEqual([]);
+    expect(detectCaptionSentenceEnds("今日は", { sentenceEndOffsets: undefined })).toEqual([]);
+    expect(detectCaptionSentenceEnds("今日は", { azookeyInputText: null })).toEqual([]);
+    expect(selectVisibleCaptionSentence("")).toBe("");
+    expect(selectVisibleCaptionSentence("   ")).toBe("");
+    expect(selectVisibleCaptionSentence("\r\n")).toBe("");
+  });
+
+  it("reuses the reading only when the surface itself has no end yet", () => {
+    expect(detectCaptionSentenceEnds("きょうは", { azookeyInputText: "きょうは" })).toEqual([]);
+    expect(detectCaptionSentenceEnds("です\u0301次", { azookeyInputText: "です\u0301次" })).toEqual(
+      [],
+    );
+  });
+
+  it("keeps a copula followed by punctuation-only remainder as one sentence", () => {
+    expect(selectVisibleCaptionSentence("今日は晴れです。")).toBe("今日は晴れです。");
+    expect(selectVisibleCaptionSentence("です。あしたは")).toBe("あしたは");
   });
 });

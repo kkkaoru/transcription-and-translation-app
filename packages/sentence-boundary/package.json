@@ -1,0 +1,20 @@
+{
+  "name": "@caption-bridge/sentence-boundary",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared caption sentence paging heuristic matching Tauri vibrato-core",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --pretty false --noEmit --project tsconfig.json",
+    "test": "vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --coverage --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^3.2.4",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

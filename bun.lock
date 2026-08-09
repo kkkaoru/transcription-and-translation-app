@@ -5,7 +5,7 @@
     "": {
       "name": "caption-bridge-workspace",
       "devDependencies": {
-        "@biomejs/biome": "2.5.5",
+        "@biomejs/biome": "^2.0.6",
       },
     },
     "apps/azookey-compare": {
@@ -45,6 +45,7 @@
       "name": "@caption-bridge/desktop",
       "version": "0.1.1",
       "dependencies": {
+        "@caption-bridge/sentence-boundary": "workspace:*",
         "@fontsource-variable/noto-sans-jp": "^5.3.0",
         "@tauri-apps/api": "^2.5.0",
         "react": "^19.1.0",
@@ -137,6 +138,15 @@
         "vitest": "^3.2.4",
       },
     },
+    "packages/sentence-boundary": {
+      "name": "@caption-bridge/sentence-boundary",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@vitest/coverage-v8": "^3.2.4",
+        "typescript": "~5.8.3",
+        "vitest": "^3.2.4",
+      },
+    },
   },
   "overrides": {
     "array-includes": "3.1.8",
@@ -219,6 +229,8 @@
     "@caption-bridge/inference-gateway": ["@caption-bridge/inference-gateway@workspace:apps/inference-gateway"],
 
     "@caption-bridge/inference-server-core": ["@caption-bridge/inference-server-core@workspace:packages/inference-server-core"],
+
+    "@caption-bridge/sentence-boundary": ["@caption-bridge/sentence-boundary@workspace:packages/sentence-boundary"],
 
     "@cloudflare/kv-asset-handler": ["@cloudflare/kv-asset-handler@0.5.0", "", {}, "sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg=="],
 
