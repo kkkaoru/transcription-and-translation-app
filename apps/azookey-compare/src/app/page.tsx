@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
 import {
   shouldRunBrowserVibratoPrePass,
+  shouldWarmBrowserDictionaryAfterConfigChange,
   shouldWarmBrowserVibratoDictionary,
 } from "../lib/azookey-reading";
 import {
@@ -656,18 +657,39 @@ export default function ComparePage() {
   };
 
   const updateConfig = <K extends keyof ComparisonConfig>(key: K, value: ComparisonConfig[K]) => {
-    setConfig((current) => ({ ...current, [key]: value }));
+    const next = { ...config, [key]: value };
+    setConfig(next);
     // The browser WASM status describes the previous settings. A changed mode
     // or pre-pass configuration must not keep claiming ready/error until the
     // new configuration has actually been exercised.
-    if (
-      key === "mode" ||
-      key === "browserWasmModuleUrl" ||
-      key === "browserWasmDictionaryUrl" ||
-      key === "browserWasmGlobalName"
-    ) {
-      setBrowserWasmState("idle");
+    if (!shouldWarmBrowserDictionaryAfterConfigChange(String(key), speechState, workerState)) {
+      if (
+        key === "mode" ||
+        key === "browserWasmModuleUrl" ||
+        key === "browserWasmDictionaryUrl" ||
+        key === "browserWasmGlobalName"
+      ) {
+        setBrowserWasmState("idle");
+      }
+      return;
     }
+    if (!shouldWarmBrowserVibratoDictionary(next.mode, workerVibratoConfiguredRef.current)) {
+      setBrowserWasmState("idle");
+      return;
+    }
+    setBrowserWasmState("loading");
+    void warmupBrowserVibrato(browserVibratoConfigFromComparison(next))
+      .then(() => {
+        setBrowserWasmState("ready");
+      })
+      .catch((caught: unknown) => {
+        setBrowserWasmState("error");
+        if (next.mode === "browser-vibrato") {
+          setError(errorMessage(caught));
+          return;
+        }
+        setNotice(`ブラウザ辞書の先行読み込みに失敗しました: ${errorMessage(caught)}`);
+      });
   };
 
   const clearComparison = (): void => {
@@ -782,8 +804,9 @@ export default function ComparePage() {
               />
             </label>
             <p className="field-help">
-              既定はローカル wrangler（`ws://127.0.0.1:8787/ws/azookey`）。デプロイ先は
-              `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` で上書きできます。
+              既定はローカル wrangler（`ws://127.0.0.1:8787/ws/azookey`）。接続エラーなら `bun run
+              worker:dev` を先に起動してください。デプロイ先は `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL`
+              で上書きできます。
             </p>
 
             {config.mode === "browser-vibrato" ? (

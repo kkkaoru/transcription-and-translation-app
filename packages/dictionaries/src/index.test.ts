@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS,
@@ -11,6 +14,8 @@ import {
   configKeyForDictionaryKind,
   DEFAULT_AZOOKEY_SYSTEM_ASSET_PATH,
   DEFAULT_VIBRATO_IPADIC_ASSET_PATH,
+  DESKTOP_DICTIONARY_DOWNLOAD_TIMEOUT_MS,
+  DESKTOP_MAX_DOWNLOAD_BYTES,
   DICTIONARY_WARM_MOMENT,
   dictionaryKindFromConfigKey,
   isAllowedDictionaryLocator,
@@ -44,6 +49,28 @@ describe("Tauri-matching dictionary contract", () => {
     expect(DICTIONARY_WARM_MOMENT.desktopCaptureStart).toBe("capture-start");
     expect(DICTIONARY_WARM_MOMENT.workerWebSocketUpgrade).toBe("websocket-upgrade");
     expect(DICTIONARY_WARM_MOMENT.browserConnectOrListen).toBe("connect-or-listen-start");
+  });
+
+  it("stays aligned with Tauri dictionary_resolve.rs keys, kinds, and download bounds", () => {
+    const rustPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../apps/desktop/src-tauri/src/dictionary_resolve.rs",
+    );
+    const rust = readFileSync(rustPath, "utf8");
+    const keysBlock = rust.match(
+      /pub const DICTIONARY_CONFIG_KEYS: &\[&str\]\s*=\s*&\[([\s\S]*?)\]/,
+    );
+    expect(keysBlock).not.toBeNull();
+    const rustKeys = [...(keysBlock?.[1]?.matchAll(/"([^"]+)"/g) ?? [])].map((match) => match[1]);
+    expect(rustKeys).toEqual([...AZOOKEY_DICTIONARY_CONFIG_KEY_LIST]);
+    expect(rust).toContain('Self::System => "system"');
+    expect(rust).toContain('Self::User => "user"');
+    expect(rust).toContain('Self::Learning => "learning-memory"');
+    expect(DESKTOP_MAX_DOWNLOAD_BYTES).toBe(64 * 1024 * 1024);
+    expect(rust).toContain("const MAX_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024");
+    expect(rust).toContain(
+      `const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(${DESKTOP_DICTIONARY_DOWNLOAD_TIMEOUT_MS / 1000})`,
+    );
   });
 
   it("classifies locators the same way desktop rejects plain HTTP", () => {
