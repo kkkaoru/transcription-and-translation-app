@@ -10,6 +10,24 @@ The read-only audit immediately before this config change reported
 live Worker. Treat that deployment as remediation-pending until the post-deploy
 checks below report the expected secret and origin.
 
+## Cursor Cloudflare MCP (agent / CLI)
+
+Interactive `mcp_auth` OAuth only works inside the Cursor desktop IDE. Agent
+and CLI sessions should authenticate Bindings / Builds / Observability with an
+API token instead:
+
+1. Put `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_DEBUG_TOKEN`) in the gitignored
+   `.env`. Copy `.env.example` if needed. Never commit the value.
+2. Run `bun run mcp:cloudflare`. It writes `~/.cursor/mcp.json` with Bearer
+   headers and does not print the token.
+3. Reload MCP servers (or restart Cursor) so `cloudflare-bindings`,
+   `cloudflare-builds`, and `cloudflare-observability` become ready.
+
+The checked-in `.cursor/mcp.json` uses `${env:CLOUDFLARE_API_TOKEN}` so desktop
+Cursor can resolve the same token from the process environment. Plugin servers
+named `plugin-cloudflare-*` still require desktop OAuth; the token-backed
+servers above are the automation path.
+
 ## Configuration posture
 
 - `CORS_ORIGIN` is one explicit HTTPS origin in `wrangler.jsonc`, currently the

@@ -18,7 +18,8 @@ apps/desktop/src-tauri/gen
 .codex/
 .claude/
 .commandcode/
-.cursor/
+.cursor/*
+!.cursor/mcp.json
 .direnv
 tmp/
 *.log

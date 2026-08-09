@@ -230,6 +230,7 @@ describe("cleanBuildArtifacts", () => {
     );
     const cleanup = "clean-build-artifacts";
 
+    assert.match(workspace.scripts["mcp:cloudflare"], /setup-cursor-cloudflare-mcp/);
     for (const scriptName of ["build", "sidecar:build", "gateway:build", "clean:build"]) {
       assert.match(workspace.scripts[scriptName], new RegExp(cleanup));
     }
