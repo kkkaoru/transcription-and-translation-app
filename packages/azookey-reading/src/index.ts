@@ -13,14 +13,21 @@ const CJK_UNIFIED_END = 0x9fff;
 const CJK_COMPATIBILITY_START = 0xf900;
 const CJK_COMPATIBILITY_END = 0xfaff;
 
+export const isKanji = (character: string): boolean => {
+  const code = character.codePointAt(0);
+  if (code === undefined) {
+    return false;
+  }
+  return (
+    (code >= CJK_EXTENSION_A_START && code <= CJK_EXTENSION_A_END) ||
+    (code >= CJK_UNIFIED_START && code <= CJK_UNIFIED_END) ||
+    (code >= CJK_COMPATIBILITY_START && code <= CJK_COMPATIBILITY_END)
+  );
+};
+
 export const containsKanji = (text: string): boolean => {
   for (const character of text) {
-    const code = character.codePointAt(0) ?? 0;
-    if (
-      (code >= CJK_EXTENSION_A_START && code <= CJK_EXTENSION_A_END) ||
-      (code >= CJK_UNIFIED_START && code <= CJK_UNIFIED_END) ||
-      (code >= CJK_COMPATIBILITY_START && code <= CJK_COMPATIBILITY_END)
-    ) {
+    if (isKanji(character)) {
       return true;
     }
   }
@@ -29,3 +36,8 @@ export const containsKanji = (text: string): boolean => {
 
 export const readingForAzookey = (text: string, toHiragana: (input: string) => string): string =>
   containsKanji(text) ? toHiragana(text) : text;
+
+export const readingForAzookeyAsync = async (
+  text: string,
+  toHiragana: (input: string) => Promise<string>,
+): Promise<string> => (containsKanji(text) ? toHiragana(text) : text);

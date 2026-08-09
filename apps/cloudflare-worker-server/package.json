@@ -15,6 +15,7 @@
     "pretest": "bun run build:wasm"
   },
   "dependencies": {
+    "@caption-bridge/azookey-reading": "workspace:*",
     "@caption-bridge/inference-server-core": "workspace:*"
   },
   "devDependencies": {

@@ -9,7 +9,7 @@
  * remains supported for deployments that host their own dictionary.
  */
 
-import { containsKanji } from "./azookey-reading";
+import { containsKanji } from "@caption-bridge/azookey-reading";
 import {
   DEFAULT_BROWSER_WASM_DICTIONARY_URL,
   DEFAULT_BROWSER_WASM_FEATURE_INDEX,

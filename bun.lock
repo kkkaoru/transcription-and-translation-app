@@ -5,13 +5,14 @@
     "": {
       "name": "caption-bridge-workspace",
       "devDependencies": {
-        "@biomejs/biome": "^2.0.6",
+        "@biomejs/biome": "2.5.5",
       },
     },
     "apps/azookey-compare": {
       "name": "@caption-bridge/azookey-compare",
       "version": "0.1.0",
       "dependencies": {
+        "@caption-bridge/azookey-reading": "workspace:*",
         "next": "^15.4.7",
         "react": "^19.1.0",
         "react-dom": "^19.1.0",
@@ -29,6 +30,7 @@
       "name": "@caption-bridge/cloudflare-worker-server",
       "version": "0.1.0",
       "dependencies": {
+        "@caption-bridge/azookey-reading": "workspace:*",
         "@caption-bridge/inference-server-core": "workspace:*",
       },
       "devDependencies": {
@@ -74,6 +76,15 @@
         "@types/ws": "^8.5.14",
         "@vitest/coverage-v8": "^3.2.4",
         "tsx": "^4.20.3",
+        "typescript": "~5.8.3",
+        "vitest": "^3.2.4",
+      },
+    },
+    "packages/azookey-reading": {
+      "name": "@caption-bridge/azookey-reading",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@vitest/coverage-v8": "^3.2.4",
         "typescript": "~5.8.3",
         "vitest": "^3.2.4",
       },
@@ -198,6 +209,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.5", "", { "os": "win32", "cpu": "x64" }, "sha512-bIBFo+n6MIxdNcVFy5CrurbKiZQiUciK3bt8+O9I4wjFZNTfXLpi+giq47522eXqW5NBc9ulx7dR1SlZKi2J5g=="],
 
     "@caption-bridge/azookey-compare": ["@caption-bridge/azookey-compare@workspace:apps/azookey-compare"],
+
+    "@caption-bridge/azookey-reading": ["@caption-bridge/azookey-reading@workspace:packages/azookey-reading"],
 
     "@caption-bridge/cloudflare-worker-server": ["@caption-bridge/cloudflare-worker-server@workspace:apps/cloudflare-worker-server"],
 

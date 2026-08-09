@@ -1,4 +1,4 @@
-import { containsKanji } from "./azookey-reading.js";
+import { readingForAzookeyAsync } from "@caption-bridge/azookey-reading";
 import { initSync as initVibratoSync, VibratoTokenizer } from "./vibrato_wasm.js";
 
 export const AZOOKEY_WS_PATH = "/ws/azookey";
@@ -782,63 +782,61 @@ export const createVibratoHttpConverter = (
     throw new Error("VIBRATO_UPSTREAM_URL must be an http:// or https:// URL");
   }
   const token = env.VIBRATO_API_TOKEN?.trim();
-  return async (text: string, language: string, signal?: AbortSignal): Promise<string> => {
-    if (!containsKanji(text)) {
-      return text;
-    }
-    let response: Response;
-    try {
-      response = await fetcher(upstreamUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ text, language }),
-        ...(signal ? { signal } : {}),
-      });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "connection failed";
-      throw new Error(`Vibrato upstream connection failed: ${detail}`);
-    }
-    if (!response.ok) {
-      throw new Error(`Vibrato upstream returned ${response.status}`);
-    }
-    if (!response.body) {
-      throw new Error("Vibrato upstream response has no body");
-    }
-    let payload: unknown;
-    try {
-      const bounded = response.body.pipeThrough(
-        byteLimitTransform(
-          VIBRATO_MAX_RESPONSE_BYTES,
-          "Vibrato upstream response exceeds the byte limit",
-        ),
-      );
-      payload = JSON.parse(
-        new TextDecoder("utf-8", { fatal: true }).decode(await collectStream(bounded)),
-      );
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === "Vibrato upstream response exceeds the byte limit"
-      ) {
-        throw error;
+  return async (text: string, language: string, signal?: AbortSignal): Promise<string> =>
+    readingForAzookeyAsync(text, async (input) => {
+      let response: Response;
+      try {
+        response = await fetcher(upstreamUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ text: input, language }),
+          ...(signal ? { signal } : {}),
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "connection failed";
+        throw new Error(`Vibrato upstream connection failed: ${detail}`);
       }
-      throw new Error("Vibrato upstream returned invalid JSON");
-    }
-    if (!isRecord(payload)) {
-      throw new Error("Vibrato upstream response must be an object");
-    }
-    const output = payload["text"] ?? payload["hiragana"] ?? payload["reading"];
-    if (typeof output !== "string" || output.trim().length === 0) {
-      throw new Error("Vibrato upstream response has no non-empty text field");
-    }
-    if (encoder.encode(output).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
-      throw new Error("Vibrato upstream output exceeds the text byte limit");
-    }
-    return output;
-  };
+      if (!response.ok) {
+        throw new Error(`Vibrato upstream returned ${response.status}`);
+      }
+      if (!response.body) {
+        throw new Error("Vibrato upstream response has no body");
+      }
+      let payload: unknown;
+      try {
+        const bounded = response.body.pipeThrough(
+          byteLimitTransform(
+            VIBRATO_MAX_RESPONSE_BYTES,
+            "Vibrato upstream response exceeds the byte limit",
+          ),
+        );
+        payload = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(await collectStream(bounded)),
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "Vibrato upstream response exceeds the byte limit"
+        ) {
+          throw error;
+        }
+        throw new Error("Vibrato upstream returned invalid JSON");
+      }
+      if (!isRecord(payload)) {
+        throw new Error("Vibrato upstream response must be an object");
+      }
+      const output = payload["text"] ?? payload["hiragana"] ?? payload["reading"];
+      if (typeof output !== "string" || output.trim().length === 0) {
+        throw new Error("Vibrato upstream response has no non-empty text field");
+      }
+      if (encoder.encode(output).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+        throw new Error("Vibrato upstream output exceeds the text byte limit");
+      }
+      return output;
+    });
 };
 
 /**
@@ -901,13 +899,11 @@ export const createVibratoWasmConverter = (
     return tokenizerPromise;
   };
 
-  const converter = (async (text: string): Promise<string> => {
-    if (!containsKanji(text)) {
-      return text;
-    }
-    const tokenizer = await loadTokenizer();
-    return tokenizer.toHiragana(text, VIBRATO_IPADIC_FEATURE_INDEX);
-  }) as AzookeyVibratoConverter;
+  const converter = (async (text: string): Promise<string> =>
+    readingForAzookeyAsync(text, async (input) => {
+      const tokenizer = await loadTokenizer();
+      return tokenizer.toHiragana(input, VIBRATO_IPADIC_FEATURE_INDEX);
+    })) as AzookeyVibratoConverter;
   converter.warmup = async (): Promise<void> => {
     await loadTokenizer();
   };

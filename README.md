@@ -33,6 +33,7 @@ apps/
   azookey-compare/       Web Speech と Worker 変換を比較する Next.js アプリ（デスクトップ不要で単体起動可）
 packages/
   inference-server-core/  ローカル/Worker 共通の HTTP 契約・ルーティング
+  azookey-reading/       Tauri 正の漢字ゲート（Worker / ブラウザが参照）
   azookey-rust/          かな漢字変換の共有 Rust crate
   parapper-asr/          Parapper-ASR フォーク（LICENSE と upstream 帰属を保持）
 docs/                    設計・運用・引き継ぎ資料
