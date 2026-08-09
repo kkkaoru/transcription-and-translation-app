@@ -21,7 +21,7 @@ WASI の有無ではなく、`vibrato-rkyv` の filesystem/mmap 前提と
 `wasm32-unknown-unknown` 用 clang target を要求して停止した。依存を一つ差し替える
 だけの workaround は採用しない。
 
-そこで [`packages/vibrato-wasm`](../packages/vibrato-wasm/) は、同じ Vibrato
+そこで [`packages/vibrato/wasm`](../packages/vibrato/wasm/) は、同じ Vibrato
 tokenizer の wasm 対応版（`vibrato` 0.5.2）を使う。zstd 圧縮された
 `system.dic` を `ruzstd` でメモリへ展開し、`vibrato::Dictionary::read` と
 `Tokenizer` へ渡す。固定フレーズ表は使わず、任意の入力を形態素分割できる。
@@ -77,12 +77,12 @@ wasm-bindgen 出力へ渡したところ、`東京都に住む` は `東京`/`�
 # のみを依存にした crate でも errno/fs4 の target OS エラーになる。
 
 # 動作する heap-backed wrapper
-cargo build --manifest-path packages/vibrato-wasm/Cargo.toml \
+cargo build --manifest-path packages/vibrato/wasm/Cargo.toml \
   --locked \
   --target wasm32-unknown-unknown --release
-cargo test --manifest-path packages/vibrato-wasm/Cargo.toml
+cargo test --manifest-path packages/vibrato/wasm/Cargo.toml
 
-# raw module を packages/vibrato-wasm/pkg/ にコピー
+# raw module を packages/vibrato/wasm/pkg/ にコピー
 node scripts/build-vibrato-wasm.mjs
 ```
 

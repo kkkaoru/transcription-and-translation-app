@@ -4,19 +4,19 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const manifest = resolve(root, "packages/vibrato-wasm/Cargo.toml");
+const manifest = resolve(root, "packages/vibrato/wasm/Cargo.toml");
 const source = resolve(
   root,
-  "packages/vibrato-wasm/target/wasm32-unknown-unknown/release/caption_bridge_vibrato_wasm.wasm",
+  "packages/vibrato/wasm/target/wasm32-unknown-unknown/release/caption_bridge_vibrato_wasm.wasm",
 );
 const bindgenRequested = process.argv.includes("--bindgen");
 const destinationDir = resolve(
   root,
   process.env.VIBRATO_WASM_OUT_DIR ??
-    (bindgenRequested ? "packages/vibrato-wasm/pkg-web" : "packages/vibrato-wasm/pkg"),
+    (bindgenRequested ? "packages/vibrato/wasm/pkg-web" : "packages/vibrato/wasm/pkg"),
 );
 const rawDestination = resolve(destinationDir, "vibrato_wasm_bg.wasm");
-const rawFallbackDestination = resolve(root, "packages/vibrato-wasm/pkg/vibrato_wasm_bg.wasm");
+const rawFallbackDestination = resolve(root, "packages/vibrato/wasm/pkg/vibrato_wasm_bg.wasm");
 let bindgenProduced = false;
 const vibratoAssetDirectory = resolve(root, "assets/vibrato/ipadic-mecab-2_7_0");
 const browserVibratoDirectory = resolve(root, "apps/azookey-compare/public/vibrato");

@@ -11,8 +11,8 @@ dist
 .vite
 coverage
 apps/desktop/src-tauri/target
-packages/*/target
-packages/*/src-tauri/target
+packages/**/target
+packages/**/src-tauri/target
 apps/desktop/src-tauri/gen
 .tools
 .codex/

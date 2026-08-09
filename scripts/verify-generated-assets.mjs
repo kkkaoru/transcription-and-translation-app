@@ -45,19 +45,19 @@ const VIBRATO_NOTICE_PATHS = [
 const VIBRATO_WASM_PATHS = [
   "apps/azookey-compare/public/vibrato/vibrato_wasm_bg.wasm",
   "apps/cloudflare-worker-server/wasm/vibrato_wasm_bg.wasm",
-  "packages/vibrato-wasm/pkg-web/vibrato_wasm_bg.wasm",
+  "packages/vibrato/wasm/pkg-web/vibrato_wasm_bg.wasm",
 ];
 const VIBRATO_GLUE_JS_PATHS = [
   "apps/azookey-compare/public/vibrato/vibrato_wasm.js",
   "apps/cloudflare-worker-server/src/vibrato_wasm.js",
-  "packages/vibrato-wasm/pkg-web/vibrato_wasm.js",
+  "packages/vibrato/wasm/pkg-web/vibrato_wasm.js",
 ];
 const VIBRATO_GLUE_DTS_PATHS = [
   "apps/azookey-compare/public/vibrato/vibrato_wasm.d.ts",
   "apps/cloudflare-worker-server/src/vibrato_wasm.d.ts",
-  "packages/vibrato-wasm/pkg-web/vibrato_wasm.d.ts",
+  "packages/vibrato/wasm/pkg-web/vibrato_wasm.d.ts",
 ];
-const VIBRATO_GLUE_BG_DTS_PATH = "packages/vibrato-wasm/pkg-web/vibrato_wasm_bg.wasm.d.ts";
+const VIBRATO_GLUE_BG_DTS_PATH = "packages/vibrato/wasm/pkg-web/vibrato_wasm_bg.wasm.d.ts";
 const AZOOKEY_DICTIONARY_PATH = "apps/cloudflare-worker-server/public/azookey/system.azkdict.gz";
 const AZOOKEY_WASM_PATH = "apps/cloudflare-worker-server/wasm/azookey.wasm";
 
