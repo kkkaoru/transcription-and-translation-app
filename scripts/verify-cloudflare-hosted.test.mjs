@@ -6,6 +6,7 @@ import {
   COMPARE_ORIGIN,
   evaluateHostedChecks,
   INFERENCE_ORIGIN,
+  isAcceptableElapsedMs,
   isRecordedElapsedMs,
   isUnauthenticatedAccessStatus,
   recordedElapsedMs,
@@ -130,10 +131,40 @@ describe("verify-cloudflare-hosted", () => {
       }).ok,
       true,
     );
+    assert.equal(
+      evaluateHostedChecks({
+        unauthenticatedHome: 302,
+        unauthenticatedHealth: 401,
+        authenticatedHealth: 200,
+        inferenceDirect: 404,
+        websocketConversion: {
+          ok: true,
+          convertedText: "今日はいい天気",
+          elapsedMs: 1,
+        },
+      }).ok,
+      true,
+    );
+    assert.match(
+      evaluateHostedChecks({
+        unauthenticatedHome: 302,
+        unauthenticatedHealth: 401,
+        authenticatedHealth: 200,
+        inferenceDirect: 404,
+        websocketConversion: {
+          ok: true,
+          convertedText: "今日はいい天気",
+          elapsedMs: 0,
+        },
+      }).failures[0],
+      /elapsedMs\/elapsed_ms must be >= 1/,
+    );
   });
 
   it("records A's elapsedMs/elapsed_ms without inventing a timer", () => {
     assert.equal(isRecordedElapsedMs(0), true);
+    assert.equal(isAcceptableElapsedMs(0), false);
+    assert.equal(isAcceptableElapsedMs(1), true);
     assert.equal(isRecordedElapsedMs(12), true);
     assert.equal(isRecordedElapsedMs(undefined), false);
     assert.equal(isRecordedElapsedMs(Number.NaN), false);

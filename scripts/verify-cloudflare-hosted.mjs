@@ -30,6 +30,8 @@ const present = (value) => typeof value === "string" && value.trim().length > 0;
 
 export const isRecordedElapsedMs = (value) => typeof value === "number" && Number.isFinite(value);
 
+export const isAcceptableElapsedMs = (value) => isRecordedElapsedMs(value) && value >= 1;
+
 export const recordedElapsedMs = (conversion) => {
   if (!conversion || typeof conversion !== "object") {
     return undefined;
@@ -100,6 +102,8 @@ export const evaluateHostedChecks = ({
       failures.push("auth WS conversion missing convertedText");
     } else if (!isRecordedElapsedMs(recordedElapsedMs(websocketConversion))) {
       failures.push("auth WS conversion missing elapsedMs/elapsed_ms");
+    } else if (!isAcceptableElapsedMs(recordedElapsedMs(websocketConversion))) {
+      failures.push("auth WS conversion elapsedMs/elapsed_ms must be >= 1");
     }
   }
   return {
