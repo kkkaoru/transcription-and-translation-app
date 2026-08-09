@@ -73,10 +73,17 @@ compare Worker secrets に `POLICY_AUD` と `TEAM_DOMAIN` を設定し、JWT ゲ
 
 ### 検証
 
-- compare `/` HTML（リダイレクト非追従）→ **302** Access login
-- compare `/` および `/v1/azookey`（API / 非 HTML）→ **401** Managed OAuth
-- inference 直 `/v1/azookey` → **404**
+- compare `/` HTML（`Accept: text/html`、リダイレクト非追従）→ **302** Access login
+- compare `/` および `/v1/azookey`（API / 非 HTML）→ **401** + `WWW-Authenticate: Bearer`（Managed OAuth）
+- inference 直 `/v1/azookey` → **404**（workers.dev 無効、error 1042）
+- 未認証 401/302 は **合格**。200 を期待しない。`POLICY_AUD` は外さない。
 - 認証後 UI / health / WS はブラウザログインが必要。推測で突破しない。
+- `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` は `.env` に無いため **ST 付き health はスキップ**。
+- ローカル portable ABI（Node `WebAssembly`、worker-server の実 `.wasm` + `system.azkdict.gz`）:
+  - `きょうはいいてんき` → `今日はいい天気`
+  - dict sha256 `84f605a5c76e09480ef1a0a02d91982fb8c9426a8a7a18fb64d9f27210641b22`
+  - compare へ辞書/WASM を複製していない。inference は同じ成果物、compare は `INFERENCE` binding。
+  - 確認コマンド: `node scripts/verify-azookey-wasm-parity.mjs` / `node --test scripts/verify-azookey-wasm-parity.test.mjs`
 
 ### 残リスク
 
