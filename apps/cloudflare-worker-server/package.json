@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build:wasm": "node ../../scripts/build-azookey-wasm.mjs",
-    "dev": "bun run build:wasm && wrangler dev",
+    "dev": "bun run build:wasm && wrangler dev --config wrangler.dev.jsonc",
     "deploy": "bun run build:wasm && wrangler deploy",
     "pretypecheck": "bun run build:wasm",
     "typecheck": "tsc --pretty false --noEmit --project tsconfig.json",

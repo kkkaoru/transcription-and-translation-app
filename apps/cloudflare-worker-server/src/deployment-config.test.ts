@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const jsonc = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+const devJsonc = readFileSync(new URL("../wrangler.dev.jsonc", import.meta.url), "utf8");
 const withoutLineComments = jsonc.replace(/^\s*\/\/.*$/gm, "");
 const deploymentRunbook = readFileSync(
   new URL("../../../docs/cloudflare-worker-deployment.md", import.meta.url),
@@ -12,6 +13,7 @@ const config = JSON.parse(withoutLineComments) as {
   secrets?: { required?: unknown };
   assets?: { directory?: string; binding?: string; run_worker_first?: boolean };
   ai?: { binding?: string };
+  workers_dev?: boolean;
 };
 
 describe("Cloudflare deployment configuration", () => {
@@ -25,10 +27,7 @@ describe("Cloudflare deployment configuration", () => {
 
   it("pins CORS to an explicit HTTPS origin and never stores API secrets", () => {
     const origin = config.vars?.["CORS_ORIGIN"];
-    expect(typeof origin).toBe("string");
-    expect(origin).toMatch(/^https:\/\//);
-    expect(origin).not.toBe("https://example.invalid");
-    expect(origin).not.toBe("*");
+    expect(origin).toBe("https://azookey-compare.kaoru.workers.dev");
     const dictionaryUrl = config.vars?.["AZOOKEY_DICTIONARY_URL"];
     expect(dictionaryUrl).toBe("/azookey/system.azkdict.gz");
     expect(config.assets).toMatchObject({
@@ -37,6 +36,13 @@ describe("Cloudflare deployment configuration", () => {
       run_worker_first: true,
     });
     expect(config.ai).toEqual({ binding: "AI" });
+    expect(config.workers_dev).toBe(false);
+    const devConfig = JSON.parse(devJsonc.replace(/^\s*\/\/.*$/gm, "")) as {
+      ai?: unknown;
+      vars?: Record<string, unknown>;
+    };
+    expect(devConfig.ai).toBeUndefined();
+    expect(devConfig.vars?.["AZOOKEY_DICTIONARY_URL"]).toBe("/azookey/system.azkdict.gz");
     expect(config.vars).not.toHaveProperty("VIBRATO_DICTIONARY_URL");
     expect(existsSync(new URL("../public/azookey/system.azkdict.gz", import.meta.url))).toBe(true);
     // The IPADIC dictionary stays in the browser comparison bundle. Keeping it

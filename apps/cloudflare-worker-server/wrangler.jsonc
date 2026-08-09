@@ -3,6 +3,9 @@
   "name": "kotoba-beacon-inference",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
+  // Public browser traffic goes through azookey-compare. Keep this workers.dev
+  // hostname disabled so inference is only reachable via the service binding.
+  "workers_dev": false,
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -20,7 +23,7 @@
   // explicit origin; override it at deploy time when the comparison UI has a
   // different, owned HTTPS origin. Never add API tokens to this file.
   "vars": {
-    "CORS_ORIGIN": "https://kotoba-beacon-inference.kaoru.workers.dev",
+    "CORS_ORIGIN": "https://azookey-compare.kaoru.workers.dev",
     "MODEL_ROUTES": "{}",
     "AZOOKEY_TIMEOUT_MS": "2000",
     "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz"

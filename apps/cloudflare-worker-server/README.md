@@ -10,6 +10,10 @@ bun run worker:dev
 bun run azookey-compare:dev
 ```
 
+`worker:dev` uses `wrangler.dev.jsonc` (no Workers AI remote session) so AzooKey
+WebSocket on `:8787` stays up even when `api.cloudflare.com` is unreachable.
+Production deploy still uses `wrangler.jsonc` with the optional AI binding.
+
 This Worker keeps the existing inference HTTP adapter and adds a dedicated
 AzooKey text conversion endpoint:
 
@@ -111,24 +115,19 @@ conversion is rejected until that frame authenticates. That successful first
 frame authorizes the rest of the socket session. The token is compared without
 including it in any response or diagnostic message.
 
-The checked-in Wrangler default pins `CORS_ORIGIN` to the Worker's own HTTPS
-origin. If a hosted comparison UI needs the HTTP adapter, deploy with one exact
-origin that you control, for example:
-
-```sh
-wrangler deploy --var CORS_ORIGIN:https://captions.your-domain.example
-```
-
-Do not use `*`, `null`, an `Origin` reflection, comma-separated origins, or a
+The checked-in Wrangler default pins `CORS_ORIGIN` to the hosted compare UI
+(`https://azookey-compare.kaoru.workers.dev`). Browser conversion should use that
+origin; the inference `workers.dev` URL is not a public client endpoint. Do not
+use `*`, `null`, an `Origin` reflection, comma-separated origins, or a
 placeholder such as `example.invalid`. The browser WebSocket endpoint does not
 use CORS, but HTTP preflight and error responses still receive the configured
 allow-list origin.
 
-To check the deployed auth posture without exposing a token, inspect only the
-boolean capability field:
+To check the deployed auth posture without exposing a token, call health through
+compare after Access login (inference direct `curl` should be denied):
 
 ```sh
-curl -fsS https://kotoba-beacon-inference.kaoru.workers.dev/v1/azookey \
+curl -fsS https://azookey-compare.kaoru.workers.dev/v1/azookey \
   | jq '{authConfigured: .auth.configured}'
 ```
 
