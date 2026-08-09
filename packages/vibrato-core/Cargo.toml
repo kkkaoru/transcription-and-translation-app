@@ -1,0 +1,18 @@
+[package]
+name = "caption-bridge-vibrato-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Shared Vibrato IPADIC reading gate used by Tauri, WASM, and tests"
+
+[lib]
+name = "caption_bridge_vibrato_core"
+crate-type = ["rlib"]
+
+[dependencies]
+ruzstd = { version = "=0.7.3", features = ["std"] }
+vibrato = { version = "=0.5.2", default-features = false }
+
+[dev-dependencies]
+zstd = "0.13"

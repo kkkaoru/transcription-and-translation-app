@@ -8,6 +8,7 @@ import {
   TRANSLATION_CAPTION_MAX_CHARS,
 } from "../core/defaults";
 import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types";
+import { type CaptionSentenceHints, selectVisibleCaptionSentence } from "./sentenceBoundary";
 
 /**
  * The caption budgets live in `core/defaults` so the config defaults can use
@@ -28,6 +29,8 @@ export interface CaptionItem {
   style: CaptionTextStyle;
   /** Resolved per-row character budget for one logical line. */
   maxChars: number;
+  azookeyInputText?: string | null;
+  sentenceEndOffsets?: number[];
 }
 
 /**
@@ -96,7 +99,10 @@ export const stripCaptionContinuationMarker = (text: string): string =>
  */
 export const MAX_IDENTICAL_KANJI_RUN = 2;
 
-export const collapseRunawayGraphemeRuns = (text: string, maxRun = MAX_IDENTICAL_KANJI_RUN): string => {
+export const collapseRunawayGraphemeRuns = (
+  text: string,
+  maxRun = MAX_IDENTICAL_KANJI_RUN,
+): string => {
   const graphemes = captionGraphemes(text);
   if (graphemes.length === 0) {
     return "";
@@ -133,7 +139,11 @@ const preferNaturalBreakIndex = (graphemes: string[], limit: number, floor: numb
       return index;
     }
     const character = graphemes[index - 1];
-    if (!punctuationBreak && character && (preferredBreak.test(character) || /\s/u.test(character))) {
+    if (
+      !punctuationBreak &&
+      character &&
+      (preferredBreak.test(character) || /\s/u.test(character))
+    ) {
       punctuationBreak = index;
     }
   }
@@ -178,11 +188,7 @@ const splitLongLine = (line: string, maxChars: number): string[] => {
   const segments: string[] = [];
   let remaining = characters;
   while (remaining.length > maxChars) {
-    const breakAt = preferNaturalBreakIndex(
-      remaining,
-      maxChars,
-      Math.floor(maxChars / 2),
-    );
+    const breakAt = preferNaturalBreakIndex(remaining, maxChars, Math.floor(maxChars / 2));
     // Trim at the grapheme-cluster level, not on the joined string: a cluster
     // like U+0020 + U+0301 is one grapheme, and String.prototype.trimStart
     // would strip the space and leave a bare combining mark at the start of
@@ -201,11 +207,12 @@ const splitLongLine = (line: string, maxChars: number): string[] => {
 };
 
 /**
- * Keep only the newest grapheme window when recognition has grown past the
- * on-screen budget (`maxChars * maxLines`).
+ * Keep only the newest sentence, then the newest grapheme window when that
+ * sentence still exceeds `maxChars * maxLines`.
  *
- * Older text is discarded entirely so the overlay / Syphon plate does not
- * stack dozens of wrapped lines and collapse the layout. Prefer starting the
+ * Vibrato / AzooKey sentence ends switch the on-screen caption automatically
+ * so two finished sentences are never stacked. Older text is discarded so the
+ * overlay / Syphon plate does not grow without bound. Prefer starting the
  * window after punctuation when a nearby break exists, so a mid-clause cut is
  * rare.
  */
@@ -213,8 +220,9 @@ export const trimCaptionToDisplayWindow = (
   text: string,
   maxChars: number,
   maxLines: number = CAPTION_MAX_VISIBLE_LINES,
+  hints: CaptionSentenceHints = {},
 ): string => {
-  const normalized = sanitizeCaptionDisplayText(text).trim();
+  const normalized = selectVisibleCaptionSentence(sanitizeCaptionDisplayText(text), hints);
   if (!normalized) {
     return "";
   }
@@ -264,11 +272,19 @@ export const segmentCaptionText = (text: string, maxChars: number): string[] => 
  * outside {@link captionItems} (older fixtures) keep the per-row default.
  */
 export const captionTextLines = (
-  item: Pick<CaptionItem, "key" | "text"> & Partial<Pick<CaptionItem, "maxChars">>,
+  item: Pick<CaptionItem, "key" | "text"> &
+    Partial<Pick<CaptionItem, "maxChars" | "azookeyInputText" | "sentenceEndOffsets">>,
 ): string[] => {
   const maxChars =
     typeof item.maxChars === "number" ? item.maxChars : defaultCaptionMaxChars(item.key);
-  return segmentCaptionText(trimCaptionToDisplayWindow(item.text, maxChars), maxChars);
+  return segmentCaptionText(
+    trimCaptionToDisplayWindow(item.text, maxChars, CAPTION_MAX_VISIBLE_LINES, {
+      key: item.key,
+      azookeyInputText: item.azookeyInputText,
+      sentenceEndOffsets: item.sentenceEndOffsets,
+    }),
+    maxChars,
+  );
 };
 
 export const createPreviewCaption = (): CaptionPayload => {
@@ -312,6 +328,8 @@ export const captionItems = (
       : sanitizeCaptionDisplayText(caption.sourceText),
     style: config.overlay.source,
     maxChars: resolveCaptionMaxChars(config, "source"),
+    azookeyInputText: caption.azookeyInputText,
+    sentenceEndOffsets: caption.sentenceEndOffsets,
   };
   const translation: CaptionItem = {
     key: "translation",

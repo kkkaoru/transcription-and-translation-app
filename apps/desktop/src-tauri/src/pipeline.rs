@@ -60,6 +60,9 @@ pub struct CaptionPayload {
     /// Indicates the payload can be shown as the latest final user-facing text.
     pub is_final: bool,
     pub confidence: Option<f32>,
+    /// Exclusive Unicode-scalar offsets where Vibrato/AzooKey completed a sentence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sentence_end_offsets: Vec<usize>,
 }
 
 /// Fine-grained per-stage timing + I/O sample for debug mode / latency diagnosis.
@@ -376,6 +379,34 @@ impl Pipeline {
         reader.reading_for_azookey(text)
     }
 
+    fn caption_sentence_end_offsets(&self, text: &str) -> Vec<usize> {
+        let reader = {
+            let mut guard = match self.vibrato.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    return crate::sentence_boundary::heuristic_sentence_end_offsets(text, false);
+                }
+            };
+            if let Some(ref reader) = *guard {
+                Arc::clone(reader)
+            } else {
+                match crate::vibrato_runtime::try_default() {
+                    Some(reader) => {
+                        let reader = Arc::new(reader);
+                        *guard = Some(Arc::clone(&reader));
+                        reader
+                    }
+                    None => {
+                        return crate::sentence_boundary::heuristic_sentence_end_offsets(
+                            text, false,
+                        );
+                    }
+                }
+            }
+        };
+        reader.sentence_end_offsets(text)
+    }
+
     /// Load the selected AzooKey dictionary before the microphone starts.
     /// Public LOUDS files are intentionally loaded once on the capture
     /// boundary; otherwise the first 640ms chunk would pay the disk/matrix
@@ -619,7 +650,8 @@ impl Pipeline {
             // the UI keeps the previous non-empty caption unchanged.
             return Ok(None);
         }
-        let ready = source_ready_caption(config, normalized, started_at, utterance_id);
+        let mut ready = source_ready_caption(config, normalized, started_at, utterance_id);
+        ready.sentence_end_offsets = self.caption_sentence_end_offsets(&ready.source_text);
         // Always emit the normalized source, even when it happens to match the
         // raw ASR string, so first-caption timing is tied to normalization.
         on_caption(&ready);
@@ -831,6 +863,7 @@ impl Pipeline {
             // Vibrato hiragana reading (stable phonetic merge key).
             Some(reading),
         );
+        ready.sentence_end_offsets = self.caption_sentence_end_offsets(&ready.source_text);
         ready.is_final = output.is_final;
         on_caption(&ready);
         Ok(Some(ready))
@@ -998,11 +1031,7 @@ impl Pipeline {
     /// path can never wedge. Returns `(reading, None)` on success or
     /// `(original, Some(error))` when the stage had to fall back so DebugPanel
     /// can show that Input N5 LM did not actually rewrite the hypothesis.
-    async fn rescore_reading(
-        &self,
-        config: &AppConfig,
-        reading: &str,
-    ) -> (String, Option<String>) {
+    async fn rescore_reading(&self, config: &AppConfig, reading: &str) -> (String, Option<String>) {
         let rescorer = match self.rescorer.get_or_load(&config.rescore) {
             Ok(r) => r,
             Err(e) => {
@@ -1079,7 +1108,11 @@ impl Pipeline {
 /// `timeout_ms`. Fail-open: any completion error (panic from the closure) or
 /// timeout returns the original reading unchanged. This is the single chokepoint
 /// that guarantees a rescore can never drop or wedge a caption.
-async fn run_rescore_with_timeout<F>(timeout_ms: u64, original: String, work: F) -> Result<String, String>
+async fn run_rescore_with_timeout<F>(
+    timeout_ms: u64,
+    original: String,
+    work: F,
+) -> Result<String, String>
 where
     F: FnOnce() -> String + Send + 'static,
 {
@@ -1301,13 +1334,16 @@ pub fn source_ready_caption_with_input(
     id: String,
     azookey_input_text: Option<String>,
 ) -> CaptionPayload {
+    let source_text = source_text.trim().to_string();
+    let sentence_end_offsets =
+        crate::sentence_boundary::heuristic_sentence_end_offsets(&source_text, false);
     CaptionPayload {
         id,
         // Normalizers should already return a trimmed result, but remote Zenz
         // responses can carry a trailing newline. Keep caption identity and
         // display text canonical so an otherwise identical partial/final pair
         // cannot look like two different rows to downstream merge logic.
-        source_text: source_text.trim().to_string(),
+        source_text,
         azookey_input_text: azookey_input_text
             .and_then(|text| (!text.trim().is_empty()).then(|| text.trim().to_string())),
         translation_text: String::new(),
@@ -1319,6 +1355,7 @@ pub fn source_ready_caption_with_input(
         sequence: 0,
         is_final: false,
         confidence: None,
+        sentence_end_offsets,
     }
 }
 
@@ -2031,6 +2068,7 @@ mod tests {
             sequence: 1,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         let value = serde_json::to_value(&payload).expect("serialize");
         assert_eq!(value["sourceText"], "源");

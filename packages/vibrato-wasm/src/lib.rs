@@ -1,5 +1,6 @@
-use std::io::Read;
-
+use caption_bridge_vibrato_core::{
+    reading_for_azookey_with_feature_index, tokenize, tokenizer_from_zstd,
+};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -11,86 +12,19 @@ pub struct Token {
     pub feature: String,
 }
 
-fn tokenizer_from_zstd(dict_zstd: &[u8]) -> Result<vibrato::Tokenizer, String> {
-    let mut decoder = ruzstd::StreamingDecoder::new(dict_zstd)
-        .map_err(|error| format!("zstd decode error: {error}"))?;
-    let mut dictionary = Vec::new();
-    decoder.read_to_end(&mut dictionary).map_err(|error| format!("zstd read error: {error}"))?;
-    let dictionary = vibrato::Dictionary::read(dictionary.as_slice())
-        .map_err(|error| format!("dictionary read error: {error}"))?;
-    Ok(vibrato::Tokenizer::new(dictionary))
-}
-
-fn tokenize_with_tokenizer(tokenizer: &vibrato::Tokenizer, text: &str) -> Vec<Token> {
-    let mut worker = tokenizer.new_worker();
-    worker.reset_sentence(text);
-    worker.tokenize();
-    worker
-        .token_iter()
-        .map(|token| Token {
-            surface: token.surface().to_string(),
-            feature: token.feature().to_string(),
-        })
-        .collect()
-}
-
-fn katakana_to_hiragana(input: &str) -> String {
-    input
-        .chars()
-        .map(|character| {
-            if ('ァ'..='ヶ').contains(&character) {
-                char::from_u32(character as u32 - ('ァ' as u32 - 'ぁ' as u32)).unwrap_or(character)
-            } else {
-                character
-            }
-        })
-        .collect()
-}
-
-fn is_kanji(character: char) -> bool {
-    let code = character as u32;
-    (0x3400..=0x4dbf).contains(&code)
-        || (0x4e00..=0x9fff).contains(&code)
-        || (0xf900..=0xfaff).contains(&code)
-}
-
-fn contains_kanji(text: &str) -> bool {
-    text.chars().any(is_kanji)
-}
-
-/// Desktop `reading_for_azookey`: skip IPADIC when the surface has no kanji.
-fn reading_for_azookey(tokenizer: &vibrato::Tokenizer, text: &str, feature_index: usize) -> String {
-    if !contains_kanji(text) {
-        return text.to_string();
-    }
-    hiragana_with_feature_index(tokenizer, text, feature_index)
-}
-
-fn hiragana_with_feature_index(
-    tokenizer: &vibrato::Tokenizer,
+fn tokenize_with_tokenizer(
+    tokenizer: &caption_bridge_vibrato_core::Tokenizer,
     text: &str,
-    feature_index: usize,
-) -> String {
-    let mut worker = tokenizer.new_worker();
-    worker.reset_sentence(text);
-    worker.tokenize();
-    worker
-        .token_iter()
-        .map(|token| {
-            token
-                .feature()
-                .split(',')
-                .nth(feature_index)
-                .filter(|reading| !reading.is_empty() && *reading != "*")
-                .map(katakana_to_hiragana)
-                .unwrap_or_else(|| token.surface().to_string())
-        })
+) -> Vec<Token> {
+    tokenize(tokenizer, text)
+        .into_iter()
+        .map(|token| Token { surface: token.surface, feature: token.feature })
         .collect()
 }
 
 #[wasm_bindgen]
 pub struct VibratoTokenizer {
-    tokenizer: vibrato::Tokenizer,
+    tokenizer: caption_bridge_vibrato_core::Tokenizer,
 }
 
 #[wasm_bindgen]
@@ -114,13 +48,16 @@ impl VibratoTokenizer {
     /// UniDic CWJ uses 20 (`kana`); IPADIC uses 7 (`reading`).
     #[wasm_bindgen(js_name = toHiragana)]
     pub fn to_hiragana(&self, text: &str, feature_index: usize) -> String {
-        reading_for_azookey(&self.tokenizer, text, feature_index)
+        reading_for_azookey_with_feature_index(&self.tokenizer, text, feature_index)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::tokenizer_from_zstd;
+    use caption_bridge_vibrato_core::{
+        contains_kanji, hiragana_with_feature_index, reading_for_azookey_with_feature_index,
+        tokenizer_from_zstd,
+    };
     use std::io::Cursor;
 
     fn tiny_dictionary_zstd() -> Vec<u8> {
@@ -146,10 +83,8 @@ mod tests {
     fn zstd_dictionary_tokenizes_arbitrary_text_without_phrase_lookup() {
         let tokenizer = tokenizer_from_zstd(&tiny_dictionary_zstd())
             .expect("zstd dictionary should initialize");
-        let mut worker = tokenizer.new_worker();
-        worker.reset_sentence("東京都に京都");
-        worker.tokenize();
-        let surfaces = worker.token_iter().map(|token| token.surface()).collect::<Vec<_>>();
+        let tokens = super::tokenize_with_tokenizer(&tokenizer, "東京都に京都");
+        let surfaces = tokens.iter().map(|token| token.surface.as_str()).collect::<Vec<_>>();
         assert_eq!(surfaces, ["東京都", "に", "京都"]);
     }
 
@@ -158,7 +93,7 @@ mod tests {
         let tokenizer = tokenizer_from_zstd(&tiny_dictionary_zstd())
             .expect("zstd dictionary should initialize");
         assert_eq!(
-            super::hiragana_with_feature_index(&tokenizer, "東京都に京都", 7),
+            hiragana_with_feature_index(&tokenizer, "東京都に京都", 7),
             "とうきょうとにきょうと"
         );
     }
@@ -167,12 +102,15 @@ mod tests {
     fn reading_for_azookey_passthrough_when_no_kanji() {
         let tokenizer = tokenizer_from_zstd(&tiny_dictionary_zstd())
             .expect("zstd dictionary should initialize");
-        assert_eq!(super::reading_for_azookey(&tokenizer, "きょうははれ", 7), "きょうははれ");
         assert_eq!(
-            super::reading_for_azookey(&tokenizer, "東京都に京都", 7),
+            reading_for_azookey_with_feature_index(&tokenizer, "きょうははれ", 7),
+            "きょうははれ"
+        );
+        assert_eq!(
+            reading_for_azookey_with_feature_index(&tokenizer, "東京都に京都", 7),
             "とうきょうとにきょうと"
         );
-        assert!(super::contains_kanji("きょうは晴れ"));
-        assert!(!super::contains_kanji("きょうははれ"));
+        assert!(contains_kanji("きょうは晴れ"));
+        assert!(!contains_kanji("きょうははれ"));
     }
 }

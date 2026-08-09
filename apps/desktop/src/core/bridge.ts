@@ -362,6 +362,7 @@ const captionEventSignature = (caption: CaptionPayload): string =>
     caption.confidence,
     caption.provisional,
     caption.captureGeneration,
+    caption.sentenceEndOffsets,
   ]);
 
 const DEFAULT_UPDATE_STATUS: UpdateStatus = {

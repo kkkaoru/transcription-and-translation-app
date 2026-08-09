@@ -762,7 +762,7 @@ fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload,
     }
     Ok(CaptionPayload {
         id: caption.id,
-        source_text,
+        source_text: source_text.clone(),
         azookey_input_text: None,
         translation_text: String::new(),
         source_language: caption.source_language,
@@ -773,6 +773,10 @@ fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload,
         sequence: 0,
         is_final: caption.is_final,
         confidence: caption.confidence,
+        sentence_end_offsets: crate::sentence_boundary::heuristic_sentence_end_offsets(
+            &source_text,
+            false,
+        ),
     })
 }
 
@@ -1085,6 +1089,7 @@ fn empty_caption(config: &AppConfig, id: String) -> CaptionPayload {
         sequence: 0,
         is_final: false,
         confidence: None,
+        sentence_end_offsets: Vec::new(),
     }
 }
 
@@ -2091,6 +2096,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         let mut emitted = 0;
 
@@ -2142,6 +2148,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
 
         let mut emitted = 0;
@@ -2209,6 +2216,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         let mut emitted = 0;
         assert!(

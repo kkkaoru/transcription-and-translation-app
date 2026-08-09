@@ -256,6 +256,12 @@ export interface CaptionPayload {
   provisional?: boolean;
   /** Native capture generation used to fence delayed source-caption invokes. */
   captureGeneration?: number;
+  /**
+   * Exclusive Unicode-scalar offsets where Vibrato/AzooKey marked a Japanese
+   * sentence end on `sourceText`. The overlay pages to the newest sentence
+   * when this is present; otherwise it falls back to surface/copula heuristics.
+   */
+  sentenceEndOffsets?: number[];
 }
 
 /** One structured interim/final output from the persistent Parapper session. */

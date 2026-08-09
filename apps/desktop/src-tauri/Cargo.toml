@@ -17,6 +17,7 @@ tauri-build = { version = "2.0.0", features = [] }
 base64 = "0.22"
 caption-bridge-azookey-rust = { path = "../../../packages/azookey-rust" }
 caption-bridge-input-lm = { path = "../../../packages/input-lm-rust", features = ["rsmarisa"] }
+caption-bridge-vibrato-core = { path = "../../../packages/vibrato-core" }
 flate2 = "1.1"
 log = "0.4"
 libc = "0.2"
@@ -40,11 +41,6 @@ url = "2.5"
 zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
 sha2 = "0.10"
 hex = "0.4"
-vibrato = { version = "=0.5.2", default-features = false }
-ruzstd = { version = "=0.7.3", features = ["std"] }
-
-[dev-dependencies]
-zstd = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 spout2-rs = "0.1.1"

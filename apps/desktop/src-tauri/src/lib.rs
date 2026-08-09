@@ -3,9 +3,9 @@
 mod audio;
 mod azookey_runtime;
 mod browser_source;
-mod dictionary_resolve;
 mod commands;
 mod config;
+mod dictionary_resolve;
 mod gateway;
 mod macos;
 mod model_download;
@@ -14,6 +14,7 @@ mod models;
 mod native_output;
 mod output;
 mod pipeline;
+mod sentence_boundary;
 mod state;
 mod updater;
 mod vibrato_runtime;

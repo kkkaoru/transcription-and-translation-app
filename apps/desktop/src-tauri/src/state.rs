@@ -1090,6 +1090,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         let late_partial = CaptionPayload {
             source_text: "遅延した途中字幕".to_string(),
@@ -1136,6 +1137,7 @@ mod tests {
             sequence: 1,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         });
         assert!(state.latest_caption().is_some());
 
@@ -1256,6 +1258,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         let mut emitted = false;
         assert!(!state.publish_caption_for_generation(delayed_generation, &caption, |_| {
@@ -1282,6 +1285,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         let mut emitted = false;
         assert!(state.publish_caption_for_generation(generation, &caption, |_| {
@@ -1319,6 +1323,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         let mut emitted = false;
         assert!(!state.publish_caption_for_generation(paused_generation, &late, |_| {
@@ -1354,6 +1359,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         assert!(state.publish_caption_for_generation(resumed_generation, &fresh, |_| {
             emitted = true;
@@ -1475,6 +1481,7 @@ mod tests {
             sequence: 0,
             is_final: false,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         state.record_latest_caption(&source);
         assert_eq!(state.latest_caption(), Some(source.clone()));
@@ -1496,6 +1503,7 @@ mod tests {
             sequence: 0,
             is_final: false,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         backdated_state.record_latest_caption(&backdated_interim);
         let final_source = CaptionPayload {
@@ -1621,6 +1629,7 @@ mod tests {
             sequence: 1,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
 
         let mut emitted_count = 0;
@@ -1655,6 +1664,7 @@ mod tests {
             sequence: 1,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         };
         let mut emitted = 0;
         state.publish_translation_for_ticket(ticket, &caption, |_| {

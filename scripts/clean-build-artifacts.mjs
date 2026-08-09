@@ -100,6 +100,7 @@ const disposableRustTargets = [
   "packages/parapper-asr/target/x86_64-pc-windows-msvc/debug",
   "packages/parapper-asr/src-tauri/target",
   "packages/azookey-rust/target",
+  "packages/vibrato-core/target",
   "packages/vibrato-wasm/target",
   "submodules/Parapper-ASR/target",
 ];

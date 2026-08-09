@@ -34,6 +34,7 @@ apps/
 packages/
   inference-server-core/  ローカル/Worker 共通の HTTP 契約・ルーティング
   azookey-reading/       Tauri 正の漢字ゲート（Worker / ブラウザが参照）
+  vibrato-core/          Tauri 正の Vibrato IPADIC 読み（WASM も参照）
   azookey-rust/          かな漢字変換の共有 Rust crate
   parapper-asr/          Parapper-ASR フォーク（LICENSE と upstream 帰属を保持）
 docs/                    設計・運用・引き継ぎ資料

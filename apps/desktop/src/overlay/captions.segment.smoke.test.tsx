@@ -145,6 +145,72 @@ describe("captionTextLines and captionItems", () => {
     expect(windowed.join("")).toBe("い".repeat(40));
   });
 
+  it("switches to the newest Japanese sentence instead of stacking two finished lines", () => {
+    const lines = captionTextLines({
+      key: "source",
+      text: "今日は晴れです。明日は雨です。",
+      maxChars: 28,
+    });
+    expect(lines).toEqual(["明日は雨です。"]);
+  });
+
+  it("keeps an in-progress sentence after a completed AzooKey copula ending", () => {
+    const lines = captionTextLines({
+      key: "source",
+      text: "今日は晴れです明日は雨",
+      azookeyInputText: "きょうははれですあしたはあめ",
+      maxChars: 28,
+    });
+    expect(lines).toEqual(["明日は雨"]);
+  });
+
+  it("pages English translation by sentence punctuation", () => {
+    const lines = captionTextLines({
+      key: "translation",
+      text: "It is sunny today. It will rain tomorrow.",
+      maxChars: 48,
+    });
+    expect(lines).toEqual(["It will rain tomorrow."]);
+  });
+
+  it("uses Vibrato sentence offsets when the pipeline supplies them", () => {
+    const text = "短いです続く文";
+    const lines = captionTextLines({
+      key: "source",
+      text,
+      maxChars: 28,
+      sentenceEndOffsets: [4],
+    });
+    expect(lines).toEqual(["続く文"]);
+  });
+
+  it("pages messy live speech from Vibrato POS offsets rather than surface copulas", () => {
+    expect(
+      captionTextLines({
+        key: "source",
+        text: "もう走る次いく",
+        maxChars: 28,
+        sentenceEndOffsets: [],
+      }),
+    ).toEqual(["もう走る次いく"]);
+    expect(
+      captionTextLines({
+        key: "source",
+        text: "えー今日は",
+        maxChars: 28,
+        sentenceEndOffsets: [],
+      }),
+    ).toEqual(["えー今日は"]);
+    expect(
+      captionTextLines({
+        key: "source",
+        text: "ちょっと待って",
+        maxChars: 28,
+        sentenceEndOffsets: [],
+      }),
+    ).toEqual(["ちょっと待って"]);
+  });
+
   it("drops older recognition once the display window is exceeded", () => {
     // With a 2-line window, 5×28 graphemes keep only the newest 56.
     // Use kana so Kanji stutter collapsing cannot interfere with the window test.

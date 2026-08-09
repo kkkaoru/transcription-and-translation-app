@@ -243,9 +243,21 @@ fn feed(app: &AppHandle) -> BrowserSourceFeed {
 fn feed_from_parts(config: &AppConfig, caption: Option<&CaptionPayload>) -> BrowserSourceFeed {
     let overlay = serde_json::to_value(&config.overlay).unwrap_or_else(|_| serde_json::json!({}));
     let budgets = config.overlay.caption_max_chars;
-    let caption = caption.map(|payload| CaptionFeed {
-        source: segment_caption_line(&payload.source_text, budgets.source),
-        translation: segment_caption_line(&payload.translation_text, budgets.translation),
+    let caption = caption.map(|payload| {
+        let source = crate::sentence_boundary::visible_caption_sentence(
+            &payload.source_text,
+            false,
+            Some(payload.sentence_end_offsets.as_slice()),
+        );
+        let translation = crate::sentence_boundary::visible_caption_sentence(
+            &payload.translation_text,
+            true,
+            None,
+        );
+        CaptionFeed {
+            source: segment_caption_line(&source, budgets.source),
+            translation: segment_caption_line(&translation, budgets.translation),
+        }
     });
     BrowserSourceFeed { caption, overlay }
 }
@@ -724,6 +736,7 @@ mod tests {
             sequence: 0,
             is_final: true,
             confidence: None,
+            sentence_end_offsets: Vec::new(),
         }
     }
 
@@ -1181,6 +1194,23 @@ mod tests {
         // Segmentation only inserts breaks; no character is dropped.
         assert_eq!(source.replace('\n', ""), "あ".repeat(12));
         assert_eq!(translation.replace('\n', ""), "b".repeat(12));
+    }
+
+    #[test]
+    fn feed_pages_to_the_newest_completed_sentence() {
+        let config = AppConfig::default();
+        let mut caption = sample_caption();
+        caption.source_text = "今日は晴れです。明日は雨です。".to_string();
+        caption.translation_text = "It is sunny today. It will rain tomorrow.".to_string();
+        caption.sentence_end_offsets =
+            crate::sentence_boundary::heuristic_sentence_end_offsets(&caption.source_text, false);
+
+        let feed = feed_from_parts(&config, Some(&caption));
+        let json: serde_json::Value =
+            serde_json::from_str(&feed_json(&feed)).expect("feed is valid JSON");
+
+        assert_eq!(json["caption"]["source"], "明日は雨です。");
+        assert_eq!(json["caption"]["translation"], "It will rain tomorrow.");
     }
 
     #[test]

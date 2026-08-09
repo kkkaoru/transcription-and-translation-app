@@ -4,7 +4,12 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
-    include: ["src/core/**/*.test.ts", "src/i18n/**/*.test.{ts,tsx}", "src/**/*.smoke.test.tsx"],
+    include: [
+      "src/core/**/*.test.ts",
+      "src/i18n/**/*.test.{ts,tsx}",
+      "src/overlay/**/*.test.ts",
+      "src/**/*.smoke.test.tsx",
+    ],
     coverage: {
       provider: "v8",
       include: ["src/core/**/*.ts", "src/i18n/messages.ts", "src/overlay/**/*.{ts,tsx}"],
