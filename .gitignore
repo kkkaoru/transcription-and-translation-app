@@ -11,10 +11,8 @@ dist
 .vite
 coverage
 apps/desktop/src-tauri/target
-packages/vibrato-wasm/target
-packages/azookey-rust/target
-packages/azookey-wasm/target
-packages/input-lm-rust/target
+packages/*/target
+packages/*/src-tauri/target
 apps/desktop/src-tauri/gen
 .tools
 .codex/
