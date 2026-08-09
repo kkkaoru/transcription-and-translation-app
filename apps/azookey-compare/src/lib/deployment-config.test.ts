@@ -16,6 +16,7 @@ const config = JSON.parse(withoutLineComments) as {
   };
   services?: { binding?: string; service?: string }[];
   vars?: Record<string, string>;
+  secrets?: { required?: unknown };
 };
 
 describe("azookey-compare Worker deployment configuration", () => {
@@ -31,6 +32,8 @@ describe("azookey-compare Worker deployment configuration", () => {
     });
     expect(config.services).toEqual([{ binding: "INFERENCE", service: "kotoba-beacon-inference" }]);
     expect(config.vars).toBeUndefined();
+    expect(config.vars ?? {}).not.toHaveProperty("AZOOKEY_API_TOKEN");
+    expect(config.secrets?.required).toEqual(["AZOOKEY_API_TOKEN"]);
     expect(COMPARE_WORKER_ORIGIN).toBe("https://azookey-compare.kaoru.workers.dev");
     expect(COMPARE_WORKER_WEBSOCKET_URL).toContain("/ws/azookey");
   });

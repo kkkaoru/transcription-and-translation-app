@@ -114,6 +114,29 @@ describe("compare Worker Access JWT gate", () => {
     });
   });
 
+  it("allows a verified service-token Access JWT through", async () => {
+    const verify = vi.fn(() =>
+      Promise.resolve({
+        payload: { type: "app", sub: "", common_name: "token-id.access", email: undefined },
+      }),
+    );
+    await expect(
+      enforceAccessJwt(
+        requestWithJwt("service-token-jwt"),
+        {
+          POLICY_AUD: "aud-tag",
+          TEAM_DOMAIN: "https://team.cloudflareaccess.com",
+        },
+        verify,
+      ),
+    ).resolves.toBeNull();
+    expect(verify).toHaveBeenCalledWith("service-token-jwt", {
+      policyAud: "aud-tag",
+      teamDomain: "https://team.cloudflareaccess.com",
+      certsUrl: "https://team.cloudflareaccess.com/cdn-cgi/access/certs",
+    });
+  });
+
   it("allows a verified Access JWT through", async () => {
     const verify = vi.fn(() => Promise.resolve({ payload: { email: "kaoru@teadea.net" } }));
     await expect(

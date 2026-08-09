@@ -10,6 +10,7 @@ export interface CompareWorkerEnv {
   INFERENCE: CompareWorkerAssets;
   POLICY_AUD?: string;
   TEAM_DOMAIN?: string;
+  AZOOKEY_API_TOKEN?: string;
 }
 
 export default {
@@ -20,7 +21,7 @@ export default {
     }
     const pathname = new URL(request.url).pathname;
     if (shouldProxyToInference(pathname)) {
-      return env.INFERENCE.fetch(inferenceProxyRequest(request));
+      return env.INFERENCE.fetch(inferenceProxyRequest(request, env));
     }
     return env.ASSETS.fetch(request);
   },

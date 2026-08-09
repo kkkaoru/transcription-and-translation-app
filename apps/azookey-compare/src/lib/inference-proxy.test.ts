@@ -24,14 +24,48 @@ describe("compare Worker inference proxy", () => {
     expect(COMPARE_WORKER_WEBSOCKET_URL).toBe("wss://azookey-compare.kaoru.workers.dev/ws/azookey");
   });
 
-  it("returns the inbound request so upgrade headers stay intact", () => {
+  it("keeps WebSocket upgrade headers after stripping client Authorization", () => {
     const request = new Request("https://azookey-compare.kaoru.workers.dev/ws/azookey", {
       headers: {
         upgrade: "websocket",
-        "cf-access-jwt-assertion": "test-jwt",
+        connection: "Upgrade",
+        "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "sec-websocket-version": "13",
+        "sec-websocket-protocol": "azookey.text.v1",
+        authorization: "Bearer client-token",
+        "cf-access-jwt-assertion": "access-jwt",
       },
     });
-    expect(inferenceProxyRequest(request)).toBe(request);
-    expect(inferenceProxyRequest(request).headers.get("upgrade")).toBe("websocket");
+    const proxied = inferenceProxyRequest(request, {});
+    expect(proxied).not.toBe(request);
+    expect(proxied.method).toBe("GET");
+    expect(new URL(proxied.url).pathname).toBe("/ws/azookey");
+    expect(proxied.headers.get("upgrade")).toBe("websocket");
+    expect(proxied.headers.get("connection")).toBe("Upgrade");
+    expect(proxied.headers.get("sec-websocket-key")).toBe("dGhlIHNhbXBsZSBub25jZQ==");
+    expect(proxied.headers.get("sec-websocket-version")).toBe("13");
+    expect(proxied.headers.get("sec-websocket-protocol")).toBe("azookey.text.v1");
+    expect(proxied.headers.get("cf-access-jwt-assertion")).toBe("access-jwt");
+    expect(proxied.headers.get("authorization")).toBeNull();
+    expect(request.headers.get("authorization")).toBe("Bearer client-token");
+  });
+
+  it("injects AZOOKEY bearer after dropping the client Authorization", () => {
+    const request = new Request("https://azookey-compare.kaoru.workers.dev/v1/azookey", {
+      headers: {
+        authorization: "Bearer client-token",
+      },
+    });
+    const proxied = inferenceProxyRequest(request, { AZOOKEY_API_TOKEN: " worker-secret " });
+    expect(proxied.headers.get("authorization")).toBe("Bearer worker-secret");
+    expect(request.headers.get("authorization")).toBe("Bearer client-token");
+  });
+
+  it("does not invent a bearer when AZOOKEY_API_TOKEN is unset", () => {
+    const request = new Request("https://azookey-compare.kaoru.workers.dev/v1/azookey");
+    expect(inferenceProxyRequest(request).headers.get("authorization")).toBeNull();
+    expect(
+      inferenceProxyRequest(request, { AZOOKEY_API_TOKEN: "   " }).headers.get("authorization"),
+    ).toBeNull();
   });
 });

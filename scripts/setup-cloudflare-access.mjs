@@ -4,14 +4,15 @@
  *
  * Creates OTP (and Google when env credentials exist), then self-hosted apps with
  * Managed OAuth. Inference stays closed to the public internet; compare allows only
- * configured teadea emails/domains. Secrets are never printed.
+ * configured teadea emails/domains plus a Service Auth policy for the verify
+ * Service Token. Secrets are never printed.
  *
  * Usage:
  *   node scripts/setup-cloudflare-access.mjs
  *   node scripts/setup-cloudflare-access.mjs --check
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDotEnv, resolveCloudflareApiToken } from "./setup-cursor-cloudflare-mcp.mjs";
@@ -21,6 +22,13 @@ const OTP_IDP_NAME = "One-time PIN login";
 const GOOGLE_IDP_NAME = "Google";
 const IDP_WRITE_PERMISSION = "Access: Organizations, Identity Providers, and Groups Edit";
 const APPS_WRITE_PERMISSION = "Access: Apps and Policies Edit";
+const SERVICE_TOKEN_WRITE_PERMISSION = "Access: Service Tokens Write";
+
+export const COMPARE_VERIFY_SERVICE_TOKEN_NAME = "cursor-azookey-compare-verify";
+export const COMPARE_SERVICE_AUTH_POLICY_NAME = "cursor verify service auth";
+export const CF_ACCESS_CLIENT_ID_KEY = "CF_ACCESS_CLIENT_ID";
+export const CF_ACCESS_CLIENT_SECRET_KEY = "CF_ACCESS_CLIENT_SECRET";
+export const SERVICE_TOKEN_DURATION = "8760h";
 
 export const COMPARE_WORKER_NAME = "azookey-compare";
 export const INFERENCE_WORKER_NAME = "kotoba-beacon-inference";
@@ -86,6 +94,12 @@ export const buildPublicDenyPolicy = () => ({
   include: [{ everyone: {} }],
 });
 
+export const buildServiceAuthPolicy = ({ tokenId }) => ({
+  name: COMPARE_SERVICE_AUTH_POLICY_NAME,
+  decision: "non_identity",
+  include: [{ service_token: { token_id: tokenId } }],
+});
+
 const isEveryoneRule = (rule) =>
   Boolean(rule && typeof rule === "object" && rule.everyone && typeof rule.everyone === "object");
 
@@ -94,20 +108,100 @@ const isLoginMethodRule = (rule) =>
     rule && typeof rule === "object" && rule.login_method && typeof rule.login_method === "object",
   );
 
+const isAnyValidServiceTokenRule = (rule) =>
+  Boolean(
+    rule &&
+      typeof rule === "object" &&
+      rule.any_valid_service_token &&
+      typeof rule.any_valid_service_token === "object",
+  );
+
+const serviceTokenIdFromRule = (rule) => {
+  const tokenId = rule?.service_token?.token_id;
+  return typeof tokenId === "string" && tokenId.trim() ? tokenId.trim() : undefined;
+};
+
 export const assertPolicyIsNotWorldOpen = (policy) => {
   if (!policy || typeof policy !== "object") {
     throw new Error("Access policy is missing");
   }
+  const include = Array.isArray(policy.include) ? policy.include : [];
+  if (policy.decision === "non_identity") {
+    if (include.some(isEveryoneRule)) {
+      throw new Error("Service Auth policy must not include everyone");
+    }
+    if (include.some(isAnyValidServiceTokenRule)) {
+      throw new Error("Service Auth policy must not allow any valid service token");
+    }
+    if (!include.some(serviceTokenIdFromRule)) {
+      throw new Error("Service Auth policy must include a specific service token");
+    }
+    return;
+  }
   if (policy.decision !== "allow") {
     return;
   }
-  const include = Array.isArray(policy.include) ? policy.include : [];
   if (include.some(isEveryoneRule)) {
     throw new Error("Allow policy must not include everyone");
   }
   if (include.some(isLoginMethodRule) && include.every(isLoginMethodRule)) {
     throw new Error("Allow policy must not be login_method-only (world-open OTP)");
   }
+};
+
+export const upsertDotEnvAssignments = (contents, assignments) => {
+  const parsed = parseDotEnv(contents);
+  let lines = contents.length > 0 ? contents.split(/\r?\n/) : [];
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines = lines.slice(0, -1);
+  }
+  /** @type {string[]} */
+  const appended = [];
+  /** @type {string[]} */
+  const reused = [];
+  /** @type {string[]} */
+  const replaced = [];
+  for (const [key, value] of Object.entries(assignments)) {
+    if (!present(value)) {
+      continue;
+    }
+    if (present(parsed[key])) {
+      reused.push(key);
+      continue;
+    }
+    const index = lines.findIndex((line) => {
+      const trimmed = line.trim();
+      return trimmed === key || trimmed.startsWith(`${key}=`);
+    });
+    if (index >= 0) {
+      lines[index] = `${key}=${value}`;
+      replaced.push(key);
+    } else {
+      lines.push(`${key}=${value}`);
+      appended.push(key);
+    }
+  }
+  return {
+    contents: lines.length > 0 ? `${lines.join("\n")}\n` : "",
+    appended,
+    reused,
+    replaced,
+  };
+};
+
+export const writeDotEnvAssignments = (envPath, assignments) => {
+  const current = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+  const result = upsertDotEnvAssignments(current, assignments);
+  if (result.appended.length === 0 && result.replaced.length === 0) {
+    return result;
+  }
+  writeFileSync(envPath, result.contents, { encoding: "utf8" });
+  try {
+    chmodSync(envPath, 0o600);
+  } catch {
+    // Windows and some shared FS mounts do not support POSIX modes.
+  }
+  return result;
 };
 
 export const selectAllowedIdpIds = ({ identityProviders, includeGoogle }) => {
@@ -209,7 +303,9 @@ export const describeAccessApiError = ({ status, errors = [], resource }) => {
     const permission =
       resource === "identity_providers" || resource === "organizations"
         ? IDP_WRITE_PERMISSION
-        : APPS_WRITE_PERMISSION;
+        : resource === "service_tokens"
+          ? SERVICE_TOKEN_WRITE_PERMISSION
+          : APPS_WRITE_PERMISSION;
     return `Cloudflare Access ${resource} returned 403. Add Account permission "${permission}".`;
   }
   return `Cloudflare Access ${resource} failed (${status}): ${messages.join("; ") || "unknown error"}`;
@@ -236,6 +332,15 @@ const summarizeApp = (app) => ({
     ? app.destinations.map((destination) => destination?.type).filter(Boolean)
     : [],
   allowedIdpCount: Array.isArray(app?.allowed_idps) ? app.allowed_idps.length : 0,
+  policyDecisions: Array.isArray(app?.policies)
+    ? app.policies.map((policy) => policy?.decision).filter(Boolean)
+    : [],
+});
+
+const summarizeServiceToken = (token) => ({
+  id: token?.id,
+  name: token?.name,
+  hasClientId: typeof token?.client_id === "string" && token.client_id.trim().length > 0,
 });
 
 const createClient = ({ accountId, token }) => {
@@ -339,6 +444,126 @@ const upsertAccessApp = async ({ client, body, existing, checkOnly }) => {
     );
   }
   return { app: data.result, created: false, updated: true };
+};
+
+export const selectServiceTokenByName = (tokens, name = COMPARE_VERIFY_SERVICE_TOKEN_NAME) =>
+  (tokens || []).find((token) => token?.name === name);
+
+export const buildCompareAccessPolicies = ({
+  emails = DEFAULT_ALLOW_EMAILS,
+  domains = DEFAULT_ALLOW_EMAIL_DOMAINS,
+  serviceTokenId,
+} = {}) => {
+  const policies = [buildTeadeaAllowPolicy({ emails, domains })];
+  if (present(serviceTokenId)) {
+    policies.push(buildServiceAuthPolicy({ tokenId: serviceTokenId }));
+  }
+  return policies;
+};
+
+export const ensureCompareVerifyServiceToken = async ({
+  client,
+  existing,
+  dotenv = {},
+  checkOnly,
+}) => {
+  const found = selectServiceTokenByName(existing);
+  const localClientId = (dotenv[CF_ACCESS_CLIENT_ID_KEY] || "").trim();
+  const localSecret = (dotenv[CF_ACCESS_CLIENT_SECRET_KEY] || "").trim();
+  if (found) {
+    if (checkOnly) {
+      return {
+        token: found,
+        created: false,
+        rotated: false,
+        missingSecret: !present(localSecret),
+      };
+    }
+    if (present(localSecret)) {
+      return {
+        token: {
+          ...found,
+          client_id: present(found.client_id) ? found.client_id : localClientId || undefined,
+        },
+        clientSecret: localSecret,
+        created: false,
+        rotated: false,
+        reusedSecret: true,
+      };
+    }
+    const { status, data } = await client.request(`access/service_tokens/${found.id}/rotate`, {
+      method: "POST",
+    });
+    if (status === 403 || !data?.success || !data.result?.id) {
+      return {
+        token: found,
+        created: false,
+        rotated: false,
+        forbidden: status === 403,
+        missingSecret: true,
+        error: describeAccessApiError({
+          status,
+          errors: data?.errors || [],
+          resource: "service_tokens",
+        }),
+      };
+    }
+    return {
+      token: data.result,
+      clientSecret: data.result?.client_secret,
+      created: false,
+      rotated: true,
+    };
+  }
+  if (checkOnly) {
+    return {
+      token: undefined,
+      created: false,
+      missing: true,
+      missingSecret: !present(localSecret),
+    };
+  }
+  const { status, data } = await client.request("access/service_tokens", {
+    method: "POST",
+    body: {
+      name: COMPARE_VERIFY_SERVICE_TOKEN_NAME,
+      duration: SERVICE_TOKEN_DURATION,
+    },
+  });
+  if (status === 403 || !data?.success || !data.result?.id) {
+    return {
+      token: undefined,
+      created: false,
+      missing: true,
+      forbidden: status === 403,
+      error: describeAccessApiError({
+        status,
+        errors: data?.errors || [],
+        resource: "service_tokens",
+      }),
+    };
+  }
+  return {
+    token: data.result,
+    clientSecret: data.result?.client_secret,
+    created: true,
+    rotated: false,
+  };
+};
+
+const persistServiceTokenDotEnv = ({ envPath, token, clientSecret }) => {
+  /** @type {Record<string, string>} */
+  const assignments = {};
+  if (present(token?.client_id)) {
+    assignments[CF_ACCESS_CLIENT_ID_KEY] = token.client_id.trim();
+  }
+  if (present(clientSecret)) {
+    assignments[CF_ACCESS_CLIENT_SECRET_KEY] = clientSecret.trim();
+  }
+  if (Object.keys(assignments).length === 0) {
+    return { appended: [], reused: [], replaced: [] };
+  }
+  return writeDotEnvAssignments(envPath, assignments);
 };
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -490,6 +715,71 @@ const run = async () => {
     );
   }
 
+  const tokensResponse = await client.request("access/service_tokens");
+  const serviceTokensWriteBlocked = tokensResponse.status === 403;
+  if (serviceTokensWriteBlocked) {
+    console.warn(
+      describeAccessApiError({
+        status: 403,
+        errors: tokensResponse.data?.errors || [],
+        resource: "service_tokens",
+      }),
+    );
+    console.warn(
+      "Continuing Access app setup without the compare Service Auth policy. Rerun after granting the permission.",
+    );
+  } else if (!tokensResponse.data?.success) {
+    throw new Error(
+      describeAccessApiError({
+        status: tokensResponse.status,
+        errors: tokensResponse.data?.errors || [],
+        resource: "service_tokens",
+      }),
+    );
+  }
+  const existingServiceTokens = serviceTokensWriteBlocked
+    ? []
+    : readResultList(tokensResponse.data);
+  const serviceTokenResult = serviceTokensWriteBlocked
+    ? { token: undefined, created: false, missing: true, forbidden: true }
+    : await ensureCompareVerifyServiceToken({
+        client,
+        existing: existingServiceTokens,
+        dotenv,
+        checkOnly,
+      });
+  if (serviceTokenResult.error) {
+    console.warn(serviceTokenResult.error);
+  }
+  if (!checkOnly && serviceTokenResult.token && present(serviceTokenResult.clientSecret)) {
+    const written = persistServiceTokenDotEnv({
+      envPath: join(repositoryRoot, ".env"),
+      token: serviceTokenResult.token,
+      clientSecret: serviceTokenResult.clientSecret,
+    });
+    console.log(
+      `dotenv Access ST keys: client_id=${
+        written.reused.includes(CF_ACCESS_CLIENT_ID_KEY)
+          ? "reused"
+          : written.appended.includes(CF_ACCESS_CLIENT_ID_KEY) ||
+              written.replaced.includes(CF_ACCESS_CLIENT_ID_KEY)
+            ? "written"
+            : "unchanged"
+      } client_secret=${
+        written.reused.includes(CF_ACCESS_CLIENT_SECRET_KEY)
+          ? "reused"
+          : written.appended.includes(CF_ACCESS_CLIENT_SECRET_KEY) ||
+              written.replaced.includes(CF_ACCESS_CLIENT_SECRET_KEY)
+            ? "written"
+            : "unchanged"
+      }`,
+    );
+  } else if (!checkOnly && serviceTokenResult.missingSecret) {
+    console.warn(
+      "Access Service Token secret is not in .env and could not be recovered. Verify will skip authenticated checks.",
+    );
+  }
+
   const appsResponse = await client.request("access/apps");
   if (!appsResponse.data?.success) {
     throw new Error(
@@ -506,9 +796,11 @@ const run = async () => {
     workerId: compareWorkerId,
     publicHost: COMPARE_PUBLIC_HOST,
     destinationKind: "public",
-    policies: [
-      buildTeadeaAllowPolicy({ emails: plan.allowEmails, domains: plan.allowEmailDomains }),
-    ],
+    policies: buildCompareAccessPolicies({
+      emails: plan.allowEmails,
+      domains: plan.allowEmailDomains,
+      serviceTokenId: serviceTokenResult.token?.id,
+    }),
     allowedIdps,
   });
   const inferenceBody = buildSelfHostedWorkerAppBody({
@@ -561,6 +853,10 @@ const run = async () => {
         google: summarizeIdp(googleResult.idp),
         compare: summarizeApp(compareApp.app),
         inference: summarizeApp(inferenceApp.app),
+        serviceToken: summarizeServiceToken(serviceTokenResult.token),
+        serviceTokenCreated: Boolean(serviceTokenResult.created),
+        serviceTokenRotated: Boolean(serviceTokenResult.rotated),
+        serviceTokenReusedSecret: Boolean(serviceTokenResult.reusedSecret),
         teamDomainConfigured: Boolean(resolveAccessTeamDomain(organization)),
         jwtBindingsReady: Boolean(jwtBindings),
         missing: {
@@ -568,6 +864,7 @@ const run = async () => {
           google: plan.googleEnabled && Boolean(googleResult.missing),
           compare: Boolean(compareApp.missing),
           inference: Boolean(inferenceApp.missing),
+          serviceToken: Boolean(serviceTokenResult.missing),
         },
       },
       null,
@@ -576,14 +873,17 @@ const run = async () => {
   );
   if (
     checkOnly &&
-    (otpResult.missing || compareApp.missing || (plan.googleEnabled && googleResult.missing))
+    (otpResult.missing ||
+      compareApp.missing ||
+      serviceTokenResult.missing ||
+      (plan.googleEnabled && googleResult.missing))
   ) {
     return 1;
   }
   if (!checkOnly && compareApp.missing) {
     return 1;
   }
-  if (idpWriteBlocked) {
+  if (idpWriteBlocked || serviceTokensWriteBlocked || serviceTokenResult.forbidden) {
     return 3;
   }
   return 0;

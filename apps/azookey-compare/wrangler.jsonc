@@ -21,5 +21,10 @@
   ],
   "observability": {
     "enabled": true
+  },
+  // Names only. Values go through `wrangler secret put`, never this file.
+  // POLICY_AUD and TEAM_DOMAIN stay as existing Worker secrets.
+  "secrets": {
+    "required": ["AZOOKEY_API_TOKEN"]
   }
 }

@@ -3,11 +3,17 @@ import { describe, it } from "node:test";
 import {
   assertPolicyIsNotWorldOpen,
   buildAccessDestinations,
+  buildCompareAccessPolicies,
   buildGoogleIdentityProviderBody,
   buildOtpIdentityProviderBody,
   buildPublicDenyPolicy,
   buildSelfHostedWorkerAppBody,
+  buildServiceAuthPolicy,
   buildTeadeaAllowPolicy,
+  CF_ACCESS_CLIENT_ID_KEY,
+  CF_ACCESS_CLIENT_SECRET_KEY,
+  COMPARE_SERVICE_AUTH_POLICY_NAME,
+  COMPARE_VERIFY_SERVICE_TOKEN_NAME,
   DEFAULT_ALLOW_EMAIL_DOMAINS,
   DEFAULT_ALLOW_EMAILS,
   describeAccessApiError,
@@ -19,6 +25,8 @@ import {
   resolveAccountId,
   resolveWorkerIdFromList,
   selectAllowedIdpIds,
+  selectServiceTokenByName,
+  upsertDotEnvAssignments,
 } from "./setup-cloudflare-access.mjs";
 
 describe("setup-cloudflare-access", () => {
@@ -92,6 +100,27 @@ describe("setup-cloudflare-access", () => {
     assert.equal(deny.decision, "deny");
     assert.deepEqual(deny.include, [{ everyone: {} }]);
     assert.doesNotThrow(() => assertPolicyIsNotWorldOpen(deny));
+    const serviceAuth = buildServiceAuthPolicy({ tokenId: "token-1" });
+    assert.equal(serviceAuth.name, COMPARE_SERVICE_AUTH_POLICY_NAME);
+    assert.equal(serviceAuth.decision, "non_identity");
+    assert.deepEqual(serviceAuth.include, [{ service_token: { token_id: "token-1" } }]);
+    assert.doesNotThrow(() => assertPolicyIsNotWorldOpen(serviceAuth));
+    assert.throws(
+      () =>
+        assertPolicyIsNotWorldOpen({
+          decision: "non_identity",
+          include: [{ everyone: {} }],
+        }),
+      /everyone/,
+    );
+    assert.throws(
+      () =>
+        assertPolicyIsNotWorldOpen({
+          decision: "non_identity",
+          include: [{ any_valid_service_token: {} }],
+        }),
+      /any valid service token/,
+    );
   });
 
   it("protects compare workers.dev with a public destination so WebSockets work", () => {
@@ -100,7 +129,7 @@ describe("setup-cloudflare-access", () => {
       workerId: "0123456789abcdef0123456789abcdef",
       publicHost: "azookey-compare.kaoru.workers.dev",
       destinationKind: "public",
-      policies: [buildTeadeaAllowPolicy()],
+      policies: buildCompareAccessPolicies({ serviceTokenId: "token-1" }),
       allowedIdps: ["otp-id"],
     });
     assert.equal(body.type, "self_hosted");
@@ -112,6 +141,10 @@ describe("setup-cloudflare-access", () => {
     assert.deepEqual(body.allowed_idps, ["otp-id"]);
     assert.equal(body.auto_redirect_to_identity, true);
     assert.equal(body.app_launcher_visible, false);
+    assert.deepEqual(
+      body.policies.map((policy) => policy.decision),
+      ["allow", "non_identity"],
+    );
   });
 
   it("builds a worker-only inference app without a public domain", () => {
@@ -220,6 +253,10 @@ describe("setup-cloudflare-access", () => {
       describeAccessApiError({ status: 403, resource: "apps" }),
       /Apps and Policies Edit/,
     );
+    assert.match(
+      describeAccessApiError({ status: 403, resource: "service_tokens" }),
+      /Service Tokens Write/,
+    );
   });
 
   it("plans Google skip and default allow lists from env", () => {
@@ -235,5 +272,47 @@ describe("setup-cloudflare-access", () => {
       "a@x.test",
       "b@y.test",
     ]);
+  });
+
+  it("selects the compare verify Service Token by name", () => {
+    assert.equal(COMPARE_VERIFY_SERVICE_TOKEN_NAME, "cursor-azookey-compare-verify");
+    assert.deepEqual(
+      selectServiceTokenByName([
+        { id: "other", name: "other-token" },
+        { id: "st-1", name: COMPARE_VERIFY_SERVICE_TOKEN_NAME, client_id: "id.access" },
+      ]),
+      { id: "st-1", name: COMPARE_VERIFY_SERVICE_TOKEN_NAME, client_id: "id.access" },
+    );
+    assert.equal(selectServiceTokenByName([]), undefined);
+  });
+
+  it("appends missing dotenv keys and reuses existing secrets without printing them", () => {
+    const first = upsertDotEnvAssignments("CLOUDFLARE_API_TOKEN=existing\n", {
+      [CF_ACCESS_CLIENT_ID_KEY]: "id.access",
+      [CF_ACCESS_CLIENT_SECRET_KEY]: "secret-value",
+    });
+    assert.deepEqual(first.appended, [CF_ACCESS_CLIENT_ID_KEY, CF_ACCESS_CLIENT_SECRET_KEY]);
+    assert.deepEqual(first.reused, []);
+    assert.match(first.contents, /^CLOUDFLARE_API_TOKEN=existing$/m);
+    assert.match(first.contents, new RegExp(`^${CF_ACCESS_CLIENT_ID_KEY}=id\\.access$`, "m"));
+    const reused = upsertDotEnvAssignments(first.contents, {
+      [CF_ACCESS_CLIENT_ID_KEY]: "other-id",
+      [CF_ACCESS_CLIENT_SECRET_KEY]: "other-secret",
+    });
+    assert.deepEqual(reused.reused, [CF_ACCESS_CLIENT_ID_KEY, CF_ACCESS_CLIENT_SECRET_KEY]);
+    assert.deepEqual(reused.appended, []);
+    assert.equal(reused.contents, first.contents);
+    const replaced = upsertDotEnvAssignments(`${CF_ACCESS_CLIENT_SECRET_KEY}=\n`, {
+      [CF_ACCESS_CLIENT_SECRET_KEY]: "recovered-secret",
+    });
+    assert.deepEqual(replaced.replaced, [CF_ACCESS_CLIENT_SECRET_KEY]);
+    assert.match(
+      replaced.contents,
+      new RegExp(`^${CF_ACCESS_CLIENT_SECRET_KEY}=recovered-secret$`, "m"),
+    );
+  });
+
+  it("keeps teadea allow when the Service Token id is unavailable", () => {
+    assert.deepEqual(buildCompareAccessPolicies(), [buildTeadeaAllowPolicy()]);
   });
 });
