@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import {
   assertPolicyIsNotWorldOpen,
+  buildAccessDestinations,
   buildGoogleIdentityProviderBody,
   buildOtpIdentityProviderBody,
   buildPublicDenyPolicy,
@@ -13,6 +14,8 @@ import {
   hasGoogleOAuthCredentials,
   parseCsvList,
   planAccessSetup,
+  resolveAccessJwtBindings,
+  resolveAccessTeamDomain,
   resolveAccountId,
   resolveWorkerIdFromList,
   selectAllowedIdpIds,
@@ -91,17 +94,19 @@ describe("setup-cloudflare-access", () => {
     assert.doesNotThrow(() => assertPolicyIsNotWorldOpen(deny));
   });
 
-  it("protects workers.dev apps with worker destinations and Managed OAuth", () => {
+  it("protects compare workers.dev with a public destination so WebSockets work", () => {
     const body = buildSelfHostedWorkerAppBody({
       name: "azookey-compare",
       workerId: "0123456789abcdef0123456789abcdef",
       publicHost: "azookey-compare.kaoru.workers.dev",
+      destinationKind: "public",
       policies: [buildTeadeaAllowPolicy()],
       allowedIdps: ["otp-id"],
     });
     assert.equal(body.type, "self_hosted");
+    assert.equal(body.domain, "azookey-compare.kaoru.workers.dev");
     assert.deepEqual(body.destinations, [
-      { type: "worker", worker_id: "0123456789abcdef0123456789abcdef" },
+      { type: "public", uri: "azookey-compare.kaoru.workers.dev" },
     ]);
     assert.equal(body.oauth_configuration.enabled, true);
     assert.deepEqual(body.allowed_idps, ["otp-id"]);
@@ -109,11 +114,57 @@ describe("setup-cloudflare-access", () => {
     assert.equal(body.app_launcher_visible, false);
   });
 
+  it("builds a worker-only inference app without a public domain", () => {
+    const body = buildSelfHostedWorkerAppBody({
+      name: "kotoba-beacon-inference",
+      workerId: "fedcba9876543210fedcba9876543210",
+      publicHost: "kotoba-beacon-inference.kaoru.workers.dev",
+      destinationKind: "worker",
+      policies: [buildPublicDenyPolicy()],
+      allowedIdps: ["otp-id"],
+    });
+    assert.equal(body.domain, undefined);
+    assert.deepEqual(buildAccessDestinations({ destinationKind: "worker", workerId: "abc" }), [
+      { type: "worker", worker_id: "abc" },
+    ]);
+    assert.deepEqual(body.destinations, [
+      { type: "worker", worker_id: "fedcba9876543210fedcba9876543210" },
+    ]);
+    assert.equal(body.oauth_configuration.enabled, true);
+  });
+
+  it("resolves JWT bindings from Access aud and team domain without inventing them", () => {
+    assert.equal(resolveAccessTeamDomain({}), undefined);
+    assert.equal(
+      resolveAccessTeamDomain({ name: "example-team" }),
+      "https://example-team.cloudflareaccess.com",
+    );
+    assert.equal(
+      resolveAccessTeamDomain({ auth_domain: "example-team.cloudflareaccess.com" }),
+      "https://example-team.cloudflareaccess.com",
+    );
+    assert.deepEqual(
+      resolveAccessJwtBindings({
+        app: { aud: "aud-tag" },
+        organization: { auth_domain: "https://example-team.cloudflareaccess.com/" },
+      }),
+      {
+        policyAud: "aud-tag",
+        teamDomain: "https://example-team.cloudflareaccess.com",
+      },
+    );
+    assert.equal(
+      resolveAccessJwtBindings({ app: { aud: "aud-tag" }, organization: {} }),
+      undefined,
+    );
+  });
+
   it("omits allowed_idps when none are known so Access keeps account IdPs", () => {
     const body = buildSelfHostedWorkerAppBody({
       name: "azookey-compare",
       workerId: "0123456789abcdef0123456789abcdef",
       publicHost: "azookey-compare.kaoru.workers.dev",
+      destinationKind: "public",
       policies: [buildTeadeaAllowPolicy()],
       allowedIdps: [],
     });

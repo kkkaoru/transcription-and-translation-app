@@ -123,6 +123,13 @@ export const selectAllowedIdpIds = ({ identityProviders, includeGoogle }) => {
   return ids;
 };
 
+export const buildAccessDestinations = ({ destinationKind, workerId, publicHost }) => {
+  if (destinationKind === "worker") {
+    return [{ type: "worker", worker_id: workerId }];
+  }
+  return [{ type: "public", uri: publicHost }];
+};
+
 export const buildSelfHostedWorkerAppBody = ({
   name,
   workerId,
@@ -130,16 +137,17 @@ export const buildSelfHostedWorkerAppBody = ({
   policies,
   allowedIdps,
   oauthEnabled = true,
+  destinationKind = "public",
 }) => {
   for (const policy of policies) {
     assertPolicyIsNotWorldOpen(policy);
   }
+  const destinations = buildAccessDestinations({ destinationKind, workerId, publicHost });
   /** @type {Record<string, unknown>} */
   const body = {
     name,
     type: "self_hosted",
-    domain: publicHost,
-    destinations: [{ type: "worker", worker_id: workerId }],
+    destinations,
     session_duration: "24h",
     app_launcher_visible: false,
     auto_redirect_to_identity: allowedIdps.length === 1,
@@ -148,10 +156,37 @@ export const buildSelfHostedWorkerAppBody = ({
     oauth_configuration: { enabled: oauthEnabled },
     policies,
   };
+  // Top-level domain must appear in destinations or Access returns
+  // "domain not included in destinations". Worker-only apps omit it.
+  if (destinationKind === "public") {
+    body.domain = publicHost;
+  }
   if (allowedIdps.length > 0) {
     body.allowed_idps = allowedIdps;
   }
   return body;
+};
+
+export const resolveAccessTeamDomain = (organization) => {
+  const authDomain =
+    (typeof organization?.auth_domain === "string" && organization.auth_domain.trim()) ||
+    (typeof organization?.name === "string" && organization.name.trim()
+      ? `${organization.name.trim()}.cloudflareaccess.com`
+      : "");
+  if (!authDomain) {
+    return undefined;
+  }
+  const host = authDomain.replace(/^https?:\/\//u, "").replace(/\/+$/u, "");
+  return host ? `https://${host}` : undefined;
+};
+
+export const resolveAccessJwtBindings = ({ app, organization }) => {
+  const policyAud = typeof app?.aud === "string" ? app.aud.trim() : "";
+  const teamDomain = resolveAccessTeamDomain(organization);
+  if (!policyAud || !teamDomain) {
+    return undefined;
+  }
+  return { policyAud, teamDomain };
 };
 
 export const resolveWorkerIdFromList = (workers, workerName) => {
@@ -196,6 +231,7 @@ const summarizeApp = (app) => ({
   name: app?.name,
   type: app?.type,
   oauthEnabled: Boolean(app?.oauth_configuration?.enabled),
+  hasAud: typeof app?.aud === "string" && app.aud.trim().length > 0,
   destinationTypes: Array.isArray(app?.destinations)
     ? app.destinations.map((destination) => destination?.type).filter(Boolean)
     : [],
@@ -469,6 +505,7 @@ const run = async () => {
     name: COMPARE_APP_NAME,
     workerId: compareWorkerId,
     publicHost: COMPARE_PUBLIC_HOST,
+    destinationKind: "public",
     policies: [
       buildTeadeaAllowPolicy({ emails: plan.allowEmails, domains: plan.allowEmailDomains }),
     ],
@@ -478,6 +515,7 @@ const run = async () => {
     name: INFERENCE_APP_NAME,
     workerId: inferenceWorkerId,
     publicHost: INFERENCE_PUBLIC_HOST,
+    destinationKind: "worker",
     policies: [buildPublicDenyPolicy()],
     allowedIdps,
   });
@@ -487,11 +525,31 @@ const run = async () => {
     existing: existingApps,
     checkOnly,
   });
-  const inferenceApp = await upsertAccessApp({
-    client,
-    body: inferenceBody,
-    existing: existingApps,
-    checkOnly,
+  let inferenceApp = { app: undefined, created: false, updated: false, missing: true };
+  try {
+    inferenceApp = await upsertAccessApp({
+      client,
+      body: inferenceBody,
+      existing: existingApps,
+      checkOnly,
+    });
+  } catch (error) {
+    console.warn(
+      `Inference Access app skipped (public hostname stays closed): ${
+        error instanceof Error ? error.message : error
+      }`,
+    );
+  }
+
+  const orgResponse = await client.request("access/organizations");
+  const organization = orgResponse.data?.success
+    ? orgResponse.data.result
+    : Array.isArray(orgResponse.data?.result)
+      ? orgResponse.data.result[0]
+      : undefined;
+  const jwtBindings = resolveAccessJwtBindings({
+    app: compareApp.app,
+    organization,
   });
 
   console.log(
@@ -503,6 +561,8 @@ const run = async () => {
         google: summarizeIdp(googleResult.idp),
         compare: summarizeApp(compareApp.app),
         inference: summarizeApp(inferenceApp.app),
+        teamDomainConfigured: Boolean(resolveAccessTeamDomain(organization)),
+        jwtBindingsReady: Boolean(jwtBindings),
         missing: {
           otp: Boolean(otpResult.missing),
           google: plan.googleEnabled && Boolean(googleResult.missing),
@@ -516,11 +576,11 @@ const run = async () => {
   );
   if (
     checkOnly &&
-    (otpResult.missing ||
-      compareApp.missing ||
-      inferenceApp.missing ||
-      (plan.googleEnabled && googleResult.missing))
+    (otpResult.missing || compareApp.missing || (plan.googleEnabled && googleResult.missing))
   ) {
+    return 1;
+  }
+  if (!checkOnly && compareApp.missing) {
     return 1;
   }
   if (idpWriteBlocked) {

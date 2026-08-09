@@ -124,8 +124,8 @@ use CORS, but HTTP preflight and error responses still receive the configured
 allow-list origin.
 
 To check the deployed auth posture without exposing a token, call health through
-compare after Access login (inference direct `curl` should 404 while
-`workers_dev` is off):
+compare after Access login (unauthenticated compare is 302/401; inference
+direct `curl` should 404 while `workers_dev` is off):
 
 ```sh
 curl -fsS https://azookey-compare.kaoru.workers.dev/v1/azookey \

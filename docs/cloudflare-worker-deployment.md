@@ -117,10 +117,10 @@ mode; do not promote it or share the WebSocket URL.
 
 ## Post-deploy checks
 
-These checks reveal status and headers only; none prints a secret. After Access
-is enabled, unauthenticated `curl` to compare should be `302` or
-`401` with `WWW-Authenticate` (Managed OAuth). Authenticated browser checks use
-the Access session cookie or `cloudflared access`.
+These checks reveal status and headers only; none prints a secret. Unauthenticated
+`curl` to compare should be `302` (HTML) or `401` with `WWW-Authenticate`
+(Managed OAuth). Authenticated browser checks use the Access session cookie or
+`cloudflared access`.
 
 ```sh
 curl -sS -D - -o /dev/null https://azookey-compare.kaoru.workers.dev/
@@ -153,27 +153,21 @@ self-hosted apps with `oauth_configuration.enabled`. Allow lists default to
 OTP. IdP write needs `Access: Organizations, Identity Providers, and Groups
 Edit`; app write needs `Access: Apps and Policies Edit`.
 
-If the API token still returns 403, enable Access from the dashboard instead:
+Compare uses a **public** Access destination on
+`azookey-compare.kaoru.workers.dev` so WebSocket upgrades are not blocked.
+Do not switch it to a Worker destination; those reject `Upgrade: websocket`
+with 403. Inference keeps `workers_dev: false` and, if created, a worker-only
+Access app with deny-everyone plus Managed OAuth.
 
-1. Sign in as `kaoru@teadea.net`.
-2. Workers & Pages → `azookey-compare` → Settings → Domains & Routes.
-3. On `workers.dev`, click **Enable Cloudflare Access**.
-4. **Manage Cloudflare Access** and restrict to `kaoru@teadea.net` plus
-   `@teadea.net`. Do not leave world-open OTP.
-5. Enable Managed OAuth on that Access app. Use OTP IdP. Create Google IdP
-   only when `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` exist.
-6. Copy the Access audience and team domain from the modal. Set them on the
-   compare Worker as `POLICY_AUD` and `TEAM_DOMAIN` (no placeholders, no git
-   commit of values), then redeploy compare from a clean UI tree.
+After Access exists, set compare Worker secrets `POLICY_AUD` and `TEAM_DOMAIN`
+from the Access app audience and organization auth domain (no placeholders, no
+git commit of values), then redeploy compare from a clean UI tree. Unauthenticated
+HTML should `302` to Access login; API clients should `401` with
+`WWW-Authenticate: Bearer`. Compare also validates
+`Cf-Access-Jwt-Assertion` once both secrets are present.
 
 Do not re-enable inference `workers.dev`. Conversion stays on the compare
-service binding. Inference needs an Access app only if a public hostname
-returns.
-
-Compare validates `Cf-Access-Jwt-Assertion` once both Worker vars are set.
-Until then the JWT gate is a no-op so local/preview still works. After the
-vars are set, a missing or invalid assertion returns `401` with
-`WWW-Authenticate: Bearer`.
+service binding.
 
 ## Local development
 
