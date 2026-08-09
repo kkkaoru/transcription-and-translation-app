@@ -89,7 +89,6 @@ describe("LiveView in-app preview scaling", () => {
             devices={[]}
             message={null}
             onToggleCapture={() => {}}
-            onOpenOverlay={() => {}}
             onDeviceChange={() => {}}
             onRefreshDevices={() => {}}
             onCloseMessage={() => {}}
@@ -122,7 +121,6 @@ describe("LiveView in-app preview scaling", () => {
     expect(stage?.querySelector(".caption-line-translation")?.textContent).toBe(
       "This is a preview caption.",
     );
-    expect(container.textContent).toMatch(/OBS\s*不要/);
     // Never force static design placeholders on the live stage.
     expect(stage?.textContent).not.toContain("日本語の音声認識結果がここに表示されます");
     expect(stage?.textContent).not.toContain("English translation will appear here");
@@ -149,7 +147,6 @@ describe("LiveView in-app preview scaling", () => {
             devices={[]}
             message={null}
             onToggleCapture={() => {}}
-            onOpenOverlay={() => {}}
             onDeviceChange={() => {}}
             onRefreshDevices={() => {}}
             onCloseMessage={() => {}}
@@ -174,7 +171,6 @@ describe("LiveView in-app preview scaling", () => {
             devices={[]}
             message={null}
             onToggleCapture={() => {}}
-            onOpenOverlay={() => {}}
             onDeviceChange={() => {}}
             onRefreshDevices={() => {}}
             onCloseMessage={() => {}}
@@ -189,10 +185,6 @@ describe("LiveView in-app preview scaling", () => {
     expect(stage?.querySelector(".caption-line-translation")?.textContent).toBe("Hello, world.");
     expect(stage?.textContent).not.toContain("これはプレビュー用の字幕です。");
     expect(stage?.textContent).not.toContain("日本語の音声認識結果がここに表示されます");
-    expect(container.querySelector(".caption-id")?.textContent).toBe("live-42");
-    expect(container.querySelector('[data-testid="normalized-caption-stage"]')?.textContent).toBe(
-      "AzooKey",
-    );
   });
 
   it("renders a pipeline-drop notice on the normal Live screen", async () => {
@@ -206,7 +198,6 @@ describe("LiveView in-app preview scaling", () => {
             devices={[]}
             message="音声字幕パイプラインで処理待ちの項目を整理しました。 source=translation · reason=retired · count=1"
             onToggleCapture={() => {}}
-            onOpenOverlay={() => {}}
             onDeviceChange={() => {}}
             onRefreshDevices={() => {}}
             onCloseMessage={() => {}}
@@ -234,7 +225,6 @@ describe("LiveView in-app preview scaling", () => {
             devices={[]}
             message={null}
             onToggleCapture={() => {}}
-            onOpenOverlay={() => {}}
             onDeviceChange={() => {}}
             onRefreshDevices={() => {}}
             onCloseMessage={() => {}}
@@ -257,7 +247,6 @@ describe("LiveView in-app preview scaling", () => {
             devices={[]}
             message={null}
             onToggleCapture={() => {}}
-            onOpenOverlay={() => {}}
             onDeviceChange={() => {}}
             onRefreshDevices={() => {}}
             onCloseMessage={() => {}}
@@ -271,45 +260,7 @@ describe("LiveView in-app preview scaling", () => {
     expect(container.querySelector<HTMLButtonElement>(".text-button")?.disabled).toBe(false);
   });
 
-  it("keeps an explicit hide action reachable beside the transparent capture action", async () => {
-    const onOpenOverlay = vi.fn();
-    const onCloseOverlay = vi.fn();
-    await act(async () => {
-      root.render(
-        <I18nProvider>
-          <LiveView
-            config={createDefaultConfig()}
-            status={DEFAULT_RUNTIME_STATUS}
-            caption={createPreviewCaption()}
-            devices={[]}
-            message={null}
-            onToggleCapture={() => {}}
-            onOpenOverlay={onOpenOverlay}
-            onCloseOverlay={onCloseOverlay}
-            onDeviceChange={() => {}}
-            onRefreshDevices={() => {}}
-            onCloseMessage={() => {}}
-          />
-        </I18nProvider>,
-      );
-      await Promise.resolve();
-    });
-
-    const buttons = [...container.querySelectorAll("button")];
-    const openButton = buttons.find((button) => button.textContent?.includes("透過取り込みを開く"));
-    const hideButton = buttons.find((button) => button.textContent?.includes("透過取り込みを隠す"));
-    expect(openButton).toBeDefined();
-    expect(hideButton).toBeDefined();
-
-    act(() => {
-      openButton?.click();
-      hideButton?.click();
-    });
-    expect(onOpenOverlay).toHaveBeenCalledOnce();
-    expect(onCloseOverlay).toHaveBeenCalledOnce();
-  });
-
-  it("keeps transparent capture controls available even when Syphon/Spout is active", async () => {
+  it("shows native always-on status with transparent-window controls on live", async () => {
     await act(async () => {
       root.render(
         <I18nProvider>
@@ -320,11 +271,11 @@ describe("LiveView in-app preview scaling", () => {
             devices={[]}
             message={null}
             onToggleCapture={() => {}}
-            onOpenOverlay={() => {}}
-            onCloseOverlay={() => {}}
             onDeviceChange={() => {}}
             onRefreshDevices={() => {}}
             onCloseMessage={() => {}}
+            onOpenTransparentCapture={() => {}}
+            onCloseTransparentCapture={() => {}}
           />
         </I18nProvider>,
       );

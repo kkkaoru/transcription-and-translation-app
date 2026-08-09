@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { installMacosAppIfRequested } from "./install-macos-app.mjs";
 import { findMacosAppBundles, optimizeMacosAppBundle } from "./restore-bundle-runtime-symlinks.mjs";
 import { bundleArgsForPlatform } from "./run-tauri-build.mjs";
 
@@ -136,7 +137,7 @@ export const tauriArgsForBuild = ({
   ];
 };
 
-const main = () => {
+const main = async () => {
   const release = process.argv.includes(RELEASE_FLAG);
   const dev = process.argv.includes(DEV_FLAG);
   const extraArgs = process.argv.slice(2);
@@ -169,24 +170,38 @@ const main = () => {
     const tauriDir = path.join(desktopRoot, "src-tauri");
     const targetDir = env.CARGO_TARGET_DIR || path.join(tauriDir, "target");
     const templateResources = path.join(tauriDir, "resources");
-    for (const appBundle of findMacosAppBundles(targetDir)) {
-      const result = optimizeMacosAppBundle(appBundle, templateResources);
+    const appBundles = findMacosAppBundles(targetDir);
+    for (const appBundle of appBundles) {
+      const optimized = optimizeMacosAppBundle(appBundle, templateResources);
       if (
-        result.restored ||
-        result.collapsed ||
-        result.removedDirs.length ||
-        result.removedFiles ||
-        result.compressed
+        optimized.restored ||
+        optimized.collapsed ||
+        optimized.removedDirs.length ||
+        optimized.removedFiles ||
+        optimized.compressed
       ) {
         console.log(
-          `Optimized ${appBundle} (symlinks=${result.restored}, collapsed=${result.collapsed}, prunedDirs=${result.removedDirs.join(",") || "none"}, licenseGzip=${result.gzipBytes})`,
+          `Optimized ${appBundle} (symlinks=${optimized.restored}, collapsed=${optimized.collapsed}, prunedDirs=${optimized.removedDirs.join(",") || "none"}, licenseGzip=${optimized.gzipBytes})`,
         );
       }
     }
+    const sourceApp =
+      appBundles.find((appBundle) => path.basename(appBundle) === "Kotoba Beacon.app") ??
+      appBundles[0];
+    try {
+      const installed = await installMacosAppIfRequested({ sourceApp });
+      if (installed.skipped) {
+        console.log(`Skipped installing Kotoba Beacon.app (${installed.reason})`);
+      } else if (installed.replaced) {
+        console.log(`Replaced ${installed.installApp} with ${installed.sourceApp}`);
+      }
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
   }
-  process.exit(0);
 };
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  main();
+  await main();
 }

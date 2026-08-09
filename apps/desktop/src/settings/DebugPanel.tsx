@@ -1410,7 +1410,6 @@ export function DebugPanel() {
         onToggle={(event) => setPanelOpen((event.currentTarget as HTMLDetailsElement).open)}
       >
         <summary className="debug-summary">
-          <span className="eyebrow">{t("debug.eyebrow")}</span>
           <span className="debug-summary-title">{t("debug.title")}</span>
         </summary>
         <div className="debug-content">

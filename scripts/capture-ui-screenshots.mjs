@@ -94,35 +94,44 @@ async function openLive(page) {
   await page.waitForSelector(".app-shell, #root", { timeout: 15000 });
   recordCheck(
     "live route rendered",
-    (await page.locator(".live-grid").count()) > 0 &&
+    (await page.locator(".live-workspace").count()) > 0 &&
       (await page.locator(".preview-stage").count()) > 0,
     BASE,
   );
-  const buildInfo = await page.evaluate(() => ({
-    version: document.querySelector('[data-testid="build-version"]')?.textContent?.trim() || "",
-    id: document.querySelector('[data-testid="build-id"]')?.textContent?.trim() || "",
-  }));
   recordCheck(
-    "main screen displays build version and unique build id",
-    /^v\S+$/.test(buildInfo.version) && /^build\s+\S+$/.test(buildInfo.id),
-    `${buildInfo.version} · ${buildInfo.id}`,
+    "live header omits build metadata",
+    (await page.locator('.topbar [data-testid="build-info"]').count()) === 0,
   );
-  const pipelineText = (await page.locator(".pipeline-panel").textContent()) || "";
   recordCheck(
-    "live pipeline displays the selected recognition mode",
-    /Web Speech|Parapper ASR/i.test(pipelineText),
-    pipelineText.replace(/\s+/g, " ").trim().slice(0, 180) || "pipeline panel is empty",
+    "live toolbar exposes start and microphone controls",
+    (await page.locator(".live-toolbar .primary-button").count()) > 0 &&
+      (await page.locator(".live-toolbar-mic select").count()) > 0,
+    "start + mic",
   );
   await sleep(350);
 }
 
 async function goSettings(page) {
-  const buttons = page.locator(".nav-tabs button");
-  if ((await buttons.count()) >= 2) {
-    await buttons.nth(1).click();
+  const settings = page.locator('[data-testid="nav-settings"]');
+  if ((await settings.count()) > 0) {
+    await settings.click();
     await sleep(450);
     const rendered = (await page.locator(".settings-section").count()) > 0;
     recordCheck("settings route rendered", rendered);
+    const buildInfo = await page.evaluate(() => ({
+      version:
+        document
+          .querySelector(".content-heading [data-testid='build-version']")
+          ?.textContent?.trim() || "",
+      id:
+        document.querySelector(".content-heading [data-testid='build-id']")?.textContent?.trim() ||
+        "",
+    }));
+    recordCheck(
+      "settings heading displays build version and unique build id",
+      /^v\S+$/.test(buildInfo.version) && /^build\s+\S+$/.test(buildInfo.id),
+      `${buildInfo.version} · ${buildInfo.id}`,
+    );
     return rendered;
   }
   recordCheck("settings route rendered", false, "Settings navigation button was not found");
@@ -509,15 +518,15 @@ async function exerciseBrowserErrorRecovery() {
   const page = await context.newPage();
   try {
     await openLive(page);
-    const start = page.locator(".content-heading .primary-button").first();
+    const start = page.locator(".live-toolbar .primary-button").first();
     await start.click();
     await page.waitForTimeout(800);
     const first = await page.evaluate(() => ({
       // Prefer the actionable alert over the persistent input-level status;
       // both are present on the live screen after a failed start.
       notice: document.querySelector('[role="alert"], [role="status"]')?.textContent?.trim() || "",
-      button: document.querySelector(".content-heading .primary-button")?.textContent?.trim() || "",
-      disabled: Boolean(document.querySelector(".content-heading .primary-button")?.disabled),
+      button: document.querySelector(".live-toolbar .primary-button")?.textContent?.trim() || "",
+      disabled: Boolean(document.querySelector(".live-toolbar .primary-button")?.disabled),
     }));
     await page.screenshot({ path: path.join(OUT, "live-error-recovery.png") });
     fs.writeFileSync(path.join(OUT, "error-recovery-state.json"), JSON.stringify(first, null, 2));
@@ -535,7 +544,7 @@ async function exerciseBrowserErrorRecovery() {
     );
     await start.click();
     await page.waitForTimeout(400);
-    const second = await page.locator(".content-heading .primary-button").first().isEnabled();
+    const second = await page.locator(".live-toolbar .primary-button").first().isEnabled();
     recordCheck("capture can be retried after the first failure", second, undefined, {
       synthetic: true,
     });

@@ -102,6 +102,12 @@ check(
   `build:app=${scripts["build:app"]}`,
 );
 check(
+  "macOS Tauri builds replace /Applications/Kotoba Beacon.app",
+  scripts["install:macos-app"] === "node scripts/install-macos-app.mjs" &&
+    /install-macos-app\.mjs/.test(read("scripts/run-desktop-tauri-build.mjs")),
+  "run-desktop-tauri-build.mjs must install the built .app after a successful macOS bundle",
+);
+check(
   "signed updater builds require the explicit release script",
   scripts["build:app:release"] ===
     "bun run sidecar:build && node scripts/build-tauri-release.mjs" &&

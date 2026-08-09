@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readlinkSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
 } from "node:fs";
@@ -87,6 +88,9 @@ const copyDirectory = (source: string, destination: string): void => {
     throw new Error(`Expected runtime directory was not generated: ${source}`);
   }
   mkdirSync(dirname(destination), { recursive: true });
+  // Replace the destination outright. A leftover absolute symlink into `source`
+  // makes Node's `cpSync` treat the copy as source-into-self and abort.
+  rmSync(destination, { recursive: true, force: true });
   cpSync(source, destination, {
     recursive: true,
     dereference: false,

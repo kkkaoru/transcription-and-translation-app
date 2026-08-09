@@ -5,7 +5,6 @@ export const LocaleSwitcher = () => {
   const { locale, setLocale, t } = useI18n();
   return (
     <label className="locale-switcher">
-      <span>{t("app.uiLanguage")}</span>
       <select
         value={locale}
         onChange={(event) => setLocale(event.target.value as Locale)}

@@ -22,9 +22,14 @@
  *   node scripts/tauri-smoke.mjs --ui            # also attempt AX UI actions
  *   node scripts/tauri-smoke.mjs --exercise-capture
  *   node scripts/tauri-smoke.mjs --keep-alive
+ *   node scripts/tauri-smoke.mjs --app "/Applications/Kotoba Beacon.app"
  *
  * Output is written to /tmp by default. Override with TAURI_SMOKE_OUT_DIR.
  * The script does not kill an app that it did not launch.
+ *
+ * Verification never activates the app: release launches use `open -n -g`
+ * plus `--kotoba-smoke-background`. Default user launches still come to the
+ * front. Window screenshots use `screencapture -l` and do not need key focus.
  */
 
 import { execFile, execFileSync, spawn } from "node:child_process";
@@ -53,6 +58,7 @@ const exerciseCapture = hasFlag("--exercise-capture");
 const buildRequested = hasFlag("--build");
 const keepAlive = hasFlag("--keep-alive");
 const noLaunch = hasFlag("--no-launch");
+const requestedApp = valueFor("--app", process.env.TAURI_SMOKE_APP || "");
 const buildCommand = valueFor(
   "--build-command",
   process.env.TAURI_SMOKE_BUILD_COMMAND || "bun run build:app",
@@ -87,6 +93,11 @@ fs.mkdirSync(outDir, { recursive: true });
 const checks = [];
 const notes = [];
 const startedProcesses = [];
+const SMOKE_BACKGROUND_ARG = "--kotoba-smoke-background";
+/** @type {number | null} */
+let smokePreviousFrontmostUnixId = null;
+let lastFocusYieldAt = 0;
+let focusYieldNoted = false;
 const report = {
   schemaVersion: 2,
   startedAt: new Date().toISOString(),
@@ -198,6 +209,7 @@ const runShell = async (command, args, options = {}) => {
 const waitFor = async (predicate, timeoutMs, intervalMs = 250) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    await yieldFocusIfSmokeAppIsFrontmost();
     const value = await predicate();
     if (value) return value;
     await sleep(intervalMs);
@@ -205,7 +217,54 @@ const waitFor = async (predicate, timeoutMs, intervalMs = 250) => {
   return null;
 };
 
-const appPath = path.join(
+const readFrontmostUnixId = async () => {
+  const result = await runShell("/usr/bin/osascript", [
+    "-e",
+    'tell application "System Events" to get unix id of first application process whose frontmost is true',
+  ]);
+  if (!result.ok) return null;
+  const id = Number.parseInt(result.stdout.trim(), 10);
+  return Number.isFinite(id) ? id : null;
+};
+
+const readFrontmostName = async () => {
+  const result = await runShell("/usr/bin/osascript", [
+    "-e",
+    'tell application "System Events" to get name of first application process whose frontmost is true',
+  ]);
+  return result.ok ? result.stdout.trim() : "";
+};
+
+const restoreFrontmost = async (unixId) => {
+  if (!unixId) return false;
+  const result = await runShell("/usr/bin/osascript", [
+    "-e",
+    `tell application "System Events"
+  try
+    set p to first application process whose unix id is ${unixId}
+    set frontmost of p to true
+    return "restored"
+  end try
+end tell`,
+  ]);
+  return result.ok && /restored/u.test(result.stdout);
+};
+
+const yieldFocusIfSmokeAppIsFrontmost = async () => {
+  if (!smokePreviousFrontmostUnixId) return;
+  const now = Date.now();
+  if (now - lastFocusYieldAt < 1000) return;
+  lastFocusYieldAt = now;
+  const name = await readFrontmostName();
+  if (!/kotoba-beacon/iu.test(name)) return;
+  const restored = await restoreFrontmost(smokePreviousFrontmostUnixId);
+  if (restored && !focusYieldNoted) {
+    focusYieldNoted = true;
+    note(`yielded key focus from ${name} back to pid ${smokePreviousFrontmostUnixId}`);
+  }
+};
+
+const defaultAppPath = path.join(
   repoRoot,
   "apps",
   "desktop",
@@ -216,6 +275,7 @@ const appPath = path.join(
   "macos",
   "Kotoba Beacon.app",
 );
+const appPath = requestedApp ? path.resolve(requestedApp) : defaultAppPath;
 const releaseExecutable = path.join(appPath, "Contents", "MacOS", "kotoba-beacon");
 const debugExecutable = path.join(
   repoRoot,
@@ -870,7 +930,6 @@ tell application "System Events"
   set matches to (every process whose name is "kotoba-beacon")
   if (count of matches is 0) then error "Kotoba Beacon process is not visible to System Events"
   set p to first item of matches
-  set frontmost of p to true
   if (count of windows of p) is 0 then error "Kotoba Beacon has no visible window"
   set windowRole to role of front window of p
   set elementCount to count of UI elements of front window of p
@@ -883,7 +942,6 @@ tell application "System Events"
   set matches to (every process whose name is "kotoba-beacon")
   if (count of matches) is 0 then error "Kotoba Beacon process is not visible to System Events"
   set p to first item of matches
-  set frontmost of p to true
   if (count of windows of p) is 0 then error "Kotoba Beacon has no visible window"
   set values to {}
   repeat with candidate in (entire contents of front window of p)
@@ -900,7 +958,6 @@ const uiAppleScript = `
 on clickNamed(targets)
   tell application "System Events"
     set appProcess to first process whose name is "kotoba-beacon"
-    set frontmost of appProcess to true
     if (count of windows of appProcess) is 0 then error "Kotoba Beacon has no window"
     set wanted to every item of targets
     repeat with candidate in (entire contents of front window of appProcess)
@@ -927,17 +984,23 @@ end clickNamed
 
 set actionName to (system attribute "SMOKE_ACTION")
 if actionName is "settings" then
-  return clickNamed({"設定", "Settings"})
+  return clickNamed({"アプリ設定", "App settings"})
+else if actionName is "style" then
+  return clickNamed({"文字の装飾設定", "Caption style"})
 else if actionName is "live" then
-  return clickNamed({"配信表示", "Live"})
+  return clickNamed({"配信", "Live"})
+else if actionName is "everyday" then
+  return clickNamed({"普段の設定", "Everyday"})
+else if actionName is "advanced" then
+  return clickNamed({"詳細設定", "Advanced"})
 else if actionName is "debug" then
-  return clickNamed({"デバッグ", "Debug"})
+  return clickNamed({"デバッグ情報", "Debug info", "デバッグ", "Debug"})
 else if actionName is "overlay" then
   return clickNamed({"透過取り込みを開く", "Open transparent capture", "Transparent capture", "オーバーレイを開く", "Open overlay", "Overlay"})
 else if actionName is "stop" then
   return clickNamed({"停止", "Stop"})
 else if actionName is "start" then
-  return clickNamed({"開始", "Start", "字幕生成を開始"})
+  return clickNamed({"字幕生成を開始", "Start captioning"})
 else if actionName is "save" then
   return clickNamed({"設定を保存", "Save settings", "Save"})
 else
@@ -994,11 +1057,26 @@ const uiSmoke = async () => {
   const settingsPressed = await pressAx("settings");
   await sleep(500);
   await captureWindow("ui-settings.png");
-  await dumpAxSnapshot("ui-settings-ax.txt", [
-    "AzooKey",
-    "無音ゲート|Silence gate",
-    "字幕チャンク|Caption chunk",
+  await dumpAxSnapshot("ui-settings-everyday-ax.txt", [
+    "普段の設定|Everyday",
+    "詳細設定|Advanced",
+    "音声と認識|Speech and recognition",
+    "字幕の出し方|Caption output",
   ]);
+  const advancedPressed = settingsPressed && (await pressAx("advanced"));
+  await sleep(500);
+  await captureWindow("ui-settings-advanced.png");
+  await dumpAxSnapshot("ui-settings-ax.txt", [
+    "推論先|Inference",
+    "AzooKey",
+    "無音判定|Silence",
+    "音声区間|VAD|chunk",
+  ]);
+  check(
+    "Settings advanced pane opened",
+    advancedPressed,
+    advancedPressed ? "advanced tab reachable" : "AX Advanced control was not reachable",
+  );
   const settingsSaved = settingsPressed && (await pressAx("save"));
   await sleep(1000);
   check(
@@ -1006,7 +1084,7 @@ const uiSmoke = async () => {
     settingsSaved,
     settingsSaved ? "config persisted through the native UI" : "AX Save control was not reachable",
   );
-  const debugPressed = await pressAx("debug");
+  const debugPressed = advancedPressed && (await pressAx("debug"));
   await sleep(500);
   await captureWindow("ui-debug.png");
   await dumpAxSnapshot("ui-debug-ax.txt", ["デバッグ|Debug", "ASR|Parapper"]);
@@ -1024,7 +1102,9 @@ const uiSmoke = async () => {
   check(
     "transparent capture opened as a second same-process window",
     overlayPressed && overlayWindows.length >= 1,
-    overlayPressed ? JSON.stringify(overlayWindows) : "AX transparent-capture action was not verified",
+    overlayPressed
+      ? JSON.stringify(overlayWindows)
+      : "AX transparent-capture action was not verified",
   );
   if (exerciseCapture) {
     const stopped = await pressAx("stop");
@@ -1043,9 +1123,9 @@ const uiSmoke = async () => {
     );
   }
   check(
-    "AX navigation reached Settings, Debug, and Live",
-    settingsPressed && debugPressed && livePressed,
-    `settings=${settingsPressed} debug=${debugPressed} live=${livePressed}`,
+    "AX navigation reached Settings, Advanced, Debug, and Live",
+    settingsPressed && advancedPressed && debugPressed && livePressed,
+    `settings=${settingsPressed} advanced=${advancedPressed} debug=${debugPressed} live=${livePressed}`,
   );
   return settingsSaved;
 };
@@ -1174,10 +1254,11 @@ const main = async () => {
   copyProcessSnapshot("processes-before.txt");
   let pid = pidForExecutable(executable);
   // macOS enforces one foreground instance through the app-data flock.  A
-  // second `open -n` of this bundle therefore exits immediately and activates
-  // whichever Kotoba Beacon is already registered with LaunchServices (often
-  // `/Applications/Kotoba Beacon.app`).  Do not mistake that existing window
-  // and its sidecars for the exact release bundle under test.
+  // second `open -n -g` of this bundle therefore exits immediately and may
+  // still activate whichever Kotoba Beacon is already registered with
+  // LaunchServices (often `/Applications/Kotoba Beacon.app`).  Do not mistake
+  // that existing window and its sidecars for the exact release bundle under
+  // test.
   if (!pid && !noLaunch) {
     const preexistingWindows = (await listWindows("Kotoba Beacon")).filter(
       (window) => window.layer === 0 && window.windowNumber > 0,
@@ -1210,15 +1291,30 @@ const main = async () => {
   }
   let launchedByUs = false;
   if (!pid && !noLaunch) {
-    note(`launching ${launchTarget}`);
+    smokePreviousFrontmostUnixId = await readFrontmostUnixId();
+    if (smokePreviousFrontmostUnixId) {
+      note(
+        `smoke will not activate; restoring frontmost pid ${smokePreviousFrontmostUnixId} if Kotoba Beacon steals focus`,
+      );
+    }
+    note(`launching ${launchTarget} without activation (${SMOKE_BACKGROUND_ARG})`);
     const child =
       flavor === "release"
-        ? spawn("/usr/bin/open", ["-n", launchTarget], { detached: true, stdio: "ignore" })
-        : spawn(launchTarget, [], { detached: true, stdio: "ignore", env: process.env });
+        ? spawn("/usr/bin/open", ["-n", "-g", launchTarget, "--args", SMOKE_BACKGROUND_ARG], {
+            detached: true,
+            stdio: "ignore",
+          })
+        : spawn(launchTarget, [SMOKE_BACKGROUND_ARG], {
+            detached: true,
+            stdio: "ignore",
+            env: { ...process.env, KOTOBA_BEACON_SMOKE_BACKGROUND: "1" },
+          });
     child.unref();
     startedProcesses.push(child.pid);
     launchedByUs = true;
+    report.launchedWithoutActivation = true;
     pid = await waitFor(() => pidForExecutable(executable), 20_000, 250);
+    await yieldFocusIfSmokeAppIsFrontmost();
   }
   check("Tauri app process is running", Boolean(pid) && processExists(pid), `pid=${pid ?? "none"}`);
   if (pid) report.appPid = pid;

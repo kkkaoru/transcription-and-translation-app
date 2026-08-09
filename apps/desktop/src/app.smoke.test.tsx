@@ -38,28 +38,24 @@ describe("App routes", () => {
     });
 
     expect(container.querySelector(".brand-name")?.textContent).toBe("Kotoba Beacon");
-    const buildInfo = container.querySelector('[data-testid="build-info"]');
-    expect(buildInfo).not.toBeNull();
-
-    const buildVersion = container.querySelector('[data-testid="build-version"]');
-    expect(buildVersion?.textContent).toBe(`v${BUILD_INFO.appVersion}`);
-    expect(BUILD_INFO.appVersion.trim()).not.toBe("");
-
-    const buildId = container.querySelector('[data-testid="build-id"]');
-    expect(buildId?.textContent).toBe(`build ${BUILD_INFO.buildId}`);
-    expect(BUILD_INFO.buildId.trim()).not.toBe("");
-    expect(buildInfo?.textContent).toMatch(/v\S+\s*·\s*build\s+\S+/);
+    expect(container.querySelector(".sidebar")).toBeNull();
+    expect(container.querySelector(".sidebar-intro")).toBeNull();
+    expect(container.querySelector(".privacy-note")).toBeNull();
+    expect(container.querySelector(".platform-label")).toBeNull();
+    expect(container.querySelector(".topbar .nav-tabs")).not.toBeNull();
+    expect(container.querySelector(".live-stage")).not.toBeNull();
+    expect(container.querySelector(".live-toolbar")).not.toBeNull();
+    expect(container.querySelector('[data-testid="open-transparent-capture"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="hide-transparent-capture"]')).not.toBeNull();
+    expect(container.querySelector('.topbar [data-testid="build-info"]')).toBeNull();
 
     // In-app preview must render live caption payload without OBS / without forced placeholders.
     expect(container.querySelector('[data-testid="live-preview-stage"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="preview-scale-host"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="input-level-meter"]')).not.toBeNull();
-    // Pipeline timing/debug output is reachable from the live workspace too;
-    // users do not need to switch tabs before they can inspect each stage.
-    expect(container.querySelector(".debug-panel")).not.toBeNull();
+    expect(container.querySelector(".debug-panel")).toBeNull();
     expect(container.textContent).toContain("これはプレビュー用の字幕です。");
     expect(container.textContent).toContain("This is a preview caption.");
-    expect(container.textContent).toMatch(/OBS\s*不要/);
     expect(container.textContent).not.toContain("日本語の音声認識結果がここに表示されます");
     // Live stage shows the live caption payload, not static design placeholders.
     const stage = container.querySelector(".preview-stage");
@@ -76,15 +72,52 @@ describe("App routes", () => {
     expect(container.querySelector(".overlay-preview")?.classList.contains("overlay-preview")).toBe(
       true,
     );
-    const settingsButton = Array.from(container.querySelectorAll(".nav-tabs button")).find(
-      (button) => button.textContent?.includes("設定"),
-    );
-    expect(settingsButton).not.toBeUndefined();
+    const styleButton = container.querySelector('[data-testid="nav-style"]');
+    expect(styleButton?.textContent).toBe("文字の装飾設定");
+    act(() => styleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(container.querySelector(".content-heading h2")?.textContent).toBe("文字の装飾設定");
+    expect(container.querySelector('[data-testid="caption-style-editors"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="caption-style-layout"]')).not.toBeNull();
+    expect(container.textContent).toContain("日本語（認識結果）");
+    expect(container.textContent).toContain("English（翻訳結果）");
 
+    const settingsButton = container.querySelector('[data-testid="nav-settings"]');
+    expect(settingsButton?.textContent).toBe("アプリ設定");
     act(() => settingsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
-    expect(container.querySelector(".content-heading h2")?.textContent).toBe("設定");
-    expect(container.textContent).toContain("言語と推論先");
+    expect(container.querySelector(".content-heading h2")?.textContent).toBe("アプリ設定");
+    expect(container.querySelector(".content-heading .settings-pane-tabs")).not.toBeNull();
+    const buildInfo = container.querySelector('[data-testid="build-info"]');
+    expect(buildInfo).not.toBeNull();
+    expect(container.querySelector('.content-heading [data-testid="build-info"]')).not.toBeNull();
+    const buildVersion = container.querySelector('[data-testid="build-version"]');
+    expect(buildVersion?.textContent).toBe(`v${BUILD_INFO.appVersion}`);
+    expect(BUILD_INFO.appVersion.trim()).not.toBe("");
+    const buildId = container.querySelector('[data-testid="build-id"]');
+    expect(buildId?.textContent).toBe(`build ${BUILD_INFO.buildId}`);
+    expect(BUILD_INFO.buildId.trim()).not.toBe("");
+    expect(buildInfo?.textContent).toMatch(/v\S+\s*·\s*build\s+\S+/);
+    expect(container.querySelector('[data-testid="settings-everyday-tab"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="settings-advanced-tab"]')).not.toBeNull();
+    const everydayPane = container.querySelector<HTMLElement>(
+      '[data-testid="settings-pane-everyday"]',
+    );
+    const advancedPane = container.querySelector<HTMLElement>(
+      '[data-testid="settings-pane-advanced"]',
+    );
+    expect(everydayPane?.hidden).toBe(false);
+    expect(advancedPane?.hidden).toBe(true);
+    expect(container.textContent).toContain("普段の設定");
+    expect(container.textContent).toContain("詳細設定");
+    expect(container.textContent).toContain("音声と認識");
+    expect(container.textContent).toContain("字幕の出し方");
+
+    const advancedTab = container.querySelector('[data-testid="settings-advanced-tab"]');
+    act(() => advancedTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(everydayPane?.hidden).toBe(true);
+    expect(advancedPane?.hidden).toBe(false);
+    expect(container.textContent).toContain("推論先");
     expect(container.textContent).toContain("モデル管理");
     expect(container.textContent).toContain("最小モデルを一括DL");
     expect(container.textContent).toContain("AzooKey ユーザー辞書（任意）");

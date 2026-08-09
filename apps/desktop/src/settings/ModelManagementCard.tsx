@@ -194,7 +194,6 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
     <section className="panel settings-section model-download-panel">
       <div className="download-toolbar">
         <div className="download-summary">
-          <span className="eyebrow">{t("model.managementEyebrow")}</span>
           <h3>{t("model.managementTitle")}</h3>
           <p className="download-lead">{t("model.managementLead")}</p>
           {desktop ? (

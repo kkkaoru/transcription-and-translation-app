@@ -9,6 +9,9 @@
 //!   by the normal `RunEvent::Exit` handler before the new image starts; and
 //! * the foreground app always uses the regular activation policy, preserving
 //!   one Dock icon.  Headless sidecars opt into `Accessory` separately.
+//!   Verification / smoke launches pass `--kotoba-smoke-background` (or
+//!   `KOTOBA_BEACON_SMOKE_BACKGROUND`) so the process stays Accessory and
+//!   does not steal key-window focus. Default user launches still activate.
 //!
 //! The non-macOS stubs keep the command surface portable so Linux CI can still
 //! compile and run the Rust unit tests.
@@ -19,6 +22,8 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 const INSTANCE_LOCK_FILE: &str = "instance.lock";
+const SMOKE_BACKGROUND_FLAG: &str = "--kotoba-smoke-background";
+const SMOKE_BACKGROUND_ENV: &str = "KOTOBA_BEACON_SMOKE_BACKGROUND";
 
 #[derive(Debug)]
 pub struct InstanceGuard {
@@ -110,9 +115,21 @@ fn acquire_macos_instance(lock_path: &Path) -> Result<InstanceGuard, InstanceErr
 
 /// Make the foreground Tauri process a regular app (and therefore keep one
 /// Dock icon) after a sidecar or another helper changed the activation policy.
+///
+/// Smoke / verification launches opt out of activation so the harness can
+/// keep working in another app. Default double-click / Dock launches still
+/// come to the front.
 pub fn configure_foreground_activation(app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        if smoke_background_requested() {
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory).map_err(|error| {
+                format!("could not set accessory activation policy for smoke: {error}")
+            })?;
+            let _ = app.set_dock_visibility(false);
+            log::info!("smoke background launch: accessory policy, not activating");
+            return Ok(());
+        }
         app.set_activation_policy(tauri::ActivationPolicy::Regular)
             .map_err(|error| format!("could not set regular activation policy: {error}"))?;
         app.set_dock_visibility(true)
@@ -120,6 +137,16 @@ pub fn configure_foreground_activation(app: &AppHandle) -> Result<(), String> {
     }
     let _ = app;
     Ok(())
+}
+
+/// True when this process was started by the native smoke harness.
+pub fn smoke_background_requested() -> bool {
+    smoke_background_requested_from(std::env::args())
+        || std::env::var_os(SMOKE_BACKGROUND_ENV).is_some()
+}
+
+pub fn smoke_background_requested_from(args: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+    args.into_iter().any(|arg| arg.as_ref() == SMOKE_BACKGROUND_FLAG)
 }
 
 /// Ask Tauri to leave through its normal exit path and start the executable at
@@ -185,6 +212,18 @@ fn current_bundle_path() -> Result<PathBuf, String> {
         return Err(format!("bundle is missing Contents/Info.plist: {}", bundle.display()));
     }
     Ok(bundle)
+}
+
+#[cfg(test)]
+mod smoke_background_tests {
+    use super::smoke_background_requested_from;
+
+    #[test]
+    fn detects_smoke_background_flag() {
+        assert!(smoke_background_requested_from(["kotoba-beacon", "--kotoba-smoke-background"]));
+        assert!(!smoke_background_requested_from(["kotoba-beacon"]));
+        assert!(!smoke_background_requested_from(["kotoba-beacon", "--kotoba-verify-launch"]));
+    }
 }
 
 #[cfg(test)]

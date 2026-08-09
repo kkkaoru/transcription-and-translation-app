@@ -42,7 +42,7 @@ describe("I18nProvider", () => {
       );
     });
 
-    expect(container.querySelector("h1")?.textContent).toBe("設定");
+    expect(container.querySelector("h1")?.textContent).toBe("アプリ設定");
     const select = container.querySelector("select");
     expect(select).not.toBeNull();
 
@@ -53,7 +53,7 @@ describe("I18nProvider", () => {
       }
     });
 
-    expect(container.querySelector("h1")?.textContent).toBe("Settings");
+    expect(container.querySelector("h1")?.textContent).toBe("App settings");
     expect(document.documentElement.lang).toBe("en");
     expect(localStorage.getItem(STORAGE_KEY)).toBe("en");
   });

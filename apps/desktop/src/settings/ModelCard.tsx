@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Field } from "../components/Field";
 import {
+  type AzooKeySystemDictionarySource,
   OFFICIAL_AZOOKEY_DICTIONARY_URL,
   pathForAzooKeySystemDictionarySource,
   resolveAzooKeySystemDictionarySource,
-  type AzooKeySystemDictionarySource,
 } from "../core/azookey-dictionary";
 import type { AppConfig, ModelCatalog, ModelFamily } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
@@ -84,8 +84,7 @@ export const ModelCard = ({
     ? `${selectedLabel}${selected?.recommended ? ` · ${t("common.recommended")}` : ""}`
     : undefined;
   const systemDictionaryPath = config.models.paths["azookey-rust"] ?? "";
-  const derivedSystemDictionarySource =
-    resolveAzooKeySystemDictionarySource(systemDictionaryPath);
+  const derivedSystemDictionarySource = resolveAzooKeySystemDictionarySource(systemDictionaryPath);
   // Empty path means builtin for the pipeline, but the UI must still stay on
   // "custom" after the user picks that preset so they can type a path/URL.
   const [customSourceUnlocked, setCustomSourceUnlocked] = useState(false);
@@ -103,7 +102,6 @@ export const ModelCard = ({
     <div className="model-card">
       <div className="model-card-heading">
         <div>
-          <span className="eyebrow">{family.toUpperCase()}</span>
           <h3>{title}</h3>
         </div>
         <span className="model-chip">{selected?.id ?? t("common.notSelected")}</span>

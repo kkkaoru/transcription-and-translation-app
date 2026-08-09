@@ -16,6 +16,6 @@ describe("i18n messages", () => {
   it("translates and interpolates message parameters", () => {
     expect(translate("ja", "audio.fallbackDevice", { number: 2 })).toBe("マイク 2");
     expect(translate("en", "audio.fallbackDevice", { number: 2 })).toBe("Microphone 2");
-    expect(translate("en", "settings.title")).toBe("Settings");
+    expect(translate("en", "settings.title")).toBe("App settings");
   });
 });

@@ -8,7 +8,6 @@ import {
   MicrophoneCapture,
 } from "../core/audio";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "../core/bridge";
-import { BUILD_INFO } from "../core/buildInfo";
 import {
   clearCaptionMergeDiagnostics,
   getCaptionMergeDiagnostics,
@@ -81,11 +80,11 @@ import {
 import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
 import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
-import { DebugPanel } from "../settings/DebugPanel";
+import { CaptionStyleView } from "../settings/CaptionStyleView";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
 
-type ActiveTab = "live" | "settings";
+type ActiveTab = "live" | "style" | "settings";
 
 type CapturePhase = "idle" | "starting" | "capturing" | "stopping";
 
@@ -277,13 +276,6 @@ export const createCaptureRestartCoordinator = <TConfig,>(
     isBusy: () => draining || pending !== null,
     getPending: () => pending,
   };
-};
-
-const platformKeys: Record<RuntimeStatus["platform"], MessageKey> = {
-  macos: "platform.macos",
-  windows: "platform.windows",
-  linux: "platform.linux",
-  unknown: "platform.unknown",
 };
 
 const statusKeys: Record<RuntimeStatus["status"], MessageKey> = {
@@ -2081,16 +2073,44 @@ export const MainApp = () => {
   const noticeText = resolveLiveNoticeText(notice, status.lastError, t);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${activeTab === "live" ? " app-shell--live" : ""}`}>
       <header className="topbar">
-        <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true">
-            <img className="brand-mark-image" src="/app-icon.png" alt="" width={39} height={39} />
-          </div>
-          <div>
+        <div className="topbar-start">
+          <div className="brand-lockup">
+            <div className="brand-mark" aria-hidden="true">
+              <img className="brand-mark-image" src="/app-icon.png" alt="" width={39} height={39} />
+            </div>
             <div className="brand-name">Kotoba Beacon</div>
-            <div className="brand-caption">{t("brand.caption")}</div>
           </div>
+          <nav className="nav-tabs" aria-label={t("sidebar.menu")}>
+            <button
+              className={activeTab === "live" ? "active" : ""}
+              type="button"
+              data-testid="nav-live"
+              aria-current={activeTab === "live" ? "page" : undefined}
+              onClick={() => setActiveTab("live")}
+            >
+              {t("sidebar.live")}
+            </button>
+            <button
+              className={activeTab === "style" ? "active" : ""}
+              type="button"
+              data-testid="nav-style"
+              aria-current={activeTab === "style" ? "page" : undefined}
+              onClick={() => setActiveTab("style")}
+            >
+              {t("sidebar.style")}
+            </button>
+            <button
+              className={activeTab === "settings" ? "active" : ""}
+              type="button"
+              data-testid="nav-settings"
+              aria-current={activeTab === "settings" ? "page" : undefined}
+              onClick={() => setActiveTab("settings")}
+            >
+              {t("sidebar.settings")}
+            </button>
+          </nav>
         </div>
         <div className="topbar-meta">
           <LocaleSwitcher />
@@ -2098,76 +2118,31 @@ export const MainApp = () => {
             <i />
             {t(statusKeys[status.status])}
           </span>
-          <span className="platform-label">{t(platformKeys[status.platform])}</span>
         </div>
       </header>
       <div className="workspace">
-        <aside className="sidebar">
-          <div className="sidebar-intro">
-            <span className="eyebrow">{t("sidebar.eyebrow")}</span>
-            <h1>{t("sidebar.title")}</h1>
-            <p>{t("sidebar.description")}</p>
-          </div>
-          <nav className="nav-tabs" aria-label={t("sidebar.menu")}>
-            <button
-              className={activeTab === "live" ? "active" : ""}
-              type="button"
-              onClick={() => setActiveTab("live")}
-            >
-              <span className="nav-icon">◉</span> {t("sidebar.live")}
-            </button>
-            <button
-              className={activeTab === "settings" ? "active" : ""}
-              type="button"
-              onClick={() => setActiveTab("settings")}
-            >
-              <span className="nav-icon">⌘</span> {t("sidebar.settings")}
-            </button>
-          </nav>
-          <div className="sidebar-foot">
-            <div className="privacy-note">
-              <span className="privacy-icon">⌂</span>
-              <span>
-                <strong>{t("sidebar.privacyTitle")}</strong>
-                <small>{t("sidebar.privacyDetail")}</small>
-              </span>
-            </div>
-            <div className="build-meta" data-testid="build-info">
-              <span data-testid="build-version">v{BUILD_INFO.appVersion}</span>
-              <span aria-hidden="true">·</span>
-              <span data-testid="build-id">build {BUILD_INFO.buildId}</span>
-            </div>
-            <div className="version">
-              Tauri 2 <span>·</span> native runtime
-            </div>
-          </div>
-        </aside>
         <main className="content">
           {activeTab === "live" ? (
-            <>
-              <LiveView
-                config={config}
-                status={status}
-                caption={caption}
-                devices={devices}
-                message={noticeText}
-                onToggleCapture={toggleCapture}
-                onOpenOverlay={() => void openTransparentCapture()}
-                onCloseOverlay={() => void closeTransparentCapture()}
-                onDeviceChange={handleDeviceChange}
-                onRefreshDevices={() => void refreshDevices({ primePermission: true })}
-                onCloseMessage={() => setNotice(null)}
-              />
-              {/*
-               * Keep the stage inspector reachable from the normal live
-               * workspace.  Capturing starts on this same mount, so ASR /
-               * normalizer /
-               * translator rows keep updating even when Settings is never
-               * opened.  SettingsView still renders the same panel when
-               * users prefer to inspect it alongside model configuration.
-               */}
-              <DebugPanel />
-            </>
+            <LiveView
+              config={config}
+              status={status}
+              caption={caption}
+              devices={devices}
+              message={noticeText}
+              onToggleCapture={toggleCapture}
+              onDeviceChange={handleDeviceChange}
+              onRefreshDevices={() => void refreshDevices({ primePermission: true })}
+              onCloseMessage={() => setNotice(null)}
+              onOpenTransparentCapture={() => void openTransparentCapture()}
+              onCloseTransparentCapture={() => void closeTransparentCapture()}
+            />
+          ) : activeTab === "style" ? (
+            <CaptionStyleView
+              config={config}
+              saving={saving}
+              onConfigChange={handleConfigChange}
+              onSave={() => void save()}
+            />
           ) : (
             <SettingsView
               config={config}
@@ -2185,6 +2160,8 @@ export const MainApp = () => {
               onDeviceChange={handleDeviceChange}
               onRefreshDevices={() => void refreshDevices({ primePermission: true })}
               onSave={() => void save()}
+              onOpenTransparentCapture={() => void openTransparentCapture()}
+              onCloseTransparentCapture={() => void closeTransparentCapture()}
             />
           )}
         </main>
