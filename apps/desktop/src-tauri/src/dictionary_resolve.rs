@@ -26,11 +26,11 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 static DOWNLOAD_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Config path keys that may be a filesystem path or an HTTPS URL.
-pub const DICTIONARY_CONFIG_KEYS: &[&str] = &[
-    "azookey-rust",
-    "azookey-user-dictionary",
-    "azookey-learning-memory",
-];
+///
+/// Keep in sync with `@caption-bridge/dictionaries` `AZOOKEY_DICTIONARY_CONFIG_KEYS`
+/// so Worker/browser locators use the same kind names as desktop.
+pub const DICTIONARY_CONFIG_KEYS: &[&str] =
+    &["azookey-rust", "azookey-user-dictionary", "azookey-learning-memory"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DictionaryKind {
@@ -114,10 +114,7 @@ pub async fn resolve_dictionary_urls_in_config(
         }
         let kind = DictionaryKind::from_config_key(key).expect("known dictionary config key");
         let local = resolve_dictionary_location(app, kind, configured).await?;
-        config
-            .models
-            .paths
-            .insert(resolved_path_key(key), local.to_string_lossy().into_owned());
+        config.models.paths.insert(resolved_path_key(key), local.to_string_lossy().into_owned());
     }
     Ok(())
 }
@@ -155,10 +152,7 @@ pub async fn resolve_dictionary_location(
 
     download_and_install_dictionary(configured, &entry, kind).await?;
     find_cached_dictionary(&entry, kind).ok_or_else(|| {
-        format!(
-            "AzooKey {} dictionary download completed but cache is incomplete",
-            kind.as_str()
-        )
+        format!("AzooKey {} dictionary download completed but cache is incomplete", kind.as_str())
     })
 }
 
@@ -224,9 +218,7 @@ fn find_cached_dictionary(cache_entry: &Path, kind: DictionaryKind) -> Option<Pa
             if files.len() == 1 {
                 return files.pop();
             }
-            if cache_entry.is_dir()
-                && external_layout_present(cache_entry, kind)
-            {
+            if cache_entry.is_dir() && external_layout_present(cache_entry, kind) {
                 return Some(cache_entry.to_path_buf());
             }
             None
@@ -321,10 +313,7 @@ async fn download_https_bytes(url: &str) -> Result<Vec<u8>, String> {
         .await
         .map_err(|error| format!("could not read AzooKey dictionary download: {error}"))?;
     if bytes.is_empty() || bytes.len() > MAX_DOWNLOAD_BYTES {
-        return Err(format!(
-            "AzooKey dictionary download size is invalid ({} bytes)",
-            bytes.len()
-        ));
+        return Err(format!("AzooKey dictionary download size is invalid ({} bytes)", bytes.len()));
     }
     Ok(bytes.to_vec())
 }
@@ -421,11 +410,7 @@ fn detect_download_format(url: &str, bytes: &[u8]) -> DownloadFormat {
 }
 
 fn url_path_lower(url: &str) -> String {
-    url.split('?')
-        .next()
-        .unwrap_or(url)
-        .trim()
-        .to_ascii_lowercase()
+    url.split('?').next().unwrap_or(url).trim().to_ascii_lowercase()
 }
 
 fn looks_like_tar_gz(bytes: &[u8]) -> bool {
@@ -494,7 +479,9 @@ fn promote_single_extracted_file(destination: &Path, kind: DictionaryKind) -> Re
     if source != payload {
         std::fs::rename(&source, &payload)
             .or_else(|_| {
-                std::fs::copy(&source, &payload).map(|_| ()).and_then(|_| std::fs::remove_file(&source))
+                std::fs::copy(&source, &payload)
+                    .map(|_| ())
+                    .and_then(|_| std::fs::remove_file(&source))
             })
             .map_err(|error| format!("could not promote dictionary payload: {error}"))?;
     }
@@ -557,8 +544,7 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
 
     fn temp_root(label: &str) -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("kotoba-dict-resolve-{label}-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("kotoba-dict-resolve-{label}-{}", uuid::Uuid::new_v4()))
     }
 
     fn write_test_dictionary_root(root: &Path) -> std::io::Result<()> {
@@ -608,16 +594,10 @@ mod tests {
     #[test]
     fn configured_or_resolved_prefers_resolved_and_skips_unresolved_urls() {
         let mut config = AppConfig::default();
-        config
-            .models
-            .paths
-            .insert("azookey-rust".into(), "https://example.com/dict.tar.gz".into());
+        config.models.paths.insert("azookey-rust".into(), "https://example.com/dict.tar.gz".into());
         assert!(configured_or_resolved_path(&config, "azookey-rust").is_none());
 
-        config.models.paths.insert(
-            "azookey-rust-resolved".into(),
-            "/tmp/cached-dictionary".into(),
-        );
+        config.models.paths.insert("azookey-rust-resolved".into(), "/tmp/cached-dictionary".into());
         assert_eq!(
             configured_or_resolved_path(&config, "azookey-rust").as_deref(),
             Some(Path::new("/tmp/cached-dictionary"))

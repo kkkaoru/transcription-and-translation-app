@@ -11,6 +11,12 @@
 
 import { containsKanji } from "@caption-bridge/azookey-reading";
 import {
+  DEFAULT_VIBRATO_IPADIC_ASSET_PATH,
+  isAllowedDictionaryLocator,
+  VIBRATO_BROWSER_MAX_DICTIONARY_BYTES,
+} from "@caption-bridge/dictionaries";
+import {
+  type ComparisonConfig,
   DEFAULT_BROWSER_WASM_DICTIONARY_URL,
   DEFAULT_BROWSER_WASM_FEATURE_INDEX,
   DEFAULT_BROWSER_WASM_GLOBAL_NAME,
@@ -53,7 +59,6 @@ interface GeneratedVibratoModule extends UnknownRecord {
 
 const loadedConverters = new Map<string, Promise<VibratoConvertFunction>>();
 const MIN_ELAPSED_MS = 0;
-const MAX_DICTIONARY_BYTES = 64 * 1024 * 1024;
 
 const isRecord = (value: unknown): value is UnknownRecord =>
   typeof value === "object" && value !== null;
@@ -88,6 +93,13 @@ const asConverter = (value: unknown): VibratoConvertFunction | null => {
 const rejectUnsafeUrl = (value: string, label: string): void => {
   if (/^javascript:/iu.test(value)) {
     throw new Error(`${label} に javascript: URL は指定できません`);
+  }
+};
+
+const assertDictionaryUrl = (value: string, label: string): void => {
+  rejectUnsafeUrl(value, label);
+  if (!isAllowedDictionaryLocator(value, "browser")) {
+    throw new Error(`${label} の URL が不正です`);
   }
 };
 
@@ -126,8 +138,9 @@ const fetchBytes = async (
 };
 
 const loadDictionary = (config: BrowserVibratoConfig): Promise<Uint8Array> => {
-  const dictionaryUrl = config.dictionaryUrl?.trim() || DEFAULT_BROWSER_WASM_DICTIONARY_URL;
-  return fetchBytes(dictionaryUrl, "Vibrato辞書", MAX_DICTIONARY_BYTES);
+  const dictionaryUrl = config.dictionaryUrl?.trim() || DEFAULT_VIBRATO_IPADIC_ASSET_PATH;
+  assertDictionaryUrl(dictionaryUrl, "Vibrato辞書");
+  return fetchBytes(dictionaryUrl, "Vibrato辞書", VIBRATO_BROWSER_MAX_DICTIONARY_BYTES);
 };
 
 const deriveWasmBinaryUrl = (moduleUrl: string): string | undefined => {
@@ -219,7 +232,7 @@ const generatedConverter = async (
 const cacheKey = (config: BrowserVibratoConfig, moduleUrl: string): string =>
   [
     moduleUrl,
-    config.dictionaryUrl?.trim() || DEFAULT_BROWSER_WASM_DICTIONARY_URL,
+    config.dictionaryUrl?.trim() || DEFAULT_VIBRATO_IPADIC_ASSET_PATH,
     String(featureIndex(config.featureIndex)),
     config.wasmBinaryUrl?.trim() ?? "",
   ].join("\u0000");
@@ -272,6 +285,29 @@ const loadConverter = async (config: BrowserVibratoConfig): Promise<VibratoConve
     });
   loadedConverters.set(key, loading);
   return loading;
+};
+
+export const browserVibratoConfigFromComparison = (
+  config: Pick<
+    ComparisonConfig,
+    "browserWasmModuleUrl" | "browserWasmDictionaryUrl" | "browserWasmGlobalName"
+  >,
+): BrowserVibratoConfig => ({
+  moduleUrl: config.browserWasmModuleUrl?.trim() ?? "",
+  dictionaryUrl: config.browserWasmDictionaryUrl?.trim() || DEFAULT_BROWSER_WASM_DICTIONARY_URL,
+  ...(config.browserWasmGlobalName?.trim()
+    ? { globalName: config.browserWasmGlobalName.trim() }
+    : {}),
+});
+
+/**
+ * Load IPADIC before the first utterance, matching Tauri capture-start warm-up.
+ *
+ * Pure kana later skips tokenization; without this, the first kanji caption
+ * would pay dictionary I/O on the live path.
+ */
+export const warmupBrowserVibrato = async (config: BrowserVibratoConfig): Promise<void> => {
+  await loadConverter(config);
 };
 
 export const runBrowserVibrato = async (

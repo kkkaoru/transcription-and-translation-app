@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@caption-bridge/azookey-reading": "workspace:*",
+    "@caption-bridge/dictionaries": "workspace:*",
     "@caption-bridge/inference-server-core": "workspace:*"
   },
   "devDependencies": {

@@ -69,7 +69,13 @@ describe("Cloudflare Worker inference adapter", () => {
       model: "azookey-rust-wasm",
       websocketPath: AZOOKEY_WS_PATH,
       maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
-      dictionary: { fetchTimeoutMs: 10_000 },
+      dictionary: {
+        fetchTimeoutMs: 10_000,
+        kind: "system",
+        configKey: "azookey-rust",
+        warmMoment: "websocket-upgrade",
+      },
+      vibrato: { kind: "vibrato-ipadic", warmMoment: "websocket-upgrade" },
       modes: { worker: AZOOKEY_MODE, browser: BROWSER_VIBRATO_MODE },
     });
 

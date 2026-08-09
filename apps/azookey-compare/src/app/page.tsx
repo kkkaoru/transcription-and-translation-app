@@ -2,8 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
-import { shouldRunBrowserVibratoPrePass } from "../lib/azookey-reading";
-import { runBrowserVibrato } from "../lib/browser-vibrato";
+import {
+  shouldRunBrowserVibratoPrePass,
+  shouldWarmBrowserVibratoDictionary,
+} from "../lib/azookey-reading";
+import {
+  browserVibratoConfigFromComparison,
+  runBrowserVibrato,
+  warmupBrowserVibrato,
+} from "../lib/browser-vibrato";
 import { type BrowserWasmState, browserWasmStateAfterStage } from "../lib/browser-wasm-status";
 import {
   browserWasmConfigurationStatus,
@@ -158,6 +165,7 @@ export default function ComparePage() {
   const speechRef = useRef<WebSpeechController | null>(null);
   const initialSpeechLanguageRef = useRef(config.language);
   const workerRef = useRef<AzooKeyWorkerClient | null>(null);
+  const workerVibratoConfiguredRef = useRef<boolean | undefined>(undefined);
   const workerGenerationRef = useRef(0);
   const rowsRef = useRef<ComparisonRow[]>([]);
   const finalTextHandlerRef = useRef<(text: string) => void>(() => undefined);
@@ -545,6 +553,23 @@ export default function ComparePage() {
     ],
   );
 
+  const warmBrowserVibratoIfNeeded = useCallback(
+    async (workerVibratoConfigured?: boolean): Promise<void> => {
+      if (!shouldWarmBrowserVibratoDictionary(config.mode, workerVibratoConfigured)) {
+        return;
+      }
+      setBrowserWasmState("loading");
+      try {
+        await warmupBrowserVibrato(browserVibratoConfigFromComparison(config));
+        setBrowserWasmState("ready");
+      } catch (caught) {
+        setBrowserWasmState("error");
+        throw caught;
+      }
+    },
+    [config],
+  );
+
   const toggleListening = (): void => {
     const controller = speechRef.current;
     if (!controller || !speechSupported) {
@@ -553,10 +578,24 @@ export default function ComparePage() {
     }
     if (speechState === "listening" || speechState === "starting") {
       controller.stop();
-    } else {
-      setError("");
-      controller.start();
+      return;
     }
+    setError("");
+    void warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current)
+      .catch((caught: unknown) => {
+        if (config.mode === "browser-vibrato") {
+          setError(errorMessage(caught));
+          return false;
+        }
+        setNotice(`ブラウザ辞書の先行読み込みに失敗しました: ${errorMessage(caught)}`);
+        return true;
+      })
+      .then((shouldStart) => {
+        if (shouldStart === false) {
+          return;
+        }
+        controller.start();
+      });
   };
 
   const connectWorker = async (): Promise<void> => {
@@ -572,6 +611,7 @@ export default function ComparePage() {
       buildVibratoWebSocketUrl(config);
       await client.connect();
       let notice = "Worker WebSocket に接続しました";
+      let workerVibratoConfigured: boolean | undefined;
       try {
         const healthUrl = new URL(config.websocketUrl.trim());
         healthUrl.protocol = healthUrl.protocol === "wss:" ? "https:" : "http:";
@@ -579,8 +619,15 @@ export default function ComparePage() {
         healthUrl.search = "";
         healthUrl.hash = "";
         const health = await fetch(healthUrl).then(async (response) =>
-          response.ok ? ((await response.json()) as { dictionary?: { transport?: string } }) : null,
+          response.ok
+            ? ((await response.json()) as {
+                dictionary?: { transport?: string };
+                vibrato?: { workerStage?: string };
+              })
+            : null,
         );
+        workerVibratoConfigured = health?.vibrato?.workerStage === "configured";
+        workerVibratoConfiguredRef.current = workerVibratoConfigured;
         if (health?.dictionary?.transport === "builtin") {
           notice =
             "Worker は内蔵語彙のみです。AZOOKEY_DICTIONARY_URL を設定しないと Tauri より精度が落ちます";
@@ -589,6 +636,17 @@ export default function ComparePage() {
         }
       } catch {
         // Health is observability only; conversion can still proceed.
+      }
+      try {
+        await warmBrowserVibratoIfNeeded(workerVibratoConfigured);
+        if (shouldWarmBrowserVibratoDictionary(config.mode, workerVibratoConfigured)) {
+          notice = `${notice} / ブラウザ IPADIC を先行読み込み済み`;
+        }
+      } catch (caught) {
+        if (config.mode === "browser-vibrato") {
+          throw caught;
+        }
+        notice = `${notice}（ブラウザ辞書の先行読み込みは後続発話時に再試行します）`;
       }
       setNotice(notice);
       setError("");

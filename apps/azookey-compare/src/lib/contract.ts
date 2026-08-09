@@ -1,3 +1,7 @@
+import {
+  DEFAULT_VIBRATO_IPADIC_ASSET_PATH,
+  VIBRATO_IPADIC_FEATURE_INDEX,
+} from "@caption-bridge/dictionaries";
 import type { ConverterModel } from "./converter-models";
 import { CONVERTER_MODELS, DEFAULT_CONVERTER_MODEL, isConverterModel } from "./converter-models";
 
@@ -24,9 +28,9 @@ export const DEFAULT_BROWSER_WASM_GLOBAL_NAME = "__AZOOKEY_VIBRATO_WASM__";
 /** Browser-bundled wasm-bindgen glue emitted by `build-vibrato-wasm.mjs`. */
 export const DEFAULT_BROWSER_WASM_MODULE_URL = "/vibrato/vibrato_wasm.js";
 /** Browser-bundled IPADIC system.dic.zst used by the generated tokenizer. */
-export const DEFAULT_BROWSER_WASM_DICTIONARY_URL = "/vibrato/system.dic.zst";
+export const DEFAULT_BROWSER_WASM_DICTIONARY_URL = DEFAULT_VIBRATO_IPADIC_ASSET_PATH;
 /** IPADIC's reading field (`feature[7]`); UniDic CWJ uses 20 instead. */
-export const DEFAULT_BROWSER_WASM_FEATURE_INDEX = 7 as const;
+export const DEFAULT_BROWSER_WASM_FEATURE_INDEX = VIBRATO_IPADIC_FEATURE_INDEX;
 
 export type ComparisonMode = "worker-vibrato" | "browser-vibrato";
 

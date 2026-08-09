@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runBrowserVibrato } from "./browser-vibrato";
+import { runBrowserVibrato, warmupBrowserVibrato } from "./browser-vibrato";
 
 const clearConverter = (name = "__AZOOKEY_VIBRATO_WASM__"): void => {
   Reflect.deleteProperty(globalThis, name);
@@ -376,6 +376,52 @@ describe("browser Vibrato bridge", () => {
     await expect(
       runBrowserVibrato("入力", { moduleUrl, dictionaryUrl: "/dict/large.zst" }),
     ).rejects.toThrow("大きすぎます");
+  });
+
+  it("warms IPADIC before the first utterance so kana does not skip dictionary I/O", async () => {
+    const fetcher = vi.fn(() => Promise.resolve(bytesResponse()));
+    vi.stubGlobal("fetch", fetcher);
+    const moduleUrl = dataModule(`
+      export default async function init() {}
+      export class VibratoTokenizer {
+        constructor() {}
+        toHiragana(text, index) { return text + ":" + index; }
+      }
+    `);
+    await warmupBrowserVibrato({
+      moduleUrl,
+      dictionaryUrl: "/vibrato/system.dic.zst",
+    });
+    expect(fetcher).toHaveBeenCalledWith("/vibrato/system.dic.zst");
+    await expect(
+      runBrowserVibrato("きょうははれ", {
+        moduleUrl,
+        dictionaryUrl: "/vibrato/system.dic.zst",
+      }),
+    ).resolves.toMatchObject({ text: "きょうははれ" });
+    await expect(
+      runBrowserVibrato("東京", {
+        moduleUrl,
+        dictionaryUrl: "/vibrato/system.dic.zst",
+      }),
+    ).resolves.toMatchObject({ text: "東京:7" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects non-browser dictionary locators", async () => {
+    const moduleUrl = dataModule(`
+      export default async function init() {}
+      export class VibratoTokenizer {
+        constructor() {}
+        toHiragana(text) { return text; }
+      }
+    `);
+    await expect(
+      warmupBrowserVibrato({
+        moduleUrl,
+        dictionaryUrl: "file:///tmp/system.dic.zst",
+      }),
+    ).rejects.toThrow("URL が不正です");
   });
 
   it("uses the bundled dictionary default and preserves non-katakana token readings", async () => {

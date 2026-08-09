@@ -1,5 +1,26 @@
 import { readingForAzookeyAsync } from "@caption-bridge/azookey-reading";
+import {
+  AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS,
+  AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES,
+  AZOOKEY_MAX_DICTIONARY_BYTES,
+  AZOOKEY_MAX_DICTIONARY_TIMEOUT_MS,
+  AZOOKEY_MIN_DICTIONARY_TIMEOUT_MS,
+  clampDictionaryTimeoutMs,
+  isAllowedDictionaryLocator,
+  VIBRATO_IPADIC_FEATURE_INDEX,
+  VIBRATO_MAX_DICTIONARY_BYTES,
+} from "@caption-bridge/dictionaries";
 import { initSync as initVibratoSync, VibratoTokenizer } from "./vibrato_wasm.js";
+
+export {
+  AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS,
+  AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES,
+  AZOOKEY_MAX_DICTIONARY_BYTES,
+  AZOOKEY_MAX_DICTIONARY_TIMEOUT_MS,
+  AZOOKEY_MIN_DICTIONARY_TIMEOUT_MS,
+  VIBRATO_IPADIC_FEATURE_INDEX,
+  VIBRATO_MAX_DICTIONARY_BYTES,
+};
 
 export const AZOOKEY_WS_PATH = "/ws/azookey";
 export const AZOOKEY_PROTOCOL = "azookey.text.v1";
@@ -47,18 +68,6 @@ export const AZOOKEY_MAX_AUTH_TOKEN_BYTES =
 export const AZOOKEY_DEFAULT_TIMEOUT_MS = 2_000;
 export const AZOOKEY_MIN_TIMEOUT_MS = 25;
 export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
-/** A dictionary cold load is intentionally bounded separately from conversion latency. */
-export const AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS = 10_000;
-export const AZOOKEY_MIN_DICTIONARY_TIMEOUT_MS = 1_000;
-export const AZOOKEY_MAX_DICTIONARY_TIMEOUT_MS = 60_000;
-/** IPADIC's comma-separated reading field used by the checked-in dictionary. */
-export const VIBRATO_IPADIC_FEATURE_INDEX = 7;
-/** Refuse unexpectedly large remote dictionaries before allocating in WASM. */
-export const VIBRATO_MAX_DICTIONARY_BYTES = 12 * 1024 * 1024;
-/** Compressed official AzooKey archive limit (the pinned asset is about 10 MiB). */
-export const AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES = 16 * 1024 * 1024;
-/** Uncompressed LOUDS/MM/CID archive limit before copying it into Wasm. */
-export const AZOOKEY_MAX_DICTIONARY_BYTES = 32 * 1024 * 1024;
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
 export const AZOOKEY_WASM_ABI_VERSION = 2;
@@ -278,22 +287,8 @@ const clampTimeout = (value: string | undefined): number => {
 
 export const azookeyTimeoutMs = (env: AzookeyEnv): number => clampTimeout(env.AZOOKEY_TIMEOUT_MS);
 
-const clampDictionaryTimeout = (value: string | undefined): number => {
-  if (!value?.trim()) {
-    return AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS;
-  }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS;
-  }
-  return Math.min(
-    AZOOKEY_MAX_DICTIONARY_TIMEOUT_MS,
-    Math.max(AZOOKEY_MIN_DICTIONARY_TIMEOUT_MS, Math.round(parsed)),
-  );
-};
-
 export const azookeyDictionaryTimeoutMs = (env: AzookeyEnv): number =>
-  clampDictionaryTimeout(env.AZOOKEY_DICTIONARY_TIMEOUT_MS);
+  clampDictionaryTimeoutMs(env.AZOOKEY_DICTIONARY_TIMEOUT_MS);
 
 const jsonMessage = (message: object): string => JSON.stringify(message);
 
@@ -755,8 +750,7 @@ const isHttpUrl = (value: string): boolean => {
   }
 };
 
-const isDictionaryUrl = (value: string): boolean =>
-  isHttpUrl(value) || (value.startsWith("/") && !value.startsWith("//"));
+const isDictionaryUrl = (value: string): boolean => isAllowedDictionaryLocator(value, "worker");
 
 const createPortableDictionaryInputAdapter =
   (): AzookeyVibratoConverter =>

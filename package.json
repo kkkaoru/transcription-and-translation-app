@@ -35,6 +35,8 @@
     "core:test:coverage": "node scripts/run-coverage-locked.mjs @caption-bridge/inference-server-core",
     "azookey-reading:typecheck": "bun --filter=@caption-bridge/azookey-reading run typecheck",
     "azookey-reading:test:coverage": "node scripts/run-coverage-locked.mjs @caption-bridge/azookey-reading",
+    "dictionaries:typecheck": "bun --filter=@caption-bridge/dictionaries run typecheck",
+    "dictionaries:test:coverage": "node scripts/run-coverage-locked.mjs @caption-bridge/dictionaries",
     "sentence-boundary:typecheck": "bun --filter=@caption-bridge/sentence-boundary run typecheck",
     "sentence-boundary:test:coverage": "node scripts/run-coverage-locked.mjs @caption-bridge/sentence-boundary",
     "azookey-compare:dev": "bun --filter=@caption-bridge/azookey-compare run dev",

@@ -27,3 +27,15 @@ export const shouldRunBrowserVibratoPrePass = (
   }
   return mode === "browser-vibrato" || containsKanji(sourceText);
 };
+
+/**
+ * Warm browser IPADIC at Tauri capture-start equivalent moments.
+ *
+ * Browser mode always needs the dictionary. Worker mode still needs it when
+ * Worker Vibrato is passthrough/unconfigured, because kanji Web Speech falls
+ * back to the browser tokenizer.
+ */
+export const shouldWarmBrowserVibratoDictionary = (
+  mode: ComparisonMode,
+  workerVibratoConfigured?: boolean,
+): boolean => mode === "browser-vibrato" || workerVibratoConfigured !== true;

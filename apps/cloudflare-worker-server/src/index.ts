@@ -1,3 +1,9 @@
+import {
+  AZOOKEY_DICTIONARY_CONFIG_KEYS,
+  AZOOKEY_DICTIONARY_KIND,
+  DICTIONARY_WARM_MOMENT,
+  VIBRATO_IPADIC_KIND,
+} from "@caption-bridge/dictionaries";
 import type { GatewayConfig } from "@caption-bridge/inference-server-core";
 import {
   correlationHeadersFromRequest,
@@ -12,9 +18,9 @@ import {
   AZOOKEY_MODE,
   AZOOKEY_MODEL,
   AZOOKEY_PROTOCOL,
+  AZOOKEY_WS_PATH,
   AZOOKEY_ZENZ_SMALL_MODEL,
   AZOOKEY_ZENZ_XSMALL_MODEL,
-  AZOOKEY_WS_PATH,
   type AzookeyFetcher,
   type AzookeyRequestDependencies,
   azookeyDictionaryTimeoutMs,
@@ -296,6 +302,9 @@ export const createWorker = (
             transport: hasAzookeyDictionary ? "portable-wasm" : "builtin",
             fetchTimeoutMs: azookeyDictionaryTimeoutMs(env),
             contract: "official AzooKey LOUDS/MM/CID caption dictionary",
+            kind: AZOOKEY_DICTIONARY_KIND.system,
+            configKey: AZOOKEY_DICTIONARY_CONFIG_KEYS.system,
+            warmMoment: DICTIONARY_WARM_MOMENT.workerWebSocketUpgrade,
           },
           vibrato: {
             workerStage:
@@ -315,6 +324,8 @@ export const createWorker = (
               hasVibratoUpstream || hasVibratoDictionary
                 ? "Vibrato reading pre-pass"
                 : "mixed Japanese text is converted directly by full AzooKey",
+            kind: VIBRATO_IPADIC_KIND,
+            warmMoment: DICTIONARY_WARM_MOMENT.workerWebSocketUpgrade,
           },
           modes: {
             worker: AZOOKEY_MODE,
