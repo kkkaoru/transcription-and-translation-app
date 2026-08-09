@@ -67,3 +67,15 @@ if (!dictionaryAvailable) {
 console.log(
   `Built ${dictionary.destination} (${dictionary.compressedBytes} bytes, sha256=${dictionary.sha256})`,
 );
+const comparePublicAzookey = resolve(root, "apps/azookey-compare/public/azookey");
+const workerLicense = resolve(root, "apps/cloudflare-worker-server/public/azookey/LICENSE");
+mkdirSync(comparePublicAzookey, { recursive: true });
+copyFileSync(destination, resolve(comparePublicAzookey, "azookey.wasm"));
+copyFileSync(
+  resolve(root, "apps/cloudflare-worker-server/public/azookey/system.azkdict.gz"),
+  resolve(comparePublicAzookey, "system.azkdict.gz"),
+);
+if (existsSync(workerLicense)) {
+  copyFileSync(workerLicense, resolve(comparePublicAzookey, "LICENSE"));
+}
+console.log(`Copied AzooKey browser assets to ${comparePublicAzookey}`);

@@ -1,7 +1,7 @@
 /**
  * Converter models the comparison UI can ask the Worker to use.
  *
- * - `azookey-rust-wasm` — portable LOUDS dictionary on the Worker (default)
+ * - `azookey-rust-wasm` — portable LOUDS dictionary (browser-compact or Worker)
  * - `zenz-v3.2-xsmall-gguf` / `zenz-v3.2-small-gguf` — AzooKey Zenzai GGUF
  *   upstreams configured in the Worker's `MODEL_ROUTES`
  */
@@ -25,9 +25,9 @@ export interface ConverterModelOption {
 export const converterModelOptions: readonly ConverterModelOption[] = [
   {
     value: "azookey-rust-wasm",
-    label: "AzooKey WASM（Worker 内蔵）",
+    label: "AzooKey WASM",
     description:
-      "Worker 上の AzooKey Rust WASM と公式 LOUDS 辞書でかな漢字変換します。追加のモデルサーバーは不要です。",
+      "公式 LOUDS 辞書の AzooKey Rust WASM。ブラウザ簡潔ではブラウザ内、Worker 依存では inference Worker で変換します。追加のモデルサーバーは不要です。",
   },
   {
     value: "zenz-v3.2-xsmall-gguf",

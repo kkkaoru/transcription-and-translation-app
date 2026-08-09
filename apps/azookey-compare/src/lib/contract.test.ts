@@ -6,6 +6,7 @@ import {
   COMPARISON_MODES,
   comparisonConfigFieldDescriptions,
   comparisonConfigSchema,
+  comparisonModeHelpSections,
   comparisonModeOptions,
   DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL,
   DEFAULT_BROWSER_WASM_DICTIONARY_URL,
@@ -32,13 +33,18 @@ describe("comparison configuration contract", () => {
       "worker-vibrato",
       "browser-vibrato",
     ]);
+    expect(comparisonModeOptions[0]?.label).toContain("Worker 依存");
+    expect(comparisonModeOptions[1]?.label).toContain("ブラウザ簡潔");
     for (const option of comparisonModeOptions) {
-      expect(option.label.toLowerCase()).toContain("vibrato");
       expect(option.description.toLowerCase()).toContain("azookey");
       expect(option.description.toLowerCase()).toMatch(/vibrato|unidic/);
       expect(option.description).not.toMatch(/使いません/);
     }
-    expect(comparisonModeOptions[0]?.description).toContain("AzooKey WASM");
+    expect(comparisonModeHelpSections.map((section) => section.title)).toEqual([
+      "Worker 依存",
+      "ブラウザ簡潔",
+    ]);
+    expect(comparisonModeOptions[0]?.description).toContain("AzooKey");
     expect(comparisonModeOptions[1]?.description).toContain("プリパス");
     expect(comparisonModeOptions[1]?.description).toContain("サイレント");
     expect(comparisonConfigFieldDescriptions.mode.toLowerCase()).toContain("vibrato");
@@ -74,7 +80,7 @@ describe("comparison configuration contract", () => {
     expect(hasBrowserWasmConfiguration({ browserWasmGlobalName: "__CUSTOM__" })).toBe(true);
     expect(comparisonModeOptions[1]?.description).toContain("必須");
     expect(comparisonModeOptions[1]?.description).not.toMatch(/任意|optional/i);
-    expect(comparisonConfigFieldDescriptions.mode).toContain("real");
+    expect(comparisonConfigFieldDescriptions.mode).toMatch(/Worker|browser/i);
     expect(comparisonConfigFieldDescriptions.mode).not.toMatch(/optional|任意/i);
     const unconfiguredStatus = browserWasmConfigurationStatus({});
     expect(unconfiguredStatus).toContain("未設定");

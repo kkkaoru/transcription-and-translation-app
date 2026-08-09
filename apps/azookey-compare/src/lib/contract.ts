@@ -12,8 +12,8 @@ import { CONVERTER_MODELS, DEFAULT_CONVERTER_MODEL, isConverterModel } from "./c
  * any desktop product settings.
  *
  * Historical wire labels (`worker-vibrato`, `vibratoInput`) are preserved for
- * Worker compatibility. The selected mode records where the real Vibrato
- * pre-pass runs; AzooKey kana→kanji remains on the Worker.
+ * Worker compatibility. The selected mode records where Vibrato and AzooKey
+ * run: browser-compact stays in-page; worker-vibrato still uses inference.
  */
 
 export const COMPARISON_CONFIG_SCHEMA_VERSION = 1 as const;
@@ -90,15 +90,33 @@ export interface ComparisonModeOption {
 export const comparisonModeOptions: readonly ComparisonModeOption[] = [
   {
     value: "worker-vibrato",
-    label: "Worker 上の Vibrato → AzooKey WASM",
+    label: "Worker 依存（Vibrato もかな漢字も Worker）",
     description:
-      "Tauri と同じく漢字があるときだけ Vibrato（IPADIC F[7]）を通し、ひらがなはそのまま AzooKey WASM に渡します。Worker Vibrato 未設定時はブラウザ Vibrato で漢字読みを補います。",
+      "Worker 上で Vibrato（漢字があるときだけ IPADIC F[7]）と AzooKey かな漢字変換を続けて実行します。Worker Vibrato 未設定時はブラウザ Vibrato で漢字読みを補います。",
   },
   {
     value: "browser-vibrato",
-    label: "ブラウザ Vibrato WASM → Worker",
+    label: "ブラウザ簡潔（Vibrato もかな漢字もブラウザ）",
     description:
-      "ブラウザ側の Vibrato WASM と IPADIC 辞書を先に通します。漢字がなければ読みはそのまま、漢字があれば F[7] でひらがな化してから Worker の AzooKey WASM に渡します。プリパス必須で、モジュールも辞書も見つからなければ失敗します（Worker 側 Vibrato へはサイレントに落ちません）。",
+      "ブラウザの Vibrato WASM と IPADIC で読みを取り、同じブラウザの AzooKey WASM でかな漢字変換します。/ws/azookey は呼びません。漢字がなければ読みはそのまま、漢字があれば F[7] でひらがな化します。プリパス必須で、モジュールも辞書も見つからなければ失敗します（Worker へはサイレントに落ちません）。",
+  },
+] as const;
+
+/** Longer copy shown in the preprocessing-location help dialog. */
+export const comparisonModeHelpSections: readonly {
+  value: ComparisonMode;
+  title: string;
+  body: string;
+}[] = [
+  {
+    value: "worker-vibrato",
+    title: "Worker 依存",
+    body: "漢字→読みも Worker に寄せます。VIBRATO_UPSTREAM_URL または VIBRATO_DICTIONARY_URL が必要で、未設定時はブラウザ Vibrato で読みだけ補います。かな漢字は Worker の AzooKey WASM、または選択した Zenzai です。",
+  },
+  {
+    value: "browser-vibrato",
+    title: "ブラウザ簡潔",
+    body: "ブラウザで Vibrato（/vibrato/vibrato_wasm.js と /vibrato/system.dic.zst）と AzooKey（/azookey/azookey.wasm と /azookey/system.azkdict.gz）を完結します。辞書/WASM が無いと失敗し、Worker へは切り替わりません。Zenzai はこのモードでは使えません。",
   },
 ] as const;
 
@@ -107,9 +125,9 @@ export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 
 /** Short, user-facing explanations for the fields in the settings panel. */
 export const comparisonConfigFieldDescriptions = {
-  mode: "Choose whether the real Vibrato pre-pass runs through the configured Worker adapter or browser WASM; AzooKey kana→kanji always runs on the Worker.",
+  mode: "Choose Worker-dependent Vibrato+conversion, or the fully browser-local Vibrato+AzooKey path. Browser-compact never calls /ws/azookey.",
   converterModel:
-    "Choose the Worker converter: built-in AzooKey WASM, or Zenzai xsmall/small when MODEL_ROUTES exposes those GGUF upstreams.",
+    "Choose AzooKey WASM (browser-compact or Worker) or Zenzai xsmall/small on the Worker when MODEL_ROUTES exposes those GGUF upstreams. Zenzai is unavailable in browser-compact.",
   websocketUrl:
     "A ws:// or wss:// URL for the AzooKey Worker endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
   auth: "Optional Bearer credentials for the Worker. Keep tokens out of URLs and logs.",

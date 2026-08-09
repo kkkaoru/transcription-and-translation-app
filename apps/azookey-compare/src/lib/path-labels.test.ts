@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   attemptedPathLabel,
+  comparisonPathSteps,
   comparisonPathSummary,
   conversionPathLabel,
   rowPathLabel,
@@ -11,7 +12,7 @@ describe("comparison path labels", () => {
     expect(conversionPathLabel("worker-vibrato")).toBe("Worker Vibrato → Worker AzooKey WASM");
     expect(conversionPathLabel("worker-vibrato").toLowerCase()).toContain("vibrato");
     expect(conversionPathLabel("browser-vibrato")).toBe(
-      "Browser Vibrato WASM → Worker AzooKey WASM",
+      "Browser Vibrato WASM → Browser AzooKey WASM",
     );
     expect(conversionPathLabel("browser-vibrato").toLowerCase()).toContain("vibrato");
   });
@@ -24,17 +25,28 @@ describe("comparison path labels", () => {
       "Web Speech → Worker Vibrato → AzooKey WASM",
     );
     expect(comparisonPathSummary("browser-vibrato", true)).toBe(
-      "Web Speech → Browser Vibrato WASM → Worker AzooKey WASM",
+      "Web Speech → Browser Vibrato WASM → Browser AzooKey WASM",
     );
     expect(comparisonPathSummary("browser-vibrato", false)).toBe(
-      "Web Speech → Browser Vibrato WASM（未設定） → Worker AzooKey WASM",
+      "Web Speech → Browser Vibrato WASM（未設定） → Browser AzooKey WASM",
     );
     expect(comparisonPathSummary("browser-vibrato", false)).toContain("未設定");
+    expect(comparisonPathSteps("worker-vibrato", true).map((step) => step.location)).toEqual([
+      "browser",
+      "worker",
+      "worker",
+    ]);
+    expect(comparisonPathSteps("browser-vibrato", true).map((step) => step.location)).toEqual([
+      "browser",
+      "browser",
+      "browser",
+    ]);
+    expect(comparisonPathSteps("browser-vibrato", false)[1]?.warning).toBe("未設定");
   });
 
   it("never advertises stages a failed row did not run", () => {
     expect(attemptedPathLabel("browser-vibrato")).toBe(
-      "Browser Vibrato WASM → Worker AzooKey WASM",
+      "Browser Vibrato WASM → Browser AzooKey WASM",
     );
     expect(attemptedPathLabel("worker-vibrato")).toBe("Worker Vibrato → Worker AzooKey WASM");
     expect(attemptedPathLabel("browser-vibrato", "setup")).toBe("未実行");
@@ -46,10 +58,13 @@ describe("comparison path labels", () => {
       "Worker Vibrato / AzooKey WASM（失敗）",
     );
     expect(attemptedPathLabel("browser-vibrato", "browser-wasm")).toBe(
-      "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行",
+      "Browser Vibrato WASM（失敗） / Browser AzooKey WASM 未実行",
+    );
+    expect(attemptedPathLabel("browser-vibrato", "browser-azookey")).toBe(
+      "Browser Vibrato WASM → Browser AzooKey WASM（失敗）",
     );
     expect(attemptedPathLabel("browser-vibrato", "worker")).toBe(
-      "Browser Vibrato WASM → Worker AzooKey WASM（失敗）",
+      "Browser Vibrato WASM → Browser AzooKey WASM（失敗）",
     );
   });
 
@@ -97,13 +112,13 @@ describe("comparison path labels", () => {
         "Worker Vibrato → Worker AzooKey WASM（予定）",
       );
       expect(rowPathLabel("browser-vibrato", state)).toBe(
-        "Browser Vibrato WASM → Worker AzooKey WASM（予定）",
+        "Browser Vibrato WASM → Browser AzooKey WASM（予定）",
       );
     }
     // Settled rows keep describing what actually happened.
     expect(rowPathLabel("worker-vibrato", "done")).toBe("Worker Vibrato → Worker AzooKey WASM");
     expect(rowPathLabel("browser-vibrato", "error", "browser-wasm")).toBe(
-      "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行",
+      "Browser Vibrato WASM（失敗） / Browser AzooKey WASM 未実行",
     );
   });
 });

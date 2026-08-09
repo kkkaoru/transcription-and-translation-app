@@ -163,6 +163,47 @@ describe("AzooKey Worker client connection lifecycle", () => {
     expect(states).toEqual(["connecting", "open"]);
   });
 
+  it("surfaces Zenzai fallback metadata from the Worker result", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = await openClient();
+    const pending = client.convert({ ...request(), model: "zenz-v3.2-xsmall-gguf" });
+    await Promise.resolve();
+    const sent = JSON.parse(socket.sent[0] ?? "{}") as { requestId: string; model?: string };
+    expect(sent.model).toBe("zenz-v3.2-xsmall-gguf");
+    socket.message(
+      JSON.stringify({
+        requestId: sent.requestId,
+        convertedText: "今日の天気",
+        model: "azookey-rust-wasm",
+        requestedModel: "zenz-v3.2-xsmall-gguf",
+        modelFallback: "unconfigured-route",
+      }),
+    );
+    await expect(pending).resolves.toMatchObject({
+      convertedText: "今日の天気",
+      model: "azookey-rust-wasm",
+      requestedModel: "zenz-v3.2-xsmall-gguf",
+      modelFallback: "unconfigured-route",
+    });
+
+    const upstream = client.convert({ ...request(), model: "zenz-v3.2-xsmall-gguf" });
+    await Promise.resolve();
+    const upstreamSent = JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string };
+    socket.message(
+      JSON.stringify({
+        requestId: upstreamSent.requestId,
+        convertedText: "WASMフォールバック",
+        model: "azookey-rust-wasm",
+        requestedModel: "zenz-v3.2-xsmall-gguf",
+        modelFallback: "upstream-failed",
+      }),
+    );
+    await expect(upstream).resolves.toMatchObject({
+      convertedText: "WASMフォールバック",
+      modelFallback: "upstream-failed",
+    });
+  });
+
   it("opens on demand when convert is called before connect", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });

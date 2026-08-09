@@ -60,6 +60,9 @@ const VIBRATO_GLUE_DTS_PATHS = [
 const VIBRATO_GLUE_BG_DTS_PATH = "packages/vibrato/wasm/pkg-web/vibrato_wasm_bg.wasm.d.ts";
 const AZOOKEY_DICTIONARY_PATH = "apps/cloudflare-worker-server/public/azookey/system.azkdict.gz";
 const AZOOKEY_WASM_PATH = "apps/cloudflare-worker-server/wasm/azookey.wasm";
+const COMPARE_AZOOKEY_DIR = "apps/azookey-compare/public/azookey";
+const COMPARE_AZOOKEY_WASM_PATH = `${COMPARE_AZOOKEY_DIR}/azookey.wasm`;
+const COMPARE_AZOOKEY_DICTIONARY_PATH = `${COMPARE_AZOOKEY_DIR}/system.azkdict.gz`;
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -134,6 +137,36 @@ const verifySubmoduleGitlinks = (root) => {
     if (!new RegExp(`\\b${revision}\\b`).test(line)) {
       throw new Error(`submodule gitlink drifted at ${path}: expected ${revision}`);
     }
+  }
+};
+
+const assertCompareAzookeyIgnored = (root) => {
+  if (
+    !isIgnored(root, COMPARE_AZOOKEY_WASM_PATH) ||
+    !isIgnored(root, COMPARE_AZOOKEY_DICTIONARY_PATH)
+  ) {
+    throw new Error(
+      `compare AzooKey browser assets must be gitignored (build-time copy): ${COMPARE_AZOOKEY_DIR}`,
+    );
+  }
+};
+
+const assertCompareAzookeyCopiesMatchWhenPresent = (root, workerWasmHash, workerDictHash) => {
+  const wasmPath = resolve(root, COMPARE_AZOOKEY_WASM_PATH);
+  const dictPath = resolve(root, COMPARE_AZOOKEY_DICTIONARY_PATH);
+  const wasmExists = existsSync(wasmPath);
+  const dictExists = existsSync(dictPath);
+  if (!wasmExists && !dictExists) {
+    return;
+  }
+  if (!wasmExists || !dictExists) {
+    throw new Error("compare AzooKey browser assets are incomplete; copy both wasm and dictionary");
+  }
+  if (sha256(readFileSync(wasmPath)) !== workerWasmHash) {
+    throw new Error("compare AzooKey wasm copy drifted from worker source");
+  }
+  if (sha256(readFileSync(dictPath)) !== workerDictHash) {
+    throw new Error("compare AzooKey dictionary copy drifted from worker source");
   }
 };
 
@@ -238,6 +271,8 @@ export const verifyGeneratedAssets = ({ root = repositoryRoot, requireTracked = 
     throw new Error(`AzooKey dictionary hash mismatch: ${azookeyDictionaryHash}`);
   }
   const azookeyWasm = verifyAzookeyWasm(root);
+  assertCompareAzookeyIgnored(root);
+  assertCompareAzookeyCopiesMatchWhenPresent(root, azookeyWasm.sha256, azookeyDictionaryHash);
   return {
     vibratoDictionary,
     vibratoWasm,

@@ -43,6 +43,9 @@ export interface AzooKeyConvertResult {
   mode?: ComparisonMode;
   elapsedMs?: number;
   receivedAt: number;
+  model?: string;
+  requestedModel?: string;
+  modelFallback?: string;
 }
 
 interface PendingRequest {
@@ -223,6 +226,9 @@ interface ParsedWorkerMessage {
   sourceText?: string;
   mode?: ComparisonMode;
   elapsedMs?: number;
+  model?: string;
+  requestedModel?: string;
+  modelFallback?: string;
 }
 
 const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
@@ -267,7 +273,23 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
   const elapsedMs =
     readNumber(payload, "elapsedMs", "durationMs", "latencyMs") ??
     (nested ? readNumber(nested, "elapsedMs", "durationMs", "latencyMs") : undefined);
-  return { requestId, convertedText, sourceText, mode, elapsedMs };
+  const model = readString(payload, "model") ?? (nested ? readString(nested, "model") : undefined);
+  const requestedModel =
+    readString(payload, "requestedModel") ??
+    (nested ? readString(nested, "requestedModel") : undefined);
+  const modelFallback =
+    readString(payload, "modelFallback") ??
+    (nested ? readString(nested, "modelFallback") : undefined);
+  return {
+    requestId,
+    convertedText,
+    sourceText,
+    mode,
+    elapsedMs,
+    ...(model ? { model } : {}),
+    ...(requestedModel ? { requestedModel } : {}),
+    ...(modelFallback ? { modelFallback } : {}),
+  };
 };
 
 /** A reconnect-on-demand JSON WebSocket client for the comparison page. */
@@ -379,7 +401,9 @@ export class AzooKeyWorkerClient {
       if (this.socket !== socket || this.socketGeneration !== generation) {
         return;
       }
-      const error = new Error("Worker WebSocket で接続エラーが発生しました");
+      const error = new Error(
+        `Worker WebSocket で接続エラーが発生しました（${this.endpoint}）。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください`,
+      );
       this.socket = null;
       this.socketGeneration += 1;
       if (this.connectionAttempt === attempt) {
@@ -649,6 +673,9 @@ export class AzooKeyWorkerClient {
       convertedText: parsed.convertedText,
       ...(parsed.mode ? { mode: parsed.mode } : {}),
       ...(parsed.elapsedMs !== undefined ? { elapsedMs: parsed.elapsedMs } : {}),
+      ...(parsed.model ? { model: parsed.model } : {}),
+      ...(parsed.requestedModel ? { requestedModel: parsed.requestedModel } : {}),
+      ...(parsed.modelFallback ? { modelFallback: parsed.modelFallback } : {}),
       receivedAt: Date.now(),
     });
   }

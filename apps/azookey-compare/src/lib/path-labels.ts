@@ -3,7 +3,7 @@ import type { ComparisonMode } from "./contract";
 /** User-visible conversion path after a single utterance is processed. */
 export const conversionPathLabel = (mode: ComparisonMode): string =>
   mode === "browser-vibrato"
-    ? "Browser Vibrato WASM → Worker AzooKey WASM"
+    ? "Browser Vibrato WASM → Browser AzooKey WASM"
     : "Worker Vibrato → Worker AzooKey WASM";
 
 /**
@@ -20,6 +20,7 @@ export const conversionPathLabel = (mode: ComparisonMode): string =>
 export type ConversionStage =
   | "setup"
   | "browser-wasm"
+  | "browser-azookey"
   | "worker-connect"
   | "worker-request"
   | "worker-transport"
@@ -38,7 +39,12 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
     return "未実行";
   }
   if (failedStage === "browser-wasm") {
-    return "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行";
+    return mode === "browser-vibrato"
+      ? "Browser Vibrato WASM（失敗） / Browser AzooKey WASM 未実行"
+      : "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行";
+  }
+  if (failedStage === "browser-azookey") {
+    return "Browser Vibrato WASM → Browser AzooKey WASM（失敗）";
   }
   if (failedStage === "worker-connect") {
     return mode === "browser-vibrato"
@@ -58,7 +64,7 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
   if (mode !== "browser-vibrato") {
     return "Worker Vibrato / AzooKey WASM（失敗）";
   }
-  return "Browser Vibrato WASM → Worker AzooKey WASM（失敗）";
+  return "Browser Vibrato WASM → Browser AzooKey WASM（失敗）";
 };
 
 /** Row states that describe work still in flight. */
@@ -80,12 +86,63 @@ export const rowPathLabel = (
     ? attemptedPathLabel(mode, failedStage)
     : `${conversionPathLabel(mode)}（予定）`;
 
+/** One box in the live / help architecture diagram. */
+export interface ComparisonPathStep {
+  id: string;
+  title: string;
+  detail: string;
+  location: "browser" | "worker";
+  warning?: string;
+}
+
 /**
- * Live path chip for the comparison surface.
+ * Structured stages for the architecture diagram.
  * Browser mode marks the pre-pass as unconfigured when neither module URL nor
  * an explicit global name is present in the form (runtime may still attempt a
  * historical default global name).
  */
+export const comparisonPathSteps = (
+  mode: ComparisonMode,
+  browserWasmConfigured: boolean,
+): ComparisonPathStep[] => {
+  const speech: ComparisonPathStep = {
+    id: "speech",
+    title: "Web Speech",
+    detail: "マイク認識",
+    location: "browser",
+  };
+  const azookey: ComparisonPathStep = {
+    id: "azookey",
+    title: "AzooKey",
+    detail: "かな漢字変換",
+    location: mode === "browser-vibrato" ? "browser" : "worker",
+  };
+  if (mode === "worker-vibrato") {
+    return [
+      speech,
+      {
+        id: "vibrato",
+        title: "Vibrato",
+        detail: "読み取り",
+        location: "worker",
+      },
+      azookey,
+    ];
+  }
+  return [
+    speech,
+    {
+      id: "vibrato",
+      title: "Vibrato",
+      detail: "読み取り",
+      location: "browser",
+      ...(browserWasmConfigured ? {} : { warning: "未設定" }),
+    },
+    azookey,
+  ];
+};
+
+/** Accessible one-line summary of the same path the diagram draws. */
 export const comparisonPathSummary = (
   mode: ComparisonMode,
   browserWasmConfigured: boolean,
@@ -94,4 +151,4 @@ export const comparisonPathSummary = (
     ? "Web Speech → Worker Vibrato → AzooKey WASM"
     : `Web Speech → Browser Vibrato WASM${
         browserWasmConfigured ? "" : "（未設定）"
-      } → Worker AzooKey WASM`;
+      } → Browser AzooKey WASM`;

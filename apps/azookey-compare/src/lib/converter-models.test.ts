@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   CONVERTER_MODELS,
-  DEFAULT_CONVERTER_MODEL,
   converterModelOptions,
+  DEFAULT_CONVERTER_MODEL,
   isConverterModel,
   isZenzConverterModel,
 } from "./converter-models";

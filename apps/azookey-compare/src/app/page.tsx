@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
 import {
-  shouldRunBrowserVibratoPrePass,
   shouldWarmBrowserDictionaryAfterConfigChange,
   shouldWarmBrowserVibratoDictionary,
 } from "../lib/azookey-reading";
+import { runBrowserAzookey, warmupBrowserAzookey } from "../lib/browser-azookey";
 import {
   browserVibratoConfigFromComparison,
   runBrowserVibrato,
@@ -27,7 +27,12 @@ import {
   AZOOKEY_CONVERSION_FIXTURES,
   type AzookeyConversionFixture,
 } from "../lib/conversion-fixtures";
-import { converterModelOptions, isConverterModel } from "../lib/converter-models";
+import { runComparisonConversion } from "../lib/conversion-pipeline";
+import {
+  converterModelOptions,
+  DEFAULT_CONVERTER_MODEL,
+  isConverterModel,
+} from "../lib/converter-models";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import { syncSpeechLanguage } from "../lib/speech-language";
 import {
@@ -36,7 +41,6 @@ import {
   WebSpeechController,
 } from "../lib/web-speech";
 import {
-  type AzooKeyConvertResult,
   AzooKeyWorkerClient,
   type WorkerConnectionState,
   workerErrorStage,
@@ -268,8 +272,7 @@ export default function ComparePage() {
         fixtureId?: string;
         /**
          * When set, skip browser Vibrato and feed this string as `vibratoInput`.
-         * Manual / fixture checks already supply a phonetic reading, so they
-         * exercise the Worker AzooKey path directly.
+         * Manual / fixture checks already supply a phonetic reading.
          */
         phoneticInput?: string;
       } = {},
@@ -304,95 +307,114 @@ export default function ComparePage() {
       const forcedPhonetic = options.phoneticInput?.trim();
       let vibratoInput = forcedPhonetic || normalizedSource;
       let wasmElapsedMs: number | undefined;
-      let ranBrowserVibrato = false;
       // Tracks the stage in flight so a failure is attributed to the stage that
       // actually failed, rather than to whichever stage happened to run last.
-      let stage: ConversionStage = "setup";
+      const stageRef: { current: ConversionStage } = { current: "setup" };
       try {
-        if (auth.scheme === "bearer" && !auth.token?.trim()) {
-          throw new Error("Bearer token を入力してください");
-        }
-        // Phonetic fixture/manual checks already supply the reading AzooKey
-        // expects. Worker mode still runs browser Vibrato for kanji-bearing
-        // Web Speech so mixed ASR matches Tauri when Worker Vibrato is passthrough.
-        if (shouldRunBrowserVibratoPrePass(mode, normalizedSource, forcedPhonetic)) {
-          setBrowserWasmState("loading");
-          patchRow({ state: "wasm" });
-          stage = "browser-wasm";
-          try {
-            const wasmResult = await runBrowserVibrato(normalizedSource, {
-              moduleUrl: wasmModuleUrl,
-              dictionaryUrl,
-              globalName: wasmGlobalName,
-            });
-            vibratoInput = wasmResult.text;
-            wasmElapsedMs = wasmResult.elapsedMs;
-            ranBrowserVibrato = true;
-            setBrowserWasmState((current) =>
-              browserWasmStateAfterStage(current, "browser-wasm", true),
-            );
-          } catch (caught) {
-            if (mode === "browser-vibrato") {
-              // Browser mode requires the pre-pass. Worker mode fail-opens like Tauri.
-              setBrowserWasmState((current) =>
-                browserWasmStateAfterStage(current, "browser-wasm", false),
-              );
-              throw caught;
-            }
-            vibratoInput = normalizedSource;
-          }
-          patchRow({ state: "sending", vibratoInput, wasmElapsedMs });
-        } else {
-          patchRow({ state: "sending", vibratoInput });
-        }
-
-        // Reaching the Worker is its own stage: staying on browser-wasm would
-        // blame a pre-pass that already succeeded, and entering the worker stage
-        // would report a conversion failure for a call that never happened.
-        // `convert` connects on demand, so the connection is awaited here to keep
-        // a connect failure out of the conversion stage.
-        stage = "worker-connect";
-        const client = workerRef.current;
-        if (!client) {
-          throw new Error("Worker WebSocket クライアントを初期化できません");
-        }
-        const workerGeneration = workerGenerationRef.current;
-        if (workerRef.current !== client || workerGenerationRef.current !== workerGeneration) {
-          throw new Error("Worker 設定が変更されました。発話を再送してください");
-        }
-        await client.connect();
-        if (workerRef.current !== client || workerGenerationRef.current !== workerGeneration) {
-          throw new Error("Worker 設定が変更されました。発話を再送してください");
-        }
-        stage = "worker";
-        const result: AzooKeyConvertResult = await client.convert({
-          source: "web-speech",
-          language,
-          sourceText: normalizedSource,
-          vibratoInput,
-          mode: forcedPhonetic ? "worker-vibrato" : mode,
-          model: converterModel,
-          vibratoExecution: forcedPhonetic
-            ? "worker"
-            : ranBrowserVibrato || mode === "browser-vibrato"
-              ? "browser-wasm"
-              : "worker",
-          auth: authForRequest(auth),
-        });
+        const model = isConverterModel(converterModel) ? converterModel : DEFAULT_CONVERTER_MODEL;
+        const result = await runComparisonConversion(
+          {
+            sourceText: normalizedSource,
+            mode,
+            converterModel: model,
+            language,
+            auth,
+            phoneticInput: forcedPhonetic,
+            wasmModuleUrl,
+            dictionaryUrl,
+            wasmGlobalName,
+          },
+          {
+            onStage: (nextStage) => {
+              stageRef.current = nextStage;
+              if (nextStage === "browser-wasm") {
+                setBrowserWasmState("loading");
+                patchRow({ state: "wasm" });
+              }
+              if (nextStage === "browser-azookey" || nextStage === "worker-connect") {
+                patchRow({
+                  state: "sending",
+                  vibratoInput,
+                  ...(wasmElapsedMs !== undefined ? { wasmElapsedMs } : {}),
+                });
+              }
+            },
+            runBrowserVibrato: async (text, options) => {
+              try {
+                const wasmResult = await runBrowserVibrato(text, options);
+                vibratoInput = wasmResult.text;
+                wasmElapsedMs = wasmResult.elapsedMs;
+                setBrowserWasmState((current) =>
+                  browserWasmStateAfterStage(current, "browser-wasm", true),
+                );
+                return wasmResult;
+              } catch (caught) {
+                if (mode === "browser-vibrato") {
+                  setBrowserWasmState((current) =>
+                    browserWasmStateAfterStage(current, "browser-wasm", false),
+                  );
+                }
+                throw caught;
+              }
+            },
+            runBrowserAzookey: (text) => runBrowserAzookey(text),
+            connectWorker: async () => {
+              const client = workerRef.current;
+              if (!client) {
+                throw new Error("Worker WebSocket クライアントを初期化できません");
+              }
+              const workerGeneration = workerGenerationRef.current;
+              if (
+                workerRef.current !== client ||
+                workerGenerationRef.current !== workerGeneration
+              ) {
+                throw new Error("Worker 設定が変更されました。発話を再送してください");
+              }
+              await client.connect();
+              if (
+                workerRef.current !== client ||
+                workerGenerationRef.current !== workerGeneration
+              ) {
+                throw new Error("Worker 設定が変更されました。発話を再送してください");
+              }
+            },
+            convertWithWorker: (request) => {
+              const client = workerRef.current;
+              if (!client) {
+                throw new Error("Worker WebSocket クライアントを初期化できません");
+              }
+              return client.convert({
+                ...request,
+                auth: authForRequest(auth),
+              });
+            },
+          },
+        );
+        vibratoInput = result.vibratoInput;
         patchRow({
           state: "done",
           convertedText: result.convertedText,
-          workerElapsedMs: result.elapsedMs,
-          vibratoInput,
-          ...(wasmElapsedMs !== undefined ? { wasmElapsedMs } : {}),
+          vibratoInput: result.vibratoInput,
+          ...(result.wasmElapsedMs !== undefined ? { wasmElapsedMs: result.wasmElapsedMs } : {}),
+          ...(result.workerElapsedMs !== undefined || result.azookeyElapsedMs !== undefined
+            ? { workerElapsedMs: result.workerElapsedMs ?? result.azookeyElapsedMs }
+            : {}),
         });
+        if (result.modelFallback && result.requestedModel) {
+          setNotice(
+            result.modelFallback === "upstream-failed"
+              ? `${result.requestedModel} の上流に接続できなかったため AzooKey WASM で変換しました`
+              : `${result.requestedModel} は Worker に未設定のため AzooKey WASM で変換しました`,
+          );
+        }
       } catch (caught) {
         // The browser WASM status is owned by the browser stage above; a Worker
         // or setup failure must not report a pre-pass that succeeded as failed.
         const message = errorMessage(caught);
         // A protocol refusal, transport failure, and converter failure are
         // different outcomes; only the Worker can prove which one occurred.
-        const failedStage = stage === "worker" ? workerErrorStage(caught) : stage;
+        const failedStage =
+          stageRef.current === "worker" ? workerErrorStage(caught) : stageRef.current;
         patchRow({ state: "error", error: message, vibratoInput, failedStage });
         setError(message);
       }
@@ -459,7 +481,11 @@ export default function ComparePage() {
       setError("かな読みを入力してください");
       return;
     }
-    setNotice("かな読みを Worker AzooKey へ送信しています");
+    setNotice(
+      config.mode === "browser-vibrato"
+        ? "かな読みをブラウザ AzooKey で変換しています"
+        : "かな読みを Worker AzooKey へ送信しています",
+    );
     enqueueConversion(reading, {
       origin: "manual",
       phoneticInput: reading,
@@ -467,7 +493,11 @@ export default function ComparePage() {
   };
 
   const runConversionFixture = (fixture: AzookeyConversionFixture): void => {
-    setNotice(`フィクスチャ「${fixture.label}」を Worker へ送信しています`);
+    setNotice(
+      config.mode === "browser-vibrato"
+        ? `フィクスチャ「${fixture.label}」をブラウザ AzooKey で変換しています`
+        : `フィクスチャ「${fixture.label}」を Worker へ送信しています`,
+    );
     enqueueConversion(fixture.reading, {
       origin: "fixture",
       phoneticInput: fixture.reading,
@@ -562,6 +592,9 @@ export default function ComparePage() {
       setBrowserWasmState("loading");
       try {
         await warmupBrowserVibrato(browserVibratoConfigFromComparison(config));
+        if (config.mode === "browser-vibrato") {
+          await warmupBrowserAzookey();
+        }
         setBrowserWasmState("ready");
       } catch (caught) {
         setBrowserWasmState("error");
@@ -679,7 +712,10 @@ export default function ComparePage() {
     }
     setBrowserWasmState("loading");
     void warmupBrowserVibrato(browserVibratoConfigFromComparison(next))
-      .then(() => {
+      .then(async () => {
+        if (next.mode === "browser-vibrato") {
+          await warmupBrowserAzookey();
+        }
         setBrowserWasmState("ready");
       })
       .catch((caught: unknown) => {

@@ -4,7 +4,7 @@
  * The generated wasm-bindgen module in `public/vibrato` exports
  * `initSync`/`VibratoTokenizer` rather than a string converter. This loader
  * initializes that module from a dictionary URL and uses its IPADIC reading
- * field (F[7]) to produce hiragana before the Worker AzooKey stage. A small
+ * field (F[7]) to produce hiragana before the AzooKey stage. A small
  * wrapper/global that already exposes `convert`, `transform`, or `tokenize`
  * remains supported for deployments that host their own dictionary.
  */

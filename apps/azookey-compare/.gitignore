@@ -4,4 +4,5 @@ coverage
 node_modules
 tsconfig.tsbuildinfo
 .wrangler
+public/azookey/
 

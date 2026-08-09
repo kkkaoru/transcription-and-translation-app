@@ -21,10 +21,9 @@
   ],
   "observability": {
     "enabled": true
-  },
-  // Names only. Values go through `wrangler secret put`, never this file.
-  // POLICY_AUD and TEAM_DOMAIN stay as existing Worker secrets.
-  "secrets": {
-    "required": ["AZOOKEY_API_TOKEN"]
   }
+  // POLICY_AUD and TEAM_DOMAIN stay as existing Worker secrets.
+  // AZOOKEY_API_TOKEN may be added later with `wrangler secret put` and is
+  // injected as Bearer on the inference proxy when present. Do not require it
+  // at deploy: .env has no token, and inventing one is forbidden.
 }

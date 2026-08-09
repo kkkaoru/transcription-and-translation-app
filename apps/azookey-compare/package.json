@@ -5,14 +5,15 @@
   "description": "WebSpeech and Worker AzooKey conversion comparison UI",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
-    "build": "next build",
+    "copy:azookey-assets": "node ../../scripts/copy-azookey-browser-assets.mjs",
+    "build": "bun run copy:azookey-assets && next build",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit --pretty false",
     "lint": "biome check src",
     "format:check": "biome format src",
     "test": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
-    "build:worker": "NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL=wss://azookey-compare.kaoru.workers.dev/ws/azookey next build",
+    "build:worker": "bun run copy:azookey-assets && NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL=wss://azookey-compare.kaoru.workers.dev/ws/azookey next build",
     "preview": "bun run build:worker && wrangler dev",
     "deploy": "bun run build:worker && wrangler deploy"
   },

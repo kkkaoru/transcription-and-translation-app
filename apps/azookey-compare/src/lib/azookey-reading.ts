@@ -11,7 +11,7 @@ import type { ComparisonMode } from "./contract";
 export { containsKanji, readingForAzookey } from "@caption-bridge/azookey-reading";
 
 /**
- * Whether the comparison UI should run browser Vibrato before Worker AzooKey.
+ * Whether the comparison UI should run browser Vibrato before AzooKey.
  *
  * Phonetic fixtures already supply a reading. Browser mode always enters the
  * pre-pass (pure kana no-ops inside the tokenizer). Worker mode only needs it
