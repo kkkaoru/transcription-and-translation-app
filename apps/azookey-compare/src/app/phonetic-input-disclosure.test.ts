@@ -165,6 +165,14 @@ describe("phonetic input disclosure", () => {
     return details;
   };
 
+  const flushDetailsToggle = async () => {
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    });
+  };
+
   it("does not unhide a closed phonetic details with display:block alone", () => {
     const sheet = loadPhoneticStylesheet();
     const desktop = mediaStyleRules(sheet, /min-width:\s*641px/);
@@ -188,6 +196,7 @@ describe("phonetic input disclosure", () => {
     await act(() => {
       summary.click();
     });
+    await flushDetailsToggle();
     expect(phoneticDisclosure(container).open).toBe(true);
   });
 
@@ -204,6 +213,7 @@ describe("phonetic input disclosure", () => {
     await act(() => {
       summary.click();
     });
+    await flushDetailsToggle();
     expect(phoneticDisclosure(container).open).toBe(true);
   });
 });
