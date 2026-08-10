@@ -628,11 +628,17 @@ describe("WorkersAiAsrController VAD session", () => {
     );
     const speech = Float32Array.from({ length: 4096 }, () => 0.4);
     const silence = new Float32Array(4096);
+    const fireTap = async (samples: Float32Array): Promise<void> => {
+      tap?.onaudioprocess?.({ inputBuffer: { getChannelData: () => samples } });
+      for (let tick = 0; tick < 30; tick += 1) {
+        await Promise.resolve();
+      }
+    };
     for (let index = 0; index < 4; index += 1) {
-      await tap?.onaudioprocess?.({ inputBuffer: { getChannelData: () => speech } });
+      await fireTap(speech);
     }
     for (let index = 0; index < 12; index += 1) {
-      await tap?.onaudioprocess?.({ inputBuffer: { getChannelData: () => silence } });
+      await fireTap(silence);
     }
     expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
     expect(events.onError).not.toHaveBeenCalled();

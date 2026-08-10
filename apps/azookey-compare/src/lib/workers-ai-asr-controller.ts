@@ -13,6 +13,15 @@ import {
   wavFileFromPcmFloat32,
 } from "./workers-ai-asr-support";
 import {
+  attachMutedScriptProcessorTap,
+  logTapWatchdog,
+  PCM_TAP_BUFFER_SIZE,
+  PCM_TAP_DEAD_WATCHDOG_MS,
+  PCM_TAP_SILENCE_WATCHDOG_MS,
+  tapHealthAfterWatchdog,
+  updateTapPeakRmsDb,
+} from "./workers-ai-asr-tap";
+import {
   EnergyVadEngine,
   resampleMono,
   SILERO_CHUNK_SAMPLES,
@@ -60,7 +69,6 @@ type NavigatorWithMedia = Navigator & {
   };
 };
 
-const PCM_TAP_BUFFER_SIZE = 4096;
 const RECORDING_TIMESLICE_MS = 250;
 const RECORDING_INTERIM = "録音中…";
 const TRANSCRIBING_INTERIM = "認識中…";
@@ -89,6 +97,10 @@ export class WorkersAiAsrController {
   private flushing = false;
   private hadCommittedSpeech = false;
   private disposed = false;
+  private tapFrames = 0;
+  private tapPeakRmsDb = Number.NEGATIVE_INFINITY;
+  private sileroError: string | undefined;
+  private tapWatchdog: ReturnType<typeof setTimeout> | null = null;
 
   public constructor(language: string, options: WorkersAiAsrControllerOptions) {
     this.options = { ...options, language };
@@ -147,6 +159,12 @@ export class WorkersAiAsrController {
         this.stopTracks();
         return;
       }
+      this.resolveEngine();
+      if (this.shouldAbortStart()) {
+        this.releaseEngine();
+        this.stopTracks();
+        return;
+      }
       try {
         await this.setupAudioGraph(this.stream);
       } catch {
@@ -159,13 +177,11 @@ export class WorkersAiAsrController {
       if (this.shouldAbortStart()) {
         return;
       }
-      this.resolveEngine();
-      if (this.shouldAbortStart()) {
-        this.releaseEngine();
-        return;
-      }
       this.setState("listening");
       this.options.onTranscript?.({ interimText: "" });
+      if (this.pcmTap || this.analyser) {
+        this.armTapWatchdog();
+      }
     } catch (error) {
       if (this.shouldAbortStart()) {
         return;
@@ -238,7 +254,8 @@ export class WorkersAiAsrController {
         return;
       }
       void this.upgradeToSilero();
-    } catch {
+    } catch (error) {
+      this.noteSileroFailure(error);
       this.engine = new EnergyVadEngine();
       this.engineKind = "energy";
       this.options.onVadNotice?.(SILERO_FALLBACK_NOTICE_JA);
@@ -268,10 +285,11 @@ export class WorkersAiAsrController {
           // Energy dispose is best effort before Silero takes over.
         }
       }
-    } catch {
+    } catch (error) {
       if (this.shouldAbortStart()) {
         return;
       }
+      this.noteSileroFailure(error);
       if (this.engineKind !== "energy" || !this.engine) {
         this.engine = new EnergyVadEngine();
         this.engineKind = "energy";
@@ -302,14 +320,16 @@ export class WorkersAiAsrController {
     }
     try {
       return await engine.process(samples);
-    } catch {
+    } catch (error) {
+      this.noteSileroFailure(error);
       if (this.engineKind !== "silero") {
         return null;
       }
       this.fallbackToEnergy();
       try {
         return await this.engine.process(samples);
-      } catch {
+      } catch (energyError) {
+        this.noteSileroFailure(energyError);
         return null;
       }
     }
@@ -358,17 +378,15 @@ export class WorkersAiAsrController {
           void this.onPcmTap(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
         };
         source.connect(tap);
-        // Never tap→destination (AudioContext.destination or MediaStreamDestination):
-        // both can throw or play the mic and fail start(). Mute via gain only.
         try {
-          if (typeof audioContext.createGain === "function") {
-            const gain = audioContext.createGain();
-            gain.gain.value = 0;
-            tap.connect(gain);
-            this.tapGain = gain;
+          this.tapGain = attachMutedScriptProcessorTap(tap, audioContext);
+        } catch (error) {
+          console.error("Workers AI ASR mute gain tap failed", { error });
+          if (hasMediaRecorderSupport()) {
+            this.ensureTimesliceRecorder();
+          } else {
+            throw new Error(WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA);
           }
-        } catch {
-          // Gain is best-effort; ScriptProcessor can still feed VAD.
         }
         this.pcmTap = tap;
         return;
@@ -409,6 +427,9 @@ export class WorkersAiAsrController {
   }
 
   private teardownPcmTap(): void {
+    this.clearTapWatchdog();
+    this.tapFrames = 0;
+    this.tapPeakRmsDb = Number.NEGATIVE_INFINITY;
     if (this.analyserTimer !== null) {
       clearInterval(this.analyserTimer);
       this.analyserTimer = null;
@@ -453,13 +474,11 @@ export class WorkersAiAsrController {
   }
 
   private async onPcmTap(channel: Float32Array, sampleRate: number): Promise<void> {
-    if (
-      this.disposed ||
-      this.requestedStop ||
-      this.flushing ||
-      this.state !== "listening" ||
-      !this.engine
-    ) {
+    if (this.disposed || this.requestedStop || this.flushing) {
+      return;
+    }
+    this.notePcmTapFrame(channel);
+    if ((this.state !== "listening" && this.state !== "starting") || !this.engine) {
       return;
     }
     try {
@@ -496,8 +515,75 @@ export class WorkersAiAsrController {
         offset += SILERO_CHUNK_SAMPLES;
       }
       this.sileroRemainder = pending.subarray(offset);
-    } catch {
+    } catch (error) {
+      this.noteSileroFailure(error);
       this.fallbackToEnergy();
+    }
+  }
+
+  private notePcmTapFrame(channel: Float32Array): void {
+    this.tapFrames += 1;
+    this.tapPeakRmsDb = updateTapPeakRmsDb(this.tapPeakRmsDb, channel);
+  }
+
+  private noteSileroFailure(error: unknown): void {
+    const message =
+      error instanceof Error && error.message.trim() ? error.message : String(error);
+    this.sileroError = message;
+    console.warn("Workers AI ASR Silero/ORT failed", {
+      error,
+      message,
+      vadBackend: this.engineKind,
+    });
+  }
+
+  private armTapWatchdog(): void {
+    this.clearTapWatchdog();
+    this.tapFrames = 0;
+    this.tapPeakRmsDb = Number.NEGATIVE_INFINITY;
+    this.tapWatchdog = setTimeout(() => {
+      this.onTapWatchdog(PCM_TAP_DEAD_WATCHDOG_MS);
+    }, PCM_TAP_DEAD_WATCHDOG_MS);
+  }
+
+  private clearTapWatchdog(): void {
+    if (this.tapWatchdog !== null) {
+      clearTimeout(this.tapWatchdog);
+      this.tapWatchdog = null;
+    }
+  }
+
+  private onTapWatchdog(elapsedMs: number): void {
+    this.tapWatchdog = null;
+    if (this.disposed || this.requestedStop || this.state !== "listening") {
+      return;
+    }
+    const snapshot = {
+      tapFrames: this.tapFrames,
+      peakRmsDb: this.tapPeakRmsDb,
+      vadBackend: this.engineKind,
+      ...(this.sileroError ? { sileroError: this.sileroError } : {}),
+    };
+    if (snapshot.tapFrames > 0) {
+      const early = tapHealthAfterWatchdog(snapshot);
+      if (early.kind === "ok") {
+        return;
+      }
+      if (elapsedMs < PCM_TAP_SILENCE_WATCHDOG_MS) {
+        this.tapWatchdog = setTimeout(() => {
+          this.onTapWatchdog(PCM_TAP_SILENCE_WATCHDOG_MS);
+        }, PCM_TAP_SILENCE_WATCHDOG_MS - elapsedMs);
+        return;
+      }
+    }
+    const verdict = tapHealthAfterWatchdog(snapshot);
+    logTapWatchdog(snapshot, verdict);
+    if (verdict.kind === "dead" && verdict.message) {
+      this.fail(verdict.message);
+      return;
+    }
+    if (verdict.kind === "silence" && verdict.message) {
+      this.options.onVadNotice?.(verdict.message);
     }
   }
 
