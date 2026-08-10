@@ -1,3 +1,13 @@
+/** Convert float32 samples in [-1, 1] to PCM16. */
+export const float32ToPcm16 = (samples: Float32Array): Int16Array => {
+  const pcm = new Int16Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[index] ?? 0));
+    pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return pcm;
+};
+
 /** Encode mono PCM16 samples as a WAV byte payload (16 kHz default). */
 export const pcm16ToWavBytes = (pcm: Int16Array, sampleRate = 16_000): Uint8Array => {
   const pcmBytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);

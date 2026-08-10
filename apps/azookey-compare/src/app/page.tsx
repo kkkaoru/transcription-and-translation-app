@@ -75,12 +75,14 @@ import {
   type WorkerConnectionState,
   workerErrorStage,
 } from "../lib/worker-client";
-import { WorkersAiAsrController, type WorkersAiAsrState } from "../lib/workers-ai-asr-controller";
+import type { WorkersAiAsrController, WorkersAiAsrState } from "../lib/workers-ai-asr-controller";
 import {
   shouldShowWorkersAiAsrCostAmount,
   utteranceAsrCostFields,
   webSpeechAsrCostSummaryJa,
 } from "../lib/workers-ai-asr-cost";
+import { ensureWorkersAiAsrController, gateWorkersAiAsrStart } from "../lib/workers-ai-asr-session";
+import { WEB_SPEECH_UNSUPPORTED_JA } from "../lib/workers-ai-asr-support";
 
 const DESKTOP_CONFIG_MEDIA_QUERY = "(min-width: 641px)";
 
@@ -228,7 +230,8 @@ export default function ComparePage() {
       ? { browserWasmGlobalName: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL }
       : {}),
   }));
-  const [speechSupported, setSpeechSupported] = useState(false);
+  const [webSpeechSupported, setWebSpeechSupported] = useState(false);
+  const [asrCaptureSupported, setAsrCaptureSupported] = useState(true);
   const [speechState, setSpeechState] = useState<SpeechRecognitionState | WorkersAiAsrState>(
     "idle",
   );
@@ -310,29 +313,24 @@ export default function ComparePage() {
     };
   }, [config.websocketUrl]);
 
-  useEffect(() => {
-    const dispatchSpeechText = (text: string, audioSeconds?: number): void => {
-      const nextDispatched = rememberDispatchedSpeech(dispatchedSpeechRef.current, text);
-      if (nextDispatched.length === dispatchedSpeechRef.current.length) {
-        return;
-      }
-      dispatchedSpeechRef.current = nextDispatched;
-      setLatestSpeechSegment(text.trim());
-      finalTextHandlerRef.current(text, audioSeconds);
-    };
+  const dispatchSpeechText = useCallback((text: string, audioSeconds?: number): void => {
+    const nextDispatched = rememberDispatchedSpeech(dispatchedSpeechRef.current, text);
+    if (nextDispatched.length === dispatchedSpeechRef.current.length) {
+      return;
+    }
+    dispatchedSpeechRef.current = nextDispatched;
+    setLatestSpeechSegment(text.trim());
+    finalTextHandlerRef.current(text, audioSeconds);
+  }, []);
 
-    speechRef.current?.dispose();
-    asrRef.current?.dispose();
-    speechRef.current = null;
-    asrRef.current = null;
-
-    if (config.recognitionProvider === "workers-ai-asr") {
-      const asrEndpoint =
-        typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined;
-      const controller = new WorkersAiAsrController(initialSpeechLanguageRef.current, {
-        language: initialSpeechLanguageRef.current,
-        endpointUrl: asrEndpoint,
-        auth: { scheme: config.auth.scheme, token: config.auth.token },
+  const ensureAsrController = useCallback((): WorkersAiAsrController => {
+    const controller = ensureWorkersAiAsrController({
+      language: config.language,
+      endpointUrl:
+        typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined,
+      auth: { scheme: config.auth.scheme, token: config.auth.token },
+      existing: asrRef.current,
+      callbacks: {
         onStateChange: (state) => {
           setSpeechState(state);
           if (state === "listening") {
@@ -354,9 +352,49 @@ export default function ComparePage() {
         onError: (message) => {
           setError(message);
         },
+      },
+    });
+    asrRef.current = controller;
+    setAsrCaptureSupported(controller.supported);
+    return controller;
+  }, [config.auth.scheme, config.auth.token, config.language, dispatchSpeechText]);
+
+  useEffect(() => {
+    if (config.recognitionProvider === "workers-ai-asr") {
+      speechRef.current?.dispose();
+      speechRef.current = null;
+      const controller = ensureWorkersAiAsrController({
+        language: initialSpeechLanguageRef.current,
+        endpointUrl:
+          typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined,
+        auth: { scheme: config.auth.scheme, token: config.auth.token },
+        existing: asrRef.current,
+        callbacks: {
+          onStateChange: (state) => {
+            setSpeechState(state);
+            if (state === "listening") {
+              setError("");
+            }
+          },
+          onTranscript: ({ interimText }) => {
+            setSpeechInterimText(interimText);
+          },
+          onFinalText: (text) => {
+            setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
+          },
+          onUtteranceFinal: ({ text, audioSeconds }) => {
+            dispatchSpeechText(text, audioSeconds);
+          },
+          onVadNotice: (message) => {
+            setNotice(message);
+          },
+          onError: (message) => {
+            setError(message);
+          },
+        },
       });
       asrRef.current = controller;
-      setSpeechSupported(controller.supported);
+      setAsrCaptureSupported(controller.supported);
       return () => {
         controller.dispose();
         if (asrRef.current === controller) {
@@ -365,6 +403,8 @@ export default function ComparePage() {
       };
     }
 
+    asrRef.current?.dispose();
+    asrRef.current = null;
     const controller = new WebSpeechController(initialSpeechLanguageRef.current, {
       onStateChange: (state) => {
         setSpeechState(state);
@@ -397,14 +437,14 @@ export default function ComparePage() {
       },
     });
     speechRef.current = controller;
-    setSpeechSupported(controller.supported);
+    setWebSpeechSupported(controller.supported);
     return () => {
       controller.dispose();
       if (speechRef.current === controller) {
         speechRef.current = null;
       }
     };
-  }, [config.recognitionProvider, config.auth.scheme, config.auth.token]);
+  }, [config.recognitionProvider, config.auth.scheme, config.auth.token, dispatchSpeechText]);
 
   // Keep one browser recognition session alive while settings are edited. A
   // dependency on `config.language` here would dispose the active controller,
@@ -838,13 +878,37 @@ export default function ComparePage() {
 
   const toggleListening = (): void => {
     const usingWorkersAi = config.recognitionProvider === "workers-ai-asr";
-    const controller = usingWorkersAi ? asrRef.current : speechRef.current;
-    if (!controller || !speechSupported) {
-      setError(
-        usingWorkersAi
-          ? "このブラウザは Workers AI ASR 録音に対応していません"
-          : "このブラウザは Web Speech API に対応していません",
-      );
+    if (usingWorkersAi) {
+      const controller = ensureAsrController();
+      const gate = gateWorkersAiAsrStart({ controller });
+      if (!gate.ok) {
+        if (gate.reason === "unsupported") {
+          setAsrCaptureSupported(false);
+        }
+        setError(gate.message);
+        return;
+      }
+      if (speechState === "listening" || speechState === "starting") {
+        void gate.controller.stop();
+        return;
+      }
+      dispatchedSpeechRef.current = [];
+      setLatestSpeechSegment("");
+      setError("");
+      beginRecognitionListening({
+        provider: "workers-ai-asr",
+        start: () => gate.controller.start(),
+        warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
+        onWarmupNotice: setNotice,
+        onWarmupError: setError,
+        requireVibratoWarmup: config.mode === "browser-vibrato",
+      });
+      return;
+    }
+
+    const controller = speechRef.current;
+    if (!controller || !webSpeechSupported) {
+      setError(WEB_SPEECH_UNSUPPORTED_JA);
       return;
     }
     if (speechState === "listening" || speechState === "starting") {
@@ -1034,13 +1098,23 @@ export default function ComparePage() {
           <span className={`state-pill state-${speechState}`}>{speechStateLabel(speechState)}</span>
         </div>
         <p className="support-line">
-          {speechSupported ? "このブラウザで利用できます" : "このブラウザでは利用できません"}
+          {(
+            config.recognitionProvider === "workers-ai-asr"
+              ? asrCaptureSupported
+              : webSpeechSupported
+          )
+            ? "このブラウザで利用できます"
+            : "このブラウザでは利用できません"}
         </p>
         <button
           className={`button button-primary ${speechState === "listening" ? "is-listening" : ""}`}
           type="button"
           onClick={toggleListening}
-          disabled={!speechSupported}
+          disabled={
+            config.recognitionProvider === "workers-ai-asr"
+              ? !asrCaptureSupported
+              : !webSpeechSupported
+          }
         >
           <span className="record-dot" aria-hidden="true" />
           {speechState === "listening" || speechState === "starting" ? "認識を停止" : "認識を開始"}

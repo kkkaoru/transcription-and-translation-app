@@ -41,6 +41,11 @@ class FakeGainNode {
   disconnect(): void {}
 }
 
+class FakeMediaStreamDestination {
+  stream = { id: "tap-destination" };
+  disconnect(): void {}
+}
+
 class FakeScriptProcessor {
   onaudioprocess:
     | ((event: { inputBuffer: { getChannelData: (i: number) => Float32Array } }) => void)
@@ -76,6 +81,7 @@ class FakeAudioContext {
   createdProcessors: FakeScriptProcessor[] = [];
   createdAnalysers: FakeAnalyser[] = [];
   createdSources: FakeMediaStreamSource[] = [];
+  createdDestinations: FakeMediaStreamDestination[] = [];
 
   constructor() {
     FakeAudioContext.instances.push(this);
@@ -107,6 +113,12 @@ class FakeAudioContext {
     const analyser = new FakeAnalyser();
     this.createdAnalysers.push(analyser);
     return analyser;
+  }
+
+  createMediaStreamDestination(): FakeMediaStreamDestination {
+    const destination = new FakeMediaStreamDestination();
+    this.createdDestinations.push(destination);
+    return destination;
   }
 
   resume(): Promise<void> {
@@ -241,7 +253,7 @@ afterEach(() => {
 });
 
 describe("WorkersAiAsrController VAD session", () => {
-  it("is inert without MediaRecorder / getUserMedia", () => {
+  it("is inert without getUserMedia / AudioContext", () => {
     const events = callbacks();
     const controller = new WorkersAiAsrController("ja-JP", { language: "ja-JP", ...events });
     expect(controller.supported).toBe(false);
@@ -249,6 +261,19 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.stop();
     controller.dispose();
     expect(events.onStateChange).toHaveBeenCalledWith("idle");
+  });
+
+  it("is supported without MediaRecorder when getUserMedia and AudioContext exist", () => {
+    installBrowser();
+    Reflect.deleteProperty(globalThis, "MediaRecorder");
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      disableSilero: true,
+      ...events,
+    });
+    expect(controller.supported).toBe(true);
+    controller.dispose();
   });
 
   it("transcribes on VAD utterance-end, clears 録音中…, and records the next utterance without stop", async () => {
@@ -510,18 +535,46 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
-  it("mutes the PCM tap instead of routing ScriptProcessor to speakers", async () => {
+  it("does not connect the PCM tap to audioContext.destination", async () => {
     installBrowser();
     const { controller, events } = await startController();
     const context = FakeAudioContext.instances[0];
     const tap = context?.createdProcessors[0];
-    const gain = context?.createdGains[0];
     expect(tap).toBeDefined();
-    expect(gain).toBeDefined();
-    expect(gain?.gain.value).toBe(0);
-    expect(tap?.connections).toContain(gain);
+    expect(context?.createdDestinations).toHaveLength(1);
+    expect(tap?.connections).toContain(context?.createdDestinations[0]);
     expect(tap?.connections).not.toContain(context?.destination);
-    expect(gain?.connections).toContain(context?.destination);
+    expect(context?.createdGains).toHaveLength(0);
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("listening");
+    controller.dispose();
+  });
+
+  it("transcribes VAD PCM as WAV when MediaRecorder is missing", async () => {
+    installBrowser();
+    Reflect.deleteProperty(globalThis, "MediaRecorder");
+    let calls = 0;
+    const engine: VadEngine = {
+      process: vi.fn(() => {
+        calls += 1;
+        const isSpeech = calls <= 3;
+        return Promise.resolve({ probability: isSpeech ? 0.92 : 0.02, isSpeech });
+      }),
+      dispose: vi.fn(),
+    };
+    const { controller, events } = await startController(engine);
+    expect(controller.supported).toBe(true);
+    expect(controller.currentState).toBe("listening");
+    const chunk = Float32Array.from({ length: 512 }, () => 0.4);
+    for (let index = 0; index < 13; index += 1) {
+      await controller.ingestSamples(chunk);
+    }
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+    const [wav] = vi.mocked(transcribeWorkersAiAsr).mock.calls[0] ?? [];
+    expect(wav).toBeInstanceOf(File);
+    expect((wav as File).name).toBe("utterance.wav");
+    expect((wav as File).type).toBe("audio/wav");
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
     expect(events.onError).not.toHaveBeenCalled();
     expect(controller.currentState).toBe("listening");
     controller.dispose();
@@ -556,11 +609,13 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
-  it("surfaces getUserMedia failure", async () => {
+  it("surfaces getUserMedia failure in Japanese", async () => {
     installBrowser();
+    const denied = new Error("Permission denied");
+    denied.name = "NotAllowedError";
     (
       navigator as Navigator & { mediaDevices: { getUserMedia: ReturnType<typeof vi.fn> } }
-    ).mediaDevices.getUserMedia = vi.fn(() => Promise.reject(new Error("permission denied")));
+    ).mediaDevices.getUserMedia = vi.fn(() => Promise.reject(denied));
     const events = callbacks();
     const controller = new WorkersAiAsrController("ja-JP", {
       language: "ja-JP",
@@ -569,7 +624,29 @@ describe("WorkersAiAsrController VAD session", () => {
     });
     await controller.start();
     expect(controller.currentState).toBe("error");
-    expect(events.onError).toHaveBeenCalledWith("permission denied");
+    expect(events.onError).toHaveBeenCalledWith(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    expect(events.onError.mock.calls[0]?.[0]).not.toMatch(/Permission denied/i);
+    controller.dispose();
+  });
+
+  it("surfaces a missing microphone in Japanese", async () => {
+    installBrowser();
+    const missing = new Error("Requested device not found");
+    missing.name = "NotFoundError";
+    (
+      navigator as Navigator & { mediaDevices: { getUserMedia: ReturnType<typeof vi.fn> } }
+    ).mediaDevices.getUserMedia = vi.fn(() => Promise.reject(missing));
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      disableSilero: true,
+      ...events,
+    });
+    await controller.start();
+    expect(controller.currentState).toBe("error");
+    expect(events.onError).toHaveBeenCalledWith("マイクが見つかりません。接続を確認してください");
     controller.dispose();
   });
 

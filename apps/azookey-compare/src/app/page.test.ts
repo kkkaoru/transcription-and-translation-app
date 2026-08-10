@@ -122,15 +122,34 @@ describe("compare page speech settings", () => {
   it("recreates recognition controllers from scheme and token, not the auth object", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
     const effectClose = source.indexOf(
-      "}, [config.recognitionProvider, config.auth.scheme, config.auth.token]);",
+      "}, [config.recognitionProvider, config.auth.scheme, config.auth.token, dispatchSpeechText]);",
     );
     expect(effectClose).toBeGreaterThan(-1);
     expect(source).not.toContain("}, [config.recognitionProvider, config.auth, config.language]);");
-    const createEffect = source.slice(source.indexOf("speechRef.current?.dispose();"), effectClose);
+    const createEffect = source.slice(
+      source.indexOf('if (config.recognitionProvider === "workers-ai-asr")'),
+      effectClose,
+    );
     expect(createEffect).toContain(
       "auth: { scheme: config.auth.scheme, token: config.auth.token }",
     );
-    expect(createEffect).toContain('if (config.recognitionProvider === "workers-ai-asr")');
+    expect(createEffect).toContain("ensureWorkersAiAsrController");
+  });
+
+  it("starts Workers AI ASR without waiting for the effect tick after selecting it", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    const toggle = source.slice(
+      source.indexOf("const toggleListening"),
+      source.indexOf("const connectWorker"),
+    );
+    expect(toggle).toContain("ensureAsrController");
+    expect(toggle).toContain("gateWorkersAiAsrStart");
+    expect(toggle).toContain("gate.controller.start()");
+    expect(toggle).not.toContain("このブラウザは Workers AI ASR 録音に対応していません");
+    expect(toggle).toContain("WEB_SPEECH_UNSUPPORTED_JA");
+    expect(source).toContain("asrCaptureSupported");
+    expect(source).toContain("webSpeechSupported");
+    expect(source).not.toContain("const [speechSupported, setSpeechSupported]");
   });
 
   it("uses Silero VAD only for Workers AI ASR and skips it on Web Speech", () => {
@@ -140,10 +159,8 @@ describe("compare page speech settings", () => {
     expect(source).toContain("Silero VAD v6");
     expect(source).toContain("Silero ONNX / ORT WASM は読み込みません");
     expect(source).toContain("asrRef.current?.dispose()");
-    expect(source.indexOf('if (config.recognitionProvider === "workers-ai-asr")')).toBeLessThan(
-      source.indexOf("new WorkersAiAsrController"),
-    );
-    expect(source.indexOf("new WorkersAiAsrController")).toBeLessThan(
+    expect(source).toContain("ensureWorkersAiAsrController");
+    expect(source.indexOf("ensureWorkersAiAsrController")).toBeLessThan(
       source.indexOf("new WebSpeechController"),
     );
     expect(source).not.toMatch(/import\s+.*onnxruntime-web/);

@@ -5,6 +5,14 @@ import { audioSecondsFromPcmLength } from "./workers-ai-asr-cost";
 import { SileroWasmVadEngine } from "./workers-ai-asr-silero";
 import { SILERO_FALLBACK_NOTICE_JA } from "./workers-ai-asr-silero-paths";
 import {
+  audioContextConstructor,
+  getUserMediaErrorMessageJa,
+  hasMediaRecorderSupport,
+  isWorkersAiAsrCaptureSupported,
+  WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA,
+  wavFileFromPcmFloat32,
+} from "./workers-ai-asr-support";
+import {
   EnergyVadEngine,
   resampleMono,
   SILERO_CHUNK_SAMPLES,
@@ -52,25 +60,10 @@ type NavigatorWithMedia = Navigator & {
   };
 };
 
-type AudioContextCtor = new () => AudioContext;
-
 const PCM_TAP_BUFFER_SIZE = 4096;
 const RECORDING_TIMESLICE_MS = 250;
 const RECORDING_INTERIM = "録音中…";
 const TRANSCRIBING_INTERIM = "認識中…";
-
-const audioContextConstructor = (): AudioContextCtor | undefined => {
-  if (typeof window === "undefined") {
-    return undefined;
-  }
-  const standard = window.AudioContext;
-  if (typeof standard === "function") {
-    return standard;
-  }
-  const webkit = (window as unknown as { webkitAudioContext?: AudioContextCtor })
-    .webkitAudioContext;
-  return typeof webkit === "function" ? webkit : undefined;
-};
 
 export class WorkersAiAsrController {
   readonly supported: boolean;
@@ -87,10 +80,13 @@ export class WorkersAiAsrController {
   private pcmTap: ScriptProcessorNode | null = null;
   private pcmSource: MediaStreamAudioSourceNode | null = null;
   private tapGain: GainNode | null = null;
+  private tapDestination: MediaStreamAudioDestinationNode | null = null;
   private analyser: AnalyserNode | null = null;
   private analyserTimer: ReturnType<typeof setInterval> | null = null;
   private resampleRemainder = new Float32Array(0);
   private sileroRemainder = new Float32Array(0);
+  private pcmFrames: Float32Array[] = [];
+  private capturingPcm = false;
   private requestedStop = false;
   private captureActive = false;
   private flushing = false;
@@ -99,12 +95,7 @@ export class WorkersAiAsrController {
 
   public constructor(language: string, options: WorkersAiAsrControllerOptions) {
     this.options = { ...options, language };
-    const nav = typeof navigator !== "undefined" ? (navigator as NavigatorWithMedia) : undefined;
-    this.supported = Boolean(
-      typeof window !== "undefined" &&
-        nav?.mediaDevices?.getUserMedia &&
-        typeof MediaRecorder !== "undefined",
-    );
+    this.supported = isWorkersAiAsrCaptureSupported();
   }
 
   public get currentState(): WorkersAiAsrState {
@@ -113,6 +104,18 @@ export class WorkersAiAsrController {
 
   public get vadBackend(): WorkersAiAsrVadBackend {
     return this.engineKind;
+  }
+
+  public get isDisposed(): boolean {
+    return this.disposed;
+  }
+
+  public matchesTransport(endpointUrl?: string, auth?: ComparisonAuth): boolean {
+    return (
+      (this.options.endpointUrl ?? "") === (endpointUrl ?? "") &&
+      (this.options.auth?.scheme ?? "none") === (auth?.scheme ?? "none") &&
+      (this.options.auth?.token ?? "") === (auth?.token ?? "")
+    );
   }
 
   public setLanguage(language: string): void {
@@ -146,12 +149,16 @@ export class WorkersAiAsrController {
       try {
         await this.setupAudioGraph(this.stream);
       } catch {
-        this.ensureTimesliceRecorder();
+        if (hasMediaRecorderSupport()) {
+          this.ensureTimesliceRecorder();
+        } else {
+          throw new Error(WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA);
+        }
       }
       if (this.shouldAbortStart()) {
         return;
       }
-      await this.resolveEngine();
+      this.resolveEngine();
       if (this.shouldAbortStart()) {
         this.releaseEngine();
         return;
@@ -162,7 +169,7 @@ export class WorkersAiAsrController {
       if (this.shouldAbortStart()) {
         return;
       }
-      this.fail(error instanceof Error ? error.message : "マイクを開始できません");
+      this.fail(getUserMediaErrorMessageJa(error));
     }
   }
 
@@ -218,17 +225,23 @@ export class WorkersAiAsrController {
   }
 
   private resolveEngine(): void {
-    if (this.options.vadEngine) {
-      this.engine = this.options.vadEngine;
-      this.engineKind = "silero";
-      return;
+    try {
+      if (this.options.vadEngine) {
+        this.engine = this.options.vadEngine;
+        this.engineKind = "silero";
+        return;
+      }
+      this.engine = new EnergyVadEngine();
+      this.engineKind = "energy";
+      if (this.options.disableSilero) {
+        return;
+      }
+      void this.upgradeToSilero();
+    } catch {
+      this.engine = new EnergyVadEngine();
+      this.engineKind = "energy";
+      this.options.onVadNotice?.(SILERO_FALLBACK_NOTICE_JA);
     }
-    this.engine = new EnergyVadEngine();
-    this.engineKind = "energy";
-    if (this.options.disableSilero) {
-      return;
-    }
-    void this.upgradeToSilero();
   }
 
   private async upgradeToSilero(): Promise<void> {
@@ -320,8 +333,11 @@ export class WorkersAiAsrController {
   private async setupAudioGraph(stream: MediaStream): Promise<void> {
     const Context = audioContextConstructor();
     if (!Context) {
-      this.ensureTimesliceRecorder();
-      return;
+      if (hasMediaRecorderSupport()) {
+        this.ensureTimesliceRecorder();
+        return;
+      }
+      throw new Error(WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA);
     }
     try {
       const audioContext = new Context();
@@ -341,11 +357,14 @@ export class WorkersAiAsrController {
           void this.onPcmTap(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
         };
         source.connect(tap);
-        if (typeof audioContext.createGain === "function") {
+        if (typeof audioContext.createMediaStreamDestination === "function") {
+          const destination = audioContext.createMediaStreamDestination();
+          tap.connect(destination);
+          this.tapDestination = destination;
+        } else if (typeof audioContext.createGain === "function") {
           const gain = audioContext.createGain();
           gain.gain.value = 0;
           tap.connect(gain);
-          gain.connect(audioContext.destination);
           this.tapGain = gain;
         }
         this.pcmTap = tap;
@@ -369,9 +388,20 @@ export class WorkersAiAsrController {
         return;
       }
 
-      this.ensureTimesliceRecorder();
-    } catch {
-      this.ensureTimesliceRecorder();
+      if (hasMediaRecorderSupport()) {
+        this.ensureTimesliceRecorder();
+        return;
+      }
+      throw new Error(WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA);
+    } catch (error) {
+      if (error instanceof Error && error.message === WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA) {
+        throw error;
+      }
+      if (hasMediaRecorderSupport()) {
+        this.ensureTimesliceRecorder();
+        return;
+      }
+      throw new Error(WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA);
     }
   }
 
@@ -395,6 +425,13 @@ export class WorkersAiAsrController {
         // Already disconnected.
       }
     }
+    if (this.tapDestination) {
+      try {
+        this.tapDestination.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
     if (this.analyser) {
       try {
         this.analyser.disconnect();
@@ -411,10 +448,13 @@ export class WorkersAiAsrController {
     }
     this.pcmTap = null;
     this.tapGain = null;
+    this.tapDestination = null;
     this.analyser = null;
     this.pcmSource = null;
     this.resampleRemainder = new Float32Array(0);
     this.sileroRemainder = new Float32Array(0);
+    this.pcmFrames = [];
+    this.capturingPcm = false;
   }
 
   private async onPcmTap(channel: Float32Array, sampleRate: number): Promise<void> {
@@ -427,36 +467,43 @@ export class WorkersAiAsrController {
     ) {
       return;
     }
-    const withRemainder = new Float32Array(this.resampleRemainder.length + channel.length);
-    withRemainder.set(this.resampleRemainder, 0);
-    withRemainder.set(channel, this.resampleRemainder.length);
-    const resampled = resampleMono(withRemainder, sampleRate, SILERO_SAMPLE_RATE);
-    const consumedNative = Math.min(
-      withRemainder.length,
-      Math.floor((resampled.length * sampleRate) / SILERO_SAMPLE_RATE),
-    );
-    this.resampleRemainder = withRemainder.subarray(consumedNative);
+    try {
+      const withRemainder = new Float32Array(this.resampleRemainder.length + channel.length);
+      withRemainder.set(this.resampleRemainder, 0);
+      withRemainder.set(channel, this.resampleRemainder.length);
+      const resampled = resampleMono(withRemainder, sampleRate, SILERO_SAMPLE_RATE);
+      const consumedNative = Math.min(
+        withRemainder.length,
+        Math.floor((resampled.length * sampleRate) / SILERO_SAMPLE_RATE),
+      );
+      this.resampleRemainder = withRemainder.subarray(consumedNative);
 
-    const pending = new Float32Array(this.sileroRemainder.length + resampled.length);
-    pending.set(this.sileroRemainder, 0);
-    pending.set(resampled, this.sileroRemainder.length);
-    let offset = 0;
-    while (offset + SILERO_CHUNK_SAMPLES <= pending.length) {
-      const chunk = pending.subarray(offset, offset + SILERO_CHUNK_SAMPLES);
-      const result = await this.processWithFallback(chunk);
-      if (
-        !result ||
-        this.disposed ||
-        this.requestedStop ||
-        this.flushing ||
-        this.state !== "listening"
-      ) {
-        return;
+      const pending = new Float32Array(this.sileroRemainder.length + resampled.length);
+      pending.set(this.sileroRemainder, 0);
+      pending.set(resampled, this.sileroRemainder.length);
+      let offset = 0;
+      while (offset + SILERO_CHUNK_SAMPLES <= pending.length) {
+        const chunk = pending.subarray(offset, offset + SILERO_CHUNK_SAMPLES);
+        if (this.capturingPcm) {
+          this.pcmFrames.push(Float32Array.from(chunk));
+        }
+        const result = await this.processWithFallback(chunk);
+        if (
+          !result ||
+          this.disposed ||
+          this.requestedStop ||
+          this.flushing ||
+          this.state !== "listening"
+        ) {
+          return;
+        }
+        await this.applyVadEvents(this.vad.pushVadResult(result, chunk));
+        offset += SILERO_CHUNK_SAMPLES;
       }
-      await this.applyVadEvents(this.vad.pushVadResult(result, chunk));
-      offset += SILERO_CHUNK_SAMPLES;
+      this.sileroRemainder = pending.subarray(offset);
+    } catch {
+      this.fallbackToEnergy();
     }
-    this.sileroRemainder = pending.subarray(offset);
   }
 
   private async applyVadEvents(events: WorkersAiAsrVadEvent[]): Promise<void> {
@@ -476,7 +523,11 @@ export class WorkersAiAsrController {
       } else if (event.type === "utterance-end") {
         this.hadCommittedSpeech = true;
         this.options.onTranscript?.({ interimText: TRANSCRIBING_INTERIM });
-        await this.flushRecording({ restart: !this.requestedStop, requireSpeech: false });
+        await this.flushRecording({
+          restart: !this.requestedStop,
+          requireSpeech: false,
+          pcm: event.fullAudio,
+        });
       }
     }
   }
@@ -496,7 +547,9 @@ export class WorkersAiAsrController {
   }
 
   private beginRecorder(timesliceMs?: number): void {
-    if (!this.stream) {
+    this.capturingPcm = true;
+    this.pcmFrames = [];
+    if (!this.stream || !hasMediaRecorderSupport()) {
       return;
     }
     this.chunks = [];
@@ -507,8 +560,8 @@ export class WorkersAiAsrController {
         this.chunks.push(event.data);
       }
     };
-    recorder.onerror = (event) => {
-      this.fail(event.error?.message ?? "MediaRecorder failed");
+    recorder.onerror = () => {
+      this.fail("録音に失敗しました");
     };
     if (typeof timesliceMs === "number" && timesliceMs > 0) {
       recorder.start(timesliceMs);
@@ -518,6 +571,8 @@ export class WorkersAiAsrController {
   }
 
   private discardRecorder(): void {
+    this.capturingPcm = false;
+    this.pcmFrames = [];
     const recorder = this.recorder;
     this.recorder = null;
     this.chunks = [];
@@ -552,18 +607,44 @@ export class WorkersAiAsrController {
     });
   }
 
+  private takeCapturedPcm(): Float32Array | undefined {
+    this.capturingPcm = false;
+    if (this.pcmFrames.length === 0) {
+      return undefined;
+    }
+    let total = 0;
+    for (const frame of this.pcmFrames) {
+      total += frame.length;
+    }
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const frame of this.pcmFrames) {
+      merged.set(frame, offset);
+      offset += frame.length;
+    }
+    this.pcmFrames = [];
+    return merged.length >= SILERO_CHUNK_SAMPLES ? merged : undefined;
+  }
+
   private async flushRecording(options: {
     restart: boolean;
     requireSpeech: boolean;
+    pcm?: Float32Array;
   }): Promise<void> {
     if (this.disposed || this.flushing) {
       return;
     }
     this.flushing = true;
     const hasSpeech = this.hadCommittedSpeech || this.vad.currentPhase === "speech";
-    const blob = await this.stopRecorder();
+    const usablePcm =
+      options.pcm && options.pcm.length >= SILERO_CHUNK_SAMPLES
+        ? options.pcm
+        : this.takeCapturedPcm();
+    const blob = usablePcm ? null : await this.stopRecorder();
     this.hadCommittedSpeech = false;
     this.vad.reset();
+    this.capturingPcm = false;
+    this.pcmFrames = [];
 
     if (this.disposed) {
       this.flushing = false;
@@ -576,17 +657,26 @@ export class WorkersAiAsrController {
       return;
     }
 
-    if (blob.size === 0) {
-      this.flushing = false;
-      this.fail("録音データがありません");
-      return;
-    }
-
     try {
       this.options.onTranscript?.({ interimText: TRANSCRIBING_INTERIM });
-      const pcm = await blobToPcm16Mono(blob);
-      const wav = new File([pcm16ToWavBytes(pcm)], "utterance.wav", { type: "audio/wav" });
-      const audioSeconds = audioSecondsFromPcmLength(pcm.length);
+      let wav: File;
+      let audioSeconds: number;
+      if (usablePcm) {
+        wav = wavFileFromPcmFloat32(usablePcm);
+        audioSeconds = audioSecondsFromPcmLength(usablePcm.length);
+      } else if (blob && blob.size > 0) {
+        const pcm = await blobToPcm16Mono(blob);
+        wav = new File([pcm16ToWavBytes(pcm)], "utterance.wav", { type: "audio/wav" });
+        audioSeconds = audioSecondsFromPcmLength(pcm.length);
+      } else {
+        this.flushing = false;
+        this.fail("録音データがありません");
+        return;
+      }
+      if (this.disposed) {
+        this.flushing = false;
+        return;
+      }
       const result = await transcribeWorkersAiAsr(wav, {
         endpointUrl: this.options.endpointUrl,
         language: this.options.language,
@@ -605,7 +695,9 @@ export class WorkersAiAsrController {
       this.completeSessionOrRestart(options.restart);
     } catch (error) {
       this.flushing = false;
-      this.fail(error instanceof Error ? error.message : "Workers AI ASR failed");
+      this.fail(
+        error instanceof Error && error.message.trim() ? error.message : "認識に失敗しました",
+      );
     }
   }
 
