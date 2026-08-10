@@ -255,6 +255,7 @@ export default function ComparePage() {
   const [fixtureBusy, setFixtureBusy] = useState(false);
   const [architectureOpen, setArchitectureOpen] = useState(false);
   const [configPanelOpen, setConfigPanelOpen] = useState(true);
+  const [phoneticPanelOpen, setPhoneticPanelOpen] = useState(false);
 
   const speechRef = useRef<WebSpeechController | null>(null);
   const asrRef = useRef<WorkersAiAsrController | null>(null);
@@ -280,6 +281,7 @@ export default function ComparePage() {
     const forceOpenOnDesktop = () => {
       if (media.matches) {
         setConfigPanelOpen(true);
+        setPhoneticPanelOpen(true);
       }
     };
     forceOpenOnDesktop();
@@ -1089,6 +1091,15 @@ export default function ComparePage() {
     </div>
   );
 
+  const phoneticPanelHeading = (
+    <div className="panel-heading">
+      <div>
+        <p className="eyebrow">PHONETIC INPUT</p>
+        <h3>読み入力</h3>
+      </div>
+    </div>
+  );
+
   return (
     <main className="compare-shell">
       <header className="topbar">
@@ -1408,71 +1419,87 @@ export default function ComparePage() {
             </details>
           </section>
 
-          <section className="panel reading-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">PHONETIC INPUT</p>
-                <h3>読み入力</h3>
-              </div>
-            </div>
-            <p className="field-help">
-              かな読みを AzooKey へ直接送り、変換結果を確認します。ブラウザ完結では
-              in-page、Cloudflare Worker 依存では推論 Cloudflare Worker で変換します。
-            </p>
-            <label className="field-label" htmlFor="manual-reading">
-              かな読み
-              <textarea
-                id="manual-reading"
-                rows={3}
-                value={manualReading}
-                onChange={(event) => setManualReading(event.target.value)}
-                placeholder="おつかれさまでした"
-                spellCheck={false}
-              />
-            </label>
-            <button className="button button-primary" type="button" onClick={submitManualReading}>
-              読みを変換
-            </button>
+          <section className="panel reading-panel" data-testid="phonetic-input-panel">
+            <div className="phonetic-input-heading-desktop">{phoneticPanelHeading}</div>
+            <details
+              className="phonetic-input-disclosure"
+              data-testid="phonetic-input-disclosure"
+              open={phoneticPanelOpen}
+              onToggle={(event) => {
+                const next = window.matchMedia(DESKTOP_CONFIG_MEDIA_QUERY).matches
+                  ? true
+                  : event.currentTarget.open;
+                setPhoneticPanelOpen((current) => (current === next ? current : next));
+              }}
+            >
+              <summary className="phonetic-input-toggle" data-testid="phonetic-input-toggle">
+                {phoneticPanelHeading}
+              </summary>
+              <div className="phonetic-input-body">
+                <p className="field-help">
+                  かな読みを AzooKey へ直接送り、変換結果を確認します。ブラウザ完結では
+                  in-page、Cloudflare Worker 依存では推論 Cloudflare Worker で変換します。
+                </p>
+                <label className="field-label" htmlFor="manual-reading">
+                  かな読み
+                  <textarea
+                    id="manual-reading"
+                    rows={3}
+                    value={manualReading}
+                    onChange={(event) => setManualReading(event.target.value)}
+                    placeholder="おつかれさまでした"
+                    spellCheck={false}
+                  />
+                </label>
+                <button
+                  className="button button-primary"
+                  type="button"
+                  onClick={submitManualReading}
+                >
+                  読みを変換
+                </button>
 
-            <div className="subsection fixture-settings">
-              <p className="subsection-title">変換フィクスチャ</p>
-              <label className="field-label" htmlFor="conversion-fixture">
-                ケース
-                <select
-                  id="conversion-fixture"
-                  value={selectedFixtureId}
-                  onChange={(event) => setSelectedFixtureId(event.target.value)}
-                >
-                  {AZOOKEY_CONVERSION_FIXTURES.map((fixture) => (
-                    <option key={fixture.id} value={fixture.id}>
-                      {fixture.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="field-help">
-                {AZOOKEY_CONVERSION_FIXTURES.find((fixture) => fixture.id === selectedFixtureId)
-                  ?.note ?? ""}
-              </p>
-              <div className="button-row">
-                <button
-                  className="button button-secondary"
-                  type="button"
-                  onClick={runSelectedFixture}
-                  disabled={fixtureBusy}
-                >
-                  選択ケースを実行
-                </button>
-                <button
-                  className="button button-secondary"
-                  type="button"
-                  onClick={() => void runAllConversionFixtures()}
-                  disabled={fixtureBusy}
-                >
-                  全ケース実行
-                </button>
+                <div className="subsection fixture-settings">
+                  <p className="subsection-title">変換フィクスチャ</p>
+                  <label className="field-label" htmlFor="conversion-fixture">
+                    ケース
+                    <select
+                      id="conversion-fixture"
+                      value={selectedFixtureId}
+                      onChange={(event) => setSelectedFixtureId(event.target.value)}
+                    >
+                      {AZOOKEY_CONVERSION_FIXTURES.map((fixture) => (
+                        <option key={fixture.id} value={fixture.id}>
+                          {fixture.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="field-help">
+                    {AZOOKEY_CONVERSION_FIXTURES.find((fixture) => fixture.id === selectedFixtureId)
+                      ?.note ?? ""}
+                  </p>
+                  <div className="button-row">
+                    <button
+                      className="button button-secondary"
+                      type="button"
+                      onClick={runSelectedFixture}
+                      disabled={fixtureBusy}
+                    >
+                      選択ケースを実行
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      type="button"
+                      onClick={() => void runAllConversionFixtures()}
+                      disabled={fixtureBusy}
+                    >
+                      全ケース実行
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
+            </details>
           </section>
         </aside>
 

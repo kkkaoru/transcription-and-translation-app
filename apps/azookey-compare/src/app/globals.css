@@ -730,6 +730,44 @@ select:focus-visible {
   }
 }
 
+.phonetic-input-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.phonetic-input-disclosure > summary::-webkit-details-marker,
+.phonetic-input-disclosure > summary::marker {
+  display: none;
+}
+
+.phonetic-input-toggle .panel-heading {
+  margin-bottom: 0;
+}
+
+.phonetic-input-heading-desktop {
+  display: none;
+}
+
+.phonetic-input-body {
+  display: grid;
+  gap: 14px;
+}
+
+@media (min-width: 641px) {
+  .phonetic-input-heading-desktop {
+    display: block;
+  }
+
+  .phonetic-input-disclosure {
+    display: contents;
+  }
+
+  .phonetic-input-disclosure > summary {
+    display: none;
+    pointer-events: none;
+  }
+}
+
 .utterance-cost-card {
   margin-top: 12px;
   padding: 12px 14px;
@@ -1007,6 +1045,15 @@ select:focus-visible {
   }
 
   .config-panel-disclosure[open] > .config-panel-body {
+    border-top: 1px solid var(--soft-line);
+    padding-top: 4px;
+  }
+
+  .phonetic-input-disclosure[open] .phonetic-input-toggle .panel-heading {
+    margin-bottom: 19px;
+  }
+
+  .phonetic-input-disclosure[open] > .phonetic-input-body {
     border-top: 1px solid var(--soft-line);
     padding-top: 4px;
   }
