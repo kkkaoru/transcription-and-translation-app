@@ -101,4 +101,3 @@ describe("compare-dev ASR Access proxy", () => {
     assert.deepEqual(await posted.json(), { text: "こんにちは", transport: "http" });
   });
 });
-
