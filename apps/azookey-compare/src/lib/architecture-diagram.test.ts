@@ -17,6 +17,7 @@ import {
   overflowingBoxIds,
   overlappingBoxIds,
   OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT,
+  OVERVIEW_DIAGRAM_TARGET_MAX_HEIGHT,
   overviewArchitecture,
 } from "./architecture-diagram";
 import { COMPARE_WORKER_ORIGIN } from "./inference-proxy";
@@ -60,8 +61,17 @@ describe("architecture SVG diagram models", () => {
     expect(text).toContain("Vibrato WASM");
     expect(overview.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
     expect(overview.height).toBeLessThan(OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT);
+    expect(overview.height).toBeLessThanOrEqual(OVERVIEW_DIAGRAM_TARGET_MAX_HEIGHT);
     expect(overview.bands).toBeUndefined();
     expect(overview.lanes).toEqual([]);
+    const byId = Object.fromEntries(overview.boxes.map((box) => [box.id, box]));
+    expect(byId.browser.x).toBeLessThan(byId.access.x);
+    expect(byId.access.x).toBeLessThan(byId.compare.x);
+    expect(byId["browser-complete"].x).toBeLessThan(byId["worker-ws"].x);
+    expect(byId["worker-ws"].x).toBeLessThan(byId.inference.x);
+    expect(byId["browser-complete"].y).toBeGreaterThan(byId.compare.y);
+    expect(byId["worker-ws"].y).toBe(byId["browser-complete"].y);
+    expect(byId.inference.y).toBe(byId["browser-complete"].y);
     expect(overview.boxes.map((box) => box.id)).toEqual([
       "browser",
       "access",
