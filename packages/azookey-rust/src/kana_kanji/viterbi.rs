@@ -1132,6 +1132,29 @@ fn is_particle_reading(reading: &str) -> bool {
     )
 }
 
+/// Copular / predicative continuations. These are not particles, but they
+/// still start a new grammatical phrase after a content word (`日なので`,
+/// `日なのに`, `日なら`, `日だ`, `日です`). Bare `な` and a blanket `なの`
+/// prefix are intentionally absent so `ひな` → `雛` and genitive `の`
+/// compounds stay particle-driven.
+fn is_copular_continuation_reading(reading: &str) -> bool {
+    matches!(
+        reading,
+        "だ" | "です"
+            | "でした"
+            | "でしょう"
+            | "である"
+            | "なので"
+            | "なのに"
+            | "なら"
+            | "なのだ"
+            | "なのです"
+            | "だが"
+            | "ですが"
+            | "だけど"
+    )
+}
+
 fn is_grammatical_particle_entry(entry: &DictionaryEntry) -> bool {
     entry.surface == entry.reading && is_particle_reading(&entry.reading)
 }
@@ -1936,6 +1959,12 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
         start + len,
         max_dictionary_word_chars,
     );
+    let copular_continuations = copular_continuations_starting_at(
+        dictionary,
+        chars,
+        start + len,
+        max_dictionary_word_chars,
+    );
     let min_other_len =
         if len == 1 { MIN_SHADOWING_TRIGGER_CHARS } else { MIN_SHADOWING_LEXICAL_CHARS };
     entries.iter().any(|other| {
@@ -1944,6 +1973,7 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
         // under `はれます`) should not hide the shorter complete word
         // (`晴れ` + `ます`).
         let leftover = remaining_chars.saturating_sub(other_len);
+        let reading_leftover = other.reading.chars().skip(len).collect::<String>();
         other_len >= min_other_len
             && other_len > len
             && other_len <= remaining_chars
@@ -1953,8 +1983,12 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
             && contains_kanji(&other.surface)
             && !is_particle_reading(&other.reading)
             && !longer_reading_crosses_a_particle_boundary(
-                &other.reading.chars().skip(len).collect::<String>(),
+                &reading_leftover,
                 &particle_continuations,
+            )
+            && !longer_reading_crosses_a_particle_boundary(
+                &reading_leftover,
+                &copular_continuations,
             )
     })
 }
@@ -1963,12 +1997,15 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
 ///
 /// Prefix pruning is useful for preventing invented compounds, but a longer
 /// row can also glue a real particle onto a shorter word (`はし` + `の`
-/// versus `橋野`, or `はじ` + `から` versus `弾か`). Compare the extra mora
-/// of that longer reading against dictionary particles that start at the
-/// short prefix's end:
+/// versus `橋野`, or `はじ` + `から` versus `弾か`), or glue a one-mora
+/// content Kanji onto a copular continuation (`ひな` / `雛` before `なので`
+/// / `なのに` / `なら`). Compare the extra mora of that longer reading against
+/// dictionary particles and copular identities that start at the short prefix's
+/// end:
 ///
 /// - leftover equals the particle (`はしの` / `の`) → keep the short word
 /// - leftover is a strict prefix of the particle (`はじか` / `から`) → keep
+/// - leftover is a strict prefix of a copula (`ひな` / `なので`) → keep
 /// - particle is a strict prefix of leftover (`きのう` / `の`) → still prune
 fn discounts_initial_particle_phrase_connection(
     dictionary: &AzooKeyDictionary,
@@ -2022,6 +2059,40 @@ fn particle_continuations_starting_at(
     start: usize,
     max_dictionary_word_chars: usize,
 ) -> Vec<String> {
+    grammatical_continuations_starting_at(
+        dictionary,
+        chars,
+        start,
+        max_dictionary_word_chars,
+        |continuation| is_particle_reading(&continuation.reading),
+    )
+}
+
+fn copular_continuations_starting_at(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    max_dictionary_word_chars: usize,
+) -> Vec<String> {
+    grammatical_continuations_starting_at(
+        dictionary,
+        chars,
+        start,
+        max_dictionary_word_chars,
+        |continuation| {
+            continuation.surface == continuation.reading
+                && is_copular_continuation_reading(&continuation.reading)
+        },
+    )
+}
+
+fn grammatical_continuations_starting_at(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    max_dictionary_word_chars: usize,
+    keep: impl Fn(&DictionaryEntry) -> bool,
+) -> Vec<String> {
     if start >= chars.len() {
         return Vec::new();
     }
@@ -2033,7 +2104,7 @@ fn particle_continuations_starting_at(
             let continuation_len = continuation.reading.chars().count();
             if continuation_len > 0
                 && start + continuation_len <= chars.len()
-                && is_particle_reading(&continuation.reading)
+                && keep(&continuation)
             {
                 Some(continuation.reading)
             } else {
@@ -3380,5 +3451,231 @@ mod tests {
                     .expect("public conversion should produce a candidate");
             assert_eq!(candidate.text, expected, "input: {input}");
         }
+    }
+
+    #[test]
+    fn keeps_one_mora_kanji_before_copular_nanode() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-copular-nanode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(&root, "ひ\t日\t-1\nひ\tひ\t-2\nひな\t雛\t-0.1\nなので\tなので\t-0.5\n")
+            .expect("copular-nanode fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("copular-nanode fixture should load")
+        .without_builtin_entries_for_test();
+
+        let chars = "ひなので".chars().collect::<Vec<_>>();
+        let pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &chars,
+            0,
+            dictionary.entries_starting_at(&chars, 0, 24).expect("ひなので lookup"),
+            chars.len(),
+            24,
+        );
+        assert!(
+            pruned.iter().any(|entry| entry.reading == "ひ" && entry.surface == "日"),
+            "ひな must not shadow 日 before なので: {:?}",
+            pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+
+        let candidates = convert_with_dictionary(
+            "ひなので",
+            &dictionary,
+            ConversionOptions { n_best: 8, ..ConversionOptions::default() },
+        );
+        let top = candidates.first().expect("copular-nanode conversion should produce a candidate");
+        assert_eq!(
+            top.text,
+            "日なので",
+            "one-mora content Kanji before a copula must outrank ひな glue: {:?}",
+            candidates.iter().map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn public_dictionary_default_beam_converts_atsui_hi_nanode() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            user: None,
+            memory: None,
+        })
+        .expect("official AzooKey dictionary should load");
+        let input = "あついひなのであついすーぷをのみたくない";
+        let chars = super::to_hiragana(input).chars().collect::<Vec<_>>();
+        let hi_start = "あつい".chars().count();
+        let max_dictionary_word_chars = super::bounded_dictionary_word_chars(
+            ConversionOptions::default().max_dictionary_word_chars,
+        );
+        let pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &chars,
+            hi_start,
+            dictionary
+                .entries_starting_at(&chars, hi_start, max_dictionary_word_chars)
+                .expect("ひ lookup"),
+            chars.len() - hi_start,
+            max_dictionary_word_chars,
+        );
+        assert!(
+            pruned.iter().any(|entry| entry.reading == "ひ" && entry.surface == "日"),
+            "日 must remain before なので: {:?}",
+            pruned
+                .iter()
+                .filter(|entry| entry.reading.starts_with('ひ'))
+                .map(|entry| (&entry.reading, &entry.surface))
+                .collect::<Vec<_>>()
+        );
+
+        let candidates = convert_with_dictionary(input, &dictionary, ConversionOptions::default());
+        let top = candidates.first().expect("public conversion should produce a candidate");
+        assert_eq!(top.text, "暑い日なので熱いスープを飲みたくない");
+    }
+
+    #[test]
+    fn keeps_one_mora_kanji_before_copular_nanoni_nara_nanoda_nanodesu() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-copular-extra-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &root,
+            "ひ\t日\t-1\nひ\tひ\t-2\nひな\t雛\t-0.1\nなのに\tなのに\t-0.5\nなら\tなら\t-0.5\nなのだ\tなのだ\t-0.5\nなのです\tなのです\t-0.5\n",
+        )
+        .expect("copular-extra fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("copular-extra fixture should load")
+        .without_builtin_entries_for_test();
+
+        for (input, expected) in [
+            ("ひなのに", "日なのに"),
+            ("ひなら", "日なら"),
+            ("ひなのだ", "日なのだ"),
+            ("ひなのです", "日なのです"),
+        ] {
+            let chars = input.chars().collect::<Vec<_>>();
+            let pruned = super::prune_short_kanji_prefix_entries(
+                &dictionary,
+                &chars,
+                0,
+                dictionary.entries_starting_at(&chars, 0, 24).expect("ひ lookup"),
+                chars.len(),
+                24,
+            );
+            assert!(
+                pruned.iter().any(|entry| entry.reading == "ひ" && entry.surface == "日"),
+                "ひな must not shadow 日 before {input}: {:?}",
+                pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+            );
+            let top = convert_with_dictionary(
+                input,
+                &dictionary,
+                ConversionOptions { n_best: 8, ..ConversionOptions::default() },
+            )
+            .into_iter()
+            .next()
+            .expect("copular-extra conversion should produce a candidate");
+            assert_eq!(top.text, expected, "input: {input}");
+        }
+
+        let hina = convert_with_dictionary(
+            "ひな",
+            &dictionary,
+            ConversionOptions { n_best: 8, ..ConversionOptions::default() },
+        )
+        .into_iter()
+        .next()
+        .expect("bare ひな conversion should produce a candidate");
+        assert_eq!(hina.text, "雛", "bare ひな must stay 雛, not 日な");
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn public_dictionary_default_beam_keeps_hi_before_copular_nanoni_and_nara() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            user: None,
+            memory: None,
+        })
+        .expect("official AzooKey dictionary should load");
+        let max_dictionary_word_chars = super::bounded_dictionary_word_chars(
+            ConversionOptions::default().max_dictionary_word_chars,
+        );
+        for (input, hi_prefix, expected_top) in [
+            ("ひなのに", "", None),
+            ("あついひなのに", "あつい", Some("暑い日なのに")),
+            ("あついひなら", "あつい", Some("暑い日なら")),
+        ] {
+            let chars = super::to_hiragana(input).chars().collect::<Vec<_>>();
+            let hi_start = hi_prefix.chars().count();
+            let pruned = super::prune_short_kanji_prefix_entries(
+                &dictionary,
+                &chars,
+                hi_start,
+                dictionary
+                    .entries_starting_at(&chars, hi_start, max_dictionary_word_chars)
+                    .expect("ひ lookup"),
+                chars.len() - hi_start,
+                max_dictionary_word_chars,
+            );
+            assert!(
+                pruned.iter().any(|entry| entry.reading == "ひ" && entry.surface == "日"),
+                "日 must remain before the copular continuation in {input}: {:?}",
+                pruned
+                    .iter()
+                    .filter(|entry| entry.reading.starts_with('ひ'))
+                    .map(|entry| (&entry.reading, &entry.surface))
+                    .collect::<Vec<_>>()
+            );
+            let candidates = convert_with_dictionary(
+                input,
+                &dictionary,
+                ConversionOptions { n_best: 16, ..ConversionOptions::default() },
+            );
+            let texts =
+                candidates.iter().map(|candidate| candidate.text.as_str()).collect::<Vec<_>>();
+            assert!(
+                texts.iter().any(|text| text.contains('日')),
+                "日 must remain available after {input}: {texts:?}"
+            );
+            if let Some(expected) = expected_top {
+                let top = texts.first().expect("public conversion should produce a candidate");
+                assert_eq!(*top, expected, "input: {input}");
+            }
+        }
+    }
+
+    #[test]
+    fn public_dictionary_default_beam_converts_bare_hina_to_chick() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            user: None,
+            memory: None,
+        })
+        .expect("official AzooKey dictionary should load");
+        let top = convert_with_dictionary("ひな", &dictionary, ConversionOptions::default())
+            .into_iter()
+            .next()
+            .expect("public conversion should produce a candidate");
+        assert_eq!(top.text, "雛");
     }
 }
