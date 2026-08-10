@@ -24,6 +24,13 @@ const MIN_FOLLOWING_CONTENT_CHARS: usize = 3;
 const MIN_UNKNOWN_FALLBACK_CHARS: usize = 2;
 const MIN_UNKNOWN_SPAN_CHARS: usize = 4;
 const CONTEXT_LOOKBACK_CHARS: usize = 8;
+/// Keep lexical lookahead bounded when a clause connector separates a
+/// homophone from the word that disambiguates it. This is a tie-breaker only;
+/// Viterbi/CID/MM scores remain the primary ranking signal.
+const CONTEXT_LOOKAHEAD_CHARS: usize = 12;
+const THICKNESS_CONTEXT_BONUS: f32 = 1.5;
+/// Extra bonus when a thickness cue co-occurs with slicing/cutting vocabulary.
+const THICKNESS_SLICE_CONTEXT_BONUS: f32 = 0.75;
 const NO_SCORE: f32 = 0.0;
 const NUMERIC_BOUNDARY_SCORE: f32 = -1.0;
 const NUMERIC_AMBIGUOUS_SCORE: f32 = -12.0;
@@ -782,6 +789,13 @@ pub fn convert_with_dictionary(
                                 end,
                                 entry,
                                 bounded_dictionary_word_chars(options.max_dictionary_word_chars),
+                            )
+                            + thickness_context_bonus(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                bounded_dictionary_word_chars(options.max_dictionary_word_chars),
                             ),
                         meaning_score: state.meaning_score + meaning_delta,
                         last: Some(entry.clone()),
@@ -1446,6 +1460,75 @@ fn following_yen_amount_bonus(chars: &[char], end: usize, entry: &DictionaryEntr
     }
 }
 
+/// Add a small, lexical-context prior for thickness adjectives.  This is
+/// intentionally based on surface cue classes found in the following clause,
+/// rather than on a reading/surface phrase table: a Kanji adjective containing
+/// `厚` gains a bounded prior when the clause contains a thinness cue, with a
+/// small extra amount when a slicing action is also present.
+fn thickness_context_bonus(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if !entry.surface.ends_with('い')
+        || !entry.surface.chars().any(|character| character == '厚')
+    {
+        return NO_SCORE;
+    }
+    if !following_clause_has_surface_cue(
+        dictionary,
+        chars,
+        end,
+        max_dictionary_word_chars,
+        &['薄', '細'],
+    ) {
+        return NO_SCORE;
+    }
+    let slice_bonus = following_clause_has_surface_cue(
+        dictionary,
+        chars,
+        end,
+        max_dictionary_word_chars,
+        &['切', '刻', '削'],
+    )
+    .then_some(THICKNESS_SLICE_CONTEXT_BONUS)
+    .unwrap_or(NO_SCORE);
+    THICKNESS_CONTEXT_BONUS + slice_bonus
+}
+
+/// Look only within the current punctuation-delimited clause and a short
+/// bounded lookahead.  Dictionary surfaces, not raw phrase strings, provide
+/// the semantic cue so this remains useful for other thickness/slicing
+/// sentences and custom dictionary rows.
+fn following_clause_has_surface_cue(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    max_dictionary_word_chars: usize,
+    cues: &[char],
+) -> bool {
+    let clause_end = chars
+        .get(start..)
+        .and_then(|rest| rest.iter().position(|character| is_boundary(*character)))
+        .map_or(chars.len(), |offset| start + offset);
+    let scan_end = clause_end.min(start + CONTEXT_LOOKAHEAD_CHARS);
+    for candidate_start in start..scan_end {
+        let entries = dictionary
+            .entries_starting_at(chars, candidate_start, max_dictionary_word_chars)
+            .unwrap_or_default();
+        if entries.iter().any(|candidate| {
+            let candidate_end = candidate_start + candidate.reading.chars().count();
+            candidate_end <= clause_end
+                && candidate.surface.chars().any(|character| cues.contains(&character))
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
 fn transition_score(
     dictionary: &AzooKeyDictionary,
     state: &PathState,
@@ -1847,14 +1930,84 @@ fn contextual_entry_bonus(
     );
     let preceding_content = preceding_context_is_content(chars.get(..start).unwrap_or_default());
     let adjective_like = entry.surface.ends_with('い') && contains_kanji(&entry.surface);
-    if !following_content && !preceding_content && !adjective_like {
+    let thickness_bonus = contextual_thickness_bonus(
+        dictionary,
+        chars,
+        end,
+        entry,
+        max_dictionary_word_chars,
+    );
+    if !following_content && !preceding_content && !adjective_like && thickness_bonus == NO_SCORE {
         return NO_SCORE;
     }
     let desired_rank = usize::from(following_content || preceding_content);
-    if rank == desired_rank {
+    let rank_bonus = if rank == desired_rank {
         CONTEXTUAL_ENTRY_BONUS
     } else {
         NO_SCORE
+    };
+    rank_bonus + thickness_bonus
+}
+
+/// Add a small semantic prior when a bounded downstream clause contains the
+/// opposite thickness axis. This helps the thickness-then-slicing construction
+/// without tying the score to a subject: the current candidate and a
+/// dictionary-backed lexical cue must form the generic thickness contrast.
+fn contextual_thickness_bonus(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    let Some(current_axis) = thickness_axis(&entry.surface) else {
+        return NO_SCORE;
+    };
+    let after = chars.get(end..).unwrap_or_default();
+    let Some(connector) = dictionary
+        .entries_starting_at(after, 0, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|candidate| is_grammatical_continuation_entry(candidate))
+        .max_by_key(|candidate| candidate.reading.chars().count())
+    else {
+        return NO_SCORE;
+    };
+    let connector_len = connector.reading.chars().count();
+    if connector_len == 0 || connector_len >= after.len() {
+        return NO_SCORE;
+    }
+    let context_start = end + connector_len;
+    let context_end = (context_start + CONTEXT_LOOKAHEAD_CHARS).min(chars.len());
+    for offset in context_start..context_end {
+        if is_boundary(chars[offset]) {
+            break;
+        }
+        let suffix = &chars[offset..];
+        let Ok(entries) = dictionary.entries_starting_at(suffix, 0, max_dictionary_word_chars)
+        else {
+            continue;
+        };
+        if entries.iter().any(|candidate| {
+            let candidate_len = candidate.reading.chars().count();
+            candidate_len > 0
+                && offset + candidate_len <= context_end
+                && contains_kanji(&candidate.surface)
+                && thickness_axis(&candidate.surface).is_some_and(|axis| axis != current_axis)
+        }) {
+            return THICKNESS_CONTEXT_BONUS;
+        }
+    }
+    NO_SCORE
+}
+
+fn thickness_axis(surface: &str) -> Option<bool> {
+    if surface.chars().any(|character| character == '厚') {
+        Some(true)
+    } else if surface.chars().any(|character| character == '薄') {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -3635,6 +3788,31 @@ mod tests {
     }
 
     #[test]
+    fn uses_thickness_context_for_daikon_clause() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            user: None,
+            memory: None,
+        })
+        .expect("official AzooKey dictionary should load")
+        .without_builtin_entries_for_test();
+        let input = "だいこんがあついのでうすくきる";
+        let candidates = convert_with_dictionary(
+            input,
+            &dictionary,
+            ConversionOptions { n_best: 16, ..ConversionOptions::default() },
+        );
+        let top = candidates.first().expect("public conversion should produce a candidate");
+        assert_eq!(top.text, "大根が厚いので薄く切る");
+        assert!(
+            candidates.iter().any(|candidate| candidate.text == "大根が熱いので薄く切る"),
+            "the temperature reading should remain in n-best: {:?}",
+            candidates.iter().map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn converts_requested_weather_and_soup_sentences_with_public_dictionary() {
         let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
@@ -4005,5 +4183,43 @@ mod tests {
             .next()
             .expect("public conversion should produce a candidate");
         assert_eq!(top.text, "雛");
+    }
+
+    #[test]
+    fn debug_daikon_context() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            user: None,
+            memory: None,
+        })
+        .expect("official AzooKey dictionary should load");
+        for reading in ["あつい", "だいこん", "ので", "うすく", "きる"] {
+            println!("READING {reading}:");
+            for entry in dictionary.lookup_exact(reading).unwrap_or_default() {
+                println!("  {:?}", entry);
+            }
+        }
+        let chars = super::to_hiragana("だいこんがあついのでうすくきる").chars().collect::<Vec<_>>();
+        let start = "だいこんが".chars().count();
+        let end = start + "あつい".chars().count();
+        let after = &chars[end..];
+        println!(
+            "CONTEXT following={} preceding={} after={:?}",
+            super::following_context_is_content(&dictionary, after, 24),
+            super::preceding_context_is_content(&chars[..start]),
+            after.iter().collect::<String>()
+        );
+        for entry in dictionary.lookup_exact("あつい").unwrap_or_default() {
+            println!("BONUS {:?} = {}", entry, super::contextual_entry_bonus(&dictionary, &chars, start, end, &entry, 24));
+        }
+        let candidates = convert_with_dictionary(
+            "だいこんがあついのでうすくきる",
+            &dictionary,
+            ConversionOptions { n_best: 64, ..ConversionOptions::default() },
+        );
+        for candidate in candidates.iter().take(20) {
+            println!("CANDIDATE {:?}", candidate);
+        }
     }
 }
