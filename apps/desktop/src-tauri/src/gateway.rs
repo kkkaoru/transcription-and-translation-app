@@ -26,7 +26,7 @@ const PARAPPER_PORT: u16 = 18082;
 /// Headless Parapper keeps a brief pause inside the same turn.  Keep these
 /// values explicit in the desktop-to-sidecar command contract so a persisted
 /// interactive Parapper profile cannot reintroduce 96ms/320ms segmentation.
-const PARAPPER_INTERIM_RESULT_SILENCE_MS: u32 = 192;
+const PARAPPER_INTERIM_RESULT_SILENCE_MS: u32 = 96;
 // Match the headless sidecar default: 960ms keeps a normal Japanese clause
 // together across an ordinary breath, with a bounded finalization delay for
 // genuinely short utterances.
@@ -1033,7 +1033,7 @@ mod tests {
                 "--vad-threshold",
                 "0.25",
                 "--interim-result-silence-ms",
-                "192",
+                "96",
                 "--turn-check-silence-ms",
                 "960",
                 "--noise-cancellation-enabled",
@@ -1061,7 +1061,7 @@ mod tests {
 
         assert_eq!(health["vadIntervalMs"], 128);
         assert_eq!(health["vadThreshold"], 1.0);
-        assert_eq!(health["interimResultSilenceMs"], 192);
+        assert_eq!(health["interimResultSilenceMs"], 96);
         assert_eq!(health["turnCheckSilenceMs"], 960);
         assert_eq!(health["turnDetector"], "namo");
         assert_eq!(health["interimResultEnabled"], true);

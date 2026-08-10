@@ -18,7 +18,7 @@ const DEFAULT_HEADLESS_PORT: u16 = 18_082;
 /// 「熱い料理はおいしい」 is not split after the first word.  These values
 /// are intentionally scoped to the sidecar entry point; the interactive
 /// Parapper configuration remains user-controlled.
-const DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS: u32 = 192;
+const DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS: u32 = 96;
 // 960ms keeps a normal Japanese clause together across an ordinary breath
 // while still finalizing promptly after a deliberate pause.  A larger value
 // would reduce false turn splits further, but would make short utterances feel
