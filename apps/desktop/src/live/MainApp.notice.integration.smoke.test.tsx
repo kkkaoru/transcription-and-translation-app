@@ -212,4 +212,75 @@ describe("MainApp pipeline-drop notice wiring", () => {
     });
     expect(getDiagnosticEvents().some((event) => event.message === "Runtime → error")).toBe(false);
   });
+
+  it("hides in-app captions when native output is active", async () => {
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <MainApp />
+        </I18nProvider>,
+      );
+      for (let index = 0; index < 8; index += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(container.querySelector(".caption-line-source")).not.toBeNull();
+
+    await act(async () => {
+      runtimeListener?.({
+        ...DEFAULT_RUNTIME_STATUS,
+        nativeOutput: "syphon",
+      });
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="live-output-status"]')?.textContent).toContain(
+      "Syphon に出力中",
+    );
+    expect(container.querySelector(".caption-line-source")).toBeNull();
+    expect(container.querySelector(".native-output-canvas")).not.toBeNull();
+  });
+
+  it("hides in-app captions while transparent capture is open", async () => {
+    vi.spyOn(bridge, "openTransparentCapture").mockResolvedValue(undefined);
+    vi.spyOn(bridge, "closeTransparentCapture").mockResolvedValue(undefined);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <MainApp />
+        </I18nProvider>,
+      );
+      for (let index = 0; index < 8; index += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="open-transparent-capture"]')
+        ?.click();
+      for (let index = 0; index < 8; index += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(container.querySelector('[data-testid="live-output-status"]')?.textContent).toContain(
+      "透過取り込みに出力中",
+    );
+    expect(container.querySelector(".caption-line-source")).toBeNull();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="hide-transparent-capture"]')
+        ?.click();
+      for (let index = 0; index < 8; index += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(container.querySelector('[data-testid="live-output-status"]')).toBeNull();
+    expect(container.querySelector(".caption-line-source")).not.toBeNull();
+  });
 });

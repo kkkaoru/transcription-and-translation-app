@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultConfig, DEFAULT_RUNTIME_STATUS } from "../core/defaults";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { createPreviewCaption } from "../overlay/captions";
-import { LiveView } from "./LiveView";
+import { LiveView, resolveLiveExternalOutput } from "./LiveView";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -260,7 +260,7 @@ describe("LiveView in-app preview scaling", () => {
     expect(container.querySelector<HTMLButtonElement>(".text-button")?.disabled).toBe(false);
   });
 
-  it("shows native always-on status with transparent-window controls on live", async () => {
+  it("replaces in-app captions with Syphon output status", async () => {
     await act(async () => {
       root.render(
         <I18nProvider>
@@ -282,10 +282,81 @@ describe("LiveView in-app preview scaling", () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('[data-testid="native-always-on"]')?.textContent).toContain(
-      "常時配信",
+    expect(container.querySelector('[data-testid="live-output-status"]')?.textContent).toContain(
+      "Syphon に出力中",
     );
+    expect(
+      container.querySelector('[data-testid="live-output-status"]')?.getAttribute("data-output"),
+    ).toBe("syphon");
+    expect(container.querySelector('[data-testid="preview-scale-host"]')).toBeNull();
+    expect(container.querySelector(".caption-line-source")).toBeNull();
     expect(container.querySelector('[data-testid="open-transparent-capture"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="hide-transparent-capture"]')).not.toBeNull();
+  });
+
+  it("replaces in-app captions while transparent capture is open", async () => {
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={createDefaultConfig()}
+            status={DEFAULT_RUNTIME_STATUS}
+            caption={createPreviewCaption()}
+            devices={[]}
+            message={null}
+            transparentCaptureOpen
+            onToggleCapture={() => {}}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+            onOpenTransparentCapture={() => {}}
+            onCloseTransparentCapture={() => {}}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="live-output-status"]')?.textContent).toContain(
+      "透過取り込みに出力中",
+    );
+    expect(container.querySelector(".caption-line-source")).toBeNull();
+  });
+
+  it("prefers Syphon status when transparent capture is also open", async () => {
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={createDefaultConfig()}
+            status={{ ...DEFAULT_RUNTIME_STATUS, nativeOutput: "spout2" }}
+            caption={createPreviewCaption()}
+            devices={[]}
+            message={null}
+            transparentCaptureOpen
+            onToggleCapture={() => {}}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="live-output-status"]')?.textContent).toContain(
+      "Spout2 に出力中",
+    );
+    expect(container.querySelector(".caption-line-source")).toBeNull();
+  });
+});
+
+describe("resolveLiveExternalOutput", () => {
+  it("prefers native transport over transparent capture", () => {
+    expect(resolveLiveExternalOutput("syphon", true)).toBe("syphon");
+    expect(resolveLiveExternalOutput("spout2", false)).toBe("spout2");
+    expect(resolveLiveExternalOutput("transparent-window", true)).toBe("transparent-window");
+    expect(resolveLiveExternalOutput("unsupported", true)).toBe("transparent-window");
+    expect(resolveLiveExternalOutput("unsupported", false)).toBeNull();
   });
 });

@@ -51,8 +51,8 @@ export const OverlayApp = () => {
   const nativeRenderer = isNativeRendererRoute();
   const transparentCapture = isTransparentCaptureRoute() && !nativeRenderer;
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
-  // Syphon/Spout2 (native-renderer) starts with sample copy so OBS can frame
-  // the layout before the first recognition. Window Capture stays blank until live text.
+  // Syphon/Spout2 starts with sample copy so clients can frame the layout
+  // before the first recognition. Window Capture stays blank until live text.
   const [caption, setCaption] = useState<CaptionPayload>(() =>
     transparentCapture ? createEmptyCaption() : createPreviewCaption(),
   );
@@ -60,15 +60,11 @@ export const OverlayApp = () => {
   useEffect(() => {
     document.documentElement.classList.add("overlay-document");
     document.body.classList.add("overlay-document");
-    if (transparentCapture) {
-      document.documentElement.classList.add("overlay-document--window");
-      document.body.classList.add("overlay-document--window");
-    }
     return () => {
-      document.documentElement.classList.remove("overlay-document", "overlay-document--window");
-      document.body.classList.remove("overlay-document", "overlay-document--window");
+      document.documentElement.classList.remove("overlay-document");
+      document.body.classList.remove("overlay-document");
     };
-  }, [transparentCapture]);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -191,12 +187,19 @@ export const OverlayApp = () => {
         disposeSafely(dispose);
       }
     };
-  }, []);
+  }, [nativeRenderer]);
 
-  return (
-    <>
-      <OverlayView config={config} caption={caption} />
-      {nativeRenderer ? <NativeFramePublisher config={config} caption={caption} /> : null}
-    </>
-  );
+  if (nativeRenderer) {
+    return (
+      <div
+        data-testid="native-renderer-root"
+        data-source-text={caption.sourceText}
+        data-translation-text={caption.translationText}
+      >
+        <NativeFramePublisher config={config} caption={caption} />
+      </div>
+    );
+  }
+
+  return <OverlayView config={config} caption={caption} />;
 };

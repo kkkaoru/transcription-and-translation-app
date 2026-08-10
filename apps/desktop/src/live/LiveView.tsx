@@ -7,7 +7,30 @@ import { getInputLevelDb, subscribeInputLevel } from "../core/input-level";
 import { computePreviewFitScale } from "../core/style";
 import type { AppConfig, AudioInputDevice, CaptionPayload, RuntimeStatus } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
+import type { MessageKey } from "../i18n/messages";
 import { OverlayView } from "../overlay/CaptionOverlay";
+
+export type LiveExternalOutput = "syphon" | "spout2" | "transparent-window";
+
+const LIVE_EXTERNAL_OUTPUT_MESSAGE: Record<LiveExternalOutput, MessageKey> = {
+  syphon: "live.outputToSyphon",
+  spout2: "live.outputToSpout2",
+  "transparent-window": "live.outputToTransparentWindow",
+};
+
+/** Prefer native transport over the optional transparent capture window. */
+export const resolveLiveExternalOutput = (
+  nativeOutput: RuntimeStatus["nativeOutput"],
+  transparentCaptureOpen: boolean,
+): LiveExternalOutput | null => {
+  if (nativeOutput === "syphon" || nativeOutput === "spout2") {
+    return nativeOutput;
+  }
+  if (transparentCaptureOpen) {
+    return "transparent-window";
+  }
+  return null;
+};
 
 /**
  * Level meter only — subscribes to the input-level store so ~12 Hz RMS ticks
@@ -70,6 +93,7 @@ export const LiveView = ({
   caption,
   devices,
   message,
+  transparentCaptureOpen = false,
   onToggleCapture,
   onDeviceChange,
   onRefreshDevices,
@@ -82,6 +106,7 @@ export const LiveView = ({
   caption: CaptionPayload;
   devices: AudioInputDevice[];
   message: string | null;
+  transparentCaptureOpen?: boolean;
   onToggleCapture: () => void;
   onDeviceChange: ChangeEventHandler<HTMLSelectElement>;
   onRefreshDevices: () => void;
@@ -94,6 +119,8 @@ export const LiveView = ({
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const overlayWidth = Math.max(1, config.overlay.width);
   const overlayHeight = Math.max(1, config.overlay.height);
+  const externalOutput = resolveLiveExternalOutput(status.nativeOutput, transparentCaptureOpen);
+  const suppressInAppCaption = externalOutput !== null;
   const previewStyle = useMemo(
     () =>
       ({
@@ -134,6 +161,9 @@ export const LiveView = ({
   // Re-bind when overlay design size changes so aspect-ratio restyle is measured.
   // biome-ignore lint/correctness/useExhaustiveDependencies: design size is a re-measure trigger, not read in the body
   useEffect(() => {
+    if (suppressInAppCaption) {
+      return;
+    }
     const node = stageRef.current;
     if (!node || typeof ResizeObserver === "undefined") {
       return;
@@ -154,9 +184,7 @@ export const LiveView = ({
     const rect = node.getBoundingClientRect();
     applySize(rect.width, rect.height);
     return () => observer.disconnect();
-  }, [overlayHeight, overlayWidth]);
-
-  const usesNativeTransport = status.nativeOutput === "syphon" || status.nativeOutput === "spout2";
+  }, [overlayHeight, overlayWidth, suppressInAppCaption]);
 
   return (
     <div className="live-workspace">
@@ -170,20 +198,34 @@ export const LiveView = ({
       ) : null}
       <section className="live-stage" aria-label={t("live.previewTitle")}>
         <div
-          className="preview-stage preview-stage--fill"
-          style={previewStyle}
+          className={`preview-stage preview-stage--fill${suppressInAppCaption ? " preview-stage--external" : ""}`}
+          style={suppressInAppCaption ? undefined : previewStyle}
           data-testid="live-preview-stage"
-          data-preview-measured={measured ? "true" : "false"}
-          data-preview-scale={previewScale.toFixed(4)}
-          ref={stageRef}
+          data-preview-measured={suppressInAppCaption ? undefined : measured ? "true" : "false"}
+          data-preview-scale={suppressInAppCaption ? undefined : previewScale.toFixed(4)}
+          ref={suppressInAppCaption ? undefined : stageRef}
         >
-          <div
-            className={`preview-scale-host${measured ? " is-scaled" : " is-fill"}`}
-            style={scaleHostStyle}
-            data-testid="preview-scale-host"
-          >
-            <LiveCaptionPreview config={config} caption={caption} />
-          </div>
+          {suppressInAppCaption && externalOutput ? (
+            <div
+              className="live-output-status"
+              data-testid="live-output-status"
+              data-output={externalOutput}
+              role="status"
+            >
+              <p className="live-output-status-title">
+                {t(LIVE_EXTERNAL_OUTPUT_MESSAGE[externalOutput])}
+              </p>
+              <p className="live-output-status-hint">{t("live.outputStatusHint")}</p>
+            </div>
+          ) : (
+            <div
+              className={`preview-scale-host${measured ? " is-scaled" : " is-fill"}`}
+              style={scaleHostStyle}
+              data-testid="preview-scale-host"
+            >
+              <LiveCaptionPreview config={config} caption={caption} />
+            </div>
+          )}
         </div>
       </section>
       <div className="live-toolbar">
@@ -212,11 +254,6 @@ export const LiveView = ({
           </button>
         </div>
         <div className="live-toolbar-actions">
-          {usesNativeTransport ? (
-            <span className="live-badge" data-testid="native-always-on">
-              {t("live.nativeAlwaysOn")}
-            </span>
-          ) : null}
           {onOpenTransparentCapture ? (
             <button
               className="text-button"

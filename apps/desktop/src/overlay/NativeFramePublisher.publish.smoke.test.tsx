@@ -39,6 +39,8 @@ import {
   beginNativePublish,
   completeNativePublishSuccess,
   createNativePublishGate,
+  NATIVE_FONTS_READY_TIMEOUT_MS,
+  NATIVE_RAF_FALLBACK_MS,
   NativeFramePublisher,
 } from "./NativeFramePublisher";
 
@@ -356,6 +358,20 @@ describe("NativeFramePublisher publish failures", () => {
     expect(mocks.publishOverlayFrame).toHaveBeenCalledWith(expect.any(String), 64, 36);
     const [rgbaBase64] = mocks.publishOverlayFrame.mock.calls[0] ?? [];
     expect(atob(rgbaBase64).length).toBe(64 * 36 * 4);
+  });
+
+  it("publishes through a timeout fallback when requestAnimationFrame never fires", async () => {
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => 1);
+    vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    await act(() => {
+      root.render(
+        <NativeFramePublisher config={smallConfig()} caption={captionWith("raf-dead")} />,
+      );
+    });
+    await flush(NATIVE_RAF_FALLBACK_MS + NATIVE_FONTS_READY_TIMEOUT_MS + 10);
+
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
   });
 
   it("retries when the canvas context is unavailable instead of dropping the frame", async () => {

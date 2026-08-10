@@ -80,6 +80,7 @@ import {
 import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
 import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
+import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
 import { CaptionStyleView } from "../settings/CaptionStyleView";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
@@ -413,6 +414,7 @@ export const MainApp = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [transparentCaptureOpen, setTransparentCaptureOpen] = useState(false);
   /** Avoid training users to ignore a repeated low-priority drop banner. */
   const pipelineDropNoticeShown = useRef(false);
   /** Keep an accepted drop token so React StrictMode updater replays are idempotent. */
@@ -1978,6 +1980,7 @@ export const MainApp = () => {
   const openTransparentCapture = async () => {
     try {
       await bridge.openTransparentCapture();
+      setTransparentCaptureOpen(true);
       pushDiagnosticEvent(
         "overlay",
         "Transparent capture shown",
@@ -1993,6 +1996,7 @@ export const MainApp = () => {
   const closeTransparentCapture = async () => {
     try {
       await bridge.closeTransparentCapture();
+      setTransparentCaptureOpen(false);
       pushDiagnosticEvent("overlay", "Transparent capture hidden");
     } catch (error) {
       const notice = noticeFromError(error, "message.transparentOpenFailed");
@@ -2129,6 +2133,7 @@ export const MainApp = () => {
               caption={caption}
               devices={devices}
               message={noticeText}
+              transparentCaptureOpen={transparentCaptureOpen}
               onToggleCapture={toggleCapture}
               onDeviceChange={handleDeviceChange}
               onRefreshDevices={() => void refreshDevices({ primePermission: true })}
@@ -2166,6 +2171,9 @@ export const MainApp = () => {
           )}
         </main>
       </div>
+      {status.nativeOutput === "syphon" || status.nativeOutput === "spout2" ? (
+        <NativeFramePublisher config={config} caption={caption} />
+      ) : null}
     </div>
   );
 };

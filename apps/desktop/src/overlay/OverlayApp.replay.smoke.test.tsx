@@ -55,6 +55,9 @@ const flush = async (): Promise<void> => {
   });
 };
 
+const nativeRendererRoot = (root: HTMLElement): HTMLElement | null =>
+  root.querySelector('[data-testid="native-renderer-root"]');
+
 describe("OverlayApp caption replay", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -252,12 +255,14 @@ describe("OverlayApp caption replay", () => {
     });
     await flush();
 
-    expect(container.querySelector(".caption-line-source")?.textContent).toBe(
+    expect(container.querySelector(".caption-line-source")).toBeNull();
+    expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
       "これはプレビュー用の字幕です。",
     );
-    expect(container.querySelector(".caption-line-translation")?.textContent).toBe(
+    expect(nativeRendererRoot(container)?.getAttribute("data-translation-text")).toBe(
       "This is a preview caption.",
     );
+    expect(container.querySelector(".native-output-canvas")).not.toBeNull();
 
     await act(async () => {
       root.unmount();
@@ -277,7 +282,8 @@ describe("OverlayApp caption replay", () => {
     });
     await flush();
 
-    expect(container.querySelector(".caption-line-source")?.textContent).toBe(
+    expect(container.querySelector(".caption-line-source")).toBeNull();
+    expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
       "これはプレビュー用の字幕です。",
     );
 
@@ -285,7 +291,9 @@ describe("OverlayApp caption replay", () => {
       captionListener?.(sourceCaption());
       await Promise.resolve();
     });
-    expect(container.querySelector(".caption-line-source")?.textContent).toBe("正規化された字幕");
+    expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
+      "正規化された字幕",
+    );
 
     await act(async () => {
       runtimeListener?.({
@@ -297,7 +305,7 @@ describe("OverlayApp caption replay", () => {
       });
       await Promise.resolve();
     });
-    expect(container.querySelector(".caption-line-source")?.textContent).toBe(
+    expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
       "これはプレビュー用の字幕です。",
     );
 

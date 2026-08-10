@@ -155,6 +155,7 @@ describe("App routes", () => {
     expect(container.textContent).not.toContain("設定を保存");
     expect(container.textContent).not.toContain("Save settings");
     expect(document.body.classList.contains("overlay-document")).toBe(true);
+    expect(document.body.classList.contains("overlay-document--window")).toBe(false);
     // Live capture starts empty; preview copy is reserved for non-capture surfaces.
     expect(container.querySelector(".caption-lines")).not.toBeNull();
   });
