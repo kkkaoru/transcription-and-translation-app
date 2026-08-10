@@ -24,15 +24,6 @@ export interface WorkersAiAsrControllerOptions {
   onError?: (message: string) => void;
 }
 
-type MediaRecorderLike = {
-  state: string;
-  start: () => void;
-  stop: () => void;
-  ondataavailable: ((event: { data: Blob }) => void) | null;
-  onstop: (() => void) | null;
-  onerror: ((event: { error?: DOMException }) => void) | null;
-};
-
 type NavigatorWithMedia = Navigator & {
   mediaDevices?: {
     getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
@@ -45,7 +36,7 @@ export class WorkersAiAsrController {
   private readonly options: WorkersAiAsrControllerOptions;
   private state: WorkersAiAsrState = "idle";
   private stream: MediaStream | null = null;
-  private recorder: MediaRecorderLike | null = null;
+  private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
   private requestedStop = false;
   private disposed = false;

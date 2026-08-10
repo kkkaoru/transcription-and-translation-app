@@ -662,7 +662,7 @@ export default function ComparePage() {
   };
 
   const enqueueConversion = useCallback(
-    (sourceText: string, options: Parameters<typeof dispatchFinalText>[8]): void => {
+    (sourceText: string, options: Parameters<typeof dispatchFinalText>[8] = {}): void => {
       const dispatch = dispatchQueueRef.current.then(() =>
         dispatchFinalText(
           sourceText,
