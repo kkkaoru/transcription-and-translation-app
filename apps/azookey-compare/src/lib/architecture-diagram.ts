@@ -49,7 +49,7 @@ export const ARCHITECTURE_ZENZAI = {
   endpoint: "/completion",
   loader: "llama-server",
   file: "ggml-model-Q5_K_M.gguf",
-  note: "Worker は GGUF を持たない",
+  note: "Cloudflare Worker は GGUF を持たない",
   xsmall: {
     id: "zenz-v3.2-xsmall-gguf",
     hf: "Miwa-Keita/zenz-v3.2-xsmall-gguf",
@@ -458,7 +458,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: access.y + access.h + 40,
     w: fullW,
     title: "③ azookey-compare",
-    lines: [COMPARE_WORKER_ORIGIN, "static Next export + compare Worker", "JWT ゲート"],
+    lines: [COMPARE_WORKER_ORIGIN, "static Next export + compare Cloudflare Worker", "JWT ゲート"],
     tone: "worker",
     artifact: "runtime",
   });
@@ -480,7 +480,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: forkY,
     w: halfW,
     title: "worker-vibrato",
-    lines: ["/ws/azookey", "→ INFERENCE binding"],
+    lines: ["Cloudflare Worker 依存", "/ws/azookey", "→ INFERENCE binding"],
     tone: "worker",
     artifact: "runtime",
   });
@@ -490,7 +490,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: workerWs.y + workerWs.h + 40,
     w: halfW,
     title: "kotoba-beacon-inference",
-    lines: ["workers_dev false", "公開 URL なし"],
+    lines: ["Cloudflare Worker（推論）", "workers_dev false", "公開 URL なし"],
     tone: "worker",
     artifact: "runtime",
   });
@@ -499,7 +499,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     x: rightX,
     y: inference.y + inference.h + 40,
     w: halfW,
-    title: "Zenzai（Worker のみ）",
+    title: "Zenzai（Cloudflare Worker のみ）",
     lines: [
       ARCHITECTURE_ZENZAI.note,
       `${ARCHITECTURE_ZENZAI.loader} が読む`,
@@ -560,7 +560,7 @@ export const modeArchitecture = (
   const reading = layoutStack(20, stackY, boxW, STACK_GAP, [
     {
       id: "vib",
-      title: worker ? "Worker Vibrato" : "ブラウザ Vibrato",
+      title: worker ? "Cloudflare Worker（推論）Vibrato" : "ブラウザ Vibrato",
       lines: worker
         ? ["/ws/azookey", "→ INFERENCE binding", "kotoba-beacon-inference", "workers_dev false"]
         : [
@@ -577,7 +577,7 @@ export const modeArchitecture = (
   const convert = layoutStack(360, stackY, boxW, STACK_GAP, [
     {
       id: "model",
-      title: zenz && !worker ? "Zenzai（Worker のみ）" : modelName,
+      title: zenz && !worker ? "Zenzai（Cloudflare Worker のみ）" : modelName,
       lines: worker
         ? zenz
           ? [
@@ -585,7 +585,7 @@ export const modeArchitecture = (
               `${ARCHITECTURE_ZENZAI.loader} が読む`,
               ARCHITECTURE_ZENZAI.file,
               `${ARCHITECTURE_ZENZAI.env} → POST ${ARCHITECTURE_ZENZAI.endpoint}`,
-              "Worker 依存のみ",
+              "Cloudflare Worker 依存のみ",
               "未設定 / 失敗 → AzooKey WASM",
             ]
           : [
@@ -595,7 +595,7 @@ export const modeArchitecture = (
               "公開 URL なし",
             ]
         : zenz
-          ? [converterModel, "Zenzai は Worker 依存のみ", "このモードでは使えません"]
+          ? [converterModel, "Zenzai は Cloudflare Worker 依存のみ", "このモードでは使えません"]
           : [converterModel, "/azookey/azookey.wasm", "in-page かな漢字", "/ws/azookey なし"],
       tone: zenz ? (worker ? "model" : "warn") : worker ? "worker" : "browser",
       artifact: zenz ? "model" : "code",
@@ -622,7 +622,7 @@ export const architectureDiagramCaption = (
     ? "Cloudflare Workers 本番構成"
     : mode === "browser-vibrato"
       ? "ブラウザ完結の実行経路"
-      : "Worker 依存の実行経路";
+      : "Cloudflare Worker 依存の実行経路";
 
 export const architectureDiagram = (options: ArchitectureDiagramOptions): ArchitectureDiagram => {
   if (options.kind === "overview") {

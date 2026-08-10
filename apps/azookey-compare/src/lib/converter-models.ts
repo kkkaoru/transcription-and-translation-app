@@ -27,19 +27,19 @@ export const converterModelOptions: readonly ConverterModelOption[] = [
     value: "azookey-rust-wasm",
     label: "AzooKey WASM",
     description:
-      "公式 LOUDS 辞書の AzooKey Rust WASM。ブラウザ完結ではブラウザ内、Worker 依存では inference Worker で変換します。追加のモデルサーバーは不要です。",
+      "公式 LOUDS 辞書の AzooKey Rust WASM。ブラウザ完結ではブラウザ内、Cloudflare Worker 依存では推論 Cloudflare Worker で変換します。追加のモデルサーバーは不要です。",
   },
   {
     value: "zenz-v3.2-xsmall-gguf",
     label: "AzooKey Zenzai v3.2 xsmall",
     description:
-      "低レイテンシー向け Zenzai。Worker の MODEL_ROUTES に zenz-v3.2-xsmall-gguf を設定したときだけ利用できます。",
+      "低レイテンシー向け Zenzai。推論 Cloudflare Worker の MODEL_ROUTES に zenz-v3.2-xsmall-gguf を設定したときだけ利用できます。",
   },
   {
     value: "zenz-v3.2-small-gguf",
     label: "AzooKey Zenzai v3.2 small",
     description:
-      "精度寄り Zenzai。Worker の MODEL_ROUTES に zenz-v3.2-small-gguf を設定したときだけ利用できます。",
+      "精度寄り Zenzai。推論 Cloudflare Worker の MODEL_ROUTES に zenz-v3.2-small-gguf を設定したときだけ利用できます。",
   },
 ] as const;
 

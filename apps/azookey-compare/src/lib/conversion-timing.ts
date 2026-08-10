@@ -35,7 +35,7 @@ export const formatRowTiming = (timing: ConversionTimingFields): string => {
   // Worker-vibrato uses inference `elapsedMs`; browser-compact maps local AzooKey ms here.
   // `0` must stay visible: production may currently report elapsedMs: 0.
   const converterMs = timing.workerElapsedMs ?? timing.azookeyElapsedMs;
-  parts.push(`Worker ${formatMilliseconds(converterMs)}`);
+  parts.push(`Cloudflare Worker ${formatMilliseconds(converterMs)}`);
   parts.push(`合計処理時間 ${formatMilliseconds(timing.totalElapsedMs)}`);
   return `処理時間 ${parts.join(" · ")}`;
 };

@@ -21,19 +21,19 @@ describe("conversion timing display", () => {
         workerElapsedMs: 12,
         totalElapsedMs: 41,
       }),
-    ).toBe("処理時間 Vibrato 4 ms · Worker 12 ms · 合計処理時間 41 ms");
+    ).toBe("処理時間 Vibrato 4 ms · Cloudflare Worker 12 ms · 合計処理時間 41 ms");
     expect(
       formatRowTiming({
         azookeyElapsedMs: 9,
         totalElapsedMs: 13,
       }),
-    ).toBe("処理時間 Worker 9 ms · 合計処理時間 13 ms");
+    ).toBe("処理時間 Cloudflare Worker 9 ms · 合計処理時間 13 ms");
     expect(
       formatRowTiming({
         workerElapsedMs: 0,
         totalElapsedMs: 41,
       }),
-    ).toBe("処理時間 Worker 0 ms · 合計処理時間 41 ms");
-    expect(formatRowTiming({})).toBe("処理時間 Worker 未計測 · 合計処理時間 未計測");
+    ).toBe("処理時間 Cloudflare Worker 0 ms · 合計処理時間 41 ms");
+    expect(formatRowTiming({})).toBe("処理時間 Cloudflare Worker 未計測 · 合計処理時間 未計測");
   });
 });

@@ -343,7 +343,7 @@ export class AzooKeyWorkerClient {
     }
     if (!this.endpoint) {
       this.setState("error");
-      return Promise.reject(new Error("Worker WebSocket URL を入力してください"));
+      return Promise.reject(new Error("Cloudflare Worker WebSocket URL を入力してください"));
     }
     if (this.socket?.readyState === WebSocket.OPEN) {
       return Promise.resolve();
@@ -358,7 +358,7 @@ export class AzooKeyWorkerClient {
       socket = new WebSocket(this.endpoint);
     } catch (error) {
       this.setState("error");
-      return Promise.reject(asError(error, "Worker WebSocket を作成できません"));
+      return Promise.reject(asError(error, "Cloudflare Worker WebSocket を作成できません"));
     }
 
     let resolveAttempt: () => void = () => undefined;
@@ -402,7 +402,7 @@ export class AzooKeyWorkerClient {
         return;
       }
       const error = new Error(
-        `Worker WebSocket で接続エラーが発生しました（${this.endpoint}）。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください`,
+        `Cloudflare Worker WebSocket で接続エラーが発生しました（${this.endpoint}）。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください`,
       );
       this.socket = null;
       this.socketGeneration += 1;
@@ -428,7 +428,7 @@ export class AzooKeyWorkerClient {
         return;
       }
       const error = new Error(
-        event.reason?.trim() || `Worker WebSocket が切断されました (${event.code})`,
+        event.reason?.trim() || `Cloudflare Worker WebSocket が切断されました (${event.code})`,
       );
       this.socket = null;
       this.socketGeneration += 1;
@@ -454,7 +454,7 @@ export class AzooKeyWorkerClient {
     return this.connect().then(() => {
       const socket = this.socket;
       if (!socket || socket.readyState !== WebSocket.OPEN) {
-        throw new Error("Worker WebSocket が接続されていません");
+        throw new Error("Cloudflare Worker WebSocket が接続されていません");
       }
       return this.enqueueConversion(request);
     });
@@ -514,12 +514,12 @@ export class AzooKeyWorkerClient {
       .then(() => {
         const connected = this.socket;
         if (!connected || connected.readyState !== WebSocket.OPEN) {
-          throw new Error("Worker WebSocket が接続されていません");
+          throw new Error("Cloudflare Worker WebSocket が接続されていません");
         }
         this.sendQueuedConversion(connected, next);
       })
       .catch((error: unknown) => {
-        this.finishQueuedConversion(next, asError(error, "Worker WebSocket に接続できません"));
+        this.finishQueuedConversion(next, asError(error, "Cloudflare Worker WebSocket に接続できません"));
       });
   }
 
@@ -538,7 +538,7 @@ export class AzooKeyWorkerClient {
       if (this.conversionQueue.length > 0) {
         this.retireSocket(socket, socketGeneration, "conversion timeout");
       }
-      this.finishQueuedConversion(queued, new Error("AzooKey Worker の応答がタイムアウトしました"));
+      this.finishQueuedConversion(queued, new Error("Cloudflare Worker（推論）AzooKey の応答がタイムアウトしました"));
     }, this.requestTimeoutMs);
     this.pending.set(queued.requestId, {
       resolve: (result) => this.finishQueuedConversion(queued, null, result),
@@ -585,13 +585,13 @@ export class AzooKeyWorkerClient {
     } else if (result) {
       queued.resolve(result);
     } else {
-      queued.reject(new Error("Worker 応答が空です"));
+      queued.reject(new Error("Cloudflare Worker 応答が空です"));
     }
     this.pumpConversions();
   }
 
   close(): void {
-    const error = new Error("Worker WebSocket を閉じました");
+    const error = new Error("Cloudflare Worker WebSocket を閉じました");
     this.closed = true;
     const socket = this.socket;
     const attempt = this.connectionAttempt;
@@ -664,7 +664,7 @@ export class AzooKeyWorkerClient {
       return;
     }
     if (parsed.convertedText === undefined) {
-      pending.reject(new Error("Worker 応答に convertedText がありません"));
+      pending.reject(new Error("Cloudflare Worker 応答に convertedText がありません"));
       return;
     }
     pending.resolve({
@@ -688,7 +688,7 @@ export class AzooKeyWorkerClient {
     this.socket = null;
     this.socketGeneration += 1;
     if (this.connectionAttempt?.socket === socket) {
-      const error = new Error("Worker WebSocket が切断されました");
+      const error = new Error("Cloudflare Worker WebSocket が切断されました");
       this.connectionAttempt.reject(error);
       this.connectionAttempt = null;
     }

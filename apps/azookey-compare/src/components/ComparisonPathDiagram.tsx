@@ -143,7 +143,7 @@ export const ComparisonPathDiagram = ({
       {kind === "overview" ? (
         <ul className="path-diagram-legend" data-testid="architecture-legend">
           <li data-legend="device">実線: 処理の流れ</li>
-          <li data-legend="internet">赤: Worker 境界を越える</li>
+          <li data-legend="internet">赤: Cloudflare Worker 境界を越える</li>
           <li data-legend="depends">点線: 任意 / フォールバック</li>
         </ul>
       ) : null}
@@ -233,7 +233,7 @@ export const ComparisonPathDiagram = ({
                 fontSize="11"
                 fontWeight="800"
               >
-                Worker 境界
+                Cloudflare Worker 境界
               </text>
             </g>
           ) : null}

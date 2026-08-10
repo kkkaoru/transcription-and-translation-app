@@ -4,17 +4,17 @@ import type { ComparisonMode } from "./contract";
 export const conversionPathLabel = (mode: ComparisonMode): string =>
   mode === "browser-vibrato"
     ? "Browser Vibrato WASM → Browser AzooKey WASM"
-    : "Worker Vibrato → Worker AzooKey WASM";
+    : "Cloudflare Worker Vibrato → Cloudflare Worker AzooKey WASM";
 
 /**
  * Stage that was in flight when a conversion failed.
  *
  * `worker-connect` sits between the two real stages: the browser pre-pass has
- * already finished, but the Worker was never reached. Folding it into either
+ * already finished, but the Cloudflare Worker was never reached. Folding it into either
  * neighbour would blame a stage that did not fail. `worker-request` is the same
- * idea one step later: the Worker answered, but refused the request (auth,
+ * idea one step later: the Cloudflare Worker answered, but refused the request (auth,
  * back-pressure, contract) without ever invoking the converter. A
- * `worker-transport` outcome means the client cannot tell whether the Worker
+ * `worker-transport` outcome means the client cannot tell whether the Cloudflare Worker
  * received or converted the request (timeout, socket close, or an unknown error).
  */
 export type ConversionStage =
@@ -28,7 +28,7 @@ export type ConversionStage =
 
 /**
  * Path a row actually reached. A failed row must not advertise stages it never
- * ran: a browser pre-pass failure never reaches the Worker, and a setup failure
+ * ran: a browser pre-pass failure never reaches the Cloudflare Worker, and a setup failure
  * (bad auth, missing client) reaches neither.
  */
 export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: ConversionStage): string => {
@@ -41,28 +41,28 @@ export const attemptedPathLabel = (mode: ComparisonMode, failedStage?: Conversio
   if (failedStage === "browser-wasm") {
     return mode === "browser-vibrato"
       ? "Browser Vibrato WASM（失敗） / Browser AzooKey WASM 未実行"
-      : "Browser Vibrato WASM（失敗） / Worker AzooKey WASM 未実行";
+      : "Browser Vibrato WASM（失敗） / Cloudflare Worker AzooKey WASM 未実行";
   }
   if (failedStage === "browser-azookey") {
     return "Browser Vibrato WASM → Browser AzooKey WASM（失敗）";
   }
   if (failedStage === "worker-connect") {
     return mode === "browser-vibrato"
-      ? "Browser Vibrato WASM 完了 / Worker AzooKey WASM 未実行"
-      : "Worker Vibrato / AzooKey WASM 未実行";
+      ? "Browser Vibrato WASM 完了 / Cloudflare Worker AzooKey WASM 未実行"
+      : "Cloudflare Worker Vibrato / AzooKey WASM 未実行";
   }
   if (failedStage === "worker-request") {
     return mode === "browser-vibrato"
-      ? "Browser Vibrato WASM 完了 / Worker がリクエストを拒否（AzooKey WASM 未実行）"
-      : "Worker がリクエストを拒否（Vibrato / AzooKey WASM 未実行）";
+      ? "Browser Vibrato WASM 完了 / Cloudflare Worker がリクエストを拒否（AzooKey WASM 未実行）"
+      : "Cloudflare Worker がリクエストを拒否（Vibrato / AzooKey WASM 未実行）";
   }
   if (failedStage === "worker-transport") {
     return mode === "browser-vibrato"
-      ? "Browser Vibrato WASM 完了 / Worker 処理結果不明（AzooKey WASM 実行不明）"
-      : "Worker 処理結果不明（Vibrato / AzooKey WASM 実行不明）";
+      ? "Browser Vibrato WASM 完了 / Cloudflare Worker 処理結果不明（AzooKey WASM 実行不明）"
+      : "Cloudflare Worker 処理結果不明（Vibrato / AzooKey WASM 実行不明）";
   }
   if (mode !== "browser-vibrato") {
-    return "Worker Vibrato / AzooKey WASM（失敗）";
+    return "Cloudflare Worker Vibrato / AzooKey WASM（失敗）";
   }
   return "Browser Vibrato WASM → Browser AzooKey WASM（失敗）";
 };
@@ -75,7 +75,7 @@ type PendingRowState = "queued" | "wasm" | "sending";
  *
  * A row only knows which stage failed once it has settled, so until then the
  * route is a plan rather than a path that was reached. Marking it keeps an
- * in-flight row from advertising a Worker conversion that has not run yet.
+ * in-flight row from advertising a Cloudflare Worker conversion that has not run yet.
  */
 export const rowPathLabel = (
   mode: ComparisonMode,
@@ -148,7 +148,7 @@ export const comparisonPathSummary = (
   browserWasmConfigured: boolean,
 ): string =>
   mode === "worker-vibrato"
-    ? "Web Speech → Worker Vibrato → AzooKey WASM"
+    ? "Web Speech → Cloudflare Worker Vibrato → AzooKey WASM"
     : `Web Speech → Browser Vibrato WASM${
         browserWasmConfigured ? "" : "（未設定）"
       } → Browser AzooKey WASM`;

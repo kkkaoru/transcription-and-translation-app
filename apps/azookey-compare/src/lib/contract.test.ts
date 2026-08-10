@@ -33,7 +33,7 @@ describe("comparison configuration contract", () => {
       "worker-vibrato",
       "browser-vibrato",
     ]);
-    expect(comparisonModeOptions[0]?.label).toContain("Worker 依存");
+    expect(comparisonModeOptions[0]?.label).toContain("Cloudflare Worker 依存");
     expect(comparisonModeOptions[1]?.label).toContain("ブラウザ完結");
     for (const option of comparisonModeOptions) {
       expect(option.description.toLowerCase()).toContain("azookey");
@@ -41,7 +41,7 @@ describe("comparison configuration contract", () => {
       expect(option.description).not.toMatch(/使いません/);
     }
     expect(comparisonModeHelpSections.map((section) => section.title)).toEqual([
-      "Worker 依存",
+      "Cloudflare Worker 依存",
       "ブラウザ完結",
     ]);
     expect(comparisonModeOptions[0]?.description).toContain("AzooKey");
@@ -80,7 +80,7 @@ describe("comparison configuration contract", () => {
     expect(hasBrowserWasmConfiguration({ browserWasmGlobalName: "__CUSTOM__" })).toBe(true);
     expect(comparisonModeOptions[1]?.description).toContain("必須");
     expect(comparisonModeOptions[1]?.description).not.toMatch(/任意|optional/i);
-    expect(comparisonConfigFieldDescriptions.mode).toMatch(/Worker|browser/i);
+    expect(comparisonConfigFieldDescriptions.mode).toMatch(/Cloudflare Worker|browser/i);
     expect(comparisonConfigFieldDescriptions.mode).not.toMatch(/optional|任意/i);
     const unconfiguredStatus = browserWasmConfigurationStatus({});
     expect(unconfiguredStatus).toContain("未設定");
@@ -99,7 +99,7 @@ describe("comparison configuration contract", () => {
       "globalThis.__CUSTOM__",
     );
     expect(browserWasmConfigurationStatus({ browserWasmGlobalName: "__CUSTOM__" })).toContain(
-      "Worker のみにはなりません",
+      "Cloudflare Worker のみにはなりません",
     );
   });
 

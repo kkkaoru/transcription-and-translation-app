@@ -265,7 +265,7 @@ describe("comparison conversion pipeline", () => {
           runBrowserAzookey: vi.fn(),
         },
       ),
-    ).rejects.toThrow(/Worker WebSocket/);
+    ).rejects.toThrow(/Cloudflare Worker WebSocket/);
 
     await expect(
       runComparisonConversion(
@@ -276,6 +276,6 @@ describe("comparison conversion pipeline", () => {
           connectWorker: vi.fn(() => Promise.resolve()),
         },
       ),
-    ).rejects.toThrow(/Worker WebSocket/);
+    ).rejects.toThrow(/Cloudflare Worker WebSocket/);
   });
 });

@@ -19,7 +19,7 @@ Workers はデプロイ済み。**compare に Access（OTP + Managed OAuth）を
 
 アカウント（非秘密）: Personal `78109ec18c7c85b194b19fb32e3bb149` / `kaoru@teadea.net` / `*.kaoru.workers.dev`。
 
-compare Worker version（ブラウザ簡潔 + JWT ゲート + 2f6b234 inference Bearer 注入）: `1100b27e-3888-4af4-8f4e-6e9150aba219`。
+compare Cloudflare Worker version（ブラウザ完結 + JWT ゲート + 2f6b234 inference Bearer 注入）: `1100b27e-3888-4af4-8f4e-6e9150aba219`。
 
 ---
 
@@ -35,13 +35,13 @@ Browser
        └ worker-vibrato only: /ws/azookey, /v1/azookey
             → strip client Authorization, inject AZOOKEY_API_TOKEN Bearer when set
             → service binding INFERENCE
-            → kotoba-beacon-inference（workers.dev 無し。Worker destination Access + deny everyone）
+            → kotoba-beacon-inference Cloudflare Worker（推論）（workers.dev 無し。Worker destination Access + deny everyone）
 ```
 
-- compare Access app は **public destination**（hostname）。Worker destination は WebSocket upgrade を 403 にするため使わない。
-- inference Access app は **worker destination** + deny everyone + Managed OAuth。公開 hostname は閉じたまま。
+- compare Access app は **public destination**（hostname）。Cloudflare Worker destination は WebSocket upgrade を 403 にするため使わない。
+- inference Access app は **Cloudflare Worker destination** + deny everyone + Managed OAuth。公開 hostname は閉じたまま。
 - Google IdP は env に `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` が無いので **未作成・スキップ**。
-- compare Worker secrets: `POLICY_AUD`, `TEAM_DOMAIN`（値は invent しない・print しない）。`AZOOKEY_API_TOKEN` は **未設定**（`.env` にも無い。invent しない）。proxy は token があるときだけ Bearer を付ける。
+- compare Cloudflare Worker secrets: `POLICY_AUD`, `TEAM_DOMAIN`（値は invent しない・print しない）。`AZOOKEY_API_TOKEN` は **未設定**（`.env` にも無い。invent しない）。proxy は token があるときだけ Bearer を付ける。
 - Service Token は API 403（`Access: Service Tokens Write` 不足）で未作成。ST verify はスキップ。
 
 ---
@@ -59,7 +59,7 @@ compare と inference は本番デプロイ済み。inference `CORS_ORIGIN` は 
 
 本番 compare UI はブラウザ簡潔込み（`page.tsx` は pipeline + `warmupBrowserAzookey`）。architecture UI / `globals.css` / `VibratoModeSelector` WIP はデプロイ・commit に含めていない。
 
-wasm/dict は Worker 成果物がソース。compare `public/azookey/` は **ビルド時コピー + gitignore**（10MB を git に複製しない）。`copy:azookey-assets` → Next export。
+wasm/dict は推論 Cloudflare Worker 成果物がソース。compare `public/azookey/` は **ビルド時コピー + gitignore**（10MB を git に複製しない）。`copy:azookey-assets` → Next export。
 
 inference proxy（`2f6b234`）: client `Authorization` を剥がし、`AZOOKEY_API_TOKEN` があれば Bearer 注入。`worker.ts` / `inference-proxy.ts` はこの担当では未編集。`wrangler.jsonc` の `secrets.required: [AZOOKEY_API_TOKEN]` は token 未設定だと deploy が止まるため外した（injection コードは残置）。
 
@@ -70,14 +70,14 @@ inference proxy（`2f6b234`）: client `Authorization` を剥がし、`AZOOKEY_A
 - OTP IdP: `onetimepin`（作成または既存を再利用）
 - Google IdP: env 無しのためスキップ
 - compare app `azookey-compare`: self_hosted、public destination、Managed OAuth on、allow `kaoru@teadea.net` + `@teadea.net`、allowed IdP 1（OTP）
-- inference app `kotoba-beacon-inference`: self_hosted、worker destination、Managed OAuth on、deny everyone
+- inference app `kotoba-beacon-inference`: self_hosted、Cloudflare Worker destination、Managed OAuth on、deny everyone
 
 Allow は everyone / login_method-only OTP ではない。
 
 ### JWT
 
-compare Worker secrets に `POLICY_AUD` と `TEAM_DOMAIN` を設定し、JWT ゲート付き UI をデプロイ済み。`POLICY_AUD` は外さない。
-未認証で Access エッジが 302/401 するため、ブラウザ未ログインでは Worker JWT まで到達しない（防御層）。
+compare Cloudflare Worker secrets に `POLICY_AUD` と `TEAM_DOMAIN` を設定し、JWT ゲート付き UI をデプロイ済み。`POLICY_AUD` は外さない。
+未認証で Access エッジが 302/401 するため、ブラウザ未ログインでは compare Cloudflare Worker JWT まで到達しない（防御層）。
 OTP 待ち・人手 QA はしない。Access JWT 付きブラウザ検証は cookie が無いためスキップ。ST 無しなので本番 ST verify もスキップ。
 
 ### 検証
@@ -92,15 +92,15 @@ OTP 待ち・人手 QA はしない。Access JWT 付きブラウザ検証は coo
   - `きょうはいいてんき` → `今日はいい天気`
   - `あしたのてんきははれ` → `明日の天気は晴れ`
   - dict sha256 `84f605a5c76e09480ef1a0a02d91982fb8c9426a8a7a18fb64d9f27210641b22`
-  - WS 未使用: `conversion-pipeline` の `browser-vibrato` は `usedWebSocket: false`、`connectWorker`/`convertWithWorker` 未呼び出し。Zenzai は明示エラー（Worker へサイレントフォールバックしない）。
-  - compare `public/azookey/` は gitignore。ソースは worker-server。`node scripts/verify-generated-assets.mjs` でコピー一致 + ignored を確認。
+  - WS 未使用: `conversion-pipeline` の `browser-vibrato` は `usedWebSocket: false`、`connectWorker`/`convertWithWorker` 未呼び出し。Zenzai は明示エラー（Cloudflare Worker へサイレントフォールバックしない）。
+  - compare `public/azookey/` は gitignore。ソースは cloudflare-worker-server。`node scripts/verify-generated-assets.mjs` でコピー一致 + ignored を確認。
   - 確認コマンド: `node scripts/verify-azookey-wasm-parity.mjs` / compare `bun run test:coverage`
 
 ### 残リスク
 
 - `*.workers.dev` cookie スコープ。将来は自前ドメイン推奨。
 - Google ログインは env が無いので使えない。OTP のみ。
-- inference の worker-destination Access は公開 URL が無い間は実トラフィックに乗らない。`workers.dev` を戻さない。
+- inference の Cloudflare Worker-destination Access は公開 URL が無い間は実トラフィックに乗らない。`workers.dev` を戻さない。
 
 ---
 

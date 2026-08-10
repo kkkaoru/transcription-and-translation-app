@@ -16,7 +16,7 @@ import type { ConversionStage } from "./path-labels";
 import type { AzooKeyConvertResult, VibratoExecution } from "./worker-client";
 
 export const BROWSER_COMPACT_ZENZ_UNSUPPORTED_MESSAGE =
-  "ブラウザ完結では Zenzai は使えません。AzooKey WASM を選ぶか Worker 依存モードに切り替えてください。";
+  "ブラウザ完結では Zenzai は使えません。AzooKey WASM を選ぶか Cloudflare Worker 依存モードに切り替えてください。";
 
 export const usesWorkerConversion = (mode: ComparisonMode): boolean => mode === "worker-vibrato";
 
@@ -133,7 +133,7 @@ export const runComparisonConversion = async (
   }
 
   if (!deps.connectWorker || !deps.convertWithWorker) {
-    throw new Error("Worker WebSocket クライアントを初期化できません");
+    throw new Error("Cloudflare Worker WebSocket クライアントを初期化できません");
   }
   deps.onStage?.("worker-connect");
   await deps.connectWorker();

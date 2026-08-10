@@ -24,13 +24,16 @@ const overviewTerms = [
   "JWT",
   "ブラウザ完結",
   "/ws/azookey なし",
+  "Cloudflare Worker 依存",
+  "Cloudflare Worker（推論）",
+  "compare Cloudflare Worker",
   "worker-vibrato",
   "/ws/azookey",
   "INFERENCE",
   "kotoba-beacon-inference",
   "workers_dev false",
   "公開 URL なし",
-  "Zenzai（Worker のみ）",
+  "Zenzai（Cloudflare Worker のみ）",
   ARCHITECTURE_ZENZAI.loader,
   ARCHITECTURE_ZENZAI.file,
   ARCHITECTURE_ZENZAI.note,
@@ -90,13 +93,13 @@ describe("architecture SVG diagram models", () => {
     const worker = architectureDiagramText(
       modeArchitecture("worker-vibrato", true, "azookey-rust-wasm"),
     );
-    expect(worker).toContain("Worker Vibrato");
+    expect(worker).toContain("Cloudflare Worker（推論）Vibrato");
     expect(worker).toContain("azookey-rust-wasm");
     expect(worker).toContain("system.azkdict.gz");
     expect(worker).toContain("INFERENCE");
     expect(worker).toContain("kotoba-beacon-inference");
     expect(worker).toContain("公開 URL なし");
-    expect(architectureDiagramCaption("mode", "worker-vibrato")).toBe("Worker 依存の実行経路");
+    expect(architectureDiagramCaption("mode", "worker-vibrato")).toBe("Cloudflare Worker 依存の実行経路");
 
     const zenz = architectureDiagramText(
       modeArchitecture("worker-vibrato", true, "zenz-v3.2-xsmall-gguf"),
@@ -104,7 +107,7 @@ describe("architecture SVG diagram models", () => {
     expect(zenz).toContain("zenz-v3.2-xsmall-gguf");
     expect(zenz).toContain(ARCHITECTURE_ZENZAI.file);
     expect(zenz).toContain(ARCHITECTURE_ZENZAI.xsmall.size);
-    expect(zenz).toContain("Worker 依存のみ");
+    expect(zenz).toContain("Cloudflare Worker 依存のみ");
 
     const small = architectureDiagramText(
       modeArchitecture("worker-vibrato", true, "zenz-v3.2-small-gguf"),
@@ -126,7 +129,7 @@ describe("architecture SVG diagram models", () => {
     const browserZenz = architectureDiagramText(
       modeArchitecture("browser-vibrato", true, "zenz-v3.2-xsmall-gguf"),
     );
-    expect(browserZenz).toContain("Zenzai は Worker 依存のみ");
+    expect(browserZenz).toContain("Zenzai は Cloudflare Worker 依存のみ");
     expect(browserZenz).toContain("このモードでは使えません");
   });
 

@@ -124,7 +124,7 @@ const rowStateLabel = (state: ComparisonRowState): string => {
     // must not claim the AzooKey WASM conversion is already running, nor that
     // the request is still being sent.
     case "sending":
-      return "Worker 通信中";
+      return "Cloudflare Worker 通信中";
     case "done":
       return "完了";
     default:
@@ -397,27 +397,27 @@ export default function ComparePage() {
             connectWorker: async () => {
               const client = workerRef.current;
               if (!client) {
-                throw new Error("Worker WebSocket クライアントを初期化できません");
+                throw new Error("Cloudflare Worker WebSocket クライアントを初期化できません");
               }
               const workerGeneration = workerGenerationRef.current;
               if (
                 workerRef.current !== client ||
                 workerGenerationRef.current !== workerGeneration
               ) {
-                throw new Error("Worker 設定が変更されました。発話を再送してください");
+                throw new Error("Cloudflare Worker 設定が変更されました。発話を再送してください");
               }
               await client.connect();
               if (
                 workerRef.current !== client ||
                 workerGenerationRef.current !== workerGeneration
               ) {
-                throw new Error("Worker 設定が変更されました。発話を再送してください");
+                throw new Error("Cloudflare Worker 設定が変更されました。発話を再送してください");
               }
             },
             convertWithWorker: (request) => {
               const client = workerRef.current;
               if (!client) {
-                throw new Error("Worker WebSocket クライアントを初期化できません");
+                throw new Error("Cloudflare Worker WebSocket クライアントを初期化できません");
               }
               return client.convert({
                 ...request,
@@ -441,7 +441,7 @@ export default function ComparePage() {
           setNotice(
             result.modelFallback === "upstream-failed"
               ? `${result.requestedModel} の上流に接続できなかったため AzooKey WASM で変換しました`
-              : `${result.requestedModel} は Worker に未設定のため AzooKey WASM で変換しました`,
+              : `${result.requestedModel} は Cloudflare Worker（推論）に未設定のため AzooKey WASM で変換しました`,
           );
         }
       } catch (caught) {
@@ -521,7 +521,7 @@ export default function ComparePage() {
     setNotice(
       config.mode === "browser-vibrato"
         ? "かな読みをブラウザ AzooKey で変換しています"
-        : "かな読みを Worker AzooKey へ送信しています",
+        : "かな読みを Cloudflare Worker（推論）AzooKey へ送信しています",
     );
     enqueueConversion(reading, {
       origin: "manual",
@@ -533,7 +533,7 @@ export default function ComparePage() {
     setNotice(
       config.mode === "browser-vibrato"
         ? `フィクスチャ「${fixture.label}」をブラウザ AzooKey で変換しています`
-        : `フィクスチャ「${fixture.label}」を Worker へ送信しています`,
+        : `フィクスチャ「${fixture.label}」を Cloudflare Worker へ送信しています`,
     );
     enqueueConversion(fixture.reading, {
       origin: "fixture",
@@ -674,7 +674,7 @@ export default function ComparePage() {
   const connectWorker = async (): Promise<void> => {
     const client = workerRef.current;
     if (!client) {
-      setError("Worker WebSocket クライアントを初期化できません");
+      setError("Cloudflare Worker WebSocket クライアントを初期化できません");
       return;
     }
     try {
@@ -683,7 +683,7 @@ export default function ComparePage() {
       }
       buildVibratoWebSocketUrl(config);
       await client.connect();
-      let notice = "Worker WebSocket に接続しました";
+      let notice = "Cloudflare Worker WebSocket に接続しました";
       let workerVibratoConfigured: boolean | undefined;
       try {
         const healthUrl = new URL(config.websocketUrl.trim());
@@ -703,9 +703,9 @@ export default function ComparePage() {
         workerVibratoConfiguredRef.current = workerVibratoConfigured;
         if (health?.dictionary?.transport === "builtin") {
           notice =
-            "Worker は内蔵語彙のみです。AZOOKEY_DICTIONARY_URL を設定しないと Tauri より精度が落ちます";
+            "Cloudflare Worker（推論）は内蔵語彙のみです。AZOOKEY_DICTIONARY_URL を設定しないと Tauri より精度が落ちます";
         } else if (health?.dictionary?.transport === "portable-wasm") {
-          notice = "Worker WebSocket に接続しました（公式 AzooKey 辞書）";
+          notice = "Cloudflare Worker WebSocket に接続しました（公式 AzooKey 辞書）";
         }
       } catch {
         // Health is observability only; conversion can still proceed.
@@ -798,9 +798,9 @@ export default function ComparePage() {
       <section className="intro-block" aria-labelledby="intro-title">
         <div>
           <p className="eyebrow">ASYNC COMPARISON SURFACE</p>
-          <h2 id="intro-title">ブラウザ認識と Worker 変換を同じ発話で見比べる</h2>
+          <h2 id="intro-title">ブラウザ認識と Cloudflare Worker 変換を同じ発話で見比べる</h2>
           <p className="intro-copy">
-            Web Speech API の結果はすぐに表示し、AzooKey の Worker
+            Web Speech API の結果はすぐに表示し、AzooKey の Cloudflare Worker
             応答は到着順に独立して更新します。
           </p>
         </div>
@@ -912,7 +912,7 @@ export default function ComparePage() {
             </p>
 
             <label className="field-label" htmlFor="worker-url">
-              Worker WebSocket URL
+              Cloudflare Worker WebSocket URL
               <input
                 id="worker-url"
                 type="url"
@@ -978,7 +978,7 @@ export default function ComparePage() {
                   module を使う場合は、`convert(text)`、 `transform(text)`、`tokenize(text)`
                   のいずれかを export する wrapper の URL、または注入済み global
                   を指定します。モジュール URL も global 名も空のときはブラウザ Vibrato WASM
-                  が未設定のためプリパスを実行できず失敗します（Worker 側 Vibrato
+                  が未設定のためプリパスを実行できず失敗します（Cloudflare Worker 側 Vibrato
                   へはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
                   実行時フォールバックとして既定名 `__AZOOKEY_VIBRATO_WASM__` を試します。
                   ブラウザ完結のかな→漢字は 同じページの AzooKey WASM で実行し、`/ws/azookey`
@@ -992,7 +992,7 @@ export default function ComparePage() {
             ) : null}
 
             <div className="subsection auth-settings">
-              <p className="subsection-title">認証（Worker の契約に合わせる）</p>
+              <p className="subsection-title">認証（Cloudflare Worker の契約に合わせる）</p>
               <label className="field-label" htmlFor="auth-scheme">
                 方式
                 <select
@@ -1046,7 +1046,7 @@ export default function ComparePage() {
               type="button"
               onClick={() => void connectWorker()}
             >
-              Worker に接続
+              Cloudflare Worker に接続
             </button>
           </section>
 
@@ -1058,8 +1058,8 @@ export default function ComparePage() {
               </div>
             </div>
             <p className="field-help">
-              かな読みを AzooKey へ直接送り、変換結果を確認します。ブラウザ完結では in-page、Worker
-              依存では inference 側で変換します。
+              かな読みを AzooKey へ直接送り、変換結果を確認します。ブラウザ完結では in-page、Cloudflare Worker
+              依存では推論 Cloudflare Worker で変換します。
             </p>
             <label className="field-label" htmlFor="manual-reading">
               かな読み
@@ -1145,8 +1145,8 @@ export default function ComparePage() {
             <section className="panel live-card worker-live-card">
               <div className="live-card-heading">
                 <div>
-                  <p className="eyebrow">ASYNC WORKER</p>
-                  <h3>Worker AzooKey 変換結果</h3>
+                  <p className="eyebrow">CLOUDFLARE WORKER</p>
+                  <h3>Cloudflare Worker AzooKey 変換結果</h3>
                 </div>
                 <span className="lane-index">02</span>
               </div>
@@ -1156,7 +1156,7 @@ export default function ComparePage() {
                 {latestWorker?.convertedText ??
                   (latestWorker
                     ? rowStateLabel(latestWorker.state)
-                    : "Worker の応答を待っています")}
+                    : "Cloudflare Worker の応答を待っています")}
               </p>
               <p className="interim-text">
                 {latestWorker?.error ??
@@ -1167,7 +1167,7 @@ export default function ComparePage() {
               <div className="live-card-footer">
                 <span>処理時間</span>
                 <strong>
-                  合計処理時間 {formatMilliseconds(latestWorker?.totalElapsedMs)} / Worker{" "}
+                  合計処理時間 {formatMilliseconds(latestWorker?.totalElapsedMs)} / Cloudflare Worker{" "}
                   {formatMilliseconds(latestWorker?.workerElapsedMs)}
                 </strong>
               </div>
@@ -1191,7 +1191,7 @@ export default function ComparePage() {
                 </span>
                 <p>確定発話がまだありません</p>
                 <span>
-                  Web Speech、手動読み、または変換フィクスチャから Worker 変換を実行できます。
+                  Web Speech、手動読み、または変換フィクスチャから Cloudflare Worker 変換を実行できます。
                 </span>
               </div>
             ) : (

@@ -90,15 +90,15 @@ export interface ComparisonModeOption {
 export const comparisonModeOptions: readonly ComparisonModeOption[] = [
   {
     value: "worker-vibrato",
-    label: "Worker 依存（Vibrato もかな漢字も Worker）",
+    label: "Cloudflare Worker 依存（Vibrato もかな漢字も Cloudflare Worker（推論））",
     description:
-      "Worker 上で Vibrato（漢字があるときだけ IPADIC F[7]）と AzooKey かな漢字変換を続けて実行します。Worker Vibrato 未設定時はブラウザ Vibrato で漢字読みを補います。",
+      "Cloudflare Worker（推論）上で Vibrato（漢字があるときだけ IPADIC F[7]）と AzooKey かな漢字変換を続けて実行します。推論側 Vibrato 未設定時はブラウザ Vibrato で漢字読みを補います。",
   },
   {
     value: "browser-vibrato",
     label: "ブラウザ完結（Vibrato もかな漢字もブラウザ）",
     description:
-      "ブラウザの Vibrato WASM と IPADIC で読みを取り、同じブラウザの AzooKey WASM でかな漢字変換します。/ws/azookey は呼びません。漢字がなければ読みはそのまま、漢字があれば F[7] でひらがな化します。プリパス必須で、モジュールも辞書も見つからなければ失敗します（Worker へはサイレントに落ちません）。",
+      "ブラウザの Vibrato WASM と IPADIC で読みを取り、同じブラウザの AzooKey WASM でかな漢字変換します。/ws/azookey は呼びません。漢字がなければ読みはそのまま、漢字があれば F[7] でひらがな化します。プリパス必須で、モジュールも辞書も見つからなければ失敗します（Cloudflare Worker へはサイレントに落ちません）。",
   },
 ] as const;
 
@@ -110,13 +110,13 @@ export const comparisonModeHelpSections: readonly {
 }[] = [
   {
     value: "worker-vibrato",
-    title: "Worker 依存",
-    body: "漢字→読みも Worker に寄せます。VIBRATO_UPSTREAM_URL または VIBRATO_DICTIONARY_URL が必要で、未設定時はブラウザ Vibrato で読みだけ補います。かな漢字は Worker の AzooKey WASM、または選択した Zenzai です。",
+    title: "Cloudflare Worker 依存",
+    body: "漢字→読みも Cloudflare Worker（推論）に寄せます。VIBRATO_UPSTREAM_URL または VIBRATO_DICTIONARY_URL が必要で、未設定時はブラウザ Vibrato で読みだけ補います。かな漢字は推論 Cloudflare Worker の AzooKey WASM、または選択した Zenzai です。",
   },
   {
     value: "browser-vibrato",
     title: "ブラウザ完結",
-    body: "ブラウザで Vibrato（/vibrato/vibrato_wasm.js と /vibrato/system.dic.zst）と AzooKey（/azookey/azookey.wasm と /azookey/system.azkdict.gz）を完結します。辞書/WASM が無いと失敗し、Worker へは切り替わりません。Zenzai はこのモードでは使えません。",
+    body: "ブラウザで Vibrato（/vibrato/vibrato_wasm.js と /vibrato/system.dic.zst）と AzooKey（/azookey/azookey.wasm と /azookey/system.azkdict.gz）を完結します。辞書/WASM が無いと失敗し、Cloudflare Worker へは切り替わりません。Zenzai はこのモードでは使えません。",
   },
 ] as const;
 
@@ -125,12 +125,12 @@ export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 
 /** Short, user-facing explanations for the fields in the settings panel. */
 export const comparisonConfigFieldDescriptions = {
-  mode: "Choose Worker-dependent Vibrato+conversion, or the fully in-browser Vibrato+AzooKey path. Browser-complete never calls /ws/azookey.",
+  mode: "Choose Cloudflare Worker-dependent Vibrato+conversion, or the fully in-browser Vibrato+AzooKey path. Browser-complete never calls /ws/azookey.",
   converterModel:
-    "Choose AzooKey WASM (browser-complete or Worker) or Zenzai xsmall/small on the Worker when MODEL_ROUTES exposes those GGUF upstreams. Zenzai is unavailable in browser-complete.",
+    "Choose AzooKey WASM (browser-complete or Cloudflare Worker) or Zenzai xsmall/small on the inference Cloudflare Worker when MODEL_ROUTES exposes those GGUF upstreams. Zenzai is unavailable in browser-complete.",
   websocketUrl:
-    "A ws:// or wss:// URL for the AzooKey Worker endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
-  auth: "Optional Bearer credentials for the Worker. Keep tokens out of URLs and logs.",
+    "A ws:// or wss:// URL for the compare Cloudflare Worker AzooKey endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
+  auth: "Optional Bearer credentials for the Cloudflare Worker. Keep tokens out of URLs and logs.",
   language: "BCP-47 language tag sent to the recognizer (for example, ja or en-US).",
   browserWasmModuleUrl:
     "Optional browser WASM glue module URL for the pre-pass. Leave empty only when a named global converter is injected.",
@@ -171,9 +171,9 @@ export const browserWasmConfigurationStatus = (
     return `ブラウザ Vibrato WASM: モジュール URL（${moduleUrl}）と IPADIC 辞書（${dictionaryUrl}、F[7]）を読み込みます。ただし globalThis.${effectiveGlobalName} が注入されている場合はそちらが優先されます。`;
   }
   if (globalName) {
-    return `ブラウザ Vibrato WASM: globalThis.${effectiveGlobalName} が注入されている場合のみ実行します。未注入なら変換は失敗します（Worker のみにはなりません）。`;
+    return `ブラウザ Vibrato WASM: globalThis.${effectiveGlobalName} が注入されている場合のみ実行します。未注入なら変換は失敗します（Cloudflare Worker のみにはなりません）。`;
   }
-  return `ブラウザ Vibrato WASM: モジュール URL も global 名も未設定です。globalThis.${effectiveGlobalName} が注入されていればそれを使い、なければ変換は失敗します（Worker のみにはなりません）。`;
+  return `ブラウザ Vibrato WASM: モジュール URL も global 名も未設定です。globalThis.${effectiveGlobalName} が注入されていればそれを使い、なければ変換は失敗します（Cloudflare Worker のみにはなりません）。`;
 };
 
 /** JSON Schema for persisted/transported comparison configuration. */
