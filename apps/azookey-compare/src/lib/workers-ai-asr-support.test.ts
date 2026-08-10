@@ -4,7 +4,9 @@ import {
   getUserMediaErrorMessageJa,
   hasMediaRecorderSupport,
   isWorkersAiAsrCaptureSupported,
+  openWorkersAiAsrMicrophone,
   WEB_SPEECH_UNSUPPORTED_JA,
+  WORKERS_AI_ASR_MIC_DENIED_JA,
   WORKERS_AI_ASR_MIC_GENERIC_JA,
   WORKERS_AI_ASR_PREPARING_JA,
   WORKERS_AI_ASR_UNSUPPORTED_JA,
@@ -86,10 +88,10 @@ describe("workers-ai-asr-support", () => {
     aborted.name = "AbortError";
     expect(getUserMediaErrorMessageJa(aborted)).toBe("マイクの開始が中断されました");
     expect(getUserMediaErrorMessageJa(new Error("permission denied"))).toBe(
-      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+      WORKERS_AI_ASR_MIC_DENIED_JA,
     );
     expect(getUserMediaErrorMessageJa(new Error("Permission denied"))).toBe(
-      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+      WORKERS_AI_ASR_MIC_DENIED_JA,
     );
     const unbound = new TypeError(
       "Can only call MediaDevices.getUserMedia on instances of MediaDevices",
@@ -102,6 +104,31 @@ describe("workers-ai-asr-support", () => {
     expect(WORKERS_AI_ASR_UNSUPPORTED_JA).toContain("Cloudflare Workers AI ASR");
     expect(WORKERS_AI_ASR_PREPARING_JA).toContain("準備");
     expect(WEB_SPEECH_UNSUPPORTED_JA).toContain("Web Speech");
+  });
+
+  it("opens the microphone via MediaDevices.getUserMedia this-binding", async () => {
+    await expect(openWorkersAiAsrMicrophone()).rejects.toThrow(WORKERS_AI_ASR_MIC_GENERIC_JA);
+    const devices = {
+      getUserMedia(this: unknown, constraints?: MediaStreamConstraints) {
+        if (this !== devices) {
+          return Promise.reject(
+            new TypeError("Can only call MediaDevices.getUserMedia on instances of MediaDevices"),
+          );
+        }
+        expect(constraints).toEqual({ audio: true });
+        return Promise.resolve({ id: "ok" } as unknown as MediaStream);
+      },
+    };
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { mediaDevices: devices },
+    });
+    await expect(openWorkersAiAsrMicrophone()).resolves.toEqual({ id: "ok" });
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { mediaDevices: {} },
+    });
+    await expect(openWorkersAiAsrMicrophone()).rejects.toThrow(WORKERS_AI_ASR_MIC_GENERIC_JA);
   });
 
   it("encodes float32 PCM as a WAV file", async () => {

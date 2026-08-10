@@ -7,6 +7,8 @@ export const WORKERS_AI_ASR_PREPARING_JA =
 export const WEB_SPEECH_UNSUPPORTED_JA = "このブラウザは Web Speech API に対応していません";
 export const WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA = "マイク音声の解析を開始できません";
 export const WORKERS_AI_ASR_MIC_GENERIC_JA = "マイクを開始できません";
+export const WORKERS_AI_ASR_MIC_DENIED_JA =
+  "マイク許可が必要です。ブラウザの設定でマイクを許可してください";
 
 type NavigatorWithMedia = Navigator & {
   mediaDevices?: {
@@ -43,6 +45,18 @@ export const isWorkersAiAsrCaptureSupported = (): boolean => {
   return Boolean(nav?.mediaDevices?.getUserMedia && audioContextConstructor());
 };
 
+/** Call getUserMedia as a method so `this` stays MediaDevices (Safari TypeError otherwise). */
+export const openWorkersAiAsrMicrophone = (
+  constraints: MediaStreamConstraints = { audio: true },
+): Promise<MediaStream> => {
+  const mediaDevices =
+    typeof navigator !== "undefined" ? (navigator as NavigatorWithMedia).mediaDevices : undefined;
+  if (!mediaDevices || typeof mediaDevices.getUserMedia !== "function") {
+    return Promise.reject(new Error(WORKERS_AI_ASR_MIC_GENERIC_JA));
+  }
+  return mediaDevices.getUserMedia(constraints);
+};
+
 export const hasMediaRecorderSupport = (): boolean => typeof MediaRecorder === "function";
 
 const errorName = (error: unknown): string =>
@@ -52,11 +66,17 @@ const errorName = (error: unknown): string =>
 
 const hasJapanese = (text: string): boolean => /[\u3040-\u30ff\u4e00-\u9fff]/.test(text);
 
+const looksLikePermissionDenied = (name: string, message: string): boolean =>
+  /permission denied|permission dismissed|notallowederror|user gesture is required/i.test(
+    `${name} ${message}`,
+  );
+
 /** Map getUserMedia failures to Japanese UI copy. Never show English-only browser strings. */
 export const getUserMediaErrorMessageJa = (error: unknown): string => {
   const name = errorName(error);
-  if (GET_USER_MEDIA_DENIED.has(name)) {
-    return "マイク許可が必要です。ブラウザの設定でマイクを許可してください";
+  const message = error instanceof Error ? error.message.trim() : "";
+  if (GET_USER_MEDIA_DENIED.has(name) || looksLikePermissionDenied(name, message)) {
+    return WORKERS_AI_ASR_MIC_DENIED_JA;
   }
   if (GET_USER_MEDIA_MISSING.has(name)) {
     return "マイクが見つかりません。接続を確認してください";
@@ -73,7 +93,6 @@ export const getUserMediaErrorMessageJa = (error: unknown): string => {
   if (name === "AbortError") {
     return "マイクの開始が中断されました";
   }
-  const message = error instanceof Error ? error.message.trim() : "";
   if (message && hasJapanese(message)) {
     return message;
   }

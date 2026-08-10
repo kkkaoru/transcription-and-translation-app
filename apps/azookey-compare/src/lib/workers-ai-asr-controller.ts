@@ -9,6 +9,7 @@ import {
   getUserMediaErrorMessageJa,
   hasMediaRecorderSupport,
   isWorkersAiAsrCaptureSupported,
+  openWorkersAiAsrMicrophone,
   WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA,
   wavFileFromPcmFloat32,
 } from "./workers-ai-asr-support";
@@ -62,12 +63,6 @@ export interface WorkersAiAsrControllerOptions {
   onUtteranceFinal?: (payload: WorkersAiAsrUtteranceFinal) => void;
   onError?: (message: string) => void;
 }
-
-type NavigatorWithMedia = Navigator & {
-  mediaDevices?: {
-    getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
-  };
-};
 
 const RECORDING_TIMESLICE_MS = 250;
 const RECORDING_INTERIM = "録音中…";
@@ -150,11 +145,7 @@ export class WorkersAiAsrController {
     this.vad.reset();
     this.setState("starting");
     try {
-      const getUserMedia = (navigator as NavigatorWithMedia).mediaDevices?.getUserMedia;
-      if (!getUserMedia) {
-        throw new Error("マイクを開始できません");
-      }
-      this.stream = await getUserMedia({ audio: true });
+      this.stream = await openWorkersAiAsrMicrophone({ audio: true });
       if (this.shouldAbortStart()) {
         this.stopTracks();
         return;
@@ -186,7 +177,7 @@ export class WorkersAiAsrController {
       if (this.shouldAbortStart()) {
         return;
       }
-      this.fail(getUserMediaErrorMessageJa(error));
+      throw this.fail(getUserMediaErrorMessageJa(error), error);
     }
   }
 
@@ -527,8 +518,7 @@ export class WorkersAiAsrController {
   }
 
   private noteSileroFailure(error: unknown): void {
-    const message =
-      error instanceof Error && error.message.trim() ? error.message : String(error);
+    const message = error instanceof Error && error.message.trim() ? error.message : String(error);
     this.sileroError = message;
     console.warn("Workers AI ASR Silero/ORT failed", {
       error,
@@ -752,6 +742,7 @@ export class WorkersAiAsrController {
       } else {
         this.flushing = false;
         this.fail("録音データがありません");
+        return;
       }
       if (this.disposed) {
         this.flushing = false;
@@ -780,6 +771,7 @@ export class WorkersAiAsrController {
       }
       this.fail(
         error instanceof Error && error.message.trim() ? error.message : "認識に失敗しました",
+        error,
       );
     }
   }
@@ -825,9 +817,10 @@ export class WorkersAiAsrController {
     return this.disposed || this.requestedStop;
   }
 
-  private fail(message: string): void {
+  private fail(message: string, cause?: unknown): Error {
+    const error = new Error(message);
     if (this.disposed) {
-      return;
+      return error;
     }
     this.teardownPcmTap();
     this.discardRecorder();
@@ -836,9 +829,11 @@ export class WorkersAiAsrController {
     this.captureActive = false;
     this.setState("error");
     this.options.onError?.(message);
-    const error = new Error(message);
     console.error(error);
-    throw error;
+    if (cause !== undefined) {
+      console.error(cause);
+    }
+    return error;
   }
 
   private setState(next: WorkersAiAsrState): void {

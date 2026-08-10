@@ -98,13 +98,14 @@ const screenshot = async (page, name) => {
   return file;
 };
 
+const DEFAULT_FOOTER_JA = "結果はブラウザ内だけに表示されます";
+
 const footerText = async (page) =>
   (
-    (await page
-      .locator("footer.status-footer")
-      .innerText()
-      .catch(() => "")) || ""
-  ).trim();
+    ((await page.locator("footer.status-footer").innerText().catch(() => "")) || "")
+      .replace(/\n?\d+\s*\/\s*\d+\s*events(?:\s*·\s*\d+\s*omitted)?\s*$/i, "")
+      .trim()
+  );
 
 const speechPill = async (page) =>
   (
@@ -216,7 +217,7 @@ const waitAfterAsrStart = async (page) => {
     if (button.includes("認識を停止") || pill === "認識中" || pill === "起動中") {
       return { footer, pill, button, kind: "started" };
     }
-    if (pill === "エラー" || (footer && footer !== "結果はブラウザ内だけに表示されます")) {
+    if (pill === "エラー" && footer && footer !== DEFAULT_FOOTER_JA) {
       return { footer, pill, button, kind: "other-error" };
     }
     await sleep(200);

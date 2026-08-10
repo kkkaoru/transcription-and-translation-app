@@ -20,17 +20,14 @@ export type BeginRecognitionListeningOptions = {
  * Start recognition. Workers AI ASR never waits on dictionary warmup:
  * the mic must begin even if IPADIC/Zenzai warmup fails (notice only).
  */
-const rethrowAsPageError = (caught: unknown): void => {
+const logStartFailure = (caught: unknown): void => {
   const error = caught instanceof Error ? caught : new Error(recognitionErrorMessage(caught));
   console.error(error);
-  queueMicrotask(() => {
-    throw error;
-  });
 };
 
 export const beginRecognitionListening = (options: BeginRecognitionListeningOptions): void => {
   if (options.provider === "workers-ai-asr") {
-    void Promise.resolve(options.start()).catch(rethrowAsPageError);
+    void Promise.resolve(options.start()).catch(logStartFailure);
     void options.warmBrowserVibrato().catch((caught: unknown) => {
       options.onWarmupNotice?.(
         `${BROWSER_VIBRATO_WARMUP_FAILURE_NOTICE_PREFIX}${recognitionErrorMessage(caught)}`,

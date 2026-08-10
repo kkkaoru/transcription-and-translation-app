@@ -3,13 +3,13 @@ import {
   BROWSER_VIBRATO_WARMUP_FAILURE_NOTICE_PREFIX,
   beginRecognitionListening,
 } from "./recognition-listen";
+import { WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA } from "./workers-ai-asr-client";
 import type { WorkersAiAsrController } from "./workers-ai-asr-controller";
 import {
   ensureWorkersAiAsrController,
   gateWorkersAiAsrStart,
   startCloudflareWorkersAiAsrAfterSelect,
 } from "./workers-ai-asr-session";
-import { WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA } from "./workers-ai-asr-client";
 import {
   isWorkersAiAsrCaptureSupported,
   WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA,
@@ -375,7 +375,12 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     const onError = vi.fn();
     const fetchImpl = vi.fn(async () =>
       Response.json(
-        { error: { code: "asr_workers_ai_unavailable", message: WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA } },
+        {
+          error: {
+            code: "asr_workers_ai_unavailable",
+            message: WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA,
+          },
+        },
         { status: 503 },
       ),
     );
