@@ -37,4 +37,11 @@ describe("compare page speech settings", () => {
     expect(source).toContain("ComparisonPathDiagram");
     expect(source).toContain("ブラウザ完結");
   });
+
+  it("wires Web Speech utterance and session-end callbacks", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    expect(source).toContain("onFinalText");
+    expect(source).toContain("onUtteranceFinal");
+    expect(source).toContain("onRecognitionEnded");
+  });
 });

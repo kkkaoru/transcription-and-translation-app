@@ -1,13 +1,10 @@
 /**
- * Page-side Web Speech utterance flush.
+ * Page-side dedupe for Web Speech → comparison rows.
  *
- * The recognition controller owns `onend` / `isFinal`. This helper only
- * decides whether leftover transcript still needs a comparison row after
- * those callbacks, so a stop without `isFinal` does not drop the utterance.
+ * `onFinalText` / `onUtteranceFinal` already commit `isFinal` and stop/end
+ * grace flushes. `onRecognitionEnded` may still carry leftover text; this
+ * helper decides whether that snapshot still needs a row.
  */
-
-/** Slightly longer than the controller's late-`isFinal` grace (100ms). */
-export const SPEECH_END_FLUSH_MS = 120;
 
 export const normalizeSpeechText = (value: string): string => value.replace(/\s+/gu, " ").trim();
 

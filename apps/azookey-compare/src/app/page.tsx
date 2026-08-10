@@ -40,14 +40,12 @@ import {
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import { visibleWebSpeechCaption } from "../lib/speech-caption-display";
 import { syncSpeechLanguage } from "../lib/speech-language";
+import { pendingSpeechUtterance, rememberDispatchedSpeech } from "../lib/speech-utterance";
 import {
-  pendingSpeechUtterance,
-  rememberDispatchedSpeech,
-  SPEECH_END_FLUSH_MS,
-} from "../lib/speech-utterance";
-import {
+  type SpeechRecognitionEnded,
   type SpeechRecognitionState,
   type SpeechTranscriptUpdate,
+  type SpeechUtteranceFinal,
   WebSpeechController,
 } from "../lib/web-speech";
 import {
@@ -181,8 +179,6 @@ export default function ComparePage() {
   const initialSpeechLanguageRef = useRef(config.language);
   const speechTranscriptRef = useRef({ finalText: "", interimText: "" });
   const dispatchedSpeechRef = useRef<string[]>([]);
-  const speechSessionActiveRef = useRef(false);
-  const speechFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const workerRef = useRef<AzooKeyWorkerClient | null>(null);
   const workerVibratoConfiguredRef = useRef<boolean | undefined>(undefined);
   const workerGenerationRef = useRef(0);
@@ -225,47 +221,21 @@ export default function ComparePage() {
   }, [config.websocketUrl]);
 
   useEffect(() => {
-    const clearSpeechFlushTimer = (): void => {
-      if (speechFlushTimerRef.current !== null) {
-        clearTimeout(speechFlushTimerRef.current);
-        speechFlushTimerRef.current = null;
-      }
-    };
-    const flushPendingSpeech = (): void => {
-      const pending = pendingSpeechUtterance(
-        speechTranscriptRef.current.finalText,
-        speechTranscriptRef.current.interimText,
-        dispatchedSpeechRef.current,
-      );
-      if (!pending) {
+    const dispatchSpeechText = (text: string): void => {
+      const nextDispatched = rememberDispatchedSpeech(dispatchedSpeechRef.current, text);
+      if (nextDispatched.length === dispatchedSpeechRef.current.length) {
         return;
       }
-      dispatchedSpeechRef.current = rememberDispatchedSpeech(dispatchedSpeechRef.current, pending);
-      setLatestSpeechSegment(pending);
-      finalTextHandlerRef.current(pending);
+      dispatchedSpeechRef.current = nextDispatched;
+      setLatestSpeechSegment(text.trim());
+      finalTextHandlerRef.current(text);
     };
     const controller = new WebSpeechController(initialSpeechLanguageRef.current, {
       onStateChange: (state) => {
         setSpeechState(state);
-        if (state === "listening" || state === "starting") {
-          speechSessionActiveRef.current = true;
-          if (state === "listening") {
-            setError("");
-          }
+        if (state === "listening") {
+          setError("");
         }
-        if (state !== "idle") {
-          return;
-        }
-        clearSpeechFlushTimer();
-        if (!speechSessionActiveRef.current) {
-          return;
-        }
-        speechSessionActiveRef.current = false;
-        // Wait for a late `isFinal` from the controller before flushing leftover interim.
-        speechFlushTimerRef.current = setTimeout(() => {
-          speechFlushTimerRef.current = null;
-          flushPendingSpeech();
-        }, SPEECH_END_FLUSH_MS);
       },
       onTranscript: ({ finalText, interimText }: SpeechTranscriptUpdate) => {
         speechTranscriptRef.current = { finalText, interimText };
@@ -273,13 +243,19 @@ export default function ComparePage() {
         setSpeechInterimText(interimText);
       },
       onFinalText: (text) => {
-        const nextDispatched = rememberDispatchedSpeech(dispatchedSpeechRef.current, text);
-        if (nextDispatched.length === dispatchedSpeechRef.current.length) {
-          return;
+        dispatchSpeechText(text);
+      },
+      onUtteranceFinal: ({ text }: SpeechUtteranceFinal) => {
+        dispatchSpeechText(text);
+      },
+      onRecognitionEnded: ({ finalText, interimText }: SpeechRecognitionEnded) => {
+        speechTranscriptRef.current = { finalText, interimText };
+        setSpeechFinalText(finalText);
+        setSpeechInterimText(interimText);
+        const pending = pendingSpeechUtterance(finalText, interimText, dispatchedSpeechRef.current);
+        if (pending) {
+          dispatchSpeechText(pending);
         }
-        dispatchedSpeechRef.current = nextDispatched;
-        setLatestSpeechSegment(text.trim());
-        finalTextHandlerRef.current(text);
       },
       onError: (message) => {
         setError(message);
@@ -288,7 +264,6 @@ export default function ComparePage() {
     speechRef.current = controller;
     setSpeechSupported(controller.supported);
     return () => {
-      clearSpeechFlushTimer();
       controller.dispose();
       if (speechRef.current === controller) {
         speechRef.current = null;
@@ -677,7 +652,6 @@ export default function ComparePage() {
       return;
     }
     dispatchedSpeechRef.current = [];
-    speechSessionActiveRef.current = true;
     setLatestSpeechSegment("");
     setError("");
     void warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current)

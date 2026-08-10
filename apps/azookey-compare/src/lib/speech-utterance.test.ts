@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  pendingSpeechUtterance,
-  rememberDispatchedSpeech,
-  SPEECH_END_FLUSH_MS,
-} from "./speech-utterance";
+import { pendingSpeechUtterance, rememberDispatchedSpeech } from "./speech-utterance";
 
 describe("pendingSpeechUtterance", () => {
   it("flushes leftover interim when recognition ends without isFinal", () => {
@@ -32,9 +28,8 @@ describe("pendingSpeechUtterance", () => {
     expect(pendingSpeechUtterance("", "", [])).toBeUndefined();
   });
 
-  it("dedupes rememberDispatchedSpeech and waits past late isFinal", () => {
+  it("dedupes rememberDispatchedSpeech", () => {
     expect(rememberDispatchedSpeech([], "  こんにちは  ")).toEqual(["こんにちは"]);
     expect(rememberDispatchedSpeech(["こんにちは"], "こんにちは")).toEqual(["こんにちは"]);
-    expect(SPEECH_END_FLUSH_MS).toBeGreaterThan(100);
   });
 });
