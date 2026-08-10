@@ -363,6 +363,42 @@ const hasSameOrExtendedAzookeyReading = (
 };
 
 /**
+ * True when a provisional same-id revision continues an already-normalized
+ * interim so the utterance tail can paint before the next normalize completes.
+ *
+ * After the first normalize lands, Parapper still emits longer partials. The
+ * historical "drop late provisional" guard blocked those extensions and left
+ * only the beginning of the utterance on screen until a later normalize (or
+ * forever, when that normalize was truncated).
+ */
+const isProgressiveProvisionalExtension = (
+  current: CaptionPayload,
+  next: CaptionPayload,
+): boolean => {
+  if (
+    next.provisional !== true ||
+    current.id !== next.id ||
+    !isSourceStagePayload(current) ||
+    !isSourceStagePayload(next) ||
+    current.isFinal === true ||
+    !hasText(current.sourceText) ||
+    !hasText(next.sourceText)
+  ) {
+    return false;
+  }
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  const currentReading = trimmedAzookeyReading(current);
+  const nextReading = trimmedAzookeyReading(next);
+  if (currentReading && nextReading) {
+    // Growing reading = same turn still speaking. Equal reading with a kana
+    // surface is the late raw-ASR rewrite we still want to reject.
+    return nextReading.startsWith(currentReading) && nextReading !== currentReading;
+  }
+  return nextText.startsWith(currentText) && nextText !== currentText;
+};
+
+/**
  * True when a non-provisional source would erase mid-utterance characters that
  * a newer provisional already painted.
  *
@@ -513,19 +549,16 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     if (current.provisional === true && next.provisional !== true && isSourceStagePayload(next)) {
       return isStaleNormalizedAgainstProvisional(current, next);
     }
-    // The Tauri event channel and the invoke that resolves the normalized
-    // caption are independent deliveries.  A pipeline:stage ASR event can
-    // therefore arrive after the real normalized source even though the
-    // backend emitted it first.  Once a non-provisional source is on screen,
-    // never append that late raw-kana revision as a rolling suffix (for
-    // example `明日は` + `あしたは`); keep the canonical source instead.
+    // After a normalized interim is on screen, still accept a longer same-id
+    // provisional so the utterance tail can paint before the next normalize.
+    // Late kana rewrites that do not extend the reading/surface stay rejected.
     if (
       current.provisional !== true &&
       next.provisional === true &&
       hasText(current.sourceText) &&
       isSourceStagePayload(next)
     ) {
-      return true;
+      return !isProgressiveProvisionalExtension(current, next);
     }
 
     const nextSequence = sequenceOf(next);

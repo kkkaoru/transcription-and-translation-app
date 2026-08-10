@@ -1908,6 +1908,96 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(normalized, provisional)).toBeNull();
   });
 
+  it("accepts a longer same-id provisional after normalize so the utterance tail can paint", () => {
+    // First normalize paints the beginning; later Parapper partials still grow
+    // before the next normalize. Those extensions must not be treated as late
+    // kana rewrites or the end of the utterance never appears.
+    const normalized = caption({
+      id: "u-1",
+      sourceText: "今日はいい",
+      azookeyInputText: "きょうはいい",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const provisionalTail = caption({
+      id: "u-1",
+      sourceText: "今日はいい天気ですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_050,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(normalized, provisionalTail)).toMatchObject({
+      sourceText: "今日はいい天気ですね",
+      provisional: true,
+    });
+  });
+
+  it("accepts a longer provisional surface extension without readings after normalize", () => {
+    const normalized = caption({
+      id: "u-1",
+      sourceText: "隣の客はよく",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const provisionalTail = caption({
+      id: "u-1",
+      sourceText: "隣の客はよく柿を食べる",
+      translationText: "",
+      startedAt: 1_050,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(normalized, provisionalTail)?.sourceText).toBe(
+      "隣の客はよく柿を食べる",
+    );
+  });
+
+  it("still drops late provisional after a finalized same-id caption", () => {
+    const finalized = caption({
+      id: "u-1",
+      sourceText: "今日はいい",
+      azookeyInputText: "きょうはいい",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const provisionalTail = caption({
+      id: "u-1",
+      sourceText: "今日はいい天気ですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_050,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, provisionalTail)).toBeNull();
+  });
+
   it("drops a late provisional kana context revision after canonical expansion", () => {
     const normalized = caption({
       id: "u-1",
