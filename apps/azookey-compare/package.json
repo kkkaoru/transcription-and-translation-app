@@ -15,6 +15,7 @@
     "format:check": "biome format src",
     "test": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
+    "test:e2e": "node e2e/compare-ui.mjs",
     "build:worker": "bun run copy:browser-assets && NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL=wss://azookey-compare.kaoru.workers.dev/ws/azookey next build && node ../../scripts/strip-compare-ort-bundle-wasm.mjs",
     "preview": "bun run build:worker && wrangler dev",
     "deploy": "bun run build:worker && wrangler deploy",

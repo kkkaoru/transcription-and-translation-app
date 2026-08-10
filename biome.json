@@ -90,7 +90,7 @@
   },
   "overrides": [
     {
-      "includes": ["scripts/*.mjs"],
+      "includes": ["scripts/*.mjs", "apps/azookey-compare/e2e/*.mjs"],
       "linter": {
         "rules": {
           "suspicious": {
