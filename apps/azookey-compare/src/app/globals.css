@@ -682,6 +682,14 @@ select:focus-visible {
   margin: 10px 0 0;
 }
 
+.path-diagram[data-kind="mode"] {
+  margin-top: 6px;
+}
+
+.path-diagram[data-kind="mode"] .path-diagram-caption {
+  margin-bottom: 4px;
+}
+
 .path-diagram-caption {
   margin: 0 0 6px;
   color: #4e585a;
