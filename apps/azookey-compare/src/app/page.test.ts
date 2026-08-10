@@ -105,6 +105,19 @@ describe("compare page speech settings", () => {
     expect(source).toContain("Web Speech 認識結果");
   });
 
+  it("recreates recognition controllers from scheme and token, not the auth object", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    const effectClose = source.indexOf("}, [config.recognitionProvider, config.auth.scheme, config.auth.token]);");
+    expect(effectClose).toBeGreaterThan(-1);
+    expect(source).not.toContain("}, [config.recognitionProvider, config.auth, config.language]);");
+    const createEffect = source.slice(
+      source.indexOf("speechRef.current?.dispose();"),
+      effectClose,
+    );
+    expect(createEffect).toContain("auth: config.auth");
+    expect(createEffect).toContain('if (config.recognitionProvider === "workers-ai-asr")');
+  });
+
   it("uses Silero VAD only for Workers AI ASR and skips it on Web Speech", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
     expect(source).toContain("WorkersAiAsrController");

@@ -134,11 +134,25 @@ export class WorkersAiAsrController {
         throw new Error("マイクを開始できません");
       }
       this.stream = await getUserMedia({ audio: true });
+      if (this.shouldAbortStart()) {
+        this.stopTracks();
+        return;
+      }
       await this.setupAudioGraph(this.stream);
+      if (this.shouldAbortStart()) {
+        return;
+      }
       await this.resolveEngine();
+      if (this.shouldAbortStart()) {
+        this.releaseEngine();
+        return;
+      }
       this.setState("listening");
       this.options.onTranscript?.({ interimText: "" });
     } catch (error) {
+      if (this.shouldAbortStart()) {
+        return;
+      }
       this.fail(error instanceof Error ? error.message : "マイクを開始できません");
     }
   }
@@ -201,8 +215,15 @@ export class WorkersAiAsrController {
       this.engine = this.options.sileroLoader
         ? await this.options.sileroLoader()
         : await this.createDefaultSilero();
+      if (this.shouldAbortStart()) {
+        this.releaseEngine();
+        return;
+      }
       this.engineKind = "silero";
     } catch {
+      if (this.shouldAbortStart()) {
+        return;
+      }
       this.engine = new EnergyVadEngine();
       this.engineKind = "energy";
       this.options.onVadNotice?.(SILERO_FALLBACK_NOTICE_JA);
@@ -483,7 +504,14 @@ export class WorkersAiAsrController {
     }
   }
 
+  private shouldAbortStart(): boolean {
+    return this.disposed || this.requestedStop;
+  }
+
   private fail(message: string): void {
+    if (this.disposed) {
+      return;
+    }
     this.teardownPcmTap();
     this.discardRecorder();
     this.stopTracks();
@@ -494,6 +522,9 @@ export class WorkersAiAsrController {
   }
 
   private setState(next: WorkersAiAsrState): void {
+    if (this.disposed && next !== "idle") {
+      return;
+    }
     this.state = next;
     this.options.onStateChange?.(next);
   }

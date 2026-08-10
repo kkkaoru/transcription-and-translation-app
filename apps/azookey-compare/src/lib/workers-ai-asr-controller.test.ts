@@ -307,6 +307,88 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
+  it("does not error when disposed while start() awaits getUserMedia", async () => {
+    installBrowser();
+    let releaseMedia: ((stream: MediaStream) => void) | undefined;
+    const stream = { getTracks: () => [fakeTrack()] } as unknown as MediaStream;
+    (
+      navigator as Navigator & { mediaDevices: { getUserMedia: ReturnType<typeof vi.fn> } }
+    ).mediaDevices.getUserMedia = vi.fn(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          releaseMedia = resolve;
+        }),
+    );
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      disableSilero: true,
+      ...events,
+    });
+    const starting = controller.start();
+    expect(controller.currentState).toBe("starting");
+    controller.dispose();
+    releaseMedia?.(stream);
+    await starting;
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("idle");
+    expect(events.onStateChange.mock.calls.map((call) => call[0])).not.toContain("listening");
+    expect(events.onStateChange.mock.calls.map((call) => call[0])).not.toContain("error");
+  });
+
+  it("does not fail after dispose when getUserMedia rejects", async () => {
+    installBrowser();
+    let rejectMedia: ((error: Error) => void) | undefined;
+    (
+      navigator as Navigator & { mediaDevices: { getUserMedia: ReturnType<typeof vi.fn> } }
+    ).mediaDevices.getUserMedia = vi.fn(
+      () =>
+        new Promise<MediaStream>((_, reject) => {
+          rejectMedia = reject;
+        }),
+    );
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      disableSilero: true,
+      ...events,
+    });
+    const starting = controller.start();
+    controller.dispose();
+    rejectMedia?.(new Error("permission denied"));
+    await starting;
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("idle");
+  });
+
+  it("does not error when disposed while Silero init is in flight", async () => {
+    installBrowser();
+    let releaseSilero: ((engine: VadEngine) => void) | undefined;
+    const engine = mockSileroEngine(true);
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      sileroLoader: () =>
+        new Promise<VadEngine>((resolve) => {
+          releaseSilero = resolve;
+        }),
+      ...events,
+    });
+    const starting = controller.start();
+    for (let tick = 0; tick < 10 && !releaseSilero; tick += 1) {
+      await Promise.resolve();
+    }
+    expect(releaseSilero).toBeTypeOf("function");
+    expect(controller.currentState).toBe("starting");
+    controller.dispose();
+    releaseSilero?.(engine);
+    await starting;
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("idle");
+    expect(events.onStateChange.mock.calls.map((call) => call[0])).not.toContain("listening");
+    expect(engine.dispose).toHaveBeenCalled();
+  });
+
   it("surfaces getUserMedia failure", async () => {
     installBrowser();
     (

@@ -403,7 +403,7 @@ export default function ComparePage() {
         speechRef.current = null;
       }
     };
-  }, [config.recognitionProvider, config.auth, config.language]);
+  }, [config.recognitionProvider, config.auth.scheme, config.auth.token]);
 
   // Keep one browser recognition session alive while settings are edited. A
   // dependency on `config.language` here would dispose the active controller,
