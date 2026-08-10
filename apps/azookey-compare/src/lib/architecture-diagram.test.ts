@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import type { ComparisonMode } from "./contract";
+import type { ConverterModel } from "./converter-models";
 import {
   ARCHITECTURE_ASSET_SIZES,
   ARCHITECTURE_DICTIONARIES,
@@ -10,6 +12,7 @@ import {
   architectureDiagramText,
   boxesCollidingWithLaneTitles,
   edgesCrossingForeignBoxes,
+  MODE_DIAGRAM_PREVIOUS_HEIGHT,
   modeArchitecture,
   overflowingBoxIds,
   overlappingBoxIds,
@@ -78,6 +81,24 @@ describe("architecture SVG diagram models", () => {
     const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
     expect(css).toMatch(/\.path-diagram-svg\s*\{[^}]*overflow-x:\s*hidden/s);
     expect(overviewArchitecture().width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
+  });
+
+  it("keeps mode diagrams compact without horizontal overflow", () => {
+    const modeCases: Array<[ComparisonMode, boolean, ConverterModel]> = [
+      ["worker-vibrato", true, "azookey-rust-wasm"],
+      ["worker-vibrato", true, "zenz-v3.2-xsmall-gguf"],
+      ["worker-vibrato", true, "zenz-v3.2-small-gguf"],
+      ["browser-vibrato", false, "azookey-rust-wasm"],
+      ["browser-vibrato", true, "azookey-rust-wasm"],
+      ["browser-vibrato", true, "zenz-v3.2-xsmall-gguf"],
+      ["browser-vibrato", true, "zenz-v3.2-small-gguf"],
+    ];
+    for (const [mode, browserWasmConfigured, converterModel] of modeCases) {
+      const diagram = modeArchitecture(mode, browserWasmConfigured, converterModel);
+      expect(diagram.compactLayout).toBe(true);
+      expect(diagram.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
+      expect(diagram.height).toBeLessThan(MODE_DIAGRAM_PREVIOUS_HEIGHT);
+    }
   });
 
   it("keeps boxes and edges readable without overlap or wrap", () => {
