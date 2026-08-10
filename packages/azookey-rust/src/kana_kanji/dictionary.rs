@@ -750,6 +750,26 @@ fn word_type(cid: u16) -> WordType {
     WordType::Postposition // 後置機能語
 }
 
+/// True when a CID is in AzooKey's true particle / auxiliary bands.
+///
+/// Upstream `CIDData.isJoshi` is `147..=368`; `DicdataStore` treats
+/// `147..=554` as 助詞+助動詞 for typo / prediction tables. This is **not**
+/// the residual `word_type == Postposition` class, which also absorbs
+/// non-grammatical gaps (e.g. 非自立名詞 `1297..=1305`).
+pub(crate) fn is_postposition_cid(cid: u16) -> bool {
+    is_joshi_cid(cid) || is_jodoushi_cid(cid)
+}
+
+/// 助詞 band (`CIDData.isJoshi`).
+pub(crate) fn is_joshi_cid(cid: u16) -> bool {
+    (147..=368).contains(&cid)
+}
+
+/// 助動詞 / copula band (DicdataStore `369..=554`).
+pub(crate) fn is_jodoushi_cid(cid: u16) -> bool {
+    (369..=554).contains(&cid)
+}
+
 fn is_clause_boundary(former_rcid: u16, latter_lcid: u16) -> bool {
     let latter_type = word_type(latter_lcid);
     if latter_type == WordType::Boundary {
@@ -1802,10 +1822,10 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
 #[cfg(test)]
 mod tests {
     use super::{
-        escaped_identifier, filter_system_entries, parse_loudstxt3_record, prediction_usable_rcid,
-        system_entry_is_usable, word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths,
-        WordType, BOS_CID, COMPETITIVE_CONVERTED_VALUE_MARGIN, EOS_CID, MID_COUNT,
-        PORTABLE_DICTIONARY_MAGIC,
+        escaped_identifier, filter_system_entries, is_postposition_cid, parse_loudstxt3_record,
+        prediction_usable_rcid, system_entry_is_usable, word_type, AzooKeyDictionary,
+        DictionaryEntry, DictionaryPaths, WordType, BOS_CID, COMPETITIVE_CONVERTED_VALUE_MARGIN,
+        EOS_CID, MID_COUNT, PORTABLE_DICTIONARY_MAGIC,
     };
 
     #[test]
@@ -2013,7 +2033,20 @@ mod tests {
         // the dictionary format is refreshed.
         assert_eq!(word_type(BOS_CID), WordType::Boundary);
         assert_eq!(word_type(6), WordType::Preposition);
+        // Residual Postposition class still includes pre-joshi gaps, but the
+        // prune predicate must stay on the narrow joshi/jodoushi bands only.
         assert_eq!(word_type(54), WordType::Postposition);
+        assert!(!is_postposition_cid(54));
+        assert!(!super::is_joshi_cid(54));
+        assert!(is_postposition_cid(147));
+        assert!(is_postposition_cid(368));
+        assert!(super::is_joshi_cid(368));
+        assert!(is_postposition_cid(369));
+        assert!(is_postposition_cid(454));
+        assert!(super::is_jodoushi_cid(454));
+        assert!(!is_postposition_cid(555));
+        assert!(!is_postposition_cid(1285));
+        assert!(!is_postposition_cid(1298));
         assert_eq!(word_type(555), WordType::ContentWord);
         assert_eq!(word_type(1315), WordType::Preposition);
         assert_eq!(word_type(EOS_CID), WordType::Boundary);

@@ -1,5 +1,6 @@
 use super::dictionary::{
-    AzooKeyDictionary, DictionaryEntry, DictionaryPaths, BOS_EOS_MID, DEFAULT_CID, DEFAULT_MID,
+    is_joshi_cid, is_postposition_cid, AzooKeyDictionary, DictionaryEntry, DictionaryPaths,
+    BOS_EOS_MID, DEFAULT_CID, DEFAULT_MID,
 };
 use super::normalization::{
     is_boundary, japanese_counter_starts_at, japanese_numeral_has_unit, numeric_counter_surface,
@@ -51,6 +52,14 @@ const CONTEXTUAL_ENTRY_BONUS: f32 = 4.5;
 /// of its dictionary prefixes (`は` + `のみたい` → `飲みたい` rather than
 /// `のみ`/`の味` + `たい`/`体`). Soft penalty keeps the prefix in n-best.
 const PARTICLE_FOLLOWING_SHORTER_PREFIX_PENALTY: f32 = -2.5;
+/// Soft-demote a conjugational (verb-band) short Kanji head when a closed-class
+/// continuation plus further content remains (`走` before `の`+`端`). Keeps the
+/// row in n-best; bare readings without that continuation stay score-driven.
+const VERB_STEM_BEFORE_PARTICLE_PHRASE_PENALTY: f32 = -4.0;
+/// After a particle, soft-demote the unique unigram-leading Kanji homophone so
+/// connection / MM evidence can compete (`恥` vs `端` after `の`). Alternatives
+/// remain in the lattice.
+const PARTICLE_FOLLOWING_UNIGRAM_LEADER_PENALTY: f32 = -3.0;
 /// CID rows encode an in-sentence morphological transition. At the start of a
 /// particle-linked content phrase, discount that transition so it cannot
 /// overwhelm the lexical evidence for a short, otherwise ambiguous head word.
@@ -370,7 +379,12 @@ pub fn convert_with_dictionary(
                     &mut states[chars.len()],
                     PathState {
                         text: trimmed.to_string(),
-                        score: UNKNOWN_SPAN_PENALTY,
+                        score: UNKNOWN_SPAN_PENALTY
+                            + unknown_span_multi_kanji_segmentation_penalty(
+                                dictionary,
+                                &chars,
+                                max_dictionary_word_chars,
+                            ),
                         meaning_score: NO_SCORE,
                         last: None,
                         clause_mid: BOS_EOS_MID,
@@ -556,7 +570,13 @@ pub fn convert_with_dictionary(
                                 // Match AzooKey's all-hiragana fallback without
                                 // allowing a long unknown span to outrank known
                                 // dictionary words.
-                                score: state.score + unknown_kana_span_penalty(length),
+                                score: state.score
+                                    + unknown_kana_span_penalty(length)
+                                    + unknown_span_multi_kanji_segmentation_penalty(
+                                        dictionary,
+                                        &chars[start..end],
+                                        max_dictionary_word_chars,
+                                    ),
                                 meaning_score: state.meaning_score,
                                 last: None,
                                 clause_mid: BOS_EOS_MID,
@@ -745,6 +765,14 @@ pub fn convert_with_dictionary(
                             + grammatical_context_bonus(&state, entry)
                             + copular_continuation_penalty(&state, entry)
                             + particle_following_shorter_prefix_penalty(&state, entry, &entries)
+                            + verb_stem_before_particle_phrase_penalty(
+                                dictionary,
+                                entry,
+                                &chars,
+                                end,
+                                max_dictionary_word_chars,
+                            )
+                            + particle_following_unigram_leader_penalty(dictionary, &state, entry)
                             + comma_list_kanji_overlap_bonus(&state, entry)
                             + following_yen_amount_bonus(&chars, end, entry)
                             + contextual_entry_bonus(
@@ -1011,12 +1039,30 @@ fn model_metadata_penalty(dictionary: &AzooKeyDictionary, entry: &DictionaryEntr
         })
         .map(|candidate| candidate.value)
         .max_by(f32::total_cmp);
-    if entry.lcid == DEFAULT_CID
-        && entry.rcid == DEFAULT_CID
-        && entry.mid == DEFAULT_MID
-        && best_specific_value.is_some_and(|value| entry.value < value)
-    {
-        penalty += MODEL_DEFAULT_METADATA_PENALTY;
+    // DEFAULT_CID+DEFAULT_MID: demote whenever a richer CID kanji beats value.
+    // DEFAULT_CID with a non-default MID (e.g. 買い手 mid=474) only demote when
+    // a conjugational te-form sibling wins: conjugational lcid + joshi rcid
+    // (書いて lcid=687/rcid=307). Do NOT treat jodoushi rcid as sufficient —
+    // 書こう (rcid=506) otherwise demotes unrelated nouns like 河口 (mid=432)
+    // and drops them from narrow comma-list beams. Do not key off conjugational
+    // lcid alone — 恥じ would demote DEFAULT 端 (mid=304) and let 橋野端 beat
+    // 橋の端 at wide beam.
+    if entry.lcid == DEFAULT_CID && entry.rcid == DEFAULT_CID {
+        let dominated = if entry.mid == DEFAULT_MID {
+            best_specific_value.is_some_and(|value| entry.value < value)
+        } else {
+            alternatives.iter().any(|candidate| {
+                candidate.lcid != DEFAULT_CID
+                    && candidate.rcid != DEFAULT_CID
+                    && contains_kanji(&candidate.surface)
+                    && candidate.value > entry.value
+                    && is_conjugational_content_cid(candidate.lcid)
+                    && is_joshi_cid(candidate.rcid)
+            })
+        };
+        if dominated {
+            penalty += MODEL_DEFAULT_METADATA_PENALTY;
+        }
     }
     let best_same_cid_value = alternatives
         .iter()
@@ -1132,11 +1178,10 @@ fn is_particle_reading(reading: &str) -> bool {
     )
 }
 
-/// Copular / predicative continuations. These are not particles, but they
-/// still start a new grammatical phrase after a content word (`日なので`,
-/// `日なのに`, `日なら`, `日だ`, `日です`). Bare `な` and a blanket `なの`
-/// prefix are intentionally absent so `ひな` → `雛` and genitive `の`
-/// compounds stay particle-driven.
+/// Copular / predicative continuations used only as a fallback when a row
+/// lacks real postposition CIDs (TSV fixtures / DEFAULT_CID). Prefer
+/// [`is_grammatical_continuation_entry`] for lattice pruning. Bare `な` and a
+/// blanket `なの` prefix stay absent so `ひな` → `雛`.
 fn is_copular_continuation_reading(reading: &str) -> bool {
     matches!(
         reading,
@@ -1153,6 +1198,34 @@ fn is_copular_continuation_reading(reading: &str) -> bool {
             | "ですが"
             | "だけど"
     )
+}
+
+/// Closed-class continuation after a short content prefix.
+///
+/// Prefer narrow joshi (`147..=368`) / jodoushi (`369..=554`) CIDs over the
+/// residual `word_type == Postposition` class. CID membership alone is not
+/// enough: official-dict conjugational residue such as identity `じ` (CID
+/// 507) or `のう` (CIDs 479 / 283) sits in those bands but must not invent
+/// particle boundaries under `はじ` / `きのう`. Require an existing particle
+/// or copular reading as well, and keep bare `な` out so `ひな` → `雛`.
+/// Reading-list fallback applies only to metadata-less / both-`DEFAULT_CID`
+/// fixtures — official rows with real CIDs outside joshi/jodoushi must not
+/// retain short prefixes via the allowlist alone. Do not grow those lists.
+fn is_grammatical_continuation_entry(entry: &DictionaryEntry) -> bool {
+    if entry.surface != entry.reading {
+        return false;
+    }
+    // Narrow joshi∪jodoushi only — not residual Postposition. In-band
+    // conjugational residue (じ/のう) still needs a known continuation reading.
+    if is_postposition_cid(entry.lcid) || is_postposition_cid(entry.rcid) {
+        return entry.reading != "な"
+            && (is_particle_reading(&entry.reading)
+                || is_copular_continuation_reading(&entry.reading));
+    }
+    // TSV fixtures / DEFAULT_CID only — not real non-joshi/jodoushi identity rows.
+    entry.lcid == DEFAULT_CID
+        && entry.rcid == DEFAULT_CID
+        && (is_particle_reading(&entry.reading) || is_copular_continuation_reading(&entry.reading))
 }
 
 fn is_grammatical_particle_entry(entry: &DictionaryEntry) -> bool {
@@ -1234,6 +1307,91 @@ fn particle_following_shorter_prefix_penalty(
     } else {
         NO_SCORE
     }
+}
+
+/// Soft-demote a short conjugational Kanji head when a particle / joshi and
+/// further lexical content remain on the suffix (`走` before `の`+`端`).
+/// Bare verb-homophone readings without that continuation stay untouched.
+fn verb_stem_before_particle_phrase_penalty(
+    dictionary: &AzooKeyDictionary,
+    entry: &DictionaryEntry,
+    chars: &[char],
+    end: usize,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    let len = entry.reading.chars().count();
+    if len == 0
+        || len > 2
+        || entry.surface == entry.reading
+        || !contains_kanji(&entry.surface)
+        || is_particle_reading(&entry.reading)
+        || !is_conjugational_content_cid(entry.lcid)
+        || !is_conjugational_content_cid(entry.rcid)
+    {
+        return NO_SCORE;
+    }
+    let has_particle_phrase =
+        particle_continuations_starting_at(dictionary, chars, end, max_dictionary_word_chars)
+            .iter()
+            .any(|particle| {
+                let after_particle = end + particle.chars().count();
+                following_particle_phrase_is_content(
+                    dictionary,
+                    chars.get(after_particle..).unwrap_or_default(),
+                    max_dictionary_word_chars,
+                )
+            });
+    if has_particle_phrase {
+        VERB_STEM_BEFORE_PARTICLE_PHRASE_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote the unique unigram-leading Kanji homophone after a particle so
+/// connection evidence can surface (`恥` vs `端` after `の`). Rows stay in
+/// n-best; bare readings without a preceding particle are unchanged.
+fn particle_following_unigram_leader_penalty(
+    dictionary: &AzooKeyDictionary,
+    state: &PathState,
+    entry: &DictionaryEntry,
+) -> f32 {
+    if !state.last.as_ref().is_some_and(|former| {
+        former.surface == former.reading && is_particle_reading(&former.reading)
+    }) || !contains_kanji(&entry.surface)
+        || entry.surface == entry.reading
+        || is_particle_reading(&entry.reading)
+    {
+        return NO_SCORE;
+    }
+    let alternatives = dictionary.lookup_exact(&entry.reading).unwrap_or_default();
+    let kanji_alternatives = alternatives
+        .iter()
+        .filter(|candidate| {
+            contains_kanji(&candidate.surface) && candidate.surface != candidate.reading
+        })
+        .collect::<Vec<_>>();
+    if kanji_alternatives.len() < 2 {
+        return NO_SCORE;
+    }
+    let Some(best_value) =
+        kanji_alternatives.iter().map(|candidate| candidate.value).max_by(f32::total_cmp)
+    else {
+        return NO_SCORE;
+    };
+    let leaders = kanji_alternatives
+        .iter()
+        .filter(|candidate| candidate.value == best_value)
+        .collect::<Vec<_>>();
+    if leaders.len() == 1 && leaders[0].surface == entry.surface && leaders[0].mid == entry.mid {
+        PARTICLE_FOLLOWING_UNIGRAM_LEADER_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+fn is_conjugational_content_cid(cid: u16) -> bool {
+    (561..=867).contains(&cid)
 }
 
 fn comma_list_kanji_overlap_bonus(state: &PathState, entry: &DictionaryEntry) -> f32 {
@@ -1477,6 +1635,22 @@ fn unknown_kana_span_penalty(_length: usize) -> f32 {
     // dictionary-missing suffix look much less plausible than a chain of
     // unrelated one-character homonyms.
     UNKNOWN_SPAN_PENALTY
+}
+
+/// Soft-demote a raw/unknown hiragana span when the same reading already has a
+/// multi-Kanji segmentation (`あついひ` → `暑い`+`日`). The span stays in n-best.
+fn unknown_span_multi_kanji_segmentation_penalty(
+    dictionary: &AzooKeyDictionary,
+    reading: &[char],
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if reading.len() < MIN_LEXICAL_ENTRY_CHARS
+        || !has_multi_kanji_segmentation(dictionary, reading, max_dictionary_word_chars)
+    {
+        NO_SCORE
+    } else {
+        IDENTITY_SEGMENTATION_PENALTY
+    }
 }
 
 fn following_has_lexical_adjective(
@@ -1953,13 +2127,7 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
     if !short_piece {
         return false;
     }
-    let particle_continuations = particle_continuations_starting_at(
-        dictionary,
-        chars,
-        start + len,
-        max_dictionary_word_chars,
-    );
-    let copular_continuations = copular_continuations_starting_at(
+    let grammatical_continuations = grammatical_lattice_continuations_starting_at(
         dictionary,
         chars,
         start + len,
@@ -1984,11 +2152,7 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
             && !is_particle_reading(&other.reading)
             && !longer_reading_crosses_a_particle_boundary(
                 &reading_leftover,
-                &particle_continuations,
-            )
-            && !longer_reading_crosses_a_particle_boundary(
-                &reading_leftover,
-                &copular_continuations,
+                &grammatical_continuations,
             )
     })
 }
@@ -1998,10 +2162,11 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
 /// Prefix pruning is useful for preventing invented compounds, but a longer
 /// row can also glue a real particle onto a shorter word (`はし` + `の`
 /// versus `橋野`, or `はじ` + `から` versus `弾か`), or glue a one-mora
-/// content Kanji onto a copular continuation (`ひな` / `雛` before `なので`
-/// / `なのに` / `なら`). Compare the extra mora of that longer reading against
-/// dictionary particles and copular identities that start at the short prefix's
-/// end:
+/// content Kanji onto a postpositional / copular continuation (`ひな` /
+/// `雛` before `なので` / `なのに` / `なら`). Compare the extra mora of that
+/// longer reading against closed-class continuations that start at the short
+/// prefix's end (narrow joshi/jodoushi CID + known continuation reading when
+/// available; reading-list fallback for DEFAULT_CID fixtures otherwise):
 ///
 /// - leftover equals the particle (`はしの` / `の`) → keep the short word
 /// - leftover is a strict prefix of the particle (`はじか` / `から`) → keep
@@ -2068,7 +2233,7 @@ fn particle_continuations_starting_at(
     )
 }
 
-fn copular_continuations_starting_at(
+fn grammatical_lattice_continuations_starting_at(
     dictionary: &AzooKeyDictionary,
     chars: &[char],
     start: usize,
@@ -2079,10 +2244,7 @@ fn copular_continuations_starting_at(
         chars,
         start,
         max_dictionary_word_chars,
-        |continuation| {
-            continuation.surface == continuation.reading
-                && is_copular_continuation_reading(&continuation.reading)
-        },
+        is_grammatical_continuation_entry,
     )
 }
 
@@ -2713,6 +2875,125 @@ mod tests {
     }
 
     #[test]
+    fn official_dict_prefix_prune_ignores_in_band_conjugational_residue() {
+        // Narrow joshi/jodoushi CIDs still tag identity じ (507) and のう
+        // (479/283). Those must not count as grammatical continuations, or
+        // short は/端 under はじ and き/機 under きのう survive incorrectly.
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("official AzooKey dictionary should load");
+
+        let haji = "はじ".chars().collect::<Vec<_>>();
+        let haji_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &haji,
+            0,
+            dictionary.entries_starting_at(&haji, 0, 24).expect("はじ lookup"),
+            haji.len(),
+            24,
+        );
+        assert!(
+            !haji_pruned
+                .iter()
+                .any(|entry| entry.reading == "は" && super::contains_kanji(&entry.surface)),
+            "official はじ must prune short kanji は/* prefixes despite identity じ CID: {:?}",
+            haji_pruned
+                .iter()
+                .map(|entry| (&entry.reading, &entry.surface, entry.lcid, entry.rcid))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            haji_pruned.iter().any(|entry| entry.reading == "はじ" && entry.surface == "端"),
+            "はじ/端 must remain available"
+        );
+
+        let kinou = "きのう".chars().collect::<Vec<_>>();
+        let kinou_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &kinou,
+            0,
+            dictionary.entries_starting_at(&kinou, 0, 24).expect("きのう lookup"),
+            kinou.len(),
+            24,
+        );
+        assert!(
+            !kinou_pruned
+                .iter()
+                .any(|entry| { entry.reading == "き" && super::contains_kanji(&entry.surface) }),
+            "official きのう must prune short kanji き/* despite identity のう CID: {:?}",
+            kinou_pruned
+                .iter()
+                .map(|entry| (&entry.reading, &entry.surface, entry.lcid, entry.rcid))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !kinou_pruned.iter().any(|entry| entry.surface == "機"),
+            "機 must not remain as a きのう prefix: {:?}",
+            kinou_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+        assert!(
+            kinou_pruned.iter().any(|entry| entry.reading == "きのう" && entry.surface == "昨日"),
+            "きのう/昨日 must remain available"
+        );
+
+        let haremasu = "はれます".chars().collect::<Vec<_>>();
+        let hare_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &haremasu,
+            0,
+            dictionary.entries_starting_at(&haremasu, 0, 24).expect("はれます lookup"),
+            haremasu.len(),
+            24,
+        );
+        assert!(
+            hare_pruned.iter().any(|entry| entry.reading == "はれ" && entry.surface == "晴れ"),
+            "official はれます must keep 晴れ against 晴れ間: {:?}",
+            hare_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+
+        let kikaku = "きかく".chars().collect::<Vec<_>>();
+        let kikaku_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &kikaku,
+            0,
+            dictionary.entries_starting_at(&kikaku, 0, 24).expect("きかく lookup"),
+            kikaku.len(),
+            24,
+        );
+        assert!(
+            !kikaku_pruned
+                .iter()
+                .any(|entry| { entry.reading == "き" && super::contains_kanji(&entry.surface) }),
+            "official きかく must still prune kanji き/* (機各 guard): {:?}",
+            kikaku_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+        assert!(
+            !kikaku_pruned.iter().any(|entry| entry.surface == "機"),
+            "機 must not remain under きかく: {:?}",
+            kikaku_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+
+        // Copular goldens still keep 日 before なのに via real joshi/jodoushi rows.
+        let hinanoni = "ひなのに".chars().collect::<Vec<_>>();
+        let hina_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &hinanoni,
+            0,
+            dictionary.entries_starting_at(&hinanoni, 0, 24).expect("ひなのに lookup"),
+            hinanoni.len(),
+            24,
+        );
+        assert!(
+            hina_pruned.iter().any(|entry| entry.reading == "ひ" && entry.surface == "日"),
+            "official ひなのに must keep 日 before なのに: {:?}",
+            hina_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn keeps_particle_chain_when_unrelated_longer_word_shadows_short_particle() {
         let root = std::env::temp_dir().join(format!(
             "caption-bridge-particle-chain-{}-{}",
@@ -2866,6 +3147,53 @@ mod tests {
             }),
             "agglutinated particle rows must not remain in default n-best: {:?}",
             candidates.iter().map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn soft_prune_ranking_prefers_hashi_no_haji_and_atsui_hi() {
+        // Ranking-only soft penalties: keep bare はし→箸 / ひな→雛, demote
+        // distractor paths when a Postposition continuation or multi-Kanji
+        // segmentation is available.
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("official AzooKey dictionary should load");
+
+        let hashi_no_haji =
+            convert_with_dictionary("はしのはじ", &dictionary, ConversionOptions::default());
+        assert_eq!(
+            hashi_no_haji.first().map(|candidate| candidate.text.as_str()),
+            Some("橋の端"),
+            "soft-prune must beat 走の恥 / 箸の恥: {:?}",
+            hashi_no_haji.iter().take(5).map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+
+        let atsui_hi =
+            convert_with_dictionary("あついひ", &dictionary, ConversionOptions::default());
+        assert_eq!(
+            atsui_hi.first().map(|candidate| candidate.text.as_str()),
+            Some("暑い日"),
+            "soft-prune must beat raw あついひ: {:?}",
+            atsui_hi.iter().take(5).map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+
+        let bare_hashi = convert_with_dictionary("はし", &dictionary, ConversionOptions::default());
+        assert_eq!(
+            bare_hashi.first().map(|candidate| candidate.text.as_str()),
+            Some("箸"),
+            "bare はし must remain chopsticks-capable: {:?}",
+            bare_hashi.iter().take(3).map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+
+        let bare_hina = convert_with_dictionary("ひな", &dictionary, ConversionOptions::default());
+        assert_eq!(
+            bare_hina.first().map(|candidate| candidate.text.as_str()),
+            Some("雛"),
+            "bare ひな must remain 雛: {:?}",
+            bare_hina.iter().take(3).map(|candidate| &candidate.text).collect::<Vec<_>>()
         );
     }
 

@@ -25,3 +25,7 @@ mod accuracy_corpus;
 #[cfg(test)]
 #[path = "kana_kanji/adversarial_corpus.rs"]
 mod adversarial_corpus;
+
+#[cfg(test)]
+#[path = "kana_kanji/dict_row_inventory.rs"]
+mod dict_row_inventory;
