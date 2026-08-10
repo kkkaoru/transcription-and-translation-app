@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { BROWSER_ZENZAI_DICT_EXECUTION } from "./browser-zenzai";
 import {
-  BROWSER_COMPACT_ZENZ_UNSUPPORTED_MESSAGE,
   runComparisonConversion,
+  usesBrowserZenzaiDictPath,
   usesWorkerConversion,
 } from "./conversion-pipeline";
 
@@ -31,9 +32,10 @@ describe("comparison conversion pipeline", () => {
       Promise.resolve({ text: "今日はいい天気", elapsedMs: 9 }),
     );
     const stages: string[] = [];
+    const { dictionaryUrl: _unused, ...inputWithoutDictUrl } = baseInput;
 
     const result = await runComparisonConversion(
-      { ...baseInput, mode: "browser-vibrato", converterModel: "azookey-rust-wasm" },
+      { ...inputWithoutDictUrl, mode: "browser-vibrato", converterModel: "azookey-rust-wasm" },
       {
         runBrowserVibrato,
         runBrowserAzookey,
@@ -52,6 +54,11 @@ describe("comparison conversion pipeline", () => {
       wasmElapsedMs: 4,
       azookeyElapsedMs: 9,
     });
+    expect(result.zenzaiExecution).toBeUndefined();
+    expect(result.trace.azookeyInput).toBe("きょうはいいてんき");
+    expect(result.trace.steps.some((step) => step.id === "browser-vibrato")).toBe(true);
+    expect(result.trace.steps.some((step) => step.id === "azookey-input")).toBe(true);
+    expect(result.steps.some((step) => step.id === "browser-azookey")).toBe(true);
     expect(result.totalElapsedMs).toBeGreaterThanOrEqual(0);
     expect(connectWorker).not.toHaveBeenCalled();
     expect(convertWithWorker).not.toHaveBeenCalled();
@@ -59,19 +66,64 @@ describe("comparison conversion pipeline", () => {
     expect(usesWorkerConversion("browser-vibrato")).toBe(false);
   });
 
-  it("does not silently fall back to Worker AzooKey when Zenzai is selected in browser-complete", async () => {
+  it("uses the Zenzai dictionary path in browser-complete without falling back to Worker", async () => {
     const convertWithWorker = vi.fn();
+    const runBrowserAzookey = vi.fn();
+    const runBrowserZenzaiDict = vi.fn(() =>
+      Promise.resolve({
+        text: "今日はいい天気",
+        elapsedMs: 6,
+        execution: BROWSER_ZENZAI_DICT_EXECUTION,
+        model: "zenz-v3.2-xsmall-gguf" as const,
+        dictionaryUrl: "/azookey/system.azkdict.gz",
+        label: "Zenzai 辞書（LOUDS / system.azkdict.gz）",
+      }),
+    );
+    const stages: string[] = [];
+
+    const result = await runComparisonConversion(
+      { ...baseInput, mode: "browser-vibrato", converterModel: "zenz-v3.2-xsmall-gguf" },
+      {
+        runBrowserVibrato: vi.fn(() =>
+          Promise.resolve({ text: "きょうはいいてんき", elapsedMs: 1 }),
+        ),
+        runBrowserAzookey,
+        runBrowserZenzaiDict,
+        convertWithWorker,
+        onStage: (stage) => stages.push(stage),
+      },
+    );
+    expect(stages).toEqual(["setup", "browser-wasm", "browser-azookey"]);
+
+    expect(result).toMatchObject({
+      convertedText: "今日はいい天気",
+      usedWebSocket: false,
+      model: "zenz-v3.2-xsmall-gguf",
+      zenzaiExecution: BROWSER_ZENZAI_DICT_EXECUTION,
+      azookeyElapsedMs: 6,
+    });
+    expect(result.model).not.toBe("azookey-rust-wasm");
+    expect(result.steps.some((step) => step.id === "browser-zenzai-dict")).toBe(true);
+    expect(result.steps.some((step) => step.id === "browser-azookey")).toBe(false);
+    expect(runBrowserAzookey).not.toHaveBeenCalled();
+    expect(convertWithWorker).not.toHaveBeenCalled();
+    expect(usesBrowserZenzaiDictPath("browser-vibrato", "zenz-v3.2-xsmall-gguf")).toBe(true);
+    expect(usesBrowserZenzaiDictPath("worker-vibrato", "zenz-v3.2-xsmall-gguf")).toBe(false);
+    expect(usesBrowserZenzaiDictPath("browser-vibrato", "azookey-rust-wasm")).toBe(false);
+  });
+
+  it("requires a Zenzai dictionary client in browser-complete mode", async () => {
     await expect(
       runComparisonConversion(
-        { ...baseInput, mode: "browser-vibrato", converterModel: "zenz-v3.2-xsmall-gguf" },
+        { ...baseInput, mode: "browser-vibrato", converterModel: "zenz-v3.2-small-gguf" },
         {
-          runBrowserVibrato: vi.fn(),
+          runBrowserVibrato: vi.fn(() =>
+            Promise.resolve({ text: "きょうはいいてんき", elapsedMs: 1 }),
+          ),
           runBrowserAzookey: vi.fn(),
-          convertWithWorker,
         },
       ),
-    ).rejects.toThrow(BROWSER_COMPACT_ZENZ_UNSUPPORTED_MESSAGE);
-    expect(convertWithWorker).not.toHaveBeenCalled();
+    ).rejects.toThrow(/Zenzai 辞書クライアント/);
   });
 
   it("skips Vibrato for phonetic fixtures and still stays in-browser", async () => {
@@ -94,7 +146,36 @@ describe("comparison conversion pipeline", () => {
     expect(result.convertedText).toBe("明日の天気は晴れ");
     expect(result.vibratoInput).toBe("あしたのてんきははれ");
     expect(result.azookeyElapsedMs).toBe(2);
+    expect(result.trace.usedPhoneticOverride).toBe(true);
+    expect(result.trace.steps.some((step) => step.id === "phonetic-override")).toBe(true);
+    expect(result.steps.some((step) => step.id === "phonetic-override")).toBe(true);
     expect(result.totalElapsedMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("skips Vibrato in worker mode for hiragana-only source", async () => {
+    const result = await runComparisonConversion(
+      {
+        ...baseInput,
+        sourceText: "きょうははれです",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+      },
+      {
+        runBrowserVibrato: vi.fn(),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker: vi.fn(() =>
+          Promise.resolve({
+            requestId: "r-skip",
+            sourceText: "きょうははれです",
+            convertedText: "今日は晴れです",
+            receivedAt: Date.now(),
+          }),
+        ),
+      },
+    );
+    expect(result.ranBrowserVibrato).toBe(false);
+    expect(result.steps.some((step) => step.id === "vibrato-skipped")).toBe(true);
   });
 
   it("uses the Worker path only for worker-vibrato", async () => {
@@ -109,8 +190,14 @@ describe("comparison conversion pipeline", () => {
         model: "azookey-rust-wasm",
       }),
     );
+    const workerStages: string[] = [];
     const result = await runComparisonConversion(
-      { ...baseInput, mode: "worker-vibrato", converterModel: "azookey-rust-wasm" },
+      {
+        ...baseInput,
+        sourceText: "今日はいい天気",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+      },
       {
         runBrowserVibrato: vi.fn(() =>
           Promise.resolve({ text: "きょうはいいてんき", elapsedMs: 1 }),
@@ -118,11 +205,16 @@ describe("comparison conversion pipeline", () => {
         runBrowserAzookey: vi.fn(),
         connectWorker,
         convertWithWorker,
+        onStage: (stage) => workerStages.push(stage),
       },
     );
+    expect(workerStages).toEqual(["setup", "browser-wasm", "worker-connect", "worker"]);
     expect(result.usedWebSocket).toBe(true);
     expect(result.convertedText).toBe("今日はいい天気");
     expect(result.workerElapsedMs).toBe(12);
+    expect(result.trace.workerRequest?.vibratoInput).toBe("きょうはいいてんき");
+    expect(result.trace.steps.some((step) => step.id === "worker-ws")).toBe(true);
+    expect(result.steps.some((step) => step.id === "worker-ws")).toBe(true);
     expect(result.totalElapsedMs).toBeGreaterThanOrEqual(0);
 
     const zeroElapsed = await runComparisonConversion(
@@ -208,6 +300,8 @@ describe("comparison conversion pipeline", () => {
     );
     expect(result.vibratoInput).toBe("今日は晴れ");
     expect(result.usedWebSocket).toBe(true);
+    expect(result.trace.steps.some((step) => step.id === "vibrato-fallback")).toBe(true);
+    expect(result.steps.some((step) => step.id === "vibrato-fallback")).toBe(true);
     expect(result.workerElapsedMs).toBeUndefined();
     expect(result.totalElapsedMs).toBeGreaterThanOrEqual(0);
 
@@ -218,6 +312,23 @@ describe("comparison conversion pipeline", () => {
           mode: "worker-vibrato",
           converterModel: "azookey-rust-wasm",
           auth: { scheme: "bearer" },
+        },
+        {
+          runBrowserVibrato: vi.fn(),
+          runBrowserAzookey: vi.fn(),
+          connectWorker: vi.fn(() => Promise.resolve()),
+          convertWithWorker: vi.fn(),
+        },
+      ),
+    ).rejects.toThrow(/Bearer token/);
+
+    await expect(
+      runComparisonConversion(
+        {
+          ...baseInput,
+          mode: "worker-vibrato",
+          converterModel: "azookey-rust-wasm",
+          auth: { scheme: "bearer", token: "   " },
         },
         {
           runBrowserVibrato: vi.fn(),
@@ -244,6 +355,122 @@ describe("comparison conversion pipeline", () => {
         },
       ),
     ).resolves.toMatchObject({ usedWebSocket: false, convertedText: "今日はいい天気" });
+  });
+
+  it("skips browser Vibrato for kana-only worker speech and records not-required trace", async () => {
+    const runBrowserVibrato = vi.fn();
+    const result = await runComparisonConversion(
+      { ...baseInput, mode: "worker-vibrato", converterModel: "azookey-rust-wasm" },
+      {
+        runBrowserVibrato,
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker: vi.fn(() =>
+          Promise.resolve({
+            requestId: "r-kana",
+            sourceText: "きょうはいいてんき",
+            convertedText: "今日はいい天気",
+            receivedAt: Date.now(),
+          }),
+        ),
+      },
+    );
+    expect(runBrowserVibrato).not.toHaveBeenCalled();
+    expect(result.trace.steps.some((step) => step.id === "vibrato-skipped")).toBe(true);
+    expect(result.trace.steps.find((step) => step.id === "vibrato-skipped")?.detail).toContain(
+      "漢字",
+    );
+    expect(result.steps).toEqual(result.trace.steps);
+  });
+
+  it("reports worker-connect and worker stages through onStage", async () => {
+    const stages: string[] = [];
+    await runComparisonConversion(
+      { ...baseInput, mode: "worker-vibrato", converterModel: "azookey-rust-wasm" },
+      {
+        runBrowserVibrato: vi.fn(),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker: vi.fn(() =>
+          Promise.resolve({
+            requestId: "r-stage",
+            sourceText: "きょうはいいてんき",
+            convertedText: "今日はいい天気",
+            receivedAt: Date.now(),
+          }),
+        ),
+        onStage: (stage) => stages.push(stage),
+      },
+    );
+    expect(stages).toEqual(["setup", "worker-connect", "worker"]);
+  });
+
+  it("forwards optional Vibrato locator fields to the browser pre-pass", async () => {
+    const runBrowserVibrato = vi.fn(() =>
+      Promise.resolve({ text: "今日は晴れ", elapsedMs: 2 }),
+    );
+    await runComparisonConversion(
+      {
+        ...baseInput,
+        sourceText: "今日は晴れ",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+        wasmModuleUrl: "/vibrato/vibrato_wasm.js",
+        dictionaryUrl: "/vibrato/system.dic.zst",
+        wasmGlobalName: "__TEST__",
+      },
+      {
+        runBrowserVibrato,
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker: vi.fn(() =>
+          Promise.resolve({
+            requestId: "r-locator",
+            sourceText: "今日は晴れ",
+            convertedText: "今日は晴れ",
+            receivedAt: Date.now(),
+          }),
+        ),
+      },
+    );
+    expect(runBrowserVibrato).toHaveBeenCalledWith("今日は晴れ", {
+      moduleUrl: "/vibrato/vibrato_wasm.js",
+      dictionaryUrl: "/vibrato/system.dic.zst",
+      globalName: "__TEST__",
+    });
+  });
+
+  it("passes undefined optional Vibrato locator fields when omitted", async () => {
+    const runBrowserVibrato = vi.fn(() =>
+      Promise.resolve({ text: "今日は晴れ", elapsedMs: 1 }),
+    );
+    const { dictionaryUrl: _dictionaryUrl, ...inputWithoutDictionary } = baseInput;
+    await runComparisonConversion(
+      {
+        ...inputWithoutDictionary,
+        sourceText: "今日は晴れ",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+      },
+      {
+        runBrowserVibrato,
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker: vi.fn(() =>
+          Promise.resolve({
+            requestId: "r-no-locator",
+            sourceText: "今日は晴れ",
+            convertedText: "今日は晴れ",
+            receivedAt: Date.now(),
+          }),
+        ),
+      },
+    );
+    expect(runBrowserVibrato).toHaveBeenCalledWith("今日は晴れ", {
+      moduleUrl: "/vibrato/vibrato_wasm.js",
+      dictionaryUrl: undefined,
+      globalName: undefined,
+    });
   });
 
   it("fails closed when browser-vibrato Vibrato or the Worker client is missing", async () => {

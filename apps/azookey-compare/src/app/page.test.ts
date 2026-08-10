@@ -44,4 +44,11 @@ describe("compare page speech settings", () => {
     expect(source).toContain("onUtteranceFinal");
     expect(source).toContain("onRecognitionEnded");
   });
+
+  it("renders per-utterance conversion trace on comparison rows", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    expect(source).toContain('data-testid="utterance-trace"');
+    expect(source).toContain("conversionTraceDisplayLines");
+    expect(source).toContain("trace: result.trace");
+  });
 });

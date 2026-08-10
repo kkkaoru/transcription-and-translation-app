@@ -3,6 +3,7 @@ import {
   elapsedSinceMs,
   formatMilliseconds,
   formatRowTiming,
+  nowMs,
   sumElapsedMs,
 } from "./conversion-timing";
 
@@ -35,5 +36,18 @@ describe("conversion timing display", () => {
       }),
     ).toBe("処理時間 Cloudflare Worker 0 ms · 合計処理時間 41 ms");
     expect(formatRowTiming({})).toBe("処理時間 Cloudflare Worker 未計測 · 合計処理時間 未計測");
+  });
+
+  it("uses Date.now when performance is unavailable", () => {
+    const original = globalThis.performance;
+    Object.defineProperty(globalThis, "performance", {
+      configurable: true,
+      value: undefined,
+    });
+    expect(nowMs()).toBeTypeOf("number");
+    Object.defineProperty(globalThis, "performance", {
+      configurable: true,
+      value: original,
+    });
   });
 });

@@ -228,6 +228,22 @@ describe("browser AzooKey WASM loader", () => {
         ({
           exports: {
             memory,
+            azookey_alloc: (size: number) => (size === tinyDictionary.byteLength ? 8 : 0),
+            azookey_dealloc: () => undefined,
+            azookey_convert: () => BigInt(1),
+            azookey_abi_version: () => AZOOKEY_WASM_ABI_VERSION,
+            azookey_dictionary_init_owned: () => 0,
+          },
+        }) as unknown as WebAssembly.Instance,
+    );
+    const converter = instantiateBrowserAzookeyConverter(dummy, tinyDictionary);
+    expect(() => converter("あ")).toThrow(/input allocation failed/);
+
+    vi.mocked(WebAssembly.Instance).mockImplementation(
+      () =>
+        ({
+          exports: {
+            memory,
             azookey_alloc: () => 8,
             azookey_dealloc: () => undefined,
             azookey_convert: () => BigInt(0),
@@ -236,8 +252,34 @@ describe("browser AzooKey WASM loader", () => {
           },
         }) as unknown as WebAssembly.Instance,
     );
-    const converter = instantiateBrowserAzookeyConverter(dummy, tinyDictionary);
-    expect(() => converter("あ")).toThrow(/conversion allocation failed/);
+    const failingConverter = instantiateBrowserAzookeyConverter(dummy, tinyDictionary);
+    expect(() => failingConverter("あ")).toThrow(/conversion allocation failed/);
+  });
+
+  it("deallocates dictionary memory when copying into Wasm fails", () => {
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const dealloc = vi.fn();
+    vi.spyOn(WebAssembly, "Instance").mockImplementation(
+      () =>
+        ({
+          exports: {
+            memory,
+            azookey_alloc: () => 8,
+            azookey_dealloc: dealloc,
+            azookey_convert: () => BigInt(1),
+            azookey_abi_version: () => AZOOKEY_WASM_ABI_VERSION,
+            azookey_dictionary_init_owned: () => 0,
+          },
+        }) as unknown as WebAssembly.Instance,
+    );
+    vi.spyOn(Uint8Array.prototype, "set").mockImplementationOnce(() => {
+      throw new Error("copy failed");
+    });
+    const dummy = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    expect(() =>
+      instantiateBrowserAzookeyConverter(dummy, new Uint8Array([1, 2, 3, 4])),
+    ).toThrow(/copy failed/);
+    expect(dealloc).toHaveBeenCalledWith(8, 4);
   });
 
   it("retries after a failed load instead of caching the rejection", async () => {

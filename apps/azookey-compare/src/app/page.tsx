@@ -11,6 +11,11 @@ import {
 } from "../lib/azookey-reading";
 import { runBrowserAzookey, warmupBrowserAzookey } from "../lib/browser-azookey";
 import {
+  BROWSER_ZENZAI_DICT_NOTICE,
+  runBrowserZenzaiDict,
+  warmupBrowserZenzaiDict,
+} from "../lib/browser-zenzai";
+import {
   browserVibratoConfigFromComparison,
   runBrowserVibrato,
   warmupBrowserVibrato,
@@ -30,12 +35,18 @@ import {
   AZOOKEY_CONVERSION_FIXTURES,
   type AzookeyConversionFixture,
 } from "../lib/conversion-fixtures";
-import { runComparisonConversion } from "../lib/conversion-pipeline";
+import { runComparisonConversion, usesBrowserZenzaiDictPath } from "../lib/conversion-pipeline";
 import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
+import {
+  conversionTraceDisplayLines,
+  type ConversionTrace,
+  traceStepLocationLabel,
+} from "../lib/conversion-trace";
 import {
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
   isConverterModel,
+  isZenzConverterModel,
 } from "../lib/converter-models";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import { visibleWebSpeechCaption } from "../lib/speech-caption-display";
@@ -72,6 +83,7 @@ interface ComparisonRow {
   totalElapsedMs?: number;
   error?: string;
   failedStage?: ConversionStage;
+  trace?: ConversionTrace;
   createdAt: number;
 }
 
@@ -394,6 +406,7 @@ export default function ComparePage() {
               }
             },
             runBrowserAzookey: (text) => runBrowserAzookey(text),
+            runBrowserZenzaiDict: (text, model) => runBrowserZenzaiDict(text, { model }),
             connectWorker: async () => {
               const client = workerRef.current;
               if (!client) {
@@ -431,13 +444,16 @@ export default function ComparePage() {
           state: "done",
           convertedText: result.convertedText,
           vibratoInput: result.vibratoInput,
+          trace: result.trace,
           ...(result.wasmElapsedMs !== undefined ? { wasmElapsedMs: result.wasmElapsedMs } : {}),
           ...(result.workerElapsedMs !== undefined || result.azookeyElapsedMs !== undefined
             ? { workerElapsedMs: result.workerElapsedMs ?? result.azookeyElapsedMs }
             : {}),
           totalElapsedMs: result.totalElapsedMs,
         });
-        if (result.modelFallback && result.requestedModel) {
+        if (result.zenzaiExecution) {
+          setNotice(BROWSER_ZENZAI_DICT_NOTICE);
+        } else if (result.modelFallback && result.requestedModel) {
           setNotice(
             result.modelFallback === "upstream-failed"
               ? `${result.requestedModel} の上流に接続できなかったため AzooKey WASM で変換しました`
@@ -599,6 +615,14 @@ export default function ComparePage() {
     [config.mode, browserWasmConfigured],
   );
 
+  const browserZenzaiDictNotice = useMemo(
+    () =>
+      usesBrowserZenzaiDictPath(config.mode, config.converterModel)
+        ? BROWSER_ZENZAI_DICT_NOTICE
+        : "",
+    [config.converterModel, config.mode],
+  );
+
   const selectedModeOption = useMemo(
     () => comparisonModeOptions.find((option) => option.value === config.mode),
     [config.mode],
@@ -630,7 +654,11 @@ export default function ComparePage() {
       try {
         await warmupBrowserVibrato(browserVibratoConfigFromComparison(config));
         if (config.mode === "browser-vibrato") {
-          await warmupBrowserAzookey();
+          if (isZenzConverterModel(config.converterModel)) {
+            await warmupBrowserZenzaiDict({ model: config.converterModel });
+          } else {
+            await warmupBrowserAzookey();
+          }
         }
         setBrowserWasmState("ready");
       } catch (caught) {
@@ -737,6 +765,7 @@ export default function ComparePage() {
     if (!shouldWarmBrowserDictionaryAfterConfigChange(String(key), speechState, workerState)) {
       if (
         key === "mode" ||
+        key === "converterModel" ||
         key === "browserWasmModuleUrl" ||
         key === "browserWasmDictionaryUrl" ||
         key === "browserWasmGlobalName"
@@ -753,7 +782,11 @@ export default function ComparePage() {
     void warmupBrowserVibrato(browserVibratoConfigFromComparison(next))
       .then(async () => {
         if (next.mode === "browser-vibrato") {
-          await warmupBrowserAzookey();
+          if (isZenzConverterModel(next.converterModel)) {
+            await warmupBrowserZenzaiDict({ model: next.converterModel });
+          } else {
+            await warmupBrowserAzookey();
+          }
         }
         setBrowserWasmState("ready");
       })
@@ -832,7 +865,7 @@ export default function ComparePage() {
           className={`button button-primary ${speechState === "listening" ? "is-listening" : ""}`}
           type="button"
           onClick={toggleListening}
-          disabled={!speechSupported || speechState === "stopping"}
+          disabled={!speechSupported}
         >
           <span className="record-dot" aria-hidden="true" />
           {speechState === "listening" || speechState === "starting" ? "認識を停止" : "認識を開始"}
@@ -909,6 +942,12 @@ export default function ComparePage() {
             >
               {converterModelOptions.find((option) => option.value === config.converterModel)
                 ?.description ?? ""}
+              {browserZenzaiDictNotice ? (
+                <>
+                  {" "}
+                  <span data-testid="browser-zenzai-dict-notice">{browserZenzaiDictNotice}</span>
+                </>
+              ) : null}
             </p>
 
             <label className="field-label" htmlFor="worker-url">
@@ -1218,10 +1257,31 @@ export default function ComparePage() {
                               ? "Manual reading"
                               : "Web Speech"}
                         </span>
-                        <p>{row.sourceText}</p>
-                        {row.vibratoInput && row.vibratoInput !== row.sourceText ? (
-                          <span className="row-meta">vibratoInput: {row.vibratoInput}</span>
-                        ) : null}
+                        {row.trace ? (
+                          <dl className="row-trace" data-testid="utterance-trace">
+                            {conversionTraceDisplayLines(row.trace).map((line) => (
+                              <div className="row-trace-step" key={`${row.id}-${line.key}`}>
+                                <dt>{line.label}</dt>
+                                <dd>
+                                  <span className="row-trace-value">{line.value}</span>
+                                  {line.detail ? (
+                                    <span className="row-meta row-trace-detail">{line.detail}</span>
+                                  ) : null}
+                                  {line.timing ? (
+                                    <span className="row-meta row-trace-timing">{line.timing}</span>
+                                  ) : null}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        ) : (
+                          <>
+                            <p>{row.sourceText}</p>
+                            {row.vibratoInput && row.vibratoInput !== row.sourceText ? (
+                              <span className="row-meta">vibratoInput: {row.vibratoInput}</span>
+                            ) : null}
+                          </>
+                        )}
                         {row.expectedText ? (
                           <span
                             className={`row-meta ${expectationMissed ? "row-meta-miss" : expectationMet ? "row-meta-hit" : ""}`}
@@ -1243,6 +1303,30 @@ export default function ComparePage() {
                           {rowPathLabel(row.mode, row.state, row.failedStage)} ·{" "}
                           {formatRowTiming(row)}
                         </span>
+                        {row.trace?.workerRequest ? (
+                          <span className="row-meta row-trace-worker-payload">
+                            Cloudflare Worker 送信: sourceText={row.trace.workerRequest.sourceText} ·
+                            vibratoInput={row.trace.workerRequest.vibratoInput} ·
+                            vibratoExecution={row.trace.workerRequest.vibratoExecution}
+                            {row.trace.workerRequest.model
+                              ? ` · model=${row.trace.workerRequest.model}`
+                              : ""}
+                          </span>
+                        ) : row.trace && row.mode === "browser-vibrato" ? (
+                          <span className="row-meta row-trace-worker-payload">
+                            ブラウザ完結（usedWebSocket: false） · AzooKey 入力=
+                            {row.trace.azookeyInput}
+                          </span>
+                        ) : null}
+                        {row.trace ? (
+                          <span className="row-meta">
+                            {row.trace.steps
+                              .filter((step) => step.location !== "none")
+                              .map((step) => traceStepLocationLabel(step.location))
+                              .filter((label, idx, labels) => labels.indexOf(label) === idx)
+                              .join(" → ")}
+                          </span>
+                        ) : null}
                       </div>
                     </li>
                   );

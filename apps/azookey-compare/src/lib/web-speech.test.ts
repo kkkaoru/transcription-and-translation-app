@@ -498,10 +498,15 @@ describe("WebSpeechController", () => {
     recognition.onstart?.();
     controller.stop();
     controller.start();
+
+    // Deferred start waits for the stop `end` and grace flush before the
+    // replacement service calls `start()` again.
+    recognition.onend?.();
+    vi.advanceTimersByTime(150);
+    expect(recognition.startCalls).toBe(2);
     recognition.onstart?.();
 
     // The superseded service can deliver `end` after the new start callback.
-    // The successful abort's ignored-end budget must still fence it.
     recognition.onend?.();
     vi.advanceTimersByTime(200);
     expect(recognition.startCalls).toBe(2);
@@ -720,15 +725,13 @@ describe("WebSpeechController", () => {
     controller.stop();
     recognition.abortFailure = "abort failed";
     controller.start();
-    expect(recognition.startCalls).toBe(2);
+    expect(recognition.startCalls).toBe(1);
 
     // This onend is not ignored: abort did not succeed, so it belongs to the
     // active browser service and must schedule the ordinary restart path.
     recognition.onend?.();
-    vi.advanceTimersByTime(100);
+    vi.advanceTimersByTime(150);
     expect(recognition.startCalls).toBe(2);
-    vi.advanceTimersByTime(50);
-    expect(recognition.startCalls).toBe(3);
     controller.dispose();
   });
 
@@ -867,10 +870,12 @@ describe("WebSpeechController", () => {
     recognition.onstart?.();
     expect(recognition.startCalls).toBe(1);
 
-    // Starting while the old service is stopping ignores its stale onend.
+    // Starting while the old service is stopping waits for its `end` before
+    // calling `start()` again.
     const staleEnd = recognition.onend;
     controller.start();
     staleEnd?.();
+    vi.advanceTimersByTime(150);
     expect(recognition.startCalls).toBe(2);
     recognition.onstart?.();
 
@@ -903,5 +908,259 @@ describe("WebSpeechController", () => {
     vi.advanceTimersByTime(50);
     clearTimeoutSpy.mockRestore();
     timerController.dispose();
+  });
+
+  class ChromeLikeSpeechRecognition extends FakeSpeechRecognition {
+    active = false;
+
+    start(): void {
+      if (this.active) {
+        throw new Error("InvalidStateError: recognition has already started");
+      }
+      super.start();
+      this.active = true;
+    }
+
+    stop(): void {
+      super.stop();
+    }
+
+    abort(): void {
+      super.abort();
+      this.active = false;
+    }
+
+    emitStart(): void {
+      this.onstart?.();
+    }
+
+    emitEnd(): void {
+      this.active = false;
+      this.onend?.();
+    }
+  }
+
+  const installChromeSpeech = (): void => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      writable: true,
+      value: { SpeechRecognition: ChromeLikeSpeechRecognition },
+    });
+  };
+
+  it("defers start until end after rapid stop then start", () => {
+    vi.useFakeTimers();
+    installChromeSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0] as ChromeLikeSpeechRecognition;
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    recognition.emitStart();
+    controller.stop();
+    controller.start();
+    expect(recognition.startCalls).toBe(1);
+
+    recognition.emitEnd();
+    vi.advanceTimersByTime(150);
+    expect(recognition.startCalls).toBe(2);
+    recognition.emitStart();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("listening");
+
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "再開後")) });
+    expect(events.onFinalText).toHaveBeenLastCalledWith("再開後");
+    controller.dispose();
+  });
+
+  it("cancels start cleanly when stop arrives during starting", () => {
+    vi.useFakeTimers();
+    installChromeSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0] as ChromeLikeSpeechRecognition;
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("starting");
+    controller.stop();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
+
+    recognition.emitStart();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
+
+    recognition.emitEnd();
+    vi.advanceTimersByTime(100);
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    expect(events.onRecognitionEnded).toHaveBeenCalledWith({
+      reason: "user-stop",
+      finalText: "",
+      interimText: "",
+    });
+    expect(recognition.startCalls).toBe(1);
+    controller.dispose();
+  });
+
+  it("ignores a double start click while already starting", () => {
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    controller.start();
+    expect(recognition.startCalls).toBe(1);
+    controller.dispose();
+  });
+
+  it("restarts after start during stopping once the browser delivers end", () => {
+    vi.useFakeTimers();
+    installChromeSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0] as ChromeLikeSpeechRecognition;
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    recognition.emitStart();
+    controller.stop();
+    controller.start();
+    recognition.emitEnd();
+    vi.advanceTimersByTime(150);
+    recognition.emitStart();
+
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "停止中に再開")) });
+    expect(events.onFinalText).toHaveBeenLastCalledWith("停止中に再開");
+    expect(events.onStateChange).toHaveBeenLastCalledWith("listening");
+    controller.dispose();
+  });
+
+  it("restarts from a stop flush when start is requested before grace expires", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    recognition.onstart?.();
+    controller.stop();
+    recognition.onend?.();
+    controller.start();
+    vi.advanceTimersByTime(100);
+    expect(recognition.startCalls).toBe(2);
+    recognition.onstart?.();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("listening");
+    controller.dispose();
+  });
+
+  it("does not restart after stop when the user keeps capture off through flush", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    recognition.onstart?.();
+    controller.stop();
+    recognition.onend?.();
+    vi.advanceTimersByTime(150);
+    expect(recognition.startCalls).toBe(1);
+    controller.dispose();
+  });
+
+  it("defers start while a result flush timer is still pending", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    recognition.onstart?.();
+    recognition.onend?.();
+    controller.start();
+    expect(recognition.startCalls).toBe(1);
+    vi.advanceTimersByTime(150);
+    expect(recognition.startCalls).toBe(2);
+    controller.dispose();
+  });
+
+  it("skips beginRecognitionStart when stop cancels capture before restart fires", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const controller = new WebSpeechController("ja-JP");
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+
+    controller.start();
+    recognition.onstart?.();
+    recognition.onend?.();
+    controller.stop();
+    vi.advanceTimersByTime(150);
+    expect(recognition.startCalls).toBe(1);
+    controller.dispose();
+  });
+
+  it("skips a duplicate browser final that repeats a just-flushed interim", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(false, "重複")) });
+    recognition.onend?.();
+    vi.advanceTimersByTime(100);
+    expect(events.onFinalText).toHaveBeenCalledWith("重複");
+    events.onFinalText.mockClear();
+    vi.advanceTimersByTime(50);
+    expect(recognition.startCalls).toBe(2);
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "重複")) });
+    expect(events.onFinalText).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("survives throwing onRecognitionEnded observers", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    events.onRecognitionEnded.mockImplementation(() => {
+      throw new Error("observer failed");
+    });
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    controller.stop();
+    recognition.onend?.();
+    vi.advanceTimersByTime(150);
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    controller.dispose();
   });
 });

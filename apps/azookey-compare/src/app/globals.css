@@ -530,10 +530,10 @@ select:focus-visible {
 
 .comparison-row {
   display: grid;
-  grid-template-columns: 30px minmax(100px, 0.78fr) 24px minmax(150px, 1fr);
-  align-items: center;
+  grid-template-columns: 30px minmax(180px, 1.05fr) 24px minmax(150px, 0.95fr);
+  align-items: start;
   gap: 13px;
-  min-height: 92px;
+  min-height: 120px;
   padding: 14px 0;
   border-bottom: 1px solid var(--soft-line);
 }
@@ -592,6 +592,44 @@ select:focus-visible {
   margin-top: 5px;
   color: #98a29f;
   font-size: 10px;
+}
+
+.row-trace {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.row-trace-step {
+  display: grid;
+  gap: 2px;
+}
+
+.row-trace-step dt {
+  margin: 0;
+  color: #7a8682;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.row-trace-step dd {
+  margin: 0;
+}
+
+.row-trace-value {
+  display: block;
+  color: #3f4849;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.row-trace-detail,
+.row-trace-timing,
+.row-trace-worker-payload {
+  margin-top: 3px;
 }
 
 .status-footer {

@@ -22,11 +22,11 @@ export const ARCHITECTURE_ASSET_ROWS = [
     name: "AzooKey 辞書",
     file: ARCHITECTURE_DICTIONARIES.azookey.file,
     size: ARCHITECTURE_ASSET_SIZES.azkdictGz,
-    reader: "AzooKey WASM",
-    source: `${ARCHITECTURE_DICTIONARIES.azookey.workerUrl}（${ARCHITECTURE_DICTIONARIES.azookey.workerEnv} → Cloudflare Worker ASSETS）`,
-    when: "websocket-upgrade（初回 fetch、isolate 内再利用）",
+    reader: "AzooKey WASM / Zenzai 辞書（ブラウザ）",
+    source: `${ARCHITECTURE_DICTIONARIES.azookey.browserUrl}（public/azookey、Cloudflare Worker ASSETS とも ${ARCHITECTURE_DICTIONARIES.azookey.workerEnv}）`,
+    when: "ブラウザ: connect / listen / Zenzai 辞書選択時",
     uses: `${ARCHITECTURE_DICTIONARIES.azookey.fn}（${ARCHITECTURE_DICTIONARIES.azookey.format}）`,
-    depends: "Zenzai は使わない",
+    depends: "Zenzai GGUF 推論は使わない（辞書のみ）",
   },
   {
     id: "gguf",
@@ -45,6 +45,11 @@ export const ARCHITECTURE_ASSET_ROWS = [
 export const ARCHITECTURE_DEPENDENCIES = [
   { from: "Vibrato", to: "IPADIC system.dic.zst", note: "漢字→ひらがな" },
   { from: "AzooKey WASM", to: "system.azkdict.gz", note: "かな漢字（既定）" },
+  {
+    from: "Zenzai 辞書（ブラウザ）",
+    to: "system.azkdict.gz",
+    note: "LOUDS のみ / GGUF 推論なし",
+  },
   { from: "Cloudflare Worker /ws/azookey", to: "AzooKey WASM または Zenzai", note: "かな漢字の入口" },
   {
     from: "Zenzai 変換",
