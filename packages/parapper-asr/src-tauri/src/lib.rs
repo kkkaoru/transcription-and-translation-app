@@ -8,8 +8,8 @@ use tauri::{Manager, generate_handler};
 use tauri_plugin_log::{Target, TargetKind};
 
 use crate::config::{
-    DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD, MAX_VAD_INTERVAL_MS, MIN_VAD_INTERVAL_MS,
-    ParapperConfig, TurnDetector, VAD_INTERVAL_STEP_MS,
+    AsrModel, DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD, MAX_VAD_INTERVAL_MS,
+    MIN_VAD_INTERVAL_MS, ParapperConfig, TurnDetector, VAD_INTERVAL_STEP_MS,
 };
 
 const HEADLESS_RUNTIME_DIR_ENV: &str = "PARAPPER_RUNTIME_DIR";
@@ -37,6 +37,9 @@ struct HeadlessOptions {
     interim_result_silence_ms: u32,
     turn_check_silence_ms: u32,
     noise_cancellation_enabled: bool,
+    /// Progressive interim-only ASR (typically Nemotron streaming). `None`
+    /// clears any persisted interim model from the isolated runtime profile.
+    interim_asr_model: Option<AsrModel>,
 }
 
 impl Default for HeadlessOptions {
@@ -48,6 +51,7 @@ impl Default for HeadlessOptions {
             interim_result_silence_ms: DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS,
             turn_check_silence_ms: DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS,
             noise_cancellation_enabled: DEFAULT_HEADLESS_NOISE_CANCELLATION_ENABLED,
+            interim_asr_model: None,
         }
     }
 }
@@ -80,6 +84,31 @@ fn parse_headless_millis_option(
         return Err(format!("{option} must be a positive integer"));
     }
     Ok(millis)
+}
+
+fn parse_headless_interim_asr_model(
+    arguments: &[String],
+    index: &mut usize,
+) -> Result<Option<AsrModel>, String> {
+    *index += 1;
+    let value = arguments
+        .get(*index)
+        .ok_or_else(|| "--interim-asr-model requires a value".to_string())?;
+    match value.as_str() {
+        "none" | "off" | "false" => Ok(None),
+        other => {
+            let model: AsrModel = serde_json::from_value(serde_json::Value::String(other.to_string()))
+                .map_err(|_| {
+                    format!("--interim-asr-model is not a known ASR model, got {value:?}")
+                })?;
+            if !model.is_interim_only() {
+                return Err(format!(
+                    "--interim-asr-model must be an interim-only model, got {value:?}"
+                ));
+            }
+            Ok(Some(model))
+        }
+    }
 }
 
 impl HeadlessOptions {
@@ -157,6 +186,10 @@ impl HeadlessOptions {
                         &mut index,
                         "--noise-cancellation-enabled",
                     )?;
+                }
+                "--interim-asr-model" => {
+                    options.interim_asr_model =
+                        parse_headless_interim_asr_model(arguments, &mut index)?;
                 }
                 "--noise-cancellation" => {
                     // A valueless alias is convenient for manually launched
@@ -473,9 +506,10 @@ fn structured_json_log_message(message: &str) -> Option<&str> {
 /// `PARAPPER_RUNTIME_DIR` so it cannot overwrite an interactive Parapper
 /// installation's settings or model cache.
 /// The sidecar accepts `--vad-interval-ms`, `--vad-threshold`,
-/// `--interim-result-silence-ms`, `--turn-check-silence-ms`, and
-/// `--noise-cancellation-enabled` so the parent application can keep speech
-/// segmentation and audio quality consistent across restarts.
+/// `--interim-result-silence-ms`, `--turn-check-silence-ms`,
+/// `--noise-cancellation-enabled`, and `--interim-asr-model` so the parent
+/// application can keep speech segmentation, audio quality, and progressive
+/// interim ASR consistent across restarts.
 ///
 /// # Errors
 ///
@@ -577,13 +611,16 @@ async fn start_headless_recognition(
     config.turn.interim_result_silence_ms = options.interim_result_silence_ms;
     config.turn.check_silence_ms = options.turn_check_silence_ms;
     apply_headless_quality_defaults(&mut config, options.noise_cancellation_enabled);
+    // Always overwrite so a stale interactive profile in PARAPPER_RUNTIME_DIR
+    // cannot keep a previous interim model after the parent disables it.
+    config.asr.interim_model = options.interim_asr_model;
     let config = state.set_config(config).await?;
 
     log::info!("Preparing Kotoba Beacon ASR models before listening on 127.0.0.1:{}", options.port);
     ensure_models_downloaded(&handle, &config).await?;
     state.start_audio_input(handle.clone()).await?;
     log::info!(
-        "Kotoba Beacon ASR service is listening on ws://127.0.0.1:{}/ws/recognition (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={} turn_detector={:?} interim_result_enabled={} rerecognize_full_on_complete={} noise_cancellation_enabled={})",
+        "Kotoba Beacon ASR service is listening on ws://127.0.0.1:{}/ws/recognition (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={} turn_detector={:?} interim_result_enabled={} rerecognize_full_on_complete={} noise_cancellation_enabled={} interim_asr_model={:?})",
         options.port,
         config.segmentation.vad_interval_ms,
         config.segmentation.vad_threshold,
@@ -593,6 +630,7 @@ async fn start_headless_recognition(
         config.turn.interim_result_enabled,
         config.turn.rerecognize_full_on_complete,
         config.noise_cancellation.enabled,
+        config.asr.interim_model,
     );
     Ok(())
 }
@@ -607,7 +645,7 @@ mod headless_tests {
         DEFAULT_VAD_THRESHOLD, HeadlessOptions, apply_headless_quality_defaults,
         structured_json_log_message,
     };
-    use crate::config::{ParapperConfig, TurnDetector};
+    use crate::config::{AsrModel, ParapperConfig, TurnDetector};
 
     #[test]
     fn structured_lifecycle_messages_remain_parseable_without_prefixes() {
@@ -631,6 +669,7 @@ mod headless_tests {
         assert_eq!(options.interim_result_silence_ms, DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS);
         assert_eq!(options.turn_check_silence_ms, DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS);
         assert_eq!(options.noise_cancellation_enabled, DEFAULT_HEADLESS_NOISE_CANCELLATION_ENABLED);
+        assert_eq!(options.interim_asr_model, None);
     }
 
     #[test]
@@ -683,6 +722,38 @@ mod headless_tests {
 
         let disable_alias = vec!["--headless".to_string(), "--no-noise-cancellation".to_string()];
         assert!(!HeadlessOptions::parse(&disable_alias).unwrap().noise_cancellation_enabled);
+    }
+
+    #[test]
+    fn headless_options_accept_nemotron_streaming_interim_asr_model() {
+        let args = vec![
+            "--headless".to_string(),
+            "--interim-asr-model".to_string(),
+            "nemotron_3_5_asr_streaming_0_6b_160ms_int8".to_string(),
+        ];
+        assert_eq!(
+            HeadlessOptions::parse(&args).unwrap().interim_asr_model,
+            Some(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8)
+        );
+
+        for off in ["none", "off", "false"] {
+            let clear = vec![
+                "--headless".to_string(),
+                "--interim-asr-model".to_string(),
+                off.to_string(),
+            ];
+            assert_eq!(HeadlessOptions::parse(&clear).unwrap().interim_asr_model, None);
+        }
+    }
+
+    #[test]
+    fn headless_options_reject_completion_models_as_interim_asr() {
+        let args = vec![
+            "--headless".to_string(),
+            "--interim-asr-model".to_string(),
+            "reazonspeech_k2_v2".to_string(),
+        ];
+        assert!(HeadlessOptions::parse(&args).is_err());
     }
 
     #[test]
@@ -758,6 +829,12 @@ mod headless_tests {
                 "--headless".to_string(),
                 "--noise-cancellation-enabled".to_string(),
                 "maybe".to_string(),
+            ],
+            vec!["--headless".to_string(), "--interim-asr-model".to_string()],
+            vec![
+                "--headless".to_string(),
+                "--interim-asr-model".to_string(),
+                "not-a-model".to_string(),
             ],
             vec!["--headless".to_string(), "--mystery".to_string()],
         ] {
