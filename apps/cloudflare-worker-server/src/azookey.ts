@@ -35,6 +35,13 @@ export const AZOOKEY_CONVERT_MODELS = [
   AZOOKEY_ZENZ_SMALL_MODEL,
 ] as const;
 export type AzookeyConvertModel = (typeof AZOOKEY_CONVERT_MODELS)[number];
+/** Worker fell back to portable WASM because MODEL_ROUTES lacked the requested Zenzai id. */
+export const AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE = "unconfigured-route";
+/** Worker fell back to portable WASM after a configured Zenzai upstream failed. */
+export const AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED = "upstream-failed";
+export type AzookeyModelFallback =
+  | typeof AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE
+  | typeof AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED;
 export const AZOOKEY_MODE = "worker-vibrato" as const;
 export const BROWSER_VIBRATO_MODE = "browser-vibrato" as const;
 /** Where the Vibrato pre-pass is executed for a comparison request. */
@@ -239,7 +246,11 @@ export interface AzookeyResultMessage {
   convertedText: string;
   mode: typeof AZOOKEY_MODE;
   elapsedMs: number;
+  /** Effective converter model after any Zenzai fallback. */
   model: AzookeyConvertModel;
+  /** Original Zenzai model id when the Worker used a dictionary fallback. */
+  requestedModel?: AzookeyConvertModel;
+  modelFallback?: AzookeyModelFallback;
 }
 
 export interface AzookeyErrorMessage {
@@ -979,6 +990,9 @@ export const parseModelRoutes = (
   }
 };
 
+export const isZenzConvertModel = (model: AzookeyConvertModel): boolean =>
+  model === AZOOKEY_ZENZ_XSMALL_MODEL || model === AZOOKEY_ZENZ_SMALL_MODEL;
+
 const convertWithZenzModel = async (
   model: AzookeyConvertModel,
   text: string,
@@ -1091,8 +1105,7 @@ export const convertAzookeyMessage = async (
   } else if (deadlineExpired()) {
     throw new AzookeyProtocolError("conversion_timeout", "conversion timed out", message.requestId);
   }
-  let converted: string;
-  try {
+  const runDictionaryConversion = async (): Promise<string> => {
     if (remainingMs() <= 0) {
       throw new AzookeyProtocolError(
         "conversion_timeout",
@@ -1100,13 +1113,10 @@ export const convertAzookeyMessage = async (
         message.requestId,
       );
     }
-    const candidate =
-      message.model === AZOOKEY_MODEL
-        ? await withTimeout((signal) => runtime.converter(conversionInput, signal), remainingMs())
-        : await withTimeout(
-            (signal) => convertWithZenzModel(message.model, conversionInput, runtime, signal),
-            remainingMs(),
-          );
+    const candidate = await withTimeout(
+      (signal) => runtime.converter(conversionInput, signal),
+      remainingMs(),
+    );
     if (deadlineExpired()) {
       throw new AzookeyProtocolError(
         "conversion_timeout",
@@ -1124,7 +1134,78 @@ export const convertAzookeyMessage = async (
         message.requestId,
       );
     }
-    converted = candidate;
+    return candidate;
+  };
+
+  let converted: string;
+  let resultModel: AzookeyConvertModel = message.model;
+  let requestedModel: AzookeyConvertModel | undefined;
+  let modelFallback: AzookeyModelFallback | undefined;
+  try {
+    if (message.model === AZOOKEY_MODEL) {
+      converted = await runDictionaryConversion();
+    } else if (!runtime.modelRoutes?.[message.model]) {
+      requestedModel = message.model;
+      modelFallback = AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE;
+      resultModel = AZOOKEY_MODEL;
+      converted = await runDictionaryConversion();
+    } else {
+      try {
+        if (remainingMs() <= 0) {
+          throw new AzookeyProtocolError(
+            "conversion_timeout",
+            "conversion timed out",
+            message.requestId,
+          );
+        }
+        const candidate = await withTimeout(
+          (signal) => convertWithZenzModel(message.model, conversionInput, runtime, signal),
+          remainingMs(),
+        );
+        if (deadlineExpired()) {
+          throw new AzookeyProtocolError(
+            "conversion_timeout",
+            "conversion timed out",
+            message.requestId,
+          );
+        }
+        if (typeof candidate !== "string") {
+          throw new AzookeyProtocolError(
+            "conversion_failed",
+            "AzooKey conversion returned no text",
+          );
+        }
+        if (encoder.encode(candidate).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+          throw new AzookeyProtocolError(
+            "conversion_failed",
+            "AzooKey conversion output exceeds the text byte limit",
+            message.requestId,
+          );
+        }
+        converted = candidate;
+      } catch (error) {
+        if (
+          error instanceof AzookeyProtocolError &&
+          (error.code === "conversion_failed" || error.code === "conversion_timeout")
+        ) {
+          requestedModel = message.model;
+          modelFallback = AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED;
+          resultModel = AZOOKEY_MODEL;
+          converted = await runDictionaryConversion();
+        } else if (error instanceof AzookeyProtocolError) {
+          if (error.requestId === undefined) {
+            throw new AzookeyProtocolError(error.code, error.message, message.requestId);
+          }
+          throw error;
+        } else {
+          throw new AzookeyProtocolError(
+            "conversion_failed",
+            "AzooKey conversion failed",
+            message.requestId,
+          );
+        }
+      }
+    }
   } catch (error) {
     if (error instanceof AzookeyProtocolError) {
       if (error.requestId === undefined) {
@@ -1150,7 +1231,9 @@ export const convertAzookeyMessage = async (
     convertedText: converted,
     mode: AZOOKEY_MODE,
     elapsedMs: elapsedMsFromDuration(elapsed),
-    model: message.model,
+    model: resultModel,
+    ...(requestedModel ? { requestedModel } : {}),
+    ...(modelFallback ? { modelFallback } : {}),
   };
 };
 
@@ -1254,10 +1337,13 @@ export const readyAzookeyMessage = (
         ? "configured"
         : "unconfigured"
       : workerInputStage;
+  const zenzDictionaryFallbackAvailable = dictionaryTransport === "portable-wasm";
   const availableModels = [
     AZOOKEY_MODEL,
     ...AZOOKEY_CONVERT_MODELS.filter(
-      (model) => model !== AZOOKEY_MODEL && Boolean(modelRoutes[model]),
+      (model) =>
+        model !== AZOOKEY_MODEL &&
+        (Boolean(modelRoutes[model]) || zenzDictionaryFallbackAvailable),
     ),
   ];
   return jsonMessage({
