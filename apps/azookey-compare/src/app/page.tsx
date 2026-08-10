@@ -891,49 +891,56 @@ export default function ComparePage() {
       dispatchedSpeechRef.current = [];
       setLatestSpeechSegment("");
       setError("");
-      void startCloudflareWorkersAiAsrAfterSelect({
-        language: config.language,
-        endpointUrl:
-          typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined,
-        auth: { scheme: config.auth.scheme, token: config.auth.token },
-        existing: asrRef.current,
-        callbacks: {
-          onStateChange: (state) => {
-            setSpeechState(state);
-            if (state === "listening") {
-              setError("");
-            }
-          },
-          onTranscript: ({ interimText }) => {
-            setSpeechInterimText(interimText);
-          },
-          onFinalText: (text) => {
-            setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
-          },
-          onUtteranceFinal: ({ text, audioSeconds }) => {
-            dispatchSpeechText(text, audioSeconds);
-          },
-          onVadNotice: (message) => {
-            setNotice(message);
-          },
-          onError: (message) => {
-            setError(message);
-          },
-        },
-        onError: (message) => {
-          setError(message);
+      beginRecognitionListening({
+        provider: "workers-ai-asr",
+        start: async () => {
+          const result = await startCloudflareWorkersAiAsrAfterSelect({
+            language: config.language,
+            endpointUrl:
+              typeof window !== "undefined"
+                ? buildWorkersAiAsrUrl(window.location.origin)
+                : undefined,
+            auth: { scheme: config.auth.scheme, token: config.auth.token },
+            existing: asrRef.current,
+            callbacks: {
+              onStateChange: (state) => {
+                setSpeechState(state);
+                if (state === "listening") {
+                  setError("");
+                }
+              },
+              onTranscript: ({ interimText }) => {
+                setSpeechInterimText(interimText);
+              },
+              onFinalText: (text) => {
+                setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
+              },
+              onUtteranceFinal: ({ text, audioSeconds }) => {
+                dispatchSpeechText(text, audioSeconds);
+              },
+              onVadNotice: (message) => {
+                setNotice(message);
+              },
+              onError: (message) => {
+                setError(message);
+              },
+            },
+            onError: (message) => {
+              setError(message);
+            },
+          });
+          if (result.controller) {
+            asrRef.current = result.controller;
+            setAsrCaptureSupported(result.controller.supported);
+          }
+          if (!result.ok && result.reason === "unsupported") {
+            setAsrCaptureSupported(false);
+          }
         },
         warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
         onWarmupNotice: setNotice,
+        onWarmupError: setError,
         requireVibratoWarmup: config.mode === "browser-vibrato",
-      }).then((result) => {
-        if (result.controller) {
-          asrRef.current = result.controller;
-          setAsrCaptureSupported(result.controller.supported);
-        }
-        if (!result.ok && result.reason === "unsupported") {
-          setAsrCaptureSupported(false);
-        }
       });
       return;
     }
