@@ -267,9 +267,10 @@ const runAsrGranted = async (browser) => {
   });
   await context.grantPermissions(["microphone"], { origin: BASE });
   const page = await context.newPage();
+  const pageerrors = [];
   const consoleErrors = [];
   page.on("pageerror", (error) => {
-    consoleErrors.push(error.message);
+    pageerrors.push(error.message);
   });
   page.on("console", (msg) => {
     if (msg.type() === "error") {
@@ -288,11 +289,12 @@ const runAsrGranted = async (browser) => {
     const after = await waitAfterAsrStart(page);
     await screenshot(page, "asr-granted");
     const oldBug = after.kind === "preparing" || after.footer.includes(PREPARING_JA);
-    const ok = after.kind === "started" && !oldBug;
+    const overlayCrash = pageerrors.length > 0;
+    const ok = after.kind === "started" && !oldBug && !overlayCrash;
     record(
       name,
       ok,
-      `kind=${after.kind} pill=${after.pill} button=${after.button} footer=${after.footer.slice(0, 120)}${
+      `kind=${after.kind} pill=${after.pill} button=${after.button} footer=${after.footer.slice(0, 120)} pageerrors=${pageerrors.length}${
         consoleErrors.length ? ` console=${consoleErrors.slice(0, 3).join(" | ")}` : ""
       }`,
     );
@@ -311,6 +313,16 @@ const runAsrDenied = async (browser) => {
     permissions: [],
   });
   const page = await context.newPage();
+  const pageerrors = [];
+  const consoleErrors = [];
+  page.on("pageerror", (error) => {
+    pageerrors.push(error.message);
+  });
+  page.on("console", (msg) => {
+    if (msg.type() === "error") {
+      consoleErrors.push(msg.text());
+    }
+  });
   await page.addInitScript(() => {
     const deny = () => {
       const error = new Error("Permission denied");
@@ -340,10 +352,13 @@ const runAsrDenied = async (browser) => {
     await screenshot(page, "asr-denied");
     const preparing = after.footer.includes(PREPARING_JA);
     const denied = after.kind === "mic-denied" || after.footer.includes(MIC_DENIED_JA);
+    const operable = after.button.includes("認識を開始");
+    const overlay = pageerrors.length > 0;
+    const logged = consoleErrors.some((text) => text.includes(MIC_DENIED_JA));
     record(
       name,
-      denied && !preparing,
-      `kind=${after.kind} pill=${after.pill} footer=${after.footer.slice(0, 160)}`,
+      denied && !preparing && after.pill === "エラー" && operable && !overlay && logged,
+      `kind=${after.kind} pill=${after.pill} footer=${after.footer.slice(0, 160)} pageerrors=${pageerrors.length} console=${logged}`,
     );
   } catch (error) {
     record(name, false, error instanceof Error ? error.message : String(error));

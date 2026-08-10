@@ -574,14 +574,14 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(tap.connections).not.toContain(audioContext.destination);
   });
 
-  it("throws after setError when PCM tap delivers zero frames", async () => {
+  it("setErrors without throwing when PCM tap delivers zero frames", async () => {
     installBrowser();
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { controller, events } = await startController();
     expect(controller.currentState).toBe("listening");
     expect(() => {
       vi.advanceTimersByTime(PCM_TAP_DEAD_WATCHDOG_MS);
-    }).toThrow(WORKERS_AI_ASR_TAP_DEAD_JA);
+    }).not.toThrow();
     expect(logged).toHaveBeenCalled();
     expect(JSON.stringify(logged.mock.calls)).toMatch(/tapFrames/);
     expect(events.onError).toHaveBeenCalledWith(WORKERS_AI_ASR_TAP_DEAD_JA);
@@ -613,6 +613,58 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
+  it("maps nameless Permission denied getUserMedia errors to マイク許可, not the generic mic string", async () => {
+    installBrowser();
+    (
+      navigator as Navigator & { mediaDevices: { getUserMedia: ReturnType<typeof vi.fn> } }
+    ).mediaDevices.getUserMedia = vi.fn(() => Promise.reject(new Error("Permission denied")));
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      disableSilero: true,
+      ...events,
+    });
+    await expect(controller.start()).rejects.toThrow(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    expect(events.onError).toHaveBeenCalledWith(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    expect(events.onError.mock.calls[0]?.[0]).not.toBe("マイクを開始できません");
+    controller.dispose();
+  });
+
+  it("calls getUserMedia as a MediaDevices method so this stays bound", async () => {
+    const track = fakeTrack();
+    const stream = { getTracks: () => [track] } as unknown as MediaStream;
+    const mediaDevices = {
+      getUserMedia(this: unknown, _constraints: MediaStreamConstraints) {
+        if (this !== mediaDevices) {
+          return Promise.reject(
+            new TypeError("Can only call MediaDevices.getUserMedia on instances of MediaDevices"),
+          );
+        }
+        return Promise.resolve(stream);
+      },
+    };
+    installBrowser(track);
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      writable: true,
+      value: { mediaDevices },
+    });
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      disableSilero: true,
+      ...events,
+    });
+    await controller.start();
+    expect(controller.currentState).toBe("listening");
+    expect(events.onError).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
   it("setErrors and console.errors when PCM tap delivers zero frames", async () => {
     installBrowser();
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -620,7 +672,7 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(controller.currentState).toBe("listening");
     expect(() => {
       vi.advanceTimersByTime(PCM_TAP_DEAD_WATCHDOG_MS);
-    }).toThrow(WORKERS_AI_ASR_TAP_DEAD_JA);
+    }).not.toThrow();
     expect(logged).toHaveBeenCalled();
     expect(JSON.stringify(logged.mock.calls)).toMatch(/tapFrames/);
     expect(JSON.stringify(logged.mock.calls)).toMatch(/peakRmsDb/);

@@ -482,6 +482,45 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     result.controller?.dispose();
   });
 
+  it("logs start failure without queueMicrotask pageerror when composed like the compare page", async () => {
+    const denied = new Error("Permission denied");
+    denied.name = "NotAllowedError";
+    const created = fakeController({
+      start: vi.fn(() => Promise.reject(denied)),
+    });
+    const onError = vi.fn();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const scheduled: Array<() => void> = [];
+    const micro = vi.spyOn(globalThis, "queueMicrotask").mockImplementation((callback) => {
+      scheduled.push(callback);
+    });
+
+    beginRecognitionListening({
+      provider: "workers-ai-asr",
+      start: async () => {
+        await startCloudflareWorkersAiAsrAfterSelect({
+          language: "ja-JP",
+          existing: null,
+          createController: () => created,
+          captureSupported: true,
+          onError,
+        });
+      },
+      warmBrowserVibrato: async () => undefined,
+    });
+    for (let tick = 0; tick < 10; tick += 1) {
+      await Promise.resolve();
+    }
+
+    expect(onError).toHaveBeenCalledWith(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    expect(logged, "start failure must console.error").toHaveBeenCalled();
+    expect(scheduled, "must not queueMicrotask throw for Next overlay").toHaveLength(0);
+    logged.mockRestore();
+    micro.mockRestore();
+  });
+
   it("still starts when composed with beginRecognitionListening like the compare page", async () => {
     installCapture();
     const asrRef: { current: WorkersAiAsrController | null } = { current: null };

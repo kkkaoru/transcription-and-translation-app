@@ -86,8 +86,15 @@ describe("workers-ai-asr-support", () => {
     aborted.name = "AbortError";
     expect(getUserMediaErrorMessageJa(aborted)).toBe("マイクの開始が中断されました");
     expect(getUserMediaErrorMessageJa(new Error("permission denied"))).toBe(
-      WORKERS_AI_ASR_MIC_GENERIC_JA,
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
     );
+    expect(getUserMediaErrorMessageJa(new Error("Permission denied"))).toBe(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    const unbound = new TypeError(
+      "Can only call MediaDevices.getUserMedia on instances of MediaDevices",
+    );
+    expect(getUserMediaErrorMessageJa(unbound)).toBe(WORKERS_AI_ASR_MIC_GENERIC_JA);
     expect(getUserMediaErrorMessageJa(new Error("マイク音声の解析を開始できません"))).toBe(
       "マイク音声の解析を開始できません",
     );

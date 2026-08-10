@@ -84,7 +84,7 @@ describe("beginRecognitionListening", () => {
     expect(onWarmupNotice).not.toHaveBeenCalled();
   });
 
-  it("does not swallow Workers AI ASR start rejections", async () => {
+  it("logs Workers AI ASR start failures without a Next overlay pageerror throw", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const scheduled: Array<() => void> = [];
     const micro = vi.spyOn(globalThis, "queueMicrotask").mockImplementation((callback) => {
@@ -103,12 +103,8 @@ describe("beginRecognitionListening", () => {
     const loggedError = logged.mock.calls[0]?.[0];
     expect(loggedError).toBeInstanceOf(Error);
     expect((loggedError as Error).message).toBe("マイクを開始できません");
-    expect(scheduled.length, "start failure must queue a pageerror throw").toBeGreaterThan(0);
-    expect(() => {
-      for (const callback of scheduled) {
-        callback();
-      }
-    }).toThrow(/マイクを開始できません/);
+    expect(scheduled, "must not queueMicrotask throw for Next overlay").toHaveLength(0);
+    expect(micro).not.toHaveBeenCalled();
 
     logged.mockRestore();
     micro.mockRestore();
