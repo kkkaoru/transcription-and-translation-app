@@ -1,4 +1,4 @@
-import type { ComparisonMode } from "./contract";
+import type { ComparisonMode, RecognitionProvider } from "./contract";
 import type { ConverterModel } from "./converter-models";
 import { DEFAULT_CONVERTER_MODEL, isZenzConverterModel } from "./converter-models";
 import { COMPARE_WORKER_ORIGIN } from "./inference-proxy";
@@ -144,6 +144,7 @@ export interface ArchitectureDiagramOptions {
   mode?: ComparisonMode;
   browserWasmConfigured?: boolean;
   converterModel?: ConverterModel;
+  recognitionProvider?: RecognitionProvider;
 }
 
 export interface Point {
@@ -501,7 +502,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: 12,
     w: fullW,
     title: "① ブラウザ",
-    lines: ["Web Speech 認識"],
+    lines: ["Web Speech 認識", "Workers AI ASR: マイク音声 → compare"],
     tone: "browser",
     artifact: "runtime",
   });
@@ -561,6 +562,8 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     lines: [
       "Cloudflare Worker（推論）",
       "workers.dev 無し",
+      "Workers AI Nova-3 ASR",
+      "@cf/deepgram/nova-3 · env.AI.run",
       "AzooKey WASM + LOUDS dict",
       `${ARCHITECTURE_ZENZAI.env} → Zenzai GGUF`,
       "未設定 → LOUDS dict フォールバック",
@@ -596,6 +599,14 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
         corridorY: compare.y + compare.h + 8,
       },
       { from: "worker-ws", to: "inference", path: "device", via: "vertical", label: "INFERENCE" },
+      {
+        from: "compare",
+        to: "inference",
+        path: "internet",
+        via: "gutter",
+        label: "Workers AI ASR",
+        dashed: true,
+      },
     ],
   };
 };
@@ -604,6 +615,7 @@ export const modeArchitecture = (
   mode: ComparisonMode,
   browserWasmConfigured: boolean,
   converterModel: ConverterModel,
+  recognitionProvider: RecognitionProvider = "web-speech",
 ): ArchitectureDiagram => {
   const modelName = converterLabel(converterModel);
   const zenz = isZenzConverterModel(converterModel);
@@ -612,13 +624,38 @@ export const modeArchitecture = (
   const boxW = 300;
   const stackY = MODE_STACK_Y;
   const worker = mode === "worker-vibrato";
+  const workersAiAsr = recognitionProvider === "workers-ai-asr";
   const zenzSize =
     converterModel === "zenz-v3.2-small-gguf"
       ? ARCHITECTURE_ZENZAI.small.size
       : ARCHITECTURE_ZENZAI.xsmall.size;
+  const asr = workersAiAsr
+    ? layoutStack(
+        20,
+        stackY,
+        boxW,
+        0,
+        [
+          {
+            id: "asr",
+            title: "Workers AI Nova-3 ASR",
+            lines: [
+              "/v1/asr/workers-ai/transcriptions",
+              "compare → inference Cloudflare Worker",
+              "env.AI.run HTTP · GPU-backed",
+            ],
+            tone: "model",
+            artifact: "model",
+            cost: "model",
+          },
+        ],
+        true,
+      )
+    : [];
+  const readingStartY = workersAiAsr ? stackY + (asr[0]?.h ?? 0) + 8 : stackY;
   const reading = layoutStack(
     20,
-    stackY,
+    readingStartY,
     boxW,
     0,
     [
@@ -684,27 +721,41 @@ export const modeArchitecture = (
     ],
     true,
   );
-  const bottom = Math.max(...[...reading, ...convert].map((box) => box.y + box.h));
+  const bottom = Math.max(...[...asr, ...reading, ...convert].map((box) => box.y + box.h));
+  const edges: ArchitectureEdge[] = workersAiAsr
+    ? [
+        { from: "asr", to: "vib", path: "internet", via: "vertical" },
+        { from: "vib", to: "model", path: "device" },
+      ]
+    : [{ from: "vib", to: "model", path: "device" }];
   return {
     viewBox: `0 0 ${width} ${bottom + MODE_BOTTOM_PAD}`,
     width,
     height: bottom + MODE_BOTTOM_PAD,
     compactLayout: true,
-    boxes: [...reading, ...convert],
+    boxes: [...asr, ...reading, ...convert],
     lanes: [],
-    edges: [{ from: "vib", to: "model", path: "device" }],
+    edges,
   };
 };
 
 export const architectureDiagramCaption = (
   kind: ArchitectureDiagramKind,
   mode: ComparisonMode = "worker-vibrato",
-): string =>
-  kind === "overview"
-    ? "Cloudflare Workers 本番構成"
-    : mode === "browser-vibrato"
-      ? "ブラウザ完結の実行経路"
-      : "Cloudflare Worker 依存の実行経路";
+  recognitionProvider: RecognitionProvider = "web-speech",
+): string => {
+  if (kind === "overview") {
+    return "Cloudflare Workers 本番構成";
+  }
+  if (recognitionProvider === "workers-ai-asr") {
+    return mode === "browser-vibrato"
+      ? "Workers AI ASR + ブラウザ完結の実行経路"
+      : "Workers AI ASR + Cloudflare Worker 依存の実行経路";
+  }
+  return mode === "browser-vibrato"
+    ? "Web Speech + ブラウザ完結の実行経路"
+    : "Web Speech + Cloudflare Worker 依存の実行経路";
+};
 
 export const architectureDiagram = (options: ArchitectureDiagramOptions): ArchitectureDiagram => {
   if (options.kind === "overview") {
@@ -714,6 +765,7 @@ export const architectureDiagram = (options: ArchitectureDiagramOptions): Archit
     options.mode ?? "worker-vibrato",
     options.browserWasmConfigured !== false,
     options.converterModel ?? DEFAULT_CONVERTER_MODEL,
+    options.recognitionProvider ?? "web-speech",
   );
 };
 

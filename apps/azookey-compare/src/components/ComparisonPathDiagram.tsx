@@ -13,7 +13,7 @@ import {
   rectsOverlap,
   routeEdge,
 } from "../lib/architecture-diagram";
-import type { ComparisonMode } from "../lib/contract";
+import type { ComparisonMode, RecognitionProvider } from "../lib/contract";
 import type { ConverterModel } from "../lib/converter-models";
 import { comparisonPathSummary } from "../lib/path-labels";
 
@@ -22,6 +22,7 @@ export interface ComparisonPathDiagramProps {
   mode?: ComparisonMode;
   browserWasmConfigured?: boolean;
   converterModel?: ConverterModel;
+  recognitionProvider?: RecognitionProvider;
   caption?: string;
   className?: string;
 }
@@ -98,8 +99,10 @@ const nudgeLabel = (
 const diagramCaption = (
   kind: ArchitectureDiagramKind,
   mode: ComparisonMode | undefined,
+  recognitionProvider: RecognitionProvider | undefined,
   fallback: string | undefined,
-): string => fallback ?? architectureDiagramCaption(kind, mode ?? "worker-vibrato");
+): string =>
+  fallback ?? architectureDiagramCaption(kind, mode ?? "worker-vibrato", recognitionProvider ?? "web-speech");
 
 const edgePath = (path: ArchitecturePath | undefined): ArchitecturePath => path ?? "device";
 
@@ -111,6 +114,7 @@ export const ComparisonPathDiagram = ({
   mode = "worker-vibrato",
   browserWasmConfigured = true,
   converterModel,
+  recognitionProvider = "web-speech",
   caption,
   className,
 }: ComparisonPathDiagramProps) => {
@@ -120,9 +124,10 @@ export const ComparisonPathDiagram = ({
     mode,
     browserWasmConfigured,
     converterModel,
+    recognitionProvider,
   });
   const layout = diagramLayoutMetrics(diagram);
-  const title = diagramCaption(kind, mode, caption);
+  const title = diagramCaption(kind, mode, recognitionProvider, caption);
   const summary = comparisonPathSummary(mode, browserWasmConfigured);
   const shadowId = `arch-shadow-${uid}`;
   const boxes = new Map(diagram.boxes.map((box) => [box.id, box]));
