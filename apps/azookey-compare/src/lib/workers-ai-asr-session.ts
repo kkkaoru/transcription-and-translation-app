@@ -5,6 +5,10 @@ import {
   type WorkersAiAsrControllerOptions,
 } from "./workers-ai-asr-controller";
 import {
+  isLoopbackWorkersAiAsrEndpoint,
+  probeWorkersAiAsrRoute,
+} from "./workers-ai-asr-client";
+import {
   getUserMediaErrorMessageJa,
   isWorkersAiAsrCaptureSupported,
   WORKERS_AI_ASR_PREPARING_JA,
@@ -97,13 +101,14 @@ export type StartCloudflareWorkersAiAsrAfterSelectParams = {
   warmBrowserVibrato?: () => Promise<void>;
   onWarmupNotice?: (message: string) => void;
   requireVibratoWarmup?: boolean;
+  fetchImpl?: typeof fetch;
 };
 
 export type StartCloudflareWorkersAiAsrAfterSelectResult =
   | { ok: true; controller: WorkersAiAsrController }
   | {
       ok: false;
-      reason: "unsupported" | "preparing" | "start-failed";
+      reason: "unsupported" | "preparing" | "start-failed" | "unavailable";
       message: string;
       controller: WorkersAiAsrController | null;
     };
@@ -132,6 +137,15 @@ export const startCloudflareWorkersAiAsrAfterSelect = (
     if (!gate.ok) {
       params.onError?.(gate.message);
       return { ...gate, controller };
+    }
+    if (isLoopbackWorkersAiAsrEndpoint(params.endpointUrl)) {
+      try {
+        await probeWorkersAiAsrRoute(params.endpointUrl ?? "", { fetchImpl: params.fetchImpl });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : WORKERS_AI_ASR_PREPARING_JA;
+        params.onError?.(message);
+        return { ok: false, reason: "unavailable", message, controller };
+      }
     }
     try {
       await gate.controller.start();

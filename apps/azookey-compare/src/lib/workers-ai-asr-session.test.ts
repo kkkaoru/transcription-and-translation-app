@@ -396,6 +396,28 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     result.controller?.dispose();
   });
 
+  it("does not open the mic when the loopback ASR probe cannot connect", async () => {
+    installCapture();
+    const start = vi.fn(async () => undefined);
+    const onError = vi.fn();
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
+      existing: null,
+      createController: () => fakeController({ start, currentState: "idle" }),
+      fetchImpl: vi.fn(async () => {
+        throw "proxy down";
+      }),
+      onError,
+    });
+    expect(start).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(onError).toHaveBeenCalledWith(
+      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run azookey-compare:dev と bun run worker:dev を起動してください",
+    );
+    result.controller?.dispose();
+  });
+
   it("web-speech → workers-ai-asr select → 認識を開始: mock mic, no setError, start() runs", async () => {
     installCapture();
     const asrRef: { current: WorkersAiAsrController | null } = { current: null };

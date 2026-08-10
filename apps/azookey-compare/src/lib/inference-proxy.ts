@@ -15,9 +15,12 @@ export const COMPARE_WORKER_ASR_URL = `${COMPARE_WORKER_ORIGIN}${COMPARE_WORKERS
 
 /** Local `next dev` rewrite target. Production compare Worker uses the INFERENCE binding instead. */
 export const COMPARE_INFERENCE_DEV_ORIGIN_DEFAULT = "http://127.0.0.1:8787";
+/** Local ASR Access proxy started by `azookey-compare:dev`. */
+export const COMPARE_ASR_DEV_PROXY_ORIGIN_DEFAULT = "http://127.0.0.1:8790";
 
 export type InferenceDevOriginEnv = {
   COMPARE_INFERENCE_ORIGIN?: string;
+  COMPARE_ASR_ORIGIN?: string;
 };
 
 export const compareInferenceDevOrigin = (env: InferenceDevOriginEnv = process.env): string =>
@@ -26,18 +29,31 @@ export const compareInferenceDevOrigin = (env: InferenceDevOriginEnv = process.e
     "",
   );
 
+export const compareAsrDevOrigin = (env: InferenceDevOriginEnv = process.env): string =>
+  (env.COMPARE_ASR_ORIGIN?.trim() || COMPARE_ASR_DEV_PROXY_ORIGIN_DEFAULT).replace(/\/+$/, "");
+
 export type InferenceDevRewrite = {
   source: string;
   destination: string;
 };
 
 export const compareInferenceDevRewrites = (
-  origin = compareInferenceDevOrigin(),
-): readonly InferenceDevRewrite[] =>
-  COMPARE_INFERENCE_PROXY_PATHS.map((pathname) => ({
-    source: pathname,
-    destination: `${origin}${pathname}`,
-  }));
+  inferenceOrigin = compareInferenceDevOrigin(),
+  asrOrigin = compareAsrDevOrigin(),
+): readonly InferenceDevRewrite[] => [
+  {
+    source: COMPARE_INFERENCE_WEBSOCKET_PATH,
+    destination: `${inferenceOrigin}${COMPARE_INFERENCE_WEBSOCKET_PATH}`,
+  },
+  {
+    source: COMPARE_INFERENCE_HEALTH_PATH,
+    destination: `${inferenceOrigin}${COMPARE_INFERENCE_HEALTH_PATH}`,
+  },
+  {
+    source: COMPARE_WORKERS_AI_ASR_PATH,
+    destination: `${asrOrigin}${COMPARE_WORKERS_AI_ASR_PATH}`,
+  },
+];
 
 export const buildWorkersAiAsrUrl = (origin: string): string =>
   `${origin.replace(/\/+$/, "")}${COMPARE_WORKERS_AI_ASR_PATH}`;

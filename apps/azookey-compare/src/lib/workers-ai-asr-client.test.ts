@@ -105,9 +105,14 @@ describe("workers-ai-asr-client", () => {
     expect(isLoopbackWorkersAiAsrEndpoint("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions")).toBe(
       true,
     );
+    expect(isLoopbackWorkersAiAsrEndpoint("http://localhost:3000/v1/asr/workers-ai/transcriptions")).toBe(
+      true,
+    );
     expect(isLoopbackWorkersAiAsrEndpoint("https://azookey-compare.kaoru.workers.dev/v1/asr/workers-ai/transcriptions")).toBe(
       false,
     );
+    expect(isLoopbackWorkersAiAsrEndpoint("   ")).toBe(false);
+    expect(isLoopbackWorkersAiAsrEndpoint("http://[")).toBe(false);
     expect(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA).toMatch(/Access/);
     expect(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA).toMatch(/worker:dev/);
 
@@ -127,6 +132,34 @@ describe("workers-ai-asr-client", () => {
         ),
       }),
     ).rejects.toThrow(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
+
+    await expect(
+      probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {
+        fetchImpl: vi.fn(async () => Response.json({ error: { code: "busy" } }, { status: 503 })),
+      }),
+    ).rejects.toThrow(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
+
+    await expect(
+      probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {
+        fetchImpl: vi.fn(async () => Response.json({ error: { code: "busy" } }, { status: 429 })),
+      }),
+    ).rejects.toThrow("Cloudflare Workers AI ASR に失敗しました（429）");
+
+    await expect(
+      probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {
+        fetchImpl: vi.fn(async () => new Response("<html>404</html>", { status: 404 })),
+      }),
+    ).rejects.toThrow(
+      "Cloudflare Workers AI ASR の経路が見つかりません（404）。ローカルなら bun run worker:dev を起動し、Next.js が inference（既定 http://127.0.0.1:8787）へ proxy しているか確認してください",
+    );
+
+    await expect(
+      probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {
+        fetchImpl: vi.fn(async () => new Response("bad", { status: 502 })),
+      }),
+    ).rejects.toThrow(
+      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run azookey-compare:dev と bun run worker:dev を起動してください",
+    );
 
     await expect(
       probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {

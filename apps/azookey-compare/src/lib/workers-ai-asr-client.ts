@@ -19,13 +19,72 @@ export const WORKERS_AI_ASR_ROUTE_MISSING_JA =
   "Cloudflare Workers AI ASR の経路が見つかりません（404）。ローカルなら bun run worker:dev を起動し、Next.js が inference（既定 http://127.0.0.1:8787）へ proxy しているか確認してください";
 
 export const WORKERS_AI_ASR_UNREACHABLE_JA =
-  "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください";
+  "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run azookey-compare:dev と bun run worker:dev を起動してください";
+
+export const WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA =
+  "ローカルの Cloudflare Workers AI ASR には .env の Access サービス トークンか、bun run worker:dev の AI binding が必要です";
 
 const defaultEndpoint = (): string => {
   if (typeof window !== "undefined" && window.location?.origin) {
     return `${window.location.origin}${COMPARE_WORKERS_AI_ASR_PATH}`;
   }
   return COMPARE_WORKERS_AI_ASR_PATH;
+};
+
+export const isLoopbackWorkersAiAsrEndpoint = (endpointUrl?: string): boolean => {
+  if (!endpointUrl?.trim()) {
+    return false;
+  }
+  try {
+    const hostname = new URL(endpointUrl, "http://127.0.0.1").hostname;
+    return hostname === "127.0.0.1" || hostname === "localhost";
+  } catch {
+    return false;
+  }
+};
+
+const readAsrErrorMessage = (payload: unknown, status: number): string => {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    "error" in payload &&
+    payload.error &&
+    typeof payload.error === "object" &&
+    "message" in payload.error &&
+    typeof payload.error.message === "string"
+  ) {
+    return payload.error.message;
+  }
+  if (status === 503) {
+    return WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA;
+  }
+  return `Cloudflare Workers AI ASR に失敗しました（${status}）`;
+};
+
+export const probeWorkersAiAsrRoute = async (
+  endpointUrl: string,
+  options: { fetchImpl?: typeof fetch } = {},
+): Promise<void> => {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(endpointUrl, { method: "GET" });
+  } catch {
+    throw new Error(WORKERS_AI_ASR_UNREACHABLE_JA);
+  }
+  if (response.ok) {
+    return;
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    if (response.status === 404) {
+      throw new Error(WORKERS_AI_ASR_ROUTE_MISSING_JA);
+    }
+    throw new Error(WORKERS_AI_ASR_UNREACHABLE_JA);
+  }
+  throw new Error(readAsrErrorMessage(payload, response.status));
 };
 
 const authHeaders = (auth: ComparisonAuth | undefined): HeadersInit => {

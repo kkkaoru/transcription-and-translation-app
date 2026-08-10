@@ -2,6 +2,7 @@ const inferenceOrigin = (process.env.COMPARE_INFERENCE_ORIGIN ?? "http://127.0.0
   /\/+$/,
   "",
 );
+const asrOrigin = (process.env.COMPARE_ASR_ORIGIN ?? "http://127.0.0.1:8790").replace(/\/+$/, "");
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -22,7 +23,7 @@ const nextConfig = {
             { source: "/v1/azookey", destination: `${inferenceOrigin}/v1/azookey` },
             {
               source: "/v1/asr/workers-ai/transcriptions",
-              destination: `${inferenceOrigin}/v1/asr/workers-ai/transcriptions`,
+              destination: `${asrOrigin}/v1/asr/workers-ai/transcriptions`,
             },
           ];
         },

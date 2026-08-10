@@ -22,13 +22,15 @@ Open `http://127.0.0.1:3000` (not `localhost`) so the Worker `CORS_ORIGIN`
 (`http://127.0.0.1:3000` via `.dev.vars`) matches the page origin.
 
 Workers AI ASR posts same-origin `/v1/asr/workers-ai/transcriptions`. Local
-`next dev` rewrites that path (plus `/v1/azookey` and `/ws/azookey`) to
-`COMPARE_INFERENCE_ORIGIN` (default `http://127.0.0.1:8787`). Without
-`bun run worker:dev`, the UI reports a missing/unreachable inference proxy
-instead of Next.js HTML 404. Local `wrangler.dev.jsonc` enables the Workers AI
-binding with `remote: true` so Nova-3 runs through local `worker:dev` without
-`wrangler dev --remote`. Production compare still proxies via the INFERENCE
-service binding.
+`azookey-compare:dev` starts an Access service-token proxy on
+`http://127.0.0.1:8790` (`COMPARE_ASR_ORIGIN`) and `next dev` rewrites ASR
+there, then to hosted compare — the same compare Worker → INFERENCE path as
+production. `/ws/azookey` and `/v1/azookey` still rewrite to
+`COMPARE_INFERENCE_ORIGIN` (default `http://127.0.0.1:8787`). Without the
+proxy or Access token in `.env`, 認識を開始 fails before the mic opens.
+Local `wrangler.dev.jsonc` still enables Workers AI with `remote: true` for
+direct `:8787` ASR; next.dev does not send ASR there because inference
+`workers.dev` is Access-gated.
 
 Local Wrangler uses `apps/cloudflare-worker-server/.dev.vars` (copy from
 `.dev.vars.example` if missing). Auth may stay unset for local demos.
