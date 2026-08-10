@@ -22,6 +22,7 @@ export const COMPARE_ORIGIN = `https://${COMPARE_PUBLIC_HOST}`;
 export const INFERENCE_ORIGIN = `https://${INFERENCE_PUBLIC_HOST}`;
 export const COMPARE_HEALTH_PATH = "/v1/azookey";
 export const COMPARE_WS_PATH = "/ws/azookey";
+export const COMPARE_ASR_PATH = "/v1/asr/workers-ai/transcriptions";
 export const COMPARE_WS_SMOKE_INPUT = "きょうはいいてんき";
 export const BROWSER_LIKE_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -132,6 +133,78 @@ export const summarizeWebsocketConversion = (conversion) => {
     convertedText: conversion.convertedText,
     elapsedMs: recordedElapsedMs(conversion),
     model: conversion.model,
+  };
+};
+
+export const buildWorkersAiAsrSmokeWav = () => {
+  const sampleRate = 16_000;
+  const sampleCount = Math.floor(sampleRate * 0.25);
+  const pcm = new Int16Array(sampleCount);
+  for (let index = 0; index < sampleCount; index += 1) {
+    const t = index / sampleRate;
+    pcm[index] = Math.round(Math.sin(2 * Math.PI * 440 * t) * 12_000);
+  }
+  const pcmBytes = new Uint8Array(pcm.buffer);
+  const header = new Uint8Array(44);
+  const view = new DataView(header.buffer);
+  header.set(new TextEncoder().encode("RIFF"), 0);
+  view.setUint32(4, 36 + pcmBytes.length, true);
+  header.set(new TextEncoder().encode("WAVEfmt "), 8);
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  header.set(new TextEncoder().encode("data"), 36);
+  view.setUint32(40, pcmBytes.length, true);
+  const wav = new Uint8Array(header.length + pcmBytes.length);
+  wav.set(header, 0);
+  wav.set(pcmBytes, header.length);
+  return wav;
+};
+
+export const smokeWorkersAiAsr = async ({ origin, headers }) => {
+  const form = new FormData();
+  form.set("file", new File([buildWorkersAiAsrSmokeWav()], "asr-smoke.wav", { type: "audio/wav" }));
+  form.set("language", "ja");
+  const response = await fetch(`${origin}${COMPARE_ASR_PATH}`, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "User-Agent": BROWSER_LIKE_USER_AGENT,
+    },
+    body: form,
+  });
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    return { ok: false, stage: "bad_json", status: response.status };
+  }
+  if (response.status === 503 && payload?.error?.code === "asr_workers_ai_unavailable") {
+    return { ok: "skipped", stage: "unavailable", status: response.status, code: payload.error.code };
+  }
+  if (!response.ok) {
+    return {
+      ok: false,
+      stage: "http_error",
+      status: response.status,
+      code: payload?.error?.code,
+      message: present(payload?.error?.message) ? String(payload.error.message).slice(0, 160) : undefined,
+    };
+  }
+  if (typeof payload?.text !== "string") {
+    return { ok: false, stage: "invalid_payload", status: response.status };
+  }
+  return {
+    ok: true,
+    status: response.status,
+    text: payload.text,
+    transport: payload.transport,
+    model: payload.model,
+    empty: payload.text.trim().length === 0,
   };
 };
 
@@ -302,6 +375,7 @@ const run = async () => {
   let authenticatedHealth;
   let websocketStatus;
   let websocketConversion;
+  let workersAiAsr;
   if (!serviceToken) {
     console.warn(
       "Access Service Token missing in env/.env. Skipping authenticated compare checks (no OTP wait).",
@@ -333,6 +407,15 @@ const run = async () => {
         message: error instanceof Error ? error.message : "unknown error",
       };
     }
+    try {
+      workersAiAsr = await smokeWorkersAiAsr({ origin: COMPARE_ORIGIN, headers });
+    } catch (error) {
+      workersAiAsr = {
+        ok: false,
+        stage: "exception",
+        message: error instanceof Error ? error.message : "unknown error",
+      };
+    }
   }
 
   const summary = evaluateHostedChecks({
@@ -355,6 +438,7 @@ const run = async () => {
         inferenceDirect: inferenceDirect.status,
         websocket: websocketStatus ?? "skipped",
         websocketConversion: summarizeWebsocketConversion(websocketConversion),
+        workersAiAsr: workersAiAsr ?? "skipped",
         ok: summary.ok,
         failures: summary.failures,
       },
