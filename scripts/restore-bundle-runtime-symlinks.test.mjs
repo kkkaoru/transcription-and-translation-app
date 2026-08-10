@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { gunzipSync } from "node:zlib";
 import {
   existsSync,
   lstatSync,
@@ -13,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { gunzipSync } from "node:zlib";
 import {
   applyTemplateSymlinks,
   collapseIdenticalLibraries,

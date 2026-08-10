@@ -109,7 +109,7 @@ export const FontFamilyCombobox = ({
         }}
       />
       {open && options.length > 0 ? (
-        <ul className="font-family-options" role="listbox" data-testid="font-family-options">
+        <ul className="font-family-options" data-testid="font-family-options">
           {options.slice(0, 80).map((family) => (
             <li key={family}>
               <button

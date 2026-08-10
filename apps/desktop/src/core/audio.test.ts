@@ -11,8 +11,8 @@ import {
   AUDIO_CONTEXT_RESET_SILENCE_MS,
   AUDIO_WORKLET_FRAME_SAMPLES,
   AudioCaptureError,
-  applyPeakNormalize,
   applyMicrophoneProcessing,
+  applyPeakNormalize,
   bytesToBase64,
   calculatePeak,
   calculateRmsDb,
@@ -518,9 +518,7 @@ describe("audio conversion", () => {
       autoGainControl: true,
     });
     const webkit = new Set(["deviceId", "echoCancellation", "groupId"]);
-    expect(
-      createMicrophoneConstraints("default", { supportedConstraints: webkit }).audio,
-    ).toEqual({
+    expect(createMicrophoneConstraints("default", { supportedConstraints: webkit }).audio).toEqual({
       echoCancellation: true,
     });
     expect(

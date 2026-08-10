@@ -36,9 +36,7 @@ describe("style editor controls", () => {
   it("filters font families through the searchable combobox", async () => {
     const onChange = vi.fn();
     await act(() => {
-      root.render(
-        <FontFamilyCombobox label="Font" value="Noto Sans JP" onChange={onChange} />,
-      );
+      root.render(<FontFamilyCombobox label="Font" value="Noto Sans JP" onChange={onChange} />);
     });
     const input = host.querySelector<HTMLInputElement>('[data-testid="font-family-combobox"]');
     if (!input) throw new Error("missing combobox");
@@ -48,9 +46,9 @@ describe("style editor controls", () => {
     });
     const options = host.querySelector('[data-testid="font-family-options"]');
     expect(options?.textContent).toContain("Helvetica Neue");
-    const helvetica = Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find(
-      (button) => button.textContent === "Helvetica Neue",
-    );
+    const helvetica = Array.from(
+      host.querySelectorAll<HTMLButtonElement>('button[role="option"]'),
+    ).find((button) => button.textContent === "Helvetica Neue");
     await act(() => {
       helvetica?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });

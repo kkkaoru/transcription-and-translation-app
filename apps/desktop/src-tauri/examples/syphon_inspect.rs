@@ -85,9 +85,9 @@ mod mac {
     }
 
     fn parse_flag_u64(args: &[String], flag: &str) -> Option<u64> {
-        args.iter().position(|arg| arg == flag).and_then(|index| {
-            args.get(index + 1).and_then(|value| value.parse::<u64>().ok())
-        })
+        args.iter()
+            .position(|arg| arg == flag)
+            .and_then(|index| args.get(index + 1).and_then(|value| value.parse::<u64>().ok()))
     }
 
     fn parse_flag_path(args: &[String], flag: &str) -> Option<PathBuf> {
@@ -158,7 +158,11 @@ mod mac {
         Ok(())
     }
 
-    fn inspect_live(timeout: Duration, out: &Path, min_opaque: usize) -> Result<FrameStats, String> {
+    fn inspect_live(
+        timeout: Duration,
+        out: &Path,
+        min_opaque: usize,
+    ) -> Result<FrameStats, String> {
         inspect_named(SERVER_NAME, timeout, out, min_opaque)
     }
 
@@ -176,10 +180,7 @@ mod mac {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             };
-            println!(
-                "found name={:?} app={:?} uuid={}",
-                desc.name, desc.app_name, desc.uuid
-            );
+            println!("found name={:?} app={:?} uuid={}", desc.name, desc.app_name, desc.uuid);
             match sample_server(&desc, deadline, out) {
                 Ok(stats) => {
                     if stats.opaque_pixels < min_opaque {
@@ -221,14 +222,8 @@ mod mac {
             if let Some((width, height, rgba)) = client_new_frame_rgba(&client)? {
                 let (opaque_pixels, max_alpha) = alpha_stats(&rgba);
                 let frames = best.as_ref().map(|stats| stats.frames + 1).unwrap_or(1);
-                let candidate = FrameStats {
-                    frames,
-                    width,
-                    height,
-                    opaque_pixels,
-                    max_alpha,
-                    rgba,
-                };
+                let candidate =
+                    FrameStats { frames, width, height, opaque_pixels, max_alpha, rgba };
                 let replace = best
                     .as_ref()
                     .map(|stats| candidate.opaque_pixels >= stats.opaque_pixels)
@@ -262,12 +257,20 @@ mod mac {
         let _: Retained<AnyObject> = unsafe { msg_send![app_cls, sharedApplication] };
     }
 
-    fn open_metal_client_for_uuid(uuid: &str) -> Result<objc2::rc::Retained<objc2::runtime::AnyObject>, String> {
-        open_metal_client_matching(|dict| dict_string(dict, "SyphonServerDescriptionUUIDKey") == uuid)
+    fn open_metal_client_for_uuid(
+        uuid: &str,
+    ) -> Result<objc2::rc::Retained<objc2::runtime::AnyObject>, String> {
+        open_metal_client_matching(|dict| {
+            dict_string(dict, "SyphonServerDescriptionUUIDKey") == uuid
+        })
     }
 
-    fn open_metal_client_for_name(name: &str) -> Result<objc2::rc::Retained<objc2::runtime::AnyObject>, String> {
-        open_metal_client_matching(|dict| dict_string(dict, "SyphonServerDescriptionNameKey") == name)
+    fn open_metal_client_for_name(
+        name: &str,
+    ) -> Result<objc2::rc::Retained<objc2::runtime::AnyObject>, String> {
+        open_metal_client_matching(|dict| {
+            dict_string(dict, "SyphonServerDescriptionNameKey") == name
+        })
     }
 
     fn open_metal_client_matching<F>(
@@ -288,8 +291,8 @@ mod mac {
         let directory: Retained<AnyObject> = unsafe { msg_send![dir_cls, sharedDirectory] };
         let servers: Retained<AnyObject> = unsafe { msg_send![&*directory, servers] };
         let count: usize = unsafe { msg_send![&*servers, count] };
-        let device = MTLCreateSystemDefaultDevice()
-            .ok_or_else(|| "Metal device unavailable".to_string())?;
+        let device =
+            MTLCreateSystemDefaultDevice().ok_or_else(|| "Metal device unavailable".to_string())?;
 
         for index in 0..count {
             let entry: Retained<AnyObject> = unsafe { msg_send![&*servers, objectAtIndex: index] };
@@ -314,15 +317,14 @@ mod mac {
     }
 
     fn dict_string(dict: &objc2::runtime::AnyObject, key: &str) -> String {
-        use std::ffi::{CStr, c_char};
         use objc2::msg_send;
         use objc2::rc::Retained;
         use objc2::runtime::AnyObject;
         use objc2_foundation::NSString;
+        use std::ffi::{c_char, CStr};
 
         let ns_key = NSString::from_str(key);
-        let value: Option<Retained<AnyObject>> =
-            unsafe { msg_send![dict, objectForKey: &*ns_key] };
+        let value: Option<Retained<AnyObject>> = unsafe { msg_send![dict, objectForKey: &*ns_key] };
         let Some(value) = value else {
             return String::new();
         };
@@ -375,20 +377,15 @@ mod mac {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, String> {
-        let bytes_per_row = (width as usize)
-            .checked_mul(4)
-            .ok_or_else(|| "texture row overflow".to_string())?;
+        let bytes_per_row =
+            (width as usize).checked_mul(4).ok_or_else(|| "texture row overflow".to_string())?;
         let len = bytes_per_row
             .checked_mul(height as usize)
             .ok_or_else(|| "texture buffer overflow".to_string())?;
         let mut rgba = vec![0u8; len];
         let region = MTLRegion {
             origin: MTLOrigin { x: 0, y: 0, z: 0 },
-            size: MTLSize {
-                width: width as usize,
-                height: height as usize,
-                depth: 1,
-            },
+            size: MTLSize { width: width as usize, height: height as usize, depth: 1 },
         };
         let ptr = NonNull::new(rgba.as_mut_ptr().cast::<c_void>())
             .ok_or_else(|| "null texture readback pointer".to_string())?;
@@ -425,11 +422,7 @@ mod mac {
                 let g = rgba[index + 1] as u32;
                 let b = rgba[index + 2] as u32;
                 let a = rgba[index + 3] as u32;
-                let checker = if ((x / 8) + (y / 8)) % 2 == 0 {
-                    48u32
-                } else {
-                    96u32
-                };
+                let checker = if ((x / 8) + (y / 8)) % 2 == 0 { 48u32 } else { 96u32 };
                 let blend = |channel: u32| -> u8 {
                     let value = channel + (checker * (255 - a)) / 255;
                     value.min(255) as u8

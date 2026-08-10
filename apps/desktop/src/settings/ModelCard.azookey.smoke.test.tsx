@@ -3,9 +3,7 @@
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  OFFICIAL_AZOOKEY_DICTIONARY_URL,
-} from "../core/azookey-dictionary";
+import { OFFICIAL_AZOOKEY_DICTIONARY_URL } from "../core/azookey-dictionary";
 import { createDefaultConfig, DEFAULT_MODEL_CATALOG } from "../core/defaults";
 import type { AppConfig } from "../core/types";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -77,9 +75,7 @@ describe("ModelCard AzooKey dictionary source select", () => {
     expect(select).not.toBeNull();
     expect(select?.value).toBe("builtin");
     expect(select?.querySelectorAll("option")).toHaveLength(3);
-    expect(
-      container.querySelector("[data-testid='azookey-system-dictionary-path']"),
-    ).toBeNull();
+    expect(container.querySelector("[data-testid='azookey-system-dictionary-path']")).toBeNull();
   });
 
   it("writes the official HTTPS archive when official is chosen", async () => {
@@ -98,9 +94,7 @@ describe("ModelCard AzooKey dictionary source select", () => {
       container.querySelector("[data-testid='azookey-system-dictionary-official-url']")
         ?.textContent,
     ).toContain(OFFICIAL_AZOOKEY_DICTIONARY_URL);
-    expect(
-      container.querySelector("[data-testid='azookey-system-dictionary-path']"),
-    ).toBeNull();
+    expect(container.querySelector("[data-testid='azookey-system-dictionary-path']")).toBeNull();
   });
 
   it("reveals a custom path field and keeps typed values", async () => {
@@ -122,19 +116,15 @@ describe("ModelCard AzooKey dictionary source select", () => {
       if (!pathInput) {
         throw new Error("missing path input");
       }
-      const valueSetter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value",
-      )?.set;
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
       valueSetter?.call(pathInput, "https://example.com/dict.tar.gz");
       pathInput.dispatchEvent(new Event("input", { bubbles: true }));
       pathInput.dispatchEvent(new Event("change", { bubbles: true }));
       await Promise.resolve();
     });
     expect(
-      container.querySelector<HTMLInputElement>(
-        "[data-testid='azookey-system-dictionary-path']",
-      )?.value,
+      container.querySelector<HTMLInputElement>("[data-testid='azookey-system-dictionary-path']")
+        ?.value,
     ).toBe("https://example.com/dict.tar.gz");
   });
 
@@ -155,9 +145,7 @@ describe("ModelCard AzooKey dictionary source select", () => {
       (option) => option.textContent ?? "",
     );
     expect(optionLabels.some((label) => /xsmall/i.test(label))).toBe(true);
-    expect(optionLabels.some((label) => /small/i.test(label) && !/xsmall/i.test(label))).toBe(
-      true,
-    );
+    expect(optionLabels.some((label) => /small/i.test(label) && !/xsmall/i.test(label))).toBe(true);
 
     await act(async () => {
       if (!modelSelect) {
@@ -168,8 +156,7 @@ describe("ModelCard AzooKey dictionary source select", () => {
       await Promise.resolve();
     });
     expect(
-      container.querySelector<HTMLSelectElement>("[data-testid='normalizer-model-select']")
-        ?.value,
+      container.querySelector<HTMLSelectElement>("[data-testid='normalizer-model-select']")?.value,
     ).toBe("zenz-v3.2-xsmall-gguf");
     expect(sourceSelect()).toBeNull();
 
@@ -185,8 +172,7 @@ describe("ModelCard AzooKey dictionary source select", () => {
       await Promise.resolve();
     });
     expect(
-      container.querySelector<HTMLSelectElement>("[data-testid='normalizer-model-select']")
-        ?.value,
+      container.querySelector<HTMLSelectElement>("[data-testid='normalizer-model-select']")?.value,
     ).toBe("zenz-v3.2-small-gguf");
     expect(container.textContent).toMatch(/Zenzai|ニューラル|neural|quality|精度/i);
   });

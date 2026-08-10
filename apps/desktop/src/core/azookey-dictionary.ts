@@ -35,8 +35,6 @@ export const pathForAzooKeySystemDictionarySource = (
     case "official":
       return OFFICIAL_AZOOKEY_DICTIONARY_URL;
     case "custom":
-      return currentCustomPath.trim() === OFFICIAL_AZOOKEY_DICTIONARY_URL
-        ? ""
-        : currentCustomPath;
+      return currentCustomPath.trim() === OFFICIAL_AZOOKEY_DICTIONARY_URL ? "" : currentCustomPath;
   }
 };

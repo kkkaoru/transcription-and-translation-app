@@ -1,5 +1,5 @@
-import type { CaptionPayload } from "./types";
 import { collapseRunawayGraphemeRuns } from "../overlay/captions";
+import type { CaptionPayload } from "./types";
 
 const NO_TIME_MS = 0;
 const SOURCE_SEQUENCE = 0;

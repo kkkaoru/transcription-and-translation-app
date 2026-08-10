@@ -5,8 +5,8 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readlinkSync,
   readdirSync,
+  readlinkSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -177,7 +177,9 @@ const copyRuntimeLibraries = (sourceDirectory: string, destination: string): voi
   // Copy real files first, then recreate symlinks. CMake emits
   // libfoo.dylib -> libfoo.0.dylib -> libfoo.0.0.1.dylib; flattening those
   // into three full copies inflates the app bundle by tens of megabytes.
-  const files = libraries.filter((file) => !lstatSync(join(sourceDirectory, file)).isSymbolicLink());
+  const files = libraries.filter(
+    (file) => !lstatSync(join(sourceDirectory, file)).isSymbolicLink(),
+  );
   const links = libraries.filter((file) => lstatSync(join(sourceDirectory, file)).isSymbolicLink());
   for (const library of files) {
     copyFileSync(join(sourceDirectory, library), join(destination, library));

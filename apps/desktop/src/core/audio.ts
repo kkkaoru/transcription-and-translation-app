@@ -720,7 +720,7 @@ const errorMessage = (error: unknown): string => {
   return typeof error === "string" ? error : "";
 };
 
-const isConstraintFailure = (error: unknown): boolean => {
+const _isConstraintFailure = (error: unknown): boolean => {
   // WKWebView may surface unsupported constraint keys as TypeError, DOMException,
   // or a plain Error whose message is only "Invalid constraint".
   if (/invalid constraint/i.test(errorMessage(error))) {
@@ -1122,12 +1122,7 @@ const isMicrophoneConstraintError = (error: unknown): boolean => {
   if (error instanceof TypeError) {
     return true;
   }
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "";
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return /invalid constraint/i.test(message);
 };
 
