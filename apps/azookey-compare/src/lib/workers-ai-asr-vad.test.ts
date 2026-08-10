@@ -258,4 +258,33 @@ describe("WorkersAiAsrVad Parapper segment machine", () => {
     const started = vad.pushVadResult({ probability: 0.9, isSpeech: true });
     expect(started.map((event) => event.type)).toEqual(["utterance-start"]);
   });
+
+  it("omits turn-check trailing silence from uploaded fullAudio (keeps ≤1 chunk pad)", () => {
+    const vad = new WorkersAiAsrVad();
+    const speech = Float32Array.from({ length: SILERO_CHUNK_SAMPLES }, () => 0.4);
+    const quiet = new Float32Array(SILERO_CHUNK_SAMPLES);
+    const speechVad = { probability: 0.92, isSpeech: true };
+    const silenceVad = { probability: 0.02, isSpeech: false };
+
+    for (let index = 0; index < 3; index += 1) {
+      vad.pushVadResult(speechVad, speech);
+    }
+    let end: WorkersAiAsrVadEvent | undefined;
+    for (let index = 0; index < 10; index += 1) {
+      const events = vad.pushVadResult(silenceVad, quiet);
+      end = events.find((event) => event.type === "utterance-end");
+      if (end) {
+        break;
+      }
+    }
+    expect(end?.type).toBe("utterance-end");
+    if (end?.type !== "utterance-end") {
+      return;
+    }
+    // 3 speech chunks + at most 1 trailing pad (not all 10 silence chunks).
+    const maxSamples = SILERO_CHUNK_SAMPLES * 4;
+    expect(end.fullAudio.length).toBeLessThanOrEqual(maxSamples);
+    expect(end.fullAudio.length).toBeGreaterThanOrEqual(SILERO_CHUNK_SAMPLES * 3);
+    expect(vad.snapshot.preSpeechChunks).toBe(10);
+  });
 });

@@ -739,6 +739,70 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
+  it("stops MediaRecorder after PCM utterance POST so inter-utterance silence is not recorded", async () => {
+    installBrowser();
+    const engine: VadEngine = {
+      process: vi.fn((samples: Float32Array) => {
+        const peak = Math.max(...Array.from(samples, (sample) => Math.abs(sample)));
+        return Promise.resolve({
+          probability: peak > 0.1 ? 0.92 : 0.02,
+          isSpeech: peak > 0.1,
+        });
+      }),
+      dispose: vi.fn(),
+    };
+    const { controller } = await startController(engine);
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+    const tap = FakeAudioContext.instances[0]?.createdProcessors[0];
+    const speech = Float32Array.from({ length: 4096 }, () => 0.4);
+    const silence = new Float32Array(4096);
+    const fireTap = async (samples: Float32Array): Promise<void> => {
+      tap?.onaudioprocess?.({ inputBuffer: { getChannelData: () => samples } });
+      for (let tick = 0; tick < 30; tick += 1) {
+        await Promise.resolve();
+      }
+    };
+    for (let index = 0; index < 4; index += 1) {
+      await fireTap(speech);
+    }
+    expect(FakeMediaRecorder.instances.length).toBeGreaterThan(0);
+    expect(FakeMediaRecorder.instances[0]?.state).toBe("recording");
+    for (let index = 0; index < 12; index += 1) {
+      await fireTap(silence);
+    }
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+    expect(FakeMediaRecorder.instances[0]?.state).toBe("inactive");
+    expect(controller.currentState).toBe("listening");
+    for (let index = 0; index < 8; index += 1) {
+      await fireTap(silence);
+    }
+    expect(FakeMediaRecorder.instances.every((recorder) => recorder.state === "inactive")).toBe(
+      true,
+    );
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it("does not start timeslice MediaRecorder when mute gain fails if Analyser fallback works", async () => {
+    class MuteGainFailContext extends FakeAudioContext {
+      createGain(): FakeGainNode {
+        const gain = super.createGain();
+        gain.connect = (): void => {
+          throw new Error("mute gain connect failed");
+        };
+        return gain;
+      }
+    }
+    installBrowser(fakeTrack(), MuteGainFailContext);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { controller } = await startController();
+    expect(controller.currentState).toBe("listening");
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+    expect(FakeAudioContext.instances[0]?.createdAnalysers.length).toBeGreaterThan(0);
+    logged.mockRestore();
+    controller.dispose();
+  });
+
   it("transcribes VAD PCM as WAV when MediaRecorder is missing", async () => {
     installBrowser();
     Reflect.deleteProperty(globalThis, "MediaRecorder");
