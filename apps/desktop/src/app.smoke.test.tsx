@@ -76,14 +76,9 @@ describe("App routes", () => {
     expect(container.querySelector(".overlay-preview")?.classList.contains("overlay-preview")).toBe(
       true,
     );
-    const styleButton = container.querySelector('[data-testid="nav-style"]');
-    expect(styleButton?.textContent).toBe("文字の装飾設定");
-    act(() => styleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(container.querySelector(".content-heading h2")?.textContent).toBe("文字の装飾設定");
-    expect(container.querySelector('[data-testid="caption-style-editors"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="caption-style-layout"]')).not.toBeNull();
-    expect(container.textContent).toContain("日本語（認識結果）");
-    expect(container.textContent).toContain("English（翻訳結果）");
+    // Style editing moved to a dedicated window opened from the Live tab.
+    expect(container.querySelector('[data-testid="nav-style"]')).toBeNull();
+    expect(container.textContent).not.toContain("文字の装飾設定");
 
     const settingsButton = container.querySelector('[data-testid="nav-settings"]');
     expect(settingsButton?.textContent).toBe("アプリ設定");

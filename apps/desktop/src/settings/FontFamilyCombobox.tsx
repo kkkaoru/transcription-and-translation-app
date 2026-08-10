@@ -49,11 +49,14 @@ export const mergeFontFamilyOptions = (
 
 /** Collect OS fonts (Tauri) plus optional Local Font Access; never throws. */
 export const collectAvailableFontFamilies = async (): Promise<string[]> => {
-  const buckets = await Promise.all([
-    bridge.listSystemFonts().catch(() => [] as string[]),
-    queryLocalFontFamilies(),
-  ]);
-  return [...new Set(buckets.flat())].sort((a, b) => a.localeCompare(b));
+  // Desktop already enumerates via Tauri — skip browser Local Font Access to avoid
+  // a redundant permission prompt in the embedded webview.
+  if (bridge.isDesktop()) {
+    const nativeFonts = await bridge.listSystemFonts().catch(() => [] as string[]);
+    return [...new Set(nativeFonts)].sort((a, b) => a.localeCompare(b));
+  }
+  const localFonts = await queryLocalFontFamilies();
+  return [...new Set(localFonts)].sort((a, b) => a.localeCompare(b));
 };
 
 export const FontFamilyCombobox = ({

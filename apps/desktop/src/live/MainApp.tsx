@@ -82,12 +82,11 @@ import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
 import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
 import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
-import { CaptionStyleView } from "../settings/CaptionStyleView";
-import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
+import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
 
-type ActiveTab = "live" | "style" | "settings";
+type ActiveTab = "live" | "settings";
 
 type CapturePhase = "idle" | "starting" | "capturing" | "stopping";
 
@@ -557,16 +556,52 @@ export const MainApp = () => {
 
   useEffect(() => {
     let mounted = true;
+    let bootstrappedFromConfigUpdate = false;
+    const disposers: Array<() => void> = [];
+    const bootstrapConfigListener = bridge
+      .listenConfig((nextConfig) => {
+        if (!mounted) {
+          return;
+        }
+        bootstrappedFromConfigUpdate = true;
+        setConfig(nextConfig);
+        pushDiagnosticEvent(
+          "config",
+          "Config updated",
+          `translator=${nextConfig.models.translator}`,
+        );
+      })
+      .then((dispose) => {
+        if (mounted) {
+          disposers.push(dispose);
+        } else {
+          dispose();
+        }
+        return dispose;
+      })
+      .catch((error: unknown) => {
+        if (mounted) {
+          pushDiagnosticEvent(
+            "error",
+            "Config listen failed",
+            formatBridgeError(error) ?? String(error),
+          );
+        }
+      });
+    void bootstrapConfigListener.catch(() => undefined);
     initialRuntimeReady.current = Promise.all([
       bridge.getConfig(),
       bridge.getModels(),
       bridge.getStatus(),
+      bootstrapConfigListener,
     ])
       .then(([nextConfig, nextModels, nextStatus]) => {
         if (!mounted) {
           return;
         }
-        setConfig(nextConfig);
+        if (!bootstrappedFromConfigUpdate) {
+          setConfig(nextConfig);
+        }
         setModels(nextModels);
         setStatus(nextStatus);
         runtimeStatusRef.current = nextStatus;
@@ -606,6 +641,9 @@ export const MainApp = () => {
     void refreshDevices();
     return () => {
       mounted = false;
+      for (const dispose of disposers) {
+        dispose();
+      }
       capturePhase.current = "stopping";
       activeCaptureGeneration.current = null;
       const cleanupAttempt = ++captureAttempt.current;
@@ -948,32 +986,6 @@ export const MainApp = () => {
         if (mounted) {
           const notice = noticeFromError(error, "message.initializeFailed");
           pushDiagnosticEvent("error", "Runtime listen failed", notice.detail ?? notice.key);
-          setNotice(notice);
-        }
-      });
-    // Quick-start may rewrite backend model selection (missing translator → minimal pack).
-    void bridge
-      .listenConfig((nextConfig) => {
-        if (mounted) {
-          setConfig(nextConfig);
-          pushDiagnosticEvent(
-            "config",
-            "Config updated",
-            `translator=${nextConfig.models.translator}`,
-          );
-        }
-      })
-      .then((dispose) => {
-        if (mounted) {
-          disposers.push(dispose);
-        } else {
-          dispose();
-        }
-      })
-      .catch((error: unknown) => {
-        if (mounted) {
-          const notice = noticeFromError(error, "message.initializeFailed");
-          pushDiagnosticEvent("error", "Config listen failed", notice.detail ?? notice.key);
           setNotice(notice);
         }
       });
@@ -2131,15 +2143,6 @@ export const MainApp = () => {
               {t("sidebar.live")}
             </button>
             <button
-              className={activeTab === "style" ? "active" : ""}
-              type="button"
-              data-testid="nav-style"
-              aria-current={activeTab === "style" ? "page" : undefined}
-              onClick={() => setActiveTab("style")}
-            >
-              {t("sidebar.style")}
-            </button>
-            <button
               className={activeTab === "settings" ? "active" : ""}
               type="button"
               data-testid="nav-settings"
@@ -2175,13 +2178,6 @@ export const MainApp = () => {
               onOpenTransparentCapture={() => void openTransparentCapture()}
               onCloseTransparentCapture={() => void closeTransparentCapture()}
               onOpenStyleEditor={() => void openStyleEditor()}
-            />
-          ) : activeTab === "style" ? (
-            <CaptionStyleView
-              config={config}
-              saving={saving}
-              onConfigChange={handleConfigChange}
-              onSave={() => void save()}
             />
           ) : (
             <SettingsView
