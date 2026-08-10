@@ -10,9 +10,10 @@ bun run worker:dev
 bun run azookey-compare:dev
 ```
 
-`worker:dev` uses `wrangler.dev.jsonc` (no Workers AI remote session) so AzooKey
-WebSocket on `:8787` stays up even when `api.cloudflare.com` is unreachable.
-Production deploy still uses `wrangler.jsonc` with the optional AI binding.
+`worker:dev` uses `wrangler.dev.jsonc` with a Workers AI remote binding
+(`ai.remote: true`) so Nova-3 works on `:8787` without `wrangler dev --remote`.
+AzooKey WebSocket stays local. Production deploy still uses `wrangler.jsonc`
+with the AI binding.
 
 This Worker keeps the existing inference HTTP adapter and adds a dedicated
 AzooKey text conversion endpoint:

@@ -8,10 +8,13 @@
     "binding": "ASSETS",
     "run_worker_first": true
   },
-  // Local AzooKey/Web Speech comparison does not use Workers AI. The deploy
-  // config keeps the AI binding, but wrangler dev with that binding opens a
-  // remote Cloudflare session; when api.cloudflare.com times out the local
-  // :8787 listener dies and the compare UI reports a WebSocket connection error.
+  // Local AzooKey stays on :8787. Workers AI has no local simulation; remote: true
+  // calls Cloudflare AI without wrangler dev --remote, so a timeout fails the ASR
+  // request instead of taking down the WebSocket listener.
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
   "observability": {
     "enabled": true
   },

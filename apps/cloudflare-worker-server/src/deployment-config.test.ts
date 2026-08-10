@@ -38,10 +38,10 @@ describe("Cloudflare deployment configuration", () => {
     expect(config.ai).toEqual({ binding: "AI" });
     expect(config.workers_dev).toBe(false);
     const devConfig = JSON.parse(devJsonc.replace(/^\s*\/\/.*$/gm, "")) as {
-      ai?: unknown;
+      ai?: { binding?: string; remote?: boolean };
       vars?: Record<string, unknown>;
     };
-    expect(devConfig.ai).toBeUndefined();
+    expect(devConfig.ai).toEqual({ binding: "AI", remote: true });
     expect(devConfig.vars?.["AZOOKEY_DICTIONARY_URL"]).toBe("/azookey/system.azkdict.gz");
     expect(config.vars).not.toHaveProperty("VIBRATO_DICTIONARY_URL");
     expect(existsSync(new URL("../public/azookey/system.azkdict.gz", import.meta.url))).toBe(true);
