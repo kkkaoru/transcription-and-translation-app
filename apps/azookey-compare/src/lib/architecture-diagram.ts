@@ -157,6 +157,9 @@ export const BODY_LINE = 16;
 export const CHIP_ROW = 22;
 export const LANE_TITLE_HEIGHT = 36;
 export const STACK_GAP = 40;
+export const OVERVIEW_STACK_GAP = 16;
+export const OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT = 744;
+export const ARCHITECTURE_DIAGRAM_MAX_WIDTH = 720;
 
 export const measureText = (text: string, fontSize: number): number => {
   let width = 0;
@@ -435,10 +438,11 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
   const leftX = 20;
   const rightX = 360;
   const gutterX = 340;
+  const gap = OVERVIEW_STACK_GAP;
   const browser = placeBox({
     id: "browser",
     x: leftX,
-    y: 16,
+    y: 12,
     w: fullW,
     title: "① ブラウザ",
     lines: ["Web Speech 認識"],
@@ -448,24 +452,24 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
   const access = placeBox({
     id: "access",
     x: leftX,
-    y: browser.y + browser.h + 40,
+    y: browser.y + browser.h + gap,
     w: fullW,
     title: "② Access",
-    lines: ["OTP + Managed OAuth"],
+    lines: ["OTP + Managed OAuth", "teadea"],
     tone: "io",
     artifact: "runtime",
   });
   const compare = placeBox({
     id: "compare",
     x: leftX,
-    y: access.y + access.h + 40,
+    y: access.y + access.h + gap,
     w: fullW,
-    title: "③ azookey-compare",
-    lines: [COMPARE_WORKER_ORIGIN, "static Next export + compare Cloudflare Worker", "JWT ゲート"],
+    title: "③ compare Cloudflare Worker",
+    lines: [COMPARE_WORKER_ORIGIN, "Access JWT + static Next export"],
     tone: "worker",
     artifact: "runtime",
   });
-  const forkY = compare.y + compare.h + 40;
+  const forkY = compare.y + compare.h + gap;
   const browserComplete = placeBox({
     id: "browser-complete",
     x: leftX,
@@ -474,8 +478,9 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     title: "ブラウザ完結",
     lines: [
       "Vibrato WASM + AzooKey WASM",
-      ARCHITECTURE_ZENZAI.browserDictLabel,
       "in-page /ws/azookey なし",
+      `Zenzai: ${ARCHITECTURE_DICTIONARIES.azookey.file}`,
+      "LOUDS 辞書のみ / GGUF なし",
     ],
     tone: "browser",
     artifact: "code",
@@ -487,37 +492,28 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: forkY,
     w: halfW,
     title: "worker-vibrato",
-    lines: ["Cloudflare Worker 依存", "/ws/azookey", "→ INFERENCE binding"],
+    lines: ["Cloudflare Worker 依存", "/ws/azookey → INFERENCE"],
     tone: "worker",
     artifact: "runtime",
   });
   const inference = placeBox({
     id: "inference",
     x: rightX,
-    y: workerWs.y + workerWs.h + 40,
+    y: workerWs.y + workerWs.h + gap,
     w: halfW,
     title: "kotoba-beacon-inference",
-    lines: ["Cloudflare Worker（推論）", "workers_dev false", "公開 URL なし"],
+    lines: [
+      "Cloudflare Worker（推論）",
+      "workers.dev 無し",
+      "AzooKey WASM + LOUDS dict",
+      `${ARCHITECTURE_ZENZAI.env} → Zenzai GGUF`,
+      "未設定 → LOUDS dict フォールバック",
+    ],
     tone: "worker",
     artifact: "runtime",
-  });
-  const zenz = placeBox({
-    id: "zenz",
-    x: rightX,
-    y: inference.y + inference.h + 40,
-    w: halfW,
-    title: "Zenzai GGUF 推論",
-    lines: [
-      ARCHITECTURE_ZENZAI.note,
-      "Cloudflare Worker 依存",
-      `${ARCHITECTURE_ZENZAI.loader} が読む`,
-      ARCHITECTURE_ZENZAI.file,
-    ],
-    tone: "model",
-    artifact: "model",
     cost: "model",
   });
-  const height = Math.max(browserComplete.y + browserComplete.h, zenz.y + zenz.h) + 24;
+  const height = Math.max(browserComplete.y + browserComplete.h, inference.y + inference.h) + 16;
 
   return {
     viewBox: `0 0 ${width} ${height}`,
@@ -525,7 +521,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     height,
     gutterX,
     lanes: [],
-    boxes: [browser, access, compare, browserComplete, workerWs, inference, zenz],
+    boxes: [browser, access, compare, browserComplete, workerWs, inference],
     edges: [
       { from: "browser", to: "access", path: "internet", via: "vertical" },
       { from: "access", to: "compare", path: "internet", via: "vertical" },
@@ -534,17 +530,16 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
         to: "browser-complete",
         path: "device",
         via: "vertical",
-        corridorY: compare.y + compare.h + 18,
+        corridorY: compare.y + compare.h + 8,
       },
       {
         from: "compare",
         to: "worker-ws",
         path: "device",
         via: "vertical",
-        corridorY: compare.y + compare.h + 18,
+        corridorY: compare.y + compare.h + 8,
       },
       { from: "worker-ws", to: "inference", path: "device", via: "vertical", label: "INFERENCE" },
-      { from: "inference", to: "zenz", path: "depends", dashed: true, via: "vertical" },
     ],
   };
 };
@@ -594,7 +589,7 @@ export const modeArchitecture = (
               ARCHITECTURE_ZENZAI.file,
               `${ARCHITECTURE_ZENZAI.env} → POST ${ARCHITECTURE_ZENZAI.endpoint}`,
               "Cloudflare Worker 依存（推論）",
-              "未設定 / 失敗 → AzooKey WASM",
+              "未設定 → inference LOUDS dict",
             ]
           : [
               converterModel,

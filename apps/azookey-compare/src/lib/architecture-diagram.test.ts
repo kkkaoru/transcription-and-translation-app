@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ARCHITECTURE_ASSET_SIZES,
   ARCHITECTURE_DICTIONARIES,
+  ARCHITECTURE_DIAGRAM_MAX_WIDTH,
   ARCHITECTURE_ZENZAI,
   architectureDiagram,
   architectureDiagramCaption,
@@ -11,6 +13,7 @@ import {
   modeArchitecture,
   overflowingBoxIds,
   overlappingBoxIds,
+  OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT,
   overviewArchitecture,
 } from "./architecture-diagram";
 import { COMPARE_WORKER_ORIGIN } from "./inference-proxy";
@@ -19,24 +22,26 @@ const overviewTerms = [
   "Web Speech",
   "Access",
   "OTP + Managed OAuth",
+  "teadea",
   COMPARE_WORKER_ORIGIN,
+  "compare Cloudflare Worker",
+  "Access JWT",
   "static Next export",
-  "JWT",
   "ブラウザ完結",
   "/ws/azookey なし",
   "Cloudflare Worker 依存",
   "Cloudflare Worker（推論）",
-  "compare Cloudflare Worker",
   "worker-vibrato",
   "/ws/azookey",
   "INFERENCE",
   "kotoba-beacon-inference",
-  "workers_dev false",
-  "公開 URL なし",
-  "Zenzai GGUF 推論",
-  ARCHITECTURE_ZENZAI.loader,
-  ARCHITECTURE_ZENZAI.file,
-  ARCHITECTURE_ZENZAI.note,
+  "workers.dev 無し",
+  "AzooKey WASM",
+  ARCHITECTURE_DICTIONARIES.azookey.file,
+  "LOUDS",
+  ARCHITECTURE_ZENZAI.env,
+  "Zenzai GGUF",
+  "LOUDS dict フォールバック",
 ];
 
 describe("architecture SVG diagram models", () => {
@@ -48,9 +53,10 @@ describe("architecture SVG diagram models", () => {
     }
     expect(text).not.toContain("Tauri");
     expect(text).not.toContain("ブラウザ簡潔");
+    expect(text).not.toContain("Service Worker");
     expect(text).toContain("Vibrato WASM");
-    expect(text).toContain("AzooKey WASM");
-    expect(overview.width).toBeLessThanOrEqual(720);
+    expect(overview.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
+    expect(overview.height).toBeLessThan(OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT);
     expect(overview.bands).toBeUndefined();
     expect(overview.lanes).toEqual([]);
     expect(overview.boxes.map((box) => box.id)).toEqual([
@@ -60,14 +66,18 @@ describe("architecture SVG diagram models", () => {
       "browser-complete",
       "worker-ws",
       "inference",
-      "zenz",
     ]);
     expect(overview.boxes.some((box) => box.artifact === "code")).toBe(true);
     expect(overview.boxes.some((box) => box.cost === "model")).toBe(true);
     expect(overview.edges.some((edge) => edge.path === "internet")).toBe(true);
-    expect(overview.edges.some((edge) => edge.dashed)).toBe(true);
     expect(overview.edges.some((edge) => edge.label === "INFERENCE")).toBe(true);
     expect(architectureDiagramCaption("overview")).toBe("Cloudflare Workers 本番構成");
+  });
+
+  it("keeps diagram within viewport width and hides horizontal overflow", () => {
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.path-diagram-svg\s*\{[^}]*overflow-x:\s*hidden/s);
+    expect(overviewArchitecture().width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
   });
 
   it("keeps boxes and edges readable without overlap or wrap", () => {
@@ -79,7 +89,7 @@ describe("architecture SVG diagram models", () => {
       modeArchitecture("browser-vibrato", true, "zenz-v3.2-small-gguf"),
     ];
     for (const diagram of diagrams) {
-      expect(diagram.width).toBeLessThanOrEqual(720);
+      expect(diagram.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
       expect(overlappingBoxIds(diagram)).toEqual([]);
       expect(overflowingBoxIds(diagram)).toEqual([]);
       expect(boxesCollidingWithLaneTitles(diagram)).toEqual([]);
@@ -108,6 +118,7 @@ describe("architecture SVG diagram models", () => {
     expect(zenz).toContain(ARCHITECTURE_ZENZAI.file);
     expect(zenz).toContain(ARCHITECTURE_ZENZAI.xsmall.size);
     expect(zenz).toContain("Cloudflare Worker 依存（推論）");
+    expect(zenz).toContain("inference LOUDS dict");
 
     const small = architectureDiagramText(
       modeArchitecture("worker-vibrato", true, "zenz-v3.2-small-gguf"),
@@ -137,7 +148,7 @@ describe("architecture SVG diagram models", () => {
   });
 
   it("architectureDiagram dispatches kinds", () => {
-    expect(architectureDiagram({ kind: "overview" }).boxes).toHaveLength(7);
+    expect(architectureDiagram({ kind: "overview" }).boxes).toHaveLength(6);
     const mode = architectureDiagram({
       kind: "mode",
       mode: "browser-vibrato",
