@@ -23,6 +23,8 @@ export {
 };
 
 export const AZOOKEY_WS_PATH = "/ws/azookey";
+/** Public inference hostname. Disabled in production (`workers_dev: false`). */
+export const INFERENCE_PUBLIC_HOST = "kotoba-beacon-inference.kaoru.workers.dev";
 export const AZOOKEY_PROTOCOL = "azookey.text.v1";
 export const AZOOKEY_MODEL = "azookey-rust-wasm";
 export const AZOOKEY_ZENZ_XSMALL_MODEL = "zenz-v3.2-xsmall-gguf";
@@ -71,7 +73,18 @@ export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
 export const AZOOKEY_WASM_ABI_VERSION = 2;
-export const AZOOKEY_MIN_ELAPSED_MS = 0;
+/**
+ * Protocol timing for `azookey.result.elapsedMs`.
+ * Field name stays `elapsedMs`. Value is a finite integer millisecond count:
+ * `Math.round` of the measured duration, then floored at 1 so a successful
+ * conversion never reports 0.
+ */
+export const AZOOKEY_MIN_ELAPSED_MS = 1;
+
+export const elapsedMsFromDuration = (elapsed: number): number => {
+  const rounded = Number.isFinite(elapsed) ? Math.round(Math.max(0, elapsed)) : 0;
+  return Math.max(AZOOKEY_MIN_ELAPSED_MS, rounded);
+};
 export const HTTP_SWITCHING_PROTOCOLS = 101;
 export const HTTP_UNAUTHORIZED = 401;
 export const HTTP_METHOD_NOT_ALLOWED = 405;
@@ -1125,7 +1138,7 @@ export const convertAzookeyMessage = async (
       message.requestId,
     );
   }
-  const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
+  const elapsed = nowMs() - startedAt;
   return {
     type: "azookey.result",
     requestId: message.requestId,
@@ -1136,7 +1149,7 @@ export const convertAzookeyMessage = async (
     vibratoPassthrough: vibratoStage === "passthrough",
     convertedText: converted,
     mode: AZOOKEY_MODE,
-    elapsedMs: Math.max(AZOOKEY_MIN_ELAPSED_MS, Math.round(elapsed)),
+    elapsedMs: elapsedMsFromDuration(elapsed),
     model: message.model,
   };
 };
@@ -1297,6 +1310,50 @@ export const bearerTokenMatches = async (request: Request, expected: string): Pr
   return constantTimeEqual(new Uint8Array(providedHash), new Uint8Array(expectedHash));
 };
 
+export const isPublicInferenceRequest = (request: Request): boolean => {
+  try {
+    return new URL(request.url).hostname === INFERENCE_PUBLIC_HOST;
+  } catch {
+    return false;
+  }
+};
+
+export type AzookeyHandshakeAuthorization = {
+  handshakeAuthorized: boolean;
+  unauthorized: boolean;
+};
+
+/**
+ * Public inference still requires a matching Bearer or first-frame token.
+ * Service-binding / local hosts (no public hostname) may upgrade without
+ * Authorization; a wrong Bearer is still 401.
+ */
+export const resolveAzookeyHandshakeAuthorization = ({
+  expectedToken,
+  hasAuthorizationHeader,
+  tokenMatches,
+  publicInferenceHost,
+}: {
+  expectedToken?: string | undefined;
+  hasAuthorizationHeader: boolean;
+  tokenMatches: boolean;
+  publicInferenceHost: boolean;
+}): AzookeyHandshakeAuthorization => {
+  if (!expectedToken) {
+    return { handshakeAuthorized: false, unauthorized: false };
+  }
+  if (hasAuthorizationHeader && !tokenMatches) {
+    return { handshakeAuthorized: false, unauthorized: true };
+  }
+  if (tokenMatches) {
+    return { handshakeAuthorized: true, unauthorized: false };
+  }
+  if (!publicInferenceHost) {
+    return { handshakeAuthorized: true, unauthorized: false };
+  }
+  return { handshakeAuthorized: false, unauthorized: false };
+};
+
 export const openAzookeySocket = async (
   request: Request,
   env: AzookeyEnv,
@@ -1324,15 +1381,19 @@ export const openAzookeySocket = async (
       },
     );
   }
-  const expectedToken = env.AZOOKEY_API_TOKEN?.trim();
+  const expectedToken = env.AZOOKEY_API_TOKEN?.trim() || undefined;
   const hasAuthorizationHeader = request.headers.has("authorization");
-  // Authentication is optional for local/demo deployments. Once a secret is
-  // configured, both native handshake headers and browser first-frame auth
-  // are enforced; an invalid header must fail before the socket upgrade.
-  const handshakeAuthorized = expectedToken
-    ? await bearerTokenMatches(request, expectedToken)
-    : false;
-  if (expectedToken && hasAuthorizationHeader && !handshakeAuthorized) {
+  const tokenMatches = expectedToken ? await bearerTokenMatches(request, expectedToken) : false;
+  const handshake = resolveAzookeyHandshakeAuthorization({
+    expectedToken,
+    hasAuthorizationHeader,
+    tokenMatches,
+    publicInferenceHost: isPublicInferenceRequest(request),
+  });
+  // A wrong Authorization header fails before upgrade. Binding requests with
+  // no Authorization are trusted (`workers_dev` stays false). Public inference
+  // still requires first-frame bearer when the handshake did not match.
+  if (handshake.unauthorized) {
     return new Response(
       JSON.stringify({ error: { code: "unauthorized", message: "Bearer token is invalid" } }),
       {
@@ -1344,6 +1405,7 @@ export const openAzookeySocket = async (
       },
     );
   }
+  const handshakeAuthorized = handshake.handshakeAuthorized;
   // A WebSocketPair is an allocated resource even while the lazy dictionary
   // warmup is in flight.  Create an injected/Workers pair before warmup so a
   // failed 503 path can close both ends explicitly.  Node/Vitest does not

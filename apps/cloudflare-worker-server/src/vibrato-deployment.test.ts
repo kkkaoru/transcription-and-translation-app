@@ -5,6 +5,7 @@ import {
   convertAzookeyMessage,
   createVibratoHttpConverter,
   createVibratoWasmConverter,
+  INFERENCE_PUBLIC_HOST,
   openAzookeySocket,
   parseAzookeyMessage,
   VIBRATO_MAX_DICTIONARY_BYTES,
@@ -344,7 +345,7 @@ describe("Worker-side Vibrato and deployment paths", () => {
     const server = new FakeSocket();
     const client = {} as WebSocket;
     const response = await openAzookeySocket(
-      new Request("https://worker.example/ws/azookey", {
+      new Request(`https://${INFERENCE_PUBLIC_HOST}/ws/azookey`, {
         headers: { upgrade: "websocket" },
       }),
       { AZOOKEY_API_TOKEN: "secret" },

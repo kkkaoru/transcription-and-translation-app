@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AZOOKEY_MAX_MESSAGE_BYTES,
   AZOOKEY_MAX_TEXT_BYTES,
+  AZOOKEY_MIN_ELAPSED_MS,
   AZOOKEY_MODE,
   type AzookeyRuntime,
   attachAzookeySocket,
@@ -12,10 +13,14 @@ import {
   convertAzookeyMessage,
   createVibratoHttpConverter,
   createWasmConverter,
+  elapsedMsFromDuration,
+  INFERENCE_PUBLIC_HOST,
+  isPublicInferenceRequest,
   isWebSocketUpgrade,
   openAzookeySocket,
   parseAzookeyMessage,
   readyAzookeyMessage,
+  resolveAzookeyHandshakeAuthorization,
   VIBRATO_MAX_RESPONSE_BYTES,
 } from "./azookey.js";
 
@@ -158,7 +163,27 @@ describe("AzooKey Worker text contract", () => {
       convertedText: "今日は配信です:きょうははいしんです",
       mode: "worker-vibrato",
     });
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(AZOOKEY_MIN_ELAPSED_MS);
+  });
+
+  it("rounds measured conversion time to integer elapsedMs and never reports 0", async () => {
+    expect(elapsedMsFromDuration(0)).toBe(1);
+    expect(elapsedMsFromDuration(0.4)).toBe(1);
+    expect(elapsedMsFromDuration(1.4)).toBe(1);
+    expect(elapsedMsFromDuration(1.5)).toBe(2);
+    expect(elapsedMsFromDuration(12.6)).toBe(13);
+    expect(elapsedMsFromDuration(Number.NaN)).toBe(1);
+    expect(elapsedMsFromDuration(Number.POSITIVE_INFINITY)).toBe(1);
+    expect(elapsedMsFromDuration(-3)).toBe(1);
+
+    vi.stubGlobal("performance", { now: vi.fn(() => 10) });
+    const zeroDuration = await convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+      timeoutMs: 250,
+      converter: (text) => `converted:${text}`,
+    });
+    expect(zeroDuration.elapsedMs).toBe(AZOOKEY_MIN_ELAPSED_MS);
+    expect(Number.isInteger(zeroDuration.elapsedMs)).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it("runs a configured Worker Vibrato stage before AzooKey", async () => {
@@ -661,6 +686,110 @@ describe("AzooKey Worker text contract", () => {
     await expect(
       convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), runtime),
     ).rejects.toMatchObject({ code: "conversion_timeout", requestId: "req-1" });
+  });
+
+  it("trusts service-binding upgrades without bearer and rejects a wrong Authorization", async () => {
+    expect(
+      isPublicInferenceRequest(
+        new Request(`https://${INFERENCE_PUBLIC_HOST}/ws/azookey`, {
+          headers: { upgrade: "websocket" },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isPublicInferenceRequest(
+        new Request("https://azookey-compare.kaoru.workers.dev/ws/azookey", {
+          headers: { upgrade: "websocket" },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      resolveAzookeyHandshakeAuthorization({
+        expectedToken: "secret",
+        hasAuthorizationHeader: false,
+        tokenMatches: false,
+        publicInferenceHost: false,
+      }),
+    ).toEqual({ handshakeAuthorized: true, unauthorized: false });
+    expect(
+      resolveAzookeyHandshakeAuthorization({
+        expectedToken: "secret",
+        hasAuthorizationHeader: false,
+        tokenMatches: false,
+        publicInferenceHost: true,
+      }),
+    ).toEqual({ handshakeAuthorized: false, unauthorized: false });
+    expect(
+      resolveAzookeyHandshakeAuthorization({
+        expectedToken: "secret",
+        hasAuthorizationHeader: true,
+        tokenMatches: false,
+        publicInferenceHost: false,
+      }),
+    ).toEqual({ handshakeAuthorized: false, unauthorized: true });
+
+    const bindingUnauthorized = await openAzookeySocket(
+      new Request("https://azookey-compare.kaoru.workers.dev/ws/azookey", {
+        headers: { upgrade: "websocket", authorization: "Bearer wrong" },
+      }),
+      { AZOOKEY_API_TOKEN: "secret" },
+    );
+    expect(bindingUnauthorized.status).toBe(401);
+    const publicUnauthorized = await openAzookeySocket(
+      new Request(`https://${INFERENCE_PUBLIC_HOST}/ws/azookey`, {
+        headers: { upgrade: "websocket", authorization: "Bearer wrong" },
+      }),
+      { AZOOKEY_API_TOKEN: "secret" },
+    );
+    expect(publicUnauthorized.status).toBe(401);
+
+    const bindingServer = new FakeSocket();
+    const bindingUpgrade = await openAzookeySocket(
+      new Request("https://azookey-compare.kaoru.workers.dev/ws/azookey", {
+        headers: { upgrade: "websocket" },
+      }),
+      { AZOOKEY_API_TOKEN: "secret" },
+      {
+        converter: (text) => `converted:${text}`,
+        socketPair: () =>
+          ({ client: {} as WebSocket, server: bindingServer }) as unknown as {
+            client: WebSocket;
+            server: WebSocket;
+          },
+      },
+    );
+    expect(bindingUpgrade.status).toBe(101);
+    bindingServer.emit(JSON.stringify({ ...valid, auth: undefined, requestId: "bind-1" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(bindingServer.sent.at(-1) ?? "{}")).toMatchObject({
+      type: "azookey.result",
+      requestId: "bind-1",
+      convertedText: "converted:きょうははいしんです",
+    });
+
+    const publicServer = new FakeSocket();
+    const publicUpgrade = await openAzookeySocket(
+      new Request(`https://${INFERENCE_PUBLIC_HOST}/ws/azookey`, {
+        headers: { upgrade: "websocket" },
+      }),
+      { AZOOKEY_API_TOKEN: "secret" },
+      {
+        converter: (text) => `converted:${text}`,
+        socketPair: () =>
+          ({ client: {} as WebSocket, server: publicServer }) as unknown as {
+            client: WebSocket;
+            server: WebSocket;
+          },
+      },
+    );
+    expect(publicUpgrade.status).toBe(101);
+    publicServer.emit(JSON.stringify({ ...valid, auth: undefined, requestId: "pub-1" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(publicServer.sent.at(-1) ?? "{}")).toMatchObject({
+      type: "azookey.error",
+      requestId: "pub-1",
+      error: { code: "unauthorized" },
+    });
   });
 
   it("allows an unauthenticated local socket when no secret is configured", async () => {
