@@ -541,10 +541,10 @@ describe("WorkersAiAsrController VAD session", () => {
     const context = FakeAudioContext.instances[0];
     const tap = context?.createdProcessors[0];
     expect(tap).toBeDefined();
-    expect(context?.createdDestinations).toHaveLength(1);
-    expect(tap?.connections).toContain(context?.createdDestinations[0]);
+    expect(context?.createdDestinations).toHaveLength(0);
+    expect(tap?.connections).toContain(context?.createdGains[0]);
     expect(tap?.connections).not.toContain(context?.destination);
-    expect(context?.createdGains).toHaveLength(0);
+    expect(context?.createdGains).toHaveLength(1);
     expect(events.onError).not.toHaveBeenCalled();
     expect(controller.currentState).toBe("listening");
     controller.dispose();

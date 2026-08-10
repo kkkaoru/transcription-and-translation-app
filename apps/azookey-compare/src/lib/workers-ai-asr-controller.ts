@@ -66,8 +66,6 @@ const RECORDING_INTERIM = "録音中…";
 const TRANSCRIBING_INTERIM = "認識中…";
 
 export class WorkersAiAsrController {
-  readonly supported: boolean;
-
   private readonly options: WorkersAiAsrControllerOptions;
   private readonly vad = new WorkersAiAsrVad();
   private engine: VadEngine | null = null;
@@ -80,7 +78,6 @@ export class WorkersAiAsrController {
   private pcmTap: ScriptProcessorNode | null = null;
   private pcmSource: MediaStreamAudioSourceNode | null = null;
   private tapGain: GainNode | null = null;
-  private tapDestination: MediaStreamAudioDestinationNode | null = null;
   private analyser: AnalyserNode | null = null;
   private analyserTimer: ReturnType<typeof setInterval> | null = null;
   private resampleRemainder = new Float32Array(0);
@@ -95,7 +92,11 @@ export class WorkersAiAsrController {
 
   public constructor(language: string, options: WorkersAiAsrControllerOptions) {
     this.options = { ...options, language };
-    this.supported = isWorkersAiAsrCaptureSupported();
+  }
+
+  /** Live probe — do not snapshot at construct time (select→start before effect). */
+  public get supported(): boolean {
+    return isWorkersAiAsrCaptureSupported();
   }
 
   public get currentState(): WorkersAiAsrState {
@@ -357,15 +358,17 @@ export class WorkersAiAsrController {
           void this.onPcmTap(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
         };
         source.connect(tap);
-        if (typeof audioContext.createMediaStreamDestination === "function") {
-          const destination = audioContext.createMediaStreamDestination();
-          tap.connect(destination);
-          this.tapDestination = destination;
-        } else if (typeof audioContext.createGain === "function") {
-          const gain = audioContext.createGain();
-          gain.gain.value = 0;
-          tap.connect(gain);
-          this.tapGain = gain;
+        // Never tap→destination (AudioContext.destination or MediaStreamDestination):
+        // both can throw or play the mic and fail start(). Mute via gain only.
+        try {
+          if (typeof audioContext.createGain === "function") {
+            const gain = audioContext.createGain();
+            gain.gain.value = 0;
+            tap.connect(gain);
+            this.tapGain = gain;
+          }
+        } catch {
+          // Gain is best-effort; ScriptProcessor can still feed VAD.
         }
         this.pcmTap = tap;
         return;
@@ -425,13 +428,6 @@ export class WorkersAiAsrController {
         // Already disconnected.
       }
     }
-    if (this.tapDestination) {
-      try {
-        this.tapDestination.disconnect();
-      } catch {
-        // Already disconnected.
-      }
-    }
     if (this.analyser) {
       try {
         this.analyser.disconnect();
@@ -448,7 +444,6 @@ export class WorkersAiAsrController {
     }
     this.pcmTap = null;
     this.tapGain = null;
-    this.tapDestination = null;
     this.analyser = null;
     this.pcmSource = null;
     this.resampleRemainder = new Float32Array(0);

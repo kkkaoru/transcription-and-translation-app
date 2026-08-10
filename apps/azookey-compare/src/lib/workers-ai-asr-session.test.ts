@@ -215,6 +215,15 @@ describe("gateWorkersAiAsrStart", () => {
     });
   });
 
+  it("does not treat a missing controller as a successful start", () => {
+    const gate = gateWorkersAiAsrStart({ controller: null, captureSupported: true });
+    expect(gate.ok).toBe(false);
+    if (!gate.ok) {
+      expect(gate.reason).toBe("preparing");
+      expect(gate.message).toBe(WORKERS_AI_ASR_PREPARING_JA);
+    }
+  });
+
   it("allows start when the controller is supported", () => {
     const controller = fakeController({ supported: true });
     expect(gateWorkersAiAsrStart({ controller, captureSupported: true })).toEqual({
@@ -226,6 +235,15 @@ describe("gateWorkersAiAsrStart", () => {
   it("rejects an unsupported controller even if one is mounted", () => {
     const controller = fakeController({ supported: false });
     expect(gateWorkersAiAsrStart({ controller, captureSupported: true })).toEqual({
+      ok: false,
+      reason: "unsupported",
+      message: WORKERS_AI_ASR_UNSUPPORTED_JA,
+    });
+  });
+
+  it("rejects when captureSupported is explicitly false even if the controller is supported", () => {
+    const controller = fakeController({ supported: true });
+    expect(gateWorkersAiAsrStart({ controller, captureSupported: false })).toEqual({
       ok: false,
       reason: "unsupported",
       message: WORKERS_AI_ASR_UNSUPPORTED_JA,
@@ -307,4 +325,96 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     expect(result.controller?.supported).toBe(true);
     result.controller?.dispose();
   });
+
+  it("reports gate failure without calling start", async () => {
+    const created = fakeController({ supported: false });
+    const onError = vi.fn();
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      existing: null,
+      createController: () => created,
+      onError,
+    });
+    expect(created.start).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_UNSUPPORTED_JA);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("unsupported");
+    }
+  });
+
+  it("maps thrown getUserMedia errors to Japanese", async () => {
+    const denied = new Error("Permission denied");
+    denied.name = "NotAllowedError";
+    const created = fakeController({
+      start: vi.fn(async () => {
+        throw denied;
+      }),
+    });
+    const onError = vi.fn();
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      existing: null,
+      createController: () => created,
+      captureSupported: true,
+      onError,
+    });
+    expect(result.ok).toBe(false);
+    expect(onError).toHaveBeenCalledWith(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    expect(String(onError.mock.calls[0]?.[0])).not.toMatch(/NotAllowedError|Permission denied/i);
+  });
+
+  it("treats controller error state after start as failure", async () => {
+    const created = fakeController({
+      start: vi.fn(async () => {
+        (created as { currentState: string }).currentState = "error";
+      }),
+    });
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      existing: null,
+      createController: () => created,
+      captureSupported: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("start-failed");
+    }
+  });
+
+  it("treats idle after start as a failed start", async () => {
+    const created = fakeController({
+      currentState: "idle",
+      start: vi.fn(async () => undefined),
+    });
+    const onError = vi.fn();
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      existing: null,
+      createController: () => created,
+      captureSupported: true,
+      onError,
+    });
+    expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_PREPARING_JA);
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts starting state immediately after start", async () => {
+    const created = fakeController({
+      start: vi.fn(async () => {
+        (created as { currentState: string }).currentState = "starting";
+      }),
+    });
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      existing: null,
+      createController: () => created,
+      captureSupported: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.controller?.currentState).toBe("starting");
+  });
 });
+

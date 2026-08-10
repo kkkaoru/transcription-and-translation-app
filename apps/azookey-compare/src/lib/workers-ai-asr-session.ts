@@ -65,14 +65,15 @@ export const gateWorkersAiAsrStart = (options: {
   controller: WorkersAiAsrController | null;
   captureSupported?: boolean;
 }): WorkersAiAsrStartGate => {
-  const captureSupported = options.captureSupported ?? isWorkersAiAsrCaptureSupported();
-  if (!captureSupported) {
-    return { ok: false, reason: "unsupported", message: WORKERS_AI_ASR_UNSUPPORTED_JA };
-  }
   if (!options.controller) {
+    const captureSupported = options.captureSupported ?? isWorkersAiAsrCaptureSupported();
+    if (!captureSupported) {
+      return { ok: false, reason: "unsupported", message: WORKERS_AI_ASR_UNSUPPORTED_JA };
+    }
     return { ok: false, reason: "preparing", message: WORKERS_AI_ASR_PREPARING_JA };
   }
-  if (!options.controller.supported) {
+  const captureSupported = options.captureSupported ?? options.controller.supported;
+  if (!captureSupported || !options.controller.supported) {
     return { ok: false, reason: "unsupported", message: WORKERS_AI_ASR_UNSUPPORTED_JA };
   }
   return { ok: true, controller: options.controller };
