@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkersAiAsrController } from "./workers-ai-asr-controller";
-import { ensureWorkersAiAsrController, gateWorkersAiAsrStart } from "./workers-ai-asr-session";
 import {
+  ensureWorkersAiAsrController,
+  gateWorkersAiAsrStart,
+  startCloudflareWorkersAiAsrAfterSelect,
+} from "./workers-ai-asr-session";
+import {
+  WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA,
   WORKERS_AI_ASR_PREPARING_JA,
   WORKERS_AI_ASR_UNSUPPORTED_JA,
 } from "./workers-ai-asr-support";
@@ -26,9 +31,100 @@ const fakeController = (
     ...overrides,
   }) as unknown as WorkersAiAsrController;
 
+class FakeMediaStreamSource {
+  connect(_node: unknown): void {}
+  disconnect(): void {}
+}
+
+class FakeGainNode {
+  gain = { value: 1 };
+  connections: unknown[] = [];
+  connect(node: unknown): void {
+    this.connections.push(node);
+  }
+  disconnect(): void {}
+}
+
+class FakeScriptProcessor {
+  onaudioprocess:
+    | ((event: { inputBuffer: { getChannelData: (i: number) => Float32Array } }) => void)
+    | null = null;
+  connections: unknown[] = [];
+  connect(node: unknown): void {
+    this.connections.push(node);
+  }
+  disconnect(): void {}
+}
+
+/** Mimics browsers where MediaStreamDestination throws during ASR start. */
+class ThrowingDestinationAudioContext {
+  state: AudioContextState = "running";
+  sampleRate = 16_000;
+  destination = { kind: "destination" as const };
+  createdGains: FakeGainNode[] = [];
+
+  createMediaStreamSource(_stream: MediaStream): FakeMediaStreamSource {
+    return new FakeMediaStreamSource();
+  }
+
+  createGain(): FakeGainNode {
+    const gain = new FakeGainNode();
+    this.createdGains.push(gain);
+    return gain;
+  }
+
+  createScriptProcessor(
+    _bufferSize?: number,
+    _inputChannels?: number,
+    _outputChannels?: number,
+  ): FakeScriptProcessor {
+    return new FakeScriptProcessor();
+  }
+
+  createMediaStreamDestination(): never {
+    throw new Error("InvalidStateError");
+  }
+
+  resume(): Promise<void> {
+    this.state = "running";
+    return Promise.resolve();
+  }
+
+  close(): Promise<void> {
+    this.state = "closed";
+    return Promise.resolve();
+  }
+}
+
+const installCapture = (AudioContextImpl = ThrowingDestinationAudioContext): MediaStream => {
+  const stream = { getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    writable: true,
+    value: { AudioContext: AudioContextImpl },
+  });
+  Object.defineProperty(globalThis, "AudioContext", {
+    configurable: true,
+    writable: true,
+    value: AudioContextImpl,
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      mediaDevices: {
+        getUserMedia: vi.fn(async () => stream),
+      },
+    },
+  });
+  Reflect.deleteProperty(globalThis, "MediaRecorder");
+  return stream;
+};
+
 afterEach(() => {
   Reflect.deleteProperty(globalThis, "window");
   Reflect.deleteProperty(globalThis, "AudioContext");
+  Reflect.deleteProperty(globalThis, "MediaRecorder");
   Reflect.deleteProperty(globalThis, "navigator");
 });
 
@@ -111,12 +207,7 @@ describe("ensureWorkersAiAsrController", () => {
 });
 
 describe("gateWorkersAiAsrStart", () => {
-  it("does not treat a missing controller as unsupported", () => {
-    expect(gateWorkersAiAsrStart({ controller: null, captureSupported: true })).toEqual({
-      ok: false,
-      reason: "preparing",
-      message: WORKERS_AI_ASR_PREPARING_JA,
-    });
+  it("rejects start when capture is unavailable, even without a controller", () => {
     expect(gateWorkersAiAsrStart({ controller: null, captureSupported: false })).toEqual({
       ok: false,
       reason: "unsupported",
@@ -141,25 +232,79 @@ describe("gateWorkersAiAsrStart", () => {
     });
   });
 
-  it("uses the live capture probe when captureSupported is omitted", () => {
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: { AudioContext: class FakeAudioContext {} },
+  it("is ok after ensureWorkersAiAsrController({ existing: null }) when capture is available", () => {
+    installCapture();
+    const controller = ensureWorkersAiAsrController({
+      language: "ja-JP",
+      existing: null,
     });
-    Object.defineProperty(globalThis, "AudioContext", {
-      configurable: true,
-      value: class FakeAudioContext {},
-    });
-    Object.defineProperty(globalThis, "navigator", {
-      configurable: true,
-      value: { mediaDevices: { getUserMedia: async () => ({}) } },
-    });
-    const controller = fakeController({ supported: true });
-    expect(gateWorkersAiAsrStart({ controller }).ok).toBe(true);
-    const preparing = gateWorkersAiAsrStart({ controller: null });
-    expect(preparing.ok).toBe(false);
-    if (!preparing.ok) {
-      expect(preparing.reason).toBe("preparing");
+    const gate = gateWorkersAiAsrStart({ controller });
+    expect(gate).toEqual({ ok: true, controller });
+    expect(gate.ok).toBe(true);
+    if (!gate.ok) {
+      expect(gate.reason).not.toBe("preparing");
+      expect(gate.reason).not.toBe("unsupported");
     }
+    controller.dispose();
+  });
+});
+
+describe("startCloudflareWorkersAiAsrAfterSelect", () => {
+  it("starts after selecting workers-ai-asr with a null controller and mocked mic", async () => {
+    installCapture();
+    const onError = vi.fn();
+    const controllerOnError = vi.fn();
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
+      auth: { scheme: "none" },
+      existing: null,
+      callbacks: {
+        disableSilero: true,
+        onError: controllerOnError,
+      },
+      onError,
+    });
+
+    const errorMessages = [
+      ...onError.mock.calls.map((call) => String(call[0])),
+      ...controllerOnError.mock.calls.map((call) => String(call[0])),
+    ];
+    expect(errorMessages, "select→認識を開始 must not setError").toEqual([]);
+    expect(result.ok, "select→認識を開始 must succeed").toBe(true);
+    if (!result.ok) {
+      expect(result.message).not.toContain("準備");
+      expect(result.message).not.toContain("非対応");
+      expect(result.message).not.toBe(WORKERS_AI_ASR_PREPARING_JA);
+      expect(result.message).not.toBe(WORKERS_AI_ASR_UNSUPPORTED_JA);
+      expect(result.message).not.toBe(WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA);
+      expect(result.message).not.toMatch(/NotAllowedError/i);
+      expect(result.message).not.toMatch(/マイクを開始できません/);
+    }
+    expect(result.controller).toBeTruthy();
+    expect(result.controller?.currentState).toBe("listening");
+    result.controller?.dispose();
+  });
+
+  it("refreshes capture support when the existing controller was snapshotted unsupported", async () => {
+    const stale = ensureWorkersAiAsrController({
+      language: "ja-JP",
+      existing: null,
+      callbacks: { disableSilero: true },
+    });
+    expect(stale.supported).toBe(false);
+    installCapture();
+    const onError = vi.fn();
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      existing: stale,
+      callbacks: { disableSilero: true, onError },
+      onError,
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    expect(result.controller?.currentState).toBe("listening");
+    expect(result.controller?.supported).toBe(true);
+    result.controller?.dispose();
   });
 });

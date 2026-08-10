@@ -142,9 +142,9 @@ describe("compare page speech settings", () => {
       source.indexOf("const toggleListening"),
       source.indexOf("const connectWorker"),
     );
-    expect(toggle).toContain("ensureAsrController");
-    expect(toggle).toContain("gateWorkersAiAsrStart");
-    expect(toggle).toContain("gate.controller.start()");
+    expect(toggle).toContain("startCloudflareWorkersAiAsrAfterSelect");
+    expect(toggle).toContain("existing: asrRef.current");
+    expect(toggle).not.toContain("gateWorkersAiAsrStart");
     expect(toggle).not.toContain("このブラウザは Workers AI ASR 録音に対応していません");
     expect(toggle).toContain("WEB_SPEECH_UNSUPPORTED_JA");
     expect(source).toContain("asrCaptureSupported");

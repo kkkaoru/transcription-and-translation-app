@@ -81,7 +81,10 @@ import {
   utteranceAsrCostFields,
   webSpeechAsrCostSummaryJa,
 } from "../lib/workers-ai-asr-cost";
-import { ensureWorkersAiAsrController, gateWorkersAiAsrStart } from "../lib/workers-ai-asr-session";
+import {
+  ensureWorkersAiAsrController,
+  startCloudflareWorkersAiAsrAfterSelect,
+} from "../lib/workers-ai-asr-session";
 import { WEB_SPEECH_UNSUPPORTED_JA } from "../lib/workers-ai-asr-support";
 
 const DESKTOP_CONFIG_MEDIA_QUERY = "(min-width: 641px)";
@@ -879,17 +882,8 @@ export default function ComparePage() {
   const toggleListening = (): void => {
     const usingWorkersAi = config.recognitionProvider === "workers-ai-asr";
     if (usingWorkersAi) {
-      const controller = ensureAsrController();
-      const gate = gateWorkersAiAsrStart({ controller });
-      if (!gate.ok) {
-        if (gate.reason === "unsupported") {
-          setAsrCaptureSupported(false);
-        }
-        setError(gate.message);
-        return;
-      }
       if (speechState === "listening" || speechState === "starting") {
-        void gate.controller.stop();
+        void ensureAsrController().stop();
         return;
       }
       dispatchedSpeechRef.current = [];
@@ -897,7 +891,50 @@ export default function ComparePage() {
       setError("");
       beginRecognitionListening({
         provider: "workers-ai-asr",
-        start: () => gate.controller.start(),
+        start: async () => {
+          const result = await startCloudflareWorkersAiAsrAfterSelect({
+            language: config.language,
+            endpointUrl:
+              typeof window !== "undefined"
+                ? buildWorkersAiAsrUrl(window.location.origin)
+                : undefined,
+            auth: { scheme: config.auth.scheme, token: config.auth.token },
+            existing: asrRef.current,
+            callbacks: {
+              onStateChange: (state) => {
+                setSpeechState(state);
+                if (state === "listening") {
+                  setError("");
+                }
+              },
+              onTranscript: ({ interimText }) => {
+                setSpeechInterimText(interimText);
+              },
+              onFinalText: (text) => {
+                setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
+              },
+              onUtteranceFinal: ({ text, audioSeconds }) => {
+                dispatchSpeechText(text, audioSeconds);
+              },
+              onVadNotice: (message) => {
+                setNotice(message);
+              },
+              onError: (message) => {
+                setError(message);
+              },
+            },
+            onError: (message) => {
+              setError(message);
+            },
+          });
+          if (result.controller) {
+            asrRef.current = result.controller;
+            setAsrCaptureSupported(result.controller.supported);
+          }
+          if (!result.ok && result.reason === "unsupported") {
+            setAsrCaptureSupported(false);
+          }
+        },
         warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
         onWarmupNotice: setNotice,
         onWarmupError: setError,

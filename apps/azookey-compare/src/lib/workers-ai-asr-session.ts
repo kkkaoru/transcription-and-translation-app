@@ -4,6 +4,7 @@ import {
   type WorkersAiAsrControllerOptions,
 } from "./workers-ai-asr-controller";
 import {
+  getUserMediaErrorMessageJa,
   isWorkersAiAsrCaptureSupported,
   WORKERS_AI_ASR_PREPARING_JA,
   WORKERS_AI_ASR_UNSUPPORTED_JA,
@@ -75,4 +76,72 @@ export const gateWorkersAiAsrStart = (options: {
     return { ok: false, reason: "unsupported", message: WORKERS_AI_ASR_UNSUPPORTED_JA };
   }
   return { ok: true, controller: options.controller };
+};
+
+export type StartCloudflareWorkersAiAsrAfterSelectParams = {
+  language: string;
+  endpointUrl?: string;
+  auth?: ComparisonAuth;
+  /** Null just after selecting workers-ai-asr, before the React effect mounts. */
+  existing: WorkersAiAsrController | null;
+  captureSupported?: boolean;
+  callbacks?: Omit<WorkersAiAsrControllerOptions, "language" | "endpointUrl" | "auth">;
+  createController?: EnsureWorkersAiAsrControllerParams["createController"];
+  onError?: (message: string) => void;
+};
+
+export type StartCloudflareWorkersAiAsrAfterSelectResult =
+  | { ok: true; controller: WorkersAiAsrController }
+  | {
+      ok: false;
+      reason: "unsupported" | "preparing" | "start-failed";
+      message: string;
+      controller: WorkersAiAsrController | null;
+    };
+
+/**
+ * Same path as the compare page “認識を開始” button after selecting
+ * Cloudflare Workers AI ASR: ensure controller → gate → start().
+ * Must succeed without waiting for a useEffect tick.
+ */
+export const startCloudflareWorkersAiAsrAfterSelect = async (
+  params: StartCloudflareWorkersAiAsrAfterSelectParams,
+): Promise<StartCloudflareWorkersAiAsrAfterSelectResult> => {
+  const controller = ensureWorkersAiAsrController({
+    language: params.language,
+    endpointUrl: params.endpointUrl,
+    auth: params.auth,
+    existing: params.existing,
+    callbacks: params.callbacks,
+    createController: params.createController,
+  });
+  const gate = gateWorkersAiAsrStart({
+    controller,
+    captureSupported: params.captureSupported,
+  });
+  if (!gate.ok) {
+    params.onError?.(gate.message);
+    return { ...gate, controller };
+  }
+  try {
+    await gate.controller.start();
+  } catch (error) {
+    const message = getUserMediaErrorMessageJa(error);
+    params.onError?.(message);
+    return { ok: false, reason: "start-failed", message, controller: gate.controller };
+  }
+  if (gate.controller.currentState === "error") {
+    return {
+      ok: false,
+      reason: "start-failed",
+      message: WORKERS_AI_ASR_PREPARING_JA,
+      controller: gate.controller,
+    };
+  }
+  if (gate.controller.currentState !== "listening" && gate.controller.currentState !== "starting") {
+    const message = WORKERS_AI_ASR_PREPARING_JA;
+    params.onError?.(message);
+    return { ok: false, reason: "start-failed", message, controller: gate.controller };
+  }
+  return { ok: true, controller: gate.controller };
 };
