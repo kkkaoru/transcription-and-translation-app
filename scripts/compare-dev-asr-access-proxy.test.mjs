@@ -67,4 +67,38 @@ describe("compare-dev ASR Access proxy", () => {
     assert.equal(calls[0]?.headers["CF-Access-Client-Id"], "id.access");
     assert.equal(calls[1]?.headers["CF-Access-Client-Secret"], "secret");
   });
+
+  it("strips upstream content-encoding so next.dev can parse Nova-3 JSON", async () => {
+    const fetchImpl = async (url, init) => {
+      if (String(url).endsWith("/v1/azookey")) {
+        return Response.json({ ok: true });
+      }
+      return new Response(JSON.stringify({ text: "こんにちは", transport: "http" }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "content-encoding": "zstd",
+          "content-length": "999",
+        },
+      });
+    };
+    const posted = await handleCompareDevAsrAccessProxyRequest(
+      new Request(`http://127.0.0.1:8790${COMPARE_ASR_PATH}`, {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=test" },
+        body: "wav-bytes",
+      }),
+      {
+        env: { CF_ACCESS_CLIENT_ID: "id.access", CF_ACCESS_CLIENT_SECRET: "secret" },
+        dotenv: {},
+        fetchImpl,
+        compareOrigin: COMPARE_ORIGIN,
+      },
+    );
+    assert.equal(posted.status, 200);
+    assert.equal(posted.headers.get("content-encoding"), null);
+    assert.match(posted.headers.get("content-type") ?? "", /application\/json/);
+    assert.deepEqual(await posted.json(), { text: "こんにちは", transport: "http" });
+  });
 });
+
