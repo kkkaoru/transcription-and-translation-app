@@ -79,11 +79,12 @@ export const AZOOKEY_MIN_TIMEOUT_MS = 25;
 export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
 /**
  * Wall-time reserved for portable WASM when a configured Zenzai upstream hangs.
- * Official dictionary conversion often needs hundreds of ms; without a reserve,
- * a dead MODEL_ROUTES host (e.g. local xsmall on :8081) would burn the whole
- * deadline and still surface conversion_timeout instead of a dictionary result.
+ * Official dictionary conversion often needs 300–1100 ms; leave enough headroom
+ * so a dead MODEL_ROUTES host (e.g. local xsmall on :8081) can still finish.
  */
-export const AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS = 1_000;
+export const AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS = 1_500;
+/** Hard cap on one Zenzai `/completion` attempt so hung sockets cannot starve WASM. */
+export const AZOOKEY_ZENZ_UPSTREAM_MAX_MS = 400;
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
 export const AZOOKEY_WASM_ABI_VERSION = 2;
@@ -1166,10 +1167,11 @@ export const convertAzookeyMessage = async (
           );
         }
         const available = remainingMs();
-        const zenzBudget =
+        const reservedBudget =
           available > AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS
             ? available - AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS
             : Math.max(AZOOKEY_MIN_TIMEOUT_MS, Math.floor(available / 2));
+        const zenzBudget = Math.min(reservedBudget, AZOOKEY_ZENZ_UPSTREAM_MAX_MS);
         const candidate = await withTimeout(
           (signal) => convertWithZenzModel(message.model, conversionInput, runtime, signal),
           zenzBudget,
