@@ -1,5 +1,7 @@
 use crate::{
-    config::AppConfig,
+    config::{
+        AppConfig, STREAMING_INTERIM_ASR_MODEL_ID, STREAMING_INTERIM_ASR_MODEL_OFF,
+    },
     model_runtime::{self, ModelRuntimeSpec},
 };
 use std::{
@@ -337,7 +339,7 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     monitor_sidecar(parapper_events, app.clone(), "kotoba_parapper", parapper_pid);
     log::info!(
         target: "kotoba_parapper",
-        "started headless recognition service with runtime data {} (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={} turn_detector={} interim_result_enabled={} rerecognize_full_on_complete={} noise_cancellation_enabled={})",
+        "started headless recognition service with runtime data {} (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={} turn_detector={} interim_result_enabled={} rerecognize_full_on_complete={} noise_cancellation_enabled={} streaming_interim_asr_enabled={} interim_asr_model={})",
         runtime_dir.display(),
         config.audio.vad_interval_ms,
         config.audio.vad_threshold,
@@ -347,6 +349,8 @@ pub fn start(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
         PARAPPER_INTERIM_RESULT_ENABLED,
         PARAPPER_RERECOGNIZE_FULL_ON_COMPLETE,
         config.audio.noise_suppression,
+        config.audio.streaming_interim_asr_enabled,
+        streaming_interim_asr_cli_value(config.audio.streaming_interim_asr_enabled),
     );
 
     let gateway_command =
@@ -382,6 +386,14 @@ fn parapper_headless_args(config: &AppConfig) -> Vec<String> {
     parapper_headless_args_with_noise_cancellation(config, config.audio.noise_suppression)
 }
 
+fn streaming_interim_asr_cli_value(enabled: bool) -> &'static str {
+    if enabled {
+        STREAMING_INTERIM_ASR_MODEL_ID
+    } else {
+        STREAMING_INTERIM_ASR_MODEL_OFF
+    }
+}
+
 fn parapper_headless_args_with_noise_cancellation(
     config: &AppConfig,
     noise_cancellation_enabled: bool,
@@ -400,6 +412,8 @@ fn parapper_headless_args_with_noise_cancellation(
         PARAPPER_TURN_CHECK_SILENCE_MS.to_string(),
         "--noise-cancellation-enabled".to_string(),
         noise_cancellation_enabled.to_string(),
+        "--interim-asr-model".to_string(),
+        streaming_interim_asr_cli_value(config.audio.streaming_interim_asr_enabled).to_string(),
     ]
 }
 
@@ -574,6 +588,16 @@ fn add_parapper_vad_diagnostics(value: &mut serde_json::Value, config: &AppConfi
         object.insert(
             "noiseCancellationEnabled".to_string(),
             serde_json::json!(config.audio.noise_suppression),
+        );
+        object.insert(
+            "streamingInterimAsrEnabled".to_string(),
+            serde_json::json!(config.audio.streaming_interim_asr_enabled),
+        );
+        object.insert(
+            "interimAsrModel".to_string(),
+            serde_json::json!(streaming_interim_asr_cli_value(
+                config.audio.streaming_interim_asr_enabled
+            )),
         );
     }
 }
@@ -1038,8 +1062,22 @@ mod tests {
                 "960",
                 "--noise-cancellation-enabled",
                 "true",
+                "--interim-asr-model",
+                "nemotron_3_5_asr_streaming_0_6b_160ms_int8",
             ],
         );
+    }
+
+    #[test]
+    fn embedded_parapper_can_disable_streaming_interim_asr() {
+        let mut config = AppConfig::default();
+        config.audio.streaming_interim_asr_enabled = false;
+        let args = parapper_headless_args(&config);
+
+        assert!(args.ends_with(&[
+            "--interim-asr-model".to_string(),
+            "none".to_string(),
+        ]));
     }
 
     #[test]
@@ -1047,7 +1085,13 @@ mod tests {
         let config = AppConfig::default();
         let args = parapper_headless_args_with_noise_cancellation(&config, false);
 
-        assert!(args.ends_with(&["--noise-cancellation-enabled".to_string(), "false".to_string(),]));
+        assert!(args.windows(2).any(|window| {
+            window == ["--noise-cancellation-enabled".to_string(), "false".to_string()]
+        }));
+        assert!(args.ends_with(&[
+            "--interim-asr-model".to_string(),
+            "nemotron_3_5_asr_streaming_0_6b_160ms_int8".to_string(),
+        ]));
     }
 
     #[test]
@@ -1067,6 +1111,11 @@ mod tests {
         assert_eq!(health["interimResultEnabled"], true);
         assert_eq!(health["rerecognizeFullOnComplete"], true);
         assert_eq!(health["noiseCancellationEnabled"], true);
+        assert_eq!(health["streamingInterimAsrEnabled"], true);
+        assert_eq!(
+            health["interimAsrModel"],
+            "nemotron_3_5_asr_streaming_0_6b_160ms_int8"
+        );
     }
 
     #[test]
