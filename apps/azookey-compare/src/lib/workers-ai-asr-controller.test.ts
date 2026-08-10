@@ -3,6 +3,12 @@ import { blobToPcm16Mono } from "./pcm-wav";
 import { transcribeWorkersAiAsr } from "./workers-ai-asr-client";
 import { WorkersAiAsrController } from "./workers-ai-asr-controller";
 import { SILERO_FALLBACK_NOTICE_JA } from "./workers-ai-asr-silero-paths";
+import {
+  PCM_TAP_DEAD_WATCHDOG_MS,
+  PCM_TAP_SILENCE_WATCHDOG_MS,
+  WORKERS_AI_ASR_TAP_DEAD_JA,
+  WORKERS_AI_ASR_TAP_SILENCE_JA,
+} from "./workers-ai-asr-tap";
 import { type VadEngine, type VadResult, WORKERS_AI_ASR_VAD_DEFAULTS } from "./workers-ai-asr-vad";
 
 vi.mock("./workers-ai-asr-client", () => ({
@@ -520,6 +526,7 @@ describe("WorkersAiAsrController VAD session", () => {
 
   it("falls back to energy VAD when Silero process throws and stays listening", async () => {
     installBrowser();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const engine: VadEngine = {
       process: vi.fn(() => Promise.reject(new Error("ORT tensor"))),
       dispose: vi.fn(),
@@ -528,23 +535,106 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(controller.vadBackend).toBe("silero");
     await controller.ingestSamples(Float32Array.from({ length: 512 }, () => 0.4));
     expect(events.onVadNotice).toHaveBeenCalledWith(SILERO_FALLBACK_NOTICE_JA);
+    expect(warned).toHaveBeenCalled();
+    expect(JSON.stringify(warned.mock.calls)).toMatch(/ORT tensor/);
     expect(controller.vadBackend).toBe("energy");
     expect(controller.currentState).toBe("listening");
     expect(events.onError).not.toHaveBeenCalled();
     expect(engine.dispose).toHaveBeenCalled();
+    warned.mockRestore();
     controller.dispose();
   });
 
-  it("does not connect the PCM tap to audioContext.destination", async () => {
+  it("keeps ScriptProcessor alive via mute gain → AudioContext.destination", async () => {
     installBrowser();
     const { controller, events } = await startController();
     const context = FakeAudioContext.instances[0];
     const tap = context?.createdProcessors[0];
+    const gain = context?.createdGains[0];
     expect(tap).toBeDefined();
+    expect(gain?.gain.value).toBe(0);
     expect(context?.createdDestinations).toHaveLength(0);
-    expect(tap?.connections).toContain(context?.createdGains[0]);
+    expect(tap?.connections).toContain(gain);
     expect(tap?.connections).not.toContain(context?.destination);
-    expect(context?.createdGains).toHaveLength(1);
+    expect(gain?.connections).toContain(context?.destination);
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("listening");
+    controller.dispose();
+  });
+
+  it("legacy tap→mute gain without destination never reaches AudioContext.destination", () => {
+    const audioContext = new FakeAudioContext();
+    const source = audioContext.createMediaStreamSource({} as MediaStream);
+    const tap = audioContext.createScriptProcessor(4096, 1, 1);
+    source.connect(tap);
+    const gain = audioContext.createGain();
+    gain.gain.value = 0;
+    tap.connect(gain);
+    expect(gain.connections).not.toContain(audioContext.destination);
+    expect(tap.connections).not.toContain(audioContext.destination);
+  });
+
+  it("setErrors and console.errors when PCM tap delivers zero frames", async () => {
+    installBrowser();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { controller, events } = await startController();
+    expect(controller.currentState).toBe("listening");
+    await vi.advanceTimersByTimeAsync(PCM_TAP_DEAD_WATCHDOG_MS);
+    expect(logged).toHaveBeenCalled();
+    expect(JSON.stringify(logged.mock.calls)).toMatch(/tapFrames/);
+    expect(JSON.stringify(logged.mock.calls)).toMatch(/peakRmsDb/);
+    expect(events.onError).toHaveBeenCalledWith(WORKERS_AI_ASR_TAP_DEAD_JA);
+    expect(controller.currentState).toBe("error");
+    logged.mockRestore();
+    controller.dispose();
+  });
+
+  it("notices silence when tap frames arrive without speech energy", async () => {
+    installBrowser();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const engine = mockSileroEngine(false);
+    const { controller, events } = await startController(engine);
+    const tap = FakeAudioContext.instances[0]?.createdProcessors[0];
+    const silence = new Float32Array(4096);
+    tap?.onaudioprocess?.({ inputBuffer: { getChannelData: () => silence } });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(PCM_TAP_SILENCE_WATCHDOG_MS);
+    expect(warned).toHaveBeenCalled();
+    expect(JSON.stringify(warned.mock.calls)).toMatch(/tapFrames/);
+    expect(events.onVadNotice).toHaveBeenCalledWith(WORKERS_AI_ASR_TAP_SILENCE_JA);
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("listening");
+    expect(transcribeWorkersAiAsr).not.toHaveBeenCalled();
+    warned.mockRestore();
+    controller.dispose();
+  });
+
+  it("POSTs transcription when onaudioprocess delivers speech then silence", async () => {
+    installBrowser();
+    const engine: VadEngine = {
+      process: vi.fn((samples: Float32Array) => {
+        const peak = Math.max(...Array.from(samples, (sample) => Math.abs(sample)));
+        return Promise.resolve({
+          probability: peak > 0.1 ? 0.92 : 0.02,
+          isSpeech: peak > 0.1,
+        });
+      }),
+      dispose: vi.fn(),
+    };
+    const { controller, events } = await startController(engine);
+    const tap = FakeAudioContext.instances[0]?.createdProcessors[0];
+    expect(FakeAudioContext.instances[0]?.createdGains[0]?.connections).toContain(
+      FakeAudioContext.instances[0]?.destination,
+    );
+    const speech = Float32Array.from({ length: 4096 }, () => 0.4);
+    const silence = new Float32Array(4096);
+    for (let index = 0; index < 4; index += 1) {
+      await tap?.onaudioprocess?.({ inputBuffer: { getChannelData: () => speech } });
+    }
+    for (let index = 0; index < 12; index += 1) {
+      await tap?.onaudioprocess?.({ inputBuffer: { getChannelData: () => silence } });
+    }
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
     expect(events.onError).not.toHaveBeenCalled();
     expect(controller.currentState).toBe("listening");
     controller.dispose();
@@ -663,6 +753,7 @@ describe("WorkersAiAsrController VAD session", () => {
 
   it("notifies Japanese fallback when Silero WASM fails to load", async () => {
     installBrowser();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const events = callbacks();
     const controller = new WorkersAiAsrController("ja-JP", {
       language: "ja-JP",
@@ -675,8 +766,11 @@ describe("WorkersAiAsrController VAD session", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(events.onVadNotice).toHaveBeenCalledWith(SILERO_FALLBACK_NOTICE_JA);
+    expect(warned).toHaveBeenCalled();
+    expect(JSON.stringify(warned.mock.calls)).toMatch(/ort missing/);
     expect(controller.vadBackend).toBe("energy");
     expect(events.onError).not.toHaveBeenCalled();
+    warned.mockRestore();
     controller.dispose();
   });
 });

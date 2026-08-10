@@ -452,8 +452,12 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     expect(result.controller?.currentState).toBe("listening");
     expect(ThrowingDestinationAudioContext.instances[0]?.destinationCreateCalls ?? 0).toBe(0);
     const tap = ThrowingDestinationAudioContext.instances[0]?.createdProcessors[0];
+    const gain = ThrowingDestinationAudioContext.instances[0]?.createdGains[0];
     const destination = ThrowingDestinationAudioContext.instances[0]?.destination;
+    expect(tap?.connections ?? []).toContain(gain);
     expect(tap?.connections ?? []).not.toContain(destination);
+    expect(gain?.connections ?? []).toContain(destination);
+    expect(gain?.gain.value).toBe(0);
     result.controller?.dispose();
   });
 
