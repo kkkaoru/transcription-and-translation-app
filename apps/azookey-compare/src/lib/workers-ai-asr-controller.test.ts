@@ -574,6 +574,45 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(tap.connections).not.toContain(audioContext.destination);
   });
 
+  it("throws after setError when PCM tap delivers zero frames", async () => {
+    installBrowser();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { controller, events } = await startController();
+    expect(controller.currentState).toBe("listening");
+    expect(() => {
+      vi.advanceTimersByTime(PCM_TAP_DEAD_WATCHDOG_MS);
+    }).toThrow(WORKERS_AI_ASR_TAP_DEAD_JA);
+    expect(logged).toHaveBeenCalled();
+    expect(JSON.stringify(logged.mock.calls)).toMatch(/tapFrames/);
+    expect(events.onError).toHaveBeenCalledWith(WORKERS_AI_ASR_TAP_DEAD_JA);
+    expect(controller.currentState).toBe("error");
+    logged.mockRestore();
+    controller.dispose();
+  });
+
+  it("start() rejects after getUserMedia failure so callers see the throw", async () => {
+    installBrowser();
+    const denied = new Error("Permission denied");
+    denied.name = "NotAllowedError";
+    (
+      navigator as Navigator & { mediaDevices: { getUserMedia: ReturnType<typeof vi.fn> } }
+    ).mediaDevices.getUserMedia = vi.fn(() => Promise.reject(denied));
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      disableSilero: true,
+      ...events,
+    });
+    await expect(controller.start()).rejects.toThrow(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    expect(controller.currentState).toBe("error");
+    expect(events.onError).toHaveBeenCalledWith(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    controller.dispose();
+  });
+
   it("setErrors and console.errors when PCM tap delivers zero frames", async () => {
     installBrowser();
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);

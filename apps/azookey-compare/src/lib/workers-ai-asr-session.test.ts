@@ -508,6 +508,63 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     startResult?.controller?.dispose();
   });
 
+  it("throws after onError when the start gate fails", async () => {
+    const created = fakeController({ supported: false });
+    const onError = vi.fn();
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        existing: null,
+        createController: () => created,
+        onError,
+      }),
+    ).rejects.toThrow(WORKERS_AI_ASR_UNSUPPORTED_JA);
+    expect(created.start).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_UNSUPPORTED_JA);
+  });
+
+  it("throws after onError when the loopback ASR probe fails", async () => {
+    installCapture();
+    const start = vi.fn(async () => undefined);
+    const onError = vi.fn();
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
+        existing: null,
+        createController: () => fakeController({ start, currentState: "idle" }),
+        fetchImpl: vi.fn(async () => {
+          throw "proxy down";
+        }),
+        onError,
+      }),
+    ).rejects.toThrow(/接続できません/);
+    expect(start, "mic must not open after probe throw").not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it("throws after onError when start() fails instead of returning ok:false only", async () => {
+    const denied = new Error("Permission denied");
+    denied.name = "NotAllowedError";
+    const created = fakeController({
+      start: vi.fn(() => Promise.reject(denied)),
+    });
+    const onError = vi.fn();
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        existing: null,
+        createController: () => created,
+        captureSupported: true,
+        onError,
+      }),
+    ).rejects.toThrow("マイク許可が必要です。ブラウザの設定でマイクを許可してください");
+    expect(onError).toHaveBeenCalledWith(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
+    expect(String(onError.mock.calls[0]?.[0])).not.toMatch(/NotAllowedError|Permission denied/i);
+  });
+
   it("reports gate failure without calling start", async () => {
     const created = fakeController({ supported: false });
     const onError = vi.fn();

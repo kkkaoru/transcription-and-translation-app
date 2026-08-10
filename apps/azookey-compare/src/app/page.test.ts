@@ -98,6 +98,22 @@ describe("compare page speech settings", () => {
     expect(css).toContain(".mode-selector > label");
   });
 
+  it("labels the speech pill as only 待機中 / 認識中 / エラー", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    const labelFn = source.slice(
+      source.indexOf("const speechStateLabel"),
+      source.indexOf("const workerStateLabel"),
+    );
+    expect(labelFn).toContain('case "starting"');
+    expect(labelFn).toContain('case "listening"');
+    expect(labelFn).toContain('case "error"');
+    expect(labelFn).toContain('return "待機中"');
+    expect(labelFn).toContain('return "認識中"');
+    expect(labelFn).toContain('return "エラー"');
+    expect(labelFn).not.toContain('return "起動中"');
+    expect(labelFn).not.toContain('return "停止中"');
+  });
+
   it("labels the live recognition heading for Workers AI ASR", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
     expect(source).toContain('config.recognitionProvider === "workers-ai-asr"');

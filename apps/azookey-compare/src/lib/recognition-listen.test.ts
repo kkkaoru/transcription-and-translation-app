@@ -84,6 +84,34 @@ describe("beginRecognitionListening", () => {
     expect(onWarmupNotice).not.toHaveBeenCalled();
   });
 
+  it("does not swallow Workers AI ASR start rejections", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const scheduled: Array<() => void> = [];
+    const micro = vi.spyOn(globalThis, "queueMicrotask").mockImplementation((callback) => {
+      scheduled.push(callback);
+    });
+
+    beginRecognitionListening({
+      provider: "workers-ai-asr",
+      start: () => Promise.reject(new Error("マイクを開始できません")),
+      warmBrowserVibrato: async () => undefined,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(logged, "start failure must console.error").toHaveBeenCalled();
+    expect(JSON.stringify(logged.mock.calls)).toMatch(/マイクを開始できません/);
+    expect(scheduled.length, "start failure must queue a pageerror throw").toBeGreaterThan(0);
+    expect(() => {
+      for (const callback of scheduled) {
+        callback();
+      }
+    }).toThrow(/マイクを開始できません/);
+
+    logged.mockRestore();
+    micro.mockRestore();
+  });
+
   it("starts Web Speech after warmup notice when Vibrato is optional", async () => {
     const start = vi.fn();
     const onWarmupNotice = vi.fn();
