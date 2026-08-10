@@ -1,4 +1,5 @@
 import type { ComparisonAuth } from "./contract";
+import { beginRecognitionListening } from "./recognition-listen";
 import {
   WorkersAiAsrController,
   type WorkersAiAsrControllerOptions,
@@ -109,47 +110,65 @@ export type StartCloudflareWorkersAiAsrAfterSelectResult =
 
 /**
  * Same path as the compare page “認識を開始” button after selecting
- * Cloudflare Workers AI ASR: ensure controller → gate → start().
- * Must succeed without waiting for a useEffect tick.
+ * Cloudflare Workers AI ASR: ensure → gate → start(), without waiting a
+ * useEffect tick. Vibrato warmup runs in parallel and never blocks start.
  */
-export const startCloudflareWorkersAiAsrAfterSelect = async (
+export const startCloudflareWorkersAiAsrAfterSelect = (
   params: StartCloudflareWorkersAiAsrAfterSelectParams,
 ): Promise<StartCloudflareWorkersAiAsrAfterSelectResult> => {
-  const controller = ensureWorkersAiAsrController({
-    language: params.language,
-    endpointUrl: params.endpointUrl,
-    auth: params.auth,
-    existing: params.existing,
-    callbacks: params.callbacks,
-    createController: params.createController,
+  const runStart = async (): Promise<StartCloudflareWorkersAiAsrAfterSelectResult> => {
+    const controller = ensureWorkersAiAsrController({
+      language: params.language,
+      endpointUrl: params.endpointUrl,
+      auth: params.auth,
+      existing: params.existing,
+      callbacks: params.callbacks,
+      createController: params.createController,
+    });
+    const gate = gateWorkersAiAsrStart({
+      controller,
+      captureSupported: params.captureSupported,
+    });
+    if (!gate.ok) {
+      params.onError?.(gate.message);
+      return { ...gate, controller };
+    }
+    try {
+      await gate.controller.start();
+    } catch (error) {
+      const message = getUserMediaErrorMessageJa(error);
+      params.onError?.(message);
+      return { ok: false, reason: "start-failed", message, controller: gate.controller };
+    }
+    if (gate.controller.currentState === "error") {
+      return {
+        ok: false,
+        reason: "start-failed",
+        message: WORKERS_AI_ASR_PREPARING_JA,
+        controller: gate.controller,
+      };
+    }
+    if (
+      gate.controller.currentState !== "listening" &&
+      gate.controller.currentState !== "starting"
+    ) {
+      const message = WORKERS_AI_ASR_PREPARING_JA;
+      params.onError?.(message);
+      return { ok: false, reason: "start-failed", message, controller: gate.controller };
+    }
+    return { ok: true, controller: gate.controller };
+  };
+
+  return new Promise((resolve) => {
+    beginRecognitionListening({
+      provider: "workers-ai-asr",
+      start: () => {
+        void runStart().then(resolve);
+      },
+      warmBrowserVibrato: params.warmBrowserVibrato ?? (() => Promise.resolve()),
+      onWarmupNotice: params.onWarmupNotice,
+      onWarmupError: params.onError,
+      requireVibratoWarmup: params.requireVibratoWarmup,
+    });
   });
-  const gate = gateWorkersAiAsrStart({
-    controller,
-    captureSupported: params.captureSupported,
-  });
-  if (!gate.ok) {
-    params.onError?.(gate.message);
-    return { ...gate, controller };
-  }
-  try {
-    await gate.controller.start();
-  } catch (error) {
-    const message = getUserMediaErrorMessageJa(error);
-    params.onError?.(message);
-    return { ok: false, reason: "start-failed", message, controller: gate.controller };
-  }
-  if (gate.controller.currentState === "error") {
-    return {
-      ok: false,
-      reason: "start-failed",
-      message: WORKERS_AI_ASR_PREPARING_JA,
-      controller: gate.controller,
-    };
-  }
-  if (gate.controller.currentState !== "listening" && gate.controller.currentState !== "starting") {
-    const message = WORKERS_AI_ASR_PREPARING_JA;
-    params.onError?.(message);
-    return { ok: false, reason: "start-failed", message, controller: gate.controller };
-  }
-  return { ok: true, controller: gate.controller };
 };
