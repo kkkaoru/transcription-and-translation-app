@@ -731,6 +731,82 @@ select:focus-visible {
   }
 }
 
+.utterance-cost-card {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid #d5e8e3;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(229, 242, 239, 0.45), rgba(255, 255, 255, 0.98));
+}
+
+.utterance-cost-heading {
+  margin: 0;
+  color: var(--teal-deep);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.utterance-cost-total {
+  margin: 6px 0 0;
+  color: #1f4f47;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+.utterance-cost-breakdown {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.utterance-cost-row {
+  display: grid;
+  gap: 4px;
+}
+
+.utterance-cost-row dt {
+  margin: 0;
+  color: #4e585a;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.utterance-cost-row dd {
+  margin: 0;
+}
+
+.utterance-cost-row-amount {
+  display: block;
+  color: #2f6760;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.utterance-cost-row-detail {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.utterance-cost-row-empty {
+  font-style: italic;
+}
+
+.utterance-cost-line-items {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .path-diagram {
   margin: 10px 0 0;
 }
@@ -933,6 +1009,10 @@ select:focus-visible {
 
   .config-panel-disclosure .config-panel {
     padding-top: 0;
+  }
+
+  .utterance-cost-total {
+    font-size: 20px;
   }
 
   .comparison-row {

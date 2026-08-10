@@ -43,8 +43,11 @@ import {
   traceStepLocationLabel,
 } from "../lib/conversion-trace";
 import {
+  CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL,
   estimateCloudflareConversionCost,
+  formatCloudflareCostUsd,
   usesExternalGgufUpstream,
+  type CloudflareConversionCostEstimate,
 } from "../lib/cloudflare-conversion-cost";
 import {
   converterModelOptions,
@@ -94,6 +97,9 @@ interface ComparisonRow {
   resolvedModel?: string;
   modelFallback?: string;
   failedBeforeInference?: boolean;
+  /** Workers AI ASR estimate when an ASR path ran (filled by ASR lane). */
+  asrCostUsd?: number;
+  asrCostSummaryJa?: string;
   createdAt: number;
 }
 
@@ -135,6 +141,36 @@ const workerStateLabel = (state: WorkerConnectionState): string => {
       return "未接続";
   }
 };
+
+const conversionCostBreakdownLabelJa = (label: string): string => {
+  switch (label) {
+    case "compare WebSocket Upgrade":
+      return "Cloudflare Worker WebSocket Upgrade";
+    case "inference 変換（service binding）":
+      return "Cloudflare Worker 推論変換";
+    case "compare Upgrade CPU（ログ cpuTime 中央値）":
+      return "Cloudflare Worker Upgrade CPU（ログ cpuTime 中央値）";
+    case "compare CPU（ログ校正）":
+      return "Cloudflare Worker CPU（ログ校正）";
+    case "inference CPU（ログ cpuTime）":
+      return "Cloudflare Worker 推論 CPU（ログ cpuTime）";
+    case "inference CPU（ログ校正）":
+      return "Cloudflare Worker 推論 CPU（ログ校正）";
+    default:
+      return label;
+  }
+};
+
+const utteranceCostTotalUsd = (
+  conversion: CloudflareConversionCostEstimate,
+  asrCostUsd?: number,
+): number => {
+  const asr = asrCostUsd !== undefined && Number.isFinite(asrCostUsd) ? asrCostUsd : 0;
+  return conversion.usd + asr;
+};
+
+const formatQuantityForCost = (value: number): string =>
+  Number.isInteger(value) ? String(value) : value.toFixed(2);
 
 const rowStateLabel = (state: ComparisonRowState): string => {
   switch (state) {
@@ -1363,13 +1399,74 @@ export default function ComparePage() {
                               modelFallback: row.modelFallback,
                             }),
                           });
+                          const asrCostUsd = row.asrCostUsd;
+                          const hasAsrCost =
+                            asrCostUsd !== undefined &&
+                            Number.isFinite(asrCostUsd) &&
+                            asrCostUsd > 0;
+                          const totalUsd = utteranceCostTotalUsd(cost, asrCostUsd);
                           return (
-                            <span
-                              className="row-meta row-conversion-cost"
-                              data-testid="utterance-conversion-cost"
-                            >
-                              {cost.summaryJa}
-                            </span>
+                            <div className="utterance-cost-card" data-testid="utterance-cost-card">
+                              <h4 className="utterance-cost-heading">料金（推定）</h4>
+                              <p className="utterance-cost-total" data-testid="utterance-cost-total">
+                                {formatCloudflareCostUsd(totalUsd)}
+                              </p>
+                              <dl className="utterance-cost-breakdown">
+                                <div
+                                  className="utterance-cost-row"
+                                  data-testid="utterance-conversion-cost"
+                                >
+                                  <dt>Cloudflare Worker（変換）</dt>
+                                  <dd>
+                                    <span className="utterance-cost-row-amount">
+                                      {cost.browserComplete
+                                        ? CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL
+                                        : formatCloudflareCostUsd(cost.usd)}
+                                    </span>
+                                    {!cost.browserComplete ? (
+                                      <span className="utterance-cost-row-detail">
+                                        リクエスト {cost.requests} · billed CPU {cost.billedCpuMs}{" "}
+                                        ms
+                                      </span>
+                                    ) : null}
+                                    {cost.breakdown.length > 0 ? (
+                                      <ul className="utterance-cost-line-items">
+                                        {cost.breakdown.map((line) => (
+                                          <li key={`${row.id}-${line.label}`}>
+                                            {conversionCostBreakdownLabelJa(line.label)} ·{" "}
+                                            {formatQuantityForCost(line.quantity)} {line.unitLabel}{" "}
+                                            · {formatCloudflareCostUsd(line.usd)}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    ) : null}
+                                  </dd>
+                                </div>
+                                <div
+                                  className="utterance-cost-row"
+                                  data-testid="utterance-asr-cost"
+                                  hidden={!hasAsrCost && !row.asrCostSummaryJa}
+                                >
+                                  <dt>Workers AI（ASR）</dt>
+                                  <dd>
+                                    {hasAsrCost ? (
+                                      <span className="utterance-cost-row-amount">
+                                        {formatCloudflareCostUsd(asrCostUsd)}
+                                      </span>
+                                    ) : null}
+                                    {row.asrCostSummaryJa ? (
+                                      <span className="utterance-cost-row-detail">
+                                        {row.asrCostSummaryJa}
+                                      </span>
+                                    ) : hasAsrCost ? null : (
+                                      <span className="utterance-cost-row-detail utterance-cost-row-empty">
+                                        未計測
+                                      </span>
+                                    )}
+                                  </dd>
+                                </div>
+                              </dl>
+                            </div>
                           );
                         })()}
                         {row.trace?.workerRequest ? (
