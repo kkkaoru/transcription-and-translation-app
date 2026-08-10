@@ -207,6 +207,15 @@ describe("SileroWasmVadEngine with injectable session", () => {
 });
 
 describe.skipIf(!modelPath)("real Silero v6 ONNX", () => {
+  it("loads the WASM EP with extern wasmPaths, not the jsep bundle", () => {
+    const source = readFileSync(new URL("./workers-ai-asr-silero.ts", import.meta.url), "utf8");
+    expect(source).toContain('import("onnxruntime-web/wasm")');
+    expect(source).not.toMatch(/import\("onnxruntime-web"\)/);
+    const nextConfig = readFileSync(new URL("../../next.config.mjs", import.meta.url), "utf8");
+    expect(nextConfig).toContain("onnxruntime-web-use-extern-wasm");
+    expect(nextConfig).not.toContain("transpilePackages");
+  });
+
   it("scores speech-like noise higher than near-silence", async () => {
     expect(modelPath.length).toBeGreaterThan(0);
     expect(SILERO_VAD_PUBLIC_MODEL_PATH).toContain("silero_vad_v6");

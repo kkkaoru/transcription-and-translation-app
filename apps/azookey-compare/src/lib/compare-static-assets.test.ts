@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMPARE_WORKER_MAX_ASSET_BYTES,
   compareStaticAssetContentType,
+  isOversizedCompareOrtAsset,
   withCompareStaticAssetHeaders,
 } from "./compare-static-assets";
 
 describe("compare static asset MIME helpers", () => {
+  it("flags jsep/jspi/asyncify and oversize wasm for Workers asset cap", () => {
+    expect(isOversizedCompareOrtAsset("ort-wasm-simd-threaded.jsep.wasm", 1_024)).toBe(true);
+    expect(isOversizedCompareOrtAsset("ort-wasm-simd-threaded.jspi.mjs", 1_024)).toBe(true);
+    expect(isOversizedCompareOrtAsset("ort-wasm-simd-threaded.asyncify.wasm", 1_024)).toBe(true);
+    expect(
+      isOversizedCompareOrtAsset("ort-wasm-simd-threaded.wasm", COMPARE_WORKER_MAX_ASSET_BYTES),
+    ).toBe(true);
+    expect(isOversizedCompareOrtAsset("ort-wasm-simd-threaded.wasm", 13 * 1024 * 1024)).toBe(false);
+    expect(isOversizedCompareOrtAsset("ort-wasm-simd-threaded.mjs", 24_000)).toBe(false);
+  });
+
   it("maps wasm / onnx / mjs used by Silero ORT", () => {
     expect(compareStaticAssetContentType("/ort/ort-wasm-simd-threaded.wasm")).toBe(
       "application/wasm",

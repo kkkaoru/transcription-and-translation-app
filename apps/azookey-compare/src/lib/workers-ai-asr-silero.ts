@@ -135,7 +135,7 @@ export const probabilityFromOrtOutput = (
 };
 
 const defaultLoadOrt = async (): Promise<SileroOrtRuntime> => {
-  const ort = (await import("onnxruntime-web")) as unknown as SileroOrtRuntime;
+  const ort = (await import("onnxruntime-web/wasm")) as unknown as SileroOrtRuntime;
   return ort;
 };
 
