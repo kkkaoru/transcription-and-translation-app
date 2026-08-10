@@ -5,11 +5,20 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultConfig } from "../core/defaults";
 import { I18nProvider } from "../i18n/I18nProvider";
-import { FontFamilyCombobox } from "./FontFamilyCombobox";
+import { FontFamilyCombobox, mergeFontFamilyOptions } from "./FontFamilyCombobox";
 import { NumberSliderField } from "./NumberSliderField";
 import { TextStyleEditor } from "./TextStyleEditor";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+const listSystemFontsMock = vi.fn(async () => [] as string[]);
+
+vi.mock("../core/bridge", () => ({
+  bridge: {
+    isDesktop: () => false,
+    listSystemFonts: () => listSystemFontsMock(),
+  },
+}));
 
 const setInputValue = (element: HTMLInputElement, value: string): void => {
   const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -26,11 +35,15 @@ describe("style editor controls", () => {
     host = document.createElement("div");
     document.body.append(host);
     root = createRoot(host);
+    listSystemFontsMock.mockReset();
+    listSystemFontsMock.mockResolvedValue([]);
+    Reflect.deleteProperty(globalThis, "queryLocalFonts");
   });
 
   afterEach(() => {
     act(() => root.unmount());
     host.remove();
+    Reflect.deleteProperty(globalThis, "queryLocalFonts");
   });
 
   it("filters font families through the searchable combobox", async () => {
@@ -53,6 +66,47 @@ describe("style editor controls", () => {
       helvetica?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
     expect(onChange).toHaveBeenCalledWith("Helvetica Neue");
+  });
+
+  it("lists every available font family without an 80-item UI cap", async () => {
+    const many = Array.from({ length: 120 }, (_, index) => `Demo Font ${String(index).padStart(3, "0")}`);
+    Object.assign(globalThis, {
+      queryLocalFonts: async () => many.map((family) => ({ family })),
+    });
+    listSystemFontsMock.mockResolvedValueOnce(
+      Array.from({ length: 30 }, (_, index) => `Native Font ${String(index).padStart(2, "0")}`),
+    );
+
+    await act(() => {
+      root.render(<FontFamilyCombobox label="Font" value="Noto Sans JP" onChange={() => undefined} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const input = host.querySelector<HTMLInputElement>('[data-testid="font-family-combobox"]');
+    if (!input) throw new Error("missing combobox");
+    await act(() => {
+      input.focus();
+      setInputValue(input, "Demo Font");
+    });
+
+    const buttons = host.querySelectorAll<HTMLButtonElement>('button[role="option"]');
+    expect(buttons.length).toBeGreaterThanOrEqual(120);
+    expect(host.textContent).toContain("Demo Font 000");
+    expect(host.textContent).toContain("Demo Font 119");
+  });
+
+  it("merges curated and enumerated families without capping", () => {
+    const merged = mergeFontFamilyOptions(
+      Array.from({ length: 100 }, (_, index) => `Extra ${index}`),
+      "Custom Face",
+    );
+    expect(merged.length).toBeGreaterThan(100);
+    expect(merged).toContain("Extra 99");
+    expect(merged).toContain("Custom Face");
+    expect(merged).toContain("Noto Sans JP");
   });
 
   it("exposes a slider alongside each numeric style field", async () => {

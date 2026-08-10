@@ -171,6 +171,24 @@ describe("browser updater bridge", () => {
     await expect(bridge.installUpdate()).rejects.toThrow(/desktop app/i);
     await expect(bridge.relaunchToUpdatedApp()).rejects.toThrow(/desktop app/i);
   });
+
+  it("returns an empty system font list outside Tauri", async () => {
+    expect(await bridge.listSystemFonts()).toEqual([]);
+  });
+
+  it("forwards list_system_fonts invoke results in Tauri", async () => {
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    try {
+      vi.mocked(invoke).mockResolvedValueOnce(["Hiragino Sans", "Arial"]);
+      await expect(bridge.listSystemFonts()).resolves.toEqual(["Hiragino Sans", "Arial"]);
+      expect(invoke).toHaveBeenCalledWith("list_system_fonts");
+
+      vi.mocked(invoke).mockRejectedValueOnce(new Error("denied"));
+      await expect(bridge.listSystemFonts()).resolves.toEqual([]);
+    } finally {
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = undefined;
+    }
+  });
 });
 
 describe("caption replay bridge", () => {

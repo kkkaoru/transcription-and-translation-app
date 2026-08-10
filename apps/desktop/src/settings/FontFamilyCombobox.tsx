@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { bridge } from "../core/bridge";
 
 /** Curated families that render Japanese captions reliably on macOS / Windows. */
 export const CURATED_CAPTION_FONT_FAMILIES = [
@@ -18,7 +19,8 @@ export const CURATED_CAPTION_FONT_FAMILIES = [
 
 type LocalFontLike = { family: string };
 
-const queryLocalFontFamilies = async (): Promise<string[]> => {
+/** Browser Local Font Access — optional supplement / non-Tauri fallback. */
+export const queryLocalFontFamilies = async (): Promise<string[]> => {
   const query = (
     globalThis as unknown as {
       queryLocalFonts?: () => Promise<LocalFontLike[]>;
@@ -33,8 +35,25 @@ const queryLocalFontFamilies = async (): Promise<string[]> => {
       a.localeCompare(b),
     );
   } catch {
+    // Permission denial or API failure — caller keeps curated + native lists.
     return [];
   }
+};
+
+/** Merge curated, native, Local Font Access, and the current value without capping. */
+export const mergeFontFamilyOptions = (
+  systemFonts: readonly string[],
+  currentValue: string,
+): string[] =>
+  [...new Set([...CURATED_CAPTION_FONT_FAMILIES, ...systemFonts, currentValue])].filter(Boolean);
+
+/** Collect OS fonts (Tauri) plus optional Local Font Access; never throws. */
+export const collectAvailableFontFamilies = async (): Promise<string[]> => {
+  const buckets = await Promise.all([
+    bridge.listSystemFonts().catch(() => [] as string[]),
+    queryLocalFontFamilies(),
+  ]);
+  return [...new Set(buckets.flat())].sort((a, b) => a.localeCompare(b));
 };
 
 export const FontFamilyCombobox = ({
@@ -56,7 +75,7 @@ export const FontFamilyCombobox = ({
 
   useEffect(() => {
     let mounted = true;
-    void queryLocalFontFamilies().then((fonts) => {
+    void collectAvailableFontFamilies().then((fonts) => {
       if (mounted) {
         setSystemFonts(fonts);
       }
@@ -67,9 +86,7 @@ export const FontFamilyCombobox = ({
   }, []);
 
   const options = useMemo(() => {
-    const merged = [...new Set([...CURATED_CAPTION_FONT_FAMILIES, ...systemFonts, value])].filter(
-      Boolean,
-    );
+    const merged = mergeFontFamilyOptions(systemFonts, value);
     const needle = query.trim().toLowerCase();
     if (!needle) {
       return merged;
@@ -85,6 +102,7 @@ export const FontFamilyCombobox = ({
         role="combobox"
         aria-expanded={open}
         aria-autocomplete="list"
+        aria-controls="font-family-options-list"
         data-testid="font-family-combobox"
         value={query}
         placeholder={label}
@@ -109,8 +127,13 @@ export const FontFamilyCombobox = ({
         }}
       />
       {open && options.length > 0 ? (
-        <ul className="font-family-options" data-testid="font-family-options">
-          {options.slice(0, 80).map((family) => (
+        <ul
+          id="font-family-options-list"
+          className="font-family-options"
+          data-testid="font-family-options"
+          role="listbox"
+        >
+          {options.map((family) => (
             <li key={family}>
               <button
                 type="button"

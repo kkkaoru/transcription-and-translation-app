@@ -537,6 +537,22 @@ export const bridge = {
     }
   },
 
+  /**
+   * Installed font family names from the OS (Tauri). Empty outside desktop or
+   * when enumeration fails — callers merge with curated / Local Font Access.
+   */
+  async listSystemFonts(): Promise<string[]> {
+    if (!isTauriRuntime()) {
+      return [];
+    }
+    try {
+      const fonts = await invoke<string[]>("list_system_fonts");
+      return Array.isArray(fonts) ? fonts.filter((name) => typeof name === "string" && name) : [];
+    } catch {
+      return [];
+    }
+  },
+
   /** @deprecated Use openTransparentCapture — opens the Window Capture plate only. */
   async openOverlay(): Promise<void> {
     await this.openTransparentCapture();

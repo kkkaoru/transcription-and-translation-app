@@ -1406,6 +1406,16 @@ pub fn open_overlay(app: AppHandle, state: State<'_, AppState>) -> Result<(), St
     open_transparent_capture(app, state)
 }
 
+/// List installed font family names for the caption style picker.
+///
+/// Uses the OS font inventory (Core Text on macOS, GDI on Windows). Returns an
+/// empty vector on failure so the frontend can fall back to curated families
+/// and optional Local Font Access without crashing.
+#[tauri::command]
+pub fn list_system_fonts() -> Vec<String> {
+    crate::system_fonts::list_system_font_families()
+}
+
 /// Open the dedicated caption style editor (decorated opaque window).
 ///
 /// Separate from transparent-capture / native-renderer: those are OBS / Syphon

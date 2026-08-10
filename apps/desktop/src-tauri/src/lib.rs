@@ -16,6 +16,7 @@ mod output;
 mod pipeline;
 mod sentence_boundary;
 mod state;
+mod system_fonts;
 mod updater;
 mod vibrato_runtime;
 
@@ -106,6 +107,7 @@ pub fn run() {
             commands::open_transparent_capture,
             commands::close_transparent_capture,
             commands::open_style_editor,
+            commands::list_system_fonts,
             commands::open_overlay,
             commands::close_overlay,
             commands::publish_overlay_frame,
