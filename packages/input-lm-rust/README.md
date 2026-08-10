@@ -5,16 +5,31 @@ n-gram language model stored as MARISA tries.
 
 ## Status
 
-**Working against the real model.** The codec, the Kneser-Ney smoothing, a
-MARISA reader, and the GPT-2 byte-level BPE tokenizer are all in place, and the
-crate produces peaked, near-normalised distributions from the published
-`input_n5_lm_v1` tries. The remaining gap is integration into the caption
-pipeline; see [Remaining work](#remaining-work).
+**Working against the real model and wired into the desktop pipeline (opt-in).**
+The codec, the Kneser-Ney smoothing, a MARISA reader, and the GPT-2 byte-level
+BPE tokenizer are all in place, and the crate produces peaked, near-normalised
+distributions from the published `input_n5_lm_v1` tries.
 
-This crate is deliberately standalone. It is **not** wired into the caption
-pipeline and changes no existing behavior. It is **not** a dependency of
-`azookey-rust`, because a MARISA C++ FFI there would break that crate's wasm
-target — any future binding belongs here, behind an off-by-default feature.
+The Tauri app (`apps/desktop`) wires this crate via `caption-bridge-input-lm`
+with the `rsmarisa` feature (`apps/desktop/src-tauri/Cargo.toml`):
+`pipeline::Pipeline::normalize_parapper_output` rescores the Vibrato
+post-processed reading with `input_n5_lm_v1` (stage `rescore`, model
+`input-n5-lm-v1`) before AzooKey conversion when `RescoreConfig.enabled` is
+true (default `false`, `apps/desktop/src-tauri/src/config.rs`). The Settings
+UI exposes the toggle at `#rescore-enabled` (`data-testid="rescore-enabled"` in
+`apps/desktop/src/settings/SettingsView.tsx`), and `ModelManagementCard`
+downloads/extracts the archive as `input-n5-lm-v1` via
+`bridge.downloadInputLmModel()`. Miss, timeout (`timeout_ms` default 200 ms via
+`spawn_blocking` in `run_rescore_with_timeout`), and panic all fail-open to the
+original reading; `azookey_input_text` always keeps the unrescored reading for
+the caption-merge key. Model cache:
+`$HOME/.cache/caption-bridge-input-lm/input_n5_lm_v1/lm` (HF
+`Miwa-Keita/input_n5_lm_v1`), tokenizer fallback under `.../tokenizer`
+(`model_runtime.rs:INPUT_LM_ARCHIVE_SPEC`).
+
+The crate is **not** a dependency of `azookey-rust` — a MARISA reader there
+would break the wasm target; the binding stays here behind the off-by-default
+`rsmarisa` feature.
 
 ## Reference
 
@@ -259,15 +274,24 @@ cargo run --release --features rsmarisa --example rescore_sweep -- <base>
    `predictive_search` allocates a `Vec` per hit. `tmp/plan.md` cites a p90 of
    ~18 ms for the Swift implementation; this port has not been benchmarked.
    Memory-mapping means first access to a cold trie also pays page-fault cost.
-2. **Integration.** The [`rescore`] module implements the ASR-specific
-   rescoring stage described in `tmp/plan.md`: it generates correction
-   candidates using acoustic confusion rules (voiced/unvoiced substitution,
-   similar mora substitution, long vowel insertion/deletion, gemination
-   insertion/deletion), scores them with a pluggable `CandidateScorer`, and
-   re-ranks them. The default `LmScorer` normalizes hiragana to katakana
-   before tokenizing, because the published model was trained on
-   katakana/romaji data and raw hiragana token ids have zero counts in the
-   tries.
+2. **Integration (wired, opt-in).** The [`rescore`] module is the
+   ASR-specific rescoring stage described in `tmp/plan.md`: it generates
+   correction candidates using acoustic confusion rules (voiced/unvoiced
+   substitution, similar mora substitution, long vowel insertion/deletion,
+   gemination insertion/deletion), scores them with a pluggable
+   `CandidateScorer`, and re-ranks them. The default `LmScorer` normalizes
+   hiragana to katakana before tokenizing, because the published model was
+   trained on katakana/romaji data and raw hiragana token ids have zero
+   counts in the tries. Tauri wires it in
+   `apps/desktop/src-tauri/src/pipeline.rs:normalize_parapper_output`
+   (Vibrato reading → `rescore` when `RescoreConfig.enabled`, before AzooKey;
+   `azookey_input_text` always keeps the unrescored reading) with a
+   `spawn_blocking` + `timeout_ms` (default 200 ms) fail-open path and
+   `RescoreHandle` lazy load via `caption-bridge-input-lm` (`rsmarisa`).
+   The shipped library defaults `1.0 / 1.0 / 0.0` are usable but not optimal
+   (see sweep below); desktop already ships the recommended
+   `RescoreConfig { lm_weight: 0.5, confusion_weight: 0.5, overcorrection_margin: 2.0 }`
+   (`config.rs:RescoreConfig::default()`).
 
    **Empirical finding (measured against the real model):** the LM *can*
    discriminate between hiragana ASR candidates when they are normalized to
@@ -285,24 +309,22 @@ cargo run --release --features rsmarisa --example rescore_sweep -- <base>
 
    **Parameter sweep (`examples/rescore_sweep.rs`, against the real model):**
    on a fixed 14-case eval set (5 rule-covered repairs + 9 correct-form
-   holds), the shipped defaults `lm_weight=1.0`, `confusion_weight=1.0`,
+   holds), the library defaults `lm_weight=1.0`, `confusion_weight=1.0`,
    `overcorrection_margin=0.0` score combined 9/14 (repairs 1/5, holds 8/9).
    The single overcorrected hold is the *correct geminated* `きってください`,
    which the default weights rewrite to `きてください` because the LM
    systematically prefers the shorter/bare form. Every combination with
    `overcorrection_margin >= 2.0` reclaims that hold and scores 10/14 without
-   losing the one real repair (e.g. `lm_weight=0.5 conf_w=0.5 margin=2.0`).
-   No combination fixes more than 1 repair, because the LM's discrimination is
-   direction-biased: it only rewards *removing* length / moving toward the
-   more-frequent form. Measured per-repair LM differences: `おはよございます`
-   → `おはようございます` +5.09 (repairs), `せんせ` → `せんせい` −0.09,
-   `おはよ` → `おはよう` −0.23, `がいしゃ` → `かいしゃ` −0.65, `がいとうした`
-   → `かいとうした` +0.76 (the last clears its 1.0 voicing cost iff weights
-   favor the LM enough). There is no weight where repairing the せんせ/おはよ
-   short-phrase pairs becomes *possible* — the model genuinely scores the worn
-   forms higher. Recommendation: raise `overcorrection_margin` to a positive
-   value (>= 2.0) when wiring the rescorer in; keep the weights near 1.0/1.0.
-   The defaults are *functional but not optimal* on this eval set.
+   losing the one real repair (e.g. `lm_weight=0.5 conf_w=0.5 margin=2.0`
+   — the desktop default). No combination fixes more than 1 repair, because
+   the LM's discrimination is direction-biased: it only rewards *removing*
+   length / moving toward the more-frequent form. Measured per-repair LM
+   differences: `おはよございます` → `おはようございます` +5.09 (repairs),
+   `せんせ` → `せんせい` −0.09, `おはよ` → `おはよう` −0.23,
+   `がいしゃ` → `かいしゃ` −0.65, `がいとうした` → `かいとうした` +0.76
+   (the last clears its 1.0 voicing cost iff weights favor the LM enough).
+   There is no weight where repairing the せんせ/おはよ short-phrase pairs
+   becomes *possible* — the model genuinely scores the worn forms higher.
 3. **`lm_c_bc.marisa` is unused.** `Inference.swift` loads only four tries; the
    46 MB `c_bc` file is not among them. Worth understanding before shipping.
 4. **Tokenizer portability.** The tokenizer reads the submodule's `vocab.json`
@@ -312,9 +334,11 @@ cargo run --release --features rsmarisa --example rescore_sweep -- <base>
    Also, `vocabSize` is still the upstream `// FIXME` constant 6000 (today
    correct; the loader already insists on exactly 6000 entries).
 
-### Integration hazard
+### Integration hazard (now enforced)
 
-When this is eventually wired in, `azookey_input_text` must keep the **original
-ASR reading**, not the corrected one. That field is the caption-merge key;
-feeding it a corrected reading turns replace-in-place into append and
-reintroduces the run-on captions fixed in `e393070`.
+`azookey_input_text` keeps the **original Vibrato reading**, not the rescored
+one. That field is the caption-merge key; feeding it a corrected reading turns
+replace-in-place into append and reintroduces the run-on captions fixed in
+`e393070`. Enforced in `pipeline.rs:normalize_parapper_output` — `reading`
+(post-Vibrato, pre-rescore) is the merge key; `normalize_input` is the
+rescored text fed to the normalizer.
