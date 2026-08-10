@@ -283,8 +283,8 @@ describe("AzooKey Worker text contract", () => {
   });
 
   it("falls back when a configured Zenzai upstream times out", async () => {
-    // Zenzai must not consume the whole AZOOKEY_TIMEOUT_MS budget; reserve leaves
-    // room for portable WASM when llama-server hangs (e.g. local xsmall :8081).
+    // Zenzai is capped (AZOOKEY_ZENZ_UPSTREAM_MAX_MS) so a hanging llama-server
+    // (e.g. local xsmall :8081) still leaves room for portable WASM.
     const fetcher = vi.fn(
       (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
@@ -297,7 +297,7 @@ describe("AzooKey Worker text contract", () => {
       JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
     );
     const result = await convertAzookeyMessage(message, {
-      timeoutMs: 250,
+      timeoutMs: 2_000,
       converter: (text) => `dict:${text}`,
       modelRoutes: {
         [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
