@@ -1119,4 +1119,48 @@ describe("WebSpeechController", () => {
     expect(recognition.startCalls).toBe(1);
     controller.dispose();
   });
+
+  it("skips a duplicate browser final that repeats a just-flushed interim", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(false, "重複")) });
+    recognition.onend?.();
+    vi.advanceTimersByTime(100);
+    expect(events.onFinalText).toHaveBeenCalledWith("重複");
+    events.onFinalText.mockClear();
+    vi.advanceTimersByTime(50);
+    expect(recognition.startCalls).toBe(2);
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "重複")) });
+    expect(events.onFinalText).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("survives throwing onRecognitionEnded observers", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    events.onRecognitionEnded.mockImplementation(() => {
+      throw new Error("observer failed");
+    });
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    controller.stop();
+    recognition.onend?.();
+    vi.advanceTimersByTime(150);
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    controller.dispose();
+  });
 });

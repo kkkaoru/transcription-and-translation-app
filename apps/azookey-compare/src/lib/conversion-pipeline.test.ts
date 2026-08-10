@@ -354,6 +354,39 @@ describe("comparison conversion pipeline", () => {
     });
   });
 
+  it("passes undefined optional Vibrato locator fields when omitted", async () => {
+    const runBrowserVibrato = vi.fn(() =>
+      Promise.resolve({ text: "今日は晴れ", elapsedMs: 1 }),
+    );
+    const { dictionaryUrl: _dictionaryUrl, ...inputWithoutDictionary } = baseInput;
+    await runComparisonConversion(
+      {
+        ...inputWithoutDictionary,
+        sourceText: "今日は晴れ",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+      },
+      {
+        runBrowserVibrato,
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker: vi.fn(() =>
+          Promise.resolve({
+            requestId: "r-no-locator",
+            sourceText: "今日は晴れ",
+            convertedText: "今日は晴れ",
+            receivedAt: Date.now(),
+          }),
+        ),
+      },
+    );
+    expect(runBrowserVibrato).toHaveBeenCalledWith("今日は晴れ", {
+      moduleUrl: "/vibrato/vibrato_wasm.js",
+      dictionaryUrl: undefined,
+      globalName: undefined,
+    });
+  });
+
   it("fails closed when browser-vibrato Vibrato or the Worker client is missing", async () => {
     await expect(
       runComparisonConversion(
