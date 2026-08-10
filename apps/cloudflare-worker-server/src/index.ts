@@ -33,7 +33,7 @@ import {
   openAzookeySocket,
 } from "./azookey.js";
 import azookeyWasm from "./azookey-wasm.js";
-import { createWorkersAiAsrTranscriber, type WorkersAiAsrRun } from "./workers-ai-asr.js";
+import { createWorkersAiAsrTranscriber, handleWorkersAiAsrTranscription, WORKERS_AI_ASR_HTTP_PATH, type WorkersAiAsrRun } from "./workers-ai-asr.js";
 
 export interface Env {
   AI?: Ai;
@@ -374,6 +374,36 @@ export const createWorker = (
         ? response
         : cors(response, env.CORS_ORIGIN);
     }
+    if (url.pathname === WORKERS_AI_ASR_HTTP_PATH) {
+      const aiBinding = env.AI;
+      return cors(
+        await handleWorkersAiAsrTranscription(
+          request,
+          {
+            ...(env.WORKERS_AI_ASR_TIMEOUT_MS
+              ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
+              : {}),
+            ...(aiBinding
+              ? {
+                  AI: {
+                    run: (model, input, options) =>
+                      aiBinding.run(
+                        model,
+                        {
+                          ...input,
+                          audio: { ...input.audio, body: input.audio.body as unknown as object },
+                        },
+                        options,
+                      ),
+                  },
+                }
+              : {}),
+          },
+          dependencies.workersAiRun,
+        ),
+        env.CORS_ORIGIN,
+      );
+    }
     let config: GatewayConfig;
     try {
       config = workerConfig(env);
@@ -401,9 +431,8 @@ export const createWorker = (
                         model,
                         {
                           ...input,
-                          // Generated Workers types currently declare Nova-3's
-                          // base64 body as object; the binding contract is a
-                          // base64 string (matching Cloudflare's adapter).
+                          // Generated Workers types declare Nova-3's binary
+                          // body as object; pass the WAV bytes through unchanged.
                           audio: { ...input.audio, body: input.audio.body as unknown as object },
                         },
                         options,

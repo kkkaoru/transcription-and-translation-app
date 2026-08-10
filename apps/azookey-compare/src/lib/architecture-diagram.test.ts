@@ -45,6 +45,9 @@ const overviewTerms = [
   ARCHITECTURE_ZENZAI.env,
   "Zenzai GGUF",
   "LOUDS dict フォールバック",
+  "Workers AI Nova-3 ASR",
+  "Workers AI ASR",
+  "@cf/deepgram/nova-3",
 ];
 
 describe("architecture SVG diagram models", () => {
@@ -74,6 +77,7 @@ describe("architecture SVG diagram models", () => {
     expect(overview.boxes.some((box) => box.cost === "model")).toBe(true);
     expect(overview.edges.some((edge) => edge.path === "internet")).toBe(true);
     expect(overview.edges.some((edge) => edge.label === "INFERENCE")).toBe(true);
+    expect(overview.edges.some((edge) => edge.label === "Workers AI ASR")).toBe(true);
     expect(architectureDiagramCaption("overview")).toBe("Cloudflare Workers 本番構成");
   });
 
@@ -98,6 +102,9 @@ describe("architecture SVG diagram models", () => {
       expect(diagram.compactLayout).toBe(true);
       expect(diagram.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
       expect(diagram.height).toBeLessThan(MODE_DIAGRAM_PREVIOUS_HEIGHT);
+      const asrDiagram = modeArchitecture(mode, browserWasmConfigured, converterModel, "workers-ai-asr");
+      expect(asrDiagram.boxes.some((box) => box.id === "asr")).toBe(true);
+      expect(asrDiagram.height).toBeLessThan(MODE_DIAGRAM_PREVIOUS_HEIGHT + 80);
     }
   });
 
@@ -130,7 +137,9 @@ describe("architecture SVG diagram models", () => {
     expect(worker).toContain("INFERENCE");
     expect(worker).toContain("kotoba-beacon-inference");
     expect(worker).toContain("公開 URL なし");
-    expect(architectureDiagramCaption("mode", "worker-vibrato")).toBe("Cloudflare Worker 依存の実行経路");
+    expect(architectureDiagramCaption("mode", "worker-vibrato")).toBe(
+      "Web Speech + Cloudflare Worker 依存の実行経路",
+    );
 
     const zenz = architectureDiagramText(
       modeArchitecture("worker-vibrato", true, "zenz-v3.2-xsmall-gguf"),
@@ -155,7 +164,12 @@ describe("architecture SVG diagram models", () => {
     expect(browser).toContain("利用不可");
     expect(browser).toContain("/ws/azookey なし");
     expect(browser).toContain(ARCHITECTURE_DICTIONARIES.ipadic.browserUrl);
-    expect(architectureDiagramCaption("mode", "browser-vibrato")).toBe("ブラウザ完結の実行経路");
+    expect(architectureDiagramCaption("mode", "browser-vibrato")).toBe(
+      "Web Speech + ブラウザ完結の実行経路",
+    );
+    expect(architectureDiagramCaption("mode", "worker-vibrato", "workers-ai-asr")).toBe(
+      "Workers AI ASR + Cloudflare Worker 依存の実行経路",
+    );
     expect(ARCHITECTURE_ASSET_SIZES.ipadicZst).toMatch(/MB/);
 
     const browserZenz = architectureDiagramText(

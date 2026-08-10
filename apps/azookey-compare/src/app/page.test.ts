@@ -52,10 +52,23 @@ describe("compare page speech settings", () => {
     expect(source).toContain("trace: result.trace");
   });
 
+  it("collapses configuration on mobile via details disclosure", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    expect(source).toContain('data-testid="config-panel-disclosure"');
+    expect(source).toContain('data-testid="config-panel-toggle"');
+    expect(source).toContain('data-testid="config-panel"');
+    expect(source).toContain("config-panel-disclosure");
+  });
+
   it("renders per-utterance Cloudflare conversion cost on comparison rows", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    expect(source).toContain('data-testid="utterance-cost-card"');
     expect(source).toContain('data-testid="utterance-conversion-cost"');
+    expect(source).toContain('data-testid="utterance-asr-cost"');
     expect(source).toContain("estimateCloudflareConversionCost");
-    expect(source).toContain("cost.summaryJa");
+    expect(source).toContain("formatCloudflareCostUsd");
+    expect(source).toContain("料金（推定）");
+    expect(source).toContain("Cloudflare Worker（変換）");
+    expect(source).toContain("Workers AI（ASR）");
   });
 });

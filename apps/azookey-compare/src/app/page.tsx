@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArchitectureAssetTable } from "../components/ArchitectureAssetTable";
 import { ComparisonPathDiagram } from "../components/ComparisonPathDiagram";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
+import { RecognitionModeSelector } from "../components/RecognitionModeSelector";
 import { isArchitectureDialogForced } from "../lib/architecture-dialog";
 import {
   shouldWarmBrowserDictionaryAfterConfigChange,
@@ -27,6 +28,7 @@ import {
   type ComparisonAuth,
   type ComparisonConfig,
   type ComparisonMode,
+  type RecognitionProvider,
   comparisonModeOptions,
   DEFAULT_COMPARISON_CONFIG,
   hasBrowserWasmConfiguration,
@@ -43,9 +45,22 @@ import {
   traceStepLocationLabel,
 } from "../lib/conversion-trace";
 import {
+  CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL,
   estimateCloudflareConversionCost,
+  formatCloudflareCostUsd,
   usesExternalGgufUpstream,
+  type CloudflareConversionCostEstimate,
 } from "../lib/cloudflare-conversion-cost";
+import { buildWorkersAiAsrUrl } from "../lib/inference-proxy";
+import {
+  estimateWorkersAiAsrCost,
+  webSpeechAsrCostSummaryJa,
+  workersAiAsrCostSummaryJa,
+} from "../lib/workers-ai-asr-cost";
+import {
+  WorkersAiAsrController,
+  type WorkersAiAsrState,
+} from "../lib/workers-ai-asr-controller";
 import {
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
@@ -70,7 +85,7 @@ import {
 } from "../lib/worker-client";
 
 type ComparisonRowState = "queued" | "wasm" | "sending" | "done" | "error";
-type ComparisonRowOrigin = "web-speech" | "manual" | "fixture";
+type ComparisonRowOrigin = "web-speech" | "workers-ai-asr" | "manual" | "fixture";
 
 interface ComparisonRow {
   id: string;
@@ -81,6 +96,8 @@ interface ComparisonRow {
   state: ComparisonRowState;
   mode: ComparisonMode;
   origin: ComparisonRowOrigin;
+  recognitionProvider?: RecognitionProvider;
+  audioSeconds?: number;
   fixtureId?: string;
   wasmElapsedMs?: number;
   workerElapsedMs?: number;
@@ -94,6 +111,9 @@ interface ComparisonRow {
   resolvedModel?: string;
   modelFallback?: string;
   failedBeforeInference?: boolean;
+  /** Workers AI ASR estimate when an ASR path ran (filled by ASR lane). */
+  asrCostUsd?: number;
+  asrCostSummaryJa?: string;
   createdAt: number;
 }
 
@@ -106,7 +126,7 @@ const createId = (): string => {
   return `utterance-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 };
 
-const speechStateLabel = (state: SpeechRecognitionState): string => {
+const speechStateLabel = (state: SpeechRecognitionState | WorkersAiAsrState): string => {
   switch (state) {
     case "starting":
       return "起動中";
@@ -135,6 +155,53 @@ const workerStateLabel = (state: WorkerConnectionState): string => {
       return "未接続";
   }
 };
+
+const conversionCostBreakdownLabelJa = (label: string): string => {
+  switch (label) {
+    case "compare WebSocket Upgrade":
+      return "Cloudflare Worker WebSocket Upgrade";
+    case "inference 変換（service binding）":
+      return "Cloudflare Worker 推論変換";
+    case "compare Upgrade CPU（ログ cpuTime 中央値）":
+      return "Cloudflare Worker Upgrade CPU（ログ cpuTime 中央値）";
+    case "compare CPU（ログ校正）":
+      return "Cloudflare Worker CPU（ログ校正）";
+    case "inference CPU（ログ cpuTime）":
+      return "Cloudflare Worker 推論 CPU（ログ cpuTime）";
+    case "inference CPU（ログ校正）":
+      return "Cloudflare Worker 推論 CPU（ログ校正）";
+    default:
+      return label;
+  }
+};
+
+const utteranceCostTotalUsd = (
+  conversion: CloudflareConversionCostEstimate,
+  asrCostUsd?: number,
+): number => {
+  const asr = asrCostUsd !== undefined && Number.isFinite(asrCostUsd) ? asrCostUsd : 0;
+  return conversion.usd + asr;
+};
+
+const utteranceAsrCostFields = (
+  provider: RecognitionProvider | undefined,
+  audioSeconds?: number,
+): Pick<ComparisonRow, "asrCostUsd" | "asrCostSummaryJa"> => {
+  if (provider === "workers-ai-asr") {
+    const estimate = estimateWorkersAiAsrCost(audioSeconds ?? 0);
+    return {
+      asrCostUsd: estimate.usd,
+      asrCostSummaryJa: workersAiAsrCostSummaryJa(estimate),
+    };
+  }
+  return {
+    asrCostUsd: 0,
+    asrCostSummaryJa: webSpeechAsrCostSummaryJa(),
+  };
+};
+
+const formatQuantityForCost = (value: number): string =>
+  Number.isInteger(value) ? String(value) : value.toFixed(2);
 
 const rowStateLabel = (state: ComparisonRowState): string => {
   switch (state) {
@@ -179,7 +246,7 @@ export default function ComparePage() {
       : {}),
   }));
   const [speechSupported, setSpeechSupported] = useState(false);
-  const [speechState, setSpeechState] = useState<SpeechRecognitionState>("idle");
+  const [speechState, setSpeechState] = useState<SpeechRecognitionState | WorkersAiAsrState>("idle");
   const [workerState, setWorkerState] = useState<WorkerConnectionState>("idle");
   const [browserWasmState, setBrowserWasmState] = useState<BrowserWasmState>("idle");
   const [speechFinalText, setSpeechFinalText] = useState("");
@@ -198,6 +265,7 @@ export default function ComparePage() {
   const [architectureOpen, setArchitectureOpen] = useState(false);
 
   const speechRef = useRef<WebSpeechController | null>(null);
+  const asrRef = useRef<WorkersAiAsrController | null>(null);
   const initialSpeechLanguageRef = useRef(config.language);
   const speechTranscriptRef = useRef({ finalText: "", interimText: "" });
   const dispatchedSpeechRef = useRef<string[]>([]);
@@ -205,7 +273,7 @@ export default function ComparePage() {
   const workerVibratoConfiguredRef = useRef<boolean | undefined>(undefined);
   const workerGenerationRef = useRef(0);
   const rowsRef = useRef<ComparisonRow[]>([]);
-  const finalTextHandlerRef = useRef<(text: string) => void>(() => undefined);
+  const finalTextHandlerRef = useRef<(text: string, audioSeconds?: number) => void>(() => undefined);
   /** Serialize browser pre-pass + Worker work so rapid finals retain order. */
   const dispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -243,15 +311,57 @@ export default function ComparePage() {
   }, [config.websocketUrl]);
 
   useEffect(() => {
-    const dispatchSpeechText = (text: string): void => {
+    const dispatchSpeechText = (text: string, audioSeconds?: number): void => {
       const nextDispatched = rememberDispatchedSpeech(dispatchedSpeechRef.current, text);
       if (nextDispatched.length === dispatchedSpeechRef.current.length) {
         return;
       }
       dispatchedSpeechRef.current = nextDispatched;
       setLatestSpeechSegment(text.trim());
-      finalTextHandlerRef.current(text);
+      finalTextHandlerRef.current(text, audioSeconds);
     };
+
+    speechRef.current?.dispose();
+    asrRef.current?.dispose();
+    speechRef.current = null;
+    asrRef.current = null;
+
+    if (config.recognitionProvider === "workers-ai-asr") {
+      const asrEndpoint =
+        typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined;
+      const controller = new WorkersAiAsrController(initialSpeechLanguageRef.current, {
+        language: config.language,
+        endpointUrl: asrEndpoint,
+        auth: config.auth,
+        onStateChange: (state) => {
+          setSpeechState(state);
+          if (state === "listening") {
+            setError("");
+          }
+        },
+        onTranscript: ({ interimText }) => {
+          setSpeechInterimText(interimText);
+        },
+        onFinalText: (text) => {
+          setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
+        },
+        onUtteranceFinal: ({ text, audioSeconds }) => {
+          dispatchSpeechText(text, audioSeconds);
+        },
+        onError: (message) => {
+          setError(message);
+        },
+      });
+      asrRef.current = controller;
+      setSpeechSupported(controller.supported);
+      return () => {
+        controller.dispose();
+        if (asrRef.current === controller) {
+          asrRef.current = null;
+        }
+      };
+    }
+
     const controller = new WebSpeechController(initialSpeechLanguageRef.current, {
       onStateChange: (state) => {
         setSpeechState(state);
@@ -291,7 +401,7 @@ export default function ComparePage() {
         speechRef.current = null;
       }
     };
-  }, []);
+  }, [config.recognitionProvider, config.auth, config.language]);
 
   // Keep one browser recognition session alive while settings are edited. A
   // dependency on `config.language` here would dispose the active controller,
@@ -300,6 +410,7 @@ export default function ComparePage() {
   // the next browser restart without losing the current state machine.
   useEffect(() => {
     syncSpeechLanguage(speechRef.current, config.language);
+    asrRef.current?.setLanguage(config.language);
   }, [config.language]);
 
   const appendRow = useCallback((row: ComparisonRow): void => {
@@ -328,6 +439,8 @@ export default function ComparePage() {
         origin?: ComparisonRowOrigin;
         expectedText?: string;
         fixtureId?: string;
+        recognitionProvider?: RecognitionProvider;
+        audioSeconds?: number;
         /**
          * When set, skip browser Vibrato and feed this string as `vibratoInput`.
          * Manual / fixture checks already supply a phonetic reading.
@@ -341,14 +454,23 @@ export default function ComparePage() {
       }
       const origin = options.origin ?? "web-speech";
       const id = createId();
+      const asrCost = utteranceAsrCostFields(
+        options.recognitionProvider ?? config.recognitionProvider,
+        options.audioSeconds,
+      );
       const initialRow: ComparisonRow = {
         id,
         sourceText: normalizedSource,
         state: "queued",
         mode,
         origin,
+        ...asrCost,
         ...(options.expectedText !== undefined ? { expectedText: options.expectedText } : {}),
         ...(options.fixtureId !== undefined ? { fixtureId: options.fixtureId } : {}),
+        ...(options.recognitionProvider !== undefined
+          ? { recognitionProvider: options.recognitionProvider }
+          : {}),
+        ...(options.audioSeconds !== undefined ? { audioSeconds: options.audioSeconds } : {}),
         createdAt: Date.now(),
       };
       appendRow(initialRow);
@@ -508,12 +630,12 @@ export default function ComparePage() {
         setError(message);
       }
     },
-    [appendRow],
+    [appendRow, config.recognitionProvider],
   );
 
   // Keep the controller callback stable while routing each final utterance to
   // the latest selected mode and WASM settings.
-  finalTextHandlerRef.current = (text) => {
+  finalTextHandlerRef.current = (text, audioSeconds) => {
     const dispatch = dispatchQueueRef.current.then(() =>
       dispatchFinalText(
         text,
@@ -524,7 +646,12 @@ export default function ComparePage() {
         config.language,
         config.auth,
         config.converterModel,
-        { origin: "web-speech" },
+        {
+          origin:
+            config.recognitionProvider === "workers-ai-asr" ? "workers-ai-asr" : "web-speech",
+          recognitionProvider: config.recognitionProvider,
+          ...(audioSeconds !== undefined ? { audioSeconds } : {}),
+        },
       ),
     );
     // Keep the chain alive after an unexpected observer/React failure. The
@@ -535,7 +662,7 @@ export default function ComparePage() {
   };
 
   const enqueueConversion = useCallback(
-    (sourceText: string, options: Parameters<typeof dispatchFinalText>[8]): void => {
+    (sourceText: string, options: Parameters<typeof dispatchFinalText>[8] = {}): void => {
       const dispatch = dispatchQueueRef.current.then(() =>
         dispatchFinalText(
           sourceText,
@@ -546,7 +673,10 @@ export default function ComparePage() {
           config.language,
           config.auth,
           config.converterModel,
-          options,
+          {
+            ...options,
+            recognitionProvider: options.recognitionProvider ?? config.recognitionProvider,
+          },
         ),
       );
       dispatchQueueRef.current = dispatch.catch(() => undefined);
@@ -560,6 +690,7 @@ export default function ComparePage() {
       config.converterModel,
       config.language,
       config.mode,
+      config.recognitionProvider,
       dispatchFinalText,
     ],
   );
@@ -706,9 +837,14 @@ export default function ComparePage() {
   );
 
   const toggleListening = (): void => {
-    const controller = speechRef.current;
+    const usingWorkersAi = config.recognitionProvider === "workers-ai-asr";
+    const controller = usingWorkersAi ? asrRef.current : speechRef.current;
     if (!controller || !speechSupported) {
-      setError("このブラウザは Web Speech API に対応していません");
+      setError(
+        usingWorkersAi
+          ? "このブラウザは Workers AI ASR 録音に対応していません"
+          : "このブラウザは Web Speech API に対応していません",
+      );
       return;
     }
     if (speechState === "listening" || speechState === "starting") {
@@ -731,7 +867,7 @@ export default function ComparePage() {
         if (shouldStart === false) {
           return;
         }
-        controller.start();
+        void controller.start();
       });
   };
 
@@ -849,6 +985,16 @@ export default function ComparePage() {
     setNotice("履歴をクリアしました");
   };
 
+  const configPanelHeading = (
+    <div className="panel-heading">
+      <div>
+        <p className="eyebrow">CONFIGURATION</p>
+        <h3>接続と方式</h3>
+      </div>
+      <span className={`state-pill state-${workerState}`}>{workerStateLabel(workerState)}</span>
+    </div>
+  );
+
   return (
     <main className="compare-shell">
       <header className="topbar">
@@ -924,29 +1070,36 @@ export default function ComparePage() {
           mode={config.mode}
           browserWasmConfigured={browserWasmConfigured}
           converterModel={config.converterModel}
+          recognitionProvider={config.recognitionProvider}
         />
         <ArchitectureAssetTable />
       </details>
 
       <div className="workspace-grid">
         <aside className="control-stack" aria-label="比較設定">
-          <section className="panel config-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">CONFIGURATION</p>
-                <h3>接続と方式</h3>
+          <details className="config-panel-disclosure" data-testid="config-panel-disclosure">
+            <summary className="config-panel-toggle" data-testid="config-panel-toggle">
+              {configPanelHeading}
+            </summary>
+            <section className="panel config-panel" data-testid="config-panel">
+              <div className="config-panel-heading-desktop" aria-hidden="true">
+                {configPanelHeading}
               </div>
-              <span className={`state-pill state-${workerState}`}>
-                {workerStateLabel(workerState)}
-              </span>
-            </div>
+
+            <RecognitionModeSelector
+              provider={config.recognitionProvider}
+              onProviderChange={(recognitionProvider) => {
+                updateConfig("recognitionProvider", recognitionProvider);
+              }}
+              label="音声認識"
+            />
 
             <VibratoModeSelector
               mode={config.mode}
               onModeChange={(mode) => {
                 updateConfig("mode", mode);
               }}
-              label="前処理の実行場所"
+              label="変換（前処理の実行場所）"
               description={selectedModeOption?.description}
             />
 
@@ -1123,7 +1276,8 @@ export default function ComparePage() {
             >
               Cloudflare Worker に接続
             </button>
-          </section>
+            </section>
+          </details>
 
           <section className="panel reading-panel">
             <div className="panel-heading">
@@ -1291,7 +1445,9 @@ export default function ComparePage() {
                             ? "Fixture"
                             : row.origin === "manual"
                               ? "Manual reading"
-                              : "Web Speech"}
+                              : row.origin === "workers-ai-asr"
+                                ? "Workers AI ASR"
+                                : "Web Speech"}
                         </span>
                         {row.trace ? (
                           <dl className="row-trace" data-testid="utterance-trace">
@@ -1354,13 +1510,74 @@ export default function ComparePage() {
                               modelFallback: row.modelFallback,
                             }),
                           });
+                          const asrCostUsd = row.asrCostUsd;
+                          const hasAsrCost =
+                            asrCostUsd !== undefined &&
+                            Number.isFinite(asrCostUsd) &&
+                            asrCostUsd > 0;
+                          const totalUsd = utteranceCostTotalUsd(cost, asrCostUsd);
                           return (
-                            <span
-                              className="row-meta row-conversion-cost"
-                              data-testid="utterance-conversion-cost"
-                            >
-                              {cost.summaryJa}
-                            </span>
+                            <div className="utterance-cost-card" data-testid="utterance-cost-card">
+                              <h4 className="utterance-cost-heading">料金（推定）</h4>
+                              <p className="utterance-cost-total" data-testid="utterance-cost-total">
+                                {formatCloudflareCostUsd(totalUsd)}
+                              </p>
+                              <dl className="utterance-cost-breakdown">
+                                <div
+                                  className="utterance-cost-row"
+                                  data-testid="utterance-conversion-cost"
+                                >
+                                  <dt>Cloudflare Worker（変換）</dt>
+                                  <dd>
+                                    <span className="utterance-cost-row-amount">
+                                      {cost.browserComplete
+                                        ? CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL
+                                        : formatCloudflareCostUsd(cost.usd)}
+                                    </span>
+                                    {!cost.browserComplete ? (
+                                      <span className="utterance-cost-row-detail">
+                                        リクエスト {cost.requests} · billed CPU {cost.billedCpuMs}{" "}
+                                        ms
+                                      </span>
+                                    ) : null}
+                                    {cost.breakdown.length > 0 ? (
+                                      <ul className="utterance-cost-line-items">
+                                        {cost.breakdown.map((line) => (
+                                          <li key={`${row.id}-${line.label}`}>
+                                            {conversionCostBreakdownLabelJa(line.label)} ·{" "}
+                                            {formatQuantityForCost(line.quantity)} {line.unitLabel}{" "}
+                                            · {formatCloudflareCostUsd(line.usd)}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    ) : null}
+                                  </dd>
+                                </div>
+                                <div
+                                  className="utterance-cost-row"
+                                  data-testid="utterance-asr-cost"
+                                  hidden={!hasAsrCost && !row.asrCostSummaryJa}
+                                >
+                                  <dt>Workers AI（ASR）</dt>
+                                  <dd>
+                                    {hasAsrCost ? (
+                                      <span className="utterance-cost-row-amount">
+                                        {formatCloudflareCostUsd(asrCostUsd)}
+                                      </span>
+                                    ) : null}
+                                    {row.asrCostSummaryJa ? (
+                                      <span className="utterance-cost-row-detail">
+                                        {row.asrCostSummaryJa}
+                                      </span>
+                                    ) : hasAsrCost ? null : (
+                                      <span className="utterance-cost-row-detail utterance-cost-row-empty">
+                                        未計測
+                                      </span>
+                                    )}
+                                  </dd>
+                                </div>
+                              </dl>
+                            </div>
                           );
                         })()}
                         {row.trace?.workerRequest ? (

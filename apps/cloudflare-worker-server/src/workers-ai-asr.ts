@@ -1,4 +1,4 @@
-import { GatewayError, MAX_AUDIO_BYTES, pcm16ToWav } from "@caption-bridge/inference-server-core";
+import { GatewayError, MAX_AUDIO_BYTES, pcm16FromWav, pcm16ToWav } from "@caption-bridge/inference-server-core";
 import { byteLimitTransform, collectStream } from "./azookey.js";
 
 /** The Workers AI partner model used only by the explicit `workers-ai` route. */
@@ -21,8 +21,8 @@ export const WORKERS_AI_ASR_MAX_RESPONSE_BYTES = 65_536;
 
 type WorkersAiAsrInput = {
   audio: {
-    /** Nova-3 binding body is base64 text. */
-    body: string;
+    /** Nova-3 binding expects a readable stream of audio bytes (see Cloudflare docs). */
+    body: ReadableStream<Uint8Array>;
     contentType: "audio/wav";
   };
   language: typeof WORKERS_AI_ASR_LANGUAGE;
@@ -58,8 +58,6 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_BAD_GATEWAY = 502;
 const HTTP_GATEWAY_TIMEOUT = 504;
 const HTTP_SERVICE_UNAVAILABLE = 503;
-const BASE64_CHUNK_BYTES = 0x8000;
-
 const finiteInteger = (value: number): number | undefined =>
   Number.isFinite(value) && Number.isInteger(value) ? value : undefined;
 
@@ -82,18 +80,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const errorDetail = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message.trim() ? error.message : fallback;
 
-/**
- * Nova-3's Workers AI binding accepts the audio body as base64. Chunking the
- * conversion avoids spreading a multi-megabyte Uint8Array into one call stack.
- */
-const base64 = (bytes: Uint8Array): string => {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_BYTES) {
-    binary += String.fromCharCode(
-      ...bytes.subarray(offset, Math.min(offset + BASE64_CHUNK_BYTES, bytes.length)),
+/** Wrap encoded WAV bytes in the stream shape Nova-3's binding validates. */
+const wavBodyStream = (wav: Uint8Array): ReadableStream<Uint8Array> => {
+  const body = new Response(wav).body;
+  if (!body) {
+    throw new GatewayError(
+      HTTP_BAD_GATEWAY,
+      "asr_workers_ai_failed",
+      "Workers AI ASR could not build the audio stream",
     );
   }
-  return btoa(binary);
+  return body;
 };
 
 const malformedResponse = (): GatewayError =>
@@ -239,7 +236,7 @@ export const createWorkersAiAsrTranscriber = (
             WORKERS_AI_ASR_MODEL,
             {
               audio: {
-                body: base64(pcm16ToWav(pcm)),
+                body: wavBodyStream(pcm16ToWav(pcm)),
                 contentType: "audio/wav",
               },
               language: WORKERS_AI_ASR_LANGUAGE,
@@ -263,4 +260,80 @@ export const createWorkersAiAsrTranscriber = (
     }
     return transcriptFromResult(result);
   };
+};
+
+/** Dedicated inference route; compare proxies here to opt into Nova-3 explicitly. */
+export const WORKERS_AI_ASR_HTTP_PATH = "/v1/asr/workers-ai/transcriptions" as const;
+
+const jsonResponse = (status: number, body: Record<string, unknown>): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+
+const readWavFromMultipart = async (request: Request): Promise<{ wav: Uint8Array; language?: string }> => {
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    throw new GatewayError(HTTP_BAD_REQUEST, "invalid_multipart", "Expected multipart form data");
+  }
+  const fileValue = form.get("file");
+  if (!(fileValue instanceof File)) {
+    throw new GatewayError(HTTP_BAD_REQUEST, "invalid_audio", "file field is required");
+  }
+  const languageValue = form.get("language");
+  const language =
+    typeof languageValue === "string" && languageValue.trim() ? languageValue.trim() : undefined;
+  return { wav: new Uint8Array(await fileValue.arrayBuffer()), language };
+};
+
+/**
+ * Handle the explicit Workers AI ASR route. This path always uses Nova-3 and
+ * does not depend on the global `ASR_PROVIDER` flag used by `/v1/audio/transcriptions`.
+ */
+export const handleWorkersAiAsrTranscription = async (
+  request: Request,
+  env: WorkersAiAsrEnvironment & { AI?: WorkersAiAsrBinding },
+  run?: WorkersAiAsrRun,
+): Promise<Response> => {
+  if (request.method !== "POST") {
+    return jsonResponse(405, {
+      error: { code: "method_not_allowed", message: "POST is required" },
+    });
+  }
+  let wav: Uint8Array;
+  let language: string | undefined;
+  try {
+    ({ wav, language } = await readWavFromMultipart(request));
+  } catch (error) {
+    if (error instanceof GatewayError) {
+      return jsonResponse(error.status, { error: { code: error.code, message: error.message } });
+    }
+    throw error;
+  }
+  let pcm: Uint8Array;
+  try {
+    pcm = pcm16FromWav(wav);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "WAV validation failed";
+    return jsonResponse(HTTP_BAD_REQUEST, { error: { code: "invalid_audio", message: detail } });
+  }
+  const transcribe = createWorkersAiAsrTranscriber(env, run);
+  try {
+    const text = await transcribe(pcm);
+    return jsonResponse(200, {
+      text,
+      language: language ?? WORKERS_AI_ASR_LANGUAGE,
+      model: WORKERS_AI_ASR_MODEL,
+      transport: "http",
+    });
+  } catch (error) {
+    if (error instanceof GatewayError) {
+      return jsonResponse(error.status, { error: { code: error.code, message: error.message } });
+    }
+    return jsonResponse(HTTP_BAD_GATEWAY, {
+      error: { code: "asr_workers_ai_failed", message: errorDetail(error, "Workers AI ASR failed") },
+    });
+  }
 };

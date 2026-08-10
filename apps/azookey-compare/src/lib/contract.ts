@@ -39,6 +39,16 @@ export const COMPARISON_MODES = [
   "browser-vibrato",
 ] as const satisfies readonly ComparisonMode[];
 
+/** Where utterance recognition runs before conversion. */
+export type RecognitionProvider = "web-speech" | "workers-ai-asr";
+
+export const RECOGNITION_PROVIDERS = [
+  "web-speech",
+  "workers-ai-asr",
+] as const satisfies readonly RecognitionProvider[];
+
+export const DEFAULT_RECOGNITION_PROVIDER: RecognitionProvider = "web-speech";
+
 export type ComparisonAuthScheme = "none" | "bearer";
 
 /** Authentication used by the Worker WebSocket endpoint.
@@ -55,6 +65,7 @@ export interface ComparisonAuth {
 export interface ComparisonConfig {
   schemaVersion: typeof COMPARISON_CONFIG_SCHEMA_VERSION;
   mode: ComparisonMode;
+  recognitionProvider: RecognitionProvider;
   /** Converter used for kana→kanji on the Worker (`azookey-rust-wasm` or Zenzai). */
   converterModel: ConverterModel;
   websocketUrl: string;
@@ -72,6 +83,7 @@ export interface ComparisonConfig {
 export type ComparisonConfigInput = {
   schemaVersion?: unknown;
   mode?: unknown;
+  recognitionProvider?: unknown;
   converterModel?: unknown;
   websocketUrl?: unknown;
   auth?: unknown;
@@ -86,6 +98,27 @@ export interface ComparisonModeOption {
   label: string;
   description: string;
 }
+
+export interface RecognitionProviderOption {
+  value: RecognitionProvider;
+  label: string;
+  description: string;
+}
+
+export const recognitionProviderOptions: readonly RecognitionProviderOption[] = [
+  {
+    value: "web-speech",
+    label: "Web Speech API（ブラウザ内・Workers AI 課金なし）",
+    description:
+      "ブラウザの Web Speech API でマイク認識します。Nova-3 は呼ばず、ASR 料金は $0 です。",
+  },
+  {
+    value: "workers-ai-asr",
+    label: "Workers AI ASR（Nova-3 · compare → inference Cloudflare Worker）",
+    description:
+      "マイク音声を compare Cloudflare Worker 経由で inference の Nova-3（env.AI.run HTTP）へ送り、文字起こしします。",
+  },
+] as const;
 
 export const comparisonModeOptions: readonly ComparisonModeOption[] = [
   {
@@ -182,10 +215,11 @@ export const comparisonConfigSchema = {
   title: "AzooKey comparison configuration",
   type: "object",
   additionalProperties: false,
-  required: ["mode", "converterModel", "websocketUrl", "auth", "language"],
+  required: ["mode", "recognitionProvider", "converterModel", "websocketUrl", "auth", "language"],
   properties: {
     schemaVersion: { type: "integer", const: COMPARISON_CONFIG_SCHEMA_VERSION },
     mode: { type: "string", enum: [...COMPARISON_MODES] },
+    recognitionProvider: { type: "string", enum: [...RECOGNITION_PROVIDERS] },
     converterModel: { type: "string", enum: [...CONVERTER_MODELS] },
     websocketUrl: { type: "string", pattern: "^wss?://" },
     auth: {
@@ -233,6 +267,7 @@ export const DEFAULT_COMPARISON_MODE: ComparisonMode = "worker-vibrato";
 export const DEFAULT_COMPARISON_CONFIG: ComparisonConfig = {
   schemaVersion: COMPARISON_CONFIG_SCHEMA_VERSION,
   mode: DEFAULT_COMPARISON_MODE,
+  recognitionProvider: DEFAULT_RECOGNITION_PROVIDER,
   converterModel: DEFAULT_CONVERTER_MODEL,
   websocketUrl: DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
   auth: { scheme: "none" },
@@ -246,6 +281,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export const isComparisonMode = (value: unknown): value is ComparisonMode =>
   typeof value === "string" && (COMPARISON_MODES as readonly string[]).includes(value);
+
+export const isRecognitionProvider = (value: unknown): value is RecognitionProvider =>
+  typeof value === "string" && (RECOGNITION_PROVIDERS as readonly string[]).includes(value);
 
 const nonEmptyString = (value: unknown, label: string): string => {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -369,6 +407,10 @@ export const validateComparisonConfig = (value: unknown): ComparisonConfig => {
   if (!isComparisonMode(mode)) {
     throw new Error("mode must be worker-vibrato or browser-vibrato");
   }
+  const recognitionProviderValue = value["recognitionProvider"] ?? DEFAULT_RECOGNITION_PROVIDER;
+  if (!isRecognitionProvider(recognitionProviderValue)) {
+    throw new Error("recognitionProvider must be web-speech or workers-ai-asr");
+  }
   const converterModelValue = value["converterModel"] ?? DEFAULT_CONVERTER_MODEL;
   if (!isConverterModel(converterModelValue)) {
     throw new Error("converterModel must be azookey-rust-wasm or a supported Zenzai id");
@@ -382,6 +424,7 @@ export const validateComparisonConfig = (value: unknown): ComparisonConfig => {
   return {
     schemaVersion: schemaVersion(value["schemaVersion"]),
     mode,
+    recognitionProvider: recognitionProviderValue,
     converterModel: converterModelValue,
     websocketUrl: websocketUrl(value["websocketUrl"]),
     auth: auth(value["auth"]),
@@ -405,6 +448,9 @@ const defaultWebsocketUrl = (mode: ComparisonMode): string =>
 export const mergeComparisonConfig = (value: unknown): ComparisonConfig => {
   const input = isRecord(value) ? value : {};
   const mode = isComparisonMode(input["mode"]) ? input["mode"] : DEFAULT_COMPARISON_CONFIG.mode;
+  const recognitionProvider = isRecognitionProvider(input["recognitionProvider"])
+    ? input["recognitionProvider"]
+    : DEFAULT_RECOGNITION_PROVIDER;
   const converterModel = isConverterModel(input["converterModel"])
     ? input["converterModel"]
     : DEFAULT_CONVERTER_MODEL;
@@ -454,6 +500,7 @@ export const mergeComparisonConfig = (value: unknown): ComparisonConfig => {
   return {
     schemaVersion: COMPARISON_CONFIG_SCHEMA_VERSION,
     mode,
+    recognitionProvider,
     converterModel,
     websocketUrl: normalizedUrl,
     auth: normalizedAuth,

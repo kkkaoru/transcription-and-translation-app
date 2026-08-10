@@ -1,13 +1,20 @@
 export const COMPARE_INFERENCE_WEBSOCKET_PATH = "/ws/azookey";
 export const COMPARE_INFERENCE_HEALTH_PATH = "/v1/azookey";
+/** Explicit compare → inference Workers AI ASR route (Nova-3 via env.AI.run). */
+export const COMPARE_WORKERS_AI_ASR_PATH = "/v1/asr/workers-ai/transcriptions";
 
 export const COMPARE_INFERENCE_PROXY_PATHS = [
   COMPARE_INFERENCE_WEBSOCKET_PATH,
   COMPARE_INFERENCE_HEALTH_PATH,
+  COMPARE_WORKERS_AI_ASR_PATH,
 ] as const;
 
 export const COMPARE_WORKER_ORIGIN = "https://azookey-compare.kaoru.workers.dev";
 export const COMPARE_WORKER_WEBSOCKET_URL = `wss://azookey-compare.kaoru.workers.dev${COMPARE_INFERENCE_WEBSOCKET_PATH}`;
+export const COMPARE_WORKER_ASR_URL = `${COMPARE_WORKER_ORIGIN}${COMPARE_WORKERS_AI_ASR_PATH}`;
+
+export const buildWorkersAiAsrUrl = (origin: string): string =>
+  `${origin.replace(/\/+$/, "")}${COMPARE_WORKERS_AI_ASR_PATH}`;
 
 export type InferenceProxyEnv = {
   AZOOKEY_API_TOKEN?: string;

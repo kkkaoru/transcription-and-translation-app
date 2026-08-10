@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "kotoba-beacon-inference",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-29",
+  "compatibility_date": "2026-08-09",
   // Public browser traffic goes through azookey-compare. Keep this workers.dev
   // hostname disabled so inference is only reachable via the service binding.
   "workers_dev": false,

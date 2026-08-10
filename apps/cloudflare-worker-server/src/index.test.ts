@@ -8,7 +8,7 @@ import {
   BROWSER_VIBRATO_MODE,
 } from "./azookey.js";
 import { createWorker, type Env, type WorkerHandler } from "./index.js";
-import { WORKERS_AI_ASR_MODEL, type WorkersAiAsrRun } from "./workers-ai-asr.js";
+import { WORKERS_AI_ASR_MODEL, WORKERS_AI_ASR_HTTP_PATH, type WorkersAiAsrRun } from "./workers-ai-asr.js";
 
 const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
 const VIBRATO_NOTICE_PATH = "/vibrato/NOTICE";
@@ -557,7 +557,7 @@ describe("Cloudflare Worker inference adapter", () => {
     const bindingRun = vi.fn((model: string, input: Record<string, unknown>) => {
       expect(model).toBe(WORKERS_AI_ASR_MODEL);
       const audio = input["audio"] as { body?: unknown; contentType?: unknown };
-      expect(typeof audio.body).toBe("string");
+      expect(audio.body).toBeInstanceOf(ReadableStream);
       expect(audio.contentType).toBe("audio/wav");
       return Promise.resolve({
         results: { channels: [{ alternatives: [{ transcript: "AI binding" }] }] },
@@ -581,6 +581,32 @@ describe("Cloudflare Worker inference adapter", () => {
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "asr_unavailable" } });
     expect(bindingRun).not.toHaveBeenCalled();
+  });
+
+  it("routes explicit Workers AI ASR through the dedicated path without ASR_PROVIDER", async () => {
+    const workersAiRun: WorkersAiAsrRun = vi.fn(() =>
+      Promise.resolve({
+        results: { channels: [{ alternatives: [{ transcript: "dedicated route" }] }] },
+      }),
+    );
+    const form = new FormData();
+    form.set("file", wav());
+    form.set("language", "ja");
+    const response = await createWorker(vi.fn(), { workersAiRun }).fetch(
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(env.CORS_ORIGIN);
+    await expect(response.json()).resolves.toMatchObject({
+      text: "dedicated route",
+      language: "ja",
+      transport: "http",
+    });
+    expect(workersAiRun).toHaveBeenCalledTimes(1);
   });
 
   it("maps upstream connection, status, and payload failures to stable ASR errors", async () => {
