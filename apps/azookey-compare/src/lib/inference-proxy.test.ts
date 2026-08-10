@@ -92,15 +92,20 @@ describe("compare Worker inference proxy", () => {
       { source: "/v1/azookey", destination: "http://127.0.0.1:8787/v1/azookey" },
       {
         source: "/v1/asr/workers-ai/transcriptions",
-        destination: "http://127.0.0.1:8787/v1/asr/workers-ai/transcriptions",
+        destination: "http://127.0.0.1:8790/v1/asr/workers-ai/transcriptions",
       },
     ]);
-    expect(mod.compareInferenceDevRewrites("http://127.0.0.1:9999")).toEqual([
+    expect(mod).toHaveProperty("COMPARE_ASR_DEV_PROXY_ORIGIN_DEFAULT", "http://127.0.0.1:8790");
+    expect(mod.compareAsrDevOrigin({})).toBe("http://127.0.0.1:8790");
+    expect(mod.compareAsrDevOrigin({ COMPARE_ASR_ORIGIN: " https://azookey-compare.kaoru.workers.dev/ " })).toBe(
+      "https://azookey-compare.kaoru.workers.dev",
+    );
+    expect(mod.compareInferenceDevRewrites("http://127.0.0.1:9999", "http://127.0.0.1:8791")).toEqual([
       { source: "/ws/azookey", destination: "http://127.0.0.1:9999/ws/azookey" },
       { source: "/v1/azookey", destination: "http://127.0.0.1:9999/v1/azookey" },
       {
         source: "/v1/asr/workers-ai/transcriptions",
-        destination: "http://127.0.0.1:9999/v1/asr/workers-ai/transcriptions",
+        destination: "http://127.0.0.1:8791/v1/asr/workers-ai/transcriptions",
       },
     ]);
   });
@@ -109,7 +114,9 @@ describe("compare Worker inference proxy", () => {
     const nextConfig = readFileSync(new URL("../../next.config.mjs", import.meta.url), "utf8");
     expect(nextConfig).toContain("rewrites");
     expect(nextConfig).toContain("COMPARE_INFERENCE_ORIGIN");
+    expect(nextConfig).toContain("COMPARE_ASR_ORIGIN");
     expect(nextConfig).toContain("http://127.0.0.1:8787");
+    expect(nextConfig).toContain("http://127.0.0.1:8790");
     expect(nextConfig).toContain('NODE_ENV === "development"');
     for (const pathname of COMPARE_INFERENCE_PROXY_PATHS) {
       expect(nextConfig).toContain(pathname);

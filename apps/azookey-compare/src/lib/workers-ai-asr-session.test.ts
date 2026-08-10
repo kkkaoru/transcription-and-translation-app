@@ -9,6 +9,7 @@ import {
   gateWorkersAiAsrStart,
   startCloudflareWorkersAiAsrAfterSelect,
 } from "./workers-ai-asr-session";
+import { WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA } from "./workers-ai-asr-client";
 import {
   isWorkersAiAsrCaptureSupported,
   WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA,
@@ -368,6 +369,33 @@ describe("legacy select→start bugs (reproduction harness)", () => {
 });
 
 describe("startCloudflareWorkersAiAsrAfterSelect", () => {
+  it("probes loopback ASR before opening the mic and setErrors on 503", async () => {
+    installCapture();
+    const start = vi.fn(async () => undefined);
+    const onError = vi.fn();
+    const fetchImpl = vi.fn(async () =>
+      Response.json(
+        { error: { code: "asr_workers_ai_unavailable", message: WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA } },
+        { status: 503 },
+      ),
+    );
+    const result = await startCloudflareWorkersAiAsrAfterSelect({
+      language: "ja-JP",
+      endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
+      existing: null,
+      createController: () => fakeController({ start, currentState: "idle" }),
+      fetchImpl,
+      onError,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
+    expect(start, "mic must not open after local ASR 503").not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
+    expect(result.message).toBe(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
+    result.controller?.dispose();
+  });
+
   it("web-speech → workers-ai-asr select → 認識を開始: mock mic, no setError, start() runs", async () => {
     installCapture();
     const asrRef: { current: WorkersAiAsrController | null } = { current: null };

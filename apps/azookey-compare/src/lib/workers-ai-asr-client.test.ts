@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { transcribeWorkersAiAsr } from "./workers-ai-asr-client";
+import {
+  isLoopbackWorkersAiAsrEndpoint,
+  probeWorkersAiAsrRoute,
+  transcribeWorkersAiAsr,
+  WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA,
+} from "./workers-ai-asr-client";
 import { workersAiAsrSmokeWavFile } from "./workers-ai-asr-fixture";
 
 describe("workers-ai-asr-client", () => {
@@ -69,7 +74,7 @@ describe("workers-ai-asr-client", () => {
         }),
       }),
     ).rejects.toThrow(
-      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください",
+      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run azookey-compare:dev と bun run worker:dev を起動してください",
     );
 
     await expect(
@@ -78,7 +83,7 @@ describe("workers-ai-asr-client", () => {
         fetchImpl: vi.fn(async () => new Response("Internal Server Error", { status: 500 })),
       }),
     ).rejects.toThrow(
-      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください",
+      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run azookey-compare:dev と bun run worker:dev を起動してください",
     );
 
     await expect(
@@ -94,6 +99,44 @@ describe("workers-ai-asr-client", () => {
         fetchImpl: vi.fn(async () => Response.json({ language: "ja" })),
       }),
     ).rejects.toThrow("Cloudflare Workers AI ASR の応答に text がありません");
+  });
+
+  it("probes loopback ASR before speech and keeps hosted compare unprobed", async () => {
+    expect(isLoopbackWorkersAiAsrEndpoint("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions")).toBe(
+      true,
+    );
+    expect(isLoopbackWorkersAiAsrEndpoint("https://azookey-compare.kaoru.workers.dev/v1/asr/workers-ai/transcriptions")).toBe(
+      false,
+    );
+    expect(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA).toMatch(/Access/);
+    expect(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA).toMatch(/worker:dev/);
+
+    await expect(
+      probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {
+        fetchImpl: vi.fn(async () => Response.json({ ok: true })),
+      }),
+    ).resolves.toBeUndefined();
+
+    await expect(
+      probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {
+        fetchImpl: vi.fn(async () =>
+          Response.json(
+            { error: { code: "asr_workers_ai_unavailable", message: WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA } },
+            { status: 503 },
+          ),
+        ),
+      }),
+    ).rejects.toThrow(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
+
+    await expect(
+      probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {
+        fetchImpl: vi.fn(() => {
+          throw new TypeError("fetch failed");
+        }),
+      }),
+    ).rejects.toThrow(
+      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run azookey-compare:dev と bun run worker:dev を起動してください",
+    );
   });
 
   it("accepts Blob input and bearer auth headers", async () => {
