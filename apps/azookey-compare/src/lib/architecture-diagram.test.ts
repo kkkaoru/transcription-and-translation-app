@@ -25,7 +25,7 @@ const overviewTerms = [
   "Web Speech",
   "Access",
   "OTP + Managed OAuth",
-  "teadea",
+  "teadea + avita",
   COMPARE_WORKER_ORIGIN,
   "compare Cloudflare Worker",
   "Access JWT",

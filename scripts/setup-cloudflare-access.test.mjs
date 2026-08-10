@@ -76,12 +76,12 @@ describe("setup-cloudflare-access", () => {
     );
   });
 
-  it("allows only teadea emails/domains and denies public inference", () => {
+  it("allows configured emails/domains and denies public inference", () => {
     const allow = buildTeadeaAllowPolicy();
     assert.equal(allow.decision, "allow");
     assert.deepEqual(allow.include, [
       { email: { email: DEFAULT_ALLOW_EMAILS[0] } },
-      { email_domain: { domain: DEFAULT_ALLOW_EMAIL_DOMAINS[0] } },
+      ...DEFAULT_ALLOW_EMAIL_DOMAINS.map((domain) => ({ email_domain: { domain } })),
     ]);
     assert.doesNotThrow(() => assertPolicyIsNotWorldOpen(allow));
     assert.throws(

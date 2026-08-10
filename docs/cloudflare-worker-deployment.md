@@ -149,7 +149,7 @@ to the `ws:`/`wss:` URL.
 `bun run access:setup` creates OTP (and Google only when
 `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` are set) plus
 self-hosted apps with `oauth_configuration.enabled`. Allow lists default to
-`kaoru@teadea.net` and `@teadea.net`. Never allow `everyone` or login-method-only
+`kaoru@teadea.net`, `@teadea.net`, and `@avita.co.jp`. Never allow `everyone` or login-method-only
 OTP. IdP write needs `Access: Organizations, Identity Providers, and Groups
 Edit`; app write needs `Access: Apps and Policies Edit`.
 

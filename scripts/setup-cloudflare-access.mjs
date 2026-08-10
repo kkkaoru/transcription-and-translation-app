@@ -4,7 +4,8 @@
  *
  * Creates OTP (and Google when env credentials exist), then self-hosted apps with
  * Managed OAuth. Inference stays closed to the public internet; compare allows only
- * configured teadea emails/domains plus a Service Auth policy for the verify
+ * configured allow emails/domains (teadea + avita) plus a Service Auth policy
+ * for the verify
  * Service Token. Secrets are never printed.
  *
  * Usage:
@@ -37,7 +38,7 @@ export const INFERENCE_APP_NAME = "kotoba-beacon-inference";
 export const COMPARE_PUBLIC_HOST = "azookey-compare.kaoru.workers.dev";
 export const INFERENCE_PUBLIC_HOST = "kotoba-beacon-inference.kaoru.workers.dev";
 export const DEFAULT_ALLOW_EMAILS = ["kaoru@teadea.net"];
-export const DEFAULT_ALLOW_EMAIL_DOMAINS = ["teadea.net"];
+export const DEFAULT_ALLOW_EMAIL_DOMAINS = ["teadea.net", "avita.co.jp"];
 
 const present = (value) => typeof value === "string" && value.trim().length > 0;
 

@@ -511,7 +511,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: browser.y + browser.h + gap,
     w: fullW,
     title: "② Access",
-    lines: ["OTP + Managed OAuth", "teadea"],
+    lines: ["OTP + Managed OAuth", "teadea + avita"],
     tone: "io",
     artifact: "runtime",
   });

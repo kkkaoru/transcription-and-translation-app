@@ -44,7 +44,7 @@ Set `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` for a deployed Worker.
 Do not point the hosted UI at the inference `workers.dev` WebSocket; that
 origin is Access-denied (or closed) and conversion is proxied in-process.
 
-Hosted compare is behind Cloudflare Access (OTP + Managed OAuth, teadea only).
+Hosted compare is behind Cloudflare Access (OTP + Managed OAuth, teadea + avita).
 Unauthenticated browsers `302` to Access login; API clients `401`. Production
 Worker secrets `POLICY_AUD` and `TEAM_DOMAIN` enable `Cf-Access-Jwt-Assertion`
 validation. Leave both unset for local `wrangler dev`.

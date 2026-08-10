@@ -27,7 +27,7 @@ compare Cloudflare Worker version（ブラウザ完結 + JWT ゲート + 2f6b234
 
 ```
 Browser
-  → Access (OTP + Managed OAuth, teadea allow)
+  → Access (OTP + Managed OAuth, teadea + avita allow)
   → https://azookey-compare.kaoru.workers.dev
        ├ Access JWT gate（POLICY_AUD + TEAM_DOMAIN secrets）
        ├ static Next export (`out/` + ASSETS)
@@ -69,7 +69,7 @@ inference proxy（`2f6b234`）: client `Authorization` を剥がし、`AZOOKEY_A
 
 - OTP IdP: `onetimepin`（作成または既存を再利用）
 - Google IdP: env 無しのためスキップ
-- compare app `azookey-compare`: self_hosted、public destination、Managed OAuth on、allow `kaoru@teadea.net` + `@teadea.net`、allowed IdP 1（OTP）
+- compare app `azookey-compare`: self_hosted、public destination、Managed OAuth on、allow `kaoru@teadea.net` + `@teadea.net` + `@avita.co.jp`、allowed IdP 1（OTP）
 - inference app `kotoba-beacon-inference`: self_hosted、Cloudflare Worker destination、Managed OAuth on、deny everyone
 
 Allow は everyone / login_method-only OTP ではない。
@@ -106,7 +106,7 @@ OTP 待ち・人手 QA はしない。Access JWT 付きブラウザ検証は coo
 
 ## ユーザー次アクション
 
-1. ブラウザで `https://azookey-compare.kaoru.workers.dev` を開き、Access OTP で `kaoru@teadea.net`（または `@teadea.net`）としてログインする。
+1. ブラウザで `https://azookey-compare.kaoru.workers.dev` を開き、Access OTP で `kaoru@teadea.net`（または `@teadea.net` / `@avita.co.jp`）としてログインする。
 2. 認証後 UI、`/v1/azookey` health、`wss://azookey-compare.kaoru.workers.dev/ws/azookey` を確認する。
 3. Google も使いたい場合は `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` を `.env` に入れて `bun run access:setup` を再実行する。invent しない。
 
