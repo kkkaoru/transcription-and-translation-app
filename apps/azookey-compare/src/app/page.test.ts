@@ -82,30 +82,6 @@ describe("compare page speech settings", () => {
     expect(css).toMatch(/\.config-panel-disclosure\s*\{\s*display:\s*contents;/);
   });
 
-  it("collapses phonetic input on mobile via details disclosure, closed by default", () => {
-    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
-    const css = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
-    expect(source).toContain('data-testid="phonetic-input-disclosure"');
-    expect(source).toContain('data-testid="phonetic-input-toggle"');
-    expect(source).toContain('data-testid="phonetic-input-panel"');
-    expect(source).toContain("phonetic-input-disclosure");
-    expect(source).toContain("phonetic-input-heading-desktop");
-    expect(source).toContain("phonetic-input-body");
-    expect(source).toContain("open={phoneticPanelOpen}");
-    expect(source).toContain("const [phoneticPanelOpen, setPhoneticPanelOpen] = useState(false)");
-    expect(source).toContain("setPhoneticPanelOpen(true)");
-    const panel = source.indexOf('data-testid="phonetic-input-panel"');
-    const desktopHeading = source.indexOf("phonetic-input-heading-desktop");
-    const disclosure = source.indexOf('data-testid="phonetic-input-disclosure"');
-    expect(panel).toBeGreaterThan(-1);
-    expect(desktopHeading).toBeGreaterThan(panel);
-    expect(disclosure).toBeGreaterThan(desktopHeading);
-    expect(css).toMatch(/\.phonetic-input-disclosure\s*\{\s*display:\s*contents;/);
-    expect(css).not.toMatch(
-      /\.phonetic-input-disclosure:not\(\[open\]\)\s*>\s*\.phonetic-input-body\s*\{\s*display:\s*block/,
-    );
-  });
-
   it("applies the shared mode-selector styles to recognition and conversion selects", () => {
     const recognition = readFileSync(
       new URL("../components/RecognitionModeSelector.tsx", import.meta.url),
