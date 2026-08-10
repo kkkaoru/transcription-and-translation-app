@@ -6,6 +6,17 @@ main window, waits for the embedded Parapper/gateway/model sidecars, submits a
 short silent WAV to the real `/v1/audio/transcriptions` endpoint, and records the
 window/process/log evidence under `/tmp`.
 
+Verification launches do **not** come to the front: the harness uses
+`open -n -g` and `--kotoba-smoke-background` so Kotoba Beacon stays Accessory
+and does not steal key-window focus. Default Dock / Finder launches still
+activate normally. Window PNGs are captured with `screencapture -l` against the
+CGWindow id, so the app does not need to be frontmost.
+
+A local `bun run build:app` also replaces `/Applications/Kotoba Beacon.app`
+unless `KOTOBA_BEACON_SKIP_INSTALL=1` or `CI` is set. Smoke launches the
+`target/release/bundle` copy by default, or `--app` / `TAURI_SMOKE_APP` when
+checking the installed Dock/Spotlight app.
+
 ```bash
 # release bundle; smoke-launched app and sidecars are stopped at the end
 node scripts/tauri-smoke.mjs
@@ -18,6 +29,9 @@ node scripts/tauri-smoke.mjs --flavor debug
 
 # retain the app for manual inspection
 node scripts/tauri-smoke.mjs --keep-alive
+
+# smoke the installed Dock/Spotlight copy
+node scripts/tauri-smoke.mjs --app "/Applications/Kotoba Beacon.app"
 ```
 
 The equivalent package commands are `bun run verify:tauri` (use the existing
@@ -71,7 +85,7 @@ foreground PID and the sidecar PIDs observed beneath that executable.
 
 ## Optional UI smoke
 
-Add `--ui` to attempt Settings, Debug, Live, Overlay, and (with
+Add `--ui` to attempt Settings, Advanced, Debug, Live, Overlay, and (with
 `--exercise-capture`) Stop/Start/Stop through the macOS Accessibility tree:
 
 ```bash
@@ -85,9 +99,10 @@ harness records the denial, saves the initial screenshot, and does **not** claim
 that the controls or overlay were pressed. This is expected on locked-down CI or
 automation sessions; rerun after granting permission for a real UI click smoke.
 
-When Accessibility is available, the harness dumps the AX names after Settings
-and Debug navigation (`ui-settings-ax.txt` and `ui-debug-ax.txt`) and checks for
-AzooKey, the caption-chunk/silence-gate fields, and ASR/Debug labels. Failed AX
+When Accessibility is available, the harness dumps the AX names after Everyday
+Settings, Advanced Settings, and Debug navigation (`ui-settings-everyday-ax.txt`,
+`ui-settings-ax.txt`, and `ui-debug-ax.txt`) and checks for the everyday/advanced
+split, AzooKey, VAD/silence fields, and ASR/Debug labels. Failed AX
 presses are kept independent so one inaccessible WebKit node does not hide the
 other attempted actions. It also presses the real Settings Save control before
 re-reading `native-config.json`; when that control is reachable, the report can

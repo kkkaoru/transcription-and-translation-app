@@ -33,6 +33,12 @@ bun install --frozen-lockfile
 bun run build:app
 ```
 
+On macOS a successful `bun run build:app` (and the signed release build) also
+replaces `/Applications/Kotoba Beacon.app` with that bundle, so Dock / Spotlight
+launch the just-built app instead of a stale install. Skip with
+`KOTOBA_BEACON_SKIP_INSTALL=1`, or rerun only the swap with
+`bun run install:macos-app`.
+
 On macOS, open the application and configure a numeric shared-output
 resolution. The app publishes a Syphon server named `Kotoba Beacon` at launch
 without further interaction: add an OBS Syphon source and select it. The
