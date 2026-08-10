@@ -283,6 +283,8 @@ describe("AzooKey Worker text contract", () => {
   });
 
   it("falls back when a configured Zenzai upstream times out", async () => {
+    // Zenzai must not consume the whole AZOOKEY_TIMEOUT_MS budget; reserve leaves
+    // room for portable WASM when llama-server hangs (e.g. local xsmall :8081).
     const fetcher = vi.fn(
       (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
@@ -294,16 +296,20 @@ describe("AzooKey Worker text contract", () => {
     const message = parseAzookeyMessage(
       JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
     );
-    await expect(
-      convertAzookeyMessage(message, {
-        timeoutMs: 25,
-        converter: (text) => `dict:${text}`,
-        modelRoutes: {
-          [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
-        },
-        fetcher,
-      }),
-    ).rejects.toMatchObject({ code: "conversion_timeout", requestId: "req-1" });
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
+      },
+      fetcher,
+    });
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+    });
   });
 
   it("falls back when a configured Zenzai upstream returns empty content", async () => {
