@@ -16,7 +16,7 @@ export const ARCHITECTURE_ASSET_SIZES = {
   vibratoWasm: "281 KB",
   azookeyWasm: "249 KB",
   sileroOnnx: "2.2 MB",
-  ortWasm: "〜11 MB",
+  ortWasm: "13 MB",
   zenzXsmall: "21 MB",
   zenzSmall: "74 MB",
 } as const;

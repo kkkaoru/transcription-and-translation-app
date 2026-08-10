@@ -12,6 +12,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -58,8 +59,8 @@ const ensureSileroOnnx = async () => {
   copyFileSync(cacheOnnx, publicOnnx);
 };
 
-const isOrtRuntimeAsset = (name) =>
-  /^ort-wasm-simd-threaded(\.jsep|\.jspi|\.asyncify)?\.(mjs|wasm)$/u.test(name);
+/** WASM EP only. jsep/jspi/asyncify exceed Cloudflare Workers' 25 MiB asset limit. */
+const isOrtRuntimeAsset = (name) => /^ort-wasm-simd-threaded\.(mjs|wasm)$/u.test(name);
 
 const copyOrtWasm = () => {
   const dist = ortDistCandidates.find((dir) => existsSync(dir));
@@ -67,6 +68,11 @@ const copyOrtWasm = () => {
     throw new Error("onnxruntime-web is not installed; add it to apps/azookey-compare");
   }
   mkdirSync(publicOrt, { recursive: true });
+  for (const stale of readdirSync(publicOrt)) {
+    if (!isOrtRuntimeAsset(stale)) {
+      rmSync(join(publicOrt, stale), { force: true });
+    }
+  }
   const names = readdirSync(dist).filter(isOrtRuntimeAsset);
   if (names.length === 0) {
     throw new Error(`No ORT wasm assets found in ${dist}`);
@@ -74,7 +80,7 @@ const copyOrtWasm = () => {
   for (const name of names) {
     copyFileSync(join(dist, name), join(publicOrt, name));
   }
-  console.log(`Copied ${names.length} onnxruntime-web WASM assets → ${publicOrt}`);
+  console.log(`Copied ${names.length} onnxruntime-web WASM EP assets → ${publicOrt}`);
 };
 
 const run = async () => {

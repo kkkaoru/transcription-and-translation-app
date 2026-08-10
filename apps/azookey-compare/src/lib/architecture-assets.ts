@@ -33,7 +33,7 @@ export const ARCHITECTURE_ASSET_ROWS = [
     id: "silero-vad",
     name: "Silero VAD v6",
     file: "silero_vad.onnx",
-    size: ARCHITECTURE_ASSET_SIZES.sileroOnnx,
+    size: `${ARCHITECTURE_ASSET_SIZES.sileroOnnx} + ORT ${ARCHITECTURE_ASSET_SIZES.ortWasm}`,
     reader: "ブラウザ onnxruntime-web（Workers AI ASR のみ）",
     source: `/models/silero_vad_v6/silero_vad.onnx（${ARCHITECTURE_DICTIONARIES.silero.upstream}）`,
     when: "Workers AI ASR 認識開始時（Web Speech では読み込まない）",

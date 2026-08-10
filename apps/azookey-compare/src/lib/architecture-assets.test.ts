@@ -51,6 +51,7 @@ describe("architecture asset inventory", () => {
     expect(text).toContain("Workers AI ASR 認識開始時");
     expect(text).toContain("Web Speech では読み込まない");
     expect(text).toContain(ARCHITECTURE_ASSET_SIZES.sileroOnnx);
+    expect(text).toContain(ARCHITECTURE_ASSET_SIZES.ortWasm);
     expect(text).not.toContain("Tauri");
     expect(text).not.toContain("capture-start");
   });
