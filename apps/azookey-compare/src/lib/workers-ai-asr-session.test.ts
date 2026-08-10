@@ -379,43 +379,44 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
         { status: 503 },
       ),
     );
-    const result = await startCloudflareWorkersAiAsrAfterSelect({
-      language: "ja-JP",
-      endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
-      existing: null,
-      createController: () => fakeController({ start, currentState: "idle" }),
-      fetchImpl,
-      onError,
-    });
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
+        existing: null,
+        createController: () => fakeController({ start, currentState: "idle" }),
+        fetchImpl,
+        onError,
+      }),
+    ).rejects.toThrow(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
     expect(start, "mic must not open after local ASR 503").not.toHaveBeenCalled();
-    expect(result.ok).toBe(false);
     expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
-    expect(result.message).toBe(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
-    result.controller?.dispose();
   });
 
   it("does not open the mic when the loopback ASR probe cannot connect", async () => {
     installCapture();
     const start = vi.fn(async () => undefined);
     const onError = vi.fn();
-    const result = await startCloudflareWorkersAiAsrAfterSelect({
-      language: "ja-JP",
-      endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
-      existing: null,
-      createController: () => fakeController({ start, currentState: "idle" }),
-      fetchImpl: vi.fn(async () => {
-        throw "proxy down";
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
+        existing: null,
+        createController: () => fakeController({ start, currentState: "idle" }),
+        fetchImpl: vi.fn(async () => {
+          throw "proxy down";
+        }),
+        onError,
       }),
-      onError,
-    });
+    ).rejects.toThrow(
+      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run azookey-compare:dev と bun run worker:dev を起動してください",
+    );
     expect(start).not.toHaveBeenCalled();
-    expect(result.ok).toBe(false);
     expect(onError).toHaveBeenCalledWith(
       "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run azookey-compare:dev と bun run worker:dev を起動してください",
     );
-    result.controller?.dispose();
   });
 
   it("web-speech → workers-ai-asr select → 認識を開始: mock mic, no setError, start() runs", async () => {
@@ -568,18 +569,16 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
   it("reports gate failure without calling start", async () => {
     const created = fakeController({ supported: false });
     const onError = vi.fn();
-    const result = await startCloudflareWorkersAiAsrAfterSelect({
-      language: "ja-JP",
-      existing: null,
-      createController: () => created,
-      onError,
-    });
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        existing: null,
+        createController: () => created,
+        onError,
+      }),
+    ).rejects.toThrow(WORKERS_AI_ASR_UNSUPPORTED_JA);
     expect(created.start).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_UNSUPPORTED_JA);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe("unsupported");
-    }
   });
 
   it("maps thrown getUserMedia errors to Japanese", async () => {
@@ -589,14 +588,15 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
       start: vi.fn(() => Promise.reject(denied)),
     });
     const onError = vi.fn();
-    const result = await startCloudflareWorkersAiAsrAfterSelect({
-      language: "ja-JP",
-      existing: null,
-      createController: () => created,
-      captureSupported: true,
-      onError,
-    });
-    expect(result.ok).toBe(false);
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        existing: null,
+        createController: () => created,
+        captureSupported: true,
+        onError,
+      }),
+    ).rejects.toThrow("マイク許可が必要です。ブラウザの設定でマイクを許可してください");
     expect(onError).toHaveBeenCalledWith(
       "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
     );
@@ -610,16 +610,14 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
         return Promise.resolve();
       }),
     });
-    const result = await startCloudflareWorkersAiAsrAfterSelect({
-      language: "ja-JP",
-      existing: null,
-      createController: () => created,
-      captureSupported: true,
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe("start-failed");
-    }
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        existing: null,
+        createController: () => created,
+        captureSupported: true,
+      }),
+    ).rejects.toThrow(WORKERS_AI_ASR_PREPARING_JA);
   });
 
   it("treats idle after start as a failed start", async () => {
@@ -628,15 +626,16 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
       start: vi.fn(async () => undefined),
     });
     const onError = vi.fn();
-    const result = await startCloudflareWorkersAiAsrAfterSelect({
-      language: "ja-JP",
-      existing: null,
-      createController: () => created,
-      captureSupported: true,
-      onError,
-    });
+    await expect(
+      startCloudflareWorkersAiAsrAfterSelect({
+        language: "ja-JP",
+        existing: null,
+        createController: () => created,
+        captureSupported: true,
+        onError,
+      }),
+    ).rejects.toThrow(WORKERS_AI_ASR_PREPARING_JA);
     expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_PREPARING_JA);
-    expect(result.ok).toBe(false);
   });
 
   it("accepts starting state immediately after start", async () => {

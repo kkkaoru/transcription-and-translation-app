@@ -752,7 +752,6 @@ export class WorkersAiAsrController {
       } else {
         this.flushing = false;
         this.fail("録音データがありません");
-        return;
       }
       if (this.disposed) {
         this.flushing = false;
@@ -776,6 +775,9 @@ export class WorkersAiAsrController {
       this.completeSessionOrRestart(options.restart);
     } catch (error) {
       this.flushing = false;
+      if (this.state === "error") {
+        throw error;
+      }
       this.fail(
         error instanceof Error && error.message.trim() ? error.message : "認識に失敗しました",
       );
@@ -834,6 +836,9 @@ export class WorkersAiAsrController {
     this.captureActive = false;
     this.setState("error");
     this.options.onError?.(message);
+    const error = new Error(message);
+    console.error(error);
+    throw error;
   }
 
   private setState(next: WorkersAiAsrState): void {

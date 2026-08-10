@@ -1,5 +1,8 @@
 import type { ComparisonAuth } from "./contract";
-import { beginRecognitionListening } from "./recognition-listen";
+import {
+  BROWSER_VIBRATO_WARMUP_FAILURE_NOTICE_PREFIX,
+  recognitionErrorMessage,
+} from "./recognition-listen";
 import {
   WorkersAiAsrController,
   type WorkersAiAsrControllerOptions,
@@ -136,7 +139,7 @@ export const startCloudflareWorkersAiAsrAfterSelect = (
     });
     if (!gate.ok) {
       params.onError?.(gate.message);
-      return { ...gate, controller };
+      throw new Error(gate.message);
     }
     if (isLoopbackWorkersAiAsrEndpoint(params.endpointUrl)) {
       try {
@@ -144,7 +147,7 @@ export const startCloudflareWorkersAiAsrAfterSelect = (
       } catch (error) {
         const message = error instanceof Error ? error.message : WORKERS_AI_ASR_PREPARING_JA;
         params.onError?.(message);
-        return { ok: false, reason: "unavailable", message, controller };
+        throw error instanceof Error ? error : new Error(message);
       }
     }
     try {
@@ -152,15 +155,12 @@ export const startCloudflareWorkersAiAsrAfterSelect = (
     } catch (error) {
       const message = getUserMediaErrorMessageJa(error);
       params.onError?.(message);
-      return { ok: false, reason: "start-failed", message, controller: gate.controller };
+      throw error instanceof Error && error.message === message ? error : new Error(message);
     }
     if (gate.controller.currentState === "error") {
-      return {
-        ok: false,
-        reason: "start-failed",
-        message: WORKERS_AI_ASR_PREPARING_JA,
-        controller: gate.controller,
-      };
+      const message = WORKERS_AI_ASR_PREPARING_JA;
+      params.onError?.(message);
+      throw new Error(message);
     }
     if (
       gate.controller.currentState !== "listening" &&
@@ -168,21 +168,15 @@ export const startCloudflareWorkersAiAsrAfterSelect = (
     ) {
       const message = WORKERS_AI_ASR_PREPARING_JA;
       params.onError?.(message);
-      return { ok: false, reason: "start-failed", message, controller: gate.controller };
+      throw new Error(message);
     }
     return { ok: true, controller: gate.controller };
   };
 
-  return new Promise((resolve) => {
-    beginRecognitionListening({
-      provider: "workers-ai-asr",
-      start: () => {
-        void runStart().then(resolve);
-      },
-      warmBrowserVibrato: params.warmBrowserVibrato ?? (() => Promise.resolve()),
-      onWarmupNotice: params.onWarmupNotice,
-      onWarmupError: params.onError,
-      requireVibratoWarmup: params.requireVibratoWarmup,
-    });
+  void (params.warmBrowserVibrato ?? (() => Promise.resolve()))().catch((caught: unknown) => {
+    params.onWarmupNotice?.(
+      `${BROWSER_VIBRATO_WARMUP_FAILURE_NOTICE_PREFIX}${recognitionErrorMessage(caught)}`,
+    );
   });
+  return runStart();
 };

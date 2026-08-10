@@ -100,7 +100,9 @@ describe("beginRecognitionListening", () => {
     await Promise.resolve();
 
     expect(logged, "start failure must console.error").toHaveBeenCalled();
-    expect(JSON.stringify(logged.mock.calls)).toMatch(/マイクを開始できません/);
+    const loggedError = logged.mock.calls[0]?.[0];
+    expect(loggedError).toBeInstanceOf(Error);
+    expect((loggedError as Error).message).toBe("マイクを開始できません");
     expect(scheduled.length, "start failure must queue a pageerror throw").toBeGreaterThan(0);
     expect(() => {
       for (const callback of scheduled) {

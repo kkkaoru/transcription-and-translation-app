@@ -618,7 +618,9 @@ describe("WorkersAiAsrController VAD session", () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { controller, events } = await startController();
     expect(controller.currentState).toBe("listening");
-    await vi.advanceTimersByTimeAsync(PCM_TAP_DEAD_WATCHDOG_MS);
+    expect(() => {
+      vi.advanceTimersByTime(PCM_TAP_DEAD_WATCHDOG_MS);
+    }).toThrow(WORKERS_AI_ASR_TAP_DEAD_JA);
     expect(logged).toHaveBeenCalled();
     expect(JSON.stringify(logged.mock.calls)).toMatch(/tapFrames/);
     expect(JSON.stringify(logged.mock.calls)).toMatch(/peakRmsDb/);
@@ -757,7 +759,9 @@ describe("WorkersAiAsrController VAD session", () => {
       disableSilero: true,
       ...events,
     });
-    await controller.start();
+    await expect(controller.start()).rejects.toThrow(
+      "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
+    );
     expect(controller.currentState).toBe("error");
     expect(events.onError).toHaveBeenCalledWith(
       "マイク許可が必要です。ブラウザの設定でマイクを許可してください",
@@ -779,7 +783,9 @@ describe("WorkersAiAsrController VAD session", () => {
       disableSilero: true,
       ...events,
     });
-    await controller.start();
+    await expect(controller.start()).rejects.toThrow(
+      "マイクが見つかりません。接続を確認してください",
+    );
     expect(controller.currentState).toBe("error");
     expect(events.onError).toHaveBeenCalledWith("マイクが見つかりません。接続を確認してください");
     controller.dispose();

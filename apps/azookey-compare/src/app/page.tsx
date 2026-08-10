@@ -85,7 +85,10 @@ import {
   ensureWorkersAiAsrController,
   startCloudflareWorkersAiAsrAfterSelect,
 } from "../lib/workers-ai-asr-session";
-import { WEB_SPEECH_UNSUPPORTED_JA } from "../lib/workers-ai-asr-support";
+import {
+  WEB_SPEECH_UNSUPPORTED_JA,
+  WORKERS_AI_ASR_UNSUPPORTED_JA,
+} from "../lib/workers-ai-asr-support";
 
 const DESKTOP_CONFIG_MEDIA_QUERY = "(min-width: 641px)";
 
@@ -134,11 +137,8 @@ const createId = (): string => {
 const speechStateLabel = (state: SpeechRecognitionState | WorkersAiAsrState): string => {
   switch (state) {
     case "starting":
-      return "起動中";
     case "listening":
       return "認識中";
-    case "stopping":
-      return "停止中";
     case "error":
       return "エラー";
     default:
@@ -894,47 +894,51 @@ export default function ComparePage() {
       beginRecognitionListening({
         provider: "workers-ai-asr",
         start: async () => {
-          const result = await startCloudflareWorkersAiAsrAfterSelect({
-            language: config.language,
-            endpointUrl:
-              typeof window !== "undefined"
-                ? buildWorkersAiAsrUrl(window.location.origin)
-                : undefined,
-            auth: { scheme: config.auth.scheme, token: config.auth.token },
-            existing: asrRef.current,
-            callbacks: {
-              onStateChange: (state) => {
-                setSpeechState(state);
-                if (state === "listening") {
-                  setError("");
-                }
-              },
-              onTranscript: ({ interimText }) => {
-                setSpeechInterimText(interimText);
-              },
-              onFinalText: (text) => {
-                setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
-              },
-              onUtteranceFinal: ({ text, audioSeconds }) => {
-                dispatchSpeechText(text, audioSeconds);
-              },
-              onVadNotice: (message) => {
-                setNotice(message);
+          try {
+            const result = await startCloudflareWorkersAiAsrAfterSelect({
+              language: config.language,
+              endpointUrl:
+                typeof window !== "undefined"
+                  ? buildWorkersAiAsrUrl(window.location.origin)
+                  : undefined,
+              auth: { scheme: config.auth.scheme, token: config.auth.token },
+              existing: asrRef.current,
+              callbacks: {
+                onStateChange: (state) => {
+                  setSpeechState(state);
+                  if (state === "listening") {
+                    setError("");
+                  }
+                },
+                onTranscript: ({ interimText }) => {
+                  setSpeechInterimText(interimText);
+                },
+                onFinalText: (text) => {
+                  setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
+                },
+                onUtteranceFinal: ({ text, audioSeconds }) => {
+                  dispatchSpeechText(text, audioSeconds);
+                },
+                onVadNotice: (message) => {
+                  setNotice(message);
+                },
+                onError: (message) => {
+                  setError(message);
+                },
               },
               onError: (message) => {
                 setError(message);
               },
-            },
-            onError: (message) => {
-              setError(message);
-            },
-          });
-          if (result.controller) {
-            asrRef.current = result.controller;
-            setAsrCaptureSupported(result.controller.supported);
-          }
-          if (!result.ok && result.reason === "unsupported") {
-            setAsrCaptureSupported(false);
+            });
+            if (result.controller) {
+              asrRef.current = result.controller;
+              setAsrCaptureSupported(result.controller.supported);
+            }
+          } catch (caught) {
+            if (caught instanceof Error && caught.message === WORKERS_AI_ASR_UNSUPPORTED_JA) {
+              setAsrCaptureSupported(false);
+            }
+            throw caught;
           }
         },
         warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
