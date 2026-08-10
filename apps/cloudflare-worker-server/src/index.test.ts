@@ -557,7 +557,7 @@ describe("Cloudflare Worker inference adapter", () => {
     const bindingRun = vi.fn((model: string, input: Record<string, unknown>) => {
       expect(model).toBe(WORKERS_AI_ASR_MODEL);
       const audio = input["audio"] as { body?: unknown; contentType?: unknown };
-      expect(typeof audio.body).toBe("string");
+      expect(audio.body).toBeInstanceOf(ReadableStream);
       expect(audio.contentType).toBe("audio/wav");
       return Promise.resolve({
         results: { channels: [{ alternatives: [{ transcript: "AI binding" }] }] },

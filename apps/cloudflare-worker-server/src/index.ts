@@ -431,9 +431,8 @@ export const createWorker = (
                         model,
                         {
                           ...input,
-                          // Generated Workers types currently declare Nova-3's
-                          // base64 body as object; the binding contract is a
-                          // base64 string (matching Cloudflare's adapter).
+                          // Generated Workers types declare Nova-3's binary
+                          // body as object; pass the WAV bytes through unchanged.
                           audio: { ...input.audio, body: input.audio.body as unknown as object },
                         },
                         options,

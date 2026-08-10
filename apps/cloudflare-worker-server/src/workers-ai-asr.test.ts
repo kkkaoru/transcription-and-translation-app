@@ -45,11 +45,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       expect(model).toBe(WORKERS_AI_ASR_MODEL);
       expect(input.language).toBe(WORKERS_AI_ASR_LANGUAGE);
       expect(input.audio.contentType).toBe("audio/wav");
-      const body = input.audio.body as unknown as string;
-      expect(typeof body).toBe("string");
-      expect([
-        ...Uint8Array.from(atob(body), (character) => character.charCodeAt(0)).slice(0, 4),
-      ]).toEqual([82, 73, 70, 70]);
+      expect(input.audio.body).toBeInstanceOf(ReadableStream);
       expect(options.signal).toBeInstanceOf(AbortSignal);
       return Promise.resolve(novaResult());
     });
