@@ -115,4 +115,22 @@ describe("compare Worker inference proxy", () => {
       expect(nextConfig).toContain(pathname);
     }
   });
+
+  it("requires local worker:dev wrangler.dev.jsonc to expose a Workers AI remote binding", () => {
+    const devJsonc = readFileSync(
+      new URL("../../../cloudflare-worker-server/wrangler.dev.jsonc", import.meta.url),
+      "utf8",
+    );
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    const devConfig = JSON.parse(devJsonc.replace(/^\s*\/\/.*$/gm, "")) as {
+      ai?: { binding?: string; remote?: boolean };
+    };
+    // Local next.dev rewrites ASR to :8787. Without a remote AI binding there,
+    // 認識を開始 succeeds but the first utterance returns JSON 503
+    // "Workers AI ASR binding is not configured".
+    expect(devConfig.ai).toEqual({ binding: "AI", remote: true });
+    expect(readme).toMatch(/wrangler\.dev\.jsonc/);
+    expect(readme).toMatch(/remote:\s*true/);
+    expect(readme).not.toMatch(/does not enable the\s+Workers AI binding/);
+  });
 });
