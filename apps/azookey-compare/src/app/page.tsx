@@ -59,6 +59,7 @@ import {
 } from "../lib/converter-models";
 import { buildWorkersAiAsrUrl } from "../lib/inference-proxy";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
+import { beginRecognitionListening } from "../lib/recognition-listen";
 import { visibleWebSpeechCaption } from "../lib/speech-caption-display";
 import { syncSpeechLanguage } from "../lib/speech-language";
 import { pendingSpeechUtterance, rememberDispatchedSpeech } from "../lib/speech-utterance";
@@ -329,9 +330,9 @@ export default function ComparePage() {
       const asrEndpoint =
         typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined;
       const controller = new WorkersAiAsrController(initialSpeechLanguageRef.current, {
-        language: config.language,
+        language: initialSpeechLanguageRef.current,
         endpointUrl: asrEndpoint,
-        auth: config.auth,
+        auth: { scheme: config.auth.scheme, token: config.auth.token },
         onStateChange: (state) => {
           setSpeechState(state);
           if (state === "listening") {
@@ -853,21 +854,14 @@ export default function ComparePage() {
     dispatchedSpeechRef.current = [];
     setLatestSpeechSegment("");
     setError("");
-    void warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current)
-      .catch((caught: unknown) => {
-        if (config.mode === "browser-vibrato") {
-          setError(errorMessage(caught));
-          return false;
-        }
-        setNotice(`ブラウザ辞書の先行読み込みに失敗しました: ${errorMessage(caught)}`);
-        return true;
-      })
-      .then((shouldStart) => {
-        if (shouldStart === false) {
-          return;
-        }
-        void controller.start();
-      });
+    beginRecognitionListening({
+      provider: config.recognitionProvider,
+      start: () => controller.start(),
+      warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
+      onWarmupNotice: setNotice,
+      onWarmupError: setError,
+      requireVibratoWarmup: config.mode === "browser-vibrato",
+    });
   };
 
   const connectWorker = async (): Promise<void> => {
@@ -1064,10 +1058,7 @@ export default function ComparePage() {
         data-testid="architecture-disclosure"
       >
         <summary>本番構成図（Cloudflare Workers）</summary>
-        <ComparisonPathDiagram
-          kind="overview"
-          recognitionProvider={config.recognitionProvider}
-        />
+        <ComparisonPathDiagram kind="overview" recognitionProvider={config.recognitionProvider} />
         <ComparisonPathDiagram
           kind="mode"
           mode={config.mode}
