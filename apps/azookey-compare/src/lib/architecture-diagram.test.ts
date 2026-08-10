@@ -19,10 +19,9 @@ import {
 } from "./architecture-diagram";
 import type { ComparisonMode } from "./contract";
 import type { ConverterModel } from "./converter-models";
-import { COMPARE_WORKER_ORIGIN } from "./inference-proxy";
+import { COMPARE_WORKER_ORIGIN, COMPARE_WORKERS_AI_ASR_PATH } from "./inference-proxy";
 
 const overviewTerms = [
-  "Web Speech",
   "Access",
   "OTP + Managed OAuth",
   "teadea + avita",
@@ -45,10 +44,27 @@ const overviewTerms = [
   ARCHITECTURE_ZENZAI.env,
   "Zenzai GGUF",
   "LOUDS dict フォールバック",
-  "Workers AI Nova-3 ASR",
-  "Workers AI ASR",
-  "@cf/deepgram/nova-3",
 ];
+
+const assertOverviewLayout = (overview: ReturnType<typeof overviewArchitecture>) => {
+  expect(overview.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
+  expect(overview.height).toBeLessThan(OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT);
+  expect(overview.viewBox.startsWith("0 0 680 ")).toBe(true);
+  expect(overview.bands).toBeUndefined();
+  expect(overview.lanes).toEqual([]);
+  expect(overview.boxes.map((box) => box.id)).toEqual([
+    "browser",
+    "access",
+    "compare",
+    "browser-complete",
+    "worker-ws",
+    "inference",
+  ]);
+  expect(overlappingBoxIds(overview)).toEqual([]);
+  expect(overflowingBoxIds(overview)).toEqual([]);
+  expect(boxesCollidingWithLaneTitles(overview)).toEqual([]);
+  expect(edgesCrossingForeignBoxes(overview)).toEqual([]);
+};
 
 describe("architecture SVG diagram models", () => {
   it("overview matches hosted Cloudflare Workers compare + inference", () => {
@@ -61,32 +77,77 @@ describe("architecture SVG diagram models", () => {
     expect(text).not.toContain("ブラウザ簡潔");
     expect(text).not.toContain("Service Worker");
     expect(text).toContain("Vibrato WASM");
-    expect(text).toContain("Web Speech: Speech API のみ · Silero なし");
-    expect(text).toContain("Workers AI ASR: ブラウザ Silero VAD → Nova-3");
-    expect(overview.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
-    expect(overview.height).toBeLessThan(OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT);
-    expect(overview.bands).toBeUndefined();
-    expect(overview.lanes).toEqual([]);
-    expect(overview.boxes.map((box) => box.id)).toEqual([
-      "browser",
-      "access",
-      "compare",
-      "browser-complete",
-      "worker-ws",
-      "inference",
-    ]);
+    expect(text).toContain("Web Speech API のみ");
+    expect(text).toContain("Silero ONNX / ORT WASM なし");
+    expect(text).not.toContain("silero_vad.onnx");
+    expect(text).not.toContain(COMPARE_WORKERS_AI_ASR_PATH);
+    expect(text).not.toContain("Workers AI Nova-3 ASR");
     expect(overview.boxes.some((box) => box.artifact === "code")).toBe(true);
     expect(overview.boxes.some((box) => box.cost === "model")).toBe(true);
     expect(overview.edges.some((edge) => edge.path === "internet")).toBe(true);
     expect(overview.edges.some((edge) => edge.label === "INFERENCE")).toBe(true);
-    expect(overview.edges.some((edge) => edge.label === "Workers AI ASR")).toBe(true);
+    expect(overview.edges.some((edge) => edge.from === "compare" && edge.to === "inference")).toBe(
+      false,
+    );
     expect(architectureDiagramCaption("overview")).toBe("Cloudflare Workers 本番構成");
+    assertOverviewLayout(overview);
+  });
+
+  it("overview Workers AI ASR draws Silero → transcriptions → Nova-3 boxes and edges", () => {
+    const overview = overviewArchitecture("workers-ai-asr");
+    const text = architectureDiagramText(overview);
+    const browser = overview.boxes.find((box) => box.id === "browser");
+    const compare = overview.boxes.find((box) => box.id === "compare");
+    const inference = overview.boxes.find((box) => box.id === "inference");
+    for (const term of overviewTerms) {
+      expect(text).toContain(term);
+    }
+    expect(browser?.lines).toEqual([
+      "Silero VAD v6（ONNX + ORT WASM）",
+      "発話切り出し",
+      ARCHITECTURE_DICTIONARIES.silero.browserUrl,
+    ]);
+    expect(compare?.lines).toContain(`POST ${COMPARE_WORKERS_AI_ASR_PATH}（Access JWT）`);
+    expect(inference?.lines).toContain("Workers AI Nova-3 ASR");
+    expect(inference?.lines).toContain("@cf/deepgram/nova-3 · env.AI.run");
+    expect(text).toContain("Silero VAD v6");
+    expect(text).toContain("/models/silero_vad_v6/silero_vad.onnx");
+    expect(text).toContain(COMPARE_WORKERS_AI_ASR_PATH);
+    expect(text).toContain("Nova-3");
+    expect(text).not.toContain("Web Speech API のみ");
+    expect(overview.edges).toContainEqual({
+      from: "compare",
+      to: "inference",
+      path: "internet",
+      via: "gutter",
+      label: "Workers AI ASR",
+    });
+    expect(overview.edges.some((edge) => edge.label === "INFERENCE")).toBe(true);
+    expect(
+      overview.edges.some((edge) => edge.from === "compare" && edge.to === "browser-complete"),
+    ).toBe(true);
+    assertOverviewLayout(overview);
+  });
+
+  it("overview Web Speech does not claim Silero is running", () => {
+    const overview = overviewArchitecture("web-speech");
+    const text = architectureDiagramText(overview);
+    expect(text).toContain("Web Speech API のみ");
+    expect(text).toContain("Silero ONNX / ORT WASM なし");
+    expect(text).not.toContain("silero_vad.onnx");
+    expect(text).not.toContain("発話切り出し");
+    expect(text).not.toContain(COMPARE_WORKERS_AI_ASR_PATH);
+    expect(text).not.toContain("@cf/deepgram/nova-3");
+    expect(overview.edges.some((edge) => edge.label === "Workers AI ASR")).toBe(false);
   });
 
   it("keeps diagram within viewport width and hides horizontal overflow", () => {
     const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
     expect(css).toMatch(/\.path-diagram-svg\s*\{[\s\S]*overflow-x:\s*hidden/);
     expect(overviewArchitecture().width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
+    expect(overviewArchitecture("workers-ai-asr").width).toBeLessThanOrEqual(
+      ARCHITECTURE_DIAGRAM_MAX_WIDTH,
+    );
   });
 
   it("keeps mode diagrams compact without horizontal overflow", () => {
@@ -115,6 +176,18 @@ describe("architecture SVG diagram models", () => {
       expect(architectureDiagramText(asrDiagram)).toContain(
         "/models/silero_vad_v6/silero_vad.onnx",
       );
+      expect(architectureDiagramText(asrDiagram)).toContain(COMPARE_WORKERS_AI_ASR_PATH);
+      expect(asrDiagram.edges).toContainEqual({
+        from: "asr",
+        to: "vib",
+        path: "device",
+        via: "vertical",
+      });
+      expect(
+        asrDiagram.edges.some(
+          (edge) => edge.from === "asr" && edge.to === "vib" && edge.path === "internet",
+        ),
+      ).toBe(false);
       expect(architectureDiagramText(diagram)).toContain("Web Speech API");
       expect(architectureDiagramText(diagram)).toContain("Silero ONNX / ORT WASM なし");
       expect(architectureDiagramText(diagram)).not.toContain("silero_vad.onnx");
@@ -125,10 +198,14 @@ describe("architecture SVG diagram models", () => {
   it("keeps boxes and edges readable without overlap or wrap", () => {
     const diagrams = [
       overviewArchitecture(),
+      overviewArchitecture("web-speech"),
+      overviewArchitecture("workers-ai-asr"),
       modeArchitecture("worker-vibrato", true, "azookey-rust-wasm"),
+      modeArchitecture("worker-vibrato", true, "azookey-rust-wasm", "workers-ai-asr"),
       modeArchitecture("worker-vibrato", true, "zenz-v3.2-xsmall-gguf"),
       modeArchitecture("browser-vibrato", false, "azookey-rust-wasm"),
       modeArchitecture("browser-vibrato", true, "zenz-v3.2-small-gguf"),
+      modeArchitecture("browser-vibrato", true, "zenz-v3.2-small-gguf", "workers-ai-asr"),
     ];
     for (const diagram of diagrams) {
       expect(diagram.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
@@ -206,6 +283,19 @@ describe("architecture SVG diagram models", () => {
 
   it("architectureDiagram dispatches kinds", () => {
     expect(architectureDiagram({ kind: "overview" }).boxes).toHaveLength(6);
+    expect(architectureDiagramText(architectureDiagram({ kind: "overview" }))).toContain(
+      "Web Speech API のみ",
+    );
+    expect(
+      architectureDiagramText(
+        architectureDiagram({ kind: "overview", recognitionProvider: "workers-ai-asr" }),
+      ),
+    ).toContain("Silero VAD v6");
+    expect(
+      architectureDiagramText(
+        architectureDiagram({ kind: "overview", recognitionProvider: "web-speech" }),
+      ),
+    ).not.toContain("silero_vad.onnx");
     const mode = architectureDiagram({
       kind: "mode",
       mode: "browser-vibrato",

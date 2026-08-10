@@ -1,7 +1,7 @@
 import type { ComparisonMode, RecognitionProvider } from "./contract";
 import type { ConverterModel } from "./converter-models";
 import { DEFAULT_CONVERTER_MODEL, isZenzConverterModel } from "./converter-models";
-import { COMPARE_WORKER_ORIGIN } from "./inference-proxy";
+import { COMPARE_WORKER_ORIGIN, COMPARE_WORKERS_AI_ASR_PATH } from "./inference-proxy";
 
 export type ArchitectureDiagramKind = "overview" | "mode";
 export type ArchitectureTone = "browser" | "worker" | "desktop" | "dict" | "model" | "io" | "warn";
@@ -502,7 +502,10 @@ const placeBox = (box: Omit<ArchitectureBox, "h">): ArchitectureBox => ({
   h: requiredBoxHeight(box),
 });
 
-export const overviewArchitecture = (): ArchitectureDiagram => {
+export const overviewArchitecture = (
+  recognitionProvider: RecognitionProvider = "web-speech",
+): ArchitectureDiagram => {
+  const workersAiAsr = recognitionProvider === "workers-ai-asr";
   const width = 680;
   const fullW = 640;
   const halfW = 300;
@@ -516,10 +519,13 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: 12,
     w: fullW,
     title: "① ブラウザ",
-    lines: [
-      "Web Speech: Speech API のみ · Silero なし",
-      "Workers AI ASR: ブラウザ Silero VAD → Nova-3",
-    ],
+    lines: workersAiAsr
+      ? [
+          "Silero VAD v6（ONNX + ORT WASM）",
+          "発話切り出し",
+          ARCHITECTURE_DICTIONARIES.silero.browserUrl,
+        ]
+      : ["Web Speech API のみ", "Silero ONNX / ORT WASM なし"],
     tone: "browser",
     artifact: "runtime",
   });
@@ -539,7 +545,13 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: access.y + access.h + gap,
     w: fullW,
     title: "③ compare Cloudflare Worker",
-    lines: [COMPARE_WORKER_ORIGIN, "Access JWT + static Next export"],
+    lines: workersAiAsr
+      ? [
+          COMPARE_WORKER_ORIGIN,
+          `POST ${COMPARE_WORKERS_AI_ASR_PATH}（Access JWT）`,
+          "static Next export",
+        ]
+      : [COMPARE_WORKER_ORIGIN, "Access JWT + static Next export"],
     tone: "worker",
     artifact: "runtime",
   });
@@ -579,8 +591,9 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     lines: [
       "Cloudflare Worker（推論）",
       "workers.dev 無し",
-      "Workers AI Nova-3 ASR",
-      "@cf/deepgram/nova-3 · env.AI.run",
+      ...(workersAiAsr
+        ? ["Workers AI Nova-3 ASR", "@cf/deepgram/nova-3 · env.AI.run"]
+        : []),
       "AzooKey WASM + LOUDS dict",
       `${ARCHITECTURE_ZENZAI.env} → Zenzai GGUF`,
       "未設定 → LOUDS dict フォールバック",
@@ -590,6 +603,36 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     cost: "model",
   });
   const height = Math.max(browserComplete.y + browserComplete.h, inference.y + inference.h) + 16;
+  const conversionEdges: ArchitectureEdge[] = [
+    { from: "browser", to: "access", path: "internet", via: "vertical" },
+    { from: "access", to: "compare", path: "internet", via: "vertical" },
+    {
+      from: "compare",
+      to: "browser-complete",
+      path: "device",
+      via: "vertical",
+      corridorY: compare.y + compare.h + 8,
+    },
+    {
+      from: "compare",
+      to: "worker-ws",
+      path: "device",
+      via: "vertical",
+      corridorY: compare.y + compare.h + 8,
+    },
+    { from: "worker-ws", to: "inference", path: "device", via: "vertical", label: "INFERENCE" },
+  ];
+  const asrEdges: ArchitectureEdge[] = workersAiAsr
+    ? [
+        {
+          from: "compare",
+          to: "inference",
+          path: "internet",
+          via: "gutter",
+          label: "Workers AI ASR",
+        },
+      ]
+    : [];
 
   return {
     viewBox: `0 0 ${width} ${height}`,
@@ -598,33 +641,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     gutterX,
     lanes: [],
     boxes: [browser, access, compare, browserComplete, workerWs, inference],
-    edges: [
-      { from: "browser", to: "access", path: "internet", via: "vertical" },
-      { from: "access", to: "compare", path: "internet", via: "vertical" },
-      {
-        from: "compare",
-        to: "browser-complete",
-        path: "device",
-        via: "vertical",
-        corridorY: compare.y + compare.h + 8,
-      },
-      {
-        from: "compare",
-        to: "worker-ws",
-        path: "device",
-        via: "vertical",
-        corridorY: compare.y + compare.h + 8,
-      },
-      { from: "worker-ws", to: "inference", path: "device", via: "vertical", label: "INFERENCE" },
-      {
-        from: "compare",
-        to: "inference",
-        path: "internet",
-        via: "gutter",
-        label: "Workers AI ASR",
-        dashed: true,
-      },
-    ],
+    edges: [...conversionEdges, ...asrEdges],
   };
 };
 
@@ -757,7 +774,7 @@ export const modeArchitecture = (
   const bottom = Math.max(...[...recognition, ...reading, ...convert].map((box) => box.y + box.h));
   const edges: ArchitectureEdge[] = workersAiAsr
     ? [
-        { from: "asr", to: "vib", path: "internet", via: "vertical" },
+        { from: "asr", to: "vib", path: "device", via: "vertical" },
         { from: "vib", to: "model", path: "device" },
       ]
     : [
@@ -795,7 +812,7 @@ export const architectureDiagramCaption = (
 
 export const architectureDiagram = (options: ArchitectureDiagramOptions): ArchitectureDiagram => {
   if (options.kind === "overview") {
-    return overviewArchitecture();
+    return overviewArchitecture(options.recognitionProvider ?? "web-speech");
   }
   return modeArchitecture(
     options.mode ?? "worker-vibrato",

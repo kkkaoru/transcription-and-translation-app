@@ -36,6 +36,16 @@ describe("compare page speech settings", () => {
     expect(source).toContain('kind="overview"');
     expect(source).toContain("ComparisonPathDiagram");
     expect(source).toContain("ブラウザ完結");
+    const overviewStart = source.indexOf("<ComparisonPathDiagram");
+    const modeStart = source.indexOf('kind="mode"');
+    expect(overviewStart).toBeGreaterThan(-1);
+    expect(modeStart).toBeGreaterThan(overviewStart);
+    expect(source.slice(overviewStart, modeStart)).toContain(
+      "recognitionProvider={config.recognitionProvider}",
+    );
+    expect(source.slice(modeStart, modeStart + 500)).toContain(
+      "recognitionProvider={config.recognitionProvider}",
+    );
   });
 
   it("wires Web Speech utterance and session-end callbacks", () => {
