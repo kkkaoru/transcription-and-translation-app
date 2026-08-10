@@ -19,12 +19,13 @@ describe("architecture asset inventory", () => {
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.ipadic.upstream);
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.ipadic.fn);
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.azookey.file);
+    expect(text).toContain(ARCHITECTURE_DICTIONARIES.azookey.browserUrl);
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.azookey.workerUrl);
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.azookey.workerEnv);
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.azookey.format);
     expect(text).toContain("Cloudflare Worker ASSETS");
     expect(text).toContain("connect / listen");
-    expect(text).toContain("websocket-upgrade");
+    expect(text).toContain("Zenzai 辞書選択時");
     expect(text).toContain(ARCHITECTURE_ZENZAI.file);
     expect(text).toContain(ARCHITECTURE_ZENZAI.loader);
     expect(text).toContain(`${ARCHITECTURE_ZENZAI.env}[model].baseUrl`);
@@ -51,6 +52,7 @@ describe("architecture asset inventory", () => {
     expect(ARCHITECTURE_DEPENDENCIES.map((row) => `${row.from}->${row.to}`)).toEqual([
       "Vibrato->IPADIC system.dic.zst",
       "AzooKey WASM->system.azkdict.gz",
+      "Zenzai 辞書（ブラウザ）->system.azkdict.gz",
       "Cloudflare Worker /ws/azookey->AzooKey WASM または Zenzai",
       "Zenzai 変換->llama-server sidecar",
       "llama-server->ggml-model-Q5_K_M.gguf",

@@ -34,6 +34,7 @@ describe("pendingSpeechUtterance", () => {
     expect(rememberDispatchedSpeech([], "  こんにちは  ")).toEqual(["こんにちは"]);
     expect(rememberDispatchedSpeech(["こんにちは"], "こんにちは")).toEqual(["こんにちは"]);
     expect(rememberDispatchedSpeech([], "   ")).toEqual([]);
+    expect(rememberDispatchedSpeech(["こんにちは"], "   ")).toEqual(["こんにちは"]);
   });
 
   it("suppresses recognition-end tails already represented by the last dispatch", () => {
@@ -42,5 +43,8 @@ describe("pendingSpeechUtterance", () => {
     expect(pendingSpeechUtterance("別文", "", ["こんにちは"])).toBe("別文");
     expect(pendingSpeechUtterance("きょうははれ", "", [])).toBe("きょうははれ");
     expect(pendingSpeechUtterance("追加のみ", "", ["こんにちは"])).toBe("追加のみ");
+    expect(pendingSpeechUtterance("こんにちは", "", ["foo", "こんにちは"])).toBeUndefined();
+    expect(pendingSpeechUtterance("またこんにちは", "", ["こんにちは"])).toBeUndefined();
+    expect(pendingSpeechUtterance("未送信", "", ["別セグメント"])).toBe("未送信");
   });
 });

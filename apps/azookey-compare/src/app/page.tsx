@@ -11,6 +11,11 @@ import {
 } from "../lib/azookey-reading";
 import { runBrowserAzookey, warmupBrowserAzookey } from "../lib/browser-azookey";
 import {
+  BROWSER_ZENZAI_DICT_NOTICE,
+  runBrowserZenzaiDict,
+  warmupBrowserZenzaiDict,
+} from "../lib/browser-zenzai";
+import {
   browserVibratoConfigFromComparison,
   runBrowserVibrato,
   warmupBrowserVibrato,
@@ -30,7 +35,7 @@ import {
   AZOOKEY_CONVERSION_FIXTURES,
   type AzookeyConversionFixture,
 } from "../lib/conversion-fixtures";
-import { runComparisonConversion } from "../lib/conversion-pipeline";
+import { runComparisonConversion, usesBrowserZenzaiDictPath } from "../lib/conversion-pipeline";
 import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
 import {
   conversionTraceDisplayLines,
@@ -41,6 +46,7 @@ import {
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
   isConverterModel,
+  isZenzConverterModel,
 } from "../lib/converter-models";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import { visibleWebSpeechCaption } from "../lib/speech-caption-display";
@@ -400,6 +406,7 @@ export default function ComparePage() {
               }
             },
             runBrowserAzookey: (text) => runBrowserAzookey(text),
+            runBrowserZenzaiDict: (text, model) => runBrowserZenzaiDict(text, { model }),
             connectWorker: async () => {
               const client = workerRef.current;
               if (!client) {
@@ -444,7 +451,9 @@ export default function ComparePage() {
             : {}),
           totalElapsedMs: result.totalElapsedMs,
         });
-        if (result.modelFallback && result.requestedModel) {
+        if (result.zenzaiExecution) {
+          setNotice(BROWSER_ZENZAI_DICT_NOTICE);
+        } else if (result.modelFallback && result.requestedModel) {
           setNotice(
             result.modelFallback === "upstream-failed"
               ? `${result.requestedModel} の上流に接続できなかったため AzooKey WASM で変換しました`
@@ -606,6 +615,14 @@ export default function ComparePage() {
     [config.mode, browserWasmConfigured],
   );
 
+  const browserZenzaiDictNotice = useMemo(
+    () =>
+      usesBrowserZenzaiDictPath(config.mode, config.converterModel)
+        ? BROWSER_ZENZAI_DICT_NOTICE
+        : "",
+    [config.converterModel, config.mode],
+  );
+
   const selectedModeOption = useMemo(
     () => comparisonModeOptions.find((option) => option.value === config.mode),
     [config.mode],
@@ -637,7 +654,11 @@ export default function ComparePage() {
       try {
         await warmupBrowserVibrato(browserVibratoConfigFromComparison(config));
         if (config.mode === "browser-vibrato") {
-          await warmupBrowserAzookey();
+          if (isZenzConverterModel(config.converterModel)) {
+            await warmupBrowserZenzaiDict({ model: config.converterModel });
+          } else {
+            await warmupBrowserAzookey();
+          }
         }
         setBrowserWasmState("ready");
       } catch (caught) {
@@ -744,6 +765,7 @@ export default function ComparePage() {
     if (!shouldWarmBrowserDictionaryAfterConfigChange(String(key), speechState, workerState)) {
       if (
         key === "mode" ||
+        key === "converterModel" ||
         key === "browserWasmModuleUrl" ||
         key === "browserWasmDictionaryUrl" ||
         key === "browserWasmGlobalName"
@@ -760,7 +782,11 @@ export default function ComparePage() {
     void warmupBrowserVibrato(browserVibratoConfigFromComparison(next))
       .then(async () => {
         if (next.mode === "browser-vibrato") {
-          await warmupBrowserAzookey();
+          if (isZenzConverterModel(next.converterModel)) {
+            await warmupBrowserZenzaiDict({ model: next.converterModel });
+          } else {
+            await warmupBrowserAzookey();
+          }
         }
         setBrowserWasmState("ready");
       })
@@ -916,6 +942,12 @@ export default function ComparePage() {
             >
               {converterModelOptions.find((option) => option.value === config.converterModel)
                 ?.description ?? ""}
+              {browserZenzaiDictNotice ? (
+                <>
+                  {" "}
+                  <span data-testid="browser-zenzai-dict-notice">{browserZenzaiDictNotice}</span>
+                </>
+              ) : null}
             </p>
 
             <label className="field-label" htmlFor="worker-url">

@@ -1,9 +1,9 @@
 /**
  * Converter models the comparison UI can ask the Worker to use.
  *
- * - `azookey-rust-wasm` — portable LOUDS dictionary (browser-complete or Worker)
- * - `zenz-v3.2-xsmall-gguf` / `zenz-v3.2-small-gguf` — AzooKey Zenzai GGUF
- *   upstreams configured in the Worker's `MODEL_ROUTES`
+ * - `azookey-rust-wasm` — portable LOUDS dictionary (browser-complete or Cloudflare Worker)
+ * - `zenz-v3.2-xsmall-gguf` / `zenz-v3.2-small-gguf` — Zenzai GGUF on inference
+ *   Cloudflare Worker; browser-complete uses the same LOUDS dictionary only (辞書のみ)
  */
 
 export const CONVERTER_MODELS = [
@@ -33,13 +33,13 @@ export const converterModelOptions: readonly ConverterModelOption[] = [
     value: "zenz-v3.2-xsmall-gguf",
     label: "AzooKey Zenzai v3.2 xsmall",
     description:
-      "低レイテンシー向け Zenzai。推論 Cloudflare Worker の MODEL_ROUTES に zenz-v3.2-xsmall-gguf を設定したときだけ利用できます。",
+      "低レイテンシー向け Zenzai。ブラウザ完結では LOUDS 辞書（system.azkdict.gz）のみ。GGUF 推論は推論 Cloudflare Worker の MODEL_ROUTES に zenz-v3.2-xsmall-gguf を設定したとき利用できます。",
   },
   {
     value: "zenz-v3.2-small-gguf",
     label: "AzooKey Zenzai v3.2 small",
     description:
-      "精度寄り Zenzai。推論 Cloudflare Worker の MODEL_ROUTES に zenz-v3.2-small-gguf を設定したときだけ利用できます。",
+      "精度寄り Zenzai。ブラウザ完結では LOUDS 辞書のみ。GGUF 推論は推論 Cloudflare Worker の MODEL_ROUTES に zenz-v3.2-small-gguf を設定したとき利用できます。",
   },
 ] as const;
 

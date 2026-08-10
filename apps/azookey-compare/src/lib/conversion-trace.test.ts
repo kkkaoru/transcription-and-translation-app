@@ -3,6 +3,7 @@ import {
   assembleConversionTrace,
   buildAzookeyInputStep,
   buildBrowserAzookeyStep,
+  buildBrowserZenzaiDictStep,
   buildBrowserVibratoStep,
   buildConverterOutputStep,
   buildNormalizeStep,
@@ -200,5 +201,43 @@ describe("conversion trace helpers", () => {
         },
       }).steps.find((step) => step.id === "vibrato-skipped")?.detail,
     ).toContain("漢字");
+  });
+
+  it("records browser Zenzai dictionary conversion separately from AzooKey WASM", () => {
+    const trace = assembleConversionTrace({
+      rawSource: "きょう",
+      normalizedSource: "きょう",
+      vibrato: { ran: false, input: "きょう", output: "きょう", skippedReason: "not-required" },
+      converter: {
+        mode: "browser-vibrato",
+        azookeyInput: "きょう",
+        convertedText: "今日",
+        elapsedMs: 3,
+        model: "zenz-v3.2-xsmall-gguf",
+        zenzaiExecution: "browser-dict",
+        dictionaryUrl: "/azookey/system.azkdict.gz",
+      },
+    });
+    expect(trace.steps.some((step) => step.id === "browser-zenzai-dict")).toBe(true);
+    expect(trace.steps.some((step) => step.id === "browser-azookey")).toBe(false);
+    const zenzStep = trace.steps.find((step) => step.id === "browser-zenzai-dict");
+    expect(zenzStep?.detail).toContain("LOUDS");
+    expect(zenzStep?.detail).toContain("GGUF 推論なし");
+    expect(buildBrowserZenzaiDictStep("in", "out", "zenz-v3.2-xsmall-gguf", "/dict.gz").elapsedMs).toBeUndefined();
+    const defaultDictTrace = assembleConversionTrace({
+      rawSource: "きょう",
+      normalizedSource: "きょう",
+      vibrato: { ran: false, input: "きょう", output: "きょう", skippedReason: "not-required" },
+      converter: {
+        mode: "browser-vibrato",
+        azookeyInput: "きょう",
+        convertedText: "今日",
+        model: "zenz-v3.2-xsmall-gguf",
+        zenzaiExecution: "browser-dict",
+      },
+    });
+    expect(defaultDictTrace.steps.find((step) => step.id === "browser-zenzai-dict")?.detail).toContain(
+      "/azookey/system.azkdict.gz",
+    );
   });
 });

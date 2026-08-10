@@ -34,22 +34,25 @@ export const ARCHITECTURE_DICTIONARIES = {
   azookey: {
     file: "system.azkdict.gz",
     format: "AZKDIC01",
+    browserUrl: "/azookey/system.azkdict.gz",
     workerUrl: "/azookey/system.azkdict.gz",
     workerEnv: "AZOOKEY_DICTIONARY_URL",
     workerHostedAsset: true,
-    usedBy: "AzooKey WASM",
+    usedBy: "AzooKey WASM / Zenzai 辞書（ブラウザ）",
     fn: "かな漢字変換 LOUDS/MM/CID",
-    unusedBy: "Zenzai GGUF",
+    unusedBy: "Zenzai GGUF 推論",
   },
 } as const;
 
-/** Zenzai GGUF is not in the Worker. llama-server loads the file; Worker only POSTs. */
+/** Zenzai GGUF inference uses llama-server; browser-complete uses LOUDS dictionary only. */
 export const ARCHITECTURE_ZENZAI = {
   env: "MODEL_ROUTES",
   endpoint: "/completion",
   loader: "llama-server",
   file: "ggml-model-Q5_K_M.gguf",
   note: "Cloudflare Worker は GGUF を持たない",
+  browserDictLabel: "Zenzai 辞書（LOUDS）",
+  browserDictUrl: "/azookey/system.azkdict.gz",
   xsmall: {
     id: "zenz-v3.2-xsmall-gguf",
     hf: "Miwa-Keita/zenz-v3.2-xsmall-gguf",
@@ -469,7 +472,11 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: forkY,
     w: halfW,
     title: "ブラウザ完結",
-    lines: ["Vibrato WASM + AzooKey WASM", "in-page", "/ws/azookey なし"],
+    lines: [
+      "Vibrato WASM + AzooKey WASM",
+      ARCHITECTURE_ZENZAI.browserDictLabel,
+      "in-page /ws/azookey なし",
+    ],
     tone: "browser",
     artifact: "code",
     cost: "cpu",
@@ -499,9 +506,10 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     x: rightX,
     y: inference.y + inference.h + 40,
     w: halfW,
-    title: "Zenzai（Cloudflare Worker のみ）",
+    title: "Zenzai GGUF 推論",
     lines: [
       ARCHITECTURE_ZENZAI.note,
+      "Cloudflare Worker 依存",
       `${ARCHITECTURE_ZENZAI.loader} が読む`,
       ARCHITECTURE_ZENZAI.file,
     ],
@@ -577,7 +585,7 @@ export const modeArchitecture = (
   const convert = layoutStack(360, stackY, boxW, STACK_GAP, [
     {
       id: "model",
-      title: zenz && !worker ? "Zenzai（Cloudflare Worker のみ）" : modelName,
+      title: zenz && !worker ? ARCHITECTURE_ZENZAI.browserDictLabel : modelName,
       lines: worker
         ? zenz
           ? [
@@ -585,7 +593,7 @@ export const modeArchitecture = (
               `${ARCHITECTURE_ZENZAI.loader} が読む`,
               ARCHITECTURE_ZENZAI.file,
               `${ARCHITECTURE_ZENZAI.env} → POST ${ARCHITECTURE_ZENZAI.endpoint}`,
-              "Cloudflare Worker 依存のみ",
+              "Cloudflare Worker 依存（推論）",
               "未設定 / 失敗 → AzooKey WASM",
             ]
           : [
@@ -595,12 +603,18 @@ export const modeArchitecture = (
               "公開 URL なし",
             ]
         : zenz
-          ? [converterModel, "Zenzai は Cloudflare Worker 依存のみ", "このモードでは使えません"]
+          ? [
+              converterModel,
+              ARCHITECTURE_DICTIONARIES.azookey.browserUrl,
+              "LOUDS 辞書のみ",
+              "GGUF 推論なし",
+              "/ws/azookey なし",
+            ]
           : [converterModel, "/azookey/azookey.wasm", "in-page かな漢字", "/ws/azookey なし"],
-      tone: zenz ? (worker ? "model" : "warn") : worker ? "worker" : "browser",
-      artifact: zenz ? "model" : "code",
-      size: zenz && worker ? zenzSize : worker ? ARCHITECTURE_ASSET_SIZES.azookeyWasm : undefined,
-      badge: zenz && !worker ? "不可" : undefined,
+      tone: zenz ? (worker ? "model" : "browser") : worker ? "worker" : "browser",
+      artifact: zenz ? (worker ? "model" : "dict") : "code",
+      size: zenz && worker ? zenzSize : worker ? ARCHITECTURE_ASSET_SIZES.azookeyWasm : ARCHITECTURE_ASSET_SIZES.azkdictGz,
+      badge: zenz && !worker ? "辞書のみ" : undefined,
     },
   ]);
   const bottom = Math.max(...[...reading, ...convert].map((box) => box.y + box.h));

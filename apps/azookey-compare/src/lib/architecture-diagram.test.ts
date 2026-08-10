@@ -33,7 +33,7 @@ const overviewTerms = [
   "kotoba-beacon-inference",
   "workers_dev false",
   "公開 URL なし",
-  "Zenzai（Cloudflare Worker のみ）",
+  "Zenzai GGUF 推論",
   ARCHITECTURE_ZENZAI.loader,
   ARCHITECTURE_ZENZAI.file,
   ARCHITECTURE_ZENZAI.note,
@@ -107,7 +107,7 @@ describe("architecture SVG diagram models", () => {
     expect(zenz).toContain("zenz-v3.2-xsmall-gguf");
     expect(zenz).toContain(ARCHITECTURE_ZENZAI.file);
     expect(zenz).toContain(ARCHITECTURE_ZENZAI.xsmall.size);
-    expect(zenz).toContain("Cloudflare Worker 依存のみ");
+    expect(zenz).toContain("Cloudflare Worker 依存（推論）");
 
     const small = architectureDiagramText(
       modeArchitecture("worker-vibrato", true, "zenz-v3.2-small-gguf"),
@@ -129,8 +129,11 @@ describe("architecture SVG diagram models", () => {
     const browserZenz = architectureDiagramText(
       modeArchitecture("browser-vibrato", true, "zenz-v3.2-xsmall-gguf"),
     );
-    expect(browserZenz).toContain("Zenzai は Cloudflare Worker 依存のみ");
-    expect(browserZenz).toContain("このモードでは使えません");
+    expect(browserZenz).toContain(ARCHITECTURE_ZENZAI.browserDictLabel);
+    expect(browserZenz).toContain(ARCHITECTURE_DICTIONARIES.azookey.browserUrl);
+    expect(browserZenz).toContain("LOUDS 辞書のみ");
+    expect(browserZenz).toContain("GGUF 推論なし");
+    expect(browserZenz).toContain("辞書のみ");
   });
 
   it("architectureDiagram dispatches kinds", () => {

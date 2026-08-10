@@ -116,7 +116,7 @@ export const comparisonModeHelpSections: readonly {
   {
     value: "browser-vibrato",
     title: "ブラウザ完結",
-    body: "ブラウザで Vibrato（/vibrato/vibrato_wasm.js と /vibrato/system.dic.zst）と AzooKey（/azookey/azookey.wasm と /azookey/system.azkdict.gz）を完結します。辞書/WASM が無いと失敗し、Cloudflare Worker へは切り替わりません。Zenzai はこのモードでは使えません。",
+    body: "ブラウザで Vibrato（/vibrato/vibrato_wasm.js と /vibrato/system.dic.zst）と AzooKey（/azookey/azookey.wasm と /azookey/system.azkdict.gz）を完結します。Zenzai モデルを選んだ場合も LOUDS 辞書（system.azkdict.gz）のみで、GGUF 推論は行いません。辞書/WASM が無いと失敗し、Cloudflare Worker へは切り替わりません。",
   },
 ] as const;
 
@@ -127,7 +127,7 @@ export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 export const comparisonConfigFieldDescriptions = {
   mode: "Choose Cloudflare Worker-dependent Vibrato+conversion, or the fully in-browser Vibrato+AzooKey path. Browser-complete never calls /ws/azookey.",
   converterModel:
-    "Choose AzooKey WASM (browser-complete or Cloudflare Worker) or Zenzai xsmall/small on the inference Cloudflare Worker when MODEL_ROUTES exposes those GGUF upstreams. Zenzai is unavailable in browser-complete.",
+    "Choose AzooKey WASM (browser-complete or Cloudflare Worker), Zenzai LOUDS dictionary in browser-complete, or Zenzai GGUF on the inference Cloudflare Worker when MODEL_ROUTES exposes those upstreams.",
   websocketUrl:
     "A ws:// or wss:// URL for the compare Cloudflare Worker AzooKey endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
   auth: "Optional Bearer credentials for the Cloudflare Worker. Keep tokens out of URLs and logs.",

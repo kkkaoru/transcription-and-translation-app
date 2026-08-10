@@ -23,5 +23,6 @@ describe("converter model catalog", () => {
     expect(isZenzConverterModel("zenz-v3.2-small-gguf")).toBe(true);
     expect(converterModelOptions[0]?.description).toContain("ブラウザ完結");
     expect(converterModelOptions[0]?.description).not.toContain("ブラウザ簡潔");
+    expect(converterModelOptions[1]?.description).toContain("LOUDS 辞書");
   });
 });

@@ -19,6 +19,7 @@ export type ConversionTraceStepId =
   | "vibrato-fallback"
   | "azookey-input"
   | "browser-azookey"
+  | "browser-zenzai-dict"
   | "worker-ws"
   | "converter-output";
 
@@ -68,6 +69,8 @@ export interface TraceVibratoOutcome {
   failedOpen?: boolean;
 }
 
+export type ZenzaiTraceExecution = "browser-dict";
+
 export interface TraceConverterOutcome {
   mode: ComparisonMode;
   azookeyInput: string;
@@ -77,6 +80,9 @@ export interface TraceConverterOutcome {
   requestedModel?: string;
   modelFallback?: string;
   workerRequest?: ConversionWorkerTracePayload;
+  /** Browser-complete Zenzai dictionary (LOUDS) without GGUF inference. */
+  zenzaiExecution?: ZenzaiTraceExecution;
+  dictionaryUrl?: string;
 }
 
 const LOCATION_LABEL: Record<ConversionTraceLocation, string> = {
@@ -178,6 +184,22 @@ export const buildBrowserAzookeyStep = (
   location: "browser",
 });
 
+export const buildBrowserZenzaiDictStep = (
+  input: string,
+  output: string,
+  model: string,
+  dictionaryUrl: string,
+  elapsedMs?: number,
+): ConversionTraceStep => ({
+  id: "browser-zenzai-dict",
+  title: "ブラウザ Zenzai 辞書変換",
+  detail: `Zenzai 辞書（LOUDS）のみ · ${dictionaryUrl} · モデル: ${model} · GGUF 推論なし`,
+  input,
+  output,
+  ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+  location: "browser",
+});
+
 export const buildWorkerWsStep = (payload: ConversionWorkerTracePayload): ConversionTraceStep => ({
   id: "worker-ws",
   title: "Cloudflare Worker へ送信",
@@ -248,14 +270,26 @@ export const assembleConversionTrace = (parts: {
   steps.push(buildAzookeyInputStep(parts.converter.azookeyInput, parts.converter.mode));
 
   if (parts.converter.mode === "browser-vibrato") {
-    steps.push(
-      buildBrowserAzookeyStep(
-        parts.converter.azookeyInput,
-        parts.converter.convertedText,
-        parts.converter.elapsedMs,
-        parts.converter.model,
-      ),
-    );
+    if (parts.converter.zenzaiExecution === "browser-dict" && parts.converter.model) {
+      steps.push(
+        buildBrowserZenzaiDictStep(
+          parts.converter.azookeyInput,
+          parts.converter.convertedText,
+          parts.converter.model,
+          parts.converter.dictionaryUrl ?? "/azookey/system.azkdict.gz",
+          parts.converter.elapsedMs,
+        ),
+      );
+    } else {
+      steps.push(
+        buildBrowserAzookeyStep(
+          parts.converter.azookeyInput,
+          parts.converter.convertedText,
+          parts.converter.elapsedMs,
+          parts.converter.model,
+        ),
+      );
+    }
   } else {
     if (parts.converter.workerRequest) {
       steps.push(buildWorkerWsStep(parts.converter.workerRequest));
