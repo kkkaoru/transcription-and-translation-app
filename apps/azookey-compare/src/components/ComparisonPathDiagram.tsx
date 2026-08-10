@@ -139,15 +139,15 @@ export const ComparisonPathDiagram = ({
       data-kind={kind}
       data-mode={mode}
     >
-      <figcaption className="path-diagram-caption">{title}</figcaption>
-      {kind === "overview" ? (
-        <ul className="path-diagram-legend" data-testid="architecture-legend">
-          <li data-legend="device">実線: 処理の流れ</li>
-          <li data-legend="internet">赤: Cloudflare Worker 境界を越える</li>
-          <li data-legend="depends">点線: 任意 / フォールバック</li>
-        </ul>
-      ) : null}
-      <div className="path-diagram-svg">
+      <figcaption className="path-diagram-caption">
+        <span className="path-diagram-caption-title">{title}</span>
+        {kind === "overview" ? (
+          <span className="path-diagram-legend-inline" data-testid="architecture-legend">
+            実線: 処理の流れ · 赤: Cloudflare Worker 境界を越える · 点線: 任意 / フォールバック
+          </span>
+        ) : null}
+      </figcaption>
+      <div className="path-diagram-svg" data-overflow-x="hidden">
         <svg
           viewBox={diagram.viewBox}
           role="img"

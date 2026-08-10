@@ -679,21 +679,34 @@ select:focus-visible {
 }
 
 .path-diagram {
-  margin: 16px 0 0;
+  margin: 10px 0 0;
 }
 
 .path-diagram-caption {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   color: #4e585a;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1.45;
+}
+
+.path-diagram-caption-title {
+  display: block;
+}
+
+.path-diagram-legend-inline {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .path-diagram-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  margin: 0 0 10px;
+  gap: 6px 12px;
+  margin: 0 0 6px;
   padding: 0;
   color: var(--muted);
   font-size: 11px;
@@ -701,7 +714,8 @@ select:focus-visible {
 }
 
 .path-diagram-svg {
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .path-diagram-svg svg {
