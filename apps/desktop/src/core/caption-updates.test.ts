@@ -1689,6 +1689,31 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, revision)?.sourceText).toBe("明日は晴れ");
   });
 
+  it("keeps the longer same-id interim when a truncated reading revision arrives", () => {
+    const current = caption({
+      id: "u-1",
+      sourceText: "今日は良い天気ですね明日も",
+      azookeyInputText: "きょうはいいてんきですねあしたも",
+      startedAt: 1_000,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const truncated = caption({
+      id: "u-1",
+      sourceText: "今日は良い天気ですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      startedAt: 1_050,
+      receivedAt: 30,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, truncated)?.sourceText).toBe("今日は良い天気ですね明日も");
+  });
+
   it("keeps same-start semantic source corrections as replacements", () => {
     const current = caption({
       id: "u-1",

@@ -374,6 +374,23 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
   }
 
   if (hasSameOrExtendedAzookeyReading(current, next)) {
+    // A truncated revision with a shorter reading/surface must not erase the
+    // longer same-id interim that already painted the utterance tail.
+    const currentText = trim(current.sourceText);
+    const nextText = trim(next.sourceText);
+    const currentReading = trimmedAzookeyReading(current);
+    const nextReading = trimmedAzookeyReading(next);
+    if (
+      currentText &&
+      nextText &&
+      [...currentText].length > [...nextText].length &&
+      currentReading &&
+      nextReading &&
+      currentReading.startsWith(nextReading) &&
+      currentReading !== nextReading
+    ) {
+      return currentText;
+    }
     return next.sourceText;
   }
 
