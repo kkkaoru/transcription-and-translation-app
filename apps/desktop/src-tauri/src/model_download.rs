@@ -76,12 +76,34 @@ pub struct ModelStatusEntry {
     pub installed_bytes: Option<u64>,
     pub expected_bytes: u64,
     pub last_error: Option<String>,
+    /// Download origin (Hugging Face / GitHub release, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    /// Absolute path under the Parapper or GGUF model runtime directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
+    /// Optional role such as `completion`, `interim`, or GGUF family.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Human-readable label for Debug / Settings panels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Classify install state for a single model path layout under `models_dir`.
 pub fn classify_model_status(models_dir: &Path, runtime: &ModelRuntimeSpec) -> ModelStatusEntry {
     let destination = model_path(models_dir, runtime);
     let partial = PathBuf::from(format!("{}.partial", destination.display()));
+    let local_path = Some(destination.display().to_string());
+    let source_url = Some(download_url(runtime));
+    let role = Some(
+        match runtime.server {
+            ModelServer::Zenz => "normalizer",
+            ModelServer::Llama => "translator",
+        }
+        .to_string(),
+    );
+    let label = Some(runtime.id.to_string());
 
     if let Ok(metadata) = std::fs::metadata(&destination) {
         let len = metadata.len();
@@ -92,6 +114,10 @@ pub fn classify_model_status(models_dir: &Path, runtime: &ModelRuntimeSpec) -> M
                 installed_bytes: Some(len),
                 expected_bytes: runtime.expected_bytes,
                 last_error: None,
+                source_url,
+                local_path,
+                role,
+                label,
             };
         }
         return ModelStatusEntry {
@@ -103,6 +129,10 @@ pub fn classify_model_status(models_dir: &Path, runtime: &ModelRuntimeSpec) -> M
                 "installed size {len} does not match expected {}",
                 runtime.expected_bytes
             )),
+            source_url,
+            local_path,
+            role,
+            label,
         };
     }
 
@@ -113,6 +143,10 @@ pub fn classify_model_status(models_dir: &Path, runtime: &ModelRuntimeSpec) -> M
             installed_bytes: Some(metadata.len()),
             expected_bytes: runtime.expected_bytes,
             last_error: None,
+            source_url,
+            local_path,
+            role,
+            label,
         };
     }
 
@@ -122,6 +156,10 @@ pub fn classify_model_status(models_dir: &Path, runtime: &ModelRuntimeSpec) -> M
         installed_bytes: None,
         expected_bytes: runtime.expected_bytes,
         last_error: None,
+        source_url,
+        local_path,
+        role,
+        label,
     }
 }
 
@@ -462,6 +500,22 @@ pub async fn list_model_status(app: AppHandle) -> Result<Vec<ModelStatusEntry>, 
     // rescorer model is installed.
     let cache_root = input_lm_cache_root();
     entries.push(classify_archive_model_status(&cache_root, &INPUT_LM_ARCHIVE_SPEC));
+
+    // Parapper ASR models (ReazonSpeech + optional Nemotron interim) live under
+    // the isolated sidecar runtime directory, not the GGUF model cache.
+    let streaming_interim = app
+        .try_state::<AppState>()
+        .and_then(|state| state.config.lock().ok().map(|config| config.audio.streaming_interim_asr_enabled))
+        .unwrap_or(true);
+    let parapper_runtime = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("could not resolve app data directory: {error}"))?
+        .join("parapper");
+    entries.extend(crate::parapper_asr_models::list_parapper_asr_model_status(
+        &parapper_runtime,
+        streaming_interim,
+    ));
     Ok(entries)
 }
 
@@ -483,6 +537,10 @@ pub fn classify_archive_model_status(
             installed_bytes: Some(spec.expected_bytes),
             expected_bytes: spec.expected_bytes,
             last_error: None,
+            source_url: Some(archive_download_url(spec)),
+            local_path: Some(extract_dir.display().to_string()),
+            role: Some("rescore".to_string()),
+            label: Some(spec.id.to_string()),
         }
     } else {
         ModelStatusEntry {
@@ -491,6 +549,10 @@ pub fn classify_archive_model_status(
             installed_bytes: None,
             expected_bytes: spec.expected_bytes,
             last_error: None,
+            source_url: Some(archive_download_url(spec)),
+            local_path: Some(extract_dir.display().to_string()),
+            role: Some("rescore".to_string()),
+            label: Some(spec.id.to_string()),
         }
     }
 }

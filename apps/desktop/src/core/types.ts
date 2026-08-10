@@ -438,6 +438,14 @@ export interface ModelStatusEntry {
   installedBytes: number | null;
   expectedBytes: number;
   lastError: string | null;
+  /** Download origin (Hugging Face / GitHub release, etc.). */
+  sourceUrl?: string | null;
+  /** Absolute install path when known. */
+  localPath?: string | null;
+  /** Optional role such as completion / interim / normalizer. */
+  role?: string | null;
+  /** Human-readable label for Debug / Settings panels. */
+  label?: string | null;
 }
 
 export interface DownloadProgress {
