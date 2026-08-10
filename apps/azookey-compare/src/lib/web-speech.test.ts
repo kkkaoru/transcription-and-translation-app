@@ -88,12 +88,15 @@ const callbacks = (): Required<SpeechRecognitionCallbacks> => ({
   onStateChange: vi.fn(),
   onTranscript: vi.fn(),
   onFinalText: vi.fn(),
+  onUtteranceFinal: vi.fn(),
+  onRecognitionEnded: vi.fn(),
   onError: vi.fn(),
 });
 
 afterEach(() => {
   FakeSpeechRecognition.instances = [];
   Reflect.deleteProperty(globalThis, "window");
+  vi.useRealTimers();
 });
 
 describe("Web Speech feature detection", () => {
@@ -208,6 +211,14 @@ describe("WebSpeechController", () => {
     recognition.onstart?.();
     controller.stop();
     recognition.onend?.();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
+    vi.advanceTimersByTime(100);
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    expect(events.onRecognitionEnded).toHaveBeenCalledWith({
+      reason: "user-stop",
+      finalText: "",
+      interimText: "",
+    });
     vi.runOnlyPendingTimers();
     expect(recognition.startCalls).toBe(2);
     controller.dispose();
@@ -230,6 +241,13 @@ describe("WebSpeechController", () => {
     // before the old generation is flushed and a replacement is started.
     recognition.onresult?.({ resultIndex: 0, results: results(result(true, "遅延した確定")) });
     expect(events.onFinalText).toHaveBeenCalledWith("遅延した確定");
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith({
+      text: "遅延した確定",
+      finalText: "遅延した確定",
+      cause: "browser-final",
+      resultIndex: 0,
+    });
+    expect(events.onRecognitionEnded).not.toHaveBeenCalled();
     vi.advanceTimersByTime(99);
     expect(recognition.startCalls).toBe(1);
     vi.advanceTimersByTime(1);
@@ -242,7 +260,8 @@ describe("WebSpeechController", () => {
   it("cancels a pending end flush restart when stop is requested from idle", () => {
     vi.useFakeTimers();
     installSpeech();
-    const controller = new WebSpeechController("ja-JP");
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
     const recognition = FakeSpeechRecognition.instances[0];
     if (!recognition) {
       throw new Error("fake recognition was not constructed");
@@ -253,6 +272,11 @@ describe("WebSpeechController", () => {
     controller.stop();
     vi.advanceTimersByTime(200);
     expect(recognition.startCalls).toBe(1);
+    expect(events.onRecognitionEnded).toHaveBeenCalledWith({
+      reason: "user-stop",
+      finalText: "",
+      interimText: "",
+    });
     controller.dispose();
   });
 
@@ -276,6 +300,189 @@ describe("WebSpeechController", () => {
     // still reach the final-text lane rather than being lost by a buffer reset.
     recognition.onresult?.({ resultIndex: 0, results: results(result(true, "停止直前の確定")) });
     expect(events.onFinalText).toHaveBeenCalledWith("停止直前の確定");
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith({
+      text: "停止直前の確定",
+      finalText: "停止直前の確定",
+      cause: "browser-final",
+      resultIndex: 0,
+    });
+    controller.dispose();
+  });
+
+  it("promotes an interim-only utterance after end, then restarts continuously", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(false, "途中の発話")) });
+    expect(events.onFinalText).not.toHaveBeenCalled();
+    recognition.onend?.();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    vi.advanceTimersByTime(100);
+    expect(events.onFinalText).toHaveBeenCalledWith("途中の発話");
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith({
+      text: "途中の発話",
+      finalText: "途中の発話",
+      cause: "end-flush",
+      resultIndex: 0,
+    });
+    expect(events.onTranscript).toHaveBeenLastCalledWith({
+      finalText: "途中の発話",
+      interimText: "",
+    });
+    expect(events.onRecognitionEnded).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(50);
+    expect(recognition.startCalls).toBe(2);
+    controller.dispose();
+  });
+
+  it("commits leftover interim when stop arrives before any browser final", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(false, "  まだ途中  ")) });
+    expect(events.onFinalText).not.toHaveBeenCalled();
+    controller.stop();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
+    recognition.onend?.();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
+    expect(events.onFinalText).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(99);
+    expect(events.onFinalText).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(events.onFinalText).toHaveBeenCalledWith("まだ途中");
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith({
+      text: "まだ途中",
+      finalText: "まだ途中",
+      cause: "stop-flush",
+      resultIndex: 0,
+    });
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    expect(events.onRecognitionEnded).toHaveBeenCalledWith({
+      reason: "user-stop",
+      finalText: "まだ途中",
+      interimText: "",
+    });
+    vi.advanceTimersByTime(200);
+    expect(recognition.startCalls).toBe(1);
+    controller.dispose();
+  });
+
+  it("emits a browser final then ends without duplicating the utterance", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "確定した発話")) });
+    expect(events.onFinalText).toHaveBeenCalledTimes(1);
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith({
+      text: "確定した発話",
+      finalText: "確定した発話",
+      cause: "browser-final",
+      resultIndex: 0,
+    });
+    controller.stop();
+    recognition.onend?.();
+    vi.advanceTimersByTime(100);
+    expect(events.onFinalText).toHaveBeenCalledTimes(1);
+    expect(events.onUtteranceFinal).toHaveBeenCalledTimes(1);
+    expect(events.onTranscript).toHaveBeenLastCalledWith({
+      finalText: "確定した発話",
+      interimText: "",
+    });
+    expect(events.onRecognitionEnded).toHaveBeenCalledWith({
+      reason: "user-stop",
+      finalText: "確定した発話",
+      interimText: "",
+    });
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    controller.dispose();
+  });
+
+  it("keeps a late final after end and does not discard it on continuous restart", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(false, "遅延前")) });
+    recognition.onend?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "遅延した確定")) });
+    expect(events.onFinalText).toHaveBeenCalledWith("遅延した確定");
+    expect(events.onUtteranceFinal).toHaveBeenLastCalledWith({
+      text: "遅延した確定",
+      finalText: "遅延した確定",
+      cause: "browser-final",
+      resultIndex: 0,
+    });
+    vi.advanceTimersByTime(100);
+    expect(events.onFinalText).toHaveBeenCalledTimes(1);
+    expect(events.onRecognitionEnded).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(50);
+    expect(recognition.startCalls).toBe(2);
+    recognition.onstart?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(true, "次の発話")) });
+    expect(events.onFinalText).toHaveBeenLastCalledWith("次の発話");
+    controller.dispose();
+  });
+
+  it("leaves stopping when end never arrives after stop", () => {
+    vi.useFakeTimers();
+    installSpeech();
+    const events = callbacks();
+    const controller = new WebSpeechController("ja-JP", events);
+    const recognition = FakeSpeechRecognition.instances[0];
+    if (!recognition) {
+      throw new Error("fake recognition was not constructed");
+    }
+    controller.start();
+    recognition.onstart?.();
+    recognition.onresult?.({ resultIndex: 0, results: results(result(false, "固着しそう")) });
+    controller.stop();
+    controller.stop();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
+    vi.advanceTimersByTime(1_999);
+    expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
+    expect(events.onFinalText).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(recognition.abortCalls).toBe(1);
+    expect(events.onFinalText).toHaveBeenCalledWith("固着しそう");
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith({
+      text: "固着しそう",
+      finalText: "固着しそう",
+      cause: "stop-flush",
+      resultIndex: 0,
+    });
+    expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    expect(events.onRecognitionEnded).toHaveBeenCalledWith({
+      reason: "timeout",
+      finalText: "固着しそう",
+      interimText: "",
+    });
     controller.dispose();
   });
 
@@ -349,6 +556,7 @@ describe("WebSpeechController", () => {
   });
 
   it("streams final and interim segments, de-duplicates finals, and stops cleanly", () => {
+    vi.useFakeTimers();
     installSpeech();
     const events = callbacks();
     const controller = new WebSpeechController("ja-JP", events);
@@ -385,6 +593,18 @@ describe("WebSpeechController", () => {
     });
     expect(events.onFinalText).toHaveBeenCalledTimes(2);
     expect(events.onFinalText).toHaveBeenLastCalledWith("新しい確定");
+    expect(events.onUtteranceFinal).toHaveBeenNthCalledWith(1, {
+      text: "先に確定",
+      finalText: "先に確定 新しい確定",
+      cause: "browser-final",
+      resultIndex: 0,
+    });
+    expect(events.onUtteranceFinal).toHaveBeenNthCalledWith(2, {
+      text: "新しい確定",
+      finalText: "先に確定 新しい確定",
+      cause: "browser-final",
+      resultIndex: 1,
+    });
 
     recognition?.onresult?.({
       resultIndex: 0,
@@ -417,7 +637,14 @@ describe("WebSpeechController", () => {
     expect(recognition?.stopCalls).toBe(1);
     recognition?.onerror?.({ error: "aborted", message: "ignored" });
     recognition?.onend?.();
+    expect(events.onStateChange).toHaveBeenLastCalledWith("stopping");
+    vi.advanceTimersByTime(100);
     expect(events.onStateChange).toHaveBeenLastCalledWith("idle");
+    expect(events.onRecognitionEnded).toHaveBeenCalledWith({
+      reason: "user-stop",
+      finalText: "さらに更新された確定 新しい確定",
+      interimText: "",
+    });
     controller.stop();
     expect(recognition?.stopCalls).toBe(1);
     controller.dispose();
@@ -552,9 +779,15 @@ describe("WebSpeechController", () => {
     );
     recognition.onstart?.();
     expect(events.onStateChange).toHaveBeenLastCalledWith("error");
+    expect(events.onRecognitionEnded).toHaveBeenCalledWith({
+      reason: "timeout",
+      finalText: "",
+      interimText: "",
+    });
     recognition.onend?.();
     vi.runOnlyPendingTimers();
     expect(recognition.startCalls).toBe(1);
+    expect(events.onStateChange).toHaveBeenLastCalledWith("error");
     controller.dispose();
   });
 
@@ -587,6 +820,12 @@ describe("WebSpeechController", () => {
       },
       onFinalText: () => {
         throw new Error("final observer");
+      },
+      onUtteranceFinal: () => {
+        throw new Error("utterance observer");
+      },
+      onRecognitionEnded: () => {
+        throw new Error("ended observer");
       },
       onError: () => {
         throw new Error("error observer");

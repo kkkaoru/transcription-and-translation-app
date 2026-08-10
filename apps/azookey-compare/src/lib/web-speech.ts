@@ -8,6 +8,10 @@
 
 export type SpeechRecognitionState = "idle" | "starting" | "listening" | "stopping" | "error";
 
+export type SpeechUtteranceFinalCause = "browser-final" | "stop-flush" | "end-flush";
+
+export type SpeechRecognitionEndReason = "user-stop" | "service-end" | "error" | "timeout";
+
 export interface SpeechTranscriptUpdate {
   /** All final segments returned by the current recognition session. */
   finalText: string;
@@ -15,10 +19,34 @@ export interface SpeechTranscriptUpdate {
   interimText: string;
 }
 
+export interface SpeechUtteranceFinal {
+  /** Newly committed utterance text (one final segment or a promoted interim). */
+  text: string;
+  /** All committed finals in the current recognition generation. */
+  finalText: string;
+  cause: SpeechUtteranceFinalCause;
+  /** Result-list index for this committed segment, when known. */
+  resultIndex: number;
+}
+
+export interface SpeechRecognitionEnded {
+  reason: SpeechRecognitionEndReason;
+  finalText: string;
+  /** Leftover interim at end, if any (usually empty after a flush). */
+  interimText: string;
+}
+
 export interface SpeechRecognitionCallbacks {
   onStateChange?: (state: SpeechRecognitionState) => void;
   onTranscript?: (update: SpeechTranscriptUpdate) => void;
   onFinalText?: (text: string) => void;
+  /** Fired when an utterance is committed: browser `isFinal` or a stop/end flush. */
+  onUtteranceFinal?: (update: SpeechUtteranceFinal) => void;
+  /**
+   * Fired when the user-facing capture session ends. Continuous `end` +
+   * auto-restart does not count; the caller should keep listening.
+   */
+  onRecognitionEnded?: (update: SpeechRecognitionEnded) => void;
   onError?: (message: string) => void;
 }
 
@@ -78,8 +106,18 @@ const START_TIMEOUT_MS = 10_000;
  * bounded window before clearing/restarting it.
  */
 const FINAL_RESULT_GRACE_MS = 100;
+/**
+ * WebKit can accept `stop()` without ever dispatching `end`. Bound that
+ * `stopping` state so the UI can return to idle and still flush leftover text.
+ */
+const STOP_TIMEOUT_MS = 2_000;
 const MAX_RESTART_DELAY_MS = 2_000;
 const MAX_RESTART_EXPONENT = 5;
+
+type ResultFlushPlan = {
+  restart: boolean;
+  reason: SpeechRecognitionEndReason;
+};
 
 declare global {
   interface Window {
@@ -122,15 +160,26 @@ export class WebSpeechController {
   private readonly callbacks: SpeechRecognitionCallbacks;
   private readonly finalSegmentsByGeneration = new Map<number, Map<number, string>>();
   private readonly emittedFinalSegmentsByGeneration = new Map<number, Map<number, string>>();
+  private readonly interimTextByGeneration = new Map<number, string>();
   private state: SpeechRecognitionState = "idle";
   private recognitionGeneration = 0;
   private endingGeneration: number | null = null;
   private requestedStop = false;
+  /**
+   * True from an explicit `start()` until `onRecognitionEnded`. Continuous
+   * browser `end` + restart keeps this set so the caller can treat one
+   * capture session as still open.
+   */
+  private captureActive = false;
   private startTimer: ReturnType<typeof setTimeout> | null = null;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly resultFlushTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private restartAttempt = 0;
   private ignoredEndEvents = 0;
+  private lastFlushCommittedText = "";
+  private flushCommittedGeneration: number | null = null;
+  private flushCommittedAt = 0;
   /**
    * A fatal recognition error (most notably `not-allowed`) must stop the
    * continuous-session loop. Browsers normally dispatch `end` after `error`,
@@ -189,13 +238,25 @@ export class WebSpeechController {
         return;
       }
       this.clearStartTimer();
+      this.clearStopWatchdog();
       const generation = this.recognitionGeneration;
       this.endingGeneration = generation;
-      this.setState("idle");
+      if (this.requestedStop) {
+        // Stay in `stopping` until the grace flush commits leftover text.
+        // A start-timeout error must remain `error` rather than looking idle.
+        if (this.state !== "error") {
+          this.setState("stopping");
+        }
+      } else {
+        this.setState("idle");
+      }
       // Do not clear this generation's final buffers yet. A queued final
       // result may be delivered after `end`, especially in WebKit. The flush
       // callback restarts only after the bounded grace window has elapsed.
-      this.scheduleResultFlush(generation, !this.requestedStop && !this.restartBlocked);
+      this.scheduleResultFlush(generation, {
+        restart: !this.requestedStop && !this.restartBlocked,
+        reason: this.requestedStop ? "user-stop" : this.restartBlocked ? "error" : "service-end",
+      });
     };
     this.recognition.onerror = (event) => {
       if (this.disposed) {
@@ -249,7 +310,9 @@ export class WebSpeechController {
     }
     this.clearRestartTimer();
     this.clearStartTimer();
+    this.clearStopWatchdog();
     this.requestedStop = false;
+    this.captureActive = true;
     // An explicit start is the user's acknowledgement/retry after a fatal
     // permission or policy error. Allow a fresh browser session to run.
     this.restartBlocked = false;
@@ -278,6 +341,7 @@ export class WebSpeechController {
     if (!preserveResultBuffers) {
       this.finalSegmentsByGeneration.clear();
       this.emittedFinalSegmentsByGeneration.clear();
+      this.interimTextByGeneration.clear();
     }
     this.recognitionGeneration += 1;
     this.ensureResultBuffers(this.recognitionGeneration);
@@ -304,6 +368,7 @@ export class WebSpeechController {
             // A service that never started may reject abort; the controller is
             // already in a recoverable, user-retryable error state.
           }
+          this.emitRecognitionEnded("timeout");
         }, START_TIMEOUT_MS);
       }
     } catch (error) {
@@ -332,17 +397,33 @@ export class WebSpeechController {
     // `end` can move the controller to idle while its bounded result-flush
     // timer is still waiting. Marking the stop request even in idle prevents
     // that timer from scheduling a restart after the user cancelled capture.
-    if (this.state === "idle" || this.state === "stopping") {
+    if (this.state === "stopping") {
+      this.ensureStopWatchdog();
+      return;
+    }
+    if (this.state === "idle") {
+      if (this.resultFlushTimers.size > 0) {
+        return;
+      }
+      if (this.captureActive) {
+        this.flushPendingTranscript(this.recognitionGeneration, "stop-flush");
+        this.setState("idle");
+        this.emitRecognitionEnded("user-stop");
+      }
       return;
     }
     this.setState("stopping");
+    this.ensureStopWatchdog();
     try {
       this.recognition.stop();
     } catch (error) {
+      this.clearStopWatchdog();
       this.setState("error");
       this.reportError(
         error instanceof Error ? error.message : "Speech recognition could not stop",
       );
+      this.flushPendingTranscript(this.recognitionGeneration, "stop-flush");
+      this.emitRecognitionEnded("error");
     }
   }
 
@@ -351,8 +432,10 @@ export class WebSpeechController {
       return;
     }
     this.requestedStop = true;
+    this.captureActive = false;
     this.clearStartTimer();
     this.clearRestartTimer();
+    this.clearStopWatchdog();
     this.clearResultFlushTimers();
     this.disposed = true;
     try {
@@ -369,6 +452,7 @@ export class WebSpeechController {
     }
     this.finalSegmentsByGeneration.clear();
     this.emittedFinalSegmentsByGeneration.clear();
+    this.interimTextByGeneration.clear();
     this.setState("idle");
   }
 
@@ -384,6 +468,33 @@ export class WebSpeechController {
       clearTimeout(this.startTimer);
       this.startTimer = null;
     }
+  }
+
+  private clearStopWatchdog(): void {
+    if (this.stopTimer !== null) {
+      clearTimeout(this.stopTimer);
+      this.stopTimer = null;
+    }
+  }
+
+  private ensureStopWatchdog(): void {
+    if (this.disposed || this.stopTimer !== null) {
+      return;
+    }
+    this.stopTimer = setTimeout(() => {
+      this.stopTimer = null;
+      if (this.disposed || this.state !== "stopping") {
+        return;
+      }
+      try {
+        this.recognition?.abort();
+      } catch {
+        // Abort is best effort; the watchdog still has to leave `stopping`.
+      }
+      this.flushPendingTranscript(this.recognitionGeneration, "stop-flush");
+      this.setState("idle");
+      this.emitRecognitionEnded("timeout");
+    }, STOP_TIMEOUT_MS);
   }
 
   private clearResultFlushTimers(): void {
@@ -402,19 +513,38 @@ export class WebSpeechController {
     }
   }
 
-  private scheduleResultFlush(generation: number, restart: boolean): void {
+  private scheduleResultFlush(generation: number, plan: ResultFlushPlan): void {
     if (this.disposed || !this.recognition || this.resultFlushTimers.has(generation)) {
       return;
     }
     const timer = setTimeout(() => {
       this.resultFlushTimers.delete(generation);
+      const reason: SpeechRecognitionEndReason = this.requestedStop ? "user-stop" : plan.reason;
+      const cause: SpeechUtteranceFinalCause = reason === "user-stop" ? "stop-flush" : "end-flush";
+      const superseded = this.recognitionGeneration !== generation;
+      this.flushPendingTranscript(generation, cause);
+      const endedSnapshot = this.snapshotTranscript(generation);
+      this.interimTextByGeneration.delete(generation);
       this.finalSegmentsByGeneration.delete(generation);
       this.emittedFinalSegmentsByGeneration.delete(generation);
-      if (this.endingGeneration !== generation) {
+      if (this.endingGeneration === generation) {
+        this.endingGeneration = null;
+      }
+      if (this.disposed) {
         return;
       }
-      this.endingGeneration = null;
-      if (restart && !this.requestedStop && this.recognitionGeneration === generation) {
+      if (superseded) {
+        return;
+      }
+      if (reason === "user-stop" || reason === "error" || reason === "timeout") {
+        this.clearStopWatchdog();
+        if (this.state === "stopping") {
+          this.setState("idle");
+        }
+        this.emitRecognitionEnded(reason, endedSnapshot);
+        return;
+      }
+      if (plan.restart && !this.requestedStop) {
         this.scheduleRestart(generation);
       }
     }, FINAL_RESULT_GRACE_MS);
@@ -476,7 +606,7 @@ export class WebSpeechController {
       return;
     }
     const interimSegments: string[] = [];
-    const newFinalTexts: string[] = [];
+    const newFinals: Array<{ index: number; text: string }> = [];
     for (let index = 0; index < event.results.length; index += 1) {
       const result = event.results[index];
       if (!result) {
@@ -490,11 +620,14 @@ export class WebSpeechController {
         finalSegments.set(index, text);
         if (emittedFinalSegments.get(index) !== text) {
           emittedFinalSegments.set(index, text);
+          if (this.shouldSkipDuplicateFlush(generation, text)) {
+            continue;
+          }
           // Browsers can revise a previously committed final segment while
           // reporting a later resultIndex. The segment map de-duplicates the
           // same text, so every changed final (including one before
           // resultIndex) must reach the consumer.
-          newFinalTexts.push(text);
+          newFinals.push({ index, text });
         }
       } else {
         interimSegments.push(text);
@@ -503,17 +636,126 @@ export class WebSpeechController {
 
     const finalText = [...finalSegments.values()].join(" ").trim();
     const interimText = interimSegments.join(" ").trim();
+    this.interimTextByGeneration.set(generation, interimText);
+    this.emitTranscript({ finalText, interimText });
+    for (const { index, text } of newFinals) {
+      this.emitFinalText(text);
+      this.emitUtteranceFinal({
+        text,
+        finalText,
+        cause: "browser-final",
+        resultIndex: index,
+      });
+    }
+  }
+
+  private flushPendingTranscript(
+    generation: number,
+    cause: Exclude<SpeechUtteranceFinalCause, "browser-final">,
+  ): SpeechTranscriptUpdate {
+    this.ensureResultBuffers(generation);
+    const finalSegments = this.finalSegmentsByGeneration.get(generation);
+    const emittedFinalSegments = this.emittedFinalSegmentsByGeneration.get(generation);
+    const update: SpeechTranscriptUpdate = {
+      finalText: finalSegments ? [...finalSegments.values()].join(" ").trim() : "",
+      interimText: "",
+    };
+    if (!finalSegments || !emittedFinalSegments) {
+      this.interimTextByGeneration.set(generation, "");
+      this.emitTranscript(update);
+      return update;
+    }
+    const interim = (this.interimTextByGeneration.get(generation) ?? "").trim();
+    if (interim) {
+      const lastFinal = [...finalSegments.values()].at(-1);
+      if (lastFinal !== interim) {
+        const nextIndex = finalSegments.size === 0 ? 0 : Math.max(...finalSegments.keys()) + 1;
+        finalSegments.set(nextIndex, interim);
+        if (emittedFinalSegments.get(nextIndex) !== interim) {
+          emittedFinalSegments.set(nextIndex, interim);
+          this.lastFlushCommittedText = interim;
+          this.flushCommittedGeneration = generation;
+          this.flushCommittedAt = Date.now();
+          update.finalText = [...finalSegments.values()].join(" ").trim();
+          this.interimTextByGeneration.set(generation, "");
+          this.emitTranscript(update);
+          this.emitFinalText(interim);
+          this.emitUtteranceFinal({
+            text: interim,
+            finalText: update.finalText,
+            cause,
+            resultIndex: nextIndex,
+          });
+          return update;
+        }
+      }
+    }
+    this.interimTextByGeneration.set(generation, "");
+    this.emitTranscript(update);
+    return update;
+  }
+
+  private snapshotTranscript(generation: number): SpeechTranscriptUpdate {
+    const finalSegments = this.finalSegmentsByGeneration.get(generation);
+    return {
+      finalText: finalSegments ? [...finalSegments.values()].join(" ").trim() : "",
+      interimText: (this.interimTextByGeneration.get(generation) ?? "").trim(),
+    };
+  }
+
+  private shouldSkipDuplicateFlush(generation: number, text: string): boolean {
+    if (
+      !this.lastFlushCommittedText ||
+      this.flushCommittedGeneration === null ||
+      text !== this.lastFlushCommittedText ||
+      generation === this.flushCommittedGeneration
+    ) {
+      return false;
+    }
+    return Date.now() - this.flushCommittedAt <= FINAL_RESULT_GRACE_MS;
+  }
+
+  private emitTranscript(update: SpeechTranscriptUpdate): void {
     try {
-      this.callbacks.onTranscript?.({ finalText, interimText });
+      this.callbacks.onTranscript?.(update);
     } catch {
       // Keep processing later results even if a UI observer fails.
     }
-    for (const text of newFinalTexts) {
-      try {
-        this.callbacks.onFinalText?.(text);
-      } catch {
-        // Keep the browser event loop independent from application callbacks.
-      }
+  }
+
+  private emitFinalText(text: string): void {
+    try {
+      this.callbacks.onFinalText?.(text);
+    } catch {
+      // Keep the browser event loop independent from application callbacks.
+    }
+  }
+
+  private emitUtteranceFinal(update: SpeechUtteranceFinal): void {
+    try {
+      this.callbacks.onUtteranceFinal?.(update);
+    } catch {
+      // Keep the browser event loop independent from application callbacks.
+    }
+  }
+
+  private emitRecognitionEnded(
+    reason: SpeechRecognitionEndReason,
+    snapshot?: SpeechTranscriptUpdate,
+  ): void {
+    if (!this.captureActive || this.disposed) {
+      return;
+    }
+    this.captureActive = false;
+    const update = snapshot ?? this.snapshotTranscript(this.recognitionGeneration);
+    try {
+      this.callbacks.onRecognitionEnded?.({
+        reason,
+        finalText: update.finalText,
+        interimText: update.interimText,
+      });
+    } catch {
+      // Ending observers must not break disposal or stop recovery.
     }
   }
 
