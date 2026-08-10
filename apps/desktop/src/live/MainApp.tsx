@@ -46,6 +46,7 @@ import {
   shouldToastAudioProcessingFailure,
 } from "../core/notices";
 import { createParapperOutputQueue, type ParapperOutputQueue } from "../core/parapper-output-queue";
+import { buildParapperProvisionalCaption } from "../core/parapper-provisional";
 import {
   DEFAULT_PARAPPER_STREAM_URL,
   ParapperRecognitionStream,
@@ -1412,35 +1413,14 @@ export const MainApp = () => {
               ? performance.now()
               : Date.now();
           try {
-            // Paint recognized characters immediately as a low-emphasis
-            // provisional caption so the plate moves before AzooKey finishes.
-            // mergeCaptionPayload upgrades this in place when the normalized
-            // source arrives below.
-            const provisionalSurface =
-              selectParapperSurfaceText(output) ||
-              output.azookeyInputText?.trim() ||
-              output.text.trim();
-            if (provisionalSurface) {
-              const receivedAt = Date.now();
-              const provisionalStartedAt = Math.max(
-                0,
-                receivedAt - Math.max(0, output.elapsedMs),
-              );
-              mergeAndCommitCaption({
-                id: `parapper:${output.sessionId}:${output.turnSessionId}:${output.turnId}`,
-                sourceText: provisionalSurface,
-                azookeyInputText: output.azookeyInputText ?? output.text,
-                translationText: "",
-                sourceLanguage: captureConfig.language.source,
-                targetLanguage: captureConfig.language.target,
-                startedAt: provisionalStartedAt,
-                receivedAt,
-                stage: "source",
-                sequence: 0,
-                isFinal: false,
-                provisional: true,
-                captureGeneration: captureGenerationForAttempt,
-              });
+            // Paint again in case this item was drained after a long wait; the
+            // enqueue path already painted the latest partial immediately.
+            const provisional = buildParapperProvisionalCaption(output, {
+              sourceLanguage: captureConfig.language.source,
+              targetLanguage: captureConfig.language.target,
+            });
+            if (provisional) {
+              mergeAndCommitCaption(provisional);
             }
             const nextCaption = await bridge.normalizeParapperOutput(output);
             if (attempt !== captureAttempt.current) {
@@ -1522,6 +1502,16 @@ export const MainApp = () => {
             isFinal: event.type === "turn.final",
             captureGeneration: captureGenerationForAttempt,
           };
+          // Paint before enqueue so recognized characters appear while an older
+          // revision is still awaiting AzooKey. The queue serializes normalize,
+          // but Live/Syphon must not wait on that serial chain.
+          const provisional = buildParapperProvisionalCaption(output, {
+            sourceLanguage: captureConfig.language.source,
+            targetLanguage: captureConfig.language.target,
+          });
+          if (provisional) {
+            mergeAndCommitCaption(provisional);
+          }
           parapperOutputQueue.current?.enqueue(output);
         };
         const outputQueue = createParapperOutputQueue<ParapperRecognitionOutput>(processOutput);
