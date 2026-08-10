@@ -10,6 +10,11 @@ import type { BrowserAzookeyResult } from "./browser-azookey";
 import type { BrowserVibratoConfig, BrowserVibratoResult } from "./browser-vibrato";
 import type { ComparisonAuth, ComparisonMode } from "./contract";
 import { elapsedSinceMs, nowMs } from "./conversion-timing";
+import {
+  assembleConversionTrace,
+  normalizeSourceText,
+  type ConversionTrace,
+} from "./conversion-trace";
 import type { ConverterModel } from "./converter-models";
 import { isZenzConverterModel } from "./converter-models";
 import type { ConversionStage } from "./path-labels";
@@ -46,6 +51,10 @@ export interface ConversionPipelineResult {
   model?: string;
   requestedModel?: string;
   modelFallback?: string;
+  /** Per-step inputs/outputs for utterance comparison cards. */
+  trace: ConversionTrace;
+  /** Flat step list (`trace.steps`) for callers that only need the timeline. */
+  steps: ConversionTrace["steps"];
 }
 
 export interface ConversionWorkerRequest {
@@ -72,11 +81,15 @@ export const runComparisonConversion = async (
   deps: ConversionPipelineDependencies,
 ): Promise<ConversionPipelineResult> => {
   const startedAt = nowMs();
-  const sourceText = input.sourceText.trim();
+  const rawSource = input.sourceText;
+  const sourceText = normalizeSourceText(rawSource);
   const phonetic = input.phoneticInput?.trim();
   let vibratoInput = phonetic || sourceText;
   let wasmElapsedMs: number | undefined;
   let ranBrowserVibrato = false;
+  let vibratoFailedOpen = false;
+  let vibratoSkippedReason: "phonetic-override" | "not-required" | undefined;
+  const vibratoStageInput = sourceText;
   deps.onStage?.("setup");
 
   if (input.mode === "browser-vibrato" && isZenzConverterModel(input.converterModel)) {
@@ -89,6 +102,12 @@ export const runComparisonConversion = async (
     !input.auth.token?.trim()
   ) {
     throw new Error("Bearer token を入力してください");
+  }
+
+  if (phonetic) {
+    vibratoSkippedReason = "phonetic-override";
+  } else if (!shouldRunBrowserVibratoPrePass(input.mode, sourceText, phonetic)) {
+    vibratoSkippedReason = "not-required";
   }
 
   if (shouldRunBrowserVibratoPrePass(input.mode, sourceText, phonetic)) {
@@ -107,6 +126,7 @@ export const runComparisonConversion = async (
         throw error;
       }
       vibratoInput = sourceText;
+      vibratoFailedOpen = true;
     }
   }
 
@@ -119,6 +139,26 @@ export const runComparisonConversion = async (
   if (input.mode === "browser-vibrato") {
     deps.onStage?.("browser-azookey");
     const azookey = await deps.runBrowserAzookey(vibratoInput);
+    const trace = assembleConversionTrace({
+      rawSource,
+      normalizedSource: sourceText,
+      phoneticInput: phonetic,
+      vibrato: {
+        ran: ranBrowserVibrato,
+        skippedReason: vibratoSkippedReason,
+        input: vibratoStageInput,
+        output: vibratoInput,
+        elapsedMs: wasmElapsedMs,
+        failedOpen: vibratoFailedOpen,
+      },
+      converter: {
+        mode: input.mode,
+        azookeyInput: vibratoInput,
+        convertedText: azookey.text,
+        elapsedMs: azookey.elapsedMs,
+        model: "azookey-rust-wasm",
+      },
+    });
     return {
       convertedText: azookey.text,
       vibratoInput,
@@ -129,6 +169,8 @@ export const runComparisonConversion = async (
       ranBrowserVibrato,
       vibratoExecution,
       model: "azookey-rust-wasm",
+      trace,
+      steps: trace.steps,
     };
   }
 
@@ -138,15 +180,46 @@ export const runComparisonConversion = async (
   deps.onStage?.("worker-connect");
   await deps.connectWorker();
   deps.onStage?.("worker");
+  const workerMode = phonetic ? "worker-vibrato" : input.mode;
+  const workerRequest = {
+    sourceText,
+    vibratoInput,
+    mode: workerMode,
+    vibratoExecution,
+    model: input.converterModel,
+  };
   const result = await deps.convertWithWorker({
     source: "web-speech",
     language: input.language,
     sourceText,
     vibratoInput,
-    mode: phonetic ? "worker-vibrato" : input.mode,
+    mode: workerMode,
     model: input.converterModel,
     vibratoExecution,
     auth: input.auth,
+  });
+  const trace = assembleConversionTrace({
+    rawSource,
+    normalizedSource: sourceText,
+    phoneticInput: phonetic,
+    vibrato: {
+      ran: ranBrowserVibrato,
+      skippedReason: vibratoSkippedReason,
+      input: vibratoStageInput,
+      output: vibratoInput,
+      elapsedMs: wasmElapsedMs,
+      failedOpen: vibratoFailedOpen,
+    },
+    converter: {
+      mode: input.mode,
+      azookeyInput: vibratoInput,
+      convertedText: result.convertedText,
+      elapsedMs: result.elapsedMs,
+      model: result.model,
+      requestedModel: result.requestedModel,
+      modelFallback: result.modelFallback,
+      workerRequest,
+    },
   });
   return {
     convertedText: result.convertedText,
@@ -160,5 +233,7 @@ export const runComparisonConversion = async (
     model: result.model,
     requestedModel: result.requestedModel,
     modelFallback: result.modelFallback,
+    trace,
+    steps: trace.steps,
   };
 };
