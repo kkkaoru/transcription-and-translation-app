@@ -7,9 +7,6 @@ use crate::config::STREAMING_INTERIM_ASR_MODEL_ID;
 use crate::model_download::ModelStatusEntry;
 use std::path::{Path, PathBuf};
 
-const SHERPA_ONNX_ASR_RELEASES: &str =
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models";
-
 #[derive(Debug, Clone, Copy)]
 pub struct ParapperAsrModelSpec {
     pub id: &'static str,
