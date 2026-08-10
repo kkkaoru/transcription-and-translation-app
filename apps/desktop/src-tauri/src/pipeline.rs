@@ -1877,6 +1877,40 @@ mod tests {
     }
 
     #[test]
+    fn azookey_official_dictionary_default_conversion_is_phrase_neutral_for_atsui_hi_nanode() {
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
+        // Official system dictionary only: no user/phrase or learning-memory rows.
+        // ConversionOptions::default() is the live normalize_azookey path.
+        let mut config = AppConfig::default();
+        config.models.paths.insert(
+            "azookey-rust".to_string(),
+            official_system_dictionary_path().to_string_lossy().into_owned(),
+        );
+
+        let outcome = normalize_azookey(&config, "あついひなのであついすーぷをのみたくない")
+            .expect("normalize");
+        assert_eq!(
+            outcome,
+            NormalizeOutcome::Success("暑い日なので熱いスープを飲みたくない".to_string())
+        );
+    }
+
+    #[test]
+    fn azookey_official_dictionary_default_conversion_is_phrase_neutral_for_atsui_hi_nanoni() {
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
+        // Official system dictionary only: no user/phrase or learning-memory rows.
+        // ConversionOptions::default() is the live normalize_azookey path.
+        let mut config = AppConfig::default();
+        config.models.paths.insert(
+            "azookey-rust".to_string(),
+            official_system_dictionary_path().to_string_lossy().into_owned(),
+        );
+
+        let outcome = normalize_azookey(&config, "あついひなのに").expect("normalize");
+        assert_eq!(outcome, NormalizeOutcome::Success("暑い日なのに".to_string()));
+    }
+
+    #[test]
     fn azookey_reuses_the_loaded_dictionary_for_repeated_chunks() {
         let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let path = temporary_dictionary_path("cache");

@@ -67,4 +67,34 @@ describe("AzooKey worker wasm/dict portable ABI parity", () => {
     assert.equal(conversions[0]?.output, "橋の端から物が落ちてます");
     assert.equal(conversions[0]?.expected, "橋の端から物が落ちてます");
   });
+
+  it("regresses phrase-neutral あついひなのであついすーぷをのみたくない on official system dictionary default conversion", () => {
+    const assets = loadWorkerAzookeyAssets();
+    assertPinnedDictionary(assets);
+    assert.equal(assets.dictSha256, EXPECTED_DICT_SHA256);
+    assert.ok(assets.dictPath.endsWith(WORKER_DICT_RELATIVE_PATH));
+
+    // Official system dictionary only: createPortableConverter does not load user/phrase rows.
+    const convert = createPortableConverter(assets.wasmBytes, assets.dictGz);
+    const conversions = convertSpotChecks(convert, [
+      ["あついひなのであついすーぷをのみたくない", "暑い日なので熱いスープを飲みたくない"],
+    ]);
+    assert.equal(conversions[0]?.input, "あついひなのであついすーぷをのみたくない");
+    assert.equal(conversions[0]?.output, "暑い日なので熱いスープを飲みたくない");
+    assert.equal(conversions[0]?.expected, "暑い日なので熱いスープを飲みたくない");
+  });
+
+  it("regresses phrase-neutral あついひなのに on official system dictionary default conversion", () => {
+    const assets = loadWorkerAzookeyAssets();
+    assertPinnedDictionary(assets);
+    assert.equal(assets.dictSha256, EXPECTED_DICT_SHA256);
+    assert.ok(assets.dictPath.endsWith(WORKER_DICT_RELATIVE_PATH));
+
+    // Official system dictionary only: createPortableConverter does not load user/phrase rows.
+    const convert = createPortableConverter(assets.wasmBytes, assets.dictGz);
+    const conversions = convertSpotChecks(convert, [["あついひなのに", "暑い日なのに"]]);
+    assert.equal(conversions[0]?.input, "あついひなのに");
+    assert.equal(conversions[0]?.output, "暑い日なのに");
+    assert.equal(conversions[0]?.expected, "暑い日なのに");
+  });
 });
