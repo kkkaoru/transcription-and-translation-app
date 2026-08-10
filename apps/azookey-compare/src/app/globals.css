@@ -291,6 +291,26 @@ select:focus-visible {
   background: #fff;
 }
 
+.field-inline-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 39px;
+  padding: 0 2px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.field-inline-control input[type="checkbox"] {
+  width: 18px;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
+  border-radius: 4px;
+  accent-color: #2f6f66;
+}
+
 .mode-selector + .mode-selector {
   margin-top: 15px;
 }

@@ -78,6 +78,11 @@ export interface ComparisonConfig {
   browserWasmDictionaryUrl?: string;
   /** Optional global converter name used by the browser pre-pass when no module URL is set. */
   browserWasmGlobalName?: string;
+  /**
+   * Opt-in `input_n5_lm_v1` kana-reading rescore after Vibrato / normalize and
+   * before AzooKey. Defaults to off (desktop `rescore.enabled` parity).
+   */
+  inputN5LmRescoreEnabled: boolean;
 }
 
 export type ComparisonConfigInput = {
@@ -91,6 +96,7 @@ export type ComparisonConfigInput = {
   browserWasmModuleUrl?: unknown;
   browserWasmDictionaryUrl?: unknown;
   browserWasmGlobalName?: unknown;
+  inputN5LmRescoreEnabled?: unknown;
 };
 
 export interface ComparisonModeOption {
@@ -172,6 +178,8 @@ export const comparisonConfigFieldDescriptions = {
     "Compressed Vibrato system.dic.zst URL for the generated tokenizer (IPADIC reading field F[7]).",
   browserWasmGlobalName:
     "Optional global converter name for the browser pre-pass (defaults to the built-in global name).",
+  inputN5LmRescoreEnabled:
+    "When enabled, rescore the kana reading with Miwa-Keita/input_n5_lm_v1 (AsrConfusionRules + recommended weights) after Vibrato and before AzooKey. Defaults to off.",
 } as const;
 
 /**
@@ -275,6 +283,7 @@ export const DEFAULT_COMPARISON_CONFIG: ComparisonConfig = {
   language: DEFAULT_COMPARISON_LANGUAGE,
   browserWasmModuleUrl: DEFAULT_BROWSER_WASM_MODULE_URL,
   browserWasmDictionaryUrl: DEFAULT_BROWSER_WASM_DICTIONARY_URL,
+  inputN5LmRescoreEnabled: false,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -498,6 +507,10 @@ export const mergeComparisonConfig = (value: unknown): ComparisonConfig => {
   } catch {
     // Ignore malformed optional browser WASM settings and use the default global name.
   }
+  const inputN5LmRescoreEnabled =
+    typeof input["inputN5LmRescoreEnabled"] === "boolean"
+      ? input["inputN5LmRescoreEnabled"]
+      : DEFAULT_COMPARISON_CONFIG.inputN5LmRescoreEnabled;
   return {
     schemaVersion: COMPARISON_CONFIG_SCHEMA_VERSION,
     mode,
@@ -506,6 +519,7 @@ export const mergeComparisonConfig = (value: unknown): ComparisonConfig => {
     websocketUrl: normalizedUrl,
     auth: normalizedAuth,
     language: normalizedLanguage,
+    inputN5LmRescoreEnabled,
     ...(normalizedBrowserModuleUrl ? { browserWasmModuleUrl: normalizedBrowserModuleUrl } : {}),
     ...(normalizedBrowserDictionaryUrl
       ? { browserWasmDictionaryUrl: normalizedBrowserDictionaryUrl }

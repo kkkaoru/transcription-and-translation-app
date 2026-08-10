@@ -18,6 +18,7 @@ export type ConversionTraceStepId =
   | "browser-vibrato"
   | "vibrato-skipped"
   | "vibrato-fallback"
+  | "rescore"
   | "azookey-input"
   | "browser-azookey"
   | "browser-zenzai-dict"
@@ -71,6 +72,13 @@ export interface TraceVibratoOutcome {
 }
 
 export type ZenzaiTraceExecution = "browser-dict";
+
+export interface TraceRescoreOutcome {
+  ran: boolean;
+  input: string;
+  output: string;
+  elapsedMs?: number;
+}
 
 export interface TraceConverterOutcome {
   mode: ComparisonMode;
@@ -154,6 +162,23 @@ export const buildVibratoFallbackStep = (input: string): ConversionTraceStep => 
     "ブラウザ Vibrato に失敗したため、Cloudflare Worker 依存モードでは原文を AzooKey 入力候補に使用します",
   input,
   output: input,
+  location: "browser",
+});
+
+export const buildRescoreStep = (
+  input: string,
+  output: string,
+  elapsedMs?: number,
+): ConversionTraceStep => ({
+  id: "rescore",
+  title: "input_n5_lm_v1 かな読み補正",
+  detail:
+    input === output
+      ? "input-n5-lm-v1（変更なし · overcorrection gate）"
+      : "input-n5-lm-v1（AsrConfusionRules + recommended weights）",
+  input,
+  output,
+  ...(elapsedMs !== undefined ? { elapsedMs } : {}),
   location: "browser",
 });
 
@@ -242,6 +267,7 @@ export const assembleConversionTrace = (parts: {
   normalizedSource: string;
   phoneticInput?: string;
   vibrato: TraceVibratoOutcome;
+  rescore?: TraceRescoreOutcome;
   converter: TraceConverterOutcome;
 }): ConversionTrace => {
   const steps: ConversionTraceStep[] = [
@@ -267,6 +293,10 @@ export const assembleConversionTrace = (parts: {
     steps.push(buildVibratoSkippedStep(parts.vibrato.skippedReason ?? "not-required", parts.vibrato.output));
   } else {
     steps.push(buildBrowserVibratoStep(parts.vibrato.input, parts.vibrato.output, parts.vibrato.elapsedMs));
+  }
+
+  if (parts.rescore?.ran) {
+    steps.push(buildRescoreStep(parts.rescore.input, parts.rescore.output, parts.rescore.elapsedMs));
   }
 
   steps.push(buildAzookeyInputStep(parts.converter.azookeyInput, parts.converter.mode));

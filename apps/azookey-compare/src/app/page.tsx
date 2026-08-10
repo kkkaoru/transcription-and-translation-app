@@ -552,6 +552,7 @@ export default function ComparePage() {
             wasmModuleUrl,
             dictionaryUrl,
             wasmGlobalName,
+            inputN5LmRescoreEnabled: config.inputN5LmRescoreEnabled,
           },
           {
             onStage: (nextStage) => {
@@ -1272,6 +1273,25 @@ export default function ComparePage() {
                       </span>
                     </>
                   ) : null}
+                </p>
+
+                <label className="field-label" htmlFor="input-n5-lm-rescore-enabled">
+                  かな読み補正（input_n5_lm_v1）
+                  <span className="field-inline-control">
+                    <input
+                      id="input-n5-lm-rescore-enabled"
+                      data-testid="input-n5-lm-rescore-enabled"
+                      type="checkbox"
+                      checked={config.inputN5LmRescoreEnabled}
+                      onChange={(event) =>
+                        updateConfig("inputN5LmRescoreEnabled", event.target.checked)
+                      }
+                    />
+                    <span>{config.inputN5LmRescoreEnabled ? "オン" : "オフ（既定）"}</span>
+                  </span>
+                </label>
+                <p className="field-help" id="input-n5-lm-rescore-description">
+                  Vibrato 後・AzooKey 前に Miwa-Keita/input_n5_lm_v1 の ASR かな読み補正をかけます。既定はオフ（既存挙動のまま）。
                 </p>
 
                 <label className="field-label" htmlFor="worker-url">

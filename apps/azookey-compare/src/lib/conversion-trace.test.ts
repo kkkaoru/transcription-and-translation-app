@@ -8,6 +8,7 @@ import {
   buildConverterOutputStep,
   buildNormalizeStep,
   buildPhoneticOverrideStep,
+  buildRescoreStep,
   buildVibratoFallbackStep,
   buildVibratoSkippedStep,
   buildWorkerWsStep,
@@ -42,6 +43,14 @@ describe("conversion trace helpers", () => {
     });
     expect(buildBrowserVibratoStep("今日", "きょう").elapsedMs).toBeUndefined();
     expect(buildVibratoFallbackStep("今日")).toMatchObject({ id: "vibrato-fallback" });
+    expect(buildRescoreStep("おはよございます", "おはようございます", 2)).toMatchObject({
+      id: "rescore",
+      input: "おはよございます",
+      output: "おはようございます",
+      elapsedMs: 2,
+    });
+    expect(buildRescoreStep("あ", "あ").detail).toContain("変更なし");
+    expect(buildRescoreStep("あ", "あ").elapsedMs).toBeUndefined();
     expect(buildAzookeyInputStep("きょう", "browser-vibrato").location).toBe("browser");
     expect(buildAzookeyInputStep("きょう", "worker-vibrato").location).toBe("cloudflare-worker");
     expect(formatTraceStepTiming(buildBrowserAzookeyStep("a", "b", 0))).toBe("0 ms");
@@ -88,6 +97,37 @@ describe("conversion trace helpers", () => {
       "browser-azookey",
     ]);
     expect(trace.steps.find((step) => step.id === "azookey-input")?.output).toBe("きょうはいいてんき");
+  });
+
+  it("includes an input_n5_lm_v1 rescore step when present", () => {
+    const trace = assembleConversionTrace({
+      rawSource: "おはよございます",
+      normalizedSource: "おはよございます",
+      vibrato: {
+        ran: true,
+        input: "おはよございます",
+        output: "おはよございます",
+        elapsedMs: 1,
+      },
+      rescore: {
+        ran: true,
+        input: "おはよございます",
+        output: "おはようございます",
+        elapsedMs: 2,
+      },
+      converter: {
+        mode: "browser-vibrato",
+        azookeyInput: "おはようございます",
+        convertedText: "おはようございます",
+        elapsedMs: 3,
+        model: "azookey-rust-wasm",
+      },
+    });
+    expect(trace.steps.map((step) => step.id)).toContain("rescore");
+    expect(trace.steps.find((step) => step.id === "rescore")).toMatchObject({
+      input: "おはよございます",
+      output: "おはようございます",
+    });
   });
 
   it("assembles phonetic override and worker traces", () => {

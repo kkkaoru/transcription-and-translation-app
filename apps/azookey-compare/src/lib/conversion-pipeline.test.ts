@@ -125,6 +125,92 @@ describe("comparison conversion pipeline", () => {
     expect(result.trace.steps.some((step) => step.id === "rescore")).toBe(false);
   });
 
+  it("feeds rescored kana to the Cloudflare Worker path when enabled", async () => {
+    const convertWithWorker = vi.fn(() =>
+      Promise.resolve({
+        requestId: "r-rescore",
+        sourceText: "おはよございます",
+        convertedText: "おはようございます",
+        receivedAt: Date.now(),
+        elapsedMs: 5,
+        model: "azookey-rust-wasm",
+      }),
+    );
+    const result = await runComparisonConversion(
+      {
+        ...baseInput,
+        sourceText: "おはよございます",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+        inputN5LmRescoreEnabled: true,
+      },
+      {
+        runBrowserVibrato: vi.fn(() =>
+          Promise.resolve({ text: "おはよございます", elapsedMs: 1 }),
+        ),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker,
+      },
+    );
+    expect(convertWithWorker).toHaveBeenCalledWith(
+      expect.objectContaining({ vibratoInput: "おはようございます" }),
+    );
+    expect(result.trace.steps.some((step) => step.id === "rescore")).toBe(true);
+  });
+
+  it("rescored kana on the Zenzai dictionary path when enabled", async () => {
+    const runBrowserZenzaiDict = vi.fn((): Promise<BrowserZenzaiDictResult> =>
+      Promise.resolve({
+        text: "おはようございます",
+        elapsedMs: 4,
+        execution: BROWSER_ZENZAI_DICT_EXECUTION,
+        model: "zenz-v3.2-xsmall-gguf",
+        dictionaryUrl: "/azookey/system.azkdict.gz",
+        label: BROWSER_ZENZAI_DICT_LABEL,
+      }),
+    );
+    const result = await runComparisonConversion(
+      {
+        ...baseInput,
+        sourceText: "おはよございます",
+        mode: "browser-vibrato",
+        converterModel: "zenz-v3.2-xsmall-gguf",
+        inputN5LmRescoreEnabled: true,
+      },
+      {
+        runBrowserVibrato: vi.fn(() =>
+          Promise.resolve({ text: "おはよございます", elapsedMs: 1 }),
+        ),
+        runBrowserAzookey: vi.fn(),
+        runBrowserZenzaiDict,
+      },
+    );
+    expect(runBrowserZenzaiDict).toHaveBeenCalledWith(
+      "おはようございます",
+      "zenz-v3.2-xsmall-gguf",
+    );
+    expect(result.trace.azookeyInput).toBe("おはようございます");
+  });
+
+  it("throws when browser Zenzai dict client is missing", async () => {
+    await expect(
+      runComparisonConversion(
+        {
+          ...baseInput,
+          mode: "browser-vibrato",
+          converterModel: "zenz-v3.2-xsmall-gguf",
+        },
+        {
+          runBrowserVibrato: vi.fn(() =>
+            Promise.resolve({ text: "きょうはいいてんき", elapsedMs: 1 }),
+          ),
+          runBrowserAzookey: vi.fn(),
+        },
+      ),
+    ).rejects.toThrow(/Zenzai/);
+  });
+
   it("uses the Zenzai dictionary path in browser-complete without falling back to Worker", async () => {
     const convertWithWorker = vi.fn();
     const runBrowserAzookey = vi.fn();

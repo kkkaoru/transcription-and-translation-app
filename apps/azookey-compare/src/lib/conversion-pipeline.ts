@@ -3,6 +3,9 @@
  *
  * `browser-vibrato` (ブラウザ完結) runs Vibrato then AzooKey entirely in the
  * browser and never opens `/ws/azookey`. `worker-vibrato` still uses inference.
+ *
+ * Optional `input_n5_lm_v1` rescore sits after Vibrato (or normalize when
+ * Vibrato is skipped) and before AzooKey — same stage order as desktop.
  */
 
 import { shouldRunBrowserVibratoPrePass } from "./azookey-reading";
@@ -16,9 +19,11 @@ import {
   assembleConversionTrace,
   normalizeSourceText,
   type ConversionTrace,
+  type TraceRescoreOutcome,
 } from "./conversion-trace";
 import type { ConverterModel } from "./converter-models";
 import { isZenzConverterModel } from "./converter-models";
+import { applyInputN5LmRescore } from "./input-n5-lm-rescore";
 import type { ConversionStage } from "./path-labels";
 import type { AzooKeyConvertResult, VibratoExecution } from "./worker-client";
 
@@ -34,6 +39,8 @@ export interface ConversionPipelineInput {
   wasmModuleUrl?: string;
   dictionaryUrl?: string;
   wasmGlobalName?: string;
+  /** Opt-in input_n5_lm_v1 rescore. Defaults to off when omitted. */
+  inputN5LmRescoreEnabled?: boolean;
 }
 
 export interface ConversionPipelineResult {
@@ -80,6 +87,25 @@ export interface ConversionPipelineDependencies {
   convertWithWorker?: (request: ConversionWorkerRequest) => Promise<AzooKeyConvertResult>;
   onStage?: (stage: ConversionStage) => void;
 }
+
+const maybeRescoreReading = (
+  reading: string,
+  enabled: boolean | undefined,
+): { azookeyInput: string; rescore?: TraceRescoreOutcome } => {
+  if (!enabled) {
+    return { azookeyInput: reading };
+  }
+  const result = applyInputN5LmRescore(reading, true);
+  return {
+    azookeyInput: result.text,
+    rescore: {
+      ran: true,
+      input: reading,
+      output: result.text,
+      ...(result.elapsedMs !== undefined ? { elapsedMs: result.elapsedMs } : {}),
+    },
+  };
+};
 
 export const runComparisonConversion = async (
   input: ConversionPipelineInput,
@@ -137,13 +163,18 @@ export const runComparisonConversion = async (
       ? "browser-wasm"
       : "worker";
 
+  const { azookeyInput, rescore } = maybeRescoreReading(
+    vibratoInput,
+    input.inputN5LmRescoreEnabled,
+  );
+
   if (input.mode === "browser-vibrato") {
     if (isZenzConverterModel(input.converterModel)) {
       if (!deps.runBrowserZenzaiDict) {
         throw new Error("ブラウザ Zenzai 辞書クライアントを初期化できません");
       }
       deps.onStage?.("browser-azookey");
-      const zenz = await deps.runBrowserZenzaiDict(vibratoInput, input.converterModel);
+      const zenz = await deps.runBrowserZenzaiDict(azookeyInput, input.converterModel);
       const trace = assembleConversionTrace({
         rawSource,
         normalizedSource: sourceText,
@@ -156,9 +187,10 @@ export const runComparisonConversion = async (
           elapsedMs: wasmElapsedMs,
           failedOpen: vibratoFailedOpen,
         },
+        ...(rescore ? { rescore } : {}),
         converter: {
           mode: input.mode,
-          azookeyInput: vibratoInput,
+          azookeyInput,
           convertedText: zenz.text,
           elapsedMs: zenz.elapsedMs,
           model: zenz.model,
@@ -182,7 +214,7 @@ export const runComparisonConversion = async (
       };
     }
     deps.onStage?.("browser-azookey");
-    const azookey = await deps.runBrowserAzookey(vibratoInput);
+    const azookey = await deps.runBrowserAzookey(azookeyInput);
     const trace = assembleConversionTrace({
       rawSource,
       normalizedSource: sourceText,
@@ -195,9 +227,10 @@ export const runComparisonConversion = async (
         elapsedMs: wasmElapsedMs,
         failedOpen: vibratoFailedOpen,
       },
+      ...(rescore ? { rescore } : {}),
       converter: {
         mode: input.mode,
-        azookeyInput: vibratoInput,
+        azookeyInput,
         convertedText: azookey.text,
         elapsedMs: azookey.elapsedMs,
         model: "azookey-rust-wasm",
@@ -227,7 +260,7 @@ export const runComparisonConversion = async (
   const workerMode = phonetic ? "worker-vibrato" : input.mode;
   const workerRequest = {
     sourceText,
-    vibratoInput,
+    vibratoInput: azookeyInput,
     mode: workerMode,
     vibratoExecution,
     model: input.converterModel,
@@ -236,7 +269,7 @@ export const runComparisonConversion = async (
     source: "web-speech",
     language: input.language,
     sourceText,
-    vibratoInput,
+    vibratoInput: azookeyInput,
     mode: workerMode,
     model: input.converterModel,
     vibratoExecution,
@@ -254,9 +287,10 @@ export const runComparisonConversion = async (
       elapsedMs: wasmElapsedMs,
       failedOpen: vibratoFailedOpen,
     },
+    ...(rescore ? { rescore } : {}),
     converter: {
       mode: input.mode,
-      azookeyInput: vibratoInput,
+      azookeyInput,
       convertedText: result.convertedText,
       elapsedMs: result.elapsedMs,
       model: result.model,

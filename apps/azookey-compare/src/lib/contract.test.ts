@@ -309,6 +309,7 @@ describe("comparison configuration contract", () => {
       language: "en-US",
       browserWasmModuleUrl: "/vibrato/vibrato_wasm.js",
       browserWasmDictionaryUrl: "/vibrato/system.dic.zst",
+      inputN5LmRescoreEnabled: false,
     });
     expect(
       mergeComparisonConfig({
