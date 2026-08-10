@@ -30,8 +30,7 @@ export const REAZONSPEECH_K2_V2_SPEC: ParapperAsrModelSpec = {
   role: "completion",
   label: "ReazonSpeech K2 v2 (completion)",
   dirName: "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01",
-  sourceUrl:
-    "https://huggingface.co/reazon-research/reazonspeech-k2-v2/resolve/main",
+  sourceUrl: "https://huggingface.co/reazon-research/reazonspeech-k2-v2/resolve/main",
   requiredFiles: [
     "encoder-epoch-99-avg-1.int8.onnx",
     "decoder-epoch-99-avg-1.onnx",
@@ -49,13 +48,13 @@ export const NEMOTRON_35_160MS_SPEC: ParapperAsrModelSpec = {
   label: "Nemotron 3.5 ASR Streaming 160ms int8 (interim)",
   dirName: NEMOTRON_35_160MS_DIR_NAME,
   sourceUrl: `${SHERPA_ONNX_ASR_RELEASES}/${NEMOTRON_35_160MS_DIR_NAME}.tar.bz2`,
-  requiredFiles: [
-    "encoder.int8.onnx",
-    "decoder.int8.onnx",
-    "joiner.int8.onnx",
-    "tokens.txt",
-  ],
+  requiredFiles: ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"],
 };
+
+/** Completion ASR required before live capture can talk to Parapper. */
+export const requiredParapperAsrModelsForCaptureStart = (): readonly ParapperAsrModelSpec[] => [
+  REAZONSPEECH_K2_V2_SPEC,
+];
 
 /** Models the desktop headless sidecar must keep ready for the current setting. */
 export const requiredParapperAsrModels = (

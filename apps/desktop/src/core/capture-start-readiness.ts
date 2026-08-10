@@ -1,4 +1,4 @@
-import { requiredParapperAsrModels } from "./parapper-asr-models";
+import { requiredParapperAsrModelsForCaptureStart } from "./parapper-asr-models";
 import type { RecognitionMode } from "./types";
 
 export type CaptureStartBlockReason =
@@ -24,6 +24,9 @@ export type CaptureStartReadinessInput = {
 /**
  * Decide why live caption capture cannot start. Returns `null` when start is
  * allowed. Stop remains available while capturing/starting regardless of this.
+ *
+ * Interim-only ASR (Nemotron) may still be downloading in the background; capture
+ * only requires the completion ASR that Parapper listens with at startup.
  */
 export const resolveCaptureStartBlockReason = (
   input: CaptureStartReadinessInput,
@@ -32,7 +35,7 @@ export const resolveCaptureStartBlockReason = (
     return input.webSpeechSupported ? null : "web-speech-unsupported";
   }
 
-  const required = requiredParapperAsrModels(input.streamingInterimAsrEnabled);
+  const required = requiredParapperAsrModelsForCaptureStart();
   for (const spec of required) {
     const entry = input.modelStatus.find((model) => model.modelId === spec.id);
     if (entry?.status !== "ready") {

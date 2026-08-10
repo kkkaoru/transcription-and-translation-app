@@ -7,7 +7,22 @@ import {
 import { NEMOTRON_35_160MS_SPEC, REAZONSPEECH_K2_V2_SPEC } from "./parapper-asr-models";
 
 describe("capture start readiness", () => {
-  it("blocks Parapper modes while required ASR models are still downloading", () => {
+  it("blocks Parapper modes while completion ASR is still downloading", () => {
+    const reason = resolveCaptureStartBlockReason({
+      recognitionMode: "parapper-azookey",
+      streamingInterimAsrEnabled: true,
+      modelStatus: [
+        { modelId: REAZONSPEECH_K2_V2_SPEC.id, status: "downloading" },
+        { modelId: NEMOTRON_35_160MS_SPEC.id, status: "missing" },
+      ],
+      parapperHealthy: false,
+      webSpeechSupported: true,
+    });
+    expect(reason).toBe("models-preparing");
+    expect(canStartCaptionCapture(reason)).toBe(false);
+  });
+
+  it("does not block start on interim-only ASR downloads", () => {
     const reason = resolveCaptureStartBlockReason({
       recognitionMode: "parapper-azookey",
       streamingInterimAsrEnabled: true,
@@ -15,11 +30,11 @@ describe("capture start readiness", () => {
         { modelId: REAZONSPEECH_K2_V2_SPEC.id, status: "ready" },
         { modelId: NEMOTRON_35_160MS_SPEC.id, status: "downloading" },
       ],
-      parapperHealthy: false,
+      parapperHealthy: true,
       webSpeechSupported: true,
     });
-    expect(reason).toBe("models-preparing");
-    expect(canStartCaptionCapture(reason)).toBe(false);
+    expect(reason).toBeNull();
+    expect(canStartCaptionCapture(reason)).toBe(true);
   });
 
   it("blocks when Parapper is unhealthy even after models are ready", () => {

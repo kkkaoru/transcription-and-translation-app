@@ -613,11 +613,42 @@ async fn start_headless_recognition(
     apply_headless_quality_defaults(&mut config, options.noise_cancellation_enabled);
     // Always overwrite so a stale interactive profile in PARAPPER_RUNTIME_DIR
     // cannot keep a previous interim model after the parent disables it.
-    config.asr.interim_model = options.interim_asr_model;
+    let requested_interim = options.interim_asr_model;
+    // Defer optional interim ASR so a multi-hundred-MB download cannot block the
+    // recognition WebSocket that the desktop microphone capture connects to.
+    config.asr.interim_model = None;
     let config = state.set_config(config).await?;
 
-    log::info!("Preparing Kotoba Beacon ASR models before listening on 127.0.0.1:{}", options.port);
+    log::info!(
+        "Preparing Kotoba Beacon ASR models before listening on 127.0.0.1:{} (defer_interim={:?})",
+        options.port,
+        requested_interim
+    );
     ensure_models_downloaded(&handle, &config).await?;
+    if let Some(interim) = requested_interim {
+        let handle_for_download = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            let state = handle_for_download.state::<state::AppState>();
+            let mut cfg = state.get_config().await;
+            cfg.asr.interim_model = Some(interim);
+            match ensure_models_downloaded(&handle_for_download, &cfg).await {
+                Ok(_) => match state.set_config(cfg).await {
+                    Ok(_) => log::info!(
+                        "Interim ASR model {:?} installed and enabled after background download",
+                        interim
+                    ),
+                    Err(err) => log::warn!(
+                        "Interim ASR model {:?} downloaded but failed to enable: {err}",
+                        interim
+                    ),
+                },
+                Err(err) => log::warn!(
+                    "Background download for interim ASR model {:?} failed: {err}",
+                    interim
+                ),
+            }
+        });
+    }
     state.start_audio_input(handle.clone()).await?;
     log::info!(
         "Kotoba Beacon ASR service is listening on ws://127.0.0.1:{}/ws/recognition (vad_interval_ms={} vad_threshold={:.3} interim_result_silence_ms={} turn_check_silence_ms={} turn_detector={:?} interim_result_enabled={} rerecognize_full_on_complete={} noise_cancellation_enabled={} interim_asr_model={:?})",
@@ -630,7 +661,7 @@ async fn start_headless_recognition(
         config.turn.interim_result_enabled,
         config.turn.rerecognize_full_on_complete,
         config.noise_cancellation.enabled,
-        config.asr.interim_model,
+        requested_interim,
     );
     Ok(())
 }

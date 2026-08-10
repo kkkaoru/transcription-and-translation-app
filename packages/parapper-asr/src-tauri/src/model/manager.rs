@@ -32,6 +32,16 @@ use crate::config::{
     LocalTtsVoice, NoiseCancellationModel, ParapperConfig, SpeechBackend, TranslationBackend,
 };
 
+/// Append `.<marker>` without using `Path::with_extension`, which replaces the
+/// final dotted segment and truncates names like
+/// `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-160ms-int8-2026-06-11`.
+pub(crate) fn path_with_marker_suffix(path: &Path, marker: &str) -> PathBuf {
+    let mut os = path.as_os_str().to_owned();
+    os.push(".");
+    os.push(marker);
+    PathBuf::from(os)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelStatus {
     pub root_dir: String,
@@ -548,8 +558,8 @@ fn japanese_morph_model_installed(model_dir: &Path) -> bool {
 }
 
 fn japanese_morph_model_preparing(model_dir: &Path) -> bool {
-    model_dir.with_extension("download").is_file()
-        || extraction_marker_is_active(&model_dir.with_extension("extracting"))
+    path_with_marker_suffix(model_dir, "download").is_file()
+        || extraction_marker_is_active(&path_with_marker_suffix(model_dir, "extracting"))
 }
 
 fn extraction_marker_is_active(path: &Path) -> bool {
@@ -999,7 +1009,7 @@ async fn download_file(
     file_index: usize,
     total_files: usize,
 ) -> Result<()> {
-    let temporary_path = target.output_path.with_extension("download");
+    let temporary_path = path_with_marker_suffix(&target.output_path, "download");
     if let Some(parent) = target.output_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create model output dir: {}", parent.display()))?;
@@ -1280,7 +1290,7 @@ fn extract_archive_directory(
     let parent = output_path.parent().with_context(|| {
         format!("{label} output path has no parent directory: {}", output_path.display())
     })?;
-    let temp_dir = output_path.with_extension("extracting");
+    let temp_dir = path_with_marker_suffix(output_path, "extracting");
     if temp_dir.is_dir() {
         fs::remove_dir_all(&temp_dir).with_context(|| {
             format!("Failed to remove temporary TTS extraction dir: {}", temp_dir.display())
@@ -1363,7 +1373,7 @@ mod tests {
         local_translation_model_dir_from_root, local_translation_model_local_source_dir,
         local_translation_models_for_config, local_tts_voices_for_config,
         materialize_rkyv_japanese_morph_dictionary, model_status_from_root,
-        namo_turn_detector_models_for_config,
+        namo_turn_detector_models_for_config, path_with_marker_suffix,
         push_local_translation_download_targets_with_source_resolver,
     };
     use crate::config::{
@@ -1375,7 +1385,11 @@ mod tests {
         VIBRATO_MODEL_MAGIC, asr_model_archive_name, asr_model_required_file_names,
         local_translation_model_required_file_names,
     };
-    use std::{fs, path::Path, time::SystemTime};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::SystemTime,
+    };
 
     #[test]
     fn namo_models_follow_required_asr_models() {
@@ -1546,6 +1560,30 @@ mod tests {
         assert!(
             !morph.preparing,
             "an incompatible installed file should be treated as missing, not as an active download"
+        );
+    }
+
+    #[test]
+    fn path_with_marker_suffix_preserves_multi_dot_directory_names() {
+        let path = Path::new(
+            "/tmp/models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-160ms-int8-2026-06-11",
+        );
+        assert_eq!(
+            path_with_marker_suffix(path, "download"),
+            PathBuf::from(
+                "/tmp/models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-160ms-int8-2026-06-11.download"
+            )
+        );
+        assert_eq!(
+            path_with_marker_suffix(path, "extracting"),
+            PathBuf::from(
+                "/tmp/models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-160ms-int8-2026-06-11.extracting"
+            )
+        );
+        // Path::with_extension would truncate after the final dotted segment.
+        assert_ne!(
+            path.with_extension("download"),
+            path_with_marker_suffix(path, "download")
         );
     }
 

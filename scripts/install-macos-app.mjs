@@ -152,6 +152,41 @@ export const replaceMacosApp = (sourceApp, installApp) => {
   runChecked("/usr/bin/ditto", [sourceApp, staging]);
   rmSync(installApp, { recursive: true, force: true });
   runChecked("/bin/mv", [staging, installApp]);
+  // Preserve microphone entitlement on the installed adhoc/local copy. A bare
+  // `codesign -s -` without --entitlements drops audio-input and WKWebView can
+  // deny getUserMedia without showing the OS permission dialog.
+  const entitlements = join(repoRoot, "apps", "desktop", "src-tauri", "Entitlements.plist");
+  if (existsSync(entitlements)) {
+    const signAttempts = [
+      [
+        "--force",
+        "--deep",
+        "--sign",
+        "-",
+        "--entitlements",
+        entitlements,
+        "--options",
+        "runtime",
+        installApp,
+      ],
+      ["--force", "--deep", "--sign", "-", "--entitlements", entitlements, installApp],
+    ];
+    let signed = false;
+    for (const args of signAttempts) {
+      try {
+        runChecked("/usr/bin/codesign", args);
+        signed = true;
+        break;
+      } catch {
+        // Try the next softer signing mode.
+      }
+    }
+    if (!signed) {
+      console.warn(
+        "codesign with microphone entitlements failed; mic permission prompts may be suppressed",
+      );
+    }
+  }
   try {
     runChecked(
       "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",

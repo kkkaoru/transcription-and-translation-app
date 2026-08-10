@@ -539,6 +539,8 @@ export const MainApp = () => {
     try {
       if (options?.primePermission) {
         try {
+          // First await from the Refresh click must be getUserMedia so WKWebView
+          // can show the OS microphone dialog (later awaits lose the gesture).
           const mode = await ensureMicrophoneAccess();
           pushDiagnosticEvent("audio", "Microphone permission primed", `mode=${mode}`);
         } catch (error) {
@@ -1364,8 +1366,17 @@ export const MainApp = () => {
         webSpeechStream.current = webSpeechForAttempt;
         webSpeechForAttempt.start();
       }
-      // Free the previous mic device before opening a new stream (NotReadableError
-      // if two sessions pin the same input).
+      // WKWebView silently rejects getUserMedia with NotAllowedError (no OS
+      // dialog) once this click turn awaits. Open the new mic now, before any
+      // await, so the permission prompt can appear. Stopping the previous
+      // session may briefly overlap on the same device; prepareInput already
+      // ladders constraints when the first open fails.
+      const preparePromise = webSpeechMode
+        ? null
+        : microphone.prepareInput(captureConfig.audio.inputDeviceId, {
+            noiseSuppression: captureConfig.audio.noiseSuppression !== false,
+            autoGainControl: captureConfig.audio.autoGainControl !== false,
+          });
       await previousMicrophone.stop();
       if (attempt !== captureAttempt.current) {
         await microphone.stop().catch(() => undefined);
@@ -1412,16 +1423,12 @@ export const MainApp = () => {
         return;
       }
 
-      // Overlap mic open with backend readiness so the first chunk is not rejected
-      // for a cold gateway, without delaying getUserMedia past the user gesture.
-      const preparePromise = microphone.prepareInput(captureConfig.audio.inputDeviceId, {
-        noiseSuppression: captureConfig.audio.noiseSuppression !== false,
-        autoGainControl: captureConfig.audio.autoGainControl !== false,
-      });
+      // Mic open already started above (gesture-safe). Overlap the remainder
+      // with backend readiness so a cold gateway does not delay the first chunk.
       const backendPromise = bridge.startCapture();
       backendStartPromise.current = backendPromise;
       const [prepareResult, backendResult] = await Promise.allSettled([
-        preparePromise,
+        preparePromise ?? Promise.resolve(),
         backendPromise,
       ]);
       if (backendStartPromise.current === backendPromise) {

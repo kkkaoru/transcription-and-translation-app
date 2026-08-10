@@ -60,13 +60,22 @@ pub fn parapper_models_root(parapper_runtime_dir: &Path) -> PathBuf {
     parapper_runtime_dir.join("models")
 }
 
+/// Append `.<marker>` without `Path::with_extension`, which truncates multi-dot
+/// Nemotron directory names after the final dotted segment.
+fn path_with_marker_suffix(path: &Path, marker: &str) -> PathBuf {
+    let mut os = path.as_os_str().to_owned();
+    os.push(".");
+    os.push(marker);
+    PathBuf::from(os)
+}
+
 pub fn classify_parapper_asr_model(
     models_root: &Path,
     spec: &ParapperAsrModelSpec,
 ) -> ModelStatusEntry {
     let local_path = models_root.join(spec.dir_name);
-    let download_marker = local_path.with_extension("download");
-    let extracting_marker = local_path.with_extension("extracting");
+    let download_marker = path_with_marker_suffix(&local_path, "download");
+    let extracting_marker = path_with_marker_suffix(&local_path, "extracting");
 
     if required_files_present(&local_path, spec.required_files) {
         let installed_bytes = directory_byte_size(&local_path);
@@ -216,9 +225,15 @@ mod tests {
         let root = temp_root("downloading");
         let models = root.join("models");
         fs::create_dir_all(&models).unwrap();
-        let marker = models
-            .join(NEMOTRON_35_160MS.dir_name)
-            .with_extension("download");
+        let marker = path_with_marker_suffix(&models.join(NEMOTRON_35_160MS.dir_name), "download");
+        assert!(
+            marker
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("-2026-06-11.download")),
+            "marker must keep the full multi-dot directory name: {}",
+            marker.display()
+        );
         fs::write(&marker, vec![0_u8; 32]).unwrap();
 
         let entry = classify_parapper_asr_model(&models, &NEMOTRON_35_160MS);
