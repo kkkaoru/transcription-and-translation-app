@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   COMPARE_INFERENCE_HEALTH_PATH,
@@ -74,5 +75,44 @@ describe("compare Worker inference proxy", () => {
     expect(
       inferenceProxyRequest(request, { AZOOKEY_API_TOKEN: "   " }).headers.get("authorization"),
     ).toBeNull();
+  });
+
+  it("builds local next.dev rewrites to COMPARE_INFERENCE_ORIGIN", async () => {
+    const mod = await import("./inference-proxy");
+    expect(mod).toHaveProperty("COMPARE_INFERENCE_DEV_ORIGIN_DEFAULT", "http://127.0.0.1:8787");
+    expect(mod.compareInferenceDevOrigin({})).toBe("http://127.0.0.1:8787");
+    expect(mod.compareInferenceDevOrigin({ COMPARE_INFERENCE_ORIGIN: "  " })).toBe(
+      "http://127.0.0.1:8787",
+    );
+    expect(
+      mod.compareInferenceDevOrigin({ COMPARE_INFERENCE_ORIGIN: "http://127.0.0.1:9999/" }),
+    ).toBe("http://127.0.0.1:9999");
+    expect(mod.compareInferenceDevRewrites()).toEqual([
+      { source: "/ws/azookey", destination: "http://127.0.0.1:8787/ws/azookey" },
+      { source: "/v1/azookey", destination: "http://127.0.0.1:8787/v1/azookey" },
+      {
+        source: "/v1/asr/workers-ai/transcriptions",
+        destination: "http://127.0.0.1:8787/v1/asr/workers-ai/transcriptions",
+      },
+    ]);
+    expect(mod.compareInferenceDevRewrites("http://127.0.0.1:9999")).toEqual([
+      { source: "/ws/azookey", destination: "http://127.0.0.1:9999/ws/azookey" },
+      { source: "/v1/azookey", destination: "http://127.0.0.1:9999/v1/azookey" },
+      {
+        source: "/v1/asr/workers-ai/transcriptions",
+        destination: "http://127.0.0.1:9999/v1/asr/workers-ai/transcriptions",
+      },
+    ]);
+  });
+
+  it("keeps next.config.mjs development rewrites aligned with inference proxy paths", () => {
+    const nextConfig = readFileSync(new URL("../../next.config.mjs", import.meta.url), "utf8");
+    expect(nextConfig).toContain("rewrites");
+    expect(nextConfig).toContain("COMPARE_INFERENCE_ORIGIN");
+    expect(nextConfig).toContain("http://127.0.0.1:8787");
+    expect(nextConfig).toContain('NODE_ENV === "development"');
+    for (const pathname of COMPARE_INFERENCE_PROXY_PATHS) {
+      expect(nextConfig).toContain(pathname);
+    }
   });
 });

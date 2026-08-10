@@ -51,6 +51,29 @@ describe("workers-ai-asr-client", () => {
 
     await expect(
       transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
+        endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
+        fetchImpl: vi.fn(
+          async () =>
+            new Response("<!DOCTYPE html>404: This page could not be found.", { status: 404 }),
+        ),
+      }),
+    ).rejects.toThrow(
+      "Cloudflare Workers AI ASR の経路が見つかりません（404）。ローカルなら bun run worker:dev を起動し、Next.js が inference（既定 http://127.0.0.1:8787）へ proxy しているか確認してください",
+    );
+
+    await expect(
+      transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
+        endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
+        fetchImpl: vi.fn(() => {
+          throw new TypeError("fetch failed");
+        }),
+      }),
+    ).rejects.toThrow(
+      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください",
+    );
+
+    await expect(
+      transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
         endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
         fetchImpl: vi.fn(async () => Response.json({ error: { code: "busy" } }, { status: 429 })),
       }),

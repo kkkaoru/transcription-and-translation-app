@@ -116,10 +116,10 @@ describe("compare page speech settings", () => {
       toggle.indexOf("const controller = speechRef.current"),
     );
     const webSpeechBranch = toggle.slice(toggle.indexOf("const controller = speechRef.current"));
+    expect(workersAiBranch).toContain("beginRecognitionListening");
     expect(workersAiBranch).toContain("startCloudflareWorkersAiAsrAfterSelect");
     expect(workersAiBranch).toContain("warmBrowserVibrato:");
     expect(workersAiBranch).toContain('requireVibratoWarmup: config.mode === "browser-vibrato"');
-    expect(workersAiBranch).not.toContain("beginRecognitionListening");
     expect(workersAiBranch).not.toContain("gateWorkersAiAsrStart");
     expect(webSpeechBranch).toContain("beginRecognitionListening");
     expect(webSpeechBranch).not.toContain(
@@ -154,11 +154,11 @@ describe("compare page speech settings", () => {
       toggle.indexOf("if (usingWorkersAi)"),
       toggle.indexOf("const controller = speechRef.current"),
     );
+    expect(workersAiBranch).toContain("beginRecognitionListening");
     expect(workersAiBranch).toContain("startCloudflareWorkersAiAsrAfterSelect");
     expect(workersAiBranch).toContain("existing: asrRef.current");
     expect(workersAiBranch).toContain("warmBrowserVibrato:");
     expect(workersAiBranch).not.toContain("gateWorkersAiAsrStart");
-    expect(workersAiBranch).not.toContain("beginRecognitionListening");
     expect(workersAiBranch).not.toContain("このブラウザは Workers AI ASR 録音に対応していません");
     expect(toggle).toContain("WEB_SPEECH_UNSUPPORTED_JA");
     expect(source).toContain("asrCaptureSupported");
