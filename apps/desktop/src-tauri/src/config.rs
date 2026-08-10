@@ -53,6 +53,15 @@ fn default_adaptive_noise_floor() -> bool {
     true
 }
 
+fn default_streaming_interim_asr_enabled() -> bool {
+    true
+}
+
+/// Headless Parapper interim model paired with ReazonSpeech completion ASR.
+pub const STREAMING_INTERIM_ASR_MODEL_ID: &str = "nemotron_3_5_asr_streaming_0_6b_160ms_int8";
+/// Explicit CLI sentinel that clears any persisted interim ASR model.
+pub const STREAMING_INTERIM_ASR_MODEL_OFF: &str = "none";
+
 /// The Parapper headless sidecar evaluates VAD frames at this interval by
 /// default. Keep the desktop contract explicit so it can be passed to the
 /// sidecar command line rather than silently falling back to Parapper's
@@ -95,6 +104,10 @@ pub struct AudioConfig {
     /// to the fixed silence_gate_db threshold.
     #[serde(default = "default_adaptive_noise_floor")]
     pub adaptive_noise_floor: bool,
+    /// When true, the headless Parapper sidecar loads Nemotron 3.5 streaming as
+    /// the interim-only ASR alongside ReazonSpeech completion. Default on.
+    #[serde(default = "default_streaming_interim_asr_enabled")]
+    pub streaming_interim_asr_enabled: bool,
 }
 
 fn default_vad_interval_ms() -> u32 {
@@ -439,6 +452,8 @@ impl Default for AppConfig {
                 auto_gain_control: true,
                 // Match frontend DEFAULT_ADAPTIVE_NOISE_FLOOR: adaptive floor gate on.
                 adaptive_noise_floor: true,
+                // Match frontend: Nemotron streaming interim ASR on by default.
+                streaming_interim_asr_enabled: true,
             },
             overlay: OverlayConfig {
                 width: 1_280,
@@ -659,6 +674,7 @@ mod tests {
         assert_eq!(config.debug.log_level, "info");
         assert!(config.audio.noise_suppression);
         assert!(config.audio.adaptive_noise_floor);
+        assert!(config.audio.streaming_interim_asr_enabled);
         assert_eq!(config.audio.vad_interval_ms, DEFAULT_VAD_INTERVAL_MS);
         assert_eq!(config.audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
         assert_eq!(config.recognition_mode, DEFAULT_RECOGNITION_MODE);
@@ -706,6 +722,7 @@ mod tests {
         assert_eq!(audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
         assert!(audio.noise_suppression);
         assert!(audio.adaptive_noise_floor);
+        assert!(audio.streaming_interim_asr_enabled);
     }
 
     #[test]

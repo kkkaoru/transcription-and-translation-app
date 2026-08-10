@@ -313,6 +313,8 @@ export const createDefaultConfig = (): AppConfig => ({
     autoGainControl: true,
     // Adaptive floor gate on by default; silenceGateDb is the fixed fallback.
     adaptiveNoiseFloor: DEFAULT_ADAPTIVE_NOISE_FLOOR,
+    // Progressive interim ASR (Nemotron 3.5 streaming) on by default.
+    streamingInterimAsrEnabled: true,
   },
   overlay: {
     width: 1_280,
@@ -541,6 +543,9 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   }
   if (typeof audio.adaptiveNoiseFloor !== "boolean") {
     audio.adaptiveNoiseFloor = DEFAULT_ADAPTIVE_NOISE_FLOOR;
+  }
+  if (typeof audio.streamingInterimAsrEnabled !== "boolean") {
+    audio.streamingInterimAsrEnabled = true;
   }
   return {
     ...base,
