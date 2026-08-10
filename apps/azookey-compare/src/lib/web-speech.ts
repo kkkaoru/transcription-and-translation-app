@@ -226,6 +226,10 @@ export class WebSpeechController {
       this.restartBlocked = false;
       this.clearStartTimer();
       this.restartAttempt = 0;
+      // Bind this browser service to the generation that called `start()`.
+      // A later `onend` must not read a replacement generation incremented
+      // while the prior service was still unwinding.
+      this.endingGeneration = this.recognitionGeneration;
       this.ensureResultBuffers(this.recognitionGeneration);
       this.setState("listening");
     };
@@ -239,8 +243,12 @@ export class WebSpeechController {
       }
       this.clearStartTimer();
       this.clearStopWatchdog();
-      const generation = this.recognitionGeneration;
+      const generation = this.endingGeneration ?? this.recognitionGeneration;
       this.endingGeneration = generation;
+      const fenceStaleEnd = !this.requestedStop && this.state === "stopping";
+      if (fenceStaleEnd) {
+        this.ignoredEndEvents += 1;
+      }
       if (this.requestedStop) {
         // Stay in `stopping` until the grace flush commits leftover text.
         // A start-timeout error must remain `error` rather than looking idle.
@@ -309,15 +317,27 @@ export class WebSpeechController {
       return;
     }
     this.clearRestartTimer();
-    this.clearStartTimer();
-    this.clearStopWatchdog();
     this.requestedStop = false;
     this.captureActive = true;
     // An explicit start is the user's acknowledgement/retry after a fatal
     // permission or policy error. Allow a fresh browser session to run.
     this.restartBlocked = false;
-    const preserveResultBuffers = this.state === "stopping" || this.resultFlushTimers.size > 0;
-    if (this.state === "stopping" || this.state === "error") {
+    // Chrome rejects `start()` until the previous service has delivered `end`.
+    // Record the latest intent and wait for the in-flight stop/flush to finish.
+    if (this.state === "stopping" || this.resultFlushTimers.size > 0) {
+      return;
+    }
+    this.beginRecognitionStart();
+  }
+
+  private beginRecognitionStart(): void {
+    if (this.disposed || !this.recognition || this.requestedStop) {
+      return;
+    }
+    this.clearStartTimer();
+    this.clearStopWatchdog();
+    const preserveResultBuffers = this.resultFlushTimers.size > 0;
+    if (this.state === "error") {
       let aborted = false;
       try {
         this.recognition.abort();
@@ -326,9 +346,6 @@ export class WebSpeechController {
         // The state transition below is the fallback for a service already
         // unwinding after a network/permission failure.
       }
-      // Only a successful abort guarantees that the next end event belongs
-      // to the superseded service. If abort throws, the real end event must
-      // still drive the normal restart/state transition.
       if (aborted) {
         this.ignoredEndEvents += 1;
       }
@@ -381,7 +398,7 @@ export class WebSpeechController {
       // unwinding. Treat that the same as its recoverable asynchronous error:
       // keep the continuous session requested and retry on the normal bounded
       // backoff rather than leaving the controller permanently errored.
-      if (!this.requestedStop) {
+      if (!this.requestedStop && !this.restartBlocked) {
         this.scheduleRestart();
       }
     }
@@ -542,9 +559,12 @@ export class WebSpeechController {
           this.setState("idle");
         }
         this.emitRecognitionEnded(reason, endedSnapshot);
+        if (!this.requestedStop && !this.restartBlocked) {
+          this.beginRecognitionStart();
+        }
         return;
       }
-      if (plan.restart && !this.requestedStop) {
+      if (plan.restart && !this.requestedStop && !this.restartBlocked) {
         this.scheduleRestart(generation);
       }
     }, FINAL_RESULT_GRACE_MS);
@@ -556,6 +576,7 @@ export class WebSpeechController {
       this.disposed ||
       !this.recognition ||
       this.requestedStop ||
+      this.restartBlocked ||
       this.restartTimer !== null ||
       this.resultFlushTimers.has(generation)
     ) {
@@ -571,7 +592,7 @@ export class WebSpeechController {
       if (this.disposed || this.requestedStop || this.recognitionGeneration !== generation) {
         return;
       }
-      this.start();
+      this.beginRecognitionStart();
     }, delay);
   }
 

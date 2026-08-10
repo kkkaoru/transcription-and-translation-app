@@ -832,7 +832,7 @@ export default function ComparePage() {
           className={`button button-primary ${speechState === "listening" ? "is-listening" : ""}`}
           type="button"
           onClick={toggleListening}
-          disabled={!speechSupported || speechState === "stopping"}
+          disabled={!speechSupported}
         >
           <span className="record-dot" aria-hidden="true" />
           {speechState === "listening" || speechState === "starting" ? "認識を停止" : "認識を開始"}
