@@ -31,9 +31,17 @@ const MODEL_NAMES: Record<string, string> = {
   "hy-mt2-1.8b-1.25bit-gguf": "Hy-MT2 1.8B 1.25-bit",
   "hy-mt2-7b-gguf": "Hy-MT2 7B",
   "input-n5-lm-v1": "Input N5 LM v1",
+  reazonspeech_k2_v2: "ReazonSpeech K2 v2",
+  nemotron_3_5_asr_streaming_0_6b_160ms_int8: "Nemotron 3.5 ASR Streaming 160ms",
 };
 
 const INPUT_LM_MODEL_ID = "input-n5-lm-v1";
+
+const isParapperAsrModel = (model: ModelStatusEntry): boolean =>
+  model.role === "completion" || model.role === "interim";
+
+const displayModelName = (model: ModelStatusEntry): string =>
+  model.label ?? MODEL_NAMES[model.modelId] ?? model.modelId;
 
 const statusLabel = (status: string, t: ReturnType<typeof useI18n>["t"]): string => {
   switch (status) {
@@ -255,23 +263,29 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
           const dp = downloading[model.modelId];
           const status = dp ? "downloading" : model.status;
           const busy = Boolean(dp) || batchDownloading;
+          const parapperAsr = isParapperAsrModel(model);
           return (
             <div key={model.modelId} className="download-row">
               <div className="download-row-main">
                 <div className="download-row-title">
-                  <span className="download-model-id">
-                    {MODEL_NAMES[model.modelId] ?? model.modelId}
-                  </span>
+                  <span className="download-model-id">{displayModelName(model)}</span>
                   <span className={`download-status-chip status-${status}`}>
                     {statusLabel(status, t)}
                   </span>
                 </div>
                 <div className="download-row-meta">
-                  <span>{model.modelId}</span>
+                  <span>
+                    {model.modelId}
+                    {model.role ? ` · ${model.role}` : ""}
+                  </span>
                   <span>
                     {model.installedBytes != null
-                      ? `${formatBytes(model.installedBytes)} / ${formatBytes(model.expectedBytes)}`
-                      : formatBytes(model.expectedBytes)}
+                      ? model.expectedBytes > 0
+                        ? `${formatBytes(model.installedBytes)} / ${formatBytes(model.expectedBytes)}`
+                        : formatBytes(model.installedBytes)
+                      : model.expectedBytes > 0
+                        ? formatBytes(model.expectedBytes)
+                        : "—"}
                   </span>
                   {dp ? (
                     <>
@@ -281,6 +295,16 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
                     </>
                   ) : null}
                 </div>
+                {model.sourceUrl ? (
+                  <p className="download-row-source">
+                    {t("model.sourceUrl")}: <code>{model.sourceUrl}</code>
+                  </p>
+                ) : null}
+                {model.localPath ? (
+                  <p className="download-row-source">
+                    {t("model.localPath")}: <code>{model.localPath}</code>
+                  </p>
+                ) : null}
                 {dp ? (
                   <div
                     className="download-progress"
@@ -294,7 +318,9 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
                 ) : null}
               </div>
               <div className="download-row-actions">
-                {dp ? (
+                {parapperAsr ? (
+                  <span className="download-sidecar-note">{t("model.parapperManaged")}</span>
+                ) : dp ? (
                   <button
                     className="secondary-button download-one-button"
                     type="button"
@@ -324,6 +350,9 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
 
       {desktop && models.some((m) => m.modelId === INPUT_LM_MODEL_ID) ? (
         <p className="download-section-note">{t("model.inputLmNote")}</p>
+      ) : null}
+      {desktop && models.some(isParapperAsrModel) ? (
+        <p className="download-section-note">{t("model.parapperAsrNote")}</p>
       ) : null}
     </section>
   );

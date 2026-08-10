@@ -450,6 +450,10 @@ const normalizeModelStatus = (value: unknown): ModelStatusEntry[] => {
     lastError: redactSensitiveText(
       toNullableString(pick(entry, "lastError") ?? pick(entry, "error")),
     ),
+    sourceUrl: toNullableString(pick(entry, "sourceUrl")),
+    localPath: toNullableString(pick(entry, "localPath")),
+    role: toNullableString(pick(entry, "role")),
+    label: toNullableString(pick(entry, "label")),
   }));
 };
 
@@ -2182,13 +2186,19 @@ export function DebugPanel() {
                     {modelStatus.map((entry) => (
                       <li key={entry.modelId}>
                         <span>
-                          {entry.modelId}{" "}
+                          {entry.label || entry.modelId}
+                          {entry.role ? ` · ${entry.role}` : ""}{" "}
                           <span className={`debug-download-chip status-${entry.status}`}>
                             {modelInstallLabel(String(entry.status), t)}
                           </span>
                         </span>
                         <code className="debug-path">
-                          {formatBytes(entry.installedBytes)} / {formatBytes(entry.expectedBytes)}
+                          {formatBytes(entry.installedBytes)}
+                          {entry.expectedBytes > 0
+                            ? ` / ${formatBytes(entry.expectedBytes)}`
+                            : ""}
+                          {entry.sourceUrl ? ` · ${t("debug.modelSource")}: ${entry.sourceUrl}` : ""}
+                          {entry.localPath ? ` · ${t("debug.modelPath")}: ${entry.localPath}` : ""}
                           {entry.lastError ? ` · ${entry.lastError}` : ""}
                         </code>
                       </li>

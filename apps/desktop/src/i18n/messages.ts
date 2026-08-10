@@ -177,7 +177,7 @@ const ja = {
   "settings.noiseSuppressionOn": "有効（推奨）",
   "settings.streamingInterimAsr": "途中認識（Nemotron Streaming）",
   "settings.streamingInterimAsrHint":
-    "audio.streamingInterimAsrEnabled。発話中の経過字幕に Nemotron 3.5 ASR Streaming（160ms int8）を併用します。確定認識は従来どおり ReazonSpeech です。保存後、アプリ再起動時にsidecarへ反映します。",
+    "audio.streamingInterimAsrEnabled。発話中の経過字幕に Nemotron 3.5 ASR Streaming（160ms int8）を併用します。確定認識は従来どおり ReazonSpeech です。モデルは初回起動時に GitHub（k2-fsa/sherpa-onnx releases）から自動取得し、詳細設定のモデルダウンロードに状態・URL・保存先を表示します。保存後、アプリ再起動時にsidecarへ反映します。",
   "settings.streamingInterimAsrOn": "有効（推奨）",
   "settings.autoGainControl": "オートゲイン（AGC）",
   "settings.autoGainControlHint":
@@ -325,6 +325,11 @@ const ja = {
   "model.statusError": "エラー",
   "model.inputLmNote":
     "Input N5 LM はかな読み補正（rescore）用の N-gram モデルです。ダウンロード後に設定タブの「かな読み補正（Input N5 LM rescore）」を有効化すると使用できます（約 120 MB、ユーザー操作でのみダウンロード）。",
+  "model.sourceUrl": "取得元",
+  "model.localPath": "保存先",
+  "model.parapperManaged": "sidecar自動取得",
+  "model.parapperAsrNote":
+    "ASRモデル（ReazonSpeech / Nemotron）は Parapper sidecar が初回起動時に自動ダウンロードします。Nemotron は GitHub（k2-fsa/sherpa-onnx releases）から取得し、詳細設定のモデルダウンロードにも状態を表示します。",
   "debug.title": "デバッグ情報",
   "debug.eyebrow": "DEVELOPER TOOLS",
   "debug.lead":
@@ -384,6 +389,8 @@ const ja = {
   "debug.defaultDevice": "システム既定",
   "debug.downloadTitle": "モデルダウンロード",
   "debug.downloadEmpty": "モデル状態を取得できませんでした（ブラウザプレビューでは空です）。",
+  "debug.modelSource": "取得元",
+  "debug.modelPath": "保存先",
   "debug.modelPartial": "途中 / 不完全",
   "debug.modelDownloading": "ダウンロード中",
   "debug.modelError": "エラー",
@@ -679,7 +686,7 @@ const en: Record<MessageKey, string> = {
   "settings.noiseSuppressionOn": "Enabled (recommended)",
   "settings.streamingInterimAsr": "Progressive interim ASR (Nemotron Streaming)",
   "settings.streamingInterimAsrHint":
-    "audio.streamingInterimAsrEnabled. Uses Nemotron 3.5 ASR Streaming (160ms int8) for mid-utterance captions while ReazonSpeech remains the final ASR. Saved changes apply to the sidecar on the next app launch.",
+    "audio.streamingInterimAsrEnabled. Uses Nemotron 3.5 ASR Streaming (160ms int8) for mid-utterance captions while ReazonSpeech remains the final ASR. On first launch the sidecar downloads the archive from GitHub (k2-fsa/sherpa-onnx releases). Debug → Model downloads shows status, source URL, and local path. Saved changes apply to the sidecar on the next app launch.",
   "settings.streamingInterimAsrOn": "Enabled (recommended)",
   "settings.autoGainControl": "Auto gain control (AGC)",
   "settings.autoGainControlHint":
@@ -825,6 +832,11 @@ const en: Record<MessageKey, string> = {
   "model.statusError": "Error",
   "model.inputLmNote":
     'Input N5 LM is an N-gram model for kana-reading rescoring. After downloading, enable "Kana-reading rescoring (Input N5 LM)" in the Settings tab to use it (~120 MB, user-triggered download only).',
+  "model.sourceUrl": "Source",
+  "model.localPath": "Local path",
+  "model.parapperManaged": "sidecar auto-fetch",
+  "model.parapperAsrNote":
+    "ASR models (ReazonSpeech / Nemotron) are downloaded automatically by the Parapper sidecar on first launch. Nemotron comes from GitHub (k2-fsa/sherpa-onnx releases). Debug → Model downloads also shows status, URL, and path.",
   "debug.title": "Debug info",
   "debug.eyebrow": "DEVELOPER TOOLS",
   "debug.lead":
@@ -884,6 +896,8 @@ const en: Record<MessageKey, string> = {
   "debug.defaultDevice": "System default",
   "debug.downloadTitle": "Model downloads",
   "debug.downloadEmpty": "No model status available (empty in browser preview).",
+  "debug.modelSource": "source",
+  "debug.modelPath": "path",
   "debug.modelPartial": "partial / incomplete",
   "debug.modelDownloading": "downloading",
   "debug.modelError": "error",
