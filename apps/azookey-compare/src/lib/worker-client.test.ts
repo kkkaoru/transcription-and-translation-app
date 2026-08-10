@@ -386,7 +386,7 @@ describe("AzooKey Worker client connection lifecycle", () => {
     await Promise.resolve();
     const noMessageId = (JSON.parse(socket.sent.at(-1) ?? "{}") as { requestId: string }).requestId;
     socket.message(JSON.stringify({ requestId: noMessageId, type: "error" }));
-    await expect(noMessage).rejects.toThrow("rejected");
+    await expect(noMessage).rejects.toThrow("AzooKey Cloudflare Worker が変換を拒否しました");
   });
 
   it("maps construction, send, timeout, and connection-close failures", async () => {

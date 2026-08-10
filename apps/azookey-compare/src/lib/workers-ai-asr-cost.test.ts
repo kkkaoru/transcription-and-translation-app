@@ -61,7 +61,7 @@ describe("workers-ai-asr-cost", () => {
 
   it("returns zero cost summary for Web Speech", () => {
     expect(webSpeechAsrCostSummaryJa()).toContain("$0");
-    expect(webSpeechAsrCostSummaryJa()).toContain("Workers AI 課金なし");
+    expect(webSpeechAsrCostSummaryJa()).toContain("Cloudflare Workers AI 課金なし");
     expect(utteranceAsrCostFields("web-speech", 3)).toEqual({
       asrCostUsd: 0,
       asrCostSummaryJa: webSpeechAsrCostSummaryJa(),
@@ -71,7 +71,7 @@ describe("workers-ai-asr-cost", () => {
   it("fills Workers AI ASR fields from duration even when the dollar amount is tiny", () => {
     const fields = utteranceAsrCostFields("workers-ai-asr", 3);
     expect(fields.asrCostUsd).toBeCloseTo(0.00026, 9);
-    expect(fields.asrCostSummaryJa).toContain("Workers AI ASR");
+    expect(fields.asrCostSummaryJa).toContain("Cloudflare Workers AI ASR");
     expect(fields.asrCostSummaryJa).toContain("3.00s");
     expect(formatWorkersAiAsrCostUsd(fields.asrCostUsd)).not.toMatch(/[eE]/);
     expect(fields.asrCostSummaryJa).not.toMatch(/\$[0-9.]*[eE]/);
@@ -97,7 +97,7 @@ describe("workers-ai-asr-cost", () => {
 
   it("builds a Japanese row summary", () => {
     const summary = workersAiAsrCostSummaryJa(estimateWorkersAiAsrCost(1.5));
-    expect(summary).toContain("Workers AI ASR");
+    expect(summary).toContain("Cloudflare Workers AI ASR");
     expect(summary).toContain("1.50s");
     expect(summary).toContain("$0.0052/分");
     expect(summary).not.toMatch(/\$[0-9.]*[eE]/);

@@ -3,7 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "AzooKey Compare",
-  description: "Compare Web Speech recognition with an asynchronous AzooKey Worker result.",
+  description:
+    "Compare Web Speech recognition with an asynchronous AzooKey Cloudflare Worker result.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

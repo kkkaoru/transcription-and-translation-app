@@ -14,8 +14,8 @@ export interface VibratoModeSelectorProps {
 /**
  * Small controlled selector shared by the comparison page and future embeds.
  * The option descriptions intentionally remain visible below the select so a
- * mode change explains the selected Vibrato path and the always-Worker AzooKey
- * WASM conversion. The Worker mode requires its configured Vibrato adapter;
+ * mode change explains the selected Vibrato path and the AzooKey WASM conversion.
+ * Cloudflare Worker mode requires its configured Vibrato adapter;
  * browser mode requires an injected/module-backed Vibrato WASM pre-pass.
  */
 export const VibratoModeSelector = ({

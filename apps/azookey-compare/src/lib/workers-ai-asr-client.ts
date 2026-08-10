@@ -36,7 +36,10 @@ export const transcribeWorkersAiAsr = async (
   const fetchImpl = options.fetchImpl ?? fetch;
   const endpoint = options.endpointUrl?.trim() || defaultEndpoint();
   const form = new FormData();
-  form.set("file", wavFile instanceof File ? wavFile : new File([wavFile], "utterance.wav", { type: "audio/wav" }));
+  form.set(
+    "file",
+    wavFile instanceof File ? wavFile : new File([wavFile], "utterance.wav", { type: "audio/wav" }),
+  );
   if (options.language?.trim()) {
     form.set("language", options.language.trim());
   }
@@ -49,7 +52,7 @@ export const transcribeWorkersAiAsr = async (
   try {
     payload = await response.json();
   } catch {
-    throw new Error(`Workers AI ASR returned non-JSON (${response.status})`);
+    throw new Error(`Cloudflare Workers AI ASR が JSON 以外を返しました（${response.status}）`);
   }
   if (!response.ok) {
     const message =
@@ -61,7 +64,7 @@ export const transcribeWorkersAiAsr = async (
       "message" in payload.error &&
       typeof payload.error.message === "string"
         ? payload.error.message
-        : `Workers AI ASR failed (${response.status})`;
+        : `Cloudflare Workers AI ASR に失敗しました（${response.status}）`;
     throw new Error(message);
   }
   if (
@@ -69,7 +72,7 @@ export const transcribeWorkersAiAsr = async (
     typeof payload !== "object" ||
     typeof (payload as { text?: unknown }).text !== "string"
   ) {
-    throw new Error("Workers AI ASR response has no text field");
+    throw new Error("Cloudflare Workers AI ASR の応答に text がありません");
   }
   const body = payload as WorkersAiAsrTranscriptionResult;
   return {

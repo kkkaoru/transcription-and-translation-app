@@ -101,7 +101,7 @@ describe("compare page speech settings", () => {
   it("labels the live recognition heading for Workers AI ASR", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
     expect(source).toContain('config.recognitionProvider === "workers-ai-asr"');
-    expect(source).toContain("Workers AI ASR 認識結果");
+    expect(source).toContain("Cloudflare Workers AI ASR 認識結果");
     expect(source).toContain("Web Speech 認識結果");
   });
 
@@ -182,7 +182,7 @@ describe("compare page speech settings", () => {
     expect(source).toContain("formatCloudflareCostUsd");
     expect(source).toContain("料金（推定）");
     expect(source).toContain("Cloudflare Worker（変換）");
-    expect(source).toContain("Workers AI（ASR）");
+    expect(source).toContain("Cloudflare Workers AI（ASR）");
     expect(source).toContain("shouldShowWorkersAiAsrCostAmount");
     expect(source).toContain("utteranceAsrCostFields");
     expect(source).toContain(

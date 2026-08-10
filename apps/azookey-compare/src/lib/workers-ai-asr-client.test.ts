@@ -5,7 +5,12 @@ import { workersAiAsrSmokeWavFile } from "./workers-ai-asr-fixture";
 describe("workers-ai-asr-client", () => {
   it("posts multipart WAV to the explicit compare ASR route", async () => {
     const fetchImpl = vi.fn(async () =>
-      Response.json({ text: "こんにちは", language: "ja", model: "@cf/deepgram/nova-3", transport: "http" }),
+      Response.json({
+        text: "こんにちは",
+        language: "ja",
+        model: "@cf/deepgram/nova-3",
+        transport: "http",
+      }),
     );
     const file = workersAiAsrSmokeWavFile();
     const result = await transcribeWorkersAiAsr(file, {
@@ -23,7 +28,10 @@ describe("workers-ai-asr-client", () => {
 
   it("surfaces server errors without printing secrets", async () => {
     const fetchImpl = vi.fn(async () =>
-      Response.json({ error: { code: "asr_workers_ai_unavailable", message: "binding missing" } }, { status: 503 }),
+      Response.json(
+        { error: { code: "asr_workers_ai_unavailable", message: "binding missing" } },
+        { status: 503 },
+      ),
     );
     await expect(
       transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
@@ -39,27 +47,27 @@ describe("workers-ai-asr-client", () => {
         endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
         fetchImpl: vi.fn(async () => new Response("not-json", { status: 502 })),
       }),
-    ).rejects.toThrow("non-JSON");
+    ).rejects.toThrow("Cloudflare Workers AI ASR が JSON 以外を返しました（502）");
 
     await expect(
       transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
         endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
         fetchImpl: vi.fn(async () => Response.json({ error: { code: "busy" } }, { status: 429 })),
       }),
-    ).rejects.toThrow("Workers AI ASR failed (429)");
+    ).rejects.toThrow("Cloudflare Workers AI ASR に失敗しました（429）");
 
     await expect(
       transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
         endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
         fetchImpl: vi.fn(async () => Response.json({ language: "ja" })),
       }),
-    ).rejects.toThrow("no text field");
+    ).rejects.toThrow("Cloudflare Workers AI ASR の応答に text がありません");
   });
 
   it("accepts Blob input and bearer auth headers", async () => {
-    const fetchImpl = vi.fn(async (_url, init) => {
+    const fetchImpl = vi.fn((_url, init) => {
       expect(init?.headers).toMatchObject({ authorization: "Bearer worker-token" });
-      return Response.json({ text: "blob ok", transport: "http" });
+      return Promise.resolve(Response.json({ text: "blob ok", transport: "http" }));
     });
     await expect(
       transcribeWorkersAiAsr(new Blob([workersAiAsrSmokeWavFile()]), {

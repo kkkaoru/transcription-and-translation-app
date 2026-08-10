@@ -1092,7 +1092,11 @@ export default function ComparePage() {
       <section className="panel speech-panel speech-panel-hero" data-testid="speech-lane">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">WEB SPEECH API</p>
+            <p className="eyebrow">
+              {config.recognitionProvider === "workers-ai-asr"
+                ? "CLOUDFLARE WORKERS AI ASR"
+                : "WEB SPEECH API"}
+            </p>
             <h3>認識レーン</h3>
           </div>
           <span className={`state-pill state-${speechState}`}>{speechStateLabel(speechState)}</span>
@@ -1121,7 +1125,7 @@ export default function ComparePage() {
         </button>
         <p className="field-help">
           {config.recognitionProvider === "workers-ai-asr"
-            ? "マイク権限を許可すると、ブラウザの Silero VAD v6（ONNX + ORT WASM）で発話を切り、Workers AI Nova-3 に送ります。無音 320ms で区切り、同じ録音のまま次の発話を待ちます。WASM を読めないときだけ -50 dBFS エネルギーゲートに倒します。"
+            ? "マイク権限を許可すると、ブラウザの Silero VAD v6（ONNX + ORT WASM）で発話を切り、Cloudflare Workers AI Nova-3 に送ります。無音 320ms で区切り、同じ録音のまま次の発話を待ちます。WASM を読めないときだけ -50 dBFS エネルギーゲートに倒します。"
             : "マイク権限を許可すると、確定した発話ごとに変換します。認識終了（final / onend）でも行を残します。Web Speech では Silero ONNX / ORT WASM は読み込みません。"}
         </p>
       </section>
@@ -1131,7 +1135,7 @@ export default function ComparePage() {
         open={architectureOpen || undefined}
         data-testid="architecture-disclosure"
       >
-        <summary>本番構成図（Cloudflare Workers）</summary>
+        <summary>本番構成図（compare / inference Cloudflare Worker）</summary>
         <ComparisonPathDiagram kind="overview" recognitionProvider={config.recognitionProvider} />
         <ComparisonPathDiagram
           kind="mode"
@@ -1443,7 +1447,7 @@ export default function ComparePage() {
                   <p className="eyebrow">IMMEDIATE</p>
                   <h3>
                     {config.recognitionProvider === "workers-ai-asr"
-                      ? "Workers AI ASR 認識結果"
+                      ? "Cloudflare Workers AI ASR 認識結果"
                       : "Web Speech 認識結果"}
                   </h3>
                 </div>
@@ -1539,7 +1543,7 @@ export default function ComparePage() {
                             : row.origin === "manual"
                               ? "Manual reading"
                               : row.origin === "workers-ai-asr"
-                                ? "Workers AI ASR"
+                                ? "Cloudflare Workers AI ASR"
                                 : "Web Speech"}
                         </span>
                         {row.trace ? (
@@ -1654,7 +1658,7 @@ export default function ComparePage() {
                                   className="utterance-cost-row"
                                   data-testid="utterance-asr-cost"
                                 >
-                                  <dt>Workers AI（ASR）</dt>
+                                  <dt>Cloudflare Workers AI（ASR）</dt>
                                   <dd>
                                     <span className="utterance-cost-row-amount">
                                       {formatCloudflareCostUsd(asrCostUsd ?? 0)}

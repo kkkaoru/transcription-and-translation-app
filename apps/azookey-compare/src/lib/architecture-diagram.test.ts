@@ -81,7 +81,7 @@ describe("architecture SVG diagram models", () => {
     expect(text).toContain("Silero ONNX / ORT WASM なし");
     expect(text).not.toContain("silero_vad.onnx");
     expect(text).not.toContain(COMPARE_WORKERS_AI_ASR_PATH);
-    expect(text).not.toContain("Workers AI Nova-3 ASR");
+    expect(text).not.toContain("Cloudflare Workers AI Nova-3 ASR");
     expect(overview.boxes.some((box) => box.artifact === "code")).toBe(true);
     expect(overview.boxes.some((box) => box.cost === "model")).toBe(true);
     expect(overview.edges.some((edge) => edge.path === "internet")).toBe(true);
@@ -89,7 +89,9 @@ describe("architecture SVG diagram models", () => {
     expect(overview.edges.some((edge) => edge.from === "compare" && edge.to === "inference")).toBe(
       false,
     );
-    expect(architectureDiagramCaption("overview")).toBe("Cloudflare Workers 本番構成");
+    expect(architectureDiagramCaption("overview")).toBe(
+      "compare / inference Cloudflare Worker 本番構成",
+    );
     assertOverviewLayout(overview);
   });
 
@@ -108,7 +110,7 @@ describe("architecture SVG diagram models", () => {
       ARCHITECTURE_DICTIONARIES.silero.browserUrl,
     ]);
     expect(compare?.lines).toContain(`POST ${COMPARE_WORKERS_AI_ASR_PATH}（Access JWT）`);
-    expect(inference?.lines).toContain("Workers AI Nova-3 ASR");
+    expect(inference?.lines).toContain("Cloudflare Workers AI Nova-3 ASR");
     expect(inference?.lines).toContain("@cf/deepgram/nova-3 · env.AI.run");
     expect(text).toContain("Silero VAD v6");
     expect(text).toContain("/models/silero_vad_v6/silero_vad.onnx");
@@ -120,7 +122,7 @@ describe("architecture SVG diagram models", () => {
       to: "inference",
       path: "internet",
       via: "gutter",
-      label: "Workers AI ASR",
+      label: "Cloudflare Workers AI ASR",
     });
     expect(overview.edges.some((edge) => edge.label === "INFERENCE")).toBe(true);
     expect(
@@ -138,7 +140,7 @@ describe("architecture SVG diagram models", () => {
     expect(text).not.toContain("発話切り出し");
     expect(text).not.toContain(COMPARE_WORKERS_AI_ASR_PATH);
     expect(text).not.toContain("@cf/deepgram/nova-3");
-    expect(overview.edges.some((edge) => edge.label === "Workers AI ASR")).toBe(false);
+    expect(overview.edges.some((edge) => edge.label === "Cloudflare Workers AI ASR")).toBe(false);
   });
 
   it("keeps diagram within viewport width and hides horizontal overflow", () => {
@@ -267,7 +269,7 @@ describe("architecture SVG diagram models", () => {
       "Web Speech + ブラウザ完結の実行経路",
     );
     expect(architectureDiagramCaption("mode", "worker-vibrato", "workers-ai-asr")).toBe(
-      "Workers AI ASR + Cloudflare Worker 依存の実行経路",
+      "Cloudflare Workers AI ASR + Cloudflare Worker 依存の実行経路",
     );
     expect(ARCHITECTURE_ASSET_SIZES.ipadicZst).toMatch(/MB/);
 

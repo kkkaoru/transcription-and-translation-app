@@ -21,6 +21,7 @@ import {
   isVibratoWebSocketUrl,
   mergeComparisonConfig,
   parseComparisonConfig,
+  recognitionProviderOptions,
   validateComparisonConfig,
 } from "./contract";
 
@@ -35,6 +36,12 @@ describe("comparison configuration contract", () => {
     ]);
     expect(comparisonModeOptions[0]?.label).toContain("Cloudflare Worker 依存");
     expect(comparisonModeOptions[1]?.label).toContain("ブラウザ完結");
+    expect(recognitionProviderOptions[0]?.label).toContain("Cloudflare Workers AI 課金なし");
+    expect(recognitionProviderOptions[1]?.label).toBe(
+      "Cloudflare Workers AI ASR（Nova-3 · compare Cloudflare Worker → inference Cloudflare Worker）",
+    );
+    expect(recognitionProviderOptions[1]?.description).toContain("inference Cloudflare Worker");
+    expect(recognitionProviderOptions[1]?.description).toContain("compare Cloudflare Worker");
     for (const option of comparisonModeOptions) {
       expect(option.description.toLowerCase()).toContain("azookey");
       expect(option.description.toLowerCase()).toMatch(/vibrato|unidic/);

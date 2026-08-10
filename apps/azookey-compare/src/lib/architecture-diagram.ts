@@ -50,7 +50,7 @@ export const ARCHITECTURE_DICTIONARIES = {
     browserUrl: "/models/silero_vad_v6/silero_vad.onnx",
     ortUrl: "/ort/",
     workerHostedAsset: true,
-    usedBy: "Workers AI ASR（ブラウザ Silero VAD）",
+    usedBy: "Cloudflare Workers AI ASR（ブラウザ Silero VAD）",
     unusedBy: "Web Speech API",
     fn: "発話区切り VAD",
   },
@@ -592,7 +592,7 @@ export const overviewArchitecture = (
       "Cloudflare Worker（推論）",
       "workers.dev 無し",
       ...(workersAiAsr
-        ? ["Workers AI Nova-3 ASR", "@cf/deepgram/nova-3 · env.AI.run"]
+        ? ["Cloudflare Workers AI Nova-3 ASR", "@cf/deepgram/nova-3 · env.AI.run"]
         : []),
       "AzooKey WASM + LOUDS dict",
       `${ARCHITECTURE_ZENZAI.env} → Zenzai GGUF`,
@@ -629,7 +629,7 @@ export const overviewArchitecture = (
           to: "inference",
           path: "internet",
           via: "gutter",
-          label: "Workers AI ASR",
+          label: "Cloudflare Workers AI ASR",
         },
       ]
     : [];
@@ -672,12 +672,12 @@ export const modeArchitecture = (
         [
           {
             id: "asr",
-            title: "Workers AI ASR",
+            title: "Cloudflare Workers AI ASR",
             lines: [
               "ブラウザ Silero VAD v6（ONNX + ORT WASM）",
               "/models/silero_vad_v6/silero_vad.onnx",
               "→ /v1/asr/workers-ai/transcriptions",
-              "compare → inference Nova-3",
+              "compare → inference Cloudflare Worker",
             ],
             tone: "model",
             artifact: "model",
@@ -798,12 +798,12 @@ export const architectureDiagramCaption = (
   recognitionProvider: RecognitionProvider = "web-speech",
 ): string => {
   if (kind === "overview") {
-    return "Cloudflare Workers 本番構成";
+    return "compare / inference Cloudflare Worker 本番構成";
   }
   if (recognitionProvider === "workers-ai-asr") {
     return mode === "browser-vibrato"
-      ? "Workers AI ASR + ブラウザ完結の実行経路"
-      : "Workers AI ASR + Cloudflare Worker 依存の実行経路";
+      ? "Cloudflare Workers AI ASR + ブラウザ完結の実行経路"
+      : "Cloudflare Workers AI ASR + Cloudflare Worker 依存の実行経路";
   }
   return mode === "browser-vibrato"
     ? "Web Speech + ブラウザ完結の実行経路"

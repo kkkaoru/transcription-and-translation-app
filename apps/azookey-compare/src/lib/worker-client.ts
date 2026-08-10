@@ -251,7 +251,7 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
     return {
       requestId,
       error: new AzooKeyWorkerError(
-        errorMessage ?? "AzooKey Worker rejected the conversion",
+        errorMessage ?? "AzooKey Cloudflare Worker が変換を拒否しました",
         errorCode,
       ),
     };
@@ -519,7 +519,10 @@ export class AzooKeyWorkerClient {
         this.sendQueuedConversion(connected, next);
       })
       .catch((error: unknown) => {
-        this.finishQueuedConversion(next, asError(error, "Cloudflare Worker WebSocket に接続できません"));
+        this.finishQueuedConversion(
+          next,
+          asError(error, "Cloudflare Worker WebSocket に接続できません"),
+        );
       });
   }
 
@@ -538,7 +541,10 @@ export class AzooKeyWorkerClient {
       if (this.conversionQueue.length > 0) {
         this.retireSocket(socket, socketGeneration, "conversion timeout");
       }
-      this.finishQueuedConversion(queued, new Error("Cloudflare Worker（推論）AzooKey の応答がタイムアウトしました"));
+      this.finishQueuedConversion(
+        queued,
+        new Error("Cloudflare Worker（推論）AzooKey の応答がタイムアウトしました"),
+      );
     }, this.requestTimeoutMs);
     this.pending.set(queued.requestId, {
       resolve: (result) => this.finishQueuedConversion(queued, null, result),
@@ -552,7 +558,10 @@ export class AzooKeyWorkerClient {
     } catch (error) {
       clearTimeout(timeout);
       this.pending.delete(queued.requestId);
-      this.finishQueuedConversion(queued, asError(error, "Worker WebSocket に送信できません"));
+      this.finishQueuedConversion(
+        queued,
+        asError(error, "Cloudflare Worker WebSocket に送信できません"),
+      );
     }
   }
 

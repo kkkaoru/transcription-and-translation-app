@@ -29,7 +29,7 @@ export const RecognitionModeSelector = ({
   const helpText =
     description ??
     selectedOption?.description ??
-    "Web Speech か Workers AI Nova-3 ASR を選択します。";
+    "Web Speech か Cloudflare Workers AI ASR（Nova-3）を選択します。";
 
   return (
     <div

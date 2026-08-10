@@ -108,15 +108,16 @@ export interface RecognitionProviderOption {
 export const recognitionProviderOptions: readonly RecognitionProviderOption[] = [
   {
     value: "web-speech",
-    label: "Web Speech API（ブラウザ内・Workers AI 課金なし）",
+    label: "Web Speech API（ブラウザ内・Cloudflare Workers AI 課金なし）",
     description:
       "ブラウザの Web Speech API でマイク認識します。Nova-3 は呼ばず、Silero ONNX / ORT WASM も読み込みません。ASR 料金は $0 です。",
   },
   {
     value: "workers-ai-asr",
-    label: "Workers AI ASR（Nova-3 · compare → inference Cloudflare Worker）",
+    label:
+      "Cloudflare Workers AI ASR（Nova-3 · compare Cloudflare Worker → inference Cloudflare Worker）",
     description:
-      "ブラウザの Silero VAD v6（ONNX + ORT WASM）で発話を切り、compare Cloudflare Worker 経由で inference の Nova-3（env.AI.run HTTP）へ送ります。Web Speech では Silero を使いません。",
+      "ブラウザの Silero VAD v6（ONNX + ORT WASM）で発話を切り、compare Cloudflare Worker 経由で inference Cloudflare Worker の Nova-3（env.AI.run HTTP）へ送ります。Web Speech では Silero を使いません。",
   },
 ] as const;
 

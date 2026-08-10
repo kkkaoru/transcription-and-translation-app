@@ -45,7 +45,7 @@ export interface WorkersAiAsrCostEstimate {
   sourceUrl: string;
 }
 
-export const WORKERS_AI_ASR_WEB_SPEECH_NOTE = "Workers AI 課金なし";
+export const WORKERS_AI_ASR_WEB_SPEECH_NOTE = "Cloudflare Workers AI 課金なし";
 
 const roundUsd = (value: number): number => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
@@ -95,7 +95,7 @@ export const estimateWorkersAiAsrCost = (audioSeconds: number): WorkersAiAsrCost
   const usd = roundUsd(minutes * WORKERS_AI_ASR_HTTP_USD_PER_AUDIO_MINUTE);
   const neurons = roundNeurons(minutes * WORKERS_AI_ASR_HTTP_NEURONS_PER_AUDIO_MINUTE);
   const note =
-    "Nova-3 HTTP（env.AI.run）: $0.0052/分 · 472.73 neurons/分。Neurons 超過は $0.011/1,000 neurons（Workers Paid・日 10k 無料枠超過分）。Workers 月額 $5 は按分しません。";
+    "Nova-3 HTTP（env.AI.run）: $0.0052/分 · 472.73 neurons/分。Neurons 超過は $0.011/1,000 neurons（Cloudflare Workers Paid・日 10k 無料枠超過分）。Cloudflare Workers 月額 $5 は按分しません。";
   return {
     usd,
     audioSeconds: seconds,
@@ -109,7 +109,7 @@ export const estimateWorkersAiAsrCost = (audioSeconds: number): WorkersAiAsrCost
 export const workersAiAsrCostSummaryJa = (estimate: WorkersAiAsrCostEstimate): string => {
   const secondsLabel = estimate.audioSeconds.toFixed(2);
   return (
-    `Workers AI ASR 推定 ${formatWorkersAiAsrCostUsd(estimate.usd)} · ` +
+    `Cloudflare Workers AI ASR 推定 ${formatWorkersAiAsrCostUsd(estimate.usd)} · ` +
     `${secondsLabel}s · HTTP $0.0052/分 · ~${estimate.neurons} neurons`
   );
 };
