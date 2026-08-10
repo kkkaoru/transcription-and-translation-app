@@ -17,7 +17,10 @@
     "binding": "AI"
   },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true
+    }
   },
   // These are public, non-secret defaults. Keep CORS_ORIGIN pinned to one
   // explicit origin; override it at deploy time when the comparison UI has a
