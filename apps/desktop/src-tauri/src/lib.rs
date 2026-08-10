@@ -13,6 +13,7 @@ mod model_runtime;
 mod models;
 mod native_output;
 mod output;
+mod parapper_asr_models;
 mod pipeline;
 mod sentence_boundary;
 mod state;
