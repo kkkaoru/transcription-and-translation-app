@@ -33,6 +33,11 @@ import {
 import { runComparisonConversion } from "../lib/conversion-pipeline";
 import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
 import {
+  conversionTraceDisplayLines,
+  type ConversionTrace,
+  traceStepLocationLabel,
+} from "../lib/conversion-trace";
+import {
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
   isConverterModel,
@@ -72,6 +77,7 @@ interface ComparisonRow {
   totalElapsedMs?: number;
   error?: string;
   failedStage?: ConversionStage;
+  trace?: ConversionTrace;
   createdAt: number;
 }
 
@@ -431,6 +437,7 @@ export default function ComparePage() {
           state: "done",
           convertedText: result.convertedText,
           vibratoInput: result.vibratoInput,
+          trace: result.trace,
           ...(result.wasmElapsedMs !== undefined ? { wasmElapsedMs: result.wasmElapsedMs } : {}),
           ...(result.workerElapsedMs !== undefined || result.azookeyElapsedMs !== undefined
             ? { workerElapsedMs: result.workerElapsedMs ?? result.azookeyElapsedMs }
@@ -1218,10 +1225,31 @@ export default function ComparePage() {
                               ? "Manual reading"
                               : "Web Speech"}
                         </span>
-                        <p>{row.sourceText}</p>
-                        {row.vibratoInput && row.vibratoInput !== row.sourceText ? (
-                          <span className="row-meta">vibratoInput: {row.vibratoInput}</span>
-                        ) : null}
+                        {row.trace ? (
+                          <dl className="row-trace" data-testid="utterance-trace">
+                            {conversionTraceDisplayLines(row.trace).map((line) => (
+                              <div className="row-trace-step" key={`${row.id}-${line.key}`}>
+                                <dt>{line.label}</dt>
+                                <dd>
+                                  <span className="row-trace-value">{line.value}</span>
+                                  {line.detail ? (
+                                    <span className="row-meta row-trace-detail">{line.detail}</span>
+                                  ) : null}
+                                  {line.timing ? (
+                                    <span className="row-meta row-trace-timing">{line.timing}</span>
+                                  ) : null}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        ) : (
+                          <>
+                            <p>{row.sourceText}</p>
+                            {row.vibratoInput && row.vibratoInput !== row.sourceText ? (
+                              <span className="row-meta">vibratoInput: {row.vibratoInput}</span>
+                            ) : null}
+                          </>
+                        )}
                         {row.expectedText ? (
                           <span
                             className={`row-meta ${expectationMissed ? "row-meta-miss" : expectationMet ? "row-meta-hit" : ""}`}
@@ -1243,6 +1271,30 @@ export default function ComparePage() {
                           {rowPathLabel(row.mode, row.state, row.failedStage)} ·{" "}
                           {formatRowTiming(row)}
                         </span>
+                        {row.trace?.workerRequest ? (
+                          <span className="row-meta row-trace-worker-payload">
+                            Cloudflare Worker 送信: sourceText={row.trace.workerRequest.sourceText} ·
+                            vibratoInput={row.trace.workerRequest.vibratoInput} ·
+                            vibratoExecution={row.trace.workerRequest.vibratoExecution}
+                            {row.trace.workerRequest.model
+                              ? ` · model=${row.trace.workerRequest.model}`
+                              : ""}
+                          </span>
+                        ) : row.trace && row.mode === "browser-vibrato" ? (
+                          <span className="row-meta row-trace-worker-payload">
+                            ブラウザ完結（usedWebSocket: false） · AzooKey 入力=
+                            {row.trace.azookeyInput}
+                          </span>
+                        ) : null}
+                        {row.trace ? (
+                          <span className="row-meta">
+                            {row.trace.steps
+                              .filter((step) => step.location !== "none")
+                              .map((step) => traceStepLocationLabel(step.location))
+                              .filter((label, idx, labels) => labels.indexOf(label) === idx)
+                              .join(" → ")}
+                          </span>
+                        ) : null}
                       </div>
                     </li>
                   );
