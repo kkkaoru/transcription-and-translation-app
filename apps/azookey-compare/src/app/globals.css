@@ -131,7 +131,7 @@ select:focus-visible {
   justify-content: space-between;
   align-items: flex-end;
   gap: 28px;
-  margin: 54px 0 28px;
+  margin: 54px 0 22px;
 }
 
 .intro-block h2 {
@@ -607,6 +607,132 @@ select:focus-visible {
 .reading-panel {
   display: grid;
   gap: 14px;
+}
+
+.speech-panel-hero {
+  margin-bottom: 18px;
+  padding: 24px 28px;
+  border-width: 2px;
+  border-color: #cfe4df;
+  background:
+    linear-gradient(180deg, rgba(229, 242, 239, 0.55), rgba(255, 255, 255, 0.96)), var(--card);
+}
+
+.speech-panel-hero .button-primary {
+  margin-top: 4px;
+  min-height: 48px;
+  font-size: 14px;
+}
+
+.architecture-disclosure {
+  margin: 0 0 18px;
+  padding: 16px 20px 20px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.architecture-disclosure > summary {
+  cursor: pointer;
+  color: var(--teal-deep);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.path-diagram {
+  margin: 16px 0 0;
+}
+
+.path-diagram-caption {
+  margin: 0 0 8px;
+  color: #4e585a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.path-diagram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0 0 10px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+  list-style: none;
+}
+
+.path-diagram-svg {
+  overflow: auto;
+}
+
+.path-diagram-svg svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.architecture-inventory {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.architecture-inventory h3,
+.architecture-inventory h4 {
+  margin: 0 0 8px;
+}
+
+.architecture-inventory table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.architecture-inventory th,
+.architecture-inventory td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--soft-line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.architecture-asset-cards {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.architecture-asset-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfcfb;
+}
+
+.architecture-asset-card h4 {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.architecture-asset-card dl {
+  margin: 0;
+}
+
+.architecture-asset-card dt {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.architecture-asset-card dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .field-label textarea {

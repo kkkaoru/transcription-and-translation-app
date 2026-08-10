@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArchitectureAssetTable } from "../components/ArchitectureAssetTable";
+import { ComparisonPathDiagram } from "../components/ComparisonPathDiagram";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
+import { isArchitectureDialogForced } from "../lib/architecture-dialog";
 import {
   shouldWarmBrowserDictionaryAfterConfigChange,
   shouldWarmBrowserVibratoDictionary,
@@ -35,7 +38,13 @@ import {
   isConverterModel,
 } from "../lib/converter-models";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
+import { visibleWebSpeechCaption } from "../lib/speech-caption-display";
 import { syncSpeechLanguage } from "../lib/speech-language";
+import {
+  pendingSpeechUtterance,
+  rememberDispatchedSpeech,
+  SPEECH_END_FLUSH_MS,
+} from "../lib/speech-utterance";
 import {
   type SpeechRecognitionState,
   type SpeechTranscriptUpdate,
@@ -155,6 +164,7 @@ export default function ComparePage() {
   const [browserWasmState, setBrowserWasmState] = useState<BrowserWasmState>("idle");
   const [speechFinalText, setSpeechFinalText] = useState("");
   const [speechInterimText, setSpeechInterimText] = useState("");
+  const [latestSpeechSegment, setLatestSpeechSegment] = useState("");
   const [rows, setRows] = useState<ComparisonRow[]>([]);
   const [droppedRows, setDroppedRows] = useState(0);
   const [latestWorker, setLatestWorker] = useState<ComparisonRow | null>(null);
@@ -165,9 +175,14 @@ export default function ComparePage() {
     AZOOKEY_CONVERSION_FIXTURES[0]?.id ?? "",
   );
   const [fixtureBusy, setFixtureBusy] = useState(false);
+  const [architectureOpen, setArchitectureOpen] = useState(false);
 
   const speechRef = useRef<WebSpeechController | null>(null);
   const initialSpeechLanguageRef = useRef(config.language);
+  const speechTranscriptRef = useRef({ finalText: "", interimText: "" });
+  const dispatchedSpeechRef = useRef<string[]>([]);
+  const speechSessionActiveRef = useRef(false);
+  const speechFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const workerRef = useRef<AzooKeyWorkerClient | null>(null);
   const workerVibratoConfiguredRef = useRef<boolean | undefined>(undefined);
   const workerGenerationRef = useRef(0);
@@ -175,6 +190,10 @@ export default function ComparePage() {
   const finalTextHandlerRef = useRef<(text: string) => void>(() => undefined);
   /** Serialize browser pre-pass + Worker work so rapid finals retain order. */
   const dispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    setArchitectureOpen(isArchitectureDialogForced(window.location.search));
+  }, []);
 
   useEffect(() => {
     const generation = workerGenerationRef.current + 1;
@@ -206,18 +225,60 @@ export default function ComparePage() {
   }, [config.websocketUrl]);
 
   useEffect(() => {
+    const clearSpeechFlushTimer = (): void => {
+      if (speechFlushTimerRef.current !== null) {
+        clearTimeout(speechFlushTimerRef.current);
+        speechFlushTimerRef.current = null;
+      }
+    };
+    const flushPendingSpeech = (): void => {
+      const pending = pendingSpeechUtterance(
+        speechTranscriptRef.current.finalText,
+        speechTranscriptRef.current.interimText,
+        dispatchedSpeechRef.current,
+      );
+      if (!pending) {
+        return;
+      }
+      dispatchedSpeechRef.current = rememberDispatchedSpeech(dispatchedSpeechRef.current, pending);
+      setLatestSpeechSegment(pending);
+      finalTextHandlerRef.current(pending);
+    };
     const controller = new WebSpeechController(initialSpeechLanguageRef.current, {
       onStateChange: (state) => {
         setSpeechState(state);
-        if (state === "listening") {
-          setError("");
+        if (state === "listening" || state === "starting") {
+          speechSessionActiveRef.current = true;
+          if (state === "listening") {
+            setError("");
+          }
         }
+        if (state !== "idle") {
+          return;
+        }
+        clearSpeechFlushTimer();
+        if (!speechSessionActiveRef.current) {
+          return;
+        }
+        speechSessionActiveRef.current = false;
+        // Wait for a late `isFinal` from the controller before flushing leftover interim.
+        speechFlushTimerRef.current = setTimeout(() => {
+          speechFlushTimerRef.current = null;
+          flushPendingSpeech();
+        }, SPEECH_END_FLUSH_MS);
       },
       onTranscript: ({ finalText, interimText }: SpeechTranscriptUpdate) => {
+        speechTranscriptRef.current = { finalText, interimText };
         setSpeechFinalText(finalText);
         setSpeechInterimText(interimText);
       },
       onFinalText: (text) => {
+        const nextDispatched = rememberDispatchedSpeech(dispatchedSpeechRef.current, text);
+        if (nextDispatched.length === dispatchedSpeechRef.current.length) {
+          return;
+        }
+        dispatchedSpeechRef.current = nextDispatched;
+        setLatestSpeechSegment(text.trim());
         finalTextHandlerRef.current(text);
       },
       onError: (message) => {
@@ -227,6 +288,7 @@ export default function ComparePage() {
     speechRef.current = controller;
     setSpeechSupported(controller.supported);
     return () => {
+      clearSpeechFlushTimer();
       controller.dispose();
       if (speechRef.current === controller) {
         speechRef.current = null;
@@ -614,6 +676,9 @@ export default function ComparePage() {
       controller.stop();
       return;
     }
+    dispatchedSpeechRef.current = [];
+    speechSessionActiveRef.current = true;
+    setLatestSpeechSegment("");
     setError("");
     void warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current)
       .catch((caught: unknown) => {
@@ -735,6 +800,9 @@ export default function ComparePage() {
     setLatestWorker(null);
     setSpeechFinalText("");
     setSpeechInterimText("");
+    setLatestSpeechSegment("");
+    speechTranscriptRef.current = { finalText: "", interimText: "" };
+    dispatchedSpeechRef.current = [];
     setNotice("履歴をクリアしました");
   };
 
@@ -774,6 +842,48 @@ export default function ComparePage() {
           {pathSummary}
         </div>
       </section>
+
+      <section className="panel speech-panel speech-panel-hero" data-testid="speech-lane">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">WEB SPEECH API</p>
+            <h3>認識レーン</h3>
+          </div>
+          <span className={`state-pill state-${speechState}`}>{speechStateLabel(speechState)}</span>
+        </div>
+        <p className="support-line">
+          {speechSupported ? "このブラウザで利用できます" : "このブラウザでは利用できません"}
+        </p>
+        <button
+          className={`button button-primary ${speechState === "listening" ? "is-listening" : ""}`}
+          type="button"
+          onClick={toggleListening}
+          disabled={!speechSupported || speechState === "stopping"}
+        >
+          <span className="record-dot" aria-hidden="true" />
+          {speechState === "listening" || speechState === "starting" ? "認識を停止" : "認識を開始"}
+        </button>
+        <p className="field-help">
+          マイク権限を許可すると、確定した発話ごとに変換します。認識終了（final /
+          onend）でも行を残します。
+        </p>
+      </section>
+
+      <details
+        className="architecture-disclosure"
+        open={architectureOpen || undefined}
+        data-testid="architecture-disclosure"
+      >
+        <summary>本番構成図（Cloudflare Workers）</summary>
+        <ComparisonPathDiagram kind="overview" />
+        <ComparisonPathDiagram
+          kind="mode"
+          mode={config.mode}
+          browserWasmConfigured={browserWasmConfigured}
+          converterModel={config.converterModel}
+        />
+        <ArchitectureAssetTable />
+      </details>
 
       <div className="workspace-grid">
         <aside className="control-stack" aria-label="比較設定">
@@ -896,8 +1006,9 @@ export default function ComparePage() {
                   を指定します。モジュール URL も global 名も空のときはブラウザ Vibrato WASM
                   が未設定のためプリパスを実行できず失敗します（Worker 側 Vibrato
                   へはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
-                  実行時フォールバックとして既定名 `__AZOOKEY_VIBRATO_WASM__` を試します。 AzooKey
-                  のかな→漢字変換は常に Worker 側の AzooKey WASM で実行します。
+                  実行時フォールバックとして既定名 `__AZOOKEY_VIBRATO_WASM__` を試します。
+                  ブラウザ完結のかな→漢字は 同じページの AzooKey WASM で実行し、`/ws/azookey`
+                  は呼びません。
                 </p>
                 <div className={`mini-status wasm-${browserWasmState}`}>
                   <span className="status-dot" aria-hidden="true" />
@@ -965,35 +1076,6 @@ export default function ComparePage() {
             </button>
           </section>
 
-          <section className="panel speech-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">WEB SPEECH API</p>
-                <h3>認識レーン</h3>
-              </div>
-              <span className={`state-pill state-${speechState}`}>
-                {speechStateLabel(speechState)}
-              </span>
-            </div>
-            <p className="support-line">
-              {speechSupported ? "このブラウザで利用できます" : "このブラウザでは利用できません"}
-            </p>
-            <button
-              className={`button button-primary ${speechState === "listening" ? "is-listening" : ""}`}
-              type="button"
-              onClick={toggleListening}
-              disabled={!speechSupported || speechState === "stopping"}
-            >
-              <span className="record-dot" aria-hidden="true" />
-              {speechState === "listening" || speechState === "starting"
-                ? "認識を停止"
-                : "認識を開始"}
-            </button>
-            <p className="field-help">
-              マイク権限を許可すると、確定した発話ごとに Worker へ非同期送信します。
-            </p>
-          </section>
-
           <section className="panel reading-panel">
             <div className="panel-heading">
               <div>
@@ -1002,7 +1084,8 @@ export default function ComparePage() {
               </div>
             </div>
             <p className="field-help">
-              かな読みを Worker の AzooKey WASM へ直接送り、変換結果を確認します。
+              かな読みを AzooKey へ直接送り、変換結果を確認します。ブラウザ完結では in-page、Worker
+              依存では inference 側で変換します。
             </p>
             <label className="field-label" htmlFor="manual-reading">
               かな読み
@@ -1071,7 +1154,11 @@ export default function ComparePage() {
                 </div>
                 <span className="lane-index">01</span>
               </div>
-              <p className="live-text">{speechFinalText || "発話するとここに表示されます"}</p>
+              <p className="live-text">
+                {visibleWebSpeechCaption(speechFinalText, latestSpeechSegment) ||
+                  speechInterimText ||
+                  "発話するとここに表示されます"}
+              </p>
               <p className="interim-text" aria-live="polite">
                 {speechInterimText ? `認識中: ${speechInterimText}` : ""}
               </p>
