@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  BROWSER_VIBRATO_WARMUP_FAILURE_NOTICE_PREFIX,
+  beginRecognitionListening,
+} from "./recognition-listen";
 import type { WorkersAiAsrController } from "./workers-ai-asr-controller";
 import {
   ensureWorkersAiAsrController,
@@ -6,6 +10,7 @@ import {
   startCloudflareWorkersAiAsrAfterSelect,
 } from "./workers-ai-asr-session";
 import {
+  isWorkersAiAsrCaptureSupported,
   WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA,
   WORKERS_AI_ASR_PREPARING_JA,
   WORKERS_AI_ASR_UNSUPPORTED_JA,
@@ -58,10 +63,18 @@ class FakeScriptProcessor {
 
 /** Mimics browsers where MediaStreamDestination throws during ASR start. */
 class ThrowingDestinationAudioContext {
+  static instances: ThrowingDestinationAudioContext[] = [];
+
   state: AudioContextState = "running";
   sampleRate = 16_000;
   destination = { kind: "destination" as const };
   createdGains: FakeGainNode[] = [];
+  createdProcessors: FakeScriptProcessor[] = [];
+  destinationCreateCalls = 0;
+
+  constructor() {
+    ThrowingDestinationAudioContext.instances.push(this);
+  }
 
   createMediaStreamSource(_stream: MediaStream): FakeMediaStreamSource {
     return new FakeMediaStreamSource();
@@ -78,10 +91,13 @@ class ThrowingDestinationAudioContext {
     _inputChannels?: number,
     _outputChannels?: number,
   ): FakeScriptProcessor {
-    return new FakeScriptProcessor();
+    const tap = new FakeScriptProcessor();
+    this.createdProcessors.push(tap);
+    return tap;
   }
 
   createMediaStreamDestination(): never {
+    this.destinationCreateCalls += 1;
     throw new Error("InvalidStateError");
   }
 
@@ -96,7 +112,16 @@ class ThrowingDestinationAudioContext {
   }
 }
 
+/** Old PCM tap: connect ScriptProcessor → MediaStreamDestination. */
+const legacyConnectTapToDestination = (audioContext: ThrowingDestinationAudioContext): void => {
+  const source = audioContext.createMediaStreamSource({} as MediaStream);
+  const tap = audioContext.createScriptProcessor(4096, 1, 1);
+  source.connect(tap);
+  tap.connect(audioContext.createMediaStreamDestination());
+};
+
 const installCapture = (AudioContextImpl = ThrowingDestinationAudioContext): MediaStream => {
+  ThrowingDestinationAudioContext.instances = [];
   const stream = { getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream;
   Object.defineProperty(globalThis, "window", {
     configurable: true,
@@ -121,7 +146,31 @@ const installCapture = (AudioContextImpl = ThrowingDestinationAudioContext): Med
   return stream;
 };
 
+/** Compare-page toggleListening after web-speech → workers-ai-asr select. */
+const pageToggleStartAfterSelect = async (options: {
+  existing: WorkersAiAsrController | null;
+  onError: (message: string) => void;
+  warmBrowserVibrato?: () => Promise<void>;
+  onWarmupNotice?: (message: string) => void;
+  requireVibratoWarmup?: boolean;
+}) =>
+  startCloudflareWorkersAiAsrAfterSelect({
+    language: "ja-JP",
+    endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
+    auth: { scheme: "none" },
+    existing: options.existing,
+    callbacks: {
+      disableSilero: true,
+      onError: options.onError,
+    },
+    onError: options.onError,
+    warmBrowserVibrato: options.warmBrowserVibrato,
+    onWarmupNotice: options.onWarmupNotice,
+    requireVibratoWarmup: options.requireVibratoWarmup,
+  });
+
 afterEach(() => {
+  ThrowingDestinationAudioContext.instances = [];
   Reflect.deleteProperty(globalThis, "window");
   Reflect.deleteProperty(globalThis, "AudioContext");
   Reflect.deleteProperty(globalThis, "MediaRecorder");
@@ -267,28 +316,81 @@ describe("gateWorkersAiAsrStart", () => {
   });
 });
 
-describe("startCloudflareWorkersAiAsrAfterSelect", () => {
-  it("starts after selecting workers-ai-asr with a null controller and mocked mic", async () => {
+describe("legacy select→start bugs (reproduction harness)", () => {
+  it("asrRef null + gate without ensure setErrors 準備中 and never starts", () => {
     installCapture();
+    const asrRef: { current: WorkersAiAsrController | null } = { current: null };
     const onError = vi.fn();
-    const controllerOnError = vi.fn();
-    const result = await startCloudflareWorkersAiAsrAfterSelect({
-      language: "ja-JP",
-      endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
-      auth: { scheme: "none" },
-      existing: null,
-      callbacks: {
-        disableSilero: true,
-        onError: controllerOnError,
-      },
-      onError,
+    const started = vi.fn();
+    // web-speech → workers-ai-asr select, effect has not mounted asrRef yet
+    const gate = gateWorkersAiAsrStart({
+      controller: asrRef.current,
+      captureSupported: true,
     });
+    if (!gate.ok) {
+      onError(gate.message);
+    } else {
+      started();
+      void gate.controller.start();
+    }
+    expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_PREPARING_JA);
+    expect(started).not.toHaveBeenCalled();
+  });
 
-    const errorMessages = [
-      ...onError.mock.calls.map((call) => String(call[0])),
-      ...controllerOnError.mock.calls.map((call) => String(call[0])),
-    ];
-    expect(errorMessages, "select→認識を開始 must not setError").toEqual([]);
+  it("snapshotted supported=false setErrors unsupported after mock mic appears", () => {
+    expect(isWorkersAiAsrCaptureSupported()).toBe(false);
+    const snapshotted = fakeController({
+      supported: false,
+      start: vi.fn(async () => undefined),
+    });
+    installCapture();
+    expect(isWorkersAiAsrCaptureSupported()).toBe(true);
+    const onError = vi.fn();
+    const gate = gateWorkersAiAsrStart({
+      controller: snapshotted,
+      captureSupported: true,
+    });
+    if (!gate.ok) {
+      onError(gate.message);
+    } else {
+      void snapshotted.start();
+    }
+    expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_UNSUPPORTED_JA);
+    expect(snapshotted.start).not.toHaveBeenCalled();
+  });
+
+  it("tap→destination throws InvalidStateError and cannot start without MediaRecorder", () => {
+    installCapture();
+    const audioContext = new ThrowingDestinationAudioContext();
+    expect(() => legacyConnectTapToDestination(audioContext)).toThrow(/InvalidStateError/);
+    expect(audioContext.destinationCreateCalls).toBe(1);
+  });
+});
+
+describe("startCloudflareWorkersAiAsrAfterSelect", () => {
+  it("web-speech → workers-ai-asr select → 認識を開始: mock mic, no setError, start() runs", async () => {
+    installCapture();
+    const asrRef: { current: WorkersAiAsrController | null } = { current: null };
+    const onError = vi.fn();
+    const warmBrowserVibrato = vi.fn(() => Promise.reject(new Error("IPADIC missing")));
+    const onWarmupNotice = vi.fn();
+
+    const result = await pageToggleStartAfterSelect({
+      existing: asrRef.current,
+      onError,
+      warmBrowserVibrato,
+      onWarmupNotice,
+      requireVibratoWarmup: true,
+    });
+    asrRef.current = result.controller;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warmBrowserVibrato, "toggleListening must fire Vibrato warmup").toHaveBeenCalled();
+    expect(onError, "select→認識を開始 must not setError").not.toHaveBeenCalled();
+    expect(onWarmupNotice).toHaveBeenCalledWith(
+      `${BROWSER_VIBRATO_WARMUP_FAILURE_NOTICE_PREFIX}IPADIC missing`,
+    );
     expect(result.ok, "select→認識を開始 must succeed").toBe(true);
     if (!result.ok) {
       expect(result.message).not.toContain("準備");
@@ -296,15 +398,16 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
       expect(result.message).not.toBe(WORKERS_AI_ASR_PREPARING_JA);
       expect(result.message).not.toBe(WORKERS_AI_ASR_UNSUPPORTED_JA);
       expect(result.message).not.toBe(WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA);
-      expect(result.message).not.toMatch(/NotAllowedError/i);
-      expect(result.message).not.toMatch(/マイクを開始できません/);
     }
-    expect(result.controller).toBeTruthy();
     expect(result.controller?.currentState).toBe("listening");
+    expect(ThrowingDestinationAudioContext.instances[0]?.destinationCreateCalls ?? 0).toBe(0);
+    const tap = ThrowingDestinationAudioContext.instances[0]?.createdProcessors[0];
+    const destination = ThrowingDestinationAudioContext.instances[0]?.destination;
+    expect(tap?.connections ?? []).not.toContain(destination);
     result.controller?.dispose();
   });
 
-  it("refreshes capture support when the existing controller was snapshotted unsupported", async () => {
+  it("refreshes live supported after construct-time false (no snapshot)", async () => {
     const stale = ensureWorkersAiAsrController({
       language: "ja-JP",
       existing: null,
@@ -313,10 +416,8 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     expect(stale.supported).toBe(false);
     installCapture();
     const onError = vi.fn();
-    const result = await startCloudflareWorkersAiAsrAfterSelect({
-      language: "ja-JP",
+    const result = await pageToggleStartAfterSelect({
       existing: stale,
-      callbacks: { disableSilero: true, onError },
       onError,
     });
     expect(onError).not.toHaveBeenCalled();
@@ -324,6 +425,33 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     expect(result.controller?.currentState).toBe("listening");
     expect(result.controller?.supported).toBe(true);
     result.controller?.dispose();
+  });
+
+  it("still starts when composed with beginRecognitionListening like the compare page", async () => {
+    installCapture();
+    const asrRef: { current: WorkersAiAsrController | null } = { current: null };
+    const onError = vi.fn();
+    let startResult: Awaited<ReturnType<typeof startCloudflareWorkersAiAsrAfterSelect>> | undefined;
+    beginRecognitionListening({
+      provider: "workers-ai-asr",
+      start: async () => {
+        startResult = await pageToggleStartAfterSelect({
+          existing: asrRef.current,
+          onError,
+        });
+        asrRef.current = startResult.controller;
+      },
+      warmBrowserVibrato: async () => undefined,
+      onWarmupError: onError,
+      requireVibratoWarmup: true,
+    });
+    for (let tick = 0; tick < 10 && !startResult; tick += 1) {
+      await Promise.resolve();
+    }
+    expect(onError).not.toHaveBeenCalled();
+    expect(startResult?.ok).toBe(true);
+    expect(startResult?.controller?.currentState).toBe("listening");
+    startResult?.controller?.dispose();
   });
 
   it("reports gate failure without calling start", async () => {

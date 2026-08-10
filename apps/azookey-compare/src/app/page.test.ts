@@ -107,14 +107,22 @@ describe("compare page speech settings", () => {
 
   it("starts Workers AI ASR without waiting on Vibrato warmup success", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
-    expect(source).toContain("beginRecognitionListening");
-    expect(source).toContain('requireVibratoWarmup: config.mode === "browser-vibrato"');
     const toggle = source.slice(
       source.indexOf("const toggleListening"),
       source.indexOf("const connectWorker"),
     );
-    expect(toggle).toContain("beginRecognitionListening");
-    expect(toggle).not.toContain(
+    const workersAiBranch = toggle.slice(
+      toggle.indexOf("if (usingWorkersAi)"),
+      toggle.indexOf("const controller = speechRef.current"),
+    );
+    const webSpeechBranch = toggle.slice(toggle.indexOf("const controller = speechRef.current"));
+    expect(workersAiBranch).toContain("startCloudflareWorkersAiAsrAfterSelect");
+    expect(workersAiBranch).toContain("warmBrowserVibrato:");
+    expect(workersAiBranch).toContain('requireVibratoWarmup: config.mode === "browser-vibrato"');
+    expect(workersAiBranch).not.toContain("beginRecognitionListening");
+    expect(workersAiBranch).not.toContain("gateWorkersAiAsrStart");
+    expect(webSpeechBranch).toContain("beginRecognitionListening");
+    expect(webSpeechBranch).not.toContain(
       "void warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current)",
     );
   });
@@ -142,10 +150,16 @@ describe("compare page speech settings", () => {
       source.indexOf("const toggleListening"),
       source.indexOf("const connectWorker"),
     );
-    expect(toggle).toContain("startCloudflareWorkersAiAsrAfterSelect");
-    expect(toggle).toContain("existing: asrRef.current");
-    expect(toggle).not.toContain("gateWorkersAiAsrStart");
-    expect(toggle).not.toContain("このブラウザは Workers AI ASR 録音に対応していません");
+    const workersAiBranch = toggle.slice(
+      toggle.indexOf("if (usingWorkersAi)"),
+      toggle.indexOf("const controller = speechRef.current"),
+    );
+    expect(workersAiBranch).toContain("startCloudflareWorkersAiAsrAfterSelect");
+    expect(workersAiBranch).toContain("existing: asrRef.current");
+    expect(workersAiBranch).toContain("warmBrowserVibrato:");
+    expect(workersAiBranch).not.toContain("gateWorkersAiAsrStart");
+    expect(workersAiBranch).not.toContain("beginRecognitionListening");
+    expect(workersAiBranch).not.toContain("このブラウザは Workers AI ASR 録音に対応していません");
     expect(toggle).toContain("WEB_SPEECH_UNSUPPORTED_JA");
     expect(source).toContain("asrCaptureSupported");
     expect(source).toContain("webSpeechSupported");

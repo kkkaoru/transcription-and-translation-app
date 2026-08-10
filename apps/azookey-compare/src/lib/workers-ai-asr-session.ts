@@ -89,6 +89,13 @@ export type StartCloudflareWorkersAiAsrAfterSelectParams = {
   callbacks?: Omit<WorkersAiAsrControllerOptions, "language" | "endpointUrl" | "auth">;
   createController?: EnsureWorkersAiAsrControllerParams["createController"];
   onError?: (message: string) => void;
+  /**
+   * Same Vibrato warmup the compare page toggleListening used to pass to
+   * beginRecognitionListening. Workers AI ASR must start even if this rejects.
+   */
+  warmBrowserVibrato?: () => Promise<void>;
+  onWarmupNotice?: (message: string) => void;
+  requireVibratoWarmup?: boolean;
 };
 
 export type StartCloudflareWorkersAiAsrAfterSelectResult =
