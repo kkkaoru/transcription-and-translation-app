@@ -7,15 +7,11 @@ import {
   type ArchitecturePath,
   architectureDiagram,
   architectureDiagramCaption,
-  BODY_SIZE,
-  BOX_PAD_TOP,
   BOX_PAD_X,
-  CHIP_ROW,
+  diagramLayoutMetrics,
   fittedBoxContent,
   rectsOverlap,
   routeEdge,
-  TITLE_LINE,
-  TITLE_SIZE,
 } from "../lib/architecture-diagram";
 import type { ComparisonMode } from "../lib/contract";
 import type { ConverterModel } from "../lib/converter-models";
@@ -125,6 +121,7 @@ export const ComparisonPathDiagram = ({
     browserWasmConfigured,
     converterModel,
   });
+  const layout = diagramLayoutMetrics(diagram);
   const title = diagramCaption(kind, mode, caption);
   const summary = comparisonPathSummary(mode, browserWasmConfigured);
   const shadowId = `arch-shadow-${uid}`;
@@ -139,15 +136,19 @@ export const ComparisonPathDiagram = ({
       data-kind={kind}
       data-mode={mode}
     >
-      <figcaption className="path-diagram-caption">{title}</figcaption>
-      {kind === "overview" ? (
-        <ul className="path-diagram-legend" data-testid="architecture-legend">
-          <li data-legend="device">実線: 処理の流れ</li>
-          <li data-legend="internet">赤: Cloudflare Worker 境界を越える</li>
-          <li data-legend="depends">点線: 任意 / フォールバック</li>
-        </ul>
-      ) : null}
-      <div className="path-diagram-svg">
+      <figcaption className="path-diagram-caption">
+        <span className="path-diagram-caption-title">{title}</span>
+        {kind === "overview" ? (
+          <span className="path-diagram-legend-inline" data-testid="architecture-legend">
+            実線: 処理の流れ · 赤: Cloudflare Worker 境界を越える · 点線: 任意 / フォールバック
+          </span>
+        ) : (
+          <span className="path-diagram-legend-inline" data-testid="architecture-legend">
+            実線: 読み取り → 変換
+          </span>
+        )}
+      </figcaption>
+      <div className="path-diagram-svg" data-overflow-x="hidden">
         <svg
           viewBox={diagram.viewBox}
           role="img"
@@ -316,8 +317,8 @@ export const ComparisonPathDiagram = ({
           })}
           {diagram.boxes.map((box) => {
             const content = fittedBoxContent(box);
-            const chipRow = box.badge ? CHIP_ROW : 0;
-            const titleY = box.y + BOX_PAD_TOP + chipRow + 14;
+            const chipRow = box.badge ? layout.chipRow : 0;
+            const titleY = box.y + layout.boxPadTop + chipRow + (diagram.compactLayout ? 12 : 14);
             return (
               <g key={box.id} filter={`url(#${shadowId})`}>
                 <rect
@@ -325,7 +326,7 @@ export const ComparisonPathDiagram = ({
                   y={box.y}
                   width={box.w}
                   height={box.h}
-                  rx="16"
+                  rx={diagram.compactLayout ? 14 : 16}
                   fill={TONE_FILL[box.tone]}
                   stroke={TONE_STROKE[box.tone]}
                   strokeWidth={box.cost === "model" || box.cost === "cpu" ? 2.4 : 1.8}
@@ -342,7 +343,7 @@ export const ComparisonPathDiagram = ({
                   <g>
                     <rect
                       x={box.x + box.w - 70}
-                      y={box.y + 8}
+                      y={box.y + (diagram.compactLayout ? 6 : 8)}
                       width="58"
                       height="18"
                       rx="9"
@@ -351,7 +352,7 @@ export const ComparisonPathDiagram = ({
                     />
                     <text
                       x={box.x + box.w - 41}
-                      y={box.y + 21}
+                      y={box.y + (diagram.compactLayout ? 19 : 21)}
                       textAnchor="middle"
                       fill={TONE_STROKE[box.tone]}
                       fontSize="10"
@@ -367,7 +368,7 @@ export const ComparisonPathDiagram = ({
                     x={box.x + BOX_PAD_X}
                     y={titleY}
                     fill="#20252b"
-                    fontSize={TITLE_SIZE}
+                    fontSize={layout.titleSize}
                     fontWeight="800"
                   >
                     {line}
@@ -377,9 +378,9 @@ export const ComparisonPathDiagram = ({
                   <text
                     key={`${box.id}-body-${line}`}
                     x={box.x + BOX_PAD_X}
-                    y={titleY + TITLE_LINE + lineIndex * 16}
+                    y={titleY + layout.titleLine + lineIndex * layout.bodyLine}
                     fill="#4e585a"
-                    fontSize={BODY_SIZE}
+                    fontSize={layout.bodySize}
                   >
                     {line}
                   </text>

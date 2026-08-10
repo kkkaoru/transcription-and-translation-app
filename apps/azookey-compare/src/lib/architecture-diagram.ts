@@ -119,6 +119,7 @@ export interface ArchitectureDiagram {
   viewBox: string;
   width: number;
   height: number;
+  compactLayout?: boolean;
   bands?: ArchitectureBand[];
   boundaryX?: number;
   corridorY?: number;
@@ -126,6 +127,16 @@ export interface ArchitectureDiagram {
   lanes: ArchitectureLane[];
   boxes: ArchitectureBox[];
   edges: ArchitectureEdge[];
+}
+
+export interface DiagramLayoutMetrics {
+  boxPadTop: number;
+  boxPadBottom: number;
+  titleLine: number;
+  bodyLine: number;
+  chipRow: number;
+  titleSize: number;
+  bodySize: number;
 }
 
 export interface ArchitectureDiagramOptions {
@@ -157,6 +168,42 @@ export const BODY_LINE = 16;
 export const CHIP_ROW = 22;
 export const LANE_TITLE_HEIGHT = 36;
 export const STACK_GAP = 40;
+export const OVERVIEW_STACK_GAP = 16;
+export const OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT = 744;
+export const MODE_BOX_PAD_TOP = 8;
+export const MODE_BOX_PAD_BOTTOM = 10;
+export const MODE_TITLE_LINE = 17;
+export const MODE_BODY_LINE = 14;
+export const MODE_CHIP_ROW = 18;
+export const MODE_TITLE_SIZE = 13;
+export const MODE_BODY_SIZE = 10;
+export const MODE_STACK_Y = 10;
+export const MODE_BOTTOM_PAD = 10;
+export const MODE_DIAGRAM_PREVIOUS_HEIGHT = 194;
+export const ARCHITECTURE_DIAGRAM_MAX_WIDTH = 720;
+
+export const diagramLayoutMetrics = (
+  diagram: Pick<ArchitectureDiagram, "compactLayout">,
+): DiagramLayoutMetrics =>
+  diagram.compactLayout
+    ? {
+        boxPadTop: MODE_BOX_PAD_TOP,
+        boxPadBottom: MODE_BOX_PAD_BOTTOM,
+        titleLine: MODE_TITLE_LINE,
+        bodyLine: MODE_BODY_LINE,
+        chipRow: MODE_CHIP_ROW,
+        titleSize: MODE_TITLE_SIZE,
+        bodySize: MODE_BODY_SIZE,
+      }
+    : {
+        boxPadTop: BOX_PAD_TOP,
+        boxPadBottom: BOX_PAD_BOTTOM,
+        titleLine: TITLE_LINE,
+        bodyLine: BODY_LINE,
+        chipRow: CHIP_ROW,
+        titleSize: TITLE_SIZE,
+        bodySize: BODY_SIZE,
+      };
 
 export const measureText = (text: string, fontSize: number): number => {
   let width = 0;
@@ -182,9 +229,17 @@ export const fittedBoxContent = (
 
 export const requiredBoxHeight = (
   box: Pick<ArchitectureBox, "w" | "title" | "lines" | "artifact" | "badge" | "cost" | "size">,
+  compact = false,
 ): number => {
-  const chipRow = box.badge ? CHIP_ROW : 0;
-  return BOX_PAD_TOP + chipRow + TITLE_LINE + box.lines.length * BODY_LINE + BOX_PAD_BOTTOM;
+  const metrics = compact ? diagramLayoutMetrics({ compactLayout: true }) : diagramLayoutMetrics({});
+  const chipRow = box.badge ? metrics.chipRow : 0;
+  return (
+    metrics.boxPadTop +
+    chipRow +
+    metrics.titleLine +
+    box.lines.length * metrics.bodyLine +
+    metrics.boxPadBottom
+  );
 };
 
 export const layoutStack = (
@@ -193,11 +248,12 @@ export const layoutStack = (
   width: number,
   gap: number,
   items: BoxDraft[],
+  compact = false,
 ): ArchitectureBox[] => {
   let y = startY;
   return items.map((item) => {
     const box: ArchitectureBox = { ...item, x, y, w: width, h: 0 };
-    box.h = requiredBoxHeight(box);
+    box.h = requiredBoxHeight(box, compact);
     y += box.h + gap;
     return box;
   });
@@ -224,18 +280,21 @@ export const overlappingBoxIds = (diagram: ArchitectureDiagram): string[] => {
   return hits;
 };
 
-export const overflowingBoxIds = (diagram: ArchitectureDiagram): string[] =>
-  diagram.boxes
+export const overflowingBoxIds = (diagram: ArchitectureDiagram): string[] => {
+  const compact = diagram.compactLayout === true;
+  const metrics = diagramLayoutMetrics(diagram);
+  return diagram.boxes
     .filter((box) => {
-      if (requiredBoxHeight(box) > box.h + 0.5) {
+      if (requiredBoxHeight(box, compact) > box.h + 0.5) {
         return true;
       }
-      if (measureText(box.title, TITLE_SIZE) > titleMaxWidth(box)) {
+      if (measureText(box.title, metrics.titleSize) > titleMaxWidth(box)) {
         return true;
       }
-      return box.lines.some((line) => measureText(line, BODY_SIZE) > bodyMaxWidth(box));
+      return box.lines.some((line) => measureText(line, metrics.bodySize) > bodyMaxWidth(box));
     })
     .map((box) => box.id);
+};
 
 export const boxesCollidingWithLaneTitles = (diagram: ArchitectureDiagram): string[] => {
   const hits: string[] = [];
@@ -435,10 +494,11 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
   const leftX = 20;
   const rightX = 360;
   const gutterX = 340;
+  const gap = OVERVIEW_STACK_GAP;
   const browser = placeBox({
     id: "browser",
     x: leftX,
-    y: 16,
+    y: 12,
     w: fullW,
     title: "① ブラウザ",
     lines: ["Web Speech 認識"],
@@ -448,24 +508,24 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
   const access = placeBox({
     id: "access",
     x: leftX,
-    y: browser.y + browser.h + 40,
+    y: browser.y + browser.h + gap,
     w: fullW,
     title: "② Access",
-    lines: ["OTP + Managed OAuth"],
+    lines: ["OTP + Managed OAuth", "teadea"],
     tone: "io",
     artifact: "runtime",
   });
   const compare = placeBox({
     id: "compare",
     x: leftX,
-    y: access.y + access.h + 40,
+    y: access.y + access.h + gap,
     w: fullW,
-    title: "③ azookey-compare",
-    lines: [COMPARE_WORKER_ORIGIN, "static Next export + compare Cloudflare Worker", "JWT ゲート"],
+    title: "③ compare Cloudflare Worker",
+    lines: [COMPARE_WORKER_ORIGIN, "Access JWT + static Next export"],
     tone: "worker",
     artifact: "runtime",
   });
-  const forkY = compare.y + compare.h + 40;
+  const forkY = compare.y + compare.h + gap;
   const browserComplete = placeBox({
     id: "browser-complete",
     x: leftX,
@@ -474,8 +534,9 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     title: "ブラウザ完結",
     lines: [
       "Vibrato WASM + AzooKey WASM",
-      ARCHITECTURE_ZENZAI.browserDictLabel,
       "in-page /ws/azookey なし",
+      `Zenzai: ${ARCHITECTURE_DICTIONARIES.azookey.file}`,
+      "LOUDS 辞書のみ / GGUF なし",
     ],
     tone: "browser",
     artifact: "code",
@@ -487,37 +548,28 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: forkY,
     w: halfW,
     title: "worker-vibrato",
-    lines: ["Cloudflare Worker 依存", "/ws/azookey", "→ INFERENCE binding"],
+    lines: ["Cloudflare Worker 依存", "/ws/azookey → INFERENCE"],
     tone: "worker",
     artifact: "runtime",
   });
   const inference = placeBox({
     id: "inference",
     x: rightX,
-    y: workerWs.y + workerWs.h + 40,
+    y: workerWs.y + workerWs.h + gap,
     w: halfW,
     title: "kotoba-beacon-inference",
-    lines: ["Cloudflare Worker（推論）", "workers_dev false", "公開 URL なし"],
+    lines: [
+      "Cloudflare Worker（推論）",
+      "workers.dev 無し",
+      "AzooKey WASM + LOUDS dict",
+      `${ARCHITECTURE_ZENZAI.env} → Zenzai GGUF`,
+      "未設定 → LOUDS dict フォールバック",
+    ],
     tone: "worker",
     artifact: "runtime",
-  });
-  const zenz = placeBox({
-    id: "zenz",
-    x: rightX,
-    y: inference.y + inference.h + 40,
-    w: halfW,
-    title: "Zenzai GGUF 推論",
-    lines: [
-      ARCHITECTURE_ZENZAI.note,
-      "Cloudflare Worker 依存",
-      `${ARCHITECTURE_ZENZAI.loader} が読む`,
-      ARCHITECTURE_ZENZAI.file,
-    ],
-    tone: "model",
-    artifact: "model",
     cost: "model",
   });
-  const height = Math.max(browserComplete.y + browserComplete.h, zenz.y + zenz.h) + 24;
+  const height = Math.max(browserComplete.y + browserComplete.h, inference.y + inference.h) + 16;
 
   return {
     viewBox: `0 0 ${width} ${height}`,
@@ -525,7 +577,7 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     height,
     gutterX,
     lanes: [],
-    boxes: [browser, access, compare, browserComplete, workerWs, inference, zenz],
+    boxes: [browser, access, compare, browserComplete, workerWs, inference],
     edges: [
       { from: "browser", to: "access", path: "internet", via: "vertical" },
       { from: "access", to: "compare", path: "internet", via: "vertical" },
@@ -534,17 +586,16 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
         to: "browser-complete",
         path: "device",
         via: "vertical",
-        corridorY: compare.y + compare.h + 18,
+        corridorY: compare.y + compare.h + 8,
       },
       {
         from: "compare",
         to: "worker-ws",
         path: "device",
         via: "vertical",
-        corridorY: compare.y + compare.h + 18,
+        corridorY: compare.y + compare.h + 8,
       },
       { from: "worker-ws", to: "inference", path: "device", via: "vertical", label: "INFERENCE" },
-      { from: "inference", to: "zenz", path: "depends", dashed: true, via: "vertical" },
     ],
   };
 };
@@ -559,69 +610,86 @@ export const modeArchitecture = (
   const ipadicOk = mode !== "browser-vibrato" || browserWasmConfigured;
   const width = 680;
   const boxW = 300;
-  const stackY = 24;
+  const stackY = MODE_STACK_Y;
   const worker = mode === "worker-vibrato";
   const zenzSize =
     converterModel === "zenz-v3.2-small-gguf"
       ? ARCHITECTURE_ZENZAI.small.size
       : ARCHITECTURE_ZENZAI.xsmall.size;
-  const reading = layoutStack(20, stackY, boxW, STACK_GAP, [
-    {
-      id: "vib",
-      title: worker ? "Cloudflare Worker（推論）Vibrato" : "ブラウザ Vibrato",
-      lines: worker
-        ? ["/ws/azookey", "→ INFERENCE binding", "kotoba-beacon-inference", "workers_dev false"]
-        : [
-            "/vibrato/vibrato_wasm.js",
-            ARCHITECTURE_DICTIONARIES.ipadic.browserUrl,
-            ipadicOk ? "WASM/辞書が利用可能" : "WASM/辞書が利用不可",
-            "/ws/azookey なし",
-          ],
-      tone: worker ? "worker" : ipadicOk ? "browser" : "warn",
-      artifact: worker ? "runtime" : "code",
-      badge: worker ? undefined : ipadicOk ? undefined : "未設定",
-    },
-  ]);
-  const convert = layoutStack(360, stackY, boxW, STACK_GAP, [
-    {
-      id: "model",
-      title: zenz && !worker ? ARCHITECTURE_ZENZAI.browserDictLabel : modelName,
-      lines: worker
-        ? zenz
-          ? [
-              converterModel,
-              `${ARCHITECTURE_ZENZAI.loader} が読む`,
-              ARCHITECTURE_ZENZAI.file,
-              `${ARCHITECTURE_ZENZAI.env} → POST ${ARCHITECTURE_ZENZAI.endpoint}`,
-              "Cloudflare Worker 依存（推論）",
-              "未設定 / 失敗 → AzooKey WASM",
-            ]
+  const reading = layoutStack(
+    20,
+    stackY,
+    boxW,
+    0,
+    [
+      {
+        id: "vib",
+        title: worker ? "Cloudflare Worker（推論）Vibrato" : "ブラウザ Vibrato",
+        lines: worker
+          ? ["/ws/azookey → INFERENCE", "kotoba-beacon-inference", "workers.dev 無し"]
           : [
-              converterModel,
-              ARCHITECTURE_DICTIONARIES.azookey.workerUrl,
-              "かな漢字変換",
-              "公開 URL なし",
-            ]
-        : zenz
-          ? [
-              converterModel,
-              ARCHITECTURE_DICTIONARIES.azookey.browserUrl,
-              "LOUDS 辞書のみ",
-              "GGUF 推論なし",
-              "/ws/azookey なし",
-            ]
-          : [converterModel, "/azookey/azookey.wasm", "in-page かな漢字", "/ws/azookey なし"],
-      tone: zenz ? (worker ? "model" : "browser") : worker ? "worker" : "browser",
-      artifact: zenz ? (worker ? "model" : "dict") : "code",
-      size: zenz && worker ? zenzSize : worker ? ARCHITECTURE_ASSET_SIZES.azookeyWasm : ARCHITECTURE_ASSET_SIZES.azkdictGz,
-      badge: zenz && !worker ? "辞書のみ" : undefined,
-    },
-  ]);
+              "/vibrato/vibrato_wasm.js",
+              ARCHITECTURE_DICTIONARIES.ipadic.browserUrl,
+              ipadicOk
+                ? "WASM/辞書 OK · /ws/azookey なし"
+                : "WASM/辞書が利用不可 · /ws/azookey なし",
+            ],
+        tone: worker ? "worker" : ipadicOk ? "browser" : "warn",
+        artifact: worker ? "runtime" : "code",
+        badge: worker ? undefined : ipadicOk ? undefined : "未設定",
+      },
+    ],
+    true,
+  );
+  const convert = layoutStack(
+    360,
+    stackY,
+    boxW,
+    0,
+    [
+      {
+        id: "model",
+        title: zenz && !worker ? ARCHITECTURE_ZENZAI.browserDictLabel : modelName,
+        lines: worker
+          ? zenz
+            ? [
+                converterModel,
+                `${ARCHITECTURE_ZENZAI.env} → Zenzai GGUF · ${zenzSize}`,
+                `${ARCHITECTURE_ZENZAI.loader} · ${ARCHITECTURE_ZENZAI.file}`,
+                "Cloudflare Worker 依存（推論）",
+                "未設定 → inference LOUDS dict",
+              ]
+            : [
+                converterModel,
+                ARCHITECTURE_DICTIONARIES.azookey.workerUrl,
+                "かな漢字 · 公開 URL なし",
+              ]
+          : zenz
+            ? [
+                converterModel,
+                ARCHITECTURE_DICTIONARIES.azookey.browserUrl,
+                "LOUDS 辞書のみ · GGUF 推論なし",
+              ]
+            : [converterModel, "/azookey/azookey.wasm", "in-page かな漢字 · /ws/azookey なし"],
+        tone: zenz ? (worker ? "model" : "browser") : worker ? "worker" : "browser",
+        artifact: zenz ? (worker ? "model" : "dict") : "code",
+        size:
+          zenz && worker
+            ? zenzSize
+            : worker
+              ? ARCHITECTURE_ASSET_SIZES.azookeyWasm
+              : ARCHITECTURE_ASSET_SIZES.azkdictGz,
+        badge: zenz && !worker ? "辞書のみ" : undefined,
+      },
+    ],
+    true,
+  );
   const bottom = Math.max(...[...reading, ...convert].map((box) => box.y + box.h));
   return {
-    viewBox: `0 0 ${width} ${bottom + 24}`,
+    viewBox: `0 0 ${width} ${bottom + MODE_BOTTOM_PAD}`,
     width,
-    height: bottom + 24,
+    height: bottom + MODE_BOTTOM_PAD,
+    compactLayout: true,
     boxes: [...reading, ...convert],
     lanes: [],
     edges: [{ from: "vib", to: "model", path: "device" }],
