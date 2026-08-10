@@ -891,56 +891,49 @@ export default function ComparePage() {
       dispatchedSpeechRef.current = [];
       setLatestSpeechSegment("");
       setError("");
-      beginRecognitionListening({
-        provider: "workers-ai-asr",
-        start: async () => {
-          const result = await startCloudflareWorkersAiAsrAfterSelect({
-            language: config.language,
-            endpointUrl:
-              typeof window !== "undefined"
-                ? buildWorkersAiAsrUrl(window.location.origin)
-                : undefined,
-            auth: { scheme: config.auth.scheme, token: config.auth.token },
-            existing: asrRef.current,
-            callbacks: {
-              onStateChange: (state) => {
-                setSpeechState(state);
-                if (state === "listening") {
-                  setError("");
-                }
-              },
-              onTranscript: ({ interimText }) => {
-                setSpeechInterimText(interimText);
-              },
-              onFinalText: (text) => {
-                setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
-              },
-              onUtteranceFinal: ({ text, audioSeconds }) => {
-                dispatchSpeechText(text, audioSeconds);
-              },
-              onVadNotice: (message) => {
-                setNotice(message);
-              },
-              onError: (message) => {
-                setError(message);
-              },
-            },
-            onError: (message) => {
-              setError(message);
-            },
-          });
-          if (result.controller) {
-            asrRef.current = result.controller;
-            setAsrCaptureSupported(result.controller.supported);
-          }
-          if (!result.ok && result.reason === "unsupported") {
-            setAsrCaptureSupported(false);
-          }
+      void startCloudflareWorkersAiAsrAfterSelect({
+        language: config.language,
+        endpointUrl:
+          typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined,
+        auth: { scheme: config.auth.scheme, token: config.auth.token },
+        existing: asrRef.current,
+        callbacks: {
+          onStateChange: (state) => {
+            setSpeechState(state);
+            if (state === "listening") {
+              setError("");
+            }
+          },
+          onTranscript: ({ interimText }) => {
+            setSpeechInterimText(interimText);
+          },
+          onFinalText: (text) => {
+            setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
+          },
+          onUtteranceFinal: ({ text, audioSeconds }) => {
+            dispatchSpeechText(text, audioSeconds);
+          },
+          onVadNotice: (message) => {
+            setNotice(message);
+          },
+          onError: (message) => {
+            setError(message);
+          },
+        },
+        onError: (message) => {
+          setError(message);
         },
         warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
         onWarmupNotice: setNotice,
-        onWarmupError: setError,
         requireVibratoWarmup: config.mode === "browser-vibrato",
+      }).then((result) => {
+        if (result.controller) {
+          asrRef.current = result.controller;
+          setAsrCaptureSupported(result.controller.supported);
+        }
+        if (!result.ok && result.reason === "unsupported") {
+          setAsrCaptureSupported(false);
+        }
       });
       return;
     }
@@ -1426,9 +1419,11 @@ export default function ComparePage() {
               data-testid="phonetic-input-disclosure"
               open={phoneticPanelOpen}
               onToggle={(event) => {
-                const next = window.matchMedia(DESKTOP_CONFIG_MEDIA_QUERY).matches
-                  ? true
-                  : event.currentTarget.open;
+                const desktop = window.matchMedia(DESKTOP_CONFIG_MEDIA_QUERY).matches;
+                if (desktop) {
+                  event.currentTarget.open = true;
+                }
+                const next = desktop ? true : event.currentTarget.open;
                 setPhoneticPanelOpen((current) => (current === next ? current : next));
               }}
             >
