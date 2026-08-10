@@ -1,5 +1,6 @@
 import {
   type CaptionSentenceHints,
+  detectCaptionSoftBreaks,
   selectVisibleCaptionSentence,
 } from "@caption-bridge/sentence-boundary";
 import {
@@ -34,6 +35,7 @@ export interface CaptionItem {
   maxChars: number;
   azookeyInputText?: string | null;
   sentenceEndOffsets?: number[];
+  softBreakOffsets?: number[];
 }
 
 /**
@@ -134,10 +136,21 @@ export const collapseRunawayGraphemeRuns = (
 export const sanitizeCaptionDisplayText = (text: string): string =>
   collapseRunawayGraphemeRuns(stripCaptionContinuationMarker(text.replace(/\r\n?/gu, "\n")));
 
-/** Pick the best wrap index in `[floor, limit]` preferring morph then punctuation. */
-const preferNaturalBreakIndex = (graphemes: string[], limit: number, floor: number): number => {
+/** Pick the best wrap index in `[floor, limit]` preferring soft POS then morph/punct. */
+const preferNaturalBreakIndex = (
+  graphemes: string[],
+  limit: number,
+  floor: number,
+  softBreakOffsets: number[] = [],
+): number => {
+  const softSet = new Set(
+    softBreakOffsets.filter((offset) => offset > floor && offset <= limit),
+  );
   let punctuationBreak = 0;
   for (let index = limit; index >= floor; index -= 1) {
+    if (softSet.has(index)) {
+      return index;
+    }
     if (isVibratoMorphBreak(graphemes, index)) {
       return index;
     }
@@ -151,6 +164,39 @@ const preferNaturalBreakIndex = (graphemes: string[], limit: number, floor: numb
     }
   }
   return punctuationBreak || limit;
+};
+
+/**
+ * Convert exclusive Unicode-scalar soft-break offsets into grapheme indices
+ * for the same `text`. Soft breaks from Vibrato are scalar offsets.
+ */
+const softBreakGraphemeOffsets = (text: string, scalarOffsets: number[]): number[] => {
+  if (scalarOffsets.length === 0) {
+    return [];
+  }
+  const scalars = Array.from(text);
+  const graphemes = captionGraphemes(text);
+  if (scalars.length === graphemes.length) {
+    return scalarOffsets.filter((offset) => offset > 0 && offset <= graphemes.length);
+  }
+  // When grapheme clusters span multiple scalars, map each scalar offset to
+  // the grapheme boundary that covers it.
+  const mapped: number[] = [];
+  let scalarIndex = 0;
+  let graphemeIndex = 0;
+  const wanted = [...new Set(scalarOffsets)].sort((a, b) => a - b);
+  let wantAt = 0;
+  while (graphemeIndex < graphemes.length && wantAt < wanted.length) {
+    const cluster = graphemes[graphemeIndex] ?? "";
+    const clusterScalars = Array.from(cluster).length;
+    scalarIndex += clusterScalars;
+    graphemeIndex += 1;
+    while (wantAt < wanted.length && (wanted[wantAt] as number) <= scalarIndex) {
+      mapped.push(graphemeIndex);
+      wantAt += 1;
+    }
+  }
+  return mapped;
 };
 
 /**
@@ -182,16 +228,24 @@ const trimStartGraphemes = (graphemes: string[]): string[] => {
   return graphemes.slice(start);
 };
 
-const splitLongLine = (line: string, maxChars: number): string[] => {
+const splitLongLine = (line: string, maxChars: number, softBreakOffsets: number[] = []): string[] => {
   const characters = captionGraphemes(line);
   if (characters.length <= maxChars) {
     return [line];
   }
 
+  const softGraphemes = softBreakGraphemeOffsets(line, softBreakOffsets);
   const segments: string[] = [];
   let remaining = characters;
+  let consumed = 0;
   while (remaining.length > maxChars) {
-    const breakAt = preferNaturalBreakIndex(remaining, maxChars, Math.floor(maxChars / 2));
+    // Prefer a POS soft break earlier than the hard budget so live captions
+    // refresh on natural phrase boundaries before maxChars is exhausted.
+    const earlyFloor = Math.max(1, Math.floor(maxChars * 0.4));
+    const relativeSoft = softGraphemes
+      .map((offset) => offset - consumed)
+      .filter((offset) => offset > 0);
+    const breakAt = preferNaturalBreakIndex(remaining, maxChars, earlyFloor, relativeSoft);
     // Trim at the grapheme-cluster level, not on the joined string: a cluster
     // like U+0020 + U+0301 is one grapheme, and String.prototype.trimStart
     // would strip the space and leave a bare combining mark at the start of
@@ -201,6 +255,7 @@ const splitLongLine = (line: string, maxChars: number): string[] => {
       segments.push(segment);
     }
     remaining = trimStartGraphemes(remaining.slice(breakAt));
+    consumed += breakAt;
   }
   const tail = trimGraphemes(remaining).join("");
   if (tail) {
@@ -210,14 +265,9 @@ const splitLongLine = (line: string, maxChars: number): string[] => {
 };
 
 /**
- * Keep only the newest sentence, then the newest grapheme window when that
- * sentence still exceeds `maxChars * maxLines`.
- *
- * Vibrato / AzooKey sentence ends switch the on-screen caption automatically
- * so two finished sentences are never stacked. Older text is discarded so the
- * overlay / Syphon plate does not grow without bound. Prefer starting the
- * window after punctuation when a nearby break exists, so a mid-clause cut is
- * rare.
+ * Keep only the newest sentence, then prefer a POS soft break before the hard
+ * `maxChars * maxLines` budget so long speech pages on natural phrase
+ * boundaries. Always keep the newest graphemes — never drop the utterance tail.
  */
 export const trimCaptionToDisplayWindow = (
   text: string,
@@ -233,15 +283,41 @@ export const trimCaptionToDisplayWindow = (
   const safeMaxLines = Math.max(1, Math.floor(maxLines));
   const budget = safeMaxChars * safeMaxLines;
   const graphemes = captionGraphemes(normalized);
+  const softScalar = detectCaptionSoftBreaks(normalized, hints);
+  const softGraphemes = softBreakGraphemeOffsets(normalized, softScalar);
+
+  // Early page: once one line is full, start after the latest soft break that
+  // still leaves a readable newest chunk (and never past the utterance end).
+  if (graphemes.length > safeMaxChars && softGraphemes.length > 0) {
+    const minVisible = Math.min(4, safeMaxChars);
+    let pageStart = 0;
+    for (const offset of softGraphemes) {
+      if (offset <= 0 || offset >= graphemes.length) {
+        continue;
+      }
+      const remaining = graphemes.length - offset;
+      if (remaining >= minVisible && remaining <= budget) {
+        pageStart = offset;
+      }
+    }
+    if (pageStart > 0) {
+      return trimStartGraphemes(graphemes.slice(pageStart)).join("");
+    }
+  }
+
   if (graphemes.length <= budget) {
     return normalized;
   }
   let start = graphemes.length - budget;
-  // Prefer a Vibrato morph / punctuation boundary near the cut so the first
-  // visible line does not begin mid-phrase when a nearby break exists.
+  // Prefer a soft / Vibrato morph / punctuation boundary near the cut so the
+  // first visible line does not begin mid-phrase when a nearby break exists.
+  // Never advance start past the newest budget — the utterance tail stays.
   const searchEnd = Math.min(graphemes.length, start + Math.floor(safeMaxChars / 2));
+  const softNearCut = new Set(
+    softGraphemes.filter((offset) => offset >= start && offset < searchEnd),
+  );
   for (let index = start; index < searchEnd; index += 1) {
-    if (isVibratoMorphBreak(graphemes, index)) {
+    if (softNearCut.has(index) || isVibratoMorphBreak(graphemes, index)) {
       start = index;
       break;
     }
@@ -255,15 +331,32 @@ export const trimCaptionToDisplayWindow = (
 };
 
 /** Split caption text into readable logical lines without dropping content. */
-export const segmentCaptionText = (text: string, maxChars: number): string[] => {
+export const segmentCaptionText = (
+  text: string,
+  maxChars: number,
+  softBreakOffsets: number[] = [],
+): string[] => {
   const normalized = sanitizeCaptionDisplayText(text).trim();
   if (!normalized) {
     return [];
   }
   const safeMaxChars = Math.max(1, Math.floor(maxChars));
+  if (!normalized.includes("\n")) {
+    const soft =
+      softBreakOffsets.length > 0 ? softBreakOffsets : detectCaptionSoftBreaks(normalized);
+    return splitLongLine(normalized, safeMaxChars, soft);
+  }
+  // Multi-line payloads are rare; re-detect soft breaks per line so offsets
+  // stay local to each segment.
   return normalized
     .split("\n")
-    .flatMap((line) => splitLongLine(line.trim(), safeMaxChars))
+    .flatMap((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return [];
+      }
+      return splitLongLine(trimmed, safeMaxChars, detectCaptionSoftBreaks(trimmed));
+    })
     .filter(Boolean);
 };
 
@@ -276,18 +369,25 @@ export const segmentCaptionText = (text: string, maxChars: number): string[] => 
  */
 export const captionTextLines = (
   item: Pick<CaptionItem, "key" | "text"> &
-    Partial<Pick<CaptionItem, "maxChars" | "azookeyInputText" | "sentenceEndOffsets">>,
+    Partial<
+      Pick<CaptionItem, "maxChars" | "azookeyInputText" | "sentenceEndOffsets" | "softBreakOffsets">
+    >,
 ): string[] => {
   const maxChars =
     typeof item.maxChars === "number" ? item.maxChars : defaultCaptionMaxChars(item.key);
-  return segmentCaptionText(
-    trimCaptionToDisplayWindow(item.text, maxChars, CAPTION_MAX_VISIBLE_LINES, {
-      key: item.key,
-      azookeyInputText: item.azookeyInputText,
-      sentenceEndOffsets: item.sentenceEndOffsets,
-    }),
+  const hints: CaptionSentenceHints = {
+    key: item.key,
+    azookeyInputText: item.azookeyInputText,
+    sentenceEndOffsets: item.sentenceEndOffsets,
+    softBreakOffsets: item.softBreakOffsets,
+  };
+  const windowed = trimCaptionToDisplayWindow(
+    item.text,
     maxChars,
+    CAPTION_MAX_VISIBLE_LINES,
+    hints,
   );
+  return segmentCaptionText(windowed, maxChars, detectCaptionSoftBreaks(windowed, hints));
 };
 
 export const createPreviewCaption = (): CaptionPayload => {
@@ -333,6 +433,7 @@ export const captionItems = (
     maxChars: resolveCaptionMaxChars(config, "source"),
     azookeyInputText: caption.azookeyInputText,
     sentenceEndOffsets: caption.sentenceEndOffsets,
+    softBreakOffsets: caption.softBreakOffsets,
   };
   const translation: CaptionItem = {
     key: "translation",

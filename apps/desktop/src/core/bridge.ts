@@ -363,6 +363,7 @@ const captionEventSignature = (caption: CaptionPayload): string =>
     caption.provisional,
     caption.captureGeneration,
     caption.sentenceEndOffsets,
+    caption.softBreakOffsets,
   ]);
 
 const DEFAULT_UPDATE_STATUS: UpdateStatus = {

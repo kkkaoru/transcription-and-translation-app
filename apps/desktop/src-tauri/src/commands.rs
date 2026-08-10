@@ -777,6 +777,7 @@ fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload,
             &source_text,
             false,
         ),
+        soft_break_offsets: crate::sentence_boundary::heuristic_soft_break_offsets(&source_text),
     })
 }
 
@@ -1090,6 +1091,7 @@ fn empty_caption(config: &AppConfig, id: String) -> CaptionPayload {
         is_final: false,
         confidence: None,
         sentence_end_offsets: Vec::new(),
+            soft_break_offsets: Vec::new(),
     }
 }
 
@@ -2149,6 +2151,7 @@ mod tests {
             is_final: true,
             confidence: None,
             sentence_end_offsets: Vec::new(),
+            soft_break_offsets: Vec::new(),
         };
         let mut emitted = 0;
 
@@ -2201,6 +2204,7 @@ mod tests {
             is_final: true,
             confidence: None,
             sentence_end_offsets: Vec::new(),
+            soft_break_offsets: Vec::new(),
         };
 
         let mut emitted = 0;
@@ -2269,6 +2273,7 @@ mod tests {
             is_final: true,
             confidence: None,
             sentence_end_offsets: Vec::new(),
+            soft_break_offsets: Vec::new(),
         };
         let mut emitted = 0;
         assert!(

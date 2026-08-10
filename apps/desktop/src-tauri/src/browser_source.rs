@@ -285,6 +285,16 @@ fn is_preferred_break(character: char) -> bool {
     )
 }
 
+/// Vibrato-like morph suffixes mirrored from `captions.ts` `vibratoMorphBreakAfter`.
+fn is_morph_soft_break(prefix: &str) -> bool {
+    const SUFFIXES: &[&str] = &[
+        "から", "まで", "より", "など", "って", "では", "には", "とは", "のは", "が", "を", "に",
+        "へ", "で", "と", "も", "の", "や", "か", "は", "ね", "よ", "な", "て", "た", "だ", "です",
+        "ます", "でした", "ました",
+    ];
+    SUFFIXES.iter().any(|suffix| prefix.ends_with(suffix))
+}
+
 fn is_breakable_grapheme(grapheme: &str) -> bool {
     // Faithful port of the frontend `preferredBreak.test(character) ||
     // /\s/u.test(character)` in `apps/desktop/src/overlay/captions.ts`, where
@@ -300,17 +310,26 @@ fn is_breakable_grapheme(grapheme: &str) -> bool {
 
 /// Find the preferred break index within `(lower..=max_chars]`, scanning from
 /// the limit downward so Japanese clauses and Latin words stay together. The
-/// scan never goes below half a line, so a very long clause still makes
-/// forward progress. Returns `max_chars` when no preferred break exists.
+/// scan prefers morph/particle soft breaks (aligned with the DOM overlay) and
+/// never goes below ~40% of a line so long clauses still make forward progress.
 fn preferred_break_index(remaining: &[String], max_chars: usize) -> usize {
     // Clamp the lower bound to 1 so `remaining[index - 1]` never underflows.
-    let lower = (max_chars / 2).max(1);
+    let lower = ((max_chars * 2) / 5).max(1);
+    let mut punctuation_break = 0usize;
     for index in (lower..=max_chars).rev() {
-        if is_breakable_grapheme(&remaining[index - 1]) {
+        let prefix: String = remaining[..index].iter().cloned().collect();
+        if is_morph_soft_break(&prefix) {
             return index;
         }
+        if punctuation_break == 0 && is_breakable_grapheme(&remaining[index - 1]) {
+            punctuation_break = index;
+        }
     }
-    max_chars
+    if punctuation_break > 0 {
+        punctuation_break
+    } else {
+        max_chars
+    }
 }
 
 /// A grapheme cluster is whitespace-only when it trims to an empty string.
@@ -737,6 +756,7 @@ mod tests {
             is_final: true,
             confidence: None,
             sentence_end_offsets: Vec::new(),
+            soft_break_offsets: Vec::new(),
         }
     }
 

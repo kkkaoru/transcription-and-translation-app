@@ -11,6 +11,32 @@ import {
   stripCaptionContinuationMarker,
 } from "./captions";
 
+describe("POS soft breaks before maxChars", () => {
+  it("wraps before maxChars at a particle soft-break instead of mid-phrase", () => {
+    const text = "今日はとても良い天気で明日も";
+    const segments = segmentCaptionText(text, 12);
+    expect(segments.join("")).toBe(text);
+    expect(segments.length).toBeGreaterThan(1);
+    // Soft break after は should be preferred over a hard cut at 12.
+    expect(segments[0]?.endsWith("は") || segments[0]?.endsWith("で")).toBe(true);
+    expect(segments.every((line) => captionGraphemes(line).length <= 12)).toBe(true);
+  });
+
+  it("pages early at a soft break so the newest phrase stays within one line", () => {
+    const text = "隣の客はよく柿を食べる客だそうですよ";
+    const lines = captionTextLines({
+      key: "source",
+      text,
+      maxChars: 10,
+      softBreakOffsets: [3, 5, 7, 10, 12],
+    });
+    expect(lines.join("").length).toBeLessThanOrEqual(20);
+    expect(lines.join("").endsWith("そうですよ") || lines.join("").endsWith("客だそうですよ")).toBe(
+      true,
+    );
+  });
+});
+
 describe("caption display sanitization", () => {
   it("strips trailing Parapper continuation markers without touching mid-text ellipsis", () => {
     expect(stripCaptionContinuationMarker("今日は...")).toBe("今日は");

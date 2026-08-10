@@ -262,6 +262,12 @@ export interface CaptionPayload {
    * when this is present; otherwise it falls back to surface/copula heuristics.
    */
   sentenceEndOffsets?: number[];
+  /**
+   * Mid-sentence POS wrap points (読点 / 格助詞 / 接続助詞 …) so captions can
+   * break before the hard `maxChars` budget. When absent, the overlay falls
+   * back to particle/punctuation heuristics.
+   */
+  softBreakOffsets?: number[];
 }
 
 /** One structured interim/final output from the persistent Parapper session. */

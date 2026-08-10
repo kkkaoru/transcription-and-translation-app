@@ -63,6 +63,9 @@ pub struct CaptionPayload {
     /// Exclusive Unicode-scalar offsets where Vibrato/AzooKey completed a sentence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sentence_end_offsets: Vec<usize>,
+    /// Mid-sentence POS wrap points for caption line breaks before maxChars.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub soft_break_offsets: Vec<usize>,
 }
 
 /// Fine-grained per-stage timing + I/O sample for debug mode / latency diagnosis.
@@ -380,31 +383,27 @@ impl Pipeline {
     }
 
     fn caption_sentence_end_offsets(&self, text: &str) -> Vec<usize> {
-        let reader = {
-            let mut guard = match self.vibrato.lock() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    return crate::sentence_boundary::heuristic_sentence_end_offsets(text, false);
-                }
-            };
-            if let Some(ref reader) = *guard {
-                Arc::clone(reader)
-            } else {
-                match crate::vibrato_runtime::try_default() {
-                    Some(reader) => {
-                        let reader = Arc::new(reader);
-                        *guard = Some(Arc::clone(&reader));
-                        reader
-                    }
-                    None => {
-                        return crate::sentence_boundary::heuristic_sentence_end_offsets(
-                            text, false,
-                        );
-                    }
-                }
-            }
-        };
-        reader.sentence_end_offsets(text)
+        match self.vibrato_reader() {
+            Some(reader) => reader.sentence_end_offsets(text),
+            None => crate::sentence_boundary::heuristic_sentence_end_offsets(text, false),
+        }
+    }
+
+    fn caption_soft_break_offsets(&self, text: &str) -> Vec<usize> {
+        match self.vibrato_reader() {
+            Some(reader) => reader.soft_break_offsets(text),
+            None => crate::sentence_boundary::heuristic_soft_break_offsets(text),
+        }
+    }
+
+    fn vibrato_reader(&self) -> Option<Arc<crate::vibrato_runtime::VibratoReader>> {
+        let mut guard = self.vibrato.lock().ok()?;
+        if let Some(ref reader) = *guard {
+            return Some(Arc::clone(reader));
+        }
+        let reader = crate::vibrato_runtime::try_default().map(Arc::new)?;
+        *guard = Some(Arc::clone(&reader));
+        Some(reader)
     }
 
     /// Load the selected AzooKey dictionary before the microphone starts.
@@ -652,6 +651,8 @@ impl Pipeline {
         }
         let mut ready = source_ready_caption(config, normalized, started_at, utterance_id);
         ready.sentence_end_offsets = self.caption_sentence_end_offsets(&ready.source_text);
+        ready.soft_break_offsets = self.caption_soft_break_offsets(&ready.source_text);
+        ready.soft_break_offsets = self.caption_soft_break_offsets(&ready.source_text);
         // Always emit the normalized source, even when it happens to match the
         // raw ASR string, so first-caption timing is tied to normalization.
         on_caption(&ready);
@@ -864,6 +865,7 @@ impl Pipeline {
             Some(reading),
         );
         ready.sentence_end_offsets = self.caption_sentence_end_offsets(&ready.source_text);
+        ready.soft_break_offsets = self.caption_soft_break_offsets(&ready.source_text);
         ready.is_final = output.is_final;
         on_caption(&ready);
         Ok(Some(ready))
@@ -1337,6 +1339,8 @@ pub fn source_ready_caption_with_input(
     let source_text = source_text.trim().to_string();
     let sentence_end_offsets =
         crate::sentence_boundary::heuristic_sentence_end_offsets(&source_text, false);
+    let soft_break_offsets =
+        crate::sentence_boundary::heuristic_soft_break_offsets(&source_text);
     CaptionPayload {
         id,
         // Normalizers should already return a trimmed result, but remote Zenz
@@ -1356,6 +1360,7 @@ pub fn source_ready_caption_with_input(
         is_final: false,
         confidence: None,
         sentence_end_offsets,
+        soft_break_offsets,
     }
 }
 
@@ -2140,6 +2145,7 @@ mod tests {
             is_final: true,
             confidence: None,
             sentence_end_offsets: Vec::new(),
+            soft_break_offsets: Vec::new(),
         };
         let value = serde_json::to_value(&payload).expect("serialize");
         assert_eq!(value["sourceText"], "源");
