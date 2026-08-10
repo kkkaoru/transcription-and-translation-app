@@ -403,6 +403,8 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     ("はれです", "晴れです"),
     ("はれます", "晴れます"),
     ("いち、に、さん", "1、2、3"),
+    // Phrase-neutral official system dictionary + ConversionOptions::default().
+    ("はしのはじからものがおちてます", "橋の端から物が落ちてます"),
 ];
 
 #[test]
@@ -433,6 +435,30 @@ fn exact_conversions_hold() {
         EXACT_CONVERSIONS.len(),
         mismatches.join("\n  "),
     );
+}
+
+#[test]
+fn official_dictionary_default_conversion_is_phrase_neutral_for_hashi_no_haji() {
+    let root = crate::dictionary::test_system_dictionary_path();
+    // Official system dictionary only: no user/phrase or learning-memory rows.
+    let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(root),
+        user: None,
+        memory: None,
+    })
+    .expect("official AzooKey dictionary should load");
+
+    let actual = convert_with_dictionary(
+        "はしのはじからものがおちてます",
+        &dictionary,
+        ConversionOptions::default(),
+    )
+    .into_iter()
+    .next()
+    .map(|candidate| candidate.text)
+    .unwrap_or_default();
+
+    assert_eq!(actual, "橋の端から物が落ちてます");
 }
 
 #[test]

@@ -77,6 +77,22 @@ describe("portable official AzooKey dictionary", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   }, 20_000);
 
+  it("regresses the established はし lattice on the Worker portable WASM default path", async () => {
+    const module = new WebAssembly.Module(wasmBytes);
+    const fetcher = vi.fn(
+      async () =>
+        new Response(responseBody(dictionaryGzip), {
+          status: 200,
+          headers: { "content-length": String(dictionaryGzip.byteLength) },
+        }),
+    );
+    const convert = createWasmConverter(module, "/azookey/system.azkdict.gz", fetcher);
+    await convert.warmup?.();
+    await expect(convert("はしのはじからものがおちてます")).resolves.toBe(
+      "橋の端から物が落ちてます",
+    );
+  }, 20_000);
+
   it("retries failed loads and rejects invalid or oversized dictionary responses", async () => {
     const module = new WebAssembly.Module(wasmBytes);
     const retryFetcher = vi

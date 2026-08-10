@@ -51,10 +51,17 @@ const CONTEXTUAL_ENTRY_BONUS: f32 = 4.5;
 /// of its dictionary prefixes (`は` + `のみたい` → `飲みたい` rather than
 /// `のみ`/`の味` + `たい`/`体`). Soft penalty keeps the prefix in n-best.
 const PARTICLE_FOLLOWING_SHORTER_PREFIX_PENALTY: f32 = -2.5;
+/// CID rows encode an in-sentence morphological transition. At the start of a
+/// particle-linked content phrase, discount that transition so it cannot
+/// overwhelm the lexical evidence for a short, otherwise ambiguous head word.
+const INITIAL_PARTICLE_PHRASE_CONNECTION_DISCOUNT: f32 = 0.43;
 /// Minimum reading length of a lexical word that may suppress its own short
 /// Kanji prefixes (`き`/`機` under `きかく`/`規格`). One-kana and two-kana
 /// pieces otherwise invent non-dictionary compounds such as `機各` / `券小`.
 const MIN_SHADOWING_LEXICAL_CHARS: usize = 3;
+/// Two-mora converted rows may trigger prefix pruning so a one-mora Kanji
+/// homophone (`は`/`端`) cannot hide under a complete two-mora word (`はじ`/`端`).
+const MIN_SHADOWING_TRIGGER_CHARS: usize = 2;
 /// When a longer reading exists at the same start, keep at most this many
 /// one-kana Kanji rows. Standalone one-kana inputs (`き` → `木`) skip the cap
 /// so connection costs can still pick the natural orthography.
@@ -329,15 +336,17 @@ pub fn convert_with_dictionary(
         if current.is_empty() {
             continue;
         }
+        let max_dictionary_word_chars =
+            bounded_dictionary_word_chars(options.max_dictionary_word_chars);
         let entries = prune_short_kanji_prefix_entries(
+            dictionary,
+            &chars,
+            start,
             dictionary
-                .entries_starting_at(
-                    &chars,
-                    start,
-                    bounded_dictionary_word_chars(options.max_dictionary_word_chars),
-                )
+                .entries_starting_at(&chars, start, max_dictionary_word_chars)
                 .unwrap_or_default(),
             chars.len() - start,
+            max_dictionary_word_chars,
         );
         let numeric_prefix = numeric_prefix_context(&chars, start, &entries);
         for state in current {
@@ -631,21 +640,6 @@ pub fn convert_with_dictionary(
                         continue;
                     }
                 }
-                // After a particle, a following one-kana particle is often the
-                // first mora of a verb (`はのみたい` → `は` + `飲みたい`), not a
-                // genitive chain (`は` + `の` + `味体`). Suppress the short
-                // particle edge when a longer converted lexical word starts
-                // here. Compound sequences such as `での`/`への` remain when no
-                // longer content word covers the same start.
-                if is_short_particle_lattice_entry(entry)
-                    && state
-                        .last
-                        .as_ref()
-                        .is_some_and(|former| is_particle_reading(&former.reading))
-                    && entries.iter().any(is_longer_lexical_content_entry)
-                {
-                    continue;
-                }
                 // Numeric dictionary rows such as `ついたち -> 1日` are
                 // intentional kana-to-digit spellings. Reject Latin
                 // transliterations (`des`, `Sun`, `アップroad`) while keeping
@@ -708,8 +702,19 @@ pub fn convert_with_dictionary(
                 {
                     continue;
                 }
-                let (connection, clause_mid, clause_has_word, meaning_delta) =
+                let (mut connection, clause_mid, clause_has_word, meaning_delta) =
                     transition_score(dictionary, &state, entry, options.preceding);
+                if discounts_initial_particle_phrase_connection(
+                    dictionary,
+                    &state,
+                    entry,
+                    &chars,
+                    end,
+                    options.preceding,
+                    max_dictionary_word_chars,
+                ) {
+                    connection *= INITIAL_PARTICLE_PHRASE_CONNECTION_DISCOUNT;
+                }
                 let surface = dictionary_surface_for_source(entry, &source_chars[start..end]);
                 push_state(
                     &mut states[end],
@@ -1127,6 +1132,10 @@ fn is_particle_reading(reading: &str) -> bool {
     )
 }
 
+fn is_grammatical_particle_entry(entry: &DictionaryEntry) -> bool {
+    entry.surface == entry.reading && is_particle_reading(&entry.reading)
+}
+
 /// True when the lattice path has a converted content word immediately before
 /// `start` (pure-hiragana ASR loanwords such as `すーぷ` → `スープ`).
 ///
@@ -1160,10 +1169,6 @@ fn preceding_converted_content_word(
         .surface
         .chars()
         .any(|character| is_kanji(character) || is_katakana(&character) || character == 'ー')
-}
-
-fn is_short_particle_lattice_entry(entry: &DictionaryEntry) -> bool {
-    is_particle_reading(&entry.reading) && entry.reading.chars().count() == 1
 }
 
 /// True when `entry` is a multi-kana converted content word.
@@ -1827,8 +1832,12 @@ fn one_kana_suffix_shadowed_by_longer_entry(
 /// mid-clause `き` (500+ surfaces) cannot explode captions such as
 /// `あしたのてんきははれ`.
 fn prune_short_kanji_prefix_entries(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
     mut entries: Vec<DictionaryEntry>,
     remaining_chars: usize,
+    max_dictionary_word_chars: usize,
 ) -> Vec<DictionaryEntry> {
     if entries.is_empty() {
         return entries;
@@ -1837,7 +1846,35 @@ fn prune_short_kanji_prefix_entries(
     if has_shadowing_lexical {
         let snapshot = entries.clone();
         entries.retain(|entry| {
-            !short_kanji_prefix_shadowed_by_longer_entry(entry, &snapshot, remaining_chars)
+            !short_kanji_prefix_shadowed_by_longer_entry(
+                dictionary,
+                chars,
+                start,
+                entry,
+                &snapshot,
+                remaining_chars,
+                max_dictionary_word_chars,
+            )
+        });
+        entries.retain(|entry| {
+            !longer_lexical_row_eats_into_following_particle(
+                dictionary,
+                chars,
+                start,
+                entry,
+                &snapshot,
+                max_dictionary_word_chars,
+            )
+        });
+        entries.retain(|entry| {
+            !longer_lexical_row_glues_leading_particle_to_one_mora(
+                dictionary,
+                chars,
+                start,
+                entry,
+                &snapshot,
+                max_dictionary_word_chars,
+            )
         });
     }
     cap_one_kana_kanji_entries_when_longer_readings_exist(&mut entries);
@@ -1846,7 +1883,7 @@ fn prune_short_kanji_prefix_entries(
 
 fn is_shadowing_lexical_entry(entry: &DictionaryEntry) -> bool {
     let len = entry.reading.chars().count();
-    len >= MIN_SHADOWING_LEXICAL_CHARS
+    len >= MIN_SHADOWING_TRIGGER_CHARS
         && entry.surface != entry.reading
         && contains_kanji(&entry.surface)
         && !is_particle_reading(&entry.reading)
@@ -1871,15 +1908,19 @@ fn has_exact_punctuation_dictionary_entry(
 }
 
 fn short_kanji_prefix_shadowed_by_longer_entry(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
     entry: &DictionaryEntry,
     entries: &[DictionaryEntry],
     remaining_chars: usize,
+    max_dictionary_word_chars: usize,
 ) -> bool {
     let len = entry.reading.chars().count();
     if len == 0 || len > 2 {
         return false;
     }
-    if is_particle_reading(&entry.reading) {
+    if is_grammatical_particle_entry(entry) {
         return false;
     }
     // Suppress both Kanji fragments (`機`) and short kana identities (`き`)
@@ -1889,13 +1930,21 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
     if !short_piece {
         return false;
     }
+    let particle_continuations = particle_continuations_starting_at(
+        dictionary,
+        chars,
+        start + len,
+        max_dictionary_word_chars,
+    );
+    let min_other_len =
+        if len == 1 { MIN_SHADOWING_TRIGGER_CHARS } else { MIN_SHADOWING_LEXICAL_CHARS };
     entries.iter().any(|other| {
         let other_len = other.reading.chars().count();
         // A longer row that leaves a single dangling mora (`晴れ間` + `す`
         // under `はれます`) should not hide the shorter complete word
         // (`晴れ` + `ます`).
         let leftover = remaining_chars.saturating_sub(other_len);
-        other_len >= MIN_SHADOWING_LEXICAL_CHARS
+        other_len >= min_other_len
             && other_len > len
             && other_len <= remaining_chars
             && leftover != 1
@@ -1903,6 +1952,223 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
             && other.surface != other.reading
             && contains_kanji(&other.surface)
             && !is_particle_reading(&other.reading)
+            && !longer_reading_crosses_a_particle_boundary(
+                &other.reading.chars().skip(len).collect::<String>(),
+                &particle_continuations,
+            )
+    })
+}
+
+/// Keep a short prefix when a longer lexical row crosses a function-word edge.
+///
+/// Prefix pruning is useful for preventing invented compounds, but a longer
+/// row can also glue a real particle onto a shorter word (`はし` + `の`
+/// versus `橋野`, or `はじ` + `から` versus `弾か`). Compare the extra mora
+/// of that longer reading against dictionary particles that start at the
+/// short prefix's end:
+///
+/// - leftover equals the particle (`はしの` / `の`) → keep the short word
+/// - leftover is a strict prefix of the particle (`はじか` / `から`) → keep
+/// - particle is a strict prefix of leftover (`きのう` / `の`) → still prune
+fn discounts_initial_particle_phrase_connection(
+    dictionary: &AzooKeyDictionary,
+    state: &PathState,
+    entry: &DictionaryEntry,
+    chars: &[char],
+    end: usize,
+    preceding: Option<PrecedingContext>,
+    max_dictionary_word_chars: usize,
+) -> bool {
+    if state.last.is_some()
+        || preceding.is_some()
+        || entry.reading.chars().count() > 2
+        || entry.surface == entry.reading
+        || !contains_kanji(&entry.surface)
+        || is_particle_reading(&entry.reading)
+    {
+        return false;
+    }
+    particle_continuations_starting_at(dictionary, chars, end, max_dictionary_word_chars)
+        .iter()
+        .any(|particle| {
+            let after_particle = end + particle.chars().count();
+            following_particle_phrase_is_content(
+                dictionary,
+                chars.get(after_particle..).unwrap_or_default(),
+                max_dictionary_word_chars,
+            )
+        })
+}
+
+fn following_particle_phrase_is_content(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    max_dictionary_word_chars: usize,
+) -> bool {
+    dictionary
+        .entries_starting_at(chars, 0, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .iter()
+        .any(|candidate| {
+            candidate.reading.chars().count() >= MIN_LEXICAL_ENTRY_CHARS
+                && contains_kanji(&candidate.surface)
+                && !is_particle_reading(&candidate.reading)
+        })
+}
+
+fn particle_continuations_starting_at(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    max_dictionary_word_chars: usize,
+) -> Vec<String> {
+    if start >= chars.len() {
+        return Vec::new();
+    }
+    dictionary
+        .entries_starting_at(chars, start, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|continuation| {
+            let continuation_len = continuation.reading.chars().count();
+            if continuation_len > 0
+                && start + continuation_len <= chars.len()
+                && is_particle_reading(&continuation.reading)
+            {
+                Some(continuation.reading)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn longer_reading_crosses_a_particle_boundary(
+    reading_leftover: &str,
+    particles: &[String],
+) -> bool {
+    !reading_leftover.is_empty()
+        && particles
+            .iter()
+            .any(|particle| reading_leftover == particle || particle.starts_with(reading_leftover))
+}
+
+fn longer_reading_eats_into_particle(reading_leftover: &str, particles: &[String]) -> bool {
+    !reading_leftover.is_empty()
+        && particles
+            .iter()
+            .any(|particle| reading_leftover != particle && particle.starts_with(reading_leftover))
+}
+
+fn longer_reading_glues_one_mora_kanji_to_particle(
+    short_len: usize,
+    short_is_kanji: bool,
+    reading_leftover: &str,
+    particles: &[String],
+    surface: &str,
+) -> bool {
+    short_len == 1
+        && short_is_kanji
+        && !reading_leftover.is_empty()
+        && particles
+            .iter()
+            .any(|particle| reading_leftover == particle && surface.ends_with(particle))
+}
+
+/// Drop a longer converted row whose extra mora is only part of the following
+/// particle (`はじか` under `はじから`), or that glues a one-mora Kanji onto
+/// that particle (`じから` / `時から`). A complete short+particle compound
+/// such as `はしの` / `橋野` is left for Viterbi to score.
+fn longer_lexical_row_eats_into_following_particle(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    entry: &DictionaryEntry,
+    snapshot: &[DictionaryEntry],
+    max_dictionary_word_chars: usize,
+) -> bool {
+    if !is_shadowing_lexical_entry(entry) {
+        return false;
+    }
+    snapshot.iter().any(|short| {
+        let short_len = short.reading.chars().count();
+        if short_len == 0 || short_len > 2 || short_len >= entry.reading.chars().count() {
+            return false;
+        }
+        if is_grammatical_particle_entry(short) {
+            return false;
+        }
+        let short_is_kanji = contains_kanji(&short.surface);
+        let short_piece = short_is_kanji || short.surface == short.reading;
+        if !short_piece || !entry.reading.starts_with(&short.reading) {
+            return false;
+        }
+        let leftover = entry.reading.chars().skip(short_len).collect::<String>();
+        let particles = particle_continuations_starting_at(
+            dictionary,
+            chars,
+            start + short_len,
+            max_dictionary_word_chars,
+        );
+        longer_reading_eats_into_particle(&leftover, &particles)
+            || longer_reading_glues_one_mora_kanji_to_particle(
+                short_len,
+                short_is_kanji,
+                &leftover,
+                &particles,
+                &entry.surface,
+            )
+    })
+}
+
+/// Drop a converted row that starts with a real particle and then glues a
+/// single Kanji mora (`のは` / `の端`). Two-mora leftovers such as `のはら`
+/// / `野原` stay in the lattice.
+fn longer_lexical_row_glues_leading_particle_to_one_mora(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    entry: &DictionaryEntry,
+    snapshot: &[DictionaryEntry],
+    max_dictionary_word_chars: usize,
+) -> bool {
+    if entry.surface == entry.reading || !contains_kanji(&entry.surface) {
+        return false;
+    }
+    let reading_len = entry.reading.chars().count();
+    if reading_len < 2 {
+        return false;
+    }
+    snapshot.iter().any(|particle| {
+        if !is_grammatical_particle_entry(particle) {
+            return false;
+        }
+        let particle_len = particle.reading.chars().count();
+        if particle_len == 0 || particle_len >= reading_len {
+            return false;
+        }
+        if !entry.reading.starts_with(&particle.reading) {
+            return false;
+        }
+        let leftover: String = entry.reading.chars().skip(particle_len).collect();
+        if leftover.chars().count() != 1 || !entry.surface.starts_with(&particle.reading) {
+            return false;
+        }
+        let after_particle = start + particle_len;
+        let has_one_mora_kanji = dictionary
+            .entries_starting_at(chars, after_particle, max_dictionary_word_chars)
+            .unwrap_or_default()
+            .iter()
+            .any(|content| content.reading == leftover && contains_kanji(&content.surface));
+        has_one_mora_kanji
+            && particle_continuations_starting_at(
+                dictionary,
+                chars,
+                start,
+                max_dictionary_word_chars,
+            )
+            .iter()
+            .any(|continuation| continuation == &particle.reading)
     })
 }
 
@@ -2181,6 +2447,355 @@ mod tests {
                 candidate.text
             );
         }
+    }
+
+    #[test]
+    fn prefix_shadowing_keeps_a_short_row_only_when_a_particle_follows() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-prefix-shadow-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &root,
+            "はし\t橋\t-10\nはしの\t橋野\t-8\nの\tの\t-2\nのは\tの端\t-8\nは\tは\t-1\nは\t端\t-9\nはじ\t端\t-10\nはじか\t弾か\t-8\nから\tから\t-2\nじ\t時\t-9\nじから\t時から\t-8\nき\t機\t-9\nきかく\t規格\t-5\nきのう\t昨日\t-6\nはれ\t晴れ\t-8\nはれま\t晴れ間\t-6\nも\t藻\t-9\nもの\t物\t-5\n",
+        )
+        .expect("prefix-shadow fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("prefix-shadow fixture should load")
+        .without_builtin_entries_for_test();
+
+        let hashi = "はしの".chars().collect::<Vec<_>>();
+        let hashi_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &hashi,
+            0,
+            dictionary.entries_starting_at(&hashi, 0, 24).expect("はしの lookup"),
+            hashi.len(),
+            24,
+        );
+        assert!(
+            hashi_pruned.iter().any(|entry| entry.reading == "はし" && entry.surface == "橋"),
+            "はし+の must keep 橋 against 橋野: {:?}",
+            hashi_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+        assert!(
+            hashi_pruned.iter().any(|entry| entry.reading == "はしの" && entry.surface == "橋野"),
+            "longer name row stays available in the lattice"
+        );
+
+        let haji = "はじから".chars().collect::<Vec<_>>();
+        let haji_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &haji,
+            0,
+            dictionary.entries_starting_at(&haji, 0, 24).expect("はじから lookup"),
+            haji.len(),
+            24,
+        );
+        assert!(
+            haji_pruned.iter().any(|entry| entry.reading == "はじ" && entry.surface == "端"),
+            "はじ+から must keep 端 against 弾か: {:?}",
+            haji_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+        assert!(
+            !haji_pruned.iter().any(|entry| entry.reading == "はじか"),
+            "はじか must be dropped when it eats into から: {:?}",
+            haji_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+
+        let kikaku = "きかく".chars().collect::<Vec<_>>();
+        let kikaku_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &kikaku,
+            0,
+            dictionary.entries_starting_at(&kikaku, 0, 24).expect("きかく lookup"),
+            kikaku.len(),
+            24,
+        );
+        assert!(
+            !kikaku_pruned.iter().any(|entry| entry.reading == "き"),
+            "きかく must still prune short き/機 prefixes: {:?}",
+            kikaku_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+        assert!(kikaku_pruned
+            .iter()
+            .any(|entry| entry.reading == "きかく" && entry.surface == "規格"));
+
+        let kinou = "きのう".chars().collect::<Vec<_>>();
+        let kinou_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &kinou,
+            0,
+            dictionary.entries_starting_at(&kinou, 0, 24).expect("きのう lookup"),
+            kinou.len(),
+            24,
+        );
+        assert!(
+            !kinou_pruned.iter().any(|entry| entry.reading == "き"),
+            "きのう must still prune short き/機 prefixes: {:?}",
+            kinou_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+        assert!(kinou_pruned
+            .iter()
+            .any(|entry| entry.reading == "きのう" && entry.surface == "昨日"));
+
+        let haji_only = "はじ".chars().collect::<Vec<_>>();
+        let haji_only_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &haji_only,
+            0,
+            dictionary.entries_starting_at(&haji_only, 0, 24).expect("はじ lookup"),
+            haji_only.len(),
+            24,
+        );
+        assert!(
+            !haji_only_pruned.iter().any(|entry| entry.reading == "は" && entry.surface == "端"),
+            "kanji は/端 must be shadowed by はじ/端: {:?}",
+            haji_only_pruned
+                .iter()
+                .map(|entry| (&entry.reading, &entry.surface))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            haji_only_pruned.iter().any(|entry| entry.reading == "は" && entry.surface == "は"),
+            "identity は must remain available as a particle"
+        );
+        assert!(haji_only_pruned
+            .iter()
+            .any(|entry| entry.reading == "はじ" && entry.surface == "端"));
+
+        let jikara = "じから".chars().collect::<Vec<_>>();
+        let jikara_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &jikara,
+            0,
+            dictionary.entries_starting_at(&jikara, 0, 24).expect("じから lookup"),
+            jikara.len(),
+            24,
+        );
+        assert!(
+            jikara_pruned.iter().any(|entry| entry.reading == "じ" && entry.surface == "時"),
+            "じ/時 must survive so 時+から can be scored separately"
+        );
+        assert!(
+            !jikara_pruned.iter().any(|entry| entry.reading == "じから"),
+            "じから/時から must drop when leftover is exactly から: {:?}",
+            jikara_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+
+        let noha = "のはじ".chars().collect::<Vec<_>>();
+        let noha_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &noha,
+            0,
+            dictionary.entries_starting_at(&noha, 0, 24).expect("のは lookup"),
+            noha.len(),
+            24,
+        );
+        assert!(
+            noha_pruned.iter().any(|entry| entry.reading == "の" && entry.surface == "の"),
+            "grammatical の must remain"
+        );
+        assert!(
+            !noha_pruned.iter().any(|entry| entry.reading == "のは"),
+            "のは/の端 must drop as leading-particle + one-mora Kanji glue: {:?}",
+            noha_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+
+        let haremasu = "はれます".chars().collect::<Vec<_>>();
+        let hare_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &haremasu,
+            0,
+            dictionary.entries_starting_at(&haremasu, 0, 24).expect("はれます lookup"),
+            haremasu.len(),
+            24,
+        );
+        assert!(
+            hare_pruned.iter().any(|entry| entry.reading == "はれ" && entry.surface == "晴れ"),
+            "はれ/晴れ must survive when 晴れ間 would leave one dangling mora: {:?}",
+            hare_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+
+        let mono = "もの".chars().collect::<Vec<_>>();
+        let mono_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &mono,
+            0,
+            dictionary.entries_starting_at(&mono, 0, 24).expect("もの lookup"),
+            mono.len(),
+            24,
+        );
+        assert!(
+            mono_pruned.iter().any(|entry| entry.reading == "もの" && entry.surface == "物"),
+            "もの/物 must not drop just because leftover reading の is a particle: {:?}",
+            mono_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn keeps_particle_chain_when_unrelated_longer_word_shadows_short_particle() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-particle-chain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(&root, "で\tで\t-1\nの\tの\t-0.1\nこと\t事\t-0.1\nのこと\t野事\t-5\n")
+            .expect("particle-chain fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("particle-chain fixture should load")
+        .without_builtin_entries_for_test();
+
+        let candidates = convert_with_dictionary(
+            "でのこと",
+            &dictionary,
+            ConversionOptions { n_best: 16, ..ConversionOptions::default() },
+        );
+        let top = candidates.first().expect("particle-chain conversion should produce a candidate");
+        assert_eq!(
+            top.text,
+            "での事",
+            "an unrelated のこと lexical row must not erase the valid で+の+事 chain: {:?}",
+            candidates.iter().map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn public_dictionary_restores_hashi_particle_segmentation() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        let candidates = convert_with_dictionary(
+            "はしのはじからものがおちてます",
+            &dictionary,
+            ConversionOptions { n_best: 16, ..ConversionOptions::default() },
+        );
+        let top = candidates.first().expect("public conversion should produce a candidate");
+        assert!(
+            !top.text.starts_with("橋野"),
+            "prefix pruning must not let 橋野 erase はし+の: {}",
+            top.text
+        );
+        assert!(
+            candidates.iter().any(|candidate| candidate.text == "橋の端から物が落ちてます"
+                || candidate.text == "箸の端から物が落ちてます"),
+            "requested particle segmentation must remain available once short prefixes survive: {:?}",
+            candidates.iter().map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn keeps_short_prefixes_with_a_distinct_particle_segmentation() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("public conversion dictionary should load");
+        let input = "はしのはじからものがおちてます";
+        let chars = super::to_hiragana(input).chars().collect::<Vec<_>>();
+        let max_dictionary_word_chars = super::bounded_dictionary_word_chars(
+            ConversionOptions::default().max_dictionary_word_chars,
+        );
+
+        let first_entries = dictionary
+            .entries_starting_at(&chars, 0, max_dictionary_word_chars)
+            .expect("first lattice position should load");
+        let first_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &chars,
+            0,
+            first_entries,
+            chars.len(),
+            max_dictionary_word_chars,
+        );
+        assert!(
+            first_pruned.iter().any(|entry| entry.reading == "はし" && entry.surface == "橋"),
+            "the short 橋 candidate must survive before the following particle の"
+        );
+
+        let haji_start = "はしの".chars().count();
+        let haji_entries = dictionary
+            .entries_starting_at(&chars, haji_start, max_dictionary_word_chars)
+            .expect("second lattice position should load");
+        let haji_pruned = super::prune_short_kanji_prefix_entries(
+            &dictionary,
+            &chars,
+            haji_start,
+            haji_entries,
+            chars.len() - haji_start,
+            max_dictionary_word_chars,
+        );
+        assert!(
+            haji_pruned.iter().any(|entry| entry.reading == "はじ" && entry.surface == "端"),
+            "the short 端 candidate must survive before the following particle から"
+        );
+        assert!(
+            !haji_pruned.iter().any(|entry| entry.reading.starts_with("はじ")
+                && entry.reading.chars().count() > 2),
+            "longer はじ… rows that eat into から must leave the lattice: {:?}",
+            haji_pruned.iter().map(|entry| (&entry.reading, &entry.surface)).collect::<Vec<_>>()
+        );
+
+        let candidates = convert_with_dictionary(
+            input,
+            &dictionary,
+            ConversionOptions { n_best: 16, ..ConversionOptions::default() },
+        );
+        let texts = candidates.iter().map(|candidate| candidate.text.as_str()).collect::<Vec<_>>();
+        assert!(
+            !texts.iter().any(|text| text.contains("端時")),
+            "particle-cutting はじか rows must not remain in n-best: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|text| *text == "橋の端から物が落ちてます"
+                    || *text == "箸の端から物が落ちてます"),
+            "particle segmentation must remain available: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn public_dictionary_default_beam_restores_hashi_no_haji_kara() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        let candidates = convert_with_dictionary(
+            "はしのはじからものがおちてます",
+            &dictionary,
+            ConversionOptions::default(),
+        );
+        let top = candidates.first().expect("public conversion should produce a candidate");
+        assert_eq!(top.text, "橋の端から物が落ちてます");
+        assert!(
+            candidates.iter().all(|candidate| {
+                !candidate.text.contains("端時") && !candidate.text.contains("橋野は時")
+            }),
+            "agglutinated particle rows must not remain in default n-best: {:?}",
+            candidates.iter().map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
     }
 
     #[test]

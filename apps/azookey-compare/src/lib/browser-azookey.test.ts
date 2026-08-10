@@ -44,6 +44,15 @@ describe("browser AzooKey WASM loader", () => {
     expect(fixture.text).toBe("明日の天気は晴れ");
   }, 20_000);
 
+  it("regresses the established はし lattice on the browser portable default path", async () => {
+    const module = await WebAssembly.compile(wasmBytes);
+    const result = await runBrowserAzookey("はしのはじからものがおちてます", {
+      wasmModule: module,
+      dictionaryBytes,
+    });
+    expect(result.text).toBe("橋の端から物が落ちてます");
+  }, 20_000);
+
   it("reuses one loaded converter for warmup and convert", async () => {
     const module = await WebAssembly.compile(wasmBytes);
     const fetcher = vi.fn();

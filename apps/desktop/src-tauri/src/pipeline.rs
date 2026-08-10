@@ -1598,6 +1598,27 @@ mod tests {
         ))
     }
 
+    fn official_system_dictionary_path() -> PathBuf {
+        if let Ok(raw) = std::env::var("AZOOKEY_DICTIONARY_ROOT") {
+            let candidate = PathBuf::from(raw.trim());
+            if crate::azookey_runtime::has_system_dictionary(&candidate) {
+                return if candidate.join("mm.binary").is_file() {
+                    candidate
+                } else {
+                    candidate.join("Dictionary")
+                };
+            }
+        }
+        let checked_in = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../submodules/azooKey_dictionary_storage/Dictionary");
+        assert!(
+            crate::azookey_runtime::has_system_dictionary(&checked_in),
+            "official AzooKey dictionary is unavailable for pipeline regression; initialize {} or set AZOOKEY_DICTIONARY_ROOT",
+            checked_in.display()
+        );
+        checked_in
+    }
+
     #[test]
     fn detects_parapper_no_speech_payloads() {
         // Exact user toast payload body from live capture:
@@ -1837,6 +1858,22 @@ mod tests {
         let config = AppConfig::default();
         let outcome = normalize_azookey(&config, "きょうははいしんです").expect("normalize");
         assert_eq!(outcome, NormalizeOutcome::Success("今日は配信です".to_string()));
+    }
+
+    #[test]
+    fn azookey_official_dictionary_default_conversion_is_phrase_neutral_for_hashi_no_haji() {
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
+        // Official system dictionary only: no user/phrase or learning-memory rows.
+        // ConversionOptions::default() is the live normalize_azookey path.
+        let mut config = AppConfig::default();
+        config.models.paths.insert(
+            "azookey-rust".to_string(),
+            official_system_dictionary_path().to_string_lossy().into_owned(),
+        );
+
+        let outcome =
+            normalize_azookey(&config, "はしのはじからものがおちてます").expect("normalize");
+        assert_eq!(outcome, NormalizeOutcome::Success("橋の端から物が落ちてます".to_string()));
     }
 
     #[test]
