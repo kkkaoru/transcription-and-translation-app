@@ -83,6 +83,7 @@ import type { MessageKey } from "../i18n/messages";
 import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
 import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
 import { CaptionStyleView } from "../settings/CaptionStyleView";
+import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
 
@@ -411,6 +412,8 @@ export const MainApp = () => {
   /** Mutable caption cursor keeps merge side effects outside React state updaters. */
   const captionRef = useRef<CaptionPayload>(createPreviewCaption());
   const [caption, setCaption] = useState<CaptionPayload>(() => captionRef.current);
+  // Grow newly recognized graphemes onto Live/Syphon one-by-one (こ→こんにちは).
+  const progressiveCaption = useProgressiveCaptionReveal(caption);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);
@@ -2161,7 +2164,7 @@ export const MainApp = () => {
             <LiveView
               config={config}
               status={status}
-              caption={caption}
+              caption={progressiveCaption}
               devices={devices}
               message={noticeText}
               transparentCaptureOpen={transparentCaptureOpen}
@@ -2204,7 +2207,7 @@ export const MainApp = () => {
         </main>
       </div>
       {status.nativeOutput === "syphon" || status.nativeOutput === "spout2" ? (
-        <NativeFramePublisher config={config} caption={caption} />
+        <NativeFramePublisher config={config} caption={progressiveCaption} />
       ) : null}
     </div>
   );
