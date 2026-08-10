@@ -3813,6 +3813,97 @@ mod tests {
     }
 
     #[test]
+    fn thickness_context_bonus_adds_slice_delta_over_thinness_only() {
+        // Pin the thinness-gated prior and the optional slice add-on separately
+        // from the combined daikon golden: thinness alone yields
+        // THICKNESS_CONTEXT_BONUS; co-occurring 切/刻/削 adds
+        // THICKNESS_SLICE_CONTEXT_BONUS without requiring a slicing-only path.
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            user: None,
+            memory: None,
+        })
+        .expect("official AzooKey dictionary should load")
+        .without_builtin_entries_for_test();
+        let thick = DictionaryEntry::plain("あつい", "厚い", -5.0);
+        let end = "あつい".chars().count();
+        let max_dictionary_word_chars = super::DEFAULT_MAX_DICTIONARY_WORD_CHARS;
+        let thinness_only: Vec<char> = "あついのでうすくする".chars().collect();
+        let thinness_and_slice: Vec<char> = "あついのでうすくきる".chars().collect();
+        let thinness_bonus = super::thickness_context_bonus(
+            &dictionary,
+            &thinness_only,
+            end,
+            &thick,
+            max_dictionary_word_chars,
+        );
+        let combined_bonus = super::thickness_context_bonus(
+            &dictionary,
+            &thinness_and_slice,
+            end,
+            &thick,
+            max_dictionary_word_chars,
+        );
+        assert_eq!(thinness_bonus, super::THICKNESS_CONTEXT_BONUS);
+        assert_eq!(
+            combined_bonus,
+            super::THICKNESS_CONTEXT_BONUS + super::THICKNESS_SLICE_CONTEXT_BONUS
+        );
+        assert_eq!(
+            combined_bonus - thinness_bonus,
+            super::THICKNESS_SLICE_CONTEXT_BONUS
+        );
+    }
+
+    #[test]
+    fn prefers_thickness_with_thinness_alone_without_slice_cue() {
+        // Thinness cues alone must still prefer 厚い where intended; the slice
+        // add-on is optional and must not be required for the base prior.
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            user: None,
+            memory: None,
+        })
+        .expect("official AzooKey dictionary should load")
+        .without_builtin_entries_for_test();
+        let top = convert_with_dictionary(
+            "だいこんがあついのでうすくする",
+            &dictionary,
+            ConversionOptions::default(),
+        )
+        .into_iter()
+        .next()
+        .expect("public conversion should produce a candidate");
+        assert_eq!(top.text, "大根が厚いので薄くする");
+    }
+
+    #[test]
+    fn weather_thinness_with_slice_does_not_flip_to_thickness() {
+        // Downstream thinness/slice cues must not override weather/food 暑い
+        // when there is no thickness subject frame.
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            user: None,
+            memory: None,
+        })
+        .expect("official AzooKey dictionary should load")
+        .without_builtin_entries_for_test();
+        for (input, expected) in [
+            ("あついのでうすくきる", "暑いので薄く切る"),
+            ("あついひなのでうすくきる", "暑い日なので薄く切る"),
+        ] {
+            let top = convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("public conversion should produce a candidate");
+            assert_eq!(top.text, expected, "input: {input}");
+        }
+    }
+
+    #[test]
     fn converts_requested_weather_and_soup_sentences_with_public_dictionary() {
         let root = crate::dictionary::test_system_dictionary_path();
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
@@ -4183,43 +4274,5 @@ mod tests {
             .next()
             .expect("public conversion should produce a candidate");
         assert_eq!(top.text, "雛");
-    }
-
-    #[test]
-    fn debug_daikon_context() {
-        let root = crate::dictionary::test_system_dictionary_path();
-        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
-            system: Some(root),
-            user: None,
-            memory: None,
-        })
-        .expect("official AzooKey dictionary should load");
-        for reading in ["あつい", "だいこん", "ので", "うすく", "きる"] {
-            println!("READING {reading}:");
-            for entry in dictionary.lookup_exact(reading).unwrap_or_default() {
-                println!("  {:?}", entry);
-            }
-        }
-        let chars = super::to_hiragana("だいこんがあついのでうすくきる").chars().collect::<Vec<_>>();
-        let start = "だいこんが".chars().count();
-        let end = start + "あつい".chars().count();
-        let after = &chars[end..];
-        println!(
-            "CONTEXT following={} preceding={} after={:?}",
-            super::following_context_is_content(&dictionary, after, 24),
-            super::preceding_context_is_content(&chars[..start]),
-            after.iter().collect::<String>()
-        );
-        for entry in dictionary.lookup_exact("あつい").unwrap_or_default() {
-            println!("BONUS {:?} = {}", entry, super::contextual_entry_bonus(&dictionary, &chars, start, end, &entry, 24));
-        }
-        let candidates = convert_with_dictionary(
-            "だいこんがあついのでうすくきる",
-            &dictionary,
-            ConversionOptions { n_best: 64, ..ConversionOptions::default() },
-        );
-        for candidate in candidates.iter().take(20) {
-            println!("CANDIDATE {:?}", candidate);
-        }
     }
 }
