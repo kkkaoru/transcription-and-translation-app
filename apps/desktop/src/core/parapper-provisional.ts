@@ -48,6 +48,8 @@ export const buildParapperProvisionalCaption = (
     sequence: 0,
     isFinal: false,
     provisional: true,
-    captureGeneration: output.captureGeneration ?? null,
+    ...(typeof output.captureGeneration === "number"
+      ? { captureGeneration: output.captureGeneration }
+      : {}),
   };
 };
