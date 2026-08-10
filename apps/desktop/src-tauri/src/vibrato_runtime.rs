@@ -48,6 +48,11 @@ impl VibratoReader {
     pub fn sentence_end_offsets(&self, text: &str) -> Vec<usize> {
         caption_bridge_vibrato_core::sentence_end_offsets(&self.tokenizer, text)
     }
+
+    /// Mid-sentence POS wrap points so captions break before maxChars.
+    pub fn soft_break_offsets(&self, text: &str) -> Vec<usize> {
+        caption_bridge_vibrato_core::soft_break_offsets(&self.tokenizer, text)
+    }
 }
 
 /// Candidate paths for the bundled / source-tree IPADIC dictionary.

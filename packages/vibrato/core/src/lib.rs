@@ -109,13 +109,21 @@ pub fn reading_for_azookey(tokenizer: &Tokenizer, text: &str) -> String {
 
 pub mod sentence_boundary;
 
-/// IPADIC POS ends unioned with plausible heuristic copulas.
-pub fn sentence_end_offsets(tokenizer: &Tokenizer, text: &str) -> Vec<usize> {
-    let tokens = tokenize(tokenizer, text)
+fn tokenize_caption_offsets(tokenizer: &Tokenizer, text: &str) -> Vec<(String, String, usize)> {
+    tokenize(tokenizer, text)
         .into_iter()
         .map(|token| (token.surface, token.feature, token.char_end))
-        .collect::<Vec<_>>();
-    sentence_boundary::caption_sentence_end_offsets(&tokens, text)
+        .collect()
+}
+
+/// IPADIC POS ends unioned with plausible heuristic copulas.
+pub fn sentence_end_offsets(tokenizer: &Tokenizer, text: &str) -> Vec<usize> {
+    sentence_boundary::caption_sentence_end_offsets(&tokenize_caption_offsets(tokenizer, text), text)
+}
+
+/// Mid-sentence POS wrap points for caption line breaks before maxChars.
+pub fn soft_break_offsets(tokenizer: &Tokenizer, text: &str) -> Vec<usize> {
+    sentence_boundary::caption_soft_break_offsets(&tokenize_caption_offsets(tokenizer, text), text)
 }
 
 #[cfg(test)]

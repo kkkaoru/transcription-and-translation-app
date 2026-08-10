@@ -378,6 +378,124 @@ pub fn caption_sentence_end_offsets(tokens: &[(String, String, usize)], text: &s
     ends
 }
 
+/// Soft wrap / early-page points from IPADIC POS combinations.
+///
+/// Unlike {@link ipadic_sentence_end_offsets}, these fire inside a still-open
+/// sentence so captions can break before the hard `maxChars` budget — after
+/// 読点, case/binding particles, or conjunctive て/で when content follows.
+pub fn caption_soft_break_offsets(tokens: &[(String, String, usize)], text: &str) -> Vec<usize> {
+    let mut ends = ipadic_soft_break_offsets(tokens, text.chars().count());
+    ends.extend(
+        heuristic_soft_break_offsets(text)
+            .into_iter()
+            .filter(|offset| heuristic_offset_is_plausible(*offset, tokens)),
+    );
+    // Sentence ends are also valid soft wrap sites.
+    ends.extend(caption_sentence_end_offsets(tokens, text));
+    ends.sort_unstable();
+    ends.dedup();
+    ends
+}
+
+/// Heuristic soft breaks when Vibrato tokens are not yet available.
+///
+/// Prefer wrapping after punctuation or common particles so the TypeScript
+/// overlay can page/wrap before the hard character budget without waiting on
+/// IPADIC offsets from the native pipeline.
+pub fn heuristic_soft_break_offsets(text: &str) -> Vec<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    const PARTICLE_SUFFIXES: &[&str] = &[
+        "から", "まで", "より", "など", "って", "では", "には", "とは", "のは", "けど", "けれど",
+        "けれども", "ので", "が", "を", "に", "へ", "で", "と", "も", "の", "や", "か", "は", "ね",
+        "よ", "な", "て", "、", "，", ",",
+    ];
+    let mut ends = Vec::new();
+    for index in 1..=chars.len() {
+        let prefix: String = chars[..index].iter().collect();
+        let trimmed = prefix.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let last = trimmed.chars().last();
+        if last.is_some_and(|character| SENTENCE_PUNCT.contains(&character) || character == '、') {
+            ends.push(index);
+            continue;
+        }
+        if PARTICLE_SUFFIXES.iter().any(|suffix| trimmed.ends_with(suffix)) {
+            let remainder: String = chars[index..].iter().collect();
+            let next = remainder.trim_start();
+            // Keep an open trailing particle on the same line until more speech
+            // arrives; soft-break only when content already follows.
+            if !next.is_empty()
+                && next.chars().next().is_some_and(|character| {
+                    !SENTENCE_PUNCT.contains(&character) && !is_combining_mark(character)
+                })
+            {
+                ends.push(index);
+            }
+        }
+    }
+    ends.sort_unstable();
+    ends.dedup();
+    ends
+}
+
+/// Vibrato IPADIC POS combinations that are safe mid-sentence wrap points.
+pub fn ipadic_soft_break_offsets(
+    tokens: &[(String, String, usize)],
+    text_len: usize,
+) -> Vec<usize> {
+    let mut ends = Vec::new();
+    for (index, (surface, feature, char_end)) in tokens.iter().enumerate() {
+        if *char_end == 0 || *char_end > text_len {
+            continue;
+        }
+        let current = IpadicPos::parse(surface, feature);
+        let next = tokens
+            .get(index + 1)
+            .map(|(next_surface, next_feature, _)| IpadicPos::parse(next_surface, next_feature));
+        if ipadic_combination_soft_breaks(current, next) {
+            ends.push(*char_end);
+        }
+    }
+    ends
+}
+
+fn ipadic_combination_soft_breaks(current: IpadicPos<'_>, next: Option<IpadicPos<'_>>) -> bool {
+    let Some(following) = next else {
+        return false;
+    };
+    if following.is_filler() {
+        return false;
+    }
+    // Relativizers must stay glued: 走る人 / 見たこと.
+    if current.is_predicate() && current.is_conclusive_form() && following.is_nounish() {
+        return false;
+    }
+    if current.is_rentaishi() || (current.is_predicate() && current.is_adnominal_or_continuative_form())
+    {
+        return false;
+    }
+    current.is_touten()
+        || current.is_kuten()
+        || (current.is_case_or_binding_particle() && soft_break_content_follows(following))
+        || (current.is_conjunctive_particle() && soft_break_content_follows(following))
+        || (current.is_final_particle() && soft_break_content_follows(following))
+}
+
+fn soft_break_content_follows(next: IpadicPos<'_>) -> bool {
+    next.is_nounish()
+        || next.is_predicate()
+        || next.is_conjunction()
+        || next.is_rentaishi()
+        || next.is_ack()
+        || next.pos1 == "副詞"
+        || next.pos1 == "感動詞"
+}
+
 fn heuristic_offset_is_plausible(offset: usize, tokens: &[(String, String, usize)]) -> bool {
     if tokens.is_empty() {
         return true;
@@ -506,7 +624,8 @@ fn adverbial_topic_restart(
 #[cfg(test)]
 mod tests {
     use super::{
-        heuristic_sentence_end_offsets, ipadic_sentence_end_offsets, visible_caption_sentence,
+        heuristic_sentence_end_offsets, heuristic_soft_break_offsets, ipadic_sentence_end_offsets,
+        ipadic_soft_break_offsets, visible_caption_sentence,
     };
 
     fn tokens(pairs: &[(&str, &str)]) -> (String, Vec<(String, String, usize)>) {
@@ -708,6 +827,41 @@ mod tests {
             let visible = visible_caption_sentence(&text, false, Some(offsets.as_slice()));
             assert_eq!(visible, text, "{label}: text={text:?} offsets={offsets:?}");
         }
+    }
+
+    #[test]
+    fn soft_breaks_prefer_particle_and_touten_before_max_chars() {
+        assert!(
+            heuristic_soft_break_offsets("今日は晴れです").contains(&3),
+            "係助詞 は should soft-break before the following content"
+        );
+        assert!(heuristic_soft_break_offsets("今日は").is_empty());
+
+        let (text, toks) = tokens(&[
+            ("今日", ADVERBIAL_NOUN),
+            ("は", BINDING),
+            ("、", TOUTEN),
+            ("雨", NOUN),
+            ("が", CASE),
+            ("降る", VERB_BASE),
+        ]);
+        let soft = ipadic_soft_break_offsets(&toks, text.chars().count());
+        assert!(soft.contains(&4), "読点 soft break missing: {soft:?}");
+        assert!(soft.contains(&6), "格助詞 soft break missing: {soft:?}");
+        assert!(
+            !soft.contains(&text.chars().count()),
+            "terminal token must not soft-break alone: {soft:?}"
+        );
+    }
+
+    #[test]
+    fn soft_breaks_do_not_split_relativizers() {
+        let (text, toks) = tokens(&[("走る", VERB_BASE), ("人", NOUN), ("だ", DA_CONJ)]);
+        let soft = ipadic_soft_break_offsets(&toks, text.chars().count());
+        assert!(
+            !soft.contains(&2),
+            "走る人 must stay glued: text={text:?} soft={soft:?}"
+        );
     }
 
     #[test]

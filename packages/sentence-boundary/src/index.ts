@@ -22,7 +22,61 @@ export interface CaptionSentenceHints {
   azookeyInputText?: string | null;
   /** Unicode scalar offsets (exclusive) from Vibrato/IPADIC when the pipeline supplies them. */
   sentenceEndOffsets?: number[];
+  /** Mid-sentence POS wrap points for line breaks before maxChars. */
+  softBreakOffsets?: number[];
 }
+
+const SOFT_PARTICLE_SUFFIX =
+  /(?:から|まで|より|など|って|では|には|とは|のは|けど|けれど|けれども|ので|が|を|に|へ|で|と|も|の|や|か|は|ね|よ|な|て|、|，|,)$/u;
+
+/**
+ * Heuristic soft wrap offsets when Vibrato POS offsets are not yet present.
+ * Matches `heuristic_soft_break_offsets` in caption-bridge-vibrato-core.
+ */
+export const detectCaptionSoftBreaks = (
+  text: string,
+  hints: CaptionSentenceHints = {},
+): number[] => {
+  const supplied = (hints.softBreakOffsets ?? []).filter(
+    (offset) => Number.isFinite(offset) && offset > 0 && offset <= codePoints(text).length,
+  );
+  if (supplied.length > 0) {
+    return [...new Set(supplied)].sort((left, right) => left - right);
+  }
+  const chars = codePoints(text);
+  if (chars.length === 0) {
+    return [];
+  }
+  const ends: number[] = [];
+  for (let index = 1; index <= chars.length; index += 1) {
+    const prefix = chars.slice(0, index).join("");
+    const trimmed = prefix.trimEnd();
+    if (!trimmed) {
+      continue;
+    }
+    const last = trimmed.at(-1);
+    if (last !== undefined && (SENTENCE_PUNCT.test(last) || last === "、")) {
+      ends.push(index);
+      continue;
+    }
+    if (!SOFT_PARTICLE_SUFFIX.test(trimmed)) {
+      continue;
+    }
+    const remainder = chars.slice(index).join("");
+    const next = remainder.trimStart();
+    const first = next[0];
+    if (
+      next &&
+      first !== undefined &&
+      !SENTENCE_PUNCT.test(first) &&
+      !/\p{M}/u.test(first)
+    ) {
+      ends.push(index);
+    }
+  }
+  const sentenceEnds = detectCaptionSentenceEnds(text, hints);
+  return [...new Set([...ends, ...sentenceEnds])].sort((left, right) => left - right);
+};
 
 const codePoints = (text: string): string[] => Array.from(text);
 
@@ -149,12 +203,9 @@ export const selectVisibleCaptionSentence = (
   if (ends.length === 0) {
     return normalized;
   }
-  const lastEnd = ends.at(-1);
-  if (lastEnd === undefined) {
-    return normalized;
-  }
+  const lastEnd = ends[ends.length - 1] as number;
   if (lastEnd >= chars.length) {
-    const previousEnd = ends.at(-2) ?? 0;
+    const previousEnd = ends.length >= 2 ? (ends[ends.length - 2] as number) : 0;
     return chars.slice(previousEnd, lastEnd).join("").trim();
   }
   return chars.slice(lastEnd).join("").trim() || normalized;

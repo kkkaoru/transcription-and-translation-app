@@ -1,5 +1,6 @@
 use caption_bridge_vibrato_core::{
-    reading_for_azookey_with_feature_index, sentence_end_offsets, tokenize, tokenizer_from_zstd,
+    reading_for_azookey_with_feature_index, sentence_end_offsets, soft_break_offsets, tokenize,
+    tokenizer_from_zstd,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -55,6 +56,15 @@ impl VibratoTokenizer {
     #[wasm_bindgen(js_name = sentenceEndOffsets)]
     pub fn sentence_end_offsets(&self, text: &str) -> Vec<u32> {
         sentence_end_offsets(&self.tokenizer, text)
+            .into_iter()
+            .map(|offset| offset as u32)
+            .collect()
+    }
+
+    /// Mid-sentence POS wrap points for caption line breaks before maxChars.
+    #[wasm_bindgen(js_name = softBreakOffsets)]
+    pub fn soft_break_offsets(&self, text: &str) -> Vec<u32> {
+        soft_break_offsets(&self.tokenizer, text)
             .into_iter()
             .map(|offset| offset as u32)
             .collect()

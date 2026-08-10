@@ -4,7 +4,7 @@
 //! tests stay here so they can load the bundled dictionary.
 
 pub use caption_bridge_vibrato_core::sentence_boundary::{
-    heuristic_sentence_end_offsets, visible_caption_sentence,
+    heuristic_sentence_end_offsets, heuristic_soft_break_offsets, visible_caption_sentence,
 };
 
 #[cfg(test)]

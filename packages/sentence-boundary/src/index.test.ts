@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { detectCaptionSentenceEnds, selectVisibleCaptionSentence } from "./index.js";
+import {
+  detectCaptionSentenceEnds,
+  detectCaptionSoftBreaks,
+  selectVisibleCaptionSentence,
+} from "./index.js";
 
 describe("Japanese sentence-end detection", () => {
   it("treats AzooKey copula endings and punctuation as completing boundaries", () => {
@@ -164,5 +168,23 @@ describe("heuristic edge cases", () => {
   it("keeps a copula followed by punctuation-only remainder as one sentence", () => {
     expect(selectVisibleCaptionSentence("今日は晴れです。")).toBe("今日は晴れです。");
     expect(selectVisibleCaptionSentence("です。あしたは")).toBe("あしたは");
+  });
+});
+
+describe("soft wrap offsets before maxChars", () => {
+  it("marks particle + content as a soft break while trailing particles stay open", () => {
+    expect(detectCaptionSoftBreaks("今日は晴れ")).toContain(3);
+    expect(detectCaptionSoftBreaks("今日は")).toEqual([]);
+  });
+
+  it("prefers supplied Vibrato soft-break offsets", () => {
+    expect(detectCaptionSoftBreaks("あいうえお", { softBreakOffsets: [2, 4] })).toEqual([2, 4]);
+  });
+
+  it("covers blank input, whitespace-only prefixes, and punctuation soft breaks", () => {
+    expect(detectCaptionSoftBreaks("")).toEqual([]);
+    expect(detectCaptionSoftBreaks("  ")).toEqual([]);
+    expect(detectCaptionSoftBreaks("晴れ。次")).toContain(3);
+    expect(detectCaptionSoftBreaks("今日、明日")).toContain(3);
   });
 });
