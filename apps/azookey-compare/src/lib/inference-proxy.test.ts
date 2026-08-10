@@ -10,10 +10,15 @@ import {
 } from "./inference-proxy";
 
 describe("compare Worker inference proxy", () => {
-  it("proxies only the AzooKey health and WebSocket paths", () => {
-    expect(COMPARE_INFERENCE_PROXY_PATHS).toEqual(["/ws/azookey", "/v1/azookey"]);
+  it("proxies AzooKey health, WebSocket, and explicit Workers AI ASR paths", () => {
+    expect(COMPARE_INFERENCE_PROXY_PATHS).toEqual([
+      "/ws/azookey",
+      "/v1/azookey",
+      "/v1/asr/workers-ai/transcriptions",
+    ]);
     expect(shouldProxyToInference(COMPARE_INFERENCE_WEBSOCKET_PATH)).toBe(true);
     expect(shouldProxyToInference(COMPARE_INFERENCE_HEALTH_PATH)).toBe(true);
+    expect(shouldProxyToInference("/v1/asr/workers-ai/transcriptions")).toBe(true);
     expect(shouldProxyToInference("/")).toBe(false);
     expect(shouldProxyToInference("/vibrato/vibrato_wasm.js")).toBe(false);
     expect(shouldProxyToInference("/ws/azookey/extra")).toBe(false);

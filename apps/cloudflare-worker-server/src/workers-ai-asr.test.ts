@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createWorkersAiAsrTranscriber,
+  handleWorkersAiAsrTranscription,
   WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS,
+  WORKERS_AI_ASR_HTTP_PATH,
   WORKERS_AI_ASR_LANGUAGE,
   WORKERS_AI_ASR_MAX_PCM_BYTES,
   WORKERS_AI_ASR_MAX_RESPONSE_BYTES,
@@ -187,6 +189,46 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     ).rejects.toMatchObject({
       status: 504,
       code: "asr_workers_ai_timeout",
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves the explicit HTTP route without requiring ASR_PROVIDER", async () => {
+    const run = vi.fn<WorkersAiAsrRun>(() => Promise.resolve(novaResult("Nova-3 route")));
+    const wav = (): File => {
+      const bytes = new Uint8Array(46);
+      const view = new DataView(bytes.buffer);
+      bytes.set(new TextEncoder().encode("RIFF"), 0);
+      view.setUint32(4, 38, true);
+      bytes.set(new TextEncoder().encode("WAVEfmt "), 8);
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, 16_000, true);
+      view.setUint32(28, 32_000, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      bytes.set(new TextEncoder().encode("data"), 36);
+      view.setUint32(40, 2, true);
+      return new File([bytes], "caption.wav", { type: "audio/wav" });
+    };
+    const form = new FormData();
+    form.set("file", wav());
+    form.set("language", "ja");
+    const response = await handleWorkersAiAsrTranscription(
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {},
+      run,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      text: "Nova-3 route",
+      language: "ja",
+      model: WORKERS_AI_ASR_MODEL,
+      transport: "http",
     });
     expect(run).toHaveBeenCalledTimes(1);
   });
