@@ -389,3 +389,99 @@ describe("resolveLiveExternalOutput", () => {
     expect(resolveLiveExternalOutput("unsupported", false)).toBeNull();
   });
 });
+
+describe("LiveView capture start blocking", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem("caption-bridge.ui-locale.v1", "ja");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it("disables Start and shows a reason while models are preparing", async () => {
+    const onToggleCapture = vi.fn();
+    await act(() => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={createDefaultConfig()}
+            status={DEFAULT_RUNTIME_STATUS}
+            caption={createPreviewCaption()}
+            devices={[]}
+            message={null}
+            startBlockReason="models-preparing"
+            onToggleCapture={onToggleCapture}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+          />
+        </I18nProvider>,
+      );
+    });
+
+    const button = container.querySelector(
+      '[data-testid="toggle-capture"]',
+    ) as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    expect(button?.disabled).toBe(true);
+    expect(button?.textContent).toContain("字幕生成を開始");
+    expect(container.querySelector('[data-testid="capture-start-blocked"]')?.textContent).toBe(
+      "ASRモデルの準備が終わるまで開始できません",
+    );
+
+    await act(() => {
+      button?.click();
+    });
+    expect(onToggleCapture).not.toHaveBeenCalled();
+  });
+
+  it("keeps Stop enabled while capturing even if start would be blocked", async () => {
+    await act(() => {
+      root.render(
+        <I18nProvider>
+          <LiveView
+            config={createDefaultConfig()}
+            status={{ ...DEFAULT_RUNTIME_STATUS, status: "capturing" }}
+            caption={createPreviewCaption()}
+            devices={[]}
+            message={null}
+            startBlockReason="models-preparing"
+            onToggleCapture={() => {}}
+            onDeviceChange={() => {}}
+            onRefreshDevices={() => {}}
+            onCloseMessage={() => {}}
+          />
+        </I18nProvider>,
+      );
+    });
+
+    const button = container.querySelector(
+      '[data-testid="toggle-capture"]',
+    ) as HTMLButtonElement | null;
+    expect(button?.disabled).toBe(false);
+    expect(button?.textContent).toContain("停止");
+    expect(container.querySelector('[data-testid="capture-start-blocked"]')).toBeNull();
+  });
+});

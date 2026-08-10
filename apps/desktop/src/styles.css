@@ -646,6 +646,23 @@ button:disabled {
   gap: 10px;
 }
 
+.live-start-blocked {
+  margin: 0;
+  padding: 0 16px 12px;
+  color: var(--muted);
+  font-size: calc(var(--font-size) * 0.92);
+  line-height: 1.35;
+}
+
+.primary-button:disabled,
+.primary-button:disabled:hover {
+  transform: none;
+  cursor: not-allowed;
+  opacity: 0.55;
+  background: color-mix(in srgb, var(--teal) 45%, var(--panel-raised));
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
 .live-preview {
   display: flex;
   flex: 1 1 auto;

@@ -15,6 +15,12 @@ import {
   takePendingCaptionTranslation,
 } from "../core/caption-updates";
 import {
+  type CaptureStartBlockReason,
+  canStartCaptionCapture,
+  resolveCaptureStartBlockReason,
+  resolveParapperHealthyFromSidecars,
+} from "../core/capture-start-readiness";
+import {
   clearChunkTimingStats,
   createLatestWinsProcessor,
   type LatestWinsProcessor,
@@ -418,6 +424,8 @@ export const MainApp = () => {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [transparentCaptureOpen, setTransparentCaptureOpen] = useState(false);
+  const [startBlockReason, setStartBlockReason] =
+    useState<CaptureStartBlockReason>("models-preparing");
   /** Avoid training users to ignore a repeated low-priority drop banner. */
   const pipelineDropNoticeShown = useRef(false);
   /** Keep an accepted drop token so React StrictMode updater replays are idempotent. */
@@ -674,6 +682,75 @@ export const MainApp = () => {
       })();
     };
   }, [refreshDevices]);
+
+  // Disable Start until required ASR models are ready and Parapper is healthy.
+  // Poll faster while blocked (e.g. Nemotron download) so the button re-enables promptly.
+  useEffect(() => {
+    let mounted = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let downloadUnlisten: (() => void) | null = null;
+
+    const clearTimer = () => {
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    const scheduleNext = (reason: CaptureStartBlockReason) => {
+      clearTimer();
+      if (!mounted) {
+        return;
+      }
+      const phase = runtimeStatusRef.current.status;
+      const capturing = phase === "capturing" || phase === "starting";
+      const delayMs = capturing ? 15_000 : reason != null ? 2_000 : 8_000;
+      timer = setTimeout(() => {
+        void refreshReadiness();
+      }, delayMs);
+    };
+
+    const refreshReadiness = async () => {
+      const [modelStatus, diagnostics] = await Promise.all([
+        bridge.listModelStatus().catch(() => null),
+        bridge.getRuntimeDiagnostics().catch(() => null),
+      ]);
+      if (!mounted) {
+        return;
+      }
+      const reason = resolveCaptureStartBlockReason({
+        recognitionMode: config.recognitionMode,
+        streamingInterimAsrEnabled: config.audio.streamingInterimAsrEnabled !== false,
+        modelStatus: modelStatus ?? [],
+        parapperHealthy: resolveParapperHealthyFromSidecars(diagnostics?.sidecars),
+        webSpeechSupported: isWebSpeechRecognitionSupported(),
+      });
+      setStartBlockReason((previous) => (previous === reason ? previous : reason));
+      scheduleNext(reason);
+    };
+
+    void refreshReadiness();
+    void bridge
+      .listenDownloadProgress(() => {
+        if (mounted) {
+          void refreshReadiness();
+        }
+      })
+      .then((dispose) => {
+        if (mounted) {
+          downloadUnlisten = dispose;
+        } else {
+          dispose();
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      mounted = false;
+      clearTimer();
+      downloadUnlisten?.();
+    };
+  }, [config.audio.streamingInterimAsrEnabled, config.recognitionMode]);
 
   useEffect(() => {
     let mounted = true;
@@ -1038,6 +1115,14 @@ export const MainApp = () => {
     // current lifecycle is still preparing or draining.
     if (capturePhase.current !== "idle") {
       pushDiagnosticEvent("audio", "Capture start ignored", `phase=${capturePhase.current}`);
+      return;
+    }
+    if (!canStartCaptionCapture(startBlockReason)) {
+      pushDiagnosticEvent(
+        "audio",
+        "Capture start blocked",
+        `reason=${startBlockReason ?? "unknown"}`,
+      );
       return;
     }
     const recognitionMode: RecognitionMode = isRecognitionMode(captureConfig.recognitionMode)
@@ -2063,9 +2148,17 @@ export const MainApp = () => {
       // not resurrect capture after the toggle to idle.
       captureRestartRef.current.cancelPending();
       void stopCapture();
-    } else {
-      void startCapture(config);
+      return;
     }
+    if (!canStartCaptionCapture(startBlockReason)) {
+      pushDiagnosticEvent(
+        "audio",
+        "Capture start blocked",
+        `reason=${startBlockReason ?? "unknown"}`,
+      );
+      return;
+    }
+    void startCapture(config);
   };
 
   const captureSessionActive =
@@ -2171,6 +2264,7 @@ export const MainApp = () => {
               devices={devices}
               message={noticeText}
               transparentCaptureOpen={transparentCaptureOpen}
+              startBlockReason={startBlockReason}
               onToggleCapture={toggleCapture}
               onDeviceChange={handleDeviceChange}
               onRefreshDevices={() => void refreshDevices({ primePermission: true })}

@@ -3,6 +3,8 @@ import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from
 import { AudioDeviceSelect } from "../components/AudioDeviceSelect";
 import { Field } from "../components/Field";
 import { rmsDbToMeterLevel } from "../core/audio";
+import type { CaptureStartBlockReason } from "../core/capture-start-readiness";
+import { canStartCaptionCapture } from "../core/capture-start-readiness";
 import { getInputLevelDb, subscribeInputLevel } from "../core/input-level";
 import { computePreviewFitScale } from "../core/style";
 import type { AppConfig, AudioInputDevice, CaptionPayload, RuntimeStatus } from "../core/types";
@@ -16,6 +18,12 @@ const LIVE_EXTERNAL_OUTPUT_MESSAGE: Record<LiveExternalOutput, MessageKey> = {
   syphon: "live.outputToSyphon",
   spout2: "live.outputToSpout2",
   "transparent-window": "live.outputToTransparentWindow",
+};
+
+const CAPTURE_START_BLOCK_MESSAGE: Record<Exclude<CaptureStartBlockReason, null>, MessageKey> = {
+  "models-preparing": "live.startBlockedModels",
+  "services-unhealthy": "live.startBlockedServices",
+  "web-speech-unsupported": "live.startBlockedWebSpeech",
 };
 
 /** Prefer native transport over the optional transparent capture window. */
@@ -101,6 +109,7 @@ export const LiveView = ({
   onOpenTransparentCapture,
   onCloseTransparentCapture,
   onOpenStyleEditor,
+  startBlockReason = null,
 }: {
   config: AppConfig;
   status: RuntimeStatus;
@@ -115,6 +124,8 @@ export const LiveView = ({
   onOpenTransparentCapture?: () => void;
   onCloseTransparentCapture?: () => void;
   onOpenStyleEditor?: () => void;
+  /** When set, the Start button is disabled until capture becomes runnable. */
+  startBlockReason?: CaptureStartBlockReason;
 }) => {
   const { t } = useI18n();
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -159,6 +170,10 @@ export const LiveView = ({
   const capturing = status.status === "capturing";
   const starting = status.status === "starting";
   const deviceControlsDisabled = starting || config.recognitionMode === "web-speech";
+  const startBlocked = !canStartCaptionCapture(startBlockReason);
+  const captureToggleDisabled = !capturing && !starting && startBlocked;
+  const startBlockedHint =
+    startBlockReason != null ? t(CAPTURE_START_BLOCK_MESSAGE[startBlockReason]) : null;
 
   // Re-bind when overlay design size changes so aspect-ratio restyle is measured.
   // biome-ignore lint/correctness/useExhaustiveDependencies: design size is a re-measure trigger, not read in the body
@@ -289,7 +304,11 @@ export const LiveView = ({
           <button
             className={`primary-button ${capturing ? "danger" : ""}`}
             type="button"
+            data-testid="toggle-capture"
             onClick={onToggleCapture}
+            disabled={captureToggleDisabled}
+            title={captureToggleDisabled ? (startBlockedHint ?? undefined) : undefined}
+            aria-disabled={captureToggleDisabled}
           >
             {/* Startup is cancellable; keep Stop available while status is starting. */}
             <span className="record-dot" />
@@ -297,6 +316,11 @@ export const LiveView = ({
           </button>
         </div>
       </div>
+      {captureToggleDisabled && startBlockedHint ? (
+        <p className="live-start-blocked" role="status" data-testid="capture-start-blocked">
+          {startBlockedHint}
+        </p>
+      ) : null}
     </div>
   );
 };
