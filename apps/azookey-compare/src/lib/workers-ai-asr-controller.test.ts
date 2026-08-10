@@ -25,18 +25,88 @@ const END_MS = WORKERS_AI_ASR_VAD_DEFAULTS.checkSilenceMs;
 type FakeTrack = { stop: ReturnType<typeof vi.fn> };
 
 class FakeMediaStreamSource {
-  connect(_node: unknown): void {}
+  connections: unknown[] = [];
+  connect(node: unknown): void {
+    this.connections.push(node);
+  }
   disconnect(): void {}
 }
 
+class FakeGainNode {
+  gain = { value: 1 };
+  connections: unknown[] = [];
+  connect(node: unknown): void {
+    this.connections.push(node);
+  }
+  disconnect(): void {}
+}
+
+class FakeScriptProcessor {
+  onaudioprocess:
+    | ((event: { inputBuffer: { getChannelData: (i: number) => Float32Array } }) => void)
+    | null = null;
+  connections: unknown[] = [];
+  connect(node: unknown): void {
+    this.connections.push(node);
+  }
+  disconnect(): void {}
+}
+
+class FakeAnalyser {
+  fftSize = 2048;
+  connections: unknown[] = [];
+  connect(node: unknown): void {
+    this.connections.push(node);
+  }
+  disconnect(): void {}
+  getFloatTimeDomainData(buffer: Float32Array): void {
+    buffer.fill(0);
+  }
+}
+
 class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
+
   state: AudioContextState = "running";
   sampleRate = 16_000;
   closeCalls = 0;
   resumeCalls = 0;
+  destination = { kind: "destination" as const };
+  createdGains: FakeGainNode[] = [];
+  createdProcessors: FakeScriptProcessor[] = [];
+  createdAnalysers: FakeAnalyser[] = [];
+  createdSources: FakeMediaStreamSource[] = [];
+
+  constructor() {
+    FakeAudioContext.instances.push(this);
+  }
 
   createMediaStreamSource(_stream: MediaStream): FakeMediaStreamSource {
-    return new FakeMediaStreamSource();
+    const source = new FakeMediaStreamSource();
+    this.createdSources.push(source);
+    return source;
+  }
+
+  createGain(): FakeGainNode {
+    const gain = new FakeGainNode();
+    this.createdGains.push(gain);
+    return gain;
+  }
+
+  createScriptProcessor(
+    _bufferSize?: number,
+    _inputChannels?: number,
+    _outputChannels?: number,
+  ): FakeScriptProcessor {
+    const tap = new FakeScriptProcessor();
+    this.createdProcessors.push(tap);
+    return tap;
+  }
+
+  createAnalyser(): FakeAnalyser {
+    const analyser = new FakeAnalyser();
+    this.createdAnalysers.push(analyser);
+    return analyser;
   }
 
   resume(): Promise<void> {
@@ -68,7 +138,7 @@ class FakeMediaRecorder {
     FakeMediaRecorder.instances.push(this);
   }
 
-  start(): void {
+  start(_timesliceMs?: number): void {
     this.startCalls += 1;
     this.state = "recording";
   }
@@ -85,18 +155,22 @@ class FakeMediaRecorder {
 
 const fakeTrack = (): FakeTrack => ({ stop: vi.fn() });
 
-const installBrowser = (track = fakeTrack()): MediaStream => {
+const installBrowser = (
+  track = fakeTrack(),
+  AudioContextImpl: typeof FakeAudioContext = FakeAudioContext,
+): MediaStream => {
   FakeMediaRecorder.instances = [];
+  FakeAudioContext.instances = [];
   const stream = { getTracks: () => [track] } as unknown as MediaStream;
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     writable: true,
-    value: { AudioContext: FakeAudioContext },
+    value: { AudioContext: AudioContextImpl },
   });
   Object.defineProperty(globalThis, "AudioContext", {
     configurable: true,
     writable: true,
-    value: FakeAudioContext,
+    value: AudioContextImpl,
   });
   Object.defineProperty(globalThis, "MediaRecorder", {
     configurable: true,
@@ -159,6 +233,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   FakeMediaRecorder.instances = [];
+  FakeAudioContext.instances = [];
   Reflect.deleteProperty(globalThis, "window");
   Reflect.deleteProperty(globalThis, "AudioContext");
   Reflect.deleteProperty(globalThis, "MediaRecorder");
@@ -387,6 +462,52 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(controller.currentState).toBe("idle");
     expect(events.onStateChange.mock.calls.map((call) => call[0])).not.toContain("listening");
     expect(engine.dispose).toHaveBeenCalled();
+  });
+
+  it("mutes the PCM tap instead of routing ScriptProcessor to speakers", async () => {
+    installBrowser();
+    const { controller, events } = await startController();
+    const context = FakeAudioContext.instances[0];
+    const tap = context?.createdProcessors[0];
+    const gain = context?.createdGains[0];
+    expect(tap).toBeDefined();
+    expect(gain).toBeDefined();
+    expect(gain?.gain.value).toBe(0);
+    expect(tap?.connections).toContain(gain);
+    expect(tap?.connections).not.toContain(context?.destination);
+    expect(gain?.connections).toContain(context?.destination);
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("listening");
+    controller.dispose();
+  });
+
+  it("falls back to Analyser PCM when ScriptProcessor is missing", async () => {
+    class AnalyserOnlyContext extends FakeAudioContext {
+      createScriptProcessor = undefined as unknown as FakeAudioContext["createScriptProcessor"];
+    }
+    installBrowser(fakeTrack(), AnalyserOnlyContext);
+    const { controller, events } = await startController();
+    const context = FakeAudioContext.instances[0];
+    expect(context?.createdAnalysers).toHaveLength(1);
+    expect(context?.createdProcessors).toHaveLength(0);
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+    expect(controller.currentState).toBe("listening");
+    expect(events.onError).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("still listens when the audio graph throws", async () => {
+    class ThrowingAudioContext extends FakeAudioContext {
+      createMediaStreamSource(): never {
+        throw new Error("graph exploded");
+      }
+    }
+    installBrowser(fakeTrack(), ThrowingAudioContext);
+    const { controller, events } = await startController();
+    expect(controller.currentState).toBe("listening");
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(FakeMediaRecorder.instances.length).toBeGreaterThan(0);
+    controller.dispose();
   });
 
   it("surfaces getUserMedia failure", async () => {

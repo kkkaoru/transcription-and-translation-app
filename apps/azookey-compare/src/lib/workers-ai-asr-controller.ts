@@ -54,6 +54,7 @@ type NavigatorWithMedia = Navigator & {
 type AudioContextCtor = new () => AudioContext;
 
 const PCM_TAP_BUFFER_SIZE = 4096;
+const RECORDING_TIMESLICE_MS = 250;
 const RECORDING_INTERIM = "録音中…";
 const TRANSCRIBING_INTERIM = "認識中…";
 
@@ -84,6 +85,9 @@ export class WorkersAiAsrController {
   private audioContext: AudioContext | null = null;
   private pcmTap: ScriptProcessorNode | null = null;
   private pcmSource: MediaStreamAudioSourceNode | null = null;
+  private tapGain: GainNode | null = null;
+  private analyser: AnalyserNode | null = null;
+  private analyserTimer: ReturnType<typeof setInterval> | null = null;
   private resampleRemainder = new Float32Array(0);
   private sileroRemainder = new Float32Array(0);
   private requestedStop = false;
@@ -138,7 +142,11 @@ export class WorkersAiAsrController {
         this.stopTracks();
         return;
       }
-      await this.setupAudioGraph(this.stream);
+      try {
+        await this.setupAudioGraph(this.stream);
+      } catch {
+        this.ensureTimesliceRecorder();
+      }
       if (this.shouldAbortStart()) {
         return;
       }
@@ -249,28 +257,66 @@ export class WorkersAiAsrController {
   private async setupAudioGraph(stream: MediaStream): Promise<void> {
     const Context = audioContextConstructor();
     if (!Context) {
+      this.ensureTimesliceRecorder();
       return;
     }
-    const audioContext = new Context();
-    this.audioContext = audioContext;
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
+    try {
+      const audioContext = new Context();
+      this.audioContext = audioContext;
+      if (audioContext.state === "suspended") {
+        await audioContext.resume();
+      }
+      if (this.shouldAbortStart()) {
+        return;
+      }
+      const source = audioContext.createMediaStreamSource(stream);
+      this.pcmSource = source;
+
+      if (typeof audioContext.createScriptProcessor === "function") {
+        const tap = audioContext.createScriptProcessor(PCM_TAP_BUFFER_SIZE, 1, 1);
+        tap.onaudioprocess = (event) => {
+          void this.onPcmTap(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
+        };
+        source.connect(tap);
+        if (typeof audioContext.createGain === "function") {
+          const gain = audioContext.createGain();
+          gain.gain.value = 0;
+          tap.connect(gain);
+          gain.connect(audioContext.destination);
+          this.tapGain = gain;
+        }
+        this.pcmTap = tap;
+        return;
+      }
+
+      if (typeof audioContext.createAnalyser === "function") {
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = PCM_TAP_BUFFER_SIZE;
+        source.connect(analyser);
+        this.analyser = analyser;
+        const buffer = new Float32Array(analyser.fftSize);
+        const sampleRate = audioContext.sampleRate;
+        this.analyserTimer = setInterval(() => {
+          if (this.disposed || this.requestedStop || this.state !== "listening") {
+            return;
+          }
+          analyser.getFloatTimeDomainData(buffer);
+          void this.onPcmTap(Float32Array.from(buffer), sampleRate);
+        }, WORKERS_AI_ASR_VAD_DEFAULTS.vadIntervalMs);
+        return;
+      }
+
+      this.ensureTimesliceRecorder();
+    } catch {
+      this.ensureTimesliceRecorder();
     }
-    if (typeof audioContext.createScriptProcessor !== "function") {
-      return;
-    }
-    const source = audioContext.createMediaStreamSource(stream);
-    const tap = audioContext.createScriptProcessor(PCM_TAP_BUFFER_SIZE, 1, 1);
-    tap.onaudioprocess = (event) => {
-      void this.onPcmTap(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
-    };
-    source.connect(tap);
-    tap.connect(audioContext.destination);
-    this.pcmSource = source;
-    this.pcmTap = tap;
   }
 
   private teardownPcmTap(): void {
+    if (this.analyserTimer !== null) {
+      clearInterval(this.analyserTimer);
+      this.analyserTimer = null;
+    }
     if (this.pcmTap) {
       try {
         this.pcmTap.disconnect();
@@ -278,6 +324,20 @@ export class WorkersAiAsrController {
         // Already disconnected.
       }
       this.pcmTap.onaudioprocess = null;
+    }
+    if (this.tapGain) {
+      try {
+        this.tapGain.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+    if (this.analyser) {
+      try {
+        this.analyser.disconnect();
+      } catch {
+        // Already disconnected.
+      }
     }
     if (this.pcmSource) {
       try {
@@ -287,6 +347,8 @@ export class WorkersAiAsrController {
       }
     }
     this.pcmTap = null;
+    this.tapGain = null;
+    this.analyser = null;
     this.pcmSource = null;
     this.resampleRemainder = new Float32Array(0);
     this.sileroRemainder = new Float32Array(0);
@@ -357,7 +419,14 @@ export class WorkersAiAsrController {
     this.beginRecorder();
   }
 
-  private beginRecorder(): void {
+  private ensureTimesliceRecorder(): void {
+    if (this.recorder && this.recorder.state !== "inactive") {
+      return;
+    }
+    this.beginRecorder(RECORDING_TIMESLICE_MS);
+  }
+
+  private beginRecorder(timesliceMs?: number): void {
     if (!this.stream) {
       return;
     }
@@ -372,6 +441,10 @@ export class WorkersAiAsrController {
     recorder.onerror = (event) => {
       this.fail(event.error?.message ?? "MediaRecorder failed");
     };
+    if (typeof timesliceMs === "number" && timesliceMs > 0) {
+      recorder.start(timesliceMs);
+      return;
+    }
     recorder.start();
   }
 
