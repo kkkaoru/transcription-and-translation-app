@@ -228,6 +228,37 @@ describe("AzooKey Worker text contract", () => {
     });
   });
 
+  it("falls back to portable WASM when a configured Zenzai upstream connection fails", async () => {
+    // Local MODEL_ROUTES often points at 127.0.0.1:8081 for xsmall. When that
+    // llama-server is down, fetch throws TypeError — not HTTP 5xx — and must
+    // still use the portable dictionary instead of "AzooKey conversion failed".
+    const fetcher = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const message = parseAzookeyMessage(
+      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+    );
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
+      },
+      fetcher,
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://127.0.0.1:8081/completion",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+    });
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(AZOOKEY_MIN_ELAPSED_MS);
+  });
+
   it("uses a configured Zenzai upstream when MODEL_ROUTES exposes the model", async () => {
     const fetcher = vi.fn(async () =>
       new Response(JSON.stringify({ content: "今日は配信です" }), { status: 200 }),
