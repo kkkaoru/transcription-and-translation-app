@@ -20,7 +20,10 @@
     }
   ],
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true
+    }
   }
   // POLICY_AUD and TEAM_DOMAIN stay as existing Worker secrets.
   // AZOOKEY_API_TOKEN may be added later with `wrangler secret put` and is
