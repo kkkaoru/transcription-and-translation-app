@@ -13,7 +13,7 @@ import { CONVERTER_MODELS, DEFAULT_CONVERTER_MODEL, isConverterModel } from "./c
  *
  * Historical wire labels (`worker-vibrato`, `vibratoInput`) are preserved for
  * Worker compatibility. The selected mode records where Vibrato and AzooKey
- * run: browser-compact stays in-page; worker-vibrato still uses inference.
+ * run: browser-complete stays in-page; worker-vibrato still uses inference.
  */
 
 export const COMPARISON_CONFIG_SCHEMA_VERSION = 1 as const;
@@ -96,7 +96,7 @@ export const comparisonModeOptions: readonly ComparisonModeOption[] = [
   },
   {
     value: "browser-vibrato",
-    label: "ブラウザ簡潔（Vibrato もかな漢字もブラウザ）",
+    label: "ブラウザ完結（Vibrato もかな漢字もブラウザ）",
     description:
       "ブラウザの Vibrato WASM と IPADIC で読みを取り、同じブラウザの AzooKey WASM でかな漢字変換します。/ws/azookey は呼びません。漢字がなければ読みはそのまま、漢字があれば F[7] でひらがな化します。プリパス必須で、モジュールも辞書も見つからなければ失敗します（Worker へはサイレントに落ちません）。",
   },
@@ -115,7 +115,7 @@ export const comparisonModeHelpSections: readonly {
   },
   {
     value: "browser-vibrato",
-    title: "ブラウザ簡潔",
+    title: "ブラウザ完結",
     body: "ブラウザで Vibrato（/vibrato/vibrato_wasm.js と /vibrato/system.dic.zst）と AzooKey（/azookey/azookey.wasm と /azookey/system.azkdict.gz）を完結します。辞書/WASM が無いと失敗し、Worker へは切り替わりません。Zenzai はこのモードでは使えません。",
   },
 ] as const;
@@ -125,9 +125,9 @@ export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 
 /** Short, user-facing explanations for the fields in the settings panel. */
 export const comparisonConfigFieldDescriptions = {
-  mode: "Choose Worker-dependent Vibrato+conversion, or the fully browser-local Vibrato+AzooKey path. Browser-compact never calls /ws/azookey.",
+  mode: "Choose Worker-dependent Vibrato+conversion, or the fully in-browser Vibrato+AzooKey path. Browser-complete never calls /ws/azookey.",
   converterModel:
-    "Choose AzooKey WASM (browser-compact or Worker) or Zenzai xsmall/small on the Worker when MODEL_ROUTES exposes those GGUF upstreams. Zenzai is unavailable in browser-compact.",
+    "Choose AzooKey WASM (browser-complete or Worker) or Zenzai xsmall/small on the Worker when MODEL_ROUTES exposes those GGUF upstreams. Zenzai is unavailable in browser-complete.",
   websocketUrl:
     "A ws:// or wss:// URL for the AzooKey Worker endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
   auth: "Optional Bearer credentials for the Worker. Keep tokens out of URLs and logs.",

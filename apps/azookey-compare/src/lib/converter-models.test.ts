@@ -21,5 +21,7 @@ describe("converter model catalog", () => {
     expect(isConverterModel("unknown")).toBe(false);
     expect(isZenzConverterModel("azookey-rust-wasm")).toBe(false);
     expect(isZenzConverterModel("zenz-v3.2-small-gguf")).toBe(true);
+    expect(converterModelOptions[0]?.description).toContain("ブラウザ完結");
+    expect(converterModelOptions[0]?.description).not.toContain("ブラウザ簡潔");
   });
 });

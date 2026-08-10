@@ -1,6 +1,7 @@
 import type { ComparisonMode } from "./contract";
 import type { ConverterModel } from "./converter-models";
 import { DEFAULT_CONVERTER_MODEL, isZenzConverterModel } from "./converter-models";
+import { COMPARE_WORKER_ORIGIN } from "./inference-proxy";
 
 export type ArchitectureDiagramKind = "overview" | "mode";
 export type ArchitectureTone = "browser" | "worker" | "desktop" | "dict" | "model" | "io" | "warn";
@@ -431,68 +432,84 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
   const leftX = 20;
   const rightX = 360;
   const gutterX = 340;
-  const speech = placeBox({
-    id: "speech",
+  const browser = placeBox({
+    id: "browser",
     x: leftX,
     y: 16,
     w: fullW,
-    title: "① 音声 → 文字",
-    lines: ["Web Speech（ブラウザが認識 API を呼ぶ）"],
+    title: "① ブラウザ",
+    lines: ["Web Speech 認識"],
     tone: "browser",
     artifact: "runtime",
   });
-  const row2Y = speech.y + speech.h + 40;
-  const bVib = placeBox({
-    id: "b-vib",
+  const access = placeBox({
+    id: "access",
     x: leftX,
-    y: row2Y,
+    y: browser.y + browser.h + 40,
+    w: fullW,
+    title: "② Access",
+    lines: ["OTP + Managed OAuth"],
+    tone: "io",
+    artifact: "runtime",
+  });
+  const compare = placeBox({
+    id: "compare",
+    x: leftX,
+    y: access.y + access.h + 40,
+    w: fullW,
+    title: "③ azookey-compare",
+    lines: [COMPARE_WORKER_ORIGIN, "static Next export + compare Worker", "JWT ゲート"],
+    tone: "worker",
+    artifact: "runtime",
+  });
+  const forkY = compare.y + compare.h + 40;
+  const browserComplete = placeBox({
+    id: "browser-complete",
+    x: leftX,
+    y: forkY,
     w: halfW,
-    title: "②a ブラウザ簡潔",
-    lines: ["Vibrato で漢字→読み", "不足時は失敗"],
+    title: "ブラウザ完結",
+    lines: ["Vibrato WASM + AzooKey WASM", "in-page", "/ws/azookey なし"],
     tone: "browser",
     artifact: "code",
     cost: "cpu",
   });
-  const wWs = placeBox({
-    id: "w-ws",
+  const workerWs = placeBox({
+    id: "worker-ws",
     x: rightX,
-    y: row2Y,
+    y: forkY,
     w: halfW,
-    title: "②b Worker 依存",
-    lines: ["漢字→読み", "/ws/azookey が入口"],
+    title: "worker-vibrato",
+    lines: ["/ws/azookey", "→ INFERENCE binding"],
     tone: "worker",
     artifact: "runtime",
   });
-  const row3Y = Math.max(bVib.y + bVib.h, wWs.y + wWs.h) + 40;
-  const wAzk = placeBox({
-    id: "w-azk",
-    x: leftX,
-    y: row3Y,
-    w: halfW,
-    title: "③ 既定 AzooKey WASM",
-    lines: ["かな漢字", "Zenzai 失敗時のフォールバック"],
-    tone: "worker",
-    artifact: "code",
-    cost: "cpu",
-  });
-  const zGguf = placeBox({
-    id: "z-gguf",
+  const inference = placeBox({
+    id: "inference",
     x: rightX,
-    y: row3Y,
+    y: workerWs.y + workerWs.h + 40,
     w: halfW,
-    title: "③ 任意 Zenzai",
+    title: "kotoba-beacon-inference",
+    lines: ["workers_dev false", "公開 URL なし"],
+    tone: "worker",
+    artifact: "runtime",
+  });
+  const zenz = placeBox({
+    id: "zenz",
+    x: rightX,
+    y: inference.y + inference.h + 40,
+    w: halfW,
+    title: "Zenzai（Worker のみ）",
     lines: [
       ARCHITECTURE_ZENZAI.note,
       `${ARCHITECTURE_ZENZAI.loader} が読む`,
       ARCHITECTURE_ZENZAI.file,
-      `${ARCHITECTURE_ZENZAI.env}[model].baseUrl`,
-      `POST ${ARCHITECTURE_ZENZAI.endpoint}`,
     ],
     tone: "model",
     artifact: "model",
     cost: "model",
   });
-  const height = Math.max(wAzk.y + wAzk.h, zGguf.y + zGguf.h) + 24;
+  const height = Math.max(browserComplete.y + browserComplete.h, zenz.y + zenz.h) + 24;
 
   return {
     viewBox: `0 0 ${width} ${height}`,
@@ -500,26 +517,26 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     height,
     gutterX,
     lanes: [],
-    boxes: [speech, bVib, wWs, wAzk, zGguf],
+    boxes: [browser, access, compare, browserComplete, workerWs, inference, zenz],
     edges: [
+      { from: "browser", to: "access", path: "internet", via: "vertical" },
+      { from: "access", to: "compare", path: "internet", via: "vertical" },
       {
-        from: "speech",
-        to: "b-vib",
+        from: "compare",
+        to: "browser-complete",
         path: "device",
         via: "vertical",
-        corridorY: speech.y + speech.h + 18,
+        corridorY: compare.y + compare.h + 18,
       },
       {
-        from: "speech",
-        to: "w-ws",
-        path: "internet",
+        from: "compare",
+        to: "worker-ws",
+        path: "device",
         via: "vertical",
-        corridorY: speech.y + speech.h + 18,
+        corridorY: compare.y + compare.h + 18,
       },
-      { from: "b-vib", to: "w-azk", path: "internet", via: "vertical" },
-      { from: "w-ws", to: "w-azk", path: "device", via: "gutter" },
-      { from: "w-ws", to: "z-gguf", path: "depends", dashed: true, via: "vertical" },
-      { from: "z-gguf", to: "w-azk", path: "depends", dashed: true, label: "失敗時" },
+      { from: "worker-ws", to: "inference", path: "device", via: "vertical", label: "INFERENCE" },
+      { from: "inference", to: "zenz", path: "depends", dashed: true, via: "vertical" },
     ],
   };
 };
@@ -545,17 +562,12 @@ export const modeArchitecture = (
       id: "vib",
       title: worker ? "Worker Vibrato" : "ブラウザ Vibrato",
       lines: worker
-        ? [
-            "/ws/azookey のあと Worker で②",
-            `${ARCHITECTURE_DICTIONARIES.ipadic.workerUpstreamEnv} または`,
-            ARCHITECTURE_DICTIONARIES.ipadic.workerEnv,
-            "未設定時はブラウザで読みを補完",
-          ]
+        ? ["/ws/azookey", "→ INFERENCE binding", "kotoba-beacon-inference", "workers_dev false"]
         : [
             "/vibrato/vibrato_wasm.js",
             ARCHITECTURE_DICTIONARIES.ipadic.browserUrl,
             ipadicOk ? "WASM/辞書が利用可能" : "WASM/辞書が利用不可",
-            "不足時は失敗（Worker Vibrato へ落ちない）",
+            "/ws/azookey なし",
           ],
       tone: worker ? "worker" : ipadicOk ? "browser" : "warn",
       artifact: worker ? "runtime" : "code",
@@ -565,19 +577,30 @@ export const modeArchitecture = (
   const convert = layoutStack(360, stackY, boxW, STACK_GAP, [
     {
       id: "model",
-      title: modelName,
-      lines: zenz
-        ? [
-            converterModel,
-            `${ARCHITECTURE_ZENZAI.loader} が読む`,
-            ARCHITECTURE_ZENZAI.file,
-            `${ARCHITECTURE_ZENZAI.env} → POST ${ARCHITECTURE_ZENZAI.endpoint}`,
-            "未設定 / 失敗 → AzooKey WASM",
-          ]
-        : [converterModel, ARCHITECTURE_DICTIONARIES.azookey.workerUrl, "かな漢字変換"],
-      tone: zenz ? "model" : "worker",
+      title: zenz && !worker ? "Zenzai（Worker のみ）" : modelName,
+      lines: worker
+        ? zenz
+          ? [
+              converterModel,
+              `${ARCHITECTURE_ZENZAI.loader} が読む`,
+              ARCHITECTURE_ZENZAI.file,
+              `${ARCHITECTURE_ZENZAI.env} → POST ${ARCHITECTURE_ZENZAI.endpoint}`,
+              "Worker 依存のみ",
+              "未設定 / 失敗 → AzooKey WASM",
+            ]
+          : [
+              converterModel,
+              ARCHITECTURE_DICTIONARIES.azookey.workerUrl,
+              "かな漢字変換",
+              "公開 URL なし",
+            ]
+        : zenz
+          ? [converterModel, "Zenzai は Worker 依存のみ", "このモードでは使えません"]
+          : [converterModel, "/azookey/azookey.wasm", "in-page かな漢字", "/ws/azookey なし"],
+      tone: zenz ? (worker ? "model" : "warn") : worker ? "worker" : "browser",
       artifact: zenz ? "model" : "code",
-      size: zenz ? zenzSize : ARCHITECTURE_ASSET_SIZES.azookeyWasm,
+      size: zenz && worker ? zenzSize : worker ? ARCHITECTURE_ASSET_SIZES.azookeyWasm : undefined,
+      badge: zenz && !worker ? "不可" : undefined,
     },
   ]);
   const bottom = Math.max(...[...reading, ...convert].map((box) => box.y + box.h));
@@ -587,9 +610,19 @@ export const modeArchitecture = (
     height: bottom + 24,
     boxes: [...reading, ...convert],
     lanes: [],
-    edges: [{ from: "vib", to: "model", path: worker ? "device" : "internet" }],
+    edges: [{ from: "vib", to: "model", path: "device" }],
   };
 };
+
+export const architectureDiagramCaption = (
+  kind: ArchitectureDiagramKind,
+  mode: ComparisonMode = "worker-vibrato",
+): string =>
+  kind === "overview"
+    ? "Cloudflare Workers 本番構成"
+    : mode === "browser-vibrato"
+      ? "ブラウザ完結の実行経路"
+      : "Worker 依存の実行経路";
 
 export const architectureDiagram = (options: ArchitectureDiagramOptions): ArchitectureDiagram => {
   if (options.kind === "overview") {

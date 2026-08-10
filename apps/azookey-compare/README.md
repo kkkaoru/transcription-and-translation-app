@@ -49,6 +49,19 @@ Unauthenticated browsers `302` to Access login; API clients `401`. Production
 Worker secrets `POLICY_AUD` and `TEAM_DOMAIN` enable `Cf-Access-Jwt-Assertion`
 validation. Leave both unset for local `wrangler dev`.
 
+Production shape:
+
+```
+Browser → Access (OTP + Managed OAuth)
+  → https://azookey-compare.kaoru.workers.dev
+       ├ static Next export + compare Worker（JWT）
+       ├ ブラウザ完結: Vibrato WASM + AzooKey WASM in-page（/ws/azookey なし）
+       └ worker-vibrato: /ws/azookey → service binding INFERENCE → kotoba-beacon-inference
+         （workers_dev false、公開 URL なし）
+```
+
+Zenzai is Worker-dependent only. Inference has no public `workers.dev` URL.
+
 ### Conversion models
 
 The configuration panel includes a **変換モデル** select:
@@ -63,8 +76,8 @@ The configuration panel includes a **変換モデル** select:
 
 | UI label | What actually runs | Wire `mode` sent to Worker |
 | --- | --- | --- |
-| Worker 上の Vibrato → AzooKey WASM | Tauri と同じく漢字があるときだけ Vibrato（IPADIC F[7]）。Worker Vibrato 未設定時はブラウザ Vibrato で漢字読みを補い、その後 AzooKey WASM | `worker-vibrato` plus `vibratoExecution: "worker"` or `"browser-wasm"` when the client supplied the reading |
-| ブラウザ Vibrato WASM → Worker | Generated `VibratoTokenizer` + IPADIC dictionary (F[7]) pre-pass（純かなはそのまま）、then Worker AzooKey WASM | `worker-vibrato` plus `comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"` |
+| Worker 依存（Vibrato もかな漢字も Worker） | `/ws/azookey` → compare Worker JWT → service binding `INFERENCE` → `kotoba-beacon-inference`（`workers_dev` false、公開 URL なし）。漢字があるときだけ Vibrato（IPADIC F[7]）。Worker Vibrato 未設定時はブラウザ Vibrato で漢字読みを補い、その後 AzooKey WASM | `worker-vibrato` plus `vibratoExecution: "worker"` or `"browser-wasm"` when the client supplied the reading |
+| ブラウザ完結（Vibrato もかな漢字もブラウザ） | Generated `VibratoTokenizer` + IPADIC dictionary (F[7]) と AzooKey WASM を in-page で実行。`/ws/azookey` は呼ばない | wire id は互換のため `browser-vibrato` |
 
 Checked-in browser defaults: `/vibrato/vibrato_wasm.js` and
 `/vibrato/system.dic.zst`. Override with

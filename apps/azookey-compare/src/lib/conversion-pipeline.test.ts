@@ -59,7 +59,7 @@ describe("comparison conversion pipeline", () => {
     expect(usesWorkerConversion("browser-vibrato")).toBe(false);
   });
 
-  it("does not silently fall back to Worker AzooKey when Zenzai is selected in browser-compact", async () => {
+  it("does not silently fall back to Worker AzooKey when Zenzai is selected in browser-complete", async () => {
     const convertWithWorker = vi.fn();
     await expect(
       runComparisonConversion(

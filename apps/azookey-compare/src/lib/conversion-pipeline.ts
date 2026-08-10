@@ -1,7 +1,7 @@
 /**
  * Comparison conversion pipeline.
  *
- * `browser-vibrato` (ブラウザ簡潔) runs Vibrato then AzooKey entirely in the
+ * `browser-vibrato` (ブラウザ完結) runs Vibrato then AzooKey entirely in the
  * browser and never opens `/ws/azookey`. `worker-vibrato` still uses inference.
  */
 
@@ -16,7 +16,7 @@ import type { ConversionStage } from "./path-labels";
 import type { AzooKeyConvertResult, VibratoExecution } from "./worker-client";
 
 export const BROWSER_COMPACT_ZENZ_UNSUPPORTED_MESSAGE =
-  "ブラウザ簡潔では Zenzai は使えません。AzooKey WASM を選ぶか Worker 依存モードに切り替えてください。";
+  "ブラウザ完結では Zenzai は使えません。AzooKey WASM を選ぶか Worker 依存モードに切り替えてください。";
 
 export const usesWorkerConversion = (mode: ComparisonMode): boolean => mode === "worker-vibrato";
 

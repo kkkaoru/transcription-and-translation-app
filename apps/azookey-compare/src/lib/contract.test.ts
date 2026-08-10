@@ -34,7 +34,7 @@ describe("comparison configuration contract", () => {
       "browser-vibrato",
     ]);
     expect(comparisonModeOptions[0]?.label).toContain("Worker 依存");
-    expect(comparisonModeOptions[1]?.label).toContain("ブラウザ簡潔");
+    expect(comparisonModeOptions[1]?.label).toContain("ブラウザ完結");
     for (const option of comparisonModeOptions) {
       expect(option.description.toLowerCase()).toContain("azookey");
       expect(option.description.toLowerCase()).toMatch(/vibrato|unidic/);
@@ -42,7 +42,7 @@ describe("comparison configuration contract", () => {
     }
     expect(comparisonModeHelpSections.map((section) => section.title)).toEqual([
       "Worker 依存",
-      "ブラウザ簡潔",
+      "ブラウザ完結",
     ]);
     expect(comparisonModeOptions[0]?.description).toContain("AzooKey");
     expect(comparisonModeOptions[1]?.description).toContain("プリパス");

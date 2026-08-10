@@ -6,6 +6,7 @@ import {
   type ArchitectureDiagramKind,
   type ArchitecturePath,
   architectureDiagram,
+  architectureDiagramCaption,
   BODY_SIZE,
   BOX_PAD_TOP,
   BOX_PAD_X,
@@ -102,15 +103,7 @@ const diagramCaption = (
   kind: ArchitectureDiagramKind,
   mode: ComparisonMode | undefined,
   fallback: string | undefined,
-): string => {
-  if (fallback) {
-    return fallback;
-  }
-  if (kind === "overview") {
-    return "処理の流れ";
-  }
-  return mode === "browser-vibrato" ? "ブラウザ簡潔の実行経路" : "Worker 依存の実行経路";
-};
+): string => fallback ?? architectureDiagramCaption(kind, mode ?? "worker-vibrato");
 
 const edgePath = (path: ArchitecturePath | undefined): ArchitecturePath => path ?? "device";
 

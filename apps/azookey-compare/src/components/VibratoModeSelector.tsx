@@ -32,7 +32,7 @@ export const VibratoModeSelector = ({
   const helpText =
     description ??
     selectedOption?.description ??
-    "AzooKey のかな→漢字変換は常に Worker 上の AzooKey WASM で実行します。選択した Vibrato ステージの設定がない場合は変換を開始しません。";
+    "選択した経路で Vibrato と AzooKey を実行します。ブラウザ完結は /ws/azookey を呼びません。";
 
   return (
     <div className={className} data-testid="vibrato-mode-control">
