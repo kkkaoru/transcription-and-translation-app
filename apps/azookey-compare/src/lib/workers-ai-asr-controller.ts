@@ -10,6 +10,7 @@ import {
   SILERO_CHUNK_SAMPLES,
   SILERO_SAMPLE_RATE,
   type VadEngine,
+  type VadResult,
   WORKERS_AI_ASR_VAD_DEFAULTS,
   WorkersAiAsrVad,
   type WorkersAiAsrVadEvent,
@@ -203,38 +204,100 @@ export class WorkersAiAsrController {
     if (this.disposed || this.requestedStop || this.flushing || this.state !== "listening") {
       return;
     }
-    const engine = this.engine ?? new EnergyVadEngine();
-    const result = await engine.process(samples);
+    const result = await this.processWithFallback(samples);
+    if (
+      !result ||
+      this.disposed ||
+      this.requestedStop ||
+      this.flushing ||
+      this.state !== "listening"
+    ) {
+      return;
+    }
     await this.applyVadEvents(this.vad.pushVadResult(result, samples));
   }
 
-  private async resolveEngine(): Promise<void> {
+  private resolveEngine(): void {
     if (this.options.vadEngine) {
       this.engine = this.options.vadEngine;
       this.engineKind = "silero";
       return;
     }
+    this.engine = new EnergyVadEngine();
+    this.engineKind = "energy";
     if (this.options.disableSilero) {
-      this.engine = new EnergyVadEngine();
-      this.engineKind = "energy";
       return;
     }
+    void this.upgradeToSilero();
+  }
+
+  private async upgradeToSilero(): Promise<void> {
     try {
-      this.engine = this.options.sileroLoader
+      const silero = this.options.sileroLoader
         ? await this.options.sileroLoader()
         : await this.createDefaultSilero();
       if (this.shouldAbortStart()) {
-        this.releaseEngine();
+        try {
+          silero.dispose?.();
+        } catch {
+          // Drop unused Silero after dispose/stop.
+        }
         return;
       }
+      const previous = this.engine;
+      this.engine = silero;
       this.engineKind = "silero";
+      if (previous && previous !== silero) {
+        try {
+          previous.dispose?.();
+        } catch {
+          // Energy dispose is best effort before Silero takes over.
+        }
+      }
     } catch {
       if (this.shouldAbortStart()) {
         return;
       }
-      this.engine = new EnergyVadEngine();
-      this.engineKind = "energy";
+      if (this.engineKind !== "energy" || !this.engine) {
+        this.engine = new EnergyVadEngine();
+        this.engineKind = "energy";
+      }
       this.options.onVadNotice?.(SILERO_FALLBACK_NOTICE_JA);
+    }
+  }
+
+  private fallbackToEnergy(): void {
+    if (this.engineKind === "energy" && this.engine) {
+      return;
+    }
+    try {
+      this.engine?.dispose?.();
+    } catch {
+      // Drop Silero even if dispose throws.
+    }
+    this.engine = new EnergyVadEngine();
+    this.engineKind = "energy";
+    this.options.onVadNotice?.(SILERO_FALLBACK_NOTICE_JA);
+  }
+
+  private async processWithFallback(samples: Float32Array): Promise<VadResult | null> {
+    const engine = this.engine ?? new EnergyVadEngine();
+    if (!this.engine) {
+      this.engine = engine;
+      this.engineKind = "energy";
+    }
+    try {
+      return await engine.process(samples);
+    } catch {
+      if (this.engineKind !== "silero") {
+        return null;
+      }
+      this.fallbackToEnergy();
+      try {
+        return await this.engine.process(samples);
+      } catch {
+        return null;
+      }
     }
   }
 
@@ -380,8 +443,14 @@ export class WorkersAiAsrController {
     let offset = 0;
     while (offset + SILERO_CHUNK_SAMPLES <= pending.length) {
       const chunk = pending.subarray(offset, offset + SILERO_CHUNK_SAMPLES);
-      const result = await this.engine.process(chunk);
-      if (this.disposed || this.requestedStop || this.flushing || this.state !== "listening") {
+      const result = await this.processWithFallback(chunk);
+      if (
+        !result ||
+        this.disposed ||
+        this.requestedStop ||
+        this.flushing ||
+        this.state !== "listening"
+      ) {
         return;
       }
       await this.applyVadEvents(this.vad.pushVadResult(result, chunk));

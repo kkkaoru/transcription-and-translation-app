@@ -436,7 +436,7 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(controller.currentState).toBe("idle");
   });
 
-  it("does not error when disposed while Silero init is in flight", async () => {
+  it("listens with energy first then swaps in Silero", async () => {
     installBrowser();
     let releaseSilero: ((engine: VadEngine) => void) | undefined;
     const engine = mockSileroEngine(true);
@@ -449,19 +449,65 @@ describe("WorkersAiAsrController VAD session", () => {
         }),
       ...events,
     });
-    const starting = controller.start();
+    await controller.start();
+    expect(controller.currentState).toBe("listening");
+    expect(controller.vadBackend).toBe("energy");
+    expect(events.onError).not.toHaveBeenCalled();
     for (let tick = 0; tick < 10 && !releaseSilero; tick += 1) {
       await Promise.resolve();
     }
-    expect(releaseSilero).toBeTypeOf("function");
-    expect(controller.currentState).toBe("starting");
+    releaseSilero?.(engine);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(controller.vadBackend).toBe("silero");
+    expect(controller.currentState).toBe("listening");
+    controller.dispose();
+    expect(engine.dispose).toHaveBeenCalled();
+  });
+
+  it("does not swap Silero onto a disposed controller", async () => {
+    installBrowser();
+    let releaseSilero: ((engine: VadEngine) => void) | undefined;
+    const engine = mockSileroEngine(true);
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      sileroLoader: () =>
+        new Promise<VadEngine>((resolve) => {
+          releaseSilero = resolve;
+        }),
+      ...events,
+    });
+    await controller.start();
+    expect(controller.vadBackend).toBe("energy");
+    for (let tick = 0; tick < 10 && !releaseSilero; tick += 1) {
+      await Promise.resolve();
+    }
     controller.dispose();
     releaseSilero?.(engine);
-    await starting;
+    await Promise.resolve();
+    await Promise.resolve();
     expect(events.onError).not.toHaveBeenCalled();
     expect(controller.currentState).toBe("idle");
-    expect(events.onStateChange.mock.calls.map((call) => call[0])).not.toContain("listening");
     expect(engine.dispose).toHaveBeenCalled();
+    expect(controller.vadBackend).toBe("energy");
+  });
+
+  it("falls back to energy VAD when Silero process throws and stays listening", async () => {
+    installBrowser();
+    const engine: VadEngine = {
+      process: vi.fn(() => Promise.reject(new Error("ORT tensor"))),
+      dispose: vi.fn(),
+    };
+    const { controller, events } = await startController(engine);
+    expect(controller.vadBackend).toBe("silero");
+    await controller.ingestSamples(Float32Array.from({ length: 512 }, () => 0.4));
+    expect(events.onVadNotice).toHaveBeenCalledWith(SILERO_FALLBACK_NOTICE_JA);
+    expect(controller.vadBackend).toBe("energy");
+    expect(controller.currentState).toBe("listening");
+    expect(events.onError).not.toHaveBeenCalled();
+    expect(engine.dispose).toHaveBeenCalled();
+    controller.dispose();
   });
 
   it("mutes the PCM tap instead of routing ScriptProcessor to speakers", async () => {
@@ -547,8 +593,13 @@ describe("WorkersAiAsrController VAD session", () => {
       ...events,
     });
     await controller.start();
+    expect(controller.currentState).toBe("listening");
+    expect(controller.vadBackend).toBe("energy");
+    await Promise.resolve();
+    await Promise.resolve();
     expect(events.onVadNotice).toHaveBeenCalledWith(SILERO_FALLBACK_NOTICE_JA);
     expect(controller.vadBackend).toBe("energy");
+    expect(events.onError).not.toHaveBeenCalled();
     controller.dispose();
   });
 });
