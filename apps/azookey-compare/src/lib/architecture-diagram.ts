@@ -5,7 +5,7 @@ import { COMPARE_WORKER_ORIGIN } from "./inference-proxy";
 
 export type ArchitectureDiagramKind = "overview" | "mode";
 export type ArchitectureTone = "browser" | "worker" | "desktop" | "dict" | "model" | "io" | "warn";
-export type ArchitectureArtifact = "code" | "static" | "model" | "runtime";
+export type ArchitectureArtifact = "code" | "static" | "model" | "runtime" | "dict";
 export type ArchitecturePath = "device" | "internet" | "depends";
 export type ArchitectureVia = "top" | "boundary" | "gutter" | "vertical";
 export type ArchitectureCost = "light" | "io" | "cpu" | "model";
