@@ -173,7 +173,9 @@ mod tests {
 
     #[test]
     fn nemotron_source_url_points_at_sherpa_onnx_github_release() {
-        assert!(NEMOTRON_35_160MS.source_url.starts_with(SHERPA_ONNX_ASR_RELEASES));
+        assert!(NEMOTRON_35_160MS.source_url.starts_with(
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+        ));
         assert!(NEMOTRON_35_160MS.source_url.ends_with(".tar.bz2"));
         assert_eq!(NEMOTRON_35_160MS.id, STREAMING_INTERIM_ASR_MODEL_ID);
     }
