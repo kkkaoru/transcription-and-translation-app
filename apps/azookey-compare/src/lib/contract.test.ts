@@ -77,7 +77,14 @@ describe("comparison configuration contract", () => {
       language: DEFAULT_COMPARISON_LANGUAGE,
       browserWasmModuleUrl: DEFAULT_BROWSER_WASM_MODULE_URL,
       browserWasmDictionaryUrl: DEFAULT_BROWSER_WASM_DICTIONARY_URL,
+      inputN5LmRescoreEnabled: false,
     });
+    expect(comparisonConfigFieldDescriptions.inputN5LmRescoreEnabled).toContain("input_n5_lm_v1");
+    expect(mergeComparisonConfig({})).toMatchObject({ inputN5LmRescoreEnabled: false });
+    expect(mergeComparisonConfig({ inputN5LmRescoreEnabled: true })).toMatchObject({
+      inputN5LmRescoreEnabled: true,
+    });
+    expect(parseComparisonConfig("{}")).toMatchObject({ inputN5LmRescoreEnabled: false });
     expect(DEFAULT_BROWSER_WASM_FEATURE_INDEX).toBe(7);
     expect(DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL).toMatch(/^ws:/);
   });

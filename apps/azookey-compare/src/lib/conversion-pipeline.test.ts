@@ -70,6 +70,61 @@ describe("comparison conversion pipeline", () => {
     expect(usesWorkerConversion("browser-vibrato")).toBe(false);
   });
 
+  it("rescored kana with input_n5_lm_v1 after Vibrato when the toggle is on", async () => {
+    const runBrowserAzookey = vi.fn(() =>
+      Promise.resolve({ text: "おはようございます", elapsedMs: 3 }),
+    );
+    const result = await runComparisonConversion(
+      {
+        ...baseInput,
+        sourceText: "おはよございます",
+        mode: "browser-vibrato",
+        converterModel: "azookey-rust-wasm",
+        inputN5LmRescoreEnabled: true,
+      },
+      {
+        runBrowserVibrato: vi.fn(() =>
+          Promise.resolve({ text: "おはよございます", elapsedMs: 1 }),
+        ),
+        runBrowserAzookey,
+      },
+    );
+
+    expect(result.trace.azookeyInput).toBe("おはようございます");
+    expect(runBrowserAzookey).toHaveBeenCalledWith("おはようございます");
+    const rescoreStep = result.trace.steps.find((step) => step.id === "rescore");
+    expect(rescoreStep).toMatchObject({
+      id: "rescore",
+      input: "おはよございます",
+      output: "おはようございます",
+    });
+    expect(rescoreStep?.detail).toContain("input-n5-lm-v1");
+  });
+
+  it("skips input_n5_lm_v1 rescore when the toggle is off (default)", async () => {
+    const runBrowserAzookey = vi.fn(() =>
+      Promise.resolve({ text: "おはよございます", elapsedMs: 2 }),
+    );
+    const result = await runComparisonConversion(
+      {
+        ...baseInput,
+        sourceText: "おはよございます",
+        mode: "browser-vibrato",
+        converterModel: "azookey-rust-wasm",
+      },
+      {
+        runBrowserVibrato: vi.fn(() =>
+          Promise.resolve({ text: "おはよございます", elapsedMs: 1 }),
+        ),
+        runBrowserAzookey,
+      },
+    );
+
+    expect(result.trace.azookeyInput).toBe("おはよございます");
+    expect(runBrowserAzookey).toHaveBeenCalledWith("おはよございます");
+    expect(result.trace.steps.some((step) => step.id === "rescore")).toBe(false);
+  });
+
   it("uses the Zenzai dictionary path in browser-complete without falling back to Worker", async () => {
     const convertWithWorker = vi.fn();
     const runBrowserAzookey = vi.fn();

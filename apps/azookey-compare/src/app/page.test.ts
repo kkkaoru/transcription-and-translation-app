@@ -71,6 +71,13 @@ describe("compare page speech settings", () => {
     expect(source).toContain("config-panel-disclosure");
     expect(source).toContain("config-panel-heading-desktop");
     expect(source).toContain("config-panel-body");
+    expect(source).toContain('data-testid="input-n5-lm-rescore-enabled"');
+    expect(source).toContain("inputN5LmRescoreEnabled");
+    expect(source).toContain("input_n5_lm_v1");
+    const configBody = source.indexOf("config-panel-body");
+    const rescoreToggle = source.indexOf('data-testid="input-n5-lm-rescore-enabled"');
+    expect(configBody).toBeGreaterThan(-1);
+    expect(rescoreToggle).toBeGreaterThan(configBody);
     expect(source).toContain("open={configPanelOpen}");
     expect(source).toContain('DESKTOP_CONFIG_MEDIA_QUERY = "(min-width: 641px)"');
     const configPanel = source.indexOf('data-testid="config-panel"');
