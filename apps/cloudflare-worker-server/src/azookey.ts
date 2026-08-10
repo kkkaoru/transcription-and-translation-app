@@ -77,6 +77,14 @@ export const AZOOKEY_MAX_AUTH_TOKEN_BYTES =
 export const AZOOKEY_DEFAULT_TIMEOUT_MS = 2_000;
 export const AZOOKEY_MIN_TIMEOUT_MS = 25;
 export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
+/**
+ * Wall-time reserved for portable WASM when a configured Zenzai upstream hangs.
+ * Official dictionary conversion often needs 300–1100 ms; leave enough headroom
+ * so a dead MODEL_ROUTES host (e.g. local xsmall on :8081) can still finish.
+ */
+export const AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS = 1_500;
+/** Hard cap on one Zenzai `/completion` attempt so hung sockets cannot starve WASM. */
+export const AZOOKEY_ZENZ_UPSTREAM_MAX_MS = 400;
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
 export const AZOOKEY_WASM_ABI_VERSION = 2;
@@ -1158,9 +1166,15 @@ export const convertAzookeyMessage = async (
             message.requestId,
           );
         }
+        const available = remainingMs();
+        const reservedBudget =
+          available > AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS
+            ? available - AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS
+            : Math.max(AZOOKEY_MIN_TIMEOUT_MS, Math.floor(available / 2));
+        const zenzBudget = Math.min(reservedBudget, AZOOKEY_ZENZ_UPSTREAM_MAX_MS);
         const candidate = await withTimeout(
           (signal) => convertWithZenzModel(message.model, conversionInput, runtime, signal),
-          remainingMs(),
+          zenzBudget,
         );
         if (deadlineExpired()) {
           throw new AzookeyProtocolError(
@@ -1184,26 +1198,25 @@ export const convertAzookeyMessage = async (
         }
         converted = candidate;
       } catch (error) {
+        // HTTP status / empty-body failures become AzookeyProtocolError
+        // (conversion_failed). Timeouts are conversion_timeout. Raw fetch
+        // connection errors (TypeError "fetch failed" when MODEL_ROUTES points
+        // at a down llama-server, e.g. local xsmall on :8081) are not protocol
+        // errors — still fall back to portable WASM while budget remains.
         if (
           error instanceof AzookeyProtocolError &&
-          (error.code === "conversion_failed" || error.code === "conversion_timeout")
+          error.code !== "conversion_failed" &&
+          error.code !== "conversion_timeout"
         ) {
-          requestedModel = message.model;
-          modelFallback = AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED;
-          resultModel = AZOOKEY_MODEL;
-          converted = await runDictionaryConversion();
-        } else if (error instanceof AzookeyProtocolError) {
           if (error.requestId === undefined) {
             throw new AzookeyProtocolError(error.code, error.message, message.requestId);
           }
           throw error;
-        } else {
-          throw new AzookeyProtocolError(
-            "conversion_failed",
-            "AzooKey conversion failed",
-            message.requestId,
-          );
         }
+        requestedModel = message.model;
+        modelFallback = AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED;
+        resultModel = AZOOKEY_MODEL;
+        converted = await runDictionaryConversion();
       }
     }
   } catch (error) {

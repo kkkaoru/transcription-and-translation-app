@@ -228,6 +228,37 @@ describe("AzooKey Worker text contract", () => {
     });
   });
 
+  it("falls back to portable WASM when a configured Zenzai upstream connection fails", async () => {
+    // Local MODEL_ROUTES often points at 127.0.0.1:8081 for xsmall. When that
+    // llama-server is down, fetch throws TypeError — not HTTP 5xx — and must
+    // still use the portable dictionary instead of "AzooKey conversion failed".
+    const fetcher = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const message = parseAzookeyMessage(
+      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+    );
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
+      },
+      fetcher,
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://127.0.0.1:8081/completion",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+    });
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(AZOOKEY_MIN_ELAPSED_MS);
+  });
+
   it("uses a configured Zenzai upstream when MODEL_ROUTES exposes the model", async () => {
     const fetcher = vi.fn(async () =>
       new Response(JSON.stringify({ content: "今日は配信です" }), { status: 200 }),
@@ -252,6 +283,8 @@ describe("AzooKey Worker text contract", () => {
   });
 
   it("falls back when a configured Zenzai upstream times out", async () => {
+    // Zenzai is capped (AZOOKEY_ZENZ_UPSTREAM_MAX_MS) so a hanging llama-server
+    // (e.g. local xsmall :8081) still leaves room for portable WASM.
     const fetcher = vi.fn(
       (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
@@ -263,16 +296,20 @@ describe("AzooKey Worker text contract", () => {
     const message = parseAzookeyMessage(
       JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
     );
-    await expect(
-      convertAzookeyMessage(message, {
-        timeoutMs: 25,
-        converter: (text) => `dict:${text}`,
-        modelRoutes: {
-          [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
-        },
-        fetcher,
-      }),
-    ).rejects.toMatchObject({ code: "conversion_timeout", requestId: "req-1" });
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 2_000,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
+      },
+      fetcher,
+    });
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+    });
   });
 
   it("falls back when a configured Zenzai upstream returns empty content", async () => {
