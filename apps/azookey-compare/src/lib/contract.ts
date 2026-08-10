@@ -127,7 +127,7 @@ export const COMPARISON_MODE_OPTIONS = comparisonModeOptions;
 export const comparisonConfigFieldDescriptions = {
   mode: "Choose Cloudflare Worker-dependent Vibrato+conversion, or the fully in-browser Vibrato+AzooKey path. Browser-complete never calls /ws/azookey.",
   converterModel:
-    "Choose AzooKey WASM (browser-complete or Cloudflare Worker), Zenzai LOUDS dictionary in browser-complete, or Zenzai GGUF on the inference Cloudflare Worker when MODEL_ROUTES exposes those upstreams.",
+    "Choose AzooKey WASM (browser-complete or Cloudflare Worker), Zenzai LOUDS dictionary in browser-complete and on the inference Cloudflare Worker when MODEL_ROUTES is empty, or Zenzai GGUF upstreams when MODEL_ROUTES exposes those ids.",
   websocketUrl:
     "A ws:// or wss:// URL for the compare Cloudflare Worker AzooKey endpoint (local wrangler default: ws://127.0.0.1:8787/ws/azookey).",
   auth: "Optional Bearer credentials for the Cloudflare Worker. Keep tokens out of URLs and logs.",
