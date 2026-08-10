@@ -169,8 +169,7 @@ export const CHIP_ROW = 22;
 export const LANE_TITLE_HEIGHT = 36;
 export const STACK_GAP = 40;
 export const OVERVIEW_STACK_GAP = 16;
-export const OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT = 504;
-export const OVERVIEW_DIAGRAM_TARGET_MAX_HEIGHT = 280;
+export const OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT = 744;
 export const MODE_BOX_PAD_TOP = 8;
 export const MODE_BOX_PAD_BOTTOM = 10;
 export const MODE_TITLE_LINE = 17;
@@ -256,22 +255,6 @@ export const layoutStack = (
     const box: ArchitectureBox = { ...item, x, y, w: width, h: 0 };
     box.h = requiredBoxHeight(box, compact);
     y += box.h + gap;
-    return box;
-  });
-};
-
-export const layoutRow = (
-  startX: number,
-  y: number,
-  gap: number,
-  items: Array<BoxDraft & { w: number }>,
-  compact = false,
-): ArchitectureBox[] => {
-  let x = startX;
-  return items.map((item) => {
-    const box: ArchitectureBox = { ...item, x, y, h: 0 };
-    box.h = requiredBoxHeight(box, compact);
-    x += box.w + gap;
     return box;
   });
 };
@@ -506,107 +489,113 @@ const placeBox = (box: Omit<ArchitectureBox, "h">): ArchitectureBox => ({
 
 export const overviewArchitecture = (): ArchitectureDiagram => {
   const width = 680;
-  const marginX = 8;
-  const rowGap = 18;
-  const colGap = 9;
-  const rowY = 12;
-  const [browser, access, compare] = layoutRow(marginX, rowY, colGap, [
-    {
-      id: "browser",
-      w: 132,
-      title: "① ブラウザ",
-      lines: ["Web Speech 認識"],
-      tone: "browser",
-      artifact: "runtime",
-    },
-    {
-      id: "access",
-      w: 168,
-      title: "② Access",
-      lines: ["OTP + Managed OAuth", "teadea"],
-      tone: "io",
-      artifact: "runtime",
-    },
-    {
-      id: "compare",
-      w: 340,
-      title: "③ compare Cloudflare Worker",
-      lines: [COMPARE_WORKER_ORIGIN, "Access JWT + static Next export"],
-      tone: "worker",
-      artifact: "runtime",
-    },
-  ]);
-  const ingressBottom = Math.max(browser.y + browser.h, access.y + access.h, compare.y + compare.h);
-  const forkY = ingressBottom + rowGap;
-  const corridorY = ingressBottom + rowGap / 2;
-  const [browserComplete, workerWs, inference] = layoutRow(marginX, forkY, colGap, [
-    {
-      id: "browser-complete",
-      w: 213,
-      title: "ブラウザ完結",
-      lines: [
-        "Vibrato WASM + AzooKey WASM",
-        "in-page /ws/azookey なし",
-        `Zenzai: ${ARCHITECTURE_DICTIONARIES.azookey.file}`,
-        "LOUDS 辞書のみ / GGUF なし",
-      ],
-      tone: "browser",
-      artifact: "code",
-      cost: "cpu",
-    },
-    {
-      id: "worker-ws",
-      w: 196,
-      title: "worker-vibrato",
-      lines: ["Cloudflare Worker 依存", "/ws/azookey → INFERENCE"],
-      tone: "worker",
-      artifact: "runtime",
-    },
-    {
-      id: "inference",
-      w: 238,
-      title: "kotoba-beacon-inference",
-      lines: [
-        "Cloudflare Worker（推論）",
-        "workers.dev 無し",
-        "AzooKey WASM + LOUDS dict",
-        `${ARCHITECTURE_ZENZAI.env} → Zenzai GGUF`,
-        "未設定 → LOUDS dict フォールバック",
-      ],
-      tone: "worker",
-      artifact: "runtime",
-      cost: "model",
-    },
-  ]);
-  const height =
-    Math.max(browserComplete.y + browserComplete.h, workerWs.y + workerWs.h, inference.y + inference.h) +
-    16;
+  const fullW = 640;
+  const halfW = 300;
+  const leftX = 20;
+  const rightX = 360;
+  const gutterX = 340;
+  const gap = OVERVIEW_STACK_GAP;
+  const browser = placeBox({
+    id: "browser",
+    x: leftX,
+    y: 12,
+    w: fullW,
+    title: "① ブラウザ",
+    lines: ["Web Speech 認識"],
+    tone: "browser",
+    artifact: "runtime",
+  });
+  const access = placeBox({
+    id: "access",
+    x: leftX,
+    y: browser.y + browser.h + gap,
+    w: fullW,
+    title: "② Access",
+    lines: ["OTP + Managed OAuth", "teadea"],
+    tone: "io",
+    artifact: "runtime",
+  });
+  const compare = placeBox({
+    id: "compare",
+    x: leftX,
+    y: access.y + access.h + gap,
+    w: fullW,
+    title: "③ compare Cloudflare Worker",
+    lines: [COMPARE_WORKER_ORIGIN, "Access JWT + static Next export"],
+    tone: "worker",
+    artifact: "runtime",
+  });
+  const forkY = compare.y + compare.h + gap;
+  const browserComplete = placeBox({
+    id: "browser-complete",
+    x: leftX,
+    y: forkY,
+    w: halfW,
+    title: "ブラウザ完結",
+    lines: [
+      "Vibrato WASM + AzooKey WASM",
+      "in-page /ws/azookey なし",
+      `Zenzai: ${ARCHITECTURE_DICTIONARIES.azookey.file}`,
+      "LOUDS 辞書のみ / GGUF なし",
+    ],
+    tone: "browser",
+    artifact: "code",
+    cost: "cpu",
+  });
+  const workerWs = placeBox({
+    id: "worker-ws",
+    x: rightX,
+    y: forkY,
+    w: halfW,
+    title: "worker-vibrato",
+    lines: ["Cloudflare Worker 依存", "/ws/azookey → INFERENCE"],
+    tone: "worker",
+    artifact: "runtime",
+  });
+  const inference = placeBox({
+    id: "inference",
+    x: rightX,
+    y: workerWs.y + workerWs.h + gap,
+    w: halfW,
+    title: "kotoba-beacon-inference",
+    lines: [
+      "Cloudflare Worker（推論）",
+      "workers.dev 無し",
+      "AzooKey WASM + LOUDS dict",
+      `${ARCHITECTURE_ZENZAI.env} → Zenzai GGUF`,
+      "未設定 → LOUDS dict フォールバック",
+    ],
+    tone: "worker",
+    artifact: "runtime",
+    cost: "model",
+  });
+  const height = Math.max(browserComplete.y + browserComplete.h, inference.y + inference.h) + 16;
 
   return {
     viewBox: `0 0 ${width} ${height}`,
     width,
     height,
-    corridorY,
+    gutterX,
     lanes: [],
     boxes: [browser, access, compare, browserComplete, workerWs, inference],
     edges: [
-      { from: "browser", to: "access", path: "internet" },
-      { from: "access", to: "compare", path: "internet" },
+      { from: "browser", to: "access", path: "internet", via: "vertical" },
+      { from: "access", to: "compare", path: "internet", via: "vertical" },
       {
         from: "compare",
         to: "browser-complete",
         path: "device",
         via: "vertical",
-        corridorY,
+        corridorY: compare.y + compare.h + 8,
       },
       {
         from: "compare",
         to: "worker-ws",
         path: "device",
         via: "vertical",
-        corridorY,
+        corridorY: compare.y + compare.h + 8,
       },
-      { from: "worker-ws", to: "inference", path: "device", label: "INFERENCE" },
+      { from: "worker-ws", to: "inference", path: "device", via: "vertical", label: "INFERENCE" },
     ],
   };
 };
