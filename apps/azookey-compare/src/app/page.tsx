@@ -1353,7 +1353,11 @@ export default function ComparePage() {
               <div className="live-card-heading">
                 <div>
                   <p className="eyebrow">IMMEDIATE</p>
-                  <h3>Web Speech 認識結果</h3>
+                  <h3>
+                    {config.recognitionProvider === "workers-ai-asr"
+                      ? "Workers AI ASR 認識結果"
+                      : "Web Speech 認識結果"}
+                  </h3>
                 </div>
                 <span className="lane-index">01</span>
               </div>

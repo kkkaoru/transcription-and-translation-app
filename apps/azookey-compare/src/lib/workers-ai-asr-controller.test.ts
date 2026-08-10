@@ -1,0 +1,285 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { blobToPcm16Mono } from "./pcm-wav";
+import { transcribeWorkersAiAsr } from "./workers-ai-asr-client";
+import { WorkersAiAsrController } from "./workers-ai-asr-controller";
+import { WORKERS_AI_ASR_VAD_DEFAULTS } from "./workers-ai-asr-vad";
+
+vi.mock("./workers-ai-asr-client", () => ({
+  transcribeWorkersAiAsr: vi.fn(async () => ({ text: "こんにちは" })),
+}));
+
+vi.mock("./pcm-wav", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./pcm-wav")>();
+  return {
+    ...actual,
+    blobToPcm16Mono: vi.fn(async () => new Int16Array(16_000)),
+  };
+});
+
+const LOUD_DB = -20;
+const SILENT_DB = -80;
+
+type FakeTrack = { stop: ReturnType<typeof vi.fn> };
+
+class FakeMediaStreamSource {
+  connect(_node: unknown): void {}
+}
+
+class FakeAnalyser {
+  fftSize = 2048;
+  fill = 128;
+
+  getByteTimeDomainData(array: Uint8Array): void {
+    array.fill(this.fill);
+  }
+}
+
+class FakeAudioContext {
+  state: AudioContextState = "running";
+  closeCalls = 0;
+  resumeCalls = 0;
+  analyser = new FakeAnalyser();
+
+  createMediaStreamSource(_stream: MediaStream): FakeMediaStreamSource {
+    return new FakeMediaStreamSource();
+  }
+
+  createAnalyser(): FakeAnalyser {
+    return this.analyser;
+  }
+
+  resume(): Promise<void> {
+    this.resumeCalls += 1;
+    this.state = "running";
+    return Promise.resolve();
+  }
+
+  close(): Promise<void> {
+    this.closeCalls += 1;
+    this.state = "closed";
+    return Promise.resolve();
+  }
+}
+
+class FakeMediaRecorder {
+  static instances: FakeMediaRecorder[] = [];
+
+  state: "inactive" | "recording" = "inactive";
+  ondataavailable: ((event: { data: Blob }) => void) | null = null;
+  onerror: ((event: { error?: { message?: string } }) => void) | null = null;
+  onstop: (() => void) | null = null;
+  startCalls = 0;
+  stopCalls = 0;
+  stream: MediaStream;
+
+  constructor(stream: MediaStream) {
+    this.stream = stream;
+    FakeMediaRecorder.instances.push(this);
+  }
+
+  start(): void {
+    this.startCalls += 1;
+    this.state = "recording";
+  }
+
+  stop(): void {
+    this.stopCalls += 1;
+    this.state = "inactive";
+    this.ondataavailable?.({
+      data: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "audio/webm" }),
+    });
+    this.onstop?.();
+  }
+}
+
+const fakeTrack = (): FakeTrack => ({ stop: vi.fn() });
+
+const installBrowser = (track = fakeTrack()): MediaStream => {
+  FakeMediaRecorder.instances = [];
+  const stream = { getTracks: () => [track] } as unknown as MediaStream;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    writable: true,
+    value: { AudioContext: FakeAudioContext },
+  });
+  Object.defineProperty(globalThis, "AudioContext", {
+    configurable: true,
+    writable: true,
+    value: FakeAudioContext,
+  });
+  Object.defineProperty(globalThis, "MediaRecorder", {
+    configurable: true,
+    writable: true,
+    value: FakeMediaRecorder,
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      mediaDevices: {
+        getUserMedia: vi.fn(async () => stream),
+      },
+    },
+  });
+  return stream;
+};
+
+const callbacks = () => ({
+  onStateChange: vi.fn(),
+  onTranscript: vi.fn(),
+  onFinalText: vi.fn(),
+  onUtteranceFinal: vi.fn(),
+  onError: vi.fn(),
+});
+
+const startController = async () => {
+  const events = callbacks();
+  const controller = new WorkersAiAsrController("ja-JP", {
+    language: "ja-JP",
+    endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
+    ...events,
+  });
+  await controller.start();
+  return { controller, events };
+};
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.mocked(transcribeWorkersAiAsr).mockReset();
+  vi.mocked(transcribeWorkersAiAsr).mockResolvedValue({ text: "こんにちは" });
+  vi.mocked(blobToPcm16Mono).mockReset();
+  vi.mocked(blobToPcm16Mono).mockResolvedValue(new Int16Array(16_000));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  FakeMediaRecorder.instances = [];
+  Reflect.deleteProperty(globalThis, "window");
+  Reflect.deleteProperty(globalThis, "AudioContext");
+  Reflect.deleteProperty(globalThis, "MediaRecorder");
+  Reflect.deleteProperty(globalThis, "navigator");
+});
+
+describe("WorkersAiAsrController VAD session", () => {
+  it("is inert without MediaRecorder / getUserMedia", () => {
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", { language: "ja-JP", ...events });
+    expect(controller.supported).toBe(false);
+    void controller.start();
+    controller.stop();
+    controller.dispose();
+    expect(events.onStateChange).toHaveBeenCalledWith("idle");
+  });
+
+  it("transcribes on VAD utterance-end, clears 録音中…, and records the next utterance without stop", async () => {
+    installBrowser();
+    const { controller, events } = await startController();
+    expect(controller.currentState).toBe("listening");
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+
+    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+    expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "録音中…" });
+
+    await controller.ingestVadFrame(SILENT_DB, WORKERS_AI_ASR_VAD_DEFAULTS.endSilenceMs);
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+    const [wav, options] = vi.mocked(transcribeWorkersAiAsr).mock.calls[0] ?? [];
+    expect(wav).toBeInstanceOf(File);
+    expect((wav as File).name).toBe("utterance.wav");
+    expect((wav as File).type).toBe("audio/wav");
+    expect(options).toMatchObject({
+      endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
+      language: "ja-JP",
+    });
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith({ text: "こんにちは", audioSeconds: 1 });
+    expect(events.onFinalText).toHaveBeenCalledWith("こんにちは");
+    expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "認識中…" });
+    expect(events.onTranscript).toHaveBeenLastCalledWith({ interimText: "" });
+    expect(controller.currentState).toBe("listening");
+
+    vi.mocked(transcribeWorkersAiAsr).mockResolvedValueOnce({ text: "きょうははれ" });
+    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
+    expect(FakeMediaRecorder.instances).toHaveLength(2);
+    await controller.ingestVadFrame(SILENT_DB, WORKERS_AI_ASR_VAD_DEFAULTS.endSilenceMs);
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(2);
+    expect(events.onUtteranceFinal).toHaveBeenLastCalledWith({
+      text: "きょうははれ",
+      audioSeconds: 1,
+    });
+    expect(controller.currentState).toBe("listening");
+    controller.dispose();
+  });
+
+  it("flushes in-progress speech once on user stop and goes idle", async () => {
+    installBrowser();
+    const { controller, events } = await startController();
+    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
+    expect(FakeMediaRecorder.instances[0]?.state).toBe("recording");
+
+    await controller.stop();
+
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+    expect(events.onUtteranceFinal).toHaveBeenCalledTimes(1);
+    expect(controller.currentState).toBe("idle");
+    expect(FakeMediaRecorder.instances[0]?.stopCalls).toBe(1);
+
+    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
+    await controller.ingestVadFrame(SILENT_DB, WORKERS_AI_ASR_VAD_DEFAULTS.endSilenceMs);
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it("does not transcribe a silence-only session on user stop", async () => {
+    const track = fakeTrack();
+    installBrowser(track);
+    const { controller, events } = await startController();
+    await controller.ingestVadFrame(SILENT_DB, 5_000);
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+
+    await controller.stop();
+
+    expect(transcribeWorkersAiAsr).not.toHaveBeenCalled();
+    expect(events.onUtteranceFinal).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("idle");
+    expect(track.stop).toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("discards a noise blip without transcribing", async () => {
+    installBrowser();
+    const { controller, events } = await startController();
+    await controller.ingestVadFrame(LOUD_DB, 80);
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+    expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "録音中…" });
+    await controller.ingestVadFrame(SILENT_DB, 100);
+    expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "" });
+    expect(transcribeWorkersAiAsr).not.toHaveBeenCalled();
+    expect(controller.currentState).toBe("listening");
+    controller.dispose();
+  });
+
+  it("updates language on the existing controller", async () => {
+    installBrowser();
+    const { controller } = await startController();
+    controller.setLanguage("en-US");
+    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
+    await controller.ingestVadFrame(SILENT_DB, WORKERS_AI_ASR_VAD_DEFAULTS.endSilenceMs);
+    expect(vi.mocked(transcribeWorkersAiAsr).mock.calls[0]?.[1]).toMatchObject({
+      language: "en-US",
+    });
+    controller.dispose();
+  });
+
+  it("surfaces getUserMedia failure", async () => {
+    installBrowser();
+    (
+      navigator as Navigator & { mediaDevices: { getUserMedia: ReturnType<typeof vi.fn> } }
+    ).mediaDevices.getUserMedia = vi.fn(() => Promise.reject(new Error("permission denied")));
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", { language: "ja-JP", ...events });
+    await controller.start();
+    expect(controller.currentState).toBe("error");
+    expect(events.onError).toHaveBeenCalledWith("permission denied");
+    controller.dispose();
+  });
+});

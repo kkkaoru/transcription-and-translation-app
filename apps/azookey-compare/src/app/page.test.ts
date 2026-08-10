@@ -60,6 +60,13 @@ describe("compare page speech settings", () => {
     expect(source).toContain("config-panel-disclosure");
   });
 
+  it("labels the live recognition heading for Workers AI ASR", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    expect(source).toContain('config.recognitionProvider === "workers-ai-asr"');
+    expect(source).toContain("Workers AI ASR 認識結果");
+    expect(source).toContain("Web Speech 認識結果");
+  });
+
   it("renders per-utterance Cloudflare conversion cost on comparison rows", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
     expect(source).toContain('data-testid="utterance-cost-card"');
