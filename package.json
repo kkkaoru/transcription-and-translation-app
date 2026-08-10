@@ -45,7 +45,7 @@
     "azookey-compare:build": "bun --filter=@caption-bridge/azookey-compare run build",
     "azookey-compare:deploy": "bun --filter=@caption-bridge/azookey-compare run deploy",
     "access:setup": "node scripts/setup-cloudflare-access.mjs",
-    "access:verify": "node scripts/verify-cloudflare-hosted.mjs",
+    "access:verify": "bun scripts/verify-cloudflare-hosted.mjs",
     "check:single-app": "node scripts/check-single-app.mjs",
     "assets:verify": "node scripts/verify-generated-assets.mjs --require-tracked",
     "check:macos-autoswitch": "bash scripts/verify-macos-autoswitch.sh",

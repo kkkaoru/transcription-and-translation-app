@@ -8,9 +8,12 @@
 use caption_bridge_azookey_rust::{
     convert_with_dictionary, AzooKeyDictionary, ConversionOptions, DictionaryPaths,
 };
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
-fn gunzip_file(path: &PathBuf) -> Vec<u8> {
+fn gunzip_file(path: &Path) -> Vec<u8> {
     let output = Command::new("gzip")
         .args(["-dc", path.to_str().expect("utf8 path")])
         .output()
