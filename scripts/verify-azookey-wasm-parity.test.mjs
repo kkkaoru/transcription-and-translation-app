@@ -4,7 +4,9 @@ import { describe, it } from "node:test";
 import {
   assertCompareDoesNotShipAzookeyAssets,
   assertInferenceCompareShareWorkerAssets,
+  assertPinnedDictionary,
   COMPARE_MUST_NOT_SHIP,
+  convertSpotChecks,
   createPortableConverter,
   EXPECTED_DICT_SHA256,
   loadWorkerAzookeyAssets,
@@ -48,5 +50,21 @@ describe("AzooKey worker wasm/dict portable ABI parity", () => {
     assert.equal(result.dictSha256, EXPECTED_DICT_SHA256);
     assert.equal(result.conversions[0]?.input, "きょうはいいてんき");
     assert.equal(result.conversions[0]?.output, "今日はいい天気");
+  });
+
+  it("regresses phrase-neutral はしのはじからものがおちてます on official system dictionary default conversion", () => {
+    const assets = loadWorkerAzookeyAssets();
+    assertPinnedDictionary(assets);
+    assert.equal(assets.dictSha256, EXPECTED_DICT_SHA256);
+    assert.ok(assets.dictPath.endsWith(WORKER_DICT_RELATIVE_PATH));
+
+    // Official system dictionary only: createPortableConverter does not load user/phrase rows.
+    const convert = createPortableConverter(assets.wasmBytes, assets.dictGz);
+    const conversions = convertSpotChecks(convert, [
+      ["はしのはじからものがおちてます", "橋の端から物が落ちてます"],
+    ]);
+    assert.equal(conversions[0]?.input, "はしのはじからものがおちてます");
+    assert.equal(conversions[0]?.output, "橋の端から物が落ちてます");
+    assert.equal(conversions[0]?.expected, "橋の端から物が落ちてます");
   });
 });
