@@ -1412,6 +1412,36 @@ export const MainApp = () => {
               ? performance.now()
               : Date.now();
           try {
+            // Paint recognized characters immediately as a low-emphasis
+            // provisional caption so the plate moves before AzooKey finishes.
+            // mergeCaptionPayload upgrades this in place when the normalized
+            // source arrives below.
+            const provisionalSurface =
+              selectParapperSurfaceText(output) ||
+              output.azookeyInputText?.trim() ||
+              output.text.trim();
+            if (provisionalSurface) {
+              const receivedAt = Date.now();
+              const provisionalStartedAt = Math.max(
+                0,
+                receivedAt - Math.max(0, output.elapsedMs),
+              );
+              mergeAndCommitCaption({
+                id: `parapper:${output.sessionId}:${output.turnSessionId}:${output.turnId}`,
+                sourceText: provisionalSurface,
+                azookeyInputText: output.azookeyInputText ?? output.text,
+                translationText: "",
+                sourceLanguage: captureConfig.language.source,
+                targetLanguage: captureConfig.language.target,
+                startedAt: provisionalStartedAt,
+                receivedAt,
+                stage: "source",
+                sequence: 0,
+                isFinal: false,
+                provisional: true,
+                captureGeneration: captureGenerationForAttempt,
+              });
+            }
             const nextCaption = await bridge.normalizeParapperOutput(output);
             if (attempt !== captureAttempt.current) {
               return;
