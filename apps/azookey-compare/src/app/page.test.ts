@@ -51,4 +51,11 @@ describe("compare page speech settings", () => {
     expect(source).toContain("conversionTraceDisplayLines");
     expect(source).toContain("trace: result.trace");
   });
+
+  it("renders per-utterance Cloudflare conversion cost on comparison rows", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    expect(source).toContain('data-testid="utterance-conversion-cost"');
+    expect(source).toContain("estimateCloudflareConversionCost");
+    expect(source).toContain("cost.summaryJa");
+  });
 });

@@ -43,6 +43,10 @@ import {
   traceStepLocationLabel,
 } from "../lib/conversion-trace";
 import {
+  estimateCloudflareConversionCost,
+  usesExternalGgufUpstream,
+} from "../lib/cloudflare-conversion-cost";
+import {
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
   isConverterModel,
@@ -84,6 +88,12 @@ interface ComparisonRow {
   error?: string;
   failedStage?: ConversionStage;
   trace?: ConversionTrace;
+  usedWebSocket?: boolean;
+  openedNewWebSocket?: boolean;
+  requestedModel?: string;
+  resolvedModel?: string;
+  modelFallback?: string;
+  failedBeforeInference?: boolean;
   createdAt: number;
 }
 
@@ -355,6 +365,8 @@ export default function ComparePage() {
       const forcedPhonetic = options.phoneticInput?.trim();
       let vibratoInput = forcedPhonetic || normalizedSource;
       let wasmElapsedMs: number | undefined;
+      let openedNewWebSocket = false;
+      let cloudflareConnectAttempted = false;
       // Tracks the stage in flight so a failure is attributed to the stage that
       // actually failed, rather than to whichever stage happened to run last.
       const stageRef: { current: ConversionStage } = { current: "setup" };
@@ -412,6 +424,7 @@ export default function ComparePage() {
               if (!client) {
                 throw new Error("Cloudflare Worker WebSocket クライアントを初期化できません");
               }
+              cloudflareConnectAttempted = true;
               const workerGeneration = workerGenerationRef.current;
               if (
                 workerRef.current !== client ||
@@ -419,7 +432,11 @@ export default function ComparePage() {
               ) {
                 throw new Error("Cloudflare Worker 設定が変更されました。発話を再送してください");
               }
+              const wsAlreadyOpen = client.connectionState === "open";
               await client.connect();
+              if (!wsAlreadyOpen) {
+                openedNewWebSocket = true;
+              }
               if (
                 workerRef.current !== client ||
                 workerGenerationRef.current !== workerGeneration
@@ -445,6 +462,11 @@ export default function ComparePage() {
           convertedText: result.convertedText,
           vibratoInput: result.vibratoInput,
           trace: result.trace,
+          usedWebSocket: result.usedWebSocket,
+          openedNewWebSocket,
+          ...(result.requestedModel !== undefined ? { requestedModel: result.requestedModel } : {}),
+          ...(result.model !== undefined ? { resolvedModel: result.model } : {}),
+          ...(result.modelFallback !== undefined ? { modelFallback: result.modelFallback } : {}),
           ...(result.wasmElapsedMs !== undefined ? { wasmElapsedMs: result.wasmElapsedMs } : {}),
           ...(result.workerElapsedMs !== undefined || result.azookeyElapsedMs !== undefined
             ? { workerElapsedMs: result.workerElapsedMs ?? result.azookeyElapsedMs }
@@ -468,7 +490,21 @@ export default function ComparePage() {
         // different outcomes; only the Worker can prove which one occurred.
         const failedStage =
           stageRef.current === "worker" ? workerErrorStage(caught) : stageRef.current;
-        patchRow({ state: "error", error: message, vibratoInput, failedStage });
+        patchRow({
+          state: "error",
+          error: message,
+          vibratoInput,
+          failedStage,
+          ...(mode === "worker-vibrato" && cloudflareConnectAttempted
+            ? {
+                usedWebSocket: true,
+                openedNewWebSocket,
+                failedBeforeInference: stageRef.current !== "worker",
+              }
+            : mode === "browser-vibrato"
+              ? { usedWebSocket: false }
+              : {}),
+        });
         setError(message);
       }
     },
@@ -1303,6 +1339,30 @@ export default function ComparePage() {
                           {rowPathLabel(row.mode, row.state, row.failedStage)} ·{" "}
                           {formatRowTiming(row)}
                         </span>
+                        {(() => {
+                          const cost = estimateCloudflareConversionCost({
+                            usedWebSocket:
+                              row.mode === "browser-vibrato"
+                                ? false
+                                : (row.usedWebSocket ?? row.mode === "worker-vibrato"),
+                            openedNewWebSocket: row.openedNewWebSocket ?? false,
+                            workerElapsedMs: row.workerElapsedMs,
+                            failedBeforeInference: row.failedBeforeInference,
+                            usesExternalGgufUpstream: usesExternalGgufUpstream({
+                              requestedModel: row.requestedModel ?? row.trace?.workerRequest?.model,
+                              resolvedModel: row.resolvedModel,
+                              modelFallback: row.modelFallback,
+                            }),
+                          });
+                          return (
+                            <span
+                              className="row-meta row-conversion-cost"
+                              data-testid="utterance-conversion-cost"
+                            >
+                              {cost.summaryJa}
+                            </span>
+                          );
+                        })()}
                         {row.trace?.workerRequest ? (
                           <span className="row-meta row-trace-worker-payload">
                             Cloudflare Worker 送信: sourceText={row.trace.workerRequest.sourceText} ·
