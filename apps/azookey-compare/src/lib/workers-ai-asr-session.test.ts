@@ -347,9 +347,7 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     const denied = new Error("Permission denied");
     denied.name = "NotAllowedError";
     const created = fakeController({
-      start: vi.fn(async () => {
-        throw denied;
-      }),
+      start: vi.fn(() => Promise.reject(denied)),
     });
     const onError = vi.fn();
     const result = await startCloudflareWorkersAiAsrAfterSelect({
@@ -368,8 +366,9 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
 
   it("treats controller error state after start as failure", async () => {
     const created = fakeController({
-      start: vi.fn(async () => {
+      start: vi.fn(() => {
         (created as { currentState: string }).currentState = "error";
+        return Promise.resolve();
       }),
     });
     const result = await startCloudflareWorkersAiAsrAfterSelect({
@@ -403,8 +402,9 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
 
   it("accepts starting state immediately after start", async () => {
     const created = fakeController({
-      start: vi.fn(async () => {
+      start: vi.fn(() => {
         (created as { currentState: string }).currentState = "starting";
+        return Promise.resolve();
       }),
     });
     const result = await startCloudflareWorkersAiAsrAfterSelect({
@@ -417,4 +417,3 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
     expect(result.controller?.currentState).toBe("starting");
   });
 });
-
