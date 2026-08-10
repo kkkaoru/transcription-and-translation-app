@@ -203,6 +203,16 @@ describe("compare page speech settings", () => {
     expect(controller).toContain("disableSilero");
   });
 
+  it("normalizes Web Speech and Workers AI ASR sourceText before conversion rows", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    expect(source).toContain("normalizeSourceText");
+    const dispatchStart = source.indexOf("const dispatchFinalText = useCallback");
+    expect(dispatchStart).toBeGreaterThan(-1);
+    const dispatchSlice = source.slice(dispatchStart, dispatchStart + 1200);
+    expect(dispatchSlice).toContain("normalizeSourceText(sourceText)");
+    expect(dispatchSlice).not.toContain("sourceText.trim()");
+  });
+
   it("renders per-utterance Cloudflare conversion cost on comparison rows", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
     expect(source).toContain('data-testid="utterance-cost-card"');
