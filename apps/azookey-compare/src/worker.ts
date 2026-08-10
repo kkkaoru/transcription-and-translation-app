@@ -24,6 +24,7 @@ export default {
     if (shouldProxyToInference(pathname)) {
       return env.INFERENCE.fetch(inferenceProxyRequest(request, env));
     }
+    // Clone ASSETS responses so HTML is no-store while hashed /_next/static stays immutable.
     const asset = await env.ASSETS.fetch(request);
     return withCompareStaticAssetHeaders(pathname, asset);
   },

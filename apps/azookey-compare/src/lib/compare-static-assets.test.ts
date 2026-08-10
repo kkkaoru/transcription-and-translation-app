@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMPARE_HASHED_STATIC_CACHE_CONTROL,
+  COMPARE_HTML_CACHE_CONTROL,
   COMPARE_WORKER_MAX_ASSET_BYTES,
+  compareAssetCacheControl,
   compareStaticAssetContentType,
+  isCompareHtmlPath,
+  isHashedNextStaticPath,
   isOversizedCompareOrtAsset,
   withCompareStaticAssetHeaders,
 } from "./compare-static-assets";
@@ -44,10 +49,68 @@ describe("compare static asset MIME helpers", () => {
     const wasm = new Response(null, { headers: { "content-type": "application/wasm" } });
     expect(withCompareStaticAssetHeaders("/ort/model.wasm", wasm)).toBe(wasm);
   });
+});
 
-  it("leaves non-model HTML responses unchanged", () => {
-    const html = new Response("<!doctype html>", { headers: { "content-type": "text/html" } });
+describe("compare ASSETS Cache-Control", () => {
+  it("classifies HTML routes and hashed Next static paths", () => {
+    expect(isCompareHtmlPath("/")).toBe(true);
+    expect(isCompareHtmlPath("/index.html")).toBe(true);
+    expect(isCompareHtmlPath("/overview")).toBe(true);
+    expect(isCompareHtmlPath("/_next/static/chunks/app/page-abc.js")).toBe(false);
+    expect(isHashedNextStaticPath("/_next/static/chunks/app/page-abc.js")).toBe(true);
+    expect(isHashedNextStaticPath("/ort/ort-wasm-simd-threaded.wasm")).toBe(false);
+  });
+
+  it("chooses no-store for HTML and immutable for hashed chunks", () => {
+    expect(compareAssetCacheControl("/", "text/html")).toBe(COMPARE_HTML_CACHE_CONTROL);
+    expect(compareAssetCacheControl("/index.html", "text/html; charset=utf-8")).toBe(
+      COMPARE_HTML_CACHE_CONTROL,
+    );
+    expect(
+      compareAssetCacheControl("/_next/static/chunks/app/page-abc.js", "application/javascript"),
+    ).toBe(COMPARE_HASHED_STATIC_CACHE_CONTROL);
+    expect(compareAssetCacheControl("/ort/model.wasm", "application/wasm")).toBeUndefined();
+  });
+
+  it("sets no-store on HTML even when ASSETS returned a revalidate cache header", () => {
+    const html = new Response("<!doctype html>", {
+      headers: {
+        "content-type": "text/html",
+        "cache-control": "public, max-age=0, must-revalidate",
+      },
+    });
+    const next = withCompareStaticAssetHeaders("/", html);
+    expect(next).not.toBe(html);
+    expect(next.headers.get("cache-control")).toBe(COMPARE_HTML_CACHE_CONTROL);
+    expect(next.headers.get("content-type")).toBe("text/html");
+  });
+
+  it("sets immutable cache on hashed Next static chunks", () => {
+    const js = new Response("console.log(1)", {
+      headers: {
+        "content-type": "application/javascript",
+        "cache-control": "public, max-age=0, must-revalidate",
+      },
+    });
+    const next = withCompareStaticAssetHeaders("/_next/static/chunks/app/page-abc.js", js);
+    expect(next.headers.get("cache-control")).toBe(COMPARE_HASHED_STATIC_CACHE_CONTROL);
+  });
+
+  it("does not treat hashed Next HTML fallback as immutable", () => {
+    const html = new Response("<!doctype html>", {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+    const next = withCompareStaticAssetHeaders("/_next/static/chunks/missing.js", html);
+    expect(next.headers.get("cache-control")).toBe(COMPARE_HTML_CACHE_CONTROL);
+  });
+
+  it("leaves already-correct HTML no-store responses unchanged", () => {
+    const html = new Response("<!doctype html>", {
+      headers: {
+        "content-type": "text/html",
+        "cache-control": COMPARE_HTML_CACHE_CONTROL,
+      },
+    });
     expect(withCompareStaticAssetHeaders("/index.html", html)).toBe(html);
-    expect(withCompareStaticAssetHeaders("/no-extension", html)).toBe(html);
   });
 });
