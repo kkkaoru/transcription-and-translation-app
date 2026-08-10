@@ -36,6 +36,8 @@ export interface CaptionItem {
   azookeyInputText?: string | null;
   sentenceEndOffsets?: number[];
   softBreakOffsets?: number[];
+  /** Skip mid-string sentence paging for provisional / non-final live captions. */
+  deferSentencePaging?: boolean;
 }
 
 /**
@@ -239,9 +241,10 @@ const splitLongLine = (line: string, maxChars: number, softBreakOffsets: number[
   let remaining = characters;
   let consumed = 0;
   while (remaining.length > maxChars) {
-    // Prefer a POS soft break earlier than the hard budget so live captions
-    // refresh on natural phrase boundaries before maxChars is exhausted.
-    const earlyFloor = Math.max(1, Math.floor(maxChars * 0.4));
+    // Prefer a POS soft break near the hard budget (not mid-line) so wrapping
+    // stays natural without producing many short lines that overflow the
+    // CAPTION_MAX_VISIBLE_LINES plate after a second CSS/canvas wrap.
+    const earlyFloor = Math.max(1, Math.floor(maxChars * 0.7));
     const relativeSoft = softGraphemes
       .map((offset) => offset - consumed)
       .filter((offset) => offset > 0);
@@ -346,17 +349,40 @@ export const segmentCaptionText = (
     .filter(Boolean);
 };
 
+/** Keep only the newest logical lines so the plate never exceeds the visible budget. */
+export const keepNewestCaptionLines = (
+  lines: string[],
+  maxLines: number = CAPTION_MAX_VISIBLE_LINES,
+): string[] => {
+  const safeMaxLines = Math.max(1, Math.floor(maxLines));
+  if (lines.length <= safeMaxLines) {
+    return lines;
+  }
+  return lines.slice(lines.length - safeMaxLines);
+};
+
 /**
  * Logical lines used by both the DOM overlay and the native canvas output.
  *
  * The budget rides on the item so every consumer honours the configured
  * value without threading the config through its own call sites. Items built
  * outside {@link captionItems} (older fixtures) keep the per-row default.
+ *
+ * Soft breaks wrap inside the grapheme window; after segmentation the result
+ * is clamped to {@link CAPTION_MAX_VISIBLE_LINES} so CSS/canvas cannot paint
+ * three or four visual rows from one source/translation plate.
  */
 export const captionTextLines = (
   item: Pick<CaptionItem, "key" | "text"> &
     Partial<
-      Pick<CaptionItem, "maxChars" | "azookeyInputText" | "sentenceEndOffsets" | "softBreakOffsets">
+      Pick<
+        CaptionItem,
+        | "maxChars"
+        | "azookeyInputText"
+        | "sentenceEndOffsets"
+        | "softBreakOffsets"
+        | "deferSentencePaging"
+      >
     >,
 ): string[] => {
   const maxChars =
@@ -366,6 +392,7 @@ export const captionTextLines = (
     azookeyInputText: item.azookeyInputText,
     sentenceEndOffsets: item.sentenceEndOffsets,
     softBreakOffsets: item.softBreakOffsets,
+    deferSentencePaging: item.deferSentencePaging,
   };
   const windowed = trimCaptionToDisplayWindow(
     item.text,
@@ -373,7 +400,10 @@ export const captionTextLines = (
     CAPTION_MAX_VISIBLE_LINES,
     hints,
   );
-  return segmentCaptionText(windowed, maxChars, detectCaptionSoftBreaks(windowed, hints));
+  return keepNewestCaptionLines(
+    segmentCaptionText(windowed, maxChars, detectCaptionSoftBreaks(windowed, hints)),
+    CAPTION_MAX_VISIBLE_LINES,
+  );
 };
 
 export const createPreviewCaption = (): CaptionPayload => {
@@ -410,6 +440,10 @@ export const captionItems = (
   caption: CaptionPayload,
   placeholder = false,
 ): CaptionItem[] => {
+  // Provisional and non-final revisions must keep mid-utterance characters;
+  // sentence paging to the newest completed copula would hide speech still in
+  // progress. Final captions (and payloads without isFinal) keep paging.
+  const deferSentencePaging = caption.provisional === true || caption.isFinal === false;
   const source: CaptionItem = {
     key: "source",
     text: placeholder
@@ -420,6 +454,7 @@ export const captionItems = (
     azookeyInputText: caption.azookeyInputText,
     sentenceEndOffsets: caption.sentenceEndOffsets,
     softBreakOffsets: caption.softBreakOffsets,
+    deferSentencePaging,
   };
   const translation: CaptionItem = {
     key: "translation",
@@ -428,6 +463,7 @@ export const captionItems = (
       : sanitizeCaptionDisplayText(caption.translationText),
     style: config.overlay.translation,
     maxChars: resolveCaptionMaxChars(config, "translation"),
+    deferSentencePaging,
   };
   return config.overlay.order === "source-first" ? [source, translation] : [translation, source];
 };

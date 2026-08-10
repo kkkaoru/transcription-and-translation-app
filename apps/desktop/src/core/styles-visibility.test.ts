@@ -81,6 +81,12 @@ describe("styles.css visibility + no-hover-motion guards", () => {
     expect(css).toMatch(/\.debug-stage-text\s*\{[\s\S]*?white-space\s*:\s*pre-wrap/i);
   });
 
+  it("keeps caption lines from pixel-wrapping past the logical 2-line budget", () => {
+    expect(css).toMatch(/\.caption-line\s*\{[\s\S]*?overflow-wrap\s*:\s*normal/i);
+    expect(css).toMatch(/\.caption-line\s*\{[\s\S]*?word-break\s*:\s*keep-all/i);
+    expect(css).toMatch(/\.caption-line\s*\{[\s\S]*?white-space\s*:\s*pre-wrap/i);
+  });
+
   it("stacks the shell at the compact desktop breakpoint", () => {
     expect(css).toMatch(
       /@media\s*\(max-width:\s*980px\)[\s\S]*?\.workspace\s*\{[\s\S]*?overflow-y\s*:\s*auto/i,

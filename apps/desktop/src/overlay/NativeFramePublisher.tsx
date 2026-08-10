@@ -241,6 +241,35 @@ const measureNativeCaption = (
   };
 };
 
+/**
+ * Layout already-segmented caption lines without a second pixel wrap.
+ *
+ * {@link captionTextLines} already clamps to CAPTION_MAX_VISIBLE_LINES and
+ * maxChars; re-wrapping by canvas width duplicated the DOM bug where each
+ * logical line lost ~1 glyph and grew into 3–4 visual rows.
+ */
+export const measurePrewrappedNativeCaption = (
+  context: CanvasRenderingContext2D,
+  lines: string[],
+  style: CaptionTextStyle,
+): NativeCaptionLayout => {
+  const letterSpacing = finiteNumber(style.letterSpacingPx, 0);
+  context.font = captionFont(style);
+  const safeLines = lines.length > 0 ? lines : [""];
+  const maxLineWidth = safeLines.reduce(
+    (maximum, line) => Math.max(maximum, measureNativeTextWidth(context, line, letterSpacing)),
+    0,
+  );
+  return {
+    lineHeight: Math.max(
+      1,
+      finiteNumber(style.fontSizePx, 34) * Math.max(0.1, finiteNumber(style.lineHeight, 1.3)),
+    ),
+    lines: safeLines,
+    maxLineWidth,
+  };
+};
+
 const drawNativeCaption = (
   context: CanvasRenderingContext2D,
   text: string,
@@ -349,16 +378,10 @@ export const renderNativeFrame = (
         blockWidth * (boundedNumber(style.maxWidthPercent, 1, 100, 86) / 100),
         Math.max(1, blockWidth - paddingX * 2),
       );
-      // Apply the configured character budget before pixel wrapping so the
-      // native/Syphon output breaks lines where the DOM overlay does.
-      // `wrapNativeText` treats the inserted newlines as hard breaks and still
-      // wraps any segment that remains too wide for `lineWidth`.
-      const layout = measureNativeCaption(
-        context,
-        captionTextLines(item).join("\n"),
-        style,
-        lineWidth,
-      );
+      // Apply the configured character budget before painting. Do not re-wrap
+      // by pixel width — captionTextLines already inserted hard breaks and
+      // clamped to CAPTION_MAX_VISIBLE_LINES.
+      const layout = measurePrewrappedNativeCaption(context, captionTextLines(item), style);
       return {
         layout,
         lineWidth,
@@ -413,7 +436,16 @@ export const renderNativeFrame = (
       context.restore();
     }
     const textY = rowY + row.height / 2;
-    drawNativeCaption(context, row.layout.lines.join("\n"), style, textX, textY, row.lineWidth);
+    // Pass a non-binding width so drawNativeCaption does not soft-wrap again;
+    // layout.lines are already budget-segmented and capped to two rows.
+    drawNativeCaption(
+      context,
+      row.layout.lines.join("\n"),
+      style,
+      textX,
+      textY,
+      Math.max(row.lineWidth, row.layout.maxLineWidth, 1),
+    );
     rowY += row.height + gap;
   }
 

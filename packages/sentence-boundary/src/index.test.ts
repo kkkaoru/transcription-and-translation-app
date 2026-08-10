@@ -169,6 +169,17 @@ describe("heuristic edge cases", () => {
     expect(selectVisibleCaptionSentence("今日は晴れです。")).toBe("今日は晴れです。");
     expect(selectVisibleCaptionSentence("です。あしたは")).toBe("あしたは");
   });
+
+  it("keeps the full utterance when deferSentencePaging is set for live interim paint", () => {
+    expect(
+      selectVisibleCaptionSentence("今日は晴れです明日は雨", { deferSentencePaging: true }),
+    ).toBe("今日は晴れです明日は雨");
+    expect(
+      selectVisibleCaptionSentence("それはとても良い天気だと思いますね今日は", {
+        deferSentencePaging: true,
+      }),
+    ).toBe("それはとても良い天気だと思いますね今日は");
+  });
 });
 
 describe("soft wrap offsets before maxChars", () => {

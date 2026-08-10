@@ -24,6 +24,12 @@ export interface CaptionSentenceHints {
   sentenceEndOffsets?: number[];
   /** Mid-sentence POS wrap points for line breaks before maxChars. */
   softBreakOffsets?: number[];
+  /**
+   * When true, keep the full utterance window instead of paging to the newest
+   * completed sentence. Used for provisional / non-final live captions so
+   * mid-speech characters are not dropped after a mid-string copula match.
+   */
+  deferSentencePaging?: boolean;
 }
 
 const SOFT_PARTICLE_SUFFIX =
@@ -197,6 +203,9 @@ export const selectVisibleCaptionSentence = (
   const normalized = text.replace(/\r\n?/gu, "\n").trim();
   if (!normalized) {
     return "";
+  }
+  if (hints.deferSentencePaging) {
+    return normalized;
   }
   const chars = codePoints(normalized);
   const ends = detectCaptionSentenceEnds(normalized, hints);

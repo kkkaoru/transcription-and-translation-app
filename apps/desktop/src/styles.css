@@ -1558,9 +1558,13 @@ button:disabled {
   display: block;
   flex: 0 0 auto;
   max-width: 100%;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* Logical newlines come from captionTextLines (max 2). Do not re-wrap by
+     pixel width — overflow-wrap:anywhere was dropping ~1 glyph per line and
+     turning a 2-line plate into 3–4 visual rows. */
+  overflow-wrap: normal;
+  word-break: keep-all;
   white-space: pre-wrap;
+  overflow: hidden;
   text-overflow: clip;
   isolation: isolate;
 }

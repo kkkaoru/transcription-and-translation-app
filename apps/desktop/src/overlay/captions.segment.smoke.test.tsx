@@ -33,7 +33,24 @@ describe("POS soft breaks before maxChars", () => {
       softBreakOffsets: [3, 5, 7, 10, 12],
     });
     expect(lines.join("")).toBe(text);
+    expect(lines.length).toBeLessThanOrEqual(2);
     expect(lines.every((line) => captionGraphemes(line).length <= 10)).toBe(true);
+  });
+
+  it("clamps soft-wrapped segments to CAPTION_MAX_VISIBLE_LINES", () => {
+    // Soft breaks every few graphemes would otherwise yield 3+ logical lines
+    // inside the grapheme budget; the plate must still show at most two.
+    const text = "あいうえおかきくけこさしすせそたちつてとなにぬねの";
+    const softBreakOffsets = [5, 10, 15, 20, 25];
+    const lines = captionTextLines({
+      key: "source",
+      text,
+      maxChars: 12,
+      softBreakOffsets,
+    });
+    expect(lines.length).toBeLessThanOrEqual(2);
+    expect(lines.join("").length).toBeLessThanOrEqual(24);
+    expect(text.endsWith(lines.join(""))).toBe(true);
   });
 
   it("still drops older graphemes once the hard display window overflows", () => {
@@ -203,6 +220,38 @@ describe("captionTextLines and captionItems", () => {
       maxChars: 28,
     });
     expect(lines).toEqual(["明日は雨"]);
+  });
+
+  it("keeps mid-speech characters when sentence paging is deferred for live interim", () => {
+    const text = "今日は晴れです明日は雨";
+    const lines = captionTextLines({
+      key: "source",
+      text,
+      azookeyInputText: "きょうははれですあしたはあめ",
+      maxChars: 28,
+      deferSentencePaging: true,
+    });
+    expect(lines.join("")).toBe(text);
+  });
+
+  it("defers sentence paging for provisional captionItems so spoken text stays visible", () => {
+    const config = createDefaultConfig();
+    const items = captionItems(config, {
+      id: "u-1",
+      sourceText: "それはとても良い天気だと思いますね今日は",
+      translationText: "",
+      sourceLanguage: "ja",
+      targetLanguage: "en",
+      startedAt: 1,
+      receivedAt: 2,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const source = items.find((item) => item.key === "source");
+    expect(source?.deferSentencePaging).toBe(true);
+    expect(captionTextLines(source!).join("")).toContain("それはとても良い天気");
   });
 
   it("pages English translation by sentence punctuation", () => {
