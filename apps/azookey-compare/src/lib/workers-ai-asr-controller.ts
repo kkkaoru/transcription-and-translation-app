@@ -1,6 +1,7 @@
 import type { ComparisonAuth } from "./contract";
-import { blobToPcm16Mono, pcm16ToWavBytes, pcmDurationSeconds } from "./pcm-wav";
+import { blobToPcm16Mono, pcm16ToWavBytes } from "./pcm-wav";
 import { transcribeWorkersAiAsr } from "./workers-ai-asr-client";
+import { audioSecondsFromPcmLength } from "./workers-ai-asr-cost";
 import { SileroWasmVadEngine } from "./workers-ai-asr-silero";
 import { SILERO_FALLBACK_NOTICE_JA } from "./workers-ai-asr-silero-paths";
 import {
@@ -422,7 +423,7 @@ export class WorkersAiAsrController {
       this.options.onTranscript?.({ interimText: TRANSCRIBING_INTERIM });
       const pcm = await blobToPcm16Mono(blob);
       const wav = new File([pcm16ToWavBytes(pcm)], "utterance.wav", { type: "audio/wav" });
-      const audioSeconds = pcmDurationSeconds(pcm);
+      const audioSeconds = audioSecondsFromPcmLength(pcm.length);
       const result = await transcribeWorkersAiAsr(wav, {
         endpointUrl: this.options.endpointUrl,
         language: this.options.language,

@@ -21,7 +21,21 @@ export const pcm16ToWavBytes = (pcm: Int16Array, sampleRate = 16_000): Uint8Arra
   return wav;
 };
 
-const TARGET_SAMPLE_RATE = 16_000;
+export const TARGET_SAMPLE_RATE = 16_000;
+
+/** OfflineAudioContext length is sample-frames, not seconds. */
+export const pcmTargetLengthForDuration = (
+  durationSeconds: number,
+  sampleRate = TARGET_SAMPLE_RATE,
+): number => {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return 1;
+  }
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(durationSeconds * sampleRate));
+};
 
 /** Decode a recorded blob to mono PCM16 at 16 kHz for Nova-3 upload. */
 export const blobToPcm16Mono = async (blob: Blob): Promise<Int16Array> => {
@@ -29,7 +43,11 @@ export const blobToPcm16Mono = async (blob: Blob): Promise<Int16Array> => {
   const audioContext = new AudioContext();
   try {
     const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0));
-    const offline = new OfflineAudioContext(1, 1, TARGET_SAMPLE_RATE);
+    const offline = new OfflineAudioContext(
+      1,
+      pcmTargetLengthForDuration(decoded.duration, TARGET_SAMPLE_RATE),
+      TARGET_SAMPLE_RATE,
+    );
     const source = offline.createBufferSource();
     source.buffer = decoded;
     source.connect(offline.destination);

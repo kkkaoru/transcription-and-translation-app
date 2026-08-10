@@ -5,8 +5,20 @@
  * @see https://developers.cloudflare.com/workers-ai/platform/pricing/
  */
 
+import type { RecognitionProvider } from "./contract";
+import { formatDecimalUsd } from "./format-usd";
+
 /** HTTP transcription: $0.0052 / audio minute (@cf/deepgram/nova-3). */
 export const WORKERS_AI_ASR_HTTP_USD_PER_AUDIO_MINUTE = 0.0052;
+
+/** Nova-3 / Silero PCM sample rate used for duration. */
+export const WORKERS_AI_ASR_PCM_SAMPLE_RATE = 16_000;
+
+/**
+ * Utterances are seconds, not minutes. Values above this are almost certainly
+ * 16 kHz PCM sample counts passed as if they were seconds.
+ */
+export const WORKERS_AI_ASR_MAX_PLAUSIBLE_SECONDS = 120;
 
 /** HTTP transcription: 472.73 neurons / audio minute. */
 export const WORKERS_AI_ASR_HTTP_NEURONS_PER_AUDIO_MINUTE = 472.73;
@@ -35,25 +47,50 @@ export interface WorkersAiAsrCostEstimate {
 
 export const WORKERS_AI_ASR_WEB_SPEECH_NOTE = "Workers AI 課金なし";
 
-const roundUsd = (value: number): number =>
-  Math.round(value * 1_000_000_000) / 1_000_000_000;
+const roundUsd = (value: number): number => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
 const roundNeurons = (value: number): number => Math.round(value * 100) / 100;
 
-/** Format USD without collapsing small nonzero values to $0.00. */
-export const formatWorkersAiAsrCostUsd = (usd: number): string => {
-  if (!Number.isFinite(usd) || usd <= 0) {
-    return "$0";
+/**
+ * Convert a PCM frame count to seconds. Public sample-count helpers must
+ * divide by 16 kHz — never treat length as seconds.
+ */
+export const audioSecondsFromPcmLength = (
+  pcmLength: number,
+  sampleRate = WORKERS_AI_ASR_PCM_SAMPLE_RATE,
+): number => {
+  if (!Number.isFinite(pcmLength) || pcmLength <= 0) {
+    return 0;
   }
-  if (usd >= 0.000_001) {
-    return `$${usd.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")}`;
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+    return 0;
   }
-  return `$${usd.toExponential(2)}`;
+  return pcmLength / sampleRate;
 };
+
+/**
+ * Accept seconds, but if the value looks like 16 kHz PCM samples, convert.
+ * `estimateWorkersAiAsrCost` itself takes seconds; use `audioSecondsFromPcmLength`
+ * when the caller has a sample count.
+ */
+export const normalizeWorkersAiAsrAudioSeconds = (audioSeconds: number): number => {
+  if (!Number.isFinite(audioSeconds) || audioSeconds <= 0) {
+    return 0;
+  }
+  if (audioSeconds > WORKERS_AI_ASR_MAX_PLAUSIBLE_SECONDS) {
+    return audioSecondsFromPcmLength(audioSeconds, WORKERS_AI_ASR_PCM_SAMPLE_RATE);
+  }
+  return audioSeconds;
+};
+
+/** Format USD without collapsing small nonzero values to $0.00. Decimal only. */
+export const formatWorkersAiAsrCostUsd = (usd: number): string => formatDecimalUsd(usd);
 
 /** Primary model-unit price from audio duration (HTTP per-minute rate). */
 export const estimateWorkersAiAsrCost = (audioSeconds: number): WorkersAiAsrCostEstimate => {
-  const seconds = Math.max(0, Number.isFinite(audioSeconds) ? audioSeconds : 0);
+  const seconds = normalizeWorkersAiAsrAudioSeconds(
+    Number.isFinite(audioSeconds) ? audioSeconds : 0,
+  );
   const minutes = seconds / 60;
   const usd = roundUsd(minutes * WORKERS_AI_ASR_HTTP_USD_PER_AUDIO_MINUTE);
   const neurons = roundNeurons(minutes * WORKERS_AI_ASR_HTTP_NEURONS_PER_AUDIO_MINUTE);
@@ -79,3 +116,37 @@ export const workersAiAsrCostSummaryJa = (estimate: WorkersAiAsrCostEstimate): s
 
 export const webSpeechAsrCostSummaryJa = (): string =>
   `Web Speech ASR ${formatWorkersAiAsrCostUsd(0)} · ${WORKERS_AI_ASR_WEB_SPEECH_NOTE}`;
+
+export const isWorkersAiAsrRecognition = (
+  provider?: RecognitionProvider | string,
+  origin?: string,
+): boolean => provider === "workers-ai-asr" || origin === "workers-ai-asr";
+
+/** Tiny ASR $ must still show the Workers AI amount; Web Speech stays $0. */
+export const shouldShowWorkersAiAsrCostAmount = (row: {
+  origin?: string;
+  recognitionProvider?: RecognitionProvider | string;
+  asrCostUsd?: number;
+}): boolean => {
+  if (isWorkersAiAsrRecognition(row.recognitionProvider, row.origin)) {
+    return true;
+  }
+  return row.asrCostUsd !== undefined && Number.isFinite(row.asrCostUsd) && row.asrCostUsd > 0;
+};
+
+export const utteranceAsrCostFields = (
+  provider: RecognitionProvider | undefined,
+  audioSeconds?: number,
+): { asrCostUsd: number; asrCostSummaryJa: string } => {
+  if (provider === "workers-ai-asr") {
+    const estimate = estimateWorkersAiAsrCost(audioSeconds ?? 0);
+    return {
+      asrCostUsd: estimate.usd,
+      asrCostSummaryJa: workersAiAsrCostSummaryJa(estimate),
+    };
+  }
+  return {
+    asrCostUsd: 0,
+    asrCostSummaryJa: webSpeechAsrCostSummaryJa(),
+  };
+};

@@ -197,6 +197,7 @@ describe("WorkersAiAsrController VAD session", () => {
       language: "ja-JP",
     });
     expect(events.onUtteranceFinal).toHaveBeenCalledWith({ text: "こんにちは", audioSeconds: 1 });
+    expect(events.onUtteranceFinal.mock.calls[0]?.[0].audioSeconds).not.toBe(16_000);
     expect(events.onFinalText).toHaveBeenCalledWith("こんにちは");
     expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "認識中…" });
     expect(events.onTranscript).toHaveBeenLastCalledWith({ interimText: "" });
@@ -212,6 +213,17 @@ describe("WorkersAiAsrController VAD session", () => {
       audioSeconds: 1,
     });
     expect(controller.currentState).toBe("listening");
+    controller.dispose();
+  });
+
+  it("reports audioSeconds from PCM length / 16 kHz, not sample count", async () => {
+    installBrowser();
+    vi.mocked(blobToPcm16Mono).mockResolvedValueOnce(new Int16Array(48_000));
+    const { controller, events } = await startController();
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
+    await controller.ingestVadFrame(SILENT_DB, END_MS);
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith({ text: "こんにちは", audioSeconds: 3 });
+    expect(events.onUtteranceFinal.mock.calls[0]?.[0].audioSeconds).not.toBe(48_000);
     controller.dispose();
   });
 
