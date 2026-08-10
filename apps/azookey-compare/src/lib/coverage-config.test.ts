@@ -14,6 +14,8 @@ describe("azookey-compare coverage configuration", () => {
     expect(coverage?.exclude).toEqual([
       "src/**/*.test.ts",
       "src/lib/vibrato-browser.ts",
+      "src/lib/workers-ai-asr-controller.ts",
+      "src/lib/pcm-wav.ts",
       "src/lib/architecture-assets.ts",
       "src/lib/architecture-diagram.ts",
       "src/lib/architecture-dialog.ts",

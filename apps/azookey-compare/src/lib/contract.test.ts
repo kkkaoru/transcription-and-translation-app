@@ -52,6 +52,7 @@ describe("comparison configuration contract", () => {
     expect(comparisonConfigFieldDescriptions.language).toContain("BCP-47");
     expect(comparisonConfigSchema.required).toEqual([
       "mode",
+      "recognitionProvider",
       "converterModel",
       "websocketUrl",
       "auth",
@@ -62,6 +63,7 @@ describe("comparison configuration contract", () => {
     expect(DEFAULT_COMPARISON_CONFIG).toEqual({
       schemaVersion: 1,
       mode: "worker-vibrato",
+      recognitionProvider: "web-speech",
       converterModel: "azookey-rust-wasm",
       websocketUrl: DEFAULT_WORKER_VIBRATO_WEBSOCKET_URL,
       auth: { scheme: "none" },
@@ -172,6 +174,7 @@ describe("comparison configuration contract", () => {
     ).toEqual({
       schemaVersion: 1,
       mode: "worker-vibrato",
+      recognitionProvider: "web-speech",
       converterModel: "azookey-rust-wasm",
       websocketUrl: "wss://worker.example/ws",
       auth: { scheme: "none" },
@@ -285,6 +288,7 @@ describe("comparison configuration contract", () => {
     ).toEqual({
       schemaVersion: 1,
       mode: "browser-vibrato",
+      recognitionProvider: "web-speech",
       converterModel: "azookey-rust-wasm",
       websocketUrl: DEFAULT_BROWSER_VIBRATO_WEBSOCKET_URL,
       auth: { scheme: "bearer", token: "secret" },
