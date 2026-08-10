@@ -5,6 +5,11 @@ import {
   AZOOKEY_MAX_TEXT_BYTES,
   AZOOKEY_MIN_ELAPSED_MS,
   AZOOKEY_MODE,
+  AZOOKEY_MODEL,
+  AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE,
+  AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+  AZOOKEY_ZENZ_SMALL_MODEL,
+  AZOOKEY_ZENZ_XSMALL_MODEL,
   type AzookeyRuntime,
   attachAzookeySocket,
   azookeyDictionaryTimeoutMs,
@@ -21,6 +26,7 @@ import {
   parseAzookeyMessage,
   readyAzookeyMessage,
   resolveAzookeyHandshakeAuthorization,
+  isZenzConvertModel,
   VIBRATO_MAX_RESPONSE_BYTES,
 } from "./azookey.js";
 
@@ -83,6 +89,10 @@ describe("AzooKey Worker text contract", () => {
     });
     expect(JSON.parse(readyAzookeyMessage(125, "passthrough", {}, "portable-wasm"))).toMatchObject({
       dictionary: { transport: "portable-wasm", configured: true },
+      models: [AZOOKEY_MODEL, AZOOKEY_ZENZ_XSMALL_MODEL, AZOOKEY_ZENZ_SMALL_MODEL],
+    });
+    expect(JSON.parse(readyAzookeyMessage(125, "passthrough", {}, "builtin"))).toMatchObject({
+      models: [AZOOKEY_MODEL],
     });
   });
 
@@ -136,6 +146,14 @@ describe("AzooKey Worker text contract", () => {
     expect(
       parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
     ).toMatchObject({ vibratoExecution: "worker" });
+    expect(parseAzookeyMessage(JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }))).toMatchObject({
+      model: AZOOKEY_ZENZ_XSMALL_MODEL,
+    });
+    expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, model: "unknown-model" }))).toThrow(
+      "model must be azookey-rust-wasm",
+    );
+    expect(isZenzConvertModel(AZOOKEY_ZENZ_XSMALL_MODEL)).toBe(true);
+    expect(isZenzConvertModel(AZOOKEY_MODEL)).toBe(false);
     expect(() =>
       parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "heuristic" })),
     ).toThrow("vibratoExecution");
@@ -164,6 +182,167 @@ describe("AzooKey Worker text contract", () => {
       mode: "worker-vibrato",
     });
     expect(result.elapsedMs).toBeGreaterThanOrEqual(AZOOKEY_MIN_ELAPSED_MS);
+  });
+
+  it("falls back to portable WASM when Zenzai models are absent from MODEL_ROUTES", async () => {
+    const runtime: AzookeyRuntime = {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {},
+    };
+    for (const model of [AZOOKEY_ZENZ_XSMALL_MODEL, AZOOKEY_ZENZ_SMALL_MODEL] as const) {
+      const message = parseAzookeyMessage(JSON.stringify({ ...valid, model }));
+      const result = await convertAzookeyMessage(message, runtime);
+      expect(result).toMatchObject({
+        convertedText: `dict:${valid.vibratoInput}`,
+        model: AZOOKEY_MODEL,
+        requestedModel: model,
+        modelFallback: AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE,
+      });
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(AZOOKEY_MIN_ELAPSED_MS);
+    }
+  });
+
+  it("falls back to portable WASM when a configured Zenzai upstream fails", async () => {
+    const fetcher = vi.fn(async () => new Response("upstream offline", { status: 503 }));
+    const message = parseAzookeyMessage(
+      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+    );
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
+      },
+      fetcher,
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://zenz.example/completion",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+    });
+  });
+
+  it("uses a configured Zenzai upstream when MODEL_ROUTES exposes the model", async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({ content: "今日は配信です" }), { status: 200 }),
+    );
+    const message = parseAzookeyMessage(
+      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_SMALL_MODEL }),
+    );
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+      },
+      fetcher,
+    });
+    expect(result).toMatchObject({
+      convertedText: "今日は配信です",
+      model: AZOOKEY_ZENZ_SMALL_MODEL,
+    });
+    expect(result.requestedModel).toBeUndefined();
+    expect(result.modelFallback).toBeUndefined();
+  });
+
+  it("falls back when a configured Zenzai upstream times out", async () => {
+    const fetcher = vi.fn(
+      (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    );
+    const message = parseAzookeyMessage(
+      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+    );
+    await expect(
+      convertAzookeyMessage(message, {
+        timeoutMs: 25,
+        converter: (text) => `dict:${text}`,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher,
+      }),
+    ).rejects.toMatchObject({ code: "conversion_timeout", requestId: "req-1" });
+  });
+
+  it("falls back when a configured Zenzai upstream returns empty content", async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({ content: "   " }), { status: 200 }),
+    );
+    const message = parseAzookeyMessage(
+      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+    );
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
+      },
+      fetcher,
+    });
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+    });
+  });
+
+  it("falls back when a configured Zenzai upstream returns oversized output", async () => {
+    const oversized = "あ".repeat(AZOOKEY_MAX_TEXT_BYTES + 1);
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({ content: oversized }), { status: 200 }),
+    );
+    const message = parseAzookeyMessage(
+      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+    );
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
+      },
+      fetcher,
+    });
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+    });
+  });
+
+  it("rejects when the Zenzai deadline is spent before dictionary fallback can run", async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({ content: "今日は配信です" }), { status: 200 }),
+    );
+    let calls = 0;
+    vi.stubGlobal("performance", {
+      now: () => {
+        calls += 1;
+        return calls <= 2 ? 0 : 10_000;
+      },
+    });
+    const message = parseAzookeyMessage(
+      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+    );
+    await expect(
+      convertAzookeyMessage(message, {
+        timeoutMs: 250,
+        converter: (text) => `dict:${text}`,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher,
+      }),
+    ).rejects.toMatchObject({ code: "conversion_timeout", requestId: "req-1" });
+    vi.unstubAllGlobals();
   });
 
   it("rounds measured conversion time to integer elapsedMs and never reports 0", async () => {

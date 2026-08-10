@@ -5,9 +5,14 @@ import {
   AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES,
   AZOOKEY_MAX_DICTIONARY_BYTES,
   AZOOKEY_MODE,
+  AZOOKEY_MODEL,
+  AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE,
+  AZOOKEY_ZENZ_XSMALL_MODEL,
   type AzookeyWasmExports,
+  convertAzookeyMessage,
   createWasmConverter,
   openAzookeySocket,
+  parseAzookeyMessage,
 } from "./azookey.js";
 
 const wasmBytes = readFileSync(new URL("../wasm/azookey.wasm", import.meta.url));
@@ -215,6 +220,43 @@ describe("portable official AzooKey dictionary", () => {
       vibrato: { workerStage: "passthrough" },
       dictionary: { transport: "portable-wasm", configured: true },
     });
+  }, 20_000);
+
+  it("converts Zenzai requests through the portable dictionary when MODEL_ROUTES is empty", async () => {
+    const module = new WebAssembly.Module(wasmBytes);
+    const fetcher = vi.fn(
+      async () =>
+        new Response(responseBody(dictionaryGzip), {
+          status: 200,
+          headers: { "content-length": String(dictionaryGzip.byteLength) },
+        }),
+    );
+    const converter = createWasmConverter(module, "/azookey/system.azkdict.gz", fetcher);
+    await converter.warmup?.();
+    const message = parseAzookeyMessage(
+      JSON.stringify({
+        type: "azookey.convert",
+        requestId: "zenz-dict-fallback",
+        source: "web-speech",
+        language: "ja",
+        sourceText: "きょうはいいてんき",
+        vibratoInput: "きょうはいいてんき",
+        mode: "worker-vibrato",
+        model: AZOOKEY_ZENZ_XSMALL_MODEL,
+      }),
+    );
+    const result = await convertAzookeyMessage(message, {
+      timeoutMs: 5_000,
+      converter,
+      modelRoutes: {},
+    });
+    expect(result).toMatchObject({
+      convertedText: "今日はいい天気",
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE,
+    });
+    expect(result.elapsedMs).toBeGreaterThan(0);
   }, 20_000);
 
   it("normalizes non-Error loader failures", async () => {
