@@ -362,6 +362,44 @@ const hasSameOrExtendedAzookeyReading = (
   );
 };
 
+/**
+ * True when a non-provisional source would erase mid-utterance characters that
+ * a newer provisional already painted.
+ *
+ * Parapper keeps at most one pending partial, but the in-flight normalizer for
+ * an older revision still completes. That stale normalize must not replace a
+ * longer provisional that was painted from a later turn cursor.
+ */
+const isStaleNormalizedAgainstProvisional = (
+  current: CaptionPayload,
+  next: CaptionPayload,
+): boolean => {
+  if (
+    current.provisional !== true ||
+    next.provisional === true ||
+    !isSourceStagePayload(current) ||
+    !isSourceStagePayload(next) ||
+    !hasText(current.sourceText) ||
+    !hasText(next.sourceText)
+  ) {
+    return false;
+  }
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  if ([...currentText].length <= [...nextText].length) {
+    return false;
+  }
+  const currentReading = trimmedAzookeyReading(current);
+  const nextReading = trimmedAzookeyReading(next);
+  if (currentReading && nextReading) {
+    // Later provisional reading strictly extends the stale normalize reading.
+    return currentReading.startsWith(nextReading) && currentReading !== nextReading;
+  }
+  // Without readings, a longer provisional that already contains the normalize
+  // surface as a prefix is still ahead of the in-flight older revision.
+  return currentText.startsWith(nextText) && currentText !== nextText;
+};
+
 const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {
   if (
     current.id === next.id &&
@@ -370,6 +408,11 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
     isSourceStagePayload(current) &&
     isSourceStagePayload(next)
   ) {
+    // Keep the painted provisional when the arriving normalize is an older
+    // in-flight revision; a later non-stale normalize still upgrades in place.
+    if (isStaleNormalizedAgainstProvisional(current, next)) {
+      return current.sourceText;
+    }
     return next.sourceText;
   }
 
@@ -464,9 +507,11 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     // Provisional ASR captions synthesized client-side must never block a real backend
     // source caption with the same utterance ID, regardless of startedAt ordering.
     // The provisional carries ASR stage timing (later than pipeline/chunk start);
-    // the real normalized source carries the pipeline start. Always accept the real one.
+    // the real normalized source carries the pipeline start. Always accept the real one
+    // — unless that normalize is a stale in-flight revision for an older cursor that
+    // would erase mid-utterance characters the newer provisional already painted.
     if (current.provisional === true && next.provisional !== true && isSourceStagePayload(next)) {
-      return false;
+      return isStaleNormalizedAgainstProvisional(current, next);
     }
     // The Tauri event channel and the invoke that resolves the normalized
     // caption are independent deliveries.  A pipeline:stage ASR event can

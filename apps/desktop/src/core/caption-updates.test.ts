@@ -1771,6 +1771,91 @@ describe("mergeCaptionPayload", () => {
     expect(merged?.sourceText).toBe("こんにちは、元気ですか");
   });
 
+  it("keeps a longer mid-utterance provisional when a stale shorter normalize completes later", () => {
+    // Parapper paints provisional ASAP, then queues normalize. An older
+    // in-flight normalize must not erase characters painted from a later
+    // provisional revision of the same utterance.
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "今日はいい天気ですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const staleNormalized = caption({
+      id: "u-1",
+      sourceText: "今日は",
+      azookeyInputText: "きょうは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_600,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(provisional, staleNormalized)).toBeNull();
+  });
+
+  it("keeps mid-utterance provisional without readings when a shorter prefix normalize arrives stale", () => {
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "隣の客はよく柿を食べる",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const staleNormalized = caption({
+      id: "u-1",
+      sourceText: "隣の客は",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_600,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(provisional, staleNormalized)).toBeNull();
+  });
+
+  it("still upgrades provisional when normalize extends or rewrites mid-utterance text", () => {
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "きょうはいいてんき",
+      azookeyInputText: "きょうはいいてんき",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const normalized = caption({
+      id: "u-1",
+      sourceText: "今日はいい天気ですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_600,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(provisional, normalized)?.sourceText).toBe("今日はいい天気ですね");
+  });
+
   it("replaces a same-id provisional source caption with normalized source when no overlap exists", () => {
     const provisional = caption({
       id: "u-1",

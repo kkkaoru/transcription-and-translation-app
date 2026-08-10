@@ -265,9 +265,15 @@ const splitLongLine = (line: string, maxChars: number, softBreakOffsets: number[
 };
 
 /**
- * Keep only the newest sentence, then prefer a POS soft break before the hard
- * `maxChars * maxLines` budget so long speech pages on natural phrase
- * boundaries. Always keep the newest graphemes — never drop the utterance tail.
+ * Keep only the newest sentence, then the newest grapheme window when that
+ * sentence still exceeds `maxChars * maxLines`.
+ *
+ * Soft POS breaks are for *wrapping* lines inside the window (see
+ * {@link segmentCaptionText}), not for discarding mid-utterance text before
+ * the hard budget fills. Early soft-paging hid characters the speaker was
+ * still producing. Prefer a soft/morph/punctuation boundary only when aligning
+ * the hard-window cut so the first visible line does not start mid-phrase.
+ * Always keep the newest graphemes — never drop the utterance tail.
  */
 export const trimCaptionToDisplayWindow = (
   text: string,
@@ -283,31 +289,11 @@ export const trimCaptionToDisplayWindow = (
   const safeMaxLines = Math.max(1, Math.floor(maxLines));
   const budget = safeMaxChars * safeMaxLines;
   const graphemes = captionGraphemes(normalized);
-  const softScalar = detectCaptionSoftBreaks(normalized, hints);
-  const softGraphemes = softBreakGraphemeOffsets(normalized, softScalar);
-
-  // Early page: once one line is full, start after the latest soft break that
-  // still leaves a readable newest chunk (and never past the utterance end).
-  if (graphemes.length > safeMaxChars && softGraphemes.length > 0) {
-    const minVisible = Math.min(4, safeMaxChars);
-    let pageStart = 0;
-    for (const offset of softGraphemes) {
-      if (offset <= 0 || offset >= graphemes.length) {
-        continue;
-      }
-      const remaining = graphemes.length - offset;
-      if (remaining >= minVisible && remaining <= budget) {
-        pageStart = offset;
-      }
-    }
-    if (pageStart > 0) {
-      return trimStartGraphemes(graphemes.slice(pageStart)).join("");
-    }
-  }
-
   if (graphemes.length <= budget) {
     return normalized;
   }
+  const softScalar = detectCaptionSoftBreaks(normalized, hints);
+  const softGraphemes = softBreakGraphemeOffsets(normalized, softScalar);
   let start = graphemes.length - budget;
   // Prefer a soft / Vibrato morph / punctuation boundary near the cut so the
   // first visible line does not begin mid-phrase when a nearby break exists.

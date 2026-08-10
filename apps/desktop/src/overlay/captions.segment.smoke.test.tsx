@@ -22,7 +22,9 @@ describe("POS soft breaks before maxChars", () => {
     expect(segments.every((line) => captionGraphemes(line).length <= 12)).toBe(true);
   });
 
-  it("pages early at a soft break so the newest phrase stays within one line", () => {
+  it("keeps mid-utterance characters until the hard maxChars×maxLines budget fills", () => {
+    // Soft breaks wrap lines; they must not early-page away the speaker's
+    // in-progress text while it still fits in the 2-line display window.
     const text = "隣の客はよく柿を食べる客だそうですよ";
     const lines = captionTextLines({
       key: "source",
@@ -30,10 +32,23 @@ describe("POS soft breaks before maxChars", () => {
       maxChars: 10,
       softBreakOffsets: [3, 5, 7, 10, 12],
     });
+    expect(lines.join("")).toBe(text);
+    expect(lines.every((line) => captionGraphemes(line).length <= 10)).toBe(true);
+  });
+
+  it("still drops older graphemes once the hard display window overflows", () => {
+    const text = "隣の客はよく柿を食べる客だそうですよみなさん";
+    const lines = captionTextLines({
+      key: "source",
+      text,
+      maxChars: 10,
+      softBreakOffsets: [3, 5, 7, 10, 12, 16],
+    });
     expect(lines.join("").length).toBeLessThanOrEqual(20);
-    expect(lines.join("").endsWith("そうですよ") || lines.join("").endsWith("客だそうですよ")).toBe(
+    expect(lines.join("").endsWith("そうですよみなさん") || lines.join("").endsWith("みなさん")).toBe(
       true,
     );
+    expect(lines.join("")).not.toBe(text);
   });
 });
 
