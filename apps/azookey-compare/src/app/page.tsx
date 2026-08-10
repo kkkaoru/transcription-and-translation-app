@@ -849,6 +849,16 @@ export default function ComparePage() {
     setNotice("履歴をクリアしました");
   };
 
+  const configPanelHeading = (
+    <div className="panel-heading">
+      <div>
+        <p className="eyebrow">CONFIGURATION</p>
+        <h3>接続と方式</h3>
+      </div>
+      <span className={`state-pill state-${workerState}`}>{workerStateLabel(workerState)}</span>
+    </div>
+  );
+
   return (
     <main className="compare-shell">
       <header className="topbar">
@@ -930,16 +940,14 @@ export default function ComparePage() {
 
       <div className="workspace-grid">
         <aside className="control-stack" aria-label="比較設定">
-          <section className="panel config-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">CONFIGURATION</p>
-                <h3>接続と方式</h3>
+          <details className="config-panel-disclosure" data-testid="config-panel-disclosure">
+            <summary className="config-panel-toggle" data-testid="config-panel-toggle">
+              {configPanelHeading}
+            </summary>
+            <section className="panel config-panel" data-testid="config-panel">
+              <div className="config-panel-heading-desktop" aria-hidden="true">
+                {configPanelHeading}
               </div>
-              <span className={`state-pill state-${workerState}`}>
-                {workerStateLabel(workerState)}
-              </span>
-            </div>
 
             <VibratoModeSelector
               mode={config.mode}
@@ -1123,7 +1131,8 @@ export default function ComparePage() {
             >
               Cloudflare Worker に接続
             </button>
-          </section>
+            </section>
+          </details>
 
           <section className="panel reading-panel">
             <div className="panel-heading">

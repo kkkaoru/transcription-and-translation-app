@@ -678,6 +678,59 @@ select:focus-visible {
   font-weight: 800;
 }
 
+.config-panel-disclosure {
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.config-panel-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.config-panel-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.config-panel-toggle {
+  padding: 17px 21px;
+}
+
+.config-panel-toggle .panel-heading {
+  margin-bottom: 0;
+}
+
+.config-panel-disclosure .config-panel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  border-top: 1px solid var(--soft-line);
+}
+
+.config-panel-heading-desktop {
+  display: none;
+}
+
+@media (min-width: 641px) {
+  .config-panel-disclosure > summary {
+    display: none;
+  }
+
+  .config-panel-disclosure:not([open]) > .config-panel {
+    display: block;
+  }
+
+  .config-panel-heading-desktop {
+    display: block;
+  }
+
+  .config-panel-disclosure .config-panel {
+    border-top: 0;
+  }
+}
+
 .path-diagram {
   margin: 10px 0 0;
 }
@@ -872,6 +925,14 @@ select:focus-visible {
   .history-panel,
   .live-card {
     padding: 17px;
+  }
+
+  .config-panel-toggle {
+    padding: 17px;
+  }
+
+  .config-panel-disclosure .config-panel {
+    padding-top: 0;
   }
 
   .comparison-row {
