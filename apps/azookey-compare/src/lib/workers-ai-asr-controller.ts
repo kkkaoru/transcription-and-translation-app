@@ -364,23 +364,25 @@ export class WorkersAiAsrController {
       this.pcmSource = source;
 
       if (typeof audioContext.createScriptProcessor === "function") {
-        const tap = audioContext.createScriptProcessor(PCM_TAP_BUFFER_SIZE, 1, 1);
-        tap.onaudioprocess = (event) => {
-          void this.onPcmTap(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
-        };
-        source.connect(tap);
         try {
+          const tap = audioContext.createScriptProcessor(PCM_TAP_BUFFER_SIZE, 1, 1);
+          tap.onaudioprocess = (event) => {
+            void this.onPcmTap(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
+          };
+          source.connect(tap);
           this.tapGain = attachMutedScriptProcessorTap(tap, audioContext);
+          this.pcmTap = tap;
+          return;
         } catch (error) {
           console.error("Workers AI ASR mute gain tap failed", { error });
-          if (hasMediaRecorderSupport()) {
-            this.ensureTimesliceRecorder();
-          } else {
-            throw new Error(WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA);
+          try {
+            source.disconnect();
+          } catch {
+            // Best effort before Analyser / timeslice fallback.
           }
+          this.tapGain = null;
+          this.pcmTap = null;
         }
-        this.pcmTap = tap;
-        return;
       }
 
       if (typeof audioContext.createAnalyser === "function") {
@@ -711,7 +713,12 @@ export class WorkersAiAsrController {
       options.pcm && options.pcm.length >= SILERO_CHUNK_SAMPLES
         ? options.pcm
         : this.takeCapturedPcm();
+    // Always release MediaRecorder after an utterance so silence between
+    // turns is not recorded (and never billed if PCM later falls back to blob).
     const blob = usablePcm ? null : await this.stopRecorder();
+    if (usablePcm) {
+      this.discardRecorder();
+    }
     this.hadCommittedSpeech = false;
     this.vad.reset();
     this.capturingPcm = false;
@@ -723,6 +730,7 @@ export class WorkersAiAsrController {
     }
 
     if (options.requireSpeech && !hasSpeech) {
+      this.discardRecorder();
       this.options.onTranscript?.({ interimText: "" });
       this.completeSessionOrRestart(options.restart);
       return;

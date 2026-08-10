@@ -457,7 +457,6 @@ export class WorkersAiAsrVad {
   }
 
   private endUtterance(reason: WorkersAiAsrVadEndReason): WorkersAiAsrVadEvent[] {
-    const fullAudio = concatAudio(this.active);
     const utteranceChunks = this.audioChunks;
     const trailingSilence: SegmentChunk[] = [];
     if (reason === "silence") {
@@ -469,6 +468,14 @@ export class WorkersAiAsrVad {
         trailingSilence.unshift(chunk);
       }
     }
+    // Drop turn-check silence from the billed upload; keep ≤1 chunk pad for
+    // Nova-3 edge context. Trailing silence still seeds the next preSpeech.
+    const trailingPadChunks = reason === "silence" && trailingSilence.length > 0 ? 1 : 0;
+    const uploadChunks =
+      trailingSilence.length > 0
+        ? this.active.slice(0, this.active.length - trailingSilence.length + trailingPadChunks)
+        : this.active;
+    const fullAudio = concatAudio(uploadChunks);
     this.reset();
     this.preSpeech = trailingSilence.slice(-this.preSpeechMaxChunks);
     return [{ type: "utterance-end", reason, fullAudio, utteranceChunks }];
