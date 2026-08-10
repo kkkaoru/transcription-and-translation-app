@@ -529,6 +529,13 @@ export const bridge = {
     }
   },
 
+  /** Dedicated opaque style-editor window (not OBS transparent capture). */
+  async openStyleEditorWindow(): Promise<void> {
+    if (isTauriRuntime()) {
+      await invoke("open_style_editor");
+    }
+  },
+
   /** @deprecated Use openTransparentCapture — opens the Window Capture plate only. */
   async openOverlay(): Promise<void> {
     await this.openTransparentCapture();

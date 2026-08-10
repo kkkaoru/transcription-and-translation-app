@@ -1211,6 +1211,11 @@ pub(crate) const NATIVE_RENDERER_LABEL: &str = "native-renderer";
 /// Desktop transparent surface for OBS Window Capture where Syphon/Spout2 are unavailable.
 pub(crate) const TRANSPARENT_CAPTURE_LABEL: &str = "transparent";
 pub(crate) const TRANSPARENT_CAPTURE_TITLE: &str = "Kotoba Beacon Transparent Capture";
+/// Dedicated opaque style-editor window (not an OBS / Syphon caption surface).
+pub(crate) const STYLE_EDITOR_LABEL: &str = "style-editor";
+pub(crate) const STYLE_EDITOR_TITLE: &str = "Kotoba Beacon — Caption Style";
+const STYLE_EDITOR_DEFAULT_WIDTH: f64 = 1_000.0;
+const STYLE_EDITOR_DEFAULT_HEIGHT: f64 = 780.0;
 
 /// Create a caption surface window.
 ///
@@ -1397,6 +1402,45 @@ pub fn close_transparent_capture(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn open_overlay(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     open_transparent_capture(app, state)
+}
+
+/// Open the dedicated caption style editor (decorated opaque window).
+///
+/// Separate from transparent-capture / native-renderer: those are OBS / Syphon
+/// surfaces. Focus an existing editor instead of spawning a second one.
+#[tauri::command]
+pub fn open_style_editor(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(STYLE_EDITOR_LABEL) {
+        window
+            .show()
+            .map_err(|error| format!("could not show style editor: {error}"))?;
+        window
+            .set_focus()
+            .map_err(|error| format!("could not focus style editor: {error}"))?;
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(
+        &app,
+        STYLE_EDITOR_LABEL,
+        WebviewUrl::App("index.html?style-editor=1".into()),
+    )
+    .title(STYLE_EDITOR_TITLE)
+    .inner_size(STYLE_EDITOR_DEFAULT_WIDTH, STYLE_EDITOR_DEFAULT_HEIGHT)
+    .min_inner_size(720.0, 560.0)
+    .decorations(true)
+    .transparent(false)
+    .resizable(true)
+    .center()
+    .visible(true)
+    .build()
+    .map_err(|error| format!("could not create style editor window: {error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("could not show style editor: {error}"))?;
+    window
+        .set_focus()
+        .map_err(|error| format!("could not focus style editor: {error}"))?;
+    Ok(())
 }
 
 /// Legacy command name kept for older frontends; hides the transparent capture window only.

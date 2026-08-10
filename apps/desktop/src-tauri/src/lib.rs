@@ -105,6 +105,7 @@ pub fn run() {
             commands::publish_source_caption,
             commands::open_transparent_capture,
             commands::close_transparent_capture,
+            commands::open_style_editor,
             commands::open_overlay,
             commands::close_overlay,
             commands::publish_overlay_frame,

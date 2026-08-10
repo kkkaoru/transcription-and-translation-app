@@ -1993,6 +1993,17 @@ export const MainApp = () => {
     }
   };
 
+  const openStyleEditor = async () => {
+    try {
+      await bridge.openStyleEditorWindow();
+      pushDiagnosticEvent("overlay", "Style editor window opened");
+    } catch (error) {
+      const notice = noticeFromError(error, "message.styleEditorOpenFailed");
+      pushDiagnosticEvent("error", "Style editor open failed", notice.detail ?? notice.key);
+      setNotice(notice);
+    }
+  };
+
   const closeTransparentCapture = async () => {
     try {
       await bridge.closeTransparentCapture();
@@ -2140,6 +2151,7 @@ export const MainApp = () => {
               onCloseMessage={() => setNotice(null)}
               onOpenTransparentCapture={() => void openTransparentCapture()}
               onCloseTransparentCapture={() => void closeTransparentCapture()}
+              onOpenStyleEditor={() => void openStyleEditor()}
             />
           ) : activeTab === "style" ? (
             <CaptionStyleView

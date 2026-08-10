@@ -47,6 +47,10 @@ describe("App routes", () => {
     expect(container.querySelector(".live-toolbar")).not.toBeNull();
     expect(container.querySelector('[data-testid="open-transparent-capture"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="hide-transparent-capture"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="open-style-editor"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="open-style-editor"]')?.textContent).toBe(
+      "文字の装飾を開く ↗",
+    );
     expect(container.querySelector('.topbar [data-testid="build-info"]')).toBeNull();
 
     // In-app preview must render live caption payload without OBS / without forced placeholders.
@@ -158,5 +162,26 @@ describe("App routes", () => {
     expect(document.body.classList.contains("overlay-document--window")).toBe(false);
     // Live capture starts empty; preview copy is reserved for non-capture surfaces.
     expect(container.querySelector(".caption-lines")).not.toBeNull();
+  });
+
+  it("renders the style-editor window route with CaptionStyleView and shared save chrome", async () => {
+    localStorage.setItem("caption-bridge.ui-locale.v1", "ja");
+    window.history.replaceState({}, "", "/?style-editor=1");
+    await act(async () => {
+      root.render(<App />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="style-editor-window"]')).not.toBeNull();
+    expect(container.querySelector(".nav-tabs")).toBeNull();
+    expect(container.querySelector(".live-stage")).toBeNull();
+    expect(container.querySelector(".overlay-root")).not.toBeNull();
+    expect(container.querySelector('[data-testid="caption-style-preview"]')).not.toBeNull();
+    expect(container.textContent).toContain("これはプレビュー用の字幕です。");
+    expect(container.textContent).toContain("This is a preview caption.");
+    expect(container.querySelector(".content-heading h2")?.textContent).toBe("文字の装飾設定");
+    expect(container.querySelector('[data-testid="caption-style-editors"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="caption-style-layout"]')).not.toBeNull();
   });
 });

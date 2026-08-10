@@ -100,6 +100,7 @@ export const LiveView = ({
   onCloseMessage,
   onOpenTransparentCapture,
   onCloseTransparentCapture,
+  onOpenStyleEditor,
 }: {
   config: AppConfig;
   status: RuntimeStatus;
@@ -113,6 +114,7 @@ export const LiveView = ({
   onCloseMessage: () => void;
   onOpenTransparentCapture?: () => void;
   onCloseTransparentCapture?: () => void;
+  onOpenStyleEditor?: () => void;
 }) => {
   const { t } = useI18n();
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -254,6 +256,16 @@ export const LiveView = ({
           </button>
         </div>
         <div className="live-toolbar-actions">
+          {onOpenStyleEditor ? (
+            <button
+              className="text-button"
+              type="button"
+              data-testid="open-style-editor"
+              onClick={onOpenStyleEditor}
+            >
+              {t("live.openStyleEditor")}
+            </button>
+          ) : null}
           {onOpenTransparentCapture ? (
             <button
               className="text-button"

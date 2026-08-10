@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Field } from "../components/Field";
 import {
   CAPTION_MAX_CHARS_MAX,
@@ -10,37 +12,123 @@ import {
   OVERLAY_SAFE_AREA_MAX_PX,
   OVERLAY_SAFE_AREA_MIN_PX,
 } from "../core/defaults";
+import { computePreviewFitScale } from "../core/style";
 import type { AppConfig } from "../core/types";
 import { useI18n } from "../i18n/I18nProvider";
-import { resolveCaptionMaxChars } from "../overlay/captions";
+import { OverlayView } from "../overlay/CaptionOverlay";
+import { createPreviewCaption, resolveCaptionMaxChars } from "../overlay/captions";
 import { TextStyleEditor } from "./TextStyleEditor";
+
+const CaptionStylePreview = ({ config }: { config: AppConfig }) => {
+  const { t } = useI18n();
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const caption = useMemo(() => createPreviewCaption(), []);
+  const overlayWidth = Number.isFinite(config.overlay.width)
+    ? Math.max(1, config.overlay.width)
+    : 1_280;
+  const overlayHeight = Number.isFinite(config.overlay.height)
+    ? Math.max(1, config.overlay.height)
+    : 720;
+  const measured = stageSize.width > 1 && stageSize.height > 1;
+  const previewScale = measured
+    ? computePreviewFitScale(stageSize.width, stageSize.height, overlayWidth, overlayHeight)
+    : 1;
+  const scaleHostStyle = useMemo<CSSProperties>(() => {
+    if (!measured) {
+      // Fill the stage until ResizeObserver reports a size (jsdom / first paint).
+      return {
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        transform: "none",
+      };
+    }
+    return {
+      position: "absolute",
+      left: "50%",
+      top: "50%",
+      width: overlayWidth,
+      height: overlayHeight,
+      transform: `translate(-50%, -50%) scale(${previewScale})`,
+      transformOrigin: "center center",
+    };
+  }, [measured, overlayHeight, overlayWidth, previewScale]);
+
+  useEffect(() => {
+    const node = stageRef.current;
+    if (!node || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const applySize = (width: number, height: number) => {
+      setStageSize((previous) =>
+        previous.width === width && previous.height === height ? previous : { width, height },
+      );
+    };
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) {
+        applySize(entry.contentRect.width, entry.contentRect.height);
+      }
+    });
+    observer.observe(node);
+    const rect = node.getBoundingClientRect();
+    applySize(rect.width, rect.height);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <section className="panel preview-panel" data-testid="caption-style-preview">
+      <div className="panel-heading">
+        <div>
+          <h3>{t("settings.stylePreviewTitle")}</h3>
+        </div>
+        <span className="live-badge">{t("settings.stylePreviewLive")}</span>
+      </div>
+      <div
+        className="preview-stage"
+        ref={stageRef}
+        style={{ aspectRatio: `${overlayWidth} / ${overlayHeight}` }}
+        data-testid="caption-style-preview-stage"
+        data-preview-measured={measured ? "true" : "false"}
+        data-preview-scale={previewScale.toFixed(4)}
+      >
+        <div
+          className={`preview-scale-host${measured ? " is-scaled" : " is-fill"}`}
+          style={scaleHostStyle}
+          data-testid="caption-style-preview-host"
+        >
+          <OverlayView config={config} caption={caption} preview placeholder={false} />
+        </div>
+      </div>
+      <div className="preview-footer">
+        <span>{t("settings.stylePreviewHint")}</span>
+      </div>
+    </section>
+  );
+};
 
 export const CaptionStyleView = ({
   config,
   saving,
   onConfigChange,
   onSave,
+  showPreview = true,
 }: {
   config: AppConfig;
   saving: boolean;
   onConfigChange: (next: AppConfig) => void;
   onSave: () => void;
+  /** Keep the preview alongside the controls in both style surfaces by default. */
+  showPreview?: boolean;
 }) => {
   const { t } = useI18n();
   const setOverlay = (patch: Partial<AppConfig["overlay"]>) =>
     onConfigChange({ ...config, overlay: { ...config.overlay, ...patch } });
 
-  return (
+  const editor = (
     <>
-      <div className="content-heading">
-        <h2>{t("sidebar.style")}</h2>
-        <div className="heading-actions">
-          <button className="primary-button" type="button" onClick={onSave} disabled={saving}>
-            {saving ? t("settings.saving") : t("settings.save")}
-          </button>
-        </div>
-      </div>
-
       <section className="panel settings-section" data-testid="caption-style-layout">
         <div className="section-heading">
           <h3>{t("settings.overlayTitle")}</h3>
@@ -134,6 +222,28 @@ export const CaptionStyleView = ({
           onChange={onConfigChange}
         />
       </div>
+    </>
+  );
+
+  return (
+    <>
+      <div className="content-heading">
+        <h2>{t("sidebar.style")}</h2>
+        <div className="heading-actions">
+          <button className="primary-button" type="button" onClick={onSave} disabled={saving}>
+            {saving ? t("settings.saving") : t("settings.save")}
+          </button>
+        </div>
+      </div>
+
+      {showPreview ? (
+        <div className="live-grid" data-testid="caption-style-workspace">
+          <div>{editor}</div>
+          <CaptionStylePreview config={config} />
+        </div>
+      ) : (
+        editor
+      )}
     </>
   );
 };
