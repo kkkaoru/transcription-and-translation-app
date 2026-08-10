@@ -77,7 +77,7 @@ export const handleCompareDevAsrAccessProxyRequest = async (
     });
   }
   const contentType = request.headers.get("content-type");
-  return fetchImpl(`${compareOrigin}${COMPARE_ASR_PATH}`, {
+  const upstream = await fetchImpl(`${compareOrigin}${COMPARE_ASR_PATH}`, {
     method: "POST",
     headers: {
       ...headers,
@@ -85,6 +85,12 @@ export const handleCompareDevAsrAccessProxyRequest = async (
     },
     body: request.body,
     duplex: "half",
+  });
+  const body = Buffer.from(await upstream.arrayBuffer());
+  const upstreamType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
+  return new Response(body, {
+    status: upstream.status,
+    headers: { "content-type": upstreamType },
   });
 };
 
