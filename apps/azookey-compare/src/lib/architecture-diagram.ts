@@ -15,6 +15,8 @@ export const ARCHITECTURE_ASSET_SIZES = {
   azkdictGz: "9.6 MB",
   vibratoWasm: "281 KB",
   azookeyWasm: "249 KB",
+  sileroOnnx: "2.2 MB",
+  ortWasm: "〜11 MB",
   zenzXsmall: "21 MB",
   zenzSmall: "74 MB",
 } as const;
@@ -41,6 +43,16 @@ export const ARCHITECTURE_DICTIONARIES = {
     usedBy: "AzooKey WASM / Zenzai 辞書（ブラウザ）",
     fn: "かな漢字変換 LOUDS/MM/CID",
     unusedBy: "Zenzai GGUF 推論",
+  },
+  silero: {
+    file: "silero_vad.onnx",
+    upstream: "snakers4/silero-vad v6.0",
+    browserUrl: "/models/silero_vad_v6/silero_vad.onnx",
+    ortUrl: "/ort/",
+    workerHostedAsset: true,
+    usedBy: "Workers AI ASR（ブラウザ Silero VAD）",
+    unusedBy: "Web Speech API",
+    fn: "発話区切り VAD",
   },
 } as const;
 
@@ -180,7 +192,7 @@ export const MODE_TITLE_SIZE = 13;
 export const MODE_BODY_SIZE = 10;
 export const MODE_STACK_Y = 10;
 export const MODE_BOTTOM_PAD = 10;
-export const MODE_DIAGRAM_PREVIOUS_HEIGHT = 194;
+export const MODE_DIAGRAM_PREVIOUS_HEIGHT = 280;
 export const ARCHITECTURE_DIAGRAM_MAX_WIDTH = 720;
 
 export const diagramLayoutMetrics = (
@@ -232,7 +244,9 @@ export const requiredBoxHeight = (
   box: Pick<ArchitectureBox, "w" | "title" | "lines" | "artifact" | "badge" | "cost" | "size">,
   compact = false,
 ): number => {
-  const metrics = compact ? diagramLayoutMetrics({ compactLayout: true }) : diagramLayoutMetrics({});
+  const metrics = compact
+    ? diagramLayoutMetrics({ compactLayout: true })
+    : diagramLayoutMetrics({});
   const chipRow = box.badge ? metrics.chipRow : 0;
   return (
     metrics.boxPadTop +
@@ -502,7 +516,10 @@ export const overviewArchitecture = (): ArchitectureDiagram => {
     y: 12,
     w: fullW,
     title: "① ブラウザ",
-    lines: ["Web Speech 認識", "Workers AI ASR: マイク音声 → compare"],
+    lines: [
+      "Web Speech: Speech API のみ · Silero なし",
+      "Workers AI ASR: ブラウザ Silero VAD → Nova-3",
+    ],
     tone: "browser",
     artifact: "runtime",
   });
@@ -629,7 +646,7 @@ export const modeArchitecture = (
     converterModel === "zenz-v3.2-small-gguf"
       ? ARCHITECTURE_ZENZAI.small.size
       : ARCHITECTURE_ZENZAI.xsmall.size;
-  const asr = workersAiAsr
+  const recognition = workersAiAsr
     ? layoutStack(
         20,
         stackY,
@@ -638,11 +655,12 @@ export const modeArchitecture = (
         [
           {
             id: "asr",
-            title: "Workers AI Nova-3 ASR",
+            title: "Workers AI ASR",
             lines: [
-              "/v1/asr/workers-ai/transcriptions",
-              "compare → inference Cloudflare Worker",
-              "env.AI.run HTTP · GPU-backed",
+              "ブラウザ Silero VAD v6（ONNX + ORT WASM）",
+              "/models/silero_vad_v6/silero_vad.onnx",
+              "→ /v1/asr/workers-ai/transcriptions",
+              "compare → inference Nova-3",
             ],
             tone: "model",
             artifact: "model",
@@ -651,8 +669,23 @@ export const modeArchitecture = (
         ],
         true,
       )
-    : [];
-  const readingStartY = workersAiAsr ? stackY + (asr[0]?.h ?? 0) + 8 : stackY;
+    : layoutStack(
+        20,
+        stackY,
+        boxW,
+        0,
+        [
+          {
+            id: "speech",
+            title: "Web Speech API",
+            lines: ["ブラウザ Speech API のみ", "Silero ONNX / ORT WASM なし"],
+            tone: "browser",
+            artifact: "runtime",
+          },
+        ],
+        true,
+      );
+  const readingStartY = stackY + (recognition[0]?.h ?? 0) + 8;
   const reading = layoutStack(
     20,
     readingStartY,
@@ -721,19 +754,22 @@ export const modeArchitecture = (
     ],
     true,
   );
-  const bottom = Math.max(...[...asr, ...reading, ...convert].map((box) => box.y + box.h));
+  const bottom = Math.max(...[...recognition, ...reading, ...convert].map((box) => box.y + box.h));
   const edges: ArchitectureEdge[] = workersAiAsr
     ? [
         { from: "asr", to: "vib", path: "internet", via: "vertical" },
         { from: "vib", to: "model", path: "device" },
       ]
-    : [{ from: "vib", to: "model", path: "device" }];
+    : [
+        { from: "speech", to: "vib", path: "device", via: "vertical" },
+        { from: "vib", to: "model", path: "device" },
+      ];
   return {
     viewBox: `0 0 ${width} ${bottom + MODE_BOTTOM_PAD}`,
     width,
     height: bottom + MODE_BOTTOM_PAD,
     compactLayout: true,
-    boxes: [...asr, ...reading, ...convert],
+    boxes: [...recognition, ...reading, ...convert],
     lanes: [],
     edges,
   };

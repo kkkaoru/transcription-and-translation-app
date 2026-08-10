@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { ComparisonMode } from "./contract";
-import type { ConverterModel } from "./converter-models";
 import {
   ARCHITECTURE_ASSET_SIZES,
-  ARCHITECTURE_DICTIONARIES,
   ARCHITECTURE_DIAGRAM_MAX_WIDTH,
+  ARCHITECTURE_DICTIONARIES,
   ARCHITECTURE_ZENZAI,
   architectureDiagram,
   architectureDiagramCaption,
@@ -14,11 +12,13 @@ import {
   edgesCrossingForeignBoxes,
   MODE_DIAGRAM_PREVIOUS_HEIGHT,
   modeArchitecture,
+  OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT,
   overflowingBoxIds,
   overlappingBoxIds,
-  OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT,
   overviewArchitecture,
 } from "./architecture-diagram";
+import type { ComparisonMode } from "./contract";
+import type { ConverterModel } from "./converter-models";
 import { COMPARE_WORKER_ORIGIN } from "./inference-proxy";
 
 const overviewTerms = [
@@ -61,6 +61,8 @@ describe("architecture SVG diagram models", () => {
     expect(text).not.toContain("ブラウザ簡潔");
     expect(text).not.toContain("Service Worker");
     expect(text).toContain("Vibrato WASM");
+    expect(text).toContain("Web Speech: Speech API のみ · Silero なし");
+    expect(text).toContain("Workers AI ASR: ブラウザ Silero VAD → Nova-3");
     expect(overview.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
     expect(overview.height).toBeLessThan(OVERVIEW_DIAGRAM_PREVIOUS_HEIGHT);
     expect(overview.bands).toBeUndefined();
@@ -83,7 +85,7 @@ describe("architecture SVG diagram models", () => {
 
   it("keeps diagram within viewport width and hides horizontal overflow", () => {
     const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
-    expect(css).toMatch(/\.path-diagram-svg\s*\{[^}]*overflow-x:\s*hidden/s);
+    expect(css).toMatch(/\.path-diagram-svg\s*\{[\s\S]*overflow-x:\s*hidden/);
     expect(overviewArchitecture().width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
   });
 
@@ -102,8 +104,20 @@ describe("architecture SVG diagram models", () => {
       expect(diagram.compactLayout).toBe(true);
       expect(diagram.width).toBeLessThanOrEqual(ARCHITECTURE_DIAGRAM_MAX_WIDTH);
       expect(diagram.height).toBeLessThan(MODE_DIAGRAM_PREVIOUS_HEIGHT);
-      const asrDiagram = modeArchitecture(mode, browserWasmConfigured, converterModel, "workers-ai-asr");
+      const asrDiagram = modeArchitecture(
+        mode,
+        browserWasmConfigured,
+        converterModel,
+        "workers-ai-asr",
+      );
       expect(asrDiagram.boxes.some((box) => box.id === "asr")).toBe(true);
+      expect(architectureDiagramText(asrDiagram)).toContain("Silero VAD v6");
+      expect(architectureDiagramText(asrDiagram)).toContain(
+        "/models/silero_vad_v6/silero_vad.onnx",
+      );
+      expect(architectureDiagramText(diagram)).toContain("Web Speech API");
+      expect(architectureDiagramText(diagram)).toContain("Silero ONNX / ORT WASM なし");
+      expect(architectureDiagramText(diagram)).not.toContain("silero_vad.onnx");
       expect(asrDiagram.height).toBeLessThan(MODE_DIAGRAM_PREVIOUS_HEIGHT + 80);
     }
   });
@@ -140,6 +154,14 @@ describe("architecture SVG diagram models", () => {
     expect(architectureDiagramCaption("mode", "worker-vibrato")).toBe(
       "Web Speech + Cloudflare Worker 依存の実行経路",
     );
+    expect(
+      architectureDiagramText(modeArchitecture("worker-vibrato", true, "azookey-rust-wasm")),
+    ).toContain("Silero ONNX / ORT WASM なし");
+    expect(
+      architectureDiagramText(
+        modeArchitecture("worker-vibrato", true, "azookey-rust-wasm", "workers-ai-asr"),
+      ),
+    ).toContain("ブラウザ Silero VAD v6");
 
     const zenz = architectureDiagramText(
       modeArchitecture("worker-vibrato", true, "zenz-v3.2-xsmall-gguf"),

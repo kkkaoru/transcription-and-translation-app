@@ -1,4 +1,5 @@
 import { enforceAccessJwt } from "./lib/access-jwt";
+import { withCompareStaticAssetHeaders } from "./lib/compare-static-assets";
 import { inferenceProxyRequest, shouldProxyToInference } from "./lib/inference-proxy";
 
 export interface CompareWorkerAssets {
@@ -23,6 +24,7 @@ export default {
     if (shouldProxyToInference(pathname)) {
       return env.INFERENCE.fetch(inferenceProxyRequest(request, env));
     }
-    return env.ASSETS.fetch(request);
+    const asset = await env.ASSETS.fetch(request);
+    return withCompareStaticAssetHeaders(pathname, asset);
   },
 };

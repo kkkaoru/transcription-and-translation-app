@@ -1,6 +1,6 @@
 import {
-  type RecognitionProvider,
   isRecognitionProvider,
+  type RecognitionProvider,
   recognitionProviderOptions,
 } from "../lib/contract";
 
@@ -32,7 +32,10 @@ export const RecognitionModeSelector = ({
     "Web Speech か Workers AI Nova-3 ASR を選択します。";
 
   return (
-    <div className={className} data-testid="recognition-mode-control">
+    <div
+      className={className ? `mode-selector ${className}` : "mode-selector"}
+      data-testid="recognition-mode-control"
+    >
       <label htmlFor={id}>{label}</label>
       <select
         id={id}

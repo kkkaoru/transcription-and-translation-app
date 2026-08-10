@@ -15,7 +15,7 @@ describe("workers-ai-asr-client", () => {
     });
     expect(result.text).toBe("こんにちは");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://compare.example/v1/asr/workers-ai/transcriptions");
     expect(init.method).toBe("POST");
     expect(init.body).toBeInstanceOf(FormData);

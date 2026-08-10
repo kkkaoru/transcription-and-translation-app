@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { blobToPcm16Mono } from "./pcm-wav";
 import { transcribeWorkersAiAsr } from "./workers-ai-asr-client";
 import { WorkersAiAsrController } from "./workers-ai-asr-controller";
-import { WORKERS_AI_ASR_VAD_DEFAULTS } from "./workers-ai-asr-vad";
+import { SILERO_FALLBACK_NOTICE_JA } from "./workers-ai-asr-silero-paths";
+import { type VadEngine, type VadResult, WORKERS_AI_ASR_VAD_DEFAULTS } from "./workers-ai-asr-vad";
 
 vi.mock("./workers-ai-asr-client", () => ({
   transcribeWorkersAiAsr: vi.fn(async () => ({ text: "こんにちは" })),
@@ -18,34 +19,24 @@ vi.mock("./pcm-wav", async (importOriginal) => {
 
 const LOUD_DB = -20;
 const SILENT_DB = -80;
+const START_MS = WORKERS_AI_ASR_VAD_DEFAULTS.segmentStartSpeechMs;
+const END_MS = WORKERS_AI_ASR_VAD_DEFAULTS.checkSilenceMs;
 
 type FakeTrack = { stop: ReturnType<typeof vi.fn> };
 
 class FakeMediaStreamSource {
   connect(_node: unknown): void {}
-}
-
-class FakeAnalyser {
-  fftSize = 2048;
-  fill = 128;
-
-  getByteTimeDomainData(array: Uint8Array): void {
-    array.fill(this.fill);
-  }
+  disconnect(): void {}
 }
 
 class FakeAudioContext {
   state: AudioContextState = "running";
+  sampleRate = 16_000;
   closeCalls = 0;
   resumeCalls = 0;
-  analyser = new FakeAnalyser();
 
   createMediaStreamSource(_stream: MediaStream): FakeMediaStreamSource {
     return new FakeMediaStreamSource();
-  }
-
-  createAnalyser(): FakeAnalyser {
-    return this.analyser;
   }
 
   resume(): Promise<void> {
@@ -127,21 +118,35 @@ const installBrowser = (track = fakeTrack()): MediaStream => {
 const callbacks = () => ({
   onStateChange: vi.fn(),
   onTranscript: vi.fn(),
+  onVadNotice: vi.fn(),
   onFinalText: vi.fn(),
   onUtteranceFinal: vi.fn(),
   onError: vi.fn(),
 });
 
-const startController = async () => {
+const startController = async (vadEngine?: VadEngine) => {
   const events = callbacks();
   const controller = new WorkersAiAsrController("ja-JP", {
     language: "ja-JP",
     endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
+    disableSilero: !vadEngine,
+    vadEngine,
     ...events,
   });
   await controller.start();
   return { controller, events };
 };
+
+const mockSileroEngine = (isSpeech = true): VadEngine => ({
+  process: vi.fn(
+    (_samples: Float32Array): Promise<VadResult> =>
+      Promise.resolve({
+        probability: isSpeech ? 0.92 : 0.01,
+        isSpeech,
+      }),
+  ),
+  dispose: vi.fn(),
+});
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -177,11 +182,11 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(controller.currentState).toBe("listening");
     expect(FakeMediaRecorder.instances).toHaveLength(0);
 
-    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
     expect(FakeMediaRecorder.instances).toHaveLength(1);
     expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "録音中…" });
 
-    await controller.ingestVadFrame(SILENT_DB, WORKERS_AI_ASR_VAD_DEFAULTS.endSilenceMs);
+    await controller.ingestVadFrame(SILENT_DB, END_MS);
     expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
     const [wav, options] = vi.mocked(transcribeWorkersAiAsr).mock.calls[0] ?? [];
     expect(wav).toBeInstanceOf(File);
@@ -198,9 +203,9 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(controller.currentState).toBe("listening");
 
     vi.mocked(transcribeWorkersAiAsr).mockResolvedValueOnce({ text: "きょうははれ" });
-    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
     expect(FakeMediaRecorder.instances).toHaveLength(2);
-    await controller.ingestVadFrame(SILENT_DB, WORKERS_AI_ASR_VAD_DEFAULTS.endSilenceMs);
+    await controller.ingestVadFrame(SILENT_DB, END_MS);
     expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(2);
     expect(events.onUtteranceFinal).toHaveBeenLastCalledWith({
       text: "きょうははれ",
@@ -210,10 +215,30 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
+  it("transcribes when a mock Silero engine marks speech then silence", async () => {
+    installBrowser();
+    const engine = mockSileroEngine(true);
+    const { controller, events } = await startController(engine);
+    const speech = Float32Array.from({ length: 512 }, () => 0.4);
+    const silenceEngine: VadEngine = {
+      process: vi.fn(() => Promise.resolve({ probability: 0.02, isSpeech: false })),
+      dispose: vi.fn(),
+    };
+    await controller.ingestSamples(speech);
+    await controller.ingestSamples(speech);
+    await controller.ingestSamples(speech);
+    expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "録音中…" });
+    controller.dispose();
+
+    const second = await startController(silenceEngine);
+    second.controller.dispose();
+    expect(engine.dispose).toHaveBeenCalled();
+  });
+
   it("flushes in-progress speech once on user stop and goes idle", async () => {
     installBrowser();
     const { controller, events } = await startController();
-    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
     expect(FakeMediaRecorder.instances[0]?.state).toBe("recording");
 
     await controller.stop();
@@ -223,8 +248,8 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(controller.currentState).toBe("idle");
     expect(FakeMediaRecorder.instances[0]?.stopCalls).toBe(1);
 
-    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
-    await controller.ingestVadFrame(SILENT_DB, WORKERS_AI_ASR_VAD_DEFAULTS.endSilenceMs);
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
+    await controller.ingestVadFrame(SILENT_DB, END_MS);
     expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
     controller.dispose();
   });
@@ -248,10 +273,10 @@ describe("WorkersAiAsrController VAD session", () => {
   it("discards a noise blip without transcribing", async () => {
     installBrowser();
     const { controller, events } = await startController();
-    await controller.ingestVadFrame(LOUD_DB, 80);
+    await controller.ingestVadFrame(LOUD_DB, 64);
     expect(FakeMediaRecorder.instances).toHaveLength(1);
-    expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "録音中…" });
-    await controller.ingestVadFrame(SILENT_DB, 100);
+    expect(events.onTranscript).not.toHaveBeenCalledWith({ interimText: "録音中…" });
+    await controller.ingestVadFrame(SILENT_DB, 32);
     expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "" });
     expect(transcribeWorkersAiAsr).not.toHaveBeenCalled();
     expect(controller.currentState).toBe("listening");
@@ -262,8 +287,8 @@ describe("WorkersAiAsrController VAD session", () => {
     installBrowser();
     const { controller } = await startController();
     controller.setLanguage("en-US");
-    await controller.ingestVadFrame(LOUD_DB, WORKERS_AI_ASR_VAD_DEFAULTS.minSpeechMs);
-    await controller.ingestVadFrame(SILENT_DB, WORKERS_AI_ASR_VAD_DEFAULTS.endSilenceMs);
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
+    await controller.ingestVadFrame(SILENT_DB, END_MS);
     expect(vi.mocked(transcribeWorkersAiAsr).mock.calls[0]?.[1]).toMatchObject({
       language: "en-US",
     });
@@ -276,10 +301,39 @@ describe("WorkersAiAsrController VAD session", () => {
       navigator as Navigator & { mediaDevices: { getUserMedia: ReturnType<typeof vi.fn> } }
     ).mediaDevices.getUserMedia = vi.fn(() => Promise.reject(new Error("permission denied")));
     const events = callbacks();
-    const controller = new WorkersAiAsrController("ja-JP", { language: "ja-JP", ...events });
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      disableSilero: true,
+      ...events,
+    });
     await controller.start();
     expect(controller.currentState).toBe("error");
     expect(events.onError).toHaveBeenCalledWith("permission denied");
+    controller.dispose();
+  });
+
+  it("disposes the Silero engine when leaving Workers AI ASR", async () => {
+    installBrowser();
+    const engine = mockSileroEngine(true);
+    const { controller } = await startController(engine);
+    expect(controller.vadBackend).toBe("silero");
+    controller.dispose();
+    expect(engine.dispose).toHaveBeenCalledTimes(1);
+    expect(controller.vadBackend).toBe("energy");
+    expect(controller.currentState).toBe("idle");
+  });
+
+  it("notifies Japanese fallback when Silero WASM fails to load", async () => {
+    installBrowser();
+    const events = callbacks();
+    const controller = new WorkersAiAsrController("ja-JP", {
+      language: "ja-JP",
+      sileroLoader: () => Promise.reject(new Error("ort missing")),
+      ...events,
+    });
+    await controller.start();
+    expect(events.onVadNotice).toHaveBeenCalledWith(SILERO_FALLBACK_NOTICE_JA);
+    expect(controller.vadBackend).toBe("energy");
     controller.dispose();
   });
 });

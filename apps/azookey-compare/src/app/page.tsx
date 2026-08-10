@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArchitectureAssetTable } from "../components/ArchitectureAssetTable";
 import { ComparisonPathDiagram } from "../components/ComparisonPathDiagram";
-import { VibratoModeSelector } from "../components/VibratoModeSelector";
 import { RecognitionModeSelector } from "../components/RecognitionModeSelector";
+import { VibratoModeSelector } from "../components/VibratoModeSelector";
 import { isArchitectureDialogForced } from "../lib/architecture-dialog";
 import {
   shouldWarmBrowserDictionaryAfterConfigChange,
@@ -12,26 +12,33 @@ import {
 } from "../lib/azookey-reading";
 import { runBrowserAzookey, warmupBrowserAzookey } from "../lib/browser-azookey";
 import {
-  BROWSER_ZENZAI_DICT_NOTICE,
-  runBrowserZenzaiDict,
-  warmupBrowserZenzaiDict,
-} from "../lib/browser-zenzai";
-import {
   browserVibratoConfigFromComparison,
   runBrowserVibrato,
   warmupBrowserVibrato,
 } from "../lib/browser-vibrato";
 import { type BrowserWasmState, browserWasmStateAfterStage } from "../lib/browser-wasm-status";
 import {
+  BROWSER_ZENZAI_DICT_NOTICE,
+  runBrowserZenzaiDict,
+  warmupBrowserZenzaiDict,
+} from "../lib/browser-zenzai";
+import {
+  CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL,
+  type CloudflareConversionCostEstimate,
+  estimateCloudflareConversionCost,
+  formatCloudflareCostUsd,
+  usesExternalGgufUpstream,
+} from "../lib/cloudflare-conversion-cost";
+import {
   browserWasmConfigurationStatus,
   buildVibratoWebSocketUrl,
   type ComparisonAuth,
   type ComparisonConfig,
   type ComparisonMode,
-  type RecognitionProvider,
   comparisonModeOptions,
   DEFAULT_COMPARISON_CONFIG,
   hasBrowserWasmConfiguration,
+  type RecognitionProvider,
 } from "../lib/contract";
 import {
   AZOOKEY_CONVERSION_FIXTURES,
@@ -40,33 +47,17 @@ import {
 import { runComparisonConversion, usesBrowserZenzaiDictPath } from "../lib/conversion-pipeline";
 import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
 import {
-  conversionTraceDisplayLines,
   type ConversionTrace,
+  conversionTraceDisplayLines,
   traceStepLocationLabel,
 } from "../lib/conversion-trace";
-import {
-  CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL,
-  estimateCloudflareConversionCost,
-  formatCloudflareCostUsd,
-  usesExternalGgufUpstream,
-  type CloudflareConversionCostEstimate,
-} from "../lib/cloudflare-conversion-cost";
-import { buildWorkersAiAsrUrl } from "../lib/inference-proxy";
-import {
-  estimateWorkersAiAsrCost,
-  webSpeechAsrCostSummaryJa,
-  workersAiAsrCostSummaryJa,
-} from "../lib/workers-ai-asr-cost";
-import {
-  WorkersAiAsrController,
-  type WorkersAiAsrState,
-} from "../lib/workers-ai-asr-controller";
 import {
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
   isConverterModel,
   isZenzConverterModel,
 } from "../lib/converter-models";
+import { buildWorkersAiAsrUrl } from "../lib/inference-proxy";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
 import { visibleWebSpeechCaption } from "../lib/speech-caption-display";
 import { syncSpeechLanguage } from "../lib/speech-language";
@@ -83,6 +74,14 @@ import {
   type WorkerConnectionState,
   workerErrorStage,
 } from "../lib/worker-client";
+import { WorkersAiAsrController, type WorkersAiAsrState } from "../lib/workers-ai-asr-controller";
+import {
+  estimateWorkersAiAsrCost,
+  webSpeechAsrCostSummaryJa,
+  workersAiAsrCostSummaryJa,
+} from "../lib/workers-ai-asr-cost";
+
+const DESKTOP_CONFIG_MEDIA_QUERY = "(min-width: 641px)";
 
 type ComparisonRowState = "queued" | "wasm" | "sending" | "done" | "error";
 type ComparisonRowOrigin = "web-speech" | "workers-ai-asr" | "manual" | "fixture";
@@ -246,7 +245,9 @@ export default function ComparePage() {
       : {}),
   }));
   const [speechSupported, setSpeechSupported] = useState(false);
-  const [speechState, setSpeechState] = useState<SpeechRecognitionState | WorkersAiAsrState>("idle");
+  const [speechState, setSpeechState] = useState<SpeechRecognitionState | WorkersAiAsrState>(
+    "idle",
+  );
   const [workerState, setWorkerState] = useState<WorkerConnectionState>("idle");
   const [browserWasmState, setBrowserWasmState] = useState<BrowserWasmState>("idle");
   const [speechFinalText, setSpeechFinalText] = useState("");
@@ -263,6 +264,7 @@ export default function ComparePage() {
   );
   const [fixtureBusy, setFixtureBusy] = useState(false);
   const [architectureOpen, setArchitectureOpen] = useState(false);
+  const [configPanelOpen, setConfigPanelOpen] = useState(true);
 
   const speechRef = useRef<WebSpeechController | null>(null);
   const asrRef = useRef<WorkersAiAsrController | null>(null);
@@ -273,12 +275,26 @@ export default function ComparePage() {
   const workerVibratoConfiguredRef = useRef<boolean | undefined>(undefined);
   const workerGenerationRef = useRef(0);
   const rowsRef = useRef<ComparisonRow[]>([]);
-  const finalTextHandlerRef = useRef<(text: string, audioSeconds?: number) => void>(() => undefined);
+  const finalTextHandlerRef = useRef<(text: string, audioSeconds?: number) => void>(
+    () => undefined,
+  );
   /** Serialize browser pre-pass + Worker work so rapid finals retain order. */
   const dispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     setArchitectureOpen(isArchitectureDialogForced(window.location.search));
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia(DESKTOP_CONFIG_MEDIA_QUERY);
+    const forceOpenOnDesktop = () => {
+      if (media.matches) {
+        setConfigPanelOpen(true);
+      }
+    };
+    forceOpenOnDesktop();
+    media.addEventListener("change", forceOpenOnDesktop);
+    return () => media.removeEventListener("change", forceOpenOnDesktop);
   }, []);
 
   useEffect(() => {
@@ -347,6 +363,9 @@ export default function ComparePage() {
         },
         onUtteranceFinal: ({ text, audioSeconds }) => {
           dispatchSpeechText(text, audioSeconds);
+        },
+        onVadNotice: (message) => {
+          setNotice(message);
         },
         onError: (message) => {
           setError(message);
@@ -647,8 +666,7 @@ export default function ComparePage() {
         config.auth,
         config.converterModel,
         {
-          origin:
-            config.recognitionProvider === "workers-ai-asr" ? "workers-ai-asr" : "web-speech",
+          origin: config.recognitionProvider === "workers-ai-asr" ? "workers-ai-asr" : "web-speech",
           recognitionProvider: config.recognitionProvider,
           ...(audioSeconds !== undefined ? { audioSeconds } : {}),
         },
@@ -1053,8 +1071,9 @@ export default function ComparePage() {
           {speechState === "listening" || speechState === "starting" ? "認識を停止" : "認識を開始"}
         </button>
         <p className="field-help">
-          マイク権限を許可すると、確定した発話ごとに変換します。認識終了（final /
-          onend）でも行を残します。
+          {config.recognitionProvider === "workers-ai-asr"
+            ? "マイク権限を許可すると、ブラウザの Silero VAD v6（ONNX + ORT WASM）で発話を切り、Workers AI Nova-3 に送ります。無音 320ms で区切り、同じ録音のまま次の発話を待ちます。WASM を読めないときだけ -50 dBFS エネルギーゲートに倒します。"
+            : "マイク権限を許可すると、確定した発話ごとに変換します。認識終了（final / onend）でも行を残します。Web Speech では Silero ONNX / ORT WASM は読み込みません。"}
         </p>
       </section>
 
@@ -1077,207 +1096,227 @@ export default function ComparePage() {
 
       <div className="workspace-grid">
         <aside className="control-stack" aria-label="比較設定">
-          <details className="config-panel-disclosure" data-testid="config-panel-disclosure">
-            <summary className="config-panel-toggle" data-testid="config-panel-toggle">
-              {configPanelHeading}
-            </summary>
-            <section className="panel config-panel" data-testid="config-panel">
-              <div className="config-panel-heading-desktop" aria-hidden="true">
-                {configPanelHeading}
-              </div>
-
-            <RecognitionModeSelector
-              provider={config.recognitionProvider}
-              onProviderChange={(recognitionProvider) => {
-                updateConfig("recognitionProvider", recognitionProvider);
+          <section className="panel config-panel" data-testid="config-panel">
+            <div className="config-panel-heading-desktop">{configPanelHeading}</div>
+            <details
+              className="config-panel-disclosure"
+              data-testid="config-panel-disclosure"
+              open={configPanelOpen}
+              onToggle={(event) => {
+                const next = window.matchMedia(DESKTOP_CONFIG_MEDIA_QUERY).matches
+                  ? true
+                  : event.currentTarget.open;
+                setConfigPanelOpen((current) => (current === next ? current : next));
               }}
-              label="音声認識"
-            />
-
-            <VibratoModeSelector
-              mode={config.mode}
-              onModeChange={(mode) => {
-                updateConfig("mode", mode);
-              }}
-              label="変換（前処理の実行場所）"
-              description={selectedModeOption?.description}
-            />
-
-            <label className="field-label" htmlFor="converter-model">
-              変換モデル
-              <select
-                id="converter-model"
-                data-testid="converter-model-select"
-                value={config.converterModel}
-                onChange={(event) => {
-                  const next = event.target.value;
-                  if (isConverterModel(next)) {
-                    updateConfig("converterModel", next);
-                  }
-                }}
-                aria-describedby="converter-model-description"
-              >
-                {converterModelOptions.map((option) => (
-                  <option key={option.value} value={option.value} title={option.description}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <p
-              className="field-help"
-              id="converter-model-description"
-              data-testid="converter-model-description"
             >
-              {converterModelOptions.find((option) => option.value === config.converterModel)
-                ?.description ?? ""}
-              {browserZenzaiDictNotice ? (
-                <>
-                  {" "}
-                  <span data-testid="browser-zenzai-dict-notice">{browserZenzaiDictNotice}</span>
-                </>
-              ) : null}
-            </p>
+              <summary className="config-panel-toggle" data-testid="config-panel-toggle">
+                {configPanelHeading}
+              </summary>
+              <div className="config-panel-body">
+                <RecognitionModeSelector
+                  provider={config.recognitionProvider}
+                  onProviderChange={(recognitionProvider) => {
+                    updateConfig("recognitionProvider", recognitionProvider);
+                  }}
+                  label="音声認識"
+                />
 
-            <label className="field-label" htmlFor="worker-url">
-              Cloudflare Worker WebSocket URL
-              <input
-                id="worker-url"
-                type="url"
-                inputMode="url"
-                value={config.websocketUrl}
-                onChange={(event) => updateConfig("websocketUrl", event.target.value)}
-                placeholder="ws://127.0.0.1:8787/ws/azookey"
-                spellCheck={false}
-              />
-            </label>
-            <p className="field-help">
-              既定はローカル wrangler（`ws://127.0.0.1:8787/ws/azookey`）。接続エラーなら `bun run
-              worker:dev` を先に起動してください。デプロイ先は `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL`
-              で上書きできます。
-            </p>
+                <VibratoModeSelector
+                  mode={config.mode}
+                  onModeChange={(mode) => {
+                    updateConfig("mode", mode);
+                  }}
+                  label="変換（前処理の実行場所）"
+                  description={selectedModeOption?.description}
+                />
 
-            {config.mode === "browser-vibrato" ? (
-              <div className="subsection browser-wasm-settings">
-                <p className="subsection-title">Browser Vibrato WASM 設定（このモードでは必須）</p>
-                <p className="field-help" data-testid="browser-wasm-config-status">
-                  {browserWasmStatus}
+                <label className="field-label" htmlFor="converter-model">
+                  変換モデル
+                  <select
+                    id="converter-model"
+                    data-testid="converter-model-select"
+                    value={config.converterModel}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      if (isConverterModel(next)) {
+                        updateConfig("converterModel", next);
+                      }
+                    }}
+                    aria-describedby="converter-model-description"
+                  >
+                    {converterModelOptions.map((option) => (
+                      <option key={option.value} value={option.value} title={option.description}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p
+                  className="field-help"
+                  id="converter-model-description"
+                  data-testid="converter-model-description"
+                >
+                  {converterModelOptions.find((option) => option.value === config.converterModel)
+                    ?.description ?? ""}
+                  {browserZenzaiDictNotice ? (
+                    <>
+                      {" "}
+                      <span data-testid="browser-zenzai-dict-notice">
+                        {browserZenzaiDictNotice}
+                      </span>
+                    </>
+                  ) : null}
                 </p>
-                <label className="field-label" htmlFor="wasm-module-url">
-                  JS glue module URL（global 未指定時は必須）
+
+                <label className="field-label" htmlFor="worker-url">
+                  Cloudflare Worker WebSocket URL
                   <input
-                    id="wasm-module-url"
+                    id="worker-url"
                     type="url"
                     inputMode="url"
-                    value={config.browserWasmModuleUrl ?? ""}
-                    onChange={(event) => updateConfig("browserWasmModuleUrl", event.target.value)}
-                    placeholder="https://localhost:3000/azookey-browser.js"
-                    spellCheck={false}
-                  />
-                </label>
-                <label className="field-label" htmlFor="wasm-global-name">
-                  global runtime 名（module URL 未指定時は必須）
-                  <input
-                    id="wasm-global-name"
-                    type="text"
-                    value={config.browserWasmGlobalName ?? ""}
-                    onChange={(event) => updateConfig("browserWasmGlobalName", event.target.value)}
-                    placeholder="__AZOOKEY_BROWSER_PREPASS__"
-                    spellCheck={false}
-                  />
-                </label>
-                <label className="field-label" htmlFor="wasm-dictionary-url">
-                  Vibrato 辞書 URL（IPADIC F[7]、生成 module では必須）
-                  <input
-                    id="wasm-dictionary-url"
-                    type="url"
-                    inputMode="url"
-                    value={config.browserWasmDictionaryUrl ?? ""}
-                    onChange={(event) =>
-                      updateConfig("browserWasmDictionaryUrl", event.target.value)
-                    }
-                    placeholder="/vibrato/system.dic.zst"
+                    value={config.websocketUrl}
+                    onChange={(event) => updateConfig("websocketUrl", event.target.value)}
+                    placeholder="ws://127.0.0.1:8787/ws/azookey"
                     spellCheck={false}
                   />
                 </label>
                 <p className="field-help">
-                  既定の wasm-bindgen module（`/vibrato/vibrato_wasm.js`）は `VibratoTokenizer` と
-                  `initSync` を export し、この辞書の IPADIC F[7] を ひらがなへ変換します。独自
-                  module を使う場合は、`convert(text)`、 `transform(text)`、`tokenize(text)`
-                  のいずれかを export する wrapper の URL、または注入済み global
-                  を指定します。モジュール URL も global 名も空のときはブラウザ Vibrato WASM
-                  が未設定のためプリパスを実行できず失敗します（Cloudflare Worker 側 Vibrato
-                  へはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
-                  実行時フォールバックとして既定名 `__AZOOKEY_VIBRATO_WASM__` を試します。
-                  ブラウザ完結のかな→漢字は 同じページの AzooKey WASM で実行し、`/ws/azookey`
-                  は呼びません。
+                  既定はローカル wrangler（`ws://127.0.0.1:8787/ws/azookey`）。接続エラーなら `bun
+                  run worker:dev` を先に起動してください。デプロイ先は
+                  `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` で上書きできます。
                 </p>
-                <div className={`mini-status wasm-${browserWasmState}`}>
-                  <span className="status-dot" aria-hidden="true" />
-                  ブラウザ WASM: {browserWasmState === "idle" ? "未実行" : browserWasmState}
-                </div>
-              </div>
-            ) : null}
 
-            <div className="subsection auth-settings">
-              <p className="subsection-title">認証（Cloudflare Worker の契約に合わせる）</p>
-              <label className="field-label" htmlFor="auth-scheme">
-                方式
-                <select
-                  id="auth-scheme"
-                  value={config.auth.scheme}
-                  onChange={(event) => {
-                    const scheme = event.target.value === "bearer" ? "bearer" : "none";
-                    updateConfig(
-                      "auth",
-                      scheme === "bearer" ? { scheme, token: config.auth.token ?? "" } : { scheme },
-                    );
-                  }}
-                >
-                  <option value="none">なし</option>
-                  <option value="bearer">Bearer token</option>
-                </select>
-              </label>
-              {config.auth.scheme === "bearer" ? (
-                <label className="field-label" htmlFor="auth-token">
-                  Token
+                {config.mode === "browser-vibrato" ? (
+                  <div className="subsection browser-wasm-settings">
+                    <p className="subsection-title">
+                      Browser Vibrato WASM 設定（このモードでは必須）
+                    </p>
+                    <p className="field-help" data-testid="browser-wasm-config-status">
+                      {browserWasmStatus}
+                    </p>
+                    <label className="field-label" htmlFor="wasm-module-url">
+                      JS glue module URL（global 未指定時は必須）
+                      <input
+                        id="wasm-module-url"
+                        type="url"
+                        inputMode="url"
+                        value={config.browserWasmModuleUrl ?? ""}
+                        onChange={(event) =>
+                          updateConfig("browserWasmModuleUrl", event.target.value)
+                        }
+                        placeholder="https://localhost:3000/azookey-browser.js"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <label className="field-label" htmlFor="wasm-global-name">
+                      global runtime 名（module URL 未指定時は必須）
+                      <input
+                        id="wasm-global-name"
+                        type="text"
+                        value={config.browserWasmGlobalName ?? ""}
+                        onChange={(event) =>
+                          updateConfig("browserWasmGlobalName", event.target.value)
+                        }
+                        placeholder="__AZOOKEY_BROWSER_PREPASS__"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <label className="field-label" htmlFor="wasm-dictionary-url">
+                      Vibrato 辞書 URL（IPADIC F[7]、生成 module では必須）
+                      <input
+                        id="wasm-dictionary-url"
+                        type="url"
+                        inputMode="url"
+                        value={config.browserWasmDictionaryUrl ?? ""}
+                        onChange={(event) =>
+                          updateConfig("browserWasmDictionaryUrl", event.target.value)
+                        }
+                        placeholder="/vibrato/system.dic.zst"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <p className="field-help">
+                      既定の wasm-bindgen module（`/vibrato/vibrato_wasm.js`）は `VibratoTokenizer`
+                      と `initSync` を export し、この辞書の IPADIC F[7] を
+                      ひらがなへ変換します。独自 module を使う場合は、`convert(text)`、
+                      `transform(text)`、`tokenize(text)` のいずれかを export する wrapper の
+                      URL、または注入済み global を指定します。モジュール URL も global
+                      名も空のときはブラウザ Vibrato WASM
+                      が未設定のためプリパスを実行できず失敗します（Cloudflare Worker 側 Vibrato
+                      へはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
+                      実行時フォールバックとして既定名 `__AZOOKEY_VIBRATO_WASM__` を試します。
+                      ブラウザ完結のかな→漢字は 同じページの AzooKey WASM で実行し、`/ws/azookey`
+                      は呼びません。
+                    </p>
+                    <div className={`mini-status wasm-${browserWasmState}`}>
+                      <span className="status-dot" aria-hidden="true" />
+                      ブラウザ WASM: {browserWasmState === "idle" ? "未実行" : browserWasmState}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="subsection auth-settings">
+                  <p className="subsection-title">認証（Cloudflare Worker の契約に合わせる）</p>
+                  <label className="field-label" htmlFor="auth-scheme">
+                    方式
+                    <select
+                      id="auth-scheme"
+                      value={config.auth.scheme}
+                      onChange={(event) => {
+                        const scheme = event.target.value === "bearer" ? "bearer" : "none";
+                        updateConfig(
+                          "auth",
+                          scheme === "bearer"
+                            ? { scheme, token: config.auth.token ?? "" }
+                            : { scheme },
+                        );
+                      }}
+                    >
+                      <option value="none">なし</option>
+                      <option value="bearer">Bearer token</option>
+                    </select>
+                  </label>
+                  {config.auth.scheme === "bearer" ? (
+                    <label className="field-label" htmlFor="auth-token">
+                      Token
+                      <input
+                        id="auth-token"
+                        type="password"
+                        value={config.auth.token ?? ""}
+                        onChange={(event) =>
+                          updateConfig("auth", { scheme: "bearer", token: event.target.value })
+                        }
+                        autoComplete="off"
+                      />
+                    </label>
+                  ) : null}
+                  <p className="field-help">
+                    Token は URL に追加せず、変換リクエストの認証フィールドにだけ送信します。
+                  </p>
+                </div>
+
+                <label className="field-label" htmlFor="speech-language">
+                  Web Speech language
                   <input
-                    id="auth-token"
-                    type="password"
-                    value={config.auth.token ?? ""}
-                    onChange={(event) =>
-                      updateConfig("auth", { scheme: "bearer", token: event.target.value })
-                    }
-                    autoComplete="off"
+                    id="speech-language"
+                    type="text"
+                    value={config.language}
+                    onChange={(event) => updateConfig("language", event.target.value)}
+                    placeholder="ja-JP"
+                    spellCheck={false}
                   />
                 </label>
-              ) : null}
-              <p className="field-help">
-                Token は URL に追加せず、変換リクエストの認証フィールドにだけ送信します。
-              </p>
-            </div>
 
-            <label className="field-label" htmlFor="speech-language">
-              Web Speech language
-              <input
-                id="speech-language"
-                type="text"
-                value={config.language}
-                onChange={(event) => updateConfig("language", event.target.value)}
-                placeholder="ja-JP"
-                spellCheck={false}
-              />
-            </label>
-
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={() => void connectWorker()}
-            >
-              Cloudflare Worker に接続
-            </button>
-            </section>
-          </details>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  onClick={() => void connectWorker()}
+                >
+                  Cloudflare Worker に接続
+                </button>
+              </div>
+            </details>
+          </section>
 
           <section className="panel reading-panel">
             <div className="panel-heading">
@@ -1287,8 +1326,8 @@ export default function ComparePage() {
               </div>
             </div>
             <p className="field-help">
-              かな読みを AzooKey へ直接送り、変換結果を確認します。ブラウザ完結では in-page、Cloudflare Worker
-              依存では推論 Cloudflare Worker で変換します。
+              かな読みを AzooKey へ直接送り、変換結果を確認します。ブラウザ完結では
+              in-page、Cloudflare Worker 依存では推論 Cloudflare Worker で変換します。
             </p>
             <label className="field-label" htmlFor="manual-reading">
               かな読み
@@ -1400,8 +1439,8 @@ export default function ComparePage() {
               <div className="live-card-footer">
                 <span>処理時間</span>
                 <strong>
-                  合計処理時間 {formatMilliseconds(latestWorker?.totalElapsedMs)} / Cloudflare Worker{" "}
-                  {formatMilliseconds(latestWorker?.workerElapsedMs)}
+                  合計処理時間 {formatMilliseconds(latestWorker?.totalElapsedMs)} / Cloudflare
+                  Worker {formatMilliseconds(latestWorker?.workerElapsedMs)}
                 </strong>
               </div>
             </section>
@@ -1424,7 +1463,8 @@ export default function ComparePage() {
                 </span>
                 <p>確定発話がまだありません</p>
                 <span>
-                  Web Speech、手動読み、または変換フィクスチャから Cloudflare Worker 変換を実行できます。
+                  Web Speech、手動読み、または変換フィクスチャから Cloudflare Worker
+                  変換を実行できます。
                 </span>
               </div>
             ) : (
@@ -1523,7 +1563,10 @@ export default function ComparePage() {
                           return (
                             <div className="utterance-cost-card" data-testid="utterance-cost-card">
                               <h4 className="utterance-cost-heading">料金（推定）</h4>
-                              <p className="utterance-cost-total" data-testid="utterance-cost-total">
+                              <p
+                                className="utterance-cost-total"
+                                data-testid="utterance-cost-total"
+                              >
                                 {formatCloudflareCostUsd(totalUsd)}
                               </p>
                               <dl className="utterance-cost-breakdown">
@@ -1586,8 +1629,8 @@ export default function ComparePage() {
                         })()}
                         {row.trace?.workerRequest ? (
                           <span className="row-meta row-trace-worker-payload">
-                            Cloudflare Worker 送信: sourceText={row.trace.workerRequest.sourceText} ·
-                            vibratoInput={row.trace.workerRequest.vibratoInput} ·
+                            Cloudflare Worker 送信: sourceText={row.trace.workerRequest.sourceText}{" "}
+                            · vibratoInput={row.trace.workerRequest.vibratoInput} ·
                             vibratoExecution={row.trace.workerRequest.vibratoExecution}
                             {row.trace.workerRequest.model
                               ? ` · model=${row.trace.workerRequest.model}`

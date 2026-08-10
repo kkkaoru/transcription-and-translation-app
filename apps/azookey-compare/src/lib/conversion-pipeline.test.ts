@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { BROWSER_ZENZAI_DICT_EXECUTION } from "./browser-zenzai";
+import {
+  BROWSER_ZENZAI_DICT_EXECUTION,
+  BROWSER_ZENZAI_DICT_LABEL,
+  type BrowserZenzaiDictResult,
+} from "./browser-zenzai";
 import {
   runComparisonConversion,
   usesBrowserZenzaiDictPath,
@@ -69,14 +73,14 @@ describe("comparison conversion pipeline", () => {
   it("uses the Zenzai dictionary path in browser-complete without falling back to Worker", async () => {
     const convertWithWorker = vi.fn();
     const runBrowserAzookey = vi.fn();
-    const runBrowserZenzaiDict = vi.fn(() =>
+    const runBrowserZenzaiDict = vi.fn((): Promise<BrowserZenzaiDictResult> =>
       Promise.resolve({
         text: "今日はいい天気",
         elapsedMs: 6,
         execution: BROWSER_ZENZAI_DICT_EXECUTION,
-        model: "zenz-v3.2-xsmall-gguf" as const,
+        model: "zenz-v3.2-xsmall-gguf",
         dictionaryUrl: "/azookey/system.azkdict.gz",
-        label: "Zenzai 辞書（LOUDS / system.azkdict.gz）",
+        label: BROWSER_ZENZAI_DICT_LABEL,
       }),
     );
     const stages: string[] = [];

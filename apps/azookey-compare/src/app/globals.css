@@ -208,6 +208,11 @@ select:focus-visible {
   padding: 21px;
 }
 
+.config-panel {
+  position: relative;
+  min-width: 0;
+}
+
 .panel-heading {
   justify-content: space-between;
   gap: 14px;
@@ -286,14 +291,18 @@ select:focus-visible {
   background: #fff;
 }
 
-[data-testid="vibrato-mode-control"] > label {
+.mode-selector + .mode-selector {
+  margin-top: 15px;
+}
+
+.mode-selector > label {
   display: block;
   color: #4e585a;
   font-size: 12px;
   font-weight: 700;
 }
 
-[data-testid="vibrato-mode-control"] select {
+.mode-selector select {
   width: 100%;
   min-height: 39px;
   margin-top: 7px;
@@ -306,7 +315,12 @@ select:focus-visible {
   font-weight: 700;
 }
 
-[data-testid="vibrato-mode-description"] {
+.mode-selector select:focus {
+  border-color: #83b9af;
+  background: #fff;
+}
+
+.mode-selector p {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 11px;
@@ -678,35 +692,18 @@ select:focus-visible {
   font-weight: 800;
 }
 
-.config-panel-disclosure {
-  border: 1px solid var(--line);
-  border-radius: 17px;
-  background: var(--card);
-  box-shadow: var(--shadow);
-}
-
 .config-panel-disclosure > summary {
   list-style: none;
   cursor: pointer;
 }
 
-.config-panel-disclosure > summary::-webkit-details-marker {
+.config-panel-disclosure > summary::-webkit-details-marker,
+.config-panel-disclosure > summary::marker {
   display: none;
-}
-
-.config-panel-toggle {
-  padding: 17px 21px;
 }
 
 .config-panel-toggle .panel-heading {
   margin-bottom: 0;
-}
-
-.config-panel-disclosure .config-panel {
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  border-top: 1px solid var(--soft-line);
 }
 
 .config-panel-heading-desktop {
@@ -714,20 +711,22 @@ select:focus-visible {
 }
 
 @media (min-width: 641px) {
-  .config-panel-disclosure > summary {
-    display: none;
-  }
-
-  .config-panel-disclosure:not([open]) > .config-panel {
-    display: block;
-  }
-
   .config-panel-heading-desktop {
     display: block;
   }
 
-  .config-panel-disclosure .config-panel {
-    border-top: 0;
+  .config-panel-disclosure {
+    display: contents;
+  }
+
+  .config-panel-disclosure > summary {
+    display: none;
+    pointer-events: none;
+  }
+
+  .config-panel-disclosure[open] > .config-panel-body,
+  .config-panel-disclosure:not([open]) > .config-panel-body {
+    display: block;
   }
 }
 
@@ -1003,12 +1002,13 @@ select:focus-visible {
     padding: 17px;
   }
 
-  .config-panel-toggle {
-    padding: 17px;
+  .config-panel-disclosure[open] .config-panel-toggle .panel-heading {
+    margin-bottom: 19px;
   }
 
-  .config-panel-disclosure .config-panel {
-    padding-top: 0;
+  .config-panel-disclosure[open] > .config-panel-body {
+    border-top: 1px solid var(--soft-line);
+    padding-top: 4px;
   }
 
   .utterance-cost-total {

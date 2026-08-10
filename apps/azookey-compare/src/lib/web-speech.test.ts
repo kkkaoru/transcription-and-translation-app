@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  getSpeechRecognitionConstructor,
-  type SpeechRecognitionCallbacks,
-  WebSpeechController,
-} from "./web-speech";
+import { getSpeechRecognitionConstructor, WebSpeechController } from "./web-speech";
 
 type TestAlternative = { transcript: string; confidence: number };
 type TestResult = {
@@ -84,7 +80,7 @@ const installSpeech = (webkit = false): void => {
   });
 };
 
-const callbacks = (): Required<SpeechRecognitionCallbacks> => ({
+const callbacks = () => ({
   onStateChange: vi.fn(),
   onTranscript: vi.fn(),
   onFinalText: vi.fn(),

@@ -13,7 +13,12 @@ import {
 describe("architecture asset inventory", () => {
   it("lists IPADIC, AzooKey dict, and GGUF with load source and size", () => {
     const text = architectureAssetText();
-    expect(ARCHITECTURE_ASSET_ROWS.map((row) => row.id)).toEqual(["ipadic", "azkdict", "gguf"]);
+    expect(ARCHITECTURE_ASSET_ROWS.map((row) => row.id)).toEqual([
+      "ipadic",
+      "azkdict",
+      "silero-vad",
+      "gguf",
+    ]);
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.ipadic.file);
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.ipadic.browserUrl);
     expect(text).toContain(ARCHITECTURE_DICTIONARIES.ipadic.upstream);
@@ -41,6 +46,11 @@ describe("architecture asset inventory", () => {
     expect(text).toContain(ARCHITECTURE_ZENZAI.xsmall.size);
     expect(text).toContain(ARCHITECTURE_ZENZAI.small.size);
     expect(text).toContain("Cloudflare Worker は GGUF を持たない");
+    expect(text).toContain("silero_vad.onnx");
+    expect(text).toContain("/models/silero_vad_v6/silero_vad.onnx");
+    expect(text).toContain("Workers AI ASR 認識開始時");
+    expect(text).toContain("Web Speech では読み込まない");
+    expect(text).toContain(ARCHITECTURE_ASSET_SIZES.sileroOnnx);
     expect(text).not.toContain("Tauri");
     expect(text).not.toContain("capture-start");
   });
@@ -56,6 +66,7 @@ describe("architecture asset inventory", () => {
       "Cloudflare Worker /ws/azookey->AzooKey WASM または Zenzai",
       "Zenzai 変換->llama-server sidecar",
       "llama-server->ggml-model-Q5_K_M.gguf",
+      "Workers AI ASR（ブラウザ）->silero_vad.onnx + ORT WASM",
     ]);
   });
 });

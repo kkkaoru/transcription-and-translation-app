@@ -15,7 +15,8 @@ export const ARCHITECTURE_ASSET_ROWS = [
     source: `${ARCHITECTURE_DICTIONARIES.ipadic.browserUrl}（${ARCHITECTURE_DICTIONARIES.ipadic.upstream}）`,
     when: "ブラウザ: connect / listen",
     uses: ARCHITECTURE_DICTIONARIES.ipadic.fn,
-    depends: "なし（Cloudflare Worker 既定は未同梱。構成時は VIBRATO_DICTIONARY_URL / VIBRATO_UPSTREAM_URL）",
+    depends:
+      "なし（Cloudflare Worker 既定は未同梱。構成時は VIBRATO_DICTIONARY_URL / VIBRATO_UPSTREAM_URL）",
   },
   {
     id: "azkdict",
@@ -27,6 +28,17 @@ export const ARCHITECTURE_ASSET_ROWS = [
     when: "ブラウザ: connect / listen / Zenzai 辞書選択時",
     uses: `${ARCHITECTURE_DICTIONARIES.azookey.fn}（${ARCHITECTURE_DICTIONARIES.azookey.format}）`,
     depends: "Zenzai GGUF 推論は使わない（辞書のみ）",
+  },
+  {
+    id: "silero-vad",
+    name: "Silero VAD v6",
+    file: "silero_vad.onnx",
+    size: ARCHITECTURE_ASSET_SIZES.sileroOnnx,
+    reader: "ブラウザ onnxruntime-web（Workers AI ASR のみ）",
+    source: `/models/silero_vad_v6/silero_vad.onnx（${ARCHITECTURE_DICTIONARIES.silero.upstream}）`,
+    when: "Workers AI ASR 認識開始時（Web Speech では読み込まない）",
+    uses: "発話区切り VAD（512 samples @ 16 kHz · ORT WASM）",
+    depends: `${ARCHITECTURE_DICTIONARIES.silero.ortUrl} onnxruntime-web WASM · ${ARCHITECTURE_DICTIONARIES.silero.unusedBy} では未使用`,
   },
   {
     id: "gguf",
@@ -50,13 +62,22 @@ export const ARCHITECTURE_DEPENDENCIES = [
     to: "system.azkdict.gz",
     note: "LOUDS のみ / GGUF 推論なし",
   },
-  { from: "Cloudflare Worker /ws/azookey", to: "AzooKey WASM または Zenzai", note: "かな漢字の入口" },
+  {
+    from: "Cloudflare Worker /ws/azookey",
+    to: "AzooKey WASM または Zenzai",
+    note: "かな漢字の入口",
+  },
   {
     from: "Zenzai 変換",
     to: "llama-server sidecar",
     note: `${ARCHITECTURE_ZENZAI.env}[model].baseUrl → POST ${ARCHITECTURE_ZENZAI.endpoint}`,
   },
   { from: "llama-server", to: "ggml-model-Q5_K_M.gguf", note: "起動時にディスクから読む" },
+  {
+    from: "Workers AI ASR（ブラウザ）",
+    to: "silero_vad.onnx + ORT WASM",
+    note: "発話区切り。Web Speech では読まない",
+  },
 ] as const;
 
 export const architectureAssetText = (): string =>

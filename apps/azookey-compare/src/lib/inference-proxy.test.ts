@@ -21,6 +21,8 @@ describe("compare Worker inference proxy", () => {
     expect(shouldProxyToInference("/v1/asr/workers-ai/transcriptions")).toBe(true);
     expect(shouldProxyToInference("/")).toBe(false);
     expect(shouldProxyToInference("/vibrato/vibrato_wasm.js")).toBe(false);
+    expect(shouldProxyToInference("/models/silero_vad_v6/silero_vad.onnx")).toBe(false);
+    expect(shouldProxyToInference("/ort/ort-wasm-simd-threaded.wasm")).toBe(false);
     expect(shouldProxyToInference("/ws/azookey/extra")).toBe(false);
   });
 

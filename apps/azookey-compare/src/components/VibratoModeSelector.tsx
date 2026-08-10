@@ -35,7 +35,10 @@ export const VibratoModeSelector = ({
     "選択した経路で Vibrato と AzooKey を実行します。ブラウザ完結は /ws/azookey を呼びません。";
 
   return (
-    <div className={className} data-testid="vibrato-mode-control">
+    <div
+      className={className ? `mode-selector ${className}` : "mode-selector"}
+      data-testid="vibrato-mode-control"
+    >
       <label htmlFor={id}>{label}</label>
       <select
         id={id}

@@ -6,14 +6,16 @@
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "copy:azookey-assets": "node ../../scripts/copy-azookey-browser-assets.mjs",
-    "build": "bun run copy:azookey-assets && next build",
+    "copy:silero-vad-assets": "node ../../scripts/copy-silero-vad-browser-assets.mjs",
+    "copy:browser-assets": "bun run copy:azookey-assets && bun run copy:silero-vad-assets",
+    "build": "bun run copy:browser-assets && next build",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit --pretty false",
     "lint": "biome check src",
     "format:check": "biome format src",
     "test": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
-    "build:worker": "bun run copy:azookey-assets && NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL=wss://azookey-compare.kaoru.workers.dev/ws/azookey next build",
+    "build:worker": "bun run copy:browser-assets && NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL=wss://azookey-compare.kaoru.workers.dev/ws/azookey next build",
     "preview": "bun run build:worker && wrangler dev",
     "deploy": "bun run build:worker && wrangler deploy"
   },
@@ -23,6 +25,7 @@
     "@caption-bridge/sentence-boundary": "workspace:*",
     "jose": "6.2.8",
     "next": "^15.4.7",
+    "onnxruntime-web": "1.27.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

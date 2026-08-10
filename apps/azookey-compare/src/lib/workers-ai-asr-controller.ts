@@ -1,13 +1,21 @@
 import type { ComparisonAuth } from "./contract";
 import { blobToPcm16Mono, pcm16ToWavBytes, pcmDurationSeconds } from "./pcm-wav";
 import { transcribeWorkersAiAsr } from "./workers-ai-asr-client";
+import { SileroWasmVadEngine } from "./workers-ai-asr-silero";
+import { SILERO_FALLBACK_NOTICE_JA } from "./workers-ai-asr-silero-paths";
 import {
-  rmsDbFromTimeDomainBytes,
+  EnergyVadEngine,
+  resampleMono,
+  SILERO_CHUNK_SAMPLES,
+  SILERO_SAMPLE_RATE,
+  type VadEngine,
+  WORKERS_AI_ASR_VAD_DEFAULTS,
   WorkersAiAsrVad,
   type WorkersAiAsrVadEvent,
 } from "./workers-ai-asr-vad";
 
 export type WorkersAiAsrState = "idle" | "starting" | "listening" | "stopping" | "error";
+export type WorkersAiAsrVadBackend = "silero" | "energy";
 
 export interface WorkersAiAsrTranscriptUpdate {
   interimText: string;
@@ -22,8 +30,15 @@ export interface WorkersAiAsrControllerOptions {
   language: string;
   endpointUrl?: string;
   auth?: ComparisonAuth;
+  /** Test seam: skip Silero ONNX/ORT download. Production leaves this unset. */
+  disableSilero?: boolean;
+  /** Test seam: inject a VAD engine (Silero mock or energy). */
+  vadEngine?: VadEngine;
+  /** Test seam: custom Silero loader. Production uses onnxruntime-web WASM. */
+  sileroLoader?: () => Promise<VadEngine>;
   onStateChange?: (state: WorkersAiAsrState) => void;
   onTranscript?: (update: WorkersAiAsrTranscriptUpdate) => void;
+  onVadNotice?: (message: string) => void;
   onFinalText?: (text: string) => void;
   onUtteranceFinal?: (payload: WorkersAiAsrUtteranceFinal) => void;
   onError?: (message: string) => void;
@@ -37,7 +52,7 @@ type NavigatorWithMedia = Navigator & {
 
 type AudioContextCtor = new () => AudioContext;
 
-const VAD_POLL_MS = 50;
+const PCM_TAP_BUFFER_SIZE = 4096;
 const RECORDING_INTERIM = "録音中…";
 const TRANSCRIBING_INTERIM = "認識中…";
 
@@ -59,14 +74,17 @@ export class WorkersAiAsrController {
 
   private readonly options: WorkersAiAsrControllerOptions;
   private readonly vad = new WorkersAiAsrVad();
+  private engine: VadEngine | null = null;
+  private engineKind: WorkersAiAsrVadBackend = "energy";
   private state: WorkersAiAsrState = "idle";
   private stream: MediaStream | null = null;
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
   private audioContext: AudioContext | null = null;
-  private analyser: AnalyserNode | null = null;
-  private timeDomain = new Uint8Array(0);
-  private vadTimer: ReturnType<typeof setInterval> | null = null;
+  private pcmTap: ScriptProcessorNode | null = null;
+  private pcmSource: MediaStreamAudioSourceNode | null = null;
+  private resampleRemainder = new Float32Array(0);
+  private sileroRemainder = new Float32Array(0);
   private requestedStop = false;
   private captureActive = false;
   private flushing = false;
@@ -85,6 +103,10 @@ export class WorkersAiAsrController {
 
   public get currentState(): WorkersAiAsrState {
     return this.state;
+  }
+
+  public get vadBackend(): WorkersAiAsrVadBackend {
+    return this.engineKind;
   }
 
   public setLanguage(language: string): void {
@@ -111,8 +133,8 @@ export class WorkersAiAsrController {
         throw new Error("マイクを開始できません");
       }
       this.stream = await getUserMedia({ audio: true });
-      await this.setupAnalyser(this.stream);
-      this.startVadPolling();
+      await this.setupAudioGraph(this.stream);
+      await this.resolveEngine();
       this.setState("listening");
       this.options.onTranscript?.({ interimText: "" });
     } catch (error) {
@@ -126,7 +148,7 @@ export class WorkersAiAsrController {
     }
     this.requestedStop = true;
     this.captureActive = false;
-    this.stopVadPolling();
+    this.teardownPcmTap();
     this.setState("stopping");
     await this.flushRecording({ restart: false, requireSpeech: true });
   }
@@ -135,16 +157,17 @@ export class WorkersAiAsrController {
     this.disposed = true;
     this.requestedStop = true;
     this.captureActive = false;
-    this.stopVadPolling();
+    this.teardownPcmTap();
     this.discardRecorder();
     this.stopTracks();
-    void this.closeAnalyser();
+    void this.closeAudioContext();
+    this.releaseEngine();
     this.setState("idle");
   }
 
   /**
    * Test / injection seam: feed synthetic RMS frames without getUserMedia.
-   * Production uses AnalyserNode polling on the same path.
+   * Production uses 16 kHz PCM → Silero (or energy fallback).
    */
   public async ingestVadFrame(rmsDb: number, durationMs: number): Promise<void> {
     if (this.disposed || this.requestedStop || this.flushing || this.state !== "listening") {
@@ -153,7 +176,55 @@ export class WorkersAiAsrController {
     await this.applyVadEvents(this.vad.pushFrame({ rmsDb, durationMs }));
   }
 
-  private async setupAnalyser(stream: MediaStream): Promise<void> {
+  public async ingestSamples(samples: Float32Array): Promise<void> {
+    if (this.disposed || this.requestedStop || this.flushing || this.state !== "listening") {
+      return;
+    }
+    const engine = this.engine ?? new EnergyVadEngine();
+    const result = await engine.process(samples);
+    await this.applyVadEvents(this.vad.pushVadResult(result, samples));
+  }
+
+  private async resolveEngine(): Promise<void> {
+    if (this.options.vadEngine) {
+      this.engine = this.options.vadEngine;
+      this.engineKind = "silero";
+      return;
+    }
+    if (this.options.disableSilero) {
+      this.engine = new EnergyVadEngine();
+      this.engineKind = "energy";
+      return;
+    }
+    try {
+      this.engine = this.options.sileroLoader
+        ? await this.options.sileroLoader()
+        : await this.createDefaultSilero();
+      this.engineKind = "silero";
+    } catch {
+      this.engine = new EnergyVadEngine();
+      this.engineKind = "energy";
+      this.options.onVadNotice?.(SILERO_FALLBACK_NOTICE_JA);
+    }
+  }
+
+  private async createDefaultSilero(): Promise<VadEngine> {
+    const silero = new SileroWasmVadEngine();
+    await silero.init();
+    return silero;
+  }
+
+  private releaseEngine(): void {
+    try {
+      this.engine?.dispose?.();
+    } catch {
+      // Leaving Workers AI ASR must drop ORT even if release throws.
+    }
+    this.engine = null;
+    this.engineKind = "energy";
+  }
+
+  private async setupAudioGraph(stream: MediaStream): Promise<void> {
     const Context = audioContextConstructor();
     if (!Context) {
       return;
@@ -163,48 +234,76 @@ export class WorkersAiAsrController {
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
+    if (typeof audioContext.createScriptProcessor !== "function") {
+      return;
+    }
     const source = audioContext.createMediaStreamSource(stream);
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 2048;
-    source.connect(analyser);
-    this.analyser = analyser;
-    this.timeDomain = new Uint8Array(analyser.fftSize);
+    const tap = audioContext.createScriptProcessor(PCM_TAP_BUFFER_SIZE, 1, 1);
+    tap.onaudioprocess = (event) => {
+      void this.onPcmTap(event.inputBuffer.getChannelData(0), audioContext.sampleRate);
+    };
+    source.connect(tap);
+    tap.connect(audioContext.destination);
+    this.pcmSource = source;
+    this.pcmTap = tap;
   }
 
-  private startVadPolling(): void {
-    if (this.vadTimer !== null || !this.analyser) {
-      return;
+  private teardownPcmTap(): void {
+    if (this.pcmTap) {
+      try {
+        this.pcmTap.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+      this.pcmTap.onaudioprocess = null;
     }
-    this.vadTimer = setInterval(() => {
-      void this.pollVad();
-    }, VAD_POLL_MS);
-  }
-
-  private stopVadPolling(): void {
-    if (this.vadTimer === null) {
-      return;
+    if (this.pcmSource) {
+      try {
+        this.pcmSource.disconnect();
+      } catch {
+        // Already disconnected.
+      }
     }
-    clearInterval(this.vadTimer);
-    this.vadTimer = null;
+    this.pcmTap = null;
+    this.pcmSource = null;
+    this.resampleRemainder = new Float32Array(0);
+    this.sileroRemainder = new Float32Array(0);
   }
 
-  private async pollVad(): Promise<void> {
+  private async onPcmTap(channel: Float32Array, sampleRate: number): Promise<void> {
     if (
-      !this.analyser ||
       this.disposed ||
       this.requestedStop ||
       this.flushing ||
-      this.state !== "listening"
+      this.state !== "listening" ||
+      !this.engine
     ) {
       return;
     }
-    this.analyser.getByteTimeDomainData(this.timeDomain);
-    await this.applyVadEvents(
-      this.vad.pushFrame({
-        rmsDb: rmsDbFromTimeDomainBytes(this.timeDomain),
-        durationMs: VAD_POLL_MS,
-      }),
+    const withRemainder = new Float32Array(this.resampleRemainder.length + channel.length);
+    withRemainder.set(this.resampleRemainder, 0);
+    withRemainder.set(channel, this.resampleRemainder.length);
+    const resampled = resampleMono(withRemainder, sampleRate, SILERO_SAMPLE_RATE);
+    const consumedNative = Math.min(
+      withRemainder.length,
+      Math.floor((resampled.length * sampleRate) / SILERO_SAMPLE_RATE),
     );
+    this.resampleRemainder = withRemainder.subarray(consumedNative);
+
+    const pending = new Float32Array(this.sileroRemainder.length + resampled.length);
+    pending.set(this.sileroRemainder, 0);
+    pending.set(resampled, this.sileroRemainder.length);
+    let offset = 0;
+    while (offset + SILERO_CHUNK_SAMPLES <= pending.length) {
+      const chunk = pending.subarray(offset, offset + SILERO_CHUNK_SAMPLES);
+      const result = await this.engine.process(chunk);
+      if (this.disposed || this.requestedStop || this.flushing || this.state !== "listening") {
+        return;
+      }
+      await this.applyVadEvents(this.vad.pushVadResult(result, chunk));
+      offset += SILERO_CHUNK_SAMPLES;
+    }
+    this.sileroRemainder = pending.subarray(offset);
   }
 
   private async applyVadEvents(events: WorkersAiAsrVadEvent[]): Promise<void> {
@@ -212,13 +311,13 @@ export class WorkersAiAsrController {
       if (this.disposed || this.requestedStop) {
         return;
       }
-      if (event.type === "candidate-start" || event.type === "utterance-start") {
-        if (event.type === "utterance-start") {
-          this.hadCommittedSpeech = true;
-        }
+      if (event.type === "pending-start") {
+        this.ensureRecorder();
+      } else if (event.type === "utterance-start") {
+        this.hadCommittedSpeech = true;
         this.ensureRecorder();
         this.options.onTranscript?.({ interimText: RECORDING_INTERIM });
-      } else if (event.type === "candidate-cancel") {
+      } else if (event.type === "pending-cancel") {
         this.discardRecorder();
         this.options.onTranscript?.({ interimText: "" });
       } else if (event.type === "utterance-end") {
@@ -352,14 +451,13 @@ export class WorkersAiAsrController {
       return;
     }
     if (!restart || this.requestedStop) {
-      this.stopVadPolling();
+      this.teardownPcmTap();
       this.stopTracks();
-      void this.closeAnalyser();
+      void this.closeAudioContext();
       this.options.onTranscript?.({ interimText: "" });
       this.setState("idle");
       return;
     }
-    this.startVadPolling();
     this.setState("listening");
   }
 
@@ -370,9 +468,8 @@ export class WorkersAiAsrController {
     this.stream = null;
   }
 
-  private async closeAnalyser(): Promise<void> {
-    this.analyser = null;
-    this.timeDomain = new Uint8Array(0);
+  private async closeAudioContext(): Promise<void> {
+    this.teardownPcmTap();
     const audioContext = this.audioContext;
     this.audioContext = null;
     if (!audioContext || audioContext.state === "closed") {
@@ -386,10 +483,10 @@ export class WorkersAiAsrController {
   }
 
   private fail(message: string): void {
-    this.stopVadPolling();
+    this.teardownPcmTap();
     this.discardRecorder();
     this.stopTracks();
-    void this.closeAnalyser();
+    void this.closeAudioContext();
     this.captureActive = false;
     this.setState("error");
     this.options.onError?.(message);
@@ -400,3 +497,5 @@ export class WorkersAiAsrController {
     this.options.onStateChange?.(next);
   }
 }
+
+export { WORKERS_AI_ASR_VAD_DEFAULTS };
