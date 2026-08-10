@@ -27,7 +27,8 @@ describe("conversion trace helpers", () => {
 
   it("builds individual step records with timings", () => {
     const normalize = buildNormalizeStep("  abc  ", "abc");
-    expect(normalize.detail).toContain("前後空白");
+    expect(normalize.detail).toContain("空白");
+    expect(normalize.detail).not.toContain("変更なし");
     expect(buildNormalizeStep("abc", "abc").detail).toContain("変更なし");
     expect(buildPhoneticOverrideStep("あ")).toMatchObject({ id: "phonetic-override" });
     expect(buildVibratoSkippedStep("not-required", "abc")).toMatchObject({

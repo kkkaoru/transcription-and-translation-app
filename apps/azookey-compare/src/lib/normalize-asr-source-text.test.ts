@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildNormalizeStep, normalizeSourceText } from "./conversion-trace";
+import { normalizeAsrSourceText } from "./normalize-asr-source-text";
 
 /**
  * Cloudflare Workers AI ASR / Web Speech が日本語トークン間に挟む空白を除去する。
@@ -23,14 +24,17 @@ describe("Japanese ASR sourceText spacing normalization", () => {
       expected: "明日の天気は晴れです。",
     },
   ])("removes Japanese token spaces: $label", ({ raw, expected }) => {
+    expect(normalizeAsrSourceText(raw)).toBe(expected);
     expect(normalizeSourceText(raw)).toBe(expected);
   });
 
   it("strips full-width spaces between Japanese characters", () => {
+    expect(normalizeAsrSourceText("明日　の　天気")).toBe("明日の天気");
     expect(normalizeSourceText("明日　の　天気")).toBe("明日の天気");
   });
 
   it("keeps Latin word spaces while still trimming edges", () => {
+    expect(normalizeAsrSourceText("  hello world  ")).toBe("hello world");
     expect(normalizeSourceText("  hello world  ")).toBe("hello world");
   });
 

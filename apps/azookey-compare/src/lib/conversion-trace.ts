@@ -8,6 +8,7 @@
 import type { ComparisonMode } from "./contract";
 import { formatMilliseconds } from "./conversion-timing";
 import type { ConverterModel } from "./converter-models";
+import { normalizeAsrSourceText } from "./normalize-asr-source-text";
 import type { VibratoExecution } from "./worker-client";
 
 export type ConversionTraceStepId =
@@ -47,7 +48,7 @@ export interface ConversionWorkerTracePayload {
 
 export interface ConversionTrace {
   steps: ConversionTraceStep[];
-  /** Trimmed source text after leading/trailing whitespace removal. */
+  /** Source text after Japanese ASR spacing normalization. */
   normalizedSource: string;
   /** Exact string passed to in-page AzooKey WASM or WS `vibratoInput`. */
   azookeyInput: string;
@@ -94,15 +95,16 @@ const LOCATION_LABEL: Record<ConversionTraceLocation, string> = {
 export const traceStepLocationLabel = (location: ConversionTraceLocation): string =>
   LOCATION_LABEL[location];
 
-export const normalizeSourceText = (rawSource: string): string => rawSource.trim();
+export const normalizeSourceText = (rawSource: string): string =>
+  normalizeAsrSourceText(rawSource);
 
 export const buildNormalizeStep = (rawSource: string, normalized: string): ConversionTraceStep => ({
   id: "normalize",
   title: "正規化",
   detail:
     rawSource === normalized
-      ? "前後空白の除去（変更なし）"
-      : "前後空白を除去しました",
+      ? "空白の正規化（変更なし）"
+      : "前後空白と日本語トークン間の空白を除去しました",
   input: rawSource,
   output: normalized,
   location: "none",

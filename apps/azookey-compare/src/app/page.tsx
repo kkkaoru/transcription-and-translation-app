@@ -49,6 +49,7 @@ import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
 import {
   type ConversionTrace,
   conversionTraceDisplayLines,
+  normalizeSourceText,
   traceStepLocationLabel,
 } from "../lib/conversion-trace";
 import {
@@ -496,7 +497,7 @@ export default function ComparePage() {
         phoneticInput?: string;
       } = {},
     ): Promise<void> => {
-      const normalizedSource = sourceText.trim();
+      const normalizedSource = normalizeSourceText(sourceText);
       if (!normalizedSource) {
         return;
       }
