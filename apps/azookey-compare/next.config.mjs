@@ -1,3 +1,8 @@
+const inferenceOrigin = (process.env.COMPARE_INFERENCE_ORIGIN ?? "http://127.0.0.1:8787").replace(
+  /\/+$/,
+  "",
+);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -9,6 +14,20 @@ const nextConfig = {
     config.resolve.conditionNames = ["onnxruntime-web-use-extern-wasm", "..."];
     return config;
   },
+  ...(process.env.NODE_ENV === "development"
+    ? {
+        async rewrites() {
+          return [
+            { source: "/ws/azookey", destination: `${inferenceOrigin}/ws/azookey` },
+            { source: "/v1/azookey", destination: `${inferenceOrigin}/v1/azookey` },
+            {
+              source: "/v1/asr/workers-ai/transcriptions",
+              destination: `${inferenceOrigin}/v1/asr/workers-ai/transcriptions`,
+            },
+          ];
+        },
+      }
+    : {}),
 };
 
 export default nextConfig;

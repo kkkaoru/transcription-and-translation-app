@@ -15,6 +15,12 @@ export interface WorkersAiAsrClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export const WORKERS_AI_ASR_ROUTE_MISSING_JA =
+  "Cloudflare Workers AI ASR の経路が見つかりません（404）。ローカルなら bun run worker:dev を起動し、Next.js が inference（既定 http://127.0.0.1:8787）へ proxy しているか確認してください";
+
+export const WORKERS_AI_ASR_UNREACHABLE_JA =
+  "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください";
+
 const defaultEndpoint = (): string => {
   if (typeof window !== "undefined" && window.location?.origin) {
     return `${window.location.origin}${COMPARE_WORKERS_AI_ASR_PATH}`;
@@ -43,15 +49,26 @@ export const transcribeWorkersAiAsr = async (
   if (options.language?.trim()) {
     form.set("language", options.language.trim());
   }
-  const response = await fetchImpl(endpoint, {
-    method: "POST",
-    body: form,
-    headers: authHeaders(options.auth),
-  });
+  let response: Response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: "POST",
+      body: form,
+      headers: authHeaders(options.auth),
+    });
+  } catch {
+    throw new Error(WORKERS_AI_ASR_UNREACHABLE_JA);
+  }
   let payload: unknown;
   try {
     payload = await response.json();
   } catch {
+    if (response.status === 404) {
+      throw new Error(WORKERS_AI_ASR_ROUTE_MISSING_JA);
+    }
+    if (response.status === 500) {
+      throw new Error(WORKERS_AI_ASR_UNREACHABLE_JA);
+    }
     throw new Error(`Cloudflare Workers AI ASR が JSON 以外を返しました（${response.status}）`);
   }
   if (!response.ok) {

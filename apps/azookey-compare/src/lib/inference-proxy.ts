@@ -13,6 +13,32 @@ export const COMPARE_WORKER_ORIGIN = "https://azookey-compare.kaoru.workers.dev"
 export const COMPARE_WORKER_WEBSOCKET_URL = `wss://azookey-compare.kaoru.workers.dev${COMPARE_INFERENCE_WEBSOCKET_PATH}`;
 export const COMPARE_WORKER_ASR_URL = `${COMPARE_WORKER_ORIGIN}${COMPARE_WORKERS_AI_ASR_PATH}`;
 
+/** Local `next dev` rewrite target. Production compare Worker uses the INFERENCE binding instead. */
+export const COMPARE_INFERENCE_DEV_ORIGIN_DEFAULT = "http://127.0.0.1:8787";
+
+export type InferenceDevOriginEnv = {
+  COMPARE_INFERENCE_ORIGIN?: string;
+};
+
+export const compareInferenceDevOrigin = (env: InferenceDevOriginEnv = process.env): string =>
+  (env.COMPARE_INFERENCE_ORIGIN?.trim() || COMPARE_INFERENCE_DEV_ORIGIN_DEFAULT).replace(
+    /\/+$/,
+    "",
+  );
+
+export type InferenceDevRewrite = {
+  source: string;
+  destination: string;
+};
+
+export const compareInferenceDevRewrites = (
+  origin = compareInferenceDevOrigin(),
+): readonly InferenceDevRewrite[] =>
+  COMPARE_INFERENCE_PROXY_PATHS.map((pathname) => ({
+    source: pathname,
+    destination: `${origin}${pathname}`,
+  }));
+
 export const buildWorkersAiAsrUrl = (origin: string): string =>
   `${origin.replace(/\/+$/, "")}${COMPARE_WORKERS_AI_ASR_PATH}`;
 

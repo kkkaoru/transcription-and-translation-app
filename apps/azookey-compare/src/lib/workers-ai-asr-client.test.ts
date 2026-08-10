@@ -74,6 +74,15 @@ describe("workers-ai-asr-client", () => {
 
     await expect(
       transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
+        endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
+        fetchImpl: vi.fn(async () => new Response("Internal Server Error", { status: 500 })),
+      }),
+    ).rejects.toThrow(
+      "Cloudflare Workers AI ASR に接続できません。ローカルなら bun run worker:dev が 8787 で起動しているか確認してください",
+    );
+
+    await expect(
+      transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
         endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
         fetchImpl: vi.fn(async () => Response.json({ error: { code: "busy" } }, { status: 429 })),
       }),

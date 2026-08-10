@@ -21,6 +21,13 @@ bun run azookey-compare:dev
 Open `http://127.0.0.1:3000` (not `localhost`) so the Worker `CORS_ORIGIN`
 (`http://127.0.0.1:3000` via `.dev.vars`) matches the page origin.
 
+Workers AI ASR posts same-origin `/v1/asr/workers-ai/transcriptions`. Local
+`next dev` rewrites that path (plus `/v1/azookey` and `/ws/azookey`) to
+`COMPARE_INFERENCE_ORIGIN` (default `http://127.0.0.1:8787`). Without
+`bun run worker:dev`, the UI reports a missing/unreachable inference proxy
+instead of Next.js HTML 404. Local `wrangler.dev.jsonc` does not enable the
+Workers AI binding; Nova-3 runs in production via the compare Worker proxy.
+
 Local Wrangler uses `apps/cloudflare-worker-server/.dev.vars` (copy from
 `.dev.vars.example` if missing). Auth may stay unset for local demos.
 
