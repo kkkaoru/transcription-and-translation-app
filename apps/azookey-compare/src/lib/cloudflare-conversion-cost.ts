@@ -7,6 +7,7 @@
  * @see https://developers.cloudflare.com/workers/platform/pricing/
  */
 
+import { formatDecimalUsd } from "./format-usd";
 import {
   COMPARE_WS_UPGRADE_CALIBRATION,
   INFERENCE_WS_CONVERT_CALIBRATION,
@@ -86,8 +87,7 @@ export interface CloudflareConversionCostEstimate {
   browserComplete: boolean;
 }
 
-const roundUsd = (value: number): number =>
-  Math.round(value * 1_000_000_000) / 1_000_000_000;
+const roundUsd = (value: number): number => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
 const requestCostUsd = (count: number): number =>
   roundUsd(count * CF_WORKERS_REQUEST_USD_PER_REQUEST);
@@ -134,16 +134,8 @@ const resolveCompareBilledCpuMs = (
   return roundCpuMs(fromWall + upgradeCpu);
 };
 
-/** Format USD without collapsing small nonzero values to $0.00. */
-export const formatCloudflareCostUsd = (usd: number): string => {
-  if (!Number.isFinite(usd) || usd <= 0) {
-    return "$0";
-  }
-  if (usd >= 0.000_001) {
-    return `$${usd.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")}`;
-  }
-  return `$${usd.toExponential(2)}`;
-};
+/** Format USD without collapsing small nonzero values to $0.00. Decimal only. */
+export const formatCloudflareCostUsd = (usd: number): string => formatDecimalUsd(usd);
 
 const formatQuantity = (value: number): string =>
   Number.isInteger(value) ? String(value) : value.toFixed(2);
@@ -219,9 +211,10 @@ export const estimateCloudflareConversionCost = (
   }
   if (inferenceBilledCpuMs > 0) {
     breakdown.push({
-      label: input.workerBilledCpuMs !== undefined
-        ? "inference CPU（ログ cpuTime）"
-        : "inference CPU（ログ校正）",
+      label:
+        input.workerBilledCpuMs !== undefined
+          ? "inference CPU（ログ cpuTime）"
+          : "inference CPU（ログ校正）",
       quantity: inferenceBilledCpuMs,
       unitLabel: "ms",
       usd: cpuCostUsd(inferenceBilledCpuMs),
@@ -241,7 +234,9 @@ export const estimateCloudflareConversionCost = (
     notes.push(CF_CONVERSION_COST_EXTERNAL_GGUF_NOTE);
   }
   if (input.failedBeforeInference && wsUpgradeRequests > 0) {
-    notes.push("推論前に失敗しましたが、WebSocket Upgrade 分のリクエストは発生している可能性があります。");
+    notes.push(
+      "推論前に失敗しましたが、WebSocket Upgrade 分のリクエストは発生している可能性があります。",
+    );
   }
 
   const summaryJa =

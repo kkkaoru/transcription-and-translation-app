@@ -11,7 +11,10 @@ import {
   formatCloudflareCostUsd,
   usesExternalGgufUpstream,
 } from "./cloudflare-conversion-cost";
-import { INFERENCE_WS_CONVERT_CALIBRATION, COMPARE_WS_UPGRADE_CALIBRATION } from "./workers-billed-cpu-calibration";
+import {
+  COMPARE_WS_UPGRADE_CALIBRATION,
+  INFERENCE_WS_CONVERT_CALIBRATION,
+} from "./workers-billed-cpu-calibration";
 
 describe("cloudflare-conversion-cost", () => {
   describe("estimateBilledCpuMsFromWall", () => {
@@ -39,9 +42,10 @@ describe("cloudflare-conversion-cost", () => {
       expect(formatCloudflareCostUsd(-1)).toBe("$0");
     });
 
-    it("preserves small nonzero values in scientific notation", () => {
+    it("preserves small nonzero values as decimals, never scientific notation", () => {
       const usd = 9 * CF_WORKERS_CPU_USD_PER_MS + CF_WORKERS_REQUEST_USD_PER_REQUEST;
-      expect(formatCloudflareCostUsd(usd)).toBe("$4.80e-7");
+      expect(formatCloudflareCostUsd(usd)).toBe("$0.00000048");
+      expect(formatCloudflareCostUsd(usd)).not.toMatch(/[eE]/);
     });
 
     it("formats larger micro-dollar amounts without rounding to $0.00", () => {
@@ -80,7 +84,8 @@ describe("cloudflare-conversion-cost", () => {
         Math.round((CF_WORKERS_REQUEST_USD_PER_REQUEST + 9 * CF_WORKERS_CPU_USD_PER_MS) * 1e9) /
           1e9,
       );
-      expect(formatCloudflareCostUsd(estimate.usd)).toBe("$4.80e-7");
+      expect(formatCloudflareCostUsd(estimate.usd)).toBe("$0.00000048");
+      expect(formatCloudflareCostUsd(estimate.usd)).not.toMatch(/[eE]/);
       expect(estimate.summaryJa).toContain("wall 12 ms");
       expect(estimate.summaryJa).toContain("billed CPU 9 ms");
       expect(estimate.note).toContain(CF_CONVERSION_COST_BILLED_CPU_NOTE);
@@ -174,6 +179,28 @@ describe("cloudflare-conversion-cost", () => {
           1e9,
       );
       expect(formatCloudflareCostUsd(estimate.usd)).toBe("$0.0000093");
+      expect(formatCloudflareCostUsd(estimate.usd)).not.toMatch(/[eE]/);
+    });
+
+    it("keeps a few hundred billed CPU-ms plus 1–2 requests far below a cent", () => {
+      expect(CF_WORKERS_CPU_USD_PER_MS).toBe(0.02 / 1_000_000);
+      expect(150 * CF_WORKERS_CPU_USD_PER_MS).toBeCloseTo(0.000003, 12);
+      const estimate = estimateCloudflareConversionCost({
+        usedWebSocket: true,
+        openedNewWebSocket: true,
+        workerBilledCpuMs: 150,
+      });
+      expect(estimate.requests).toBe(2);
+      expect(estimate.billedCpuMs).toBe(154);
+      expect(estimate.usd).toBeGreaterThan(0);
+      expect(estimate.usd).toBeLessThan(0.01);
+      expect(estimate.usd).toBeLessThan(0.0001);
+      expect(estimate.usd).not.toBeCloseTo(3, 0);
+      expect(formatCloudflareCostUsd(estimate.usd)).not.toMatch(/[eE]/);
+      for (const line of estimate.breakdown) {
+        expect(line.usd).toBeLessThan(0.01);
+        expect(formatCloudflareCostUsd(line.usd)).not.toMatch(/[eE]/);
+      }
     });
   });
 
