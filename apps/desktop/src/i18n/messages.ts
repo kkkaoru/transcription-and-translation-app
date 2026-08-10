@@ -175,6 +175,10 @@ const ja = {
   "settings.noiseSuppressionHint":
     "ブラウザのノイズ抑制・エコーキャンセルを使います。オフにすると未加工キャプチャになります。AGC は下の項目で別途設定できます。配信中に変更するとマイクを再接続して反映します。",
   "settings.noiseSuppressionOn": "有効（推奨）",
+  "settings.streamingInterimAsr": "途中認識（Nemotron Streaming）",
+  "settings.streamingInterimAsrHint":
+    "audio.streamingInterimAsrEnabled。発話中の経過字幕に Nemotron 3.5 ASR Streaming（160ms int8）を併用します。確定認識は従来どおり ReazonSpeech です。保存後、アプリ再起動時にsidecarへ反映します。",
+  "settings.streamingInterimAsrOn": "有効（推奨）",
   "settings.autoGainControl": "オートゲイン（AGC）",
   "settings.autoGainControlHint":
     "マイク音量を自動調整します。静かな声でも無音判定されにくくなります。ノイズキャンセリングとは独立して切り替えられます。",
@@ -673,6 +677,10 @@ const en: Record<MessageKey, string> = {
   "settings.noiseSuppressionHint":
     "Uses the browser noise suppressor and echo canceller. Turn off for raw capture. AGC is controlled separately below. Changing this during capture reconnects the microphone.",
   "settings.noiseSuppressionOn": "Enabled (recommended)",
+  "settings.streamingInterimAsr": "Progressive interim ASR (Nemotron Streaming)",
+  "settings.streamingInterimAsrHint":
+    "audio.streamingInterimAsrEnabled. Uses Nemotron 3.5 ASR Streaming (160ms int8) for mid-utterance captions while ReazonSpeech remains the final ASR. Saved changes apply to the sidecar on the next app launch.",
+  "settings.streamingInterimAsrOn": "Enabled (recommended)",
   "settings.autoGainControl": "Auto gain control (AGC)",
   "settings.autoGainControlHint":
     "Automatically levels microphone volume so quiet speech clears the silence gate. Independent from noise cancellation.",

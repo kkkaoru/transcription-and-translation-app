@@ -341,4 +341,51 @@ describe("SettingsView audio tuning", () => {
     save?.click();
     expect(onSave).toHaveBeenCalledTimes(1);
   });
+
+  it("toggles progressive Nemotron streaming interim ASR independently of capture restart", async () => {
+    let latest = createDefaultConfig();
+    expect(latest.audio.streamingInterimAsrEnabled).toBe(true);
+
+    const Harness = () => {
+      const [config, setConfig] = useState(latest);
+      return (
+        <SettingsView
+          config={config}
+          models={DEFAULT_MODEL_CATALOG}
+          devices={[]}
+          saving={false}
+          onConfigChange={(next) => {
+            latest = next;
+            setConfig(next);
+          }}
+          onModelChange={() => undefined}
+          onDeviceChange={() => undefined}
+          onRefreshDevices={() => undefined}
+          onSave={() => undefined}
+        />
+      );
+    };
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <Harness />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    const toggle = container.querySelector<HTMLInputElement>("#audio-streaming-interim-asr");
+    expect(toggle).not.toBeNull();
+    expect(toggle?.checked).toBe(true);
+    expect(toggle?.disabled).toBe(false);
+    expect(container.textContent).toMatch(/Nemotron/);
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+    expect(latest.audio.streamingInterimAsrEnabled).toBe(false);
+    expect(toggle?.checked).toBe(false);
+  });
 });

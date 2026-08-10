@@ -658,6 +658,28 @@ export const SettingsView = ({
               </label>
             </Field>
             <Field
+              label={t("settings.streamingInterimAsr")}
+              hint={t("settings.streamingInterimAsrHint")}
+            >
+              <label className="checkbox-field">
+                <input
+                  id="audio-streaming-interim-asr"
+                  type="checkbox"
+                  checked={config.audio.streamingInterimAsrEnabled !== false}
+                  onChange={(event) =>
+                    onConfigChange({
+                      ...config,
+                      audio: {
+                        ...config.audio,
+                        streamingInterimAsrEnabled: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                <span>{t("settings.streamingInterimAsrOn")}</span>
+              </label>
+            </Field>
+            <Field
               label={t("settings.autoGainControl")}
               hint={audioPipelineHint(t("settings.autoGainControlHint"))}
             >
