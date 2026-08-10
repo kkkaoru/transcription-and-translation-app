@@ -128,5 +128,12 @@ describe("compare page speech settings", () => {
     expect(source).toContain("料金（推定）");
     expect(source).toContain("Cloudflare Worker（変換）");
     expect(source).toContain("Workers AI（ASR）");
+    expect(source).toContain("shouldShowWorkersAiAsrCostAmount");
+    expect(source).toContain("utteranceAsrCostFields");
+    expect(source).toContain(
+      "recognitionProvider: options.recognitionProvider ?? config.recognitionProvider",
+    );
+    expect(source).not.toContain("toExponential");
+    expect(source).not.toContain("asrCostUsd > 0");
   });
 });

@@ -76,9 +76,9 @@ import {
 } from "../lib/worker-client";
 import { WorkersAiAsrController, type WorkersAiAsrState } from "../lib/workers-ai-asr-controller";
 import {
-  estimateWorkersAiAsrCost,
+  shouldShowWorkersAiAsrCostAmount,
+  utteranceAsrCostFields,
   webSpeechAsrCostSummaryJa,
-  workersAiAsrCostSummaryJa,
 } from "../lib/workers-ai-asr-cost";
 
 const DESKTOP_CONFIG_MEDIA_QUERY = "(min-width: 641px)";
@@ -180,23 +180,6 @@ const utteranceCostTotalUsd = (
 ): number => {
   const asr = asrCostUsd !== undefined && Number.isFinite(asrCostUsd) ? asrCostUsd : 0;
   return conversion.usd + asr;
-};
-
-const utteranceAsrCostFields = (
-  provider: RecognitionProvider | undefined,
-  audioSeconds?: number,
-): Pick<ComparisonRow, "asrCostUsd" | "asrCostSummaryJa"> => {
-  if (provider === "workers-ai-asr") {
-    const estimate = estimateWorkersAiAsrCost(audioSeconds ?? 0);
-    return {
-      asrCostUsd: estimate.usd,
-      asrCostSummaryJa: workersAiAsrCostSummaryJa(estimate),
-    };
-  }
-  return {
-    asrCostUsd: 0,
-    asrCostSummaryJa: webSpeechAsrCostSummaryJa(),
-  };
 };
 
 const formatQuantityForCost = (value: number): string =>
@@ -483,12 +466,10 @@ export default function ComparePage() {
         state: "queued",
         mode,
         origin,
+        recognitionProvider: options.recognitionProvider ?? config.recognitionProvider,
         ...asrCost,
         ...(options.expectedText !== undefined ? { expectedText: options.expectedText } : {}),
         ...(options.fixtureId !== undefined ? { fixtureId: options.fixtureId } : {}),
-        ...(options.recognitionProvider !== undefined
-          ? { recognitionProvider: options.recognitionProvider }
-          : {}),
         ...(options.audioSeconds !== undefined ? { audioSeconds: options.audioSeconds } : {}),
         createdAt: Date.now(),
       };
@@ -1083,7 +1064,10 @@ export default function ComparePage() {
         data-testid="architecture-disclosure"
       >
         <summary>本番構成図（Cloudflare Workers）</summary>
-        <ComparisonPathDiagram kind="overview" />
+        <ComparisonPathDiagram
+          kind="overview"
+          recognitionProvider={config.recognitionProvider}
+        />
         <ComparisonPathDiagram
           kind="mode"
           mode={config.mode}
@@ -1555,10 +1539,11 @@ export default function ComparePage() {
                             }),
                           });
                           const asrCostUsd = row.asrCostUsd;
-                          const hasAsrCost =
-                            asrCostUsd !== undefined &&
-                            Number.isFinite(asrCostUsd) &&
-                            asrCostUsd > 0;
+                          const hasAsrCost = shouldShowWorkersAiAsrCostAmount({
+                            origin: row.origin,
+                            recognitionProvider: row.recognitionProvider,
+                            asrCostUsd,
+                          });
                           const totalUsd = utteranceCostTotalUsd(cost, asrCostUsd);
                           return (
                             <div className="utterance-cost-card" data-testid="utterance-cost-card">
@@ -1603,22 +1588,19 @@ export default function ComparePage() {
                                 <div
                                   className="utterance-cost-row"
                                   data-testid="utterance-asr-cost"
-                                  hidden={!hasAsrCost && !row.asrCostSummaryJa}
                                 >
                                   <dt>Workers AI（ASR）</dt>
                                   <dd>
-                                    {hasAsrCost ? (
-                                      <span className="utterance-cost-row-amount">
-                                        {formatCloudflareCostUsd(asrCostUsd)}
-                                      </span>
-                                    ) : null}
+                                    <span className="utterance-cost-row-amount">
+                                      {formatCloudflareCostUsd(asrCostUsd ?? 0)}
+                                    </span>
                                     {row.asrCostSummaryJa ? (
                                       <span className="utterance-cost-row-detail">
                                         {row.asrCostSummaryJa}
                                       </span>
-                                    ) : hasAsrCost ? null : (
+                                    ) : (
                                       <span className="utterance-cost-row-detail utterance-cost-row-empty">
-                                        未計測
+                                        {hasAsrCost ? "未計測" : webSpeechAsrCostSummaryJa()}
                                       </span>
                                     )}
                                   </dd>
