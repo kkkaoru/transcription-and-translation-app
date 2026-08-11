@@ -967,15 +967,32 @@ fn emit_pipeline_stage(
     }
 
     // success → debug (rank 3); failure → error (rank 0)
+    // ASR/normalize/vibrato also log a short text snippet at info so greeting /
+    // hearing-phrase regressions can be diagnosed from kotoba-beacon.log without
+    // raising the global log level (config.debug.logLevel is usually "info").
     let event_rank: u8 = if stage.ok { 3 } else { 0 };
     let threshold = log_level_rank(&config.debug.log_level);
-    if event_rank <= threshold {
-        let input_bytes = stage
-            .input_snippet
-            .strip_prefix("wavBytes=")
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(stage.input_snippet.len());
-        let output_bytes = stage.output_text.len();
+    let input_bytes = stage
+        .input_snippet
+        .strip_prefix("wavBytes=")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(stage.input_snippet.len());
+    let output_bytes = stage.output_text.len();
+    let text_stage = matches!(stage.stage, "asr" | "vibrato" | "normalize" | "rescore");
+    if text_stage {
+        log::info!(
+            target: "pipeline_stage",
+            "stage={} model={} ok={} duration_ms={} utterance={} in={:?} out={:?} generation={}",
+            stage.stage,
+            stage.model_id,
+            stage.ok,
+            stage.duration_ms,
+            stage.utterance_id,
+            stage.input_snippet,
+            stage.output_text,
+            generation
+        );
+    } else if event_rank <= threshold {
         if stage.ok {
             log::debug!(
                 target: "pipeline_stage",
