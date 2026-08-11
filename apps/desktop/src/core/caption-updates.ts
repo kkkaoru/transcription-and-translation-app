@@ -143,6 +143,11 @@ const sourceBoundary = /[。．！？!?]$/u;
 const incompleteSourceEnding =
   /(?:は|が|を|に|へ|で|と|も|の|や|か|ね|よ|な|ま|て|is|are|the|a|an|to|of|and|but|with|for|in|on|at)$/iu;
 const japaneseSourceText = /^[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]+$/u;
+/** Exact greeting plate (optional elongation). Must stay with a same-breath continuation. */
+const FIXED_GREETING_SURFACE =
+  /^(?:こんにちは|こんばんは|おはようございます|おはよう|さようなら)[ー〜～]*$/u;
+/** Short ack finals that ASR sometimes substitutes for a greeting. */
+const SHORT_ACK_SURFACE = /^(?:はい|うん|ええ|いいえ)$/u;
 
 const isShortJapaneseContinuation = (current: CaptionPayload, next: CaptionPayload): boolean => {
   const currentText = trim(current.sourceText);
@@ -231,6 +236,82 @@ const hasCloseSourceTiming = (current: CaptionPayload, next: CaptionPayload): bo
 };
 
 /**
+ * Prefer a painted greeting over a short ack that ASR sometimes emits instead
+ * of `こんにちは` (acoustic confusion with はい).
+ */
+const shouldKeepGreetingOverShortAck = (
+  current: CaptionPayload,
+  next: CaptionPayload,
+): boolean => {
+  if (!isSourceStagePayload(current) || !isSourceStagePayload(next)) {
+    return false;
+  }
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  if (!FIXED_GREETING_SURFACE.test(currentText) || !SHORT_ACK_SURFACE.test(nextText)) {
+    return false;
+  }
+  // Same utterance id: treat as a bad rewrite of the greeting.
+  if (current.id === next.id) {
+    return true;
+  }
+  // Cross-id: only suppress a near-immediate ack substitute, not a later real はい.
+  const bothUnset = startedAtOf(current) === NO_TIME_MS && startedAtOf(next) === NO_TIME_MS;
+  const currentReceivedAt = receivedAtOf(current);
+  const nextReceivedAt = receivedAtOf(next);
+  const closeReceipt =
+    currentReceivedAt > NO_TIME_MS &&
+    nextReceivedAt >= currentReceivedAt &&
+    nextReceivedAt - currentReceivedAt <= SOURCE_CONTINUATION_GAP_MS;
+  return hasCloseSourceTiming(current, next) || bothUnset || closeReceipt;
+};
+
+/**
+ * When Parapper seals a greeting turn early, the continuation arrives on a new
+ * id and would normally replace the plate. Append so `こんにちは` + `きこえますか`
+ * stay one visible utterance when timing is still within the continuation window.
+ */
+const shouldAppendAfterGreetingTurn = (
+  current: CaptionPayload,
+  next: CaptionPayload,
+): boolean => {
+  if (!isSourceStagePayload(current) || !isSourceStagePayload(next)) {
+    return false;
+  }
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  if (!FIXED_GREETING_SURFACE.test(currentText) || !nextText) {
+    return false;
+  }
+  if (FIXED_GREETING_SURFACE.test(nextText) || SHORT_ACK_SURFACE.test(nextText)) {
+    return false;
+  }
+  if (nextText.startsWith(currentText.replace(/[ー〜～]+$/u, ""))) {
+    // Continuation already includes the greeting surface.
+    return false;
+  }
+  const bothUnset = startedAtOf(current) === NO_TIME_MS && startedAtOf(next) === NO_TIME_MS;
+  const currentReceivedAt = receivedAtOf(current);
+  const nextReceivedAt = receivedAtOf(next);
+  const closeReceipt =
+    currentReceivedAt > NO_TIME_MS &&
+    nextReceivedAt >= currentReceivedAt &&
+    nextReceivedAt - currentReceivedAt <= SOURCE_CONTINUATION_GAP_MS;
+  if (!hasCloseSourceTiming(current, next) && !bothUnset && !closeReceipt) {
+    return false;
+  }
+  return japaneseSourceText.test(nextText);
+};
+
+const appendGreetingContinuation = (currentText: string, nextText: string): string => {
+  const greeting = trim(currentText);
+  const continuation = trim(nextText);
+  const separator =
+    /[A-Za-z0-9]$/u.test(greeting) && /^[A-Za-z0-9]/u.test(continuation) ? " " : "";
+  return collapseRunawayGraphemeRuns(`${greeting}${separator}${continuation}`);
+};
+
+/**
  * Join source text from adjacent rolling-context revisions without duplicating
  * an overlap. A complete prior source starts a new caption; otherwise a
  * full-prefix, suffix-overlap, or short continuation can carry the phrase
@@ -238,9 +319,16 @@ const hasCloseSourceTiming = (current: CaptionPayload, next: CaptionPayload): bo
  * audio start advances, so equal-start semantic corrections still replace the
  * old text (for example `雨` → `晴れ`).
  *
+ * Parapper turns emit a full growing hypothesis per id. Unrelated or shorter
+ * surfaces replace the previous string instead of concatenating onto it, so a
+ * mid-turn restart/correction does not leave prior utterance characters on
+ * screen. Legacy chunk ids keep the historical keep-longer / append behavior.
+ *
  * Every accepted join is run through Kanji-stutter collapse so a rolling
  * `為` → `為為` → `為為為…` revision cannot accumulate on screen.
  */
+const isParapperTurnId = (id: string): boolean => id.startsWith("parapper:");
+
 const mergeSourceText = (
   current: CaptionPayload,
   next: CaptionPayload,
@@ -251,8 +339,10 @@ const mergeSourceText = (
   if (!currentText || !nextText) {
     return collapseRunawayGraphemeRuns(nextText || currentText);
   }
-  // Resolve lexical prefix/overlap first. This preserves a complete current
-  // source when a later contextual revision is only a shorter prefix.
+  const parapperTurn = isParapperTurnId(current.id) && current.id === next.id;
+  // Resolve lexical prefix/overlap first. A later shorter prefix must not erase
+  // the already-painted utterance tail (Parapper and legacy alike) — that made
+  // endings flicker or disappear before the turn closed.
   if (nextText.startsWith(currentText)) {
     return collapseRunawayGraphemeRuns(nextText);
   }
@@ -266,6 +356,10 @@ const mergeSourceText = (
   // A completed prior chunk starts a new caption when there is no lexical
   // relation; otherwise a no-overlap suffix may continue an incomplete phrase.
   if (sourceBoundary.test(currentText)) {
+    return collapseRunawayGraphemeRuns(nextText);
+  }
+  // Parapper: no lexical relation means replace, never append old+new.
+  if (parapperTurn) {
     return collapseRunawayGraphemeRuns(nextText);
   }
   if (
@@ -405,9 +499,8 @@ const isProgressiveProvisionalExtension = (
  *
  * Parapper keeps at most one pending partial, but the in-flight normalizer for
  * an older revision still completes. That stale normalize must not replace a
- * longer provisional that was painted from a later turn cursor. Dual-ASR
- * completion finals that are a strict prefix truncation of the painted
- * provisional are treated the same way.
+ * longer provisional that was painted from a later turn cursor. Completed
+ * finals bypass this guard and replace the provisional surface instead.
  */
 const isStaleNormalizedAgainstProvisional = (
   current: CaptionPayload,
@@ -439,7 +532,37 @@ const isStaleNormalizedAgainstProvisional = (
   return currentText.startsWith(nextText) && currentText !== nextText;
 };
 
+/**
+ * After `isFinal`, accept only a strict longer prefix continuation on the same
+ * id (early final + more speech). Drop late shorter/equal interims and kana
+ * rewrites so the converted surface is not replaced by a stale raw hypothesis.
+ * Genuinely new utterances should arrive with a new Parapper turn id.
+ */
+const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload): boolean => {
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  if (!nextText) {
+    return true;
+  }
+  return !(nextText.startsWith(currentText) && nextText !== currentText);
+};
+
 const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {
+  // Prefer a completed conversion/final, but do not let a truncated final erase
+  // a longer already-painted surface (completion ASR often cuts the tail). That
+  // truncation reads as worse 変換 quality on the overlay.
+  if (next.isFinal === true && isSourceStagePayload(next) && hasText(next.sourceText)) {
+    const currentText = trim(current.sourceText);
+    const nextText = trim(next.sourceText);
+    if (shouldKeepGreetingOverShortAck(current, next)) {
+      return collapseRunawayGraphemeRuns(currentText);
+    }
+    if (currentText && nextText && currentText.startsWith(nextText) && currentText !== nextText) {
+      return collapseRunawayGraphemeRuns(currentText);
+    }
+    return collapseRunawayGraphemeRuns(nextText);
+  }
+
   if (
     current.id === next.id &&
     current.provisional === true &&
@@ -456,8 +579,9 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
   }
 
   if (hasSameOrExtendedAzookeyReading(current, next)) {
-    // A truncated revision with a shorter reading/surface must not erase the
-    // longer same-id interim that already painted the utterance tail.
+    // A truncated non-final revision with a shorter reading/surface must not
+    // erase the longer same-id interim that already painted the utterance tail.
+    // Finals are handled above (keep longer on prefix truncation).
     const currentText = trim(current.sourceText);
     const nextText = trim(next.sourceText);
     const currentReading = trimmedAzookeyReading(current);
@@ -550,9 +674,8 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     // — unless that normalize is a stale in-flight revision for an older cursor that
     // would erase mid-utterance characters the newer provisional already painted.
     if (current.provisional === true && next.provisional !== true && isSourceStagePayload(next)) {
-      // Truncating finals still merge so `isFinal` upgrades while
-      // `mergeSameIdSourceText` keeps the longer provisional surface. Non-final
-      // stale normalizes remain out-of-order drops.
+      // Finals always merge so the completed conversion replaces any longer
+      // provisional tail. Non-final stale normalizes remain out-of-order drops.
       if (next.isFinal === true) {
         return false;
       }
@@ -567,18 +690,21 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
       hasText(current.sourceText) &&
       isSourceStagePayload(next)
     ) {
+      if (current.isFinal === true) {
+        // Finalized turns still accept a real continuation/restart on the same
+        // id (early final + more speech). Only drop stale shorter/equal/kana
+        // rewrites that would freeze the plate on the old final text.
+        return isStaleNonFinalAfterFinal(current, next);
+      }
       return !isProgressiveProvisionalExtension(current, next);
     }
 
     const nextSequence = sequenceOf(next);
     const currentSequence = sequenceOf(current);
 
-    // A completed source turn is terminal at this merge boundary.  The event
-    // and invoke paths can race, so an earlier interim may be delivered after
-    // its final counterpart; receipt time alone must not let that stale
-    // interim replace the completed text. Exception: a longer provisional that
-    // strictly extends a truncated final restores the utterance tail lost to
-    // dual-ASR completion (Reazon) racing ahead of Nemotron.
+    // A completed source turn rejects late shorter/equal interims, but must
+    // still accept a same-id continuation or rewrite so new characters paint
+    // after an early final instead of freezing the previous surface.
     if (
       currentSequence === SOURCE_SEQUENCE &&
       nextSequence === SOURCE_SEQUENCE &&
@@ -587,18 +713,13 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
       isSourceStagePayload(current) &&
       isSourceStagePayload(next)
     ) {
-      if (next.provisional === true && isProgressiveProvisionalExtension(current, next)) {
-        return false;
-      }
-      return true;
+      return isStaleNonFinalAfterFinal(current, next);
     }
 
     // Parapper backdates a final caption's `startedAt` by its measured audio
     // duration, while an interim has no duration and therefore starts at the
     // receive time.  A final for the same source turn must still replace that
-    // interim even though its audio start is numerically earlier.  Truncating
-    // finals are accepted here so `mergeSameIdSourceText` can keep the longer
-    // provisional surface while upgrading `isFinal`.
+    // interim even though its audio start is numerically earlier.
     if (
       currentSequence === SOURCE_SEQUENCE &&
       nextSequence === SOURCE_SEQUENCE &&
@@ -638,6 +759,17 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     // sequence-1 update arrives.  This is the progressive path for e.g.
     // 「明日の天気は」 → 「明日の天気は晴れ」.
     return !isNewerSourceRevision(current, next);
+  }
+
+  // Distinct Parapper turns use receipt order. Completion finals backdate
+  // `startedAt` by audio duration, which can make a newer turn look older than
+  // the painted final and freeze the previous characters on screen.
+  if (
+    current.id.startsWith("parapper:") &&
+    next.id.startsWith("parapper:") &&
+    current.id !== next.id
+  ) {
+    return receivedAtOf(next) < receivedAtOf(current);
   }
 
   const currentStartedAt = startedAtOf(current);
@@ -690,7 +822,8 @@ export const captionsDisplayEqual = (a: CaptionPayload, b: CaptionPayload): bool
  * - late updates for older chunks are dropped
  * - unchanged late same-id source-stage results after translation are dropped
  * - newer same-id source revisions replace the visible source even if translation landed first
- * - silence / empty soft-skips never clear the live caption
+ * - silence / empty soft-skips never clear the live caption (UI hold-clear
+ *   blanks the plate after a short idle once updates stop)
  * - any accepted merge clears `provisional` unless the incoming payload itself
  *   is provisional, so a real (backend) update always ends the reduced-
  *   emphasis state even though the incoming payload has no `provisional` key
@@ -725,6 +858,11 @@ export const mergeCaptionPayload = (
   }
 
   if (isOutOfOrder(current, incoming)) {
+    return null;
+  }
+
+  // Drop short-ack ASR substitutes for an already-painted greeting (こんにちは→はい).
+  if (shouldKeepGreetingOverShortAck(current, incoming)) {
     return null;
   }
 
@@ -771,6 +909,9 @@ export const mergeCaptionPayload = (
     if (sameChunk) {
       return mergeSameIdSourceText(current, incoming);
     }
+    if (shouldAppendAfterGreetingTurn(current, incoming)) {
+      return appendGreetingContinuation(current.sourceText, incoming.sourceText);
+    }
     if (isSourceStagePayload(incoming) && isLikelyCrossIdSourceRevision(current, incoming)) {
       return collapseRunawayGraphemeRuns(trim(incoming.sourceText));
     }
@@ -780,16 +921,31 @@ export const mergeCaptionPayload = (
     return collapseRunawayGraphemeRuns(incoming.sourceText);
   };
 
+  const mergedSourceText = resolveMergedSourceText();
+  const currentSource = trim(current.sourceText);
+  const nextSource = trim(mergedSourceText);
+  const incomingSource = trim(incoming.sourceText);
+  // Keep a painted translation only while the source is unchanged or grows as
+  // a prefix extension. A rewrite / restart must clear the old translation line
+  // so prior-utterance characters do not linger beside the new source.
+  const sourceKeepsTranslation =
+    !currentSource ||
+    !nextSource ||
+    nextSource === currentSource ||
+    nextSource.startsWith(currentSource);
+
   const currentWithoutProvisional = { ...current };
   delete currentWithoutProvisional.provisional;
   const merged: CaptionPayload = {
     ...currentWithoutProvisional,
     ...incoming,
-    sourceText: resolveMergedSourceText(),
+    sourceText: mergedSourceText,
     translationText: sameChunk
       ? hasIncomingTranslation
         ? incoming.translationText
-        : current.translationText
+        : sourceKeepsTranslation
+          ? current.translationText
+          : ""
       : hasIncomingTranslation
         ? incoming.translationText
         : "",
@@ -800,16 +956,53 @@ export const mergeCaptionPayload = (
   };
   if (incoming.provisional === true) {
     merged.provisional = true;
-  }
-  // A longer provisional that restores a truncated finalized surface should keep
-  // the turn closed (isFinal) while painting the recovered utterance tail.
-  if (
-    current.isFinal === true &&
-    incoming.provisional === true &&
-    isProgressiveProvisionalExtension(current, incoming)
-  ) {
-    merged.isFinal = true;
+  } else {
     delete merged.provisional;
+  }
+
+  // Morph offsets are measured against a specific surface. When we keep a longer
+  // painted/provisional surface over a truncated incoming revision, adopting the
+  // incoming offsets pages mid-utterance (こんにちは|きこえますか → only the tail,
+  // or 明日の天気は|… → only the suffix) and hides already-recognized text.
+  if (
+    hasIncomingSource &&
+    nextSource.length > incomingSource.length &&
+    nextSource !== incomingSource
+  ) {
+    if (
+      Array.isArray(current.sentenceEndOffsets) &&
+      current.sentenceEndOffsets.length > 0 &&
+      trim(current.sourceText) === nextSource
+    ) {
+      merged.sentenceEndOffsets = current.sentenceEndOffsets;
+    } else {
+      delete merged.sentenceEndOffsets;
+    }
+    if (
+      Array.isArray(current.softBreakOffsets) &&
+      current.softBreakOffsets.length > 0 &&
+      trim(current.sourceText) === nextSource
+    ) {
+      merged.softBreakOffsets = current.softBreakOffsets;
+    } else {
+      delete merged.softBreakOffsets;
+    }
+  }
+
+  // A source-stage revision that changes the visible text after a final must
+  // reopen the turn. Incoming payloads often omit `isFinal: false`, and leaving
+  // the previous `isFinal: true` would freeze later prefix continuations.
+  if (incoming.isFinal === true) {
+    merged.isFinal = true;
+  } else if (
+    current.isFinal === true &&
+    hasIncomingSource &&
+    isSourceStagePayload(incoming) &&
+    trim(mergedSourceText) !== trim(current.sourceText)
+  ) {
+    merged.isFinal = false;
+  } else if (incoming.isFinal === false) {
+    merged.isFinal = false;
   }
 
   // Preserve React identity when event + invoke deliver the same paint payload.

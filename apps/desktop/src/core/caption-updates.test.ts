@@ -1689,7 +1689,7 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, revision)?.sourceText).toBe("明日は晴れ");
   });
 
-  it("keeps the longer same-id interim when a truncated reading revision arrives", () => {
+  it("keeps a longer same-id interim when a truncated final would cut the converted tail", () => {
     const current = caption({
       id: "u-1",
       sourceText: "今日は良い天気ですね明日も",
@@ -1970,7 +1970,7 @@ describe("mergeCaptionPayload", () => {
     );
   });
 
-  it("restores a truncated finalized caption when a longer provisional arrives", () => {
+  it("accepts a same-id continuation after final so newer characters still paint", () => {
     const finalized = caption({
       id: "u-1",
       sourceText: "今日はいい",
@@ -1997,9 +1997,145 @@ describe("mergeCaptionPayload", () => {
 
     expect(mergeCaptionPayload(finalized, provisionalTail)).toMatchObject({
       sourceText: "今日はいい天気ですね",
+      isFinal: false,
+      provisional: true,
+    });
+  });
+
+  it("accepts a newer Parapper turn even when its startedAt is earlier than a backdated final", () => {
+    const finalized = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "昨日の話は終わりました",
+      translationText: "",
+      // Finals are backdated by measured audio duration.
+      startedAt: 5_000,
+      receivedAt: 8_000,
+      stage: "source",
+      sequence: 0,
       isFinal: true,
     });
-    expect(mergeCaptionPayload(finalized, provisionalTail)?.provisional).toBeUndefined();
+    const nextTurn = caption({
+      id: "parapper:session:turn:2",
+      sourceText: "今日は雨です",
+      translationText: "",
+      startedAt: 4_500,
+      receivedAt: 8_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, nextTurn)).toMatchObject({
+      id: "parapper:session:turn:2",
+      sourceText: "今日は雨です",
+    });
+  });
+
+  it("appends a close Parapper continuation after an early-finalized greeting", () => {
+    const greeting = caption({
+      id: "parapper:session:turn:hello",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const continuation = caption({
+      id: "parapper:session:turn:hello-cont",
+      sourceText: "きこえますか",
+      translationText: "",
+      startedAt: 1_450,
+      receivedAt: 1_700,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(greeting, continuation)).toMatchObject({
+      id: "parapper:session:turn:hello-cont",
+      sourceText: "こんにちはきこえますか",
+    });
+  });
+
+  it("keeps a painted greeting when ASR substitutes a short ack", () => {
+    const greeting = caption({
+      id: "parapper:session:turn:hello2",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const ack = caption({
+      id: "parapper:session:turn:hello2",
+      sourceText: "はい",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(greeting, ack)).toBeNull();
+  });
+
+  it("keeps a greeting plate when a later turn is only a short ack", () => {
+    const greeting = caption({
+      id: "parapper:session:turn:hello3",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const ack = caption({
+      id: "parapper:session:turn:ack",
+      sourceText: "はい",
+      translationText: "",
+      startedAt: 1_300,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(greeting, ack)).toBeNull();
+  });
+
+  it("drops a same-id rewrite after final so late raw ASR cannot replace the conversion", () => {
+    const finalized = caption({
+      id: "parapper:session:turn:9",
+      sourceText: "昨日の話は終わりました",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const nextSpeech = caption({
+      id: "parapper:session:turn:9",
+      sourceText: "今日は雨です",
+      translationText: "",
+      startedAt: 1_500,
+      receivedAt: 1_600,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, nextSpeech)).toBeNull();
   });
 
   it("still drops a non-extending late provisional after a finalized same-id caption", () => {
@@ -2030,7 +2166,7 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(finalized, provisionalRewrite)).toBeNull();
   });
 
-  it("keeps a longer provisional surface when a truncated final arrives", () => {
+  it("keeps a longer painted surface when a truncated final would worsen conversion quality", () => {
     const provisional = caption({
       id: "u-1",
       sourceText: "今日はいい天気ですね",
@@ -2059,6 +2195,63 @@ describe("mergeCaptionPayload", () => {
       isFinal: true,
     });
     expect(merged?.provisional).toBeUndefined();
+  });
+
+  it("drops truncated-final morph offsets when keeping a longer provisional surface", () => {
+    const provisional = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "こんにちはきこえますか",
+      sentenceEndOffsets: [11],
+      startedAt: 1_000,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const truncatedFinal = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "こんにちは",
+      sentenceEndOffsets: [5],
+      startedAt: 900,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    const merged = mergeCaptionPayload(provisional, truncatedFinal);
+    expect(merged?.sourceText).toBe("こんにちはきこえますか");
+    expect(merged?.sentenceEndOffsets).toEqual([11]);
+  });
+
+  it("still accepts a finalized conversion that is longer or rewritten", () => {
+    const interim = caption({
+      id: "u-1",
+      sourceText: "きょうは",
+      translationText: "",
+      startedAt: 1_050,
+      receivedAt: 1_100,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const finalized = caption({
+      id: "u-1",
+      sourceText: "今日は晴れです",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(interim, finalized)).toMatchObject({
+      sourceText: "今日は晴れです",
+      isFinal: true,
+    });
   });
 
   it("drops a late provisional kana context revision after canonical expansion", () => {
@@ -2355,5 +2548,79 @@ describe("mergeCaptionPayload", () => {
       isFinal: false,
     });
     expect(mergeCaptionPayload(current, next)?.sourceText).toBe("今日は為為");
+  });
+
+  it("keeps a Parapper same-id longer surface when a shorter prefix revision arrives", () => {
+    const current = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "今日は良い天気ですね",
+      startedAt: 1_000,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const shorter = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "今日は",
+      startedAt: 1_400,
+      receivedAt: 40,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, shorter)?.sourceText).toBe("今日は良い天気ですね");
+  });
+
+  it("does not concatenate unrelated Parapper same-id hypotheses", () => {
+    const current = caption({
+      id: "parapper:session:turn:2",
+      sourceText: "昨日の話は終わりました",
+      startedAt: 1_000,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const next = caption({
+      id: "parapper:session:turn:2",
+      sourceText: "今日は雨です",
+      startedAt: 1_500,
+      receivedAt: 30,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(current, next)?.sourceText).toBe("今日は雨です");
+  });
+
+  it("clears a stale translation when the same-id source rewrites", () => {
+    const translated = caption({
+      id: "u-rewrite",
+      sourceText: "明日の天気は晴れ",
+      translationText: "The weather tomorrow is sunny",
+      startedAt: 1_000,
+      receivedAt: 20,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+    const rewritten = caption({
+      id: "u-rewrite",
+      sourceText: "今日は雨です",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 40,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(translated, rewritten)).toMatchObject({
+      sourceText: "今日は雨です",
+      translationText: "",
+    });
   });
 });
