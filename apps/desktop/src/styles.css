@@ -1595,6 +1595,13 @@ button:disabled {
   z-index: 2;
 }
 
+/* Invisible reserved slot: keeps JA/EN vertical rhythm when translation is empty. */
+.caption-line-empty {
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
 .native-output-canvas {
   position: absolute;
   width: 1px;

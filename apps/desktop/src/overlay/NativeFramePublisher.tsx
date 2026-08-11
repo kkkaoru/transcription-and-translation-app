@@ -369,30 +369,33 @@ export const renderNativeFrame = (
   );
   const blockX = (width * boundedNumber(config.overlay.captionXPercent, 0, 100, 50)) / 100;
   const blockY = (height * boundedNumber(config.overlay.captionYPercent, 0, 100, 88)) / 100;
-  const rows = captionItems(config, caption)
-    .filter((item) => item.text.trim().length > 0)
-    .map((item) => {
-      const style = item.style;
-      const paddingX = Math.max(0, finiteNumber(style.paddingX, 0));
-      const lineWidth = Math.min(
-        blockWidth * (boundedNumber(style.maxWidthPercent, 1, 100, 86) / 100),
-        Math.max(1, blockWidth - paddingX * 2),
-      );
-      // Apply the configured character budget before painting. Do not re-wrap
-      // by pixel width — captionTextLines already inserted hard breaks and
-      // clamped to CAPTION_MAX_VISIBLE_LINES.
-      const layout = measurePrewrappedNativeCaption(context, captionTextLines(item), style);
-      return {
-        layout,
-        lineWidth,
-        style,
-        height: Math.max(
-          1,
-          layout.lineHeight * layout.lines.length +
-            Math.max(0, finiteNumber(style.paddingY, 0)) * 2,
-        ),
-      };
-    });
+  const rows = captionItems(config, caption).map((item) => {
+    const style = item.style;
+    const paddingX = Math.max(0, finiteNumber(style.paddingX, 0));
+    const lineWidth = Math.min(
+      blockWidth * (boundedNumber(style.maxWidthPercent, 1, 100, 86) / 100),
+      Math.max(1, blockWidth - paddingX * 2),
+    );
+    const hasText = item.text.trim().length > 0;
+    // Always reserve both source and translation row heights so the native
+    // plate does not jump when translation arrives or clears.
+    const layout = measurePrewrappedNativeCaption(
+      context,
+      hasText ? captionTextLines(item) : [""],
+      style,
+    );
+    return {
+      layout,
+      lineWidth,
+      style,
+      hasText,
+      height: Math.max(
+        1,
+        layout.lineHeight * Math.max(1, layout.lines.length) +
+          Math.max(0, finiteNumber(style.paddingY, 0)) * 2,
+      ),
+    };
+  });
   // DOM overlay and OBS page both render `gap: max(10, gapPx)`; keep the
   // native/Syphon output spacing-identical, including the sub-10px clamp.
   const gap = Math.max(10, finiteNumber(config.overlay.gapPx, 14));
@@ -409,7 +412,7 @@ export const renderNativeFrame = (
         : style.textAlign === "right"
           ? (width + blockWidth) / 2 - paddingX
           : blockX;
-    const textWidth = Math.min(row.lineWidth, row.layout.maxLineWidth);
+    const textWidth = Math.min(row.lineWidth, Math.max(row.layout.maxLineWidth, 1));
     const plateWidth = Math.min(blockWidth, textWidth + paddingX * 2);
     const plateLeft =
       style.textAlign === "left"
@@ -418,7 +421,7 @@ export const renderNativeFrame = (
           ? textX - plateWidth + paddingX
           : textX - plateWidth / 2;
 
-    if (style.backgroundEnabled) {
+    if (row.hasText && style.backgroundEnabled) {
       context.save();
       context.fillStyle = hexToRgba(
         style.backgroundColor,
@@ -435,17 +438,19 @@ export const renderNativeFrame = (
       context.fill();
       context.restore();
     }
-    const textY = rowY + row.height / 2;
-    // Pass a non-binding width so drawNativeCaption does not soft-wrap again;
-    // layout.lines are already budget-segmented and capped to two rows.
-    drawNativeCaption(
-      context,
-      row.layout.lines.join("\n"),
-      style,
-      textX,
-      textY,
-      Math.max(row.lineWidth, row.layout.maxLineWidth, 1),
-    );
+    if (row.hasText) {
+      const textY = rowY + row.height / 2;
+      // Pass a non-binding width so drawNativeCaption does not soft-wrap again;
+      // layout.lines are already budget-segmented and capped to two rows.
+      drawNativeCaption(
+        context,
+        row.layout.lines.join("\n"),
+        style,
+        textX,
+        textY,
+        Math.max(row.lineWidth, row.layout.maxLineWidth, 1),
+      );
+    }
     rowY += row.height + gap;
   }
 

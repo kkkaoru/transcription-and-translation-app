@@ -3,6 +3,9 @@ import { overlayCaptionCss, toCaptionCss } from "../core/style";
 import type { AppConfig, CaptionPayload } from "../core/types";
 import { captionItems, captionTextLines } from "./captions";
 
+/** Keep an invisible line box so empty translation/source slots do not shift layout. */
+const CAPTION_SLOT_PLACEHOLDER = "\u00a0";
+
 export const CaptionLines = memo(
   ({
     config,
@@ -14,17 +17,20 @@ export const CaptionLines = memo(
     placeholder?: boolean;
   }) => (
     <div className="caption-lines" style={overlayCaptionCss(config.overlay)}>
-      {captionItems(config, caption, placeholder)
-        .filter((item) => item.text.trim().length > 0)
-        .map((item) => (
+      {captionItems(config, caption, placeholder).map((item) => {
+        const hasText = item.text.trim().length > 0;
+        return (
           <div
-            className={`caption-line caption-line-${item.key}`}
+            className={`caption-line caption-line-${item.key}${hasText ? "" : " caption-line-empty"}`}
             key={item.key}
             style={toCaptionCss(item.style)}
+            aria-hidden={hasText ? undefined : true}
+            data-empty={hasText ? undefined : "true"}
           >
-            {captionTextLines(item).join("\n")}
+            {hasText ? captionTextLines(item).join("\n") : CAPTION_SLOT_PLACEHOLDER}
           </div>
-        ))}
+        );
+      })}
     </div>
   ),
 );

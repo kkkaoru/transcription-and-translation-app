@@ -227,4 +227,42 @@ describe("configurable budget changes the native/Syphon line split", () => {
     expect(paintedGraphemes.some((cluster) => cluster.startsWith("\u3099"))).toBe(false);
     expect(paintedGraphemes.length).toBe(4);
   });
+
+  it("reserves translation row height when translation text is empty", () => {
+    const withTranslation = withBudget(48, 48);
+    withTranslation.overlay.width = 6_000;
+    withTranslation.overlay.height = 400;
+    withTranslation.overlay.safeAreaPx = 0;
+    withTranslation.overlay.source.fontSizePx = 20;
+    withTranslation.overlay.translation.fontSizePx = 20;
+    withTranslation.overlay.source.lineHeight = 1;
+    withTranslation.overlay.translation.lineHeight = 1;
+    withTranslation.overlay.source.paddingY = 0;
+    withTranslation.overlay.translation.paddingY = 0;
+    withTranslation.overlay.gapPx = 10;
+    withTranslation.overlay.captionYPercent = 50;
+
+    const both = createWideCanvasHarness();
+    expect(
+      renderNativeFrame(both.canvas, withTranslation, {
+        ...createPreviewCaption(),
+        sourceText: "あ",
+        translationText: "b",
+      }),
+    ).not.toBeNull();
+    const bothYs = [...new Set(both.fillCalls.map((call) => call.y))].sort((a, b) => a - b);
+
+    const sourceOnly = createWideCanvasHarness();
+    expect(
+      renderNativeFrame(sourceOnly.canvas, withTranslation, {
+        ...createPreviewCaption(),
+        sourceText: "あ",
+        translationText: "",
+      }),
+    ).not.toBeNull();
+    const sourceYs = [...new Set(sourceOnly.fillCalls.map((call) => call.y))].sort((a, b) => a - b);
+
+    // Source baseline stays put when translation is absent (reserved empty row).
+    expect(sourceYs[0]).toBe(bothYs[0]);
+  });
 });
