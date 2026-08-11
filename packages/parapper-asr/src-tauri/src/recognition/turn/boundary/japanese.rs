@@ -233,11 +233,21 @@ fn japanese_morph_boundary_class(
     if has_pos1(feature, "形状詞") {
         return is_terminal_token.then_some(GrammarBoundaryClass::NormalEnd);
     }
+    // Fixed greetings often sit alone before a same-breath continuation
+    // (こんにちはきこえますか). Treating them as NormalEnd finalizes the turn at
+    // turn-check silence and drops the continuation onto a new turn id. Keep the
+    // turn open (ClauseWeak) so completion ASR can still see the whole phrase;
+    // genuine end-of-speech still closes via the silence timeout path.
+    if is_fixed_greeting_surface(token.surface.as_str()) {
+        return is_terminal_token.then_some(GrammarBoundaryClass::ClauseWeak);
+    }
     if has_pos1(feature, "感動詞") {
         return if matches!(token.surface.as_str(), "はい" | "うん" | "ええ" | "いいえ") {
             Some(GrammarBoundaryClass::StrongEnd)
         } else {
-            is_terminal_token.then_some(GrammarBoundaryClass::NormalEnd)
+            // Other interjections are weak ends for the same reason as greetings:
+            // a short pause must not seal the turn before trailing speech arrives.
+            is_terminal_token.then_some(GrammarBoundaryClass::ClauseWeak)
         };
     }
     if has_any_pos1(feature, &["接頭辞", "連体詞"]) {
@@ -253,6 +263,19 @@ fn token_can_continue_after_predicate(token: &JapaneseMorphToken) -> bool {
         || has_pos(feature, "助詞", "接続助詞")
         || has_pos(feature, "助詞", "終助詞")
         || has_any_pos1(feature, &["名詞", "代名詞", "接尾辞"])
+}
+
+fn is_fixed_greeting_surface(surface: &str) -> bool {
+    matches!(
+        surface,
+        "こんにちは"
+            | "こんばんは"
+            | "おはようございます"
+            | "おはよう"
+            | "さようなら"
+            | "こんにちはー"
+            | "こんばんはー"
+    )
 }
 
 fn has_pos(feature: &str, pos1: &str, pos2: &str) -> bool {

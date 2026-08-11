@@ -396,7 +396,7 @@ impl RecognitionSession {
             segment_activity_epoch: self.activity.segment_activity_epoch,
             open_turn_since_tick: self.activity.open_turn_since_tick,
             next_runtime_tick: self.counters.next_runtime_tick,
-            timeout_ticks: self.timeout_ticks(),
+            timeout_ticks: self.timeout_ticks_for_open_turn(),
         });
         let turn_id = match action {
             timeout::Action::NoOpenTurn | timeout::Action::Waiting => return false,
@@ -425,6 +425,32 @@ impl RecognitionSession {
     pub(in crate::recognition) fn timeout_ticks(&self) -> u64 {
         timeout::ticks(&self.config)
     }
+
+    /// Greetings often pause briefly before a same-breath continuation
+    /// (`こんにちは` … `きこえますか`). Give those drafts a longer silence
+    /// timeout so the continuation can still attach to the same turn.
+    fn timeout_ticks_for_open_turn(&self) -> u64 {
+        let base = self.timeout_ticks();
+        let Some(turn_id) = self.turn_store.open_turn_id else {
+            return base;
+        };
+        let Some(turn) = self.turn_store.turns.get(&turn_id) else {
+            return base;
+        };
+        let text = turn.draft().combined_text.trim();
+        if is_fixed_greeting_only(text) {
+            base.saturating_mul(3)
+        } else {
+            base
+        }
+    }
+}
+
+fn is_fixed_greeting_only(text: &str) -> bool {
+    matches!(
+        text.trim_end_matches(['ー', '〜', '～']),
+        "こんにちは" | "こんばんは" | "おはようございます" | "おはよう" | "さようなら"
+    )
 }
 
 impl RecognitionSession {

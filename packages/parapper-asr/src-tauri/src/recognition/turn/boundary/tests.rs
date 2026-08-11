@@ -286,6 +286,30 @@ fn japanese_morph_terminal_nominal_particle_and_comma_classes_are_distinct() {
 }
 
 #[test]
+fn japanese_morph_fixed_greeting_stays_clause_weak_at_text_end() {
+    let transcript = AsrTranscript::from_parts(
+        "こんにちは".to_string(),
+        vec!["こんにちは".to_string()],
+        Some(&[0.0]),
+        Some(&[0.4]),
+    );
+    let morph_tokens = vec![JapaneseMorphToken {
+        surface: "こんにちは".to_string(),
+        char_range: 0..5,
+        feature: "感動詞,一般,*,*,*,*".to_string(),
+    }];
+
+    let candidates = japanese_morph_candidates(&transcript, 32_000, &vads(&[true]), &morph_tokens);
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].class,
+        GrammarBoundaryClass::ClauseWeak,
+        "greetings must not NormalEnd-finalize before a same-breath continuation"
+    );
+}
+
+#[test]
 fn japanese_morph_boundary_classes_use_token_aligned_transcript_timestamps() {
     let cases = [
         ("ね", "助詞,終助詞,*,*,*", GrammarBoundaryClass::StrongEnd),
