@@ -1731,7 +1731,7 @@ export class MicrophoneCapture {
   private async ensureAudioFramesFlowing(): Promise<void> {
     if (
       typeof process !== "undefined" &&
-      (process.env.VITEST === "true" || process.env.NODE_ENV === "test")
+      (process.env["VITEST"] === "true" || process.env["NODE_ENV"] === "test")
     ) {
       return;
     }
