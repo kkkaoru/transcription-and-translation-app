@@ -30,7 +30,7 @@ describe("progressive caption reveal", () => {
 
   it("keeps per-grapheme delay bounded for long jumps", () => {
     expect(progressiveRevealStepMs(1)).toBeGreaterThan(0);
-    expect(progressiveRevealStepMs(100)).toBeLessThanOrEqual(420);
+    expect(progressiveRevealStepMs(100)).toBeLessThanOrEqual(160);
     expect(progressiveRevealStepMs(0)).toBe(0);
   });
 });

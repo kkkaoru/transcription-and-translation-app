@@ -9,19 +9,43 @@ import type { CaptionPayload } from "../core/types";
 
 /**
  * Reveal newly recognized source graphemes one-by-one so Live/Syphon captions
- * grow like こ → こん → こんにちは as ASR hypotheses lengthen.
+ * grow like こ → こん → こんにちは as ASR hypotheses lengthen within a turn.
+ *
+ * Utterance id changes and non-prefix rewrites snap immediately so the previous
+ * turn's characters never paint under the new caption (and switches stay fast).
  *
  * Only characters already present in the latest recognition target are shown;
  * the helper never invents text ahead of ASR.
  */
 export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPayload => {
   const [displayedSource, setDisplayedSource] = useState(caption.sourceText);
+  const [trackedId, setTrackedId] = useState(caption.id);
   const displayedRef = useRef(displayedSource);
   const targetRef = useRef(caption.sourceText);
   const idRef = useRef(caption.id);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  displayedRef.current = displayedSource;
+  // Prefer the synced surface for this render so a new turn never commits with
+  // the previous utterance's characters (React may also retry after setState).
+  let paintSource = displayedSource;
+  if (caption.id !== trackedId) {
+    setTrackedId(caption.id);
+    setDisplayedSource(caption.sourceText);
+    paintSource = caption.sourceText;
+    displayedRef.current = caption.sourceText;
+    idRef.current = caption.id;
+    targetRef.current = caption.sourceText;
+  } else if (
+    displayedSource !== caption.sourceText &&
+    !shouldProgressivelyReveal(displayedSource, caption.sourceText)
+  ) {
+    setDisplayedSource(caption.sourceText);
+    paintSource = caption.sourceText;
+    displayedRef.current = caption.sourceText;
+    targetRef.current = caption.sourceText;
+  } else {
+    displayedRef.current = displayedSource;
+  }
 
   useEffect(() => {
     const clearTimer = (): void => {
@@ -57,16 +81,10 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     targetRef.current = target;
 
     if (idChanged) {
+      // Render-phase sync already snapped to the full new turn.
       clearTimer();
-      if (shouldProgressivelyReveal("", target)) {
-        const first = advanceProgressiveReveal("", target);
-        displayedRef.current = first;
-        setDisplayedSource(first);
-        scheduleToward(first, target);
-      } else {
-        displayedRef.current = target;
-        setDisplayedSource(target);
-      }
+      displayedRef.current = target;
+      setDisplayedSource(target);
       return clearTimer;
     }
 
@@ -84,8 +102,8 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     return clearTimer;
   }, [caption.id, caption.sourceText]);
 
-  if (displayedSource === caption.sourceText) {
+  if (paintSource === caption.sourceText) {
     return caption;
   }
-  return { ...caption, sourceText: displayedSource };
+  return { ...caption, sourceText: paintSource };
 };

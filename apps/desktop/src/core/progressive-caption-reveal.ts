@@ -1,9 +1,9 @@
 import { captionGraphemes } from "../overlay/captions";
 
 /** Delay between newly recognized graphemes while revealing a longer hypothesis. */
-export const PROGRESSIVE_REVEAL_MS_PER_GRAPHEME = 36;
+export const PROGRESSIVE_REVEAL_MS_PER_GRAPHEME = 12;
 /** Cap so a long jump (e.g. silence interim) still finishes promptly. */
-export const PROGRESSIVE_REVEAL_MAX_MS = 420;
+export const PROGRESSIVE_REVEAL_MAX_MS = 160;
 
 /**
  * True when `next` is a longer recognition of the same growing utterance as
@@ -31,7 +31,7 @@ export const progressiveRevealStepMs = (remainingGraphemes: number): number => {
     PROGRESSIVE_REVEAL_MAX_MS,
     PROGRESSIVE_REVEAL_MS_PER_GRAPHEME * safeRemaining,
   );
-  return Math.max(12, Math.floor(totalBudget / safeRemaining));
+  return Math.max(8, Math.floor(totalBudget / safeRemaining));
 };
 
 /**
