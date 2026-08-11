@@ -55,6 +55,7 @@
     "verify:tauri:build": "node scripts/tauri-smoke.mjs --build",
     "verify:tauri:ui": "node scripts/tauri-smoke.mjs --ui --exercise-capture",
     "verify:tauri:build:ui": "node scripts/tauri-smoke.mjs --build --ui --exercise-capture",
+    "verify:caption-quality": "node scripts/verify-caption-quality.mjs",
     "verify:ui": "node scripts/capture-ui-screenshots.mjs --exercise-recovery",
     "verify:recognition": "node scripts/recognition-integration.mjs",
     "parapper:install": "bun --cwd=packages/parapper-asr install --frozen-lockfile",
