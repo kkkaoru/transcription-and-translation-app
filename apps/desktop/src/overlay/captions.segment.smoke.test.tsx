@@ -6,6 +6,7 @@ import {
   captionTextLines,
   collapseRunawayGraphemeRuns,
   createPreviewCaption,
+  repairHearingPhraseConfusion,
   sanitizeCaptionDisplayText,
   segmentCaptionText,
   stripCaptionContinuationMarker,
@@ -70,6 +71,19 @@ describe("POS soft breaks before maxChars", () => {
 });
 
 describe("caption display sanitization", () => {
+  it("repairs ASR slips of きこえますか to the intended hearing phrase", () => {
+    expect(repairHearingPhraseConfusion("あえますか")).toBe("きこえますか");
+    expect(repairHearingPhraseConfusion("おえますか")).toBe("きこえますか");
+    expect(repairHearingPhraseConfusion("会えますか")).toBe("聞こえますか");
+    expect(repairHearingPhraseConfusion("終えますか")).toBe("聞こえますか");
+    expect(repairHearingPhraseConfusion("こんにちはあえますか")).toBe("こんにちはきこえますか");
+    expect(repairHearingPhraseConfusion("こんにちはーおえますか")).toBe("こんにちはーきこえますか");
+    expect(repairHearingPhraseConfusion("こんにちは会えますか")).toBe("こんにちは聞こえますか");
+    expect(repairHearingPhraseConfusion("こんにちは。聞こえますか。")).toBe("こんにちは聞こえますか。");
+    expect(sanitizeCaptionDisplayText("こんにちは。聞こえますか。")).toBe("こんにちは聞こえますか。");
+    expect(sanitizeCaptionDisplayText("こんにちはあえますか")).toBe("こんにちはきこえますか");
+  });
+
   it("strips trailing Parapper continuation markers without touching mid-text ellipsis", () => {
     expect(stripCaptionContinuationMarker("今日は...")).toBe("今日は");
     expect(stripCaptionContinuationMarker("今日は…")).toBe("今日は");
@@ -101,6 +115,13 @@ describe("segmentCaptionText edge cases", () => {
 
   it("keeps a single short line intact", () => {
     expect(segmentCaptionText("こんにちは", 10)).toEqual(["こんにちは"]);
+  });
+
+  it("keeps under-budget phrases on one line even when particles could soft-wrap", () => {
+    expect(segmentCaptionText("今日の天気は晴れ。", 28)).toEqual(["今日の天気は晴れ。"]);
+    expect(segmentCaptionText("最後に質問をお受けしますね", 28)).toEqual([
+      "最後に質問をお受けしますね",
+    ]);
   });
 
   it("breaks after a preferred-break punctuation that carries a combining mark", () => {
@@ -222,7 +243,7 @@ describe("captionTextLines and captionItems", () => {
     expect(lines).toEqual(["明日は雨"]);
   });
 
-  it("keeps mid-speech characters when sentence paging is deferred for live interim", () => {
+  it("pages finished clauses for live interim so old recognition leaves the plate", () => {
     const text = "今日は晴れです明日は雨";
     const lines = captionTextLines({
       key: "source",
@@ -231,14 +252,14 @@ describe("captionTextLines and captionItems", () => {
       maxChars: 28,
       deferSentencePaging: true,
     });
-    expect(lines.join("")).toBe(text);
+    expect(lines).toEqual(["明日は雨"]);
   });
 
-  it("defers sentence paging for provisional captionItems so spoken text stays visible", () => {
+  it("pages soft sentence ends for non-final captionItems using POS/heuristic restarts", () => {
     const config = createDefaultConfig();
     const items = captionItems(config, {
       id: "u-1",
-      sourceText: "それはとても良い天気だと思いますね今日は",
+      sourceText: "今日は晴れです明日は雨",
       translationText: "",
       sourceLanguage: "ja",
       targetLanguage: "en",
@@ -247,11 +268,46 @@ describe("captionTextLines and captionItems", () => {
       stage: "source",
       sequence: 0,
       isFinal: false,
-      provisional: true,
     });
     const source = items.find((item) => item.key === "source");
-    expect(source?.deferSentencePaging).toBe(true);
-    expect(captionTextLines(source!).join("")).toContain("それはとても良い天気");
+    expect(captionTextLines(source!)).toEqual(["明日は雨"]);
+  });
+
+  it("pages past explicit punctuation on non-final captions", () => {
+    const config = createDefaultConfig();
+    const items = captionItems(config, {
+      id: "u-1",
+      sourceText: "今日は晴れです。明日は雨",
+      translationText: "",
+      sourceLanguage: "ja",
+      targetLanguage: "en",
+      startedAt: 1,
+      receivedAt: 2,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const source = items.find((item) => item.key === "source");
+    expect(captionTextLines(source!)).toEqual(["明日は雨"]);
+  });
+
+  it("pages soft sentence ends for finalized captions so prior clauses leave the plate", () => {
+    const config = createDefaultConfig();
+    const items = captionItems(config, {
+      id: "u-1",
+      sourceText: "今日は晴れです明日は雨",
+      translationText: "",
+      sourceLanguage: "ja",
+      targetLanguage: "en",
+      startedAt: 1,
+      receivedAt: 2,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const source = items.find((item) => item.key === "source");
+    expect(source?.deferSentencePaging).toBe(false);
+    expect(captionTextLines(source!)).toEqual(["明日は雨"]);
   });
 
   it("pages English translation by sentence punctuation", () => {

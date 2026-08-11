@@ -134,9 +134,44 @@ export const collapseRunawayGraphemeRuns = (
   return out.join("");
 };
 
+/**
+ * ReazonSpeech often drops the initial き of 聞こえる, yielding あえますか /
+ * おえますか (ZenZ/AzooKey may then pick 会えますか / 終えますか). Restore the
+ * intended hearing check. ZenZ also inserts 。 after greetings
+ * (`こんにちは。聞こえますか。`), which pages away the greeting — strip that.
+ */
+export const repairHearingPhraseConfusion = (text: string): string => {
+  if (!text) {
+    return text;
+  }
+  let next = text;
+  next = next.replace(
+    /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)(?:あえ|おえ)ますか/gu,
+    "$1$2きこえますか",
+  );
+  next = next.replace(
+    /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)(?:会え|終え)ますか/gu,
+    "$1$2聞こえますか",
+  );
+  next = next.replace(
+    /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)[。．.、](きこえますか|聞こえますか)/gu,
+    "$1$2$3",
+  );
+  const trimmed = next.trim();
+  if (/^(?:あえますか|おえますか)$/u.test(trimmed)) {
+    return "きこえますか";
+  }
+  if (/^(?:会えますか|終えますか)$/u.test(trimmed)) {
+    return "聞こえますか";
+  }
+  return next;
+};
+
 /** Sanitize caption text before segmentation / display. */
 export const sanitizeCaptionDisplayText = (text: string): string =>
-  collapseRunawayGraphemeRuns(stripCaptionContinuationMarker(text.replace(/\r\n?/gu, "\n")));
+  collapseRunawayGraphemeRuns(
+    repairHearingPhraseConfusion(stripCaptionContinuationMarker(text.replace(/\r\n?/gu, "\n"))),
+  );
 
 /** Pick the best wrap index in `[floor, limit]` preferring soft POS then morph/punct. */
 const preferNaturalBreakIndex = (
@@ -232,11 +267,15 @@ const trimStartGraphemes = (graphemes: string[]): string[] => {
 
 const splitLongLine = (line: string, maxChars: number, softBreakOffsets: number[] = []): string[] => {
   const characters = captionGraphemes(line);
+  const softGraphemes = softBreakGraphemeOffsets(line, softBreakOffsets);
+
+  // Stay on one plate row while the grapheme budget holds. Earlier POS
+  // "pre-wrap" under maxChars produced arbitrary mid-phrase breaks
+  // (今日の天気は / 晴れ。) that users read as unwanted line breaks.
   if (characters.length <= maxChars) {
-    return [line];
+    return characters.length > 0 ? [characters.join("")] : [line];
   }
 
-  const softGraphemes = softBreakGraphemeOffsets(line, softBreakOffsets);
   const segments: string[] = [];
   let remaining = characters;
   let consumed = 0;
@@ -440,9 +479,9 @@ export const captionItems = (
   caption: CaptionPayload,
   placeholder = false,
 ): CaptionItem[] => {
-  // Provisional and non-final revisions must keep mid-utterance characters;
-  // sentence paging to the newest completed copula would hide speech still in
-  // progress. Final captions (and payloads without isFinal) keep paging.
+  // Non-final captions still page finished clauses (です/ます + new content)
+  // so long speech advances before the speaker finishes. Soft grammatical
+  // continuations (が/ので/て…) stay open inside sentence-boundary heuristics.
   const deferSentencePaging = caption.provisional === true || caption.isFinal === false;
   const source: CaptionItem = {
     key: "source",

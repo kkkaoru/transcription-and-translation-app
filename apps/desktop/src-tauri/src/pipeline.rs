@@ -649,6 +649,7 @@ impl Pipeline {
             // the UI keeps the previous non-empty caption unchanged.
             return Ok(None);
         }
+        let normalized = repair_hearing_phrase_confusion(&normalized);
         let mut ready = source_ready_caption(config, normalized, started_at, utterance_id);
         ready.sentence_end_offsets = self.caption_sentence_end_offsets(&ready.source_text);
         ready.soft_break_offsets = self.caption_soft_break_offsets(&ready.source_text);
@@ -849,6 +850,7 @@ impl Pipeline {
         if normalized.trim().is_empty() {
             return Ok(None);
         }
+        let normalized = repair_hearing_phrase_confusion(&normalized);
 
         let mut ready = source_ready_caption_with_input(
             config,
@@ -1140,6 +1142,59 @@ where
 
 fn zenz_prompt(input: &str) -> String {
     format!("\u{EE00}{}\u{EE01}", to_katakana(input))
+}
+
+/// ReazonSpeech often drops the initial き of 聞こえる (`あえますか` /
+/// `おえますか`); ZenZ may then pick 会えますか / 終えますか. Restore the
+/// intended hearing check before the caption is published.
+///
+/// ZenZ also inserts a sentence period after fixed greetings
+/// (`こんにちは。聞こえますか。`), which pages the plate onto only the second
+/// clause and hides the greeting the speaker already said.
+fn repair_hearing_phrase_confusion(text: &str) -> String {
+    let greetings = [
+        "こんにちは",
+        "こんばんは",
+        "おはようございます",
+        "おはよう",
+        "さようなら",
+    ];
+    let mut next = text.to_string();
+    for greeting in greetings {
+        for (wrong, right) in [
+            ("あえますか", "きこえますか"),
+            ("おえますか", "きこえますか"),
+            ("会えますか", "聞こえますか"),
+            ("終えますか", "聞こえますか"),
+        ] {
+            let pattern_plain = format!("{greeting}{wrong}");
+            let replacement_plain = format!("{greeting}{right}");
+            next = next.replace(&pattern_plain, &replacement_plain);
+            for mark in ['ー', '〜', '～'] {
+                let pattern = format!("{greeting}{mark}{wrong}");
+                let replacement = format!("{greeting}{mark}{right}");
+                next = next.replace(&pattern, &replacement);
+            }
+        }
+        // Keep greeting + hearing check as one caption sentence.
+        for hearing in ["きこえますか", "聞こえますか"] {
+            for punct in ['。', '．', '.', '、'] {
+                let split = format!("{greeting}{punct}{hearing}");
+                let joined = format!("{greeting}{hearing}");
+                next = next.replace(&split, &joined);
+                for mark in ['ー', '〜', '～'] {
+                    let split_mark = format!("{greeting}{mark}{punct}{hearing}");
+                    let joined_mark = format!("{greeting}{mark}{hearing}");
+                    next = next.replace(&split_mark, &joined_mark);
+                }
+            }
+        }
+    }
+    match next.trim() {
+        "あえますか" | "おえますか" => "きこえますか".to_string(),
+        "会えますか" | "終えますか" => "聞こえますか".to_string(),
+        _ => next,
+    }
 }
 
 fn to_katakana(input: &str) -> String {
@@ -1579,6 +1634,7 @@ mod tests {
         record_stage, resolve_utterance_id, run_rescore_with_timeout, snippet,
         source_ready_caption, source_ready_caption_with_input, stage_event,
         stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload, NormalizeOutcome,
+        repair_hearing_phrase_confusion,
         ParapperRecognitionInput, Pipeline, PipelineStageEvent, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
@@ -1938,6 +1994,25 @@ mod tests {
     fn zenz_prompt_converts_hiragana_to_katakana_inside_protocol_tags() {
         assert_eq!(zenz_prompt("きょうは配信です"), "\u{EE00}キョウハ配信デス\u{EE01}");
         assert_eq!(zenz_prompt("カタカナ"), "\u{EE00}カタカナ\u{EE01}");
+    }
+
+    #[test]
+    fn repair_hearing_phrase_confusion_restores_kikoemasu() {
+        assert_eq!(repair_hearing_phrase_confusion("あえますか"), "きこえますか");
+        assert_eq!(repair_hearing_phrase_confusion("おえますか"), "きこえますか");
+        assert_eq!(repair_hearing_phrase_confusion("会えますか"), "聞こえますか");
+        assert_eq!(
+            repair_hearing_phrase_confusion("こんにちはあえますか"),
+            "こんにちはきこえますか"
+        );
+        assert_eq!(
+            repair_hearing_phrase_confusion("こんにちは会えますか"),
+            "こんにちは聞こえますか"
+        );
+        assert_eq!(
+            repair_hearing_phrase_confusion("こんにちは。聞こえますか。"),
+            "こんにちは聞こえますか。"
+        );
     }
 
     #[test]
