@@ -7,18 +7,27 @@ import {
 import { STREAMING_INTERIM_ASR_MODEL_ID, STREAMING_INTERIM_ASR_MODEL_OFF } from "./streaming-interim-asr";
 
 describe("streaming interim ASR headless contract", () => {
-  it("defaults to Nemotron 160ms int8 beside ReazonSpeech without human setup", () => {
+  it("defaults streaming interim ASR off; enabling requests Nemotron 160ms int8", () => {
     const config = createDefaultConfig();
-    expect(config.audio.streamingInterimAsrEnabled).toBe(true);
+    expect(config.audio.streamingInterimAsrEnabled).toBe(false);
 
-    const contract = buildStreamingInterimAsrHeadlessContract();
-    expect(contract).toEqual({
+    const disabled = buildStreamingInterimAsrHeadlessContract();
+    expect(disabled).toEqual({
+      enabled: false,
+      cliFlag: "--interim-asr-model",
+      cliValue: STREAMING_INTERIM_ASR_MODEL_OFF,
+      primaryCompletionAsr: "reazonspeech_k2_v2",
+    });
+    expect(verifyStreamingInterimAsrHeadlessContract(disabled)).toEqual([]);
+
+    const enabled = buildStreamingInterimAsrHeadlessContract(true);
+    expect(enabled).toEqual({
       enabled: true,
       cliFlag: "--interim-asr-model",
       cliValue: STREAMING_INTERIM_ASR_MODEL_ID,
       primaryCompletionAsr: "reazonspeech_k2_v2",
     });
-    expect(verifyStreamingInterimAsrHeadlessContract(contract)).toEqual([]);
+    expect(verifyStreamingInterimAsrHeadlessContract(enabled)).toEqual([]);
   });
 
   it("clears the interim model when the setting is off", () => {

@@ -1063,15 +1063,26 @@ mod tests {
                 "--noise-cancellation-enabled",
                 "true",
                 "--interim-asr-model",
-                "nemotron_3_5_asr_streaming_0_6b_160ms_int8",
+                "none",
             ],
         );
     }
 
     #[test]
-    fn embedded_parapper_can_disable_streaming_interim_asr() {
+    fn embedded_parapper_can_enable_streaming_interim_asr() {
         let mut config = AppConfig::default();
-        config.audio.streaming_interim_asr_enabled = false;
+        config.audio.streaming_interim_asr_enabled = true;
+        let args = parapper_headless_args(&config);
+
+        assert!(args.ends_with(&[
+            "--interim-asr-model".to_string(),
+            "nemotron_3_5_asr_streaming_0_6b_160ms_int8".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn embedded_parapper_defaults_streaming_interim_asr_off() {
+        let config = AppConfig::default();
         let args = parapper_headless_args(&config);
 
         assert!(args.ends_with(&[
@@ -1090,7 +1101,7 @@ mod tests {
         }));
         assert!(args.ends_with(&[
             "--interim-asr-model".to_string(),
-            "nemotron_3_5_asr_streaming_0_6b_160ms_int8".to_string(),
+            "none".to_string(),
         ]));
     }
 
@@ -1111,11 +1122,8 @@ mod tests {
         assert_eq!(health["interimResultEnabled"], true);
         assert_eq!(health["rerecognizeFullOnComplete"], true);
         assert_eq!(health["noiseCancellationEnabled"], true);
-        assert_eq!(health["streamingInterimAsrEnabled"], true);
-        assert_eq!(
-            health["interimAsrModel"],
-            "nemotron_3_5_asr_streaming_0_6b_160ms_int8"
-        );
+        assert_eq!(health["streamingInterimAsrEnabled"], false);
+        assert_eq!(health["interimAsrModel"], "none");
     }
 
     #[test]

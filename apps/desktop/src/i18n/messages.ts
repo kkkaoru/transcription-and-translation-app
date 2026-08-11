@@ -180,8 +180,8 @@ const ja = {
   "settings.noiseSuppressionOn": "有効（推奨）",
   "settings.streamingInterimAsr": "途中認識（Nemotron Streaming）",
   "settings.streamingInterimAsrHint":
-    "audio.streamingInterimAsrEnabled。発話中の経過字幕に Nemotron 3.5 ASR Streaming（160ms int8）を併用します。確定認識は従来どおり ReazonSpeech です。モデルは初回起動時に GitHub（k2-fsa/sherpa-onnx releases）から自動取得し、詳細設定のモデルダウンロードに状態・URL・保存先を表示します。保存後、アプリ再起動時にsidecarへ反映します。",
-  "settings.streamingInterimAsrOn": "有効（推奨）",
+    "audio.streamingInterimAsrEnabled。発話中の経過字幕に Nemotron 3.5 ASR Streaming（160ms int8）を併用します（任意・実験的）。確定認識は従来どおり ReazonSpeech です。モデルは有効化後の初回起動時に GitHub（k2-fsa/sherpa-onnx releases）から自動取得し、詳細設定のモデルダウンロードに状態・URL・保存先を表示します。保存後、アプリ再起動時にsidecarへ反映します。",
+  "settings.streamingInterimAsrOn": "有効",
   "settings.autoGainControl": "オートゲイン（AGC）",
   "settings.autoGainControlHint":
     "マイク音量を自動調整します。静かな声でも無音判定されにくくなります。ノイズキャンセリングとは独立して切り替えられます。",
@@ -694,8 +694,8 @@ const en: Record<MessageKey, string> = {
   "settings.noiseSuppressionOn": "Enabled (recommended)",
   "settings.streamingInterimAsr": "Progressive interim ASR (Nemotron Streaming)",
   "settings.streamingInterimAsrHint":
-    "audio.streamingInterimAsrEnabled. Uses Nemotron 3.5 ASR Streaming (160ms int8) for mid-utterance captions while ReazonSpeech remains the final ASR. On first launch the sidecar downloads the archive from GitHub (k2-fsa/sherpa-onnx releases). Debug → Model downloads shows status, source URL, and local path. Saved changes apply to the sidecar on the next app launch.",
-  "settings.streamingInterimAsrOn": "Enabled (recommended)",
+    "audio.streamingInterimAsrEnabled. Optionally uses Nemotron 3.5 ASR Streaming (160ms int8) for mid-utterance captions while ReazonSpeech remains the final ASR. Experimental; off by default. After enabling, the sidecar downloads the archive from GitHub (k2-fsa/sherpa-onnx releases) on first launch. Debug → Model downloads shows status, source URL, and local path. Saved changes apply to the sidecar on the next app launch.",
+  "settings.streamingInterimAsrOn": "Enabled",
   "settings.autoGainControl": "Auto gain control (AGC)",
   "settings.autoGainControlHint":
     "Automatically levels microphone volume so quiet speech clears the silence gate. Independent from noise cancellation.",

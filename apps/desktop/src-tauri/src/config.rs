@@ -54,7 +54,7 @@ fn default_adaptive_noise_floor() -> bool {
 }
 
 fn default_streaming_interim_asr_enabled() -> bool {
-    true
+    false
 }
 
 /// Headless Parapper interim model paired with ReazonSpeech completion ASR.
@@ -452,8 +452,8 @@ impl Default for AppConfig {
                 auto_gain_control: true,
                 // Match frontend DEFAULT_ADAPTIVE_NOISE_FLOOR: adaptive floor gate on.
                 adaptive_noise_floor: true,
-                // Match frontend: Nemotron streaming interim ASR on by default.
-                streaming_interim_asr_enabled: true,
+                // Match frontend: Nemotron streaming interim ASR off by default.
+                streaming_interim_asr_enabled: false,
             },
             overlay: OverlayConfig {
                 width: 1_280,
@@ -674,7 +674,7 @@ mod tests {
         assert_eq!(config.debug.log_level, "info");
         assert!(config.audio.noise_suppression);
         assert!(config.audio.adaptive_noise_floor);
-        assert!(config.audio.streaming_interim_asr_enabled);
+        assert!(!config.audio.streaming_interim_asr_enabled);
         assert_eq!(config.audio.vad_interval_ms, DEFAULT_VAD_INTERVAL_MS);
         assert_eq!(config.audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
         assert_eq!(config.recognition_mode, DEFAULT_RECOGNITION_MODE);
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
         assert!(audio.noise_suppression);
         assert!(audio.adaptive_noise_floor);
-        assert!(audio.streaming_interim_asr_enabled);
+        assert!(!audio.streaming_interim_asr_enabled);
     }
 
     #[test]

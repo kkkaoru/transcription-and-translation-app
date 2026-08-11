@@ -722,7 +722,7 @@ export const MainApp = () => {
       }
       const reason = resolveCaptureStartBlockReason({
         recognitionMode: config.recognitionMode,
-        streamingInterimAsrEnabled: config.audio.streamingInterimAsrEnabled !== false,
+        streamingInterimAsrEnabled: config.audio.streamingInterimAsrEnabled === true,
         modelStatus: modelStatus ?? [],
         parapperHealthy: resolveParapperHealthyFromSidecars(diagnostics?.sidecars),
         webSpeechSupported: isWebSpeechRecognitionSupported(),

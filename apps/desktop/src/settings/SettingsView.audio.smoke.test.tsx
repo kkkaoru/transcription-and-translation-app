@@ -344,7 +344,7 @@ describe("SettingsView audio tuning", () => {
 
   it("toggles progressive Nemotron streaming interim ASR independently of capture restart", async () => {
     let latest = createDefaultConfig();
-    expect(latest.audio.streamingInterimAsrEnabled).toBe(true);
+    expect(latest.audio.streamingInterimAsrEnabled).toBe(false);
 
     const Harness = () => {
       const [config, setConfig] = useState(latest);
@@ -377,7 +377,7 @@ describe("SettingsView audio tuning", () => {
 
     const toggle = container.querySelector<HTMLInputElement>("#audio-streaming-interim-asr");
     expect(toggle).not.toBeNull();
-    expect(toggle?.checked).toBe(true);
+    expect(toggle?.checked).toBe(false);
     expect(toggle?.disabled).toBe(false);
     expect(container.textContent).toMatch(/Nemotron/);
 
@@ -385,7 +385,7 @@ describe("SettingsView audio tuning", () => {
       toggle?.click();
       await Promise.resolve();
     });
-    expect(latest.audio.streamingInterimAsrEnabled).toBe(false);
-    expect(toggle?.checked).toBe(false);
+    expect(latest.audio.streamingInterimAsrEnabled).toBe(true);
+    expect(toggle?.checked).toBe(true);
   });
 });

@@ -79,7 +79,8 @@ export interface AudioConfig {
   /**
    * Pair Nemotron 3.5 streaming (`nemotron_3_5_asr_streaming_0_6b_160ms_int8`)
    * with the primary ReazonSpeech completion model for progressive interim
-   * captions. Default true; applied to the Parapper sidecar on its next launch.
+   * captions. Default false; opt in from settings. Applied to the Parapper
+   * sidecar on its next launch.
    */
   streamingInterimAsrEnabled: boolean;
 }

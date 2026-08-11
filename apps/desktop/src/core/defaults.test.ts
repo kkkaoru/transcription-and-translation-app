@@ -58,7 +58,7 @@ describe("default configuration", () => {
     expect(config.audio.autoGainControl).toBe(true);
     // Adaptive noise-floor gate is the default; silenceGateDb is the fallback.
     expect(config.audio.adaptiveNoiseFloor).toBe(true);
-    expect(config.audio.streamingInterimAsrEnabled).toBe(true);
+    expect(config.audio.streamingInterimAsrEnabled).toBe(false);
     expect(config.debug.verboseLogging).toBe(false);
     expect(config.debug.logLevel).toBe("info");
   });
@@ -108,9 +108,11 @@ describe("default configuration", () => {
     expect(fixed.audio.silenceGateDb).toBe(-60);
   });
 
-  it("defaults missing streamingInterimAsrEnabled to true when merging legacy config", () => {
+  it("defaults missing streamingInterimAsrEnabled to false when merging legacy config", () => {
     const merged = mergeConfig({ audio: { chunkMs: 1000 } });
-    expect(merged.audio.streamingInterimAsrEnabled).toBe(true);
+    expect(merged.audio.streamingInterimAsrEnabled).toBe(false);
+    const on = mergeConfig({ audio: { streamingInterimAsrEnabled: true } });
+    expect(on.audio.streamingInterimAsrEnabled).toBe(true);
     const off = mergeConfig({ audio: { streamingInterimAsrEnabled: false } });
     expect(off.audio.streamingInterimAsrEnabled).toBe(false);
   });

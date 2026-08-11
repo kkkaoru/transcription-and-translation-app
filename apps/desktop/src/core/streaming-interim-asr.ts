@@ -1,9 +1,9 @@
 /**
  * Progressive interim ASR paired with the primary ReazonSpeech completion model.
  *
- * When enabled, the desktop headless Parapper sidecar loads this Nemotron 3.5
- * streaming model for mid-utterance hypotheses while ReazonSpeech K2 v2 remains
- * the final/completion ASR.
+ * When enabled (off by default; opt in from settings), the desktop headless
+ * Parapper sidecar loads this Nemotron 3.5 streaming model for mid-utterance
+ * hypotheses while ReazonSpeech K2 v2 remains the final/completion ASR.
  */
 export const STREAMING_INTERIM_ASR_MODEL_ID =
   "nemotron_3_5_asr_streaming_0_6b_160ms_int8" as const;

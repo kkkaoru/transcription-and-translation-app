@@ -665,7 +665,7 @@ export const SettingsView = ({
                 <input
                   id="audio-streaming-interim-asr"
                   type="checkbox"
-                  checked={config.audio.streamingInterimAsrEnabled !== false}
+                  checked={config.audio.streamingInterimAsrEnabled === true}
                   onChange={(event) =>
                     onConfigChange({
                       ...config,
