@@ -68,6 +68,18 @@ impl RecognitionSession {
                 || (request.kind == AsrTaskKind::CompletionCheck
                     && latest_segment_audio_is_prefix()))
             || completion_replaces_streaming_interim;
+        // Dual-ASR: ReazonSpeech completion can truncate a longer Nemotron draft
+        // ("…ですね" tails vanish). Keep the longer streaming surface when the
+        // completion is clearly a prefix truncation; still swap to completion audio.
+        let transcript_text = if completion_replaces_streaming_interim
+            && prefer_streaming_interim_text_over_truncated_completion(
+                &draft.combined_text,
+                &transcript.text,
+            ) {
+            draft.combined_text.clone()
+        } else {
+            transcript.text
+        };
         if replace_latest_segment {
             draft.replace_latest_recognized_segment(
                 segment_id,
@@ -75,7 +87,7 @@ impl RecognitionSession {
                 &request.source_audio,
                 &request.source_vad_results,
                 request.route,
-                transcript.text,
+                transcript_text,
                 elapsed_millis,
             );
         } else {
@@ -97,7 +109,7 @@ impl RecognitionSession {
                 &request.source_audio[append_source_start..],
                 source_vad_results,
                 request.route,
-                transcript.text,
+                transcript_text,
                 elapsed_millis,
             );
         }
@@ -203,6 +215,32 @@ impl RecognitionSession {
             self.turn_store.last_recognition_route = Some(request.route);
         }
     }
+}
+
+/// Keep a longer Nemotron (or other streaming) draft when completion ASR
+/// returns a shorter prefix of the same utterance.
+fn prefer_streaming_interim_text_over_truncated_completion(
+    existing: &str,
+    completion: &str,
+) -> bool {
+    let existing = strip_turn_surface_noise(existing);
+    let completion = strip_turn_surface_noise(completion);
+    if existing.is_empty() || completion.is_empty() {
+        return false;
+    }
+    let existing_chars = existing.chars().count();
+    let completion_chars = completion.chars().count();
+    if completion_chars >= existing_chars {
+        return false;
+    }
+    existing.starts_with(completion) && existing != completion
+}
+
+fn strip_turn_surface_noise(text: &str) -> &str {
+    text.trim()
+        .trim_end_matches(['.', '。', '…', '⋯'])
+        .trim_end_matches("...")
+        .trim()
 }
 
 fn samples_between(start: GlobalSampleIndex, end: GlobalSampleIndex) -> usize {

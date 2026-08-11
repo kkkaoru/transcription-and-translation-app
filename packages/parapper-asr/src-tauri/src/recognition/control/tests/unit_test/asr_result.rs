@@ -469,6 +469,57 @@ fn split_asr_completion_after_interim_only_draft_is_not_dropped_as_stale() {
 }
 
 #[test]
+fn split_asr_completion_keeps_longer_streaming_interim_when_completion_truncates_prefix() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .asr_model(AsrModel::ReazonSpeechK2V2)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8)
+        .interim_display(true)
+        .turn_detector(TurnDetector::Simple);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut streaming_interim = interim_request_for_turn(1, 1);
+    streaming_interim.route =
+        RecognitionRoute::from_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8);
+    streaming_interim.close_reason = Some(SegmentCloseReason::InterimChunkReached);
+    streaming_interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(480)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(streaming_interim.clone());
+    asr_handle.complete_request_with_text(&streaming_interim, "今日はいい天気ですね");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.route = RecognitionRoute::from_model(AsrModel::ReazonSpeechK2V2);
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(480)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "今日はいい天気");
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("今日はいい天気ですね...", false, 1, 1),
+            output_snapshot("今日はいい天気ですね。", true, 1, 1),
+        ],
+        "a truncated ReazonSpeech completion must not erase the longer Nemotron utterance tail"
+    );
+}
+
+#[test]
 fn turn_runtime_mismatched_asr_result_keeps_in_flight_request_for_later_match() {
     let mut builder = RecognitionSessionTestBuilder::new();
     let asr_handle = builder.use_manual_asr();

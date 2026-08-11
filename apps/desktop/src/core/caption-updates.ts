@@ -369,7 +369,9 @@ const hasSameOrExtendedAzookeyReading = (
  * After the first normalize lands, Parapper still emits longer partials. The
  * historical "drop late provisional" guard blocked those extensions and left
  * only the beginning of the utterance on screen until a later normalize (or
- * forever, when that normalize was truncated).
+ * forever, when that normalize was truncated). The same restore is needed after
+ * a truncated `isFinal` from completion ASR (Reazon) that raced ahead of a
+ * longer Nemotron provisional.
  */
 const isProgressiveProvisionalExtension = (
   current: CaptionPayload,
@@ -380,7 +382,6 @@ const isProgressiveProvisionalExtension = (
     current.id !== next.id ||
     !isSourceStagePayload(current) ||
     !isSourceStagePayload(next) ||
-    current.isFinal === true ||
     !hasText(current.sourceText) ||
     !hasText(next.sourceText)
   ) {
@@ -404,7 +405,9 @@ const isProgressiveProvisionalExtension = (
  *
  * Parapper keeps at most one pending partial, but the in-flight normalizer for
  * an older revision still completes. That stale normalize must not replace a
- * longer provisional that was painted from a later turn cursor.
+ * longer provisional that was painted from a later turn cursor. Dual-ASR
+ * completion finals that are a strict prefix truncation of the painted
+ * provisional are treated the same way.
  */
 const isStaleNormalizedAgainstProvisional = (
   current: CaptionPayload,
@@ -547,6 +550,12 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     // — unless that normalize is a stale in-flight revision for an older cursor that
     // would erase mid-utterance characters the newer provisional already painted.
     if (current.provisional === true && next.provisional !== true && isSourceStagePayload(next)) {
+      // Truncating finals still merge so `isFinal` upgrades while
+      // `mergeSameIdSourceText` keeps the longer provisional surface. Non-final
+      // stale normalizes remain out-of-order drops.
+      if (next.isFinal === true) {
+        return false;
+      }
       return isStaleNormalizedAgainstProvisional(current, next);
     }
     // After a normalized interim is on screen, still accept a longer same-id
@@ -567,7 +576,9 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     // A completed source turn is terminal at this merge boundary.  The event
     // and invoke paths can race, so an earlier interim may be delivered after
     // its final counterpart; receipt time alone must not let that stale
-    // interim replace the completed text.
+    // interim replace the completed text. Exception: a longer provisional that
+    // strictly extends a truncated final restores the utterance tail lost to
+    // dual-ASR completion (Reazon) racing ahead of Nemotron.
     if (
       currentSequence === SOURCE_SEQUENCE &&
       nextSequence === SOURCE_SEQUENCE &&
@@ -576,15 +587,18 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
       isSourceStagePayload(current) &&
       isSourceStagePayload(next)
     ) {
+      if (next.provisional === true && isProgressiveProvisionalExtension(current, next)) {
+        return false;
+      }
       return true;
     }
 
     // Parapper backdates a final caption's `startedAt` by its measured audio
     // duration, while an interim has no duration and therefore starts at the
     // receive time.  A final for the same source turn must still replace that
-    // interim even though its audio start is numerically earlier.  The
-    // persistent stream queue already orders/filters turn cursors, so this is
-    // only the completion upgrade at the caption merge boundary.
+    // interim even though its audio start is numerically earlier.  Truncating
+    // finals are accepted here so `mergeSameIdSourceText` can keep the longer
+    // provisional surface while upgrading `isFinal`.
     if (
       currentSequence === SOURCE_SEQUENCE &&
       nextSequence === SOURCE_SEQUENCE &&
@@ -786,6 +800,16 @@ export const mergeCaptionPayload = (
   };
   if (incoming.provisional === true) {
     merged.provisional = true;
+  }
+  // A longer provisional that restores a truncated finalized surface should keep
+  // the turn closed (isFinal) while painting the recovered utterance tail.
+  if (
+    current.isFinal === true &&
+    incoming.provisional === true &&
+    isProgressiveProvisionalExtension(current, incoming)
+  ) {
+    merged.isFinal = true;
+    delete merged.provisional;
   }
 
   // Preserve React identity when event + invoke deliver the same paint payload.

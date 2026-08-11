@@ -1970,7 +1970,7 @@ describe("mergeCaptionPayload", () => {
     );
   });
 
-  it("still drops late provisional after a finalized same-id caption", () => {
+  it("restores a truncated finalized caption when a longer provisional arrives", () => {
     const finalized = caption({
       id: "u-1",
       sourceText: "今日はいい",
@@ -1995,7 +1995,70 @@ describe("mergeCaptionPayload", () => {
       provisional: true,
     });
 
-    expect(mergeCaptionPayload(finalized, provisionalTail)).toBeNull();
+    expect(mergeCaptionPayload(finalized, provisionalTail)).toMatchObject({
+      sourceText: "今日はいい天気ですね",
+      isFinal: true,
+    });
+    expect(mergeCaptionPayload(finalized, provisionalTail)?.provisional).toBeUndefined();
+  });
+
+  it("still drops a non-extending late provisional after a finalized same-id caption", () => {
+    const finalized = caption({
+      id: "u-1",
+      sourceText: "今日はいい天気ですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const provisionalRewrite = caption({
+      id: "u-1",
+      sourceText: "きょうはいいてんきですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_050,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, provisionalRewrite)).toBeNull();
+  });
+
+  it("keeps a longer provisional surface when a truncated final arrives", () => {
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "今日はいい天気ですね",
+      translationText: "",
+      startedAt: 1_050,
+      receivedAt: 1_100,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const truncatedFinal = caption({
+      id: "u-1",
+      sourceText: "今日はいい天気",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    const merged = mergeCaptionPayload(provisional, truncatedFinal);
+    expect(merged).toMatchObject({
+      sourceText: "今日はいい天気ですね",
+      isFinal: true,
+    });
+    expect(merged?.provisional).toBeUndefined();
   });
 
   it("drops a late provisional kana context revision after canonical expansion", () => {
