@@ -90,7 +90,7 @@ import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
 import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
-import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
+import { useCaptionHoldClear } from "./useCaptionHoldClear";
 
 type ActiveTab = "live" | "settings";
 
@@ -417,8 +417,6 @@ export const MainApp = () => {
   /** Mutable caption cursor keeps merge side effects outside React state updaters. */
   const captionRef = useRef<CaptionPayload>(createPreviewCaption());
   const [caption, setCaption] = useState<CaptionPayload>(() => captionRef.current);
-  // Grow newly recognized graphemes onto Live/Syphon one-by-one (こ→こんにちは).
-  const progressiveCaption = useProgressiveCaptionReveal(caption);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);
@@ -525,6 +523,19 @@ export const MainApp = () => {
     setCaption(empty);
     clearCaptionMergeDiagnostics();
   }, []);
+
+  /** Blank the plate after hold without tearing down merge diagnostics / session. */
+  const blankDisplayedCaption = useCallback((): void => {
+    const current = captionRef.current;
+    if (!current.sourceText.trim() && !current.translationText.trim()) {
+      return;
+    }
+    const empty = createEmptyCaption();
+    captionRef.current = empty;
+    setCaption(empty);
+  }, []);
+
+  useCaptionHoldClear(caption, blankDisplayedCaption);
 
   // A later ambient soft-skip must not replace the visible notice from a
   // persistent ASR result-loss error. A real caption clears this ref through
@@ -2267,7 +2278,7 @@ export const MainApp = () => {
             <LiveView
               config={config}
               status={status}
-              caption={progressiveCaption}
+              caption={caption}
               devices={devices}
               message={noticeText}
               transparentCaptureOpen={transparentCaptureOpen}
@@ -2304,7 +2315,7 @@ export const MainApp = () => {
         </main>
       </div>
       {status.nativeOutput === "syphon" || status.nativeOutput === "spout2" ? (
-        <NativeFramePublisher config={config} caption={progressiveCaption} />
+        <NativeFramePublisher config={config} caption={caption} />
       ) : null}
     </div>
   );

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { bridge } from "../core/bridge";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
 import type { AppConfig, CaptionPayload } from "../core/types";
+import { useCaptionHoldClear } from "../live/useCaptionHoldClear";
 import { OverlayView } from "./CaptionOverlay";
 import { createEmptyCaption, createPreviewCaption } from "./captions";
 import { NativeFramePublisher } from "./NativeFramePublisher";
@@ -56,6 +57,20 @@ export const OverlayApp = () => {
   const [caption, setCaption] = useState<CaptionPayload>(() =>
     transparentCapture ? createEmptyCaption() : createPreviewCaption(),
   );
+
+  const blankDisplayedCaption = useCallback((): void => {
+    setCaption((current) => {
+      if (current.id === "preview") {
+        return current;
+      }
+      if (!current.sourceText.trim() && !current.translationText.trim()) {
+        return current;
+      }
+      return createEmptyCaption();
+    });
+  }, []);
+
+  useCaptionHoldClear(caption, blankDisplayedCaption);
 
   useEffect(() => {
     document.documentElement.classList.add("overlay-document");

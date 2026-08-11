@@ -236,7 +236,10 @@ describe("OverlayApp caption replay", () => {
 
     expect(container.querySelectorAll(".caption-line-source")).toHaveLength(1);
     expect(container.querySelector(".caption-line-source")?.textContent).toBe("漢字とひらがな");
-    expect(container.querySelector(".caption-line-translation")).toBeNull();
+    // Empty translation keeps a reserved slot so layout does not jump when EN arrives.
+    expect(container.querySelector(".caption-line-translation")?.getAttribute("data-empty")).toBe(
+      "true",
+    );
 
     await act(async () => {
       root.unmount();
@@ -362,8 +365,12 @@ describe("OverlayApp caption replay", () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector(".caption-line-source")).toBeNull();
-    expect(container.querySelector(".caption-line-translation")).toBeNull();
+    expect(container.querySelector(".caption-line-source")?.getAttribute("data-empty")).toBe(
+      "true",
+    );
+    expect(container.querySelector(".caption-line-translation")?.getAttribute("data-empty")).toBe(
+      "true",
+    );
 
     await act(async () => {
       runtimeListener?.({
