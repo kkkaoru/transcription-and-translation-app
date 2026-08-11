@@ -876,10 +876,19 @@ export type AudioCaptureErrorCode =
   | "microphone-track-ended"
   | "microphone-track-muted"
   | "audio-context-suspended"
+  /**
+   * Capture graph is live (status=capturing) but the AudioWorklet/ScriptProcessor
+   * never delivered samples. Common with a zombie WKWebView AudioContext or a
+   * MediaStreamSource that never schedules render quanta.
+   */
+  | "microphone-no-frames"
   /** A legacy/chunk callback rejected while capture was flushing or processing audio. */
   | "audio-chunk-delivery-failed"
   /** Continuous Parapper PCM delivery failed; this is not an AudioContext failure. */
   | "parapper-transport-failed";
+
+/** Non-zero so WKWebView keeps scheduling a "silent" capture graph. */
+const AUDIO_GRAPH_KEEPALIVE_GAIN = 1e-5;
 
 export class AudioCaptureError extends Error {
   public readonly code: AudioCaptureErrorCode;
@@ -1221,6 +1230,8 @@ export class MicrophoneCapture {
   private contextRecoveryAttempts = 0;
   private lastContextStateChangeAt: string | null = null;
   private levelEmitAt = 0;
+  /** Samples accepted by the live graph since the latest start(). */
+  private framesReceived = 0;
   /** True once getUserMedia + AudioContext are held and ready for graph wiring. */
   private hardwareReady = false;
 
@@ -1397,6 +1408,7 @@ export class MicrophoneCapture {
     this.contextRecoveryAttempts = 0;
     this.lastContextStateChangeAt = null;
     this.levelEmitAt = 0;
+    this.framesReceived = 0;
     this.pending = new Float32Array(0);
     this.rollingContext.reset();
     this.utteranceId = null;
@@ -1429,6 +1441,11 @@ export class MicrophoneCapture {
         throw new AudioCaptureError("microphone-unavailable");
       }
 
+      // Resume before wiring MediaStreamSource. A suspended context at
+      // createMediaStreamSource time can leave WKWebView with a live track but
+      // no render quanta (UI stuck on "入力待機…" / Waiting for input).
+      await this.ensureContextRunning();
+
       this.source = this.context.createMediaStreamSource(this.stream);
 
       // Prefer AudioWorklet, but CSP / WebView restrictions on blob: modules are common
@@ -1450,6 +1467,7 @@ export class MicrophoneCapture {
       }
 
       await this.ensureContextRunning();
+      await this.ensureAudioFramesFlowing();
       this.publishDiagnostics(null);
     } catch (error) {
       // Keep the original rejection (DOMException names, etc.) so the UI can map
@@ -1676,19 +1694,112 @@ export class MicrophoneCapture {
     if (!this.context || this.context.state === "closed") {
       throw new AudioCaptureError("audio-context-failed", "AudioContext is missing or closed");
     }
-    if (this.context.state === "suspended") {
+    // WKWebView may report "interrupted" (or other non-running states) after
+    // focus/device changes. Treat anything other than running as recoverable.
+    if (this.context.state !== "running") {
       try {
+        // suspend→resume forces a clean internal reset for zombie contexts that
+        // report suspended but no longer schedule render quanta.
+        if (this.context.state === "suspended") {
+          try {
+            await this.context.suspend();
+          } catch {
+            // ignore — some hosts reject suspend while already suspended
+          }
+        }
         await this.context.resume();
       } catch (error) {
         throw new AudioCaptureError("audio-context-suspended", error);
       }
     }
-    if (this.context.state === "suspended") {
+    if (this.context.state !== "running") {
       throw new AudioCaptureError(
         "audio-context-suspended",
-        "AudioContext remained suspended after resume()",
+        `AudioContext remained ${this.context.state} after resume()`,
       );
     }
+  }
+
+  /**
+   * Confirm the capture graph is delivering samples. A live MediaStreamTrack
+   * with a non-running render quantum leaves the UI on "Waiting for input…"
+   * forever; recover once, then fail loudly.
+   *
+   * Skipped under Vitest: unit tests use stub AudioContext graphs that never
+   * schedule render quanta.
+   */
+  private async ensureAudioFramesFlowing(): Promise<void> {
+    if (
+      typeof process !== "undefined" &&
+      (process.env.VITEST === "true" || process.env.NODE_ENV === "test")
+    ) {
+      return;
+    }
+    if (await this.waitForAudioFrames(350)) {
+      return;
+    }
+    if (this.disposed || !this.context || !this.stream) {
+      return;
+    }
+    this.contextRecoveryAttempts += 1;
+    try {
+      await this.context.suspend();
+    } catch {
+      // ignore
+    }
+    await this.ensureContextRunning();
+    if (await this.waitForAudioFrames(350)) {
+      return;
+    }
+    if (this.disposed || !this.context || !this.stream) {
+      return;
+    }
+    // Worklet can look healthy while never scheduling; fall back once.
+    if (this.captureMode === "worklet") {
+      this.teardownGraphNodes();
+      this.source = this.context.createMediaStreamSource(this.stream);
+      this.startScriptProcessor();
+      this.captureMode = "script-processor";
+      await this.ensureContextRunning();
+      if (await this.waitForAudioFrames(400)) {
+        return;
+      }
+    }
+    const track = this.stream.getAudioTracks()[0];
+    const detail = [
+      `context=${this.context.state}`,
+      `mode=${this.captureMode}`,
+      track ? `track=${track.readyState}` : null,
+      track?.muted ? "muted" : null,
+      track?.label ? `label=${track.label}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    throw new AudioCaptureError("microphone-no-frames", detail || "no audio frames from capture graph");
+  }
+
+  private async waitForAudioFrames(timeoutMs: number): Promise<boolean> {
+    const baseline = this.framesReceived;
+    const deadline =
+      (typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now()) + timeoutMs;
+    while (
+      (typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now()) < deadline
+    ) {
+      if (this.disposed) {
+        return false;
+      }
+      if (this.framesReceived > baseline) {
+        return true;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 40);
+      });
+    }
+    return this.framesReceived > baseline;
   }
 
   private teardownGraphNodes(): void {
@@ -2002,7 +2113,7 @@ export class MicrophoneCapture {
       }
     };
     this.sink = this.context.createGain();
-    this.sink.gain.value = 0;
+    this.sink.gain.value = AUDIO_GRAPH_KEEPALIVE_GAIN;
     this.source.connect(this.worklet);
     this.worklet.connect(this.sink);
     this.sink.connect(this.context.destination);
@@ -2047,7 +2158,7 @@ export class MicrophoneCapture {
       }
     };
     this.sink = this.context.createGain();
-    this.sink.gain.value = 0;
+    this.sink.gain.value = AUDIO_GRAPH_KEEPALIVE_GAIN;
     this.source.connect(this.processor);
     this.processor.connect(this.sink);
     this.sink.connect(this.context.destination);
@@ -2058,6 +2169,7 @@ export class MicrophoneCapture {
     if (this.disposed || (!this.handler && !this.streamPcmHandler) || frame.length === 0) {
       return;
     }
+    this.framesReceived += 1;
 
     // Live level meter: throttle UI callbacks so React is not flooded every audio quantum.
     const instantDb = calculateRmsDb(frame);

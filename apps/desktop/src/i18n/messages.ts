@@ -278,6 +278,8 @@ const ja = {
     "マイクトラックが終了しました。デバイスが切断された可能性があります。",
   "message.microphoneTrackMuted":
     "マイク入力が一時的にミュートされています。入力デバイスを確認してください。",
+  "message.microphoneNoFrames":
+    "マイクは開きましたが音声フレームが届きません。デバイスを切り替えるか、Discord など他アプリのマイク使用を止めてから、停止→開始し直してください。",
   "message.audioChunkDeliveryFailed": "音声チャンクを字幕処理へ渡せませんでした。",
   "message.parapperTransportFailed": "Parapper 音声ストリームへの送信に失敗しました。",
   "message.webSpeechUnsupported":
@@ -787,6 +789,8 @@ const en: Record<MessageKey, string> = {
   "message.microphoneConstraint": "The selected microphone is unavailable. Select another device.",
   "message.microphoneTrackEnded": "Microphone track ended. The device may have been disconnected.",
   "message.microphoneTrackMuted": "Microphone input is temporarily muted. Check the input device.",
+  "message.microphoneNoFrames":
+    "The microphone opened but no audio frames arrived. Switch devices or stop other apps using the mic (for example Discord), then Stop and Start again.",
   "message.audioChunkDeliveryFailed": "Could not deliver an audio chunk to caption processing.",
   "message.parapperTransportFailed": "Could not send audio to the Parapper stream.",
   "message.webSpeechUnsupported":

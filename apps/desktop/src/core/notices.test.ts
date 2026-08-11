@@ -101,6 +101,9 @@ describe("AudioCaptureError → notice mapping", () => {
     expect(noticeFromError(new AudioCaptureError("microphone-track-muted"), FALLBACK).key).toBe(
       "message.microphoneTrackMuted",
     );
+    expect(noticeFromError(new AudioCaptureError("microphone-no-frames"), FALLBACK).key).toBe(
+      "message.microphoneNoFrames",
+    );
     expect(
       noticeFromError(new AudioCaptureError("audio-chunk-delivery-failed"), FALLBACK).key,
     ).toBe("message.audioChunkDeliveryFailed");

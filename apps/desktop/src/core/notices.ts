@@ -83,6 +83,7 @@ export const noticeFromError = (error: unknown, fallback: MessageKey): Notice =>
       "audio-context-suspended": "message.audioContextFailed",
       "microphone-track-ended": "message.microphoneTrackEnded",
       "microphone-track-muted": "message.microphoneTrackMuted",
+      "microphone-no-frames": "message.microphoneNoFrames",
       "audio-chunk-delivery-failed": "message.audioChunkDeliveryFailed",
       "parapper-transport-failed": "message.parapperTransportFailed",
     };
