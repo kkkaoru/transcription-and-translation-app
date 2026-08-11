@@ -176,6 +176,11 @@ pub(in crate::recognition) fn drop_front_interim_segments_covered_by_completion(
         if front.kind() != AsrTaskKind::InterimDisplay {
             break;
         }
+        // Nemotron streaming chunks carry the utterance tail. Never skip them
+        // just because a later Reazon completion covers the same sample range.
+        if front.reason == SegmentCloseReason::InterimChunkReached {
+            break;
+        }
         let Some(covering_completion_index) = pending
             .iter()
             .skip(1)
@@ -194,6 +199,7 @@ pub(in crate::recognition) fn drop_front_interim_segments_covered_by_completion(
             .expect("covering completion should still be present");
         while pending.front().is_some_and(|candidate| {
             candidate.kind() == AsrTaskKind::InterimDisplay
+                && candidate.reason != SegmentCloseReason::InterimChunkReached
                 && candidate.turn_id() == covering_completion.turn_id()
                 && covering_completion.range.contains(candidate.range)
         }) {

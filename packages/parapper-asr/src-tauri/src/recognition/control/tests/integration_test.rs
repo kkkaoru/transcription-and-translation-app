@@ -724,7 +724,7 @@ fn turn_runtime_streaming_interim_continues_across_interim_silence_without_dupli
 }
 
 #[test]
-fn turn_runtime_end_silence_discards_queued_nemotron_streaming_interim_chunks() {
+fn turn_runtime_end_silence_flushes_queued_nemotron_streaming_interim_chunks_before_reset() {
     const FRAME_SAMPLES: usize = 256;
     let mut builder = RecognitionSessionTestBuilder::new()
         .asr_model(AsrModel::ReazonSpeechK2V2)
@@ -766,8 +766,8 @@ fn turn_runtime_end_silence_discards_queued_nemotron_streaming_interim_chunks() 
             .pending
             .asr_segments
             .iter()
-            .all(|segment| { segment.reason != SegmentCloseReason::InterimChunkReached }),
-        "queued Nemotron interim audio that was not submitted yet must be discarded when the utterance closes"
+            .any(|segment| { segment.reason == SegmentCloseReason::InterimChunkReached }),
+        "queued Nemotron interim audio must be kept so the utterance tail can decode before completion"
     );
     assert!(
         runtime
@@ -775,12 +775,16 @@ fn turn_runtime_end_silence_discards_queued_nemotron_streaming_interim_chunks() 
             .asr_segments
             .iter()
             .any(|segment| { segment.reason == SegmentCloseReason::EndSilenceReached }),
-        "the final completion candidate must remain queued after discarding interim-only audio"
+        "the final completion candidate must remain queued behind the flushed streaming chunks"
     );
     assert_eq!(
         asr_handle.streaming_reset_count(),
-        1,
-        "closing the utterance must reset the Nemotron streaming cache before the next interim session"
+        0,
+        "Nemotron streaming cache must stay alive until flushed interim chunks are submitted"
+    );
+    assert!(
+        runtime.pending.deferred_streaming_session_reset,
+        "end silence should defer the streaming-session reset until flush completes"
     );
 }
 

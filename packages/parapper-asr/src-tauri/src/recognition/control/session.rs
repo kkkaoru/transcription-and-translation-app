@@ -45,6 +45,9 @@ pub(in crate::recognition) struct PendingRuntimeState {
     pub(in crate::recognition) finalization: Option<PendingFinalization>,
     pub(in crate::recognition) asr_segments: VecDeque<PendingAsrSegment>,
     pub(in crate::recognition) interim_asr: InterimAsrState,
+    /// Reset Nemotron streaming cache only after flushed InterimChunkReached
+    /// requests for the closing utterance have been submitted.
+    pub(in crate::recognition) deferred_streaming_session_reset: bool,
 }
 
 #[derive(Default)]
@@ -166,6 +169,26 @@ impl InterimAsrState {
         Some(display_segment_id)
     }
 
+    /// Emit any ready full chunks plus a final remainder chunk, then clear the
+    /// active streaming buffer for `segment_id`. Used on end-silence so the
+    /// utterance tail is not dropped before Nemotron can decode it.
+    pub(in crate::recognition) fn flush_streaming_if_segment(
+        &mut self,
+        segment_id: u64,
+    ) -> Option<(u64, Vec<PendingAsrSegment>)> {
+        let active = self.streaming.active.as_ref()?;
+        if active.current_segment_id != segment_id {
+            return None;
+        }
+        let display_segment_id = active.display_segment_id;
+        let mut segments = self.take_ready_streaming_segments();
+        if let Some(remainder) = self.take_streaming_remainder_segment() {
+            segments.push(remainder);
+        }
+        self.streaming.active = None;
+        Some((display_segment_id, segments))
+    }
+
     pub(in crate::recognition) fn clear_streaming(&mut self) {
         self.streaming.active = None;
     }
@@ -179,27 +202,20 @@ impl InterimAsrState {
         while active.emitted_samples + chunk_samples <= active.audio_len() {
             let delta_start = active.emitted_samples;
             active.emitted_samples += chunk_samples;
-            let (source_audio, source_vad_results) =
-                active.audio_and_vad_range(0, active.emitted_samples);
-            let (audio, vad_results) =
-                active.audio_and_vad_range(delta_start, active.emitted_samples);
-            let range = AudioRange::new(
-                active.range_start,
-                GlobalSampleIndex(active.range_start.0 + active.emitted_samples as u64),
-            );
-            segments.push(PendingAsrSegment {
-                segment_id: active.display_segment_id,
-                previous_segment_id: None,
-                source_audio,
-                source_vad_results,
-                audio,
-                vad_results,
-                reason: SegmentCloseReason::InterimChunkReached,
-                range,
-                created_at_frame: active.created_at_frame,
-            });
+            segments.push(active.pending_chunk_segment(delta_start, active.emitted_samples));
         }
         segments
+    }
+
+    fn take_streaming_remainder_segment(&mut self) -> Option<PendingAsrSegment> {
+        let active = self.streaming.active.as_mut()?;
+        let audio_len = active.audio_len();
+        if active.emitted_samples >= audio_len {
+            return None;
+        }
+        let delta_start = active.emitted_samples;
+        active.emitted_samples = audio_len;
+        Some(active.pending_chunk_segment(delta_start, audio_len))
     }
 }
 
@@ -210,6 +226,26 @@ impl StreamingInterimSegmentState {
 
     fn audio_len(&self) -> usize {
         self.chunks.iter().map(|chunk| chunk.audio.len()).sum()
+    }
+
+    fn pending_chunk_segment(&self, delta_start: usize, emitted_samples: usize) -> PendingAsrSegment {
+        let (source_audio, source_vad_results) = self.audio_and_vad_range(0, emitted_samples);
+        let (audio, vad_results) = self.audio_and_vad_range(delta_start, emitted_samples);
+        let range = AudioRange::new(
+            self.range_start,
+            GlobalSampleIndex(self.range_start.0 + emitted_samples as u64),
+        );
+        PendingAsrSegment {
+            segment_id: self.display_segment_id,
+            previous_segment_id: None,
+            source_audio,
+            source_vad_results,
+            audio,
+            vad_results,
+            reason: SegmentCloseReason::InterimChunkReached,
+            range,
+            created_at_frame: self.created_at_frame,
+        }
     }
 
     fn append_chunks(&mut self, chunks: Vec<StreamingInterimAudioChunk>) {

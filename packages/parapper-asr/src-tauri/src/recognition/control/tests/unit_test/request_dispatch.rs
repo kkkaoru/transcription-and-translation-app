@@ -236,7 +236,7 @@ fn turn_runtime_batched_turn_check_promotes_pending_interim_to_completion_before
 }
 
 #[test]
-fn turn_runtime_turn_check_promotes_real_interim_when_nemotron_streaming_chunk_is_queued_first() {
+fn turn_runtime_turn_check_flushes_nemotron_streaming_chunk_before_promoting_silence_interim() {
     let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)
         .interim_display(true)
@@ -252,13 +252,18 @@ fn turn_runtime_turn_check_promotes_real_interim_when_nemotron_streaming_chunk_i
         .requests
         .in_flight_request
         .as_ref()
-        .expect("turn-check should promote the real interim segment to completion");
-    assert_eq!(request.kind, AsrTaskKind::CompletionCheck);
-    assert_eq!(request.close_reason, Some(SegmentCloseReason::EndSilenceReached));
-    assert_eq!(request.target.range, AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(320)));
-    assert!(
-        runtime.pending.asr_segments.is_empty(),
-        "covered streaming chunks must be dropped before the promoted completion dispatches"
+        .expect("turn-check should flush the streaming chunk before promoting silence interim");
+    assert_eq!(request.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(request.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(request.target.range, AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(160)));
+    assert_eq!(
+        runtime.pending.asr_segments.len(),
+        1,
+        "silence interim must remain queued behind the flushed streaming chunk"
+    );
+    assert_eq!(
+        runtime.pending.asr_segments.front().map(|segment| segment.reason),
+        Some(SegmentCloseReason::InterimResultSilenceReached)
     );
 }
 

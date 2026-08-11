@@ -118,13 +118,37 @@ impl RecognitionSession {
         &mut self,
         segment_id: u64,
     ) {
-        let display_segment_id =
-            self.pending.interim_asr.clear_streaming_if_segment(segment_id).unwrap_or(segment_id);
-        self.pending.asr_segments.retain(|segment| {
-            segment.reason != SegmentCloseReason::InterimChunkReached
-                || (segment.segment_id != display_segment_id && segment.segment_id != segment_id)
-        });
+        // Keep queued / remainder Nemotron chunks so the utterance tail can
+        // decode before Reazon completion. Reset the streaming cache only after
+        // those InterimChunkReached requests have been submitted.
+        if let Some((_display_segment_id, flushed)) =
+            self.pending.interim_asr.flush_streaming_if_segment(segment_id)
+        {
+            self.pending.asr_segments.extend(flushed);
+        } else {
+            self.pending.interim_asr.clear_streaming();
+        }
+        self.pending.deferred_streaming_session_reset = true;
+        self.apply_deferred_streaming_session_reset_if_ready();
+    }
+
+    pub(in crate::recognition) fn apply_deferred_streaming_session_reset_if_ready(&mut self) {
+        if !self.pending.deferred_streaming_session_reset {
+            return;
+        }
+        let has_pending_streaming_chunk = self
+            .pending
+            .asr_segments
+            .iter()
+            .any(|segment| segment.reason == SegmentCloseReason::InterimChunkReached);
+        let in_flight_is_streaming_chunk = self.requests.in_flight_request.as_ref().is_some_and(
+            |request| request.close_reason == Some(SegmentCloseReason::InterimChunkReached),
+        );
+        if has_pending_streaming_chunk || in_flight_is_streaming_chunk {
+            return;
+        }
         self.io.asr_runner.reset_streaming_sessions();
+        self.pending.deferred_streaming_session_reset = false;
     }
 
     fn streaming_interim_asr_enabled(&self) -> bool {
@@ -144,6 +168,7 @@ impl RecognitionSession {
         }
         drop_front_interim_segments_covered_by_completion(&mut self.pending.asr_segments);
         let Some(request) = self.build_next_asr_request() else {
+            self.apply_deferred_streaming_session_reset_if_ready();
             return;
         };
         let in_flight = AsrInFlight::from(&request);
@@ -157,6 +182,7 @@ impl RecognitionSession {
         }
         self.requests.in_flight_request = Some(request);
         self.requests.last_dispatched = Some(in_flight);
+        self.apply_deferred_streaming_session_reset_if_ready();
     }
 
     fn build_next_asr_request(&mut self) -> Option<AsrRequest> {
@@ -303,6 +329,7 @@ impl RecognitionSession {
             return true;
         }
         self.apply_asr_result_action(&request, action);
+        self.apply_deferred_streaming_session_reset_if_ready();
         true
     }
 

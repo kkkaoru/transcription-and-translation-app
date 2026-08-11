@@ -261,6 +261,14 @@ impl RecognitionSession {
         let Some(index) = self.promotable_pending_interim_index(previous_segment_id) else {
             return false;
         };
+        // Streaming Nemotron chunks ahead of the silence interim must decode
+        // first so the utterance tail is not dropped on promotion.
+        if self.pending.asr_segments.iter().take(index).any(|segment| {
+            segment.reason == SegmentCloseReason::InterimChunkReached
+        }) {
+            self.dispatch_next_asr_request_if_idle();
+            return self.requests.in_flight_request.is_some();
+        }
         for _ in 0..index {
             self.pending.asr_segments.pop_front();
         }
