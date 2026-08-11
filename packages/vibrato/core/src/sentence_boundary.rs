@@ -384,6 +384,7 @@ pub fn caption_sentence_end_offsets(tokens: &[(String, String, usize)], text: &s
 /// sentence so captions can break before the hard `maxChars` budget — after
 /// 読点, case/binding particles, or conjunctive て/で when content follows.
 pub fn caption_soft_break_offsets(tokens: &[(String, String, usize)], text: &str) -> Vec<usize> {
+    let chars: Vec<char> = text.chars().collect();
     let mut ends = ipadic_soft_break_offsets(tokens, text.chars().count());
     ends.extend(
         heuristic_soft_break_offsets(text)
@@ -392,6 +393,14 @@ pub fn caption_soft_break_offsets(tokens: &[(String, String, usize)], text: &str
     );
     // Sentence ends are also valid soft wrap sites.
     ends.extend(caption_sentence_end_offsets(tokens, text));
+    ends.retain(|offset| {
+        if *offset == 0 || *offset > chars.len() {
+            return false;
+        }
+        let prefix: String = chars[..*offset].iter().collect();
+        let remainder: String = chars[*offset..].iter().collect();
+        !should_ignore_soft_break_in_greeting(prefix.trim_end(), remainder.trim_start())
+    });
     ends.sort_unstable();
     ends.dedup();
     ends
@@ -434,6 +443,20 @@ pub fn heuristic_soft_break_offsets(text: &str) -> Vec<usize> {
                     !SENTENCE_PUNCT.contains(&character) && !is_combining_mark(character)
                 })
             {
+                // Keep です/でした/でしょう intact — soft で is not a wrap point.
+                if trimmed.ends_with('で')
+                    && (next.starts_with("す")
+                        || next.starts_with("した")
+                        || next.starts_with("して")
+                        || next.starts_with("しょう"))
+                {
+                    continue;
+                }
+                // 「こんにちはきこえますか」— interior に/は must not wrap so the
+                // greeting stays with its continuation on one plate row.
+                if should_ignore_soft_break_in_greeting(trimmed, next) {
+                    continue;
+                }
                 ends.push(index);
             }
         }
@@ -441,6 +464,21 @@ pub fn heuristic_soft_break_offsets(text: &str) -> Vec<usize> {
     ends.sort_unstable();
     ends.dedup();
     ends
+}
+
+const FIXED_GREETINGS: &[&str] =
+    &["こんにちは", "こんばんは", "おはようございます", "おはよう", "さようなら"];
+
+fn should_ignore_soft_break_in_greeting(prefix: &str, remainder: &str) -> bool {
+    if remainder.trim_start().is_empty() {
+        return false;
+    }
+    let trimmed = prefix
+        .trim_end()
+        .trim_end_matches(['ー', '〜', '～']);
+    FIXED_GREETINGS
+        .iter()
+        .any(|greeting| greeting.starts_with(trimmed) || *greeting == trimmed)
 }
 
 /// Vibrato IPADIC POS combinations that are safe mid-sentence wrap points.
@@ -836,6 +874,11 @@ mod tests {
             "係助詞 は should soft-break before the following content"
         );
         assert!(heuristic_soft_break_offsets("今日は").is_empty());
+        assert!(
+            heuristic_soft_break_offsets("こんにちはきこえますか").is_empty(),
+            "greeting interior に/は must not soft-wrap away the continuation"
+        );
+        assert!(heuristic_soft_break_offsets("こんにちはーきこえますか").is_empty());
 
         let (text, toks) = tokens(&[
             ("今日", ADVERBIAL_NOUN),

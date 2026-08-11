@@ -19,7 +19,40 @@ describe("Japanese sentence-end detection", () => {
     expect(detectCaptionSentenceEnds("ですからね")).toEqual([]);
     expect(detectCaptionSentenceEnds("ですら知らない")).toEqual([]);
     expect(selectVisibleCaptionSentence("ましたら連絡します")).toBe("ましたら連絡します");
-    expect(selectVisibleCaptionSentence("行きましたよ次")).toBe("行きましたよ次");
+    // 終助詞のあとに新しい内容語が来たら話し終わり前でもページする
+    expect(selectVisibleCaptionSentence("行きましたよ次")).toBe("次");
+  });
+
+  it("pages after です/ます when the next span is a new clause (not only strong heads)", () => {
+    expect(
+      selectVisibleCaptionSentence(
+        "本日はウェビナーにご参加いただきありがとうございます最後に質問をお受けしますね",
+      ),
+    ).toBe("最後に質問をお受けしますね");
+    expect(
+      selectVisibleCaptionSentence(
+        "本日はウェビナーにご参加いただきありがとうございます最後に質問を",
+      ),
+    ).toBe("最後に質問を");
+  });
+
+  it("does not page before a prolonged-sound continuation", () => {
+    expect(detectCaptionSentenceEnds("こんにちはーきこえますか")).toEqual([12]);
+    expect(selectVisibleCaptionSentence("こんにちはーきこえますか")).toBe(
+      "こんにちはーきこえますか",
+    );
+    expect(
+      selectVisibleCaptionSentence("こんにちはーきこえますか", { sentenceEndOffsets: [5] }),
+    ).toBe("こんにちはーきこえますか");
+  });
+
+  it("keeps greetings with same-turn continuations despite Vibrato offsets", () => {
+    expect(
+      selectVisibleCaptionSentence("こんにちはきこえますか", { sentenceEndOffsets: [5] }),
+    ).toBe("こんにちはきこえますか");
+    expect(
+      selectVisibleCaptionSentence("明日の天気は晴れ水確率は60%", { sentenceEndOffsets: [6] }),
+    ).toBe("明日の天気は晴れ水確率は60%");
   });
 
   it("does not treat また as a past-tense sentence end", () => {
@@ -170,15 +203,33 @@ describe("heuristic edge cases", () => {
     expect(selectVisibleCaptionSentence("です。あしたは")).toBe("あしたは");
   });
 
-  it("keeps the full utterance when deferSentencePaging is set for live interim paint", () => {
+  it("pages finished clauses even while live interim marks deferSentencePaging", () => {
     expect(
       selectVisibleCaptionSentence("今日は晴れです明日は雨", { deferSentencePaging: true }),
-    ).toBe("今日は晴れです明日は雨");
+    ).toBe("明日は雨");
     expect(
       selectVisibleCaptionSentence("それはとても良い天気だと思いますね今日は", {
         deferSentencePaging: true,
       }),
-    ).toBe("それはとても良い天気だと思いますね今日は");
+    ).toBe("今日は");
+  });
+
+  it("pages past explicit punctuation and honors Vibrato/IPADIC sentence ends", () => {
+    expect(
+      selectVisibleCaptionSentence("今日は晴れです。明日は雨", { deferSentencePaging: true }),
+    ).toBe("明日は雨");
+    expect(
+      selectVisibleCaptionSentence("It is sunny today. It will rain tomorrow.", {
+        key: "translation",
+        deferSentencePaging: true,
+      }),
+    ).toBe("It will rain tomorrow.");
+    expect(
+      selectVisibleCaptionSentence("短いです続く文", {
+        deferSentencePaging: true,
+        sentenceEndOffsets: [4],
+      }),
+    ).toBe("続く文");
   });
 });
 
@@ -186,6 +237,26 @@ describe("soft wrap offsets before maxChars", () => {
   it("marks particle + content as a soft break while trailing particles stay open", () => {
     expect(detectCaptionSoftBreaks("今日は晴れ")).toContain(3);
     expect(detectCaptionSoftBreaks("今日は")).toEqual([]);
+  });
+
+  it("does not soft-break inside です / でした / でしょう", () => {
+    const preview = "これはプレビュー用の字幕です。";
+    // Offset 13 would be after で in です — must not wrap there.
+    expect(detectCaptionSoftBreaks(preview)).not.toContain(13);
+    expect(detectCaptionSoftBreaks("今日は晴れです")).not.toContain(6);
+    expect(detectCaptionSoftBreaks("準備でした")).not.toContain(2);
+  });
+
+  it("does not soft-break inside fixed greetings before a continuation", () => {
+    const spoken = "こんにちはきこえますか";
+    const soft = detectCaptionSoftBreaks(spoken);
+    expect(soft).not.toContain(3);
+    expect(soft).not.toContain(5);
+    expect(detectCaptionSoftBreaks("こんにちはーきこえますか")).not.toContain(5);
+    // Interior particle offsets from Vibrato must also be ignored.
+    expect(
+      detectCaptionSoftBreaks(spoken, { softBreakOffsets: [3, 5] }),
+    ).toEqual([]);
   });
 
   it("prefers supplied Vibrato soft-break offsets", () => {
