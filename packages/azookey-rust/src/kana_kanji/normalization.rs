@@ -208,6 +208,9 @@ const JAPANESE_NUMERAL_COUNTERS: &[(&str, &str)] = &[
     ("ど", "度"),
     ("かげつ", "か月"),
     ("しゅう", "週"),
+    // Percent: spoken パーセント, and ASR often mishears it as わらび → 蕨.
+    ("ぱーせんと", "%"),
+    ("わらび", "%"),
 ];
 
 pub(crate) fn japanese_counter_starts_at(reading: &[char]) -> bool {
@@ -396,6 +399,20 @@ mod tests {
         assert_eq!(numeric_counter_surface(&people_suffix), Some((2, "人".to_string())));
         let half_time_suffix = "じはんです".chars().collect::<Vec<_>>();
         assert_eq!(numeric_counter_surface(&half_time_suffix), Some((3, "時半".to_string())));
+        let percent = "ぱーせんと".chars().collect::<Vec<_>>();
+        assert_eq!(numeric_counter_surface(&percent), Some((5, "%".to_string())));
+        let warabi_asr = "わらび".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_counter_surface(&warabi_asr),
+            Some((3, "%".to_string())),
+            "ASR percent→わらび must map to % after a number"
+        );
+        let sixty_warabi = "60わらび".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_surface_prefix(&sixty_warabi),
+            Some((2, "60".to_string())),
+            "digit percent readings must keep an ASCII numeric prefix"
+        );
         let separated = "いち、に".chars().collect::<Vec<_>>();
         assert_eq!(numeric_surface_prefix(&separated), Some((2, "1".to_string())));
     }
