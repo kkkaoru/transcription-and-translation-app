@@ -98,6 +98,7 @@ const REQUIRED_SANITIZE_IDS = [
   "sayonara-hearing",
   "strip-zenz-period-kana",
   "strip-sayonara-period",
+  "strip-konbanwa-period",
 ];
 const REQUIRED_MERGE_IDS = [
   "append-kikoemasu",

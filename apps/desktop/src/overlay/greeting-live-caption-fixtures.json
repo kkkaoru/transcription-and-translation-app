@@ -128,6 +128,12 @@
       "input": "さようなら。聞こえますか。",
       "expectedOverlay": "さようなら聞こえますか。",
       "note": "Farewell greeting must not be paged away by ZenZ 。"
+    },
+    {
+      "id": "strip-konbanwa-period",
+      "input": "こんばんは。聞こえますか。",
+      "expectedOverlay": "こんばんは聞こえますか。",
+      "note": "Evening greeting must not be paged away by ZenZ 。"
     }
   ],
   "merge": [
