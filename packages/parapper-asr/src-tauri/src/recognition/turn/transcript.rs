@@ -147,17 +147,38 @@ impl RecognitionSession {
                 );
                 append_vad_results.as_slice()
             };
-            draft.append_recognized_segment(
-                segment_id,
-                previous_segment_id,
-                &request.source_audio[append_source_start..],
-                source_vad_results,
-                request.route,
-                recorded_text,
-                elapsed_millis,
-            );
-            if replace_combined_with_longer_rewrite {
-                draft.replace_text_preserving_sources(request.route, incoming_text, 0);
+            let uncovered_audio = &request.source_audio[append_source_start..];
+            let skip_empty_duplicate =
+                skip_duplicate_completion_text && !replace_combined_with_longer_rewrite;
+            if skip_empty_duplicate {
+                // Duplicate completion used to push an empty segment and advance
+                // latest_segment_id, so later silence/overlap checks missed the
+                // still-open utterance. Keep uncovered tail audio on the current
+                // segment instead.
+                if uncovered_audio.is_empty() {
+                    draft.route = Some(request.route);
+                    draft.processing_millis += elapsed_millis;
+                } else {
+                    draft.extend_latest_segment_audio(
+                        uncovered_audio,
+                        source_vad_results,
+                        request.route,
+                        elapsed_millis,
+                    );
+                }
+            } else {
+                draft.append_recognized_segment(
+                    segment_id,
+                    previous_segment_id,
+                    uncovered_audio,
+                    source_vad_results,
+                    request.route,
+                    recorded_text,
+                    elapsed_millis,
+                );
+                if replace_combined_with_longer_rewrite {
+                    draft.replace_text_preserving_sources(request.route, incoming_text, 0);
+                }
             }
         }
         if request.close_reason == Some(SegmentCloseReason::InterimChunkReached) {

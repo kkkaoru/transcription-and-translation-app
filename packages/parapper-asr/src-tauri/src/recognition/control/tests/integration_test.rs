@@ -1234,7 +1234,7 @@ fn turn_runtime_interim_silence_does_not_emit_final_before_final_asr_result() {
         *outputs.lock().expect("outputs should be readable"),
         vec![
             output_snapshot("五月五日はこどもの日です...", false, 1, 1),
-            output_snapshot("五月五日はこどもの日です。", true, 1, 2),
+            output_snapshot("五月五日はこどもの日です。", true, 1, 1),
         ]
     );
 }
@@ -1564,7 +1564,7 @@ fn turn_runtime_following_simple_interim_after_completed_turn_is_emitted_as_next
             output_snapshot("五月五日はこどもの日です...", false, 1, 1),
             output_snapshot("五月五日はこどもの日です。", true, 1, 1),
             output_snapshot("すごいね...", false, 2, 2),
-            output_snapshot("すごいね。", true, 2, 3),
+            output_snapshot("すごいね。", true, 2, 2),
         ]
     );
 }

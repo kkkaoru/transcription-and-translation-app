@@ -1,7 +1,7 @@
 use crate::{
     delivery::{
-        RecognitionSourceMeta, RecognizedTextMeta, RecognizedTextOutput, continuing_turn_text,
-        finalize_turn_text, join_turn_segments,
+        continuing_turn_text, finalize_turn_text, join_turn_segments, RecognitionSourceMeta,
+        RecognizedTextMeta, RecognizedTextOutput,
     },
     recognition::{segmentation::vad::engine::VadResult, transcription::route::RecognitionRoute},
 };
@@ -88,6 +88,25 @@ impl TurnDraft {
             elapsed_millis,
             false,
         );
+    }
+
+    pub(crate) fn extend_latest_segment_audio(
+        &mut self,
+        audio: &[f32],
+        vad_results: &[VadResult],
+        route: RecognitionRoute,
+        elapsed_millis: u128,
+    ) {
+        self.route = Some(route);
+        self.full_audio.extend_from_slice(audio);
+        self.vad_results.extend_from_slice(vad_results);
+        if let Some(len) = self.segment_audio_lens.last_mut() {
+            *len = len.saturating_add(audio.len());
+        }
+        if let Some(len) = self.segment_vad_lens.last_mut() {
+            *len = len.saturating_add(vad_results.len());
+        }
+        self.processing_millis += elapsed_millis;
     }
 
     #[expect(
