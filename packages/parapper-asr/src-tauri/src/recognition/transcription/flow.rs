@@ -209,6 +209,8 @@ impl RecognitionSession {
             // AfterInterimSilence). New audio must become the next turn instead
             // of vanishing. Late plans whose own segment id *is* the finalized
             // turn stay dropped so a finished caption cannot be reopened.
+            // When the natural remint id is already finalized for a different
+            // reason, allocate a fresh turn id instead of silently dropping.
             if self.turn_store.finalized_turns.contains(&target_turn_id) {
                 let reminted_turn_id = plan.first_segment_id();
                 if reminted_turn_id != target_turn_id
@@ -218,11 +220,17 @@ impl RecognitionSession {
                         "Starting a new turn after finalized turn attachment: finalized={target_turn_id} new_turn={reminted_turn_id} range={range:?}"
                     );
                     target_turn_id = reminted_turn_id;
-                } else {
+                } else if reminted_turn_id == target_turn_id {
                     log::warn!(
                         "Dropping pending ASR segment plan for finalized turn: turn_id={target_turn_id} range={range:?}",
                     );
                     continue;
+                } else {
+                    let fresh_turn_id = self.take_unconflicting_turn_id();
+                    log::info!(
+                        "Starting a fresh turn after finalized remint collision: finalized_target={target_turn_id} finalized_remint={reminted_turn_id} new_turn={fresh_turn_id} range={range:?}"
+                    );
+                    target_turn_id = fresh_turn_id;
                 }
             }
             let source_audio = plan.source_audio();
@@ -244,6 +252,18 @@ impl RecognitionSession {
                     detected_language: route_selection.detected_language,
                 },
             ));
+        }
+    }
+
+    fn take_unconflicting_turn_id(&mut self) -> u64 {
+        loop {
+            let candidate = self.counters.next_turn_id;
+            self.counters.next_turn_id = candidate.saturating_add(1);
+            if !self.turn_store.finalized_turns.contains(&candidate)
+                && !self.turn_store.turns.contains_key(&candidate)
+            {
+                return candidate;
+            }
         }
     }
 
@@ -808,6 +828,79 @@ mod tests {
             runtime.requests.in_flight_request.is_none(),
             "a late plan whose segment id is the finalized turn must stay dropped"
         );
+        assert!(runtime.pending.asr_segments.is_empty());
+    }
+
+    #[test]
+    fn dispatch_next_asr_request_if_idle_does_not_drop_when_remint_id_already_finalized() {
+        // Invariant: when the attachment target is finalized and the natural
+        // remint id is *also* finalized for a different reason than the
+        // same-segment late plan, new audio beyond confirmed_until must not
+        // vanish in the else branch.
+        let mut runtime = RecognitionSession::new(&ParapperConfig::default());
+        runtime.turn_store.finalized_turns.insert(1);
+        runtime.turn_store.finalized_turns.insert(2);
+        runtime.turn_store.confirmed_until_sample = GlobalSampleIndex(10);
+        runtime.counters.next_turn_id = 3;
+        runtime.pending.asr_segments.push_back(pending_segment(
+            2,
+            Some(1),
+            SegmentCloseReason::InterimResultSilenceReached,
+            10..30,
+        ));
+
+        runtime.dispatch_next_asr_request_if_idle();
+
+        let request = runtime
+            .requests
+            .in_flight_request
+            .as_ref()
+            .expect("new audio must not be dropped when remint id is already finalized");
+        assert_ne!(
+            request.target.turn_id,
+            TurnId(1),
+            "must not reopen the finalized attachment target"
+        );
+        assert_ne!(
+            request.target.turn_id,
+            TurnId(2),
+            "must not reuse the already-finalized remint id"
+        );
+        assert_eq!(
+            request.target.turn_id,
+            TurnId(3),
+            "fresh turn must come from the next_turn_id watermark"
+        );
+        assert_eq!(request.target.range.start_sample, GlobalSampleIndex(10));
+        assert_eq!(request.target.range.end_sample, GlobalSampleIndex(30));
+        assert!(runtime.pending.asr_segments.is_empty());
+    }
+
+    #[test]
+    fn dispatch_next_asr_request_if_idle_third_plan_after_two_remints_gets_fresh_turn() {
+        // Invariant: two remint cycles in a row (turn 1 then turn 2 finalized)
+        // must still attribute the third child plan to a live turn, not drop it.
+        let mut runtime = RecognitionSession::new(&ParapperConfig::default());
+        runtime.turn_store.finalized_turns.insert(1);
+        runtime.turn_store.finalized_turns.insert(2);
+        runtime.turn_store.confirmed_until_sample = GlobalSampleIndex(30);
+        runtime.counters.next_turn_id = 3;
+        runtime.pending.asr_segments.push_back(pending_segment(
+            3,
+            Some(2),
+            SegmentCloseReason::InterimResultSilenceReached,
+            30..50,
+        ));
+
+        runtime.dispatch_next_asr_request_if_idle();
+
+        let request = runtime
+            .requests
+            .in_flight_request
+            .as_ref()
+            .expect("third utterance after reminted finals must still be transcribed");
+        assert_eq!(request.target.turn_id, TurnId(3));
+        assert_eq!(request.target.last_segment_id, Some(SegmentId(3)));
         assert!(runtime.pending.asr_segments.is_empty());
     }
 

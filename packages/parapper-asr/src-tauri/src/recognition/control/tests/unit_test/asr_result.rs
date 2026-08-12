@@ -219,6 +219,115 @@ fn turn_runtime_speech_after_finalized_greeting_starts_a_new_turn() {
 }
 
 #[test]
+fn third_utterance_after_reminted_interim_must_not_drop_or_reuse_turn_two() {
+    // Invariant: after turn 1 finalizes and utterance 2 remints onto turn 2 via
+    // InterimResultSilenceReached, a third utterance must still emit and must
+    // not reuse turn 2 (caption overwrite / silent drop).
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .scripted_asr_texts(vec!["utterance-two", "utterance-three"]);
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+    runtime_state(&mut runtime)
+        .turn(1, recognized_turn_with_audio(1, "utterance-one", &[1.0]))
+        .turn_audio_range(1, 0..10);
+
+    runtime.complete_turn_without_grammar(1);
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("utterance-one。", true, 1, 1)]
+    );
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimResultSilenceReached,
+        10..30,
+    );
+    runtime.step();
+    runtime.step();
+    assert_eq!(runtime.turn_store.open_turn_id, Some(2));
+
+    // New root segment: SegmentBuilder starts a fresh root after the reminted
+    // turn's interim close when the next utterance is not a child attachment.
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        30..50,
+    );
+    runtime.step();
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    assert!(
+        outputs.iter().any(|output| output.text.contains("utterance-three")),
+        "utterance 3 must not be dropped after a reminted interim turn; got {outputs:?}"
+    );
+    assert!(
+        outputs
+            .iter()
+            .any(|output| { output.text.contains("utterance-three") && output.turn_id == 3 }),
+        "utterance 3 must not land on reminted turn 2; got {outputs:?}"
+    );
+    assert!(
+        !outputs
+            .iter()
+            .any(|output| { output.text.contains("utterance-three") && output.turn_id == 2 }),
+        "utterance 3 must not overwrite reminted turn 2; got {outputs:?}"
+    );
+}
+
+#[test]
+fn reminted_turn_completion_must_emit_is_final() {
+    // Invariant: a reminted turn that later receives completion audio must
+    // finalize and emit isFinal (existing remint coverage only asserts open).
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .scripted_asr_texts(vec!["reminted-interim", "reminted-final"]);
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+    runtime_state(&mut runtime)
+        .turn(1, recognized_turn_with_audio(1, "prior-final", &[1.0]))
+        .turn_audio_range(1, 0..10);
+
+    runtime.complete_turn_without_grammar(1);
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimResultSilenceReached,
+        10..30,
+    );
+    runtime.step();
+    runtime.step();
+    assert_eq!(runtime.turn_store.open_turn_id, Some(2));
+    assert!(
+        outputs.lock().expect("outputs should be readable").iter().any(|output| {
+            output.turn_id == 2 && !output.is_final && output.text.contains("reminted-interim")
+        }),
+        "reminted turn must first emit an interim"
+    );
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        Some(2),
+        SegmentCloseReason::EndSilenceReached,
+        30..50,
+    );
+    runtime.step();
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    assert!(
+        outputs.iter().any(|output| output.turn_id == 2 && output.is_final),
+        "reminted turn 2 must finalize with isFinal after completion; got {outputs:?}"
+    );
+}
+
+#[test]
 fn turn_runtime_completion_after_streaming_interim_does_not_append_duplicate_tail_text() {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
