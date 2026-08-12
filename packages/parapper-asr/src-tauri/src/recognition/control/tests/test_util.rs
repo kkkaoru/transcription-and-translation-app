@@ -8,10 +8,10 @@ use std::{
 use anyhow::{Result, anyhow};
 
 use super::{
-    AsrRequestRunner, LanguageIdRuntime, PendingAsrSegment, PendingTurnCheck, RecognitionDriver,
-    RecognitionDriverHandle, RecognitionSession, RecognitionShutdownResult, RerecognitionPurpose,
-    SegmentCloseReason, TurnDecisionRunner, TurnOutputSink, replay_vad_frames_for_runtime,
-    run_engine_asr_request,
+    AsrRequestRunner, LanguageIdRuntime, PendingAsrSegment, PendingFinalization, PendingTurnCheck,
+    RecognitionDriver, RecognitionDriverHandle, RecognitionSession, RecognitionShutdownResult,
+    RerecognitionPurpose, SegmentCloseReason, TurnDecisionRunner, TurnOutputSink,
+    replay_vad_frames_for_runtime, run_engine_asr_request,
 };
 use crate::{
     config::{AsrLanguage, AsrModel, AsrPrecision, ParapperConfig, TurnDetector},
@@ -520,6 +520,11 @@ impl RuntimeStateBuilder<'_> {
             previous_segment_id,
             activity_epoch: self.runtime.activity.segment_activity_epoch,
         });
+        self
+    }
+
+    fn pending_finalization(self, turn_id: u64) -> Self {
+        self.runtime.pending.finalization = Some(PendingFinalization::new(turn_id));
         self
     }
 

@@ -683,3 +683,43 @@ fn turn_runtime_promotes_turn_check_in_same_step_after_streaming_chunk_result() 
     );
     assert!(runtime.pending.asr_segments.is_empty());
 }
+
+#[test]
+fn turn_runtime_dispatches_next_utterance_in_same_step_after_finalization() {
+    // Successful finalization used to `return` before dispatch. The next
+    // utterance's already-queued root segment then waited a full VAD/input
+    // tick, which is when the first hypothesis of the following turn goes
+    // missing after the speaker already started again.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .build();
+    runtime_state(&mut runtime)
+        .turn(1, recognized_turn_with_audio(1, "前の発話", &[1.0, 2.0, 3.0]))
+        .pending_finalization(1)
+        .pending_segment(2, None, SegmentCloseReason::InterimResultSilenceReached, 100..200);
+
+    runtime.step();
+
+    assert!(
+        runtime.pending.finalization.is_none(),
+        "unblocked finalization must complete in this step"
+    );
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "turn 1 must finalize before the next utterance is dispatched"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "queued next-utterance ASR must dispatch in the same step that finalized the prior turn",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(2));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(100), GlobalSampleIndex(200))
+    );
+    assert!(
+        runtime.pending.asr_segments.is_empty(),
+        "the next-utterance segment must leave the pending queue once dispatched"
+    );
+}

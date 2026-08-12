@@ -261,6 +261,10 @@ impl RecognitionDriverHandle for RecognitionDriver {
         }
 
         if self.runtime.process_pending_finalization_if_ready() {
+            // The next utterance's pending ASR is for a newer turn (otherwise
+            // finalization would still be blocked). Dispatch it now so the
+            // first hypothesis does not wait another VAD/input tick.
+            self.runtime.dispatch_next_asr_request_if_idle();
             return;
         }
 
