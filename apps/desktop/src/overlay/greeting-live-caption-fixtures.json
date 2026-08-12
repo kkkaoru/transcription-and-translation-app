@@ -542,6 +542,25 @@
       "note": "Acoustic いいえ must not replace a painted おはよう"
     },
     {
+      "id": "keep-longer-ohayou-hearing-final",
+      "current": {
+        "id": "parapper:session:turn:ohayou-trunc",
+        "sourceText": "おはようきこえますか",
+        "isFinal": true,
+        "startedAt": 2000,
+        "receivedAt": 3200
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-trunc",
+        "sourceText": "おはよう",
+        "isFinal": true,
+        "startedAt": 800,
+        "receivedAt": 4000
+      },
+      "expectedOverlay": "おはようきこえますか",
+      "note": "Backdated truncated final must not erase おはようきこえますか"
+    },
+    {
       "id": "keep-konbanwa-over-un",
       "current": {
         "id": "parapper:session:turn:konbanwa-un",

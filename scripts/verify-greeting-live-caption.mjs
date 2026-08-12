@@ -120,6 +120,7 @@ const REQUIRED_MERGE_IDS = [
   "keep-ohayou-over-un",
   "keep-ohayou-over-ee",
   "keep-ohayou-over-iie",
+  "keep-longer-ohayou-hearing-final",
   "keep-konbanwa-over-un",
   "keep-konbanwa-over-ee",
   "keep-konbanwa-over-iie",
