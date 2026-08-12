@@ -212,6 +212,12 @@
       "input": "こんにちは終えますか",
       "expectedOverlay": "こんにちは聞こえますか",
       "note": "Greeting glued to 終えますか"
+    },
+    {
+      "id": "sayonara-hearing-oe-kanji",
+      "input": "さようなら終えますか",
+      "expectedOverlay": "さようなら聞こえますか",
+      "note": "Farewell greeting glued to 終えますか"
     }
   ],
   "merge": [
