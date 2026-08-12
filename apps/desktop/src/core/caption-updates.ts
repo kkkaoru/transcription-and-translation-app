@@ -1081,19 +1081,22 @@ export const mergeCaptionPayload = (
     delete merged.provisional;
   }
 
-  // Morph offsets are measured against a specific surface. When we keep a longer
-  // painted/provisional surface over a truncated incoming revision, adopting the
-  // incoming offsets pages mid-utterance (こんにちは|きこえますか → only the tail,
-  // or 明日の天気は|… → only the suffix) and hides already-recognized text.
+  // Morph offsets and AzooKey readings are measured against a specific surface.
+  // When we keep a longer painted/provisional surface over a truncated incoming
+  // revision, adopting the incoming offsets pages mid-utterance
+  // (こんにちは|きこえますか → only the tail, or 明日の天気は|… → only the suffix)
+  // and hides already-recognized text. Adopting a shorter reading likewise
+  // desyncs reading-prefix merge gates from the characters still on screen.
   if (
     hasIncomingSource &&
     nextSource.length > incomingSource.length &&
     nextSource !== incomingSource
   ) {
+    const keptCurrentSurface = trim(current.sourceText) === nextSource;
     if (
       Array.isArray(current.sentenceEndOffsets) &&
       current.sentenceEndOffsets.length > 0 &&
-      trim(current.sourceText) === nextSource
+      keptCurrentSurface
     ) {
       merged.sentenceEndOffsets = current.sentenceEndOffsets;
     } else {
@@ -1102,11 +1105,22 @@ export const mergeCaptionPayload = (
     if (
       Array.isArray(current.softBreakOffsets) &&
       current.softBreakOffsets.length > 0 &&
-      trim(current.sourceText) === nextSource
+      keptCurrentSurface
     ) {
       merged.softBreakOffsets = current.softBreakOffsets;
     } else {
       delete merged.softBreakOffsets;
+    }
+    if (keptCurrentSurface) {
+      const currentReading = trimmedAzookeyReading(current);
+      const incomingReading = trimmedAzookeyReading(incoming);
+      if (
+        currentReading &&
+        (!incomingReading || [...currentReading].length >= [...incomingReading].length) &&
+        typeof current.azookeyInputText === "string"
+      ) {
+        merged.azookeyInputText = current.azookeyInputText;
+      }
     }
   }
 

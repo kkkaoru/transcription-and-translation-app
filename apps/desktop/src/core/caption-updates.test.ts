@@ -1714,6 +1714,39 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, truncated)?.sourceText).toBe("今日は良い天気ですね明日も");
   });
 
+  it("keeps the longer AzooKey reading when a truncated final loses to the painted surface", () => {
+    // Completion ASR can finalize on a prefix while a longer provisional already
+    // painted the utterance tail. Source text stays long; the shorter final must
+    // not overwrite azookeyInputText or later reading-prefix gates desync.
+    const painted = caption({
+      id: "parapper:session:turn:reading-keep",
+      sourceText: "今日は良い天気ですね明日も",
+      azookeyInputText: "きょうはいいてんきですねあしたも",
+      startedAt: 1_000,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const truncatedFinal = caption({
+      id: "parapper:session:turn:reading-keep",
+      sourceText: "今日は良い天気ですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      startedAt: 900,
+      receivedAt: 30,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(painted, truncatedFinal)).toMatchObject({
+      sourceText: "今日は良い天気ですね明日も",
+      azookeyInputText: "きょうはいいてんきですねあしたも",
+      isFinal: true,
+    });
+  });
+
   it("keeps same-start semantic source corrections as replacements", () => {
     const current = caption({
       id: "u-1",
@@ -2779,6 +2812,7 @@ describe("mergeCaptionPayload", () => {
     const provisional = caption({
       id: "parapper:session:turn:1",
       sourceText: "こんにちはきこえますか",
+      azookeyInputText: "こんにちはきこえますか",
       sentenceEndOffsets: [11],
       startedAt: 1_000,
       receivedAt: 10,
@@ -2790,6 +2824,7 @@ describe("mergeCaptionPayload", () => {
     const truncatedFinal = caption({
       id: "parapper:session:turn:1",
       sourceText: "こんにちは",
+      azookeyInputText: "こんにちは",
       sentenceEndOffsets: [5],
       startedAt: 900,
       receivedAt: 20,
@@ -2800,6 +2835,7 @@ describe("mergeCaptionPayload", () => {
 
     const merged = mergeCaptionPayload(provisional, truncatedFinal);
     expect(merged?.sourceText).toBe("こんにちはきこえますか");
+    expect(merged?.azookeyInputText).toBe("こんにちはきこえますか");
     expect(merged?.sentenceEndOffsets).toEqual([11]);
   });
 
