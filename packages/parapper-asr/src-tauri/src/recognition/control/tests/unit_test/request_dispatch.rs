@@ -792,3 +792,71 @@ fn turn_runtime_dispatches_next_utterance_in_same_step_after_open_turn_timeout()
     );
     assert!(runtime.pending.asr_segments.is_empty());
 }
+
+#[test]
+fn turn_runtime_dispatches_next_utterance_in_same_step_after_turn_check_completes_without_grammar()
+{
+    // Simple turn-check silence used to finalize then `return` before dispatch.
+    // A root segment already queued for the following utterance waited another
+    // VAD tick, which is when the first hypothesis after a pause goes missing.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .build();
+    runtime_state(&mut runtime)
+        .turn(1, recognized_turn_with_audio(1, "前の発話", &[1.0, 2.0, 3.0]))
+        .open_turn(1)
+        .pending_turn_check(1)
+        .pending_segment(2, None, SegmentCloseReason::InterimResultSilenceReached, 100..200);
+
+    runtime.step();
+
+    assert!(
+        runtime.pending.turn_check.is_none(),
+        "turn-check must be consumed after CompleteWithoutGrammar"
+    );
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "turn 1 must finalize in the same step as the silence turn-check"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "queued next-utterance ASR must dispatch in the same step that completed the prior turn",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(2));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(100), GlobalSampleIndex(200))
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+}
+
+#[test]
+fn turn_runtime_dispatches_pending_asr_in_same_step_after_ignored_turn_check() {
+    // Ignore (no open turn to close) used to `return` before dispatch, so a
+    // queued root segment waited another VAD tick for its first hypothesis.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .build();
+    runtime_state(&mut runtime)
+        .pending_turn_check(1)
+        .pending_segment(2, None, SegmentCloseReason::InterimResultSilenceReached, 100..200);
+
+    runtime.step();
+
+    assert!(
+        runtime.pending.turn_check.is_none(),
+        "an ignored turn-check must be dropped in this step"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "queued ASR must dispatch in the same step that ignored the stale turn-check",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(2));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(100), GlobalSampleIndex(200))
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+}

@@ -276,6 +276,11 @@ impl RecognitionDriverHandle for RecognitionDriver {
             } else if self.runtime.handle_turn_check_silence_reached(turn_check.previous_segment_id)
             {
                 self.runtime.pending.turn_check = None;
+                // CompleteWithoutGrammar / Ignore used to return here, so a
+                // newer utterance already queued waited another VAD tick.
+                // Promote/rerecognition already occupy in-flight; dispatch is
+                // then a no-op.
+                self.runtime.dispatch_next_asr_request_if_idle();
                 return;
             } else {
                 return;
