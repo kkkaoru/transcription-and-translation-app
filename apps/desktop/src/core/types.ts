@@ -275,6 +275,12 @@ export interface CaptionPayload {
    * back to particle/punctuation heuristics.
    */
   softBreakOffsets?: number[];
+  /**
+   * Optional ASR sidecar timestamps copied from the wire event when present.
+   * Overlay/Live join these onto the local span; they are session-origin ms,
+   * not Unix time.
+   */
+  asrLatency?: AsrLatencyTimestamps;
 }
 
 /** One structured interim/final output from the persistent Parapper session. */
@@ -349,6 +355,8 @@ export interface PipelineStageEvent {
   error?: string | null;
   /** Native capture generation for stale-session diagnostics. */
   captureGeneration?: number;
+  /** Optional ASR sidecar timestamps when the stage payload already carries `*_at`. */
+  asrLatency?: AsrLatencyTimestamps;
 }
 
 /** One live utterance with ordered stage rows for DebugPanel. */

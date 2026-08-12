@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  asrLatencyFromUnknown,
   captionLatencyJoinKey,
   clearCaptionLatency,
   getCaptionLatencyRevision,
@@ -202,9 +203,35 @@ describe("caption latency spans", () => {
     });
     expect(parseAsrLatencyTimestamps({ speech_start: 0 })?.speech_start_at).toBe(0);
     expect(parseAsrLatencyTimestamps({ final: Number.NaN })).toBeUndefined();
+    expect(
+      parseAsrLatencyTimestamps({
+        caption_latency: {},
+        speech_start_at: 10,
+        first_partial_at: 12,
+      }),
+    ).toEqual({
+      speech_start_at: 10,
+      asr_dispatch_at: null,
+      first_partial_at: 12,
+      asr_final_at: null,
+    });
+    expect(
+      parseAsrLatencyTimestamps({
+        caption_latency: { speech_start_at: 1 },
+        first_partial_at: 2,
+        asrLatency: { asr_dispatch_at: 3 },
+      }),
+    ).toEqual({
+      speech_start_at: 1,
+      asr_dispatch_at: 3,
+      first_partial_at: 2,
+      asr_final_at: null,
+    });
     expect(parseNumericTurnId("parapper:s:1:9")).toBe(9);
     expect(parseNumericTurnId("utterance-hello")).toBeNull();
     expect(parseNumericTurnId("")).toBeNull();
+    expect(asrLatencyFromUnknown(null)).toBeUndefined();
+    expect(asrLatencyFromUnknown([])).toBeUndefined();
   });
 
   it("evicts the oldest span after 32 turns", () => {

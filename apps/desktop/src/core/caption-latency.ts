@@ -208,17 +208,38 @@ const pickAsrAt = (
   alias: string,
 ): number | null => readEpochField(record, canonical) ?? readEpochField(record, alias);
 
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+/**
+ * Join nested `caption_latency` / `asrLatency` with top-level `*_at` fields.
+ * An empty nested object must not hide timestamps already present on the event.
+ * Nested canonical names win per field; otherwise fall back to aliases, then
+ * the same lookup on the remaining sources. Do not invent values.
+ */
 export const parseAsrLatencyTimestamps = (
   record: Record<string, unknown>,
 ): AsrLatencyTimestamps | undefined => {
-  const nestedRaw = record["caption_latency"];
-  const nested =
-    nestedRaw && typeof nestedRaw === "object" ? (nestedRaw as Record<string, unknown>) : null;
-  const source = nested ?? record;
-  const speech_start_at = pickAsrAt(source, "speech_start_at", "speech_start");
-  const asr_dispatch_at = pickAsrAt(source, "asr_dispatch_at", "asr_dispatch");
-  const first_partial_at = pickAsrAt(source, "first_partial_at", "first_partial");
-  const asr_final_at = pickAsrAt(source, "asr_final_at", "final");
+  const sources = [
+    asRecord(record["caption_latency"]),
+    asRecord(record["asrLatency"]),
+    record,
+  ].filter((source): source is Record<string, unknown> => source != null);
+  const pickJoined = (canonical: string, alias: string): number | null => {
+    for (const source of sources) {
+      const value = pickAsrAt(source, canonical, alias);
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  };
+  const speech_start_at = pickJoined("speech_start_at", "speech_start");
+  const asr_dispatch_at = pickJoined("asr_dispatch_at", "asr_dispatch");
+  const first_partial_at = pickJoined("first_partial_at", "first_partial");
+  const asr_final_at = pickJoined("asr_final_at", "final");
   if (
     speech_start_at == null &&
     asr_dispatch_at == null &&
@@ -228,6 +249,12 @@ export const parseAsrLatencyTimestamps = (
     return undefined;
   }
   return { speech_start_at, asr_dispatch_at, first_partial_at, asr_final_at };
+};
+
+/** Parse sidecar timestamps from a caption, pipeline stage, or wire payload. */
+export const asrLatencyFromUnknown = (value: unknown): AsrLatencyTimestamps | undefined => {
+  const record = asRecord(value);
+  return record ? parseAsrLatencyTimestamps(record) : undefined;
 };
 
 const pickLatencyAt = (

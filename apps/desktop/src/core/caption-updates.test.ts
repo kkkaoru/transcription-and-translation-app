@@ -1886,6 +1886,37 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(provisional, staleNormalized)).toBeNull();
   });
 
+  it("keeps a longer kana provisional when a shorter kanji normalize has no reading", () => {
+    // Overlay ASR stages often paint kana without a shared kanji prefix. A
+    // delayed in-flight normalize of an older cursor (今日は) must not erase
+    // the already-painted tail. Same-revision きょうは → 今日は stays similar
+    // length and still upgrades in the existing no-overlap test.
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "きょうはいいてんきですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const staleNormalized = caption({
+      id: "u-1",
+      sourceText: "今日は",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_600,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(provisional, staleNormalized)).toBeNull();
+  });
+
   it("still upgrades provisional when normalize extends or rewrites mid-utterance text", () => {
     const provisional = caption({
       id: "u-1",

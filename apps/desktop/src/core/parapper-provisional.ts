@@ -1,3 +1,4 @@
+import { asrLatencyFromUnknown } from "./caption-latency";
 import { selectParapperSurfaceText } from "./parapperStream";
 import type { CaptionPayload, PipelineStageEvent } from "./types";
 
@@ -71,20 +72,24 @@ export const buildProvisionalCaptionFromAsrStage = (
     | "startedAt"
     | "at"
     | "captureGeneration"
+    | "asrLatency"
   >,
   languages: { sourceLanguage: string; targetLanguage: string },
 ): CaptionPayload | null => {
   if (event.stage !== "asr" || !event.ok) {
     return null;
   }
-  const sourceText = event.surfaceText?.trim() || event.outputText.trim();
+  const outputText = event.outputText.trim();
+  const sourceText = event.surfaceText?.trim() || outputText;
   const utteranceId = event.utteranceId.trim();
   if (!sourceText || !utteranceId) {
     return null;
   }
+  const asrLatency = event.asrLatency ?? asrLatencyFromUnknown(event);
   return {
     id: utteranceId,
     sourceText,
+    ...(outputText ? { azookeyInputText: outputText } : {}),
     translationText: "",
     sourceLanguage: languages.sourceLanguage,
     targetLanguage: languages.targetLanguage,
@@ -97,5 +102,6 @@ export const buildProvisionalCaptionFromAsrStage = (
     ...(typeof event.captureGeneration === "number"
       ? { captureGeneration: event.captureGeneration }
       : {}),
+    ...(asrLatency ? { asrLatency } : {}),
   };
 };

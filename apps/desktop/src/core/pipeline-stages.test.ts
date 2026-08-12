@@ -62,6 +62,25 @@ describe("pipeline stage events", () => {
       at: 100,
       captureGeneration: 3,
     });
+    expect(camel?.asrLatency).toBeUndefined();
+
+    const withLatency = normalizePipelineStageEvent({
+      stage: "asr",
+      utteranceId: "u-at",
+      outputText: "きょうは",
+      ok: true,
+      at: 40,
+      startedAt: 10,
+      caption_latency: {},
+      speech_start_at: 1,
+      first_partial_at: 3,
+    });
+    expect(withLatency?.asrLatency).toEqual({
+      speech_start_at: 1,
+      asr_dispatch_at: null,
+      first_partial_at: 3,
+      asr_final_at: null,
+    });
 
     const snake = normalizePipelineStageEvent({
       stage: "normalize",

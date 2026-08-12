@@ -3,7 +3,7 @@
  * Used by DebugPanel for continuous latency + text inspection without React coupling.
  */
 
-import { markCaptionConvertDone } from "./caption-latency";
+import { asrLatencyFromUnknown, markCaptionConvertDone } from "./caption-latency";
 import { pushDiagnosticEvent } from "./diagnostics";
 import { logPipelineStageEvent } from "./structuredLog";
 import type {
@@ -185,6 +185,7 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
     typeof captureGenerationRaw === "number" && Number.isFinite(captureGenerationRaw)
       ? Math.max(0, Math.round(captureGenerationRaw))
       : undefined;
+  const asrLatency = asrLatencyFromUnknown(record);
   return {
     stage,
     utteranceId: utteranceId || `stage-${Date.now()}-${sequence}`,
@@ -198,6 +199,7 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
     ok: Boolean(ok) && !error,
     error,
     ...(captureGeneration !== undefined ? { captureGeneration } : {}),
+    ...(asrLatency ? { asrLatency } : {}),
   };
 };
 

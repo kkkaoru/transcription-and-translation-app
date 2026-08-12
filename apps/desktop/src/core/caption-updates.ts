@@ -524,7 +524,16 @@ const isStaleNormalizedAgainstProvisional = (
   }
   // Without readings, a longer provisional that already contains the normalize
   // surface as a prefix is still ahead of the in-flight older revision.
-  return currentText.startsWith(nextText) && currentText !== nextText;
+  if (currentText.startsWith(nextText) && currentText !== nextText) {
+    return true;
+  }
+  // Overlay native-renderer often paints ASR kana (no shared kanji prefix) and
+  // then a delayed `caption:update` / getLatestCaption replay delivers an older
+  // in-flight normalize such as 今日は. A same-revision conversion (きょうは →
+  // 今日は) stays similar length; a prefix cut of a longer tail does not.
+  const currentLen = [...currentText].length;
+  const nextLen = [...nextText].length;
+  return nextLen * 2 < currentLen;
 };
 
 const sharedGraphemePrefixLength = (left: string, right: string): number => {

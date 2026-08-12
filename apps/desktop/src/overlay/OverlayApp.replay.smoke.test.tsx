@@ -4,6 +4,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CAPTION_HOLD_CLEAR_MS, captionHoldClearEpoch } from "../core/caption-hold-clear";
+import { clearCaptionLatency, getCaptionLatencySpan } from "../core/caption-latency";
 import { clearCaptionMergeDiagnostics, getCaptionMergeDiagnostics } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import * as displayTiming from "../core/display-timing";
@@ -378,6 +379,116 @@ describe("OverlayApp caption replay", () => {
       });
       expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("今日は");
     } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
+  it("keeps a longer ASR provisional when a stale shorter caption:update races in", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "きょうはいいてんきですね",
+          startedAt: 40,
+          at: 80,
+          durationMs: 40,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
+        "きょうはいいてんきですね",
+      );
+
+      await act(async () => {
+        captionListener?.({
+          id: "parapper:s:1:8",
+          sourceText: "今日は",
+          translationText: "",
+          sourceLanguage: "ja",
+          targetLanguage: "en",
+          startedAt: 10,
+          receivedAt: 20,
+          stage: "source",
+          sequence: 0,
+          isFinal: false,
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
+        "きょうはいいてんきですね",
+      );
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
+  it("joins flattened *_at from an ASR stage onto the overlay first-paint span", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+    clearCaptionLatency();
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "きょうは",
+          surfaceText: "今日は",
+          startedAt: 10,
+          at: 40,
+          durationMs: 30,
+          ok: true,
+          asrLatency: {
+            speech_start_at: 1_000,
+            asr_dispatch_at: 1_010,
+            first_partial_at: 1_040,
+            asr_final_at: null,
+          },
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("今日は");
+      expect(getCaptionLatencySpan("parapper:s:1:8")).toMatchObject({
+        speech_start_at: 1_000,
+        first_partial_at: 1_040,
+        speech_to_event_ms: 40,
+      });
+      expect(
+        getCaptionLatencySpan("parapper:s:1:8")?.speech_to_first_paint_ms,
+      ).toBeGreaterThanOrEqual(40);
+    } finally {
+      clearCaptionLatency();
       await act(async () => {
         root.unmount();
         await Promise.resolve();

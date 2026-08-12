@@ -10,7 +10,11 @@ import {
 } from "../core/audio";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "../core/bridge";
 import { shouldApplyCaptionHoldClear } from "../core/caption-hold-clear";
-import { markCaptionIpcReceived } from "../core/caption-latency";
+import {
+  asrLatencyFromUnknown,
+  markCaptionIpcReceived,
+  parseNumericTurnId,
+} from "../core/caption-latency";
 import {
   clearCaptionMergeDiagnostics,
   getCaptionMergeDiagnostics,
@@ -542,6 +546,10 @@ export const MainApp = () => {
         return false;
       }
       captionRef.current = merged;
+      markCaptionIpcReceived(merged.id, {
+        turnId: parseNumericTurnId(merged.id),
+        asrLatency: merged.asrLatency ?? asrLatencyFromUnknown(incoming),
+      });
       markCaptionDisplay(merged);
       setCaption(merged);
       return true;

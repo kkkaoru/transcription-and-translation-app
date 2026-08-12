@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../core/bridge";
 import { shouldBlankCaptionForHoldClear } from "../core/caption-hold-clear";
+import {
+  asrLatencyFromUnknown,
+  markCaptionIpcReceived,
+  parseNumericTurnId,
+} from "../core/caption-latency";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
@@ -112,6 +117,13 @@ export const OverlayApp = () => {
         return;
       }
       captionRef.current = merged;
+      // Native-renderer is a separate webview from Live. Join `*_at` here so
+      // Syphon first-paint spans are not missing speech_start_at when the
+      // caption or ASR stage already carries them.
+      markCaptionIpcReceived(merged.id, {
+        turnId: parseNumericTurnId(merged.id),
+        asrLatency: merged.asrLatency ?? asrLatencyFromUnknown(nextCaption),
+      });
       markCaptionDisplay(merged);
       setCaption(merged);
     };

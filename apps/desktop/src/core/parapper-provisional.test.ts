@@ -128,11 +128,39 @@ describe("buildParapperProvisionalCaption", () => {
     ).toMatchObject({
       id: "parapper:s:1:8",
       sourceText: "今日は",
+      azookeyInputText: "きょうは",
       stage: "source",
       provisional: true,
       startedAt: 10,
       receivedAt: 40,
       captureGeneration: 3,
+    });
+  });
+
+  it("copies flattened ASR sidecar timestamps onto the provisional caption", () => {
+    expect(
+      buildProvisionalCaptionFromAsrStage(
+        {
+          stage: "asr",
+          ok: true,
+          utteranceId: "parapper:s:1:8",
+          outputText: "きょうは",
+          startedAt: 10,
+          at: 40,
+          asrLatency: {
+            speech_start_at: 1,
+            asr_dispatch_at: 2,
+            first_partial_at: 3,
+            asr_final_at: null,
+          },
+        },
+        languages,
+      )?.asrLatency,
+    ).toEqual({
+      speech_start_at: 1,
+      asr_dispatch_at: 2,
+      first_partial_at: 3,
+      asr_final_at: null,
     });
   });
 
