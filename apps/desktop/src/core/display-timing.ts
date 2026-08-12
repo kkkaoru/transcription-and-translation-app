@@ -9,6 +9,7 @@
  * - sinceFirstPaint: wall ms from first source paint → translation paint
  */
 
+import { clearCaptionLatency, markCaptionFirstPaint } from "./caption-latency";
 import { isVerbosePipelineLogging } from "./pipelineStages";
 import { appendStructuredLog } from "./structuredLog";
 import type { CaptionPayload } from "./types";
@@ -103,6 +104,9 @@ export const markCaptionDisplay = (caption: CaptionPayload): void => {
   const isTranslation =
     caption.stage === "translation" || Boolean(caption.isFinal && caption.translationText.trim());
   const prior = firstPaintById.get(caption.id);
+  if (caption.sourceText.trim()) {
+    markCaptionFirstPaint(caption.id, wall);
+  }
 
   if (!prior && caption.sourceText.trim() && !isTranslation) {
     remember(caption.id, wall);
@@ -202,6 +206,7 @@ export const clearCaptionDisplayTiming = (): void => {
   firstPaintById.clear();
   displayStats = emptyStats();
   displayRevision += 1;
+  clearCaptionLatency();
   for (const listener of [...displayListeners]) {
     try {
       listener();

@@ -10,6 +10,7 @@ import {
 } from "../core/audio";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "../core/bridge";
 import { shouldApplyCaptionHoldClear } from "../core/caption-hold-clear";
+import { markCaptionIpcReceived } from "../core/caption-latency";
 import {
   clearCaptionMergeDiagnostics,
   getCaptionMergeDiagnostics,
@@ -1701,7 +1702,16 @@ export const MainApp = () => {
             audioDurationMs: event.audioDurationMs,
             isFinal: event.type === "turn.final",
             captureGeneration: captureGenerationForAttempt,
+            asrLatency: event.asrLatency,
           };
+          markCaptionIpcReceived(
+            `parapper:${event.sessionId}:${event.turnSessionId}:${event.turnId}`,
+            {
+              turnId: event.turnId,
+              turnSessionId: event.turnSessionId,
+              asrLatency: event.asrLatency,
+            },
+          );
           // Paint before enqueue so recognized characters appear while an older
           // revision is still awaiting AzooKey. The queue serializes normalize,
           // but Live/Syphon must not wait on that serial chain.

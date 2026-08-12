@@ -8,6 +8,9 @@
  * protocol ordering; text normalization remains a native Tauri concern.
  */
 
+import { parseAsrLatencyTimestamps } from "./caption-latency";
+import type { AsrLatencyTimestamps } from "./types";
+
 export const PARAPPER_STREAM_PROTOCOL_VERSION = 1;
 export const PARAPPER_MAX_AUDIO_FRAME_BYTES = 3_200;
 export const DEFAULT_PARAPPER_STREAM_TIMEOUT_MS = 8_000;
@@ -35,6 +38,7 @@ export type ParapperTurnEvent = {
   detectedLanguage: string | null;
   elapsedMs: number;
   audioDurationMs: number | null;
+  asrLatency?: AsrLatencyTimestamps;
 };
 
 export type ParapperStreamEvent =
@@ -77,6 +81,10 @@ type ServerMessage = {
   detected_language?: unknown;
   elapsed_ms?: unknown;
   audio_duration_ms?: unknown;
+  speech_start?: unknown;
+  asr_dispatch?: unknown;
+  first_partial?: unknown;
+  final?: unknown;
   code?: unknown;
   message?: unknown;
   fatal?: unknown;
@@ -182,6 +190,7 @@ const toEvent = (message: ServerMessage, sessionId: string): ParapperStreamEvent
     detectedLanguage: nonEmptyString(message.detected_language),
     elapsedMs: finiteNumber(message.elapsed_ms),
     audioDurationMs: optionalFiniteNumber(message.audio_duration_ms),
+    asrLatency: parseAsrLatencyTimestamps(message as Record<string, unknown>),
   };
 };
 

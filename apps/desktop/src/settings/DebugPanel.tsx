@@ -5,6 +5,11 @@ import {
   getLastAudioCaptureDiagnostics,
 } from "../core/audio";
 import { bridge, formatBridgeError } from "../core/bridge";
+import {
+  getCaptionLatencyRevision,
+  getCaptionLatencyStats,
+  subscribeCaptionLatency,
+} from "../core/caption-latency";
 import { type ChunkTimingStats, getChunkTimingStats } from "../core/chunkQueue";
 import { DEFAULT_RECOGNITION_MODE, isRecognitionMode, mergeConfig } from "../core/defaults";
 import {
@@ -602,6 +607,19 @@ export function DebugPanel() {
     void displayTimingRevision;
     return getCaptionDisplayTimingStats();
   }, [displayTimingRevision]);
+  const subscribeCaptionLatencyWhenOpen = useCallback(
+    (listener: () => void) => (open ? subscribeCaptionLatency(listener) : () => undefined),
+    [open],
+  );
+  const captionLatencyRevision = useSyncExternalStore(
+    subscribeCaptionLatencyWhenOpen,
+    getCaptionLatencyRevision,
+    getCaptionLatencyRevision,
+  );
+  const captionLatency = useMemo(() => {
+    void captionLatencyRevision;
+    return getCaptionLatencyStats();
+  }, [captionLatencyRevision]);
   const utteranceGroups = useMemo(() => {
     void stageStoreRevision;
     return getUtteranceStageGroups();
@@ -719,6 +737,7 @@ export function DebugPanel() {
       pipelineStages: stageEvents,
       utteranceGroups,
       displayTiming,
+      captionLatency,
       chunkTiming,
       pipelineDrops,
       translationRetired: readTranslationRetired(backendInfo),
@@ -745,6 +764,7 @@ export function DebugPanel() {
     stageEvents,
     utteranceGroups,
     displayTiming,
+    captionLatency,
     chunkTiming,
     pipelineDrops,
     verboseLogging,
@@ -2040,6 +2060,22 @@ export function DebugPanel() {
                   <li>
                     <span>{t("debug.displayTranslationLag")}</span>
                     <code>{formatMs(displayTiming.translationSinceSourcePaintMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.latencySpeechToPaint")}</span>
+                    <code>{formatMs(captionLatency.speechToFirstPaintMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.latencyIpcToPaint")}</span>
+                    <code>{formatMs(captionLatency.ipcToFirstPaintMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.latencyPaintToVisible")}</span>
+                    <code>{formatMs(captionLatency.paintToVisibleMs)}</code>
+                  </li>
+                  <li>
+                    <span>{t("debug.latencyConvert")}</span>
+                    <code>{formatMs(captionLatency.convertDurationMs)}</code>
                   </li>
                   <li>
                     <span>{t("debug.chunkProcessed")}</span>

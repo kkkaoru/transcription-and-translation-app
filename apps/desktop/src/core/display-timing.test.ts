@@ -51,7 +51,9 @@ describe("caption display timing", () => {
       sourceEventToPaintMs: 100,
       utteranceId: "utterance-1",
     });
-    expect(getStructuredLogs({ maxLevel: "trace" })[0]).toMatchObject({
+    expect(
+      getStructuredLogs({ maxLevel: "trace" }).find((row) => row.stage === "display"),
+    ).toMatchObject({
       source: "frontend",
       stage: "display",
       chunkId: "utterance-1",
@@ -88,7 +90,9 @@ describe("caption display timing", () => {
       translationEventToPaintMs: 50,
       translationSinceSourcePaintMs: 350,
     });
-    expect(getStructuredLogs({ maxLevel: "trace" })[0]).toMatchObject({
+    expect(
+      getStructuredLogs({ maxLevel: "trace" }).find((row) => row.message === "translation painted"),
+    ).toMatchObject({
       stage: "display",
       message: "translation painted",
       durationMs: 950,
@@ -111,7 +115,7 @@ describe("caption display timing", () => {
 
     markCaptionDisplay(caption());
 
-    expect(info).not.toHaveBeenCalled();
+    expect(info.mock.calls.some((call) => String(call[0]).includes("[display]"))).toBe(false);
     // But stats are still recorded.
     expect(getCaptionDisplayTimingStats()).toMatchObject({
       sourceSincePipelineStartMs: 600,
@@ -174,8 +178,7 @@ describe("caption display timing", () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     markCaptionDisplay(caption());
-    // First call will log (first paint).
-    expect(info).toHaveBeenCalledTimes(0); // Verbose is off.
+    expect(info.mock.calls.some((call) => String(call[0]).includes("[display]"))).toBe(false);
 
     markCaptionDisplay(
       caption({
@@ -187,8 +190,8 @@ describe("caption display timing", () => {
       }),
     );
 
-    // Second call should not log either.
-    expect(info).toHaveBeenCalledTimes(0);
+    // Second call should not log the display-timing console line either.
+    expect(info.mock.calls.some((call) => String(call[0]).includes("[display]"))).toBe(false);
     // But stats should be updated. (2350 - 1400 startedAt = 950ms)
     expect(getCaptionDisplayTimingStats()).toMatchObject({
       translationSincePipelineStartMs: 950,

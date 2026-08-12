@@ -3,6 +3,7 @@
  * Used by DebugPanel for continuous latency + text inspection without React coupling.
  */
 
+import { markCaptionConvertDone } from "./caption-latency";
 import { pushDiagnosticEvent } from "./diagnostics";
 import { logPipelineStageEvent } from "./structuredLog";
 import type {
@@ -211,6 +212,9 @@ export const pushPipelineStageEvent = (raw: unknown): PipelineStageEvent | null 
   }
   sequence += 1;
   logStage(event);
+  if (event.stage === "normalize" && event.ok) {
+    markCaptionConvertDone(event.utteranceId, { at: event.at, durationMs: event.durationMs });
+  }
   notify();
   return event;
 };

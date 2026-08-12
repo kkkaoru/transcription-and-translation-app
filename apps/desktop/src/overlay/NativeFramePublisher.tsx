@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { bytesToBase64 } from "../core/audio";
 import { bridge, formatBridgeError } from "../core/bridge";
+import { markCaptionVisible } from "../core/caption-latency";
 import { appendStructuredLog } from "../core/structuredLog";
 import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types";
 import { captionGraphemes, captionItems, captionTextLines } from "./captions";
@@ -815,6 +816,9 @@ export const NativeFramePublisher = ({
                 return;
               }
               const followUp = completeNativePublishSuccess(gateRef.current, publishedKey);
+              if (currentCaption.sourceText.trim()) {
+                markCaptionVisible(currentCaption.id);
+              }
               if (followUp) {
                 schedule();
               }

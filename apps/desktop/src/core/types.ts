@@ -300,7 +300,23 @@ export interface ParapperRecognitionOutput {
   isFinal: boolean;
   /** Native capture generation captured when the output entered the queue. */
   captureGeneration?: number;
+  /**
+   * Optional ASR sidecar timestamps (sibling-owned). Snake_case names match
+   * the wire schema: speech_start, asr_dispatch, first_partial, final.
+   */
+  asrLatency?: AsrLatencyTimestamps;
 }
+
+/**
+ * Epoch-ms timestamps owned by the Parapper ASR sidecar. Desktop joins on
+ * `turn_id` and must not invent these values.
+ */
+export type AsrLatencyTimestamps = {
+  speech_start?: number | null;
+  asr_dispatch?: number | null;
+  first_partial?: number | null;
+  final?: number | null;
+};
 
 /** Independent pipeline stage for debug mode (parapper / azookey / HY-MT2). */
 export type PipelineStageName = "asr" | "normalize" | "translate";
