@@ -72,12 +72,14 @@ describe("useProgressiveCaptionReveal", () => {
     renderCaption(baseCaption({ sourceText: "" }));
     paints = [];
     renderCaption(baseCaption({ sourceText: "こんにちは" }));
-    expect(paints.at(-1)).toBe("");
+    // First grapheme must paint on the same update — never hold a blank plate
+    // for a full progressive step after the first hypothesis arrives.
+    expect(paints.at(-1)).toBe("こ");
 
     act(() => {
       vi.advanceTimersByTime(20);
     });
-    expect(paints.at(-1)).toBe("こ");
+    expect(paints.at(-1)).toBe("こん");
 
     act(() => {
       vi.advanceTimersByTime(200);
@@ -88,9 +90,6 @@ describe("useProgressiveCaptionReveal", () => {
   it("snaps immediately when the utterance id changes mid-reveal", () => {
     renderCaption(baseCaption({ sourceText: "" }));
     renderCaption(baseCaption({ sourceText: "こんにちは" }));
-    act(() => {
-      vi.advanceTimersByTime(20);
-    });
     expect(paints.at(-1)).toBe("こ");
 
     paints = [];

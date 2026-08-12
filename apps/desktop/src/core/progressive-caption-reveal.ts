@@ -56,3 +56,20 @@ export const advanceProgressiveReveal = (displayed: string, target: string): str
   }
   return targetGraphemes.slice(0, displayedCount + 1).join("");
 };
+
+/**
+ * First paint for a progressive jump from an empty plate.
+ *
+ * Callers must not wait a full step interval before showing anything: the first
+ * recognized grapheme should appear on the same update that starts progressive
+ * growth. Subsequent graphemes still use the timer-driven step path.
+ */
+export const immediateProgressiveRevealStart = (displayed: string, target: string): string => {
+  if (displayed.trim()) {
+    return displayed;
+  }
+  if (!shouldProgressivelyReveal(displayed, target)) {
+    return target;
+  }
+  return advanceProgressiveReveal(displayed, target);
+};

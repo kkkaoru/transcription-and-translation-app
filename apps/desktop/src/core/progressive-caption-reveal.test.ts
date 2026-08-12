@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   advanceProgressiveReveal,
+  immediateProgressiveRevealStart,
   progressiveRevealStepMs,
   shouldProgressivelyReveal,
 } from "./progressive-caption-reveal";
@@ -26,6 +27,27 @@ describe("progressive caption reveal", () => {
 
   it("snaps immediately on kana-to-kanji rewrites", () => {
     expect(advanceProgressiveReveal("あしたは", "明日は")).toBe("明日は");
+  });
+
+  it("is a no-op when displayed already matches the target", () => {
+    expect(advanceProgressiveReveal("こんにちは", "こんにちは")).toBe("こんにちは");
+  });
+
+  it("snaps when displayed already has at least as many graphemes as the target", () => {
+    // Defensive branch: longer displayed with non-prefix target is a snap;
+    // equal grapheme count with progressive false also snaps via rewrite path.
+    expect(advanceProgressiveReveal("こんに", "こん")).toBe("こん");
+  });
+
+  it("paints the first grapheme immediately when the plate is empty", () => {
+    expect(immediateProgressiveRevealStart("", "こんにちは")).toBe("こ");
+    expect(immediateProgressiveRevealStart("   ", "こんにちは")).toBe("こ");
+    // Already painted text must not jump ahead of the timer-driven steps.
+    expect(immediateProgressiveRevealStart("こ", "こんにちは")).toBe("こ");
+    // Single-grapheme targets are not progressive and snap fully.
+    expect(immediateProgressiveRevealStart("", "あ")).toBe("あ");
+    // Multi-grapheme still only seeds the first character (rest is timed).
+    expect(immediateProgressiveRevealStart("", "明日は")).toBe("明");
   });
 
   it("keeps per-grapheme delay bounded for long jumps", () => {

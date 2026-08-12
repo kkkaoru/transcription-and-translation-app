@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   advanceProgressiveReveal,
+  immediateProgressiveRevealStart,
   progressiveRevealStepMs,
   shouldProgressivelyReveal,
 } from "../core/progressive-caption-reveal";
@@ -15,7 +16,9 @@ import { captionGraphemes } from "../overlay/captions";
  * turn's characters never paint under the new caption (and switches stay fast).
  *
  * Only characters already present in the latest recognition target are shown;
- * the helper never invents text ahead of ASR.
+ * the helper never invents text ahead of ASR. An empty plate always paints the
+ * first grapheme on the same update that starts progressive growth so viewers
+ * never wait a full step interval on a blank caption.
  */
 export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPayload => {
   const [displayedSource, setDisplayedSource] = useState(caption.sourceText);
@@ -43,6 +46,17 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     paintSource = caption.sourceText;
     displayedRef.current = caption.sourceText;
     targetRef.current = caption.sourceText;
+  } else if (
+    displayedSource !== caption.sourceText &&
+    !displayedSource.trim() &&
+    shouldProgressivelyReveal(displayedSource, caption.sourceText)
+  ) {
+    // Empty plate → multi-grapheme: paint the first character this frame.
+    const firstStep = immediateProgressiveRevealStart(displayedSource, caption.sourceText);
+    setDisplayedSource(firstStep);
+    paintSource = firstStep;
+    displayedRef.current = firstStep;
+    targetRef.current = caption.sourceText;
   } else {
     displayedRef.current = displayedSource;
   }
@@ -57,10 +71,18 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
 
     const scheduleToward = (from: string, target: string): void => {
       clearTimer();
-      if (!shouldProgressivelyReveal(from, target)) {
+      let current = from;
+      // Defense-in-depth: if render-phase sync did not already seed the first
+      // grapheme (e.g. Strict Mode remount), do it before waiting on a timer.
+      if (!current.trim() && shouldProgressivelyReveal(current, target)) {
+        current = immediateProgressiveRevealStart(current, target);
+        displayedRef.current = current;
+        setDisplayedSource(current);
+      }
+      if (!shouldProgressivelyReveal(current, target)) {
         return;
       }
-      const remaining = captionGraphemes(target).length - captionGraphemes(from).length;
+      const remaining = captionGraphemes(target).length - captionGraphemes(current).length;
       if (remaining <= 0) {
         return;
       }
