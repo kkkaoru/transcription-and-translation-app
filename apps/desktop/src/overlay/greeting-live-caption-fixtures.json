@@ -152,6 +152,12 @@
       "input": "こんばんは。きこえますか",
       "expectedOverlay": "こんばんはきこえますか",
       "note": "ZenZ period before kana きこえますか must not page こんばんは"
+    },
+    {
+      "id": "strip-ohayou-period-kana",
+      "input": "おはよう。きこえますか",
+      "expectedOverlay": "おはようきこえますか",
+      "note": "ZenZ period before kana きこえますか must not page おはよう"
     }
   ],
   "merge": [
