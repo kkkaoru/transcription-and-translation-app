@@ -22,7 +22,11 @@ struct RequiredSurface {
 const REQUIRED_SURFACES: &[RequiredSurface] = &[
     // かいて / 書いて vs 買い手
     RequiredSurface { reading: "かいて", surface: "書いて", note: "verb te-form" },
+    RequiredSurface { reading: "かいて", surface: "描いて", note: "draw te-form" },
     RequiredSurface { reading: "かいて", surface: "買い手", note: "noun distractor" },
+    RequiredSurface { reading: "かく", surface: "書く", note: "write" },
+    RequiredSurface { reading: "かく", surface: "描く", note: "draw" },
+    RequiredSurface { reading: "かく", surface: "掻く", note: "scratch/idiom" },
     // はし / はじ
     RequiredSurface { reading: "はし", surface: "橋", note: "bridge" },
     RequiredSurface { reading: "はし", surface: "端", note: "edge (hashi)" },
@@ -44,6 +48,7 @@ const REQUIRED_SURFACES: &[RequiredSurface] = &[
 /// Readings whose full row dump is printed into the inventory summary.
 const INVENTORY_READINGS: &[&str] = &[
     "かいて",
+    "かく",
     "はし",
     "はじ",
     "はしのはじ",
@@ -132,6 +137,18 @@ const CONVERSION_CASES: &[ConversionCase] = &[
         expected: "机の端",
         max_rank: 1,
         inventory_hint: "desk の+はじ ranks 端 over shame 恥",
+    },
+    ConversionCase {
+        input: "えをかいて",
+        expected: "絵を描いて",
+        max_rank: 1,
+        inventory_hint: "picture object 絵を ranks 描いて over 書いて",
+    },
+    ConversionCase {
+        input: "はじをかく",
+        expected: "恥を掻く",
+        max_rank: 1,
+        inventory_hint: "shame object 恥を ranks 掻く over 書く",
     },
     ConversionCase {
         input: "はしのはじからものがおちてます",

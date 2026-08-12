@@ -133,6 +133,19 @@ const KAKU_TE_REQUEST_CONTEXT_BONUS: f32 = 4.5;
 const EDGE_AFTER_SPATIAL_NOUN_BONUS: f32 = 6.5;
 /// Soft-demote shame `恥`/`恥じ` in the same spatial-possessive slot.
 const SHAME_AFTER_SPATIAL_NOUN_PENALTY: f32 = -4.5;
+/// Soft-boost draw `描いて`/`描く` after a picture object (`絵を` / `画を`)
+/// so `えをかいて` does not keep write `書いて`. Isolated `かいて` and
+/// `かいてください` stay write-capable.
+const DRAW_AFTER_PICTURE_OBJECT_BONUS: f32 = 4.5;
+/// Soft-demote write `書いて`/`書く` in the same picture-object slot.
+const WRITE_AFTER_PICTURE_OBJECT_PENALTY: f32 = -4.5;
+/// Soft-boost scratch `掻く` after shame `恥を` so the idiom `はじをかく`
+/// becomes `恥を掻く` instead of `恥を書く`. Isolated `かく` is unchanged.
+const SCRATCH_AFTER_SHAME_OBJECT_BONUS: f32 = 11.0;
+/// Soft-demote write/draw `書く`/`描く` after `恥を`. The glued rows
+/// `を書く` / `を描く` exist, but `を掻く` does not, so the idiom path is
+/// `恥を`+`掻く` and needs a larger swing than picture-object `描いて`.
+const WRITE_AFTER_SHAME_OBJECT_PENALTY: f32 = -6.5;
 /// Soft-demote raw Katakana ruby-id rows before a jodoushi identity when a
 /// conjugational Kanji stem exists for the same reading. Without this, loanword
 /// orthography such as `フリ`+`ます` can beat `降り`+`ます` after bare roots are
@@ -971,6 +984,9 @@ pub fn convert_with_dictionary(
                             + thickness_object_noun_context_score(&state, &chars, end, entry)
                             + kaku_te_request_context_bonus(&chars, end, entry)
                             + edge_after_spatial_possessive_score(&state, entry)
+                            + draw_after_picture_object_score(&state, entry)
+                            + scratch_after_shame_object_score(&state, entry)
+                            + haji_before_scratch_verb_score(&chars, end, entry)
                             + short_head_before_person_suffix_penalty(
                                 dictionary, &chars, end, entry,
                             )
@@ -2261,6 +2277,84 @@ fn edge_after_spatial_possessive_score(state: &PathState, entry: &DictionaryEntr
     match entry.surface.as_str() {
         "端" => EDGE_AFTER_SPATIAL_NOUN_BONUS,
         "恥" | "恥じ" => SHAME_AFTER_SPATIAL_NOUN_PENALTY,
+        _ => NO_SCORE,
+    }
+}
+
+fn picture_object_verb_context(state: &PathState, entry: &DictionaryEntry) -> bool {
+    let prefix = state.text.as_str();
+    if prefix.ends_with("絵を") || prefix.ends_with("画を") {
+        return true;
+    }
+    if !(prefix.ends_with('絵') || prefix.ends_with('画')) {
+        return false;
+    }
+    entry.reading.starts_with("をかい")
+        || entry.reading.starts_with("をかく")
+        || entry.surface.starts_with("を描")
+        || entry.surface.starts_with("を書")
+}
+
+/// Soft-prefer draw `描いて` after a picture object. Write `書いて` stays
+/// top-1 for isolated `かいて`, `もじをかいて`, and `かいてください`.
+fn draw_after_picture_object_score(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    if !picture_object_verb_context(state, entry) {
+        return NO_SCORE;
+    }
+    match entry.surface.as_str() {
+        "描いて" | "描く" | "を描いて" | "を描く" => DRAW_AFTER_PICTURE_OBJECT_BONUS,
+        "書いて" | "書く" | "を書いて" | "を書く" => WRITE_AFTER_PICTURE_OBJECT_PENALTY,
+        _ => NO_SCORE,
+    }
+}
+
+fn shame_object_verb_context(state: &PathState, entry: &DictionaryEntry) -> bool {
+    let prefix = state.text.as_str();
+    if prefix.ends_with("恥を") {
+        return true;
+    }
+    if !prefix.ends_with('恥') {
+        return false;
+    }
+    entry.reading.starts_with("をかく")
+        || entry.surface.starts_with("を掻")
+        || entry.surface.starts_with("を書")
+        || entry.surface.starts_with("を描")
+}
+
+/// Soft-prefer scratch `掻く` after shame `恥を`. Isolated `かく` and
+/// `てをかく` stay score-driven.
+fn scratch_after_shame_object_score(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    if !shame_object_verb_context(state, entry) {
+        return NO_SCORE;
+    }
+    let surface = entry.surface.as_str();
+    if surface == "掻く" || surface.ends_with("掻く") {
+        return SCRATCH_AFTER_SHAME_OBJECT_BONUS;
+    }
+    if surface == "各"
+        || surface.ends_with("書く")
+        || surface.ends_with("描く")
+        || surface.ends_with("を各")
+    {
+        return WRITE_AFTER_SHAME_OBJECT_PENALTY;
+    }
+    NO_SCORE
+}
+
+fn remaining_has_scratch_verb(remaining: &str) -> bool {
+    remaining.starts_with("をかく")
+}
+
+/// Soft-prefer shame `恥` when leftover speech is the idiom verb `をかく`.
+/// Isolated `はじ` and spatial `の`+`はじ` stay on their own priors.
+fn haji_before_scratch_verb_score(chars: &[char], end: usize, entry: &DictionaryEntry) -> f32 {
+    if entry.reading != "はじ" || !remaining_has_scratch_verb(&remaining_reading(chars, end)) {
+        return NO_SCORE;
+    }
+    match entry.surface.as_str() {
+        "恥" => SCRATCH_AFTER_SHAME_OBJECT_BONUS,
+        "端" => WRITE_AFTER_SHAME_OBJECT_PENALTY,
         _ => NO_SCORE,
     }
 }
@@ -4791,6 +4885,9 @@ mod tests {
             ("はじ", "恥"),
             ("わたしのはじ", "私の恥"),
             ("はじる", "恥じる"),
+            ("えをかいて", "絵を描いて"),
+            ("もじをかいて", "文字を書いて"),
+            ("はじをかく", "恥を掻く"),
         ] {
             let candidates = convert_with_dictionary(
                 input,
