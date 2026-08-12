@@ -297,7 +297,17 @@ impl AsrConfusionRules {
         // --- Deletions: long vowel, gemination ---
         for (i, &ch) in chars.iter().enumerate() {
             // Long vowel deletion: remove a vowel that extends the previous one.
-            if i > 0 && is_long_vowel(chars[i - 1], ch) {
+            //
+            // Only generate the deletion when the previous mora is a pure vowel
+            // (あ, い, う, え, お). A consonant mora such as は has vowel あ, so
+            // `is_long_vowel('は', 'あ')` is true — but in continuous speech the
+            // あ after a particle は is almost always the start of a new word
+            // (は + あつい…), not a long-vowel extension. Restricting the
+            // deletion to vowel-mora doublings (ああ, いい, うう, えい, おう)
+            // prevents the rescorer from swallowing a mora that begins a new
+            // lexical word while still fixing genuine vowel-doubling ASR errors
+            // like けいいさつ → けいさつ or こううさつ → こうさつ.
+            if i > 0 && is_long_vowel(chars[i - 1], ch) && is_vowel_mora(chars[i - 1]) {
                 out.push(RescoreCandidate {
                     text: delete_char(&chars, i),
                     confusion_cost: self.long_vowel_delete_cost,
@@ -940,6 +950,19 @@ fn is_long_vowel(prev: char, ch: char) -> bool {
     long_vowel_for(prev) == Some(ch)
 }
 
+/// Returns true for the five pure Japanese vowel mora.
+///
+/// Consonant mora (か, は, …) share the same vowel code as their vowel-only
+/// counterparts, so `long_vowel_for` maps them to an extension vowel. But a
+/// vowel that follows a consonant mora in continuous speech is far more likely
+/// to begin a new word than to be a long-vowel extension. Restricting the
+/// long-vowel *deletion* to vowel-mora doublings avoids swallowing the first
+/// mora of a new word (は + あつい → は + つい) while still correcting genuine
+/// vowel-doubling ASR errors (うう → う, えい → え).
+fn is_vowel_mora(ch: char) -> bool {
+    matches!(ch, 'あ' | 'い' | 'う' | 'え' | 'お')
+}
+
 /// Returns the vowel of a mora, or None for non-mora characters.
 fn mora_vowel(ch: char) -> Option<char> {
     match ch {
@@ -1166,11 +1189,41 @@ mod tests {
     }
 
     #[test]
-    fn long_vowel_deletion_removes_extending_vowel() {
+    fn long_vowel_deletion_removes_vowel_mora_doubling() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("ばああ");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.contains(&"ばあ"), "long vowel あ deletion missing from {texts:?}");
+    }
+
+    #[test]
+    fn long_vowel_deletion_skips_consonant_mora_extensions() {
         let rules = AsrConfusionRules::default();
         let candidates = rules.generate("おはよう");
         let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
-        assert!(texts.contains(&"おはよ"), "long vowel う deletion missing from {texts:?}");
+        // The う after よ extends the お-vowel, but よ is a consonant mora.
+        // Deleting it would remove a vowel that could begin a new word, so it
+        // must not be generated as a deletion candidate.
+        assert!(
+            !texts.contains(&"おはよ"),
+            "consonant-mora long-vowel deletion should not be generated: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn long_vowel_deletion_does_not_swallow_word_initial_mora_after_particle() {
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("あついひはあついたべものをたべたくない");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        // The あ after は (particle) is the start of the word あつい (hot), not
+        // a long-vowel extension of は. The rescorer must not generate a
+        // deletion candidate that drops it — doing so would make the downstream
+        // kana-kanji converter receive "あついひはついたべものをたべたくない"
+        // and lose the second あつい → 熱い conversion.
+        assert!(
+            !texts.contains(&"あついひはついたべものをたべたくない"),
+            "spurious long-vowel deletion swallowed word-initial あ after particle は: {texts:?}"
+        );
     }
 
     #[test]
