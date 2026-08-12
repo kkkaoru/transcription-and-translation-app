@@ -218,6 +218,12 @@
       "input": "さようなら終えますか",
       "expectedOverlay": "さようなら聞こえますか",
       "note": "Farewell greeting glued to 終えますか"
+    },
+    {
+      "id": "konbanwa-hearing-oe-kanji",
+      "input": "こんばんは終えますか",
+      "expectedOverlay": "こんばんは聞こえますか",
+      "note": "Evening greeting glued to 終えますか"
     }
   ],
   "merge": [
