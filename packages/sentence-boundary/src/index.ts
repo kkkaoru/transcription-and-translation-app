@@ -152,13 +152,13 @@ const prefixEndsWithPunct = (prefix: string): boolean => {
 };
 
 /**
- * Heuristic copula/ます paging may replace the lead only when the next span is
- * at least as long as the finished prefix. A shorter tail (です＋次節, ます＋短い
- * 続き, unknown long speech with a brief restart) dropped the already-recognized
- * head and left only short text on the plate.
+ * Heuristic / Vibrato copula paging may replace the lead only when the next
+ * span is strictly longer — i.e. the majority of the utterance. An equal split
+ * (`確認です`+`次の議題`) is ambiguous, so the full longer surface stays.
+ * Punctuation and empty remainder (true end-of-utterance) still complete.
  */
 const remainderDominatesPrefix = (prefix: string, remainder: string): boolean =>
-  codePoints(remainder.trimStart()).length >= codePoints(prefix.trimEnd()).length;
+  codePoints(remainder.trimStart()).length > codePoints(prefix.trimEnd()).length;
 
 const startsClauseContinuation = (remainder: string, english: boolean): boolean => {
   const next = remainder.trimStart();
@@ -215,9 +215,8 @@ const shouldIgnoreSentenceEndBeforeContinuation = (
   if (startsClauseContinuation(remainder, false) || startsTaraContinuation(prefix, remainder)) {
     return true;
   }
-  // Copula/ます (and other non-punct) offsets must not replace a longer lead
-  // with a shorter tail — same rule as the heuristic path. Punctuation still
-  // pages. Empty remainder is handled above as a true end-of-utterance.
+  // Copula/ます (and other non-punct) offsets must not replace the lead unless
+  // the next span is strictly longer. Equal-length tails are ambiguous.
   if (!prefixEndsWithPunct(trimmedPrefix) && !remainderDominatesPrefix(trimmedPrefix, next)) {
     return true;
   }
@@ -322,8 +321,8 @@ export const selectVisibleCaptionSentence = (
     return "";
   }
   // Punctuation still pages. Heuristic and Vibrato copula/ます ends page only
-  // when the next span dominates the lead. `deferSentencePaging` skips
-  // heuristic copula detection so a first hypothesis like 「です＋次節」 keeps
-  // the already-recognized head when offsets are absent.
+  // when the next span is strictly longer than the lead (the majority).
+  // `deferSentencePaging` skips heuristic copula detection so a first
+  // hypothesis like 「です＋次節」 keeps the head when offsets are absent.
   return sliceNewestSentence(normalized, detectCaptionSentenceEnds(normalized, hints));
 };
