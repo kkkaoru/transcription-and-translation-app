@@ -1601,3 +1601,53 @@ fn turn_runtime_truncated_completion_does_not_clobber_longer_interim_while_rerec
         "a truncated completion must not replace the longer visible interim while rerecognition waits"
     );
 }
+
+#[test]
+fn turn_runtime_namo_continue_emits_longer_rerecognition_rewrite_when_interim_display_is_off() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let _ = builder
+        .use_scripted_decisions(vec![TurnDecision { is_end_of_turn: false, confidence: 0.01 }]);
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..1,
+    );
+    runtime.step();
+    let completion =
+        runtime.requests.in_flight_request.clone().expect("completion request should be in flight");
+    asr_handle.complete_request_with_text(&completion, "前半から");
+    runtime.step();
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("Namo completion must dispatch grammar rerecognition");
+    assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("前半から...", false, 1, 1)],
+        "completion hypothesis must be visible while rerecognition is in flight"
+    );
+    asr_handle.complete_request_with_text(&rerecognition, "前半から末尾まで");
+    runtime.step();
+
+    assert_eq!(runtime.turn_store.open_turn_id, Some(1), "Namo Continue must keep the turn open");
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "Namo Continue must not finalize"
+    );
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("前半から...", false, 1, 1),
+            output_snapshot("前半から末尾まで...", false, 1, 1)
+        ],
+        "a longer rerecognition rewrite must reach the caption before final even when interim display is off"
+    );
+}

@@ -175,6 +175,11 @@ impl RecognitionSession {
         self.reset_open_turn_timeout_origin();
         if emit_interim && self.config.turn.interim_result_enabled {
             self.emit_turn_output(turn_id, false);
+        } else {
+            // Interim display off still must paint a longer rerecognition
+            // rewrite. Namo/Morph Continue used to skip emit and leave the
+            // overlay on the older completion hypothesis until final.
+            self.emit_waiting_draft_if_blank_or_longer(turn_id);
         }
     }
 

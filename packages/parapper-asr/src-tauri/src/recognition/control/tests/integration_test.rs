@@ -1988,6 +1988,13 @@ fn turn_runtime_shutdown_keeps_internal_grammar_boundary_in_same_turn_and_finali
                 vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0]
             ),
             (
+                "前半。後半...",
+                false,
+                1,
+                1,
+                vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0]
+            ),
+            (
                 "前半。後半追加...",
                 false,
                 1,
@@ -2296,7 +2303,10 @@ fn turn_runtime_internal_strong_boundary_keeps_turn_open_until_terminal_candidat
 
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![output_snapshot("はい次です...", false, 1, 1)]
+        vec![
+            output_snapshot("はい次です...", false, 1, 1),
+            output_snapshot("はい。次です...", false, 1, 1)
+        ]
     );
     assert_eq!(
         runtime.turn_store.open_turn_id,
