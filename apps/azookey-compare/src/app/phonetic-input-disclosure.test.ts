@@ -1,11 +1,20 @@
 // @vitest-environment jsdom
 
 import { readFileSync } from "node:fs";
-import path from "node:path";
-import { act, createElement } from "react";
+import { join } from "node:path";
+import * as React from "react";
 import { createRoot, type Root } from "react-dom/client";
+import * as ReactDOMTestUtils from "react-dom/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ComparePage from "./page";
+
+// Prefer React.act (19+). Fall back when a React 18 copy is resolved (named
+// `import { act } from "react"` is then undefined → "act is not a function").
+const act = typeof React.act === "function" ? React.act : ReactDOMTestUtils.act;
+const { createElement } = React;
+if (typeof act !== "function") {
+  throw new Error("React act helper is unavailable for phonetic disclosure tests");
+}
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -110,7 +119,9 @@ const unhidesClosedPhoneticBody = (rule: CSSStyleRule): boolean => {
 };
 
 const loadPhoneticStylesheet = (): CSSStyleSheet => {
-  const css = readFileSync(path.join("src/app/globals.css"), "utf8");
+  // Named join: default `path` interop breaks under some Vitest/jsdom setups.
+  // Avoid import.meta.url: jsdom replaces global URL.
+  const css = readFileSync(join("src/app/globals.css"), "utf8");
   const style = document.createElement("style");
   style.textContent = css;
   document.head.append(style);
