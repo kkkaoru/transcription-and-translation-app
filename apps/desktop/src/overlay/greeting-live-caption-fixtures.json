@@ -234,6 +234,65 @@
       },
       "expectedOverlay": "おはようきこえますか",
       "note": "Early-finalized おはよう + close hearing continuation"
+    },
+    {
+      "id": "append-kikoemasu-after-sayonara",
+      "current": {
+        "id": "parapper:session:turn:sayonara",
+        "sourceText": "さようなら",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "next": {
+        "id": "parapper:session:turn:sayonara-cont",
+        "sourceText": "きこえますか",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1450,
+        "receivedAt": 1700
+      },
+      "expectedOverlay": "さようならきこえますか",
+      "note": "Early-finalized さようなら + close hearing continuation"
+    },
+    {
+      "id": "keep-sayonara-over-ack",
+      "current": {
+        "id": "parapper:session:turn:sayonara-ack",
+        "sourceText": "さようなら",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:sayonara-ack",
+        "sourceText": "はい",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "さようなら",
+      "note": "Acoustic はい must not replace a painted さようなら"
+    },
+    {
+      "id": "keep-longer-sayonara-hearing-final",
+      "current": {
+        "id": "parapper:session:turn:sayonara-trunc",
+        "sourceText": "さようならきこえますか",
+        "isFinal": true,
+        "startedAt": 2000,
+        "receivedAt": 3200
+      },
+      "next": {
+        "id": "parapper:session:turn:sayonara-trunc",
+        "sourceText": "さようなら",
+        "isFinal": true,
+        "startedAt": 800,
+        "receivedAt": 4000
+      },
+      "expectedOverlay": "さようならきこえますか",
+      "note": "Backdated truncated final must not erase さようならきこえますか"
     }
   ],
   "paging": [

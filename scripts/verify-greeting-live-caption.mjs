@@ -47,6 +47,9 @@ const REQUIRED_MERGE_IDS = [
   "keep-longer-hearing-final",
   "second-utterance-after-greeting",
   "append-kikoemasu-after-ohayou",
+  "append-kikoemasu-after-sayonara",
+  "keep-sayonara-over-ack",
+  "keep-longer-sayonara-hearing-final",
 ];
 const REQUIRED_PHRASES = [
   "こんにちは",
