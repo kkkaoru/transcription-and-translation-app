@@ -57,15 +57,13 @@ describe("progressive caption reveal", () => {
     expect(advanceProgressiveReveal("こんに", "こん")).toBe("こん");
   });
 
-  it("paints the first grapheme immediately when the plate is empty", () => {
-    expect(immediateProgressiveRevealStart("", "こんにちは")).toBe("こ");
-    expect(immediateProgressiveRevealStart("   ", "こんにちは")).toBe("こ");
+  it("paints the full first hypothesis immediately when the plate is empty", () => {
+    expect(immediateProgressiveRevealStart("", "こんにちは")).toBe("こんにちは");
+    expect(immediateProgressiveRevealStart("   ", "こんにちは")).toBe("こんにちは");
     // Already painted text must not jump ahead of the timer-driven steps.
     expect(immediateProgressiveRevealStart("こ", "こんにちは")).toBe("こ");
-    // Single-grapheme targets are not progressive and snap fully.
     expect(immediateProgressiveRevealStart("", "あ")).toBe("あ");
-    // Multi-grapheme still only seeds the first character (rest is timed).
-    expect(immediateProgressiveRevealStart("", "明日は")).toBe("明");
+    expect(immediateProgressiveRevealStart("", "明日は")).toBe("明日は");
   });
 
   it("keeps per-grapheme delay bounded for long jumps", () => {

@@ -68,12 +68,17 @@ describe("useProgressiveCaptionReveal", () => {
     });
   };
 
-  it("reveals a longer same-turn hypothesis one grapheme at a time", () => {
+  it("paints the full first hypothesis immediately from an empty plate", () => {
     renderCaption(baseCaption({ sourceText: "" }));
     paints = [];
     renderCaption(baseCaption({ sourceText: "こんにちは" }));
-    // First grapheme must paint on the same update — never hold a blank plate
-    // for a full progressive step after the first hypothesis arrives.
+    expect(paints.at(-1)?.sourceText).toBe("こんにちは");
+  });
+
+  it("reveals a longer same-turn hypothesis one grapheme at a time after the first paint", () => {
+    renderCaption(baseCaption({ sourceText: "こ" }));
+    paints = [];
+    renderCaption(baseCaption({ sourceText: "こんにちは" }));
     expect(paints.at(-1)?.sourceText).toBe("こ");
 
     act(() => {
@@ -88,7 +93,7 @@ describe("useProgressiveCaptionReveal", () => {
   });
 
   it("snaps immediately when the utterance id changes mid-reveal", () => {
-    renderCaption(baseCaption({ sourceText: "" }));
+    renderCaption(baseCaption({ sourceText: "こ" }));
     renderCaption(baseCaption({ sourceText: "こんにちは" }));
     expect(paints.at(-1)?.sourceText).toBe("こ");
 
@@ -105,7 +110,7 @@ describe("useProgressiveCaptionReveal", () => {
   it("snaps immediately on same-turn kana-to-kanji rewrites", () => {
     renderCaption(baseCaption({ sourceText: "" }));
     renderCaption(baseCaption({ sourceText: "あしたは" }));
-    expect(paints.at(-1)?.sourceText).toBe("あ");
+    expect(paints.at(-1)?.sourceText).toBe("あしたは");
 
     paints = [];
     renderCaption(baseCaption({ sourceText: "明日は" }));
@@ -122,32 +127,25 @@ describe("useProgressiveCaptionReveal", () => {
       }),
     );
 
-    // Reveal targets the newest paged sentence. Intermediate paints may be
-    // prefixes of 「明日は雨です」 (including 「明」), but must never recreate
-    // the finished first clause that sentence paging would then collapse away.
-    const midRevealPaints: string[] = [];
+    // Empty-plate first paint snaps to the newest paged sentence. The hook then
+    // returns the full caption so overlay paging stays authoritative — never
+    // recreate the finished first clause as a typewriter prefix.
+    expect(paints.at(-1)?.sourceText).toBe("今日は晴れです。明日は雨です");
     act(() => {
-      for (let step = 0; step < 12; step += 1) {
-        vi.advanceTimersByTime(20);
-        const latest = paints.at(-1)?.sourceText;
-        if (typeof latest === "string") {
-          midRevealPaints.push(latest);
-        }
-      }
+      vi.advanceTimersByTime(200);
     });
-
-    expect(midRevealPaints.some((text) => text.includes("今日は晴れです"))).toBe(false);
-    expect(
-      midRevealPaints
-        .filter((text) => text.length > 0 && text !== "今日は晴れです。明日は雨です")
-        .every((text) => "明日は雨です".startsWith(text)),
-    ).toBe(true);
     expect(paints.at(-1)?.sourceText).toBe("今日は晴れです。明日は雨です");
   });
 
   it("does not carry final sentenceEndOffsets onto progressive partial paints", () => {
     const spoken = "こんにちはーきこえますか";
-    renderCaption(baseCaption({ sourceText: "" }));
+    renderCaption(
+      baseCaption({
+        sourceText: "こ",
+        sentenceEndOffsets: [5],
+        softBreakOffsets: [3],
+      }),
+    );
     paints = [];
     renderCaption(
       baseCaption({
@@ -182,7 +180,12 @@ describe("useProgressiveCaptionReveal", () => {
 
   it("does not carry full-text ends onto last-sentence progressive prefixes", () => {
     const full = "短いです今日はとても良い天気です";
-    renderCaption(baseCaption({ sourceText: "" }));
+    renderCaption(
+      baseCaption({
+        sourceText: "今",
+        sentenceEndOffsets: [4],
+      }),
+    );
     paints = [];
     renderCaption(
       baseCaption({
