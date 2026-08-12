@@ -72,17 +72,35 @@ struct ConversionCase {
 /// Table-driven conversion regression for the advisor focus set.
 const CONVERSION_CASES: &[ConversionCase] = &[
     ConversionCase {
+        input: "はし",
+        expected: "橋",
+        // Bare はし currently prefers 箸; isolation stays chopsticks-capable.
+        max_rank: 8,
+        inventory_hint: "はし has 橋/端/箸 rows; no missing quality row",
+    },
+    ConversionCase {
+        input: "はしをわたる",
+        expected: "橋を渡る",
+        max_rank: 1,
+        inventory_hint: "crossing cue をわたる ranks 橋 over isolated 箸",
+    },
+    ConversionCase {
         input: "かいて",
         expected: "書いて",
         max_rank: 1,
         inventory_hint: "かいて has 書いて + 買い手 rows; DEFAULT_CID demotion ranks 書いて first",
     },
     ConversionCase {
-        input: "はし",
-        expected: "橋",
-        // Bare はし currently prefers 箸; soft-prune / ranking backlog.
-        max_rank: 8,
-        inventory_hint: "はし has 橋/端/箸 rows; no missing quality row",
+        input: "かいてください",
+        expected: "書いてください",
+        max_rank: 1,
+        inventory_hint: "request auxiliary keeps 書いて over 描いて",
+    },
+    ConversionCase {
+        input: "あついかべ",
+        expected: "厚い壁",
+        max_rank: 1,
+        inventory_hint: "attributive あつい before かべ ranks thickness 厚い",
     },
     ConversionCase {
         input: "はじ",

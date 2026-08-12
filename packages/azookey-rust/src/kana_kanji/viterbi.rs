@@ -116,6 +116,17 @@ const WAVE_STEM_AFTER_RAIN_PENALTY: f32 = -4.5;
 const FOOD_HEAT_AFTER_FOOD_SUBJECT_BONUS: f32 = 4.5;
 /// Soft-demote weather `暑い` after the same food subject.
 const WEATHER_HEAT_AFTER_FOOD_SUBJECT_PENALTY: f32 = -4.5;
+/// Soft-boost `橋` when the leftover is a crossing cue (`をわたる` / `をとおる`)
+/// so isolated `はし` can stay chopsticks while `はしをわたる` becomes a bridge.
+const BRIDGE_CROSSING_CONTEXT_BONUS: f32 = 4.5;
+/// Soft-boost thickness `厚い` before a physical object noun (`かべ` / `ほん` /
+/// `こおり`) so attributive captions do not keep weather `暑い`.
+const THICKNESS_OBJECT_NOUN_BONUS: f32 = 6.5;
+/// Soft-demote weather/temperature `暑い`/`熱い` in the same attributive slot.
+const THICKNESS_OBJECT_NOUN_HEAT_PENALTY: f32 = -4.5;
+/// Soft-boost te-form `書いて` before a request/try auxiliary so
+/// `かいてください` / `かいてみます` do not keep rarer `描いて`.
+const KAKU_TE_REQUEST_CONTEXT_BONUS: f32 = 4.5;
 /// Soft-demote raw Katakana ruby-id rows before a jodoushi identity when a
 /// conjugational Kanji stem exists for the same reading. Without this, loanword
 /// orthography such as `フリ`+`ます` can beat `降り`+`ます` after bare roots are
@@ -950,6 +961,9 @@ pub fn convert_with_dictionary(
                             + wave_stem_after_rain_penalty(&state, entry)
                             + food_heat_after_food_subject_bonus(&state, entry)
                             + weather_heat_after_food_subject_penalty(&state, entry)
+                            + bridge_crossing_context_bonus(&chars, end, entry)
+                            + thickness_object_noun_context_score(&chars, end, entry)
+                            + kaku_te_request_context_bonus(&chars, end, entry)
                             + short_head_before_person_suffix_penalty(
                                 dictionary, &chars, end, entry,
                             )
@@ -2098,6 +2112,75 @@ fn food_heat_after_food_subject_bonus(state: &PathState, entry: &DictionaryEntry
 fn weather_heat_after_food_subject_penalty(state: &PathState, entry: &DictionaryEntry) -> f32 {
     if entry.surface == "暑い" && path_ends_with_food_subject(state) {
         WEATHER_HEAT_AFTER_FOOD_SUBJECT_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+fn remaining_reading(chars: &[char], end: usize) -> String {
+    chars.get(end..).unwrap_or_default().iter().collect()
+}
+
+fn remaining_has_object_noun(remaining: &str, noun: &str) -> bool {
+    remaining == noun
+        || remaining.strip_prefix(noun).is_some_and(|rest| {
+            rest.is_empty() || rest.starts_with(['が', 'は', 'を', 'の', 'で', 'に', 'も'])
+        })
+}
+
+fn remaining_has_crossing_cue(remaining: &str) -> bool {
+    remaining.starts_with("をわた") || remaining.starts_with("をとお")
+}
+
+fn remaining_has_thickness_object_noun(remaining: &str) -> bool {
+    remaining_has_object_noun(remaining, "かべ")
+        || remaining_has_object_noun(remaining, "ほん")
+        || remaining_has_object_noun(remaining, "こおり")
+}
+
+fn remaining_has_request_or_try_aux(remaining: &str) -> bool {
+    remaining.starts_with("ください")
+        || remaining.starts_with("下さい")
+        || remaining.starts_with("みます")
+}
+
+/// Soft-boost `橋` when leftover speech is a crossing verb. Isolated `はし`
+/// stays chopsticks-capable; `はしでたべる` is unchanged.
+fn bridge_crossing_context_bonus(chars: &[char], end: usize, entry: &DictionaryEntry) -> f32 {
+    if entry.reading != "はし" || entry.surface != "橋" {
+        return NO_SCORE;
+    }
+    if remaining_has_crossing_cue(&remaining_reading(chars, end)) {
+        BRIDGE_CROSSING_CONTEXT_BONUS
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-prefer thickness `厚い` before a physical object noun. Weather `暑い`
+/// and food `熱い` stay available in n-best and keep their other contexts.
+fn thickness_object_noun_context_score(chars: &[char], end: usize, entry: &DictionaryEntry) -> f32 {
+    if entry.reading != "あつい" {
+        return NO_SCORE;
+    }
+    if !remaining_has_thickness_object_noun(&remaining_reading(chars, end)) {
+        return NO_SCORE;
+    }
+    match entry.surface.as_str() {
+        "厚い" => THICKNESS_OBJECT_NOUN_BONUS,
+        "暑い" | "熱い" => THICKNESS_OBJECT_NOUN_HEAT_PENALTY,
+        _ => NO_SCORE,
+    }
+}
+
+/// Soft-boost te-form `書いて` before `ください` / `みます`. Isolated `かいて`
+/// already ranks `書いて`; the continuation otherwise prefers `描いて`.
+fn kaku_te_request_context_bonus(chars: &[char], end: usize, entry: &DictionaryEntry) -> f32 {
+    if entry.surface != "書いて" {
+        return NO_SCORE;
+    }
+    if remaining_has_request_or_try_aux(&remaining_reading(chars, end)) {
+        KAKU_TE_REQUEST_CONTEXT_BONUS
     } else {
         NO_SCORE
     }
@@ -4587,6 +4670,49 @@ mod tests {
                     .next()
                     .expect("public conversion should produce a candidate");
             assert_eq!(candidate.text, expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn prefers_contextual_hashi_atsui_and_kaite_continuations() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        assert!(
+            dictionary.has_system_dictionary(),
+            "quality test requires the official dictionary"
+        );
+        for (input, expected) in [
+            ("はしをわたる", "橋を渡る"),
+            ("はしをとおる", "橋を通る"),
+            ("はしでたべる", "箸で食べる"),
+            ("はし", "箸"),
+            ("あついかべ", "厚い壁"),
+            ("あついほん", "厚い本"),
+            ("あついこおり", "厚い氷"),
+            ("あついひ", "暑い日"),
+            ("あついすーぷは", "熱いスープは"),
+            ("かいて", "書いて"),
+            ("かいてください", "書いてください"),
+            ("かいてみます", "書いてみます"),
+            ("かいてある", "書いてある"),
+        ] {
+            let candidates = convert_with_dictionary(
+                input,
+                &dictionary,
+                ConversionOptions { n_best: 16, ..ConversionOptions::default() },
+            );
+            let top = candidates.first().expect("public conversion should produce a candidate");
+            assert_eq!(
+                top.text,
+                expected,
+                "input: {input}; n-best={:?}",
+                candidates.iter().take(5).map(|candidate| &candidate.text).collect::<Vec<_>>()
+            );
         }
     }
 
