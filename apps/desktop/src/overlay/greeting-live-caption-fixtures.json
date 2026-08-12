@@ -140,6 +140,12 @@
       "input": "おはようございます。聞こえますか。",
       "expectedOverlay": "おはようございます聞こえますか。",
       "note": "Full morning greeting must not be paged away by ZenZ 。"
+    },
+    {
+      "id": "strip-sayonara-period-kana",
+      "input": "さようなら。きこえますか",
+      "expectedOverlay": "さようならきこえますか",
+      "note": "ZenZ period before kana きこえますか must not page さようなら"
     }
   ],
   "merge": [
