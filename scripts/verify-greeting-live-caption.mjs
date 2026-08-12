@@ -42,6 +42,8 @@ const REQUIRED_SANITIZE_IDS = [
 const REQUIRED_MERGE_IDS = [
   "append-kikoemasu",
   "keep-greeting-over-ack",
+  "keep-greeting-over-un",
+  "keep-greeting-over-ee",
   "keep-longer-hearing-final",
   "second-utterance-after-greeting",
   "append-kikoemasu-after-ohayou",
@@ -55,6 +57,8 @@ const REQUIRED_PHRASES = [
   "おはよう",
   "おはようございます",
   "さようなら",
+  "うん",
+  "ええ",
 ];
 
 export const loadGreetingLiveCaptionFixtures = (root = repositoryRoot) => {
