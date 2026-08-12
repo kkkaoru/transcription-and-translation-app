@@ -133,6 +133,11 @@ const KAKU_TE_REQUEST_CONTEXT_BONUS: f32 = 4.5;
 const EDGE_AFTER_SPATIAL_NOUN_BONUS: f32 = 6.5;
 /// Soft-demote shame `恥`/`恥じ` in the same spatial-possessive slot.
 const SHAME_AFTER_SPATIAL_NOUN_PENALTY: f32 = -4.5;
+/// Soft-boost paper `紙` when leftover speech is `の`+`はじ` so `かみのはじ`
+/// becomes `紙の端` instead of literary `神の恥`. Isolated `かみ` stays 神.
+const PAPER_BEFORE_EDGE_POSSESSIVE_BONUS: f32 = 6.5;
+/// Soft-demote deity `神` in the same leftover slot.
+const GOD_BEFORE_EDGE_POSSESSIVE_PENALTY: f32 = -4.5;
 /// Soft-boost draw `描いて`/`描く` after a picture object (`絵を` / `画を`)
 /// so `えをかいて` does not keep write `書いて`. Isolated `かいて` and
 /// `かいてください` stay write-capable.
@@ -984,6 +989,7 @@ pub fn convert_with_dictionary(
                             + thickness_object_noun_context_score(&state, &chars, end, entry)
                             + kaku_te_request_context_bonus(&chars, end, entry)
                             + edge_after_spatial_possessive_score(&state, entry)
+                            + kami_before_edge_possessive_score(&chars, end, entry)
                             + draw_after_picture_object_score(&state, entry)
                             + scratch_after_shame_object_score(&state, entry)
                             + haji_before_scratch_verb_score(&chars, end, entry)
@@ -2155,6 +2161,10 @@ fn remaining_has_crossing_cue(remaining: &str) -> bool {
     remaining.starts_with("をわた") || remaining.starts_with("をとお")
 }
 
+fn remaining_has_edge_possessive(remaining: &str) -> bool {
+    remaining.starts_with("のはじ")
+}
+
 fn remaining_has_thickness_object_noun(remaining: &str) -> bool {
     remaining_has_object_noun(remaining, "かべ")
         || remaining_has_object_noun(remaining, "ほん")
@@ -2250,7 +2260,7 @@ fn kaku_te_request_context_bonus(chars: &[char], end: usize, entry: &DictionaryE
 
 /// Physical/spatial nouns whose `の`+`はじ` continuation is an edge, not shame.
 const SPATIAL_EDGE_NOUNS: &[&str] =
-    &["道", "橋", "机", "壁", "駅", "ページ", "箱", "板", "窓", "床", "角", "線"];
+    &["道", "橋", "机", "壁", "駅", "ページ", "箱", "板", "窓", "床", "角", "線", "紙", "髪"];
 
 fn path_ends_with_spatial_possessive(state: &PathState) -> bool {
     let prefix = state.text.as_str();
@@ -2277,6 +2287,19 @@ fn edge_after_spatial_possessive_score(state: &PathState, entry: &DictionaryEntr
     match entry.surface.as_str() {
         "端" => EDGE_AFTER_SPATIAL_NOUN_BONUS,
         "恥" | "恥じ" => SHAME_AFTER_SPATIAL_NOUN_PENALTY,
+        _ => NO_SCORE,
+    }
+}
+
+/// Soft-prefer paper `紙` when leftover speech is the edge possessive `のはじ`.
+/// Isolated `かみ`, `かみさま`, and `かみのけ` stay on their own priors.
+fn kami_before_edge_possessive_score(chars: &[char], end: usize, entry: &DictionaryEntry) -> f32 {
+    if entry.reading != "かみ" || !remaining_has_edge_possessive(&remaining_reading(chars, end)) {
+        return NO_SCORE;
+    }
+    match entry.surface.as_str() {
+        "紙" => PAPER_BEFORE_EDGE_POSSESSIVE_BONUS,
+        "神" => GOD_BEFORE_EDGE_POSSESSIVE_PENALTY,
         _ => NO_SCORE,
     }
 }
@@ -4888,6 +4911,10 @@ mod tests {
             ("えをかいて", "絵を描いて"),
             ("もじをかいて", "文字を書いて"),
             ("はじをかく", "恥を掻く"),
+            ("かみのはじ", "紙の端"),
+            ("かみ", "神"),
+            ("かみさま", "神様"),
+            ("かみのけ", "髪の毛"),
         ] {
             let candidates = convert_with_dictionary(
                 input,

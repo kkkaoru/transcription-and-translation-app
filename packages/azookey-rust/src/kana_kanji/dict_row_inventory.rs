@@ -32,6 +32,9 @@ const REQUIRED_SURFACES: &[RequiredSurface] = &[
     RequiredSurface { reading: "はし", surface: "端", note: "edge (hashi)" },
     RequiredSurface { reading: "はし", surface: "箸", note: "chopsticks distractor" },
     RequiredSurface { reading: "はじ", surface: "端", note: "edge (haji)" },
+    RequiredSurface { reading: "かみ", surface: "紙", note: "paper" },
+    RequiredSurface { reading: "かみ", surface: "神", note: "deity distractor" },
+    RequiredSurface { reading: "かみ", surface: "髪", note: "hair distractor" },
     // あつい / ひ / ひな
     RequiredSurface { reading: "あつい", surface: "暑い", note: "weather-hot" },
     RequiredSurface { reading: "あつい", surface: "熱い", note: "temperature-hot" },
@@ -51,6 +54,7 @@ const INVENTORY_READINGS: &[&str] = &[
     "かく",
     "はし",
     "はじ",
+    "かみ",
     "はしのはじ",
     "あつい",
     "ひ",
@@ -149,6 +153,12 @@ const CONVERSION_CASES: &[ConversionCase] = &[
         expected: "恥を掻く",
         max_rank: 1,
         inventory_hint: "shame object 恥を ranks 掻く over 書く",
+    },
+    ConversionCase {
+        input: "かみのはじ",
+        expected: "紙の端",
+        max_rank: 1,
+        inventory_hint: "paper かみ + のはじ ranks 紙の端 over literary 神の恥",
     },
     ConversionCase {
         input: "はしのはじからものがおちてます",
