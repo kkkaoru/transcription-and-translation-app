@@ -320,6 +320,12 @@
       "input": "こんばんはー会えますか",
       "expectedOverlay": "こんばんはー聞こえますか",
       "note": "Prolonged こんばんは + 会えますか"
+    },
+    {
+      "id": "ohayou-hearing-prolonged-kanji",
+      "input": "おはようー会えますか",
+      "expectedOverlay": "おはようー聞こえますか",
+      "note": "Prolonged おはよう + 会えますか"
     }
   ],
   "merge": [
