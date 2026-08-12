@@ -117,6 +117,60 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
         "こんにちはきこえますか",
       );
     });
+
+    it("grows past a mid-stream early final whose surface is not a clean prefix", () => {
+      const frozen = "電車が遅延してただから僕は学校";
+      const complete = "電車が遅延してたから僕は学校に行かない";
+      expect(complete.startsWith(frozen)).toBe(false);
+      expect(complete).toContain("に行かない");
+      expect(captionTextLines({ key: "source", text: complete, maxChars: 28 }).join("")).toBe(
+        complete,
+      );
+
+      const earlyFinal = expectMerged(
+        mergeCaptionPayload(
+          caption({
+            id: "parapper:session:turn:delay",
+            sourceText: frozen,
+            azookeyInputText: "でんしゃがちえんしてただからぼくはがっこう",
+            provisional: true,
+            startedAt: 3_000,
+            receivedAt: 3_000,
+          }),
+          caption({
+            id: "parapper:session:turn:delay",
+            sourceText: frozen,
+            azookeyInputText: "でんしゃがちえんしてただからぼくはがっこう",
+            isFinal: true,
+            startedAt: 1_000,
+            receivedAt: 4_000,
+          }),
+        ),
+      );
+      expect(earlyFinal.sourceText).toBe(frozen);
+      expect(earlyFinal.isFinal).toBe(true);
+
+      const continued = expectMerged(
+        mergeCaptionPayload(
+          earlyFinal,
+          caption({
+            id: "parapper:session:turn:delay",
+            sourceText: complete,
+            azookeyInputText: "でんしゃがちえんしてただからぼくはがっこうにいかない",
+            provisional: true,
+            startedAt: 1_200,
+            receivedAt: 5_200,
+          }),
+        ),
+      );
+      expect(continued.sourceText).toBe(complete);
+      expect(continued.sourceText).toContain("に行かない");
+      expect(
+        captionTextLines({ key: "source", text: continued.sourceText, maxChars: 28 }).join(""),
+      ).toBe(complete);
+      expect(shouldProgressivelyReveal(frozen, complete)).toBe(false);
+      expect(advanceProgressiveReveal(frozen, complete)).toBe(complete);
+    });
   });
 
   describe("finished clauses leave the plate (POS / punctuation / offsets)", () => {

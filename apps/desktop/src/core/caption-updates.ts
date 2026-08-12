@@ -525,11 +525,37 @@ const isStaleNormalizedAgainstProvisional = (
   return currentText.startsWith(nextText) && currentText !== nextText;
 };
 
+const sharedGraphemePrefixLength = (left: string, right: string): number => {
+  const leftChars = [...left];
+  const rightChars = [...right];
+  const limit = Math.min(leftChars.length, rightChars.length);
+  let shared = 0;
+  while (shared < limit && leftChars[shared] === rightChars[shared]) {
+    shared += 1;
+  }
+  return shared;
+};
+
 /**
- * After `isFinal`, accept only a strict longer prefix continuation on the same
- * id (early final + more speech). Drop late shorter/equal interims and kana
- * rewrites so the converted surface is not replaced by a stale raw hypothesis.
- * Genuinely new utterances should arrive with a new Parapper turn id.
+ * True when `next` is a longer same-turn revision of `current` even though
+ * conversion rewrote a mid-span, so `next` is not a clean prefix of `current`.
+ */
+const isLongerSameUtteranceRevision = (currentText: string, nextText: string): boolean => {
+  const currentChars = [...currentText];
+  const nextChars = [...nextText];
+  if (nextChars.length <= currentChars.length || currentChars.length === 0) {
+    return false;
+  }
+  const shared = sharedGraphemePrefixLength(currentText, nextText);
+  return shared >= Math.max(MIN_OVERLAP_CHARS, Math.ceil(currentChars.length / 2));
+};
+
+/**
+ * After `isFinal`, accept a same-id continuation that is still the same
+ * utterance: a strict longer prefix, a growing AzooKey reading, or a longer
+ * surface that keeps most of the painted head. Drop late shorter/equal
+ * interims, raw kana rewrites, and unrelated same-id speech. Genuinely new
+ * utterances should arrive with a new Parapper turn id.
  */
 const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload): boolean => {
   const currentText = trim(current.sourceText);
@@ -537,7 +563,27 @@ const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload
   if (!nextText) {
     return true;
   }
-  return !(nextText.startsWith(currentText) && nextText !== currentText);
+  if (nextText.startsWith(currentText) && nextText !== currentText) {
+    return false;
+  }
+  const currentReading = trimmedAzookeyReading(current);
+  const nextReading = trimmedAzookeyReading(next);
+  if (currentReading && nextReading) {
+    if (nextReading.startsWith(currentReading) && nextReading !== currentReading) {
+      return false;
+    }
+    // Same audio span with a longer converted surface (early final cut the
+    // tail). A raw kana echo of that reading is still a late ASR rewrite.
+    if (
+      nextReading === currentReading &&
+      isLongerSameUtteranceRevision(currentText, nextText) &&
+      nextText !== nextReading
+    ) {
+      return false;
+    }
+    return true;
+  }
+  return !isLongerSameUtteranceRevision(currentText, nextText);
 };
 
 const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {

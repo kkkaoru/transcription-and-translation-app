@@ -2022,6 +2022,131 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("accepts a longer rewritten same-id continuation after an early mid-stream final", () => {
+    // Long utterances often finalize a mid-stream hypothesis (extra だ, missing
+    // tail). The later revision is not a clean prefix of that frozen surface, so
+    // a strict startsWith guard would keep 「…僕は学校」 forever.
+    const midStreamFinal = caption({
+      id: "parapper:session:turn:delay",
+      sourceText: "電車が遅延してただから僕は学校",
+      azookeyInputText: "でんしゃがちえんしてただからぼくはがっこう",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const longerContinuation = caption({
+      id: "parapper:session:turn:delay",
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+      azookeyInputText: "でんしゃがちえんしてただからぼくはがっこうにいかない",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 5_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(midStreamFinal, longerContinuation)).toMatchObject({
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+      isFinal: false,
+      provisional: true,
+    });
+  });
+
+  it("accepts a longer rewritten same-id continuation after final without readings", () => {
+    const midStreamFinal = caption({
+      id: "parapper:session:turn:delay-noreading",
+      sourceText: "電車が遅延してただから僕は学校",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const longerContinuation = caption({
+      id: "parapper:session:turn:delay-noreading",
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 5_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(midStreamFinal, longerContinuation)).toMatchObject({
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+    });
+  });
+
+  it("accepts a longer converted surface after final when the reading is already complete", () => {
+    const fullReading = "でんしゃがちえんしてただからぼくはがっこうにいかない";
+    const midStreamFinal = caption({
+      id: "parapper:session:turn:delay-full-reading",
+      sourceText: "電車が遅延してただから僕は学校",
+      azookeyInputText: fullReading,
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const longerConversion = caption({
+      id: "parapper:session:turn:delay-full-reading",
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+      azookeyInputText: fullReading,
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 5_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(midStreamFinal, longerConversion)).toMatchObject({
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+    });
+  });
+
+  it("accepts a backdated longer rewritten final after an early mid-stream final", () => {
+    // 052c80c already lets a later same-id final merge despite backdated
+    // startedAt. The surface rewrite (してただ → してた) must still replace the
+    // frozen mid-stream hypothesis so the tail can paint.
+    const midStreamFinal = caption({
+      id: "parapper:session:turn:delay-final",
+      sourceText: "電車が遅延してただから僕は学校",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const longerFinal = caption({
+      id: "parapper:session:turn:delay-final",
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+      translationText: "",
+      startedAt: 800,
+      receivedAt: 5_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(midStreamFinal, longerFinal)).toMatchObject({
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+      isFinal: true,
+    });
+  });
+
   it("accepts a same-id continuation after final so newer characters still paint", () => {
     const finalized = caption({
       id: "u-1",
