@@ -58,6 +58,36 @@
       "input": "こんばんはあえますか",
       "expectedOverlay": "こんばんはきこえますか",
       "note": "Evening greeting uses the same hearing repair"
+    },
+    {
+      "id": "morning-hearing",
+      "input": "おはようあえますか",
+      "expectedOverlay": "おはようきこえますか",
+      "note": "Short morning greeting + き-drop"
+    },
+    {
+      "id": "ohayou-gozaimasu-hearing-kanji",
+      "input": "おはようございます会えますか",
+      "expectedOverlay": "おはようございます聞こえますか",
+      "note": "Full morning greeting + 会えますか"
+    },
+    {
+      "id": "sayonara-hearing",
+      "input": "さようならおえますか",
+      "expectedOverlay": "さようならきこえますか",
+      "note": "Farewell greeting + おえますか"
+    },
+    {
+      "id": "strip-zenz-period-kana",
+      "input": "こんにちは。きこえますか",
+      "expectedOverlay": "こんにちはきこえますか",
+      "note": "ZenZ period before kana きこえますか must not page the greeting"
+    },
+    {
+      "id": "strip-ohayou-period",
+      "input": "おはよう。聞こえますか。",
+      "expectedOverlay": "おはよう聞こえますか。",
+      "note": "Morning greeting must not be paged away by ZenZ 。"
     }
   ],
   "merge": [
@@ -139,6 +169,26 @@
       },
       "expectedOverlayContains": "きこえますか",
       "note": "A later Parapper turn after a finalized greeting must still paint"
+    },
+    {
+      "id": "append-kikoemasu-after-ohayou",
+      "current": {
+        "id": "parapper:session:turn:ohayou",
+        "sourceText": "おはよう",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-cont",
+        "sourceText": "きこえますか",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1450,
+        "receivedAt": 1700
+      },
+      "expectedOverlay": "おはようきこえますか",
+      "note": "Early-finalized おはよう + close hearing continuation"
     }
   ]
 }

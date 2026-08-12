@@ -32,12 +32,17 @@ const REQUIRED_SANITIZE_IDS = [
   "hearing-ae-kanji",
   "concat-hearing-kana",
   "strip-zenz-period",
+  "morning-hearing",
+  "ohayou-gozaimasu-hearing-kanji",
+  "sayonara-hearing",
+  "strip-zenz-period-kana",
 ];
 const REQUIRED_MERGE_IDS = [
   "append-kikoemasu",
   "keep-greeting-over-ack",
   "keep-longer-hearing-final",
   "second-utterance-after-greeting",
+  "append-kikoemasu-after-ohayou",
 ];
 const REQUIRED_PHRASES = [
   "こんにちは",
@@ -45,6 +50,9 @@ const REQUIRED_PHRASES = [
   "あえますか",
   "会えますか",
   "こんにちは。聞こえますか。",
+  "おはよう",
+  "おはようございます",
+  "さようなら",
 ];
 
 export const loadGreetingLiveCaptionFixtures = (root = repositoryRoot) => {

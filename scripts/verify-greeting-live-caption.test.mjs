@@ -29,6 +29,14 @@ describe("greeting live-caption regression harness", () => {
       fixtures.merge.find((row) => row.id === "append-kikoemasu")?.expectedOverlay,
       "こんにちはきこえますか",
     );
+    assert.equal(
+      fixtures.sanitize.find((row) => row.id === "morning-hearing")?.expectedOverlay,
+      "おはようきこえますか",
+    );
+    assert.equal(
+      fixtures.merge.find((row) => row.id === "append-kikoemasu-after-ohayou")?.expectedOverlay,
+      "おはようきこえますか",
+    );
     assert.equal(GREETING_FIXTURES_RELATIVE_PATH.endsWith(".json"), true);
   });
 
