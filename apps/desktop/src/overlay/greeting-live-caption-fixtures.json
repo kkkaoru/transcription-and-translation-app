@@ -16,7 +16,10 @@
     "ohayouExpectedOverlay": "おはようきこえますか",
     "konbanwaWav": "apps/desktop/src/overlay/fixtures/greeting-konbanwa.wav",
     "konbanwaSpoken": "こんばんは、きこえますか",
-    "konbanwaExpectedOverlay": "こんばんはきこえますか"
+    "konbanwaExpectedOverlay": "こんばんはきこえますか",
+    "ohayouGozaimasuWav": "apps/desktop/src/overlay/fixtures/greeting-ohayou-gozaimasu.wav",
+    "ohayouGozaimasuSpoken": "おはようございます、きこえますか",
+    "ohayouGozaimasuExpectedOverlay": "おはようございますきこえますか"
   },
   "sanitize": [
     {
@@ -526,6 +529,27 @@
       "maxChars": 28,
       "expectedLines": ["おはようきこえますか"],
       "note": "Do not wrap after おはよう so the hearing check stays visible"
+    },
+    {
+      "id": "stale-vibrato-offset-ohayou-gozaimasu",
+      "text": "おはようございますきこえますか",
+      "sentenceEndOffsets": [9],
+      "expectedVisible": "おはようございますきこえますか",
+      "note": "Stale Vibrato offset after おはようございます must not page away きこえますか"
+    },
+    {
+      "id": "zenz-period-ohayou-gozaimasu-after-sanitize",
+      "text": "おはようございます。聞こえますか。",
+      "sanitize": true,
+      "expectedVisible": "おはようございます聞こえますか。",
+      "note": "Sanitize ZenZ 。 then keep おはようございます + hearing check on one plate"
+    },
+    {
+      "id": "no-soft-wrap-after-ohayou-gozaimasu",
+      "text": "おはようございますきこえますか",
+      "maxChars": 28,
+      "expectedLines": ["おはようございますきこえますか"],
+      "note": "Do not wrap after おはようございます so the hearing check stays visible"
     }
   ]
 }
