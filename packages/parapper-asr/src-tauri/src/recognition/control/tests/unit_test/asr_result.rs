@@ -617,6 +617,232 @@ fn turn_runtime_failed_completion_keeps_visible_text_and_uncovered_tail() {
 }
 
 #[test]
+fn turn_runtime_pending_next_utterance_preempts_rerecognition_and_keeps_visible_tail() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut interim = interim_request_for_turn(1, 1);
+    interim.source_audio = (0..100).map(|sample| sample as f32).collect();
+    interim.source_vad_results = vec![vad(true)];
+    interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "全体");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = (0..150).map(|sample| sample as f32).collect();
+    completion.source_vad_results = vec![vad(true), vad(true)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(150)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime)
+        .in_flight(completion.clone())
+        .pending_segment(3, None, SegmentCloseReason::InterimResultSilenceReached, 200..300);
+    asr_handle.complete_request_with_text(&completion, "全体");
+    runtime.step();
+
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "the completed turn must finalize from the visible draft instead of waiting on rerecognition"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "queued next-utterance ASR must dispatch instead of occupying the slot with rerecognition",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(3));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(200), GlobalSampleIndex(300))
+    );
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs
+        .iter()
+        .find(|output| output.is_final && output.turn_id == 1)
+        .expect("turn 1 must emit a final caption");
+    assert_eq!(final_output.text, "全体。");
+    assert_eq!(final_output.segment_id, 1);
+    assert_eq!(
+        final_output.phrase,
+        (0..150).map(|sample| sample as f32).collect::<Vec<_>>(),
+        "preempting rerecognition must keep visible text and uncovered tail audio"
+    );
+}
+
+#[test]
+fn turn_runtime_in_flight_rerecognition_yields_to_pending_next_utterance() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut interim = interim_request_for_turn(1, 1);
+    interim.source_audio = (0..100).map(|sample| sample as f32).collect();
+    interim.source_vad_results = vec![vad(true)];
+    interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "全体");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = (0..150).map(|sample| sample as f32).collect();
+    completion.source_vad_results = vec![vad(true), vad(true)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(150)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "全体");
+    runtime.step();
+
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("completion without a newer pending utterance should start rerecognition");
+    assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        200..300,
+    );
+    runtime.step();
+
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "in-flight rerecognition must yield so the prior turn can finalize from visible text"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "queued next-utterance ASR must take the slot from in-flight rerecognition",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(3));
+
+    asr_handle.complete_request_with_text(&rerecognition, "短い");
+    runtime.step();
+
+    let dispatched_after_late_result = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("a late rerecognition result must not steal the next-utterance slot");
+    assert_eq!(dispatched_after_late_result.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched_after_late_result.target.turn_id, TurnId(3));
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs
+        .iter()
+        .find(|output| output.is_final && output.turn_id == 1)
+        .expect("turn 1 must keep its final caption");
+    assert_eq!(
+        final_output.text, "全体。",
+        "a late rerecognition result must not shorten the already-final visible text"
+    );
+    assert_eq!(
+        final_output.phrase,
+        (0..150).map(|sample| sample as f32).collect::<Vec<_>>(),
+        "a late rerecognition result must not drop uncovered tail audio"
+    );
+}
+
+#[test]
+fn turn_runtime_same_turn_continuation_does_not_preempt_rerecognition() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    let mut interim = interim_request_for_turn(1, 1);
+    interim.source_audio = (0..100).map(|sample| sample as f32).collect();
+    interim.source_vad_results = vec![vad(true)];
+    interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "全体");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = (0..150).map(|sample| sample as f32).collect();
+    completion.source_vad_results = vec![vad(true), vad(true)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(150)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "全体");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition)
+    );
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimResultSilenceReached,
+        150..200,
+    );
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "a same-turn continuation must wait for rerecognition instead of stealing the slot"
+    );
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "the open utterance must stay open for the continuation after rerecognition"
+    );
+    assert_eq!(runtime.pending.asr_segments.len(), 1);
+}
+
+#[test]
 fn turn_runtime_blank_replace_keeps_visible_text_and_uncovered_tail() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)

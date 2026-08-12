@@ -47,6 +47,11 @@ impl RecognitionSession {
         if self.requests.in_flight_request.is_some() {
             return false;
         }
+        if self.pending_asr_preempts_rerecognition(turn_id) {
+            // A newer utterance is already queued. Occupying the single ASR
+            // slot with follow-up rerecognition would delay its first hypothesis.
+            return false;
+        }
         let Some((
             draft_route,
             mut detected_language,
@@ -125,6 +130,31 @@ impl RecognitionSession {
         self.requests.last_dispatched = Some(in_flight);
         self.stamp_asr_dispatch(turn_id);
         true
+    }
+
+    pub(in crate::recognition) fn yield_rerecognition_slot_for_next_utterance(&mut self) {
+        let Some(request) = self.requests.in_flight_request.as_ref() else {
+            return;
+        };
+        if request.kind != AsrTaskKind::Rerecognition {
+            return;
+        }
+        let turn_id = request.target.turn_id.0;
+        if !self.pending_asr_preempts_rerecognition(turn_id) {
+            return;
+        }
+        // Drop the slot so finalization is not blocked by this follow-up ASR.
+        // The late result is ignored (no in-flight / mismatch). Visible text
+        // and uncovered tail already live on the draft.
+        self.requests.in_flight_request = None;
+        self.requests.pending_rerecognition_purpose = None;
+        self.complete_turn_without_grammar(turn_id);
+    }
+
+    fn pending_asr_preempts_rerecognition(&self, rerecognition_turn_id: u64) -> bool {
+        self.pending.asr_segments.iter().any(|segment| {
+            !self.pending_segment_blocks_finalization(segment, rerecognition_turn_id)
+        })
     }
 
     pub(in crate::recognition) fn complete_or_continue_turn_with_namo(&mut self, turn_id: u64) {

@@ -167,6 +167,7 @@ impl RecognitionSession {
     }
 
     pub(in crate::recognition) fn dispatch_next_asr_request_if_idle(&mut self) {
+        self.yield_rerecognition_slot_for_next_utterance();
         if self.requests.in_flight_request.is_some() {
             return;
         }
