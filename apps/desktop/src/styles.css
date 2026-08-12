@@ -650,7 +650,7 @@ button:disabled {
   margin: 0;
   padding: 0 16px 12px;
   color: var(--muted);
-  font-size: calc(var(--font-size) * 0.92);
+  font-size: var(--font-size-sm);
   line-height: 1.35;
 }
 
