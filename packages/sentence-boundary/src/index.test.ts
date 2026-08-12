@@ -48,6 +48,10 @@ describe("Japanese sentence-end detection", () => {
     expect(
       selectVisibleCaptionSentence("明日の天気は晴れ水確率は60%", { sentenceEndOffsets: [6] }),
     ).toBe("明日の天気は晴れ水確率は60%");
+    const topicThenLong = "明日の天気はこれから午後の予定と明日の議題についての確認";
+    expect(selectVisibleCaptionSentence(topicThenLong, { sentenceEndOffsets: [6] })).toBe(
+      topicThenLong,
+    );
   });
 
   it("does not treat また as a past-tense sentence end", () => {
@@ -91,14 +95,14 @@ describe("Japanese sentence-end detection", () => {
   });
 
   it("uses the AzooKey reading only when it is the display surface", () => {
-    const reading = "きょうははれですこれから午後の予定と明日の議題";
+    const reading = "きょうははれですこれから午後の予定と明日の議題についての確認";
     expect(
       detectCaptionSentenceEnds(reading, {
         azookeyInputText: reading,
       }),
     ).toEqual([8]);
     expect(
-      detectCaptionSentenceEnds("今日は晴れですこれから午後の予定と明日の議題", {
+      detectCaptionSentenceEnds("今日は晴れですこれから午後の予定と明日の議題についての確認", {
         azookeyInputText: reading,
       }),
     ).toEqual([7]);
@@ -167,10 +171,10 @@ describe("Vibrato POS offsets page messy live speech", () => {
       visible: "きょうははれですあしたはあめ",
     },
     {
-      label: "かなだけのASRで次節が先頭以上なら切替",
-      text: "きょうははれですこれから午後の予定と明日の議題",
+      label: "かなだけのASRで次節が先頭の2倍以上なら切替",
+      text: "きょうははれですこれから午後の予定と明日の議題についての確認",
       sentenceEndOffsets: [8],
-      visible: "これから午後の予定と明日の議題",
+      visible: "これから午後の予定と明日の議題についての確認",
     },
   ];
 
@@ -308,12 +312,31 @@ const discardedLead = (text: string, visible: string): string => {
 };
 
 describe("heuristic paging invariants (unknown utterances)", () => {
-  it("never replaces a copula lead with a shorter, equal, or one-mora-longer remainder", () => {
-    const leads = ["準備ができました", "説明します", "確認です", "終わります", "学生です"];
-    const tails = ["次", "続き", "質問を", "田中さん", "次の議題", "きこえますか"];
+  const remainderOwnsPlate = (lead: string, tail: string): boolean =>
+    scalarCount(tail) >= 2 * scalarCount(lead);
+
+  it("never pages a copula split unless the next span is at least twice the lead", () => {
+    const leads = [
+      "準備ができました",
+      "説明します",
+      "確認です",
+      "終わります",
+      "学生です",
+      "本日は説明します",
+      "準備を進めています",
+    ];
+    const tails = [
+      "次",
+      "続き",
+      "質問を",
+      "田中さん",
+      "次の議題",
+      "きこえますか",
+      "これから詳細を共有します",
+    ];
     for (const lead of leads) {
       for (const tail of tails) {
-        if (scalarCount(tail) > scalarCount(lead) + 1) {
+        if (remainderOwnsPlate(lead, tail)) {
           continue;
         }
         const text = `${lead}${tail}`;
@@ -325,13 +348,18 @@ describe("heuristic paging invariants (unknown utterances)", () => {
       }
     }
     expect(selectVisibleCaptionSentence("確認です次の議題")).toBe("確認です次の議題");
-    expect(selectVisibleCaptionSentence("説明しますきこえますか")).toBe("説明しますきこえますか");
+    expect(selectVisibleCaptionSentence("本日は説明しますこれから詳細を共有します")).toBe(
+      "本日は説明しますこれから詳細を共有します",
+    );
+    expect(selectVisibleCaptionSentence("準備を進めていますこれから詳細を共有します")).toBe(
+      "準備を進めていますこれから詳細を共有します",
+    );
   });
 
-  it("pages after a copula only when the next span is clearly longer than the lead", () => {
+  it("pages after a copula only when the next span is at least twice the lead", () => {
     const lead = "終わりです";
     const tail = "これから午後の予定と明日の議題を確認します";
-    expect(scalarCount(tail)).toBeGreaterThan(scalarCount(lead) + 1);
+    expect(scalarCount(tail)).toBeGreaterThanOrEqual(2 * scalarCount(lead));
     expect(selectVisibleCaptionSentence(`${lead}${tail}`)).toBe(tail);
   });
 
@@ -349,12 +377,28 @@ describe("heuristic paging invariants (unknown utterances)", () => {
     );
   });
 
-  it("never replaces a copula lead with a shorter, equal, or one-mora-longer Vibrato remainder", () => {
-    const leads = ["準備ができました", "説明します", "確認です", "終わります", "短いです"];
-    const tails = ["次", "続き", "続く文", "質問を", "田中さん", "次の議題", "きこえますか"];
+  it("never pages a Vibrato copula split unless the next span is at least twice the lead", () => {
+    const leads = [
+      "準備ができました",
+      "説明します",
+      "確認です",
+      "終わります",
+      "短いです",
+      "準備を進めています",
+    ];
+    const tails = [
+      "次",
+      "続き",
+      "続く文",
+      "質問を",
+      "田中さん",
+      "次の議題",
+      "きこえますか",
+      "これから詳細を共有します",
+    ];
     for (const lead of leads) {
       for (const tail of tails) {
-        if (scalarCount(tail) > scalarCount(lead) + 1) {
+        if (scalarCount(tail) >= 2 * scalarCount(lead)) {
           continue;
         }
         const text = `${lead}${tail}`;
@@ -375,7 +419,7 @@ describe("heuristic paging invariants (unknown utterances)", () => {
   it("pages a Vibrato copula offset only when the next span dominates the lead", () => {
     const lead = "終わりです";
     const tail = "これから午後の予定と明日の議題を確認します";
-    expect(scalarCount(tail)).toBeGreaterThan(scalarCount(lead) + 1);
+    expect(scalarCount(tail)).toBeGreaterThanOrEqual(2 * scalarCount(lead));
     expect(
       selectVisibleCaptionSentence(`${lead}${tail}`, { sentenceEndOffsets: [scalarCount(lead)] }),
     ).toBe(tail);
@@ -411,7 +455,7 @@ describe("heuristic paging invariants (unknown utterances)", () => {
         continue;
       }
       const punctBoundary = /[。．！？!?]$/u.test(lead);
-      expect(punctBoundary || scalarCount(visible) > scalarCount(lead) + 1, text).toBe(true);
+      expect(punctBoundary || scalarCount(visible) >= 2 * scalarCount(lead), text).toBe(true);
     }
   });
 });

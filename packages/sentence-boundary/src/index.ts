@@ -152,13 +152,13 @@ const prefixEndsWithPunct = (prefix: string): boolean => {
 };
 
 /**
- * Copula paging may replace the lead only when the next span is clearly the
- * majority — strictly longer by more than one scalar. Equal splits and
- * one-mora near-ties (`学生です`+`きこえますか`) are ambiguous, so the full
- * longer surface stays. Punctuation still pages.
+ * Copula paging may replace the lead only when the next span is at least twice
+ * as long — two-thirds of the utterance. Mid-vs-mid splits (8 vs 12) and ます
+ * stems with a merely-longer tail are ambiguous, so the full longer surface
+ * stays. Punctuation still pages.
  */
 const remainderDominatesPrefix = (prefix: string, remainder: string): boolean =>
-  codePoints(remainder.trimStart()).length > codePoints(prefix.trimEnd()).length + 1;
+  codePoints(remainder.trimStart()).length >= 2 * codePoints(prefix.trimEnd()).length;
 
 const startsClauseContinuation = (remainder: string, english: boolean): boolean => {
   const next = remainder.trimStart();
@@ -215,8 +215,8 @@ const shouldIgnoreSentenceEndBeforeContinuation = (
   if (startsClauseContinuation(remainder, false) || startsTaraContinuation(prefix, remainder)) {
     return true;
   }
-  // Copula/ます offsets must not replace the lead unless the next span is
-  // clearly longer (more than a one-mora near-tie). Punctuation still pages.
+  // Copula/ます offsets must not replace the lead unless the next span is at
+  // least twice as long. Punctuation still pages.
   if (!prefixEndsWithPunct(trimmedPrefix) && !remainderDominatesPrefix(trimmedPrefix, next)) {
     return true;
   }
@@ -321,8 +321,8 @@ export const selectVisibleCaptionSentence = (
     return "";
   }
   // Punctuation still pages. Heuristic and Vibrato copula/ます ends page only
-  // when the next span is clearly longer than the lead. `deferSentencePaging`
-  // skips heuristic copula detection so a first hypothesis like 「です＋次節」
-  // keeps the head when offsets are absent.
+  // when the next span is at least twice the lead. `deferSentencePaging` skips
+  // heuristic copula detection so a first hypothesis like 「です＋次節」 keeps
+  // the head when offsets are absent.
   return sliceNewestSentence(normalized, detectCaptionSentenceEnds(normalized, hints));
 };
