@@ -1144,3 +1144,177 @@ describe("AzooKey Worker text contract", () => {
     vi.unstubAllGlobals();
   });
 });
+
+/**
+ * Approach D: when clients request zenz-v3.2-xsmall-gguf but MODEL_ROUTES is
+ * empty or the upstream fails, the Worker falls back to portable WASM and
+ * advertises model=azookey-rust-wasm + modelFallback. These cases assert both
+ * the routing metadata and the conversion surfaces for the reported xsmall
+ * regressions (precipitation-percent garble and dual あつい homophones).
+ *
+ * Real zenz GGUF is not exercised here — local llama-server is optional and
+ * transport failures must remain visible as modelFallback, never as a
+ * silent "model output".
+ */
+describe("xsmall request fallback quality regressions", () => {
+  const portableWasmBytes = readFileSync(new URL("../wasm/azookey.wasm", import.meta.url));
+  const portableDictionaryGzip = readFileSync(
+    new URL("../public/azookey/system.azkdict.gz", import.meta.url),
+  );
+  const responseBody = (bytes: Uint8Array): BodyInit => bytes as unknown as BodyInit;
+
+  const loadPortableConverter = async () => {
+    const module = new WebAssembly.Module(portableWasmBytes);
+    const fetcher = vi.fn(
+      async () =>
+        new Response(responseBody(portableDictionaryGzip), {
+          status: 200,
+          headers: { "content-length": String(portableDictionaryGzip.byteLength) },
+        }),
+    );
+    const converter = createWasmConverter(module, "/azookey/system.azkdict.gz", fetcher);
+    await converter.warmup?.();
+    return converter;
+  };
+
+  const convertXsmall = async (
+    vibratoInput: string,
+    runtime: Pick<AzookeyRuntime, "converter" | "modelRoutes" | "fetcher" | "timeoutMs">,
+  ) => {
+    const message = parseAzookeyMessage(
+      JSON.stringify({
+        type: "azookey.convert",
+        requestId: "xsmall-quality",
+        source: "web-speech",
+        language: "ja",
+        sourceText: vibratoInput,
+        vibratoInput,
+        mode: "worker-vibrato",
+        model: AZOOKEY_ZENZ_XSMALL_MODEL,
+      }),
+    );
+    return convertAzookeyMessage(message, {
+      timeoutMs: runtime.timeoutMs ?? 5_000,
+      converter: runtime.converter,
+      modelRoutes: runtime.modelRoutes,
+      ...(runtime.fetcher ? { fetcher: runtime.fetcher } : {}),
+    });
+  };
+
+  it("falls back unconfigured-route and keeps dual-あつい weather/food ranking", async () => {
+    const converter = await loadPortableConverter();
+    const input = "あついひはあついたべものをたべたくない";
+    const result = await convertXsmall(input, {
+      converter,
+      modelRoutes: {},
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toMatchObject({
+      type: "azookey.result",
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE,
+      convertedText: "暑い日は熱い食べ物を食べたくない",
+    });
+    // Homophone regression: weather 暑い then food 熱い — never both 暑い.
+    expect(result.convertedText).not.toBe("暑い日は暑い食べ物を食べたくない");
+    expect(result.convertedText).not.toMatch(/暑い食べ物/);
+  }, 30_000);
+
+  it("falls back unconfigured-route and maps precipitation percent without 蕨/° garble", async () => {
+    const converter = await loadPortableConverter();
+    // Reported xsmall garble was 6０°蕨 on neural output; portable fallback must
+    // map ASR わらび / spoken ぱーせんと after arabic numerals to % without that
+    // surface. Full-kana number readings (ろくじゅう…) are azookey-rust numeric
+    // segmentation ownership — not asserted here (current portable yields
+    // 降水確率張ろ90% for こうすいかくりつはろくじゅうぱーせんと).
+    const cases: Array<{ input: string; expected: string }> = [
+      {
+        input: "こうすいかくりつは60わらび",
+        expected: "降水確率は60%",
+      },
+      {
+        input: "こうすいかくりつは60ぱーせんとです",
+        expected: "降水確率は60%です",
+      },
+    ];
+
+    for (const { input, expected } of cases) {
+      const result = await convertXsmall(input, {
+        converter,
+        modelRoutes: {},
+        timeoutMs: 5_000,
+      });
+      expect(result).toMatchObject({
+        model: AZOOKEY_MODEL,
+        requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+        modelFallback: AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE,
+        convertedText: expected,
+      });
+      expect(result.convertedText).not.toContain("蕨");
+      expect(result.convertedText).not.toMatch(/[°℃]/);
+      expect(result.convertedText).not.toMatch(/6０/);
+    }
+  }, 30_000);
+
+  it("falls back upstream-failed with the same quality surfaces as unconfigured-route", async () => {
+    const converter = await loadPortableConverter();
+    const fetcher = vi.fn(async () => new Response("upstream offline", { status: 503 }));
+    const dual = await convertXsmall("あついひはあついたべものをたべたくない", {
+      converter,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
+      },
+      fetcher,
+      timeoutMs: 5_000,
+    });
+    expect(dual).toMatchObject({
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+      convertedText: "暑い日は熱い食べ物を食べたくない",
+    });
+
+    const percent = await convertXsmall("こうすいかくりつは60わらび", {
+      converter,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
+      },
+      fetcher,
+      timeoutMs: 5_000,
+    });
+    expect(percent).toMatchObject({
+      model: AZOOKEY_MODEL,
+      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+      convertedText: "降水確率は60%",
+    });
+    expect(percent.convertedText).not.toContain("蕨");
+    expect(fetcher).toHaveBeenCalled();
+  }, 30_000);
+
+  it("keeps neural xsmall success metadata distinct from dictionary fallback", async () => {
+    // Successful /completion is real neural path: no modelFallback, model stays
+    // zenz-v3.2-xsmall-gguf. Do not rewrite this into a dictionary surface.
+    const fetcher = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ content: "降水確率は6０°蕨" }), { status: 200 }),
+    );
+    const result = await convertXsmall("こうすいかくりつは60わらび", {
+      converter: (text) => `dict-must-not-run:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
+      },
+      fetcher,
+      timeoutMs: 250,
+    });
+    expect(result).toMatchObject({
+      model: AZOOKEY_ZENZ_XSMALL_MODEL,
+      convertedText: "降水確率は6０°蕨",
+    });
+    expect(result.modelFallback).toBeUndefined();
+    expect(result.requestedModel).toBeUndefined();
+    expect(result.convertedText).not.toMatch(/^dict-must-not-run:/);
+  });
+});
