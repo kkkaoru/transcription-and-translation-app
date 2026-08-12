@@ -127,6 +127,12 @@ const THICKNESS_OBJECT_NOUN_HEAT_PENALTY: f32 = -4.5;
 /// Soft-boost te-form `書いて` before a request/try auxiliary so
 /// `かいてください` / `かいてみます` do not keep rarer `描いて`.
 const KAKU_TE_REQUEST_CONTEXT_BONUS: f32 = 4.5;
+/// Soft-boost edge `端` after a physical/spatial noun + `の` so
+/// `みちのはじ` / `つくえのはじ` do not keep shame `恥`. Isolated `はじ`
+/// and animate possessives (`わたしのはじ`) stay shame-capable.
+const EDGE_AFTER_SPATIAL_NOUN_BONUS: f32 = 6.5;
+/// Soft-demote shame `恥`/`恥じ` in the same spatial-possessive slot.
+const SHAME_AFTER_SPATIAL_NOUN_PENALTY: f32 = -4.5;
 /// Soft-demote raw Katakana ruby-id rows before a jodoushi identity when a
 /// conjugational Kanji stem exists for the same reading. Without this, loanword
 /// orthography such as `フリ`+`ます` can beat `降り`+`ます` after bare roots are
@@ -964,6 +970,7 @@ pub fn convert_with_dictionary(
                             + bridge_crossing_context_bonus(&chars, end, entry)
                             + thickness_object_noun_context_score(&state, &chars, end, entry)
                             + kaku_te_request_context_bonus(&chars, end, entry)
+                            + edge_after_spatial_possessive_score(&state, entry)
                             + short_head_before_person_suffix_penalty(
                                 dictionary, &chars, end, entry,
                             )
@@ -2222,6 +2229,39 @@ fn kaku_te_request_context_bonus(chars: &[char], end: usize, entry: &DictionaryE
         KAKU_TE_REQUEST_CONTEXT_BONUS
     } else {
         NO_SCORE
+    }
+}
+
+/// Physical/spatial nouns whose `の`+`はじ` continuation is an edge, not shame.
+const SPATIAL_EDGE_NOUNS: &[&str] =
+    &["道", "橋", "机", "壁", "駅", "ページ", "箱", "板", "窓", "床", "角", "線"];
+
+fn path_ends_with_spatial_possessive(state: &PathState) -> bool {
+    let prefix = state.text.as_str();
+    if !prefix.ends_with('の') {
+        return false;
+    }
+    if SPATIAL_EDGE_NOUNS.iter().any(|noun| prefix.ends_with(&format!("{noun}の"))) {
+        return true;
+    }
+    if !prefix.ends_with("本の") {
+        return false;
+    }
+    let before = prefix.strip_suffix("本の").unwrap_or("");
+    // Standalone book (`本の` / `この本の`), not `日本の` or numeral `2本の`.
+    before.chars().last().is_none_or(|character| is_hiragana(character) || is_katakana(&character))
+}
+
+/// Soft-prefer edge `端` after a spatial/physical noun + `の`. Shame `恥`
+/// stays top-1 for isolated `はじ` and animate possessives (`私の恥`).
+fn edge_after_spatial_possessive_score(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    if entry.reading != "はじ" || !path_ends_with_spatial_possessive(state) {
+        return NO_SCORE;
+    }
+    match entry.surface.as_str() {
+        "端" => EDGE_AFTER_SPATIAL_NOUN_BONUS,
+        "恥" | "恥じ" => SHAME_AFTER_SPATIAL_NOUN_PENALTY,
+        _ => NO_SCORE,
     }
 }
 
@@ -4742,6 +4782,15 @@ mod tests {
             ("かいてください", "書いてください"),
             ("かいてみます", "書いてみます"),
             ("かいてある", "書いてある"),
+            ("みちのはじ", "道の端"),
+            ("つくえのはじ", "机の端"),
+            ("かべのはじ", "壁の端"),
+            ("えきのはじ", "駅の端"),
+            ("ページのはじ", "ページの端"),
+            ("はしのはじ", "橋の端"),
+            ("はじ", "恥"),
+            ("わたしのはじ", "私の恥"),
+            ("はじる", "恥じる"),
         ] {
             let candidates = convert_with_dictionary(
                 input,

@@ -122,6 +122,18 @@ const CONVERSION_CASES: &[ConversionCase] = &[
         inventory_hint: "no compound はしのはじ row; 橋+の+端 must win by ranking",
     },
     ConversionCase {
+        input: "みちのはじ",
+        expected: "道の端",
+        max_rank: 1,
+        inventory_hint: "spatial の+はじ ranks 端 over shame 恥",
+    },
+    ConversionCase {
+        input: "つくえのはじ",
+        expected: "机の端",
+        max_rank: 1,
+        inventory_hint: "desk の+はじ ranks 端 over shame 恥",
+    },
+    ConversionCase {
         input: "はしのはじからものがおちてます",
         expected: "橋の端から物が落ちてます",
         max_rank: 1,
