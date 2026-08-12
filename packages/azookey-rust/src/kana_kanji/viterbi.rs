@@ -1,6 +1,6 @@
 use super::dictionary::{
-    is_joshi_cid, is_postposition_cid, AzooKeyDictionary, DictionaryEntry, DictionaryPaths,
-    BOS_EOS_MID, DEFAULT_CID, DEFAULT_MID,
+    is_jodoushi_cid, is_joshi_cid, is_postposition_cid, AzooKeyDictionary, DictionaryEntry,
+    DictionaryPaths, BOS_EOS_MID, DEFAULT_CID, DEFAULT_MID,
 };
 use super::normalization::{
     is_boundary, japanese_counter_starts_at, japanese_numeral_has_unit, numeric_counter_surface,
@@ -50,6 +50,10 @@ const IDENTITY_SURFACE_PENALTY: f32 = -1.5;
 // when the system dictionary has no full-span Kanji row. Keep short function
 // words and single lexical segments untouched.
 const IDENTITY_SEGMENTATION_PENALTY: f32 = -4.0;
+/// Extra demotion when compact-unknown covers a span that already has a complete
+/// multi-Kanji dictionary segmentation. Strong enough that object+verb paths
+/// such as `柿`+`食う` can outrank raw kana after a predicate (`良く`).
+const UNKNOWN_MULTI_KANJI_SEGMENTATION_PENALTY: f32 = -20.0;
 const MODEL_DEFAULT_METADATA_PENALTY: f32 = -2.0;
 const MODEL_DEFAULT_MID_PENALTY: f32 = -2.5;
 const COPULAR_CONTINUATION_PENALTY: f32 = -6.0;
@@ -67,6 +71,51 @@ const VERB_STEM_BEFORE_PARTICLE_PHRASE_PENALTY: f32 = -4.0;
 /// connection / MM evidence can compete (`恥` vs `端` after `の`). Alternatives
 /// remain in the lattice.
 const PARTICLE_FOLLOWING_UNIGRAM_LEADER_PENALTY: f32 = -3.0;
+/// Soft-demote a multi-Kanji compound when the same reading has a single-Kanji
+/// alternative and the next edge is a conjugational verb (`下記` before `食う`
+/// while `柿` remains available). Keeps compounds in n-best.
+const MULTI_KANJI_COMPOUND_BEFORE_VERB_PENALTY: f32 = -4.0;
+/// Soft-demote a conjugational stem that is immediately followed by another
+/// conjugational verb without a connective `て`/`で` surface (`書き`+`食う`).
+/// Serial verb chains without て are rare in captions; noun+verb stays intact.
+const CONJUGATIONAL_STEM_BEFORE_VERB_PENALTY: f32 = -8.0;
+/// Soft-boost a single-Kanji content word immediately before a conjugational
+/// verb (`柿`+`食う`). Counters sparse multi-mora leftovers that leave a raw
+/// kana tail (`角`+`くう`) without embedding a surface pair.
+const SINGLE_KANJI_BEFORE_VERB_BONUS: f32 = 6.0;
+/// Soft-boost adverbial `…く` spellings (`良く`) before content so they can
+/// outrank bare Kanji homophones (`翌`) when an object+verb follows.
+const ADVERBIAL_KU_BEFORE_CONTENT_BONUS: f32 = 12.0;
+/// Soft-demote a longer stem that ends inside a following conjugational verb
+/// after a short content object (`角く` under `かき`+`食う`).
+const STEM_CUTTING_INTO_OBJECT_VERB_PENALTY: f32 = -10.0;
+/// Soft-demote a bare single-Kanji row when the same reading has a conjugational
+/// stem alternative (`書` under `書き`) and another verb follows.
+const BARE_KANJI_STEM_BEFORE_VERB_PENALTY: f32 = -2.5;
+/// Soft-demote a conjugational spelling that loses unigram value to another
+/// conjugational surface for the same reading when attached after a content
+/// object (`喰う` under `食う` after `柿`). Bare clause-initial adjectives are
+/// unchanged so `晴れ` is not demoted toward `貼れ`.
+const DOMINATED_CONJUGATIONAL_AFTER_OBJECT_PENALTY: f32 = -3.0;
+/// Soft-demote non-conjugational Kanji when a conjugational stem alternative
+/// exists for the same reading and the next edge is a jodoushi identity
+/// auxiliary (`ます`). Bare roots such as `古` otherwise beat verb stems
+/// (`降り`) on connection cost alone before polite endings.
+const BARE_CONTENT_BEFORE_JODOUSHI_PENALTY: f32 = -8.0;
+/// Soft-demote raw Katakana ruby-id rows before a jodoushi identity when a
+/// conjugational Kanji stem exists for the same reading. Without this, loanword
+/// orthography such as `フリ`+`ます` can beat `降り`+`ます` after bare roots are
+/// demoted.
+const RUBY_IDENTITY_BEFORE_JODOUSHI_PENALTY: f32 = -4.0;
+/// Soft-boost a conjugational stem with an inflectional kana tail immediately
+/// before a jodoushi identity auxiliary. Complements the bare-content demotion
+/// so `降り`+`ます` stays ahead of near-tie ruby and compound leftovers.
+const CONJUGATIONAL_STEM_BEFORE_JODOUSHI_BONUS: f32 = 3.0;
+/// Soft-demote a short converted head when the remaining reading begins with a
+/// closed-class personification suffix and a longer converted dictionary row
+/// already covers head+suffix (`私たち` covering `わたし`+`たち`). Keeps rare
+/// short spellings (`妾`) from winning via cheap DEFAULT transitions.
+const SHORT_HEAD_BEFORE_PERSON_SUFFIX_PENALTY: f32 = -5.0;
 /// CID rows encode an in-sentence morphological transition. At the start of a
 /// particle-linked content phrase, discount that transition so it cannot
 /// overwhelm the lexical evidence for a short, otherwise ambiguous head word.
@@ -554,6 +603,10 @@ pub fn convert_with_dictionary(
                     || entry.surface.ends_with('く')
                     || entry.surface.ends_with("ない")
             });
+            // After a predicate, compact unknown may re-open even when multi-kana
+            // lexical rows exist. Keep that fallback for unfinished suffixes, but
+            // the span penalty below demotes it whenever a complete multi-Kanji
+            // segmentation covers the same run (`柿`+`食う` over raw `かきくう`).
             if start > 0
                 && state.last.is_some()
                 && !particle_followed_by_adjective
@@ -780,6 +833,76 @@ pub fn convert_with_dictionary(
                                 max_dictionary_word_chars,
                             )
                             + particle_following_unigram_leader_penalty(dictionary, &state, entry)
+                            + multi_kanji_compound_before_verb_penalty(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + conjugational_stem_before_verb_penalty(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + single_kanji_before_verb_bonus(
+                                dictionary,
+                                &chars,
+                                start,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + adverbial_ku_before_content_bonus(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + stem_cutting_into_object_verb_penalty(
+                                dictionary,
+                                &chars,
+                                start,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + bare_kanji_stem_before_verb_penalty(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + dominated_conjugational_after_object_penalty(
+                                dictionary, &state, entry,
+                            )
+                            + bare_content_before_jodoushi_penalty(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + ruby_identity_before_jodoushi_penalty(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + conjugational_stem_before_jodoushi_bonus(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + short_head_before_person_suffix_penalty(
+                                dictionary, &chars, end, entry,
+                            )
                             + comma_list_kanji_overlap_bonus(&state, entry)
                             + following_yen_amount_bonus(&chars, end, entry)
                             + contextual_entry_bonus(
@@ -1089,6 +1212,22 @@ fn model_metadata_penalty(dictionary: &AzooKeyDictionary, entry: &DictionaryEntr
         .map(|candidate| candidate.value)
         .max_by(f32::total_cmp);
     if entry.mid == DEFAULT_MID && best_same_cid_value.is_some_and(|value| entry.value < value) {
+        penalty += MODEL_DEFAULT_MID_PENALTY;
+    }
+    // A multi-mora single-Kanji row with only DEFAULT_MID is often a sparse
+    // morphology leftover (`角` for `かき`). When the same reading has a
+    // non-default MID Kanji alternative (`柿` mid=4), soft-demote the fallback
+    // so object+verb paths can compete without dropping the row from n-best.
+    if entry.mid == DEFAULT_MID
+        && entry.reading.chars().count() >= MIN_LEXICAL_ENTRY_CHARS
+        && entry.surface.chars().count() == 1
+        && entry.surface.chars().all(is_kanji)
+        && alternatives.iter().any(|candidate| {
+            candidate.mid != DEFAULT_MID
+                && contains_kanji(&candidate.surface)
+                && candidate.surface != entry.surface
+        })
+    {
         penalty += MODEL_DEFAULT_MID_PENALTY;
     }
     penalty
@@ -1404,6 +1543,470 @@ fn particle_following_unigram_leader_penalty(
     }
 }
 
+/// Soft-demote multi-Kanji compounds when a single-Kanji homophone exists and
+/// the next edge is a conjugational verb. Dictionary value alone often prefers
+/// written compounds (`下記`) over spoken single-Kanji objects (`柿`) before
+/// colloquial verbs (`食う`); this is a bounded morphology prior, not a phrase map.
+fn multi_kanji_compound_before_verb_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    let kanji_count = entry.surface.chars().filter(|character| is_kanji(*character)).count();
+    if kanji_count < 2
+        || entry.surface == entry.reading
+        || is_particle_reading(&entry.reading)
+        || is_conjugational_content_cid(entry.lcid)
+    {
+        return NO_SCORE;
+    }
+    if !following_edge_is_conjugational_verb(dictionary, chars, end, max_dictionary_word_chars) {
+        return NO_SCORE;
+    }
+    let has_single_kanji_alternative =
+        dictionary.lookup_exact(&entry.reading).unwrap_or_default().iter().any(|candidate| {
+            candidate.surface != entry.surface
+                && candidate.surface.chars().count() == 1
+                && candidate.surface.chars().all(is_kanji)
+        });
+    if has_single_kanji_alternative {
+        MULTI_KANJI_COMPOUND_BEFORE_VERB_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote a conjugational stem immediately followed by another conjugational
+/// verb when the stem is not already a て/で connective form. Noun + verb paths
+/// are unaffected; caption-style serial verbs without て stay available in n-best.
+fn conjugational_stem_before_verb_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if !is_conjugational_content_cid(entry.lcid)
+        || !contains_kanji(&entry.surface)
+        || entry.surface.ends_with('て')
+        || entry.surface.ends_with('で')
+    {
+        return NO_SCORE;
+    }
+    if following_edge_is_conjugational_verb(dictionary, chars, end, max_dictionary_word_chars) {
+        CONJUGATIONAL_STEM_BEFORE_VERB_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Prefer a single-Kanji object reading when the next edge is a conjugational
+/// verb. Spoken captions often realize object+verb as short Kanji + verb while
+/// unigram frequency prefers written compounds or leaves a kana tail.
+fn single_kanji_before_verb_bonus(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if entry.surface.chars().count() != 1
+        || !entry.surface.chars().all(is_kanji)
+        || is_conjugational_content_cid(entry.lcid)
+        || is_particle_reading(&entry.reading)
+    {
+        return NO_SCORE;
+    }
+    // Do not boost a one-Kanji head when a longer same-start converted word
+    // extends that surface (`晴` under `晴れ` before `ます`).
+    let entry_len = entry.reading.chars().count();
+    let has_longer_extension = dictionary
+        .entries_starting_at(chars, start, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .iter()
+        .any(|candidate| {
+            let candidate_len = candidate.reading.chars().count();
+            candidate_len > entry_len
+                && candidate.reading.starts_with(&entry.reading)
+                && candidate.surface.starts_with(&entry.surface)
+                && contains_kanji(&candidate.surface)
+                && candidate.surface.chars().any(|character| is_hiragana(character))
+        });
+    if has_longer_extension {
+        return NO_SCORE;
+    }
+    if following_edge_is_conjugational_verb(dictionary, chars, end, max_dictionary_word_chars) {
+        SINGLE_KANJI_BEFORE_VERB_BONUS
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote a conjugational spelling that is value-dominated by another
+/// conjugational surface for the same reading, but only after a content object.
+/// Prefers `食う` over `喰う` after `柿` without demoting clause-initial `晴れ`.
+fn dominated_conjugational_after_object_penalty(
+    dictionary: &AzooKeyDictionary,
+    state: &PathState,
+    entry: &DictionaryEntry,
+) -> f32 {
+    if !is_conjugational_content_cid(entry.lcid) || !contains_kanji(&entry.surface) {
+        return NO_SCORE;
+    }
+    let Some(former) = state.last.as_ref() else {
+        return NO_SCORE;
+    };
+    if !contains_kanji(&former.surface)
+        || is_conjugational_content_cid(former.lcid)
+        || is_particle_reading(&former.reading)
+        || former.surface == former.reading
+    {
+        return NO_SCORE;
+    }
+    let dominated =
+        dictionary.lookup_exact(&entry.reading).unwrap_or_default().iter().any(|candidate| {
+            candidate.surface != entry.surface
+                && is_conjugational_content_cid(candidate.lcid)
+                && contains_kanji(&candidate.surface)
+                && candidate.value > entry.value
+        });
+    if dominated {
+        DOMINATED_CONJUGATIONAL_AFTER_OBJECT_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote a bare single-Kanji spelling when the same reading has a
+/// conjugational stem alternative (`書き` for `書`) and another verb follows.
+/// Prevents incomplete stems from acting as objects before colloquial verbs.
+fn bare_kanji_stem_before_verb_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if entry.surface.chars().count() != 1
+        || !entry.surface.chars().all(is_kanji)
+        || is_conjugational_content_cid(entry.lcid)
+    {
+        return NO_SCORE;
+    }
+    if !following_edge_is_conjugational_verb(dictionary, chars, end, max_dictionary_word_chars) {
+        return NO_SCORE;
+    }
+    // Require the conjugational alternative to extend this exact Kanji
+    // (`書` → `書き`), not an unrelated stem for the same reading (`柿` vs `書き`).
+    let has_conjugational_stem_alternative =
+        dictionary.lookup_exact(&entry.reading).unwrap_or_default().iter().any(|candidate| {
+            candidate.surface != entry.surface
+                && candidate.surface.starts_with(&entry.surface)
+                && candidate.surface.chars().count() > entry.surface.chars().count()
+                && is_conjugational_content_cid(candidate.lcid)
+                && candidate.surface.chars().any(|character| is_hiragana(character))
+        });
+    if has_conjugational_stem_alternative {
+        BARE_KANJI_STEM_BEFORE_VERB_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote a multi-mora stem whose reading ends inside a conjugational verb
+/// that attaches to a shorter content object at the same start (`角く` cutting
+/// into `食う` after `柿`). Keeps the stem in n-best without burying object+verb.
+///
+/// Complete `…い` adjectives (`暑い`) are excluded: a later mora can still begin
+/// an unrelated conjugational reading (`言ひ` under `あついひ`) without meaning
+/// the adjective itself is an incomplete stem.
+fn stem_cutting_into_object_verb_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    let len = entry.reading.chars().count();
+    if len < MIN_SHADOWING_LEXICAL_CHARS
+        || !contains_kanji(&entry.surface)
+        || entry.surface == entry.reading
+        || is_particle_reading(&entry.reading)
+        || entry.surface.ends_with('い')
+    {
+        return NO_SCORE;
+    }
+    // Stem-like surfaces only (`角く` / `描き`), not closed nouns.
+    if !(entry.surface.ends_with('く')
+        || entry.surface.ends_with('き')
+        || entry.surface.ends_with('ぎ')
+        || entry.surface.ends_with('み')
+        || entry.surface.ends_with('り')
+        || entry.surface.ends_with('し'))
+    {
+        return NO_SCORE;
+    }
+    for prefix_len in 1..len {
+        if prefix_len > 2 {
+            break;
+        }
+        let prefix: String = entry.reading.chars().take(prefix_len).collect();
+        let has_short_object =
+            dictionary.lookup_exact(&prefix).unwrap_or_default().iter().any(|candidate| {
+                contains_kanji(&candidate.surface)
+                    && candidate.surface != candidate.reading
+                    && !is_conjugational_content_cid(candidate.lcid)
+                    && !is_particle_reading(&candidate.reading)
+                    && candidate.surface.chars().filter(|character| is_kanji(*character)).count()
+                        <= 2
+            });
+        if !has_short_object {
+            continue;
+        }
+        let verb_lens = conjugational_verb_reading_lengths_starting_at(
+            dictionary,
+            chars,
+            start + prefix_len,
+            max_dictionary_word_chars,
+        );
+        // Verb must continue past this stem and share the stem's trailing mora
+        // as its first mora (`く` of `角く` inside `くう`).
+        let stem_tail = entry.reading.chars().nth(prefix_len);
+        if verb_lens.iter().any(|verb_len| *verb_len > len - prefix_len)
+            && stem_tail.is_some_and(|tail| chars.get(start + prefix_len).copied() == Some(tail))
+        {
+            return STEM_CUTTING_INTO_OBJECT_VERB_PENALTY;
+        }
+    }
+    NO_SCORE
+}
+
+/// Prefer mixed-script adverbial `…く` rows (`良く`) over bare Kanji homophones
+/// when the following lattice has content. Beginning/CID costs alone often make
+/// `翌` win before an object+verb continuation.
+fn adverbial_ku_before_content_bonus(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if !entry.surface.ends_with('く')
+        || !contains_kanji(&entry.surface)
+        || entry.surface.chars().all(is_kanji)
+        || is_particle_reading(&entry.reading)
+    {
+        return NO_SCORE;
+    }
+    let following = chars.get(end..).unwrap_or_default();
+    if following.is_empty() {
+        return NO_SCORE;
+    }
+    let has_following_content = dictionary
+        .entries_starting_at(chars, end, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .iter()
+        .any(|candidate| {
+            candidate.reading.chars().count() >= MIN_LEXICAL_ENTRY_CHARS
+                && contains_kanji(&candidate.surface)
+                && !is_particle_reading(&candidate.reading)
+        });
+    if has_following_content {
+        ADVERBIAL_KU_BEFORE_CONTENT_BONUS
+    } else {
+        NO_SCORE
+    }
+}
+
+fn following_edge_is_conjugational_verb(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    max_dictionary_word_chars: usize,
+) -> bool {
+    if end >= chars.len() {
+        return false;
+    }
+    dictionary
+        .entries_starting_at(chars, end, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .iter()
+        .any(|candidate| {
+            is_conjugational_content_cid(candidate.lcid)
+                && contains_kanji(&candidate.surface)
+                && candidate.reading.chars().count() >= MIN_LEXICAL_ENTRY_CHARS
+        })
+}
+
+/// True when the next lattice edge can be a jodoushi identity auxiliary such as
+/// `ます` / `ました` / `です`. Kanji homophones for the same reading (`鱒`) are
+/// ignored so only grammatical continuations trigger the prior.
+fn following_edge_is_jodoushi_auxiliary(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    max_dictionary_word_chars: usize,
+) -> bool {
+    if end >= chars.len() {
+        return false;
+    }
+    dictionary
+        .entries_starting_at(chars, end, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .iter()
+        .any(|candidate| {
+            candidate.surface == candidate.reading
+                && (is_jodoushi_cid(candidate.lcid) || is_jodoushi_cid(candidate.rcid))
+        })
+}
+
+/// Soft-demote non-conjugational Kanji when a conjugational stem alternative
+/// exists for the same reading and the next edge is a jodoushi identity
+/// auxiliary. Captions almost always attach `ます` to a verb/adjective stem
+/// (`降り`+`ます`), not to a bare noun/adjective root (`古`+`ます`).
+fn bare_content_before_jodoushi_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    // Gate on conjugational CID bands rather than system-dictionary presence so
+    // TSV fixtures with real morphology CIDs can unit-test the prior. Builtin
+    // DEFAULT_CID rows never look conjugational, so they stay score-driven.
+    if is_conjugational_content_cid(entry.lcid)
+        || !contains_kanji(&entry.surface)
+        || entry.surface == entry.reading
+        || is_particle_reading(&entry.reading)
+    {
+        return NO_SCORE;
+    }
+    if !following_edge_is_jodoushi_auxiliary(dictionary, chars, end, max_dictionary_word_chars) {
+        return NO_SCORE;
+    }
+    if has_conjugational_stem_alternative(dictionary, entry) {
+        BARE_CONTENT_BEFORE_JODOUSHI_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote raw Katakana ruby-id rows before a jodoushi identity when a
+/// conjugational Kanji stem exists for the same reading (`フリ` under `降り`).
+fn ruby_identity_before_jodoushi_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if !entry.raw_ruby_identity || is_particle_reading(&entry.reading) {
+        return NO_SCORE;
+    }
+    if !following_edge_is_jodoushi_auxiliary(dictionary, chars, end, max_dictionary_word_chars) {
+        return NO_SCORE;
+    }
+    if has_conjugational_stem_alternative(dictionary, entry) {
+        RUBY_IDENTITY_BEFORE_JODOUSHI_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-boost a conjugational stem with an inflectional kana tail immediately
+/// before a jodoushi identity auxiliary when non-stem alternatives exist.
+fn conjugational_stem_before_jodoushi_bonus(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if !is_conjugational_content_cid(entry.lcid)
+        || !contains_kanji(&entry.surface)
+        || !entry.surface.chars().any(is_hiragana)
+        || is_particle_reading(&entry.reading)
+    {
+        return NO_SCORE;
+    }
+    if !following_edge_is_jodoushi_auxiliary(dictionary, chars, end, max_dictionary_word_chars) {
+        return NO_SCORE;
+    }
+    // Only boost when a non-stem alternative would otherwise compete
+    // (bare Kanji root or raw ruby for the same reading).
+    let has_competing_non_stem =
+        dictionary.lookup_exact(&entry.reading).unwrap_or_default().iter().any(|candidate| {
+            candidate.surface != entry.surface
+                && (candidate.raw_ruby_identity
+                    || (contains_kanji(&candidate.surface)
+                        && !is_conjugational_content_cid(candidate.lcid)))
+        });
+    if has_competing_non_stem {
+        CONJUGATIONAL_STEM_BEFORE_JODOUSHI_BONUS
+    } else {
+        NO_SCORE
+    }
+}
+
+/// True when the same reading has a conjugational Kanji stem that keeps an
+/// inflectional kana tail (`降り` / `行き`). Bare single-Kanji conjugational
+/// residues are ignored so the prior stays stem-vs-root rather than a surface map.
+fn has_conjugational_stem_alternative(
+    dictionary: &AzooKeyDictionary,
+    entry: &DictionaryEntry,
+) -> bool {
+    dictionary.lookup_exact(&entry.reading).unwrap_or_default().iter().any(|candidate| {
+        candidate.surface != entry.surface
+            && is_conjugational_content_cid(candidate.lcid)
+            && contains_kanji(&candidate.surface)
+            && candidate.surface.chars().any(is_hiragana)
+    })
+}
+
+/// Soft-demote a short converted head when the remaining reading begins with a
+/// closed-class personification suffix and a longer converted dictionary row
+/// already covers head+suffix. Stops rare short spellings (`妾`) plus a suffix
+/// identity from outranking the full-span form (`私たち`) via DEFAULT CID costs.
+fn short_head_before_person_suffix_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+) -> f32 {
+    if !contains_kanji(&entry.surface)
+        || entry.surface == entry.reading
+        || is_particle_reading(&entry.reading)
+    {
+        return NO_SCORE;
+    }
+    let remaining: String = chars.get(end..).unwrap_or_default().iter().collect();
+    if remaining.is_empty() {
+        return NO_SCORE;
+    }
+    let Some(suffix) =
+        HONORIFIC_READING_SUFFIXES.iter().copied().find(|suffix| remaining.starts_with(suffix))
+    else {
+        return NO_SCORE;
+    };
+    let combined = format!("{}{}", entry.reading, suffix);
+    // Only fire when the dictionary already has a converted full-span row for
+    // head+suffix. Without that row, short-head+suffix segmentation is legitimate.
+    let has_full_span_converted =
+        dictionary.lookup_exact(&combined).unwrap_or_default().iter().any(|candidate| {
+            contains_kanji(&candidate.surface)
+                && candidate.surface != candidate.reading
+                && candidate.reading.chars().count() > entry.reading.chars().count()
+        });
+    if has_full_span_converted {
+        SHORT_HEAD_BEFORE_PERSON_SUFFIX_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
 fn is_conjugational_content_cid(cid: u16) -> bool {
     (561..=867).contains(&cid)
 }
@@ -1472,8 +2075,7 @@ fn thickness_context_bonus(
     entry: &DictionaryEntry,
     max_dictionary_word_chars: usize,
 ) -> f32 {
-    if !entry.surface.ends_with('い')
-        || !entry.surface.chars().any(|character| character == '厚')
+    if !entry.surface.ends_with('い') || !entry.surface.chars().any(|character| character == '厚')
     {
         return NO_SCORE;
     }
@@ -1643,7 +2245,8 @@ fn unknown_kana_span_end(
     // homographs beginning inside it.  The beam can then compare a readable
     // kana fallback against a sequence of unrelated lexical fragments (for
     // example an uncertain ASR tail); the ordinary dictionary edges remain
-    // available as alternatives.
+    // available as alternatives. Multi-Kanji segmentations of the same span
+    // win via unknown_span_multi_kanji_segmentation_penalty, not hard removal.
     Some(end)
 }
 
@@ -1721,7 +2324,8 @@ fn unknown_kana_span_penalty(_length: usize) -> f32 {
 }
 
 /// Soft-demote a raw/unknown hiragana span when the same reading already has a
-/// multi-Kanji segmentation (`あついひ` → `暑い`+`日`). The span stays in n-best.
+/// multi-Kanji segmentation (`あついひ` → `暑い`+`日`, `かきくう` → `柿`+`食う`).
+/// The span stays in n-best for unfinished suffixes; lexical paths can outrank it.
 fn unknown_span_multi_kanji_segmentation_penalty(
     dictionary: &AzooKeyDictionary,
     reading: &[char],
@@ -1732,7 +2336,9 @@ fn unknown_span_multi_kanji_segmentation_penalty(
     {
         NO_SCORE
     } else {
-        IDENTITY_SEGMENTATION_PENALTY
+        // Stack the identity-segmentation prior with a stronger unknown demotion
+        // so predicate-final compact kana cannot bury complete object+verb paths.
+        IDENTITY_SEGMENTATION_PENALTY + UNKNOWN_MULTI_KANJI_SEGMENTATION_PENALTY
     }
 }
 
@@ -1930,22 +2536,13 @@ fn contextual_entry_bonus(
     );
     let preceding_content = preceding_context_is_content(chars.get(..start).unwrap_or_default());
     let adjective_like = entry.surface.ends_with('い') && contains_kanji(&entry.surface);
-    let thickness_bonus = contextual_thickness_bonus(
-        dictionary,
-        chars,
-        end,
-        entry,
-        max_dictionary_word_chars,
-    );
+    let thickness_bonus =
+        contextual_thickness_bonus(dictionary, chars, end, entry, max_dictionary_word_chars);
     if !following_content && !preceding_content && !adjective_like && thickness_bonus == NO_SCORE {
         return NO_SCORE;
     }
     let desired_rank = usize::from(following_content || preceding_content);
-    let rank_bonus = if rank == desired_rank {
-        CONTEXTUAL_ENTRY_BONUS
-    } else {
-        NO_SCORE
-    };
+    let rank_bonus = if rank == desired_rank { CONTEXTUAL_ENTRY_BONUS } else { NO_SCORE };
     rank_bonus + thickness_bonus
 }
 
@@ -2288,6 +2885,14 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
     );
     let min_other_len =
         if len == 1 { MIN_SHADOWING_TRIGGER_CHARS } else { MIN_SHADOWING_LEXICAL_CHARS };
+    // Object+verb paths (`柿`+`食う`) must survive when a longer stem only
+    // eats the first mora of the following verb (`角く` under `かきくう…`).
+    let following_verb_lens = conjugational_verb_reading_lengths_starting_at(
+        dictionary,
+        chars,
+        start + len,
+        max_dictionary_word_chars,
+    );
     entries.iter().any(|other| {
         let other_len = other.reading.chars().count();
         // A longer row that leaves a single dangling mora (`晴れ間` + `す`
@@ -2295,10 +2900,22 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
         // (`晴れ` + `ます`).
         let leftover = remaining_chars.saturating_sub(other_len);
         let reading_leftover = other.reading.chars().skip(len).collect::<String>();
+        // Longer row ends strictly inside a conjugational verb that attaches
+        // to this short content word → keep the short word for object+verb.
+        let cuts_into_following_verb = following_verb_lens
+            .iter()
+            .any(|verb_len| other_len > len && other_len < len + *verb_len);
+        // A longer row that ends immediately before a small kana (`空気` under
+        // `くうきゃく`, leaving `ゃ…`) cannot start a legal next lattice token.
+        // Keep the shorter verb/noun so `食う`+`客` remains available.
+        let leftover_starts_with_small_kana =
+            chars.get(start + other_len).is_some_and(|character| is_small_hiragana(*character));
         other_len >= min_other_len
             && other_len > len
             && other_len <= remaining_chars
             && leftover != 1
+            && !leftover_starts_with_small_kana
+            && !cuts_into_following_verb
             && other.reading.starts_with(&entry.reading)
             && other.surface != other.reading
             && contains_kanji(&other.surface)
@@ -2308,6 +2925,28 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
                 &grammatical_continuations,
             )
     })
+}
+
+fn conjugational_verb_reading_lengths_starting_at(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    max_dictionary_word_chars: usize,
+) -> Vec<usize> {
+    if start >= chars.len() {
+        return Vec::new();
+    }
+    dictionary
+        .entries_starting_at(chars, start, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|candidate| {
+            is_conjugational_content_cid(candidate.lcid)
+                && contains_kanji(&candidate.surface)
+                && candidate.reading.chars().count() >= MIN_LEXICAL_ENTRY_CHARS
+        })
+        .map(|candidate| candidate.reading.chars().count())
+        .collect()
 }
 
 /// Keep a short prefix when a longer lexical row crosses a function-word edge.
@@ -3850,10 +4489,7 @@ mod tests {
             combined_bonus,
             super::THICKNESS_CONTEXT_BONUS + super::THICKNESS_SLICE_CONTEXT_BONUS
         );
-        assert_eq!(
-            combined_bonus - thinness_bonus,
-            super::THICKNESS_SLICE_CONTEXT_BONUS
-        );
+        assert_eq!(combined_bonus - thinness_bonus, super::THICKNESS_SLICE_CONTEXT_BONUS);
     }
 
     #[test]
@@ -4020,10 +4656,260 @@ mod tests {
         )
         .expect("configured public dictionary should convert");
         // A narrow (five-state) beam used to commit to `下記くうきゃくだ`
-        // before the later verb/nominal connections were available. The
-        // wider default keeps the complete lexical path without embedding a
-        // phrase-specific replacement.
-        assert_eq!(converted, "隣の客は良くかきくう客だ");
+        // before the later verb/nominal connections were available. Compact
+        // unknown after `良く` must not outrank the multi-Kanji path
+        // `柿`+`食う` either.
+        assert_eq!(converted, "隣の客は良く柿食う客だ");
+    }
+
+    #[test]
+    fn prefers_multi_kanji_segmentation_for_kaki_kuu() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        let candidate =
+            convert_with_dictionary("かきくう", &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("public conversion should produce a candidate");
+        assert_eq!(candidate.text, "柿食う");
+    }
+
+    #[test]
+    fn prefers_conjugational_stem_before_polite_auxiliary() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        for (input, expected) in [
+            ("ふります", "降ります"),
+            ("あめがふります", "雨が降ります"),
+            // Already-correct polite verbs must not regress.
+            ("はれます", "晴れます"),
+            ("いきます", "行きます"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn prefers_full_span_person_plural_over_rare_short_head() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+        for (input, expected) in [
+            ("わたしたち", "私たち"),
+            ("わたしたちはがくせいです", "私たちは学生です"),
+            // Short head without a person suffix stays score-driven.
+            ("わたし", "私"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn jodoushi_and_person_suffix_priors_are_context_gated() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load");
+
+        // Without a following jodoushi auxiliary, bare readings stay score-driven
+        // rather than being forced toward a conjugational stem.
+        let furi = convert_with_dictionary("ふり", &dictionary, ConversionOptions::default())
+            .into_iter()
+            .next()
+            .expect("ふり should convert");
+        assert_ne!(
+            furi.text, "降り",
+            "bare ふり must not be forced to the polite-stem prior: {}",
+            furi.text
+        );
+
+        // Stem+ます that already has a full-span conjugational surface must not
+        // regress when competing non-stem rows are absent from the top path.
+        for (input, expected) in [
+            ("みます", "見ます"),
+            ("ききます", "聞きます"),
+            ("かきます", "書きます"),
+            ("たべます", "食べます"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+        }
+
+        // A personification suffix without a full-span converted plural row
+        // remains a normal head+suffix path (not forced by the 私たち prior).
+        let yamada =
+            convert_with_dictionary("やまださん", &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("やまださん should convert");
+        assert!(
+            yamada.text.contains('山') || yamada.text.contains("山田"),
+            "やまださん should keep the proper-noun path, got {}",
+            yamada.text
+        );
+    }
+
+    #[test]
+    fn fixture_jodoushi_prior_demotes_bare_root_before_masu() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-jodoushi-prior-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        // Bare non-conjugational root + conjugational stem share ふり; only the
+        // stem should win before jodoushi ます. CID 11 is outside the
+        // conjugational band; 788 is inside it (matches official LOUDS bands).
+        fs::write(
+            &root,
+            "ふり\t古\t-1\t11\t11\t10\n\
+             ふり\t降り\t-2\t788\t788\t20\n\
+             ます\tます\t-0.5\t491\t491\t17\n",
+        )
+        .expect("jodoushi-prior fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("jodoushi-prior fixture should load")
+        .without_builtin_entries_for_test();
+
+        let chars = "ふります".chars().collect::<Vec<_>>();
+        let furi = dictionary
+            .lookup_exact("ふり")
+            .expect("ふり lookup")
+            .into_iter()
+            .find(|entry| entry.surface == "古")
+            .expect("bare root 古");
+        let furi_stem = dictionary
+            .lookup_exact("ふり")
+            .expect("ふり lookup")
+            .into_iter()
+            .find(|entry| entry.surface == "降り")
+            .expect("stem 降り");
+        assert_eq!(
+            super::bare_content_before_jodoushi_penalty(&dictionary, &chars, 2, &furi, 24),
+            super::BARE_CONTENT_BEFORE_JODOUSHI_PENALTY,
+            "bare root before ます must be demoted"
+        );
+        assert_eq!(
+            super::bare_content_before_jodoushi_penalty(&dictionary, &chars, 2, &furi_stem, 24),
+            super::NO_SCORE,
+            "conjugational stem must not receive the bare-root demotion"
+        );
+        assert_eq!(
+            super::conjugational_stem_before_jodoushi_bonus(&dictionary, &chars, 2, &furi_stem, 24),
+            super::CONJUGATIONAL_STEM_BEFORE_JODOUSHI_BONUS,
+            "conjugational stem before ます must receive the stem bonus"
+        );
+        assert_eq!(
+            super::bare_content_before_jodoushi_penalty(
+                &dictionary,
+                &"ふり".chars().collect::<Vec<_>>(),
+                2,
+                &furi,
+                24
+            ),
+            super::NO_SCORE,
+            "bare root without a following jodoushi must stay score-driven"
+        );
+
+        let top = convert_with_dictionary(
+            "ふります",
+            &dictionary,
+            ConversionOptions { n_best: 4, ..ConversionOptions::default() },
+        )
+        .into_iter()
+        .next()
+        .expect("fixture conversion should produce a candidate");
+        assert_eq!(
+            top.text, "降ります",
+            "conjugational stem must beat bare root before ます: {}",
+            top.text
+        );
+
+        // Without ます, the higher-valued bare root may still win.
+        let bare = convert_with_dictionary(
+            "ふり",
+            &dictionary,
+            ConversionOptions { n_best: 4, ..ConversionOptions::default() },
+        )
+        .into_iter()
+        .next()
+        .expect("bare fixture conversion should produce a candidate");
+        assert_eq!(bare.text, "古", "bare ふり stays score-driven without ます");
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn fixture_person_suffix_prior_prefers_full_span_plural() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-person-suffix-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &root,
+            "わたし\t妾\t-1\t1285\t1285\t97\n\
+             わたし\t私\t-0.5\t1306\t1306\t17\n\
+             わたしたち\t私たち\t-1.2\t1288\t1288\t17\n\
+             たち\tたち\t-0.3\t1298\t1298\t459\n\
+             は\tは\t-0.2\t261\t261\t468\n",
+        )
+        .expect("person-suffix fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("person-suffix fixture should load")
+        .without_builtin_entries_for_test();
+
+        let top = convert_with_dictionary(
+            "わたしたちは",
+            &dictionary,
+            ConversionOptions { n_best: 6, ..ConversionOptions::default() },
+        )
+        .into_iter()
+        .next()
+        .expect("person-suffix fixture conversion should produce a candidate");
+        assert_eq!(
+            top.text, "私たちは",
+            "full-span plural must beat rare short head + たち: {}",
+            top.text
+        );
+        let _ = fs::remove_file(root);
     }
 
     #[test]

@@ -161,12 +161,8 @@ const CONVERSION_CASES: &[ConversionCase] = &[
 
 fn load_official_dictionary() -> AzooKeyDictionary {
     let root = crate::dictionary::test_system_dictionary_path();
-    AzooKeyDictionary::from_paths(&DictionaryPaths {
-        system: Some(root),
-        user: None,
-        memory: None,
-    })
-    .expect("official AzooKey dictionary should load")
+    AzooKeyDictionary::from_paths(&DictionaryPaths { system: Some(root), user: None, memory: None })
+        .expect("official AzooKey dictionary should load")
 }
 
 fn cid_word_type_label(cid: u16) -> &'static str {
@@ -241,10 +237,8 @@ fn classify_conversion_failure(
                 .iter()
                 .any(|entry| entry.surface == required.surface)
         {
-            missing_pieces.push(format!(
-                "{}/{} ({})",
-                required.reading, required.surface, required.note
-            ));
+            missing_pieces
+                .push(format!("{}/{} ({})", required.reading, required.surface, required.note));
         }
     }
     if !missing_pieces.is_empty() {
@@ -276,19 +270,16 @@ fn dict_row_inventory_required_surfaces_exist() {
 
     for reading in INVENTORY_READINGS {
         let entries = lookup_sorted(&dictionary, reading);
-        summary.push(format!(
-            "=== {reading:?} ({} rows) ===",
-            entries.len()
-        ));
+        summary.push(format!("=== {reading:?} ({} rows) ===", entries.len()));
         if entries.is_empty() {
             summary.push("  (no exact compound / reading row)".to_string());
         }
         for entry in &entries {
             // Cap noisy dumps (ひ has dozens of rows) to the top value hits
             // plus any required surfaces for this reading.
-            let is_required = REQUIRED_SURFACES.iter().any(|required| {
-                required.reading == *reading && required.surface == entry.surface
-            });
+            let is_required = REQUIRED_SURFACES
+                .iter()
+                .any(|required| required.reading == *reading && required.surface == entry.surface);
             let rank_among =
                 entries.iter().position(|candidate| candidate.surface == entry.surface);
             let keep = is_required
@@ -338,29 +329,26 @@ fn dict_row_inventory_copula_suffixes_are_postposition() {
     let mut failures = Vec::new();
     for reading in suffixes {
         let entries = lookup_sorted(&dictionary, reading);
-        let identity = entries
-            .iter()
-            .filter(|entry| entry.surface == reading)
-            .collect::<Vec<_>>();
+        let identity = entries.iter().filter(|entry| entry.surface == reading).collect::<Vec<_>>();
         if identity.is_empty() {
             failures.push(format!("{reading}: missing identity row"));
             continue;
         }
-        let any_postposition = identity.iter().any(|entry| {
-            is_postposition_cid(entry.lcid) || is_postposition_cid(entry.rcid)
-        });
+        let any_postposition = identity
+            .iter()
+            .any(|entry| is_postposition_cid(entry.lcid) || is_postposition_cid(entry.rcid));
         if !any_postposition {
             failures.push(format!(
                 "{reading}: identity rows lack Postposition CID: {}",
-                identity.iter().map(|entry| format_entry_row(entry)).collect::<Vec<_>>().join(" | ")
+                identity
+                    .iter()
+                    .map(|entry| format_entry_row(entry))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             ));
         }
     }
-    assert!(
-        failures.is_empty(),
-        "copula suffix inventory failures:\n  {}",
-        failures.join("\n  ")
-    );
+    assert!(failures.is_empty(), "copula suffix inventory failures:\n  {}", failures.join("\n  "));
 }
 
 #[test]
@@ -375,8 +363,7 @@ fn conversion_regression_table_for_advisor_focus() {
             &dictionary,
             ConversionOptions { n_best: 16, ..ConversionOptions::default() },
         );
-        let texts =
-            candidates.iter().map(|candidate| candidate.text.as_str()).collect::<Vec<_>>();
+        let texts = candidates.iter().map(|candidate| candidate.text.as_str()).collect::<Vec<_>>();
         let actual_top = texts.first().copied().unwrap_or("");
         let rank = texts.iter().position(|text| *text == case.expected).map(|index| index + 1);
 
@@ -423,4 +410,3 @@ fn conversion_regression_table_for_advisor_focus() {
         failures.join("\n  ")
     );
 }
-

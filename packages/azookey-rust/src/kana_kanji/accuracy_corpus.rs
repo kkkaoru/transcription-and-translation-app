@@ -288,10 +288,11 @@ const CORPUS: &[CorpusCase] = &[
         input: "もじ、かんじ、ぞくじ",
         expected: "文字、漢字、俗字",
     },
+    CorpusCase { category: "full_sentences", input: "かきくう", expected: "柿食う" },
     CorpusCase {
         category: "full_sentences",
         input: "となりのきゃくはよくかきくうきゃくだ",
-        expected: "隣の客は良くかきくう客だ",
+        expected: "隣の客は良く柿食う客だ",
     },
     CorpusCase {
         category: "full_sentences",
@@ -421,6 +422,16 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
         "電車が遅延してたから僕は学校に行かない",
     ),
     ("ひな", "雛"),
+    // Compact-unknown after a predicate must not outrank multi-Kanji lexical
+    // paths; single-Kanji object + colloquial verb wins over written compounds.
+    ("かきくう", "柿食う"),
+    ("となりのきゃくはよくかきくうきゃくだ", "隣の客は良く柿食う客だ"),
+    // Bare noun/adjective roots must not beat conjugational stems before ます.
+    ("あめがふります", "雨が降ります"),
+    ("ふります", "降ります"),
+    // Full-span person plural must outrank rare short heads + たち.
+    ("わたしたちはがくせいです", "私たちは学生です"),
+    ("わたしたち", "私たち"),
 ];
 
 #[test]
