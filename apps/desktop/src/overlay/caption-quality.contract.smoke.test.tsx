@@ -6,19 +6,28 @@
  */
 // @vitest-environment jsdom
 
+import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import {
   CAPTION_HOLD_CLEAR_MS,
   captionHoldClearDelayMs,
 } from "../core/caption-hold-clear";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
+import {
+  advanceProgressiveReveal,
+  shouldProgressivelyReveal,
+} from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
 import { CaptionLines } from "./CaptionOverlay";
-import { captionItems, captionTextLines, createPreviewCaption } from "./captions";
+import {
+  captionItems,
+  captionTextLines,
+  createEmptyCaption,
+  createPreviewCaption,
+} from "./captions";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -36,6 +45,14 @@ const caption = (partial: Partial<CaptionPayload>): CaptionPayload => ({
   ...partial,
 });
 
+const expectMerged = (value: CaptionPayload | null): CaptionPayload => {
+  expect(value).not.toBeNull();
+  if (value == null) {
+    throw new Error("expected mergeCaptionPayload to accept the revision");
+  }
+  return value;
+};
+
 describe("caption quality contracts (automated, no human eyeball)", () => {
   describe("viewer hold / blank gaps", () => {
     it("keeps finalized captions readable for at least 4 seconds", () => {
@@ -46,6 +63,62 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
     it("does not auto-clear non-final captions during long speech gaps", () => {
       expect(captionHoldClearDelayMs(caption({ isFinal: false }))).toBeNull();
       expect(captionHoldClearDelayMs(caption({ isFinal: false, provisional: true }))).toBeNull();
+    });
+  });
+
+  describe("prefix-stuck: interim to longer final across reveal and hold-clear", () => {
+    it("grows from an early short final to a backdated longer completion", () => {
+      const interim = caption({
+        id: "parapper:session:turn:1",
+        sourceText: "こんにちは",
+        provisional: true,
+        startedAt: 2_000,
+        receivedAt: 2_000,
+      });
+      expect(captionHoldClearDelayMs(interim)).toBeNull();
+      expect(shouldProgressivelyReveal("", interim.sourceText)).toBe(true);
+
+      const shortFinal = expectMerged(
+        mergeCaptionPayload(
+          interim,
+          caption({
+            id: "parapper:session:turn:1",
+            sourceText: "こんにちは",
+            isFinal: true,
+            startedAt: 1_000,
+            receivedAt: 2_500,
+          }),
+        ),
+      );
+      expect(shortFinal.sourceText).toBe("こんにちは");
+      expect(shortFinal.isFinal).toBe(true);
+      expect(captionHoldClearDelayMs(shortFinal)).toBe(CAPTION_HOLD_CLEAR_MS);
+
+      const longerFinal = expectMerged(
+        mergeCaptionPayload(
+          shortFinal,
+          caption({
+            id: "parapper:session:turn:1",
+            sourceText: "こんにちはきこえますか",
+            isFinal: true,
+            startedAt: 800,
+            receivedAt: 3_200,
+          }),
+        ),
+      );
+      expect(longerFinal.sourceText).toBe("こんにちはきこえますか");
+      expect(captionHoldClearDelayMs(longerFinal)).toBe(CAPTION_HOLD_CLEAR_MS);
+      expect(shouldProgressivelyReveal(shortFinal.sourceText, longerFinal.sourceText)).toBe(true);
+
+      let displayed = shortFinal.sourceText;
+      while (displayed !== longerFinal.sourceText) {
+        displayed = advanceProgressiveReveal(displayed, longerFinal.sourceText);
+      }
+      expect(displayed).toBe("こんにちはきこえますか");
+
+      expect(mergeCaptionPayload(createEmptyCaption(), longerFinal)?.sourceText).toBe(
+        "こんにちはきこえますか",
+      );
     });
   });
 

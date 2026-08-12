@@ -718,12 +718,16 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
 
     // Parapper backdates a final caption's `startedAt` by its measured audio
     // duration, while an interim has no duration and therefore starts at the
-    // receive time.  A final for the same source turn must still replace that
-    // interim even though its audio start is numerically earlier.
+    // receive time. A same-id final must still merge even though its audio
+    // start is numerically earlier — both the first completion (interim →
+    // final) and a later longer completion after an early short final
+    // (こんにちは → こんにちはきこえますか). Rejecting the longer final as
+    // "older" freezes the plate on the prefix until hold-clear blanks it.
+    // Truncated finals still reach mergeSameIdSourceText, which keeps the
+    // longer already-painted surface.
     if (
       currentSequence === SOURCE_SEQUENCE &&
       nextSequence === SOURCE_SEQUENCE &&
-      current.isFinal !== true &&
       next.isFinal === true &&
       isSourceStagePayload(current) &&
       isSourceStagePayload(next)

@@ -1970,6 +1970,58 @@ describe("mergeCaptionPayload", () => {
     );
   });
 
+  it("accepts a backdated longer same-id final after an early short final", () => {
+    // Completion ASR backdates startedAt by the full audio duration. An early
+    // short final (こんにちは) therefore looks newer than the later longer
+    // completion (こんにちはきこえますか). Dropping that longer final froze
+    // the prefix until hold-clear blanked the plate.
+    const interim = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 2_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const shortFinal = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 2_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const longerFinal = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "こんにちはきこえますか",
+      translationText: "",
+      startedAt: 800,
+      receivedAt: 3_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    const afterShort = mergeCaptionPayload(interim, shortFinal);
+    expect(afterShort).toMatchObject({
+      sourceText: "こんにちは",
+      isFinal: true,
+    });
+    expect(afterShort).not.toBeNull();
+    if (afterShort == null) {
+      return;
+    }
+    expect(mergeCaptionPayload(afterShort, longerFinal)).toMatchObject({
+      sourceText: "こんにちはきこえますか",
+      isFinal: true,
+    });
+  });
+
   it("accepts a same-id continuation after final so newer characters still paint", () => {
     const finalized = caption({
       id: "u-1",
