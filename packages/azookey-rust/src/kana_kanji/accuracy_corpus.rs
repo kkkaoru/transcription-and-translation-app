@@ -424,6 +424,7 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     ("えをかいて", "絵を描いて"),
     ("はじをかく", "恥を掻く"),
     ("かみのはじ", "紙の端"),
+    ("かみをきる", "髪を切る"),
     // Past-auxiliary + から must not grow a copula だ at the segment boundary.
     // The intact reading converts; a duplicated だ (してただ) is a rescore /
     // offset bug, not a dictionary gap.

@@ -138,6 +138,11 @@ const SHAME_AFTER_SPATIAL_NOUN_PENALTY: f32 = -4.5;
 const PAPER_BEFORE_EDGE_POSSESSIVE_BONUS: f32 = 6.5;
 /// Soft-demote deity `神` in the same leftover slot.
 const GOD_BEFORE_EDGE_POSSESSIVE_PENALTY: f32 = -4.5;
+/// Soft-boost hair `髪` when leftover speech is `をきる` so `かみをきる`
+/// becomes `髪を切る` instead of `神を切る`. Isolated `かみ` stays 神.
+const HAIR_BEFORE_CUT_VERB_BONUS: f32 = 6.5;
+/// Soft-demote deity `神` in the same leftover slot.
+const GOD_BEFORE_CUT_VERB_PENALTY: f32 = -4.5;
 /// Soft-boost draw `描いて`/`描く` after a picture object (`絵を` / `画を`)
 /// so `えをかいて` does not keep write `書いて`. Isolated `かいて` and
 /// `かいてください` stay write-capable.
@@ -990,6 +995,7 @@ pub fn convert_with_dictionary(
                             + kaku_te_request_context_bonus(&chars, end, entry)
                             + edge_after_spatial_possessive_score(&state, entry)
                             + kami_before_edge_possessive_score(&chars, end, entry)
+                            + kami_before_hair_cut_score(&chars, end, entry)
                             + draw_after_picture_object_score(&state, entry)
                             + scratch_after_shame_object_score(&state, entry)
                             + haji_before_scratch_verb_score(&chars, end, entry)
@@ -2165,6 +2171,12 @@ fn remaining_has_edge_possessive(remaining: &str) -> bool {
     remaining.starts_with("のはじ")
 }
 
+fn remaining_has_hair_cut_verb(remaining: &str) -> bool {
+    remaining.starts_with("をきる")
+        || remaining.starts_with("をきって")
+        || remaining.starts_with("をきった")
+}
+
 fn remaining_has_thickness_object_noun(remaining: &str) -> bool {
     remaining_has_object_noun(remaining, "かべ")
         || remaining_has_object_noun(remaining, "ほん")
@@ -2300,6 +2312,19 @@ fn kami_before_edge_possessive_score(chars: &[char], end: usize, entry: &Diction
     match entry.surface.as_str() {
         "紙" => PAPER_BEFORE_EDGE_POSSESSIVE_BONUS,
         "神" => GOD_BEFORE_EDGE_POSSESSIVE_PENALTY,
+        _ => NO_SCORE,
+    }
+}
+
+/// Soft-prefer hair `髪` when leftover speech is the cut verb `をきる`.
+/// Isolated `かみ`, `かみさま`, and `かみのはじ` stay on their own priors.
+fn kami_before_hair_cut_score(chars: &[char], end: usize, entry: &DictionaryEntry) -> f32 {
+    if entry.reading != "かみ" || !remaining_has_hair_cut_verb(&remaining_reading(chars, end)) {
+        return NO_SCORE;
+    }
+    match entry.surface.as_str() {
+        "髪" => HAIR_BEFORE_CUT_VERB_BONUS,
+        "神" => GOD_BEFORE_CUT_VERB_PENALTY,
         _ => NO_SCORE,
     }
 }
@@ -4915,6 +4940,7 @@ mod tests {
             ("かみ", "神"),
             ("かみさま", "神様"),
             ("かみのけ", "髪の毛"),
+            ("かみをきる", "髪を切る"),
         ] {
             let candidates = convert_with_dictionary(
                 input,

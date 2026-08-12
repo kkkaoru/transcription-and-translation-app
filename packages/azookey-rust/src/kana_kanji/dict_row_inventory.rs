@@ -161,6 +161,12 @@ const CONVERSION_CASES: &[ConversionCase] = &[
         inventory_hint: "paper かみ + のはじ ranks 紙の端 over literary 神の恥",
     },
     ConversionCase {
+        input: "かみをきる",
+        expected: "髪を切る",
+        max_rank: 1,
+        inventory_hint: "cut verb をきる ranks 髪 over isolated 神",
+    },
+    ConversionCase {
         input: "はしのはじからものがおちてます",
         expected: "橋の端から物が落ちてます",
         max_rank: 1,
