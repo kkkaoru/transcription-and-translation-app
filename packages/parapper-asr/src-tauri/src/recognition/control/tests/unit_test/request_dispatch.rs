@@ -756,3 +756,39 @@ fn turn_runtime_dispatches_pending_asr_after_stale_turn_check_is_dropped() {
     );
     assert!(runtime.pending.asr_segments.is_empty());
 }
+
+#[test]
+fn turn_runtime_dispatches_next_utterance_in_same_step_after_open_turn_timeout() {
+    // Open-turn timeout used to `return` before dispatch. The next utterance's
+    // already-queued root segment then waited a full VAD tick, which is when
+    // the first hypothesis after a long pause goes missing.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .vad_interval_ms(32)
+        .turn_check_silence_ms(32)
+        .build();
+    let timeout_ticks = runtime.timeout_ticks();
+    runtime_state(&mut runtime)
+        .turn(1, recognized_turn_with_audio(1, "前の発話", &[1.0, 2.0, 3.0]))
+        .open_turn_since(1, 0)
+        .next_runtime_tick(timeout_ticks)
+        .pending_segment(2, None, SegmentCloseReason::InterimResultSilenceReached, 100..200);
+
+    runtime.step();
+
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "timed-out turn 1 must finalize in this step"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "queued next-utterance ASR must dispatch in the same step that timed out the prior turn",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(2));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(100), GlobalSampleIndex(200))
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+}

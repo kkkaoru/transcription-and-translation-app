@@ -287,6 +287,10 @@ impl RecognitionDriverHandle for RecognitionDriver {
         // Pending segments and turn-check promotion above still run so the
         // next caption does not wait for another VAD/input tick.
         if !applied_asr && self.runtime.handle_open_turn_timeout() {
+            // Timeout may finalize immediately (Simple) or occupy in-flight
+            // with rerecognition. Either way, a newer utterance already queued
+            // must not wait another VAD tick.
+            self.runtime.dispatch_next_asr_request_if_idle();
             return;
         }
 
