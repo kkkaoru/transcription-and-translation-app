@@ -367,6 +367,139 @@ fn turn_runtime_completion_does_not_duplicate_visible_interim_when_rerecognition
 }
 
 #[test]
+fn turn_runtime_rerecognition_does_not_hear_already_covered_completion_audio() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut interim = interim_request_for_turn(1, 1);
+    interim.source_audio = (0..100).map(|sample| sample as f32).collect();
+    interim.source_vad_results = vec![vad(true)];
+    interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "五月五日はこどもの日です");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = (0..100).map(|sample| sample as f32).collect();
+    completion.source_vad_results = vec![vad(true)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "五月五日はこどもの日です");
+    runtime.step();
+
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("completion must still dispatch full-turn rerecognition");
+    assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+    let speech_end = rerecognition
+        .audio
+        .iter()
+        .rposition(|sample| sample.abs() > f32::EPSILON)
+        .map_or(0, |index| index + 1);
+    assert!(
+        speech_end <= interim.source_audio.len(),
+        "rerecognition must not concatenate already-covered completion audio; speech_end={speech_end}"
+    );
+
+    asr_handle.complete_request_with_text(
+        &rerecognition,
+        "五月五日はこどもの日です五月五日はこどもの日です",
+    );
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs.last().expect("final output should be emitted");
+    assert_eq!(final_output.text, "五月五日はこどもの日です。");
+    assert!(final_output.is_final);
+    assert_eq!(
+        final_output.phrase,
+        (0..100).map(|sample| sample as f32).collect::<Vec<_>>(),
+        "the saved phrase must keep a single copy of the covered utterance"
+    );
+}
+
+#[test]
+fn turn_runtime_overlapping_completion_keeps_uncovered_tail_audio_for_rerecognition() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut interim = interim_request_for_turn(1, 1);
+    interim.source_audio = (0..100).map(|sample| sample as f32).collect();
+    interim.source_vad_results = vec![vad(true)];
+    interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "全体");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = (0..150).map(|sample| sample as f32).collect();
+    completion.source_vad_results = vec![vad(true), vad(true)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(150)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "全体追加");
+    runtime.step();
+
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("completion with an uncovered tail must still dispatch rerecognition");
+    assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+    asr_handle.complete_request_with_text(&rerecognition, "全体追加");
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs.last().expect("final output should be emitted");
+    assert_eq!(final_output.text, "全体追加。");
+    assert!(final_output.is_final);
+    assert_eq!(
+        final_output.phrase,
+        (0..150).map(|sample| sample as f32).collect::<Vec<_>>(),
+        "uncovered completion tail audio must remain in the rerecognition buffer"
+    );
+}
+
+#[test]
 fn turn_runtime_completion_after_non_streaming_interim_keeps_uncovered_tail_speech() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)

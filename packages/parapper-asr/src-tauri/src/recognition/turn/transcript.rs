@@ -100,12 +100,12 @@ impl RecognitionSession {
             request.kind == AsrTaskKind::CompletionCheck && !replace_latest_segment;
         let replace_combined_with_longer_rewrite =
             completion_append && completion_is_full_longer_rewrite(&existing_text, &incoming_text);
+        let skip_duplicate_completion_text = completion_append
+            && (replace_combined_with_longer_rewrite
+                || completion_text_duplicates_existing(&existing_text, &incoming_text));
         let recorded_text = if replace_latest_segment {
             incoming_text.clone()
-        } else if completion_append
-            && (replace_combined_with_longer_rewrite
-                || completion_text_duplicates_existing(&existing_text, &incoming_text))
-        {
+        } else if skip_duplicate_completion_text {
             // Keep the visible utterance in combined_text. Appending the same
             // (or truncated) completion string doubled the final when
             // rerecognition did not run to replace the draft.
@@ -124,8 +124,13 @@ impl RecognitionSession {
                 elapsed_millis,
             );
         } else {
-            let append_source_start =
-                streaming_interim_overlap.map_or(0, |overlap| overlap.source_samples);
+            let append_source_start = if let Some(overlap) = streaming_interim_overlap {
+                overlap.source_samples
+            } else if skip_duplicate_completion_text {
+                uncovered_completion_source_start(&draft.full_audio, &request.source_audio)
+            } else {
+                0
+            };
             let append_vad_results;
             let source_vad_results = if append_source_start == 0 {
                 request.source_vad_results.as_slice()
@@ -268,10 +273,11 @@ impl RecognitionSession {
             if prefer_streaming_interim_text_over_truncated_completion(
                 &longer_surface,
                 &transcript.text,
-            ) {
-                // Truncated full-turn rerecognition must not shrink the draft:
-                // the overlay may still show the longer hypothesis, and the
-                // later final would otherwise drop the utterance tail.
+            ) || is_repeated_turn_append(&longer_surface, &transcript.text)
+            {
+                // Truncated or repeated-string full-turn rerecognition must not
+                // replace a longer (or already-clean) draft. Doubled completion
+                // audio used to make ASR hear the utterance twice.
                 if draft.combined_text != longer_surface {
                     draft.replace_text_preserving_sources(
                         request.route,
@@ -504,6 +510,29 @@ fn strip_turn_surface_noise(text: &str) -> &str {
     text.trim().trim_end_matches(['.', '。', '…', '⋯']).trim_end_matches("...").trim()
 }
 
+fn uncovered_completion_source_start(draft_audio: &[f32], source_audio: &[f32]) -> usize {
+    if source_audio.is_empty() || draft_audio.is_empty() {
+        return 0;
+    }
+    if source_audio.len() >= draft_audio.len()
+        && source_audio[..draft_audio.len()]
+            .iter()
+            .zip(draft_audio)
+            .all(|(left, right)| left.to_bits() == right.to_bits())
+    {
+        return draft_audio.len();
+    }
+    if draft_audio.len() >= source_audio.len()
+        && draft_audio[..source_audio.len()]
+            .iter()
+            .zip(source_audio)
+            .all(|(left, right)| left.to_bits() == right.to_bits())
+    {
+        return source_audio.len();
+    }
+    0
+}
+
 fn samples_between(start: GlobalSampleIndex, end: GlobalSampleIndex) -> usize {
     usize::try_from(end.0.saturating_sub(start.0)).unwrap_or(usize::MAX)
 }
@@ -571,7 +600,7 @@ mod tests {
     use super::{
         completion_is_full_longer_rewrite, completion_text_duplicates_existing,
         is_longer_turn_rewrite, longer_turn_surface_text,
-        prefer_streaming_interim_text_over_truncated_completion,
+        prefer_streaming_interim_text_over_truncated_completion, uncovered_completion_source_start,
     };
 
     #[test]
@@ -619,5 +648,11 @@ mod tests {
         assert!(!completion_text_duplicates_existing("全体", "追加"));
         assert!(completion_is_full_longer_rewrite("前半", "前半と末尾"));
         assert!(!completion_is_full_longer_rewrite("全体", "追加です"));
+        assert_eq!(
+            uncovered_completion_source_start(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0, 3.0, 4.0]),
+            3
+        );
+        assert_eq!(uncovered_completion_source_start(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0]), 3);
+        assert_eq!(uncovered_completion_source_start(&[0.0, 1.0], &[2.0, 3.0]), 0);
     }
 }
