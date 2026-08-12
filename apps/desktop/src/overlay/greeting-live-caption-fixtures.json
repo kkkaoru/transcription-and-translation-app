@@ -314,6 +314,12 @@
       "input": "さようならー会えますか",
       "expectedOverlay": "さようならー聞こえますか",
       "note": "Prolonged さようなら + 会えますか"
+    },
+    {
+      "id": "konbanwa-hearing-prolonged-kanji",
+      "input": "こんばんはー会えますか",
+      "expectedOverlay": "こんばんはー聞こえますか",
+      "note": "Prolonged こんばんは + 会えますか"
     }
   ],
   "merge": [
