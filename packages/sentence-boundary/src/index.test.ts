@@ -59,6 +59,15 @@ describe("Japanese sentence-end detection", () => {
     expect(detectCaptionSentenceEnds("明日また")).toEqual([]);
   });
 
+  it("does not page past-auxiliary た away from following から", () => {
+    const train = "でんしゃがちえんしてたからぼくはがっこうにいかない";
+    const weather = "あついひはあついたべものをたべたくない";
+    expect(detectCaptionSentenceEnds(train)).toEqual([]);
+    expect(selectVisibleCaptionSentence(train)).toBe(train);
+    expect(detectCaptionSentenceEnds(weather)).toEqual([]);
+    expect(selectVisibleCaptionSentence(weather)).toBe(weather);
+  });
+
   it("pages to the in-progress sentence after a completed ending", () => {
     expect(selectVisibleCaptionSentence("今日は晴れです明日は雨")).toBe("明日は雨");
     expect(selectVisibleCaptionSentence("今日は晴れです。明日は雨です。")).toBe("明日は雨です。");

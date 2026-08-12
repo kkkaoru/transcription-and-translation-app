@@ -413,6 +413,13 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     // the particle は and the following word あつい.
     ("あついひはあついたべものをたべたくない", "暑い日は熱い食べ物を食べたくない"),
     ("あついたべもの", "熱い食べ物"),
+    // Past-auxiliary + から must not grow a copula だ at the segment boundary.
+    // The intact reading converts; a duplicated だ (してただ) is a rescore /
+    // offset bug, not a dictionary gap.
+    (
+        "でんしゃがちえんしてたからぼくはがっこうにいかない",
+        "電車が遅延してたから僕は学校に行かない",
+    ),
     ("ひな", "雛"),
 ];
 

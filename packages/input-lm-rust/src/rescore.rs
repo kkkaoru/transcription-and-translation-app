@@ -1227,6 +1227,72 @@ mod tests {
     }
 
     #[test]
+    fn confusion_edits_do_not_duplicate_past_auxiliary_before_kara() {
+        let rules = AsrConfusionRules::default();
+        let original = "でんしゃがちえんしてたからぼくはがっこうにいかない";
+        let candidates = rules.generate(original);
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        // た→だ voicing is a 1:1 substitution (してだから), not a span overlap.
+        // A start/end off-by-one that reused the past-auxiliary mora while also
+        // emitting だから would produce してただ. That candidate must not exist:
+        // no confusion rule inserts だ, and char-index edits cannot duplicate a
+        // mora at a segment boundary.
+        assert!(
+            !texts.iter().any(|text| text.contains("してただ")),
+            "spurious mora duplication produced してただ: {texts:?}"
+        );
+        assert!(texts.contains(&original), "original hypothesis missing from {texts:?}");
+    }
+
+    #[test]
+    fn confusion_edits_are_single_char_index_operations() {
+        // Hiragana moras are 3-byte UTF-8 scalars. Mixing byte offsets with
+        // char/mora indices at a span boundary would drop or duplicate a mora
+        // and scramble the neighboring characters. Every edit-1 candidate must
+        // therefore differ from the original by exactly one char-level
+        // substitution, insertion, or deletion.
+        let rules = AsrConfusionRules::default();
+        for original in [
+            "あついひはあついたべものをたべたくない",
+            "でんしゃがちえんしてたからぼくはがっこうにいかない",
+        ] {
+            let original_chars: Vec<char> = original.chars().collect();
+            for candidate in rules.generate(original) {
+                if candidate.text == original {
+                    assert_eq!(candidate.confusion_cost, 0.0);
+                    continue;
+                }
+                let candidate_chars: Vec<char> = candidate.text.chars().collect();
+                assert!(
+                    is_single_char_edit(&original_chars, &candidate_chars),
+                    "candidate {:?} is not a single char-index edit of {original:?}",
+                    candidate.text
+                );
+            }
+        }
+    }
+
+    fn is_single_char_edit(original: &[char], candidate: &[char]) -> bool {
+        match candidate.len() as isize - original.len() as isize {
+            0 => original.iter().zip(candidate).filter(|(a, b)| a != b).count() == 1,
+            1 => (0..=original.len()).any(|i| {
+                let Some(&inserted_char) = candidate.get(i) else {
+                    return false;
+                };
+                let mut inserted = original.to_vec();
+                inserted.insert(i, inserted_char);
+                inserted == candidate
+            }),
+            -1 => (0..original.len()).any(|i| {
+                let mut deleted = original.to_vec();
+                deleted.remove(i);
+                deleted.as_slice() == candidate
+            }),
+            _ => false,
+        }
+    }
+
+    #[test]
     fn gemination_insertion_generates_small_tu() {
         let rules = AsrConfusionRules::default();
         let candidates = rules.generate("きて");

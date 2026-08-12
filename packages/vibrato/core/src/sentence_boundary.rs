@@ -704,6 +704,26 @@ mod tests {
     }
 
     #[test]
+    fn past_auxiliary_before_kara_is_not_a_sentence_end() {
+        // Splitting してた | だから would duplicate だ when the two pages are
+        // concatenated. The exclusive end after してた must stay glued to から.
+        let train = "でんしゃがちえんしてたからぼくはがっこうにいかない";
+        let weather = "あついひはあついたべものをたべたくない";
+        assert!(
+            heuristic_sentence_end_offsets(train, false).is_empty(),
+            "してたから must not page before から: {:?}",
+            heuristic_sentence_end_offsets(train, false)
+        );
+        assert_eq!(visible_caption_sentence(train, false, None), train);
+        assert!(
+            heuristic_sentence_end_offsets(weather, false).is_empty(),
+            "は+あつい must not page between the particle and the next word: {:?}",
+            heuristic_sentence_end_offsets(weather, false)
+        );
+        assert_eq!(visible_caption_sentence(weather, false, None), weather);
+    }
+
+    #[test]
     fn continuations_are_not_sentence_ends() {
         assert!(heuristic_sentence_end_offsets("晴れですが寒い", false).is_empty());
         assert!(heuristic_sentence_end_offsets("明日また", false).is_empty());

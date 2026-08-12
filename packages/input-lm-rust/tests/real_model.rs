@@ -337,3 +337,43 @@ fn rescorer_generates_and_ranks_candidates_with_real_model() {
         top3 = ranked.iter().take(3).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn recommended_rescorer_holds_boundary_mora_on_caption_sentences() {
+    let Some(base) = model_base() else {
+        eprintln!("skipping: INPUT_LM_MODEL_BASE is not set");
+        return;
+    };
+
+    let tokenizer = match caption_bridge_input_lm::tokenizer::ZenzTokenizer::from_submodule() {
+        Some(t) => t,
+        None => {
+            eprintln!("skipping: submodule tokenizer assets not present");
+            return;
+        }
+    };
+
+    let params = NgramParams::default();
+    let model = open_model(&base, params).expect("open model");
+    let scorer = caption_bridge_input_lm::rescore::LmScorer::new(model, tokenizer);
+    let rescorer = caption_bridge_input_lm::rescore::Rescorer::with_recommended_weights(
+        scorer,
+        caption_bridge_input_lm::rescore::AsrConfusionRules::default(),
+    );
+
+    let weather = "あついひはあついたべものをたべたくない";
+    let train = "でんしゃがちえんしてたからぼくはがっこうにいかない";
+    let weather_best = rescorer.best(weather);
+    let train_best = rescorer.best(train);
+    eprintln!("recommended best weather={weather_best:?} train={train_best:?}");
+    assert!(
+        !weather_best.contains("はつい"),
+        "rescorer dropped the second あつい's leading あ: {weather_best:?}"
+    );
+    assert_eq!(weather_best, weather, "weather hold was rewritten to {weather_best:?}");
+    assert!(
+        !train_best.contains("してただ"),
+        "rescorer duplicated a mora into してただ: {train_best:?}"
+    );
+    assert_eq!(train_best, train, "train hold was rewritten to {train_best:?}");
+}
