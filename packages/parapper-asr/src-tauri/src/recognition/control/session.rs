@@ -52,7 +52,7 @@ pub(in crate::recognition) struct PendingRuntimeState {
     pub(in crate::recognition) finalization: Option<PendingFinalization>,
     pub(in crate::recognition) asr_segments: VecDeque<PendingAsrSegment>,
     pub(in crate::recognition) interim_asr: InterimAsrState,
-    /// Reset Nemotron streaming cache only after flushed InterimChunkReached
+    /// Reset Nemotron streaming cache only after flushed `InterimChunkReached`
     /// requests for the closing utterance have been submitted.
     pub(in crate::recognition) deferred_streaming_session_reset: bool,
 }
@@ -163,6 +163,7 @@ impl InterimAsrState {
         (!streaming_interim_enabled).then_some(segment)
     }
 
+    #[allow(dead_code)]
     pub(in crate::recognition) fn clear_streaming_if_segment(
         &mut self,
         segment_id: u64,

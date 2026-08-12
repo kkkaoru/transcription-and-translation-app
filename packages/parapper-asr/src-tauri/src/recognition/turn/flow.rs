@@ -367,10 +367,10 @@ impl RecognitionSession {
             return;
         };
         let draft = turn.draft();
-        if let Some(visible) = draft.last_emitted_interim_text.as_deref() {
-            if !super::transcript::is_longer_turn_rewrite(visible, &draft.combined_text) {
-                return;
-            }
+        if let Some(visible) = draft.last_emitted_interim_text.as_deref()
+            && !super::transcript::is_longer_turn_rewrite(visible, &draft.combined_text)
+        {
+            return;
         }
         self.emit_turn_output(turn_id, false);
     }
@@ -572,7 +572,7 @@ impl RecognitionSession {
     ///
     /// `PendingAsrSegment::turn_id()` uses only the immediate `previous_segment_id`
     /// (or the segment itself). Max-chunk / interim-silence chains therefore report
-    /// intermediate ids (segment 3 with previous=2 yields turn_id 2) even when the
+    /// intermediate ids (segment 3 with previous=2 yields `turn_id` 2) even when the
     /// open draft turn is still the utterance root (turn 1 with segments [1, 2]).
     /// Comparing that proxy to the session turn id alone finalizes too early and
     /// drops the continuation onto a new turn after `open_turn` is cleared.

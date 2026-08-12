@@ -34,10 +34,12 @@ impl CaptionClock for MonotonicCaptionClock {
 
 /// Test clock: tests advance this explicitly so spans do not depend on wall time.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(crate) struct InjectedCaptionClock {
     millis: Arc<AtomicU64>,
 }
 
+#[allow(dead_code)]
 impl InjectedCaptionClock {
     pub(crate) fn new(start_millis: u64) -> Self {
         Self { millis: Arc::new(AtomicU64::new(start_millis)) }

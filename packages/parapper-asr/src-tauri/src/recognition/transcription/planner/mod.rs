@@ -6,10 +6,10 @@ use crate::{
         segmentation::{segment::builder::SegmentCloseReason, vad::engine::VadResult},
         transcription::{
             asr::{
-                input::{ensure_asr_request_edge_silence, AsrRequestEdgePadding},
+                input::{AsrRequestEdgePadding, ensure_asr_request_edge_silence},
                 task::{
-                    AsrRequest, AsrRequestId, AsrTarget, AsrTaskKind, AudioRange, GlobalSampleIndex,
-                    SegmentId, TurnId, TurnRevision, VadFrameIndex,
+                    AsrRequest, AsrRequestId, AsrTarget, AsrTaskKind, AudioRange,
+                    GlobalSampleIndex, SegmentId, TurnId, TurnRevision, VadFrameIndex,
                 },
             },
             route::RecognitionRouteSelection,
@@ -65,7 +65,7 @@ impl PendingAsrSegment {
     }
 
     /// Fold a contiguous breath-chain interim into one segment so turn-check
-    /// promotion can emit a single CompletionCheck over the full utterance.
+    /// promotion can emit a single `CompletionCheck` over the full utterance.
     pub(in crate::recognition) fn merge_contiguous_interim(mut self, next: Self) -> Self {
         debug_assert!(self.is_contiguous_with(&next));
         let first_segment_id = self.first_segment_id().0;
@@ -362,7 +362,8 @@ mod tests {
 
     #[test]
     fn merge_contiguous_interim_trims_padding_overlap_without_dropping_source_speech() {
-        let left = pending_segment(1, None, SegmentCloseReason::InterimResultSilenceReached, 0..100);
+        let left =
+            pending_segment(1, None, SegmentCloseReason::InterimResultSilenceReached, 0..100);
         let mut right =
             pending_segment(2, Some(1), SegmentCloseReason::InterimResultSilenceReached, 80..200);
         // 20-sample geometric overlap is only ASR-only leading padding on `audio`.

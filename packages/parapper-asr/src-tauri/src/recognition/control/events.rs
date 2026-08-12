@@ -69,6 +69,7 @@ pub(crate) struct RecognitionSourceMeta {
 /// on the same turn (long utterances, rerecognition) must not reset earlier
 /// stamps.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct TurnCaptionLatency {
     /// VAD speech onset attributed to this turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]

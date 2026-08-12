@@ -18,6 +18,7 @@ use crate::config::{
 use crate::connect::test_support::{
     MockHttpServer, TimedMockHttpServer, json_response, request_id_from_plugin_request,
 };
+use crate::recognition::control::events::TurnCaptionLatency;
 
 fn source_meta(source_id: &str, turn_id: u64, output_sequence: u64) -> RecognitionSourceMeta {
     RecognitionSourceMeta {
@@ -43,7 +44,7 @@ fn recognized_output(id: &str, turn_id: u64, text: &str, is_final: bool) -> Reco
         detected_language: None,
         meta: turn_meta(id, turn_id, is_final),
         elapsed_millis: 0,
-        caption_latency: Default::default(),
+        caption_latency: TurnCaptionLatency::default(),
     }
 }
 

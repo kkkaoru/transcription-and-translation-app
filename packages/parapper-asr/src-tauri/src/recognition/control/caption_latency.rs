@@ -1,7 +1,9 @@
-use std::sync::Arc;
-
-use super::{RecognitionSession, clock::CaptionClock, events::TurnCaptionLatency};
+use super::RecognitionSession;
+#[cfg(test)]
+use super::clock::CaptionClock;
 use crate::delivery::RecognizedTextOutput;
+#[cfg(test)]
+use std::sync::Arc;
 
 impl RecognitionSession {
     pub(in crate::recognition) fn note_vad_speech(&mut self, is_speech: bool) {
