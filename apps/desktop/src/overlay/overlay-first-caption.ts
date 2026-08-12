@@ -113,10 +113,10 @@ const isParseableOverlayAsrSession = (utteranceId: string): boolean =>
 
 /**
  * Previous-session ASR must not repaint after idle. Prefer captureGeneration
- * when both sides have it. Untagged live rows from the idle session (Parapper,
- * web-speech, or a non-parapper rolling id) are delayed previous-session
- * stages; a different parseable session key is the new capture and must still
- * paint the longer ASR.
+ * when both sides have it. Untagged live *or history* rows from the idle
+ * session (Parapper, web-speech, or a non-parapper rolling id) are delayed
+ * previous-session stages even when `at` is later; a different parseable
+ * session key is the new capture and must still paint the longer ASR.
  */
 export const isStaleOverlayAsrStage = (
   stage: OverlayAsrStageRef,
@@ -131,19 +131,24 @@ export const isStaleOverlayAsrStage = (
     }
     return historyInvalidated && stage.captureGeneration <= fence.captureGeneration;
   }
-  if (source === "live" && typeof stage.captureGeneration !== "number") {
+  if (typeof stage.captureGeneration !== "number" && idleAsrSessionKey) {
     const stageSession = overlayAsrSessionKey(stage.utteranceId);
-    if (idleAsrSessionKey && stageSession === idleAsrSessionKey) {
+    if (stageSession === idleAsrSessionKey) {
       return true;
     }
+    if (isParseableOverlayAsrSession(stage.utteranceId) && stageSession) {
+      return false;
+    }
+    return true;
+  }
+  if (source === "live" && typeof stage.captureGeneration !== "number") {
     if (
       isParseableOverlayAsrSession(stage.utteranceId) &&
-      stageSession &&
-      (!idleAsrSessionKey || stageSession !== idleAsrSessionKey)
+      overlayAsrSessionKey(stage.utteranceId)
     ) {
       return false;
     }
-    if (historyInvalidated || idleAsrSessionKey) {
+    if (historyInvalidated) {
       return true;
     }
   }

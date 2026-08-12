@@ -247,6 +247,55 @@ describe("isStaleOverlayAsrStage", () => {
     ).toBe(false);
   });
 
+  it("drops untagged delayed ASR history from the idle session even when at is later", () => {
+    const fence = overlayAsrStageFence({
+      utteranceId: "parapper:s:1:8",
+      at: 80,
+      startedAt: 40,
+    });
+    const idleSession = overlayAsrSessionKey(fence.utteranceId);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "parapper:s:1:8", at: 220, startedAt: 180 },
+        fence,
+        true,
+        "history",
+        idleSession,
+      ),
+    ).toBe(true);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "parapper:s:1:9", at: 240, startedAt: 200 },
+        fence,
+        true,
+        "history",
+        idleSession,
+      ),
+    ).toBe(true);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "chunk-2", at: 220, startedAt: 180 },
+        overlayAsrStageFence({
+          utteranceId: "chunk-1",
+          at: 80,
+          startedAt: 40,
+        }),
+        true,
+        "history",
+        "chunk-1",
+      ),
+    ).toBe(true);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "parapper:s:2:1", at: 10, startedAt: 1 },
+        fence,
+        true,
+        "history",
+        idleSession,
+      ),
+    ).toBe(false);
+  });
+
   it("keeps untagged live ASR from a new web-speech attempt after idle", () => {
     const fence = overlayAsrStageFence({
       utteranceId: "web-speech:1:1000",
