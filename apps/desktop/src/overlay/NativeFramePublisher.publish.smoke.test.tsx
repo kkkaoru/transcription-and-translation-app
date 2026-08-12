@@ -361,7 +361,20 @@ describe("NativeFramePublisher publish failures", () => {
     expect(atob(rgbaBase64).length).toBe(64 * 36 * 4);
   });
 
-  it("publishes through a timeout fallback when requestAnimationFrame never fires", async () => {
+  it("publishes the first caption without waiting for rAF", async () => {
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => 1);
+    vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    await act(() => {
+      root.render(
+        <NativeFramePublisher config={smallConfig()} caption={captionWith("first-pixels")} />,
+      );
+    });
+
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes later captions through a timeout fallback when requestAnimationFrame never fires", async () => {
     vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => 1);
     vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => undefined);
 
@@ -370,9 +383,17 @@ describe("NativeFramePublisher publish failures", () => {
         <NativeFramePublisher config={smallConfig()} caption={captionWith("raf-dead")} />,
       );
     });
-    await flush(NATIVE_RAF_FALLBACK_MS + 5);
-
     expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+    await flush(60);
+
+    await act(() => {
+      root.render(
+        <NativeFramePublisher config={smallConfig()} caption={captionWith("raf-dead-2")} />,
+      );
+    });
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+    await flush(NATIVE_RAF_FALLBACK_MS + 5);
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(2);
   });
 
   it("publishes the first Syphon frame without waiting for hanging fonts.ready", async () => {

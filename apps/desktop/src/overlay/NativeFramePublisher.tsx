@@ -913,7 +913,15 @@ export const NativeFramePublisher = ({
     // Warm webfonts in the background. First Syphon pixels must not wait on
     // document.fonts.ready (off-screen WKWebView can stall that for 500ms).
     void ensureFontsReady(overlayCaptionFontCss(config));
-    schedule();
+    // First caption of this publisher: do not wait rAF / the 16ms fallback
+    // before the first pixels. Skip the extra schedule() so a rejected first
+    // invoke is not immediately double-fired by the 16ms rAF fallback.
+    // Later updates still coalesce on rAF; failures retry via scheduleRetry.
+    if (gateRef.current.lastSuccessfulKey === "" && gateRef.current.inFlightKey === null) {
+      paint();
+    } else {
+      schedule();
+    }
     return () => {
       cancelled = true;
       clearRetry();
