@@ -23,6 +23,7 @@ import {
   isStaleOverlayAsrStage,
   overlayAsrFenceFromCaption,
   overlayAsrStageFence,
+  parapperSessionKey,
   rearmPreviewHold,
   retainHeldOverlayCaption,
   shouldHoldCaptionOverPreview,
@@ -145,6 +146,7 @@ export const OverlayApp = () => {
     let heldOverPreview: CaptionPayload | null = null;
     let asrHistoryInvalidated = false;
     let staleAsrFence: ReturnType<typeof overlayAsrStageFence> | null = null;
+    let idleParapperSessionKey: string | null = null;
     const flushHeldCaptionOverPreview = (): void => {
       const held = heldOverPreview;
       heldOverPreview = null;
@@ -259,6 +261,9 @@ export const OverlayApp = () => {
             asrHistoryInvalidated = true;
             staleAsrFence =
               staleAsrFence ?? overlayAsrFenceFromCaption(captionRef.current) ?? staleAsrFence;
+            idleParapperSessionKey =
+              (staleAsrFence ? parapperSessionKey(staleAsrFence.utteranceId) : null) ??
+              idleParapperSessionKey;
             const cleared = nativeRenderer ? createPreviewCaption() : createEmptyCaption();
             captionRef.current = cleared;
             setCaption(cleared);
@@ -302,6 +307,7 @@ export const OverlayApp = () => {
             staleAsrFence,
             asrHistoryInvalidated,
             source,
+            idleParapperSessionKey,
           )
         ) {
           return;
@@ -357,6 +363,7 @@ export const OverlayApp = () => {
               staleAsrFence,
               asrHistoryInvalidated,
               "history",
+              idleParapperSessionKey,
             );
             if (!stale) {
               applyAsrStage(latest, "history");

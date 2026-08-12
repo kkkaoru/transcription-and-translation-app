@@ -4,6 +4,7 @@ import {
   isStaleOverlayAsrStage,
   overlayAsrFenceFromCaption,
   overlayAsrStageFence,
+  parapperSessionKey,
   rearmPreviewHold,
   retainHeldOverlayCaption,
   shouldHoldCaptionOverPreview,
@@ -145,6 +146,64 @@ describe("isStaleOverlayAsrStage", () => {
         fromCaption,
         true,
         "history",
+      ),
+    ).toBe(false);
+  });
+
+  it("drops untagged delayed live ASR from the idle Parapper session", () => {
+    const fence = overlayAsrStageFence({
+      utteranceId: "parapper:s:1:8",
+      at: 80,
+      startedAt: 40,
+    });
+    const idleSession = parapperSessionKey(fence.utteranceId);
+    expect(idleSession).toBe("s:1");
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "parapper:s:1:8", at: 200, startedAt: 150 },
+        fence,
+        true,
+        "live",
+        idleSession,
+      ),
+    ).toBe(true);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "parapper:s:1:9", at: 220, startedAt: 180 },
+        fence,
+        true,
+        "live",
+        idleSession,
+      ),
+    ).toBe(true);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "parapper:s:1:9", at: 220, startedAt: 180 },
+        overlayAsrStageFence({
+          utteranceId: "parapper:s:2:1",
+          at: 40,
+          startedAt: 10,
+        }),
+        false,
+        "live",
+        idleSession,
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps untagged live ASR from a new Parapper session after idle", () => {
+    const fence = overlayAsrStageFence({
+      utteranceId: "parapper:s:1:8",
+      at: 80,
+      startedAt: 40,
+    });
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "parapper:s:2:1", at: 10, startedAt: 1 },
+        fence,
+        true,
+        "live",
+        parapperSessionKey(fence.utteranceId),
       ),
     ).toBe(false);
   });

@@ -69,22 +69,53 @@ export const overlayAsrFenceFromCaption = (caption: CaptionPayload): OverlayAsrS
 };
 
 /**
+ * `parapper:session:turnSession:turnId` → `session:turnSession`.
+ * Delayed untagged ASR from the idle recognition session shares this key;
+ * a new capture uses a new session or turnSession id.
+ */
+export const parapperSessionKey = (utteranceId: string): string | null => {
+  if (!utteranceId.startsWith("parapper:")) {
+    return null;
+  }
+  const rest = utteranceId.slice("parapper:".length);
+  const turnColon = rest.lastIndexOf(":");
+  if (turnColon <= 0) {
+    return null;
+  }
+  const beforeTurn = rest.slice(0, turnColon);
+  if (!beforeTurn.includes(":")) {
+    return null;
+  }
+  return beforeTurn;
+};
+
+/**
  * Previous-session ASR must not repaint after idle. Prefer captureGeneration
- * when both sides have it; otherwise treat a history snapshot that is not
- * newer than the idle fence as stale. Live events after capturing still
- * paint unless they belong to an older generation or the same fenced row.
+ * when both sides have it. Untagged live rows from the idle Parapper session
+ * are delayed previous-session stages even when `at` is later; a different
+ * session key is the new capture and must still paint the longer ASR.
  */
 export const isStaleOverlayAsrStage = (
   stage: OverlayAsrStageRef,
   fence: OverlayAsrStageRef | null,
   historyInvalidated: boolean,
   source: "history" | "live",
+  idleParapperSession: string | null = null,
 ): boolean => {
   if (typeof stage.captureGeneration === "number" && typeof fence?.captureGeneration === "number") {
     if (stage.captureGeneration < fence.captureGeneration) {
       return true;
     }
     return historyInvalidated && stage.captureGeneration <= fence.captureGeneration;
+  }
+  if (source === "live" && typeof stage.captureGeneration !== "number") {
+    const stageSession = parapperSessionKey(stage.utteranceId);
+    if (idleParapperSession && stageSession === idleParapperSession) {
+      return true;
+    }
+    if (historyInvalidated && fence && stage.utteranceId === fence.utteranceId) {
+      return true;
+    }
   }
   if (source === "history" && historyInvalidated) {
     if (!fence) {
