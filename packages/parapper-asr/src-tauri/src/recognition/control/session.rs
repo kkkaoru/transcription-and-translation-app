@@ -407,6 +407,7 @@ pub(in crate::recognition) struct TurnStore {
     pub(in crate::recognition) last_recognition_route: Option<RecognitionRoute>,
     pub(in crate::recognition) open_turn_id: Option<u64>,
     pub(in crate::recognition) open_turn_accepts_root_segment: bool,
+    pub(in crate::recognition) open_turn_is_closing: bool,
     pub(in crate::recognition) caption_latency: HashMap<u64, TurnCaptionLatency>,
 }
 
@@ -422,6 +423,7 @@ impl Default for TurnStore {
             last_recognition_route: None,
             open_turn_id: None,
             open_turn_accepts_root_segment: false,
+            open_turn_is_closing: false,
             caption_latency: HashMap::new(),
         }
     }

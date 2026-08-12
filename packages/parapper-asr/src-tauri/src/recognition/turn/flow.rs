@@ -47,6 +47,14 @@ impl RecognitionSession {
         if self.requests.in_flight_request.is_some() {
             return false;
         }
+        if matches!(
+            purpose,
+            RerecognitionPurpose::SimpleTurnCheckFinal | RerecognitionPurpose::TimeoutFinal
+        ) {
+            // Closing rerecognition must not keep absorbing AfterInterimSilence
+            // children of this turn; those are the next utterance.
+            self.stop_accepting_root_while_closing(turn_id);
+        }
         if self.pending_asr_preempts_rerecognition(turn_id) {
             // A newer utterance is already queued. Occupying the single ASR
             // slot with follow-up rerecognition would delay its first hypothesis.
@@ -202,6 +210,7 @@ impl RecognitionSession {
     pub(in crate::recognition) fn keep_turn_open(&mut self, turn_id: u64, emit_interim: bool) {
         self.turn_store.open_turn_id = Some(turn_id);
         self.turn_store.open_turn_accepts_root_segment = true;
+        self.turn_store.open_turn_is_closing = false;
         self.reset_open_turn_timeout_origin();
         if emit_interim && self.config.turn.interim_result_enabled {
             self.emit_turn_output(turn_id, false);
@@ -229,12 +238,14 @@ impl RecognitionSession {
     fn stop_accepting_root_while_closing(&mut self, turn_id: u64) {
         if self.turn_store.open_turn_id == Some(turn_id) {
             self.turn_store.open_turn_accepts_root_segment = false;
+            self.turn_store.open_turn_is_closing = true;
         }
     }
 
     pub(in crate::recognition) fn clear_open_turn(&mut self) {
         self.turn_store.open_turn_id = None;
         self.turn_store.open_turn_accepts_root_segment = false;
+        self.turn_store.open_turn_is_closing = false;
         self.activity.open_turn_since_tick = None;
     }
 
@@ -611,6 +622,12 @@ impl RecognitionSession {
         segment: &PendingAsrSegment,
         turn_id: u64,
     ) -> bool {
+        if self.pending_child_is_next_utterance_of_closing_turn(segment, turn_id) {
+            // AfterInterimSilence names the last closed segment as previous.
+            // Once this turn is closing, that child remints after finalize
+            // instead of blocking the caption and merging into it.
+            return false;
+        }
         if segment.turn_id().0 <= turn_id {
             return true;
         }
@@ -640,5 +657,32 @@ impl RecognitionSession {
         }
 
         false
+    }
+
+    fn pending_child_is_next_utterance_of_closing_turn(
+        &self,
+        segment: &PendingAsrSegment,
+        turn_id: u64,
+    ) -> bool {
+        if self.turn_store.open_turn_id != Some(turn_id) || !self.turn_store.open_turn_is_closing {
+            return false;
+        }
+        let Some(previous_segment_id) = segment.previous_segment_id else {
+            return false;
+        };
+        match segment.reason {
+            // Max-chunk / streaming-chunk children are still the same utterance.
+            SegmentCloseReason::SegmentMaxChunksReached
+            | SegmentCloseReason::InterimChunkReached => return false,
+            SegmentCloseReason::InterimResultSilenceReached
+            | SegmentCloseReason::EndSilenceReached => {}
+        }
+        if segment.turn_id().0 == turn_id {
+            return true;
+        }
+        self.turn_store.turns.get(&turn_id).is_some_and(|turn| {
+            turn.draft().segment_ids.contains(&previous_segment_id)
+                || turn.draft().latest_segment_id == Some(previous_segment_id)
+        })
     }
 }

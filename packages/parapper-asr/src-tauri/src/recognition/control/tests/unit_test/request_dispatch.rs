@@ -900,6 +900,44 @@ fn turn_runtime_dispatches_next_utterance_instead_of_rerecognition_when_root_is_
 }
 
 #[test]
+fn turn_runtime_dispatches_child_next_utterance_instead_of_rerecognition() {
+    // AfterInterimSilence names the last closed segment as previous, so the
+    // next utterance arrives as a child. Closing rerecognition used to treat
+    // that child as same-turn continuation and block finalization.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(true)
+        .build();
+    runtime_state(&mut runtime)
+        .turn(1, recognized_turn_with_audio(1, "前の発話", &[1.0, 2.0, 3.0]))
+        .open_turn(1)
+        .pending_turn_check(1)
+        .pending_segment(2, Some(1), SegmentCloseReason::InterimResultSilenceReached, 100..200);
+
+    runtime.step();
+
+    assert!(
+        runtime.pending.turn_check.is_none(),
+        "turn-check must be consumed after yielding rerecognition to the child next utterance"
+    );
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "turn 1 must finalize instead of merging the child into the same caption"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "queued child next-utterance ASR must remint onto a new turn",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(2));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(100), GlobalSampleIndex(200))
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+}
+
+#[test]
 fn turn_runtime_dispatches_next_utterance_when_namo_turn_check_rerecognition_cannot_submit() {
     // Namo turn-check used to keep the check and return without dispatch when
     // rerecognition could not occupy in-flight (empty draft audio). The next
