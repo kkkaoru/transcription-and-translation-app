@@ -160,19 +160,6 @@ const prefixEndsWithPunct = (prefix: string): boolean => {
 const remainderDominatesPrefix = (prefix: string, remainder: string): boolean =>
   codePoints(remainder.trimStart()).length >= codePoints(prefix.trimEnd()).length;
 
-/**
- * After a copula/punctuation end, page when the next span is a new clause that
- * can own the plate — not a shorter tail. Clause continuations are rejected
- * before this runs. Punctuation and empty remainder still complete.
- */
-const japaneseCopulaAllowsRemainder = (prefix: string, remainder: string): boolean => {
-  const next = remainder.trimStart();
-  if (!next || prefixEndsWithPunct(prefix)) {
-    return true;
-  }
-  return remainderDominatesPrefix(prefix, remainder);
-};
-
 const startsClauseContinuation = (remainder: string, english: boolean): boolean => {
   const next = remainder.trimStart();
   if (!next) {
@@ -225,6 +212,9 @@ const shouldIgnoreSentenceEndBeforeContinuation = (
     return true;
   }
   const trimmedPrefix = prefix.trimEnd();
+  if (startsClauseContinuation(remainder, false) || startsTaraContinuation(prefix, remainder)) {
+    return true;
+  }
   // Copula/ます (and other non-punct) offsets must not replace a longer lead
   // with a shorter tail — same rule as the heuristic path. Punctuation still
   // pages. Empty remainder is handled above as a true end-of-utterance.
@@ -258,13 +248,7 @@ const detectHeuristicEnds = (text: string, english: boolean, allowCopula = true)
     if (shouldIgnoreSentenceEndBeforeContinuation(prefix, remainder, english)) {
       continue;
     }
-    if (startsClauseContinuation(remainder, english)) {
-      continue;
-    }
-    if (!english && startsTaraContinuation(prefix, remainder)) {
-      continue;
-    }
-    if (!english && !japaneseCopulaAllowsRemainder(prefix, remainder)) {
+    if (english && startsClauseContinuation(remainder, true)) {
       continue;
     }
     ends.push(index);

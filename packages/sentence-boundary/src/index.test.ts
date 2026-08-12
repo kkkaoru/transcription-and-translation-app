@@ -289,6 +289,12 @@ describe("soft wrap offsets before maxChars", () => {
     expect(detectCaptionSoftBreaks("今日、明日")).toContain(3);
     expect(detectCaptionSoftBreaks("晴れ，次")).toContain(3);
     expect(detectCaptionSoftBreaks("ok, next")).toContain(3);
+    expect(detectCaptionSoftBreaks("本日の会議", { softBreakOffsets: [0, Number.NaN, 99] })).toEqual(
+      [],
+    );
+    expect(detectCaptionSentenceEnds("本日の会議", { sentenceEndOffsets: [0, Number.NaN, 99] })).toEqual(
+      [],
+    );
   });
 });
 
@@ -371,6 +377,20 @@ describe("heuristic paging invariants (unknown utterances)", () => {
     expect(
       selectVisibleCaptionSentence(`${lead}${tail}`, { sentenceEndOffsets: [scalarCount(lead)] }),
     ).toBe(tail);
+  });
+
+  it("does not page Vibrato copula offsets into a grammatical continuation", () => {
+    const lead = "準備ができました";
+    const tail = "これから午後の予定と明日の議題を確認します";
+    const particles = ["が", "ので", "て", "から", "けど"];
+    for (const particle of particles) {
+      const text = `${lead}${particle}${tail}`;
+      const offset = scalarCount(lead);
+      expect(selectVisibleCaptionSentence(text), text).toBe(text);
+      expect(selectVisibleCaptionSentence(text, { sentenceEndOffsets: [offset] }), text).toBe(text);
+    }
+    const tara = `だったら${tail}`;
+    expect(selectVisibleCaptionSentence(tara, { sentenceEndOffsets: [3] })).toBe(tara);
   });
 
   it("visible heuristic text is the full utterance or a remainder that dominates the lead", () => {
