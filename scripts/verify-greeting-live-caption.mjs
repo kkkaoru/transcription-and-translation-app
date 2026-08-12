@@ -125,6 +125,7 @@ const REQUIRED_SANITIZE_IDS = [
   "concat-hearing-prolonged-ae",
   "sayonara-hearing-prolonged-ae",
   "konbanwa-hearing-prolonged-ae",
+  "ohayou-hearing-prolonged-ae",
 ];
 const REQUIRED_MERGE_IDS = [
   "append-kikoemasu",
