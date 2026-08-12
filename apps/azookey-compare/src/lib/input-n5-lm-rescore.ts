@@ -284,6 +284,22 @@ const longVowelFor = (ch: string): string | undefined => {
 
 const isLongVowel = (prev: string, ch: string): boolean => longVowelFor(prev) === ch;
 
+/**
+ * True for the five pure Japanese vowel mora.
+ *
+ * Consonant mora (か, は, …) share the same vowel code as their vowel-only
+ * counterparts, so `longVowelFor` maps them to an extension vowel. But a
+ * vowel that follows a consonant mora in continuous speech is far more likely
+ * to begin a new word than to be a long-vowel extension. Restricting the
+ * long-vowel *deletion* to vowel-mora doublings avoids swallowing the first
+ * mora of a new word (は + あつい → は + つい) while still correcting genuine
+ * vowel-doubling ASR errors (うう → う, えい → え).
+ *
+ * Mirrors `is_vowel_mora` in packages/input-lm-rust (commit 9f8f504).
+ */
+const isVowelMora = (ch: string): boolean =>
+  ch === "あ" || ch === "い" || ch === "う" || ch === "え" || ch === "お";
+
 const canGeminate = (ch: string): boolean =>
   "かきくけこさしすせそたちつてとはひふへほぱぴぷぺぽ".includes(ch);
 
@@ -299,15 +315,15 @@ const insertChar = (chars: readonly string[], i: number, ch: string): string =>
 const deleteChar = (chars: readonly string[], i: number): string =>
   [...chars.slice(0, i), ...chars.slice(i + 1)].join("");
 
-const edit1Candidates = (
-  text: string,
-  rules: AsrConfusionRulesConfig,
-): RescoreCandidate[] => {
+const edit1Candidates = (text: string, rules: AsrConfusionRulesConfig): RescoreCandidate[] => {
   const out: RescoreCandidate[] = [];
   const chars = [...text];
 
   for (let i = 0; i < chars.length; i += 1) {
-    const ch = chars[i]!;
+    const ch = chars.at(i);
+    if (ch === undefined) {
+      continue;
+    }
     const voiced = voicingPair(ch);
     if (voiced) {
       out.push({ text: substituteChar(chars, i, voiced), confusionCost: rules.voicingCost });
@@ -326,7 +342,8 @@ const edit1Candidates = (
 
   for (let i = 0; i <= chars.length; i += 1) {
     if (i > 0) {
-      const vowel = longVowelFor(chars[i - 1]!);
+      const prevCh = chars.at(i - 1);
+      const vowel = prevCh === undefined ? undefined : longVowelFor(prevCh);
       if (vowel) {
         out.push({
           text: insertChar(chars, i, vowel),
@@ -334,7 +351,8 @@ const edit1Candidates = (
         });
       }
     }
-    if (i < chars.length && canGeminate(chars[i]!)) {
+    const currentCh = chars.at(i);
+    if (i < chars.length && currentCh !== undefined && canGeminate(currentCh)) {
       out.push({
         text: insertChar(chars, i, "っ"),
         confusionCost: rules.geminationInsertCost,
@@ -343,8 +361,14 @@ const edit1Candidates = (
   }
 
   for (let i = 0; i < chars.length; i += 1) {
-    const ch = chars[i]!;
-    if (i > 0 && isLongVowel(chars[i - 1]!, ch)) {
+    const ch = chars.at(i);
+    if (ch === undefined) {
+      continue;
+    }
+    const prevCh = chars.at(i - 1);
+    // Only delete when prev is a pure vowel mora (ああ/いい/うう/えい/おう).
+    // Consonant-mora extensions (は→あ, よ→う) are preserved as word starts.
+    if (i > 0 && prevCh !== undefined && isLongVowel(prevCh, ch) && isVowelMora(prevCh)) {
       out.push({ text: deleteChar(chars, i), confusionCost: rules.longVowelDeleteCost });
     }
     if (ch === "っ") {
@@ -392,7 +416,9 @@ export const generateAsrConfusionCandidates = (
 
 const isKanaLike = (c: string): boolean => {
   const code = c.codePointAt(0) ?? 0;
-  return (code >= 0x3041 && code <= 0x309e) || (code >= 0x30a1 && code <= 0x30fa) || code === 0x30fc;
+  return (
+    (code >= 0x3041 && code <= 0x309e) || (code >= 0x30a1 && code <= 0x30fa) || code === 0x30fc
+  );
 };
 
 /** Exported for unit tests; mirrors Rust `is_sane_output`. */

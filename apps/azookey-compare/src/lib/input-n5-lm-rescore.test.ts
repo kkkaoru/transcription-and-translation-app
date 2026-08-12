@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_ASR_CONFUSION_RULES,
-  DEFAULT_INPUT_N5_LM_RESCORE_ENABLED,
-  INPUT_N5_LM_MODEL_ID,
-  INPUT_N5_LM_RECOMMENDED_OVERCORRECTION_MARGIN,
   applyInputN5LmRescore,
   createDefaultInputN5LmRescorer,
   createInputN5LmRescorer,
+  DEFAULT_ASR_CONFUSION_RULES,
+  DEFAULT_INPUT_N5_LM_RESCORE_ENABLED,
   generateAsrConfusionCandidates,
+  INPUT_N5_LM_MODEL_ID,
+  INPUT_N5_LM_RECOMMENDED_OVERCORRECTION_MARGIN,
   isSaneInputN5LmOutput,
 } from "./input-n5-lm-rescore";
 
@@ -29,15 +29,34 @@ describe("input_n5_lm_v1 rescore (compare)", () => {
   });
 
   it("generates voicing, semi-voicing, gemination, and long-vowel deletion candidates", () => {
-    expect(generateAsrConfusionCandidates("かいとう").some((c) => c.text === "がいとう")).toBe(true);
+    expect(generateAsrConfusionCandidates("かいとう").some((c) => c.text === "がいとう")).toBe(
+      true,
+    );
     expect(generateAsrConfusionCandidates("はな").some((c) => c.text === "ぱな")).toBe(true);
     expect(generateAsrConfusionCandidates("きて").some((c) => c.text === "きって")).toBe(true);
     expect(generateAsrConfusionCandidates("きって").some((c) => c.text === "きて")).toBe(true);
-    expect(generateAsrConfusionCandidates("おはよう").some((c) => c.text === "おはよ")).toBe(true);
+    expect(generateAsrConfusionCandidates("ばああ").some((c) => c.text === "ばあ")).toBe(true);
     expect(generateAsrConfusionCandidates("しち").some((c) => c.text === "いち")).toBe(true);
     expect(generateAsrConfusionCandidates("か").some((c) => c.text === "が")).toBe(true);
     expect(generateAsrConfusionCandidates("い").some((c) => c.text === "し")).toBe(true);
     expect(generateAsrConfusionCandidates("ん").some((c) => c.text === "む")).toBe(true);
+  });
+
+  it("restricts long-vowel deletion to vowel-mora doublings, not consonant-mora extensions", () => {
+    const texts = generateAsrConfusionCandidates("おはよう").map((c) => c.text);
+    // う after よ extends the お-vowel, but よ is a consonant mora — do not delete.
+    expect(texts).not.toContain("おはよ");
+    // Insertion path stays intact so missing long vowels can still be rescued.
+    expect(generateAsrConfusionCandidates("おはよ").map((c) => c.text)).toContain("おはよう");
+  });
+
+  it("does not delete a word-initial vowel mora after a particle via long-vowel deletion", () => {
+    const texts = generateAsrConfusionCandidates("あついひはあついたべものをたべたくない").map(
+      (c) => c.text,
+    );
+    // General vowel-mora guard: あ after consonant-mora は is a new word start, not
+    // a long-vowel extension. No phrase-specific source special case.
+    expect(texts).not.toContain("あついひはついたべものをたべたくない");
   });
 
   it("includes the empty hypothesis and expands edit-2 when maxEdits is 2", () => {
@@ -84,11 +103,15 @@ describe("input_n5_lm_v1 rescore (compare)", () => {
       おはよございます: -20,
       おはようございます: -10,
     };
-    const gated = createInputN5LmRescorer((text) => scores[text] ?? -30, DEFAULT_ASR_CONFUSION_RULES, {
-      lmWeight: 1,
-      confusionWeight: 1,
-      overcorrectionMargin: 100,
-    });
+    const gated = createInputN5LmRescorer(
+      (text) => scores[text] ?? -30,
+      DEFAULT_ASR_CONFUSION_RULES,
+      {
+        lmWeight: 1,
+        confusionWeight: 1,
+        overcorrectionMargin: 100,
+      },
+    );
     expect(gated.best("おはよございます")).toBe("おはよございます");
 
     const nanScorer = createInputN5LmRescorer(
