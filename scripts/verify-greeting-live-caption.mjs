@@ -107,7 +107,7 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if ((fixtures.merge ?? []).length < 4) {
     throw new Error(`merge fixture table too small: ${fixtures.merge?.length ?? 0}`);
   }
-  if ((fixtures.paging ?? []).length < 6) {
+  if ((fixtures.paging ?? []).length < 9) {
     throw new Error(`paging fixture table too small: ${fixtures.paging?.length ?? 0}`);
   }
   const blob = JSON.stringify(fixtures);

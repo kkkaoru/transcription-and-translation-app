@@ -28,7 +28,7 @@ describe("greeting live-caption regression harness", () => {
     assert.equal(fixtures.playback.spoken, "こんにちは、きこえますか");
     assert.ok(inventory.sanitizeCount >= 8);
     assert.ok(inventory.mergeCount >= 4);
-    assert.ok(inventory.pagingCount >= 6);
+    assert.ok(inventory.pagingCount >= 9);
     assert.equal(inventory.sayonaraWav, GREETING_SAYONARA_WAV_RELATIVE_PATH);
     assert.ok(wav.sayonara.bytes > 1024);
     assert.equal(fixtures.playback.sayonaraExpectedOverlay, "さようならきこえますか");
@@ -98,6 +98,10 @@ describe("greeting live-caption regression harness", () => {
     assert.equal(
       fixtures.paging.find((row) => row.id === "stale-vibrato-offset-sayonara")?.expectedVisible,
       "さようならきこえますか",
+    );
+    assert.equal(
+      fixtures.paging.find((row) => row.id === "stale-vibrato-offset-konbanwa")?.expectedVisible,
+      "こんばんはきこえますか",
     );
     assert.equal(GREETING_FIXTURES_RELATIVE_PATH.endsWith(".json"), true);
   });

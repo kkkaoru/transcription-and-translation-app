@@ -484,6 +484,27 @@
       "maxChars": 28,
       "expectedLines": ["さようならきこえますか"],
       "note": "Do not wrap after さようなら so the hearing check stays visible"
+    },
+    {
+      "id": "stale-vibrato-offset-konbanwa",
+      "text": "こんばんはきこえますか",
+      "sentenceEndOffsets": [5],
+      "expectedVisible": "こんばんはきこえますか",
+      "note": "Stale Vibrato offset after こんばんは must not page away きこえますか"
+    },
+    {
+      "id": "zenz-period-konbanwa-after-sanitize",
+      "text": "こんばんは。聞こえますか。",
+      "sanitize": true,
+      "expectedVisible": "こんばんは聞こえますか。",
+      "note": "Sanitize ZenZ 。 then keep こんばんは + hearing check on one plate"
+    },
+    {
+      "id": "no-soft-wrap-after-konbanwa",
+      "text": "こんばんはきこえますか",
+      "maxChars": 28,
+      "expectedLines": ["こんばんはきこえますか"],
+      "note": "Do not wrap after こんばんは so the hearing check stays visible"
     }
   ]
 }
