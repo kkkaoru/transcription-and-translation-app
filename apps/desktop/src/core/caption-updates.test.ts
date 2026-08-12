@@ -2588,6 +2588,35 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("accepts a later Parapper turn after a finalized greeting instead of dropping it", () => {
+    const greeting = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "こんばんは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const nextTurn = caption({
+      id: "parapper:session:turn:2",
+      sourceText: "こんにちはーきこえますかー",
+      translationText: "",
+      startedAt: 2_200,
+      receivedAt: 2_600,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(greeting, nextTurn)).toMatchObject({
+      id: "parapper:session:turn:2",
+      sourceText: expect.stringContaining("きこえますか"),
+    });
+  });
+
   it("appends a close Parapper continuation after an early-finalized greeting", () => {
     const greeting = caption({
       id: "parapper:session:turn:hello",

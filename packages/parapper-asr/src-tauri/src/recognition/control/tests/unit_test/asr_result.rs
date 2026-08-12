@@ -174,6 +174,51 @@ fn turn_runtime_interim_after_finalized_turn_does_not_recreate_or_overwrite_fina
 }
 
 #[test]
+fn turn_runtime_speech_after_finalized_greeting_starts_a_new_turn() {
+    // After a complete greeting finalizes, the next utterance often arrives as a
+    // child of the last closed segment (AfterInterimSilence). That audio must
+    // become turn 2 instead of vanishing with the finalized turn.
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .scripted_asr_texts(vec!["こんにちはーきこえますかー"]);
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+    runtime_state(&mut runtime)
+        .turn(1, recognized_turn_with_audio(1, "こんばんは", &[1.0]))
+        .turn_audio_range(1, 0..10);
+
+    runtime.complete_turn_without_grammar(1);
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("こんばんは。", true, 1, 1)]
+    );
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimResultSilenceReached,
+        10..30,
+    );
+    runtime.step();
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("こんばんは。", true, 1, 1),
+            output_snapshot("こんにちはーきこえますかー...", false, 2, 2),
+        ],
+        "the second utterance after a finalized greeting must emit as a new turn"
+    );
+    assert_eq!(runtime.turn_store.open_turn_id, Some(2));
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&2),
+        "the reminted turn must stay open for further speech"
+    );
+}
+
+#[test]
 fn turn_runtime_completion_after_streaming_interim_does_not_append_duplicate_tail_text() {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
@@ -499,8 +544,8 @@ fn turn_runtime_completion_overlap_offset_ignores_leading_asr_only_padding_on_so
 }
 
 #[test]
-fn turn_runtime_completion_overlap_token_trim_uses_source_timeline_when_timestamps_omit_leading_padding()
-{
+fn turn_runtime_completion_overlap_token_trim_uses_source_timeline_when_timestamps_omit_leading_padding(
+) {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
     let outputs = builder.use_recording_sink();
@@ -567,8 +612,8 @@ fn turn_runtime_completion_overlap_token_trim_uses_source_timeline_when_timestam
 }
 
 #[test]
-fn turn_runtime_completion_overlap_token_trim_keeps_padded_audio_timeline_when_timestamps_include_padding()
-{
+fn turn_runtime_completion_overlap_token_trim_keeps_padded_audio_timeline_when_timestamps_include_padding(
+) {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
     let outputs = builder.use_recording_sink();

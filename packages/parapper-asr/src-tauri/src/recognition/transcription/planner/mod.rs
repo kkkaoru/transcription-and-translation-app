@@ -6,7 +6,7 @@ use crate::{
         segmentation::{segment::builder::SegmentCloseReason, vad::engine::VadResult},
         transcription::{
             asr::{
-                input::{AsrRequestEdgePadding, ensure_asr_request_edge_silence},
+                input::{ensure_asr_request_edge_silence, AsrRequestEdgePadding},
                 task::{
                     AsrRequest, AsrRequestId, AsrTarget, AsrTaskKind, AudioRange, SegmentId,
                     TurnId, TurnRevision, VadFrameIndex,
@@ -98,6 +98,10 @@ impl AsrRequestSegmentPlan {
             return first.segment_id;
         }
         open_turn_id.unwrap_or_else(|| first.turn_id().0)
+    }
+
+    pub(in crate::recognition) fn first_segment_id(&self) -> u64 {
+        self.first().segment_id
     }
 
     #[cfg(test)]

@@ -8,18 +8,18 @@ use crate::recognition::{
             GlobalSampleIndex, VadFrameIndex,
         },
         planner::{
-            PendingAsrSegment, drop_front_interim_segments_covered_by_completion,
-            take_next_request_segment_plan,
+            drop_front_interim_segments_covered_by_completion, take_next_request_segment_plan,
+            PendingAsrSegment,
         },
         reducer::{
-            AsrRequestStaleInput, AsrResultAction, AsrResultCompletionAfterTranscript,
-            AsrResultCompletionFailureAction, AsrResultReductionInput,
-            AsrResultRerecognitionPurpose, reduce_asr_result,
+            reduce_asr_result, AsrRequestStaleInput, AsrResultAction,
+            AsrResultCompletionAfterTranscript, AsrResultCompletionFailureAction,
+            AsrResultReductionInput, AsrResultRerecognitionPurpose,
         },
         route::{
-            RecognitionRoute, RecognitionRouteSelection,
             language_id::LanguageDetector,
-            selection::{AsrInput, TurnInput, refresh_turn, select_asr},
+            selection::{refresh_turn, select_asr, AsrInput, TurnInput},
+            RecognitionRoute, RecognitionRouteSelection,
         },
     },
 };
@@ -141,9 +141,10 @@ impl RecognitionSession {
             .asr_segments
             .iter()
             .any(|segment| segment.reason == SegmentCloseReason::InterimChunkReached);
-        let in_flight_is_streaming_chunk = self.requests.in_flight_request.as_ref().is_some_and(
-            |request| request.close_reason == Some(SegmentCloseReason::InterimChunkReached),
-        );
+        let in_flight_is_streaming_chunk =
+            self.requests.in_flight_request.as_ref().is_some_and(|request| {
+                request.close_reason == Some(SegmentCloseReason::InterimChunkReached)
+            });
         if has_pending_streaming_chunk || in_flight_is_streaming_chunk {
             return;
         }
@@ -198,16 +199,31 @@ impl RecognitionSession {
                 );
                 continue;
             }
-            let target_turn_id = plan.target_turn_id(
+            let mut target_turn_id = plan.target_turn_id(
                 &self.config,
                 self.turn_store.open_turn_id,
                 self.turn_store.open_turn_accepts_root_segment,
             );
+            // A child segment can still name a just-finalized turn (greeting /
+            // completion sealed the draft while SegmentBuilder was in
+            // AfterInterimSilence). New audio must become the next turn instead
+            // of vanishing. Late plans whose own segment id *is* the finalized
+            // turn stay dropped so a finished caption cannot be reopened.
             if self.turn_store.finalized_turns.contains(&target_turn_id) {
-                log::warn!(
-                    "Dropping pending ASR segment plan for finalized turn: turn_id={target_turn_id} range={range:?}",
-                );
-                continue;
+                let reminted_turn_id = plan.first_segment_id();
+                if reminted_turn_id != target_turn_id
+                    && !self.turn_store.finalized_turns.contains(&reminted_turn_id)
+                {
+                    log::info!(
+                        "Starting a new turn after finalized turn attachment: finalized={target_turn_id} new_turn={reminted_turn_id} range={range:?}"
+                    );
+                    target_turn_id = reminted_turn_id;
+                } else {
+                    log::warn!(
+                        "Dropping pending ASR segment plan for finalized turn: turn_id={target_turn_id} range={range:?}",
+                    );
+                    continue;
+                }
             }
             let source_audio = plan.source_audio();
             let route_selection = self.route_selection_for_asr_request(
@@ -743,6 +759,55 @@ mod tests {
             "a pending segment whose range is already confirmed must not consume an ASR cycle"
         );
         assert!(runtime.requests.last_dispatched.is_none());
+        assert!(runtime.pending.asr_segments.is_empty());
+    }
+
+    #[test]
+    fn dispatch_next_asr_request_if_idle_starts_new_turn_when_previous_points_at_finalized_turn() {
+        let mut runtime = RecognitionSession::new(&ParapperConfig::default());
+        runtime.turn_store.finalized_turns.insert(1);
+        runtime.turn_store.confirmed_until_sample = GlobalSampleIndex(10);
+        runtime.pending.asr_segments.push_back(pending_segment(
+            2,
+            Some(1),
+            SegmentCloseReason::InterimResultSilenceReached,
+            10..30,
+        ));
+
+        runtime.dispatch_next_asr_request_if_idle();
+
+        let request = runtime
+            .requests
+            .in_flight_request
+            .as_ref()
+            .expect("new speech after a finalized turn must still be transcribed");
+        assert_eq!(request.target.turn_id, TurnId(2));
+        // The plan still names the previous closed segment as its first id;
+        // reminting only changes the turn the new audio is attributed to.
+        assert_eq!(request.target.first_segment_id, Some(SegmentId(1)));
+        assert_eq!(request.target.last_segment_id, Some(SegmentId(2)));
+        assert_eq!(request.target.range.start_sample, GlobalSampleIndex(10));
+        assert_eq!(request.target.range.end_sample, GlobalSampleIndex(30));
+        assert!(runtime.pending.asr_segments.is_empty());
+    }
+
+    #[test]
+    fn dispatch_next_asr_request_if_idle_still_drops_late_plan_for_same_finalized_segment() {
+        let mut runtime = RecognitionSession::new(&ParapperConfig::default());
+        runtime.turn_store.finalized_turns.insert(1);
+        runtime.pending.asr_segments.push_back(pending_segment(
+            1,
+            None,
+            SegmentCloseReason::InterimResultSilenceReached,
+            10..20,
+        ));
+
+        runtime.dispatch_next_asr_request_if_idle();
+
+        assert!(
+            runtime.requests.in_flight_request.is_none(),
+            "a late plan whose segment id is the finalized turn must stay dropped"
+        );
         assert!(runtime.pending.asr_segments.is_empty());
     }
 
