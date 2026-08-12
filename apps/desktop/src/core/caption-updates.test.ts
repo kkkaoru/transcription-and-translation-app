@@ -2934,6 +2934,38 @@ describe("mergeCaptionPayload", () => {
     expect(merged?.sentenceEndOffsets).toEqual([11]);
   });
 
+  it("drops leftover sentenceEndOffsets when accepting a longer same-id surface without new offsets", () => {
+    // A short painted surface may carry Vibrato end offsets measured against
+    // that span. A longer continuation often omits sentenceEndOffsets entirely.
+    // Object-spread merge must not keep the stale cut, or the pager pages to
+    // the mid-phrase tail (短いです|続く文 → only 「続く文」).
+    const short = caption({
+      id: "parapper:session:turn:leftover-ends",
+      sourceText: "短いです",
+      sentenceEndOffsets: [4],
+      softBreakOffsets: [4],
+      startedAt: 1_000,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const longer = caption({
+      id: "parapper:session:turn:leftover-ends",
+      sourceText: "短いです続く文",
+      startedAt: 1_000,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    const merged = mergeCaptionPayload(short, longer);
+    expect(merged?.sourceText).toBe("短いです続く文");
+    expect(merged?.sentenceEndOffsets).toBeUndefined();
+    expect(merged?.softBreakOffsets).toBeUndefined();
+  });
+
   it("still accepts a finalized conversion that is longer or rewritten", () => {
     const interim = caption({
       id: "u-1",

@@ -1178,6 +1178,21 @@ export const mergeCaptionPayload = (
         merged.azookeyInputText = current.azookeyInputText;
       }
     }
+  } else if (
+    // Converse of the keep-longer path: accepting incoming's changed surface
+    // while it omits morph offsets must not inherit ends measured against the
+    // previous shorter span via `{...current, ...incoming}` (短いです|[4] then
+    // 短いです続く文 → pager shows only 「続く文」).
+    hasIncomingSource &&
+    nextSource === incomingSource &&
+    nextSource !== currentSource
+  ) {
+    if (!Array.isArray(incoming.sentenceEndOffsets) || incoming.sentenceEndOffsets.length === 0) {
+      delete merged.sentenceEndOffsets;
+    }
+    if (!Array.isArray(incoming.softBreakOffsets) || incoming.softBreakOffsets.length === 0) {
+      delete merged.softBreakOffsets;
+    }
   }
 
   // A source-stage revision that changes the visible text after a final must
