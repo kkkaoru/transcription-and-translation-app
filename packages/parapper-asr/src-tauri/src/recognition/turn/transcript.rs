@@ -354,20 +354,60 @@ impl StreamingCompletionOverlap {
 
 /// Leading samples present in ASR `audio` but omitted from turn `source_audio`
 /// (copied end-silence padding from the segment builder).
+///
+/// `request.audio` may already have an edge fade applied to the source body, so
+/// bit-identical suffix matching is not enough to recognize that padding.
 fn leading_asr_only_padding_samples(audio: &[f32], source_audio: &[f32]) -> usize {
     if source_audio.len() >= audio.len() {
         return 0;
     }
     let padding = audio.len() - source_audio.len();
-    if audio[padding..]
-        .iter()
-        .zip(source_audio.iter())
-        .all(|(left, right)| left.to_bits() == right.to_bits())
-    {
+    if waveforms_match_allowing_edge_fade(&audio[padding..], source_audio) {
         padding
     } else {
         0
     }
+}
+
+fn waveforms_match_allowing_edge_fade(faded: &[f32], source: &[f32]) -> bool {
+    if faded.len() != source.len() {
+        return false;
+    }
+    if faded.iter().zip(source).all(|(left, right)| left.to_bits() == right.to_bits()) {
+        return true;
+    }
+    let fade_samples = max_asr_edge_fade_samples().min(faded.len());
+    let interior_end = faded.len().saturating_sub(fade_samples);
+    if fade_samples > interior_end {
+        return faded.iter().zip(source).all(|(left, right)| sample_is_edge_fade_of(*left, *right));
+    }
+    faded[..fade_samples]
+        .iter()
+        .zip(&source[..fade_samples])
+        .all(|(left, right)| sample_is_edge_fade_of(*left, *right))
+        && faded[fade_samples..interior_end]
+            .iter()
+            .zip(&source[fade_samples..interior_end])
+            .all(|(left, right)| left.to_bits() == right.to_bits())
+        && faded[interior_end..]
+            .iter()
+            .zip(&source[interior_end..])
+            .all(|(left, right)| sample_is_edge_fade_of(*left, *right))
+}
+
+fn sample_is_edge_fade_of(faded: f32, source: f32) -> bool {
+    if faded.to_bits() == source.to_bits() {
+        return true;
+    }
+    if faded.abs() > source.abs() + f32::EPSILON {
+        return false;
+    }
+    faded.abs() <= f32::EPSILON || faded.is_sign_positive() == source.is_sign_positive()
+}
+
+fn max_asr_edge_fade_samples() -> usize {
+    // Covers Reazon 10ms and Nemotron 80ms edge fades on 16 kHz audio.
+    usize::try_from(ASR_SAMPLE_RATE).unwrap_or(16_000).saturating_mul(80) / 1_000
 }
 
 /// Keep only transcript tokens whose audio begins after an already-applied
@@ -645,7 +685,7 @@ fn even_chunk_ranges(audio_len: usize, chunk_count: usize) -> Option<Vec<std::op
 mod tests {
     use super::{
         completion_is_full_longer_rewrite, completion_text_duplicates_existing,
-        is_longer_turn_rewrite, longer_turn_surface_text,
+        is_longer_turn_rewrite, leading_asr_only_padding_samples, longer_turn_surface_text,
         prefer_streaming_interim_text_over_truncated_completion,
         source_samples_covered_by_range_overlap, uncovered_completion_source_start,
     };
@@ -723,5 +763,30 @@ mod tests {
             ),
             0
         );
+        let source = vec![2.0; 200];
+        let mut faded_source = source.clone();
+        apply_test_fade(&mut faded_source, 16);
+        let faded_audio = [vec![0.0; 50], faded_source].concat();
+        assert_eq!(leading_asr_only_padding_samples(&faded_audio, &source), 50);
+        assert_eq!(
+            leading_asr_only_padding_samples(&[0.0, 3.0, 4.0], &[2.0, 3.0]),
+            0,
+            "a longer audio prefix must not count as padding unless the suffix matches the source"
+        );
+    }
+
+    #[expect(clippy::cast_precision_loss, reason = "test fade gains mirror ASR edge-fade ratios")]
+    fn apply_test_fade(audio: &mut [f32], fade_samples: usize) {
+        let fade_samples = fade_samples.min(audio.len());
+        if fade_samples == 0 {
+            return;
+        }
+        for (index, sample) in audio.iter_mut().take(fade_samples).enumerate() {
+            *sample *= index as f32 / fade_samples as f32;
+        }
+        let start = audio.len() - fade_samples;
+        for (index, sample) in audio[start..].iter_mut().enumerate() {
+            *sample *= (fade_samples - index) as f32 / fade_samples as f32;
+        }
     }
 }

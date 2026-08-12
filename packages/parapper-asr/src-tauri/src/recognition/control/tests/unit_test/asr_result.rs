@@ -552,6 +552,71 @@ fn turn_runtime_overlapping_completion_skips_unmatched_covered_audio_and_keeps_t
 }
 
 #[test]
+fn turn_runtime_faded_child_completion_keeps_new_speech_despite_range_overlap() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    const CHUNK: usize = 512;
+    const FADE: usize = 160;
+    let mut interim = interim_request_for_turn(1, 1);
+    interim.source_audio = vec![1.0; CHUNK * 2];
+    interim.audio = interim.source_audio.clone();
+    interim.source_vad_results = vec![vad(true), vad(true)];
+    interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex((CHUNK * 2) as u64)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "全体");
+    runtime.step();
+
+    let source = [vec![2.0; CHUNK], vec![0.0; CHUNK * 2]].concat();
+    let mut faded_source = source.clone();
+    for (index, sample) in faded_source.iter_mut().take(FADE).enumerate() {
+        *sample *= index as f32 / FADE as f32;
+    }
+    let fade_start = faded_source.len() - FADE;
+    for (index, sample) in faded_source[fade_start..].iter_mut().enumerate() {
+        *sample *= (FADE - index) as f32 / FADE as f32;
+    }
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = source;
+    completion.audio = [vec![0.0; CHUNK], faded_source].concat();
+    completion.source_vad_results = vec![vad(true), vad(false), vad(false)];
+    completion.vad_results = vec![vad(false), vad(true), vad(false), vad(false)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(CHUNK as u64), GlobalSampleIndex((CHUNK * 5) as u64)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "追加");
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs.last().expect("final output should be emitted");
+    assert_eq!(final_output.text, "全体追加。");
+    assert!(final_output.is_final);
+    assert_eq!(
+        final_output.phrase,
+        [vec![1.0; CHUNK * 2], vec![2.0; CHUNK], vec![0.0; CHUNK * 2]].concat(),
+        "copied leading ASR padding must still be recognized after an edge fade so new child speech is not geometrically skipped"
+    );
+}
+
+#[test]
 fn turn_runtime_completion_after_non_streaming_interim_keeps_uncovered_tail_speech() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)
