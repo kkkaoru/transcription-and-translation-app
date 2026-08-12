@@ -26,8 +26,8 @@ export interface CaptionSentenceHints {
   softBreakOffsets?: number[];
   /**
    * Skip heuristic copula/ます paging so a first hypothesis like
-   * 「です＋次節」 keeps the lead sentence. Explicit punctuation and supplied
-   * Vibrato `sentenceEndOffsets` still page.
+   * 「です＋次節」 keeps the lead sentence. Explicit punctuation still pages.
+   * Supplied Vibrato copula offsets follow the same remainder-dominance rule.
    */
   deferSentencePaging?: boolean;
 }
@@ -225,13 +225,10 @@ const shouldIgnoreSentenceEndBeforeContinuation = (
     return true;
   }
   const trimmedPrefix = prefix.trimEnd();
-  // A 1-scalar tail after a longer prefix is a stale/false end, not a new
-  // clause. That hid the already-recognized lead behind a single grapheme.
-  if (
-    !prefixEndsWithPunct(trimmedPrefix) &&
-    codePoints(next).length === 1 &&
-    codePoints(trimmedPrefix).length > 1
-  ) {
+  // Copula/ます (and other non-punct) offsets must not replace a longer lead
+  // with a shorter tail — same rule as the heuristic path. Punctuation still
+  // pages. Empty remainder is handled above as a true end-of-utterance.
+  if (!prefixEndsWithPunct(trimmedPrefix) && !remainderDominatesPrefix(trimmedPrefix, next)) {
     return true;
   }
   // Bare topic/binding は・も mid-utterance must not page; those offsets hide
@@ -295,8 +292,8 @@ export const detectCaptionSentenceEnds = (
     }
     const prefix = chars.slice(0, offset).join("");
     const remainder = chars.slice(offset).join("");
-    // Drop pipeline offsets that would split before ー/〜, leave a 1-scalar
-    // tail, or page after a bare topic は・も so the recognized head stays.
+    // Drop pipeline offsets that would split before ー/〜, replace a longer
+    // lead with a shorter copula tail, or page after a bare topic は・も.
     if (shouldIgnoreSentenceEndBeforeContinuation(prefix, remainder, english)) {
       return false;
     }
@@ -340,8 +337,9 @@ export const selectVisibleCaptionSentence = (
   if (!normalized) {
     return "";
   }
-  // Punctuation and Vibrato/IPADIC offsets always page. Heuristic copula/ます
-  // paging stays off while `deferSentencePaging` is set so a first hypothesis
-  // like 「です＋次節」 keeps the already-recognized lead sentence.
+  // Punctuation still pages. Heuristic and Vibrato copula/ます ends page only
+  // when the next span dominates the lead. `deferSentencePaging` skips
+  // heuristic copula detection so a first hypothesis like 「です＋次節」 keeps
+  // the already-recognized head when offsets are absent.
   return sliceNewestSentence(normalized, detectCaptionSentenceEnds(normalized, hints));
 };

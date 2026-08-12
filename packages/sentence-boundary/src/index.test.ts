@@ -72,10 +72,13 @@ describe("Japanese sentence-end detection", () => {
     expect(selectVisibleCaptionSentence("となりのきゃくはよく")).toBe("となりのきゃくはよく");
   });
 
-  it("prefers Vibrato offsets from the native pipeline", () => {
+  it("prefers Vibrato offsets from the native pipeline when the next span dominates", () => {
     expect(selectVisibleCaptionSentence("短いです続く文", { sentenceEndOffsets: [4] })).toBe(
-      "続く文",
+      "短いです続く文",
     );
+    const lead = "短いです";
+    const tail = "これから午後の予定と明日の議題";
+    expect(selectVisibleCaptionSentence(`${lead}${tail}`, { sentenceEndOffsets: [4] })).toBe(tail);
   });
 
   it("does not page verb/adjective stems until a strong topic restart arrives", () => {
@@ -83,7 +86,7 @@ describe("Japanese sentence-end detection", () => {
     expect(selectVisibleCaptionSentence("もう走る次いく")).toBe("もう走る次いく");
     expect(detectCaptionSentenceEnds("今日は寒い明日は")).toEqual([]);
     expect(selectVisibleCaptionSentence("今日は寒い明日は", { sentenceEndOffsets: [5] })).toBe(
-      "明日は",
+      "今日は寒い明日は",
     );
   });
 
@@ -110,10 +113,10 @@ describe("Vibrato POS offsets page messy live speech", () => {
     visible: string;
   }> = [
     {
-      label: "助動詞基本形のあと新しい名詞句へ切替",
+      label: "助動詞基本形のあと短い名詞句では切替しない",
       text: "今日は晴れです明日は雨",
       sentenceEndOffsets: [7],
-      visible: "明日は雨",
+      visible: "今日は晴れです明日は雨",
     },
     {
       label: "動詞基本形+次だけでは切らない",
@@ -122,16 +125,16 @@ describe("Vibrato POS offsets page messy live speech", () => {
       visible: "もう走る次いく",
     },
     {
-      label: "形容詞基本形のあと切替",
+      label: "形容詞基本形のあと短い主題では切替しない",
       text: "今日は寒い明日は",
       sentenceEndOffsets: [5],
-      visible: "明日は",
+      visible: "今日は寒い明日は",
     },
     {
-      label: "終助詞のあと今日はへ切替",
+      label: "終助詞のあと短い主題では切替しない",
       text: "行きましたよ今日は",
       sentenceEndOffsets: [6],
-      visible: "今日は",
+      visible: "行きましたよ今日は",
     },
     {
       label: "フィラー＋未完の主題は切らない",
@@ -158,10 +161,16 @@ describe("Vibrato POS offsets page messy live speech", () => {
       visible: "うん今日行く",
     },
     {
-      label: "かなだけのASRでもオフセットで切替",
+      label: "かなだけのASRでも短い次節では切替しない",
       text: "きょうははれですあしたはあめ",
       sentenceEndOffsets: [8],
-      visible: "あしたはあめ",
+      visible: "きょうははれですあしたはあめ",
+    },
+    {
+      label: "かなだけのASRで次節が先頭以上なら切替",
+      text: "きょうははれですこれから午後の予定と明日の議題",
+      sentenceEndOffsets: [8],
+      visible: "これから午後の予定と明日の議題",
     },
   ];
 
@@ -237,7 +246,7 @@ describe("heuristic edge cases", () => {
         deferSentencePaging: true,
         sentenceEndOffsets: [4],
       }),
-    ).toBe("続く文");
+    ).toBe("短いです続く文");
   });
 });
 
@@ -330,6 +339,38 @@ describe("heuristic paging invariants (unknown utterances)", () => {
     expect(selectVisibleCaptionSentence("行きましたよ次", { sentenceEndOffsets: [6] })).toBe(
       "行きましたよ次",
     );
+  });
+
+  it("never replaces a longer copula lead with a shorter Vibrato remainder", () => {
+    const leads = ["準備ができました", "説明します", "確認です", "終わります", "短いです"];
+    const tails = ["次", "続き", "続く文", "質問を", "田中さん"];
+    for (const lead of leads) {
+      for (const tail of tails) {
+        if (scalarCount(tail) >= scalarCount(lead)) {
+          continue;
+        }
+        const text = `${lead}${tail}`;
+        const offset = scalarCount(lead);
+        expect(selectVisibleCaptionSentence(text, { sentenceEndOffsets: [offset] }), text).toBe(
+          text,
+        );
+        expect(
+          detectCaptionSentenceEnds(text, { sentenceEndOffsets: [offset] }).every(
+            (end) => end >= scalarCount(text),
+          ),
+          text,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("pages a Vibrato copula offset only when the next span dominates the lead", () => {
+    const lead = "終わりです";
+    const tail = "これから午後の予定と明日の議題を確認します";
+    expect(scalarCount(tail)).toBeGreaterThanOrEqual(scalarCount(lead));
+    expect(
+      selectVisibleCaptionSentence(`${lead}${tail}`, { sentenceEndOffsets: [scalarCount(lead)] }),
+    ).toBe(tail);
   });
 
   it("visible heuristic text is the full utterance or a remainder that dominates the lead", () => {
