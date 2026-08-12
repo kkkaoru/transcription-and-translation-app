@@ -108,6 +108,12 @@ check(
   `verify:greeting-caption=${scripts["verify:greeting-caption"]}`,
 );
 check(
+  "caption quality gate is a check-in-able root script",
+  scripts["verify:caption-quality"] === "node scripts/verify-caption-quality.mjs" &&
+    /verify-caption-quality\.test\.mjs/.test(scripts["test:build-cleanup"] ?? ""),
+  `verify:caption-quality=${scripts["verify:caption-quality"]}`,
+);
+check(
   "macOS Tauri builds replace /Applications/Kotoba Beacon.app",
   scripts["install:macos-app"] === "node scripts/install-macos-app.mjs" &&
     /install-macos-app\.mjs/.test(read("scripts/run-desktop-tauri-build.mjs")),

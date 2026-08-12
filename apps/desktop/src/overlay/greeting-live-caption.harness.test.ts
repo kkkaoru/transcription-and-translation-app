@@ -55,7 +55,7 @@ describe("greeting live-caption harness (check-in-able, no live audio)", () => {
   });
 
   it("does not page or wrap away こんにちは / きこえますか on the overlay plate", () => {
-    expect(fixtures.paging.length).toBeGreaterThanOrEqual(9);
+    expect(fixtures.paging.length).toBeGreaterThanOrEqual(15);
     for (const row of fixtures.paging) {
       const text = row.sanitize ? sanitizeCaptionDisplayText(row.text) : row.text;
       if ("expectedVisible" in row && row.expectedVisible) {

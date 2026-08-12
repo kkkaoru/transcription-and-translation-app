@@ -33,6 +33,8 @@ export const GREETING_OHAYOU_WAV_RELATIVE_PATH =
   "apps/desktop/src/overlay/fixtures/greeting-ohayou.wav";
 export const GREETING_KONBANWA_WAV_RELATIVE_PATH =
   "apps/desktop/src/overlay/fixtures/greeting-konbanwa.wav";
+export const GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH =
+  "apps/desktop/src/overlay/fixtures/greeting-ohayou-gozaimasu.wav";
 
 const REQUIRED_SANITIZE_IDS = [
   "hearing-ae",
@@ -63,6 +65,15 @@ const REQUIRED_MERGE_IDS = [
   "append-kikoemasu-after-ohayou-gozaimasu",
   "keep-ohayou-gozaimasu-over-ack",
   "keep-longer-ohayou-gozaimasu-hearing-final",
+  "keep-ohayou-over-un",
+  "keep-ohayou-over-ee",
+  "keep-ohayou-over-iie",
+  "keep-konbanwa-over-un",
+  "keep-konbanwa-over-ee",
+  "keep-konbanwa-over-iie",
+  "keep-sayonara-over-un",
+  "keep-sayonara-over-ee",
+  "keep-sayonara-over-iie",
 ];
 const REQUIRED_PHRASES = [
   "こんにちは",
@@ -107,7 +118,7 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if ((fixtures.merge ?? []).length < 4) {
     throw new Error(`merge fixture table too small: ${fixtures.merge?.length ?? 0}`);
   }
-  if ((fixtures.paging ?? []).length < 9) {
+  if ((fixtures.paging ?? []).length < 15) {
     throw new Error(`paging fixture table too small: ${fixtures.paging?.length ?? 0}`);
   }
   const blob = JSON.stringify(fixtures);
@@ -143,6 +154,16 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if (fixtures.playback?.konbanwaExpectedOverlay !== "こんばんはきこえますか") {
     throw new Error("playback.konbanwaExpectedOverlay must be こんばんはきこえますか");
   }
+  if (fixtures.playback?.ohayouGozaimasuWav !== GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH) {
+    throw new Error(
+      `playback.ohayouGozaimasuWav must be ${GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH}`,
+    );
+  }
+  if (fixtures.playback?.ohayouGozaimasuExpectedOverlay !== "おはようございますきこえますか") {
+    throw new Error(
+      "playback.ohayouGozaimasuExpectedOverlay must be おはようございますきこえますか",
+    );
+  }
   if (!/verify:tauri:ui/.test(fixtures.playback?.command ?? "")) {
     throw new Error("playback command must document verify:tauri:ui");
   }
@@ -159,6 +180,7 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
     sayonaraWav: fixtures.playback.sayonaraWav,
     ohayouWav: fixtures.playback.ohayouWav,
     konbanwaWav: fixtures.playback.konbanwaWav,
+    ohayouGozaimasuWav: fixtures.playback.ohayouGozaimasuWav,
   };
 };
 
@@ -183,7 +205,15 @@ export const assertGreetingWavFixture = (root = repositoryRoot) => {
   const sayonara = assertRiffWave(GREETING_SAYONARA_WAV_RELATIVE_PATH, root);
   const ohayou = assertRiffWave(GREETING_OHAYOU_WAV_RELATIVE_PATH, root);
   const konbanwa = assertRiffWave(GREETING_KONBANWA_WAV_RELATIVE_PATH, root);
-  return { wavPath: primary.wavPath, bytes: primary.bytes, sayonara, ohayou, konbanwa };
+  const ohayouGozaimasu = assertRiffWave(GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH, root);
+  return {
+    wavPath: primary.wavPath,
+    bytes: primary.bytes,
+    sayonara,
+    ohayou,
+    konbanwa,
+    ohayouGozaimasu,
+  };
 };
 
 export const assertGreetingHarnessWired = (root = repositoryRoot) => {
