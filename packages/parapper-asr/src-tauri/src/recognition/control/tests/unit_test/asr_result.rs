@@ -500,6 +500,58 @@ fn turn_runtime_overlapping_completion_keeps_uncovered_tail_audio_for_rerecognit
 }
 
 #[test]
+fn turn_runtime_overlapping_completion_skips_unmatched_covered_audio_and_keeps_tail() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut interim = interim_request_for_turn(1, 1);
+    interim.source_audio = vec![1.0; 100];
+    interim.source_vad_results = vec![vad(true)];
+    interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "全体");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = [vec![2.0; 100], vec![3.0; 50]].concat();
+    completion.audio = completion.source_audio.clone();
+    completion.source_vad_results = vec![vad(true), vad(true)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(150)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "追加");
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs.last().expect("final output should be emitted");
+    assert_eq!(final_output.text, "全体追加。");
+    assert!(final_output.is_final);
+    assert_eq!(
+        final_output.phrase,
+        [vec![1.0; 100], vec![3.0; 50]].concat(),
+        "an overlapping completion window must drop already-covered samples even without a waveform prefix match, while keeping the uncovered tail"
+    );
+}
+
+#[test]
 fn turn_runtime_completion_after_non_streaming_interim_keeps_uncovered_tail_speech() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)

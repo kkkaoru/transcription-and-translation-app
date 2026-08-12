@@ -41,6 +41,7 @@ impl RecognitionSession {
                 overlap.source_samples,
             )
         });
+        let existing_audio_range = self.turn_store.audio_ranges.get(&turn_id).copied();
         self.merge_turn_audio_range(turn_id, request.target.range);
         if completion_is_duplicate_tail {
             return turn_id;
@@ -126,10 +127,14 @@ impl RecognitionSession {
         } else {
             let append_source_start = if let Some(overlap) = streaming_interim_overlap {
                 overlap.source_samples
-            } else if skip_duplicate_completion_text {
-                uncovered_completion_source_start(&draft.full_audio, &request.source_audio)
             } else {
-                0
+                let range_skip = covered_completion_source_samples(existing_audio_range, request);
+                let prefix_skip = if skip_duplicate_completion_text {
+                    uncovered_completion_source_start(&draft.full_audio, &request.source_audio)
+                } else {
+                    0
+                };
+                range_skip.max(prefix_skip)
             };
             let append_vad_results;
             let source_vad_results = if append_source_start == 0 {
@@ -510,6 +515,47 @@ fn strip_turn_surface_noise(text: &str) -> &str {
     text.trim().trim_end_matches(['.', '。', '…', '⋯']).trim_end_matches("...").trim()
 }
 
+fn covered_completion_source_samples(
+    existing_range: Option<AudioRange>,
+    request: &AsrRequest,
+) -> usize {
+    if request.kind != AsrTaskKind::CompletionCheck {
+        return 0;
+    }
+    let leading_padding = leading_asr_only_padding_samples(&request.audio, &request.source_audio);
+    source_samples_covered_by_range_overlap(
+        existing_range,
+        request.target.range,
+        request.source_audio.len(),
+        leading_padding,
+    )
+}
+
+fn source_samples_covered_by_range_overlap(
+    existing_range: Option<AudioRange>,
+    request_range: AudioRange,
+    source_len: usize,
+    leading_padding: usize,
+) -> usize {
+    // Copied previous-segment silence lives in request.audio, not source_audio.
+    // That child window can geometrically overlap the draft even though its
+    // source speech is new; do not treat it as a same-window re-ASR.
+    if leading_padding > 0 {
+        return 0;
+    }
+    let Some(existing) = existing_range else {
+        return 0;
+    };
+    if request_range.start_sample >= existing.end_sample {
+        return 0;
+    }
+    let overlap_end = request_range.end_sample.min(existing.end_sample);
+    if overlap_end <= request_range.start_sample {
+        return 0;
+    }
+    samples_between(request_range.start_sample, overlap_end).min(source_len)
+}
+
 fn uncovered_completion_source_start(draft_audio: &[f32], source_audio: &[f32]) -> usize {
     if source_audio.is_empty() || draft_audio.is_empty() {
         return 0;
@@ -600,8 +646,14 @@ mod tests {
     use super::{
         completion_is_full_longer_rewrite, completion_text_duplicates_existing,
         is_longer_turn_rewrite, longer_turn_surface_text,
-        prefer_streaming_interim_text_over_truncated_completion, uncovered_completion_source_start,
+        prefer_streaming_interim_text_over_truncated_completion,
+        source_samples_covered_by_range_overlap, uncovered_completion_source_start,
     };
+    use crate::recognition::transcription::asr::task::{AudioRange, GlobalSampleIndex};
+
+    fn range(start: u64, end: u64) -> AudioRange {
+        AudioRange::new(GlobalSampleIndex(start), GlobalSampleIndex(end))
+    }
 
     #[test]
     fn longer_rewrite_emits_a_real_tail_but_not_truncation_or_duplicate_append() {
@@ -654,5 +706,22 @@ mod tests {
         );
         assert_eq!(uncovered_completion_source_start(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0]), 3);
         assert_eq!(uncovered_completion_source_start(&[0.0, 1.0], &[2.0, 3.0]), 0);
+        assert_eq!(
+            source_samples_covered_by_range_overlap(Some(range(0, 100)), range(0, 150), 150, 0),
+            100
+        );
+        assert_eq!(
+            source_samples_covered_by_range_overlap(Some(range(0, 100)), range(100, 150), 50, 0),
+            0
+        );
+        assert_eq!(
+            source_samples_covered_by_range_overlap(
+                Some(range(0, 1024)),
+                range(512, 2560),
+                1536,
+                512
+            ),
+            0
+        );
     }
 }
