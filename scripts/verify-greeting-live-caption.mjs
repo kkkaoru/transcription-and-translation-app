@@ -51,6 +51,9 @@ const REQUIRED_MERGE_IDS = [
   "append-kikoemasu-after-sayonara",
   "keep-sayonara-over-ack",
   "keep-longer-sayonara-hearing-final",
+  "append-kikoemasu-after-konbanwa",
+  "keep-konbanwa-over-ack",
+  "keep-longer-konbanwa-hearing-final",
 ];
 const REQUIRED_PHRASES = [
   "こんにちは",
@@ -61,6 +64,7 @@ const REQUIRED_PHRASES = [
   "おはよう",
   "おはようございます",
   "さようなら",
+  "こんばんは",
   "うん",
   "ええ",
   "いいえ",

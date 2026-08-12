@@ -66,6 +66,14 @@ describe("greeting live-caption regression harness", () => {
       fixtures.merge.find((row) => row.id === "keep-sayonara-over-ack")?.expectedOverlay,
       "さようなら",
     );
+    assert.equal(
+      fixtures.merge.find((row) => row.id === "append-kikoemasu-after-konbanwa")?.expectedOverlay,
+      "こんばんはきこえますか",
+    );
+    assert.equal(
+      fixtures.merge.find((row) => row.id === "keep-konbanwa-over-ack")?.expectedOverlay,
+      "こんばんは",
+    );
     assert.equal(GREETING_FIXTURES_RELATIVE_PATH.endsWith(".json"), true);
   });
 

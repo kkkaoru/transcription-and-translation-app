@@ -313,6 +313,65 @@
       },
       "expectedOverlay": "さようならきこえますか",
       "note": "Backdated truncated final must not erase さようならきこえますか"
+    },
+    {
+      "id": "append-kikoemasu-after-konbanwa",
+      "current": {
+        "id": "parapper:session:turn:konbanwa",
+        "sourceText": "こんばんは",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "next": {
+        "id": "parapper:session:turn:konbanwa-cont",
+        "sourceText": "きこえますか",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1450,
+        "receivedAt": 1700
+      },
+      "expectedOverlay": "こんばんはきこえますか",
+      "note": "Early-finalized こんばんは + close hearing continuation"
+    },
+    {
+      "id": "keep-konbanwa-over-ack",
+      "current": {
+        "id": "parapper:session:turn:konbanwa-ack",
+        "sourceText": "こんばんは",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:konbanwa-ack",
+        "sourceText": "はい",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "こんばんは",
+      "note": "Acoustic はい must not replace a painted こんばんは"
+    },
+    {
+      "id": "keep-longer-konbanwa-hearing-final",
+      "current": {
+        "id": "parapper:session:turn:konbanwa-trunc",
+        "sourceText": "こんばんはきこえますか",
+        "isFinal": true,
+        "startedAt": 2000,
+        "receivedAt": 3200
+      },
+      "next": {
+        "id": "parapper:session:turn:konbanwa-trunc",
+        "sourceText": "こんばんは",
+        "isFinal": true,
+        "startedAt": 800,
+        "receivedAt": 4000
+      },
+      "expectedOverlay": "こんばんはきこえますか",
+      "note": "Backdated truncated final must not erase こんばんはきこえますか"
     }
   ],
   "paging": [
