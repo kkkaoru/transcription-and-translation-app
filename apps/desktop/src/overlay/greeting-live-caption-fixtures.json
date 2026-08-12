@@ -278,6 +278,12 @@
       "input": "こんにちはーあえますか",
       "expectedOverlay": "こんにちはーきこえますか",
       "note": "Prolonged greeting + あえますか"
+    },
+    {
+      "id": "sayonara-hearing-prolonged-ae",
+      "input": "さようならーあえますか",
+      "expectedOverlay": "さようならーきこえますか",
+      "note": "Prolonged さようなら + あえますか"
     }
   ],
   "merge": [
