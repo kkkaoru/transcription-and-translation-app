@@ -272,6 +272,12 @@
       "input": "おはようございますおえますか",
       "expectedOverlay": "おはようございますきこえますか",
       "note": "Full morning greeting glued to おえますか"
+    },
+    {
+      "id": "concat-hearing-prolonged-ae",
+      "input": "こんにちはーあえますか",
+      "expectedOverlay": "こんにちはーきこえますか",
+      "note": "Prolonged greeting + あえますか"
     }
   ],
   "merge": [
