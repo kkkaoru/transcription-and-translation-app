@@ -20,6 +20,7 @@ use crate::recognition::{
 
 impl RecognitionSession {
     pub(in crate::recognition) fn complete_turn_without_grammar(&mut self, turn_id: u64) {
+        self.stop_accepting_root_while_closing(turn_id);
         if self.defer_finalization_if_blocked(PendingFinalization::new(turn_id)) {
             return;
         }
@@ -181,10 +182,19 @@ impl RecognitionSession {
         &mut self,
         turn_id: u64,
     ) {
+        self.stop_accepting_root_while_closing(turn_id);
         if self.defer_finalization_if_blocked(PendingFinalization::new(turn_id)) {
             return;
         }
         self.finalize_turn_now(turn_id);
+    }
+
+    /// A queued next-utterance root is a new turn once we have decided to close.
+    /// Namo/Morph otherwise treat that root as a continuation and defer forever.
+    fn stop_accepting_root_while_closing(&mut self, turn_id: u64) {
+        if self.turn_store.open_turn_id == Some(turn_id) {
+            self.turn_store.open_turn_accepts_root_segment = false;
+        }
     }
 
     pub(in crate::recognition) fn clear_open_turn(&mut self) {
@@ -233,16 +243,20 @@ impl RecognitionSession {
             silence::Action::RefreshRouteThenDispatchRerecognition {
                 turn_id,
                 purpose,
-                fallback_complete_without_grammar,
+                fallback_complete_without_grammar: _,
             } => {
                 self.refresh_turn_route_with_sli(turn_id);
                 if self.dispatch_rerecognition_for_turn_if_idle(turn_id, purpose) {
-                    true
-                } else if fallback_complete_without_grammar {
-                    self.complete_turn_without_grammar(turn_id);
+                    // Existing draft must stay visible while grammar/full-turn
+                    // rerecognition occupies the slot.
+                    self.emit_waiting_draft_if_caption_blank(turn_id);
                     true
                 } else {
-                    false
+                    // Submit/route/audio failure must not hold the turn-check
+                    // forever; finalize the draft and let the next utterance
+                    // dispatch in this step.
+                    self.complete_turn_without_grammar(turn_id);
+                    true
                 }
             }
             silence::Action::CompleteWithoutGrammar { turn_id } => {
@@ -333,6 +347,25 @@ impl RecognitionSession {
         let chain_ok = preceding.windows(2).all(|pair| pair[0].is_contiguous_with(pair[1]))
             && preceding.last().is_some_and(|last| last.is_contiguous_with(candidate));
         chain_ok.then_some(candidate_index)
+    }
+
+    /// Paint a still-open draft only when the caption is blank.
+    ///
+    /// Re-recognition can occupy the ASR slot for a full extra round-trip.
+    /// Emit even when live interim display is off: Namo/Morph wait on
+    /// rerecognition before any final, and that wait used to leave the overlay
+    /// empty. Do not replace an already-visible interim (completion apply may
+    /// append overlapping text).
+    pub(in crate::recognition) fn emit_waiting_draft_if_caption_blank(&mut self, turn_id: u64) {
+        let already_visible = self
+            .turn_store
+            .turns
+            .get(&turn_id)
+            .is_some_and(|turn| turn.draft().last_emitted_interim_text.is_some());
+        if already_visible {
+            return;
+        }
+        self.emit_turn_output(turn_id, false);
     }
 
     pub(in crate::recognition) fn emit_stale_turn_finals(&mut self, before_turn_id: u64) {
@@ -455,9 +488,7 @@ impl RecognitionSession {
                 RerecognitionPurpose::TimeoutFinal,
             )
         } {
-            return true;
-        }
-        if self.defer_finalization_if_blocked(PendingFinalization::new(turn_id)) {
+            self.emit_waiting_draft_if_caption_blank(turn_id);
             return true;
         }
         self.finalize_timeout_turn_after_rerecognition(turn_id);

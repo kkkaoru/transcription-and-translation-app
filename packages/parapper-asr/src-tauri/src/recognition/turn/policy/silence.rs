@@ -82,7 +82,7 @@ pub(in crate::recognition) fn action(input: Input) -> Action {
             Action::RefreshRouteThenDispatchRerecognition {
                 turn_id,
                 purpose: RerecognitionPurpose::GrammarAfterCompletion,
-                fallback_complete_without_grammar: false,
+                fallback_complete_without_grammar: true,
             }
         }
         CompletionStrategy::SimpleRerecognizeFull => {
@@ -155,7 +155,7 @@ mod tests {
             Action::RefreshRouteThenDispatchRerecognition {
                 turn_id: 3,
                 purpose: RerecognitionPurpose::GrammarAfterCompletion,
-                fallback_complete_without_grammar: false,
+                fallback_complete_without_grammar: true,
             }
         );
         assert_eq!(

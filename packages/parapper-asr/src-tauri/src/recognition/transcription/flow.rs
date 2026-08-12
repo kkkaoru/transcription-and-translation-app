@@ -459,6 +459,21 @@ impl RecognitionSession {
                             turn_id,
                             runtime_purpose_from_result(purpose),
                         ) {
+                            // Paint the completion hypothesis before waiting on
+                            // follow-up ASR so the caption is not blank for a
+                            // full extra recognition round-trip.
+                            self.emit_waiting_draft_if_caption_blank(turn_id);
+                            let previous_open_turn_id = self.turn_store.open_turn_id;
+                            if self
+                                .turn_store
+                                .open_turn_id
+                                .is_none_or(|open_turn_id| open_turn_id <= turn_id)
+                            {
+                                self.turn_store.open_turn_id = Some(turn_id);
+                                if previous_open_turn_id != Some(turn_id) {
+                                    self.turn_store.open_turn_accepts_root_segment = false;
+                                }
+                            }
                             return;
                         }
                     }

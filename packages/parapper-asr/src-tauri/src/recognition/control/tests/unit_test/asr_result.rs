@@ -1287,7 +1287,10 @@ fn turn_runtime_failed_timeout_rerecognition_clears_purpose_and_finalizes_existi
     );
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![output_snapshot("未確定。", true, 1, 1)],
+        vec![
+            output_snapshot("未確定...", false, 1, 1),
+            output_snapshot("未確定。", true, 1, 1)
+        ],
         "timeout rerecognition failure should fall back to the existing draft instead of hanging"
     );
     assert!(runtime.turn_store.open_turn_id.is_none());
@@ -1321,6 +1324,11 @@ fn turn_runtime_failed_simple_turn_check_rerecognition_finalizes_existing_draft(
         .in_flight_request
         .clone()
         .expect("simple turn-check rerecognition should be in flight");
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("簡易確定...", false, 1, 1)],
+        "existing draft must stay visible while turn-check rerecognition is in flight"
+    );
     asr_handle.fail_request(&request);
 
     runtime.step();
@@ -1328,7 +1336,10 @@ fn turn_runtime_failed_simple_turn_check_rerecognition_finalizes_existing_draft(
     assert!(runtime.requests.pending_rerecognition_purpose.is_none());
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![output_snapshot("簡易確定。", true, 1, 1)]
+        vec![
+            output_snapshot("簡易確定...", false, 1, 1),
+            output_snapshot("簡易確定。", true, 1, 1)
+        ]
     );
 }
 
@@ -1357,6 +1368,11 @@ fn turn_runtime_failed_grammar_rerecognition_uses_turn_decision_on_existing_draf
         .in_flight_request
         .clone()
         .expect("grammar rerecognition should be in flight");
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("文法判定...", false, 1, 1)],
+        "completion text must be visible while grammar rerecognition is in flight"
+    );
     asr_handle.fail_request(&request);
 
     runtime.step();
@@ -1368,7 +1384,10 @@ fn turn_runtime_failed_grammar_rerecognition_uses_turn_decision_on_existing_draf
     );
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![output_snapshot("文法判定。", true, 1, 1)]
+        vec![
+            output_snapshot("文法判定...", false, 1, 1),
+            output_snapshot("文法判定。", true, 1, 1)
+        ]
     );
 }
 
@@ -1442,5 +1461,40 @@ fn turn_runtime_final_is_emitted_even_when_text_equals_last_emitted_interim() {
             output_snapshot("確定テキスト。", true, 1, 1),
         ],
         "a final must always emit even when its combined text equals the last emitted interim"
+    );
+}
+
+#[test]
+fn turn_runtime_completion_hypothesis_is_visible_while_rerecognition_is_in_flight() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .rerecognize_full_on_complete(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..100,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch a completion request");
+    asr_handle.complete_request_with_text(&completion, "completion-draft");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "completion must still wait on full-turn rerecognition"
+    );
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("completion-draft...", false, 1, 1)],
+        "the completion transcript must be on screen before rerecognition returns"
     );
 }

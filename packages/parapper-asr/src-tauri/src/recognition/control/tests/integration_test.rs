@@ -1099,12 +1099,16 @@ fn turn_runtime_namo_completion_and_rerecognition_elapsed_millis_are_accumulated
     runtime.step();
 
     let outputs = outputs.lock().expect("outputs should be readable");
-    assert_eq!(outputs.len(), 1);
-    assert_eq!(outputs[0].text, "再認識後。");
-    assert!(outputs[0].is_final);
+    let final_output = outputs.last().expect("rerecognition must emit a final");
+    assert!(final_output.is_final);
+    assert_eq!(final_output.text, "再認識後。");
     assert_eq!(
-        outputs[0].elapsed_millis, 100,
+        final_output.elapsed_millis, 100,
         "final output should report completion ASR plus rerecognition ASR elapsed time"
+    );
+    assert!(
+        outputs.iter().any(|output| !output.is_final && output.text == "句読点つき。..."),
+        "completion hypothesis must be visible before rerecognition returns"
     );
 }
 
@@ -1145,8 +1149,8 @@ fn turn_runtime_suppresses_late_interim_when_turn_check_already_reached() {
 
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        Vec::<OutputSnapshot>::new(),
-        "completion ASR must wait for full-turn rerecognition before final output"
+        vec![output_snapshot("hello...", false, 1, 1)],
+        "completion text must stay visible while full-turn rerecognition is in flight"
     );
     let submitted = asr_handle.submitted_requests();
     assert_eq!(submitted.len(), 1);
@@ -1157,7 +1161,10 @@ fn turn_runtime_suppresses_late_interim_when_turn_check_already_reached() {
 
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![output_snapshot("hello。", true, 1, 1)]
+        vec![
+            output_snapshot("hello...", false, 1, 1),
+            output_snapshot("hello。", true, 1, 1)
+        ]
     );
 }
 
@@ -1526,7 +1533,10 @@ fn turn_runtime_following_simple_interim_after_completed_turn_is_emitted_as_next
 
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![output_snapshot("五月五日はこどもの日です。", true, 1, 1)],
+        vec![
+            output_snapshot("五月五日はこどもの日です...", false, 1, 1),
+            output_snapshot("五月五日はこどもの日です。", true, 1, 1)
+        ],
         "silence that reaches turn-check must finalize the first turn before the following root interim"
     );
 
@@ -1551,6 +1561,7 @@ fn turn_runtime_following_simple_interim_after_completed_turn_is_emitted_as_next
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
         vec![
+            output_snapshot("五月五日はこどもの日です...", false, 1, 1),
             output_snapshot("五月五日はこどもの日です。", true, 1, 1),
             output_snapshot("すごいね...", false, 2, 2),
             output_snapshot("すごいね。", true, 2, 3),
@@ -1968,13 +1979,22 @@ fn turn_runtime_shutdown_keeps_internal_grammar_boundary_in_same_turn_and_finali
                 output.phrase.clone(),
             ))
             .collect::<Vec<_>>(),
-        vec![(
-            "前半。後半追加。",
-            true,
-            1,
-            2,
-            vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0, 7.0, 8.0]
-        )],
+        vec![
+            (
+                "前半後半...",
+                false,
+                1,
+                1,
+                vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0]
+            ),
+            (
+                "前半。後半追加。",
+                true,
+                1,
+                2,
+                vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0, 7.0, 8.0]
+            )
+        ],
         "Namo shutdown must finalize the same open turn and keep the active tail audio"
     );
 }
@@ -2052,8 +2072,8 @@ fn simple_completion_check_rerecognition_flag_controls_final_output_source() {
         if rerecognize_full_on_complete {
             assert_eq!(
                 *outputs.lock().expect("outputs should be readable"),
-                Vec::<OutputSnapshot>::new(),
-                "{case_name}: completion output must wait for full-turn rerecognition"
+                vec![output_snapshot("初回結果...", false, 1, 1)],
+                "{case_name}: completion hypothesis must be visible while full-turn rerecognition runs"
             );
             let rerecognition_request =
                 runtime.requests.in_flight_request.clone().unwrap_or_else(|| {
@@ -2078,7 +2098,10 @@ fn simple_completion_check_rerecognition_flag_controls_final_output_source() {
 
             assert_eq!(
                 *outputs.lock().expect("outputs should be readable"),
-                vec![output_snapshot("再認識結果。", true, 1, 1)],
+                vec![
+                    output_snapshot("初回結果...", false, 1, 1),
+                    output_snapshot("再認識結果。", true, 1, 1)
+                ],
                 "{case_name}"
             );
         } else {
@@ -2133,8 +2156,8 @@ fn turn_runtime_parakeet_models_dispatch_rerecognition_after_namo_completion_che
 
         assert_eq!(
             *outputs.lock().expect("outputs should be readable"),
-            Vec::<OutputSnapshot>::new(),
-            "model={model:?} must wait for rerecognition before final output"
+            vec![output_snapshot("first pass...", false, 1, 1)],
+            "model={model:?} must show the completion hypothesis while rerecognition is in flight"
         );
         let rerecognition_request = runtime
             .requests
@@ -2211,12 +2234,15 @@ fn english_punctuation_after_rerecognition_finalizes_as_strong_end_without_namo(
     );
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![OutputSnapshot {
-            text: "We should keep going.".to_string(),
-            is_final: true,
-            turn_id: 1,
-            segment_id: 1,
-        }],
+        vec![
+            output_snapshot("we should keep going...", false, 1, 1),
+            OutputSnapshot {
+                text: "We should keep going.".to_string(),
+                is_final: true,
+                turn_id: 1,
+                segment_id: 1,
+            }
+        ],
         "Namo must finalize English sentence punctuation as grammar StrongEnd"
     );
     assert!(runtime.turn_store.open_turn_id.is_none());
@@ -2261,7 +2287,10 @@ fn turn_runtime_internal_strong_boundary_keeps_turn_open_until_terminal_candidat
 
     runtime.step();
 
-    assert_eq!(*outputs.lock().expect("outputs should be readable"), vec![]);
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("はい次です...", false, 1, 1)]
+    );
     assert_eq!(
         runtime.turn_store.open_turn_id,
         Some(1),
@@ -2298,12 +2327,20 @@ fn turn_runtime_namo_complete_without_boundary_emits_final() {
     );
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![OutputSnapshot {
-            text: "東京駅。".to_string(),
-            is_final: true,
-            turn_id: 1,
-            segment_id: 1,
-        }]
+        vec![
+            OutputSnapshot {
+                text: "東京駅...".to_string(),
+                is_final: false,
+                turn_id: 1,
+                segment_id: 1,
+            },
+            OutputSnapshot {
+                text: "東京駅。".to_string(),
+                is_final: true,
+                turn_id: 1,
+                segment_id: 1,
+            }
+        ]
     );
 }
 
@@ -2326,13 +2363,13 @@ fn namo_decision_confidence_threshold_controls_finalization() {
         Case {
             name: "continue decision above threshold stays open",
             decision: TurnDecision { is_end_of_turn: false, confidence: 0.99 },
-            expected_output: None,
+            expected_output: Some(("東京駅...", false)),
             expected_open_turn_id: Some(1),
         },
         Case {
             name: "end decision below threshold stays open",
             decision: TurnDecision { is_end_of_turn: true, confidence: 0.79 },
-            expected_output: None,
+            expected_output: Some(("東京駅...", false)),
             expected_open_turn_id: Some(1),
         },
     ];
@@ -2360,10 +2397,19 @@ fn namo_decision_confidence_threshold_controls_finalization() {
 
         let outputs = outputs.lock().expect("outputs should be readable");
         match expected_output {
-            Some((expected_text, expected_is_final)) => {
-                assert_eq!(outputs.len(), 1, "{name}");
+            Some((expected_text, true)) => {
+                let last = outputs.last().unwrap_or_else(|| panic!("{name}: expected a final"));
+                assert_eq!(last.text, expected_text, "{name}");
+                assert!(last.is_final, "{name}");
+                assert!(
+                    outputs.iter().any(|output| !output.is_final),
+                    "{name}: completion hypothesis must be visible before the final"
+                );
+            }
+            Some((expected_text, false)) => {
+                assert_eq!(outputs.len(), 1, "{name}: got outputs {outputs:?}");
                 assert_eq!(outputs[0].text, expected_text, "{name}");
-                assert_eq!(outputs[0].is_final, expected_is_final, "{name}");
+                assert!(!outputs[0].is_final, "{name}");
             }
             None => assert!(outputs.is_empty(), "{name}: got outputs {outputs:?}"),
         }
@@ -2380,7 +2426,7 @@ fn namo_continue_interim_display_flag_controls_partial_output_while_turn_stays_o
     }
 
     let cases = vec![
-        Case { name: "interim display disabled", interim_display: false, expected_output: None },
+        Case { name: "interim display disabled", interim_display: false, expected_output: Some(("東京駅...", false)) },
         Case {
             name: "interim display enabled",
             interim_display: true,
@@ -2451,8 +2497,8 @@ fn namo_turn_decision_error_keeps_turn_open_without_final_output() {
     );
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        Vec::<OutputSnapshot>::new(),
-        "a Namo decision error must continue the turn instead of finalizing with stale confidence"
+        vec![output_snapshot("東京駅...", false, 1, 1)],
+        "a Namo decision error must keep the completion hypothesis visible without finalizing"
     );
     assert_eq!(runtime.turn_store.open_turn_id, Some(1));
 }
@@ -2488,12 +2534,20 @@ fn turn_runtime_timeout_after_namo_continue_rerecognizes_then_finalizes() {
 
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![OutputSnapshot {
-            text: "東京駅再認識。".to_string(),
-            is_final: true,
-            turn_id: 1,
-            segment_id: 1,
-        }]
+        vec![
+            OutputSnapshot {
+                text: "東京駅...".to_string(),
+                is_final: false,
+                turn_id: 1,
+                segment_id: 1,
+            },
+            OutputSnapshot {
+                text: "東京駅再認識。".to_string(),
+                is_final: true,
+                turn_id: 1,
+                segment_id: 1,
+            }
+        ]
     );
     assert!(runtime.turn_store.open_turn_id.is_none());
 }
@@ -2559,7 +2613,10 @@ fn turn_runtime_mid_phrase_breath_after_namo_continue_keeps_turn_open_and_delays
         "the segment after Namo Continue must stay attached to the open turn for a mid-phrase breath"
     );
     assert_eq!(runtime.turn_store.open_turn_id, Some(1));
-    assert_eq!(*outputs.lock().expect("outputs should be readable"), Vec::<OutputSnapshot>::new());
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("東京駅から...", false, 1, 1)]
+    );
 }
 #[test]
 fn turn_runtime_integrated_two_utterance_sequence_splits_after_genuine_end_silence() {
@@ -2664,7 +2721,7 @@ fn simple_turn_check_rerecognition_flag_controls_existing_interim_finalization()
         runtime.step();
 
         let expected_after_first_step = if rerecognize_full_on_complete {
-            Vec::<OutputSnapshot>::new()
+            vec![output_snapshot("途中...", false, 1, 1)]
         } else {
             vec![output_snapshot("途中。", true, 1, 1)]
         };
@@ -2677,7 +2734,10 @@ fn simple_turn_check_rerecognition_flag_controls_existing_interim_finalization()
         runtime.step();
 
         let expected_after_second_step = if rerecognize_full_on_complete {
-            vec![output_snapshot("確定。", true, 1, 1)]
+            vec![
+                output_snapshot("途中...", false, 1, 1),
+                output_snapshot("確定。", true, 1, 1),
+            ]
         } else {
             vec![output_snapshot("途中。", true, 1, 1)]
         };
