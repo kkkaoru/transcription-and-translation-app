@@ -164,6 +164,12 @@
       "input": "おはようございます。きこえますか",
       "expectedOverlay": "おはようございますきこえますか",
       "note": "ZenZ period before kana きこえますか must not page おはようございます"
+    },
+    {
+      "id": "sayonara-hearing-kanji",
+      "input": "さようなら会えますか",
+      "expectedOverlay": "さようなら聞こえますか",
+      "note": "Farewell greeting glued to 会えますか"
     }
   ],
   "merge": [
