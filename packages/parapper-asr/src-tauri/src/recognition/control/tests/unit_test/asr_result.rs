@@ -328,6 +328,117 @@ fn reminted_turn_completion_must_emit_is_final() {
 }
 
 #[test]
+fn turn_runtime_completion_does_not_duplicate_visible_interim_when_rerecognition_does_not_run() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let interim = interim_request_for_turn(1, 1);
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "五月五日はこどもの日です");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(1)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "五月五日はこどもの日です");
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("五月五日はこどもの日です...", false, 1, 1),
+            output_snapshot("五月五日はこどもの日です。", true, 1, 2),
+        ],
+        "completion must not duplicate the already-visible utterance in the final when rerecognition does not run"
+    );
+}
+
+#[test]
+fn turn_runtime_completion_after_non_streaming_interim_keeps_uncovered_tail_speech() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let interim = interim_request_for_turn(1, 1);
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "全体");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(1)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "追加");
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("全体...", false, 1, 1), output_snapshot("全体追加。", true, 1, 2),],
+        "a real completion tail after a non-streaming interim must still append"
+    );
+}
+
+#[test]
+fn turn_runtime_completion_replaces_visible_interim_with_full_longer_rewrite() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let interim = interim_request_for_turn(1, 1);
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "前半");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(1)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "前半と末尾");
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![output_snapshot("前半...", false, 1, 1), output_snapshot("前半と末尾。", true, 1, 2),],
+        "a full longer completion rewrite must replace the visible utterance, not concatenate it"
+    );
+}
+
+#[test]
 fn turn_runtime_completion_after_streaming_interim_does_not_append_duplicate_tail_text() {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
@@ -1287,10 +1398,7 @@ fn turn_runtime_failed_timeout_rerecognition_clears_purpose_and_finalizes_existi
     );
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![
-            output_snapshot("未確定...", false, 1, 1),
-            output_snapshot("未確定。", true, 1, 1)
-        ],
+        vec![output_snapshot("未確定...", false, 1, 1), output_snapshot("未確定。", true, 1, 1)],
         "timeout rerecognition failure should fall back to the existing draft instead of hanging"
     );
     assert!(runtime.turn_store.open_turn_id.is_none());
@@ -1548,8 +1656,8 @@ fn turn_runtime_longer_completion_rewrite_is_visible_while_rerecognition_is_in_f
 }
 
 #[test]
-fn turn_runtime_truncated_completion_does_not_clobber_longer_interim_while_rerecognition_is_in_flight()
-{
+fn turn_runtime_truncated_completion_does_not_clobber_longer_interim_while_rerecognition_is_in_flight(
+) {
     let mut builder = RecognitionSessionTestBuilder::new()
         .asr_model(AsrModel::ReazonSpeechK2V2)
         .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8)
@@ -1697,10 +1805,7 @@ fn turn_runtime_namo_continue_emits_longer_rerecognition_rewrite_when_interim_di
     runtime.step();
 
     assert_eq!(runtime.turn_store.open_turn_id, Some(1), "Namo Continue must keep the turn open");
-    assert!(
-        !runtime.turn_store.finalized_turns.contains(&1),
-        "Namo Continue must not finalize"
-    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1), "Namo Continue must not finalize");
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
         vec![

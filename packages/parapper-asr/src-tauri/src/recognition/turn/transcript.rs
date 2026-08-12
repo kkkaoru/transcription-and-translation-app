@@ -8,7 +8,7 @@ use crate::{
             engine::AsrTranscript,
             task::{AsrRequest, AsrTaskKind, AudioRange, GlobalSampleIndex},
         },
-        turn::{Turn, boundary::candidates_for_transcript, turn_event_id},
+        turn::{boundary::candidates_for_transcript, turn_event_id, Turn},
     },
 };
 
@@ -82,7 +82,7 @@ impl RecognitionSession {
         // Dual-ASR: ReazonSpeech completion can truncate a longer Nemotron draft
         // ("…ですね" tails vanish). Keep the longer streaming surface when the
         // completion is clearly a prefix truncation; still swap to completion audio.
-        let transcript_text = if completion_replaces_streaming_interim
+        let incoming_text = if completion_replaces_streaming_interim
             && prefer_streaming_interim_text_over_truncated_completion(
                 &draft.combined_text,
                 &transcript.text,
@@ -95,6 +95,24 @@ impl RecognitionSession {
                     .map_or(0, |overlap| overlap.samples_for_transcript_tokens(&transcript)),
             )
         };
+        let existing_text = draft.combined_text.clone();
+        let completion_append =
+            request.kind == AsrTaskKind::CompletionCheck && !replace_latest_segment;
+        let replace_combined_with_longer_rewrite =
+            completion_append && completion_is_full_longer_rewrite(&existing_text, &incoming_text);
+        let recorded_text = if replace_latest_segment {
+            incoming_text.clone()
+        } else if completion_append
+            && (replace_combined_with_longer_rewrite
+                || completion_text_duplicates_existing(&existing_text, &incoming_text))
+        {
+            // Keep the visible utterance in combined_text. Appending the same
+            // (or truncated) completion string doubled the final when
+            // rerecognition did not run to replace the draft.
+            String::new()
+        } else {
+            incoming_text.clone()
+        };
         if replace_latest_segment {
             draft.replace_latest_recognized_segment(
                 segment_id,
@@ -102,7 +120,7 @@ impl RecognitionSession {
                 &request.source_audio,
                 &request.source_vad_results,
                 request.route,
-                transcript_text,
+                recorded_text,
                 elapsed_millis,
             );
         } else {
@@ -125,9 +143,12 @@ impl RecognitionSession {
                 &request.source_audio[append_source_start..],
                 source_vad_results,
                 request.route,
-                transcript_text,
+                recorded_text,
                 elapsed_millis,
             );
+            if replace_combined_with_longer_rewrite {
+                draft.replace_text_preserving_sources(request.route, incoming_text, 0);
+            }
         }
         if request.close_reason == Some(SegmentCloseReason::InterimChunkReached) {
             self.turn_store
@@ -457,11 +478,30 @@ fn is_repeated_turn_append(visible: &str, candidate: &str) -> bool {
     rest.is_empty() || visible.starts_with(rest) || rest.starts_with(visible)
 }
 
+fn completion_is_full_longer_rewrite(existing: &str, incoming: &str) -> bool {
+    let existing = strip_turn_surface_noise(existing);
+    let incoming = strip_turn_surface_noise(incoming);
+    is_longer_turn_rewrite(existing, incoming) && incoming.starts_with(existing)
+}
+
+fn completion_text_duplicates_existing(existing: &str, incoming: &str) -> bool {
+    let existing = strip_turn_surface_noise(existing);
+    let incoming = strip_turn_surface_noise(incoming);
+    if existing.is_empty() || incoming.is_empty() {
+        return false;
+    }
+    if existing == incoming {
+        return true;
+    }
+    if prefer_streaming_interim_text_over_truncated_completion(existing, incoming) {
+        return true;
+    }
+    is_repeated_turn_append(existing, &format!("{existing}{incoming}"))
+        || is_repeated_turn_append(existing, &format!("{existing} {incoming}"))
+}
+
 fn strip_turn_surface_noise(text: &str) -> &str {
-    text.trim()
-        .trim_end_matches(['.', '。', '…', '⋯'])
-        .trim_end_matches("...")
-        .trim()
+    text.trim().trim_end_matches(['.', '。', '…', '⋯']).trim_end_matches("...").trim()
 }
 
 fn samples_between(start: GlobalSampleIndex, end: GlobalSampleIndex) -> usize {
@@ -529,6 +569,7 @@ fn even_chunk_ranges(audio_len: usize, chunk_count: usize) -> Option<Vec<std::op
 #[cfg(test)]
 mod tests {
     use super::{
+        completion_is_full_longer_rewrite, completion_text_duplicates_existing,
         is_longer_turn_rewrite, longer_turn_surface_text,
         prefer_streaming_interim_text_over_truncated_completion,
     };
@@ -562,5 +603,21 @@ mod tests {
             ),
             "五月五日はこどもの日です"
         );
+    }
+
+    #[test]
+    fn completion_append_keeps_visible_text_and_real_tails() {
+        assert!(completion_text_duplicates_existing(
+            "五月五日はこどもの日です",
+            "五月五日はこどもの日です"
+        ));
+        assert!(completion_text_duplicates_existing(
+            "五月五日はこどもの日です",
+            "五月五日はこどもの日です。"
+        ));
+        assert!(completion_text_duplicates_existing("今日はいい天気ですね", "今日はいい天気"));
+        assert!(!completion_text_duplicates_existing("全体", "追加"));
+        assert!(completion_is_full_longer_rewrite("前半", "前半と末尾"));
+        assert!(!completion_is_full_longer_rewrite("全体", "追加です"));
     }
 }
