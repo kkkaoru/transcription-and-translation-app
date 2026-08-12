@@ -445,6 +445,26 @@
       "note": "Backdated truncated final must not erase おはようございますきこえますか"
     },
     {
+      "id": "keep-ohayou-over-ack",
+      "current": {
+        "id": "parapper:session:turn:ohayou-ack",
+        "sourceText": "おはよう",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-ack",
+        "sourceText": "はい",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "おはよう",
+      "note": "Acoustic はい must not replace a painted おはよう"
+    },
+    {
       "id": "keep-ohayou-over-un",
       "current": {
         "id": "parapper:session:turn:ohayou-un",
