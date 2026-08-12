@@ -19,6 +19,7 @@ import { useProgressiveCaptionReveal } from "../live/useProgressiveCaptionReveal
 import { OverlayView } from "./CaptionOverlay";
 import { createEmptyCaption, createHoldClearedCaption, createPreviewCaption } from "./captions";
 import { NativeFramePublisher } from "./NativeFramePublisher";
+import { retainHeldOverlayCaption, shouldHoldCaptionOverPreview } from "./overlay-first-caption";
 
 /**
  * The overlay receives only the standard user-facing caption surface. Raw ASR
@@ -130,6 +131,34 @@ export const OverlayApp = () => {
       markCaptionDisplay(merged);
       setCaption(merged);
     };
+    // Short getLatestCaption / caption:update must not replace preview before
+    // ASR history settles; otherwise first Syphon paint is a truncated sentence.
+    let asrHistorySettled = typeof bridge.listenPipelineStages !== "function";
+    let heldOverPreview: CaptionPayload | null = null;
+    const flushHeldCaptionOverPreview = (): void => {
+      const held = heldOverPreview;
+      heldOverPreview = null;
+      if (held) {
+        applyCaption(held);
+      }
+    };
+    const settleAsrHistory = (): void => {
+      if (asrHistorySettled) {
+        return;
+      }
+      asrHistorySettled = true;
+      flushHeldCaptionOverPreview();
+    };
+    const ingestCaption = (nextCaption: CaptionPayload): void => {
+      if (!mounted || idle || !isOverlayCaption(nextCaption)) {
+        return;
+      }
+      if (shouldHoldCaptionOverPreview(captionRef.current.id, nextCaption, asrHistorySettled)) {
+        heldOverPreview = retainHeldOverlayCaption(heldOverPreview, nextCaption);
+        return;
+      }
+      applyCaption(nextCaption);
+    };
     const replayLatestCaption = (): void => {
       // Do not await replay in the effect. A missing command in an older
       // bundle, a disconnected webview, or a rejected IPC call must not leave
@@ -143,7 +172,7 @@ export const OverlayApp = () => {
       void replay
         .then((latest) => {
           if (latest) {
-            applyCaption(latest);
+            ingestCaption(latest);
           }
         })
         .catch(() => undefined);
@@ -164,7 +193,7 @@ export const OverlayApp = () => {
     // the overlay mount on a subscription Promise.
     let listenPromise: Promise<() => void>;
     try {
-      listenPromise = Promise.resolve(bridge.listenCaptions(applyCaption));
+      listenPromise = Promise.resolve(bridge.listenCaptions(ingestCaption));
     } catch {
       listenPromise = Promise.reject(new Error("caption listener unavailable"));
     }
@@ -180,7 +209,7 @@ export const OverlayApp = () => {
       })
       .then((latest) => {
         if (latest) {
-          applyCaption(latest);
+          ingestCaption(latest);
         }
       })
       .catch(() => {
@@ -241,20 +270,23 @@ export const OverlayApp = () => {
           targetLanguage: captionRef.current.targetLanguage,
         });
         if (provisional) {
-          applyCaption(provisional);
+          ingestCaption(provisional);
         }
       };
       const replayLatestAsrStage = (): void => {
         if (typeof bridge.getPipelineStageHistory !== "function") {
+          settleAsrHistory();
           return;
         }
         let replay: Promise<PipelineStageEvent[]>;
         try {
           replay = bridge.getPipelineStageHistory();
         } catch {
+          settleAsrHistory();
           return;
         }
         if (!replay || typeof replay.then !== "function") {
+          settleAsrHistory();
           return;
         }
         void replay
@@ -263,8 +295,11 @@ export const OverlayApp = () => {
             if (latest) {
               applyAsrStage(latest);
             }
+            settleAsrHistory();
           })
-          .catch(() => undefined);
+          .catch(() => {
+            settleAsrHistory();
+          });
       };
       replayLatestAsrStage();
       void bridge

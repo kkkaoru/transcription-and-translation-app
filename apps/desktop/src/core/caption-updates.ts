@@ -485,6 +485,11 @@ const isProgressiveProvisionalExtension = (
     // surface is the late raw-ASR rewrite we still want to reject.
     return nextReading.startsWith(currentReading) && nextReading !== currentReading;
   }
+  // Short kanji (今日は) then a longer kana ASR tail share no prefix. Treat
+  // the painted surface as stale-shorter so overlay first paint can grow.
+  if (isStaleShorterCaptionSurface(currentText, nextText)) {
+    return true;
+  }
   return nextText.startsWith(currentText) && nextText !== currentText;
 };
 
@@ -775,6 +780,11 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
     const stitched = stitchConvertedHeadWithPaintedTail(nextText, currentText);
     if (stitched && [...stitched].length > [...nextText].length) {
       return collapseRunawayGraphemeRuns(stitched);
+    }
+    // Short first caption (今日は) then a longer kana ASR tail share no prefix,
+    // so rolling append would concatenate. Prefer the longer surface.
+    if (next.provisional === true && isStaleShorterCaptionSurface(currentText, nextText)) {
+      return collapseRunawayGraphemeRuns(nextText);
     }
   }
 

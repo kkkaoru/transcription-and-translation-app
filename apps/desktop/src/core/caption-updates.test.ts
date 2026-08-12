@@ -2089,6 +2089,35 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(normalized, provisional)).toBeNull();
   });
 
+  it("accepts a longer kana provisional after a short kanji first caption", () => {
+    const shortKanji = caption({
+      id: "u-1",
+      sourceText: "今日は",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const longerKana = caption({
+      id: "u-1",
+      sourceText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(shortKanji, longerKana)).toMatchObject({
+      sourceText: "きょうはいいてんきですね",
+      provisional: true,
+    });
+  });
+
   it("accepts a longer same-id provisional after normalize so the utterance tail can paint", () => {
     // First normalize paints the beginning; later Parapper partials still grow
     // before the next normalize. Those extensions must not be treated as late
