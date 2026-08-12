@@ -3,8 +3,10 @@ import { describe, it } from "node:test";
 import {
   assertGreetingFixtureInventory,
   assertGreetingHarnessWired,
+  assertGreetingWavFixture,
   GREETING_FIXTURES_RELATIVE_PATH,
   GREETING_HARNESS_RELATIVE_PATH,
+  GREETING_WAV_RELATIVE_PATH,
   loadGreetingLiveCaptionFixtures,
   runGreetingLiveCaptionGate,
 } from "./verify-greeting-live-caption.mjs";
@@ -14,7 +16,13 @@ describe("greeting live-caption regression harness", () => {
     const inventory = assertGreetingFixtureInventory();
     const fixtures = loadGreetingLiveCaptionFixtures();
     assert.equal(inventory.playbackEnv, "KOTOBA_BEACON_GREETING_WAV");
-    assert.match(inventory.playbackCommand, /verify:tauri:ui/);
+    assert.equal(inventory.playbackWav, GREETING_WAV_RELATIVE_PATH);
+    assert.match(inventory.playbackCommand, /greeting-kikoemasu\.wav/);
+    const wav = assertGreetingWavFixture();
+    assert.equal(wav.wavPath.endsWith("greeting-kikoemasu.wav"), true);
+    assert.ok(wav.bytes > 1024);
+    assert.equal(fixtures.playback.expectedOverlay, "こんにちはきこえますか");
+    assert.equal(fixtures.playback.spoken, "こんにちは、きこえますか");
     assert.ok(inventory.sanitizeCount >= 8);
     assert.ok(inventory.mergeCount >= 4);
     assert.ok(inventory.pagingCount >= 3);
@@ -48,5 +56,6 @@ describe("greeting live-caption regression harness", () => {
     const skipped = runGreetingLiveCaptionGate({ spawnVitest: false });
     assert.equal(skipped.vitest, "skipped");
     assert.equal(skipped.inventory.playbackEnv, "KOTOBA_BEACON_GREETING_WAV");
+    assert.ok(skipped.wav.bytes > 1024);
   });
 });

@@ -1,8 +1,13 @@
 {
   "playback": {
     "env": "KOTOBA_BEACON_GREETING_WAV",
-    "command": "bun run verify:tauri:ui",
-    "note": "Optional live wav. The fixture table is the check-in gate; live audio is not required."
+    "wav": "apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav",
+    "voice": "Kyoko",
+    "spoken": "こんにちは、きこえますか",
+    "expectedOverlay": "こんにちはきこえますか",
+    "sampleRate": 16000,
+    "command": "KOTOBA_BEACON_GREETING_WAV=apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav bun run verify:tauri:ui",
+    "note": "Checked-in 16 kHz mono PCM of the greeting. CI validates RIFF/WAVE plus overlay fixtures; live ASR playback is optional."
   },
   "sanitize": [
     {

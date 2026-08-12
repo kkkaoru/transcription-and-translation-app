@@ -3,7 +3,7 @@
  *
  * Fixture table: `greeting-live-caption-fixtures.json`.
  * Gate: `bun run verify:greeting-caption` (no microphone).
- * Optional playback: `KOTOBA_BEACON_GREETING_WAV=<wav> bun run verify:tauri:ui`.
+ * Optional playback: `KOTOBA_BEACON_GREETING_WAV=apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav bun run verify:tauri:ui`.
  */
 import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { beforeEach, describe, expect, it } from "vitest";

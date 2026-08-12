@@ -9,10 +9,10 @@
  * through the desktop overlay sanitizer + caption merge tests. Live audio
  * is not required.
  *
- * Optional local playback:
- *   KOTOBA_BEACON_GREETING_WAV=/path/to/greeting.wav bun run verify:tauri:ui
- * Play 「こんにちは、きこえますか」 and confirm the overlay matches the
- * `concat-hearing-*` / `append-kikoemasu` fixtures.
+ * Optional local playback of the checked-in wav:
+ *   KOTOBA_BEACON_GREETING_WAV=apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav bun run verify:tauri:ui
+ * Play 「こんにちは、きこえますか」 and confirm the overlay matches
+ * `concat-hearing-*` / `append-kikoemasu`.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -25,6 +25,8 @@ export const GREETING_FIXTURES_RELATIVE_PATH =
   "apps/desktop/src/overlay/greeting-live-caption-fixtures.json";
 export const GREETING_HARNESS_RELATIVE_PATH =
   "apps/desktop/src/overlay/greeting-live-caption.harness.test.ts";
+export const GREETING_WAV_RELATIVE_PATH =
+  "apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav";
 
 const REQUIRED_SANITIZE_IDS = [
   "hearing-ae",
@@ -95,8 +97,17 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if (fixtures.playback?.env !== "KOTOBA_BEACON_GREETING_WAV") {
     throw new Error(`unexpected playback env: ${fixtures.playback?.env}`);
   }
+  if (fixtures.playback?.wav !== GREETING_WAV_RELATIVE_PATH) {
+    throw new Error(`playback.wav must be ${GREETING_WAV_RELATIVE_PATH}`);
+  }
+  if (fixtures.playback?.expectedOverlay !== "こんにちはきこえますか") {
+    throw new Error("playback.expectedOverlay must be こんにちはきこえますか");
+  }
   if (!/verify:tauri:ui/.test(fixtures.playback?.command ?? "")) {
     throw new Error("playback command must document verify:tauri:ui");
+  }
+  if (!fixtures.playback?.command?.includes(GREETING_WAV_RELATIVE_PATH)) {
+    throw new Error("playback command must point at the checked-in wav");
   }
   return {
     sanitizeCount: fixtures.sanitize.length,
@@ -104,7 +115,24 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
     pagingCount: fixtures.paging.length,
     playbackEnv: fixtures.playback.env,
     playbackCommand: fixtures.playback.command,
+    playbackWav: fixtures.playback.wav,
   };
+};
+
+export const assertGreetingWavFixture = (root = repositoryRoot) => {
+  const wavPath = path.join(root, GREETING_WAV_RELATIVE_PATH);
+  if (!existsSync(wavPath)) {
+    throw new Error(`missing greeting wav: ${GREETING_WAV_RELATIVE_PATH}`);
+  }
+  const bytes = readFileSync(wavPath);
+  if (bytes.byteLength < 1024 || bytes.byteLength > 200_000) {
+    throw new Error(`greeting wav size out of bounds: ${bytes.byteLength}`);
+  }
+  const ascii = bytes.subarray(0, 12).toString("ascii");
+  if (!ascii.startsWith("RIFF") || ascii.slice(8, 12) !== "WAVE") {
+    throw new Error("greeting wav must be RIFF/WAVE PCM");
+  }
+  return { wavPath, bytes: bytes.byteLength };
 };
 
 export const assertGreetingHarnessWired = (root = repositoryRoot) => {
@@ -144,9 +172,10 @@ export const assertGreetingHarnessWired = (root = repositoryRoot) => {
 
 export const runGreetingLiveCaptionGate = ({ spawnVitest = true } = {}) => {
   const inventory = assertGreetingFixtureInventory();
+  const wav = assertGreetingWavFixture();
   const wired = assertGreetingHarnessWired();
   if (!spawnVitest) {
-    return { inventory, wired, vitest: "skipped" };
+    return { inventory, wav, wired, vitest: "skipped" };
   }
   const desktop = path.join(repositoryRoot, "apps/desktop");
   console.log("\n[verify:greeting-caption] desktop-greeting-harness");
@@ -162,16 +191,18 @@ export const runGreetingLiveCaptionGate = ({ spawnVitest = true } = {}) => {
   if (result.status !== 0) {
     throw new Error("greeting live-caption harness vitest failed");
   }
-  return { inventory, wired, vitest: "ok" };
+  return { inventory, wav, wired, vitest: "ok" };
 };
 
 export const main = () => {
   try {
     const inventory = assertGreetingFixtureInventory();
+    const wav = assertGreetingWavFixture();
     console.log("[verify:greeting-caption] fixture table (no live audio required)");
     console.log(
-      `[verify:greeting-caption] optional playback: ${inventory.playbackEnv}=<wav> ${inventory.playbackCommand}`,
+      `[verify:greeting-caption] checked-in wav: ${inventory.playbackWav} (${wav.bytes} bytes)`,
     );
+    console.log(`[verify:greeting-caption] optional playback: ${inventory.playbackCommand}`);
     runGreetingLiveCaptionGate({ spawnVitest: true });
     console.log("\n[verify:greeting-caption] OK — greeting live-caption fixtures passed");
     process.exitCode = 0;
