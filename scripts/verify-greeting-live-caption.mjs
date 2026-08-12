@@ -27,6 +27,8 @@ export const GREETING_HARNESS_RELATIVE_PATH =
   "apps/desktop/src/overlay/greeting-live-caption.harness.test.ts";
 export const GREETING_WAV_RELATIVE_PATH =
   "apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav";
+export const GREETING_SAYONARA_WAV_RELATIVE_PATH =
+  "apps/desktop/src/overlay/fixtures/greeting-sayonara.wav";
 
 const REQUIRED_SANITIZE_IDS = [
   "hearing-ae",
@@ -98,7 +100,7 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if ((fixtures.merge ?? []).length < 4) {
     throw new Error(`merge fixture table too small: ${fixtures.merge?.length ?? 0}`);
   }
-  if ((fixtures.paging ?? []).length < 3) {
+  if ((fixtures.paging ?? []).length < 6) {
     throw new Error(`paging fixture table too small: ${fixtures.paging?.length ?? 0}`);
   }
   const blob = JSON.stringify(fixtures);
@@ -113,8 +115,14 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if (fixtures.playback?.wav !== GREETING_WAV_RELATIVE_PATH) {
     throw new Error(`playback.wav must be ${GREETING_WAV_RELATIVE_PATH}`);
   }
+  if (fixtures.playback?.sayonaraWav !== GREETING_SAYONARA_WAV_RELATIVE_PATH) {
+    throw new Error(`playback.sayonaraWav must be ${GREETING_SAYONARA_WAV_RELATIVE_PATH}`);
+  }
   if (fixtures.playback?.expectedOverlay !== "こんにちはきこえますか") {
     throw new Error("playback.expectedOverlay must be こんにちはきこえますか");
+  }
+  if (fixtures.playback?.sayonaraExpectedOverlay !== "さようならきこえますか") {
+    throw new Error("playback.sayonaraExpectedOverlay must be さようならきこえますか");
   }
   if (!/verify:tauri:ui/.test(fixtures.playback?.command ?? "")) {
     throw new Error("playback command must document verify:tauri:ui");
@@ -129,23 +137,30 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
     playbackEnv: fixtures.playback.env,
     playbackCommand: fixtures.playback.command,
     playbackWav: fixtures.playback.wav,
+    sayonaraWav: fixtures.playback.sayonaraWav,
   };
 };
 
-export const assertGreetingWavFixture = (root = repositoryRoot) => {
-  const wavPath = path.join(root, GREETING_WAV_RELATIVE_PATH);
+const assertRiffWave = (relativePath, root = repositoryRoot) => {
+  const wavPath = path.join(root, relativePath);
   if (!existsSync(wavPath)) {
-    throw new Error(`missing greeting wav: ${GREETING_WAV_RELATIVE_PATH}`);
+    throw new Error(`missing greeting wav: ${relativePath}`);
   }
   const bytes = readFileSync(wavPath);
   if (bytes.byteLength < 1024 || bytes.byteLength > 200_000) {
-    throw new Error(`greeting wav size out of bounds: ${bytes.byteLength}`);
+    throw new Error(`greeting wav size out of bounds: ${relativePath} ${bytes.byteLength}`);
   }
   const ascii = bytes.subarray(0, 12).toString("ascii");
   if (!ascii.startsWith("RIFF") || ascii.slice(8, 12) !== "WAVE") {
-    throw new Error("greeting wav must be RIFF/WAVE PCM");
+    throw new Error(`${relativePath} must be RIFF/WAVE PCM`);
   }
   return { wavPath, bytes: bytes.byteLength };
+};
+
+export const assertGreetingWavFixture = (root = repositoryRoot) => {
+  const primary = assertRiffWave(GREETING_WAV_RELATIVE_PATH, root);
+  const sayonara = assertRiffWave(GREETING_SAYONARA_WAV_RELATIVE_PATH, root);
+  return { wavPath: primary.wavPath, bytes: primary.bytes, sayonara };
 };
 
 export const assertGreetingHarnessWired = (root = repositoryRoot) => {

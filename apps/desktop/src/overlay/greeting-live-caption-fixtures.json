@@ -7,7 +7,10 @@
     "expectedOverlay": "こんにちはきこえますか",
     "sampleRate": 16000,
     "command": "KOTOBA_BEACON_GREETING_WAV=apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav bun run verify:tauri:ui",
-    "note": "Checked-in 16 kHz mono PCM of the greeting. CI validates RIFF/WAVE plus overlay fixtures; live ASR playback is optional."
+    "note": "Checked-in 16 kHz mono PCM of the greeting. CI validates RIFF/WAVE plus overlay fixtures; live ASR playback is optional.",
+    "sayonaraWav": "apps/desktop/src/overlay/fixtures/greeting-sayonara.wav",
+    "sayonaraSpoken": "さようなら、きこえますか",
+    "sayonaraExpectedOverlay": "さようならきこえますか"
   },
   "sanitize": [
     {
@@ -395,6 +398,27 @@
       "maxChars": 28,
       "expectedLines": ["こんにちはきこえますか"],
       "note": "Do not wrap after こんにちは so the hearing check stays visible"
+    },
+    {
+      "id": "stale-vibrato-offset-sayonara",
+      "text": "さようならきこえますか",
+      "sentenceEndOffsets": [5],
+      "expectedVisible": "さようならきこえますか",
+      "note": "Stale Vibrato offset after さようなら must not page away きこえますか"
+    },
+    {
+      "id": "zenz-period-sayonara-after-sanitize",
+      "text": "さようなら。聞こえますか。",
+      "sanitize": true,
+      "expectedVisible": "さようなら聞こえますか。",
+      "note": "Sanitize ZenZ 。 then keep さようなら + hearing check on one plate"
+    },
+    {
+      "id": "no-soft-wrap-after-sayonara",
+      "text": "さようならきこえますか",
+      "maxChars": 28,
+      "expectedLines": ["さようならきこえますか"],
+      "note": "Do not wrap after さようなら so the hearing check stays visible"
     }
   ]
 }

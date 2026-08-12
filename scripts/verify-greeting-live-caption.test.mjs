@@ -6,6 +6,7 @@ import {
   assertGreetingWavFixture,
   GREETING_FIXTURES_RELATIVE_PATH,
   GREETING_HARNESS_RELATIVE_PATH,
+  GREETING_SAYONARA_WAV_RELATIVE_PATH,
   GREETING_WAV_RELATIVE_PATH,
   loadGreetingLiveCaptionFixtures,
   runGreetingLiveCaptionGate,
@@ -25,7 +26,10 @@ describe("greeting live-caption regression harness", () => {
     assert.equal(fixtures.playback.spoken, "こんにちは、きこえますか");
     assert.ok(inventory.sanitizeCount >= 8);
     assert.ok(inventory.mergeCount >= 4);
-    assert.ok(inventory.pagingCount >= 3);
+    assert.ok(inventory.pagingCount >= 6);
+    assert.equal(inventory.sayonaraWav, GREETING_SAYONARA_WAV_RELATIVE_PATH);
+    assert.ok(wav.sayonara.bytes > 1024);
+    assert.equal(fixtures.playback.sayonaraExpectedOverlay, "さようならきこえますか");
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "hearing-ae")?.expectedOverlay,
       "きこえますか",
@@ -74,6 +78,10 @@ describe("greeting live-caption regression harness", () => {
       fixtures.merge.find((row) => row.id === "keep-konbanwa-over-ack")?.expectedOverlay,
       "こんばんは",
     );
+    assert.equal(
+      fixtures.paging.find((row) => row.id === "stale-vibrato-offset-sayonara")?.expectedVisible,
+      "さようならきこえますか",
+    );
     assert.equal(GREETING_FIXTURES_RELATIVE_PATH.endsWith(".json"), true);
   });
 
@@ -85,5 +93,6 @@ describe("greeting live-caption regression harness", () => {
     assert.equal(skipped.vitest, "skipped");
     assert.equal(skipped.inventory.playbackEnv, "KOTOBA_BEACON_GREETING_WAV");
     assert.ok(skipped.wav.bytes > 1024);
+    assert.ok(skipped.wav.sayonara.bytes > 1024);
   });
 });
