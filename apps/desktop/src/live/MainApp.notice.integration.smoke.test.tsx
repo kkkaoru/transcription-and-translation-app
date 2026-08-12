@@ -8,11 +8,20 @@ import { DEFAULT_RUNTIME_STATUS } from "../core/defaults";
 import { clearDiagnosticEvents, getDiagnosticEvents } from "../core/diagnostics";
 import type { PipelineDropSignal } from "../core/dropDiagnostics";
 import { clearPipelineDrops, snapshotPipelineDrops } from "../core/dropDiagnostics";
-import type { RuntimeStatus } from "../core/types";
+import { REAZONSPEECH_K2_V2_SPEC } from "../core/parapper-asr-models";
+import type { ModelStatusEntry, RuntimeStatus } from "../core/types";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { MainApp } from "./MainApp";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+const READY_COMPLETION_MODEL: ModelStatusEntry = {
+  modelId: REAZONSPEECH_K2_V2_SPEC.id,
+  status: "ready",
+  installedBytes: 1,
+  expectedBytes: 1,
+  lastError: null,
+};
 
 describe("MainApp pipeline-drop notice wiring", () => {
   let container: HTMLDivElement;
@@ -45,6 +54,9 @@ describe("MainApp pipeline-drop notice wiring", () => {
       return Promise.resolve(() => undefined);
     });
     vi.spyOn(bridge, "getStatus").mockResolvedValue({ ...DEFAULT_RUNTIME_STATUS });
+    vi.spyOn(bridge, "listModelStatus").mockResolvedValue([READY_COMPLETION_MODEL]);
+    vi.spyOn(bridge, "startCapture").mockResolvedValue(1);
+    vi.spyOn(bridge, "stopCapture").mockResolvedValue(undefined);
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -137,10 +149,23 @@ describe("MainApp pipeline-drop notice wiring", () => {
     });
     expect(snapshotPipelineDrops().bySource["translation"]).toBe(2);
 
-    const startButton = container.querySelector<HTMLButtonElement>(".primary-button");
-    expect(startButton).not.toBeNull();
+    let enabledStartButton: HTMLButtonElement | undefined;
     await act(async () => {
-      startButton?.click();
+      for (let index = 0; index < 24; index += 1) {
+        const button = container.querySelector('[data-testid="toggle-capture"]');
+        if (button instanceof HTMLButtonElement && !button.disabled) {
+          enabledStartButton = button;
+          break;
+        }
+        await Promise.resolve();
+      }
+    });
+    if (!enabledStartButton) {
+      throw new Error("toggle-capture stayed disabled after model-status refresh");
+    }
+    const startButton = enabledStartButton;
+    await act(async () => {
+      startButton.click();
       await Promise.resolve();
     });
 
