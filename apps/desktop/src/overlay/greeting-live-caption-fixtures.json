@@ -122,6 +122,12 @@
       "input": "おはよう。聞こえますか。",
       "expectedOverlay": "おはよう聞こえますか。",
       "note": "Morning greeting must not be paged away by ZenZ 。"
+    },
+    {
+      "id": "strip-sayonara-period",
+      "input": "さようなら。聞こえますか。",
+      "expectedOverlay": "さようなら聞こえますか。",
+      "note": "Farewell greeting must not be paged away by ZenZ 。"
     }
   ],
   "merge": [
