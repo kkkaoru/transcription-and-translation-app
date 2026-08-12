@@ -23,6 +23,9 @@ export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): s
     azookeyInputText: caption.azookeyInputText,
     sentenceEndOffsets: caption.sentenceEndOffsets,
     softBreakOffsets: caption.softBreakOffsets,
+    // Match overlay captionItems: only a provisional first hypothesis defers
+    // copula paging, so 「です＋次節」 does not drop the lead sentence mid-reveal.
+    deferSentencePaging: caption.provisional === true,
   });
 
 /**

@@ -114,6 +114,27 @@ describe("progressive caption reveal", () => {
     ).toBe(true);
   });
 
+  it("keeps the lead sentence as the reveal target on a provisional です＋次節 hypothesis", () => {
+    const text = "今日は晴れです明日は雨";
+    expect(
+      resolveProgressiveRevealSourceTarget(
+        caption({ sourceText: text, provisional: true, isFinal: false }),
+      ),
+    ).toBe(text);
+    expect(
+      resolveProgressiveRevealSourceTarget(caption({ sourceText: text, isFinal: false })),
+    ).toBe("明日は雨");
+    expect(
+      resolveProgressiveRevealSourceTarget(
+        caption({
+          sourceText: "今日は晴れです。明日は雨",
+          provisional: true,
+          isFinal: false,
+        }),
+      ),
+    ).toBe("明日は雨");
+  });
+
   it("keeps a single-clause or greeting continuation as the reveal target", () => {
     expect(resolveProgressiveRevealSourceTarget(caption({ sourceText: "こんにちは" }))).toBe(
       "こんにちは",

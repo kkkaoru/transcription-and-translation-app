@@ -214,4 +214,25 @@ describe("useProgressiveCaptionReveal", () => {
     expect(done?.sourceText).toBe(full);
     expect(done?.sentenceEndOffsets).toEqual([4]);
   });
+
+  it("does not drop the lead sentence while revealing a longer provisional です＋次節 hypothesis", () => {
+    const first = "今日は晴れです明日は雨";
+    const longer = "今日は晴れです明日は雨です";
+    renderCaption(baseCaption({ sourceText: "", provisional: true }));
+    paints = [];
+    renderCaption(baseCaption({ sourceText: first, provisional: true }));
+    expect(paints.at(-1)?.sourceText).toBe(first);
+
+    paints = [];
+    renderCaption(baseCaption({ sourceText: longer, provisional: true }));
+    const mid = paints.at(-1);
+    expect(mid?.sourceText).toBeTruthy();
+    expect(mid?.sourceText?.startsWith("今日は晴れです")).toBe(true);
+    expect(mid?.sourceText).not.toBe("明日は雨");
+
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(paints.at(-1)?.sourceText).toBe(longer);
+  });
 });
