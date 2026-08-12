@@ -194,6 +194,12 @@
       "input": "こんばんはーおえますか",
       "expectedOverlay": "こんばんはーきこえますか",
       "note": "Prolonged こんばんは + おえますか"
+    },
+    {
+      "id": "ohayou-hearing-prolonged",
+      "input": "おはようーおえますか",
+      "expectedOverlay": "おはようーきこえますか",
+      "note": "Prolonged おはよう + おえますか"
     }
   ],
   "merge": [
