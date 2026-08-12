@@ -14,10 +14,17 @@ use crate::state::{
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{
     window::Color, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
+
+/// Last capture generation that already emitted a first-success caption log.
+/// `u64::MAX` means "none logged yet".
+static CAPTION_PUBLISH_SUCCESS_LOGGED_GENERATION: AtomicU64 = AtomicU64::new(u64::MAX);
+/// One legacy/unfenced first-success log per process (avoids partial spam).
+static CAPTION_PUBLISH_SUCCESS_LEGACY_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -499,7 +506,7 @@ fn publish_parapper_caption(
     caption: &CaptionPayload,
     emit: impl FnOnce(&CaptionPayload),
 ) -> bool {
-    match enqueued_generation {
+    let published = match enqueued_generation {
         // A stamped producer keeps the generation gate.
         Some(generation) => state.publish_caption_for_generation(generation, caption, emit),
         // A legacy producer is never generation-fenced: publish under the
@@ -517,7 +524,11 @@ fn publish_parapper_caption(
             emit(caption);
             true
         }
+    };
+    if published {
+        log_caption_publish_success(enqueued_generation, caption, "parapper");
     }
+    published
 }
 
 #[tauri::command]
@@ -711,6 +722,8 @@ fn publish_source_caption_gated(
             // generation loses every caption with zero observability.
             if !published {
                 state.record_source_caption_stale_dropped();
+            } else {
+                log_caption_publish_success(Some(generation), caption, "source");
             }
             Ok(published)
         }
@@ -729,6 +742,7 @@ fn publish_source_caption_gated(
             // count the unfenced volume instead so the debug snapshot can
             // quantify producers that cannot be generation-checked.
             state.record_unfenced_caption_accepted();
+            log_caption_publish_success(None, caption, "source-legacy");
             Ok(true)
         }
     }
@@ -893,9 +907,12 @@ fn emit_caption_update_for_generation(app: &AppHandle, caption: &CaptionPayload,
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let _ = state.publish_caption_for_generation(generation, caption, |payload| {
+    let published = state.publish_caption_for_generation(generation, caption, |payload| {
         emit_caption_event(app, payload);
     });
+    if published {
+        log_caption_publish_success(Some(generation), caption, "asr");
+    }
 }
 
 /// Emit a caption while a publish helper holds the runtime status lock. The
@@ -905,6 +922,74 @@ fn emit_caption_event(app: &AppHandle, caption: &CaptionPayload) {
     if let Err(error) = app.emit("caption:update", caption) {
         log::warn!("could not emit caption:update: {error}");
     }
+}
+
+/// Rate-limited native success log for caption publish.
+///
+/// Failure paths already emit warn/error detail; the success path was sparse,
+/// which made cold-start loss hard to distinguish from later pipeline drops.
+/// Log only the first success per capture generation (plus a single legacy
+/// unfenced first success) with safe size metrics — never the transcript body.
+///
+/// Returns `true` when a log line was emitted (useful for focused tests).
+fn log_caption_publish_success(
+    generation: Option<u64>,
+    caption: &CaptionPayload,
+    channel: &str,
+) -> bool {
+    if !should_log_caption_publish_success(generation) {
+        return false;
+    }
+
+    let source_chars = caption.source_text.chars().count();
+    let source_bytes = caption.source_text.len();
+    let translation_chars = caption.translation_text.chars().count();
+    let translation_bytes = caption.translation_text.len();
+    let id_chars = caption.id.chars().count();
+    let id_bytes = caption.id.len();
+
+    match generation {
+        Some(generation) => log::info!(
+            target: "caption_publish",
+            "caption publish success channel={channel} generation={generation} stage={} is_final={} source_chars={source_chars} source_bytes={source_bytes} translation_chars={translation_chars} translation_bytes={translation_bytes} id_chars={id_chars} id_bytes={id_bytes}",
+            caption.stage,
+            caption.is_final
+        ),
+        None => log::info!(
+            target: "caption_publish",
+            "caption publish success channel={channel} generation=none stage={} is_final={} source_chars={source_chars} source_bytes={source_bytes} translation_chars={translation_chars} translation_bytes={translation_bytes} id_chars={id_chars} id_bytes={id_bytes}",
+            caption.stage,
+            caption.is_final
+        ),
+    }
+    true
+}
+
+fn should_log_caption_publish_success(generation: Option<u64>) -> bool {
+    // Track the generation we last logged so a Stop+Start re-enables logging
+    // for the replacement session without spamming every partial caption.
+    match generation {
+        Some(generation) => {
+            let previous = CAPTION_PUBLISH_SUCCESS_LOGGED_GENERATION.load(Ordering::Relaxed);
+            if previous == generation {
+                false
+            } else {
+                CAPTION_PUBLISH_SUCCESS_LOGGED_GENERATION.store(generation, Ordering::Relaxed);
+                true
+            }
+        }
+        None => {
+            // One unfenced/legacy success log per process is enough; further
+            // legacy publishes stay silent so frame-rate partials do not flood.
+            !CAPTION_PUBLISH_SUCCESS_LEGACY_LOGGED.swap(true, Ordering::Relaxed)
+        }
+    }
+}
+
+#[cfg(test)]
+fn reset_caption_publish_success_log_for_tests() {
+    CAPTION_PUBLISH_SUCCESS_LOGGED_GENERATION.store(u64::MAX, Ordering::Relaxed);
+    CAPTION_PUBLISH_SUCCESS_LEGACY_LOGGED.store(false, Ordering::Relaxed);
 }
 
 /// Emit one bounded pipeline drop signal for the renderer diagnostics store.
@@ -1758,12 +1843,13 @@ pub async fn export_debug_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_is_active, ensure_native_publisher_window, native_output_uses_render_publish,
-        observe_http_empty_asr, parapper_output_generation_is_current, persistent_asr_loss_message,
+        capture_is_active, ensure_native_publisher_window, log_caption_publish_success,
+        native_output_uses_render_publish, observe_http_empty_asr,
+        parapper_output_generation_is_current, persistent_asr_loss_message,
         publish_parapper_caption, publish_source_caption_gated, redact_runtime_text,
-        sanitize_debug_json, sanitize_export_body, source_caption_payload,
-        stop_generation_is_current, validate_overlay_frame_dimensions, NativeOverlayFrame,
-        SourceCaptionInput, NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL,
+        reset_caption_publish_success_log_for_tests, sanitize_debug_json, sanitize_export_body,
+        source_caption_payload, stop_generation_is_current, validate_overlay_frame_dimensions,
+        NativeOverlayFrame, SourceCaptionInput, NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL,
     };
     use crate::config::AppConfig;
     use crate::native_output::NativeOutputHandle;
@@ -2495,5 +2581,52 @@ mod tests {
 
         assert!(safe_result.is_some(), "safe dimensions should not overflow");
         assert_eq!(safe_result.unwrap(), 1920 * 1080 * 4);
+    }
+
+    #[test]
+    fn caption_publish_success_log_is_once_per_generation_and_omits_transcript_body() {
+        reset_caption_publish_success_log_for_tests();
+        let caption = CaptionPayload {
+            id: "utt-1".to_string(),
+            source_text: "秘密の本文はログに出さない".to_string(),
+            azookey_input_text: None,
+            translation_text: "secret body stays out of logs".to_string(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 1,
+            received_at: 2,
+            stage: "source",
+            sequence: 0,
+            is_final: true,
+            confidence: None,
+            sentence_end_offsets: Vec::new(),
+            soft_break_offsets: Vec::new(),
+        };
+
+        assert!(
+            log_caption_publish_success(Some(7), &caption, "source"),
+            "first success for a generation must log"
+        );
+        assert!(
+            !log_caption_publish_success(Some(7), &caption, "source"),
+            "second success for the same generation must be rate-limited"
+        );
+        assert!(
+            log_caption_publish_success(Some(8), &caption, "source"),
+            "a new capture generation must re-enable the first-success log"
+        );
+        assert!(
+            log_caption_publish_success(None, &caption, "source-legacy"),
+            "legacy path logs once"
+        );
+        assert!(
+            !log_caption_publish_success(None, &caption, "source-legacy"),
+            "legacy path stays rate-limited after the first success"
+        );
+
+        // Metrics are derived from text length only; the formatter never
+        // interpolates source_text / translation_text into the log template.
+        assert_eq!(caption.source_text.chars().count(), 13);
+        assert_eq!(caption.translation_text.len(), 29);
     }
 }
