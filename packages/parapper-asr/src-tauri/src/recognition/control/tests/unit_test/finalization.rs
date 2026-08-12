@@ -349,3 +349,81 @@ fn turn_runtime_pending_finalization_uses_latest_blocked_turn_to_avoid_orphaning
     assert!(runtime.turn_store.turns.is_empty());
     assert!(runtime.turn_store.open_turn_id.is_none());
 }
+
+#[test]
+fn turn_runtime_finalization_waits_for_multi_hop_pending_continuation_segment() {
+    // Max-chunk / interim-silence chains set previous_segment_id to the immediate
+    // prior segment, not the utterance root. PendingAsrSegment::turn_id() therefore
+    // returns an intermediate id (2) for segment 3 in chain 1 -> 2 -> 3. Finalizing
+    // open turn 1 must still wait for that pending continuation ASR so the tail is
+    // not split into a separate turn after open_turn is cleared.
+    let mut builder = RecognitionSessionTestBuilder::new().turn_detector(TurnDetector::Simple);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, config) = builder.build();
+    let route = RecognitionRoute::from_model(config.asr.model);
+    let mut turn = Turn::new("turn-1-1-0".to_string(), 0);
+    turn.draft_mut().append_recognized_segment(
+        1,
+        None,
+        &[1.0],
+        &[vad(true)],
+        route,
+        "前半".to_string(),
+        0,
+    );
+    turn.draft_mut().append_recognized_segment(
+        2,
+        Some(1),
+        &[2.0],
+        &[vad(true)],
+        route,
+        "中盤".to_string(),
+        0,
+    );
+    runtime_state(&mut runtime)
+        .turn(1, turn)
+        .turn_audio_range(1, 0..2)
+        .open_turn(1)
+        // previous points at intermediate segment 2, not root segment 1
+        .pending_segment(3, Some(2), SegmentCloseReason::SegmentMaxChunksReached, 2..4);
+
+    runtime.complete_turn_without_grammar(1);
+
+    assert!(
+        outputs.lock().expect("outputs should be readable").is_empty(),
+        "finalization must wait while a multi-hop continuation segment is still pending for the open turn"
+    );
+    assert!(
+        runtime.pending.finalization.is_some(),
+        "blocked finalization must be deferred until the multi-hop pending segment is applied"
+    );
+    assert_eq!(runtime.turn_store.open_turn_id, Some(1));
+
+    runtime.step();
+    let continuation = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("multi-hop continuation ASR should dispatch while finalization is deferred");
+    assert_eq!(continuation.target.turn_id, TurnId(1));
+    assert_eq!(continuation.source_audio, vec![3.0, 3.0]);
+    asr_handle.complete_request_with_text(&continuation, "後半");
+    runtime.step();
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_outputs = outputs.iter().filter(|output| output.is_final).collect::<Vec<_>>();
+    assert_eq!(final_outputs.len(), 1);
+    assert_eq!(
+        final_outputs[0].text, "前半中盤後半。",
+        "deferred finalization must include the multi-hop continuation transcript"
+    );
+    assert_eq!(
+        final_outputs[0].phrase,
+        vec![1.0, 2.0, 3.0, 3.0],
+        "deferred finalization must keep multi-hop continuation audio on the same turn"
+    );
+    assert!(runtime.turn_store.open_turn_id.is_none());
+    assert!(runtime.pending.finalization.is_none());
+}

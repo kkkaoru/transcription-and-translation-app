@@ -9,6 +9,7 @@ use crate::recognition::{
                 GlobalSampleIndex, SegmentId, TurnId, TurnRevision, VadFrameIndex,
             },
         },
+        planner::PendingAsrSegment,
         route::{RecognitionRoute, selection::configured_split_route},
     },
     turn::{
@@ -485,6 +486,54 @@ impl RecognitionSession {
             .in_flight_request
             .as_ref()
             .is_some_and(|request| request.target.turn_id.0 <= turn_id)
-            || self.pending.asr_segments.iter().any(|segment| segment.turn_id().0 <= turn_id)
+            || self
+                .pending
+                .asr_segments
+                .iter()
+                .any(|segment| self.pending_segment_blocks_finalization(segment, turn_id))
+    }
+
+    /// Whether a queued ASR segment may still extend `turn_id` or an older turn.
+    ///
+    /// `PendingAsrSegment::turn_id()` uses only the immediate `previous_segment_id`
+    /// (or the segment itself). Max-chunk / interim-silence chains therefore report
+    /// intermediate ids (segment 3 with previous=2 yields turn_id 2) even when the
+    /// open draft turn is still the utterance root (turn 1 with segments [1, 2]).
+    /// Comparing that proxy to the session turn id alone finalizes too early and
+    /// drops the continuation onto a new turn after `open_turn` is cleared.
+    fn pending_segment_blocks_finalization(
+        &self,
+        segment: &PendingAsrSegment,
+        turn_id: u64,
+    ) -> bool {
+        if segment.turn_id().0 <= turn_id {
+            return true;
+        }
+
+        if let Some(previous_segment_id) = segment.previous_segment_id {
+            for (existing_turn_id, turn) in &self.turn_store.turns {
+                if *existing_turn_id <= turn_id
+                    && turn.draft().segment_ids.contains(&previous_segment_id)
+                {
+                    return true;
+                }
+            }
+
+            // previous itself may still be queued ahead in the same multi-hop chain
+            if self.pending.asr_segments.iter().any(|other| {
+                other.segment_id == previous_segment_id
+                    && self.pending_segment_blocks_finalization(other, turn_id)
+            }) {
+                return true;
+            }
+        } else if self.turn_store.open_turn_id.is_some_and(|open| open <= turn_id)
+            && self.turn_store.open_turn_accepts_root_segment
+            && self.config.can_connect_interim_after_completion()
+        {
+            // Root segment that a Namo-continued open turn will absorb.
+            return true;
+        }
+
+        false
     }
 }

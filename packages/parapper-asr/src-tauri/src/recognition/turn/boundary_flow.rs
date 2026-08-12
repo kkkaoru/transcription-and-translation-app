@@ -72,8 +72,8 @@ impl RecognitionSession {
     }
 
     fn complete_whole_turn_after_grammar_boundary(&mut self, turn_id: u64) {
-        self.emit_stale_turn_finals(turn_id);
-        self.emit_turn_output(turn_id, true);
-        self.clear_open_turn();
+        // Share deferred finalization with the non-grammar complete path so
+        // multi-hop pending / in-flight ASR for this turn can still extend it.
+        self.complete_turn_without_grammar(turn_id);
     }
 }
