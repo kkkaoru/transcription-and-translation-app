@@ -193,19 +193,16 @@ export const parseNumericTurnId = (turnId: string): number | null => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
+const readEpochField = (record: Record<string, unknown>, key: string): number | null =>
+  finitePositive(typeof record[key] === "number" ? record[key] : null);
+
 export const parseAsrLatencyTimestamps = (
   record: Record<string, unknown>,
 ): AsrLatencyTimestamps | undefined => {
-  const speech_start = finitePositive(
-    typeof record.speech_start === "number" ? record.speech_start : null,
-  );
-  const asr_dispatch = finitePositive(
-    typeof record.asr_dispatch === "number" ? record.asr_dispatch : null,
-  );
-  const first_partial = finitePositive(
-    typeof record.first_partial === "number" ? record.first_partial : null,
-  );
-  const final = finitePositive(typeof record.final === "number" ? record.final : null);
+  const speech_start = readEpochField(record, "speech_start");
+  const asr_dispatch = readEpochField(record, "asr_dispatch");
+  const first_partial = readEpochField(record, "first_partial");
+  const final = readEpochField(record, "final");
   if (speech_start == null && asr_dispatch == null && first_partial == null && final == null) {
     return undefined;
   }
