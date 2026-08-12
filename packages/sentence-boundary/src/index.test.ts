@@ -12,6 +12,12 @@ describe("Japanese sentence-end detection", () => {
     expect(detectCaptionSentenceEnds("行きましたよ")).toEqual([6]);
   });
 
+  it("does not treat polite ます auxiliary as a sentence end", () => {
+    expect(detectCaptionSentenceEnds("準備を進めています")).toEqual([]);
+    expect(detectCaptionSentenceEnds("確認できます")).toEqual([]);
+    expect(detectCaptionSentenceEnds("しています")).toEqual([]);
+  });
+
   it("does not split mid-clause ですが / ですので continuations", () => {
     expect(detectCaptionSentenceEnds("晴れですが寒い")).toEqual([]);
     expect(detectCaptionSentenceEnds("晴れですので")).toEqual([]);
@@ -32,7 +38,7 @@ describe("Japanese sentence-end detection", () => {
   });
 
   it("does not page before a prolonged-sound continuation", () => {
-    expect(detectCaptionSentenceEnds("こんにちはーきこえますか")).toEqual([12]);
+    expect(detectCaptionSentenceEnds("こんにちはーきこえますか")).toEqual([]);
     expect(selectVisibleCaptionSentence("こんにちはーきこえますか")).toBe(
       "こんにちはーきこえますか",
     );
@@ -354,6 +360,28 @@ describe("heuristic paging invariants (unknown utterances)", () => {
     expect(selectVisibleCaptionSentence("準備を進めていますこれから詳細を共有します")).toBe(
       "準備を進めていますこれから詳細を共有します",
     );
+  });
+
+  it("does not page polite ます stems even when the next span is twice the lead", () => {
+    const longTail = "これから午後の予定と明日の議題についての確認";
+    const masuStems = [
+      "しています",
+      "できます",
+      "わかります",
+      "準備を進めています",
+      "確認できます",
+    ];
+    for (const lead of masuStems) {
+      expect(scalarCount(longTail), lead).toBeGreaterThanOrEqual(2 * scalarCount(lead));
+      const text = `${lead}${longTail}`;
+      expect(selectVisibleCaptionSentence(text), text).toBe(text);
+      expect(
+        selectVisibleCaptionSentence(text, { sentenceEndOffsets: [scalarCount(lead)] }),
+        text,
+      ).toBe(text);
+      expect(detectCaptionSentenceEnds(text), text).not.toContain(scalarCount(lead));
+    }
+    expect(selectVisibleCaptionSentence("準備を進めています。次")).toBe("次");
   });
 
   it("pages after a copula only when the next span is at least twice the lead", () => {

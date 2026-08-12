@@ -8,7 +8,9 @@
 
 const SENTENCE_PUNCT = /[。．！？!?]/u;
 const COPULA_END =
-  /(?:ませんでした|でした|ました|ません|でしょう|だろう|だった|である|です|ます)(?:[よねなわぞさか])?[。．！？!?]?\s*$/u;
+  /(?:ませんでした|でした|ました|ません|でしょう|だろう|だった|である|です)(?:[よねなわぞさか])?[。．！？!?]?\s*$/u;
+/** Polite non-past auxiliary ます (しています / できます / ございます…). Not a completed copula. */
+const POLITE_MASU_AUXILIARY = /ます(?:[よねなわぞさか])?$/u;
 const PAST_WITH_PARTICLE = /(?:だ|た|ない)[よねなわぞさか][。．！？!?]?\s*$/u;
 const CLAUSE_CONTINUATION =
   /^(?:が|を|に|へ|で|と|も|の|や|て|けど|けれど|けれども|から|ので|し|ば|たり|つつ|ながら|よ|ね|な|わ|ぞ|さ|か|、|，|,)/u;
@@ -25,9 +27,10 @@ export interface CaptionSentenceHints {
   /** Mid-sentence POS wrap points for line breaks before maxChars. */
   softBreakOffsets?: number[];
   /**
-   * Skip heuristic copula/ます paging so a first hypothesis like
+   * Skip heuristic copula paging so a first hypothesis like
    * 「です＋次節」 keeps the lead sentence. Explicit punctuation still pages.
    * Supplied Vibrato copula offsets follow the same remainder-dominance rule.
+   * Polite ます stems are never sentence ends.
    */
   deferSentencePaging?: boolean;
 }
@@ -151,6 +154,9 @@ const prefixEndsWithPunct = (prefix: string): boolean => {
   return last !== undefined && SENTENCE_PUNCT.test(last);
 };
 
+const endsWithPoliteMasuAuxiliary = (prefix: string): boolean =>
+  POLITE_MASU_AUXILIARY.test(prefix.trimEnd());
+
 /**
  * Copula paging may replace the lead only when the next span is at least twice
  * as long — two-thirds of the utterance. Mid-vs-mid splits (8 vs 12) and ます
@@ -215,8 +221,13 @@ const shouldIgnoreSentenceEndBeforeContinuation = (
   if (startsClauseContinuation(remainder, false) || startsTaraContinuation(prefix, remainder)) {
     return true;
   }
-  // Copula/ます offsets must not replace the lead unless the next span is at
-  // least twice as long. Punctuation still pages.
+  // ます is a polite auxiliary on a verb stem, not a completed copula.
+  // Offsets after しています / できます / ございます must not page.
+  if (endsWithPoliteMasuAuxiliary(trimmedPrefix) && !prefixEndsWithPunct(trimmedPrefix)) {
+    return true;
+  }
+  // Completed copula offsets must not replace the lead unless the next span is
+  // at least twice as long. Punctuation still pages.
   if (!prefixEndsWithPunct(trimmedPrefix) && !remainderDominatesPrefix(trimmedPrefix, next)) {
     return true;
   }
@@ -320,9 +331,9 @@ export const selectVisibleCaptionSentence = (
   if (!normalized) {
     return "";
   }
-  // Punctuation still pages. Heuristic and Vibrato copula/ます ends page only
-  // when the next span is at least twice the lead. `deferSentencePaging` skips
-  // heuristic copula detection so a first hypothesis like 「です＋次節」 keeps
-  // the head when offsets are absent.
+  // Punctuation still pages. Completed copulas (です/ました) page only when
+  // the next span is at least twice the lead. Polite ます stems never page.
+  // `deferSentencePaging` skips heuristic copula detection so a first
+  // hypothesis like 「です＋次節」 keeps the head when offsets are absent.
   return sliceNewestSentence(normalized, detectCaptionSentenceEnds(normalized, hints));
 };
