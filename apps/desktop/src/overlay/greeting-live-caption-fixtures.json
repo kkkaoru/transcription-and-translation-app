@@ -260,6 +260,12 @@
       "input": "おはようおえますか",
       "expectedOverlay": "おはようきこえますか",
       "note": "Short morning greeting glued to おえますか"
+    },
+    {
+      "id": "konbanwa-hearing-oe",
+      "input": "こんばんはおえますか",
+      "expectedOverlay": "こんばんはきこえますか",
+      "note": "Evening greeting glued to おえますか"
     }
   ],
   "merge": [
