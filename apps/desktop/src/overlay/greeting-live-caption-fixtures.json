@@ -381,6 +381,65 @@
       },
       "expectedOverlay": "こんばんはきこえますか",
       "note": "Backdated truncated final must not erase こんばんはきこえますか"
+    },
+    {
+      "id": "append-kikoemasu-after-ohayou-gozaimasu",
+      "current": {
+        "id": "parapper:session:turn:ohayou-gozaimasu",
+        "sourceText": "おはようございます",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-gozaimasu-cont",
+        "sourceText": "きこえますか",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1450,
+        "receivedAt": 1700
+      },
+      "expectedOverlay": "おはようございますきこえますか",
+      "note": "Early-finalized おはようございます + close hearing continuation"
+    },
+    {
+      "id": "keep-ohayou-gozaimasu-over-ack",
+      "current": {
+        "id": "parapper:session:turn:ohayou-gozaimasu-ack",
+        "sourceText": "おはようございます",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-gozaimasu-ack",
+        "sourceText": "はい",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "おはようございます",
+      "note": "Acoustic はい must not replace a painted おはようございます"
+    },
+    {
+      "id": "keep-longer-ohayou-gozaimasu-hearing-final",
+      "current": {
+        "id": "parapper:session:turn:ohayou-gozaimasu-trunc",
+        "sourceText": "おはようございますきこえますか",
+        "isFinal": true,
+        "startedAt": 2000,
+        "receivedAt": 3200
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-gozaimasu-trunc",
+        "sourceText": "おはようございます",
+        "isFinal": true,
+        "startedAt": 800,
+        "receivedAt": 4000
+      },
+      "expectedOverlay": "おはようございますきこえますか",
+      "note": "Backdated truncated final must not erase おはようございますきこえますか"
     }
   ],
   "paging": [
