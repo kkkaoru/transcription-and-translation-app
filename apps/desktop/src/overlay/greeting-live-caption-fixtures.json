@@ -134,6 +134,12 @@
       "input": "こんばんは。聞こえますか。",
       "expectedOverlay": "こんばんは聞こえますか。",
       "note": "Evening greeting must not be paged away by ZenZ 。"
+    },
+    {
+      "id": "strip-ohayou-gozaimasu-period",
+      "input": "おはようございます。聞こえますか。",
+      "expectedOverlay": "おはようございます聞こえますか。",
+      "note": "Full morning greeting must not be paged away by ZenZ 。"
     }
   ],
   "merge": [
