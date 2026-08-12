@@ -242,6 +242,12 @@
       "input": "おはようございますあえますか",
       "expectedOverlay": "おはようございますきこえますか",
       "note": "Full morning greeting + き-drop"
+    },
+    {
+      "id": "sayonara-hearing-ae",
+      "input": "さようならあえますか",
+      "expectedOverlay": "さようならきこえますか",
+      "note": "Farewell greeting + き-drop"
     }
   ],
   "merge": [
