@@ -3,6 +3,7 @@ import type { CaptionPayload } from "../core/types";
 import {
   isStaleOverlayAsrStage,
   overlayAsrFenceFromCaption,
+  overlayAsrSessionKey,
   overlayAsrStageFence,
   parapperSessionKey,
   rearmPreviewHold,
@@ -156,8 +157,9 @@ describe("isStaleOverlayAsrStage", () => {
       at: 80,
       startedAt: 40,
     });
-    const idleSession = parapperSessionKey(fence.utteranceId);
-    expect(idleSession).toBe("s:1");
+    const idleSession = overlayAsrSessionKey(fence.utteranceId);
+    expect(idleSession).toBe("parapper:s:1");
+    expect(parapperSessionKey(fence.utteranceId)).toBe("s:1");
     expect(
       isStaleOverlayAsrStage(
         { utteranceId: "parapper:s:1:8", at: 200, startedAt: 150 },
@@ -203,7 +205,71 @@ describe("isStaleOverlayAsrStage", () => {
         fence,
         true,
         "live",
-        parapperSessionKey(fence.utteranceId),
+        overlayAsrSessionKey(fence.utteranceId),
+      ),
+    ).toBe(false);
+  });
+
+  it("drops untagged delayed live ASR with a non-parapper id after idle", () => {
+    const fence = overlayAsrStageFence({
+      utteranceId: "chunk-1",
+      at: 80,
+      startedAt: 40,
+    });
+    const idleSession = overlayAsrSessionKey(fence.utteranceId);
+    expect(idleSession).toBe("chunk-1");
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "chunk-1", at: 200, startedAt: 150 },
+        fence,
+        true,
+        "live",
+        idleSession,
+      ),
+    ).toBe(true);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "chunk-2", at: 220, startedAt: 180 },
+        fence,
+        true,
+        "live",
+        idleSession,
+      ),
+    ).toBe(true);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "parapper:s:2:1", at: 10, startedAt: 1 },
+        fence,
+        true,
+        "live",
+        idleSession,
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps untagged live ASR from a new web-speech attempt after idle", () => {
+    const fence = overlayAsrStageFence({
+      utteranceId: "web-speech:1:1000",
+      at: 80,
+      startedAt: 40,
+    });
+    expect(overlayAsrSessionKey(fence.utteranceId)).toBe("web-speech:1");
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "web-speech:1:1500", at: 200, startedAt: 150 },
+        fence,
+        true,
+        "live",
+        overlayAsrSessionKey(fence.utteranceId),
+      ),
+    ).toBe(true);
+    expect(
+      isStaleOverlayAsrStage(
+        { utteranceId: "web-speech:2:10", at: 10, startedAt: 1 },
+        fence,
+        true,
+        "live",
+        overlayAsrSessionKey(fence.utteranceId),
       ),
     ).toBe(false);
   });

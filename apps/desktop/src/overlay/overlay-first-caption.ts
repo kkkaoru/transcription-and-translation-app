@@ -90,17 +90,40 @@ export const parapperSessionKey = (utteranceId: string): string | null => {
 };
 
 /**
+ * Session identity for idle fencing. Parapper and web-speech ids group by
+ * capture attempt; other ids stay exact so a delayed same-row replay is
+ * still dropped.
+ */
+export const overlayAsrSessionKey = (utteranceId: string): string | null => {
+  const parapper = parapperSessionKey(utteranceId);
+  if (parapper) {
+    return `parapper:${parapper}`;
+  }
+  if (utteranceId.startsWith("web-speech:")) {
+    const rest = utteranceId.slice("web-speech:".length);
+    const colon = rest.indexOf(":");
+    return colon <= 0 ? utteranceId : `web-speech:${rest.slice(0, colon)}`;
+  }
+  const trimmed = utteranceId.trim();
+  return trimmed ? trimmed : null;
+};
+
+const isParseableOverlayAsrSession = (utteranceId: string): boolean =>
+  parapperSessionKey(utteranceId) != null || utteranceId.startsWith("web-speech:");
+
+/**
  * Previous-session ASR must not repaint after idle. Prefer captureGeneration
- * when both sides have it. Untagged live rows from the idle Parapper session
- * are delayed previous-session stages even when `at` is later; a different
- * session key is the new capture and must still paint the longer ASR.
+ * when both sides have it. Untagged live rows from the idle session (Parapper,
+ * web-speech, or a non-parapper rolling id) are delayed previous-session
+ * stages; a different parseable session key is the new capture and must still
+ * paint the longer ASR.
  */
 export const isStaleOverlayAsrStage = (
   stage: OverlayAsrStageRef,
   fence: OverlayAsrStageRef | null,
   historyInvalidated: boolean,
   source: "history" | "live",
-  idleParapperSession: string | null = null,
+  idleAsrSessionKey: string | null = null,
 ): boolean => {
   if (typeof stage.captureGeneration === "number" && typeof fence?.captureGeneration === "number") {
     if (stage.captureGeneration < fence.captureGeneration) {
@@ -109,11 +132,18 @@ export const isStaleOverlayAsrStage = (
     return historyInvalidated && stage.captureGeneration <= fence.captureGeneration;
   }
   if (source === "live" && typeof stage.captureGeneration !== "number") {
-    const stageSession = parapperSessionKey(stage.utteranceId);
-    if (idleParapperSession && stageSession === idleParapperSession) {
+    const stageSession = overlayAsrSessionKey(stage.utteranceId);
+    if (idleAsrSessionKey && stageSession === idleAsrSessionKey) {
       return true;
     }
-    if (historyInvalidated && fence && stage.utteranceId === fence.utteranceId) {
+    if (
+      isParseableOverlayAsrSession(stage.utteranceId) &&
+      stageSession &&
+      (!idleAsrSessionKey || stageSession !== idleAsrSessionKey)
+    ) {
+      return false;
+    }
+    if (historyInvalidated || idleAsrSessionKey) {
       return true;
     }
   }
