@@ -410,3 +410,154 @@ fn conversion_regression_table_for_advisor_focus() {
         failures.join("\n  ")
     );
 }
+
+fn synthetic_entry(
+    reading: &str,
+    surface: &str,
+    lcid: u16,
+    rcid: u16,
+    value: f32,
+) -> DictionaryEntry {
+    DictionaryEntry {
+        reading: reading.to_string(),
+        surface: surface.to_string(),
+        lcid,
+        rcid,
+        mid: 501,
+        raw_ruby_identity: false,
+        value,
+    }
+}
+
+fn load_sparse_tsv_dictionary(body: &str) -> AzooKeyDictionary {
+    let path = std::env::temp_dir().join(format!(
+        "caption-bridge-dict-row-inventory-{}-{}.tsv",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos()
+    ));
+    std::fs::write(&path, body).expect("sparse inventory fixture should write");
+    let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(path.clone()),
+        user: None,
+        memory: None,
+    })
+    .expect("sparse inventory fixture should load")
+    // Drop the compact built-in lexicon so inventory classification sees only
+    // the fixture rows (required surfaces stay missing).
+    .without_builtin_entries_for_test();
+    let _ = std::fs::remove_file(path);
+    dictionary
+}
+
+#[test]
+fn cid_and_entry_word_type_labels_cover_all_buckets() {
+    assert_eq!(cid_word_type_label(0), "Boundary");
+    assert_eq!(cid_word_type_label(1316), "Boundary");
+    assert_eq!(cid_word_type_label(6), "Preposition");
+    assert_eq!(cid_word_type_label(557), "Preposition");
+    assert_eq!(cid_word_type_label(1315), "Preposition");
+    assert_eq!(cid_word_type_label(1), "ContentWord");
+    assert_eq!(cid_word_type_label(20), "ContentWord");
+    assert_eq!(cid_word_type_label(600), "ContentWord");
+    // Outside the mirrored ContentWord / Preposition bands.
+    assert_eq!(cid_word_type_label(200), "Postposition");
+    assert_eq!(cid_word_type_label(400), "Postposition");
+
+    let same = synthetic_entry("あ", "亜", 1, 1, -5.0);
+    assert_eq!(entry_word_type_label(&same), "ContentWord");
+    assert!(format_entry_row(&same).contains("word_type=ContentWord"));
+
+    let mixed = synthetic_entry("かいて", "書いて", 687, 307, -8.0);
+    let mixed_label = entry_word_type_label(&mixed);
+    assert!(
+        mixed_label.contains('/'),
+        "mixed lcid/rcid buckets should render both labels: {mixed_label}"
+    );
+    assert!(format_entry_row(&mixed).contains(&format!("word_type={mixed_label}")));
+}
+
+#[test]
+fn classify_conversion_failure_reports_missing_quality_and_ranking() {
+    // Sparse dictionary without any REQUIRED_SURFACES rows.
+    let sparse = load_sparse_tsv_dictionary("dummy\tダミー\t-1\n");
+
+    let missing_case = ConversionCase {
+        input: "かいて",
+        expected: "書いて",
+        max_rank: 1,
+        inventory_hint: "missing-row fixture",
+    };
+    let missing = classify_conversion_failure(&sparse, &missing_case, "ダミー", &[]);
+    assert!(
+        missing.contains("missing-quality-row"),
+        "expected missing-quality-row classification, got: {missing}"
+    );
+    assert!(missing.contains("書いて"));
+
+    // Expected text has no REQUIRED_SURFACES piece → ranking/prune, and the
+    // compound reading itself is absent from the sparse dictionary.
+    let no_compound = ConversionCase {
+        input: "zzzznotareading",
+        expected: "合成語",
+        max_rank: 1,
+        inventory_hint: "no-compound fixture",
+    };
+    let ranking_empty = classify_conversion_failure(&sparse, &no_compound, "top", &["top"]);
+    assert!(
+        ranking_empty.contains("prune/ranking"),
+        "expected prune/ranking for absent compound, got: {ranking_empty}"
+    );
+    assert!(ranking_empty.contains("no compound row"));
+
+    // Official dictionary: required piece surfaces exist, so ranking path wins.
+    let official = load_official_dictionary();
+    let present_case = ConversionCase {
+        input: "はし",
+        expected: "橋",
+        max_rank: 1,
+        inventory_hint: "ranking backlog fixture",
+    };
+    let ranking_present =
+        classify_conversion_failure(&official, &present_case, "箸", &["箸", "端"]);
+    assert!(
+        ranking_present.contains("prune/ranking"),
+        "expected prune/ranking when piece rows exist, got: {ranking_present}"
+    );
+    assert!(
+        ranking_present.contains("beyond max_rank") || ranking_present.contains("absent"),
+        "expected max_rank wording, got: {ranking_present}"
+    );
+
+    // Compound reading present in sparse dict, expected not in n-best texts →
+    // final ranking branch (not the empty-compound branch).
+    let with_compound = load_sparse_tsv_dictionary("dummy\tダミー\t-1\n");
+    let present_input = ConversionCase {
+        input: "dummy",
+        expected: "別物",
+        max_rank: 2,
+        inventory_hint: "present-compound ranking",
+    };
+    let ranking_present_input =
+        classify_conversion_failure(&with_compound, &present_input, "ダミー", &["ダミー"]);
+    assert!(
+        ranking_present_input.contains("prune/ranking"),
+        "expected prune/ranking for present compound miss, got: {ranking_present_input}"
+    );
+    assert!(ranking_present_input.contains("beyond max_rank"));
+}
+
+#[test]
+fn lookup_sorted_orders_by_descending_value() {
+    let dictionary = load_sparse_tsv_dictionary(
+        "あ\t低\t-9\nあ\t高\t-1\nあ\t中\t-5\n",
+    );
+    let entries = lookup_sorted(&dictionary, "あ");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].surface, "高");
+    assert_eq!(entries[1].surface, "中");
+    assert_eq!(entries[2].surface, "低");
+    assert!(lookup_sorted(&dictionary, "存在しない読み").is_empty());
+}
