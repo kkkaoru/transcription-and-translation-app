@@ -1,14 +1,17 @@
 use crate::{
     audio::ASR_SAMPLE_RATE,
     recognition::{
-        control::RecognitionSession,
+        control::{RecognitionSession, RerecognitionPurpose},
         segmentation::segment::builder::SegmentCloseReason,
         segmentation::vad::engine::VadResult,
         transcription::asr::{
             engine::AsrTranscript,
             task::{AsrRequest, AsrTaskKind, AudioRange, GlobalSampleIndex},
         },
-        turn::{Turn, boundary::candidates_for_transcript, turn_event_id},
+        turn::{
+            Turn, boundary::candidates_for_transcript, boundary::candidates_for_visible_draft,
+            turn_event_id,
+        },
     },
 };
 
@@ -44,6 +47,9 @@ impl RecognitionSession {
         let existing_audio_range = self.turn_store.audio_ranges.get(&turn_id).copied();
         self.merge_turn_audio_range(turn_id, request.target.range);
         if completion_is_duplicate_tail {
+            if request.kind == AsrTaskKind::CompletionCheck {
+                self.refresh_visible_draft_boundary_from_completion(turn_id, &transcript);
+            }
             return turn_id;
         }
         let revision = *self.turn_store.revisions.entry(turn_id).or_insert(0);
@@ -199,7 +205,82 @@ impl RecognitionSession {
             self.turn_store.streaming_interim_ranges.remove(&turn_id);
         }
         self.turn_store.last_recognition_route = Some(request.route);
+        if request.kind == AsrTaskKind::CompletionCheck {
+            self.refresh_visible_draft_boundary_from_completion(turn_id, &transcript);
+        }
         turn_id
+    }
+
+    fn refresh_visible_draft_boundary_from_completion(
+        &mut self,
+        turn_id: u64,
+        completion: &AsrTranscript,
+    ) {
+        if !matches!(
+            self.rerecognition_purpose_after_completion(),
+            Some(RerecognitionPurpose::GrammarAfterCompletion)
+        ) {
+            return;
+        }
+        self.refresh_visible_draft_boundary_candidates(turn_id, Some(completion));
+    }
+
+    pub(in crate::recognition) fn ensure_visible_draft_boundary_candidates(
+        &mut self,
+        turn_id: u64,
+    ) {
+        if self
+            .turn_store
+            .turns
+            .get(&turn_id)
+            .is_some_and(|turn| !turn.draft().boundary_candidates.is_empty())
+        {
+            return;
+        }
+        self.refresh_visible_draft_boundary_candidates(turn_id, None);
+    }
+
+    fn refresh_visible_draft_boundary_candidates(
+        &mut self,
+        turn_id: u64,
+        completion: Option<&AsrTranscript>,
+    ) {
+        let Some((language, text, audio, vad_results)) =
+            self.turn_store.turns.get(&turn_id).and_then(|turn| {
+                let draft = turn.draft();
+                Some((
+                    draft.route?.language,
+                    draft.combined_text.clone(),
+                    draft.full_audio.clone(),
+                    draft.vad_results.clone(),
+                ))
+            })
+        else {
+            return;
+        };
+        let token_aligned =
+            completion.filter(|transcript| transcript.text == text).and_then(|transcript| {
+                let candidates = candidates_for_transcript(
+                    language,
+                    transcript,
+                    &audio,
+                    &vad_results,
+                    self.io.japanese_morph.as_ref(),
+                );
+                (!candidates.is_empty()).then_some(candidates)
+            });
+        let candidates = token_aligned.unwrap_or_else(|| {
+            candidates_for_visible_draft(
+                language,
+                &text,
+                &audio,
+                &vad_results,
+                self.io.japanese_morph.as_ref(),
+            )
+        });
+        if let Some(turn) = self.turn_store.turns.get_mut(&turn_id) {
+            turn.draft_mut().boundary_candidates = candidates;
+        }
     }
 
     fn completion_replaces_streaming_interim(&self, turn_id: u64, request: &AsrRequest) -> bool {

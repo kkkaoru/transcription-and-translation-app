@@ -30,6 +30,7 @@ impl RecognitionSession {
     }
 
     pub(in crate::recognition) fn grammar_already_completes_turn(&mut self, turn_id: u64) -> bool {
+        self.ensure_visible_draft_boundary_candidates(turn_id);
         let Some(candidates) = self
             .turn_store
             .turns

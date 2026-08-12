@@ -25,7 +25,38 @@ pub(crate) fn candidates_for_transcript(
     if transcript.tokens.is_empty() || !tokens_have_aligned_timestamps(&transcript.tokens) {
         return Vec::new();
     }
+    collect_boundary_candidates(language, transcript, audio, vad_results, japanese_morph)
+}
 
+/// Grammar boundaries from already-visible draft text, without waiting for
+/// token-aligned rerecognition. Mid-clause punctuation stays internal so
+/// Continue-possible utterances are not treated as `CompleteTurn`.
+pub(crate) fn candidates_for_visible_draft(
+    language: AsrLanguage,
+    text: &str,
+    audio: &[f32],
+    vad_results: &[VadResult],
+    japanese_morph: Option<&JapaneseMorphAnalyzer>,
+) -> Vec<TurnBoundaryCandidate> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    collect_boundary_candidates(
+        language,
+        &AsrTranscript::from_text(text),
+        audio,
+        vad_results,
+        japanese_morph,
+    )
+}
+
+fn collect_boundary_candidates(
+    language: AsrLanguage,
+    transcript: &AsrTranscript,
+    audio: &[f32],
+    vad_results: &[VadResult],
+    japanese_morph: Option<&JapaneseMorphAnalyzer>,
+) -> Vec<TurnBoundaryCandidate> {
     let mut candidates = match language {
         AsrLanguage::Japanese => {
             japanese_candidates_from_tokens(transcript, audio.len(), vad_results)
@@ -95,17 +126,17 @@ fn sentence_punctuation_candidates_from_text(
         .chars()
         .enumerate()
         .filter(|(_, character)| is_sentence_punctuation(*character))
-        .filter_map(|(index, _)| {
+        .map(|(index, _)| {
             let char_end = index + 1;
-            let sample_end = sample_end_for_char_end(transcript, char_end, audio_len)?;
+            let sample_end = sample_end_for_char_end_or_ratio(transcript, char_end, audio_len);
             let audio_window = audio_window_for_boundary(audio_len, vad_results, sample_end);
-            Some(TurnBoundaryCandidate {
+            TurnBoundaryCandidate {
                 char_end,
                 sample_end,
                 prefix_audio_end: audio_window.prefix_audio_end,
                 suffix_audio_start: audio_window.suffix_audio_start,
                 class,
-            })
+            }
         })
         .collect()
 }
@@ -121,6 +152,17 @@ pub(super) fn sample_end_for_char_end(
         .enumerate()
         .find(|(_, token)| token.char_range.as_ref().is_some_and(|range| range.end >= char_end))
         .and_then(|(index, _)| token_end_sample(transcript, index, audio_len))
+}
+
+fn sample_end_for_char_end_or_ratio(
+    transcript: &AsrTranscript,
+    char_end: usize,
+    audio_len: usize,
+) -> usize {
+    sample_end_for_char_end(transcript, char_end, audio_len).unwrap_or_else(|| {
+        let text_len = transcript.text.chars().count().max(1);
+        char_end.saturating_mul(audio_len) / text_len
+    })
 }
 
 fn token_end_sample(
