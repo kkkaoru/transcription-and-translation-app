@@ -18,12 +18,12 @@ import { captionGraphemes } from "../overlay/captions";
  * turn's characters never paint under the new caption (and switches stay fast).
  *
  * Only characters already present in the latest recognition target are shown;
- * the helper never invents text ahead of ASR. An empty plate always paints the
- * first grapheme on the same update that starts progressive growth so viewers
- * never wait a full step interval on a blank caption. The reveal target is the
- * newest visible sentence (same paging as the overlay), not the raw
- * multi-clause `sourceText`, so finished-clause paging cannot collapse a
- * mid-reveal prefix to a single grapheme.
+ * the helper never invents text ahead of ASR. An empty plate paints the full
+ * first hypothesis on the same update so viewers never wait a grapheme timer
+ * on a blank caption. Later prefix extensions still reveal one grapheme at a
+ * time. The reveal target is the newest visible sentence (same paging as the
+ * overlay), not the raw multi-clause `sourceText`, so finished-clause paging
+ * cannot collapse a mid-reveal prefix to a single grapheme.
  */
 export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPayload => {
   const revealTarget = resolveProgressiveRevealSourceTarget(caption);
@@ -57,7 +57,7 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     !displayedSource.trim() &&
     shouldProgressivelyReveal(displayedSource, revealTarget)
   ) {
-    // Empty plate → multi-grapheme: paint the first character this frame.
+    // Empty plate → first hypothesis: paint the full visible sentence this frame.
     const firstStep = immediateProgressiveRevealStart(displayedSource, revealTarget);
     setDisplayedSource(firstStep);
     paintSource = firstStep;
@@ -79,7 +79,7 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
       clearTimer();
       let current = from;
       // Defense-in-depth: if render-phase sync did not already seed the first
-      // grapheme (e.g. Strict Mode remount), do it before waiting on a timer.
+      // hypothesis (e.g. Strict Mode remount), do it before waiting on a timer.
       if (!current.trim() && shouldProgressivelyReveal(current, target)) {
         current = immediateProgressiveRevealStart(current, target);
         displayedRef.current = current;

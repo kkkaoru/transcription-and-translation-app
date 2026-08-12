@@ -254,27 +254,43 @@ impl RecognitionDriverHandle for RecognitionDriver {
     }
 
     fn step(&mut self) {
-        if self.runtime.apply_completed_asr_result_if_ready() {
+        let applied_asr = self.runtime.apply_completed_asr_result_if_ready();
+        if applied_asr && self.runtime.requests.in_flight_request.is_some() {
+            // Mismatched result kept the slot occupied; wait for the matching one.
             return;
         }
 
         if self.runtime.process_pending_finalization_if_ready() {
+            // The next utterance's pending ASR is for a newer turn (otherwise
+            // finalization would still be blocked). Dispatch it now so the
+            // first hypothesis does not wait another VAD/input tick.
+            self.runtime.dispatch_next_asr_request_if_idle();
             return;
         }
 
         if let Some(turn_check) = self.runtime.pending.turn_check {
             if turn_check.activity_epoch != self.runtime.activity.segment_activity_epoch {
+                // Stale check: new speech already advanced the epoch. Drop it
+                // and fall through so queued ASR for that speech can dispatch.
+                self.runtime.pending.turn_check = None;
+            } else if self.runtime.handle_turn_check_silence_reached(turn_check.previous_segment_id)
+            {
                 self.runtime.pending.turn_check = None;
                 return;
-            }
-            if self.runtime.handle_turn_check_silence_reached(turn_check.previous_segment_id) {
-                self.runtime.pending.turn_check = None;
+            } else {
                 return;
             }
-            return;
         }
 
-        if self.runtime.handle_open_turn_timeout() {
+        // A just-applied ASR result must not re-enter timeout rerecognition in
+        // the same step (failed timeout rerecognition already finalized).
+        // Pending segments and turn-check promotion above still run so the
+        // next caption does not wait for another VAD/input tick.
+        if !applied_asr && self.runtime.handle_open_turn_timeout() {
+            // Timeout may finalize immediately (Simple) or occupy in-flight
+            // with rerecognition. Either way, a newer utterance already queued
+            // must not wait another VAD tick.
+            self.runtime.dispatch_next_asr_request_if_idle();
             return;
         }
 

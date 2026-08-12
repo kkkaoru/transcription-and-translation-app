@@ -6,19 +6,14 @@
  * audio is dropped instead of forming an unbounded backlog behind slow ASR/MT.
  *
  * Progressive first paint: `process` may return as soon as `whenFirstCaption`
- * resolves (normalized source on screen). That releases the queue so a newer
- * chunk is not head-of-line blocked by translation still running for the
- * previous utterance.
+ * resolves (source on screen, including a provisional ASR paint). That
+ * releases the queue so a newer chunk is not head-of-line blocked by
+ * normalization or translation still running for the previous utterance.
  *
- * This queue only gates on the *normalized* source paint — it is deliberately
- * unaware of the even-earlier raw-ASR provisional paint. The caller (MainApp)
- * paints raw ASR text immediately from the `asr` pipeline-stage event, fully
- * outside this queue's flight/whenFirstCaption bookkeeping, so that earlier
- * paint cannot change when the next chunk is allowed to start and the
- * existing no-head-of-line-blocking guarantee below is unaffected. See
- * `caption-updates.ts` for how the provisional paint is upgraded in place
- * once the normalized source (this module's `markFirstCaption` trigger)
- * arrives.
+ * The caller (MainApp) paints raw ASR text immediately from the `asr`
+ * pipeline-stage event and calls `markFirstCaption` once that paint sticks.
+ * See `caption-updates.ts` for how the provisional paint is upgraded in
+ * place once the normalized source arrives.
  */
 
 import { recordPipelineDrop } from "./dropDiagnostics";
@@ -31,7 +26,7 @@ export type ChunkTimingStats = {
    * measure full invoke duration instead.
    */
   lastPipelineMs: number | null;
-  /** Wall time until the first normalized source caption for the last chunk. */
+  /** Wall time until the first painted source caption for the last chunk. */
   lastFirstCaptionMs: number | null;
   chunksProcessed: number;
   chunksDropped: number;
@@ -45,8 +40,9 @@ export type ChunkTimingStats = {
 /** Helpers passed into each process() flight. */
 export type ChunkProcessContext = {
   /**
-   * Resolves once `markFirstCaption()` is called for this flight (normalized
-   * source paint). Never rejects. Safe to race against the backend invoke.
+   * Resolves once `markFirstCaption()` is called for this flight (source
+   * painted, including a provisional ASR paint). Never rejects. Safe to race
+   * against the backend invoke.
    */
   whenFirstCaption: () => Promise<void>;
   /** False after `reset()` invalidates this flight. */
@@ -68,7 +64,7 @@ export type LatestWinsProcessor<T> = {
   whenIdle: () => Promise<void>;
   reset: () => void;
   getStats: () => ChunkTimingStats;
-  /** Mark first normalized source caption for the current in-flight item (TTFS). */
+  /** Mark first painted source caption for the current in-flight item (TTFS). */
   markFirstCaption: () => void;
 };
 
@@ -94,7 +90,7 @@ export const createLatestWinsProcessor = <T>(
   /** Bumped on reset(); invalidates all flights (stop capture). */
   let generation = 0;
   /**
-   * Bumped at the start of every process flight. When normalized first-paint
+   * Bumped at the start of every process flight. When first-paint
    * releases the queue early, a newer flight increments this so the previous
    * invoke's late completion cannot markFirstCaption / claim isCurrent().
    */

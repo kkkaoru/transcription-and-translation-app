@@ -475,18 +475,63 @@ let fontsReady: Promise<void> | null = null;
 export const NATIVE_FONTS_READY_TIMEOUT_MS = 500;
 
 /**
- * Off-screen WKWebView often never runs `requestAnimationFrame`. Fall back to
- * a short timer so Syphon/Spout still receive frames when rAF is throttled.
+ * Off-screen WKWebView often never runs `requestAnimationFrame`. Fall back in
+ * one display frame so Syphon/Spout still receive frames when rAF is throttled.
+ * Matches the canvas-not-ready retry; the paint path is unchanged.
  */
-export const NATIVE_RAF_FALLBACK_MS = 50;
+export const NATIVE_RAF_FALLBACK_MS = 16;
+
+const GENERIC_FONT_FALLBACK =
+  /,\s*(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-sans-serif|ui-serif|ui-monospace|ui-rounded)(?:\s*,\s*(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-sans-serif|ui-serif|ui-monospace|ui-rounded))*\s*$/iu;
+
+/**
+ * Drop generic CSS families so `document.fonts.check` cannot succeed on
+ * `sans-serif` alone and skip waiting for the real caption face.
+ */
+export const fontCssForReadinessCheck = (fontCss: string): string =>
+  fontCss.replace(GENERIC_FONT_FALLBACK, "").trim();
+
+export const overlayCaptionFontCss = (config: AppConfig): string[] => [
+  captionFont(config.overlay.source),
+  captionFont(config.overlay.translation),
+];
+
+/** True when canvas can already measure/paint with this caption `font` value. */
+export const captionFontCssIsReady = (fontCss: string): boolean => {
+  if (typeof document === "undefined" || !document.fonts) {
+    return true;
+  }
+  if (document.fonts.status === "loaded") {
+    return true;
+  }
+  const check = document.fonts.check;
+  if (typeof check !== "function") {
+    return false;
+  }
+  const candidate = fontCssForReadinessCheck(fontCss);
+  if (!candidate) {
+    return false;
+  }
+  try {
+    return check.call(document.fonts, candidate);
+  } catch {
+    return false;
+  }
+};
 
 /** Clear the fonts.ready cache between tests so suites cannot leak waiters. */
 export const __resetNativeFontsReadyForTests = (): void => {
   fontsReady = null;
 };
 
-export const ensureFontsReady = (): Promise<void> => {
+export const ensureFontsReady = (fontCssList: readonly string[] = []): Promise<void> => {
   if (typeof document === "undefined" || !document.fonts?.ready) {
+    return Promise.resolve();
+  }
+  if (document.fonts.status === "loaded") {
+    return Promise.resolve();
+  }
+  if (fontCssList.length > 0 && fontCssList.every((css) => captionFontCssIsReady(css))) {
     return Promise.resolve();
   }
   if (!fontsReady) {
@@ -707,7 +752,7 @@ export const NativeFramePublisher = ({
     };
 
     const paint = (): void => {
-      void ensureFontsReady().then(() => {
+      void ensureFontsReady(overlayCaptionFontCss(latestRef.current.config)).then(() => {
         if (cancelled) {
           return;
         }
@@ -863,6 +908,9 @@ export const NativeFramePublisher = ({
       }, NATIVE_RAF_FALLBACK_MS);
     };
 
+    // Start webfont wait in parallel with rAF / the 16ms fallback so first
+    // paint is max(layout, fonts), not layout then fonts.
+    void ensureFontsReady(overlayCaptionFontCss(config));
     schedule();
     return () => {
       cancelled = true;

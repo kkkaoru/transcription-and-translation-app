@@ -356,6 +356,16 @@ export const acceptsPipelineStageGeneration = (
   activeGeneration: number | null,
 ): boolean => eventGeneration == null || eventGeneration === activeGeneration;
 
+/**
+ * Release the HTTP chunk queue once a source caption actually painted.
+ * Provisional ASR uses the same gate as normalized source so the next chunk
+ * is not head-of-line blocked while AzooKey still runs.
+ */
+export const shouldReleaseChunkQueueAfterSourcePaint = (
+  painted: boolean,
+  sourceText: string,
+): boolean => painted && Boolean(sourceText.trim());
+
 /** Record and surface one native queue-drop signal on the normal Live screen. */
 export const handlePipelineDropSignal = (
   drop: PipelineDropSignal,
@@ -817,7 +827,8 @@ export const MainApp = () => {
         // painted-source flag is gated on stage so TTFS stays tied to source.
         const painted = mergeAndCommitCaption(nextCaption);
         const paintedProgressiveSource =
-          isSourceStage && painted && captionRef.current.sourceText.trim();
+          isSourceStage &&
+          shouldReleaseChunkQueueAfterSourcePaint(painted, captionRef.current.sourceText);
         const afterMergeDiagnostics = getCaptionMergeDiagnostics();
         // A cross-ID translation is retained in a bounded side channel so it
         // cannot be mis-attributed to the current live caption. Report only a
@@ -920,10 +931,8 @@ export const MainApp = () => {
         // client-side, as a low-emphasis provisional caption on the same
         // utterance id; mergeCaptionPayload upgrades it in place (same id, no
         // new caption entry) once the real normalized `source` caption
-        // arrives below. This does not call markFirstCaption() / release the
-        // chunkQueue — that release stays tied to the normalized source paint
-        // so the existing no-head-of-line-blocking guarantee for translation
-        // (and the next chunk's ASR call) is unchanged.
+        // arrives below. A successful paint also releases the HTTP chunk
+        // queue so the next chunk is not blocked on AzooKey.
         if (
           !captionIdleGuard.current &&
           acceptsPipelineStageGeneration(
@@ -939,7 +948,7 @@ export const MainApp = () => {
           // so the same-id revision does not look like a suffix when the
           // normalized caption arrives through the other event channel.
           const provisionalText = stageEvent.surfaceText?.trim() || stageEvent.outputText.trim();
-          mergeAndCommitCaption({
+          const painted = mergeAndCommitCaption({
             id: stageEvent.utteranceId,
             sourceText: provisionalText,
             translationText: "",
@@ -952,6 +961,9 @@ export const MainApp = () => {
             isFinal: false,
             provisional: true,
           });
+          if (shouldReleaseChunkQueueAfterSourcePaint(painted, captionRef.current.sourceText)) {
+            chunkProcessor.current?.markFirstCaption();
+          }
         }
       })
       .then((dispose) => {

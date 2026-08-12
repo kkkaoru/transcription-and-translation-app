@@ -212,15 +212,18 @@ describe("heuristic edge cases", () => {
     expect(selectVisibleCaptionSentence("です。あしたは")).toBe("あしたは");
   });
 
-  it("pages finished clauses even while live interim marks deferSentencePaging", () => {
+  it("keeps the lead sentence when deferSentencePaging skips copula paging", () => {
     expect(
       selectVisibleCaptionSentence("今日は晴れです明日は雨", { deferSentencePaging: true }),
-    ).toBe("明日は雨");
+    ).toBe("今日は晴れです明日は雨");
+    expect(
+      detectCaptionSentenceEnds("今日は晴れです明日は雨", { deferSentencePaging: true }),
+    ).toEqual([]);
     expect(
       selectVisibleCaptionSentence("それはとても良い天気だと思いますね今日は", {
         deferSentencePaging: true,
       }),
-    ).toBe("今日は");
+    ).toBe("それはとても良い天気だと思いますね今日は");
   });
 
   it("pages past explicit punctuation and honors Vibrato/IPADIC sentence ends", () => {

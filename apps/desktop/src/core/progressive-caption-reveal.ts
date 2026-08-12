@@ -23,6 +23,9 @@ export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): s
     azookeyInputText: caption.azookeyInputText,
     sentenceEndOffsets: caption.sentenceEndOffsets,
     softBreakOffsets: caption.softBreakOffsets,
+    // Match overlay captionItems: only a provisional first hypothesis defers
+    // copula paging, so 「です＋次節」 does not drop the lead sentence mid-reveal.
+    deferSentencePaging: caption.provisional === true,
   });
 
 /**
@@ -80,18 +83,15 @@ export const advanceProgressiveReveal = (displayed: string, target: string): str
 /**
  * First paint for a progressive jump from an empty plate.
  *
- * Callers must not wait a full step interval before showing anything: the first
- * recognized grapheme should appear on the same update that starts progressive
- * growth. Subsequent graphemes still use the timer-driven step path.
+ * Callers must not wait a timer before showing the first hypothesis: paint the
+ * full first visible sentence on the same update. Subsequent prefix extensions
+ * still use the timer-driven grapheme steps so later growth stays live.
  */
 export const immediateProgressiveRevealStart = (displayed: string, target: string): string => {
   if (displayed.trim()) {
     return displayed;
   }
-  if (!shouldProgressivelyReveal(displayed, target)) {
-    return target;
-  }
-  return advanceProgressiveReveal(displayed, target);
+  return target;
 };
 
 /**
