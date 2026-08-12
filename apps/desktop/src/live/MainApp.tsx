@@ -97,7 +97,11 @@ import {
 } from "../core/webSpeechRecognition";
 import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../i18n/messages";
-import { createEmptyCaption, createPreviewCaption } from "../overlay/captions";
+import {
+  createEmptyCaption,
+  createHoldClearedCaption,
+  createPreviewCaption,
+} from "../overlay/captions";
 import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
@@ -548,7 +552,7 @@ export const MainApp = () => {
     if (!current.sourceText.trim() && !current.translationText.trim()) {
       return;
     }
-    const empty = createEmptyCaption();
+    const empty = createHoldClearedCaption();
     captionRef.current = empty;
     setCaption(empty);
   }, []);
@@ -1525,8 +1529,7 @@ export const MainApp = () => {
             return;
           }
           markCaptureFirstCaption({
-            captureGeneration:
-              caption.captureGeneration ?? captureGenerationForAttempt ?? null,
+            captureGeneration: caption.captureGeneration ?? captureGenerationForAttempt ?? null,
             captionId: caption.id,
           });
         };

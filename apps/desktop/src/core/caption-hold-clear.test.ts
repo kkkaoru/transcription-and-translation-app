@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { createEmptyCaption, createHoldClearedCaption } from "../overlay/captions";
 import {
   CAPTION_HOLD_CLEAR_MS,
   captionHoldClearDelayMs,
@@ -6,6 +10,7 @@ import {
   shouldApplyCaptionHoldClear,
   shouldBlankCaptionForHoldClear,
 } from "./caption-hold-clear";
+import { mergeCaptionPayload } from "./caption-updates";
 import type { CaptionPayload } from "./types";
 
 const caption = (partial: Partial<CaptionPayload>): CaptionPayload => ({
@@ -96,5 +101,82 @@ describe("shouldBlankCaptionForHoldClear", () => {
         caption({ sourceText: "", translationText: "", isFinal: true }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("live hold-clear receipt barrier", () => {
+  const lateSameUtterance = (): CaptionPayload =>
+    caption({
+      id: "live-hold-stale-revive",
+      sourceText: "消えたあとに戻ってはいけない",
+      isFinal: true,
+      startedAt: 70,
+      receivedAt: 90,
+    });
+
+  it("proves createEmptyCaption after hold-clear would revive a late same-utterance payload", () => {
+    // Live MainApp historically blanked with createEmptyCaption() (receivedAt: 0).
+    // Merge then treated any finite receipt as the first post-reset caption.
+    const emptyPlate = createEmptyCaption();
+    expect(emptyPlate.receivedAt).toBe(0);
+    expect(mergeCaptionPayload(emptyPlate, lateSameUtterance())?.sourceText).toBe(
+      "消えたあとに戻ってはいけない",
+    );
+  });
+
+  it("drops a late older payload after hold-clear while accepting a newer utterance", () => {
+    const cleared = createHoldClearedCaption(5_000);
+    expect(cleared.receivedAt).toBe(5_000);
+    expect(cleared.startedAt).toBe(0);
+    expect(mergeCaptionPayload(cleared, lateSameUtterance())).toBeNull();
+    expect(
+      mergeCaptionPayload(
+        cleared,
+        caption({
+          id: "live-after-hold-clear",
+          sourceText: "新しい発話",
+          isFinal: false,
+          startedAt: 4_900,
+          receivedAt: 5_001,
+        }),
+      )?.sourceText,
+    ).toBe("新しい発話");
+  });
+
+  it("keeps session-reset empty at receivedAt 0 so the first post-reset caption still lands", () => {
+    const reset = createEmptyCaption();
+    expect(reset.receivedAt).toBe(0);
+    expect(
+      mergeCaptionPayload(
+        reset,
+        caption({
+          id: "live-first-after-reset",
+          sourceText: "リセット後の最初の字幕",
+          isFinal: false,
+          startedAt: 10,
+          receivedAt: 20,
+        }),
+      )?.sourceText,
+    ).toBe("リセット後の最初の字幕");
+  });
+
+  it("wires MainApp blankDisplayedCaption to createHoldClearedCaption and keeps clearCaptionState on createEmptyCaption", () => {
+    const mainAppPath = join(dirname(fileURLToPath(import.meta.url)), "../live/MainApp.tsx");
+    const source = readFileSync(mainAppPath, "utf8");
+    expect(source).toMatch(
+      /import\s*\{[^}]*\bcreateHoldClearedCaption\b[^}]*\}\s*from\s*"\.\.\/overlay\/captions"/,
+    );
+
+    const blankMatch = source.match(
+      /const blankDisplayedCaption = useCallback\(\(expectedEpoch: string\): void => \{([\s\S]*?)\}, \[\]\);/,
+    );
+    expect(blankMatch?.[1]).toMatch(/createHoldClearedCaption\s*\(/);
+    expect(blankMatch?.[1]).not.toMatch(/createEmptyCaption\s*\(/);
+
+    const clearMatch = source.match(
+      /const clearCaptionState = useCallback\(\(\): void => \{([\s\S]*?)\}, \[\]\);/,
+    );
+    expect(clearMatch?.[1]).toMatch(/createEmptyCaption\s*\(/);
+    expect(clearMatch?.[1]).not.toMatch(/createHoldClearedCaption\s*\(/);
   });
 });
