@@ -431,6 +431,9 @@ export const validateComparisonConfig = (value: unknown): ComparisonConfig => {
     value["browserWasmGlobalName"],
     "browserWasmGlobalName",
   );
+  const inputN5LmRescoreEnabledValue = value["inputN5LmRescoreEnabled"];
+  const inputN5LmRescoreEnabled =
+    typeof inputN5LmRescoreEnabledValue === "boolean" ? inputN5LmRescoreEnabledValue : false;
   return {
     schemaVersion: schemaVersion(value["schemaVersion"]),
     mode,
@@ -439,6 +442,7 @@ export const validateComparisonConfig = (value: unknown): ComparisonConfig => {
     websocketUrl: websocketUrl(value["websocketUrl"]),
     auth: auth(value["auth"]),
     language: language(value["language"]),
+    inputN5LmRescoreEnabled,
     ...(browserModuleUrl ? { browserWasmModuleUrl: browserModuleUrl } : {}),
     ...(browserDictionaryUrl ? { browserWasmDictionaryUrl: browserDictionaryUrl } : {}),
     ...(browserGlobalName ? { browserWasmGlobalName: browserGlobalName } : {}),

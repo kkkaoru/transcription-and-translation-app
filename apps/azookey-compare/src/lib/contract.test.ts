@@ -193,6 +193,7 @@ describe("comparison configuration contract", () => {
       websocketUrl: "wss://worker.example/ws",
       auth: { scheme: "none" },
       language: "ja-JP",
+      inputN5LmRescoreEnabled: false,
     });
     expect(
       validateComparisonConfig({

@@ -97,10 +97,14 @@ describe("compare Worker inference proxy", () => {
     ]);
     expect(mod).toHaveProperty("COMPARE_ASR_DEV_PROXY_ORIGIN_DEFAULT", "http://127.0.0.1:8790");
     expect(mod.compareAsrDevOrigin({})).toBe("http://127.0.0.1:8790");
-    expect(mod.compareAsrDevOrigin({ COMPARE_ASR_ORIGIN: " https://azookey-compare.kaoru.workers.dev/ " })).toBe(
-      "https://azookey-compare.kaoru.workers.dev",
-    );
-    expect(mod.compareInferenceDevRewrites("http://127.0.0.1:9999", "http://127.0.0.1:8791")).toEqual([
+    expect(
+      mod.compareAsrDevOrigin({
+        COMPARE_ASR_ORIGIN: " https://azookey-compare.kaoru.workers.dev/ ",
+      }),
+    ).toBe("https://azookey-compare.kaoru.workers.dev");
+    expect(
+      mod.compareInferenceDevRewrites("http://127.0.0.1:9999", "http://127.0.0.1:8791"),
+    ).toEqual([
       { source: "/ws/azookey", destination: "http://127.0.0.1:9999/ws/azookey" },
       { source: "/v1/azookey", destination: "http://127.0.0.1:9999/v1/azookey" },
       {

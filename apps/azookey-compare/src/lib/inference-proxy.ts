@@ -23,13 +23,20 @@ export type InferenceDevOriginEnv = {
   COMPARE_ASR_ORIGIN?: string;
 };
 
-export const compareInferenceDevOrigin = (env: InferenceDevOriginEnv = process.env): string =>
+const processEnvOrigins = (): InferenceDevOriginEnv => ({
+  COMPARE_INFERENCE_ORIGIN: process.env["COMPARE_INFERENCE_ORIGIN"],
+  COMPARE_ASR_ORIGIN: process.env["COMPARE_ASR_ORIGIN"],
+});
+
+export const compareInferenceDevOrigin = (
+  env: InferenceDevOriginEnv = processEnvOrigins(),
+): string =>
   (env.COMPARE_INFERENCE_ORIGIN?.trim() || COMPARE_INFERENCE_DEV_ORIGIN_DEFAULT).replace(
     /\/+$/,
     "",
   );
 
-export const compareAsrDevOrigin = (env: InferenceDevOriginEnv = process.env): string =>
+export const compareAsrDevOrigin = (env: InferenceDevOriginEnv = processEnvOrigins()): string =>
   (env.COMPARE_ASR_ORIGIN?.trim() || COMPARE_ASR_DEV_PROXY_ORIGIN_DEFAULT).replace(/\/+$/, "");
 
 export type InferenceDevRewrite = {

@@ -15,16 +15,18 @@ export const WORKERS_AI_ASR_TAP_SILENCE_JA =
 
 export type TapVadBackend = "silero" | "energy";
 
-export type TapAudioContext = {
+export type TapGain = {
+  gain: { value: number };
+  connect(node: unknown): void;
+};
+
+export type TapAudioContext<TGain extends TapGain = TapGain> = {
   destination: unknown;
-  createGain: () => {
-    gain: { value: number };
-    connect: (node: unknown) => void;
-  };
+  createGain(): TGain;
 };
 
 export type TapProcessor = {
-  connect: (node: unknown) => void;
+  connect(node: unknown): void;
 };
 
 export type TapHealthSnapshot = {
@@ -43,10 +45,10 @@ export type TapWatchdogVerdict = {
  * Keep ScriptProcessor in the audio rendering quantum without audible playback.
  * tap→destination or MediaStreamDestination can throw or play the mic.
  */
-export const attachMutedScriptProcessorTap = (
+export const attachMutedScriptProcessorTap = <TGain extends TapGain>(
   tap: TapProcessor,
-  audioContext: TapAudioContext,
-): ReturnType<TapAudioContext["createGain"]> => {
+  audioContext: TapAudioContext<TGain>,
+): TGain => {
   const gain = audioContext.createGain();
   gain.gain.value = 0;
   tap.connect(gain);

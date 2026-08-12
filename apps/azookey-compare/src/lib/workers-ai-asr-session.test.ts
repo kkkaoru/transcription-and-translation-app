@@ -395,7 +395,10 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
       }),
     ).rejects.toThrow(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ method: "GET" }),
+    );
     expect(start, "mic must not open after local ASR 503").not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA);
   });
@@ -410,9 +413,7 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
         endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
         existing: null,
         createController: () => fakeController({ start, currentState: "idle" }),
-        fetchImpl: vi.fn(async () => {
-          throw "proxy down";
-        }),
+        fetchImpl: vi.fn(() => Promise.reject("proxy down")),
         onError,
       }),
     ).rejects.toThrow(
@@ -578,9 +579,7 @@ describe("startCloudflareWorkersAiAsrAfterSelect", () => {
         endpointUrl: "http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions",
         existing: null,
         createController: () => fakeController({ start, currentState: "idle" }),
-        fetchImpl: vi.fn(async () => {
-          throw "proxy down";
-        }),
+        fetchImpl: vi.fn(() => Promise.reject("proxy down")),
         onError,
       }),
     ).rejects.toThrow(/接続できません/);

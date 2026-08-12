@@ -34,11 +34,11 @@ const installMatchMedia = (desktopMatches: boolean) => {
     addListener: () => undefined,
     removeListener: () => undefined,
     dispatchEvent: () => true,
-  } as MediaQueryList;
+  };
 
   window.matchMedia = (query: string) => {
     media.media = query;
-    return media;
+    return media as MediaQueryList;
   };
 
   return {

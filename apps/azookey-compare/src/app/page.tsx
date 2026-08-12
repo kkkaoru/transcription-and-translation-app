@@ -678,7 +678,7 @@ export default function ComparePage() {
         setError(message);
       }
     },
-    [appendRow, config.recognitionProvider],
+    [appendRow, config.recognitionProvider, config.inputN5LmRescoreEnabled],
   );
 
   // Keep the controller callback stable while routing each final utterance to
@@ -1291,7 +1291,8 @@ export default function ComparePage() {
                   </span>
                 </label>
                 <p className="field-help" id="input-n5-lm-rescore-description">
-                  Vibrato 後・AzooKey 前に Miwa-Keita/input_n5_lm_v1 の ASR かな読み補正をかけます。既定はオフ（既存挙動のまま）。
+                  Vibrato 後・AzooKey 前に Miwa-Keita/input_n5_lm_v1 の ASR
+                  かな読み補正をかけます。既定はオフ（既存挙動のまま）。
                 </p>
 
                 <label className="field-label" htmlFor="worker-url">
