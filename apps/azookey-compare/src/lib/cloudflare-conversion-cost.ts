@@ -264,7 +264,7 @@ export const usesExternalGgufUpstream = (options: {
   modelFallback?: string;
 }): boolean => {
   const requested = options.requestedModel?.trim();
-  if (!requested || !requested.includes("gguf")) {
+  if (!requested?.includes("gguf")) {
     return false;
   }
   if (options.modelFallback) {

@@ -22,6 +22,8 @@ export type BeginRecognitionListeningOptions = {
  */
 const logStartFailure = (caught: unknown): void => {
   const error = caught instanceof Error ? caught : new Error(recognitionErrorMessage(caught));
+  // Tests assert start failures surface via console.error.
+  // biome-ignore lint/suspicious/noConsole: intentional start-failure diagnostics for UI callers
   console.error(error);
 };
 

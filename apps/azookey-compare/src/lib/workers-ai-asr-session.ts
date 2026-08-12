@@ -3,14 +3,11 @@ import {
   BROWSER_VIBRATO_WARMUP_FAILURE_NOTICE_PREFIX,
   recognitionErrorMessage,
 } from "./recognition-listen";
+import { isLoopbackWorkersAiAsrEndpoint, probeWorkersAiAsrRoute } from "./workers-ai-asr-client";
 import {
   WorkersAiAsrController,
   type WorkersAiAsrControllerOptions,
 } from "./workers-ai-asr-controller";
-import {
-  isLoopbackWorkersAiAsrEndpoint,
-  probeWorkersAiAsrRoute,
-} from "./workers-ai-asr-client";
 import {
   getUserMediaErrorMessageJa,
   isWorkersAiAsrCaptureSupported,

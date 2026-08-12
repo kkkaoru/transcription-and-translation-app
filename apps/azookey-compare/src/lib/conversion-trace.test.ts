@@ -3,8 +3,8 @@ import {
   assembleConversionTrace,
   buildAzookeyInputStep,
   buildBrowserAzookeyStep,
-  buildBrowserZenzaiDictStep,
   buildBrowserVibratoStep,
+  buildBrowserZenzaiDictStep,
   buildConverterOutputStep,
   buildNormalizeStep,
   buildPhoneticOverrideStep,
@@ -61,7 +61,8 @@ describe("conversion trace helpers", () => {
       buildConverterOutputStep("out", "worker-vibrato", 1, "m1", "m0", "upstream-failed").detail,
     ).toContain("m0");
     expect(
-      buildConverterOutputStep("out", "worker-vibrato", 1, undefined, "m0", "upstream-failed").detail,
+      buildConverterOutputStep("out", "worker-vibrato", 1, undefined, "m0", "upstream-failed")
+        .detail,
     ).toContain("AzooKey WASM");
     expect(buildConverterOutputStep("out", "worker-vibrato", undefined, "m1").detail).toBe(
       "モデル: m1",
@@ -96,7 +97,9 @@ describe("conversion trace helpers", () => {
       "azookey-input",
       "browser-azookey",
     ]);
-    expect(trace.steps.find((step) => step.id === "azookey-input")?.output).toBe("きょうはいいてんき");
+    expect(trace.steps.find((step) => step.id === "azookey-input")?.output).toBe(
+      "きょうはいいてんき",
+    );
   });
 
   it("includes an input_n5_lm_v1 rescore step when present", () => {
@@ -178,7 +181,11 @@ describe("conversion trace helpers", () => {
     expect(workerTrace.workerRequest?.vibratoInput).toBe("今日は晴れ");
     expect(workerTrace.steps.some((step) => step.id === "vibrato-fallback")).toBe(true);
     expect(workerTrace.steps.some((step) => step.id === "worker-ws")).toBe(true);
-    expect(buildWorkerWsStep(workerTrace.workerRequest!)).toMatchObject({
+    const workerRequest = workerTrace.workerRequest;
+    if (!workerRequest) {
+      throw new Error("expected workerRequest to be set");
+    }
+    expect(buildWorkerWsStep(workerRequest)).toMatchObject({
       title: "Cloudflare Worker へ送信",
     });
     expect(
@@ -264,7 +271,9 @@ describe("conversion trace helpers", () => {
     const zenzStep = trace.steps.find((step) => step.id === "browser-zenzai-dict");
     expect(zenzStep?.detail).toContain("LOUDS");
     expect(zenzStep?.detail).toContain("GGUF 推論なし");
-    expect(buildBrowserZenzaiDictStep("in", "out", "zenz-v3.2-xsmall-gguf", "/dict.gz").elapsedMs).toBeUndefined();
+    expect(
+      buildBrowserZenzaiDictStep("in", "out", "zenz-v3.2-xsmall-gguf", "/dict.gz").elapsedMs,
+    ).toBeUndefined();
     const defaultDictTrace = assembleConversionTrace({
       rawSource: "きょう",
       normalizedSource: "きょう",
@@ -277,8 +286,8 @@ describe("conversion trace helpers", () => {
         zenzaiExecution: "browser-dict",
       },
     });
-    expect(defaultDictTrace.steps.find((step) => step.id === "browser-zenzai-dict")?.detail).toContain(
-      "/azookey/system.azkdict.gz",
-    );
+    expect(
+      defaultDictTrace.steps.find((step) => step.id === "browser-zenzai-dict")?.detail,
+    ).toContain("/azookey/system.azkdict.gz");
   });
 });

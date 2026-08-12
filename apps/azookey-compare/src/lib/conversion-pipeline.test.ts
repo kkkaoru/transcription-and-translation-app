@@ -83,9 +83,7 @@ describe("comparison conversion pipeline", () => {
         inputN5LmRescoreEnabled: true,
       },
       {
-        runBrowserVibrato: vi.fn(() =>
-          Promise.resolve({ text: "おはよございます", elapsedMs: 1 }),
-        ),
+        runBrowserVibrato: vi.fn(() => Promise.resolve({ text: "おはよございます", elapsedMs: 1 })),
         runBrowserAzookey,
       },
     );
@@ -113,9 +111,7 @@ describe("comparison conversion pipeline", () => {
         converterModel: "azookey-rust-wasm",
       },
       {
-        runBrowserVibrato: vi.fn(() =>
-          Promise.resolve({ text: "おはよございます", elapsedMs: 1 }),
-        ),
+        runBrowserVibrato: vi.fn(() => Promise.resolve({ text: "おはよございます", elapsedMs: 1 })),
         runBrowserAzookey,
       },
     );
@@ -145,9 +141,7 @@ describe("comparison conversion pipeline", () => {
         inputN5LmRescoreEnabled: true,
       },
       {
-        runBrowserVibrato: vi.fn(() =>
-          Promise.resolve({ text: "おはよございます", elapsedMs: 1 }),
-        ),
+        runBrowserVibrato: vi.fn(() => Promise.resolve({ text: "おはよございます", elapsedMs: 1 })),
         runBrowserAzookey: vi.fn(),
         connectWorker: vi.fn(() => Promise.resolve()),
         convertWithWorker,
@@ -160,15 +154,16 @@ describe("comparison conversion pipeline", () => {
   });
 
   it("rescored kana on the Zenzai dictionary path when enabled", async () => {
-    const runBrowserZenzaiDict = vi.fn((): Promise<BrowserZenzaiDictResult> =>
-      Promise.resolve({
-        text: "おはようございます",
-        elapsedMs: 4,
-        execution: BROWSER_ZENZAI_DICT_EXECUTION,
-        model: "zenz-v3.2-xsmall-gguf",
-        dictionaryUrl: "/azookey/system.azkdict.gz",
-        label: BROWSER_ZENZAI_DICT_LABEL,
-      }),
+    const runBrowserZenzaiDict = vi.fn(
+      (): Promise<BrowserZenzaiDictResult> =>
+        Promise.resolve({
+          text: "おはようございます",
+          elapsedMs: 4,
+          execution: BROWSER_ZENZAI_DICT_EXECUTION,
+          model: "zenz-v3.2-xsmall-gguf",
+          dictionaryUrl: "/azookey/system.azkdict.gz",
+          label: BROWSER_ZENZAI_DICT_LABEL,
+        }),
     );
     const result = await runComparisonConversion(
       {
@@ -179,9 +174,7 @@ describe("comparison conversion pipeline", () => {
         inputN5LmRescoreEnabled: true,
       },
       {
-        runBrowserVibrato: vi.fn(() =>
-          Promise.resolve({ text: "おはよございます", elapsedMs: 1 }),
-        ),
+        runBrowserVibrato: vi.fn(() => Promise.resolve({ text: "おはよございます", elapsedMs: 1 })),
         runBrowserAzookey: vi.fn(),
         runBrowserZenzaiDict,
       },
@@ -214,15 +207,16 @@ describe("comparison conversion pipeline", () => {
   it("uses the Zenzai dictionary path in browser-complete without falling back to Worker", async () => {
     const convertWithWorker = vi.fn();
     const runBrowserAzookey = vi.fn();
-    const runBrowserZenzaiDict = vi.fn((): Promise<BrowserZenzaiDictResult> =>
-      Promise.resolve({
-        text: "今日はいい天気",
-        elapsedMs: 6,
-        execution: BROWSER_ZENZAI_DICT_EXECUTION,
-        model: "zenz-v3.2-xsmall-gguf",
-        dictionaryUrl: "/azookey/system.azkdict.gz",
-        label: BROWSER_ZENZAI_DICT_LABEL,
-      }),
+    const runBrowserZenzaiDict = vi.fn(
+      (): Promise<BrowserZenzaiDictResult> =>
+        Promise.resolve({
+          text: "今日はいい天気",
+          elapsedMs: 6,
+          execution: BROWSER_ZENZAI_DICT_EXECUTION,
+          model: "zenz-v3.2-xsmall-gguf",
+          dictionaryUrl: "/azookey/system.azkdict.gz",
+          label: BROWSER_ZENZAI_DICT_LABEL,
+        }),
     );
     const stages: string[] = [];
 
@@ -551,9 +545,7 @@ describe("comparison conversion pipeline", () => {
   });
 
   it("forwards optional Vibrato locator fields to the browser pre-pass", async () => {
-    const runBrowserVibrato = vi.fn(() =>
-      Promise.resolve({ text: "今日は晴れ", elapsedMs: 2 }),
-    );
+    const runBrowserVibrato = vi.fn(() => Promise.resolve({ text: "今日は晴れ", elapsedMs: 2 }));
     await runComparisonConversion(
       {
         ...baseInput,
@@ -586,9 +578,7 @@ describe("comparison conversion pipeline", () => {
   });
 
   it("passes undefined optional Vibrato locator fields when omitted", async () => {
-    const runBrowserVibrato = vi.fn(() =>
-      Promise.resolve({ text: "今日は晴れ", elapsedMs: 1 }),
-    );
+    const runBrowserVibrato = vi.fn(() => Promise.resolve({ text: "今日は晴れ", elapsedMs: 1 }));
     const { dictionaryUrl: _dictionaryUrl, ...inputWithoutDictionary } = baseInput;
     await runComparisonConversion(
       {

@@ -10,8 +10,8 @@ import {
   browserZenzaiDictionaryUrl,
   isBrowserZenzaiDictModel,
   resetBrowserZenzaiDictCache,
-  warmupBrowserZenzaiDict,
   runBrowserZenzaiDict,
+  warmupBrowserZenzaiDict,
 } from "./browser-zenzai";
 
 const wasmBytes = readFileSync(

@@ -102,15 +102,17 @@ describe("workers-ai-asr-client", () => {
   });
 
   it("probes loopback ASR before speech and keeps hosted compare unprobed", async () => {
-    expect(isLoopbackWorkersAiAsrEndpoint("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions")).toBe(
-      true,
-    );
-    expect(isLoopbackWorkersAiAsrEndpoint("http://localhost:3000/v1/asr/workers-ai/transcriptions")).toBe(
-      true,
-    );
-    expect(isLoopbackWorkersAiAsrEndpoint("https://azookey-compare.kaoru.workers.dev/v1/asr/workers-ai/transcriptions")).toBe(
-      false,
-    );
+    expect(
+      isLoopbackWorkersAiAsrEndpoint("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions"),
+    ).toBe(true);
+    expect(
+      isLoopbackWorkersAiAsrEndpoint("http://localhost:3000/v1/asr/workers-ai/transcriptions"),
+    ).toBe(true);
+    expect(
+      isLoopbackWorkersAiAsrEndpoint(
+        "https://azookey-compare.kaoru.workers.dev/v1/asr/workers-ai/transcriptions",
+      ),
+    ).toBe(false);
     expect(isLoopbackWorkersAiAsrEndpoint("   ")).toBe(false);
     expect(isLoopbackWorkersAiAsrEndpoint("http://[")).toBe(false);
     expect(WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA).toMatch(/Access/);
@@ -126,7 +128,12 @@ describe("workers-ai-asr-client", () => {
       probeWorkersAiAsrRoute("http://127.0.0.1:3000/v1/asr/workers-ai/transcriptions", {
         fetchImpl: vi.fn(async () =>
           Response.json(
-            { error: { code: "asr_workers_ai_unavailable", message: WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA } },
+            {
+              error: {
+                code: "asr_workers_ai_unavailable",
+                message: WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA,
+              },
+            },
             { status: 503 },
           ),
         ),

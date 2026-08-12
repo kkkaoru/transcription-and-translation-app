@@ -102,7 +102,8 @@ const diagramCaption = (
   recognitionProvider: RecognitionProvider | undefined,
   fallback: string | undefined,
 ): string =>
-  fallback ?? architectureDiagramCaption(kind, mode ?? "worker-vibrato", recognitionProvider ?? "web-speech");
+  fallback ??
+  architectureDiagramCaption(kind, mode ?? "worker-vibrato", recognitionProvider ?? "web-speech");
 
 const edgePath = (path: ArchitecturePath | undefined): ArchitecturePath => path ?? "device";
 

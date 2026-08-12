@@ -374,6 +374,7 @@ export class WorkersAiAsrController {
           this.pcmTap = tap;
           return;
         } catch (error) {
+          // biome-ignore lint/suspicious/noConsole: operational PCM tap fallback diagnostics
           console.error("Workers AI ASR mute gain tap failed", { error });
           try {
             source.disconnect();
@@ -522,6 +523,7 @@ export class WorkersAiAsrController {
   private noteSileroFailure(error: unknown): void {
     const message = error instanceof Error && error.message.trim() ? error.message : String(error);
     this.sileroError = message;
+    // biome-ignore lint/suspicious/noConsole: Silero/ORT soft-fail is operator-visible
     console.warn("Workers AI ASR Silero/ORT failed", {
       error,
       message,
@@ -837,8 +839,10 @@ export class WorkersAiAsrController {
     this.captureActive = false;
     this.setState("error");
     this.options.onError?.(message);
+    // biome-ignore lint/suspicious/noConsole: controller fatal path mirrors onError for operators
     console.error(error);
     if (cause !== undefined) {
+      // biome-ignore lint/suspicious/noConsole: preserve causal chain beside the primary error
       console.error(cause);
     }
     return error;

@@ -7,11 +7,11 @@
  */
 
 import {
+  type BrowserAzookeyOptions,
+  type BrowserAzookeyResult,
   DEFAULT_BROWSER_AZOOKEY_DICTIONARY_URL,
   runBrowserAzookey,
   warmupBrowserAzookey,
-  type BrowserAzookeyOptions,
-  type BrowserAzookeyResult,
 } from "./browser-azookey";
 import type { ConverterModel } from "./converter-models";
 import { isZenzConverterModel } from "./converter-models";

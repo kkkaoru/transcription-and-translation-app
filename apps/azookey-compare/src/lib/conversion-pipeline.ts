@@ -17,8 +17,8 @@ import type { ComparisonAuth, ComparisonMode } from "./contract";
 import { elapsedSinceMs, nowMs } from "./conversion-timing";
 import {
   assembleConversionTrace,
-  normalizeSourceText,
   type ConversionTrace,
+  normalizeSourceText,
   type TraceRescoreOutcome,
 } from "./conversion-trace";
 import type { ConverterModel } from "./converter-models";
@@ -79,10 +79,7 @@ export interface ConversionWorkerRequest {
 export interface ConversionPipelineDependencies {
   runBrowserVibrato: (text: string, options: BrowserVibratoConfig) => Promise<BrowserVibratoResult>;
   runBrowserAzookey: (text: string) => Promise<BrowserAzookeyResult>;
-  runBrowserZenzaiDict?: (
-    text: string,
-    model: ConverterModel,
-  ) => Promise<BrowserZenzaiDictResult>;
+  runBrowserZenzaiDict?: (text: string, model: ConverterModel) => Promise<BrowserZenzaiDictResult>;
   connectWorker?: () => Promise<void>;
   convertWithWorker?: (request: ConversionWorkerRequest) => Promise<AzooKeyConvertResult>;
   onStage?: (stage: ConversionStage) => void;
@@ -317,7 +314,5 @@ export const runComparisonConversion = async (
 };
 
 /** True when browser-complete will use the Zenzai dictionary path for this model. */
-export const usesBrowserZenzaiDictPath = (
-  mode: ComparisonMode,
-  model: ConverterModel,
-): boolean => mode === "browser-vibrato" && isBrowserZenzaiDictModel(model);
+export const usesBrowserZenzaiDictPath = (mode: ComparisonMode, model: ConverterModel): boolean =>
+  mode === "browser-vibrato" && isBrowserZenzaiDictModel(model);

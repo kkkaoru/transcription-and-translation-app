@@ -103,8 +103,7 @@ const LOCATION_LABEL: Record<ConversionTraceLocation, string> = {
 export const traceStepLocationLabel = (location: ConversionTraceLocation): string =>
   LOCATION_LABEL[location];
 
-export const normalizeSourceText = (rawSource: string): string =>
-  normalizeAsrSourceText(rawSource);
+export const normalizeSourceText = (rawSource: string): string => normalizeAsrSourceText(rawSource);
 
 export const buildNormalizeStep = (rawSource: string, normalized: string): ConversionTraceStep => ({
   id: "normalize",
@@ -132,10 +131,7 @@ export const buildVibratoSkippedStep = (
 ): ConversionTraceStep => ({
   id: "vibrato-skipped",
   title: "Vibrato 前処理",
-  detail:
-    reason === "phonetic-override"
-      ? "かな読み指定のため未実行"
-      : "漢字を含まないため未実行",
+  detail: reason === "phonetic-override" ? "かな読み指定のため未実行" : "漢字を含まないため未実行",
   input: text,
   output: text,
   location: "browser",
@@ -246,7 +242,8 @@ export const buildConverterOutputStep = (
   requestedModel?: string,
   modelFallback?: string,
 ): ConversionTraceStep => {
-  let detail = mode === "browser-vibrato" ? "ブラウザ AzooKey WASM の出力" : "Cloudflare Worker 変換結果";
+  let detail =
+    mode === "browser-vibrato" ? "ブラウザ AzooKey WASM の出力" : "Cloudflare Worker 変換結果";
   if (requestedModel && modelFallback) {
     detail = `${requestedModel} から ${model ?? "AzooKey WASM"} へフォールバック`;
   } else if (model) {
@@ -290,13 +287,19 @@ export const assembleConversionTrace = (parts: {
   } else if (parts.vibrato.failedOpen) {
     steps.push(buildVibratoFallbackStep(parts.vibrato.input));
   } else if (!parts.vibrato.ran) {
-    steps.push(buildVibratoSkippedStep(parts.vibrato.skippedReason ?? "not-required", parts.vibrato.output));
+    steps.push(
+      buildVibratoSkippedStep(parts.vibrato.skippedReason ?? "not-required", parts.vibrato.output),
+    );
   } else {
-    steps.push(buildBrowserVibratoStep(parts.vibrato.input, parts.vibrato.output, parts.vibrato.elapsedMs));
+    steps.push(
+      buildBrowserVibratoStep(parts.vibrato.input, parts.vibrato.output, parts.vibrato.elapsedMs),
+    );
   }
 
   if (parts.rescore?.ran) {
-    steps.push(buildRescoreStep(parts.rescore.input, parts.rescore.output, parts.rescore.elapsedMs));
+    steps.push(
+      buildRescoreStep(parts.rescore.input, parts.rescore.output, parts.rescore.elapsedMs),
+    );
   }
 
   steps.push(buildAzookeyInputStep(parts.converter.azookeyInput, parts.converter.mode));

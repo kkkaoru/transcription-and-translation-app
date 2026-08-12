@@ -872,16 +872,16 @@ select:focus-visible {
   margin-top: 6px;
 }
 
-.path-diagram[data-kind="mode"] .path-diagram-caption {
-  margin-bottom: 4px;
-}
-
 .path-diagram-caption {
   margin: 0 0 6px;
   color: #4e585a;
   font-size: 12px;
   font-weight: 800;
   line-height: 1.45;
+}
+
+.path-diagram[data-kind="mode"] .path-diagram-caption {
+  margin-bottom: 4px;
 }
 
 .path-diagram-caption-title {

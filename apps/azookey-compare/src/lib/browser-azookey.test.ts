@@ -294,9 +294,9 @@ describe("browser AzooKey WASM loader", () => {
       throw new Error("copy failed");
     });
     const dummy = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-    expect(() =>
-      instantiateBrowserAzookeyConverter(dummy, new Uint8Array([1, 2, 3, 4])),
-    ).toThrow(/copy failed/);
+    expect(() => instantiateBrowserAzookeyConverter(dummy, new Uint8Array([1, 2, 3, 4]))).toThrow(
+      /copy failed/,
+    );
     expect(dealloc).toHaveBeenCalledWith(8, 4);
   });
 

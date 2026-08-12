@@ -17,7 +17,7 @@ const nextConfig = {
   },
   ...(process.env.NODE_ENV === "development"
     ? {
-        async rewrites() {
+        rewrites() {
           return [
             { source: "/ws/azookey", destination: `${inferenceOrigin}/ws/azookey` },
             { source: "/v1/azookey", destination: `${inferenceOrigin}/v1/azookey` },

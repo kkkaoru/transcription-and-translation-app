@@ -102,10 +102,13 @@ const DEFAULT_FOOTER_JA = "結果はブラウザ内だけに表示されます";
 
 const footerText = async (page) =>
   (
-    ((await page.locator("footer.status-footer").innerText().catch(() => "")) || "")
-      .replace(/\n?\d+\s*\/\s*\d+\s*events(?:\s*·\s*\d+\s*omitted)?\s*$/i, "")
-      .trim()
-  );
+    (await page
+      .locator("footer.status-footer")
+      .innerText()
+      .catch(() => "")) || ""
+  )
+    .replace(/\n?\d+\s*\/\s*\d+\s*events(?:\s*·\s*\d+\s*omitted)?\s*$/i, "")
+    .trim();
 
 const speechPill = async (page) =>
   (
