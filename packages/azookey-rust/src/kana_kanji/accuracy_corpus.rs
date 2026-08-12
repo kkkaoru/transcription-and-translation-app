@@ -408,6 +408,11 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     ("あついひなのであついすーぷをのみたくない", "暑い日なので熱いスープを飲みたくない"),
     ("あついひなのに", "暑い日なのに"),
     ("あついひなら", "暑い日なら"),
+    // Dual-あつい homophone selection: weather あつい → 暑い, food あつい → 熱い.
+    // Both occurrences must convert — a mora must never be swallowed between
+    // the particle は and the following word あつい.
+    ("あついひはあついたべものをたべたくない", "暑い日は熱い食べ物を食べたくない"),
+    ("あついたべもの", "熱い食べ物"),
     ("ひな", "雛"),
 ];
 
