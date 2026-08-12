@@ -302,6 +302,12 @@
       "input": "おはようございますーあえますか",
       "expectedOverlay": "おはようございますーきこえますか",
       "note": "Prolonged おはようございます + あえますか"
+    },
+    {
+      "id": "concat-hearing-prolonged-kanji",
+      "input": "こんにちはー会えますか",
+      "expectedOverlay": "こんにちはー聞こえますか",
+      "note": "Prolonged greeting + 会えますか"
     }
   ],
   "merge": [

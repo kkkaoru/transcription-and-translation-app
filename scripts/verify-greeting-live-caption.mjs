@@ -127,6 +127,7 @@ const REQUIRED_SANITIZE_IDS = [
   "konbanwa-hearing-prolonged-ae",
   "ohayou-hearing-prolonged-ae",
   "ohayou-gozaimasu-hearing-prolonged-ae",
+  "concat-hearing-prolonged-kanji",
 ];
 const REQUIRED_MERGE_IDS = [
   "append-kikoemasu",
