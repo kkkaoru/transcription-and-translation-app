@@ -1917,6 +1917,96 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(provisional, staleNormalized)).toBeNull();
   });
 
+  it("keeps a longer kana provisional when a shorter kanji final has no shared prefix", () => {
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "きょうはいいてんきですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const truncatedFinal = caption({
+      id: "u-1",
+      sourceText: "今日は",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_800,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(provisional, truncatedFinal)).toMatchObject({
+      sourceText: "きょうはいいてんきですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      isFinal: true,
+    });
+  });
+
+  it("drops a stale shorter provisional re-paint that arrives with a later receivedAt", () => {
+    const longer = caption({
+      id: "u-1",
+      sourceText: "きょうはいいてんきですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 500,
+      receivedAt: 2_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const staleInFlight = caption({
+      id: "u-1",
+      sourceText: "きょうは",
+      azookeyInputText: "きょうは",
+      translationText: "",
+      startedAt: 2_100,
+      receivedAt: 2_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(longer, staleInFlight)).toBeNull();
+  });
+
+  it("still upgrades a longer kana provisional to a similar-length converted final", () => {
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "きょうはいいてんきですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 1_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const convertedFinal = caption({
+      id: "u-1",
+      sourceText: "今日はいい天気ですね",
+      azookeyInputText: "きょうはいいてんきですね",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_800,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(provisional, convertedFinal)?.sourceText).toBe(
+      "今日はいい天気ですね",
+    );
+  });
+
   it("still upgrades provisional when normalize extends or rewrites mid-utterance text", () => {
     const provisional = caption({
       id: "u-1",

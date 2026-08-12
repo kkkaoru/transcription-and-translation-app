@@ -531,10 +531,12 @@ const isStaleNormalizedAgainstProvisional = (
   // then a delayed `caption:update` / getLatestCaption replay delivers an older
   // in-flight normalize such as 今日は. A same-revision conversion (きょうは →
   // 今日は) stays similar length; a prefix cut of a longer tail does not.
-  const currentLen = [...currentText].length;
-  const nextLen = [...nextText].length;
-  return nextLen * 2 < currentLen;
+  return isMuchShorterSurface(nextText, currentText);
 };
+
+/** True when `incoming` cannot be a full conversion of `painted` (prefix cut). */
+const isMuchShorterSurface = (incoming: string, painted: string): boolean =>
+  [...incoming].length * 2 < [...painted].length;
 
 const sharedGraphemePrefixLength = (left: string, right: string): number => {
   const leftChars = [...left];
@@ -739,6 +741,13 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
     if (stitched) {
       return collapseRunawayGraphemeRuns(stitched);
     }
+    // Completion ASR / a late in-flight final can be kanji for only the first
+    // words (今日は) while overlay already painted a longer kana provisional.
+    // Shared-prefix stitch misses that pair; keep the longer tail instead of
+    // treating the short final as a full conversion.
+    if (current.provisional === true && isMuchShorterSurface(nextText, currentText)) {
+      return collapseRunawayGraphemeRuns(currentText);
+    }
     return collapseRunawayGraphemeRuns(nextText);
   }
 
@@ -887,6 +896,25 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
         return isStaleNonFinalAfterFinal(current, next);
       }
       return !isProgressiveProvisionalExtension(current, next);
+    }
+
+    // In-flight queue drain re-paints a stale shorter provisional with a later
+    // receivedAt (Date.now() at process time). A much shorter surface cannot be
+    // a full conversion of the painted tail; truncated same-script rewrites
+    // still merge so stitch can keep the converted head plus the spoken tail.
+    if (
+      current.provisional === true &&
+      next.provisional === true &&
+      isSourceStagePayload(current) &&
+      isSourceStagePayload(next) &&
+      hasText(current.sourceText) &&
+      hasText(next.sourceText)
+    ) {
+      const currentText = trim(current.sourceText);
+      const nextText = trim(next.sourceText);
+      if (nextText !== currentText && isMuchShorterSurface(nextText, currentText)) {
+        return true;
+      }
     }
 
     const nextSequence = sequenceOf(next);
