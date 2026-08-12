@@ -10,12 +10,12 @@ export const PROGRESSIVE_REVEAL_MAX_MS = 160;
 /**
  * Source string the progressive reveal should grow toward.
  *
- * Overlay/Syphon already page finished clauses to the newest sentence. Revealing
- * the raw full `sourceText` character-by-character recreates those clause
- * boundaries as temporary prefixes (`今日は晴れです。明`), and sentence paging
- * then collapses the plate to a one-grapheme fragment mid-animation. Target the
- * same visible sentence the final paint would show so reveal intermediates stay
- * inside one clause.
+ * Overlay/Syphon page finished clauses on punctuation, and on copulas only when
+ * the next span is at least twice the lead. Revealing the raw full `sourceText`
+ * character-by-character still recreates punctuated prefixes (`今日は晴れです。明`),
+ * and sentence paging then collapses the plate to a one-grapheme fragment.
+ * Target the same visible sentence the final paint would show so reveal
+ * intermediates stay inside one clause.
  */
 export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): string =>
   selectVisibleCaptionSentence(caption.sourceText, {

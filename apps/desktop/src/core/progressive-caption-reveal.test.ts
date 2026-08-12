@@ -120,7 +120,7 @@ describe("progressive caption reveal", () => {
     ).toBe(true);
   });
 
-  it("keeps the lead sentence as the reveal target on a provisional です＋次節 hypothesis", () => {
+  it("keeps the lead sentence as the reveal target unless punctuation or a 2x tail pages", () => {
     const text = "今日は晴れです明日は雨";
     expect(
       resolveProgressiveRevealSourceTarget(
@@ -129,7 +129,7 @@ describe("progressive caption reveal", () => {
     ).toBe(text);
     expect(
       resolveProgressiveRevealSourceTarget(caption({ sourceText: text, isFinal: false })),
-    ).toBe("明日は雨");
+    ).toBe(text);
     expect(
       resolveProgressiveRevealSourceTarget(
         caption({
@@ -163,14 +163,13 @@ describe("progressive caption reveal", () => {
       softBreakOffsets: [3],
     });
 
-    // Full-surface offsets must still page once paint has caught up.
+    // Full-surface copula offsets keep the longer lead when the tail is shorter.
     expect(alignCaptionOffsetsToPaintedSource(payload, full)).toBe(payload);
-    expect(selectVisibleCaptionSentence(full, { sentenceEndOffsets: [5] })).toBe("明日は");
+    expect(selectVisibleCaptionSentence(full, { sentenceEndOffsets: [5] })).toBe(full);
 
-    // Mid-reveal prefixes inherit final ends without alignment and clip to a
-    // 1–N grapheme tail on the offset path (the residual progressive bug).
+    // Mid-reveal prefixes with a stale full-text end also keep the longer lead.
     const partial = "今日は寒い明";
-    expect(selectVisibleCaptionSentence(partial, { sentenceEndOffsets: [5] })).toBe("明");
+    expect(selectVisibleCaptionSentence(partial, { sentenceEndOffsets: [5] })).toBe(partial);
 
     const aligned = alignCaptionOffsetsToPaintedSource(payload, partial);
     expect(aligned.sourceText).toBe(partial);
@@ -213,7 +212,7 @@ describe("progressive caption reveal", () => {
     expect(revealTarget).toBe("今日はとても良い天気です");
 
     const mid = "今日はとて";
-    expect(selectVisibleCaptionSentence(mid, { sentenceEndOffsets: [4] })).toBe("て");
+    expect(selectVisibleCaptionSentence(mid, { sentenceEndOffsets: [4] })).toBe(mid);
 
     const aligned = alignCaptionOffsetsToPaintedSource(payload, mid);
     expect(aligned.sentenceEndOffsets).toBeUndefined();

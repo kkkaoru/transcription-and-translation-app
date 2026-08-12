@@ -345,25 +345,22 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
   });
 
   describe("finished clauses leave the plate (POS / punctuation / offsets)", () => {
-    it("pages soft copula + strong restart without waiting for punctuation", () => {
-      expect(selectVisibleCaptionSentence("今日は晴れです明日は雨")).toBe("明日は雨");
+    it("keeps the longer lead when a copula tail is not twice as long", () => {
+      expect(selectVisibleCaptionSentence("今日は晴れです明日は雨")).toBe("今日は晴れです明日は雨");
       expect(selectVisibleCaptionSentence("それはとても良い天気だと思いますね今日は")).toBe(
-        "今日は",
+        "それはとても良い天気だと思いますね今日は",
       );
     });
 
-    it("pages mid-speech so the newest ending phrase owns the plate", () => {
+    it("keeps a long ます utterance instead of paging to the polite stem tail", () => {
       const full = "本日はウェビナーにご参加いただきありがとうございます最後に質問をお受けしますね";
-      expect(selectVisibleCaptionSentence(full)).toBe("最後に質問をお受けしますね");
-      expect(captionTextLines({ key: "source", text: full, maxChars: 28 }).join("")).toBe(
-        "最後に質問をお受けしますね",
-      );
-      // While the ending phrase is still open, old thanks must already be gone.
+      expect(selectVisibleCaptionSentence(full)).toBe(full);
+      expect(captionTextLines({ key: "source", text: full, maxChars: 28 }).join("")).toBe(full);
       expect(
         selectVisibleCaptionSentence(
           "本日はウェビナーにご参加いただきありがとうございます最後に質問を",
         ),
-      ).toBe("最後に質問を");
+      ).toBe("本日はウェビナーにご参加いただきありがとうございます最後に質問を");
     });
 
     it("keeps elongated greetings with their continuation on the plate", () => {
@@ -383,8 +380,9 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
         sentenceEndOffsets: [4],
       });
       const mid = "今日はとて";
-      // Unaligned mid-reveal of the already-paged clause clips via full-text ends.
-      expect(selectVisibleCaptionSentence(mid, { sentenceEndOffsets: [4] })).toBe("て");
+      // Remainder-dominance keeps the mid-reveal prefix; a 1-grapheme tail
+      // after offset 4 is not twice the lead, so the plate stays intact.
+      expect(selectVisibleCaptionSentence(mid, { sentenceEndOffsets: [4] })).toBe(mid);
       const aligned = alignCaptionOffsetsToPaintedSource(payload, mid);
       expect(
         captionTextLines({
@@ -455,9 +453,14 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       }
     });
 
-    it("honors Vibrato/IPADIC sentenceEndOffsets over residual older surface", () => {
+    it("honors Vibrato/IPADIC sentenceEndOffsets only when the next span dominates", () => {
       expect(selectVisibleCaptionSentence("短いです続く文", { sentenceEndOffsets: [4] })).toBe(
-        "続く文",
+        "短いです続く文",
+      );
+      const lead = "短いです";
+      const tail = "これから午後の予定と明日の議題";
+      expect(selectVisibleCaptionSentence(`${lead}${tail}`, { sentenceEndOffsets: [4] })).toBe(
+        tail,
       );
       expect(
         captionTextLines({
@@ -466,7 +469,7 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
           maxChars: 28,
           sentenceEndOffsets: [4],
         }),
-      ).toEqual(["次いく"]);
+      ).toEqual(["もう走る次いく"]);
     });
 
     it("keeps a single newest clause for non-final live captionItems", () => {

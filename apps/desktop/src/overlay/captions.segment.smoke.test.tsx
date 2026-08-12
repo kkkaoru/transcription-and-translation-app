@@ -241,14 +241,15 @@ describe("captionTextLines and captionItems", () => {
     expect(lines).toEqual(["明日は雨です。"]);
   });
 
-  it("keeps an in-progress sentence after a completed AzooKey copula ending", () => {
+  it("keeps the longer lead after a completed AzooKey copula when the tail is shorter", () => {
+    const text = "今日は晴れです明日は雨";
     const lines = captionTextLines({
       key: "source",
-      text: "今日は晴れです明日は雨",
+      text,
       azookeyInputText: "きょうははれですあしたはあめ",
       maxChars: 28,
     });
-    expect(lines).toEqual(["明日は雨"]);
+    expect(lines).toEqual([text]);
   });
 
   it("keeps the lead sentence when live interim marks deferSentencePaging", () => {
@@ -263,11 +264,12 @@ describe("captionTextLines and captionItems", () => {
     expect(lines).toEqual([text]);
   });
 
-  it("pages soft sentence ends for non-final captionItems using POS/heuristic restarts", () => {
+  it("keeps the longer lead on non-final captionItems when the copula tail is shorter", () => {
     const config = createDefaultConfig();
+    const text = "今日は晴れです明日は雨";
     const items = captionItems(config, {
       id: "u-1",
-      sourceText: "今日は晴れです明日は雨",
+      sourceText: text,
       translationText: "",
       sourceLanguage: "ja",
       targetLanguage: "en",
@@ -283,7 +285,7 @@ describe("captionTextLines and captionItems", () => {
       throw new Error("missing source caption item");
     }
     expect(source.deferSentencePaging).toBe(false);
-    expect(captionTextLines(source)).toEqual(["明日は雨"]);
+    expect(captionTextLines(source)).toEqual([text]);
   });
 
   it("keeps the lead sentence on a provisional first hypothesis with です＋次節", () => {
@@ -333,11 +335,12 @@ describe("captionTextLines and captionItems", () => {
     expect(captionTextLines(source)).toEqual(["明日は雨"]);
   });
 
-  it("pages soft sentence ends for finalized captions so prior clauses leave the plate", () => {
+  it("keeps the longer lead on finalized captions when the copula tail is shorter", () => {
     const config = createDefaultConfig();
+    const text = "今日は晴れです明日は雨";
     const items = captionItems(config, {
       id: "u-1",
-      sourceText: "今日は晴れです明日は雨",
+      sourceText: text,
       translationText: "",
       sourceLanguage: "ja",
       targetLanguage: "en",
@@ -353,7 +356,7 @@ describe("captionTextLines and captionItems", () => {
       throw new Error("missing source caption item");
     }
     expect(source.deferSentencePaging).toBe(false);
-    expect(captionTextLines(source)).toEqual(["明日は雨"]);
+    expect(captionTextLines(source)).toEqual([text]);
   });
 
   it("pages English translation by sentence punctuation", () => {
@@ -365,15 +368,26 @@ describe("captionTextLines and captionItems", () => {
     expect(lines).toEqual(["It will rain tomorrow."]);
   });
 
-  it("uses Vibrato sentence offsets when the pipeline supplies them", () => {
-    const text = "短いです続く文";
-    const lines = captionTextLines({
-      key: "source",
-      text,
-      maxChars: 28,
-      sentenceEndOffsets: [4],
-    });
-    expect(lines).toEqual(["続く文"]);
+  it("uses Vibrato sentence offsets only when the next span dominates the lead", () => {
+    const shortTail = "短いです続く文";
+    expect(
+      captionTextLines({
+        key: "source",
+        text: shortTail,
+        maxChars: 28,
+        sentenceEndOffsets: [4],
+      }),
+    ).toEqual([shortTail]);
+    const lead = "短いです";
+    const tail = "これから午後の予定と明日の議題";
+    expect(
+      captionTextLines({
+        key: "source",
+        text: `${lead}${tail}`,
+        maxChars: 28,
+        sentenceEndOffsets: [4],
+      }),
+    ).toEqual([tail]);
   });
 
   it("pages messy live speech from Vibrato POS offsets rather than surface copulas", () => {

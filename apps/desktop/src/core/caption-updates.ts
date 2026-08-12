@@ -1206,7 +1206,8 @@ export const mergeCaptionPayload = (
     // Converse of the keep-longer path: accepting incoming's changed surface
     // while it omits morph offsets must not inherit ends measured against the
     // previous shorter span via `{...current, ...incoming}` (短いです|[4] then
-    // 短いです続く文 → pager shows only 「続く文」).
+    // 短いです続く文). Remainder-dominance also keeps that short tail from
+    // replacing the lead; dropping stale offsets remains the merge-path guard.
     hasIncomingSource &&
     nextSource === incomingSource &&
     nextSource !== currentSource

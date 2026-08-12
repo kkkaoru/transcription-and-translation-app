@@ -2958,9 +2958,7 @@ describe("mergeCaptionPayload", () => {
     expect(isTruncatedCaptionRewrite("", painted.sourceText)).toBe(false);
     expect(isTruncatedCaptionRewrite(truncatedRewrite.sourceText, "")).toBe(false);
     expect(isTruncatedCaptionRewrite("別の話題です", painted.sourceText)).toBe(false);
-    expect(
-      isTruncatedCaptionRewrite(truncatedRewrite.sourceText, painted.sourceText),
-    ).toBe(true);
+    expect(isTruncatedCaptionRewrite(truncatedRewrite.sourceText, painted.sourceText)).toBe(true);
     expect(merged?.sourceText).toBe("電車が遅延してたから僕は学校に行かない");
     expect(merged?.sourceText).toContain("に行かない");
     expect(merged?.provisional).toBe(true);
@@ -3002,8 +3000,9 @@ describe("mergeCaptionPayload", () => {
   it("drops leftover sentenceEndOffsets when accepting a longer same-id surface without new offsets", () => {
     // A short painted surface may carry Vibrato end offsets measured against
     // that span. A longer continuation often omits sentenceEndOffsets entirely.
-    // Object-spread merge must not keep the stale cut, or the pager pages to
-    // the mid-phrase tail (短いです|続く文 → only 「続く文」).
+    // Object-spread merge must not keep the stale cut. Remainder-dominance
+    // also keeps a short tail from replacing the lead; this guard still
+    // drops offsets measured against the previous shorter span.
     const short = caption({
       id: "parapper:session:turn:leftover-ends",
       sourceText: "短いです",
