@@ -2,6 +2,7 @@ import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary"
 import { describe, expect, it } from "vitest";
 import {
   advanceProgressiveReveal,
+  alignCaptionOffsetsToPaintedSource,
   immediateProgressiveRevealStart,
   progressiveRevealStepMs,
   resolveProgressiveRevealSourceTarget,
@@ -93,7 +94,7 @@ describe("progressive caption reveal", () => {
     }
     const collapsedRawSteps = rawSteps
       .map((step) => selectVisibleCaptionSentence(step))
-      .filter((visible, index) => visible.length === 1 && rawSteps[index]!.includes("。"));
+      .filter((visible, index) => visible.length === 1 && rawSteps[index]?.includes("。"));
     expect(collapsedRawSteps.length).toBeGreaterThan(0);
     expect(collapsedRawSteps[0]).toBe("明");
 
@@ -127,5 +128,89 @@ describe("progressive caption reveal", () => {
         }),
       ),
     ).toBe("こんにちはーきこえますか");
+  });
+
+  it("drops full-text sentenceEndOffsets on progressive partial paints", () => {
+    const full = "今日は寒い明日は";
+    const payload = caption({
+      sourceText: full,
+      sentenceEndOffsets: [5],
+      softBreakOffsets: [3],
+    });
+
+    // Full-surface offsets must still page once paint has caught up.
+    expect(alignCaptionOffsetsToPaintedSource(payload, full)).toBe(payload);
+    expect(selectVisibleCaptionSentence(full, { sentenceEndOffsets: [5] })).toBe("明日は");
+
+    // Mid-reveal prefixes inherit final ends without alignment and clip to a
+    // 1–N grapheme tail on the offset path (the residual progressive bug).
+    const partial = "今日は寒い明";
+    expect(selectVisibleCaptionSentence(partial, { sentenceEndOffsets: [5] })).toBe("明");
+
+    const aligned = alignCaptionOffsetsToPaintedSource(payload, partial);
+    expect(aligned.sourceText).toBe(partial);
+    expect(aligned.sentenceEndOffsets).toBeUndefined();
+    expect(aligned.softBreakOffsets).toBeUndefined();
+    expect(
+      selectVisibleCaptionSentence(aligned.sourceText, {
+        sentenceEndOffsets: aligned.sentenceEndOffsets,
+      }),
+    ).toBe(partial);
+  });
+
+  it("keeps greeting continuation prefixes intact when Vibrato ends would page mid-reveal", () => {
+    const spoken = "こんにちはーきこえますか";
+    const payload = caption({
+      sourceText: spoken,
+      sentenceEndOffsets: [5],
+    });
+    expect(resolveProgressiveRevealSourceTarget(payload)).toBe(spoken);
+
+    const mid = "こんにちはー";
+    const aligned = alignCaptionOffsetsToPaintedSource(payload, mid);
+    expect(aligned.sentenceEndOffsets).toBeUndefined();
+    expect(
+      selectVisibleCaptionSentence(aligned.sourceText, {
+        sentenceEndOffsets: aligned.sentenceEndOffsets,
+      }),
+    ).toBe(mid);
+  });
+
+  it("drops full-text ends so last-sentence prefixes are not clipped mid-reveal", () => {
+    // Reveal already targets the newest clause. Full-text offset 4 still sits
+    // inside a 5-grapheme prefix of that clause and would page to 「て」.
+    const full = "短いです今日はとても良い天気です";
+    const payload = caption({
+      sourceText: full,
+      sentenceEndOffsets: [4],
+    });
+    const revealTarget = resolveProgressiveRevealSourceTarget(payload);
+    expect(revealTarget).toBe("今日はとても良い天気です");
+
+    const mid = "今日はとて";
+    expect(selectVisibleCaptionSentence(mid, { sentenceEndOffsets: [4] })).toBe("て");
+
+    const aligned = alignCaptionOffsetsToPaintedSource(payload, mid);
+    expect(aligned.sentenceEndOffsets).toBeUndefined();
+    expect(
+      selectVisibleCaptionSentence(aligned.sourceText, {
+        sentenceEndOffsets: aligned.sentenceEndOffsets,
+      }),
+    ).toBe(mid);
+
+    let displayed = "";
+    const visibleSteps: string[] = [];
+    while (displayed !== revealTarget) {
+      displayed = advanceProgressiveReveal(displayed, revealTarget);
+      const paint = alignCaptionOffsetsToPaintedSource(payload, displayed);
+      visibleSteps.push(
+        selectVisibleCaptionSentence(paint.sourceText, {
+          sentenceEndOffsets: paint.sentenceEndOffsets,
+        }),
+      );
+    }
+    expect(visibleSteps).not.toContain("て");
+    expect(visibleSteps.at(-1)).toBe(revealTarget);
+    expect(visibleSteps.some((step) => step.startsWith("今日はとて"))).toBe(true);
   });
 });

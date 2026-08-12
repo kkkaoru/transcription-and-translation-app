@@ -18,6 +18,7 @@ import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import {
   advanceProgressiveReveal,
+  alignCaptionOffsetsToPaintedSource,
   shouldProgressivelyReveal,
 } from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
@@ -372,6 +373,27 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       const lines = captionTextLines({ key: "source", text: spoken, maxChars: 28 });
       expect(lines.join("")).toBe(spoken);
       expect(lines).toEqual([spoken]);
+    });
+
+    it("does not page last-sentence prefixes to a 1-grapheme tail during progressive reveal", () => {
+      const full = "短いです今日はとても良い天気です";
+      const payload = caption({
+        id: "parapper:session:turn:1",
+        sourceText: full,
+        sentenceEndOffsets: [4],
+      });
+      const mid = "今日はとて";
+      // Unaligned mid-reveal of the already-paged clause clips via full-text ends.
+      expect(selectVisibleCaptionSentence(mid, { sentenceEndOffsets: [4] })).toBe("て");
+      const aligned = alignCaptionOffsetsToPaintedSource(payload, mid);
+      expect(
+        captionTextLines({
+          key: "source",
+          text: aligned.sourceText,
+          maxChars: 28,
+          sentenceEndOffsets: aligned.sentenceEndOffsets,
+        }),
+      ).toEqual([mid]);
     });
 
     it("does not drop the greeting when stale Vibrato offsets arrive with a longer surface", () => {

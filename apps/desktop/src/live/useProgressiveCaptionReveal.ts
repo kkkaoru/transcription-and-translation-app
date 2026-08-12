@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   advanceProgressiveReveal,
+  alignCaptionOffsetsToPaintedSource,
   immediateProgressiveRevealStart,
   progressiveRevealStepMs,
   resolveProgressiveRevealSourceTarget,
@@ -133,5 +134,5 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
   if (paintSource === revealTarget) {
     return caption;
   }
-  return { ...caption, sourceText: paintSource };
+  return alignCaptionOffsetsToPaintedSource(caption, paintSource);
 };

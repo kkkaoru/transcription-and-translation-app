@@ -93,3 +93,27 @@ export const immediateProgressiveRevealStart = (displayed: string, target: strin
   }
   return advanceProgressiveReveal(displayed, target);
 };
+
+/**
+ * Align a progressive paint with the offsets that describe that surface.
+ *
+ * Full-turn Vibrato/IPADIC `sentenceEndOffsets` (and soft-break indices) are
+ * measured against the latest complete recognition. Applying them to an
+ * intermediate progressive prefix pages away the head as soon as the paint
+ * grows past an end (`selectVisibleCaptionSentence` → `sliceNewestSentence`).
+ * After reveal already targets the newest clause, those full-text ends still
+ * sit inside the last-sentence prefix (`今日はとて` + offset 4 → `て`).
+ * Drop those pipeline ends until the paint has caught up to the reveal target.
+ */
+export const alignCaptionOffsetsToPaintedSource = (
+  caption: CaptionPayload,
+  paintSource: string,
+): CaptionPayload => {
+  if (paintSource === caption.sourceText) {
+    return caption;
+  }
+  const aligned: CaptionPayload = { ...caption, sourceText: paintSource };
+  delete aligned.sentenceEndOffsets;
+  delete aligned.softBreakOffsets;
+  return aligned;
+};
