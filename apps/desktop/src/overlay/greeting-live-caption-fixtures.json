@@ -248,6 +248,12 @@
       "input": "さようならあえますか",
       "expectedOverlay": "さようならきこえますか",
       "note": "Farewell greeting + き-drop"
+    },
+    {
+      "id": "concat-hearing-oe",
+      "input": "こんにちはおえますか",
+      "expectedOverlay": "こんにちはきこえますか",
+      "note": "Greeting glued to おえますか"
     }
   ],
   "merge": [
