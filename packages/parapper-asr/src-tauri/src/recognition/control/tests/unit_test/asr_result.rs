@@ -1537,6 +1537,44 @@ fn turn_runtime_completion_without_interim_keeps_max_chunk_on_same_turn() {
 }
 
 #[test]
+fn turn_runtime_mid_clause_prequeued_child_does_not_steal_rerecognition_on_same_tick() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimResultSilenceReached,
+        150..250,
+    );
+    asr_handle.complete_request_with_text(&completion, "しようとしたら");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "same-tick dispatch_next must not remint a Continue-possible mid-clause as a new turn"
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    assert_eq!(runtime.pending.asr_segments.len(), 1);
+}
+
+#[test]
 fn turn_runtime_open_turn_child_continuation_stays_on_same_turn() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)
@@ -2653,6 +2691,47 @@ fn turn_runtime_mismatched_asr_result_keeps_in_flight_request_for_later_match() 
         vec![output_snapshot("正しい結果...", false, 1, 1)]
     );
     assert!(runtime.requests.in_flight_request.is_none());
+}
+
+#[test]
+fn turn_runtime_mismatched_asr_result_does_not_dispatch_pending_next_utterance() {
+    let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+    let request = interim_request_for_turn(1, 1);
+    runtime_state(&mut runtime).in_flight(request.clone()).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        100..200,
+    );
+    asr_handle.push_completed_result(AsrResult {
+        request_id: AsrRequestId(999),
+        kind: request.kind,
+        target: request.target.clone(),
+        route: request.route,
+        status: AsrResultStatus::Ok(AsrTranscript::from_text("古い結果")),
+        completed_at_frame: VadFrameIndex(0),
+        elapsed_millis: 0,
+    });
+
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.request_id),
+        Some(request.request_id),
+        "a mismatched result must keep the original in-flight request"
+    );
+    assert_eq!(
+        runtime.pending.asr_segments.len(),
+        1,
+        "a mismatched result must not dispatch a queued next utterance over the live request"
+    );
+    assert!(
+        outputs.lock().expect("outputs should be readable").is_empty(),
+        "a mismatched result must not emit output"
+    );
 }
 
 #[test]

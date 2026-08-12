@@ -255,9 +255,21 @@ impl RecognitionDriverHandle for RecognitionDriver {
     }
 
     fn step(&mut self) {
+        let in_flight_before =
+            self.runtime.requests.in_flight_request.as_ref().map(|request| request.request_id);
         let applied_asr = self.runtime.apply_completed_asr_result_if_ready();
-        if applied_asr && self.runtime.requests.in_flight_request.is_some() {
-            // Mismatched result kept the slot occupied; wait for the matching one.
+        if applied_asr
+            && self
+                .runtime
+                .requests
+                .in_flight_request
+                .as_ref()
+                .is_some_and(|request| Some(request.request_id) == in_flight_before)
+        {
+            // Only a mismatched result keeps the original in-flight request.
+            // Completion that starts grammar rerecognition occupies the slot
+            // with a *new* request; same-tick dispatch_next must still run so
+            // a yielded next utterance can take that slot immediately.
             return;
         }
 
