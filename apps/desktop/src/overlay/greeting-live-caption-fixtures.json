@@ -236,6 +236,12 @@
       "input": "おはようございます終えますか",
       "expectedOverlay": "おはようございます聞こえますか",
       "note": "Full morning greeting glued to 終えますか"
+    },
+    {
+      "id": "ohayou-gozaimasu-hearing-ae",
+      "input": "おはようございますあえますか",
+      "expectedOverlay": "おはようございますきこえますか",
+      "note": "Full morning greeting + き-drop"
     }
   ],
   "merge": [

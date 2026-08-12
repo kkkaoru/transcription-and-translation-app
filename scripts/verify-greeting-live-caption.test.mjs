@@ -123,6 +123,10 @@ describe("greeting live-caption regression harness", () => {
       "おはようございます聞こえますか",
     );
     assert.equal(
+      fixtures.sanitize.find((row) => row.id === "ohayou-gozaimasu-hearing-ae")?.expectedOverlay,
+      "おはようございますきこえますか",
+    );
+    assert.equal(
       fixtures.merge.find((row) => row.id === "append-kikoemasu")?.expectedOverlay,
       "こんにちはきこえますか",
     );
