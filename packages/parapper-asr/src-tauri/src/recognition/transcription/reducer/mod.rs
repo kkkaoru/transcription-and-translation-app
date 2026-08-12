@@ -112,11 +112,8 @@ pub(in crate::recognition) fn reduce_asr_result(
         return AsrResultAction::DropStaleResult;
     }
 
-    let transcript = match &result.status {
-        AsrResultStatus::Ok(transcript) if !transcript.text.trim().is_empty() => transcript.clone(),
-        AsrResultStatus::Ok(_) | AsrResultStatus::Failed(_) => {
-            return unusable_result_action(request, input);
-        }
+    let Some(transcript) = usable_transcript_from_result(result, request, input) else {
+        return unusable_result_action(request, input);
     };
 
     match request.kind {
@@ -139,6 +136,27 @@ pub(in crate::recognition) fn reduce_asr_result(
                 .pending_rerecognition_purpose
                 .unwrap_or(AsrResultRerecognitionPurpose::GrammarAfterCompletion),
         },
+    }
+}
+
+fn usable_transcript_from_result(
+    result: &AsrResult,
+    request: &AsrRequest,
+    input: AsrResultReductionInput,
+) -> Option<AsrTranscript> {
+    match &result.status {
+        AsrResultStatus::Ok(transcript) if !transcript.text.trim().is_empty() => {
+            Some(transcript.clone())
+        }
+        AsrResultStatus::Ok(transcript)
+            if request.kind == AsrTaskKind::CompletionCheck
+                && input.completion_has_non_empty_draft =>
+        {
+            // Blank completion still has to reach apply_segment_transcript so
+            // uncovered tail audio is kept on the visible utterance.
+            Some(transcript.clone())
+        }
+        AsrResultStatus::Ok(_) | AsrResultStatus::Failed(_) => None,
     }
 }
 
@@ -445,11 +463,14 @@ mod tests {
             (
                 asr_request(AsrTaskKind::CompletionCheck, route, None, 0..10),
                 AsrResultStatus::Ok(AsrTranscript::from_text("   ")),
-                AsrResultReductionInput {
-                    completion_has_non_empty_draft: true,
-                    ..reduction_input_for(route)
-                },
-                AsrResultAction::FallbackCompletionWithoutGrammar { turn_id: 1 },
+                reduction_input_for(route),
+                AsrResultAction::DropUnusableCompletionWithoutDraft,
+            ),
+            (
+                asr_request(AsrTaskKind::InterimDisplay, route, None, 0..10),
+                AsrResultStatus::Ok(AsrTranscript::from_text("   ")),
+                reduction_input_for(route),
+                AsrResultAction::DropUnusableInterim,
             ),
             (
                 asr_request(AsrTaskKind::CompletionCheck, route, None, 0..10),
@@ -492,6 +513,48 @@ mod tests {
             result.status = status;
 
             assert_eq!(reduce_asr_result(&result, &request, input), expected);
+        }
+    }
+
+    #[test]
+    fn reduce_blank_completion_with_draft_applies_transcript_to_keep_uncovered_tail() {
+        let route = RecognitionRoute::from_model(ParapperConfig::default().asr.model);
+        let request = asr_request(AsrTaskKind::CompletionCheck, route, None, 0..10);
+        let cases = [
+            (
+                AsrTranscript::from_text(""),
+                AsrResultReductionInput {
+                    completion_has_non_empty_draft: true,
+                    ..reduction_input_for(route)
+                },
+                AsrResultCompletionAfterTranscript::CompleteWithoutGrammar,
+            ),
+            (
+                AsrTranscript::from_text("   "),
+                AsrResultReductionInput {
+                    completion_has_non_empty_draft: true,
+                    completion_rerecognition_purpose: Some(
+                        AsrResultRerecognitionPurpose::SimpleTurnCheckFinal,
+                    ),
+                    ..reduction_input_for(route)
+                },
+                AsrResultCompletionAfterTranscript::RerecognizeIfIdle(
+                    AsrResultRerecognitionPurpose::SimpleTurnCheckFinal,
+                ),
+            ),
+        ];
+
+        for (transcript, input, after_transcript) in cases {
+            let mut result = asr_result_from_request(&request);
+            result.status = AsrResultStatus::Ok(transcript.clone());
+            assert_eq!(
+                reduce_asr_result(&result, &request, input),
+                AsrResultAction::ApplyCompletionTranscript {
+                    transcript,
+                    elapsed_millis: 1,
+                    after_transcript,
+                }
+            );
         }
     }
 

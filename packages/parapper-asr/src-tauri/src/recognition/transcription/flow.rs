@@ -3,9 +3,12 @@ use crate::recognition::{
     segmentation::segment::builder::SegmentCloseReason,
     segmentation::vad::engine::VadResult,
     transcription::{
-        asr::task::{
-            AsrInFlight, AsrRequest, AsrRequestId, AsrResult, AsrTaskKind, AudioRange,
-            GlobalSampleIndex, VadFrameIndex,
+        asr::{
+            engine::AsrTranscript,
+            task::{
+                AsrInFlight, AsrRequest, AsrRequestId, AsrResult, AsrTaskKind, AudioRange,
+                GlobalSampleIndex, VadFrameIndex,
+            },
         },
         planner::{
             PendingAsrSegment, drop_front_interim_segments_covered_by_completion,
@@ -424,12 +427,15 @@ impl RecognitionSession {
             | AsrResultAction::DropUnusableInterim
             | AsrResultAction::DropUnusableCompletionWithoutDraft => {}
             AsrResultAction::FallbackCompletionWithNamo { turn_id } => {
+                self.apply_unusable_completion_audio_keep_visible(request);
                 self.complete_or_continue_turn_with_namo(turn_id);
             }
             AsrResultAction::FallbackCompletionWithoutGrammar { turn_id } => {
+                self.apply_unusable_completion_audio_keep_visible(request);
                 self.complete_turn_without_grammar(turn_id);
             }
             AsrResultAction::FallbackCompletionKeepOpen { turn_id } => {
+                self.apply_unusable_completion_audio_keep_visible(request);
                 self.keep_turn_open(turn_id, true);
             }
             AsrResultAction::FallbackRerecognition { turn_id, purpose } => {
@@ -551,6 +557,16 @@ impl RecognitionSession {
             .turns
             .get(&turn_id)
             .is_some_and(|turn| !turn.draft().combined_text.trim().is_empty())
+    }
+
+    fn apply_unusable_completion_audio_keep_visible(&mut self, request: &AsrRequest) {
+        if request.kind != AsrTaskKind::CompletionCheck {
+            return;
+        }
+        if !self.turn_has_non_empty_draft(request.target.turn_id.0) {
+            return;
+        }
+        self.apply_segment_transcript(request, AsrTranscript::from_text(""), 0);
     }
 
     fn completion_failure_action_for_request(&self) -> AsrResultCompletionFailureAction {

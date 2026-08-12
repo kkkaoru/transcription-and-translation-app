@@ -496,6 +496,127 @@ fn turn_runtime_empty_incoming_completion_keeps_uncovered_tail_without_advancing
 }
 
 #[test]
+fn turn_runtime_whitespace_asr_completion_keeps_uncovered_tail_without_advancing_segment_id() {
+    for incoming in ["", "   "] {
+        let mut builder = RecognitionSessionTestBuilder::new()
+            .turn_detector(TurnDetector::Simple)
+            .interim_display(true)
+            .rerecognize_full_on_complete(true);
+        let asr_handle = builder.use_manual_asr();
+        let outputs = builder.use_recording_phrase_sink();
+        let (mut runtime, _config) = builder.build();
+
+        let mut interim = interim_request_for_turn(1, 1);
+        interim.source_audio = (0..100).map(|sample| sample as f32).collect();
+        interim.source_vad_results = vec![vad(true)];
+        interim.target = AsrTarget::new(
+            TurnId(1),
+            TurnRevision(0),
+            AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+            Some(SegmentId(1)),
+            Some(SegmentId(1)),
+        );
+        runtime_state(&mut runtime).in_flight(interim.clone());
+        asr_handle.complete_request_with_text(&interim, "全体");
+        runtime.step();
+
+        let mut completion = interim_request_for_turn(2, 1);
+        completion.kind = AsrTaskKind::CompletionCheck;
+        completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+        completion.source_audio = (0..150).map(|sample| sample as f32).collect();
+        completion.source_vad_results = vec![vad(true), vad(true)];
+        completion.target = AsrTarget::new(
+            TurnId(1),
+            TurnRevision(0),
+            AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(150)),
+            Some(SegmentId(1)),
+            Some(SegmentId(2)),
+        );
+        runtime_state(&mut runtime).in_flight(completion.clone());
+        asr_handle.complete_request_with_text(&completion, incoming);
+        runtime.step();
+
+        let rerecognition = runtime.requests.in_flight_request.clone().unwrap_or_else(|| {
+            panic!(
+                "whitespace ASR {incoming:?} must still apply uncovered tail and dispatch rerecognition"
+            )
+        });
+        assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+        assert_eq!(
+            rerecognition.target.last_segment_id,
+            Some(SegmentId(1)),
+            "unusable completion text {incoming:?} must not append a new segment"
+        );
+        asr_handle.complete_request_with_text(&rerecognition, "全体");
+        runtime.step();
+
+        let outputs = outputs.lock().expect("outputs should be readable");
+        let final_output = outputs.last().expect("final output should be emitted");
+        assert_eq!(final_output.text, "全体。");
+        assert!(final_output.is_final);
+        assert_eq!(final_output.segment_id, 1);
+        assert_eq!(
+            final_output.phrase,
+            (0..150).map(|sample| sample as f32).collect::<Vec<_>>(),
+            "uncovered completion tail must remain for unusable ASR {incoming:?}"
+        );
+    }
+}
+
+#[test]
+fn turn_runtime_failed_completion_keeps_visible_text_and_uncovered_tail() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut interim = interim_request_for_turn(1, 1);
+    interim.source_audio = (0..100).map(|sample| sample as f32).collect();
+    interim.source_vad_results = vec![vad(true)];
+    interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(100)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(interim.clone());
+    asr_handle.complete_request_with_text(&interim, "全体");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = (0..150).map(|sample| sample as f32).collect();
+    completion.source_vad_results = vec![vad(true), vad(true)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(150)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.fail_request(&completion);
+    runtime.step();
+
+    assert!(runtime.requests.in_flight_request.is_none());
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs.last().expect("final output should be emitted");
+    assert_eq!(final_output.text, "全体。");
+    assert!(final_output.is_final);
+    assert_eq!(final_output.segment_id, 1);
+    assert_eq!(
+        final_output.phrase,
+        (0..150).map(|sample| sample as f32).collect::<Vec<_>>(),
+        "failed completion ASR must still keep visible text and uncovered tail audio"
+    );
+}
+
+#[test]
 fn turn_runtime_blank_replace_keeps_visible_text_and_uncovered_tail() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)
