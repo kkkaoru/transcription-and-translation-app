@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildParapperProvisionalCaption,
   buildProvisionalCaptionFromAsrStage,
+  pickLatestSuccessfulAsrStage,
 } from "./parapper-provisional";
 
 describe("buildParapperProvisionalCaption", () => {
@@ -203,6 +204,72 @@ describe("buildParapperProvisionalCaption", () => {
         },
         languages,
       ),
+    ).toBeNull();
+  });
+});
+
+describe("pickLatestSuccessfulAsrStage", () => {
+  it("picks the newest successful ASR row and ignores failed or empty stages", () => {
+    expect(
+      pickLatestSuccessfulAsrStage([
+        {
+          stage: "normalize",
+          ok: true,
+          utteranceId: "u-old",
+          outputText: "正規化",
+          startedAt: 1,
+          at: 90,
+        },
+        {
+          stage: "asr",
+          ok: false,
+          utteranceId: "u-fail",
+          outputText: "失敗",
+          startedAt: 1,
+          at: 80,
+        },
+        {
+          stage: "asr",
+          ok: true,
+          utteranceId: "u-1",
+          outputText: "きょうは",
+          surfaceText: "今日は",
+          startedAt: 10,
+          at: 40,
+        },
+        {
+          stage: "asr",
+          ok: true,
+          utteranceId: "u-2",
+          outputText: "はれです",
+          startedAt: 50,
+          at: 70,
+        },
+        {
+          stage: "asr",
+          ok: true,
+          utteranceId: "u-empty",
+          outputText: "  ",
+          startedAt: 1,
+          at: 100,
+        },
+      ])?.utteranceId,
+    ).toBe("u-2");
+  });
+
+  it("returns null when history has no paintable ASR", () => {
+    expect(pickLatestSuccessfulAsrStage([])).toBeNull();
+    expect(
+      pickLatestSuccessfulAsrStage([
+        {
+          stage: "translate",
+          ok: true,
+          utteranceId: "u-1",
+          outputText: "Hello",
+          startedAt: 1,
+          at: 2,
+        },
+      ]),
     ).toBeNull();
   });
 });

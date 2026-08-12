@@ -33,6 +33,7 @@ vi.mock("../live/useCaptionHoldClear", async (importOriginal) => {
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   getLatestCaption: vi.fn(),
+  getPipelineStageHistory: vi.fn(),
   isDesktop: vi.fn(),
   listenCaptions: vi.fn(),
   listenConfig: vi.fn(),
@@ -91,6 +92,7 @@ describe("OverlayApp caption replay", () => {
     mocks.isDesktop.mockReset().mockReturnValue(false);
     mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
     mocks.getLatestCaption.mockReset().mockResolvedValue(sourceCaption());
+    mocks.getPipelineStageHistory.mockReset().mockResolvedValue([]);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     captionListener = null;
     pipelineListener = null;
@@ -377,6 +379,52 @@ describe("OverlayApp caption replay", () => {
         });
         await Promise.resolve();
       });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("今日は");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
+  it("replays the latest ASR stage from native history before caption:update", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+    mocks.getPipelineStageHistory.mockResolvedValue([
+      {
+        stage: "normalize",
+        utteranceId: "parapper:s:1:7",
+        modelId: "azookey-rust",
+        inputSnippet: "",
+        outputText: "古い正規化",
+        startedAt: 1,
+        at: 20,
+        durationMs: 19,
+        ok: true,
+      },
+      {
+        stage: "asr",
+        utteranceId: "parapper:s:1:8",
+        modelId: "parapper-ja",
+        inputSnippet: "",
+        outputText: "きょうは",
+        surfaceText: "今日は",
+        startedAt: 10,
+        at: 40,
+        durationMs: 30,
+        ok: true,
+      },
+    ]);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
       expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("今日は");
     } finally {
       await act(async () => {
@@ -914,6 +962,7 @@ describe("OverlayApp listener cleanup robustness", () => {
     mocks.isDesktop.mockReset().mockReturnValue(false);
     mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
     mocks.getLatestCaption.mockReset().mockResolvedValue(null);
+    mocks.getPipelineStageHistory.mockReset().mockResolvedValue([]);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenPipelineStages.mockReset().mockResolvedValue(noopUnlisten);
@@ -985,6 +1034,7 @@ describe("OverlayApp synchronous bridge throws", () => {
     mocks.isDesktop.mockReset().mockReturnValue(false);
     mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
     mocks.getLatestCaption.mockReset().mockResolvedValue(null);
+    mocks.getPipelineStageHistory.mockReset().mockResolvedValue([]);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenPipelineStages.mockReset().mockResolvedValue(noopUnlisten);
@@ -1042,6 +1092,7 @@ describe("OverlayApp resolves listeners after unmount", () => {
     mocks.isDesktop.mockReset().mockReturnValue(false);
     mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
     mocks.getLatestCaption.mockReset().mockResolvedValue(null);
+    mocks.getPipelineStageHistory.mockReset().mockResolvedValue([]);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenPipelineStages.mockReset().mockResolvedValue(noopUnlisten);
@@ -1113,6 +1164,7 @@ describe("OverlayApp caption listener late dispose", () => {
     mocks.isDesktop.mockReset().mockReturnValue(false);
     mocks.getConfig.mockReset().mockResolvedValue(createDefaultConfig());
     mocks.getLatestCaption.mockReset().mockResolvedValue(null);
+    mocks.getPipelineStageHistory.mockReset().mockResolvedValue([]);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenPipelineStages.mockReset().mockResolvedValue(noopUnlisten);

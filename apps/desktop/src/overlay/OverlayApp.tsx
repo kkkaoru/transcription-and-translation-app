@@ -9,8 +9,11 @@ import {
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
-import { buildProvisionalCaptionFromAsrStage } from "../core/parapper-provisional";
-import type { AppConfig, CaptionPayload } from "../core/types";
+import {
+  buildProvisionalCaptionFromAsrStage,
+  pickLatestSuccessfulAsrStage,
+} from "../core/parapper-provisional";
+import type { AppConfig, CaptionPayload, PipelineStageEvent } from "../core/types";
 import { useCaptionHoldClear } from "../live/useCaptionHoldClear";
 import { useProgressiveCaptionReveal } from "../live/useProgressiveCaptionReveal";
 import { OverlayView } from "./CaptionOverlay";
@@ -227,27 +230,56 @@ export const OverlayApp = () => {
     // here, native-renderer waits for AzooKey `caption:update` and the first
     // recognized words never reach OBS.
     if (typeof bridge.listenPipelineStages === "function") {
+      const applyAsrStage = (
+        stageEvent: Parameters<typeof buildProvisionalCaptionFromAsrStage>[0],
+      ): void => {
+        if (!mounted || idle) {
+          return;
+        }
+        const provisional = buildProvisionalCaptionFromAsrStage(stageEvent, {
+          sourceLanguage: captionRef.current.sourceLanguage,
+          targetLanguage: captionRef.current.targetLanguage,
+        });
+        if (provisional) {
+          applyCaption(provisional);
+        }
+      };
+      const replayLatestAsrStage = (): void => {
+        if (typeof bridge.getPipelineStageHistory !== "function") {
+          return;
+        }
+        let replay: Promise<PipelineStageEvent[]>;
+        try {
+          replay = bridge.getPipelineStageHistory();
+        } catch {
+          return;
+        }
+        if (!replay || typeof replay.then !== "function") {
+          return;
+        }
+        void replay
+          .then((history) => {
+            const latest = pickLatestSuccessfulAsrStage(history);
+            if (latest) {
+              applyAsrStage(latest);
+            }
+          })
+          .catch(() => undefined);
+      };
+      replayLatestAsrStage();
       void bridge
-        .listenPipelineStages((stageEvent) => {
-          if (!mounted || idle) {
-            return;
-          }
-          const provisional = buildProvisionalCaptionFromAsrStage(stageEvent, {
-            sourceLanguage: captionRef.current.sourceLanguage,
-            targetLanguage: captionRef.current.targetLanguage,
-          });
-          if (provisional) {
-            applyCaption(provisional);
-          }
-        })
+        .listenPipelineStages(applyAsrStage)
         .then((dispose) => {
-          if (mounted) {
+          if (mounted && typeof dispose === "function") {
             disposers.push(dispose);
-          } else {
+          } else if (typeof dispose === "function") {
             disposeSafely(dispose);
           }
+          replayLatestAsrStage();
         })
-        .catch(() => undefined);
+        .catch(() => {
+          replayLatestAsrStage();
+        });
     }
     return () => {
       mounted = false;

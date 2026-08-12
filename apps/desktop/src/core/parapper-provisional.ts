@@ -105,3 +105,30 @@ export const buildProvisionalCaptionFromAsrStage = (
     ...(asrLatency ? { asrLatency } : {}),
   };
 };
+
+/** Newest successful ASR row that can paint a provisional overlay caption. */
+export const pickLatestSuccessfulAsrStage = (
+  events: readonly Pick<
+    PipelineStageEvent,
+    "stage" | "ok" | "utteranceId" | "outputText" | "surfaceText" | "startedAt" | "at"
+  >[],
+): (typeof events)[number] | null => {
+  let latest: (typeof events)[number] | null = null;
+  for (const event of events) {
+    if (event.stage !== "asr" || !event.ok) {
+      continue;
+    }
+    const sourceText = event.surfaceText?.trim() || event.outputText.trim();
+    if (!sourceText || !event.utteranceId.trim()) {
+      continue;
+    }
+    if (
+      !latest ||
+      event.at > latest.at ||
+      (event.at === latest.at && event.startedAt >= latest.startedAt)
+    ) {
+      latest = event;
+    }
+  }
+  return latest;
+};
