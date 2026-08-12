@@ -104,9 +104,12 @@ impl RecognitionSession {
         let skip_duplicate_completion_text = completion_append
             && (replace_combined_with_longer_rewrite
                 || completion_text_duplicates_existing(&existing_text, &incoming_text));
+        let skip_blank_completion_append = completion_append
+            && !replace_combined_with_longer_rewrite
+            && (skip_duplicate_completion_text || completion_incoming_is_blank(&incoming_text));
         let recorded_text = if replace_latest_segment {
             incoming_text.clone()
-        } else if skip_duplicate_completion_text {
+        } else if skip_duplicate_completion_text || skip_blank_completion_append {
             // Keep the visible utterance in combined_text. Appending the same
             // (or truncated) completion string doubled the final when
             // rerecognition did not run to replace the draft.
@@ -129,7 +132,8 @@ impl RecognitionSession {
                 overlap.source_samples
             } else {
                 let range_skip = covered_completion_source_samples(existing_audio_range, request);
-                let prefix_skip = if skip_duplicate_completion_text {
+                let prefix_skip = if skip_duplicate_completion_text || skip_blank_completion_append
+                {
                     uncovered_completion_source_start(&draft.full_audio, &request.source_audio)
                 } else {
                     0
@@ -148,14 +152,12 @@ impl RecognitionSession {
                 append_vad_results.as_slice()
             };
             let uncovered_audio = &request.source_audio[append_source_start..];
-            let skip_empty_duplicate =
-                skip_duplicate_completion_text && !replace_combined_with_longer_rewrite;
-            if skip_empty_duplicate {
-                // Duplicate completion used to push an empty segment and advance
-                // latest_segment_id, so later silence/overlap checks missed the
-                // still-open utterance. Keep uncovered tail audio on the current
+            if skip_blank_completion_append {
+                // Blank or duplicate completion used to push an empty segment and
+                // advance latest_segment_id, so later silence/overlap checks missed
+                // the still-open utterance. Keep uncovered tail audio on the current
                 // segment instead.
-                if uncovered_audio.is_empty() {
+                if uncovered_audio.is_empty() || draft.latest_segment_id.is_none() {
                     draft.route = Some(request.route);
                     draft.processing_millis += elapsed_millis;
                 } else {
@@ -572,6 +574,10 @@ fn completion_text_duplicates_existing(existing: &str, incoming: &str) -> bool {
         || is_repeated_turn_append(existing, &format!("{existing} {incoming}"))
 }
 
+fn completion_incoming_is_blank(incoming: &str) -> bool {
+    strip_turn_surface_noise(incoming).is_empty()
+}
+
 fn strip_turn_surface_noise(text: &str) -> &str {
     text.trim().trim_end_matches(['.', '。', '…', '⋯']).trim_end_matches("...").trim()
 }
@@ -705,8 +711,9 @@ fn even_chunk_ranges(audio_len: usize, chunk_count: usize) -> Option<Vec<std::op
 #[cfg(test)]
 mod tests {
     use super::{
-        completion_is_full_longer_rewrite, completion_text_duplicates_existing,
-        is_longer_turn_rewrite, leading_asr_only_padding_samples, longer_turn_surface_text,
+        completion_incoming_is_blank, completion_is_full_longer_rewrite,
+        completion_text_duplicates_existing, is_longer_turn_rewrite,
+        leading_asr_only_padding_samples, longer_turn_surface_text,
         prefer_streaming_interim_text_over_truncated_completion,
         source_samples_covered_by_range_overlap, uncovered_completion_source_start,
     };
@@ -759,6 +766,11 @@ mod tests {
         ));
         assert!(completion_text_duplicates_existing("今日はいい天気ですね", "今日はいい天気"));
         assert!(!completion_text_duplicates_existing("全体", "追加"));
+        assert!(!completion_text_duplicates_existing("全体", ""));
+        assert!(completion_incoming_is_blank(""));
+        assert!(completion_incoming_is_blank("。"));
+        assert!(completion_incoming_is_blank("..."));
+        assert!(!completion_incoming_is_blank("追加"));
         assert!(completion_is_full_longer_rewrite("前半", "前半と末尾"));
         assert!(!completion_is_full_longer_rewrite("全体", "追加です"));
         assert_eq!(
