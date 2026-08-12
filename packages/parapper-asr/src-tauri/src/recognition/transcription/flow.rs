@@ -462,7 +462,7 @@ impl RecognitionSession {
                             // Paint the completion hypothesis before waiting on
                             // follow-up ASR so the caption is not blank for a
                             // full extra recognition round-trip.
-                            self.emit_waiting_draft_if_caption_blank(turn_id);
+                            self.emit_waiting_draft_if_blank_or_longer(turn_id);
                             let previous_open_turn_id = self.turn_store.open_turn_id;
                             if self
                                 .turn_store

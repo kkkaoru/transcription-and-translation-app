@@ -249,7 +249,7 @@ impl RecognitionSession {
                 if self.dispatch_rerecognition_for_turn_if_idle(turn_id, purpose) {
                     // Existing draft must stay visible while grammar/full-turn
                     // rerecognition occupies the slot.
-                    self.emit_waiting_draft_if_caption_blank(turn_id);
+                    self.emit_waiting_draft_if_blank_or_longer(turn_id);
                     true
                 } else {
                     // Submit/route/audio failure must not hold the turn-check
@@ -349,21 +349,23 @@ impl RecognitionSession {
         chain_ok.then_some(candidate_index)
     }
 
-    /// Paint a still-open draft only when the caption is blank.
+    /// Paint a still-open draft when the caption is blank, or when completion
+    /// produced a longer rewrite of the visible interim.
     ///
     /// Re-recognition can occupy the ASR slot for a full extra round-trip.
     /// Emit even when live interim display is off: Namo/Morph wait on
     /// rerecognition before any final, and that wait used to leave the overlay
-    /// empty. Do not replace an already-visible interim (completion apply may
-    /// append overlapping text).
-    pub(in crate::recognition) fn emit_waiting_draft_if_caption_blank(&mut self, turn_id: u64) {
-        let already_visible = self
-            .turn_store
-            .turns
-            .get(&turn_id)
-            .is_some_and(|turn| turn.draft().last_emitted_interim_text.is_some());
-        if already_visible {
+    /// empty. Do not clobber a longer interim with a truncated completion, and
+    /// do not flash a duplicate-append of the text already on screen.
+    pub(in crate::recognition) fn emit_waiting_draft_if_blank_or_longer(&mut self, turn_id: u64) {
+        let Some(turn) = self.turn_store.turns.get(&turn_id) else {
             return;
+        };
+        let draft = turn.draft();
+        if let Some(visible) = draft.last_emitted_interim_text.as_deref() {
+            if !super::transcript::is_longer_turn_rewrite(visible, &draft.combined_text) {
+                return;
+            }
         }
         self.emit_turn_output(turn_id, false);
     }
@@ -488,7 +490,7 @@ impl RecognitionSession {
                 RerecognitionPurpose::TimeoutFinal,
             )
         } {
-            self.emit_waiting_draft_if_caption_blank(turn_id);
+            self.emit_waiting_draft_if_blank_or_longer(turn_id);
             return true;
         }
         self.finalize_timeout_turn_after_rerecognition(turn_id);

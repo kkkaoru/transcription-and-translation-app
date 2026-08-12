@@ -1988,6 +1988,13 @@ fn turn_runtime_shutdown_keeps_internal_grammar_boundary_in_same_turn_and_finali
                 vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0]
             ),
             (
+                "前半。後半追加...",
+                false,
+                1,
+                2,
+                vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0, 7.0, 8.0]
+            ),
+            (
                 "前半。後半追加。",
                 true,
                 1,

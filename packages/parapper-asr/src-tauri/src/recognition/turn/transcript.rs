@@ -388,6 +388,32 @@ fn prefer_streaming_interim_text_over_truncated_completion(
     existing.starts_with(completion) && existing != completion
 }
 
+/// True when `candidate` is a longer rewrite of `visible` that should replace
+/// the on-screen interim while rerecognition is still in flight.
+///
+/// Shorter prefix truncations stay off-screen (keep-longer). A completion that
+/// merely concatenates the visible text onto itself is not a real tail.
+pub(in crate::recognition) fn is_longer_turn_rewrite(visible: &str, candidate: &str) -> bool {
+    let visible = strip_turn_surface_noise(visible);
+    let candidate = strip_turn_surface_noise(candidate);
+    if candidate.is_empty() {
+        return false;
+    }
+    if visible.is_empty() {
+        return true;
+    }
+    if candidate.chars().count() <= visible.chars().count() {
+        return false;
+    }
+    if candidate.starts_with(visible) {
+        let rest = candidate[visible.len()..].trim();
+        if rest.is_empty() || visible.starts_with(rest) || rest.starts_with(visible) {
+            return false;
+        }
+    }
+    true
+}
+
 fn strip_turn_surface_noise(text: &str) -> &str {
     text.trim()
         .trim_end_matches(['.', '。', '…', '⋯'])
@@ -455,4 +481,25 @@ fn even_chunk_ranges(audio_len: usize, chunk_count: usize) -> Option<Vec<std::op
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_longer_turn_rewrite, prefer_streaming_interim_text_over_truncated_completion};
+
+    #[test]
+    fn longer_rewrite_emits_a_real_tail_but_not_truncation_or_duplicate_append() {
+        assert!(is_longer_turn_rewrite("長い発話の前半", "長い発話の前半と末尾"));
+        assert!(is_longer_turn_rewrite("途中", "全体の長い結果"));
+        assert!(!is_longer_turn_rewrite("今日はいい天気ですね", "今日はいい天気"));
+        assert!(!is_longer_turn_rewrite(
+            "五月五日はこどもの日です",
+            "五月五日はこどもの日です五月五日はこどもの日です"
+        ));
+        assert!(!is_longer_turn_rewrite("同じ", "同じ"));
+        assert!(prefer_streaming_interim_text_over_truncated_completion(
+            "今日はいい天気ですね",
+            "今日はいい天気"
+        ));
+    }
 }
