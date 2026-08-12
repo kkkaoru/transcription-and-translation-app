@@ -476,6 +476,20 @@ export const createEmptyCaption = (): CaptionPayload => {
   };
 };
 
+/**
+ * Empty plate after hold-clear while capture is still running.
+ *
+ * `receivedAt` is a receipt barrier so merge drops late events whose original
+ * timestamps predate the clear. `startedAt` stays 0 so a new utterance whose
+ * audio started just before the timer is not rejected by the startedAt guard.
+ * Initial mount and idle reset keep {@link createEmptyCaption} (`receivedAt: 0`)
+ * so the first live caption after OBS opens or capture restarts can still land.
+ */
+export const createHoldClearedCaption = (clearedAt = Date.now()): CaptionPayload => ({
+  ...createEmptyCaption(),
+  receivedAt: Math.max(1, clearedAt),
+});
+
 export const captionItems = (
   config: AppConfig,
   caption: CaptionPayload,

@@ -8,7 +8,7 @@ import type { AppConfig, CaptionPayload } from "../core/types";
 import { useCaptionHoldClear } from "../live/useCaptionHoldClear";
 import { useProgressiveCaptionReveal } from "../live/useProgressiveCaptionReveal";
 import { OverlayView } from "./CaptionOverlay";
-import { createEmptyCaption, createPreviewCaption } from "./captions";
+import { createEmptyCaption, createHoldClearedCaption, createPreviewCaption } from "./captions";
 import { NativeFramePublisher } from "./NativeFramePublisher";
 
 /**
@@ -76,7 +76,7 @@ export const OverlayApp = () => {
     if (!shouldBlankCaptionForHoldClear(expectedEpoch, current)) {
       return;
     }
-    const empty = createEmptyCaption();
+    const empty = createHoldClearedCaption();
     captionRef.current = empty;
     setCaption(empty);
   }, []);

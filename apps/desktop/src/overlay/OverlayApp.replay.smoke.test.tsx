@@ -592,6 +592,78 @@ describe("OverlayApp caption replay", () => {
     vi.useRealTimers();
     container.remove();
   });
+
+  it("does not revive a hold-cleared plate from a late older payload", async () => {
+    vi.useFakeTimers();
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    const finalized = {
+      ...sourceCaption(),
+      id: "overlay-hold-stale-revive",
+      sourceText: "消えたあとに戻ってはいけない",
+      isFinal: true,
+      startedAt: 70,
+      receivedAt: 80,
+    };
+    await act(async () => {
+      captionListener?.(finalized);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe(
+      "消えたあとに戻ってはいけない",
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_HOLD_CLEAR_MS);
+    });
+    await flush();
+    expect(container.querySelector(".caption-line-source")?.getAttribute("data-empty")).toBe(
+      "true",
+    );
+
+    // Same utterance, slightly newer receipt than the painted final, but still
+    // older than the hold-clear itself. createEmptyCaption() used receivedAt: 0,
+    // so merge treated this as the first live caption after reset.
+    await act(async () => {
+      captionListener?.({
+        ...finalized,
+        receivedAt: 90,
+      });
+      await Promise.resolve();
+    });
+    await flush();
+    expect(container.querySelector(".caption-line-source")?.getAttribute("data-empty")).toBe(
+      "true",
+    );
+
+    await act(async () => {
+      captionListener?.({
+        ...sourceCaption(),
+        id: "overlay-after-hold-clear",
+        sourceText: "新しい発話",
+        isFinal: false,
+        startedAt: Date.now(),
+        receivedAt: Date.now() + 1,
+      });
+      await Promise.resolve();
+    });
+    await flush();
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("新しい発話");
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+    container.remove();
+  });
 });
 
 describe("isOverlayCaption", () => {

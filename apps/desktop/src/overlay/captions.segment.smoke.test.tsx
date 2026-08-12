@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
+import type { CaptionPayload } from "../core/types";
 import {
   captionGraphemes,
   captionItems,
   captionTextLines,
   collapseRunawayGraphemeRuns,
+  createEmptyCaption,
+  createHoldClearedCaption,
   createPreviewCaption,
   repairHearingPhraseConfusion,
   sanitizeCaptionDisplayText,
@@ -392,5 +396,56 @@ describe("captionTextLines and captionItems", () => {
     const items = captionItems(config, createPreviewCaption(), true);
     expect(items[0]?.text).toContain("日本語の音声認識");
     expect(items[1]?.text).toContain("English translation");
+  });
+});
+
+describe("hold-cleared empty caption receipt barrier", () => {
+  const lateSource = (overrides: Partial<CaptionPayload> = {}): CaptionPayload => ({
+    id: "overlay-hold-stale-revive",
+    sourceText: "消えたあとに戻ってはいけない",
+    translationText: "",
+    sourceLanguage: "ja",
+    targetLanguage: "en",
+    startedAt: 70,
+    receivedAt: 90,
+    stage: "source",
+    sequence: 0,
+    isFinal: true,
+    ...overrides,
+  });
+
+  it("keeps the session-reset empty caption at receivedAt 0 so the first live source can land", () => {
+    const empty = createEmptyCaption();
+    expect(empty.receivedAt).toBe(0);
+    expect(empty.startedAt).toBe(0);
+    expect(mergeCaptionPayload(empty, lateSource())?.sourceText).toBe(
+      "消えたあとに戻ってはいけない",
+    );
+  });
+
+  it("drops a late older source after hold-clear while accepting a newer utterance", () => {
+    const cleared = createHoldClearedCaption(5_000);
+    expect(cleared.id).toBe("empty");
+    expect(cleared.sourceText).toBe("");
+    expect(cleared.startedAt).toBe(0);
+    expect(cleared.receivedAt).toBe(5_000);
+    expect(mergeCaptionPayload(cleared, lateSource())).toBeNull();
+    expect(
+      mergeCaptionPayload(
+        cleared,
+        lateSource({
+          id: "overlay-after-hold-clear",
+          sourceText: "新しい発話",
+          isFinal: false,
+          startedAt: 4_900,
+          receivedAt: 5_001,
+        }),
+      )?.sourceText,
+    ).toBe("新しい発話");
+  });
+
+  it("never stamps a zero receipt barrier", () => {
+    expect(createHoldClearedCaption(0).receivedAt).toBe(1);
+    expect(createHoldClearedCaption(-8).receivedAt).toBe(1);
   });
 });
