@@ -240,9 +240,36 @@ impl RecognitionSession {
         if let Some(turn) = self.turn_store.turns.get_mut(&turn_id) {
             let draft = turn.draft_mut();
             draft.set_detected_language(request.detected_language.clone());
-            draft.replace_text_preserving_sources(request.route, transcript.text, elapsed_millis);
-            if let Some(candidates) = candidates {
-                draft.boundary_candidates = candidates;
+            let longer_surface = longer_turn_surface_text(
+                &draft.combined_text,
+                draft.last_emitted_interim_text.as_deref(),
+            );
+            if prefer_streaming_interim_text_over_truncated_completion(
+                &longer_surface,
+                &transcript.text,
+            ) {
+                // Truncated full-turn rerecognition must not shrink the draft:
+                // the overlay may still show the longer hypothesis, and the
+                // later final would otherwise drop the utterance tail.
+                if draft.combined_text != longer_surface {
+                    draft.replace_text_preserving_sources(
+                        request.route,
+                        longer_surface,
+                        elapsed_millis,
+                    );
+                } else {
+                    draft.route = Some(request.route);
+                    draft.processing_millis += elapsed_millis;
+                }
+            } else {
+                draft.replace_text_preserving_sources(
+                    request.route,
+                    transcript.text,
+                    elapsed_millis,
+                );
+                if let Some(candidates) = candidates {
+                    draft.boundary_candidates = candidates;
+                }
             }
             self.turn_store.last_recognition_route = Some(request.route);
         }
@@ -388,6 +415,17 @@ fn prefer_streaming_interim_text_over_truncated_completion(
     existing.starts_with(completion) && existing != completion
 }
 
+fn longer_turn_surface_text(combined: &str, last_emitted: Option<&str>) -> String {
+    let Some(visible) = last_emitted else {
+        return combined.to_string();
+    };
+    if is_longer_turn_rewrite(visible, combined) {
+        combined.to_string()
+    } else {
+        visible.to_string()
+    }
+}
+
 /// True when `candidate` is a longer rewrite of `visible` that should replace
 /// the on-screen interim while rerecognition is still in flight.
 ///
@@ -405,13 +443,18 @@ pub(in crate::recognition) fn is_longer_turn_rewrite(visible: &str, candidate: &
     if candidate.chars().count() <= visible.chars().count() {
         return false;
     }
-    if candidate.starts_with(visible) {
-        let rest = candidate[visible.len()..].trim();
-        if rest.is_empty() || visible.starts_with(rest) || rest.starts_with(visible) {
-            return false;
-        }
+    !is_repeated_turn_append(visible, candidate)
+}
+
+fn is_repeated_turn_append(visible: &str, candidate: &str) -> bool {
+    if visible.is_empty() || candidate.chars().count() <= visible.chars().count() {
+        return false;
     }
-    true
+    if !candidate.starts_with(visible) {
+        return false;
+    }
+    let rest = candidate[visible.len()..].trim();
+    rest.is_empty() || visible.starts_with(rest) || rest.starts_with(visible)
 }
 
 fn strip_turn_surface_noise(text: &str) -> &str {
@@ -485,7 +528,10 @@ fn even_chunk_ranges(audio_len: usize, chunk_count: usize) -> Option<Vec<std::op
 
 #[cfg(test)]
 mod tests {
-    use super::{is_longer_turn_rewrite, prefer_streaming_interim_text_over_truncated_completion};
+    use super::{
+        is_longer_turn_rewrite, longer_turn_surface_text,
+        prefer_streaming_interim_text_over_truncated_completion,
+    };
 
     #[test]
     fn longer_rewrite_emits_a_real_tail_but_not_truncation_or_duplicate_append() {
@@ -501,5 +547,20 @@ mod tests {
             "今日はいい天気ですね",
             "今日はいい天気"
         ));
+        assert_eq!(
+            longer_turn_surface_text("今日はいい天気", Some("今日はいい天気ですね")),
+            "今日はいい天気ですね"
+        );
+        assert_eq!(
+            longer_turn_surface_text("今日はいい天気ですね", Some("今日はいい天気ですね")),
+            "今日はいい天気ですね"
+        );
+        assert_eq!(
+            longer_turn_surface_text(
+                "五月五日はこどもの日です五月五日はこどもの日です",
+                Some("五月五日はこどもの日です")
+            ),
+            "五月五日はこどもの日です"
+        );
     }
 }

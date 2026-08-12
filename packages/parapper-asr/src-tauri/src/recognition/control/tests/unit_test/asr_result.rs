@@ -1603,6 +1603,65 @@ fn turn_runtime_truncated_completion_does_not_clobber_longer_interim_while_rerec
 }
 
 #[test]
+fn turn_runtime_truncated_rerecognition_does_not_shorten_final_output() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .asr_model(AsrModel::ReazonSpeechK2V2)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8)
+        .interim_display(true)
+        .turn_detector(TurnDetector::Simple)
+        .rerecognize_full_on_complete(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut streaming_interim = interim_request_for_turn(1, 1);
+    streaming_interim.route =
+        RecognitionRoute::from_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8);
+    streaming_interim.close_reason = Some(SegmentCloseReason::InterimChunkReached);
+    streaming_interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(480)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(streaming_interim.clone());
+    asr_handle.complete_request_with_text(&streaming_interim, "今日はいい天気ですね");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.route = RecognitionRoute::from_model(AsrModel::ReazonSpeechK2V2);
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(480)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "今日はいい天気");
+    runtime.step();
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("truncated completion must still dispatch full-turn rerecognition");
+    asr_handle.complete_request_with_text(&rerecognition, "今日はいい天気");
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("今日はいい天気ですね...", false, 1, 1),
+            output_snapshot("今日はいい天気ですね。", true, 1, 1)
+        ],
+        "a truncated rerecognition must not replace the longer hypothesis in the final caption"
+    );
+}
+
+#[test]
 fn turn_runtime_namo_continue_emits_longer_rerecognition_rewrite_when_interim_display_is_off() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)
