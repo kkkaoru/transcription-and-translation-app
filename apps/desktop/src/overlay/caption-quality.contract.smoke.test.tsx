@@ -171,6 +171,69 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       expect(shouldProgressivelyReveal(frozen, complete)).toBe(false);
       expect(advanceProgressiveReveal(frozen, complete)).toBe(complete);
     });
+
+    it("does not rewrite a correct final into a majority-head question", () => {
+      const sunny = "明日の天気は晴れです";
+      const question = "明日の天気はどうなりますか";
+      const finalized = expectMerged(
+        mergeCaptionPayload(
+          caption({
+            id: "parapper:session:turn:wx",
+            sourceText: sunny,
+            provisional: true,
+            startedAt: 2_000,
+            receivedAt: 2_000,
+          }),
+          caption({
+            id: "parapper:session:turn:wx",
+            sourceText: sunny,
+            isFinal: true,
+            startedAt: 2_000,
+            receivedAt: 3_000,
+          }),
+        ),
+      );
+      expect(finalized.sourceText).toBe(sunny);
+      expect(finalized.isFinal).toBe(true);
+
+      expect(
+        mergeCaptionPayload(
+          finalized,
+          caption({
+            id: "parapper:session:turn:wx",
+            sourceText: question,
+            provisional: true,
+            startedAt: 2_200,
+            receivedAt: 4_000,
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        captionTextLines({ key: "source", text: finalized.sourceText, maxChars: 28 }).join(""),
+      ).toBe(sunny);
+    });
+
+    it("keeps a strict prefix continuation after an early final", () => {
+      const continued = expectMerged(
+        mergeCaptionPayload(
+          caption({
+            id: "parapper:session:turn:hot",
+            sourceText: "暑い日は",
+            isFinal: true,
+            startedAt: 1_000,
+            receivedAt: 2_000,
+          }),
+          caption({
+            id: "parapper:session:turn:hot",
+            sourceText: "暑い日はあった",
+            provisional: true,
+            startedAt: 1_100,
+            receivedAt: 2_500,
+          }),
+        ),
+      );
+      expect(continued.sourceText).toBe("暑い日はあった");
+    });
   });
 
   describe("finished clauses leave the plate (POS / punctuation / offsets)", () => {

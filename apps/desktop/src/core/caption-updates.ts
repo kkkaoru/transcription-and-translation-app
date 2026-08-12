@@ -6,6 +6,8 @@ const SOURCE_SEQUENCE = 0;
 const TRANSLATION_SEQUENCE = 1;
 const MIN_OVERLAP_CHARS = 2;
 const INDEX_STEP = 1;
+const MAX_PAINTED_HEAD_REWRITE_CHARS = 3;
+const PAINTED_HEAD_REWRITE_DENOMINATOR = 8;
 const MAX_PENDING_CROSS_ID_TRANSLATIONS = 64;
 const HIRAGANA_START_CODE_POINT = 0x3041;
 const KATAKANA_START_CODE_POINT = 0x30a1;
@@ -551,11 +553,71 @@ const isLongerSameUtteranceRevision = (currentText: string, nextText: string): b
 };
 
 /**
+ * True when a longer `next` continues the already-painted `current` surface.
+ *
+ * A strict prefix extension is a continuation. A short conversion rewrite at
+ * the first mismatch is also a continuation when the remaining painted
+ * characters are still a prefix of `next` (してただ → してた, then more tail).
+ * Sharing only a majority head is not enough: that would accept an unrelated
+ * question that happens to reuse 「明日の天気は」.
+ */
+const isLongerSurfaceContinuation = (currentText: string, nextText: string): boolean => {
+  const currentChars = [...currentText];
+  const nextChars = [...nextText];
+  if (nextChars.length <= currentChars.length || currentChars.length === 0) {
+    return false;
+  }
+  if (nextText.startsWith(currentText)) {
+    return true;
+  }
+  const shared = sharedGraphemePrefixLength(currentText, nextText);
+  if (shared < MIN_OVERLAP_CHARS) {
+    return false;
+  }
+  const remCurrent = currentChars.slice(shared);
+  const remNext = nextChars.slice(shared);
+  const maxRewrite = Math.max(
+    INDEX_STEP,
+    Math.min(
+      MAX_PAINTED_HEAD_REWRITE_CHARS,
+      Math.ceil(currentChars.length / PAINTED_HEAD_REWRITE_DENOMINATOR),
+    ),
+  );
+  for (
+    let dropCurrent = 0;
+    dropCurrent <= Math.min(maxRewrite, remCurrent.length);
+    dropCurrent += INDEX_STEP
+  ) {
+    for (
+      let dropNext = 0;
+      dropNext <= Math.min(maxRewrite, remNext.length);
+      dropNext += INDEX_STEP
+    ) {
+      if (dropCurrent === 0 && dropNext === 0) {
+        continue;
+      }
+      const restCurrent = remCurrent.slice(dropCurrent).join("");
+      const restNext = remNext.slice(dropNext).join("");
+      if (restCurrent.length === 0) {
+        // The painted remainder was only the conversion rewrite; `next` still
+        // has tail after that window, so this is a continuation.
+        return true;
+      }
+      if (restNext.startsWith(restCurrent)) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
+/**
  * After `isFinal`, accept a same-id continuation that is still the same
  * utterance: a strict longer prefix, a growing AzooKey reading, or a longer
- * surface that keeps most of the painted head. Drop late shorter/equal
- * interims, raw kana rewrites, and unrelated same-id speech. Genuinely new
- * utterances should arrive with a new Parapper turn id.
+ * surface that continues the painted characters after a short conversion
+ * rewrite. Drop late shorter/equal interims, raw kana rewrites, majority-head
+ * questions that replace the painted remainder, and unrelated same-id speech.
+ * Genuinely new utterances should arrive with a new Parapper turn id.
  */
 const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload): boolean => {
   const currentText = trim(current.sourceText);
@@ -583,7 +645,7 @@ const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload
     }
     return true;
   }
-  return !isLongerSameUtteranceRevision(currentText, nextText);
+  return !isLongerSurfaceContinuation(currentText, nextText);
 };
 
 const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {

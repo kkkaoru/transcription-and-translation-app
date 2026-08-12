@@ -2085,6 +2085,174 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("rejects a majority-head same-id rewrite after final when readings are absent", () => {
+    // Shared head 「明日の天気は」 is a majority of the painted final, but the
+    // remainder is a different question, not a tail continuation.
+    const finalized = caption({
+      id: "parapper:session:turn:wx",
+      sourceText: "明日の天気は晴れです",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const rewrittenQuestion = caption({
+      id: "parapper:session:turn:wx",
+      sourceText: "明日の天気はどうなりますか",
+      translationText: "",
+      startedAt: 2_200,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, rewrittenQuestion)).toBeNull();
+  });
+
+  it("rejects a majority-head rewrite after final when only one side has a reading", () => {
+    const finalized = caption({
+      id: "parapper:session:turn:wx-one-reading",
+      sourceText: "明日の天気は晴れです",
+      azookeyInputText: "あしたのてんきははれです",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const rewrittenQuestion = caption({
+      id: "parapper:session:turn:wx-one-reading",
+      sourceText: "明日の天気はどうなりますか",
+      translationText: "",
+      startedAt: 2_200,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, rewrittenQuestion)).toBeNull();
+  });
+
+  it("still drops a majority-head rewrite after final when readings diverge", () => {
+    const finalized = caption({
+      id: "parapper:session:turn:wx-readings",
+      sourceText: "明日の天気は晴れです",
+      azookeyInputText: "あしたのてんきははれです",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const rewrittenQuestion = caption({
+      id: "parapper:session:turn:wx-readings",
+      sourceText: "明日の天気はどうなりますか",
+      azookeyInputText: "あしたのてんきはどうなりますか",
+      translationText: "",
+      startedAt: 2_200,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, rewrittenQuestion)).toBeNull();
+  });
+
+  it("accepts a strict prefix continuation after final without readings", () => {
+    const earlyFinal = caption({
+      id: "parapper:session:turn:hot",
+      sourceText: "暑い日は",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 2_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const longer = caption({
+      id: "parapper:session:turn:hot",
+      sourceText: "暑い日はあった",
+      translationText: "",
+      startedAt: 1_100,
+      receivedAt: 2_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(earlyFinal, longer)).toMatchObject({
+      sourceText: "暑い日はあった",
+      isFinal: false,
+    });
+  });
+
+  it("accepts a short conversion rewrite plus tail after final without readings", () => {
+    const earlyFinal = caption({
+      id: "parapper:session:turn:hare",
+      sourceText: "明日ははれ",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 2_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const converted = caption({
+      id: "parapper:session:turn:hare",
+      sourceText: "明日は晴れです",
+      translationText: "",
+      startedAt: 1_100,
+      receivedAt: 2_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(earlyFinal, converted)).toMatchObject({
+      sourceText: "明日は晴れです",
+    });
+  });
+
+  it("accepts a continuation after final when the rewrite consumes the painted remainder", () => {
+    const earlyFinal = caption({
+      id: "parapper:session:turn:da-tail",
+      sourceText: "今日はだ",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 2_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const continued = caption({
+      id: "parapper:session:turn:da-tail",
+      sourceText: "今日はですね",
+      translationText: "",
+      startedAt: 1_100,
+      receivedAt: 2_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(earlyFinal, continued)).toMatchObject({
+      sourceText: "今日はですね",
+    });
+  });
+
   it("accepts a longer converted surface after final when the reading is already complete", () => {
     const fullReading = "でんしゃがちえんしてただからぼくはがっこうにいかない";
     const midStreamFinal = caption({
@@ -2313,6 +2481,61 @@ describe("mergeCaptionPayload", () => {
     });
 
     expect(mergeCaptionPayload(finalized, nextSpeech)).toBeNull();
+  });
+
+  it("drops a whitespace-only non-final after a finalized source", () => {
+    const finalized = caption({
+      id: "parapper:session:turn:blank-interim",
+      sourceText: "明日の天気は晴れです",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const blankInterim = caption({
+      id: "parapper:session:turn:blank-interim",
+      sourceText: "   ",
+      translationText: "Sunny tomorrow",
+      startedAt: 2_200,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, blankInterim)).toBeNull();
+  });
+
+  it("drops a shorter same-reading provisional after final", () => {
+    const fullReading = "きょうはいいてんきですね";
+    const finalized = caption({
+      id: "parapper:session:turn:shorter-reading",
+      sourceText: "今日はいい天気ですね",
+      azookeyInputText: fullReading,
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const shorter = caption({
+      id: "parapper:session:turn:shorter-reading",
+      sourceText: "今日はいい",
+      azookeyInputText: fullReading,
+      translationText: "",
+      startedAt: 1_050,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(finalized, shorter)).toBeNull();
   });
 
   it("still drops a non-extending late provisional after a finalized same-id caption", () => {
