@@ -224,19 +224,40 @@ impl RecognitionSession {
 /// streaming prefix. Completion ASR may be run over a source range that starts
 /// inside the range already covered by a streaming interim; its text therefore
 /// includes tokens from that covered prefix as well.
+///
+/// When every usable token starts inside the overlap, return an empty string so
+/// the covered prefix is not appended again. Missing timestamps/char ranges
+/// still fall back to the full transcript text, because the seam cannot be
+/// resolved from audio geometry.
 fn text_after_audio_overlap(transcript: &AsrTranscript, overlap_samples: usize) -> String {
     if overlap_samples == 0 || transcript.tokens.is_empty() {
         return transcript.text.clone();
     }
 
     let text_len = transcript.text.chars().count();
-    let Some(first_uncovered_char) = transcript.tokens.iter().find_map(|token| {
-        let char_range = token.char_range.as_ref()?;
-        let start_sec = token.start_sec?;
-        let start_sample = sample_index_from_seconds(start_sec)?;
-        (start_sample >= overlap_samples).then_some(char_range.start)
-    }) else {
+    let mut saw_usable_token = false;
+    let mut first_uncovered_char = None;
+    for token in &transcript.tokens {
+        let Some(char_range) = token.char_range.as_ref() else {
+            continue;
+        };
+        let Some(start_sec) = token.start_sec else {
+            continue;
+        };
+        let Some(start_sample) = sample_index_from_seconds(start_sec) else {
+            continue;
+        };
+        saw_usable_token = true;
+        if start_sample >= overlap_samples {
+            first_uncovered_char = Some(char_range.start);
+            break;
+        }
+    }
+    if !saw_usable_token {
         return transcript.text.clone();
+    }
+    let Some(first_uncovered_char) = first_uncovered_char else {
+        return String::new();
     };
     if first_uncovered_char > text_len {
         return transcript.text.clone();
