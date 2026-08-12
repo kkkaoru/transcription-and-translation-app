@@ -8,7 +8,7 @@ use crate::{
             engine::AsrTranscript,
             task::{AsrRequest, AsrTaskKind, AudioRange, GlobalSampleIndex},
         },
-        turn::{boundary::candidates_for_transcript, turn_event_id, Turn},
+        turn::{Turn, boundary::candidates_for_transcript, turn_event_id},
     },
 };
 
@@ -108,7 +108,13 @@ impl RecognitionSession {
             && !replace_combined_with_longer_rewrite
             && (skip_duplicate_completion_text || completion_incoming_is_blank(&incoming_text));
         let recorded_text = if replace_latest_segment {
-            incoming_text.clone()
+            visible_text_for_blank_replace(
+                &incoming_text,
+                draft.segment_texts.last().map(String::as_str),
+                &existing_text,
+                draft.last_emitted_interim_text.as_deref(),
+                draft.segment_texts.len(),
+            )
         } else if skip_duplicate_completion_text || skip_blank_completion_append {
             // Keep the visible utterance in combined_text. Appending the same
             // (or truncated) completion string doubled the final when
@@ -306,15 +312,15 @@ impl RecognitionSession {
                 // Truncated or repeated-string full-turn rerecognition must not
                 // replace a longer (or already-clean) draft. Doubled completion
                 // audio used to make ASR hear the utterance twice.
-                if draft.combined_text != longer_surface {
+                if draft.combined_text == longer_surface {
+                    draft.route = Some(request.route);
+                    draft.processing_millis += elapsed_millis;
+                } else {
                     draft.replace_text_preserving_sources(
                         request.route,
                         longer_surface,
                         elapsed_millis,
                     );
-                } else {
-                    draft.route = Some(request.route);
-                    draft.processing_millis += elapsed_millis;
                 }
             } else {
                 draft.replace_text_preserving_sources(
@@ -385,11 +391,7 @@ fn leading_asr_only_padding_samples(audio: &[f32], source_audio: &[f32]) -> usiz
         return 0;
     }
     let padding = audio.len() - source_audio.len();
-    if waveforms_match_allowing_edge_fade(&audio[padding..], source_audio) {
-        padding
-    } else {
-        0
-    }
+    if waveforms_match_allowing_edge_fade(&audio[padding..], source_audio) { padding } else { 0 }
 }
 
 fn waveforms_match_allowing_edge_fade(faded: &[f32], source: &[f32]) -> bool {
@@ -499,8 +501,12 @@ fn prefer_streaming_interim_text_over_truncated_completion(
 ) -> bool {
     let existing = strip_turn_surface_noise(existing);
     let completion = strip_turn_surface_noise(completion);
-    if existing.is_empty() || completion.is_empty() {
+    if existing.is_empty() {
         return false;
+    }
+    if completion.is_empty() {
+        // Blank completion is a total truncation of the streaming hypothesis.
+        return true;
     }
     let existing_chars = existing.chars().count();
     let completion_chars = completion.chars().count();
@@ -572,6 +578,29 @@ fn completion_text_duplicates_existing(existing: &str, incoming: &str) -> bool {
     }
     is_repeated_turn_append(existing, &format!("{existing}{incoming}"))
         || is_repeated_turn_append(existing, &format!("{existing} {incoming}"))
+}
+
+fn visible_text_for_blank_replace(
+    incoming: &str,
+    latest_segment_text: Option<&str>,
+    combined: &str,
+    last_emitted: Option<&str>,
+    segment_count: usize,
+) -> String {
+    if !completion_incoming_is_blank(incoming) {
+        return incoming.to_string();
+    }
+    if let Some(latest) = latest_segment_text
+        && !completion_incoming_is_blank(latest)
+    {
+        return latest.to_string();
+    }
+    let surface = longer_turn_surface_text(combined, last_emitted);
+    if segment_count <= 1 && !completion_incoming_is_blank(&surface) {
+        surface
+    } else {
+        incoming.to_string()
+    }
 }
 
 fn completion_incoming_is_blank(incoming: &str) -> bool {
@@ -716,6 +745,7 @@ mod tests {
         leading_asr_only_padding_samples, longer_turn_surface_text,
         prefer_streaming_interim_text_over_truncated_completion,
         source_samples_covered_by_range_overlap, uncovered_completion_source_start,
+        visible_text_for_blank_replace,
     };
     use crate::recognition::transcription::asr::task::{AudioRange, GlobalSampleIndex};
 
@@ -737,6 +767,24 @@ mod tests {
             "今日はいい天気ですね",
             "今日はいい天気"
         ));
+        assert!(prefer_streaming_interim_text_over_truncated_completion(
+            "今日はいい天気ですね",
+            ""
+        ));
+        assert!(prefer_streaming_interim_text_over_truncated_completion(
+            "今日はいい天気ですね",
+            "。"
+        ));
+        assert_eq!(
+            visible_text_for_blank_replace(
+                "。",
+                Some("今日はいい天気ですね"),
+                "今日はいい天気ですね",
+                None,
+                1
+            ),
+            "今日はいい天気ですね"
+        );
         assert_eq!(
             longer_turn_surface_text("今日はいい天気", Some("今日はいい天気ですね")),
             "今日はいい天気ですね"

@@ -496,6 +496,62 @@ fn turn_runtime_empty_incoming_completion_keeps_uncovered_tail_without_advancing
 }
 
 #[test]
+fn turn_runtime_blank_replace_keeps_visible_text_and_uncovered_tail() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut streaming_interim = interim_request_for_turn(1, 1);
+    streaming_interim.close_reason = Some(SegmentCloseReason::InterimChunkReached);
+    streaming_interim.source_audio = vec![1.0; 320];
+    streaming_interim.source_vad_results = vec![vad(true)];
+    streaming_interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(320)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(streaming_interim.clone());
+    asr_handle.complete_request_with_text(&streaming_interim, "今日はいい天気ですね");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.source_audio = [vec![1.0; 320], vec![2.0; 80]].concat();
+    completion.source_vad_results = vec![vad(true), vad(true)];
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(400)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "。");
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs.last().expect("final output should be emitted");
+    assert_eq!(
+        final_output.text, "今日はいい天気ですね。",
+        "blank completion must not wipe the longer visible streaming hypothesis"
+    );
+    assert!(final_output.is_final);
+    assert_eq!(final_output.segment_id, 1);
+    assert_eq!(
+        final_output.phrase,
+        [vec![1.0; 320], vec![2.0; 80]].concat(),
+        "replacing the latest segment with blank text must still keep uncovered tail audio"
+    );
+}
+
+#[test]
 fn turn_runtime_rerecognition_does_not_hear_already_covered_completion_audio() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)
@@ -682,6 +738,8 @@ fn turn_runtime_overlapping_completion_skips_unmatched_covered_audio_and_keeps_t
 
 #[test]
 fn turn_runtime_faded_child_completion_keeps_new_speech_despite_range_overlap() {
+    const CHUNK: usize = 512;
+    const FADE: usize = 160;
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)
         .interim_display(true)
@@ -690,8 +748,6 @@ fn turn_runtime_faded_child_completion_keeps_new_speech_despite_range_overlap() 
     let outputs = builder.use_recording_phrase_sink();
     let (mut runtime, _config) = builder.build();
 
-    const CHUNK: usize = 512;
-    const FADE: usize = 160;
     let mut interim = interim_request_for_turn(1, 1);
     interim.source_audio = vec![1.0; CHUNK * 2];
     interim.audio = interim.source_audio.clone();
@@ -1143,8 +1199,8 @@ fn turn_runtime_completion_overlap_offset_ignores_leading_asr_only_padding_on_so
 }
 
 #[test]
-fn turn_runtime_completion_overlap_token_trim_uses_source_timeline_when_timestamps_omit_leading_padding(
-) {
+fn turn_runtime_completion_overlap_token_trim_uses_source_timeline_when_timestamps_omit_leading_padding()
+ {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
     let outputs = builder.use_recording_sink();
@@ -1202,17 +1258,14 @@ fn turn_runtime_completion_overlap_token_trim_uses_source_timeline_when_timestam
 
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![
-            output_snapshot("全体...", false, 1, 1),
-            output_snapshot("全体追加分。", true, 1, 2),
-        ],
+        vec![output_snapshot("全体...", false, 1, 1), output_snapshot("全体追加分。", true, 1, 2),],
         "source-relative completion timestamps must not be trimmed against the padded audio overlap"
     );
 }
 
 #[test]
-fn turn_runtime_completion_overlap_token_trim_keeps_padded_audio_timeline_when_timestamps_include_padding(
-) {
+fn turn_runtime_completion_overlap_token_trim_keeps_padded_audio_timeline_when_timestamps_include_padding()
+ {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
     let outputs = builder.use_recording_sink();
@@ -2035,8 +2088,8 @@ fn turn_runtime_longer_completion_rewrite_is_visible_while_rerecognition_is_in_f
 }
 
 #[test]
-fn turn_runtime_truncated_completion_does_not_clobber_longer_interim_while_rerecognition_is_in_flight(
-) {
+fn turn_runtime_truncated_completion_does_not_clobber_longer_interim_while_rerecognition_is_in_flight()
+ {
     let mut builder = RecognitionSessionTestBuilder::new()
         .asr_model(AsrModel::ReazonSpeechK2V2)
         .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8)
