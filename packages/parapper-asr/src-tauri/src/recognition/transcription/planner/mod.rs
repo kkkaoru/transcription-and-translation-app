@@ -53,10 +53,27 @@ impl PendingAsrSegment {
         SegmentId(self.segment_id)
     }
 
-    fn is_contiguous_with(&self, next: &Self) -> bool {
+    pub(in crate::recognition) fn is_contiguous_with(&self, next: &Self) -> bool {
         self.range.end_sample == next.range.start_sample
             && next.previous_segment_id == Some(self.segment_id)
             && self.last_segment_id() <= next.last_segment_id()
+    }
+
+    /// Fold a contiguous breath-chain interim into one segment so turn-check
+    /// promotion can emit a single CompletionCheck over the full utterance.
+    pub(in crate::recognition) fn merge_contiguous_interim(mut self, next: Self) -> Self {
+        debug_assert!(self.is_contiguous_with(&next));
+        let first_segment_id = self.first_segment_id().0;
+        self.audio.extend(next.audio);
+        self.vad_results.extend(next.vad_results);
+        self.source_audio.extend(next.source_audio);
+        self.source_vad_results.extend(next.source_vad_results);
+        self.range = self.range.merge(next.range);
+        self.segment_id = next.segment_id;
+        self.previous_segment_id =
+            (first_segment_id != self.segment_id).then_some(first_segment_id);
+        self.reason = next.reason;
+        self
     }
 }
 
@@ -274,6 +291,23 @@ mod tests {
         assert_eq!(plan.audio(), vec![1.0; 10]);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending.front().map(|segment| segment.segment_id), Some(2));
+    }
+
+    #[test]
+    fn merge_contiguous_interim_preserves_first_last_segment_ids_and_audio() {
+        let left = pending_segment(1, None, SegmentCloseReason::InterimResultSilenceReached, 0..10);
+        let right =
+            pending_segment(2, Some(1), SegmentCloseReason::InterimResultSilenceReached, 10..25);
+        assert!(left.is_contiguous_with(&right));
+
+        let merged = left.merge_contiguous_interim(right);
+        assert_eq!(merged.first_segment_id().0, 1);
+        assert_eq!(merged.last_segment_id().0, 2);
+        assert_eq!(merged.turn_id().0, 1);
+        assert_eq!(merged.range.start_sample, GlobalSampleIndex(0));
+        assert_eq!(merged.range.end_sample, GlobalSampleIndex(25));
+        assert_eq!(merged.source_audio, [vec![1.0; 10], vec![2.0; 15]].concat());
+        assert_eq!(merged.reason, SegmentCloseReason::InterimResultSilenceReached);
     }
 
     #[test]

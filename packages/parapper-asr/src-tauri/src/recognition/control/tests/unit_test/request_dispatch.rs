@@ -327,6 +327,50 @@ fn turn_runtime_turn_check_promotes_silence_interim_to_completion_after_nemotron
 }
 
 #[test]
+fn turn_runtime_turn_check_promotes_contiguous_interim_silence_chain_to_completion() {
+    // Mid-utterance breath closes interim segment 1, then speech continues into
+    // segment 2. When genuine end silence arrives, both InterimResultSilenceReached
+    // segments may still be queued. Promotion must merge that contiguous chain into
+    // one CompletionCheck instead of ignoring the turn-check (range containment
+    // fails across abutting non-overlapping ranges) and dispatching InterimDisplay.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .build();
+    runtime_state(&mut runtime)
+        .pending_segment(1, None, SegmentCloseReason::InterimResultSilenceReached, 0..100)
+        .pending_segment(2, Some(1), SegmentCloseReason::InterimResultSilenceReached, 100..200)
+        .pending_turn_check(2);
+
+    runtime.step();
+
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("turn-check must promote the contiguous interim silence chain");
+    assert_eq!(completion.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(completion.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(
+        completion.target.range,
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(200)),
+        "promoted completion must cover the full contiguous interim chain"
+    );
+    assert_eq!(completion.target.first_segment_id, Some(SegmentId(1)));
+    assert_eq!(completion.target.last_segment_id, Some(SegmentId(2)));
+    assert_eq!(
+        completion.source_audio,
+        [vec![1.0; 100], vec![2.0; 100]].concat(),
+        "promoted completion must keep audio from every breath-chained interim segment"
+    );
+    assert!(
+        runtime.pending.turn_check.is_none(),
+        "turn-check must be consumed after promoting the contiguous interim chain"
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+}
+
+#[test]
 fn turn_runtime_turn_check_promotes_pending_interim_while_open_turn_exists() {
     let (mut runtime, config) =
         RecognitionSessionTestBuilder::new().turn_detector(TurnDetector::Simple).build();

@@ -270,14 +270,27 @@ impl RecognitionSession {
             self.dispatch_next_asr_request_if_idle();
             return false;
         }
-        for _ in 0..index {
-            self.pending.asr_segments.pop_front();
-        }
 
-        let Some(segment) = self.pending.asr_segments.front_mut() else {
+        let mut promoted: Option<PendingAsrSegment> = None;
+        for _ in 0..=index {
+            let Some(segment) = self.pending.asr_segments.pop_front() else {
+                return false;
+            };
+            promoted = Some(match promoted {
+                None => segment,
+                // Covered prefix (e.g. cumulative streaming geometry already inside
+                // the silence interim): keep the covering segment only.
+                Some(previous) if segment.range.contains(previous.range) => segment,
+                // Contiguous mid-utterance breath chain: fold audio into one
+                // CompletionCheck that spans every interim silence segment.
+                Some(previous) => previous.merge_contiguous_interim(segment),
+            });
+        }
+        let Some(mut segment) = promoted else {
             return false;
         };
         segment.reason = SegmentCloseReason::EndSilenceReached;
+        self.pending.asr_segments.push_front(segment);
         self.dispatch_next_asr_request_if_idle();
         self.requests.in_flight_request.is_some()
     }
@@ -288,13 +301,33 @@ impl RecognitionSession {
                 && segment.last_segment_id().0 == previous_segment_id
         })?;
         let candidate = self.pending.asr_segments.get(candidate_index)?;
-        let preceding_segments_are_covered =
-            self.pending.asr_segments.iter().take(candidate_index).all(|segment| {
-                segment.kind() == AsrTaskKind::InterimDisplay
-                    && segment.turn_id() == candidate.turn_id()
-                    && candidate.range.contains(segment.range)
-            });
-        preceding_segments_are_covered.then_some(candidate_index)
+        let preceding = self.pending.asr_segments.iter().take(candidate_index).collect::<Vec<_>>();
+        if preceding.is_empty() {
+            return Some(candidate_index);
+        }
+        if !preceding.iter().all(|segment| segment.kind() == AsrTaskKind::InterimDisplay) {
+            return None;
+        }
+        // Existing path: cumulative Nemotron chunks / covered silence already
+        // inside the candidate range can be dropped on promotion.
+        if preceding.iter().all(|segment| {
+            segment.turn_id() == candidate.turn_id() && candidate.range.contains(segment.range)
+        }) {
+            return Some(candidate_index);
+        }
+        // Breath-chained interim silences abut without overlapping. Require a
+        // contiguous previous→next segment chain ending at the candidate so
+        // turn-check can still promote the whole utterance to CompletionCheck.
+        if preceding.iter().any(|segment| {
+            segment.reason != SegmentCloseReason::InterimResultSilenceReached
+        }) {
+            return None;
+        }
+        let chain_ok = preceding.windows(2).all(|pair| pair[0].is_contiguous_with(pair[1]))
+            && preceding
+                .last()
+                .is_some_and(|last| last.is_contiguous_with(candidate));
+        chain_ok.then_some(candidate_index)
     }
 
     pub(in crate::recognition) fn emit_stale_turn_finals(&mut self, before_turn_id: u64) {
