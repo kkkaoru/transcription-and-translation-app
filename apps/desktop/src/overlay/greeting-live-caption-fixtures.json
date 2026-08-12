@@ -200,6 +200,12 @@
       "input": "おはようーおえますか",
       "expectedOverlay": "おはようーきこえますか",
       "note": "Prolonged おはよう + おえますか"
+    },
+    {
+      "id": "ohayou-gozaimasu-hearing-prolonged",
+      "input": "おはようございますーおえますか",
+      "expectedOverlay": "おはようございますーきこえますか",
+      "note": "Prolonged おはようございます + おえますか"
     }
   ],
   "merge": [
