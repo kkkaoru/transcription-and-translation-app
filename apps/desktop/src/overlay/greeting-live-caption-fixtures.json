@@ -505,6 +505,27 @@
       "maxChars": 28,
       "expectedLines": ["こんばんはきこえますか"],
       "note": "Do not wrap after こんばんは so the hearing check stays visible"
+    },
+    {
+      "id": "stale-vibrato-offset-ohayou",
+      "text": "おはようきこえますか",
+      "sentenceEndOffsets": [4],
+      "expectedVisible": "おはようきこえますか",
+      "note": "Stale Vibrato offset after おはよう must not page away きこえますか"
+    },
+    {
+      "id": "zenz-period-ohayou-after-sanitize",
+      "text": "おはよう。聞こえますか。",
+      "sanitize": true,
+      "expectedVisible": "おはよう聞こえますか。",
+      "note": "Sanitize ZenZ 。 then keep おはよう + hearing check on one plate"
+    },
+    {
+      "id": "no-soft-wrap-after-ohayou",
+      "text": "おはようきこえますか",
+      "maxChars": 28,
+      "expectedLines": ["おはようきこえますか"],
+      "note": "Do not wrap after おはよう so the hearing check stays visible"
     }
   ]
 }
