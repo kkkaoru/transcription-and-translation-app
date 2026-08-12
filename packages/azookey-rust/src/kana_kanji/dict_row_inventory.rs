@@ -248,9 +248,7 @@ fn classify_conversion_failure(
             case.inventory_hint
         );
     }
-    if lookup_sorted(dictionary, case.input).is_empty()
-        && !texts.iter().any(|text| *text == case.expected)
-    {
+    if lookup_sorted(dictionary, case.input).is_empty() && !texts.contains(&case.expected) {
         return format!(
             "prune/ranking (no compound row for {:?}; piece rows present; top={actual_top:?}; hint={})",
             case.input, case.inventory_hint
@@ -551,9 +549,7 @@ fn classify_conversion_failure_reports_missing_quality_and_ranking() {
 
 #[test]
 fn lookup_sorted_orders_by_descending_value() {
-    let dictionary = load_sparse_tsv_dictionary(
-        "あ\t低\t-9\nあ\t高\t-1\nあ\t中\t-5\n",
-    );
+    let dictionary = load_sparse_tsv_dictionary("あ\t低\t-9\nあ\t高\t-1\nあ\t中\t-5\n");
     let entries = lookup_sorted(&dictionary, "あ");
     assert_eq!(entries.len(), 3);
     assert_eq!(entries[0].surface, "高");

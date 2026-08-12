@@ -429,6 +429,12 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     // Bare noun/adjective roots must not beat conjugational stems before ます.
     ("あめがふります", "雨が降ります"),
     ("ふります", "降ります"),
+    // Hiragana identity before ます must not beat a conjugational Kanji stem.
+    ("のみます", "飲みます"),
+    ("みずをのみます", "水を飲みます"),
+    // Bare roots / one-mora Kanji must not absorb stem + evidential そうです.
+    ("ふりそうです", "振りそうです"),
+    ("あめがふりそうです", "雨が振りそうです"),
     // Full-span person plural must outrank rare short heads + たち.
     ("わたしたちはがくせいです", "私たちは学生です"),
     ("わたしたち", "私たち"),

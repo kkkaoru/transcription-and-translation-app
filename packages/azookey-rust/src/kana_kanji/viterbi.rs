@@ -100,8 +100,9 @@ const DOMINATED_CONJUGATIONAL_AFTER_OBJECT_PENALTY: f32 = -3.0;
 /// Soft-demote non-conjugational Kanji when a conjugational stem alternative
 /// exists for the same reading and the next edge is a jodoushi identity
 /// auxiliary (`ます`). Bare roots such as `古` otherwise beat verb stems
-/// (`降り`) on connection cost alone before polite endings.
-const BARE_CONTENT_BEFORE_JODOUSHI_PENALTY: f32 = -8.0;
+/// (`降り`) on connection cost alone before polite endings. Also covers
+/// evidential `そうです`, where the same bare roots outrank `降り`/`振り`.
+const BARE_CONTENT_BEFORE_JODOUSHI_PENALTY: f32 = -12.0;
 /// Soft-demote raw Katakana ruby-id rows before a jodoushi identity when a
 /// conjugational Kanji stem exists for the same reading. Without this, loanword
 /// orthography such as `フリ`+`ます` can beat `降り`+`ます` after bare roots are
@@ -111,6 +112,16 @@ const RUBY_IDENTITY_BEFORE_JODOUSHI_PENALTY: f32 = -4.0;
 /// before a jodoushi identity auxiliary. Complements the bare-content demotion
 /// so `降り`+`ます` stays ahead of near-tie ruby and compound leftovers.
 const CONJUGATIONAL_STEM_BEFORE_JODOUSHI_BONUS: f32 = 3.0;
+/// Soft-demote a hiragana identity before a jodoushi auxiliary when a
+/// conjugational Kanji stem exists for the same reading (`のみ`+`ます` →
+/// `飲み`+`ます`). Joshi-band and conjugational-band kana identities both
+/// outrank stems via cheap transitions; jodoushi-band identities such as
+/// `あり` before `ます` stay score-driven.
+const HIRAGANA_IDENTITY_BEFORE_JODOUSHI_PENALTY: f32 = -4.0;
+/// Soft-demote a one-mora non-conjugational Kanji when a longer conjugational
+/// stem starts at the same offset and the leftover is a jodoushi identity
+/// (`ふ`+`理想`+`です` under `降り`+`そうです`). Keeps the short Kanji in n-best.
+const SHORT_KANJI_HIDING_STEM_BEFORE_JODOUSHI_PENALTY: f32 = -12.0;
 /// Soft-demote a short converted head when the remaining reading begins with a
 /// closed-class personification suffix and a longer converted dictionary row
 /// already covers head+suffix (`私たち` covering `わたし`+`たち`). Keeps rare
@@ -893,6 +904,20 @@ pub fn convert_with_dictionary(
                                 entry,
                                 max_dictionary_word_chars,
                             )
+                            + hiragana_identity_before_jodoushi_penalty(
+                                dictionary,
+                                &chars,
+                                end,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
+                            + short_kanji_hiding_stem_before_jodoushi_penalty(
+                                dictionary,
+                                &chars,
+                                start,
+                                entry,
+                                max_dictionary_word_chars,
+                            )
                             + conjugational_stem_before_jodoushi_bonus(
                                 dictionary,
                                 &chars,
@@ -1633,7 +1658,7 @@ fn single_kanji_before_verb_bonus(
                 && candidate.reading.starts_with(&entry.reading)
                 && candidate.surface.starts_with(&entry.surface)
                 && contains_kanji(&candidate.surface)
-                && candidate.surface.chars().any(|character| is_hiragana(character))
+                && candidate.surface.chars().any(is_hiragana)
         });
     if has_longer_extension {
         return NO_SCORE;
@@ -1707,7 +1732,7 @@ fn bare_kanji_stem_before_verb_penalty(
                 && candidate.surface.starts_with(&entry.surface)
                 && candidate.surface.chars().count() > entry.surface.chars().count()
                 && is_conjugational_content_cid(candidate.lcid)
-                && candidate.surface.chars().any(|character| is_hiragana(character))
+                && candidate.surface.chars().any(is_hiragana)
         });
     if has_conjugational_stem_alternative {
         BARE_KANJI_STEM_BEFORE_VERB_PENALTY
@@ -1916,6 +1941,78 @@ fn ruby_identity_before_jodoushi_penalty(
     }
 }
 
+/// Soft-demote a hiragana identity before a jodoushi auxiliary when a
+/// conjugational Kanji stem exists for the same reading. Captions attach
+/// `ます` to verb stems (`飲み`), not to kana identities (`のみ`). Jodoushi-band
+/// identities (`あり`) keep their morphology-driven ranking.
+fn hiragana_identity_before_jodoushi_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    if entry.surface != entry.reading
+        || entry.reading.chars().count() < MIN_LEXICAL_ENTRY_CHARS
+        || is_jodoushi_cid(entry.lcid)
+        || is_jodoushi_cid(entry.rcid)
+    {
+        return NO_SCORE;
+    }
+    if !following_edge_is_jodoushi_auxiliary(dictionary, chars, end, max_dictionary_word_chars) {
+        return NO_SCORE;
+    }
+    if has_conjugational_stem_alternative(dictionary, entry) {
+        HIRAGANA_IDENTITY_BEFORE_JODOUSHI_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote a one-mora non-conjugational Kanji when a longer conjugational
+/// stem starts at the same offset and leaves a jodoushi identity remainder
+/// (`不` under `降り`+`そうです`). Noun compounds such as `理想` otherwise
+/// absorb the stem+auxiliary reading into an unrelated word.
+fn short_kanji_hiding_stem_before_jodoushi_penalty(
+    dictionary: &AzooKeyDictionary,
+    chars: &[char],
+    start: usize,
+    entry: &DictionaryEntry,
+    max_dictionary_word_chars: usize,
+) -> f32 {
+    let len = entry.reading.chars().count();
+    if len != 1
+        || !contains_kanji(&entry.surface)
+        || entry.surface == entry.reading
+        || is_conjugational_content_cid(entry.lcid)
+        || is_particle_reading(&entry.reading)
+    {
+        return NO_SCORE;
+    }
+    let has_hiding_stem = dictionary
+        .entries_starting_at(chars, start, max_dictionary_word_chars)
+        .unwrap_or_default()
+        .iter()
+        .any(|candidate| {
+            let stem_len = candidate.reading.chars().count();
+            stem_len > len
+                && is_conjugational_content_cid(candidate.lcid)
+                && contains_kanji(&candidate.surface)
+                && candidate.surface.chars().any(is_hiragana)
+                && following_edge_is_jodoushi_auxiliary(
+                    dictionary,
+                    chars,
+                    start + stem_len,
+                    max_dictionary_word_chars,
+                )
+        });
+    if has_hiding_stem {
+        SHORT_KANJI_HIDING_STEM_BEFORE_JODOUSHI_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
 /// Soft-boost a conjugational stem with an inflectional kana tail immediately
 /// before a jodoushi identity auxiliary when non-stem alternatives exist.
 fn conjugational_stem_before_jodoushi_bonus(
@@ -2088,15 +2185,17 @@ fn thickness_context_bonus(
     ) {
         return NO_SCORE;
     }
-    let slice_bonus = following_clause_has_surface_cue(
+    let slice_bonus = if following_clause_has_surface_cue(
         dictionary,
         chars,
         end,
         max_dictionary_word_chars,
         &['切', '刻', '削'],
-    )
-    .then_some(THICKNESS_SLICE_CONTEXT_BONUS)
-    .unwrap_or(NO_SCORE);
+    ) {
+        THICKNESS_SLICE_CONTEXT_BONUS
+    } else {
+        NO_SCORE
+    };
     THICKNESS_CONTEXT_BONUS + slice_bonus
 }
 
@@ -2565,7 +2664,7 @@ fn contextual_thickness_bonus(
         .entries_starting_at(after, 0, max_dictionary_word_chars)
         .unwrap_or_default()
         .into_iter()
-        .filter(|candidate| is_grammatical_continuation_entry(candidate))
+        .filter(is_grammatical_continuation_entry)
         .max_by_key(|candidate| candidate.reading.chars().count())
     else {
         return NO_SCORE;
@@ -4689,6 +4788,12 @@ mod tests {
         for (input, expected) in [
             ("ふります", "降ります"),
             ("あめがふります", "雨が降ります"),
+            // Joshi/conjugational-band kana identities must not beat verb stems.
+            ("のみます", "飲みます"),
+            ("みずをのみます", "水を飲みます"),
+            // Bare roots + noun compounds must not absorb stem+evidential そう.
+            ("ふりそうです", "振りそうです"),
+            ("あめがふりそうです", "雨が振りそうです"),
             // Already-correct polite verbs must not regress.
             ("はれます", "晴れます"),
             ("いきます", "行きます"),
@@ -4867,6 +4972,72 @@ mod tests {
         .next()
         .expect("bare fixture conversion should produce a candidate");
         assert_eq!(bare.text, "古", "bare ふり stays score-driven without ます");
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn fixture_hiragana_identity_before_jodoushi_prefers_kanji_stem() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-hiragana-identity-jodoushi-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        // Conjugational-band kana identity outranks the Kanji stem on cheap
+        // transitions unless the identity-before-jodoushi prior demotes it.
+        fs::write(
+            &root,
+            "のみ\tのみ\t-1\t767\t767\t420\n\
+             のみ\t飲み\t-2\t767\t767\t290\n\
+             ます\tます\t-0.5\t491\t491\t17\n",
+        )
+        .expect("hiragana-identity fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("hiragana-identity fixture should load")
+        .without_builtin_entries_for_test();
+
+        let chars = "のみます".chars().collect::<Vec<_>>();
+        let identity = dictionary
+            .lookup_exact("のみ")
+            .expect("のみ lookup")
+            .into_iter()
+            .find(|entry| entry.surface == "のみ")
+            .expect("identity のみ");
+        let stem = dictionary
+            .lookup_exact("のみ")
+            .expect("のみ lookup")
+            .into_iter()
+            .find(|entry| entry.surface == "飲み")
+            .expect("stem 飲み");
+        assert_eq!(
+            super::hiragana_identity_before_jodoushi_penalty(&dictionary, &chars, 2, &identity, 24),
+            super::HIRAGANA_IDENTITY_BEFORE_JODOUSHI_PENALTY,
+            "kana identity before ます must be demoted"
+        );
+        assert_eq!(
+            super::hiragana_identity_before_jodoushi_penalty(&dictionary, &chars, 2, &stem, 24),
+            super::NO_SCORE,
+            "Kanji stem must not receive the identity demotion"
+        );
+
+        let top = convert_with_dictionary(
+            "のみます",
+            &dictionary,
+            ConversionOptions { n_best: 4, ..ConversionOptions::default() },
+        )
+        .into_iter()
+        .next()
+        .expect("fixture conversion should produce a candidate");
+        assert_eq!(
+            top.text, "飲みます",
+            "Kanji stem must beat kana identity before ます: {}",
+            top.text
+        );
         let _ = fs::remove_file(root);
     }
 
