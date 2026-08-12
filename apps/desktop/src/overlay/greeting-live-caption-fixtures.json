@@ -296,6 +296,12 @@
       "input": "おはようーあえますか",
       "expectedOverlay": "おはようーきこえますか",
       "note": "Prolonged おはよう + あえますか"
+    },
+    {
+      "id": "ohayou-gozaimasu-hearing-prolonged-ae",
+      "input": "おはようございますーあえますか",
+      "expectedOverlay": "おはようございますーきこえますか",
+      "note": "Prolonged おはようございます + あえますか"
     }
   ],
   "merge": [
