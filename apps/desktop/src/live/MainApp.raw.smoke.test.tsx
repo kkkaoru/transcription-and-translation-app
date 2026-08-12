@@ -18,6 +18,7 @@ import {
   reportCrossIdTranslationSaved,
   resolveLiveNoticeText,
   resolveTranscribeAudioChunkTimeoutMs,
+  shouldReleaseChunkQueueAfterSourcePaint,
   shouldShowPipelineDropNotice,
   TRANSCRIBE_AUDIO_CHUNK_DEFAULT_TIMEOUT_MS,
   withFiniteTimeout,
@@ -198,6 +199,14 @@ describe("MainApp ASR lifecycle guards", () => {
     expect(acceptsPipelineStageGeneration(undefined, 2)).toBe(true);
     expect(acceptsPipelineStageGeneration(null, 2)).toBe(true);
     expect(acceptsPipelineStageGeneration(undefined, null)).toBe(true);
+  });
+
+  it("releases the chunk queue once a provisional source paint sticks", () => {
+    expect(shouldReleaseChunkQueueAfterSourcePaint(true, "こんにちは")).toBe(true);
+    expect(shouldReleaseChunkQueueAfterSourcePaint(true, "  です明日は  ")).toBe(true);
+    expect(shouldReleaseChunkQueueAfterSourcePaint(false, "こんにちは")).toBe(false);
+    expect(shouldReleaseChunkQueueAfterSourcePaint(true, "")).toBe(false);
+    expect(shouldReleaseChunkQueueAfterSourcePaint(true, "   ")).toBe(false);
   });
 
   it("logs one diagnostic per newly saved cross-ID translation", () => {
