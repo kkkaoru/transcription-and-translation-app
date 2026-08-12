@@ -544,6 +544,102 @@ describe("OverlayApp caption replay", () => {
     }
   });
 
+  it("re-arms the short-latest hold after idle restores preview", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      await act(async () => {
+        captionListener?.(sourceCaption());
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
+        "正規化された字幕",
+      );
+
+      await act(async () => {
+        runtimeListener?.({
+          status: "idle",
+          platform: "macos",
+          backendReachable: true,
+          nativeOutput: "syphon",
+          lastError: null,
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
+        "これはプレビュー用の字幕です。",
+      );
+
+      let resolveHistory!: (events: PipelineStageEvent[]) => void;
+      mocks.getPipelineStageHistory.mockReturnValue(
+        new Promise<PipelineStageEvent[]>((resolve) => {
+          resolveHistory = resolve;
+        }),
+      );
+
+      await act(async () => {
+        runtimeListener?.({
+          status: "capturing",
+          platform: "macos",
+          backendReachable: true,
+          nativeOutput: "syphon",
+          lastError: null,
+        });
+        captionListener?.({
+          id: "parapper:s:1:8",
+          sourceText: "今日は",
+          translationText: "",
+          sourceLanguage: "ja",
+          targetLanguage: "en",
+          startedAt: 10,
+          receivedAt: 20,
+          stage: "source",
+          sequence: 0,
+          isFinal: false,
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
+        "これはプレビュー用の字幕です。",
+      );
+
+      await act(async () => {
+        resolveHistory([
+          {
+            stage: "asr",
+            utteranceId: "parapper:s:1:8",
+            modelId: "parapper-ja",
+            inputSnippet: "",
+            outputText: "きょうはいいてんきですね",
+            startedAt: 40,
+            at: 80,
+            durationMs: 40,
+            ok: true,
+          },
+        ]);
+        await Promise.resolve();
+      });
+      await flush();
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe(
+        "きょうはいいてんきですね",
+      );
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
   it("keeps a longer ASR provisional when a stale shorter caption:update races in", async () => {
     history.pushState({}, "", "/?native=1");
     mocks.getLatestCaption.mockResolvedValue(null);

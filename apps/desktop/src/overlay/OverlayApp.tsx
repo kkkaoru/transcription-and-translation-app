@@ -19,7 +19,11 @@ import { useProgressiveCaptionReveal } from "../live/useProgressiveCaptionReveal
 import { OverlayView } from "./CaptionOverlay";
 import { createEmptyCaption, createHoldClearedCaption, createPreviewCaption } from "./captions";
 import { NativeFramePublisher } from "./NativeFramePublisher";
-import { retainHeldOverlayCaption, shouldHoldCaptionOverPreview } from "./overlay-first-caption";
+import {
+  rearmPreviewHold,
+  retainHeldOverlayCaption,
+  shouldHoldCaptionOverPreview,
+} from "./overlay-first-caption";
 
 /**
  * The overlay receives only the standard user-facing caption surface. Raw ASR
@@ -159,6 +163,9 @@ export const OverlayApp = () => {
       }
       applyCaption(nextCaption);
     };
+    let replayLatestAsrStage = (): void => {
+      settleAsrHistory();
+    };
     const replayLatestCaption = (): void => {
       // Do not await replay in the effect. A missing command in an older
       // bundle, a disconnected webview, or a rejected IPC call must not leave
@@ -236,6 +243,9 @@ export const OverlayApp = () => {
           idle = status.status === "idle";
           if (status.status === "starting" || status.status === "capturing") {
             idle = false;
+            if (!asrHistorySettled) {
+              replayLatestAsrStage();
+            }
           }
           if (idle && !status.lastError) {
             // Native Syphon/Spout path restores sample text for OBS layout checks.
@@ -243,6 +253,12 @@ export const OverlayApp = () => {
             const cleared = nativeRenderer ? createPreviewCaption() : createEmptyCaption();
             captionRef.current = cleared;
             setCaption(cleared);
+            const nextHold = rearmPreviewHold(
+              cleared.id,
+              typeof bridge.listenPipelineStages === "function",
+            );
+            asrHistorySettled = nextHold.asrHistorySettled;
+            heldOverPreview = nextHold.heldOverPreview;
           }
         })
         .then((dispose) => {
@@ -273,7 +289,7 @@ export const OverlayApp = () => {
           ingestCaption(provisional);
         }
       };
-      const replayLatestAsrStage = (): void => {
+      replayLatestAsrStage = (): void => {
         if (typeof bridge.getPipelineStageHistory !== "function") {
           settleAsrHistory();
           return;

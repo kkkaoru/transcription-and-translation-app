@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { CaptionPayload } from "../core/types";
-import { retainHeldOverlayCaption, shouldHoldCaptionOverPreview } from "./overlay-first-caption";
+import {
+  rearmPreviewHold,
+  retainHeldOverlayCaption,
+  shouldHoldCaptionOverPreview,
+} from "./overlay-first-caption";
 
 const caption = (overrides: Partial<CaptionPayload>): CaptionPayload => ({
   id: "parapper:s:1:8",
@@ -34,6 +38,27 @@ describe("shouldHoldCaptionOverPreview", () => {
   it("does not hold after ASR history has settled or once preview is gone", () => {
     expect(shouldHoldCaptionOverPreview("preview", caption({}), true)).toBe(false);
     expect(shouldHoldCaptionOverPreview("parapper:s:1:8", caption({}), false)).toBe(false);
+  });
+});
+
+describe("rearmPreviewHold", () => {
+  it("re-arms the short-latest hold when idle restores preview", () => {
+    const next = rearmPreviewHold("preview", true);
+    expect(next.asrHistorySettled).toBe(false);
+    expect(next.heldOverPreview).toBeNull();
+    expect(shouldHoldCaptionOverPreview("preview", caption({}), next.asrHistorySettled)).toBe(true);
+  });
+
+  it("does not hold forever when idle restores empty or pipeline stages are unavailable", () => {
+    expect(rearmPreviewHold("empty", true).asrHistorySettled).toBe(true);
+    expect(rearmPreviewHold("preview", false).asrHistorySettled).toBe(true);
+    expect(
+      shouldHoldCaptionOverPreview(
+        "preview",
+        caption({}),
+        rearmPreviewHold("preview", false).asrHistorySettled,
+      ),
+    ).toBe(false);
   });
 });
 

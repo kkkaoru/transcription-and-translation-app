@@ -25,3 +25,16 @@ export const retainHeldOverlayCaption = (
   }
   return mergeCaptionPayload(held, incoming) ?? held;
 };
+
+/**
+ * Successful idle restores design-time preview. Drop any held latest and wait
+ * for ASR history again so the next session cannot first-paint a short caption.
+ * Without pipeline stages there is nothing to wait for, so stay settled.
+ */
+export const rearmPreviewHold = (
+  restoredCaptionId: string,
+  pipelineStagesAvailable: boolean,
+): { asrHistorySettled: boolean; heldOverPreview: null } => ({
+  asrHistorySettled: restoredCaptionId !== "preview" || !pipelineStagesAvailable,
+  heldOverPreview: null,
+});
