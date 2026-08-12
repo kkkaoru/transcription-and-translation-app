@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearCaptionMergeDiagnostics,
   getCaptionMergeDiagnostics,
+  isStaleShorterCaptionSurface,
   isTruncatedCaptionRewrite,
   mergeCaptionPayload,
   takePendingCaptionTranslation,
@@ -1945,6 +1946,7 @@ describe("mergeCaptionPayload", () => {
       sourceText: "きょうはいいてんきですね",
       azookeyInputText: "きょうはいいてんきですね",
       isFinal: true,
+      provisional: true,
     });
   });
 
@@ -2979,8 +2981,8 @@ describe("mergeCaptionPayload", () => {
     expect(merged).toMatchObject({
       sourceText: "今日はいい天気ですね",
       isFinal: true,
+      provisional: true,
     });
-    expect(merged?.provisional).toBeUndefined();
   });
 
   it("keeps a longer painted tail when a truncated rewritten final is not a clean prefix", () => {
@@ -3080,6 +3082,8 @@ describe("mergeCaptionPayload", () => {
     expect(isTruncatedCaptionRewrite(truncatedRewrite.sourceText, "")).toBe(false);
     expect(isTruncatedCaptionRewrite("別の話題です", painted.sourceText)).toBe(false);
     expect(isTruncatedCaptionRewrite(truncatedRewrite.sourceText, painted.sourceText)).toBe(true);
+    expect(isStaleShorterCaptionSurface("今日は", "きょうはいいてんきですね")).toBe(true);
+    expect(isStaleShorterCaptionSurface("今日は", "きょうは")).toBe(false);
     expect(merged?.sourceText).toBe("電車が遅延してたから僕は学校に行かない");
     expect(merged?.sourceText).toContain("に行かない");
     expect(merged?.provisional).toBe(true);

@@ -67,7 +67,11 @@ import {
   noticeFromError,
   shouldToastAudioProcessingFailure,
 } from "../core/notices";
-import { createParapperOutputQueue, type ParapperOutputQueue } from "../core/parapper-output-queue";
+import {
+  createParapperOutputQueue,
+  type ParapperOutputQueue,
+  shouldSkipParapperNormalize,
+} from "../core/parapper-output-queue";
 import {
   buildParapperProvisionalCaption,
   buildProvisionalCaptionFromAsrStage,
@@ -1615,6 +1619,9 @@ export const MainApp = () => {
             if (provisional) {
               mergeAndCommitCaption(provisional);
               noteFirstCaption(provisional);
+            }
+            if (shouldSkipParapperNormalize(captionRef.current, output)) {
+              return;
             }
             const nextCaption = await bridge.normalizeParapperOutput(output);
             if (attempt !== captureAttempt.current) {

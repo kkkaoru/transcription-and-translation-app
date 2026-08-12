@@ -5,6 +5,7 @@ import {
   PARAPPER_OUTPUT_QUEUE_MAX_PENDING,
   PARAPPER_OUTPUT_QUEUE_MAX_TRACKED_TURNS,
   type ParapperOutputQueueItem,
+  shouldSkipParapperNormalize,
 } from "./parapper-output-queue";
 
 type Item = ParapperOutputQueueItem & { id: string };
@@ -301,6 +302,101 @@ describe("Parapper output coalescing queue", () => {
     release.shift()?.();
     await queue.whenIdle();
     expect(queue.getStats()).toMatchObject({ processed: 3, pending: 0, droppedPartials: 0 });
+  });
+
+  it("does not replace a longer kana pending rewrite with a shorter kanji partial or final", async () => {
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.id);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 11,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      text: "きょうは",
+      isFinal: false,
+      revision: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "longer-kana",
+      text: "きょうはいいてんきですね",
+      isFinal: false,
+      revision: 5,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "short-kanji-partial",
+      text: "今日は",
+      isFinal: false,
+      revision: 6,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "short-kanji-final",
+      text: "今日は",
+      isFinal: true,
+      revision: 7,
+      ...turn,
+    });
+
+    expect(queue.getStats()).toMatchObject({ pending: 2, droppedPartials: 1, inFlight: true });
+
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["in-flight", "longer-kana"]);
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["in-flight", "longer-kana", "short-kanji-final"]);
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(queue.getStats()).toMatchObject({ processed: 3, pending: 0 });
+  });
+
+  it("skips AzooKey for a stale shorter partial when a longer same-id surface already painted", () => {
+    expect(
+      shouldSkipParapperNormalize(
+        { id: "parapper:s:1:8", sourceText: "きょうはいいてんきですね" },
+        {
+          isFinal: false,
+          sessionId: "s",
+          turnSessionId: 1,
+          turnId: 8,
+          text: "今日は",
+        },
+      ),
+    ).toBe(true);
+    expect(
+      shouldSkipParapperNormalize(
+        { id: "parapper:s:1:8", sourceText: "きょうはいいてんきですね" },
+        {
+          isFinal: true,
+          sessionId: "s",
+          turnSessionId: 1,
+          turnId: 8,
+          text: "今日は",
+        },
+      ),
+    ).toBe(false);
+    expect(
+      shouldSkipParapperNormalize(
+        { id: "parapper:s:1:9", sourceText: "きょうはいいてんきですね" },
+        {
+          isFinal: false,
+          sessionId: "s",
+          turnSessionId: 1,
+          turnId: 8,
+          text: "今日は",
+        },
+      ),
+    ).toBe(false);
   });
 
   it("uses sourceText when deciding to keep a longer pending rewrite", async () => {

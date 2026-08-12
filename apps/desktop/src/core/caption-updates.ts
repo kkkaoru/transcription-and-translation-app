@@ -640,6 +640,22 @@ export const isTruncatedCaptionRewrite = (incoming: string, painted: string): bo
   return isLongerSurfaceContinuation(nextText, currentText);
 };
 
+/**
+ * True when `incoming` is a prefix cut or a much shorter conversion of
+ * `painted` (今日は vs a long kana tail). Same-revision きょうは → 今日は stays
+ * similar length and is not stale.
+ */
+export const isStaleShorterCaptionSurface = (incoming: string, painted: string): boolean => {
+  const nextText = incoming.trim();
+  const currentText = painted.trim();
+  if (!nextText || !currentText || [...nextText].length >= [...currentText].length) {
+    return false;
+  }
+  return (
+    isTruncatedCaptionRewrite(nextText, currentText) || isMuchShorterSurface(nextText, currentText)
+  );
+};
+
 const stitchConvertedHeadWithPaintedTail = (shorter: string, longer: string): string | null => {
   if (!shorter || !longer || [...longer].length <= [...shorter].length) {
     return null;
@@ -1193,6 +1209,15 @@ export const mergeCaptionPayload = (
     // a stale `provisional: true` in place forever once accepted here.
   };
   if (incoming.provisional === true) {
+    merged.provisional = true;
+  } else if (
+    current.provisional === true &&
+    nextSource === trim(current.sourceText) &&
+    hasIncomingSource &&
+    nextSource.length > incomingSource.length
+  ) {
+    // Kept the longer provisional surface over a truncated normalize/final.
+    // Stay provisional so overlay copula paging does not drop the spoken tail.
     merged.provisional = true;
   } else {
     delete merged.provisional;

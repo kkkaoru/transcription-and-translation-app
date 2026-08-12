@@ -9,7 +9,7 @@
  * can only wait for one in-flight normalizer call.
  */
 
-import { isTruncatedCaptionRewrite } from "./caption-updates";
+import { isStaleShorterCaptionSurface } from "./caption-updates";
 import { recordPipelineDrop } from "./dropDiagnostics";
 
 export type ParapperOutputQueueItem = {
@@ -145,7 +145,24 @@ const isShorterRewriteOfPending = (
   if (!candidateText || !pendingText) {
     return false;
   }
-  return isTruncatedCaptionRewrite(candidateText, pendingText);
+  return isStaleShorterCaptionSurface(candidateText, pendingText);
+};
+
+/** Skip AzooKey for a stale shorter partial when a longer same-id surface already painted. */
+export const shouldSkipParapperNormalize = (
+  painted: { id: string; sourceText: string },
+  output: ParapperOutputQueueItem,
+): boolean => {
+  if (output.isFinal) {
+    return false;
+  }
+  if (
+    hasTurnIdentity(output) &&
+    painted.id !== `parapper:${output.sessionId}:${output.turnSessionId}:${output.turnId}`
+  ) {
+    return false;
+  }
+  return isStaleShorterCaptionSurface(queueItemSurface(output), painted.sourceText);
 };
 
 const shouldDropForCursor = (
@@ -233,6 +250,16 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
     while (!closed && pending.length > 0) {
       const item = pending.shift();
       if (!item) {
+        continue;
+      }
+      if (
+        !item.isFinal &&
+        pending.some(
+          (queued) => sameTurnOrLegacy(item, queued) && isShorterRewriteOfPending(item, queued),
+        )
+      ) {
+        droppedPartials += 1;
+        recordPipelineDrop("parapper-output-queue", 1, "drain-superseded-partial");
         continue;
       }
       try {
