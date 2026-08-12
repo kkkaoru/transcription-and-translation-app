@@ -118,6 +118,7 @@ const REQUIRED_MERGE_IDS = [
   "append-kikoemasu-after-ohayou-gozaimasu",
   "keep-ohayou-gozaimasu-over-ack",
   "keep-longer-ohayou-gozaimasu-hearing-final",
+  "second-utterance-after-ohayou-gozaimasu",
   "keep-ohayou-over-ack",
   "keep-ohayou-over-un",
   "keep-ohayou-over-ee",
