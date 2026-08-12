@@ -29,6 +29,10 @@ export const GREETING_WAV_RELATIVE_PATH =
   "apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav";
 export const GREETING_SAYONARA_WAV_RELATIVE_PATH =
   "apps/desktop/src/overlay/fixtures/greeting-sayonara.wav";
+export const GREETING_OHAYOU_WAV_RELATIVE_PATH =
+  "apps/desktop/src/overlay/fixtures/greeting-ohayou.wav";
+export const GREETING_KONBANWA_WAV_RELATIVE_PATH =
+  "apps/desktop/src/overlay/fixtures/greeting-konbanwa.wav";
 
 const REQUIRED_SANITIZE_IDS = [
   "hearing-ae",
@@ -124,6 +128,18 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if (fixtures.playback?.sayonaraExpectedOverlay !== "さようならきこえますか") {
     throw new Error("playback.sayonaraExpectedOverlay must be さようならきこえますか");
   }
+  if (fixtures.playback?.ohayouWav !== GREETING_OHAYOU_WAV_RELATIVE_PATH) {
+    throw new Error(`playback.ohayouWav must be ${GREETING_OHAYOU_WAV_RELATIVE_PATH}`);
+  }
+  if (fixtures.playback?.ohayouExpectedOverlay !== "おはようきこえますか") {
+    throw new Error("playback.ohayouExpectedOverlay must be おはようきこえますか");
+  }
+  if (fixtures.playback?.konbanwaWav !== GREETING_KONBANWA_WAV_RELATIVE_PATH) {
+    throw new Error(`playback.konbanwaWav must be ${GREETING_KONBANWA_WAV_RELATIVE_PATH}`);
+  }
+  if (fixtures.playback?.konbanwaExpectedOverlay !== "こんばんはきこえますか") {
+    throw new Error("playback.konbanwaExpectedOverlay must be こんばんはきこえますか");
+  }
   if (!/verify:tauri:ui/.test(fixtures.playback?.command ?? "")) {
     throw new Error("playback command must document verify:tauri:ui");
   }
@@ -138,6 +154,8 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
     playbackCommand: fixtures.playback.command,
     playbackWav: fixtures.playback.wav,
     sayonaraWav: fixtures.playback.sayonaraWav,
+    ohayouWav: fixtures.playback.ohayouWav,
+    konbanwaWav: fixtures.playback.konbanwaWav,
   };
 };
 
@@ -160,7 +178,9 @@ const assertRiffWave = (relativePath, root = repositoryRoot) => {
 export const assertGreetingWavFixture = (root = repositoryRoot) => {
   const primary = assertRiffWave(GREETING_WAV_RELATIVE_PATH, root);
   const sayonara = assertRiffWave(GREETING_SAYONARA_WAV_RELATIVE_PATH, root);
-  return { wavPath: primary.wavPath, bytes: primary.bytes, sayonara };
+  const ohayou = assertRiffWave(GREETING_OHAYOU_WAV_RELATIVE_PATH, root);
+  const konbanwa = assertRiffWave(GREETING_KONBANWA_WAV_RELATIVE_PATH, root);
+  return { wavPath: primary.wavPath, bytes: primary.bytes, sayonara, ohayou, konbanwa };
 };
 
 export const assertGreetingHarnessWired = (root = repositoryRoot) => {

@@ -6,6 +6,8 @@ import {
   assertGreetingWavFixture,
   GREETING_FIXTURES_RELATIVE_PATH,
   GREETING_HARNESS_RELATIVE_PATH,
+  GREETING_KONBANWA_WAV_RELATIVE_PATH,
+  GREETING_OHAYOU_WAV_RELATIVE_PATH,
   GREETING_SAYONARA_WAV_RELATIVE_PATH,
   GREETING_WAV_RELATIVE_PATH,
   loadGreetingLiveCaptionFixtures,
@@ -30,6 +32,12 @@ describe("greeting live-caption regression harness", () => {
     assert.equal(inventory.sayonaraWav, GREETING_SAYONARA_WAV_RELATIVE_PATH);
     assert.ok(wav.sayonara.bytes > 1024);
     assert.equal(fixtures.playback.sayonaraExpectedOverlay, "さようならきこえますか");
+    assert.equal(inventory.ohayouWav, GREETING_OHAYOU_WAV_RELATIVE_PATH);
+    assert.ok(wav.ohayou.bytes > 1024);
+    assert.equal(fixtures.playback.ohayouExpectedOverlay, "おはようきこえますか");
+    assert.equal(inventory.konbanwaWav, GREETING_KONBANWA_WAV_RELATIVE_PATH);
+    assert.ok(wav.konbanwa.bytes > 1024);
+    assert.equal(fixtures.playback.konbanwaExpectedOverlay, "こんばんはきこえますか");
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "hearing-ae")?.expectedOverlay,
       "きこえますか",
@@ -94,5 +102,7 @@ describe("greeting live-caption regression harness", () => {
     assert.equal(skipped.inventory.playbackEnv, "KOTOBA_BEACON_GREETING_WAV");
     assert.ok(skipped.wav.bytes > 1024);
     assert.ok(skipped.wav.sayonara.bytes > 1024);
+    assert.ok(skipped.wav.ohayou.bytes > 1024);
+    assert.ok(skipped.wav.konbanwa.bytes > 1024);
   });
 });
