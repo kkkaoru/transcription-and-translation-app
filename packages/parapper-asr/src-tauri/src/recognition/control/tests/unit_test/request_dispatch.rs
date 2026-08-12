@@ -371,6 +371,50 @@ fn turn_runtime_turn_check_promotes_contiguous_interim_silence_chain_to_completi
 }
 
 #[test]
+fn turn_runtime_turn_check_promotes_padding_overlapped_interim_silence_chain_to_completion() {
+    // Production geometry: segment builder copies prior end-silence into the next
+    // segment as ASR-only leading padding, so the next pending range starts before
+    // the previous end (overlap) instead of abutting. Turn-check must still promote
+    // the previous→next interim chain to one CompletionCheck; otherwise only
+    // InterimDisplay runs and the final caption for the continued utterance is lost.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .build();
+    runtime_state(&mut runtime)
+        .pending_segment(1, None, SegmentCloseReason::InterimResultSilenceReached, 0..100)
+        .pending_segment(2, Some(1), SegmentCloseReason::InterimResultSilenceReached, 80..200)
+        .pending_turn_check(2);
+
+    runtime.step();
+
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("turn-check must promote a padding-overlapped interim silence chain");
+    assert_eq!(completion.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(completion.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(
+        completion.target.range,
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(200)),
+        "promoted completion must span the union of the overlapped interim chain"
+    );
+    assert_eq!(completion.target.first_segment_id, Some(SegmentId(1)));
+    assert_eq!(completion.target.last_segment_id, Some(SegmentId(2)));
+    assert_eq!(
+        completion.source_audio,
+        [vec![1.0; 100], vec![2.0; 100]].concat(),
+        "promoted completion must append only the non-overlapped suffix of the next interim"
+    );
+    assert!(
+        runtime.pending.turn_check.is_none(),
+        "turn-check must be consumed after promoting the overlapped interim chain"
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+}
+
+#[test]
 fn turn_runtime_turn_check_promotes_pending_interim_while_open_turn_exists() {
     let (mut runtime, config) =
         RecognitionSessionTestBuilder::new().turn_detector(TurnDetector::Simple).build();

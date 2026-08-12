@@ -315,7 +315,8 @@ impl RecognitionSession {
         }) {
             return Some(candidate_index);
         }
-        // Breath-chained interim silences abut without overlapping. Require a
+        // Breath-chained interim silences may abut or overlap (ASR-only leading
+        // padding copies prior end-silence into the next segment range). Require a
         // contiguous previous→next segment chain ending at the candidate so
         // turn-check can still promote the whole utterance to CompletionCheck.
         if preceding.iter().any(|segment| {

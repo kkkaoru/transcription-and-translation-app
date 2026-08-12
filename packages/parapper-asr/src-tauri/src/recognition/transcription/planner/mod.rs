@@ -8,8 +8,8 @@ use crate::{
             asr::{
                 input::{ensure_asr_request_edge_silence, AsrRequestEdgePadding},
                 task::{
-                    AsrRequest, AsrRequestId, AsrTarget, AsrTaskKind, AudioRange, SegmentId,
-                    TurnId, TurnRevision, VadFrameIndex,
+                    AsrRequest, AsrRequestId, AsrTarget, AsrTaskKind, AudioRange, GlobalSampleIndex,
+                    SegmentId, TurnId, TurnRevision, VadFrameIndex,
                 },
             },
             route::RecognitionRouteSelection,
@@ -54,9 +54,14 @@ impl PendingAsrSegment {
     }
 
     pub(in crate::recognition) fn is_contiguous_with(&self, next: &Self) -> bool {
-        self.range.end_sample == next.range.start_sample
-            && next.previous_segment_id == Some(self.segment_id)
+        // Breath-chained interims usually abut (`end == next.start`). Production
+        // segment-builder padding can also copy prior end-silence into the next
+        // segment as ASR-only leading audio, so `next.start` may land *before*
+        // `self.end` (overlap) while previous_segment_id still chains them.
+        next.previous_segment_id == Some(self.segment_id)
             && self.last_segment_id() <= next.last_segment_id()
+            && next.range.start_sample <= self.range.end_sample
+            && self.range.end_sample < next.range.end_sample
     }
 
     /// Fold a contiguous breath-chain interim into one segment so turn-check
@@ -64,10 +69,20 @@ impl PendingAsrSegment {
     pub(in crate::recognition) fn merge_contiguous_interim(mut self, next: Self) -> Self {
         debug_assert!(self.is_contiguous_with(&next));
         let first_segment_id = self.first_segment_id().0;
-        self.audio.extend(next.audio);
-        self.vad_results.extend(next.vad_results);
-        self.source_audio.extend(next.source_audio);
-        self.source_vad_results.extend(next.source_vad_results);
+        let overlap_samples = samples_between(next.range.start_sample, self.range.end_sample);
+        let source_overlap = overlap_samples.saturating_sub(leading_padding_covered_by_overlap(
+            overlap_samples,
+            next.audio.len(),
+            next.source_audio.len(),
+        ));
+        let (next_audio, next_vad) =
+            trim_leading_samples(next.audio, next.vad_results, overlap_samples);
+        let (next_source_audio, next_source_vad) =
+            trim_leading_samples(next.source_audio, next.source_vad_results, source_overlap);
+        self.audio.extend(next_audio);
+        self.vad_results.extend(next_vad);
+        self.source_audio.extend(next_source_audio);
+        self.source_vad_results.extend(next_source_vad);
         self.range = self.range.merge(next.range);
         self.segment_id = next.segment_id;
         self.previous_segment_id =
@@ -75,6 +90,37 @@ impl PendingAsrSegment {
         self.reason = next.reason;
         self
     }
+}
+
+fn samples_between(start: GlobalSampleIndex, end: GlobalSampleIndex) -> usize {
+    usize::try_from(end.0.saturating_sub(start.0)).unwrap_or(usize::MAX)
+}
+
+fn leading_padding_covered_by_overlap(
+    overlap_samples: usize,
+    audio_len: usize,
+    source_len: usize,
+) -> usize {
+    // When request/full audio is longer than source audio, the prefix is ASR-only
+    // padding copied from the previous segment. Geometric overlap that falls inside
+    // that padding must not trim continued speech from source_audio.
+    audio_len.saturating_sub(source_len).min(overlap_samples)
+}
+
+fn trim_leading_samples(
+    mut audio: Vec<f32>,
+    mut vad_results: Vec<VadResult>,
+    skip_samples: usize,
+) -> (Vec<f32>, Vec<VadResult>) {
+    if skip_samples == 0 || audio.is_empty() {
+        return (audio, vad_results);
+    }
+    let skip = skip_samples.min(audio.len());
+    audio.drain(..skip);
+    if !vad_results.is_empty() && audio.is_empty() {
+        vad_results.clear();
+    }
+    (audio, vad_results)
 }
 
 pub(in crate::recognition) struct AsrRequestSegmentPlan {
@@ -312,6 +358,28 @@ mod tests {
         assert_eq!(merged.range.end_sample, GlobalSampleIndex(25));
         assert_eq!(merged.source_audio, [vec![1.0; 10], vec![2.0; 15]].concat());
         assert_eq!(merged.reason, SegmentCloseReason::InterimResultSilenceReached);
+    }
+
+    #[test]
+    fn merge_contiguous_interim_trims_padding_overlap_without_dropping_source_speech() {
+        let left = pending_segment(1, None, SegmentCloseReason::InterimResultSilenceReached, 0..100);
+        let mut right =
+            pending_segment(2, Some(1), SegmentCloseReason::InterimResultSilenceReached, 80..200);
+        // 20-sample geometric overlap is only ASR-only leading padding on `audio`.
+        right.audio = [vec![0.0; 20], vec![2.0; 100]].concat();
+        right.source_audio = vec![2.0; 100];
+        right.source_vad_results = vec![VadResult { probability: 0.9, is_speech: true }];
+        assert!(left.is_contiguous_with(&right));
+
+        let merged = left.merge_contiguous_interim(right);
+        assert_eq!(merged.range.start_sample, GlobalSampleIndex(0));
+        assert_eq!(merged.range.end_sample, GlobalSampleIndex(200));
+        assert_eq!(merged.audio, [vec![1.0; 100], vec![2.0; 100]].concat());
+        assert_eq!(
+            merged.source_audio,
+            [vec![1.0; 100], vec![2.0; 100]].concat(),
+            "ASR-only leading padding overlap must not trim the next segment's source speech"
+        );
     }
 
     #[test]
