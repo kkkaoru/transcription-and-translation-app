@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../core/bridge";
-import { shouldApplyCaptionHoldClear } from "../core/caption-hold-clear";
+import { shouldBlankCaptionForHoldClear } from "../core/caption-hold-clear";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
@@ -59,23 +59,26 @@ export const OverlayApp = () => {
   const [caption, setCaption] = useState<CaptionPayload>(() =>
     transparentCapture ? createEmptyCaption() : createPreviewCaption(),
   );
+  /**
+   * Keep the latest committed caption outside React's state updater. Merge and
+   * display-timing side effects must run once per event; StrictMode/concurrent
+   * replays of `setCaption(current => …)` would otherwise duplicate
+   * `markCaptionDisplay` and cross-ID pending-translation inserts (same pattern
+   * as MainApp.mergeAndCommitCaption).
+   */
+  const captionRef = useRef(caption);
   // Match MainApp Live/Syphon: reveal growing source graphemes on the overlay
   // paths. Hold-clear still keys off the merged caption, not reveal ticks.
   const progressiveCaption = useProgressiveCaptionReveal(caption);
 
   const blankDisplayedCaption = useCallback((expectedEpoch: string): void => {
-    setCaption((current) => {
-      if (!shouldApplyCaptionHoldClear(expectedEpoch, current)) {
-        return current;
-      }
-      if (current.id === "preview") {
-        return current;
-      }
-      if (!current.sourceText.trim() && !current.translationText.trim()) {
-        return current;
-      }
-      return createEmptyCaption();
-    });
+    const current = captionRef.current;
+    if (!shouldBlankCaptionForHoldClear(expectedEpoch, current)) {
+      return;
+    }
+    const empty = createEmptyCaption();
+    captionRef.current = empty;
+    setCaption(empty);
   }, []);
 
   useCaptionHoldClear(caption, blankDisplayedCaption);
@@ -97,19 +100,19 @@ export const OverlayApp = () => {
       if (!mounted || idle || !isOverlayCaption(nextCaption)) {
         return;
       }
-      setCaption((current) => {
-        // The preview is generated when the overlay mounts. A real caption
-        // may legitimately have an older `startedAt` (for example when OBS
-        // opens after capture already began), so do not let the generic
-        // out-of-order guard reject the first native replay.
-        const merged =
-          current.id === "preview" ? nextCaption : mergeCaptionPayload(current, nextCaption);
-        if (merged === null || merged === current) {
-          return current;
-        }
-        markCaptionDisplay(merged);
-        return merged;
-      });
+      const current = captionRef.current;
+      // The preview is generated when the overlay mounts. A real caption
+      // may legitimately have an older `startedAt` (for example when OBS
+      // opens after capture already began), so do not let the generic
+      // out-of-order guard reject the first native replay.
+      const merged =
+        current.id === "preview" ? nextCaption : mergeCaptionPayload(current, nextCaption);
+      if (merged === null || merged === current) {
+        return;
+      }
+      captionRef.current = merged;
+      markCaptionDisplay(merged);
+      setCaption(merged);
     };
     const replayLatestCaption = (): void => {
       // Do not await replay in the effect. A missing command in an older
@@ -192,7 +195,9 @@ export const OverlayApp = () => {
           if (idle && !status.lastError) {
             // Native Syphon/Spout path restores sample text for OBS layout checks.
             // Transparent Window Capture clears so a stopped session does not look live.
-            setCaption(nativeRenderer ? createPreviewCaption() : createEmptyCaption());
+            const cleared = nativeRenderer ? createPreviewCaption() : createEmptyCaption();
+            captionRef.current = cleared;
+            setCaption(cleared);
           }
         })
         .then((dispose) => {

@@ -30,6 +30,25 @@ export const shouldApplyCaptionHoldClear = (
 ): boolean => expectedEpoch === captionHoldClearEpoch(current);
 
 /**
+ * Decide whether a hold-clear timer may blank the visible caption.
+ *
+ * Epoch mismatch rejects a stale timer after a newer utterance landed.
+ * Preview / already-empty plates stay put even if a timer somehow fires.
+ */
+export const shouldBlankCaptionForHoldClear = (
+  expectedEpoch: string,
+  current: CaptionPayload,
+): boolean => {
+  if (!shouldApplyCaptionHoldClear(expectedEpoch, current)) {
+    return false;
+  }
+  if (current.id === "preview") {
+    return false;
+  }
+  return Boolean(current.sourceText.trim() || current.translationText.trim());
+};
+
+/**
  * Non-final captions must not auto-clear on a short idle: long utterances can
  * pause between ASR revisions for several seconds, and blanking the plate then
  * hides the only readable text. Only finalized/translated captions hold-clear.

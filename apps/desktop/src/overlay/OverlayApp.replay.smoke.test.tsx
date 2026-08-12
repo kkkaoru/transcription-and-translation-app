@@ -1,13 +1,33 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CAPTION_HOLD_CLEAR_MS, captionHoldClearEpoch } from "../core/caption-hold-clear";
+import { clearCaptionMergeDiagnostics, getCaptionMergeDiagnostics } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
+import * as displayTiming from "../core/display-timing";
 import type { CaptionPayload, RuntimeStatus, UnlistenFn } from "../core/types";
 import { isOverlayCaption, OverlayApp } from "./OverlayApp";
 
 const noopUnlisten: UnlistenFn = () => undefined;
+
+const holdClearApi = vi.hoisted(() => ({
+  onClear: null as null | ((expectedEpoch: string) => void),
+}));
+
+vi.mock("../live/useCaptionHoldClear", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../live/useCaptionHoldClear")>();
+  return {
+    useCaptionHoldClear: (
+      caption: CaptionPayload,
+      onClear: (expectedEpoch: string) => void,
+    ): void => {
+      holdClearApi.onClear = onClear;
+      actual.useCaptionHoldClear(caption, onClear);
+    },
+  };
+});
 
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
@@ -71,6 +91,7 @@ describe("OverlayApp caption replay", () => {
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     captionListener = null;
     runtimeListener = null;
+    holdClearApi.onClear = null;
     mocks.listenCaptions
       .mockReset()
       .mockImplementation((callback: (caption: CaptionPayload) => void) => {
@@ -394,6 +415,181 @@ describe("OverlayApp caption replay", () => {
       root.unmount();
       await Promise.resolve();
     });
+    container.remove();
+  });
+
+  it("commits overlay merges once under StrictMode without duplicating display marks", async () => {
+    // React StrictMode double-invokes state updaters. Merge + markCaptionDisplay
+    // must run outside setState so each live event paints and times exactly once.
+    mocks.getLatestCaption.mockResolvedValue(null);
+    const markSpy = vi.spyOn(displayTiming, "markCaptionDisplay");
+    clearCaptionMergeDiagnostics();
+
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <OverlayApp />
+        </StrictMode>,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+    markSpy.mockClear();
+
+    const live = {
+      ...sourceCaption(),
+      id: "overlay-strict-live",
+      sourceText: "ライブ字幕",
+      receivedAt: 50,
+    };
+    await act(async () => {
+      captionListener?.(live);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("ライブ字幕");
+    expect(markSpy).toHaveBeenCalledTimes(1);
+    expect(markSpy.mock.calls[0]?.[0]?.id).toBe("overlay-strict-live");
+
+    markSpy.mockClear();
+    clearCaptionMergeDiagnostics();
+    await act(async () => {
+      captionListener?.({
+        id: "older-turn",
+        sourceText: "",
+        translationText: "Stale translation",
+        sourceLanguage: "ja",
+        targetLanguage: "en",
+        startedAt: 1,
+        receivedAt: 60,
+        stage: "translation",
+        sequence: 1,
+        isFinal: true,
+      });
+      await Promise.resolve();
+    });
+    await flush();
+
+    // Cross-id translation must stay off the live plate and land once in the
+    // pending side channel (not twice from a StrictMode updater replay).
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("ライブ字幕");
+    expect(markSpy).not.toHaveBeenCalled();
+    expect(getCaptionMergeDiagnostics()).toMatchObject({
+      crossIdTranslationIdsSaved: 1,
+      pendingCrossIdTranslations: 1,
+    });
+
+    markSpy.mockRestore();
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+
+  it("blanks a finalized overlay caption after hold-clear via captionRef", async () => {
+    vi.useFakeTimers();
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    const finalized = {
+      ...sourceCaption(),
+      id: "overlay-hold-clear",
+      sourceText: "ホールド後に消える",
+      isFinal: true,
+      receivedAt: 80,
+    };
+    await act(async () => {
+      captionListener?.(finalized);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("ホールド後に消える");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_HOLD_CLEAR_MS);
+    });
+    await flush();
+
+    expect(container.querySelector(".caption-line-source")?.getAttribute("data-empty")).toBe(
+      "true",
+    );
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+    container.remove();
+  });
+
+  it("ignores a stale hold-clear after a newer overlay caption replaces the plate", async () => {
+    vi.useFakeTimers();
+    mocks.getLatestCaption.mockResolvedValue(null);
+    holdClearApi.onClear = null;
+
+    await act(async () => {
+      root.render(<OverlayApp />);
+      await Promise.resolve();
+    });
+    await flush();
+
+    const oldFinal = {
+      ...sourceCaption(),
+      id: "overlay-hold-old",
+      sourceText: "古い最終字幕",
+      isFinal: true,
+      receivedAt: 90,
+    };
+    await act(async () => {
+      captionListener?.(oldFinal);
+      await Promise.resolve();
+    });
+    await flush();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_HOLD_CLEAR_MS - 1);
+    });
+    await act(async () => {
+      captionListener?.({
+        ...sourceCaption(),
+        id: "overlay-hold-new",
+        sourceText: "新しい最終字幕",
+        isFinal: true,
+        receivedAt: 100,
+      });
+      await Promise.resolve();
+    });
+    await flush();
+
+    // Simulate a late timer from the replaced utterance: captionRef already
+    // points at the newer final, so blanking must no-op.
+    await act(async () => {
+      holdClearApi.onClear?.(captionHoldClearEpoch(oldFinal));
+      await Promise.resolve();
+    });
+    await flush();
+    expect(container.querySelector(".caption-line-source")?.textContent).toBe("新しい最終字幕");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_HOLD_CLEAR_MS);
+    });
+    await flush();
+    expect(container.querySelector(".caption-line-source")?.getAttribute("data-empty")).toBe(
+      "true",
+    );
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
     container.remove();
   });
 });
