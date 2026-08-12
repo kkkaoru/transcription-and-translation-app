@@ -121,6 +121,7 @@ const REQUIRED_MERGE_IDS = [
   "keep-ohayou-over-ee",
   "keep-ohayou-over-iie",
   "keep-longer-ohayou-hearing-final",
+  "second-utterance-after-ohayou",
   "keep-konbanwa-over-un",
   "keep-konbanwa-over-ee",
   "keep-konbanwa-over-iie",
