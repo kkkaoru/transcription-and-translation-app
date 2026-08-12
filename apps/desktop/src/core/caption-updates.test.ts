@@ -2315,6 +2315,184 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("rejects a backdated diverging same-id final after a newer final", () => {
+    const current = caption({
+      id: "parapper:session:turn:b-weather",
+      sourceText: "明日の天気は晴れです",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const olderUnrelated = caption({
+      id: "parapper:session:turn:b-weather",
+      sourceText: "昨日は雨でしたね",
+      translationText: "",
+      startedAt: 500,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, olderUnrelated)).toBeNull();
+  });
+
+  it("rejects a backdated greeting final that does not continue the painted final", () => {
+    const current = caption({
+      id: "parapper:session:turn:b-hear",
+      sourceText: "聞こえますか",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const olderGreeting = caption({
+      id: "parapper:session:turn:b-hear",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 500,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, olderGreeting)).toBeNull();
+  });
+
+  it("rejects an earlier-received diverging final when startedAt matches", () => {
+    const current = caption({
+      id: "parapper:session:turn:b-receipt",
+      sourceText: "明日の天気は晴れです",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const earlierReceipt = caption({
+      id: "parapper:session:turn:b-receipt",
+      sourceText: "昨日は雨でしたね",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 2_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, earlierReceipt)).toBeNull();
+  });
+
+  it("still accepts a newer diverging same-id final as a correction", () => {
+    const current = caption({
+      id: "parapper:session:turn:b-correct",
+      sourceText: "今日は雨です",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 2_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const newerCorrection = caption({
+      id: "parapper:session:turn:b-correct",
+      sourceText: "今日は晴れです",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 2_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, newerCorrection)).toMatchObject({
+      sourceText: "今日は晴れです",
+      isFinal: true,
+    });
+  });
+
+  it("keeps a longer finalized surface when a backdated truncated final arrives", () => {
+    const current = caption({
+      id: "parapper:session:turn:b-trunc",
+      sourceText: "こんにちはきこえますか",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const truncated = caption({
+      id: "parapper:session:turn:b-trunc",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 800,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, truncated)?.sourceText).toBe("こんにちはきこえますか");
+  });
+
+  it("returns the current final when a backdated duplicate final paints the same text", () => {
+    const current = caption({
+      id: "parapper:session:turn:b-dup",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 2_500,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const duplicate = caption({
+      id: "parapper:session:turn:b-dup",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 800,
+      receivedAt: 3_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, duplicate)).toBe(current);
+  });
+
+  it("drops a whitespace-only backdated final that would otherwise skip ordering", () => {
+    const current = caption({
+      id: "parapper:session:turn:b-blank",
+      sourceText: "明日の天気は晴れです",
+      translationText: "",
+      startedAt: 2_000,
+      receivedAt: 3_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const blankFinal = caption({
+      id: "parapper:session:turn:b-blank",
+      sourceText: "   ",
+      translationText: "Sunny tomorrow",
+      startedAt: 500,
+      receivedAt: 4_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(current, blankFinal)).toBeNull();
+  });
+
   it("accepts a same-id continuation after final so newer characters still paint", () => {
     const finalized = caption({
       id: "u-1",

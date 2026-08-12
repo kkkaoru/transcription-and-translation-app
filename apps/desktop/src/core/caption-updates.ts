@@ -825,7 +825,8 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     // (こんにちは → こんにちはきこえますか). Rejecting the longer final as
     // "older" freezes the plate on the prefix until hold-clear blanks it.
     // Truncated finals still reach mergeSameIdSourceText, which keeps the
-    // longer already-painted surface.
+    // longer already-painted surface. A backdated final that diverges from an
+    // already-final surface is not that continuation and must keep ordering.
     if (
       currentSequence === SOURCE_SEQUENCE &&
       nextSequence === SOURCE_SEQUENCE &&
@@ -833,6 +834,21 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
       isSourceStagePayload(current) &&
       isSourceStagePayload(next)
     ) {
+      if (current.isFinal === true) {
+        const currentText = trim(current.sourceText);
+        const nextText = trim(next.sourceText);
+        if (!hasText(nextText)) {
+          return true;
+        }
+        if (
+          nextText === currentText ||
+          currentText.startsWith(nextText) ||
+          isLongerSurfaceContinuation(currentText, nextText)
+        ) {
+          return false;
+        }
+        return isOlderSameIdRevision(current, next);
+      }
       return false;
     }
 

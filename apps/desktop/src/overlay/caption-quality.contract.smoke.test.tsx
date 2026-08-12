@@ -234,6 +234,34 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       );
       expect(continued.sourceText).toBe("暑い日はあった");
     });
+
+    it("does not let a backdated diverging final replace a newer final", () => {
+      const current = expectMerged(
+        mergeCaptionPayload(
+          createEmptyCaption(),
+          caption({
+            id: "parapper:session:turn:b-weather",
+            sourceText: "明日の天気は晴れです",
+            isFinal: true,
+            startedAt: 2_000,
+            receivedAt: 3_000,
+          }),
+        ),
+      );
+      expect(
+        mergeCaptionPayload(
+          current,
+          caption({
+            id: "parapper:session:turn:b-weather",
+            sourceText: "昨日は雨でしたね",
+            isFinal: true,
+            startedAt: 500,
+            receivedAt: 4_000,
+          }),
+        ),
+      ).toBeNull();
+      expect(current.sourceText).toBe("明日の天気は晴れです");
+    });
   });
 
   describe("finished clauses leave the plate (POS / punctuation / offsets)", () => {
