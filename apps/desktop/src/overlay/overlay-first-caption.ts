@@ -38,3 +38,68 @@ export const rearmPreviewHold = (
   asrHistorySettled: restoredCaptionId !== "preview" || !pipelineStagesAvailable,
   heldOverPreview: null,
 });
+
+/** Last ASR row the overlay painted, used to fence previous-session history. */
+export type OverlayAsrStageRef = {
+  utteranceId: string;
+  at: number;
+  startedAt?: number;
+  captureGeneration?: number;
+};
+
+export const overlayAsrStageFence = (stage: OverlayAsrStageRef): OverlayAsrStageRef => ({
+  utteranceId: stage.utteranceId,
+  at: stage.at,
+  ...(typeof stage.startedAt === "number" ? { startedAt: stage.startedAt } : {}),
+  ...(typeof stage.captureGeneration === "number"
+    ? { captureGeneration: stage.captureGeneration }
+    : {}),
+});
+
+export const overlayAsrFenceFromCaption = (caption: CaptionPayload): OverlayAsrStageRef | null => {
+  if (caption.id === "preview" || caption.id === "empty") {
+    return null;
+  }
+  return overlayAsrStageFence({
+    utteranceId: caption.id,
+    at: caption.receivedAt,
+    startedAt: caption.startedAt,
+    captureGeneration: caption.captureGeneration,
+  });
+};
+
+/**
+ * Previous-session ASR must not repaint after idle. Prefer captureGeneration
+ * when both sides have it; otherwise treat a history snapshot that is not
+ * newer than the idle fence as stale. Live events after capturing still
+ * paint unless they belong to an older generation or the same fenced row.
+ */
+export const isStaleOverlayAsrStage = (
+  stage: OverlayAsrStageRef,
+  fence: OverlayAsrStageRef | null,
+  historyInvalidated: boolean,
+  source: "history" | "live",
+): boolean => {
+  if (typeof stage.captureGeneration === "number" && typeof fence?.captureGeneration === "number") {
+    if (stage.captureGeneration < fence.captureGeneration) {
+      return true;
+    }
+    return historyInvalidated && stage.captureGeneration <= fence.captureGeneration;
+  }
+  if (source === "history" && historyInvalidated) {
+    if (!fence) {
+      return true;
+    }
+    return stage.at <= fence.at;
+  }
+  if (!fence) {
+    return false;
+  }
+  return stage.utteranceId === fence.utteranceId && stage.at <= fence.at;
+};
+
+/** Stale-only history after idle must not settle the short-latest hold. */
+export const shouldSettleAsrHistoryReplay = (
+  appliedNonStaleHistory: boolean,
+  historyInvalidated: boolean,
+): boolean => appliedNonStaleHistory || !historyInvalidated;

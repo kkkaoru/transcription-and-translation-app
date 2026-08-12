@@ -110,7 +110,14 @@ export const buildProvisionalCaptionFromAsrStage = (
 export const pickLatestSuccessfulAsrStage = (
   events: readonly Pick<
     PipelineStageEvent,
-    "stage" | "ok" | "utteranceId" | "outputText" | "surfaceText" | "startedAt" | "at"
+    | "stage"
+    | "ok"
+    | "utteranceId"
+    | "outputText"
+    | "surfaceText"
+    | "startedAt"
+    | "at"
+    | "captureGeneration"
   >[],
 ): (typeof events)[number] | null => {
   let latest: (typeof events)[number] | null = null;

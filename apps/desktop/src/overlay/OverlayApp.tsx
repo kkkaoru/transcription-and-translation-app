@@ -20,9 +20,13 @@ import { OverlayView } from "./CaptionOverlay";
 import { createEmptyCaption, createHoldClearedCaption, createPreviewCaption } from "./captions";
 import { NativeFramePublisher } from "./NativeFramePublisher";
 import {
+  isStaleOverlayAsrStage,
+  overlayAsrFenceFromCaption,
+  overlayAsrStageFence,
   rearmPreviewHold,
   retainHeldOverlayCaption,
   shouldHoldCaptionOverPreview,
+  shouldSettleAsrHistoryReplay,
 } from "./overlay-first-caption";
 
 /**
@@ -139,6 +143,8 @@ export const OverlayApp = () => {
     // ASR history settles; otherwise first Syphon paint is a truncated sentence.
     let asrHistorySettled = typeof bridge.listenPipelineStages !== "function";
     let heldOverPreview: CaptionPayload | null = null;
+    let asrHistoryInvalidated = false;
+    let staleAsrFence: ReturnType<typeof overlayAsrStageFence> | null = null;
     const flushHeldCaptionOverPreview = (): void => {
       const held = heldOverPreview;
       heldOverPreview = null;
@@ -250,6 +256,9 @@ export const OverlayApp = () => {
           if (idle && !status.lastError) {
             // Native Syphon/Spout path restores sample text for OBS layout checks.
             // Transparent Window Capture clears so a stopped session does not look live.
+            asrHistoryInvalidated = true;
+            staleAsrFence =
+              staleAsrFence ?? overlayAsrFenceFromCaption(captionRef.current) ?? staleAsrFence;
             const cleared = nativeRenderer ? createPreviewCaption() : createEmptyCaption();
             captionRef.current = cleared;
             setCaption(cleared);
@@ -277,8 +286,24 @@ export const OverlayApp = () => {
     if (typeof bridge.listenPipelineStages === "function") {
       const applyAsrStage = (
         stageEvent: Parameters<typeof buildProvisionalCaptionFromAsrStage>[0],
+        source: "history" | "live",
       ): void => {
         if (!mounted || idle) {
+          return;
+        }
+        if (
+          isStaleOverlayAsrStage(
+            {
+              utteranceId: stageEvent.utteranceId,
+              at: stageEvent.at,
+              startedAt: stageEvent.startedAt,
+              captureGeneration: stageEvent.captureGeneration,
+            },
+            staleAsrFence,
+            asrHistoryInvalidated,
+            source,
+          )
+        ) {
           return;
         }
         const provisional = buildProvisionalCaptionFromAsrStage(stageEvent, {
@@ -286,7 +311,15 @@ export const OverlayApp = () => {
           targetLanguage: captionRef.current.targetLanguage,
         });
         if (provisional) {
+          staleAsrFence = overlayAsrStageFence({
+            utteranceId: stageEvent.utteranceId,
+            at: stageEvent.at,
+            startedAt: stageEvent.startedAt,
+            captureGeneration: stageEvent.captureGeneration,
+          });
+          asrHistoryInvalidated = false;
           ingestCaption(provisional);
+          settleAsrHistory();
         }
       };
       replayLatestAsrStage = (): void => {
@@ -308,10 +341,29 @@ export const OverlayApp = () => {
         void replay
           .then((history) => {
             const latest = pickLatestSuccessfulAsrStage(history);
-            if (latest) {
-              applyAsrStage(latest);
+            if (!latest) {
+              if (shouldSettleAsrHistoryReplay(false, asrHistoryInvalidated)) {
+                settleAsrHistory();
+              }
+              return;
             }
-            settleAsrHistory();
+            const stale = isStaleOverlayAsrStage(
+              {
+                utteranceId: latest.utteranceId,
+                at: latest.at,
+                startedAt: latest.startedAt,
+                captureGeneration: latest.captureGeneration,
+              },
+              staleAsrFence,
+              asrHistoryInvalidated,
+              "history",
+            );
+            if (!stale) {
+              applyAsrStage(latest, "history");
+            }
+            if (shouldSettleAsrHistoryReplay(!stale, asrHistoryInvalidated)) {
+              settleAsrHistory();
+            }
           })
           .catch(() => {
             settleAsrHistory();
@@ -319,7 +371,9 @@ export const OverlayApp = () => {
       };
       replayLatestAsrStage();
       void bridge
-        .listenPipelineStages(applyAsrStage)
+        .listenPipelineStages((stageEvent) => {
+          applyAsrStage(stageEvent, "live");
+        })
         .then((dispose) => {
           if (mounted && typeof dispose === "function") {
             disposers.push(dispose);
