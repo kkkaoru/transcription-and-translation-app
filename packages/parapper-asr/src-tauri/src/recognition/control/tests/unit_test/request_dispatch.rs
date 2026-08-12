@@ -723,3 +723,36 @@ fn turn_runtime_dispatches_next_utterance_in_same_step_after_finalization() {
         "the next-utterance segment must leave the pending queue once dispatched"
     );
 }
+
+#[test]
+fn turn_runtime_dispatches_pending_asr_after_stale_turn_check_is_dropped() {
+    // A turn-check whose activity epoch no longer matches is discarded. That
+    // used to `return` before dispatch, so a newer utterance already queued
+    // behind the stale check waited another VAD tick.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .build();
+    runtime_state(&mut runtime)
+        .pending_turn_check(1)
+        .pending_segment(2, None, SegmentCloseReason::InterimResultSilenceReached, 100..200);
+    runtime.activity.segment_activity_epoch =
+        runtime.activity.segment_activity_epoch.saturating_add(1);
+
+    runtime.step();
+
+    assert!(
+        runtime.pending.turn_check.is_none(),
+        "a stale turn-check must be dropped in this step"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "queued ASR must dispatch in the same step that dropped the stale turn-check",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(2));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(100), GlobalSampleIndex(200))
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+}

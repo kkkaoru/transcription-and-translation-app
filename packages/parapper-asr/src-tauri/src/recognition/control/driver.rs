@@ -270,14 +270,16 @@ impl RecognitionDriverHandle for RecognitionDriver {
 
         if let Some(turn_check) = self.runtime.pending.turn_check {
             if turn_check.activity_epoch != self.runtime.activity.segment_activity_epoch {
+                // Stale check: new speech already advanced the epoch. Drop it
+                // and fall through so queued ASR for that speech can dispatch.
+                self.runtime.pending.turn_check = None;
+            } else if self.runtime.handle_turn_check_silence_reached(turn_check.previous_segment_id)
+            {
                 self.runtime.pending.turn_check = None;
                 return;
-            }
-            if self.runtime.handle_turn_check_silence_reached(turn_check.previous_segment_id) {
-                self.runtime.pending.turn_check = None;
+            } else {
                 return;
             }
-            return;
         }
 
         // A just-applied ASR result must not re-enter timeout rerecognition in
