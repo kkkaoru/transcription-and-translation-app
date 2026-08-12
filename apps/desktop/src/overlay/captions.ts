@@ -496,8 +496,8 @@ export const captionItems = (
   placeholder = false,
 ): CaptionItem[] => {
   // Provisional first hypotheses keep the lead sentence (defer copula paging)
-  // so 「です＋次節」 does not drop the already-recognized head. Normalized
-  // live interims and finals still page finished clauses.
+  // so 「です＋次節」 does not drop the already-recognized head. Copula paging
+  // on live interims/finals still requires punctuation or a 2× remainder.
   const deferSentencePaging = caption.provisional === true;
   const source: CaptionItem = {
     key: "source",

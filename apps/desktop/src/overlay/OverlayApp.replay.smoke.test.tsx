@@ -7,7 +7,7 @@ import { CAPTION_HOLD_CLEAR_MS, captionHoldClearEpoch } from "../core/caption-ho
 import { clearCaptionMergeDiagnostics, getCaptionMergeDiagnostics } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import * as displayTiming from "../core/display-timing";
-import type { CaptionPayload, RuntimeStatus, UnlistenFn } from "../core/types";
+import type { CaptionPayload, PipelineStageEvent, RuntimeStatus, UnlistenFn } from "../core/types";
 import { isOverlayCaption, OverlayApp } from "./OverlayApp";
 
 const noopUnlisten: UnlistenFn = () => undefined;
@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   isDesktop: vi.fn(),
   listenCaptions: vi.fn(),
   listenConfig: vi.fn(),
+  listenPipelineStages: vi.fn(),
   listenRuntime: vi.fn(),
   publishOverlayFrame: vi.fn(),
 }));
@@ -82,6 +83,7 @@ describe("OverlayApp caption replay", () => {
   let container: HTMLDivElement;
   let root: Root;
   let captionListener: ((caption: CaptionPayload) => void) | null;
+  let pipelineListener: ((stage: PipelineStageEvent) => void) | null;
   let runtimeListener: ((status: RuntimeStatus) => void) | null;
 
   beforeEach(() => {
@@ -90,12 +92,19 @@ describe("OverlayApp caption replay", () => {
     mocks.getLatestCaption.mockReset().mockResolvedValue(sourceCaption());
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     captionListener = null;
+    pipelineListener = null;
     runtimeListener = null;
     holdClearApi.onClear = null;
     mocks.listenCaptions
       .mockReset()
       .mockImplementation((callback: (caption: CaptionPayload) => void) => {
         captionListener = callback;
+        return Promise.resolve(noopUnlisten);
+      });
+    mocks.listenPipelineStages
+      .mockReset()
+      .mockImplementation((callback: (stage: PipelineStageEvent) => void) => {
+        pipelineListener = callback;
         return Promise.resolve(noopUnlisten);
       });
     mocks.listenRuntime
@@ -339,6 +348,43 @@ describe("OverlayApp caption replay", () => {
     });
     history.replaceState({}, "", "/");
     container.remove();
+  });
+
+  it("paints ASR pipeline stages as provisional source on the native-renderer before caption:update", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "きょうは",
+          surfaceText: "今日は",
+          startedAt: 10,
+          at: 40,
+          durationMs: 30,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("今日は");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
   });
 
   it("clears on successful idle and ignores caption events that arrive afterward", async () => {
@@ -702,6 +748,7 @@ describe("OverlayApp listener cleanup robustness", () => {
     mocks.getLatestCaption.mockReset().mockResolvedValue(null);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenPipelineStages.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenRuntime.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
     container = document.createElement("div");
     document.body.append(container);
@@ -772,6 +819,7 @@ describe("OverlayApp synchronous bridge throws", () => {
     mocks.getLatestCaption.mockReset().mockResolvedValue(null);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenPipelineStages.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenRuntime.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
     container = document.createElement("div");
     document.body.append(container);
@@ -828,6 +876,7 @@ describe("OverlayApp resolves listeners after unmount", () => {
     mocks.getLatestCaption.mockReset().mockResolvedValue(null);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenPipelineStages.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenRuntime.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
     container = document.createElement("div");
     document.body.append(container);
@@ -898,6 +947,7 @@ describe("OverlayApp caption listener late dispose", () => {
     mocks.getLatestCaption.mockReset().mockResolvedValue(null);
     mocks.listenConfig.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenCaptions.mockReset().mockResolvedValue(noopUnlisten);
+    mocks.listenPipelineStages.mockReset().mockResolvedValue(noopUnlisten);
     mocks.listenRuntime.mockReset().mockImplementation(() => Promise.resolve(noopUnlisten));
     container = document.createElement("div");
     document.body.append(container);

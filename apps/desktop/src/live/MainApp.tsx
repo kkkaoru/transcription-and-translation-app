@@ -64,7 +64,10 @@ import {
   shouldToastAudioProcessingFailure,
 } from "../core/notices";
 import { createParapperOutputQueue, type ParapperOutputQueue } from "../core/parapper-output-queue";
-import { buildParapperProvisionalCaption } from "../core/parapper-provisional";
+import {
+  buildParapperProvisionalCaption,
+  buildProvisionalCaptionFromAsrStage,
+} from "../core/parapper-provisional";
 import {
   DEFAULT_PARAPPER_STREAM_URL,
   ParapperRecognitionStream,
@@ -939,31 +942,17 @@ export const MainApp = () => {
           acceptsPipelineStageGeneration(
             stageEvent.captureGeneration,
             activeCaptureGeneration.current,
-          ) &&
-          stageEvent.stage === "asr" &&
-          stageEvent.ok &&
-          (stageEvent.surfaceText?.trim() || stageEvent.outputText.trim())
+          )
         ) {
-          // Parapper's Vibrato sink retains the surface form alongside its
-          // Hiragana reading. Prefer that surface for the provisional paint
-          // so the same-id revision does not look like a suffix when the
-          // normalized caption arrives through the other event channel.
-          const provisionalText = stageEvent.surfaceText?.trim() || stageEvent.outputText.trim();
-          const painted = mergeAndCommitCaption({
-            id: stageEvent.utteranceId,
-            sourceText: provisionalText,
-            translationText: "",
+          const provisional = buildProvisionalCaptionFromAsrStage(stageEvent, {
             sourceLanguage: captionRef.current.sourceLanguage,
             targetLanguage: captionRef.current.targetLanguage,
-            startedAt: stageEvent.startedAt,
-            receivedAt: stageEvent.at,
-            stage: "source",
-            sequence: 0,
-            isFinal: false,
-            provisional: true,
           });
-          if (shouldReleaseChunkQueueAfterSourcePaint(painted, captionRef.current.sourceText)) {
-            chunkProcessor.current?.markFirstCaption();
+          if (provisional) {
+            const painted = mergeAndCommitCaption(provisional);
+            if (shouldReleaseChunkQueueAfterSourcePaint(painted, captionRef.current.sourceText)) {
+              chunkProcessor.current?.markFirstCaption();
+            }
           }
         }
       })

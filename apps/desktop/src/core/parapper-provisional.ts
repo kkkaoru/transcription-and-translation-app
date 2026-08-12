@@ -1,5 +1,5 @@
 import { selectParapperSurfaceText } from "./parapperStream";
-import type { CaptionPayload } from "./types";
+import type { CaptionPayload, PipelineStageEvent } from "./types";
 
 /** Parapper turn fields needed to synthesize an immediate provisional caption. */
 export type ParapperProvisionalInput = {
@@ -48,6 +48,54 @@ export const buildParapperProvisionalCaption = (
     provisional: true,
     ...(typeof output.captureGeneration === "number"
       ? { captureGeneration: output.captureGeneration }
+      : {}),
+  };
+};
+
+/**
+ * Synthesize the same provisional source caption Live paints from `pipeline:stage`.
+ *
+ * The off-screen native-renderer (primary Syphon/Spout publisher) only sees
+ * `caption:update` from the native pipeline, which waits for AzooKey. ASR stage
+ * events are already app-wide; mapping them here lets overlay/Syphon paint the
+ * recognized surface without waiting on normalize.
+ */
+export const buildProvisionalCaptionFromAsrStage = (
+  event: Pick<
+    PipelineStageEvent,
+    | "stage"
+    | "ok"
+    | "utteranceId"
+    | "outputText"
+    | "surfaceText"
+    | "startedAt"
+    | "at"
+    | "captureGeneration"
+  >,
+  languages: { sourceLanguage: string; targetLanguage: string },
+): CaptionPayload | null => {
+  if (event.stage !== "asr" || !event.ok) {
+    return null;
+  }
+  const sourceText = event.surfaceText?.trim() || event.outputText.trim();
+  const utteranceId = event.utteranceId.trim();
+  if (!sourceText || !utteranceId) {
+    return null;
+  }
+  return {
+    id: utteranceId,
+    sourceText,
+    translationText: "",
+    sourceLanguage: languages.sourceLanguage,
+    targetLanguage: languages.targetLanguage,
+    startedAt: event.startedAt,
+    receivedAt: event.at,
+    stage: "source",
+    sequence: 0,
+    isFinal: false,
+    provisional: true,
+    ...(typeof event.captureGeneration === "number"
+      ? { captureGeneration: event.captureGeneration }
       : {}),
   };
 };

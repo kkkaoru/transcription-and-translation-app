@@ -4,6 +4,7 @@ import { shouldBlankCaptionForHoldClear } from "../core/caption-hold-clear";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
+import { buildProvisionalCaptionFromAsrStage } from "../core/parapper-provisional";
 import type { AppConfig, CaptionPayload } from "../core/types";
 import { useCaptionHoldClear } from "../live/useCaptionHoldClear";
 import { useProgressiveCaptionReveal } from "../live/useProgressiveCaptionReveal";
@@ -198,6 +199,33 @@ export const OverlayApp = () => {
             const cleared = nativeRenderer ? createPreviewCaption() : createEmptyCaption();
             captionRef.current = cleared;
             setCaption(cleared);
+          }
+        })
+        .then((dispose) => {
+          if (mounted) {
+            disposers.push(dispose);
+          } else {
+            disposeSafely(dispose);
+          }
+        })
+        .catch(() => undefined);
+    }
+    // Primary Syphon/Spout publisher is this off-screen webview. Live already
+    // paints ASR as a provisional source caption; without the same mapping
+    // here, native-renderer waits for AzooKey `caption:update` and the first
+    // recognized words never reach OBS.
+    if (typeof bridge.listenPipelineStages === "function") {
+      void bridge
+        .listenPipelineStages((stageEvent) => {
+          if (!mounted || idle) {
+            return;
+          }
+          const provisional = buildProvisionalCaptionFromAsrStage(stageEvent, {
+            sourceLanguage: captionRef.current.sourceLanguage,
+            targetLanguage: captionRef.current.targetLanguage,
+          });
+          if (provisional) {
+            applyCaption(provisional);
           }
         })
         .then((dispose) => {

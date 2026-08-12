@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildParapperProvisionalCaption } from "./parapper-provisional";
+import {
+  buildParapperProvisionalCaption,
+  buildProvisionalCaptionFromAsrStage,
+} from "./parapper-provisional";
 
 describe("buildParapperProvisionalCaption", () => {
   const languages = { sourceLanguage: "ja", targetLanguage: "en" };
@@ -105,5 +108,73 @@ describe("buildParapperProvisionalCaption", () => {
         1,
       )?.sourceText,
     ).toBe("今日は");
+  });
+
+  it("maps a successful ASR stage onto a provisional source caption", () => {
+    expect(
+      buildProvisionalCaptionFromAsrStage(
+        {
+          stage: "asr",
+          ok: true,
+          utteranceId: "parapper:s:1:8",
+          outputText: "きょうは",
+          surfaceText: "今日は",
+          startedAt: 10,
+          at: 40,
+          captureGeneration: 3,
+        },
+        languages,
+      ),
+    ).toMatchObject({
+      id: "parapper:s:1:8",
+      sourceText: "今日は",
+      stage: "source",
+      provisional: true,
+      startedAt: 10,
+      receivedAt: 40,
+      captureGeneration: 3,
+    });
+  });
+
+  it("ignores failed or non-ASR stages and empty surfaces", () => {
+    expect(
+      buildProvisionalCaptionFromAsrStage(
+        {
+          stage: "normalize",
+          ok: true,
+          utteranceId: "u-1",
+          outputText: "今日は",
+          startedAt: 1,
+          at: 2,
+        },
+        languages,
+      ),
+    ).toBeNull();
+    expect(
+      buildProvisionalCaptionFromAsrStage(
+        {
+          stage: "asr",
+          ok: false,
+          utteranceId: "u-1",
+          outputText: "今日は",
+          startedAt: 1,
+          at: 2,
+        },
+        languages,
+      ),
+    ).toBeNull();
+    expect(
+      buildProvisionalCaptionFromAsrStage(
+        {
+          stage: "asr",
+          ok: true,
+          utteranceId: "u-1",
+          outputText: "  ",
+          startedAt: 1,
+          at: 2,
+        },
+        languages,
+      ),
+    ).toBeNull();
   });
 });

@@ -265,8 +265,8 @@ export interface CaptionPayload {
   captureGeneration?: number;
   /**
    * Exclusive Unicode-scalar offsets where Vibrato/AzooKey marked a Japanese
-   * sentence end on `sourceText`. The overlay pages to the newest sentence
-   * when this is present; otherwise it falls back to surface/copula heuristics.
+   * sentence end on `sourceText`. Overlay paging keeps the longer lead unless
+   * the next span is at least twice as long (or punctuation ends the clause).
    */
   sentenceEndOffsets?: number[];
   /**
