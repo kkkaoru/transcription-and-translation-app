@@ -170,6 +170,12 @@
       "input": "さようなら会えますか",
       "expectedOverlay": "さようなら聞こえますか",
       "note": "Farewell greeting glued to 会えますか"
+    },
+    {
+      "id": "konbanwa-hearing-kanji",
+      "input": "こんばんは会えますか",
+      "expectedOverlay": "こんばんは聞こえますか",
+      "note": "Evening greeting glued to 会えますか"
     }
   ],
   "merge": [
