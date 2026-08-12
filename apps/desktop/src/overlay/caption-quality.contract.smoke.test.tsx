@@ -6,6 +6,9 @@
  */
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -27,6 +30,10 @@ import {
 } from "./captions";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+const desktopSrc = dirname(fileURLToPath(import.meta.url));
+const mainAppSource = readFileSync(join(desktopSrc, "..", "live", "MainApp.tsx"), "utf8");
+const overlayAppSource = readFileSync(join(desktopSrc, "OverlayApp.tsx"), "utf8");
 
 const caption = (partial: Partial<CaptionPayload>): CaptionPayload => ({
   id: "u-1",
@@ -51,6 +58,28 @@ const expectMerged = (value: CaptionPayload | null): CaptionPayload => {
 };
 
 describe("caption quality contracts (automated, no human eyeball)", () => {
+  describe("progressive reveal wiring (live + overlay)", () => {
+    it("keeps Live/Syphon and overlay display paths on progressiveCaption", () => {
+      // hold-clear once replaced this import and left grapheme reveal dead.
+      expect(mainAppSource).toMatch(/useProgressiveCaptionReveal/);
+      expect(mainAppSource).toMatch(
+        /const progressiveCaption = useProgressiveCaptionReveal\(caption\)/,
+      );
+      expect(mainAppSource).toMatch(/caption=\{progressiveCaption\}/);
+      expect(mainAppSource).toMatch(
+        /<NativeFramePublisher config=\{config\} caption=\{progressiveCaption\} \/>/,
+      );
+      expect(mainAppSource).toMatch(/useCaptionHoldClear\(caption,/);
+
+      expect(overlayAppSource).toMatch(/useProgressiveCaptionReveal/);
+      expect(overlayAppSource).toMatch(
+        /const progressiveCaption = useProgressiveCaptionReveal\(caption\)/,
+      );
+      expect(overlayAppSource).toMatch(/caption=\{progressiveCaption\}/);
+      expect(overlayAppSource).toMatch(/useCaptionHoldClear\(caption,/);
+    });
+  });
+
   describe("viewer hold / blank gaps", () => {
     it("keeps finalized captions readable for at least 4 seconds", () => {
       expect(CAPTION_HOLD_CLEAR_MS).toBeGreaterThanOrEqual(4_000);

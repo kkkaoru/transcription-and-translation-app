@@ -6,6 +6,7 @@ import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
 import type { AppConfig, CaptionPayload } from "../core/types";
 import { useCaptionHoldClear } from "../live/useCaptionHoldClear";
+import { useProgressiveCaptionReveal } from "../live/useProgressiveCaptionReveal";
 import { OverlayView } from "./CaptionOverlay";
 import { createEmptyCaption, createPreviewCaption } from "./captions";
 import { NativeFramePublisher } from "./NativeFramePublisher";
@@ -58,6 +59,9 @@ export const OverlayApp = () => {
   const [caption, setCaption] = useState<CaptionPayload>(() =>
     transparentCapture ? createEmptyCaption() : createPreviewCaption(),
   );
+  // Match MainApp Live/Syphon: reveal growing source graphemes on the overlay
+  // paths. Hold-clear still keys off the merged caption, not reveal ticks.
+  const progressiveCaption = useProgressiveCaptionReveal(caption);
 
   const blankDisplayedCaption = useCallback((expectedEpoch: string): void => {
     setCaption((current) => {
@@ -212,13 +216,13 @@ export const OverlayApp = () => {
     return (
       <div
         data-testid="native-renderer-root"
-        data-source-text={caption.sourceText}
-        data-translation-text={caption.translationText}
+        data-source-text={progressiveCaption.sourceText}
+        data-translation-text={progressiveCaption.translationText}
       >
-        <NativeFramePublisher config={config} caption={caption} />
+        <NativeFramePublisher config={config} caption={progressiveCaption} />
       </div>
     );
   }
 
-  return <OverlayView config={config} caption={caption} />;
+  return <OverlayView config={config} caption={progressiveCaption} />;
 };
