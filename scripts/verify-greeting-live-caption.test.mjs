@@ -17,6 +17,7 @@ describe("greeting live-caption regression harness", () => {
     assert.match(inventory.playbackCommand, /verify:tauri:ui/);
     assert.ok(inventory.sanitizeCount >= 8);
     assert.ok(inventory.mergeCount >= 4);
+    assert.ok(inventory.pagingCount >= 3);
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "hearing-ae")?.expectedOverlay,
       "きこえますか",

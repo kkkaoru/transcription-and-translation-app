@@ -190,5 +190,28 @@
       "expectedOverlay": "おはようきこえますか",
       "note": "Early-finalized おはよう + close hearing continuation"
     }
+  ],
+  "paging": [
+    {
+      "id": "stale-vibrato-offset",
+      "text": "こんにちはきこえますか",
+      "sentenceEndOffsets": [5],
+      "expectedVisible": "こんにちはきこえますか",
+      "note": "Stale Vibrato offset after こんにちは must not page away きこえますか"
+    },
+    {
+      "id": "zenz-period-after-sanitize",
+      "text": "こんにちは。聞こえますか。",
+      "sanitize": true,
+      "expectedVisible": "こんにちは聞こえますか。",
+      "note": "Sanitize ZenZ 。 then keep greeting + hearing check on one plate"
+    },
+    {
+      "id": "no-soft-wrap-after-greeting",
+      "text": "こんにちはきこえますか",
+      "maxChars": 28,
+      "expectedLines": ["こんにちはきこえますか"],
+      "note": "Do not wrap after こんにちは so the hearing check stays visible"
+    }
   ]
 }

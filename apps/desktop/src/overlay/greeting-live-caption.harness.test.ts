@@ -5,10 +5,11 @@
  * Gate: `bun run verify:greeting-caption` (no microphone).
  * Optional playback: `KOTOBA_BEACON_GREETING_WAV=<wav> bun run verify:tauri:ui`.
  */
+import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { beforeEach, describe, expect, it } from "vitest";
 import { clearCaptionMergeDiagnostics, mergeCaptionPayload } from "../core/caption-updates";
 import type { CaptionPayload } from "../core/types";
-import { sanitizeCaptionDisplayText } from "./captions";
+import { captionTextLines, sanitizeCaptionDisplayText } from "./captions";
 import fixtures from "./greeting-live-caption-fixtures.json";
 
 const caption = (
@@ -49,6 +50,41 @@ describe("greeting live-caption harness (check-in-able, no live audio)", () => {
       }
       if ("expectedOverlayContains" in row && row.expectedOverlayContains) {
         expect(overlay, row.id).toContain(row.expectedOverlayContains);
+      }
+    }
+  });
+
+  it("does not page or wrap away こんにちは / きこえますか on the overlay plate", () => {
+    expect(fixtures.paging.length).toBeGreaterThanOrEqual(3);
+    for (const row of fixtures.paging) {
+      const text = row.sanitize ? sanitizeCaptionDisplayText(row.text) : row.text;
+      if ("expectedVisible" in row && row.expectedVisible) {
+        expect(
+          selectVisibleCaptionSentence(text, {
+            sentenceEndOffsets: row.sentenceEndOffsets,
+          }),
+          row.id,
+        ).toBe(row.expectedVisible);
+        expect(
+          captionTextLines({
+            key: "source",
+            text,
+            maxChars: row.maxChars ?? 28,
+            sentenceEndOffsets: row.sentenceEndOffsets,
+          }).join(""),
+          row.id,
+        ).toBe(row.expectedVisible);
+      }
+      if ("expectedLines" in row && row.expectedLines) {
+        expect(
+          captionTextLines({
+            key: "source",
+            text,
+            maxChars: row.maxChars ?? 28,
+            sentenceEndOffsets: row.sentenceEndOffsets,
+          }),
+          row.id,
+        ).toEqual(row.expectedLines);
       }
     }
   });

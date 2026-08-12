@@ -83,6 +83,9 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if ((fixtures.merge ?? []).length < 4) {
     throw new Error(`merge fixture table too small: ${fixtures.merge?.length ?? 0}`);
   }
+  if ((fixtures.paging ?? []).length < 3) {
+    throw new Error(`paging fixture table too small: ${fixtures.paging?.length ?? 0}`);
+  }
   const blob = JSON.stringify(fixtures);
   for (const phrase of REQUIRED_PHRASES) {
     if (!blob.includes(phrase)) {
@@ -98,6 +101,7 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   return {
     sanitizeCount: fixtures.sanitize.length,
     mergeCount: fixtures.merge.length,
+    pagingCount: fixtures.paging.length,
     playbackEnv: fixtures.playback.env,
     playbackCommand: fixtures.playback.command,
   };
@@ -117,6 +121,9 @@ export const assertGreetingHarnessWired = (root = repositoryRoot) => {
   }
   if (!harnessSource.includes("mergeCaptionPayload")) {
     throw new Error("harness test must apply mergeCaptionPayload");
+  }
+  if (!harnessSource.includes("selectVisibleCaptionSentence")) {
+    throw new Error("harness test must apply selectVisibleCaptionSentence");
   }
   const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
   if (
