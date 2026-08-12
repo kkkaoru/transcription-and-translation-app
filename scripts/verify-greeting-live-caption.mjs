@@ -74,6 +74,9 @@ const REQUIRED_MERGE_IDS = [
   "keep-sayonara-over-un",
   "keep-sayonara-over-ee",
   "keep-sayonara-over-iie",
+  "keep-ohayou-gozaimasu-over-un",
+  "keep-ohayou-gozaimasu-over-ee",
+  "keep-ohayou-gozaimasu-over-iie",
 ];
 const REQUIRED_PHRASES = [
   "こんにちは",
