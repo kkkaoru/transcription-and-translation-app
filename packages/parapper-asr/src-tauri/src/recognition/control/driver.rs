@@ -254,7 +254,9 @@ impl RecognitionDriverHandle for RecognitionDriver {
     }
 
     fn step(&mut self) {
-        if self.runtime.apply_completed_asr_result_if_ready() {
+        let applied_asr = self.runtime.apply_completed_asr_result_if_ready();
+        if applied_asr && self.runtime.requests.in_flight_request.is_some() {
+            // Mismatched result kept the slot occupied; wait for the matching one.
             return;
         }
 
@@ -274,7 +276,11 @@ impl RecognitionDriverHandle for RecognitionDriver {
             return;
         }
 
-        if self.runtime.handle_open_turn_timeout() {
+        // A just-applied ASR result must not re-enter timeout rerecognition in
+        // the same step (failed timeout rerecognition already finalized).
+        // Pending segments and turn-check promotion above still run so the
+        // next caption does not wait for another VAD/input tick.
+        if !applied_asr && self.runtime.handle_open_turn_timeout() {
             return;
         }
 
