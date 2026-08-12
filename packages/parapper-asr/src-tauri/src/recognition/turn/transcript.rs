@@ -23,14 +23,14 @@ impl RecognitionSession {
         self.counters.next_turn_id = self.counters.next_turn_id.max(turn_id.saturating_add(1));
         let completion_replaces_streaming_interim =
             self.completion_replaces_streaming_interim(turn_id, request);
-        let streaming_interim_overlap_offset = (!completion_replaces_streaming_interim)
-            .then(|| self.streaming_interim_completion_source_overlap_offset(turn_id, request))
+        let streaming_interim_overlap = (!completion_replaces_streaming_interim)
+            .then(|| self.streaming_interim_completion_overlap(turn_id, request))
             .flatten();
-        let completion_is_duplicate_tail = streaming_interim_overlap_offset.is_some_and(|offset| {
+        let completion_is_duplicate_tail = streaming_interim_overlap.is_some_and(|overlap| {
             !vad_has_speech_after_sample(
                 request.source_audio.len(),
                 &request.source_vad_results,
-                offset,
+                overlap.source_samples,
             )
         });
         self.merge_turn_audio_range(turn_id, request.target.range);
@@ -81,7 +81,10 @@ impl RecognitionSession {
             ) {
             draft.combined_text.clone()
         } else {
-            text_after_audio_overlap(&transcript, streaming_interim_overlap_offset.unwrap_or(0))
+            text_after_audio_overlap(
+                &transcript,
+                streaming_interim_overlap.map(|overlap| overlap.audio_samples).unwrap_or(0),
+            )
         };
         if replace_latest_segment {
             draft.replace_latest_recognized_segment(
@@ -94,7 +97,8 @@ impl RecognitionSession {
                 elapsed_millis,
             );
         } else {
-            let append_source_start = streaming_interim_overlap_offset.unwrap_or(0);
+            let append_source_start =
+                streaming_interim_overlap.map(|overlap| overlap.source_samples).unwrap_or(0);
             let append_vad_results;
             let source_vad_results = if append_source_start == 0 {
                 request.source_vad_results.as_slice()
@@ -155,11 +159,11 @@ impl RecognitionSession {
         draft.latest_segment_id == Some(first_segment_id)
     }
 
-    fn streaming_interim_completion_source_overlap_offset(
+    fn streaming_interim_completion_overlap(
         &self,
         turn_id: u64,
         request: &AsrRequest,
-    ) -> Option<usize> {
+    ) -> Option<StreamingCompletionOverlap> {
         if request.kind != AsrTaskKind::CompletionCheck
             || request.close_reason != Some(SegmentCloseReason::EndSilenceReached)
         {
@@ -177,10 +181,22 @@ impl RecognitionSession {
         if draft.latest_segment_id != Some(first_segment_id) {
             return None;
         }
-        Some(
-            samples_between(request.target.range.start_sample, streaming_range.end_sample)
-                .min(request.source_audio.len()),
-        )
+        // Completion ranges are measured over request.audio, which may start with
+        // ASR-only copied silence that source_audio deliberately omits. Token
+        // timestamps live in that audio space; turn-phrase audio uses source space.
+        let geometric_overlap =
+            samples_between(request.target.range.start_sample, streaming_range.end_sample);
+        let leading_padding =
+            leading_asr_only_padding_samples(&request.audio, &request.source_audio);
+        let source_samples =
+            geometric_overlap.saturating_sub(leading_padding).min(request.source_audio.len());
+        let audio_samples = if leading_padding > 0 {
+            geometric_overlap.min(request.audio.len())
+        } else {
+            // No ASR-only padding relationship: range/source share one timeline.
+            source_samples
+        };
+        Some(StreamingCompletionOverlap { audio_samples, source_samples })
     }
 
     fn merge_turn_audio_range(&mut self, turn_id: u64, range: AudioRange) {
@@ -217,6 +233,33 @@ impl RecognitionSession {
             }
             self.turn_store.last_recognition_route = Some(request.route);
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StreamingCompletionOverlap {
+    /// Overlap measured in `request.audio` / token-timestamp coordinates.
+    audio_samples: usize,
+    /// Same overlap expressed in `request.source_audio` coordinates after
+    /// removing leading ASR-only padding that is absent from turn phrase audio.
+    source_samples: usize,
+}
+
+/// Leading samples present in ASR `audio` but omitted from turn `source_audio`
+/// (copied end-silence padding from the segment builder).
+fn leading_asr_only_padding_samples(audio: &[f32], source_audio: &[f32]) -> usize {
+    if source_audio.len() >= audio.len() {
+        return 0;
+    }
+    let padding = audio.len() - source_audio.len();
+    if audio[padding..]
+        .iter()
+        .zip(source_audio.iter())
+        .all(|(left, right)| left.to_bits() == right.to_bits())
+    {
+        padding
+    } else {
+        0
     }
 }
 

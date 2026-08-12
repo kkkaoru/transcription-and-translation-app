@@ -435,6 +435,70 @@ fn turn_runtime_completion_after_streaming_interim_drops_all_tokens_inside_audio
 }
 
 #[test]
+fn turn_runtime_completion_overlap_offset_ignores_leading_asr_only_padding_on_source_audio() {
+    let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut streaming_interim = interim_request_for_turn(1, 1);
+    streaming_interim.close_reason = Some(SegmentCloseReason::InterimChunkReached);
+    streaming_interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(4_800)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    streaming_interim.source_audio = (0..4_800).map(|sample| sample as f32).collect();
+    streaming_interim.audio = streaming_interim.source_audio.clone();
+    streaming_interim.source_vad_results = vec![vad(true)];
+    streaming_interim.vad_results = vec![vad(true)];
+    runtime_state(&mut runtime).in_flight(streaming_interim.clone());
+    asr_handle.complete_request_with_text(&streaming_interim, "全体");
+    runtime.step();
+
+    // Segment builder copies prior end-silence into the next segment as ASR-only
+    // padding (`include_in_turn_audio = false`). The completion range still spans
+    // that padding, but source_audio starts after it. Overlap must be converted
+    // into source coordinates; applying the raw range overlap drops real speech.
+    let leading_asr_padding = 1_600;
+    let source_len = 3_200;
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(3_200), GlobalSampleIndex(8_000)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    completion.source_audio = (4_800..8_000).map(|sample| sample as f32).collect();
+    completion.audio = std::iter::repeat_n(0.0, leading_asr_padding)
+        .chain(completion.source_audio.iter().copied())
+        .collect();
+    completion.source_vad_results = vec![vad(true); 2];
+    completion.vad_results = vec![vad(false), vad(true), vad(true)];
+    assert_eq!(completion.source_audio.len(), source_len);
+    assert_eq!(completion.audio.len(), leading_asr_padding + source_len);
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "追加");
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    assert_eq!(
+        outputs.iter().map(|output| output.text.as_str()).collect::<Vec<_>>(),
+        vec!["全体...", "全体追加。"]
+    );
+    assert_eq!(
+        outputs.last().expect("final output should be emitted").phrase,
+        (0..8_000).map(|sample| sample as f32).collect::<Vec<_>>(),
+        "ASR-only leading padding must not inflate the source overlap offset and drop post-overlap speech"
+    );
+}
+
+#[test]
 fn streaming_interim_prespeech_padding_is_not_reused_by_final_completion_audio() {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
