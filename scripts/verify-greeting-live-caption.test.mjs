@@ -6,14 +6,13 @@ import {
   assertGreetingWavFixture,
   GREETING_FIXTURES_RELATIVE_PATH,
   GREETING_HARNESS_RELATIVE_PATH,
-  GREETING_KONBANWA_WAV_RELATIVE_PATH,
-  GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH,
-  GREETING_OHAYOU_WAV_RELATIVE_PATH,
-  GREETING_SAYONARA_WAV_RELATIVE_PATH,
+  GREETING_PLAYBACK_CLIPS,
   GREETING_WAV_RELATIVE_PATH,
   loadGreetingLiveCaptionFixtures,
   runGreetingLiveCaptionGate,
 } from "./verify-greeting-live-caption.mjs";
+
+const clipById = (clips, id) => clips.find((row) => row.id === id);
 
 describe("greeting live-caption regression harness", () => {
   it("keeps a check-in-able fixture table for こんにちは / きこえますか", () => {
@@ -25,26 +24,17 @@ describe("greeting live-caption regression harness", () => {
     const wav = assertGreetingWavFixture();
     assert.equal(wav.wavPath.endsWith("greeting-kikoemasu.wav"), true);
     assert.ok(wav.bytes > 1024);
-    assert.equal(fixtures.playback.expectedOverlay, "こんにちはきこえますか");
-    assert.equal(fixtures.playback.spoken, "こんにちは、きこえますか");
+    assert.equal(inventory.clips.length, GREETING_PLAYBACK_CLIPS.length);
+    for (const required of GREETING_PLAYBACK_CLIPS) {
+      const clip = clipById(fixtures.playback.clips, required.id);
+      assert.equal(clip?.wav, required.wav);
+      assert.equal(clip?.spoken, required.spoken);
+      assert.equal(clip?.expectedOverlay, required.expectedOverlay);
+      assert.ok(wav.clips[required.id].bytes > 1024);
+    }
     assert.ok(inventory.sanitizeCount >= 8);
     assert.ok(inventory.mergeCount >= 4);
     assert.ok(inventory.pagingCount >= 15);
-    assert.equal(inventory.sayonaraWav, GREETING_SAYONARA_WAV_RELATIVE_PATH);
-    assert.ok(wav.sayonara.bytes > 1024);
-    assert.equal(fixtures.playback.sayonaraExpectedOverlay, "さようならきこえますか");
-    assert.equal(inventory.ohayouWav, GREETING_OHAYOU_WAV_RELATIVE_PATH);
-    assert.ok(wav.ohayou.bytes > 1024);
-    assert.equal(fixtures.playback.ohayouExpectedOverlay, "おはようきこえますか");
-    assert.equal(inventory.konbanwaWav, GREETING_KONBANWA_WAV_RELATIVE_PATH);
-    assert.ok(wav.konbanwa.bytes > 1024);
-    assert.equal(fixtures.playback.konbanwaExpectedOverlay, "こんばんはきこえますか");
-    assert.equal(inventory.ohayouGozaimasuWav, GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH);
-    assert.ok(wav.ohayouGozaimasu.bytes > 1024);
-    assert.equal(
-      fixtures.playback.ohayouGozaimasuExpectedOverlay,
-      "おはようございますきこえますか",
-    );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "hearing-ae")?.expectedOverlay,
       "きこえますか",
@@ -158,9 +148,8 @@ describe("greeting live-caption regression harness", () => {
     assert.equal(skipped.vitest, "skipped");
     assert.equal(skipped.inventory.playbackEnv, "KOTOBA_BEACON_GREETING_WAV");
     assert.ok(skipped.wav.bytes > 1024);
-    assert.ok(skipped.wav.sayonara.bytes > 1024);
-    assert.ok(skipped.wav.ohayou.bytes > 1024);
-    assert.ok(skipped.wav.konbanwa.bytes > 1024);
-    assert.ok(skipped.wav.ohayouGozaimasu.bytes > 1024);
+    for (const required of GREETING_PLAYBACK_CLIPS) {
+      assert.ok(skipped.wav.clips[required.id].bytes > 1024);
+    }
   });
 });

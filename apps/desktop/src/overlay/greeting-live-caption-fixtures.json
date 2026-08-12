@@ -1,25 +1,42 @@
 {
   "playback": {
     "env": "KOTOBA_BEACON_GREETING_WAV",
-    "wav": "apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav",
     "voice": "Kyoko",
-    "spoken": "こんにちは、きこえますか",
-    "expectedOverlay": "こんにちはきこえますか",
     "sampleRate": 16000,
     "command": "KOTOBA_BEACON_GREETING_WAV=apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav bun run verify:tauri:ui",
     "note": "Checked-in 16 kHz mono PCM of the greeting. CI validates RIFF/WAVE plus overlay fixtures; live ASR playback is optional.",
-    "sayonaraWav": "apps/desktop/src/overlay/fixtures/greeting-sayonara.wav",
-    "sayonaraSpoken": "さようなら、きこえますか",
-    "sayonaraExpectedOverlay": "さようならきこえますか",
-    "ohayouWav": "apps/desktop/src/overlay/fixtures/greeting-ohayou.wav",
-    "ohayouSpoken": "おはよう、きこえますか",
-    "ohayouExpectedOverlay": "おはようきこえますか",
-    "konbanwaWav": "apps/desktop/src/overlay/fixtures/greeting-konbanwa.wav",
-    "konbanwaSpoken": "こんばんは、きこえますか",
-    "konbanwaExpectedOverlay": "こんばんはきこえますか",
-    "ohayouGozaimasuWav": "apps/desktop/src/overlay/fixtures/greeting-ohayou-gozaimasu.wav",
-    "ohayouGozaimasuSpoken": "おはようございます、きこえますか",
-    "ohayouGozaimasuExpectedOverlay": "おはようございますきこえますか"
+    "clips": [
+      {
+        "id": "kikoemasu",
+        "wav": "apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav",
+        "spoken": "こんにちは、きこえますか",
+        "expectedOverlay": "こんにちはきこえますか"
+      },
+      {
+        "id": "sayonara",
+        "wav": "apps/desktop/src/overlay/fixtures/greeting-sayonara.wav",
+        "spoken": "さようなら、きこえますか",
+        "expectedOverlay": "さようならきこえますか"
+      },
+      {
+        "id": "ohayou",
+        "wav": "apps/desktop/src/overlay/fixtures/greeting-ohayou.wav",
+        "spoken": "おはよう、きこえますか",
+        "expectedOverlay": "おはようきこえますか"
+      },
+      {
+        "id": "konbanwa",
+        "wav": "apps/desktop/src/overlay/fixtures/greeting-konbanwa.wav",
+        "spoken": "こんばんは、きこえますか",
+        "expectedOverlay": "こんばんはきこえますか"
+      },
+      {
+        "id": "ohayou-gozaimasu",
+        "wav": "apps/desktop/src/overlay/fixtures/greeting-ohayou-gozaimasu.wav",
+        "spoken": "おはようございます、きこえますか",
+        "expectedOverlay": "おはようございますきこえますか"
+      }
+    ]
   },
   "sanitize": [
     {

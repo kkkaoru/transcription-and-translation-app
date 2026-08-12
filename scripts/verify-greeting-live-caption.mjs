@@ -36,6 +36,57 @@ export const GREETING_KONBANWA_WAV_RELATIVE_PATH =
 export const GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH =
   "apps/desktop/src/overlay/fixtures/greeting-ohayou-gozaimasu.wav";
 
+export const GREETING_PLAYBACK_CLIPS = [
+  {
+    id: "kikoemasu",
+    wav: GREETING_WAV_RELATIVE_PATH,
+    spoken: "こんにちは、きこえますか",
+    expectedOverlay: "こんにちはきこえますか",
+  },
+  {
+    id: "sayonara",
+    wav: GREETING_SAYONARA_WAV_RELATIVE_PATH,
+    spoken: "さようなら、きこえますか",
+    expectedOverlay: "さようならきこえますか",
+  },
+  {
+    id: "ohayou",
+    wav: GREETING_OHAYOU_WAV_RELATIVE_PATH,
+    spoken: "おはよう、きこえますか",
+    expectedOverlay: "おはようきこえますか",
+  },
+  {
+    id: "konbanwa",
+    wav: GREETING_KONBANWA_WAV_RELATIVE_PATH,
+    spoken: "こんばんは、きこえますか",
+    expectedOverlay: "こんばんはきこえますか",
+  },
+  {
+    id: "ohayou-gozaimasu",
+    wav: GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH,
+    spoken: "おはようございます、きこえますか",
+    expectedOverlay: "おはようございますきこえますか",
+  },
+];
+
+const STALE_PLAYBACK_FIELDS = [
+  "wav",
+  "spoken",
+  "expectedOverlay",
+  "sayonaraWav",
+  "sayonaraSpoken",
+  "sayonaraExpectedOverlay",
+  "ohayouWav",
+  "ohayouSpoken",
+  "ohayouExpectedOverlay",
+  "konbanwaWav",
+  "konbanwaSpoken",
+  "konbanwaExpectedOverlay",
+  "ohayouGozaimasuWav",
+  "ohayouGozaimasuSpoken",
+  "ohayouGozaimasuExpectedOverlay",
+];
+
 const REQUIRED_SANITIZE_IDS = [
   "hearing-ae",
   "hearing-oe",
@@ -135,44 +186,37 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
   if (fixtures.playback?.env !== "KOTOBA_BEACON_GREETING_WAV") {
     throw new Error(`unexpected playback env: ${fixtures.playback?.env}`);
   }
-  if (fixtures.playback?.wav !== GREETING_WAV_RELATIVE_PATH) {
-    throw new Error(`playback.wav must be ${GREETING_WAV_RELATIVE_PATH}`);
+  for (const stale of STALE_PLAYBACK_FIELDS) {
+    if (Object.hasOwn(fixtures.playback ?? {}, stale)) {
+      throw new Error(`playback.${stale} must move into playback.clips`);
+    }
   }
-  if (fixtures.playback?.sayonaraWav !== GREETING_SAYONARA_WAV_RELATIVE_PATH) {
-    throw new Error(`playback.sayonaraWav must be ${GREETING_SAYONARA_WAV_RELATIVE_PATH}`);
+  const clips = fixtures.playback?.clips;
+  if (!Array.isArray(clips) || clips.length < GREETING_PLAYBACK_CLIPS.length) {
+    throw new Error(`playback.clips table too small: ${clips?.length ?? 0}`);
   }
-  if (fixtures.playback?.expectedOverlay !== "こんにちはきこえますか") {
-    throw new Error("playback.expectedOverlay must be こんにちはきこえますか");
+  for (const required of GREETING_PLAYBACK_CLIPS) {
+    const clip = clips.find((row) => row.id === required.id);
+    if (!clip) {
+      throw new Error(`missing playback clip: ${required.id}`);
+    }
+    if (clip.wav !== required.wav) {
+      throw new Error(`playback clip ${required.id} wav must be ${required.wav}`);
+    }
+    if (clip.spoken !== required.spoken) {
+      throw new Error(`playback clip ${required.id} spoken must be ${required.spoken}`);
+    }
+    if (clip.expectedOverlay !== required.expectedOverlay) {
+      throw new Error(
+        `playback clip ${required.id} expectedOverlay must be ${required.expectedOverlay}`,
+      );
+    }
   }
-  if (fixtures.playback?.sayonaraExpectedOverlay !== "さようならきこえますか") {
-    throw new Error("playback.sayonaraExpectedOverlay must be さようならきこえますか");
-  }
-  if (fixtures.playback?.ohayouWav !== GREETING_OHAYOU_WAV_RELATIVE_PATH) {
-    throw new Error(`playback.ohayouWav must be ${GREETING_OHAYOU_WAV_RELATIVE_PATH}`);
-  }
-  if (fixtures.playback?.ohayouExpectedOverlay !== "おはようきこえますか") {
-    throw new Error("playback.ohayouExpectedOverlay must be おはようきこえますか");
-  }
-  if (fixtures.playback?.konbanwaWav !== GREETING_KONBANWA_WAV_RELATIVE_PATH) {
-    throw new Error(`playback.konbanwaWav must be ${GREETING_KONBANWA_WAV_RELATIVE_PATH}`);
-  }
-  if (fixtures.playback?.konbanwaExpectedOverlay !== "こんばんはきこえますか") {
-    throw new Error("playback.konbanwaExpectedOverlay must be こんばんはきこえますか");
-  }
-  if (fixtures.playback?.ohayouGozaimasuWav !== GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH) {
-    throw new Error(
-      `playback.ohayouGozaimasuWav must be ${GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH}`,
-    );
-  }
-  if (fixtures.playback?.ohayouGozaimasuExpectedOverlay !== "おはようございますきこえますか") {
-    throw new Error(
-      "playback.ohayouGozaimasuExpectedOverlay must be おはようございますきこえますか",
-    );
-  }
+  const primary = clips.find((row) => row.id === "kikoemasu");
   if (!/verify:tauri:ui/.test(fixtures.playback?.command ?? "")) {
     throw new Error("playback command must document verify:tauri:ui");
   }
-  if (!fixtures.playback?.command?.includes(GREETING_WAV_RELATIVE_PATH)) {
+  if (!fixtures.playback?.command?.includes(primary.wav)) {
     throw new Error("playback command must point at the checked-in wav");
   }
   return {
@@ -181,11 +225,8 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
     pagingCount: fixtures.paging.length,
     playbackEnv: fixtures.playback.env,
     playbackCommand: fixtures.playback.command,
-    playbackWav: fixtures.playback.wav,
-    sayonaraWav: fixtures.playback.sayonaraWav,
-    ohayouWav: fixtures.playback.ohayouWav,
-    konbanwaWav: fixtures.playback.konbanwaWav,
-    ohayouGozaimasuWav: fixtures.playback.ohayouGozaimasuWav,
+    playbackWav: primary.wav,
+    clips,
   };
 };
 
@@ -206,18 +247,14 @@ const assertRiffWave = (relativePath, root = repositoryRoot) => {
 };
 
 export const assertGreetingWavFixture = (root = repositoryRoot) => {
-  const primary = assertRiffWave(GREETING_WAV_RELATIVE_PATH, root);
-  const sayonara = assertRiffWave(GREETING_SAYONARA_WAV_RELATIVE_PATH, root);
-  const ohayou = assertRiffWave(GREETING_OHAYOU_WAV_RELATIVE_PATH, root);
-  const konbanwa = assertRiffWave(GREETING_KONBANWA_WAV_RELATIVE_PATH, root);
-  const ohayouGozaimasu = assertRiffWave(GREETING_OHAYOU_GOZAIMASU_WAV_RELATIVE_PATH, root);
+  const clips = Object.fromEntries(
+    GREETING_PLAYBACK_CLIPS.map((clip) => [clip.id, assertRiffWave(clip.wav, root)]),
+  );
+  const primary = clips.kikoemasu;
   return {
     wavPath: primary.wavPath,
     bytes: primary.bytes,
-    sayonara,
-    ohayou,
-    konbanwa,
-    ohayouGozaimasu,
+    clips,
   };
 };
 
