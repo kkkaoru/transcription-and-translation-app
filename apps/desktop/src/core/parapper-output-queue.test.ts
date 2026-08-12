@@ -198,6 +198,146 @@ describe("Parapper output coalescing queue", () => {
     expect(queue.getStats()).toMatchObject({ droppedFinals: 1, droppedPartials: 0 });
   });
 
+  it("does not let a later shorter rewrite replace a pending longer same-turn rewrite", async () => {
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.id);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      text: "電車が",
+      isFinal: false,
+      revision: 1,
+      outputSequence: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "longer-rewrite",
+      text: "電車が遅延してただから僕は学校に行かない",
+      isFinal: false,
+      revision: 5,
+      outputSequence: 5,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "truncated-rewrite",
+      text: "電車が遅延してたから僕は学校",
+      isFinal: false,
+      revision: 6,
+      outputSequence: 6,
+      ...turn,
+    });
+
+    expect(queue.getStats()).toMatchObject({ pending: 1, droppedPartials: 1, inFlight: true });
+
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["in-flight", "longer-rewrite"]);
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(processed).toEqual(["in-flight", "longer-rewrite"]);
+    expect(queue.getStats()).toMatchObject({ processed: 2, pending: 0, droppedPartials: 1 });
+  });
+
+  it("uses sourceText when deciding to keep a longer pending rewrite", async () => {
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { sourceText: string }>((next) => {
+      processed.push(next.id);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 9,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      sourceText: "電車が",
+      isFinal: false,
+      revision: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "longer-rewrite",
+      sourceText: "電車が遅延してただから僕は学校に行かない",
+      isFinal: false,
+      revision: 5,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "truncated-rewrite",
+      sourceText: "電車が遅延してたから僕は学校",
+      isFinal: false,
+      revision: 6,
+      ...turn,
+    });
+
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["in-flight", "longer-rewrite"]);
+    release.shift()?.();
+    await queue.whenIdle();
+  });
+
+  it("still replaces a pending partial with a later longer same-turn rewrite", async () => {
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.id);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      text: "電車が",
+      isFinal: false,
+      revision: 1,
+      outputSequence: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "short-partial",
+      text: "電車が遅延してた",
+      isFinal: false,
+      revision: 5,
+      outputSequence: 5,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "longer-rewrite",
+      text: "電車が遅延してただから僕は学校に行かない",
+      isFinal: false,
+      revision: 6,
+      outputSequence: 6,
+      ...turn,
+    });
+
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["in-flight", "longer-rewrite"]);
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(queue.getStats()).toMatchObject({ processed: 2, pending: 0, droppedPartials: 1 });
+  });
+
   it("does not let an older final remove a newer turn's pending partial", async () => {
     const started: string[] = [];
     const release: Array<() => void> = [];

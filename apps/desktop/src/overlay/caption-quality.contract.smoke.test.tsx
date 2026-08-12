@@ -220,6 +220,26 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       expect(truncatedRewriteFinal.sourceText).toBe(complete);
       expect(truncatedRewriteFinal.sourceText).toContain("に行かない");
       expect(truncatedRewriteFinal.sentenceEndOffsets).toBeUndefined();
+      const truncatedRewritePartial = expectMerged(
+        mergeCaptionPayload(
+          caption({
+            id: "parapper:session:turn:delay",
+            sourceText: "電車が遅延してただから僕は学校に行かない",
+            provisional: true,
+            startedAt: 1_200,
+            receivedAt: 5_000,
+          }),
+          caption({
+            id: "parapper:session:turn:delay",
+            sourceText: "電車が遅延してたから僕は学校",
+            provisional: true,
+            startedAt: 1_200,
+            receivedAt: 5_200,
+          }),
+        ),
+      );
+      expect(truncatedRewritePartial.sourceText).toBe(complete);
+      expect(truncatedRewritePartial.sourceText).toContain("に行かない");
       expect(
         captionTextLines({
           key: "source",

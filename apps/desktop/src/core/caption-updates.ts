@@ -616,6 +616,19 @@ const isLongerSurfaceContinuation = (currentText: string, nextText: string): boo
  * the converted head plus any extra painted tail. Prefix extensions return
  * `longer` unchanged. Unrelated pairs return null.
  */
+/**
+ * True when `incoming` is a shorter truncated rewrite of already-painted
+ * `painted` — a prefix cut, or a short mid-span conversion that dropped the tail.
+ */
+export const isTruncatedCaptionRewrite = (incoming: string, painted: string): boolean => {
+  const nextText = incoming.trim();
+  const currentText = painted.trim();
+  if (!nextText || !currentText) {
+    return false;
+  }
+  return isLongerSurfaceContinuation(nextText, currentText);
+};
+
 const stitchConvertedHeadWithPaintedTail = (shorter: string, longer: string): string | null => {
   if (!shorter || !longer || [...longer].length <= [...shorter].length) {
     return null;
@@ -718,6 +731,17 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
       return collapseRunawayGraphemeRuns(stitched);
     }
     return collapseRunawayGraphemeRuns(nextText);
+  }
+
+  // Same keep-tail rule for later non-finals. Latest-wins / a newer provisional
+  // can rewrite してただ → してた and drop the still-spoken tail before a final.
+  if (isSourceStagePayload(next) && hasText(next.sourceText) && hasText(current.sourceText)) {
+    const currentText = trim(current.sourceText);
+    const nextText = trim(next.sourceText);
+    const stitched = stitchConvertedHeadWithPaintedTail(nextText, currentText);
+    if (stitched && [...stitched].length > [...nextText].length) {
+      return collapseRunawayGraphemeRuns(stitched);
+    }
   }
 
   if (

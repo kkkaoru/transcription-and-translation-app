@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearCaptionMergeDiagnostics,
   getCaptionMergeDiagnostics,
+  isTruncatedCaptionRewrite,
   mergeCaptionPayload,
   takePendingCaptionTranslation,
 } from "./caption-updates";
@@ -42,6 +43,30 @@ describe("mergeCaptionPayload", () => {
       ...first,
       translationText: "Hello",
       receivedAt: 2,
+    });
+  });
+
+  it("keeps incoming translation when a new sequence-0 chunk already carries both texts", () => {
+    const current = caption({
+      id: "parapper:session:turn:1",
+      sourceText: "昨日は雨",
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+    });
+    const next = caption({
+      id: "parapper:session:turn:2",
+      sourceText: "今日は晴れ",
+      translationText: "It is sunny today",
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+    });
+
+    expect(mergeCaptionPayload(current, next)).toMatchObject({
+      id: "parapper:session:turn:2",
+      sourceText: "今日は晴れ",
+      translationText: "It is sunny today",
     });
   });
 
@@ -2903,12 +2928,51 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("keeps a longer painted tail when a later non-final rewrite is truncated", () => {
+    // Latest-wins can paint a later same-turn rewrite that converts the mid-span
+    // (してただ → してた) and drops the still-spoken tail before a final arrives.
+    const painted = caption({
+      id: "parapper:session:turn:delay-tail",
+      sourceText: "電車が遅延してただから僕は学校に行かない",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 5_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const truncatedRewrite = caption({
+      id: "parapper:session:turn:delay-tail",
+      sourceText: "電車が遅延してたから僕は学校",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 5_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    const merged = mergeCaptionPayload(painted, truncatedRewrite);
+    expect(isTruncatedCaptionRewrite("", painted.sourceText)).toBe(false);
+    expect(isTruncatedCaptionRewrite(truncatedRewrite.sourceText, "")).toBe(false);
+    expect(isTruncatedCaptionRewrite("別の話題です", painted.sourceText)).toBe(false);
+    expect(
+      isTruncatedCaptionRewrite(truncatedRewrite.sourceText, painted.sourceText),
+    ).toBe(true);
+    expect(merged?.sourceText).toBe("電車が遅延してたから僕は学校に行かない");
+    expect(merged?.sourceText).toContain("に行かない");
+    expect(merged?.provisional).toBe(true);
+  });
+
   it("drops truncated-final morph offsets when keeping a longer provisional surface", () => {
     const provisional = caption({
       id: "parapper:session:turn:1",
       sourceText: "こんにちはきこえますか",
       azookeyInputText: "こんにちはきこえますか",
       sentenceEndOffsets: [11],
+      softBreakOffsets: [5],
       startedAt: 1_000,
       receivedAt: 10,
       stage: "source",
@@ -2932,6 +2996,7 @@ describe("mergeCaptionPayload", () => {
     expect(merged?.sourceText).toBe("こんにちはきこえますか");
     expect(merged?.azookeyInputText).toBe("こんにちはきこえますか");
     expect(merged?.sentenceEndOffsets).toEqual([11]);
+    expect(merged?.softBreakOffsets).toEqual([5]);
   });
 
   it("drops leftover sentenceEndOffsets when accepting a longer same-id surface without new offsets", () => {

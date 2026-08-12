@@ -9,6 +9,7 @@
  * can only wait for one in-flight normalizer call.
  */
 
+import { isTruncatedCaptionRewrite } from "./caption-updates";
 import { recordPipelineDrop } from "./dropDiagnostics";
 
 export type ParapperOutputQueueItem = {
@@ -20,6 +21,9 @@ export type ParapperOutputQueueItem = {
   revision?: number;
   outputSequence?: number;
   segmentId?: number;
+  /** Optional recognized surface used to keep a longer rewrite over a truncated later partial. */
+  text?: string;
+  sourceText?: string | null;
 };
 
 export type ParapperOutputQueueStats = {
@@ -120,6 +124,28 @@ export const compareParapperTurnCursor = (
     return candidate.isFinal ? 1 : -1;
   }
   return 0;
+};
+
+const queueItemSurface = (item: ParapperOutputQueueItem): string => {
+  if (typeof item.sourceText === "string" && item.sourceText.trim()) {
+    return item.sourceText.trim();
+  }
+  if (typeof item.text === "string" && item.text.trim()) {
+    return item.text.trim();
+  }
+  return "";
+};
+
+const isShorterRewriteOfPending = (
+  candidate: ParapperOutputQueueItem,
+  pendingItem: ParapperOutputQueueItem,
+): boolean => {
+  const candidateText = queueItemSurface(candidate);
+  const pendingText = queueItemSurface(pendingItem);
+  if (!candidateText || !pendingText) {
+    return false;
+  }
+  return isTruncatedCaptionRewrite(candidateText, pendingText);
 };
 
 const shouldDropForCursor = (
@@ -238,6 +264,22 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
           }
           return;
         }
+      }
+      const trailing = pending.length > 0 ? pending[pending.length - 1] : undefined;
+      if (
+        !item.isFinal &&
+        trailing &&
+        !trailing.isFinal &&
+        sameTurnOrLegacy(item, trailing) &&
+        isShorterRewriteOfPending(item, trailing)
+      ) {
+        // Latest-wins must not drop a longer pending rewrite in favor of a
+        // truncated later partial. The longer surface still needs normalize.
+        droppedPartials += 1;
+        recordPipelineDrop("parapper-output-queue", 1, "truncated-rewrite-partial");
+        return;
+      }
+      if (key !== null) {
         rememberLatestTurn(key, item);
       }
       if (item.isFinal) {
