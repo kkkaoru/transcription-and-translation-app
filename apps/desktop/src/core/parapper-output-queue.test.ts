@@ -248,6 +248,61 @@ describe("Parapper output coalescing queue", () => {
     expect(queue.getStats()).toMatchObject({ processed: 2, pending: 0, droppedPartials: 1 });
   });
 
+  it("does not let a truncated same-turn final discard a longer pending rewrite", async () => {
+    // Completion ASR can finalize on a prefix while a longer Nemotron rewrite is
+    // still queued behind an in-flight normalizer. Dropping that pending surface
+    // is the "spoke but no caption tail" failure: the long text never paints.
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.id);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      text: "電車が",
+      isFinal: false,
+      revision: 1,
+      outputSequence: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "longer-rewrite",
+      text: "電車が遅延してただから僕は学校に行かない",
+      isFinal: false,
+      revision: 5,
+      outputSequence: 5,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "truncated-final",
+      text: "電車が遅延してたから僕は学校",
+      isFinal: true,
+      revision: 6,
+      outputSequence: 6,
+      ...turn,
+    });
+
+    expect(queue.getStats()).toMatchObject({ pending: 2, droppedPartials: 0, inFlight: true });
+
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["in-flight", "longer-rewrite"]);
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["in-flight", "longer-rewrite", "truncated-final"]);
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(queue.getStats()).toMatchObject({ processed: 3, pending: 0, droppedPartials: 0 });
+  });
+
   it("uses sourceText when deciding to keep a longer pending rewrite", async () => {
     const processed: string[] = [];
     const release: Array<() => void> = [];

@@ -283,7 +283,8 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
         rememberLatestTurn(key, item);
       }
       if (item.isFinal) {
-        // Partials waiting for this same turn are superseded by its final.
+        // Partials waiting for this same turn are superseded by its final,
+        // except a longer pending rewrite that this final truncates.
         // Keep a newer turn's partial intact even if transport delivery is
         // briefly interleaved.
         while (
@@ -291,6 +292,13 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
           !pending[pending.length - 1]?.isFinal &&
           sameTurnOrLegacy(item, pending[pending.length - 1] as T)
         ) {
+          const trailingPartial = pending[pending.length - 1] as T;
+          // Truncated completion ASR must not discard a longer pending rewrite
+          // that has not painted yet. Keep that surface in front of this final
+          // so merge can stitch the utterance tail instead of dropping it.
+          if (isShorterRewriteOfPending(item, trailingPartial)) {
+            break;
+          }
           pending.pop();
           droppedPartials += 1;
           recordPipelineDrop("parapper-output-queue", 1, "final-superseded-partial");
