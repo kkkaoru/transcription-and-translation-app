@@ -103,6 +103,13 @@ const DOMINATED_CONJUGATIONAL_AFTER_OBJECT_PENALTY: f32 = -3.0;
 /// (`降り`) on connection cost alone before polite endings. Also covers
 /// evidential `そうです`, where the same bare roots outrank `降り`/`振り`.
 const BARE_CONTENT_BEFORE_JODOUSHI_PENALTY: f32 = -12.0;
+/// Soft-boost precipitation stems after a weather noun (`雨`/`雪` and
+/// `が`/`は` tails) so `あめがふりそうです` becomes `雨が降りそうです`
+/// instead of `振り`.
+const PRECIPITATION_STEM_AFTER_RAIN_BONUS: f32 = 4.5;
+/// Soft-demote the wave/shake stem after the same weather noun so it stays in
+/// n-best without winning live weather captions.
+const WAVE_STEM_AFTER_RAIN_PENALTY: f32 = -4.5;
 /// Soft-demote raw Katakana ruby-id rows before a jodoushi identity when a
 /// conjugational Kanji stem exists for the same reading. Without this, loanword
 /// orthography such as `フリ`+`ます` can beat `降り`+`ます` after bare roots are
@@ -925,6 +932,8 @@ pub fn convert_with_dictionary(
                                 entry,
                                 max_dictionary_word_chars,
                             )
+                            + precipitation_stem_after_rain_bonus(&state, entry)
+                            + wave_stem_after_rain_penalty(&state, entry)
                             + short_head_before_person_suffix_penalty(
                                 dictionary, &chars, end, entry,
                             )
@@ -2008,6 +2017,42 @@ fn short_kanji_hiding_stem_before_jodoushi_penalty(
         });
     if has_hiding_stem {
         SHORT_KANJI_HIDING_STEM_BEFORE_JODOUSHI_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+fn path_ends_with_precipitation_noun(state: &PathState) -> bool {
+    let prefix = state.text.as_str();
+    prefix.ends_with('雨')
+        || prefix.ends_with("雨が")
+        || prefix.ends_with("雨は")
+        || prefix.ends_with('雪')
+        || prefix.ends_with("雪が")
+        || prefix.ends_with("雪は")
+}
+
+/// Soft-boost `降り`/`降る`/`降っ` after a weather noun so evidentials keep
+/// precipitation orthography (`雨が降りそうです` / `雪が降りそうです`).
+fn precipitation_stem_after_rain_bonus(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    if !path_ends_with_precipitation_noun(state) {
+        return NO_SCORE;
+    }
+    if matches!(entry.surface.as_str(), "降り" | "降る" | "降っ") {
+        PRECIPITATION_STEM_AFTER_RAIN_BONUS
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote `振り`/`振る`/`振っ` after a weather noun. Without this, unigram
+/// value can still rank the wave/shake stem over precipitation.
+fn wave_stem_after_rain_penalty(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    if !path_ends_with_precipitation_noun(state) {
+        return NO_SCORE;
+    }
+    if matches!(entry.surface.as_str(), "振り" | "振る" | "振っ") {
+        WAVE_STEM_AFTER_RAIN_PENALTY
     } else {
         NO_SCORE
     }
@@ -4792,8 +4837,12 @@ mod tests {
             ("のみます", "飲みます"),
             ("みずをのみます", "水を飲みます"),
             // Bare roots + noun compounds must not absorb stem+evidential そう.
+            // After 雨, precipitation must beat the wave/shake homophone.
             ("ふりそうです", "振りそうです"),
-            ("あめがふりそうです", "雨が振りそうです"),
+            ("あめがふりそうです", "雨が降りそうです"),
+            ("雨がふりそうです", "雨が降りそうです"),
+            ("ゆきがふりそうです", "雪が降りそうです"),
+            ("雪がふりそうです", "雪が降りそうです"),
             // Already-correct polite verbs must not regress.
             ("はれます", "晴れます"),
             ("いきます", "行きます"),

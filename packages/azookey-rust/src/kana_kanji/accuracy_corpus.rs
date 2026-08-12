@@ -433,8 +433,10 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     ("のみます", "飲みます"),
     ("みずをのみます", "水を飲みます"),
     // Bare roots / one-mora Kanji must not absorb stem + evidential そうです.
+    // Weather context must keep precipitation, not the wave/shake homophone.
     ("ふりそうです", "振りそうです"),
-    ("あめがふりそうです", "雨が振りそうです"),
+    ("あめがふりそうです", "雨が降りそうです"),
+    ("ゆきがふりそうです", "雪が降りそうです"),
     // Full-span person plural must outrank rare short heads + たち.
     ("わたしたちはがくせいです", "私たちは学生です"),
     ("わたしたち", "私たち"),
