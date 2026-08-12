@@ -65,6 +65,15 @@ const REQUIRED_MERGE_IDS = [
   "append-kikoemasu-after-ohayou-gozaimasu",
   "keep-ohayou-gozaimasu-over-ack",
   "keep-longer-ohayou-gozaimasu-hearing-final",
+  "keep-ohayou-over-un",
+  "keep-ohayou-over-ee",
+  "keep-ohayou-over-iie",
+  "keep-konbanwa-over-un",
+  "keep-konbanwa-over-ee",
+  "keep-konbanwa-over-iie",
+  "keep-sayonara-over-un",
+  "keep-sayonara-over-ee",
+  "keep-sayonara-over-iie",
 ];
 const REQUIRED_PHRASES = [
   "こんにちは",

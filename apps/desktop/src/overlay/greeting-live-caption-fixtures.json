@@ -443,6 +443,186 @@
       },
       "expectedOverlay": "おはようございますきこえますか",
       "note": "Backdated truncated final must not erase おはようございますきこえますか"
+    },
+    {
+      "id": "keep-ohayou-over-un",
+      "current": {
+        "id": "parapper:session:turn:ohayou-un",
+        "sourceText": "おはよう",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-un",
+        "sourceText": "うん",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "おはよう",
+      "note": "Acoustic うん must not replace a painted おはよう"
+    },
+    {
+      "id": "keep-ohayou-over-ee",
+      "current": {
+        "id": "parapper:session:turn:ohayou-ee",
+        "sourceText": "おはよう",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-ee",
+        "sourceText": "ええ",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "おはよう",
+      "note": "Acoustic ええ must not replace a painted おはよう"
+    },
+    {
+      "id": "keep-ohayou-over-iie",
+      "current": {
+        "id": "parapper:session:turn:ohayou-iie",
+        "sourceText": "おはよう",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:ohayou-iie",
+        "sourceText": "いいえ",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "おはよう",
+      "note": "Acoustic いいえ must not replace a painted おはよう"
+    },
+    {
+      "id": "keep-konbanwa-over-un",
+      "current": {
+        "id": "parapper:session:turn:konbanwa-un",
+        "sourceText": "こんばんは",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:konbanwa-un",
+        "sourceText": "うん",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "こんばんは",
+      "note": "Acoustic うん must not replace a painted こんばんは"
+    },
+    {
+      "id": "keep-konbanwa-over-ee",
+      "current": {
+        "id": "parapper:session:turn:konbanwa-ee",
+        "sourceText": "こんばんは",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:konbanwa-ee",
+        "sourceText": "ええ",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "こんばんは",
+      "note": "Acoustic ええ must not replace a painted こんばんは"
+    },
+    {
+      "id": "keep-konbanwa-over-iie",
+      "current": {
+        "id": "parapper:session:turn:konbanwa-iie",
+        "sourceText": "こんばんは",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:konbanwa-iie",
+        "sourceText": "いいえ",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "こんばんは",
+      "note": "Acoustic いいえ must not replace a painted こんばんは"
+    },
+    {
+      "id": "keep-sayonara-over-un",
+      "current": {
+        "id": "parapper:session:turn:sayonara-un",
+        "sourceText": "さようなら",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:sayonara-un",
+        "sourceText": "うん",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "さようなら",
+      "note": "Acoustic うん must not replace a painted さようなら"
+    },
+    {
+      "id": "keep-sayonara-over-ee",
+      "current": {
+        "id": "parapper:session:turn:sayonara-ee",
+        "sourceText": "さようなら",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:sayonara-ee",
+        "sourceText": "ええ",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "さようなら",
+      "note": "Acoustic ええ must not replace a painted さようなら"
+    },
+    {
+      "id": "keep-sayonara-over-iie",
+      "current": {
+        "id": "parapper:session:turn:sayonara-iie",
+        "sourceText": "さようなら",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:sayonara-iie",
+        "sourceText": "いいえ",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "さようなら",
+      "note": "Acoustic いいえ must not replace a painted さようなら"
     }
   ],
   "paging": [

@@ -103,6 +103,18 @@ describe("greeting live-caption regression harness", () => {
       "おはようございます",
     );
     assert.equal(
+      fixtures.merge.find((row) => row.id === "keep-ohayou-over-un")?.expectedOverlay,
+      "おはよう",
+    );
+    assert.equal(
+      fixtures.merge.find((row) => row.id === "keep-konbanwa-over-ee")?.expectedOverlay,
+      "こんばんは",
+    );
+    assert.equal(
+      fixtures.merge.find((row) => row.id === "keep-sayonara-over-iie")?.expectedOverlay,
+      "さようなら",
+    );
+    assert.equal(
       fixtures.paging.find((row) => row.id === "stale-vibrato-offset-sayonara")?.expectedVisible,
       "さようならきこえますか",
     );
