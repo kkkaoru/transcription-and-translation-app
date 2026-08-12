@@ -326,6 +326,12 @@
       "input": "おはようー会えますか",
       "expectedOverlay": "おはようー聞こえますか",
       "note": "Prolonged おはよう + 会えますか"
+    },
+    {
+      "id": "ohayou-gozaimasu-hearing-prolonged-kanji",
+      "input": "おはようございますー会えますか",
+      "expectedOverlay": "おはようございますー聞こえますか",
+      "note": "Prolonged おはようございます + 会えますか"
     }
   ],
   "merge": [
