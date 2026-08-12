@@ -76,6 +76,11 @@ describe("greeting live-caption regression harness", () => {
       "さようなら",
     );
     assert.equal(
+      fixtures.merge.find((row) => row.id === "second-utterance-after-sayonara")
+        ?.expectedOverlayContains,
+      "きこえますか",
+    );
+    assert.equal(
       fixtures.merge.find((row) => row.id === "append-kikoemasu-after-konbanwa")?.expectedOverlay,
       "こんばんはきこえますか",
     );

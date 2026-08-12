@@ -110,6 +110,7 @@ const REQUIRED_MERGE_IDS = [
   "append-kikoemasu-after-sayonara",
   "keep-sayonara-over-ack",
   "keep-longer-sayonara-hearing-final",
+  "second-utterance-after-sayonara",
   "append-kikoemasu-after-konbanwa",
   "keep-konbanwa-over-ack",
   "keep-longer-konbanwa-hearing-final",
