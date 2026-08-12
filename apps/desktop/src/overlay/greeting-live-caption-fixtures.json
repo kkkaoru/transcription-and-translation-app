@@ -177,6 +177,26 @@
       "note": "Acoustic ええ must not replace a painted こんにちは"
     },
     {
+      "id": "keep-greeting-over-iie",
+      "current": {
+        "id": "parapper:session:turn:hello-iie",
+        "sourceText": "こんにちは",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:hello-iie",
+        "sourceText": "いいえ",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "こんにちは",
+      "note": "Acoustic いいえ must not replace a painted こんにちは"
+    },
+    {
       "id": "keep-longer-hearing-final",
       "current": {
         "id": "parapper:session:turn:b-trunc",
