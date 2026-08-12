@@ -13,6 +13,14 @@ use crate::{
 };
 
 impl RecognitionSession {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "segment transcript merge keeps replace/append and streaming-overlap paths together"
+    )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "callers transfer ownership of the ASR transcript at the session boundary"
+    )]
     pub(in crate::recognition) fn apply_segment_transcript(
         &mut self,
         request: &AsrRequest,
@@ -83,7 +91,8 @@ impl RecognitionSession {
         } else {
             text_after_audio_overlap(
                 &transcript,
-                streaming_interim_overlap.map(|overlap| overlap.audio_samples).unwrap_or(0),
+                streaming_interim_overlap
+                    .map_or(0, |overlap| overlap.samples_for_transcript_tokens(&transcript)),
             )
         };
         if replace_latest_segment {
@@ -98,7 +107,7 @@ impl RecognitionSession {
             );
         } else {
             let append_source_start =
-                streaming_interim_overlap.map(|overlap| overlap.source_samples).unwrap_or(0);
+                streaming_interim_overlap.map_or(0, |overlap| overlap.source_samples);
             let append_vad_results;
             let source_vad_results = if append_source_start == 0 {
                 request.source_vad_results.as_slice()
@@ -196,7 +205,11 @@ impl RecognitionSession {
             // No ASR-only padding relationship: range/source share one timeline.
             source_samples
         };
-        Some(StreamingCompletionOverlap { audio_samples, source_samples })
+        Some(StreamingCompletionOverlap {
+            audio_samples,
+            source_samples,
+            leading_asr_padding: leading_padding,
+        })
     }
 
     fn merge_turn_audio_range(&mut self, turn_id: u64, range: AudioRange) {
@@ -243,6 +256,41 @@ struct StreamingCompletionOverlap {
     /// Same overlap expressed in `request.source_audio` coordinates after
     /// removing leading ASR-only padding that is absent from turn phrase audio.
     source_samples: usize,
+    /// Leading ASR-only padding present in `request.audio` but not `source_audio`.
+    leading_asr_padding: usize,
+}
+
+impl StreamingCompletionOverlap {
+    /// Choose the overlap timeline that matches how token timestamps were produced.
+    ///
+    /// Completion audio may include copied end-silence padding. Token clocks
+    /// sometimes stay on that padded audio timeline, and sometimes already start
+    /// at the first source sample after ignoring silence. Use the same 80%
+    /// padding heuristic as `maybe_shift_transcript_timestamps_for_leading_padding`
+    /// so source-relative clocks are not trimmed against the padded overlap.
+    fn samples_for_transcript_tokens(self, transcript: &AsrTranscript) -> usize {
+        if self.leading_asr_padding == 0 || self.audio_samples == self.source_samples {
+            return self.audio_samples;
+        }
+        let Some(first_start_sample) = transcript.tokens.iter().find_map(|token| {
+            let start_sec = token.start_sec?;
+            sample_index_from_seconds(start_sec)
+        }) else {
+            return self.audio_samples;
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            clippy::cast_sign_loss,
+            reason = "padding threshold mirrors the existing ASR timestamp-shift heuristic"
+        )]
+        let padding_threshold = (self.leading_asr_padding as f32 * 0.8).round() as usize;
+        if first_start_sample < padding_threshold {
+            self.source_samples
+        } else {
+            self.audio_samples
+        }
+    }
 }
 
 /// Leading samples present in ASR `audio` but omitted from turn `source_audio`

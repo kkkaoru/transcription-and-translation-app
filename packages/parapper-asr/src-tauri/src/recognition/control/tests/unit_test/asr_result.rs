@@ -499,6 +499,145 @@ fn turn_runtime_completion_overlap_offset_ignores_leading_asr_only_padding_on_so
 }
 
 #[test]
+fn turn_runtime_completion_overlap_token_trim_uses_source_timeline_when_timestamps_omit_leading_padding()
+{
+    let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut streaming_interim = interim_request_for_turn(1, 1);
+    streaming_interim.close_reason = Some(SegmentCloseReason::InterimChunkReached);
+    streaming_interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(4_800)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    streaming_interim.source_audio = (0..4_800).map(|sample| sample as f32).collect();
+    streaming_interim.audio = streaming_interim.source_audio.clone();
+    streaming_interim.source_vad_results = vec![vad(true)];
+    streaming_interim.vad_results = vec![vad(true)];
+    runtime_state(&mut runtime).in_flight(streaming_interim.clone());
+    asr_handle.complete_request_with_text(&streaming_interim, "全体");
+    runtime.step();
+
+    // Geometric overlap equals leading ASR-only padding, so source overlap is 0.
+    // Offline completion may still timestamp from the first source sample (0.0)
+    // after ignoring copied silence; trimming against the padded audio timeline
+    // would treat every token as overlapped and drop the uncovered suffix text.
+    let leading_asr_padding = 1_600;
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(3_200), GlobalSampleIndex(8_000)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    completion.source_audio = (4_800..8_000).map(|sample| sample as f32).collect();
+    completion.audio = std::iter::repeat_n(0.0, leading_asr_padding)
+        .chain(completion.source_audio.iter().copied())
+        .collect();
+    completion.source_vad_results = vec![vad(true); 2];
+    completion.vad_results = vec![vad(false), vad(true), vad(true)];
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_transcript(
+        &completion,
+        AsrTranscript::from_parts(
+            "追加分",
+            ["追", "加", "分"].into_iter().map(String::from).collect(),
+            Some(&[0.0, 0.05, 0.10]),
+            None,
+        ),
+    );
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("全体...", false, 1, 1),
+            output_snapshot("全体追加分。", true, 1, 2),
+        ],
+        "source-relative completion timestamps must not be trimmed against the padded audio overlap"
+    );
+}
+
+#[test]
+fn turn_runtime_completion_overlap_token_trim_keeps_padded_audio_timeline_when_timestamps_include_padding()
+{
+    let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut streaming_interim = interim_request_for_turn(1, 1);
+    streaming_interim.close_reason = Some(SegmentCloseReason::InterimChunkReached);
+    streaming_interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(4_800)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    streaming_interim.source_audio = (0..4_800).map(|sample| sample as f32).collect();
+    streaming_interim.audio = streaming_interim.source_audio.clone();
+    streaming_interim.source_vad_results = vec![vad(true)];
+    streaming_interim.vad_results = vec![vad(true)];
+    runtime_state(&mut runtime).in_flight(streaming_interim.clone());
+    asr_handle.complete_request_with_text(&streaming_interim, "電車が遅延してた");
+    runtime.step();
+
+    // Same padded completion geometry as above, but token clocks include the
+    // leading silence. Overlap trimming must stay on the padded audio timeline.
+    let leading_asr_padding = 1_600;
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(3_200), GlobalSampleIndex(8_000)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    completion.source_audio = (4_800..8_000).map(|sample| sample as f32).collect();
+    completion.audio = std::iter::repeat_n(0.0, leading_asr_padding)
+        .chain(completion.source_audio.iter().copied())
+        .collect();
+    completion.source_vad_results = vec![vad(true); 2];
+    completion.vad_results = vec![vad(false), vad(true), vad(true)];
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_transcript(
+        &completion,
+        AsrTranscript::from_parts(
+            "だから僕は学校に行かない",
+            ["だ", "か", "ら", "僕", "は", "学", "校", "に", "行", "か", "な", "い"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            // Clocks include the 0.1s leading silence. Tokens before 0.1s are in
+            // the padded overlap; 0.12s+ is the uncovered source suffix.
+            Some(&[0.09, 0.095, 0.099, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.20]),
+            None,
+        ),
+    );
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("電車が遅延してた...", false, 1, 1),
+            output_snapshot("電車が遅延してた僕は学校に行かない。", true, 1, 2),
+        ],
+        "padded-audio token timestamps must still drop the overlapped prefix mora"
+    );
+}
+
+#[test]
 fn streaming_interim_prespeech_padding_is_not_reused_by_final_completion_audio() {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();
