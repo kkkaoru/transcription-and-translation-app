@@ -417,6 +417,7 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     ("りょうりがあついのでさます", "料理が熱いのでさます"),
     ("はしをわたる", "橋を渡る"),
     ("あついかべ", "厚い壁"),
+    ("かべがあつい", "壁が厚い"),
     ("かいてください", "書いてください"),
     // Past-auxiliary + から must not grow a copula だ at the segment boundary.
     // The intact reading converts; a duplicated だ (してただ) is a rescore /

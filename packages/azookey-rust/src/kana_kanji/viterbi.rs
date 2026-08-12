@@ -962,7 +962,7 @@ pub fn convert_with_dictionary(
                             + food_heat_after_food_subject_bonus(&state, entry)
                             + weather_heat_after_food_subject_penalty(&state, entry)
                             + bridge_crossing_context_bonus(&chars, end, entry)
-                            + thickness_object_noun_context_score(&chars, end, entry)
+                            + thickness_object_noun_context_score(&state, &chars, end, entry)
                             + kaku_te_request_context_bonus(&chars, end, entry)
                             + short_head_before_person_suffix_penalty(
                                 dictionary, &chars, end, entry,
@@ -2138,6 +2138,37 @@ fn remaining_has_thickness_object_noun(remaining: &str) -> bool {
         || remaining_has_object_noun(remaining, "こおり")
 }
 
+fn path_ends_with_particle_subject(prefix: &str, noun: &str) -> bool {
+    ["が", "は", "も"].iter().any(|particle| prefix.ends_with(&format!("{noun}{particle}")))
+}
+
+/// True when the converted prefix is a thickness-bearing subject
+/// (`壁が` / standalone `本が` / `氷が`). `日本が` must not match `本が`.
+fn path_ends_with_thickness_object(state: &PathState) -> bool {
+    let prefix = state.text.as_str();
+    if path_ends_with_particle_subject(prefix, "壁")
+        || path_ends_with_particle_subject(prefix, "氷")
+    {
+        return true;
+    }
+    for particle in ["が", "は", "も"] {
+        let tail = format!("本{particle}");
+        if !prefix.ends_with(&tail) {
+            continue;
+        }
+        let before = prefix.strip_suffix(&tail).unwrap_or("");
+        // Standalone book (`本が` / `この本が`), not `日本が` or numeral `2本が`.
+        if before
+            .chars()
+            .last()
+            .is_none_or(|character| is_hiragana(character) || is_katakana(&character))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn remaining_has_request_or_try_aux(remaining: &str) -> bool {
     remaining.starts_with("ください")
         || remaining.starts_with("下さい")
@@ -2157,13 +2188,21 @@ fn bridge_crossing_context_bonus(chars: &[char], end: usize, entry: &DictionaryE
     }
 }
 
-/// Soft-prefer thickness `厚い` before a physical object noun. Weather `暑い`
-/// and food `熱い` stay available in n-best and keep their other contexts.
-fn thickness_object_noun_context_score(chars: &[char], end: usize, entry: &DictionaryEntry) -> f32 {
+/// Soft-prefer thickness `厚い` before a physical object noun, or after a
+/// thickness subject (`壁が厚い`). Weather `暑い` and food `熱い` stay in
+/// n-best and keep their other contexts (`日本が暑い`, `スープが熱い`).
+fn thickness_object_noun_context_score(
+    state: &PathState,
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+) -> f32 {
     if entry.reading != "あつい" {
         return NO_SCORE;
     }
-    if !remaining_has_thickness_object_noun(&remaining_reading(chars, end)) {
+    let attributive = remaining_has_thickness_object_noun(&remaining_reading(chars, end));
+    let predicative = path_ends_with_thickness_object(state);
+    if !attributive && !predicative {
         return NO_SCORE;
     }
     match entry.surface.as_str() {
@@ -4694,6 +4733,9 @@ mod tests {
             ("あついかべ", "厚い壁"),
             ("あついほん", "厚い本"),
             ("あついこおり", "厚い氷"),
+            ("かべがあつい", "壁が厚い"),
+            ("ほんがあつい", "本が厚い"),
+            ("こおりがあつい", "氷が厚い"),
             ("あついひ", "暑い日"),
             ("あついすーぷは", "熱いスープは"),
             ("かいて", "書いて"),
@@ -4714,6 +4756,19 @@ mod tests {
                 candidates.iter().take(5).map(|candidate| &candidate.text).collect::<Vec<_>>()
             );
         }
+        let nihon = convert_with_dictionary(
+            "にほんがあつい",
+            &dictionary,
+            ConversionOptions { n_best: 16, ..ConversionOptions::default() },
+        );
+        let nihon_top = nihon.first().map(|candidate| candidate.text.as_str());
+        assert_ne!(nihon_top, Some("2本が厚い"), "numeral 本 must not steal にほんがあつい");
+        assert_ne!(nihon_top, Some("日本が厚い"), "日本が must not take the book-thickness prior");
+        assert!(
+            nihon.iter().any(|candidate| candidate.text == "日本が暑い"),
+            "weather reading must remain available: {:?}",
+            nihon.iter().take(5).map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
     }
 
     #[test]

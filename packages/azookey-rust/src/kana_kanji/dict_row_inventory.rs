@@ -103,6 +103,12 @@ const CONVERSION_CASES: &[ConversionCase] = &[
         inventory_hint: "attributive あつい before かべ ranks thickness 厚い",
     },
     ConversionCase {
+        input: "かべがあつい",
+        expected: "壁が厚い",
+        max_rank: 1,
+        inventory_hint: "predicate 壁が ranks thickness 厚い over weather 暑い",
+    },
+    ConversionCase {
         input: "はじ",
         expected: "端",
         // Bare はじ currently prefers 恥.
