@@ -52,16 +52,20 @@ pub(in crate::recognition) enum Action {
 }
 
 pub(in crate::recognition) fn action(input: Input) -> Action {
+    if input.pending_interim == PendingInterim::Promotable {
+        return if input.asr_state == AsrState::Busy {
+            Action::WaitForBusyAsr
+        } else {
+            Action::PromotePendingInterim
+        };
+    }
+
     let (turn_id, latest_segment_id) = match input.open_turn {
         OpenTurn::None => {
             if input.asr_state == AsrState::Busy {
                 return Action::WaitForBusyAsr;
             }
-            return if input.pending_interim == PendingInterim::Promotable {
-                Action::PromotePendingInterim
-            } else {
-                Action::Ignore
-            };
+            return Action::Ignore;
         }
         OpenTurn::Missing => return Action::Ignore,
         OpenTurn::Present { turn_id, latest_segment_id } => (turn_id, latest_segment_id),
@@ -167,6 +171,40 @@ mod tests {
                 purpose: RerecognitionPurpose::SimpleTurnCheckFinal,
                 fallback_complete_without_grammar: true,
             }
+        );
+    }
+
+    #[test]
+    fn action_promotes_pending_interim_before_open_turn_finalization_or_ignore() {
+        assert_eq!(
+            action(Input {
+                open_turn: OpenTurn::Present { turn_id: 1, latest_segment_id: Some(2) },
+                previous_segment_id: 2,
+                asr_state: AsrState::Idle,
+                pending_interim: PendingInterim::Promotable,
+                completion_strategy: CompletionStrategy::CompleteWithoutGrammar,
+            }),
+            Action::PromotePendingInterim
+        );
+        assert_eq!(
+            action(Input {
+                open_turn: OpenTurn::Present { turn_id: 1, latest_segment_id: Some(1) },
+                previous_segment_id: 2,
+                asr_state: AsrState::Idle,
+                pending_interim: PendingInterim::Promotable,
+                completion_strategy: CompletionStrategy::Namo,
+            }),
+            Action::PromotePendingInterim
+        );
+        assert_eq!(
+            action(Input {
+                open_turn: OpenTurn::Present { turn_id: 1, latest_segment_id: Some(1) },
+                previous_segment_id: 2,
+                asr_state: AsrState::Busy,
+                pending_interim: PendingInterim::Promotable,
+                completion_strategy: CompletionStrategy::Namo,
+            }),
+            Action::WaitForBusyAsr
         );
     }
 }

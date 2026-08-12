@@ -265,6 +265,149 @@ fn turn_runtime_turn_check_flushes_nemotron_streaming_chunk_before_promoting_sil
         runtime.pending.asr_segments.front().map(|segment| segment.reason),
         Some(SegmentCloseReason::InterimResultSilenceReached)
     );
+    assert!(
+        runtime.pending.turn_check.is_some(),
+        "turn-check must be preserved so the silence interim can be promoted after the streaming chunk completes"
+    );
+}
+
+#[test]
+fn turn_runtime_turn_check_promotes_silence_interim_to_completion_after_nemotron_chunk_flushed() {
+    // Regression: Nemotron streaming chunk + queued silence interim. After the
+    // streaming chunk is flushed, the turn-check must re-fire and promote the
+    // silence interim from InterimResultSilenceReached to
+    // EndSilenceReached -> CompletionCheck, not degrade to InterimDisplay.
+    let (mut runtime, _config) = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Simple)
+        .interim_display(true)
+        .build();
+    runtime_state(&mut runtime)
+        .pending_segment(1, None, SegmentCloseReason::InterimChunkReached, 0..160)
+        .pending_segment(1, None, SegmentCloseReason::InterimResultSilenceReached, 0..320)
+        .pending_turn_check(1);
+
+    runtime.step();
+
+    let chunk_request = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("first step must dispatch the streaming chunk");
+    assert_eq!(chunk_request.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk_request.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert!(
+        runtime.pending.turn_check.is_some(),
+        "turn-check must be deferred, not consumed"
+    );
+    assert_eq!(
+        runtime.pending.asr_segments.front().map(|segment| segment.reason),
+        Some(SegmentCloseReason::InterimResultSilenceReached)
+    );
+
+    runtime.requests.in_flight_request = None;
+
+    runtime.step();
+
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("second step must promote the silence interim to CompletionCheck");
+    assert_eq!(completion.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(completion.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(completion.target.range, AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(320)));
+    assert!(
+        runtime.pending.turn_check.is_none(),
+        "turn-check must be consumed after successful promotion"
+    );
+    assert!(
+        runtime.pending.asr_segments.is_empty(),
+        "silence interim must be consumed after promotion"
+    );
+}
+
+#[test]
+fn turn_runtime_turn_check_promotes_pending_interim_while_open_turn_exists() {
+    let (mut runtime, config) =
+        RecognitionSessionTestBuilder::new().turn_detector(TurnDetector::Simple).build();
+    let mut open_turn = Turn::new("turn-1-1-0".to_string(), 0);
+    open_turn.draft_mut().append_recognized_segment(
+        1,
+        None,
+        &[1.0],
+        &[vad(true)],
+        RecognitionRoute::from_model(config.asr.model),
+        "前半".to_string(),
+        0,
+    );
+    runtime_state(&mut runtime)
+        .turn(1, open_turn)
+        .open_turn(1)
+        .pending_segment(2, Some(1), SegmentCloseReason::InterimResultSilenceReached, 100..200)
+        .pending_turn_check(2);
+
+    runtime.step();
+
+    let request = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("turn-check must promote the queued interim even with an open turn");
+    assert_eq!(request.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(request.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(
+        request.target.turn_id,
+        TurnId(1),
+        "continuation interim should attach to the existing open turn"
+    );
+    assert_eq!(request.target.first_segment_id, Some(SegmentId(1)));
+    assert_eq!(request.target.last_segment_id, Some(SegmentId(2)));
+    assert_eq!(
+        request.target.range,
+        AudioRange::new(GlobalSampleIndex(100), GlobalSampleIndex(200))
+    );
+    assert!(
+        runtime.pending.turn_check.is_none(),
+        "turn-check must be consumed after promoting the pending interim"
+    );
+    assert!(
+        runtime.pending.asr_segments.is_empty(),
+        "promoted interim must leave the pending ASR queue as the in-flight completion"
+    );
+}
+
+#[test]
+fn turn_runtime_turn_check_promotes_same_segment_pending_interim_before_open_turn_finalization() {
+    let (mut runtime, config) =
+        RecognitionSessionTestBuilder::new().turn_detector(TurnDetector::Simple).build();
+    let mut open_turn = Turn::new("turn-1-1-0".to_string(), 0);
+    open_turn.draft_mut().append_recognized_segment(
+        1,
+        None,
+        &[1.0],
+        &[vad(true)],
+        RecognitionRoute::from_model(config.asr.model),
+        "途中".to_string(),
+        0,
+    );
+    runtime_state(&mut runtime)
+        .turn(1, open_turn)
+        .open_turn(1)
+        .pending_segment(1, None, SegmentCloseReason::InterimResultSilenceReached, 0..160)
+        .pending_turn_check(1);
+
+    runtime.step();
+
+    let request = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("matching open-turn segment must still promote the queued silence interim");
+    assert_eq!(request.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(request.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(request.target.turn_id, TurnId(1));
+    assert_eq!(request.target.range, AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(160)));
+    assert!(runtime.pending.turn_check.is_none());
 }
 
 #[test]

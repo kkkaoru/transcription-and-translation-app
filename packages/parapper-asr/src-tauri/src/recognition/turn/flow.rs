@@ -268,7 +268,7 @@ impl RecognitionSession {
             segment.reason == SegmentCloseReason::InterimChunkReached
         }) {
             self.dispatch_next_asr_request_if_idle();
-            return self.requests.in_flight_request.is_some();
+            return false;
         }
         for _ in 0..index {
             self.pending.asr_segments.pop_front();
