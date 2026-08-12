@@ -753,138 +753,136 @@ export const NativeFramePublisher = ({
     };
 
     const paint = (): void => {
-      void ensureFontsReady(overlayCaptionFontCss(latestRef.current.config)).then(() => {
-        if (cancelled) {
-          return;
-        }
-        const { config: currentConfig, caption: currentCaption } = latestRef.current;
-        const nextKey = framePaintKey(currentConfig, currentCaption);
-        const decision = beginNativePublish(gateRef.current, nextKey);
-        if (decision.action === "exhausted") {
-          appendStructuredLog({
-            level: "error",
-            source: "frontend",
-            stage: "native-output",
-            message:
-              "native overlay publish suppressed after repeated failures; OBS may show a frozen frame",
-            chunkId: currentCaption.id,
-            fields: {
-              failureCount: gateRef.current.failureCount,
-            },
-          });
-          return;
-        }
-        if (decision.action !== "publish") {
-          return;
-        }
+      if (cancelled) {
+        return;
+      }
+      const { config: currentConfig, caption: currentCaption } = latestRef.current;
+      const nextKey = framePaintKey(currentConfig, currentCaption);
+      const decision = beginNativePublish(gateRef.current, nextKey);
+      if (decision.action === "exhausted") {
+        appendStructuredLog({
+          level: "error",
+          source: "frontend",
+          stage: "native-output",
+          message:
+            "native overlay publish suppressed after repeated failures; OBS may show a frozen frame",
+          chunkId: currentCaption.id,
+          fields: {
+            failureCount: gateRef.current.failureCount,
+          },
+        });
+        return;
+      }
+      if (decision.action !== "publish") {
+        return;
+      }
 
-        const canvas = canvasRef.current;
-        if (!canvas) {
-          // Canvas not mounted yet; release the in-flight claim and retry shortly.
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        // Canvas not mounted yet; release the in-flight claim and retry shortly.
+        gateRef.current.inFlightKey = null;
+        scheduleRetry(16);
+        return;
+      }
+
+      const width = Math.max(1, Math.round(currentConfig.overlay.width));
+      const height = Math.max(1, Math.round(currentConfig.overlay.height));
+      // Avoid resetting the bitmap when only text changes (transparent clear
+      // still runs inside renderNativeFrame).
+      if (lastSizeRef.current.width !== width || lastSizeRef.current.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+        lastSizeRef.current = { width, height };
+      }
+      const publishedKey = nextKey;
+      try {
+        const frame = renderNativeFrame(canvas, currentConfig, currentCaption);
+        if (!frame) {
           gateRef.current.inFlightKey = null;
           scheduleRetry(16);
           return;
         }
-
-        const width = Math.max(1, Math.round(currentConfig.overlay.width));
-        const height = Math.max(1, Math.round(currentConfig.overlay.height));
-        // Avoid resetting the bitmap when only text changes (transparent clear
-        // still runs inside renderNativeFrame).
-        if (lastSizeRef.current.width !== width || lastSizeRef.current.height !== height) {
-          canvas.width = width;
-          canvas.height = height;
-          lastSizeRef.current = { width, height };
+        if (cancelled) {
+          gateRef.current.inFlightKey = null;
+          return;
         }
-        const publishedKey = nextKey;
-        try {
-          const frame = renderNativeFrame(canvas, currentConfig, currentCaption);
-          if (!frame) {
-            gateRef.current.inFlightKey = null;
-            scheduleRetry(16);
-            return;
-          }
-          if (cancelled) {
-            gateRef.current.inFlightKey = null;
-            return;
-          }
-          void bridge
-            .publishOverlayFrame(bytesToBase64(frame.pixels), frame.width, frame.height)
-            .then(() => {
-              if (cancelled) {
-                // Cleanup already released the old claim. Never clear a
-                // replacement effect's claim if it republishes the same key.
-                return;
-              }
-              const followUp = completeNativePublishSuccess(gateRef.current, publishedKey);
-              if (currentCaption.sourceText.trim()) {
-                markCaptionVisible(currentCaption.id);
-              }
-              if (followUp) {
-                schedule();
-              }
-            })
-            .catch((error: unknown) => {
-              if (cancelled) {
-                // Cleanup already released the old claim. Never clear a
-                // replacement effect's claim if it republishes the same key.
-                return;
-              }
-              const detail = formatBridgeError(error) ?? "native overlay publish rejected";
-              const { nextKey: retryKey, exhausted } = completeNativePublishFailure(
-                gateRef.current,
-                publishedKey,
-              );
-              appendStructuredLog({
-                level: exhausted ? "error" : "warn",
-                source: "frontend",
-                stage: "native-output",
-                message: exhausted
-                  ? "native overlay publish exhausted retries; OBS may show a frozen frame"
-                  : "native overlay publish failed; will retry latest frame",
-                error: detail,
-                chunkId: currentCaption.id,
-                fields: {
-                  failureCount: gateRef.current.failureCount,
-                  exhausted,
-                },
-              });
-              if (retryKey) {
-                // Brief backoff avoids a tight loop when the native worker is
-                // reconnecting, while still recovering without a caption change.
-                scheduleRetry(200);
-              }
-            });
-        } catch (error) {
-          if (cancelled) {
-            if (gateRef.current.inFlightKey === publishedKey) {
-              gateRef.current.inFlightKey = null;
+        void bridge
+          .publishOverlayFrame(bytesToBase64(frame.pixels), frame.width, frame.height)
+          .then(() => {
+            if (cancelled) {
+              // Cleanup already released the old claim. Never clear a
+              // replacement effect's claim if it republishes the same key.
+              return;
             }
-            return;
-          }
-          const detail = formatBridgeError(error) ?? "native overlay frame render failed";
-          const { nextKey: retryKey, exhausted } = completeNativePublishFailure(
-            gateRef.current,
-            publishedKey,
-          );
-          appendStructuredLog({
-            level: exhausted ? "error" : "warn",
-            source: "frontend",
-            stage: "native-output",
-            message: exhausted
-              ? "native overlay publish exhausted retries; OBS may show a frozen frame"
-              : "native overlay frame render failed; will retry latest frame",
-            error: detail,
-            chunkId: currentCaption.id,
-            fields: {
-              failureCount: gateRef.current.failureCount,
-              exhausted,
-            },
+            const followUp = completeNativePublishSuccess(gateRef.current, publishedKey);
+            if (currentCaption.sourceText.trim()) {
+              markCaptionVisible(currentCaption.id);
+            }
+            if (followUp) {
+              schedule();
+            }
+          })
+          .catch((error: unknown) => {
+            if (cancelled) {
+              // Cleanup already released the old claim. Never clear a
+              // replacement effect's claim if it republishes the same key.
+              return;
+            }
+            const detail = formatBridgeError(error) ?? "native overlay publish rejected";
+            const { nextKey: retryKey, exhausted } = completeNativePublishFailure(
+              gateRef.current,
+              publishedKey,
+            );
+            appendStructuredLog({
+              level: exhausted ? "error" : "warn",
+              source: "frontend",
+              stage: "native-output",
+              message: exhausted
+                ? "native overlay publish exhausted retries; OBS may show a frozen frame"
+                : "native overlay publish failed; will retry latest frame",
+              error: detail,
+              chunkId: currentCaption.id,
+              fields: {
+                failureCount: gateRef.current.failureCount,
+                exhausted,
+              },
+            });
+            if (retryKey) {
+              // Brief backoff avoids a tight loop when the native worker is
+              // reconnecting, while still recovering without a caption change.
+              scheduleRetry(200);
+            }
           });
-          if (retryKey) {
-            scheduleRetry(200);
+      } catch (error) {
+        if (cancelled) {
+          if (gateRef.current.inFlightKey === publishedKey) {
+            gateRef.current.inFlightKey = null;
           }
+          return;
         }
-      });
+        const detail = formatBridgeError(error) ?? "native overlay frame render failed";
+        const { nextKey: retryKey, exhausted } = completeNativePublishFailure(
+          gateRef.current,
+          publishedKey,
+        );
+        appendStructuredLog({
+          level: exhausted ? "error" : "warn",
+          source: "frontend",
+          stage: "native-output",
+          message: exhausted
+            ? "native overlay publish exhausted retries; OBS may show a frozen frame"
+            : "native overlay frame render failed; will retry latest frame",
+          error: detail,
+          chunkId: currentCaption.id,
+          fields: {
+            failureCount: gateRef.current.failureCount,
+            exhausted,
+          },
+        });
+        if (retryKey) {
+          scheduleRetry(200);
+        }
+      }
     };
 
     const schedule = (): void => {
@@ -912,8 +910,8 @@ export const NativeFramePublisher = ({
       }, NATIVE_RAF_FALLBACK_MS);
     };
 
-    // Start webfont wait in parallel with rAF / the 16ms fallback so first
-    // paint is max(layout, fonts), not layout then fonts.
+    // Warm webfonts in the background. First Syphon pixels must not wait on
+    // document.fonts.ready (off-screen WKWebView can stall that for 500ms).
     void ensureFontsReady(overlayCaptionFontCss(config));
     schedule();
     return () => {

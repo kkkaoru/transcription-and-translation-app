@@ -370,9 +370,37 @@ describe("NativeFramePublisher publish failures", () => {
         <NativeFramePublisher config={smallConfig()} caption={captionWith("raf-dead")} />,
       );
     });
-    await flush(NATIVE_RAF_FALLBACK_MS + NATIVE_FONTS_READY_TIMEOUT_MS + 10);
+    await flush(NATIVE_RAF_FALLBACK_MS + 5);
 
     expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes the first Syphon frame without waiting for hanging fonts.ready", async () => {
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => 1);
+    vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const originalFonts = document.fonts;
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        status: "loading",
+        ready: new Promise<void>(() => undefined),
+        check: () => false,
+      },
+    });
+    try {
+      await act(() => {
+        root.render(
+          <NativeFramePublisher config={smallConfig()} caption={captionWith("fonts-hang")} />,
+        );
+      });
+      await flush(NATIVE_RAF_FALLBACK_MS + 5);
+      expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: originalFonts,
+      });
+    }
   });
 
   it("publishes within one frame when rAF is dead and caption fonts are already usable", async () => {
