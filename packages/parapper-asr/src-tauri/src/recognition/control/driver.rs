@@ -249,6 +249,7 @@ impl RecognitionDriverHandle for RecognitionDriver {
 
     fn push_vad_frame(&mut self, samples: &[f32], vad_result: VadResult) {
         self.runtime.advance_runtime_tick();
+        self.runtime.note_vad_speech(vad_result.is_speech);
         let frame_events = self.segmentation_flow.push_vad_frame(samples, vad_result);
         self.runtime.push_segment_event_frame(frame_events);
     }

@@ -43,6 +43,7 @@ fn recognized_output(id: &str, turn_id: u64, text: &str, is_final: bool) -> Reco
         detected_language: None,
         meta: turn_meta(id, turn_id, is_final),
         elapsed_millis: 0,
+        caption_latency: Default::default(),
     }
 }
 

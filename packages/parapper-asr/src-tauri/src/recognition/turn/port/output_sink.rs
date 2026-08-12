@@ -235,6 +235,7 @@ mod tests {
                 true,
             ),
             elapsed_millis: 37,
+            caption_latency: Default::default(),
         }
     }
 

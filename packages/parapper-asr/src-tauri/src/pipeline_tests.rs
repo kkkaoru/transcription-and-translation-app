@@ -34,6 +34,7 @@ fn recognized_output(id: &str, text: &str) -> RecognizedTextOutput {
         detected_language: Some("ja".to_string()),
         meta: RecognizedTextMeta::replace_turn(id.to_string(), source_meta(), true),
         elapsed_millis: 0,
+        caption_latency: Default::default(),
     }
 }
 

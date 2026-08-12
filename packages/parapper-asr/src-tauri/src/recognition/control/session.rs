@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
+};
 
 use super::pending::{PendingFinalization, PendingTurnCheck, RerecognitionPurpose};
 use crate::{
@@ -18,7 +21,10 @@ use crate::{
     },
 };
 
-use super::{AsrRequestRunner, TurnDecisionRunner, TurnOutputSink};
+use super::{
+    AsrRequestRunner, TurnDecisionRunner, TurnOutputSink, clock::CaptionClock,
+    events::TurnCaptionLatency,
+};
 
 pub(crate) struct RecognitionSession {
     pub(in crate::recognition) config: ParapperConfig,
@@ -28,6 +34,7 @@ pub(crate) struct RecognitionSession {
     pub(in crate::recognition) counters: RuntimeCounters,
     pub(in crate::recognition) activity: ActivityState,
     pub(in crate::recognition) requests: AsrRequestState,
+    pub(in crate::recognition) clock: Arc<dyn CaptionClock>,
 }
 
 pub(in crate::recognition) struct RuntimeIo {
@@ -228,7 +235,11 @@ impl StreamingInterimSegmentState {
         self.chunks.iter().map(|chunk| chunk.audio.len()).sum()
     }
 
-    fn pending_chunk_segment(&self, delta_start: usize, emitted_samples: usize) -> PendingAsrSegment {
+    fn pending_chunk_segment(
+        &self,
+        delta_start: usize,
+        emitted_samples: usize,
+    ) -> PendingAsrSegment {
         let (source_audio, source_vad_results) = self.audio_and_vad_range(0, emitted_samples);
         let (audio, vad_results) = self.audio_and_vad_range(delta_start, emitted_samples);
         let range = AudioRange::new(
@@ -395,6 +406,7 @@ pub(in crate::recognition) struct TurnStore {
     pub(in crate::recognition) last_recognition_route: Option<RecognitionRoute>,
     pub(in crate::recognition) open_turn_id: Option<u64>,
     pub(in crate::recognition) open_turn_accepts_root_segment: bool,
+    pub(in crate::recognition) caption_latency: HashMap<u64, TurnCaptionLatency>,
 }
 
 impl Default for TurnStore {
@@ -409,6 +421,7 @@ impl Default for TurnStore {
             last_recognition_route: None,
             open_turn_id: None,
             open_turn_accepts_root_segment: false,
+            caption_latency: HashMap::new(),
         }
     }
 }
@@ -442,6 +455,8 @@ pub(in crate::recognition) struct ActivityState {
     pub(in crate::recognition) segment_activity_epoch: u64,
     pub(in crate::recognition) open_turn_activity_epoch: u64,
     pub(in crate::recognition) open_turn_since_tick: Option<u64>,
+    pub(in crate::recognition) vad_was_speech: bool,
+    pub(in crate::recognition) pending_speech_onset_at: Option<u64>,
 }
 
 #[derive(Default)]

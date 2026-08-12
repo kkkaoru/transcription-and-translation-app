@@ -82,6 +82,7 @@ mod tests {
                 false,
             ),
             elapsed_millis: 0,
+            caption_latency: Default::default(),
         };
 
         assert!(!is_final_for_ync_delivery(&output));

@@ -347,6 +347,15 @@ pub(crate) enum ServerMessage {
         source_language: String,
         detected_language: Option<String>,
         elapsed_ms: u64,
+        /// Monotonic ms from the recognition session clock. Omitted when unknown.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speech_start_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        asr_dispatch_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        first_partial_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        asr_final_at: Option<u64>,
     },
     #[serde(rename = "turn.final")]
     TurnFinal {
@@ -369,6 +378,15 @@ pub(crate) enum ServerMessage {
         detected_language: Option<String>,
         audio_duration_ms: u64,
         elapsed_ms: u64,
+        /// Monotonic ms from the recognition session clock. Omitted when unknown.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speech_start_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        asr_dispatch_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        first_partial_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        asr_final_at: Option<u64>,
     },
     #[serde(rename = "error")]
     Error {
@@ -662,6 +680,10 @@ mod tests {
             detected_language: None,
             audio_duration_ms: 1_280,
             elapsed_ms: 96,
+            speech_start_at: None,
+            asr_dispatch_at: None,
+            first_partial_at: None,
+            asr_final_at: None,
         };
         let final_expected: Value = serde_json::from_str(include_str!(
             "../../../documents/developer/protocol/fixtures/server-turn-final-v1.json"
@@ -686,6 +708,10 @@ mod tests {
             detected_language: None,
             audio_duration_ms: 1_280,
             elapsed_ms: 96,
+            speech_start_at: None,
+            asr_dispatch_at: None,
+            first_partial_at: None,
+            asr_final_at: None,
         };
         assert_eq!(
             serde_json::to_value(hiragana_message).unwrap(),
@@ -729,6 +755,10 @@ mod tests {
             source_language: "ja".to_string(),
             detected_language: None,
             elapsed_ms: 96,
+            speech_start_at: None,
+            asr_dispatch_at: None,
+            first_partial_at: None,
+            asr_final_at: None,
         };
 
         // `source_text` and `azookey_input_text` must be omitted (not null)
@@ -753,5 +783,35 @@ mod tests {
                 "elapsed_ms": 96,
             })
         );
+    }
+
+    #[test]
+    fn turn_partial_includes_caption_latency_when_present() {
+        let partial = ServerMessage::TurnPartial {
+            version: 1,
+            session_id: "fixture-session".to_string(),
+            turn_session_id: 7,
+            turn_id: 3,
+            revision: 2,
+            output_sequence: 1,
+            segment_id: 8,
+            previous_segment_id: Some(7),
+            text: "こんにちは".to_string(),
+            source_text: None,
+            azookey_input_text: None,
+            source_asr_model: "reazonspeech_k2_v2".to_string(),
+            source_language: "ja".to_string(),
+            detected_language: None,
+            elapsed_ms: 96,
+            speech_start_at: Some(1_000),
+            asr_dispatch_at: Some(1_100),
+            first_partial_at: Some(1_300),
+            asr_final_at: None,
+        };
+        let value = serde_json::to_value(partial).unwrap();
+        assert_eq!(value["speech_start_at"], 1_000);
+        assert_eq!(value["asr_dispatch_at"], 1_100);
+        assert_eq!(value["first_partial_at"], 1_300);
+        assert!(value.get("asr_final_at").is_none());
     }
 }

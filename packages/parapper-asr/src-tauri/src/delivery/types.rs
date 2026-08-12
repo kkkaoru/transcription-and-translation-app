@@ -1,7 +1,7 @@
 use crate::{
     config::{AsrLanguage, AsrModel},
     recognition::{
-        control::events::{RecognitionSourceMeta, RecognizedTextUpdateMode},
+        control::events::{RecognitionSourceMeta, RecognizedTextUpdateMode, TurnCaptionLatency},
         transcription::route::RecognitionRoute,
     },
 };
@@ -24,6 +24,7 @@ pub(crate) struct RecognizedTextOutput {
     pub(crate) detected_language: Option<String>,
     pub(crate) meta: RecognizedTextMeta,
     pub(crate) elapsed_millis: u128,
+    pub(crate) caption_latency: TurnCaptionLatency,
 }
 
 impl RecognizedTextOutput {
@@ -44,6 +45,7 @@ impl RecognizedTextOutput {
             detected_language,
             meta,
             elapsed_millis,
+            caption_latency: TurnCaptionLatency::default(),
         }
     }
 

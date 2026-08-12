@@ -7,6 +7,7 @@ use super::DeliveryTurnOutputSink;
 use super::{
     AsrRequestRunner, AsrWorkerStartupSender, EngineAsrRequestRunner, EngineTurnDecisionRunner,
     RecognitionSession, TurnDecisionRunner, TurnOutputSink,
+    clock::MonotonicCaptionClock,
     session::{
         ActivityState, AsrRequestState, LanguageIdRuntime, PendingRuntimeState, RuntimeCounters,
         RuntimeIo, TurnStore,
@@ -130,6 +131,7 @@ impl RecognitionSession {
             counters: RuntimeCounters::new(turn_session_id),
             activity: ActivityState::default(),
             requests: AsrRequestState::default(),
+            clock: std::sync::Arc::new(MonotonicCaptionClock::new()),
         }
     }
 

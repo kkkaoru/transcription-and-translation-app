@@ -181,8 +181,10 @@ impl RecognitionSession {
             );
             return;
         }
+        let turn_id = request.target.turn_id.0;
         self.requests.in_flight_request = Some(request);
         self.requests.last_dispatched = Some(in_flight);
+        self.stamp_asr_dispatch(turn_id);
         self.apply_deferred_streaming_session_reset_if_ready();
     }
 

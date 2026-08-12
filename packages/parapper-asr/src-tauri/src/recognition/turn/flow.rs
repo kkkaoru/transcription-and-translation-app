@@ -122,6 +122,7 @@ impl RecognitionSession {
         self.requests.in_flight_request = Some(request);
         self.requests.pending_rerecognition_purpose = Some(purpose);
         self.requests.last_dispatched = Some(in_flight);
+        self.stamp_asr_dispatch(turn_id);
         true
     }
 
@@ -264,9 +265,13 @@ impl RecognitionSession {
         };
         // Streaming Nemotron chunks ahead of the silence interim must decode
         // first so the utterance tail is not dropped on promotion.
-        if self.pending.asr_segments.iter().take(index).any(|segment| {
-            segment.reason == SegmentCloseReason::InterimChunkReached
-        }) {
+        if self
+            .pending
+            .asr_segments
+            .iter()
+            .take(index)
+            .any(|segment| segment.reason == SegmentCloseReason::InterimChunkReached)
+        {
             self.dispatch_next_asr_request_if_idle();
             return false;
         }
@@ -319,15 +324,14 @@ impl RecognitionSession {
         // padding copies prior end-silence into the next segment range). Require a
         // contiguous previous→next segment chain ending at the candidate so
         // turn-check can still promote the whole utterance to CompletionCheck.
-        if preceding.iter().any(|segment| {
-            segment.reason != SegmentCloseReason::InterimResultSilenceReached
-        }) {
+        if preceding
+            .iter()
+            .any(|segment| segment.reason != SegmentCloseReason::InterimResultSilenceReached)
+        {
             return None;
         }
         let chain_ok = preceding.windows(2).all(|pair| pair[0].is_contiguous_with(pair[1]))
-            && preceding
-                .last()
-                .is_some_and(|last| last.is_contiguous_with(candidate));
+            && preceding.last().is_some_and(|last| last.is_contiguous_with(candidate));
         chain_ok.then_some(candidate_index)
     }
 
@@ -388,7 +392,9 @@ impl RecognitionSession {
                 return;
             };
             *self.turn_store.revisions.entry(turn_id).or_insert(0) += 1;
-            self.io.output_sink.emit(confirmed.into_output());
+            let mut output = confirmed.into_output();
+            self.attach_caption_latency(turn_id, true, &mut output);
+            self.io.output_sink.emit(output);
             return;
         }
 
@@ -399,7 +405,7 @@ impl RecognitionSession {
         }
         let combined_text = draft.combined_text.clone();
         let output_sequence = take_next_output_sequence(&mut self.counters.next_output_sequence);
-        let Some(output) =
+        let Some(mut output) =
             draft.interim_output(self.counters.turn_session_id, turn_id, output_sequence, route)
         else {
             return;
@@ -407,6 +413,7 @@ impl RecognitionSession {
         if let Some(turn) = self.turn_store.turns.get_mut(&turn_id) {
             turn.draft_mut().last_emitted_interim_text = Some(combined_text);
         }
+        self.attach_caption_latency(turn_id, false, &mut output);
         self.io.output_sink.emit(output);
     }
 
@@ -473,11 +480,7 @@ impl RecognitionSession {
             return base;
         };
         let text = turn.draft().combined_text.trim();
-        if is_fixed_greeting_only(text) {
-            base.saturating_mul(3)
-        } else {
-            base
-        }
+        if is_fixed_greeting_only(text) { base.saturating_mul(3) } else { base }
     }
 }
 

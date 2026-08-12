@@ -852,6 +852,7 @@ fn message_from_output(
         .unwrap_or_else(|| "unknown".to_string());
     let source_language = source_language_code(output.source_language).to_string();
     let elapsed_ms = u64::try_from(output.elapsed_millis).unwrap_or(u64::MAX);
+    let latency = output.caption_latency;
     if output.meta.is_final {
         let audio_duration_ms =
             u64::try_from(output.phrase.len()).unwrap_or(u64::MAX).saturating_mul(1_000)
@@ -873,6 +874,10 @@ fn message_from_output(
             detected_language: output.detected_language,
             audio_duration_ms,
             elapsed_ms,
+            speech_start_at: latency.speech_start_at,
+            asr_dispatch_at: latency.asr_dispatch_at,
+            first_partial_at: latency.first_partial_at,
+            asr_final_at: latency.asr_final_at,
         }
     } else {
         ServerMessage::TurnPartial {
@@ -891,6 +896,10 @@ fn message_from_output(
             source_language,
             detected_language: output.detected_language,
             elapsed_ms,
+            speech_start_at: latency.speech_start_at,
+            asr_dispatch_at: latency.asr_dispatch_at,
+            first_partial_at: latency.first_partial_at,
+            asr_final_at: latency.asr_final_at,
         }
     }
 }
