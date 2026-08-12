@@ -41,28 +41,32 @@ const SOFT_PARTICLE_SUFFIX =
  */
 const COPULA_AFTER_DE = /^(?:す|した|して|しょう)/u;
 
-/** Greetings whose interior に/は must not become soft wrap points. */
-const FIXED_GREETINGS = [
-  "こんにちは",
-  "こんばんは",
-  "おはようございます",
-  "おはよう",
-  "さようなら",
-] as const;
+/**
+ * Particle wraps before this many scalars isolate a short head on its own row
+ * while the same-turn continuation is still arriving. Structural, not a
+ * greeting/lexeme table: unknown short leads stay glued to what follows.
+ */
+const MIN_SOFT_WRAP_PREFIX = 8;
 
 /**
- * True when a soft break would split inside/after a fixed greeting while more
- * speech follows — that left only 「こんにちは」 on the first plate row.
+ * True when a soft break would leave only a short already-recognized head on
+ * the first wrap row. Applies to greetings and any other short prefix.
  */
-const shouldIgnoreSoftBreakInGreeting = (prefix: string, remainder: string): boolean => {
+const shouldIgnoreShortPrefixSoftBreak = (prefix: string, remainder: string): boolean => {
   const next = remainder.trimStart();
   if (!next) {
     return false;
   }
   const trimmed = prefix.trimEnd().replace(/[ー〜～]+$/u, "");
-  return FIXED_GREETINGS.some(
-    (greeting) => greeting.startsWith(trimmed) || trimmed === greeting,
-  );
+  const last = trimmed.at(-1);
+  // Punctuation wraps stay valid even on a short head; particle wraps do not.
+  if (
+    last !== undefined &&
+    (SENTENCE_PUNCT.test(last) || last === "、" || last === "，" || last === ",")
+  ) {
+    return false;
+  }
+  return codePoints(trimmed).length < MIN_SOFT_WRAP_PREFIX;
 };
 
 /**
@@ -80,12 +84,12 @@ export const detectCaptionSoftBreaks = (
     }
     const prefix = chars.slice(0, offset).join("");
     const remainder = chars.slice(offset).join("");
-    return !shouldIgnoreSoftBreakInGreeting(prefix, remainder);
+    return !shouldIgnoreShortPrefixSoftBreak(prefix, remainder);
   };
   const rawSupplied = hints.softBreakOffsets;
   if (rawSupplied != null && rawSupplied.length > 0) {
-    // Respect an explicit Vibrato list even when greeting filters clear it —
-    // do not reintroduce heuristic particle wraps inside こんにちは….
+    // Drop particle wraps that would isolate a short head, including stale
+    // Vibrato offsets inside an still-open lead clause.
     return [...new Set(rawSupplied.filter(allowSoftBreak))].sort((left, right) => left - right);
   }
   if (chars.length === 0) {
@@ -119,7 +123,7 @@ export const detectCaptionSoftBreaks = (
       if (trimmed.endsWith("で") && COPULA_AFTER_DE.test(next)) {
         continue;
       }
-      if (shouldIgnoreSoftBreakInGreeting(prefix, remainder)) {
+      if (shouldIgnoreShortPrefixSoftBreak(prefix, remainder)) {
         continue;
       }
       ends.push(index);
@@ -142,26 +146,31 @@ const startsTaraContinuation = (prefix: string, remainder: string): boolean => {
   return base.endsWith("か") || base.endsWith("た") || base.endsWith("です");
 };
 
+const prefixEndsWithPunct = (prefix: string): boolean => {
+  const last = prefix.trimEnd().at(-1);
+  return last !== undefined && SENTENCE_PUNCT.test(last);
+};
+
 /**
- * After a copula/punctuation end, page whenever the next span is a new clause
- * rather than a grammatical continuation. Restricting to a small "strong head"
- * list (今日/じゃあ…) left finished clauses on the plate through long speech,
- * so the newest ending phrase (e.g. 「質問をお受けしますね」) never owned the
- * visible window until the whole utterance finished.
+ * Heuristic copula/ます paging may replace the lead only when the next span is
+ * at least as long as the finished prefix. A shorter tail (です＋次節, ます＋短い
+ * 続き, unknown long speech with a brief restart) dropped the already-recognized
+ * head and left only short text on the plate.
+ */
+const remainderDominatesPrefix = (prefix: string, remainder: string): boolean =>
+  codePoints(remainder.trimStart()).length >= codePoints(prefix.trimEnd()).length;
+
+/**
+ * After a copula/punctuation end, page when the next span is a new clause that
+ * can own the plate — not a shorter tail. Clause continuations are rejected
+ * before this runs. Punctuation and empty remainder still complete.
  */
 const japaneseCopulaAllowsRemainder = (prefix: string, remainder: string): boolean => {
   const next = remainder.trimStart();
-  if (!next) {
+  if (!next || prefixEndsWithPunct(prefix)) {
     return true;
   }
-  const last = prefix.trimEnd().at(-1);
-  if (last !== undefined && SENTENCE_PUNCT.test(last)) {
-    return true;
-  }
-  // Clause continuations (が/ので/て/よ…) are rejected earlier; any other
-  // remainder is treated as a new caption page so mid-speech POS paging can
-  // show the current clause before the speaker finishes.
-  return !startsClauseContinuation(remainder, false);
+  return remainderDominatesPrefix(prefix, remainder);
 };
 
 const startsClauseContinuation = (remainder: string, english: boolean): boolean => {
@@ -195,9 +204,6 @@ const isEnglishSentenceEnd = (prefix: string): boolean =>
   ENGLISH_SENTENCE_END.test(prefix.trimEnd());
 
 const ELONGATION_MARK = /^[ー〜～]/u;
-/** Fixed greetings that must not page away from a same-turn continuation. */
-const FIXED_GREETING_END =
-  /(?:こんにちは|こんばんは|おはようございます|おはよう|さようなら)$/u;
 
 /** True when a sentence end would split immediately before a prolonged sound. */
 const remainderStartsWithElongation = (remainder: string): boolean =>
@@ -218,14 +224,18 @@ const shouldIgnoreSentenceEndBeforeContinuation = (
   if (remainderStartsWithElongation(next)) {
     return true;
   }
-  // 「こんにちはきこえますか」— Vibrato may mark は as a sentence end; keep the
-  // greeting with the continuation so the first recognized words stay visible.
   const trimmedPrefix = prefix.trimEnd();
-  if (FIXED_GREETING_END.test(trimmedPrefix)) {
+  // A 1-scalar tail after a longer prefix is a stale/false end, not a new
+  // clause. That hid the already-recognized lead behind a single grapheme.
+  if (
+    !prefixEndsWithPunct(trimmedPrefix) &&
+    codePoints(next).length === 1 &&
+    codePoints(trimmedPrefix).length > 1
+  ) {
     return true;
   }
-  // Bare topic/binding は・も mid-utterance (明日の天気は晴れ…) must not page;
-  // those offsets hide the already-recognized head on the plate.
+  // Bare topic/binding は・も mid-utterance must not page; those offsets hide
+  // the already-recognized head on the plate. Structural, not a word list.
   if (/[はも]$/u.test(trimmedPrefix) && !isJapaneseSentenceEnd(trimmedPrefix)) {
     return true;
   }
@@ -247,8 +257,7 @@ const detectHeuristicEnds = (text: string, english: boolean, allowCopula = true)
       continue;
     }
     const remainder = chars.slice(index).join("");
-    // 「こんにちはーきこえますか」— do not page after は when ー continues the
-    // same spoken phrase; that left only the greeting on the plate.
+    // Do not page after は when ー continues the same spoken phrase.
     if (shouldIgnoreSentenceEndBeforeContinuation(prefix, remainder, english)) {
       continue;
     }
@@ -286,8 +295,8 @@ export const detectCaptionSentenceEnds = (
     }
     const prefix = chars.slice(0, offset).join("");
     const remainder = chars.slice(offset).join("");
-    // Drop pipeline offsets that would strip a fixed greeting or split before
-    // ー/〜 so the first recognized span stays on the plate with its continuation.
+    // Drop pipeline offsets that would split before ー/〜, leave a 1-scalar
+    // tail, or page after a bare topic は・も so the recognized head stays.
     if (shouldIgnoreSentenceEndBeforeContinuation(prefix, remainder, english)) {
       return false;
     }

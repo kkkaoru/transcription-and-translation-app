@@ -19,21 +19,16 @@ describe("Japanese sentence-end detection", () => {
     expect(detectCaptionSentenceEnds("ですからね")).toEqual([]);
     expect(detectCaptionSentenceEnds("ですら知らない")).toEqual([]);
     expect(selectVisibleCaptionSentence("ましたら連絡します")).toBe("ましたら連絡します");
-    // 終助詞のあとに新しい内容語が来たら話し終わり前でもページする
-    expect(selectVisibleCaptionSentence("行きましたよ次")).toBe("次");
+    // A 1-scalar tail must not replace a longer finished prefix.
+    expect(selectVisibleCaptionSentence("行きましたよ次")).toBe("行きましたよ次");
   });
 
-  it("pages after です/ます when the next span is a new clause (not only strong heads)", () => {
-    expect(
-      selectVisibleCaptionSentence(
-        "本日はウェビナーにご参加いただきありがとうございます最後に質問をお受けしますね",
-      ),
-    ).toBe("最後に質問をお受けしますね");
-    expect(
-      selectVisibleCaptionSentence(
-        "本日はウェビナーにご参加いただきありがとうございます最後に質問を",
-      ),
-    ).toBe("最後に質問を");
+  it("keeps a long utterance when the span after です/ます is shorter than the lead", () => {
+    const thanksThenQuestion =
+      "本日はウェビナーにご参加いただきありがとうございます最後に質問をお受けしますね";
+    const thanksThenOpen = "本日はウェビナーにご参加いただきありがとうございます最後に質問を";
+    expect(selectVisibleCaptionSentence(thanksThenQuestion)).toBe(thanksThenQuestion);
+    expect(selectVisibleCaptionSentence(thanksThenOpen)).toBe(thanksThenOpen);
   });
 
   it("does not page before a prolonged-sound continuation", () => {
@@ -68,8 +63,8 @@ describe("Japanese sentence-end detection", () => {
     expect(selectVisibleCaptionSentence(weather)).toBe(weather);
   });
 
-  it("pages to the in-progress sentence after a completed ending", () => {
-    expect(selectVisibleCaptionSentence("今日は晴れです明日は雨")).toBe("明日は雨");
+  it("pages to the in-progress sentence after punctuation, not a shorter copula tail", () => {
+    expect(selectVisibleCaptionSentence("今日は晴れです明日は雨")).toBe("今日は晴れです明日は雨");
     expect(selectVisibleCaptionSentence("今日は晴れです。明日は雨です。")).toBe("明日は雨です。");
   });
 
@@ -93,14 +88,15 @@ describe("Japanese sentence-end detection", () => {
   });
 
   it("uses the AzooKey reading only when it is the display surface", () => {
+    const reading = "きょうははれですこれから午後の予定と明日の議題";
     expect(
-      detectCaptionSentenceEnds("きょうははれですあした", {
-        azookeyInputText: "きょうははれですあした",
+      detectCaptionSentenceEnds(reading, {
+        azookeyInputText: reading,
       }),
     ).toEqual([8]);
     expect(
-      detectCaptionSentenceEnds("今日は晴れです明日", {
-        azookeyInputText: "きょうははれですあした",
+      detectCaptionSentenceEnds("今日は晴れですこれから午後の予定と明日の議題", {
+        azookeyInputText: reading,
       }),
     ).toEqual([7]);
   });
@@ -193,7 +189,7 @@ describe("heuristic edge cases", () => {
   it("treats empty or whitespace captions as having no visible sentence", () => {
     expect(detectCaptionSentenceEnds("")).toEqual([]);
     expect(detectCaptionSentenceEnds("   ")).toEqual([]);
-    expect(detectCaptionSentenceEnds("今日は", { sentenceEndOffsets: undefined })).toEqual([]);
+    expect(detectCaptionSentenceEnds("今日は", {})).toEqual([]);
     expect(detectCaptionSentenceEnds("今日は", { azookeyInputText: null })).toEqual([]);
     expect(selectVisibleCaptionSentence("")).toBe("");
     expect(selectVisibleCaptionSentence("   ")).toBe("");
@@ -246,9 +242,11 @@ describe("heuristic edge cases", () => {
 });
 
 describe("soft wrap offsets before maxChars", () => {
-  it("marks particle + content as a soft break while trailing particles stay open", () => {
-    expect(detectCaptionSoftBreaks("今日は晴れ")).toContain(3);
+  it("marks particle + content as a soft break only after a long enough prefix", () => {
     expect(detectCaptionSoftBreaks("今日は")).toEqual([]);
+    expect(detectCaptionSoftBreaks("今日は晴れ")).not.toContain(3);
+    const longTopic = "本日の会議の議題は予算です";
+    expect(detectCaptionSoftBreaks(longTopic).some((offset) => offset >= 8)).toBe(true);
   });
 
   it("does not soft-break inside です / でした / でしょう", () => {
@@ -259,20 +257,20 @@ describe("soft wrap offsets before maxChars", () => {
     expect(detectCaptionSoftBreaks("準備でした")).not.toContain(2);
   });
 
-  it("does not soft-break inside fixed greetings before a continuation", () => {
+  it("does not soft-break a short prefix away from its same-turn continuation", () => {
     const spoken = "こんにちはきこえますか";
     const soft = detectCaptionSoftBreaks(spoken);
     expect(soft).not.toContain(3);
     expect(soft).not.toContain(5);
     expect(detectCaptionSoftBreaks("こんにちはーきこえますか")).not.toContain(5);
-    // Interior particle offsets from Vibrato must also be ignored.
-    expect(
-      detectCaptionSoftBreaks(spoken, { softBreakOffsets: [3, 5] }),
-    ).toEqual([]);
+    expect(detectCaptionSoftBreaks("準備です続き", { softBreakOffsets: [3, 5] })).toEqual([]);
+    expect(detectCaptionSoftBreaks(spoken, { softBreakOffsets: [3, 5] })).toEqual([]);
   });
 
-  it("prefers supplied Vibrato soft-break offsets", () => {
-    expect(detectCaptionSoftBreaks("あいうえお", { softBreakOffsets: [2, 4] })).toEqual([2, 4]);
+  it("prefers supplied Vibrato soft-break offsets after a long enough prefix", () => {
+    expect(
+      detectCaptionSoftBreaks("本日の会議の議題は予算です", { softBreakOffsets: [8, 12] }),
+    ).toEqual([8, 12]);
   });
 
   it("covers blank input, whitespace-only prefixes, and punctuation soft breaks", () => {
@@ -280,5 +278,77 @@ describe("soft wrap offsets before maxChars", () => {
     expect(detectCaptionSoftBreaks("  ")).toEqual([]);
     expect(detectCaptionSoftBreaks("晴れ。次")).toContain(3);
     expect(detectCaptionSoftBreaks("今日、明日")).toContain(3);
+    expect(detectCaptionSoftBreaks("晴れ，次")).toContain(3);
+    expect(detectCaptionSoftBreaks("ok, next")).toContain(3);
+  });
+});
+
+const scalarCount = (text: string): number => Array.from(text).length;
+
+const discardedLead = (text: string, visible: string): string => {
+  if (visible === text || !text.endsWith(visible)) {
+    return "";
+  }
+  return Array.from(text).slice(0, scalarCount(text) - scalarCount(visible)).join("");
+};
+
+describe("heuristic paging invariants (unknown utterances)", () => {
+  it("never replaces a longer copula lead with a shorter remainder", () => {
+    const leads = ["準備ができました", "説明します", "確認です", "終わります", "学生です"];
+    const tails = ["次", "続き", "質問を", "田中さん", "きこえますか"];
+    for (const lead of leads) {
+      for (const tail of tails) {
+        if (scalarCount(tail) >= scalarCount(lead)) {
+          continue;
+        }
+        const text = `${lead}${tail}`;
+        const visible = selectVisibleCaptionSentence(text);
+        expect(visible, text).toBe(text);
+        expect(detectCaptionSentenceEnds(text).every((offset) => offset >= scalarCount(text))).toBe(
+          true,
+        );
+      }
+    }
+  });
+
+  it("pages after a copula only when the next span is at least as long as the lead", () => {
+    const lead = "終わりです";
+    const tail = "これから午後の予定と明日の議題を確認します";
+    expect(scalarCount(tail)).toBeGreaterThanOrEqual(scalarCount(lead));
+    expect(selectVisibleCaptionSentence(`${lead}${tail}`)).toBe(tail);
+  });
+
+  it("still pages on punctuation even when the next span is shorter", () => {
+    expect(selectVisibleCaptionSentence("終わりです。次")).toBe("次");
+    expect(selectVisibleCaptionSentence("今日は晴れです。雨")).toBe("雨");
+  });
+
+  it("does not honor a 1-scalar pipeline offset that would hide a longer lead", () => {
+    expect(selectVisibleCaptionSentence("今日はとて", { sentenceEndOffsets: [4] })).toBe(
+      "今日はとて",
+    );
+    expect(selectVisibleCaptionSentence("行きましたよ次", { sentenceEndOffsets: [6] })).toBe(
+      "行きましたよ次",
+    );
+  });
+
+  it("visible heuristic text is the full utterance or a remainder that dominates the lead", () => {
+    const samples = [
+      "確認です次の議題",
+      "準備ができました続きを話します",
+      "本日は説明しますこれから詳細を共有します",
+      "学生です田中さんです",
+      "終わりますよろしくお願いします",
+    ];
+    for (const text of samples) {
+      const visible = selectVisibleCaptionSentence(text);
+      const lead = discardedLead(text, visible);
+      if (!lead) {
+        expect(visible).toBe(text);
+        continue;
+      }
+      const punctBoundary = /[。．！？!?]$/u.test(lead);
+      expect(punctBoundary || scalarCount(visible) >= scalarCount(lead), text).toBe(true);
+    }
   });
 });
