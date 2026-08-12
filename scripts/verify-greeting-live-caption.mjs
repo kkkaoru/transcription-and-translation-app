@@ -119,6 +119,7 @@ const REQUIRED_SANITIZE_IDS = [
   "ohayou-gozaimasu-hearing-ae",
   "sayonara-hearing-ae",
   "concat-hearing-oe",
+  "ohayou-hearing-oe",
 ];
 const REQUIRED_MERGE_IDS = [
   "append-kikoemasu",
