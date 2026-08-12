@@ -1433,6 +1433,110 @@ fn turn_runtime_completion_internal_sentence_end_keeps_grammar_rerecognition() {
 }
 
 #[test]
+fn turn_runtime_completion_without_interim_yields_child_next_utterance() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    assert_eq!(completion.kind, AsrTaskKind::CompletionCheck);
+    assert!(
+        runtime.turn_store.open_turn_id.is_none(),
+        "completion without an interim must not already own an open turn"
+    );
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimResultSilenceReached,
+        150..250,
+    );
+    asr_handle.complete_request_with_text(&completion, "全体。");
+    runtime.step();
+
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "a closing completion without an interim must remint the AfterInterimSilence child"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "the next utterance must take the slot instead of waiting on grammar rerecognition",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.target.turn_id, TurnId(2));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(150), GlobalSampleIndex(250))
+    );
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs
+        .iter()
+        .find(|output| output.is_final && output.turn_id == 1)
+        .expect("turn 1 must keep its final caption");
+    assert_eq!(final_output.text, "全体。");
+    assert_eq!(
+        final_output.phrase,
+        vec![1.0; 150],
+        "reminting a child next utterance must keep uncovered tail audio"
+    );
+}
+
+#[test]
+fn turn_runtime_completion_without_interim_keeps_max_chunk_on_same_turn() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    asr_handle.complete_request_with_text(&completion, "全体。");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "a max-chunk continuation must keep the slot instead of reminting as a new turn"
+    );
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "same-turn max-chunk audio must still extend the open utterance"
+    );
+    assert_eq!(runtime.pending.asr_segments.len(), 1);
+}
+
+#[test]
 fn turn_runtime_open_turn_child_continuation_stays_on_same_turn() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Simple)

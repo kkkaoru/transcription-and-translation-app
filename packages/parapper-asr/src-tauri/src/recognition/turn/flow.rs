@@ -254,6 +254,12 @@ impl RecognitionSession {
     /// A queued next-utterance root is a new turn once we have decided to close.
     /// Namo/Morph otherwise treat that root as a continuation and defer forever.
     fn stop_accepting_root_while_closing(&mut self, turn_id: u64) {
+        if self.turn_store.open_turn_id.is_none() && self.turn_store.turns.contains_key(&turn_id) {
+            // Completion can create a draft without an interim, so `open_turn`
+            // was never assigned. Attach it now: AfterInterimSilence children
+            // of a closing turn remint instead of blocking as same-turn.
+            self.turn_store.open_turn_id = Some(turn_id);
+        }
         if self.turn_store.open_turn_id == Some(turn_id) {
             self.turn_store.open_turn_accepts_root_segment = false;
             self.turn_store.open_turn_is_closing = true;
