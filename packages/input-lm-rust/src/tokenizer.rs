@@ -202,27 +202,37 @@ pub fn byte_level_bpe(text_unicode: &str, tables: &BpeTables) -> Vec<usize> {
             .map(|ch| tables.token_to_id.get(&ch.to_string()).copied().unwrap_or(0))
             .collect();
     }
-    let mut parts: Vec<String> = text_unicode.chars().map(|c| c.to_string()).collect();
+    let parts: Vec<String> = text_unicode.chars().map(|c| c.to_string()).collect();
+    merge_bpe_parts(parts, tables)
+}
 
+/// Repeatedly merges the lowest-ranked adjacent pair in `parts`.
+///
+/// Merges are applied by **pair identity** `(left, right)`, not by equality of
+/// the concatenated string. A concat-only match would also rewrite a different
+/// neighbour whose parts happen to concatenate to the same text (for example
+/// `("a","xb")` and `("ax","b")` both yield `"axb"`).
+fn merge_bpe_parts(mut parts: Vec<String>, tables: &BpeTables) -> Vec<usize> {
     loop {
-        let mut best: Option<(usize, String)> = None; // (rank, merged)
+        let mut best: Option<(usize, String, String)> = None; // (rank, left, right)
         for i in 0..parts.len().saturating_sub(1) {
             let rank = tables.ranks.get(&(parts[i].clone(), parts[i + 1].clone()));
             if let Some(&rank) = rank {
                 let better = match best {
                     None => true,
-                    Some((best_rank, _)) => rank < best_rank,
+                    Some((best_rank, _, _)) => rank < best_rank,
                 };
                 if better {
-                    best = Some((rank, format!("{}{}", parts[i], parts[i + 1])));
+                    best = Some((rank, parts[i].clone(), parts[i + 1].clone()));
                 }
             }
         }
-        let Some((_, merged)) = best else { break };
+        let Some((_, left, right)) = best else { break };
+        let merged = format!("{left}{right}");
         let mut next = Vec::with_capacity(parts.len());
         let mut i = 0;
         while i < parts.len() {
-            if i + 1 < parts.len() && parts[i].clone() + &parts[i + 1] == merged {
+            if i + 1 < parts.len() && parts[i] == left && parts[i + 1] == right {
                 next.push(merged.clone());
                 i += 2;
             } else {
@@ -549,6 +559,34 @@ mod tests {
         assert_eq!(tables.ranks.get(&("tok0".to_string(), "tok1".to_string())), Some(&0));
         assert_eq!(tables.ranks.len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn byte_level_bpe_merges_by_pair_identity_not_concat_string() {
+        // Regression: the merge pass used to match `parts[i] + parts[i+1] ==
+        // merged_text`, which also fires for a different adjacent pair whose
+        // parts concatenate to the same string. Only ("a","xb") is ranked here;
+        // ("ax","b") concatenates to the same "axb" but must NOT be merged.
+        //
+        // The colliding state uses multi-char parts, so the test starts from
+        // that intermediate partition rather than from raw characters (where
+        // concat equality coincides with pair identity).
+        let mut ranks = HashMap::new();
+        ranks.insert(("a".to_string(), "xb".to_string()), 0);
+        let mut token_to_id = HashMap::new();
+        token_to_id.insert("axb".to_string(), 1);
+        token_to_id.insert("ax".to_string(), 2);
+        token_to_id.insert("b".to_string(), 3);
+        let tables = BpeTables {
+            token_to_id,
+            id_to_token: vec![String::new(); 4],
+            ranks,
+        };
+        let parts =
+            vec!["a".to_string(), "xb".to_string(), "ax".to_string(), "b".to_string()];
+        // Correct: merge only the ranked pair → ["axb","ax","b"] → ids [1,2,3].
+        // Buggy concat match would also merge ("ax","b") → ["axb","axb"] → [1,1].
+        assert_eq!(merge_bpe_parts(parts, &tables), vec![1, 2, 3]);
     }
 
     #[test]
