@@ -6,6 +6,7 @@ import {
   enumerateAudioInputDevices,
   formatAudioCaptureDiagnostics,
   MicrophoneCapture,
+  TARGET_SAMPLE_RATE,
 } from "../core/audio";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "../core/bridge";
 import { shouldApplyCaptionHoldClear } from "../core/caption-hold-clear";
@@ -37,11 +38,20 @@ import {
   isRecognitionMode,
   resolveSilenceGateMode,
 } from "../core/defaults";
-import { pushDiagnosticEvent } from "../core/diagnostics";
+import {
+  beginCaptureStartupCorrelation,
+  markCaptureFirstCaption,
+  markCaptureFirstForwardedPcm,
+  markCaptureFirstSpeech,
+  markCapturePrerollStats,
+  markCaptureSessionReady,
+  pushDiagnosticEvent,
+} from "../core/diagnostics";
 import { clearCaptionDisplayTiming, markCaptionDisplay } from "../core/display-timing";
 import {
   clearPipelineDrops,
   type PipelineDropSignal,
+  recordCaptureStartupDiscard,
   recordPipelineDrop,
 } from "../core/dropDiagnostics";
 import { clearInputLevelDb, setInputLevelDb } from "../core/input-level";
@@ -1261,6 +1271,10 @@ export const MainApp = () => {
         error: null,
       });
       mergeAndCommitCaption(caption);
+      markCaptureFirstCaption({
+        captureGeneration: caption.captureGeneration ?? captureGenerationForAttempt ?? null,
+        captionId: caption.id,
+      });
       captionFailureMessage.current = null;
       setNotice(clearLegacyFailureNotice);
       setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
@@ -1477,7 +1491,46 @@ export const MainApp = () => {
       parapperOutputQueue.current?.close();
       parapperOutputQueue.current = null;
 
+      // Correlate prepare → ready → first PCM → first caption under the native
+      // capture generation so cold-start speech loss is greppable in exports.
+      beginCaptureStartupCorrelation({
+        captureGeneration: captureGenerationForAttempt ?? null,
+        mode: recognitionMode,
+      });
+
       if (desktopStreaming) {
+        // Mic is open but Parapper session.ready (ASR preload) has not resolved
+        // yet. Buffer a bounded PCM preroll so speech during that gap is not
+        // discarded; start() flushes it once before live sendPcm16 frames.
+        try {
+          await microphone.beginPrerollCapture();
+        } catch (error) {
+          pushDiagnosticEvent(
+            "audio",
+            "Preroll capture unavailable",
+            formatBridgeError(error) ?? String(error),
+          );
+        }
+        if (attempt !== captureAttempt.current) {
+          recordCaptureStartupDiscard("superseded-generation", {
+            captureGeneration: captureGenerationForAttempt ?? null,
+            source: "audio",
+          });
+          await microphone.stop().catch(() => undefined);
+          return;
+        }
+
+        const noteFirstCaption = (caption: CaptionPayload): void => {
+          if (!caption.sourceText.trim()) {
+            return;
+          }
+          markCaptureFirstCaption({
+            captureGeneration:
+              caption.captureGeneration ?? captureGenerationForAttempt ?? null,
+            captionId: caption.id,
+          });
+        };
+
         const processOutput = async (output: ParapperRecognitionOutput): Promise<void> => {
           if (attempt !== captureAttempt.current) {
             return;
@@ -1515,6 +1568,7 @@ export const MainApp = () => {
               error: null,
             });
             mergeAndCommitCaption(rawCaption);
+            noteFirstCaption(rawCaption);
             captionFailureMessage.current = null;
             setNotice(clearLegacyFailureNotice);
             setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
@@ -1547,6 +1601,7 @@ export const MainApp = () => {
             });
             if (provisional) {
               mergeAndCommitCaption(provisional);
+              noteFirstCaption(provisional);
             }
             const nextCaption = await bridge.normalizeParapperOutput(output);
             if (attempt !== captureAttempt.current) {
@@ -1575,6 +1630,7 @@ export const MainApp = () => {
               `id=${nextCaption.id} · ${elapsed}ms · src=${nextCaption.sourceText.slice(0, 48)}`,
             );
             mergeAndCommitCaption(nextCaption);
+            noteFirstCaption(nextCaption);
             captionFailureMessage.current = null;
             setNotice(clearLegacyFailureNotice);
             setStatus((current) => (current.lastError ? { ...current, lastError: null } : current));
@@ -1606,6 +1662,9 @@ export const MainApp = () => {
           if (attempt !== captureAttempt.current || event.type === "speech.started") {
             if (event.type === "speech.started" && attempt === captureAttempt.current) {
               pushDiagnosticEvent("audio", "Parapper speech started");
+              markCaptureFirstSpeech({
+                captureGeneration: captureGenerationForAttempt ?? null,
+              });
             }
             return;
           }
@@ -1637,6 +1696,7 @@ export const MainApp = () => {
           });
           if (provisional) {
             mergeAndCommitCaption(provisional);
+            noteFirstCaption(provisional);
           }
           parapperOutputQueue.current?.enqueue(output);
         };
@@ -1678,7 +1738,15 @@ export const MainApp = () => {
           );
           throw error;
         }
+        // stream.start() resolves after session.ready / ASR preload completes.
+        markCaptureSessionReady({
+          captureGeneration: captureGenerationForAttempt ?? null,
+        });
         if (attempt !== captureAttempt.current) {
+          recordCaptureStartupDiscard("superseded-generation", {
+            captureGeneration: captureGenerationForAttempt ?? null,
+            source: "audio",
+          });
           streamForAttempt.cancel();
           await microphone.stop().catch(() => undefined);
           return;
@@ -1742,6 +1810,11 @@ export const MainApp = () => {
               }
               processorRef.current?.markFirstCaption();
               mergeAndCommitCaption(nextCaption);
+              markCaptureFirstCaption({
+                captureGeneration:
+                  nextCaption.captureGeneration ?? captureGenerationForAttempt ?? null,
+                captionId: nextCaption.id,
+              });
               captionFailureMessage.current = null;
               setNotice(clearLegacyFailureNotice);
               setStatus((current) =>
@@ -1760,6 +1833,20 @@ export const MainApp = () => {
         });
         processorRef.current = processor;
         chunkProcessor.current = processor;
+      }
+
+      // Snapshot preroll before start() flushes the ring into streamPcmHandler.
+      const prerollSampleCount = microphone.getPrerollSampleCount();
+      const prerollFrameCount = microphone.getPrerollFrameCount();
+      if (prerollSampleCount > 0 || prerollFrameCount > 0) {
+        markCapturePrerollStats(
+          {
+            prerollFrameCount,
+            prerollSampleCount,
+            prerollDurationMs: Math.round((prerollSampleCount / TARGET_SAMPLE_RATE) * 1_000),
+          },
+          { captureGeneration: captureGenerationForAttempt ?? null },
+        );
       }
 
       await microphone.start(
@@ -1815,7 +1902,12 @@ export const MainApp = () => {
           adaptiveGate:
             resolveSilenceGateMode(captureConfig.audio.adaptiveNoiseFloor) === "adaptive",
           streamPcmHandler: streamForAttempt
-            ? (frame) => streamForAttempt?.sendPcm16(frame)
+            ? (frame) => {
+                markCaptureFirstForwardedPcm({
+                  captureGeneration: captureGenerationForAttempt ?? null,
+                });
+                streamForAttempt?.sendPcm16(frame);
+              }
             : undefined,
         },
       );
@@ -1823,6 +1915,10 @@ export const MainApp = () => {
         // A newer lifecycle owns the bridge now; only release this attempt's
         // microphone.  Stopping the shared backend here could tear down the
         // replacement session after a slow microphone.start() continuation.
+        recordCaptureStartupDiscard("superseded-generation", {
+          captureGeneration: captureGenerationForAttempt ?? null,
+          source: "audio",
+        });
         await microphone.stop().catch(() => undefined);
         return;
       }
@@ -1853,8 +1949,16 @@ export const MainApp = () => {
       }
       await microphone.stop().catch(() => undefined);
       if (attempt !== captureAttempt.current) {
+        recordCaptureStartupDiscard("superseded-generation", {
+          captureGeneration: captureGenerationForAttempt ?? null,
+          source: "audio",
+        });
         return;
       }
+      recordCaptureStartupDiscard("start-failed", {
+        captureGeneration: captureGenerationForAttempt ?? null,
+        source: "runtime",
+      });
       // This attempt still owns the backend only when its generation remains
       // current.  A stop/restart may have taken ownership while microphone
       // cleanup was awaiting; never stop that replacement bridge session.
@@ -1902,9 +2006,14 @@ export const MainApp = () => {
       // microphone.start(). Invalidate it before awaiting teardown so none of
       // those continuations can publish a capturing status or stop a newer
       // bridge session. There is no user-visible capture tail to drain yet.
+      const cancelledGeneration = activeCaptureGeneration.current;
       captureAttempt.current += 1;
       captionIdleGuard.current = true;
       activeCaptureGeneration.current = null;
+      recordCaptureStartupDiscard("cancelled-during-start", {
+        captureGeneration: cancelledGeneration,
+        source: "audio",
+      });
       processor?.reset();
       if (chunkProcessor.current === processor) {
         chunkProcessor.current = null;

@@ -34,6 +34,8 @@ import {
   passesAdaptiveSilenceGate,
   passesSilenceGate,
   pcm16ToBase64,
+  PCM_PREROLL_MAX_MS,
+  PCM_PREROLL_MAX_SAMPLES,
   resampleLinear,
   rmsDbToMeterLevel,
   SCRIPT_PROCESSOR_BUFFER_SIZE,
@@ -1695,5 +1697,135 @@ describe("audio conversion", () => {
         configurable: true,
       });
     }
+  });
+
+  it("keeps preroll well under the server-side 2 s audio queue", () => {
+    expect(PCM_PREROLL_MAX_MS).toBe(800);
+    expect(PCM_PREROLL_MAX_SAMPLES).toBe((TARGET_SAMPLE_RATE * PCM_PREROLL_MAX_MS) / 1_000);
+    expect(PCM_PREROLL_MAX_MS).toBeLessThan(2_000);
+    expect(PCM_PREROLL_MAX_SAMPLES).toBeLessThan(TARGET_SAMPLE_RATE * 2);
+  });
+
+  it("buffers samples during delayed session.ready and flushes them once at start", async () => {
+    const capture = new MicrophoneCapture();
+    const received: Uint8Array[] = [];
+    const track = {
+      readyState: "live",
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const source = { connect: vi.fn(), disconnect: vi.fn() };
+    const processor = {
+      onaudioprocess: null as ScriptProcessorNode["onaudioprocess"],
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const context = {
+      state: "running",
+      sampleRate: TARGET_SAMPLE_RATE,
+      createMediaStreamSource: vi.fn(() => source),
+      createScriptProcessor: vi.fn(() => processor),
+      createGain: vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() })),
+      destination: {},
+      close: vi.fn(async () => undefined),
+    };
+    const internals = capture as unknown as {
+      context: AudioContext | null;
+      stream: MediaStream | null;
+      source: MediaStreamAudioSourceNode | null;
+      processor: ScriptProcessorNode | null;
+      worklet: AudioWorkletNode | null;
+      hardwareReady: boolean;
+      deviceIdRequested: string | null;
+      processing: { noiseSuppression: boolean; autoGainControl: boolean };
+      prerollActive: boolean;
+      acceptSamples: (samples: Float32Array) => void;
+    };
+    internals.context = context as unknown as AudioContext;
+    internals.stream = {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+    } as unknown as MediaStream;
+    internals.hardwareReady = true;
+    internals.deviceIdRequested = "default";
+    internals.processing = { noiseSuppression: true, autoGainControl: true };
+    // Simulate beginPrerollCapture graph without scheduling real audio quanta.
+    internals.source = source as unknown as MediaStreamAudioSourceNode;
+    internals.processor = processor as unknown as ScriptProcessorNode;
+    internals.worklet = null;
+    internals.prerollActive = true;
+
+    const first = new Float32Array(160).fill(0.1);
+    const second = new Float32Array(160).fill(0.25);
+    internals.acceptSamples(first);
+    internals.acceptSamples(second);
+    expect(capture.getPrerollSampleCount()).toBe(320);
+    expect(received).toHaveLength(0);
+
+    await capture.start("default", DEFAULT_AUDIO_CHUNK_MS, -50, null, undefined, undefined, true, {
+      streamPcmHandler: (frame) => {
+        received.push(frame.slice());
+      },
+    });
+
+    expect(received).toHaveLength(2);
+    expect(float32ToPcm16(first).buffer.byteLength).toBe(received[0]?.byteLength);
+    // Chronological order: first frame then second.
+    const firstPcm = float32ToPcm16(first);
+    const secondPcm = float32ToPcm16(second);
+    expect(Array.from(received[0] ?? [])).toEqual(
+      Array.from(new Uint8Array(firstPcm.buffer, firstPcm.byteOffset, firstPcm.byteLength)),
+    );
+    expect(Array.from(received[1] ?? [])).toEqual(
+      Array.from(new Uint8Array(secondPcm.buffer, secondPcm.byteOffset, secondPcm.byteLength)),
+    );
+    expect(capture.getPrerollSampleCount()).toBe(0);
+
+    // Live frames after start go straight to the handler (no second flush of old data).
+    const live = new Float32Array(80).fill(0.5);
+    internals.acceptSamples(live);
+    expect(received).toHaveLength(3);
+    await capture.stop();
+  });
+
+  it("discards preroll on stop so a replacement session cannot inherit it", async () => {
+    const capture = new MicrophoneCapture();
+    const internals = capture as unknown as {
+      context: { sampleRate: number };
+      prerollActive: boolean;
+      acceptSamples: (samples: Float32Array) => void;
+    };
+    internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+    internals.prerollActive = true;
+    const generationBefore = capture.getPrerollGeneration();
+
+    internals.acceptSamples(new Float32Array(200).fill(0.3));
+    expect(capture.getPrerollSampleCount()).toBe(200);
+
+    await capture.stop();
+    expect(capture.getPrerollSampleCount()).toBe(0);
+    expect(capture.getPrerollGeneration()).toBeGreaterThan(generationBefore);
+  });
+
+  it("caps preroll length by dropping the oldest frames first", () => {
+    const capture = new MicrophoneCapture();
+    const internals = capture as unknown as {
+      context: { sampleRate: number };
+      prerollActive: boolean;
+      acceptSamples: (samples: Float32Array) => void;
+    };
+    internals.context = { sampleRate: TARGET_SAMPLE_RATE };
+    internals.prerollActive = true;
+
+    // Frames slightly under half the cap so two fit, but a third forces a drop.
+    const frameSamples = Math.floor(PCM_PREROLL_MAX_SAMPLES / 2) - 8;
+    expect(frameSamples * 2).toBeLessThanOrEqual(PCM_PREROLL_MAX_SAMPLES);
+    expect(frameSamples * 3).toBeGreaterThan(PCM_PREROLL_MAX_SAMPLES);
+
+    for (let index = 0; index < 3; index += 1) {
+      internals.acceptSamples(new Float32Array(frameSamples).fill(0.05 * (index + 1)));
+    }
+    expect(capture.getPrerollSampleCount()).toBeLessThanOrEqual(PCM_PREROLL_MAX_SAMPLES);
+    // Oldest frame dropped; newest two retained.
+    expect(capture.getPrerollSampleCount()).toBe(frameSamples * 2);
   });
 });

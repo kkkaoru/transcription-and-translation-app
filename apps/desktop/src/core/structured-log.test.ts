@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __resetStructuredLogForTests,
+  appendCaptureCorrelationLog,
   appendStructuredLog,
   buildLogExportFilename,
   clearStructuredLogs,
@@ -295,5 +296,57 @@ describe("structuredLog", () => {
 
     expect(setLogLevel("debug")).toBe("debug");
     expect(getLogLevel()).toBe("debug");
+  });
+
+  it("stamps capture-startup correlation fields for DebugPanel/export grep", () => {
+    const record = appendCaptureCorrelationLog({
+      phase: "first-pcm",
+      message: "Capture startup: first forwarded PCM",
+      kind: "audio",
+      captureGeneration: 12,
+      fields: {
+        prepareAtMs: 100,
+        firstForwardedPcmAtMs: 180,
+        prerollFrameCount: 2,
+        prerollSampleCount: 3_200,
+        prerollDurationMs: 200,
+      },
+      epochMs: 1_700_000_000_000,
+    });
+
+    expect(record.stage).toBe("capture-startup");
+    expect(record.chunkId).toBe("capture-gen:12");
+    expect(record.fields["correlationPhase"]).toBe("first-pcm");
+    expect(record.fields["captureGeneration"]).toBe(12);
+    expect(record.fields["prerollFrameCount"]).toBe(2);
+    expect(formatLogsAsJsonl()).toContain('"correlationPhase":"first-pcm"');
+    expect(formatLogsAsJsonl()).toContain('"captureGeneration":12');
+  });
+
+  it("falls back to fields.captureGeneration and error level for correlation logs", () => {
+    const fromFields = appendCaptureCorrelationLog({
+      phase: "discard",
+      message: "Capture startup: discarded",
+      kind: "error",
+      fields: { captureGeneration: 7, discardReason: "start-failed" },
+    });
+    expect(fromFields.level).toBe("error");
+    expect(fromFields.chunkId).toBe("capture-gen:7");
+    expect(fromFields.fields["captureGeneration"]).toBe(7);
+
+    const stringGen = appendCaptureCorrelationLog({
+      phase: "prepare",
+      message: "Capture startup: prepare",
+      fields: { captureGeneration: "legacy" },
+    });
+    expect(stringGen.chunkId).toBe("capture-gen:legacy");
+    expect(stringGen.fields["captureGeneration"]).toBeNull();
+
+    const none = appendCaptureCorrelationLog({
+      phase: "prepare",
+      message: "Capture startup: prepare",
+    });
+    expect(none.chunkId).toBeNull();
+    expect(none.fields["captureGeneration"]).toBeNull();
   });
 });

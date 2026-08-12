@@ -166,14 +166,21 @@ describe("MainApp pipeline-drop notice wiring", () => {
     const startButton = enabledStartButton;
     await act(async () => {
       startButton.click();
-      await Promise.resolve();
+      // Start clears prior-session drops synchronously, then the mocked
+      // jsdom mic path rejects and records a start-failed discard.
+      for (let index = 0; index < 16; index += 1) {
+        await Promise.resolve();
+      }
     });
 
-    expect(snapshotPipelineDrops()).toEqual({
-      total: 0,
-      bySource: {},
-      byReason: {},
-      signals: [],
+    const drops = snapshotPipelineDrops();
+    expect(drops.bySource["translation"]).toBeUndefined();
+    expect(drops.byReason["retired"]).toBeUndefined();
+    expect(drops).toMatchObject({
+      total: 1,
+      bySource: { runtime: 1 },
+      byReason: { "start-failed": 1 },
+      signals: [{ source: "runtime", reason: "start-failed", count: 1 }],
     });
   });
 

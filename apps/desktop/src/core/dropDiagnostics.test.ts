@@ -1,16 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as diagnostics from "./diagnostics";
-import { clearDiagnosticEvents, getDiagnosticEvents } from "./diagnostics";
+import {
+  beginCaptureStartupCorrelation,
+  clearCaptureStartupCorrelations,
+  clearDiagnosticEvents,
+  getDiagnosticEvents,
+  snapshotCaptureStartupCorrelations,
+} from "./diagnostics";
 import {
   clearPipelineDrops,
   MAX_PIPELINE_DROP_BUCKETS,
+  recordCaptureStartupDiscard,
   recordPipelineDrop,
   snapshotPipelineDrops,
 } from "./dropDiagnostics";
+import { __resetStructuredLogForTests } from "./structuredLog";
 
 afterEach(() => {
   clearPipelineDrops();
   clearDiagnosticEvents();
+  clearCaptureStartupCorrelations();
+  __resetStructuredLogForTests();
 });
 
 describe("pipeline drop diagnostics", () => {
@@ -86,5 +96,27 @@ describe("pipeline drop diagnostics", () => {
     recordPipelineDrop("parapper-output-queue", 4, "stale-final-cursor");
     clearPipelineDrops();
     expect(snapshotPipelineDrops()).toEqual({ total: 0, bySource: {}, byReason: {}, signals: [] });
+  });
+
+  it("records a capture-startup discard into drops and the correlation timeline", () => {
+    beginCaptureStartupCorrelation({ captureGeneration: 9, epochMs: 500 });
+    recordCaptureStartupDiscard("preroll-discarded", {
+      captureGeneration: 9,
+      source: "audio",
+      count: 2,
+    });
+
+    expect(snapshotPipelineDrops()).toMatchObject({
+      total: 2,
+      bySource: { audio: 2 },
+      byReason: { "preroll-discarded": 2 },
+    });
+    expect(snapshotCaptureStartupCorrelations()[0]).toMatchObject({
+      captureGeneration: 9,
+      discardReason: "preroll-discarded",
+    });
+    expect(
+      getDiagnosticEvents().some((event) => event.message.includes("Capture startup: discarded")),
+    ).toBe(true);
   });
 });

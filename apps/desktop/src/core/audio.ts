@@ -33,6 +33,15 @@ const WORKLET_FLUSH_TIMEOUT_MS = 100;
 export const SCRIPT_PROCESSOR_BUFFER_SIZE = 4_096;
 
 /**
+ * Bounded PCM preroll retained between prepareInput() and start() while the
+ * Parapper transport awaits session.ready / ASR preload. Kept well under the
+ * server-side 2 s audio queue so a single flush cannot overrun it.
+ */
+export const PCM_PREROLL_MAX_MS = 800;
+/** Max 16 kHz mono samples retained in the preroll ring buffer. */
+export const PCM_PREROLL_MAX_SAMPLES = Math.floor((TARGET_SAMPLE_RATE * PCM_PREROLL_MAX_MS) / 1_000);
+
+/**
  * Seed the next ASR request with the preceding speech window. A 640 ms window
  * is intentionally reused as context rather than making the first request
  * longer: the first caption still arrives after one configured window while
@@ -1234,6 +1243,17 @@ export class MicrophoneCapture {
   private framesReceived = 0;
   /** True once getUserMedia + AudioContext are held and ready for graph wiring. */
   private hardwareReady = false;
+  /**
+   * Generation for the bounded preroll buffer. Bumped on stop / discard so a
+   * superseded capture cannot flush stale PCM into a replacement session.
+   */
+  private prerollGeneration = 0;
+  /** When true, acceptSamples retains 16 kHz PCM16 frames until start() flushes. */
+  private prerollActive = false;
+  /** Chronological PCM16 frames (Uint8Array views of int16 little-endian samples). */
+  private prerollFrames: Uint8Array[] = [];
+  /** Total int16 samples currently held in {@link prerollFrames}. */
+  private prerollSampleCount = 0;
 
   public getDiagnostics(): AudioCaptureDiagnostics {
     const track = this.stream?.getAudioTracks()[0] ?? null;
@@ -1366,6 +1386,87 @@ export class MicrophoneCapture {
     }
   }
 
+  /**
+   * Wire the capture graph in buffer-only mode after {@link prepareInput}.
+   * Frames arrive into a generation-scoped, size-capped PCM preroll until
+   * {@link start} installs a stream handler and flushes them in order.
+   */
+  public async beginPrerollCapture(): Promise<void> {
+    if (this.disposed) {
+      throw new AudioCaptureError(
+        "microphone-unavailable",
+        "capture was cancelled before preroll could start",
+      );
+    }
+    if (!this.hardwareReady || !this.stream || !this.context || this.context.state === "closed") {
+      throw new AudioCaptureError(
+        "microphone-unavailable",
+        "microphone input is not prepared for preroll",
+      );
+    }
+
+    // Already buffering on a live graph for this instance.
+    if (this.source && (this.worklet || this.processor)) {
+      this.prerollActive = true;
+      return;
+    }
+
+    this.prerollGeneration += 1;
+    this.clearPrerollFrames();
+    this.prerollActive = true;
+    this.framesReceived = 0;
+
+    try {
+      await this.ensureContextRunning();
+      if (this.disposed) {
+        throw new AudioCaptureError(
+          "microphone-unavailable",
+          "capture was cancelled while starting preroll",
+        );
+      }
+      this.source = this.context.createMediaStreamSource(this.stream);
+
+      let started = false;
+      if (this.context.audioWorklet) {
+        try {
+          await this.startWorklet();
+          this.captureMode = "worklet";
+          started = true;
+        } catch {
+          this.teardownGraphNodes();
+          this.source = this.context.createMediaStreamSource(this.stream);
+        }
+      }
+      if (!started) {
+        this.startScriptProcessor();
+        this.captureMode = "script-processor";
+      }
+      await this.ensureContextRunning();
+      this.publishDiagnostics(null);
+    } catch (error) {
+      this.discardPreroll(true);
+      this.teardownGraphNodes();
+      this.source = null;
+      this.captureMode = "none";
+      throw error;
+    }
+  }
+
+  /** Current preroll generation (for tests and capture fencing diagnostics). */
+  public getPrerollGeneration(): number {
+    return this.prerollGeneration;
+  }
+
+  /** Total 16 kHz samples currently held in the preroll ring (tests / diagnostics). */
+  public getPrerollSampleCount(): number {
+    return this.prerollSampleCount;
+  }
+
+  /** Number of PCM frames currently held in the preroll ring (tests / diagnostics). */
+  public getPrerollFrameCount(): number {
+    return this.prerollFrames.length;
+  }
+
   public async start(
     deviceId: string,
     chunkMs: number,
@@ -1408,12 +1509,21 @@ export class MicrophoneCapture {
     this.contextRecoveryAttempts = 0;
     this.lastContextStateChangeAt = null;
     this.levelEmitAt = 0;
-    this.framesReceived = 0;
+    // Keep framesReceived when reusing a preroll graph so ensureAudioFramesFlowing
+    // can observe already-flowing quanta; reset only when rewiring below.
     this.pending = new Float32Array(0);
     this.rollingContext.reset();
     this.utteranceId = null;
 
     try {
+      // Drain buffered speech before any graph teardown so a delayed
+      // session.ready path never discards samples collected during preload.
+      if (this.streamPcmHandler) {
+        this.flushPrerollToHandler(this.streamPcmHandler);
+      } else {
+        this.discardPreroll(true);
+      }
+
       const liveTrack = this.stream?.getAudioTracks()[0];
       const prepared =
         this.hardwareReady &&
@@ -1424,7 +1534,17 @@ export class MicrophoneCapture {
         this.deviceIdRequested === deviceId &&
         previousProcessing.noiseSuppression === processing.noiseSuppression &&
         previousProcessing.autoGainControl === processing.autoGainControl;
+      const graphLive =
+        prepared && this.source !== null && (this.worklet !== null || this.processor !== null);
 
+      if (graphLive) {
+        // Preroll already owns a live worklet/script graph; keep it and go live.
+        await this.ensureContextRunning();
+        this.publishDiagnostics(null);
+        return;
+      }
+
+      this.framesReceived = 0;
       if (!prepared) {
         // Standalone start() path (tests / callers that skip prepareInput).
         this.teardownGraphNodes();
@@ -1473,6 +1593,7 @@ export class MicrophoneCapture {
       // Keep the original rejection (DOMException names, etc.) so the UI can map
       // NotAllowedError / NotFoundError. Only synthesize AudioCaptureError when
       // the failure has no browser-native type.
+      this.discardPreroll(true);
       this.publishDiagnostics(toCaptureError(error));
       await this.stop().catch(() => undefined);
       throw error;
@@ -1485,6 +1606,8 @@ export class MicrophoneCapture {
     // before the main-thread tail flush can preserve it.
     await this.flushWorkletTail();
     this.disposed = true;
+    // Drop any unsent preroll so a replacement session cannot inherit it.
+    this.discardPreroll(true);
     // Stop accepting new worklet/script-processor frames, but keep the
     // current handler and context alive long enough to deliver a speech-aware
     // tail. The helper takes ownership of `pending` synchronously so a
@@ -2167,9 +2290,64 @@ export class MicrophoneCapture {
     this.sink.connect(this.context.destination);
   }
 
+  private clearPrerollFrames(): void {
+    this.prerollFrames = [];
+    this.prerollSampleCount = 0;
+  }
+
+  private discardPreroll(bumpGeneration: boolean): void {
+    this.clearPrerollFrames();
+    this.prerollActive = false;
+    if (bumpGeneration) {
+      this.prerollGeneration += 1;
+    }
+  }
+
+  /** Append a 16 kHz PCM16 frame, dropping the oldest frames past the cap. */
+  private pushPrerollFrame(frame: Uint8Array): void {
+    if (frame.byteLength === 0 || frame.byteLength % 2 !== 0) {
+      return;
+    }
+    const samples = frame.byteLength / 2;
+    this.prerollFrames.push(frame);
+    this.prerollSampleCount += samples;
+    while (this.prerollSampleCount > PCM_PREROLL_MAX_SAMPLES && this.prerollFrames.length > 0) {
+      const oldest = this.prerollFrames.shift();
+      if (!oldest) {
+        break;
+      }
+      this.prerollSampleCount -= oldest.byteLength / 2;
+    }
+    if (this.prerollSampleCount < 0) {
+      this.prerollSampleCount = 0;
+    }
+  }
+
+  /**
+   * Deliver buffered preroll frames once in chronological order, then leave
+   * the live stream handler to receive subsequent frames.
+   */
+  private flushPrerollToHandler(handler: PcmStreamHandler): void {
+    const frames = this.prerollFrames;
+    const generation = this.prerollGeneration;
+    this.clearPrerollFrames();
+    this.prerollActive = false;
+    for (const frame of frames) {
+      if (this.prerollGeneration !== generation) {
+        // stop()/cancel superseded this buffer mid-flush.
+        break;
+      }
+      handler(frame);
+    }
+  }
+
   private acceptSamples(samples: Float32Array | ArrayBuffer): void {
     const frame = samples instanceof Float32Array ? samples : new Float32Array(samples);
-    if (this.disposed || (!this.handler && !this.streamPcmHandler) || frame.length === 0) {
+    if (
+      this.disposed ||
+      (!this.handler && !this.streamPcmHandler && !this.prerollActive) ||
+      frame.length === 0
+    ) {
       return;
     }
     this.framesReceived += 1;
@@ -2208,6 +2386,17 @@ export class MicrophoneCapture {
         this.streamFramesDropped += 1;
         recordPipelineDrop("audio", 1, "stream-frame-delivery-failed");
         this.reportCaptureFailure(new AudioCaptureError("parapper-transport-failed", error));
+      }
+    } else if (this.prerollActive) {
+      try {
+        const sampleRate = this.context?.sampleRate ?? TARGET_SAMPLE_RATE;
+        const target = resampleLinear(frame, sampleRate, TARGET_SAMPLE_RATE);
+        const pcm = float32ToPcm16(target);
+        this.pushPrerollFrame(
+          new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength).slice(),
+        );
+      } catch {
+        // A single bad frame must not disable preroll for the whole startup window.
       }
     }
 

@@ -9,7 +9,11 @@
  * aggregate remains queryable without coupling producers to React.
  */
 
-import { type DiagnosticEventKind, pushDiagnosticEvent } from "./diagnostics";
+import {
+  type DiagnosticEventKind,
+  markCaptureStartupDiscard,
+  pushDiagnosticEvent,
+} from "./diagnostics";
 
 /** Maximum number of source/reason buckets retained in memory. */
 export const MAX_PIPELINE_DROP_BUCKETS = 32;
@@ -135,6 +139,35 @@ export const clearPipelineDrops = (): void => {
   sourceTotals.clear();
   reasonTotals.clear();
   buckets.clear();
+};
+
+/**
+ * Record a capture-startup discard that should appear both in pipeline drop
+ * accounting and on the generation-correlated prepare→ready timeline.
+ *
+ * Safe to call before {@link markCaptureStartupDiscard}'s active correlation
+ * exists: the drop aggregate is always updated; the correlation stamp is
+ * best-effort when a generation tracker is already open.
+ */
+export const recordCaptureStartupDiscard = (
+  reason: string,
+  options?: {
+    source?: PipelineDropSource;
+    count?: number;
+    captureGeneration?: number | null;
+  },
+): void => {
+  const normalizedReason = normalizeLabel(reason, "unspecified");
+  const source = normalizeLabel(options?.source, "audio");
+  recordPipelineDrop(source, options?.count ?? 1, normalizedReason);
+  try {
+    markCaptureStartupDiscard({
+      reason: normalizedReason,
+      captureGeneration: options?.captureGeneration,
+    });
+  } catch {
+    // Correlation stamp is best-effort; drop accounting already succeeded.
+  }
 };
 
 // Explicit aliases keep the API discoverable for callers that refer to the

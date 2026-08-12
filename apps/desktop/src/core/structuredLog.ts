@@ -41,6 +41,29 @@ export type StructuredLogInput = {
   epochMs?: number;
 };
 
+/**
+ * Capture-startup correlation milestones. Field names are stable for
+ * DebugPanel/export grep (`captureGeneration`, `correlationPhase`, preroll*).
+ */
+export type CaptureCorrelationPhase =
+  | "prepare"
+  | "session-ready"
+  | "preroll"
+  | "first-pcm"
+  | "first-speech"
+  | "first-caption"
+  | "discard";
+
+export type CaptureCorrelationLogInput = {
+  phase: CaptureCorrelationPhase;
+  message: string;
+  /** Diagnostic kind for level mapping; defaults to info-bearing audio/runtime. */
+  kind?: "runtime" | "audio" | "caption" | "error" | "info";
+  captureGeneration?: number | null;
+  fields?: Record<string, string | number | boolean | null>;
+  epochMs?: number;
+};
+
 const MAX_LOGS = 400;
 const LEVEL_STORAGE_KEY = "kotoba-beacon.debug.logLevel";
 
@@ -322,6 +345,41 @@ const writeConsole = (record: StructuredLogRecord): void => {
   } catch {
     // Ignore console transport failures; the ring buffer remains authoritative.
   }
+};
+
+/**
+ * Append one capture-startup correlation row. Always uses frontend source and
+ * stamps `correlationPhase` + `captureGeneration` so prepare/ready/first-PCM
+ * timelines can be grepped from JSONL export without transcript text.
+ */
+export const appendCaptureCorrelationLog = (
+  input: CaptureCorrelationLogInput,
+): StructuredLogRecord => {
+  const kind = input.kind ?? "runtime";
+  const level: LogLevel = kind === "error" ? "error" : "info";
+  const generation =
+    typeof input.captureGeneration === "number" && Number.isFinite(input.captureGeneration)
+      ? Math.max(0, Math.round(input.captureGeneration))
+      : (input.fields?.["captureGeneration"] ?? null);
+  return appendStructuredLog({
+    level,
+    source: "frontend",
+    stage: "capture-startup",
+    chunkId:
+      typeof generation === "number"
+        ? `capture-gen:${generation}`
+        : generation == null
+          ? null
+          : `capture-gen:${String(generation)}`,
+    message: input.message,
+    epochMs: input.epochMs,
+    fields: {
+      ...(input.fields ?? {}),
+      correlationPhase: input.phase,
+      captureGeneration: typeof generation === "number" ? generation : null,
+      diagnosticKind: kind,
+    },
+  });
 };
 
 export const appendStructuredLog = (input: StructuredLogInput): StructuredLogRecord => {
