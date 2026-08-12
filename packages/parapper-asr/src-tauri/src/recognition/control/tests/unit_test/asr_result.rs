@@ -317,6 +317,65 @@ fn turn_runtime_completion_after_streaming_interim_appends_only_uncovered_tail_a
 }
 
 #[test]
+fn turn_runtime_completion_after_streaming_interim_drops_overlapping_transcript_tokens() {
+    let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    let mut streaming_interim = interim_request_for_turn(1, 1);
+    streaming_interim.close_reason = Some(SegmentCloseReason::InterimChunkReached);
+    streaming_interim.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(4_800)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    streaming_interim.source_audio = vec![1.0; 4_800];
+    streaming_interim.source_vad_results = vec![vad(true)];
+    runtime_state(&mut runtime).in_flight(streaming_interim.clone());
+    asr_handle.complete_request_with_text(&streaming_interim, "電車が遅延してた");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(2, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(3_200), GlobalSampleIndex(8_000)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    completion.source_audio = vec![2.0; 4_800];
+    completion.source_vad_results = vec![vad(true)];
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_transcript(
+        &completion,
+        AsrTranscript::from_parts(
+            "だから僕は学校に行かない",
+            ["だ", "か", "ら", "僕", "は", "学", "校", "に", "行", "か", "な", "い"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            Some(&[0.0, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.20, 0.21, 0.22]),
+            None,
+        ),
+    );
+    runtime.step();
+
+    assert_eq!(
+        *outputs.lock().expect("outputs should be readable"),
+        vec![
+            output_snapshot("電車が遅延してた...", false, 1, 1),
+            output_snapshot("電車が遅延してたから僕は学校に行かない。", true, 1, 2),
+        ],
+        "completion text in the already-covered audio prefix must not duplicate the seam mora"
+    );
+}
+
+#[test]
 fn streaming_interim_prespeech_padding_is_not_reused_by_final_completion_audio() {
     let mut builder = RecognitionSessionTestBuilder::new().interim_display(true);
     let asr_handle = builder.use_manual_asr();

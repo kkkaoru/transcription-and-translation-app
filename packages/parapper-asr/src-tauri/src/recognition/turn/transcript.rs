@@ -1,12 +1,15 @@
-use crate::recognition::{
-    control::RecognitionSession,
-    segmentation::segment::builder::SegmentCloseReason,
-    segmentation::vad::engine::VadResult,
-    transcription::asr::{
-        engine::AsrTranscript,
-        task::{AsrRequest, AsrTaskKind, AudioRange, GlobalSampleIndex},
+use crate::{
+    audio::ASR_SAMPLE_RATE,
+    recognition::{
+        control::RecognitionSession,
+        segmentation::segment::builder::SegmentCloseReason,
+        segmentation::vad::engine::VadResult,
+        transcription::asr::{
+            engine::AsrTranscript,
+            task::{AsrRequest, AsrTaskKind, AudioRange, GlobalSampleIndex},
+        },
+        turn::{Turn, boundary::candidates_for_transcript, turn_event_id},
     },
-    turn::{Turn, boundary::candidates_for_transcript, turn_event_id},
 };
 
 impl RecognitionSession {
@@ -78,7 +81,7 @@ impl RecognitionSession {
             ) {
             draft.combined_text.clone()
         } else {
-            transcript.text
+            text_after_audio_overlap(&transcript, streaming_interim_overlap_offset.unwrap_or(0))
         };
         if replace_latest_segment {
             draft.replace_latest_recognized_segment(
@@ -215,6 +218,43 @@ impl RecognitionSession {
             self.turn_store.last_recognition_route = Some(request.route);
         }
     }
+}
+
+/// Keep only transcript tokens whose audio begins after an already-applied
+/// streaming prefix. Completion ASR may be run over a source range that starts
+/// inside the range already covered by a streaming interim; its text therefore
+/// includes tokens from that covered prefix as well.
+fn text_after_audio_overlap(transcript: &AsrTranscript, overlap_samples: usize) -> String {
+    if overlap_samples == 0 || transcript.tokens.is_empty() {
+        return transcript.text.clone();
+    }
+
+    let text_len = transcript.text.chars().count();
+    let Some(first_uncovered_char) = transcript.tokens.iter().find_map(|token| {
+        let char_range = token.char_range.as_ref()?;
+        let start_sec = token.start_sec?;
+        let start_sample = sample_index_from_seconds(start_sec)?;
+        (start_sample >= overlap_samples).then_some(char_range.start)
+    }) else {
+        return transcript.text.clone();
+    };
+    if first_uncovered_char > text_len {
+        return transcript.text.clone();
+    }
+    transcript.text.chars().skip(first_uncovered_char).collect()
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "ASR token timestamps are converted to bounded sample offsets for overlap merging"
+)]
+fn sample_index_from_seconds(seconds: f32) -> Option<usize> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    Some((seconds * ASR_SAMPLE_RATE as f32).round() as usize)
 }
 
 /// Keep a longer Nemotron (or other streaming) draft when completion ASR

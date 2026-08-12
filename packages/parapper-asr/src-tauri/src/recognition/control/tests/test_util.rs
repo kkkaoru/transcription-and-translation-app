@@ -122,6 +122,27 @@ impl ManualAsrHandle {
         text: &str,
         elapsed_millis: u128,
     ) {
+        self.complete_request_with_transcript_elapsed(
+            request,
+            AsrTranscript::from_text(text),
+            elapsed_millis,
+        );
+    }
+
+    fn complete_request_with_transcript(
+        &self,
+        request: &AsrRequest,
+        transcript: AsrTranscript,
+    ) {
+        self.complete_request_with_transcript_elapsed(request, transcript, 0);
+    }
+
+    fn complete_request_with_transcript_elapsed(
+        &self,
+        request: &AsrRequest,
+        transcript: AsrTranscript,
+        elapsed_millis: u128,
+    ) {
         self.completed
             .lock()
             .expect("completed ASR results should be writable")
@@ -130,7 +151,7 @@ impl ManualAsrHandle {
                 kind: request.kind,
                 target: request.target.clone(),
                 route: request.route,
-                status: AsrResultStatus::Ok(AsrTranscript::from_text(text)),
+                status: AsrResultStatus::Ok(transcript),
                 completed_at_frame: VadFrameIndex(0),
                 elapsed_millis,
             });

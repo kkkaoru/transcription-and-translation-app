@@ -612,7 +612,11 @@ fn turn_runtime_streaming_interim_silence_threshold_does_not_split_completion_re
         .in_flight_request
         .clone()
         .expect("first streaming interim request should be in flight");
-    assert_eq!(streaming_request.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(
+        streaming_request.kind,
+        AsrTaskKind::InterimDisplay,
+        "the flushed Nemotron chunk must be submitted before completion"
+    );
     assert_eq!(streaming_request.close_reason, Some(SegmentCloseReason::InterimChunkReached));
     asr_handle.complete_request_with_text(&streaming_request, "途中");
     runtime.step();
@@ -624,6 +628,24 @@ fn turn_runtime_streaming_interim_silence_threshold_does_not_split_completion_re
             .chain(std::iter::once((vec![2.0; FRAME_SAMPLES], vad(true))))
             .chain((0..4).map(|_| (vec![0.0; FRAME_SAMPLES], vad(false)))),
     );
+
+    let flushed_streaming_request = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("the final flushed Nemotron chunk should be dispatched before completion");
+    assert_eq!(
+        flushed_streaming_request.kind,
+        AsrTaskKind::InterimDisplay,
+        "end silence must drain every queued Nemotron chunk before completion"
+    );
+    assert_eq!(
+        flushed_streaming_request.close_reason,
+        Some(SegmentCloseReason::InterimChunkReached)
+    );
+    asr_handle.complete_request_with_text(&flushed_streaming_request, "続き");
+    runtime.step();
+    runtime.step();
 
     let completion = runtime
         .requests
