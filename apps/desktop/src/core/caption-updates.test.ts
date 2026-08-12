@@ -2837,6 +2837,72 @@ describe("mergeCaptionPayload", () => {
     expect(merged?.provisional).toBeUndefined();
   });
 
+  it("keeps a longer painted tail when a truncated rewritten final is not a clean prefix", () => {
+    // Completion ASR often finalizes a mid-span rewrite (してただ → してた)
+    // without the still-spoken tail. That is not a startsWith truncation, so
+    // preferring the final would freeze the plate before 「に行かない」.
+    const painted = caption({
+      id: "parapper:session:turn:delay-tail",
+      sourceText: "電車が遅延してただから僕は学校に行かない",
+      translationText: "",
+      startedAt: 1_200,
+      receivedAt: 5_000,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const truncatedRewriteFinal = caption({
+      id: "parapper:session:turn:delay-tail",
+      sourceText: "電車が遅延してたから僕は学校",
+      sentenceEndOffsets: [14],
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 5_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    const merged = mergeCaptionPayload(painted, truncatedRewriteFinal);
+    expect(merged).toMatchObject({
+      sourceText: "電車が遅延してたから僕は学校に行かない",
+      isFinal: true,
+    });
+    expect(merged?.sourceText).toContain("に行かない");
+    expect(merged?.sentenceEndOffsets).toBeUndefined();
+    expect(merged?.provisional).toBeUndefined();
+  });
+
+  it("keeps a longer painted rewrite when a truncated final only converts the remainder", () => {
+    const painted = caption({
+      id: "parapper:session:turn:da-rewrite",
+      sourceText: "今日はですね",
+      translationText: "",
+      startedAt: 1_100,
+      receivedAt: 2_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const truncatedFinal = caption({
+      id: "parapper:session:turn:da-rewrite",
+      sourceText: "今日はだ",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 2_600,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(painted, truncatedFinal)).toMatchObject({
+      sourceText: "今日はですね",
+      isFinal: true,
+    });
+  });
+
   it("drops truncated-final morph offsets when keeping a longer provisional surface", () => {
     const provisional = caption({
       id: "parapper:session:turn:1",

@@ -612,6 +612,59 @@ const isLongerSurfaceContinuation = (currentText: string, nextText: string): boo
 };
 
 /**
+ * When `longer` continues `shorter` after a short conversion rewrite, return
+ * the converted head plus any extra painted tail. Prefix extensions return
+ * `longer` unchanged. Unrelated pairs return null.
+ */
+const stitchConvertedHeadWithPaintedTail = (shorter: string, longer: string): string | null => {
+  if (!shorter || !longer || [...longer].length <= [...shorter].length) {
+    return null;
+  }
+  if (longer.startsWith(shorter)) {
+    return longer;
+  }
+  if (!isLongerSurfaceContinuation(shorter, longer)) {
+    return null;
+  }
+  const shorterChars = [...shorter];
+  const longerChars = [...longer];
+  const shared = sharedGraphemePrefixLength(shorter, longer);
+  const remShorter = shorterChars.slice(shared);
+  const remLonger = longerChars.slice(shared);
+  const maxRewrite = Math.max(
+    INDEX_STEP,
+    Math.min(
+      MAX_PAINTED_HEAD_REWRITE_CHARS,
+      Math.ceil(shorterChars.length / PAINTED_HEAD_REWRITE_DENOMINATOR),
+    ),
+  );
+  for (
+    let dropShorter = 0;
+    dropShorter <= Math.min(maxRewrite, remShorter.length);
+    dropShorter += INDEX_STEP
+  ) {
+    for (
+      let dropLonger = 0;
+      dropLonger <= Math.min(maxRewrite, remLonger.length);
+      dropLonger += INDEX_STEP
+    ) {
+      if (dropShorter === 0 && dropLonger === 0) {
+        continue;
+      }
+      const restShorter = remShorter.slice(dropShorter).join("");
+      const restLonger = remLonger.slice(dropLonger).join("");
+      if (restShorter.length === 0) {
+        return longer;
+      }
+      if (restLonger.startsWith(restShorter)) {
+        return `${shorter}${restLonger.slice(restShorter.length)}`;
+      }
+    }
+  }
+  return longer;
+};
+
+/**
  * After `isFinal`, accept a same-id continuation that is still the same
  * utterance: a strict longer prefix, a growing AzooKey reading, or a longer
  * surface that continues the painted characters after a short conversion
@@ -658,8 +711,11 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
     if (shouldKeepGreetingOverShortAck(current, next)) {
       return collapseRunawayGraphemeRuns(currentText);
     }
-    if (currentText && nextText && currentText.startsWith(nextText) && currentText !== nextText) {
-      return collapseRunawayGraphemeRuns(currentText);
+    // Prefer a completed conversion, but keep any already-painted tail when
+    // the final is a prefix cut or a short conversion rewrite of that surface.
+    const stitched = stitchConvertedHeadWithPaintedTail(nextText, currentText);
+    if (stitched) {
+      return collapseRunawayGraphemeRuns(stitched);
     }
     return collapseRunawayGraphemeRuns(nextText);
   }
