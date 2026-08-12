@@ -29,6 +29,18 @@ impl RecognitionSession {
         }
     }
 
+    pub(in crate::recognition) fn grammar_already_completes_turn(&mut self, turn_id: u64) -> bool {
+        let Some(candidates) = self
+            .turn_store
+            .turns
+            .get(&turn_id)
+            .map(|turn| turn.draft().boundary_candidates.clone())
+        else {
+            return false;
+        };
+        matches!(self.grammar_boundary_action(turn_id, candidates), grammar::Action::CompleteTurn)
+    }
+
     fn grammar_boundary_action(
         &mut self,
         turn_id: u64,

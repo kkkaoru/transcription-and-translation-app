@@ -47,15 +47,7 @@ impl RecognitionSession {
         if self.requests.in_flight_request.is_some() {
             return false;
         }
-        if matches!(
-            purpose,
-            RerecognitionPurpose::SimpleTurnCheckFinal | RerecognitionPurpose::TimeoutFinal
-        ) {
-            // Closing rerecognition must not keep absorbing AfterInterimSilence
-            // children of this turn; those are the next utterance.
-            self.stop_accepting_root_while_closing(turn_id);
-        }
-        if self.pending_asr_preempts_rerecognition(turn_id) {
+        if self.should_yield_rerecognition_to_pending_next(turn_id, purpose) {
             // A newer utterance is already queued. Occupying the single ASR
             // slot with follow-up rerecognition would delay its first hypothesis.
             return false;
@@ -148,7 +140,10 @@ impl RecognitionSession {
             return;
         }
         let turn_id = request.target.turn_id.0;
-        if !self.pending_asr_preempts_rerecognition(turn_id) {
+        let Some(purpose) = self.requests.pending_rerecognition_purpose else {
+            return;
+        };
+        if !self.should_yield_rerecognition_to_pending_next(turn_id, purpose) {
             return;
         }
         // Drop the slot so finalization is not blocked by this follow-up ASR.
@@ -157,6 +152,29 @@ impl RecognitionSession {
         self.requests.in_flight_request = None;
         self.requests.pending_rerecognition_purpose = None;
         self.complete_turn_without_grammar(turn_id);
+    }
+
+    fn should_yield_rerecognition_to_pending_next(
+        &mut self,
+        turn_id: u64,
+        purpose: RerecognitionPurpose,
+    ) -> bool {
+        match purpose {
+            RerecognitionPurpose::SimpleTurnCheckFinal | RerecognitionPurpose::TimeoutFinal => {
+                self.stop_accepting_root_while_closing(turn_id);
+            }
+            RerecognitionPurpose::GrammarAfterCompletion => {
+                // Namo/Morph may still Continue. Only treat the pending segment
+                // as a true next utterance when the current draft already has a
+                // confirmed completing grammar boundary (split-after-genuine-
+                // end-silence). Mid-phrase Continue must keep the slot.
+                if !self.grammar_already_completes_turn(turn_id) {
+                    return false;
+                }
+                self.stop_accepting_root_while_closing(turn_id);
+            }
+        }
+        self.pending_asr_preempts_rerecognition(turn_id)
     }
 
     fn pending_asr_preempts_rerecognition(&self, rerecognition_turn_id: u64) -> bool {
