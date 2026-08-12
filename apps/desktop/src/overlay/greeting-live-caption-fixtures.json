@@ -308,6 +308,12 @@
       "input": "こんにちはー会えますか",
       "expectedOverlay": "こんにちはー聞こえますか",
       "note": "Prolonged greeting + 会えますか"
+    },
+    {
+      "id": "sayonara-hearing-prolonged-kanji",
+      "input": "さようならー会えますか",
+      "expectedOverlay": "さようならー聞こえますか",
+      "note": "Prolonged さようなら + 会えますか"
     }
   ],
   "merge": [
