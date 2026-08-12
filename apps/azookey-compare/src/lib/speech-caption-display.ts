@@ -15,11 +15,17 @@ export const visibleWebSpeechCaption = (
   if (!accumulated) {
     return "";
   }
+  const latest = latestFinalSegment.replace(/\s+/gu, " ").trim();
   const paged = selectVisibleCaptionSentence(accumulated, { key: "source" });
   if (paged && paged !== accumulated) {
+    // Soft mid-dump paging (e.g. after a greeting) can still leave multiple
+    // unfinished utterances. Prefer the pause-delimited Web Speech final when
+    // it is already the page suffix — matching Tauri overlay reset behavior.
+    if (latest && accumulated.endsWith(latest) && paged.endsWith(latest)) {
+      return latest;
+    }
     return paged;
   }
-  const latest = latestFinalSegment.replace(/\s+/gu, " ").trim();
   if (latest && (accumulated === latest || accumulated.endsWith(latest))) {
     return latest;
   }
