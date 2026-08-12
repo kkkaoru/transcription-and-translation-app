@@ -928,11 +928,14 @@ fn similar_moras(ch: char) -> &'static [char] {
 /// Returns the extending vowel for a long vowel after `ch`, if any.
 ///
 /// In Japanese, long vowels are formed by inserting a specific vowel:
-/// - o-ending moras are extended with う (e.g., おはよう)
+/// - o-ending moras are extended with う (e.g., おはよう, きょう)
 /// - e-ending moras are extended with い (e.g., せんせい)
 /// - u-ending moras are extended with う
-/// - a-ending moras are extended with あ
+/// - a-ending moras are extended with あ (e.g., じゃあ)
 /// - i-ending moras are extended with い
+///
+/// Yoon small kana (`ゃ`/`ゅ`/`ょ`) share the vowel of their full-size
+/// counterparts, so a missing extension after them is generated the same way.
 fn long_vowel_for(ch: char) -> Option<char> {
     let vowel = mora_vowel(ch)?;
     match vowel {
@@ -964,14 +967,19 @@ fn is_vowel_mora(ch: char) -> bool {
 }
 
 /// Returns the vowel of a mora, or None for non-mora characters.
+///
+/// Includes yoon / contracted small kana (`ゃ`/`ゅ`/`ょ`) and the small vowel
+/// kana (`ぁ`…`ぉ`). Those glyphs are the second half of a syllable and carry
+/// its vowel, so long-vowel insertion after them must use the same extending
+/// vowel as the full-size counterparts (`ょ`/`よ` → `う`, `ゃ`/`や` → `あ`).
 fn mora_vowel(ch: char) -> Option<char> {
     match ch {
-        // Vowels
-        'あ' => Some('あ'),
-        'い' => Some('い'),
-        'う' => Some('う'),
-        'え' => Some('え'),
-        'お' => Some('お'),
+        // Vowels (full-size and small)
+        'あ' | 'ぁ' => Some('あ'),
+        'い' | 'ぃ' => Some('い'),
+        'う' | 'ぅ' => Some('う'),
+        'え' | 'ぇ' => Some('え'),
+        'お' | 'ぉ' => Some('お'),
         // k
         'か' => Some('あ'),
         'き' => Some('い'),
@@ -1033,10 +1041,10 @@ fn mora_vowel(ch: char) -> Option<char> {
         'む' => Some('う'),
         'め' => Some('え'),
         'も' => Some('お'),
-        // y
-        'や' => Some('あ'),
-        'ゆ' => Some('う'),
-        'よ' => Some('お'),
+        // y (full-size and yoon small kana)
+        'や' | 'ゃ' => Some('あ'),
+        'ゆ' | 'ゅ' => Some('う'),
+        'よ' | 'ょ' => Some('お'),
         // r
         'ら' => Some('あ'),
         'り' => Some('い'),
@@ -1186,6 +1194,52 @@ mod tests {
         let candidates = rules.generate("おはよ");
         let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
         assert!(texts.contains(&"おはよう"), "long vowel う insertion missing from {texts:?}");
+    }
+
+    #[test]
+    fn long_vowel_insertion_rescues_missing_vowel_after_yoon_small_kana() {
+        // Yoon orthography writes the second half as a small kana (ゃ/ゅ/ょ).
+        // That small kana carries the syllable's vowel, so a missing long-vowel
+        // extension must be insertable after it — the same rescue path as
+        // おはよ → おはよう after full-size よ. Without a mora_vowel mapping for
+        // the small kana, edit-1 never proposes しょうがっこう / じゃあ / りゅう
+        // and the LM cannot recover the dropped mora.
+        let rules = AsrConfusionRules::default();
+        for (input, expected) in [
+            ("しょがっこう", "しょうがっこう"),
+            ("じゃ", "じゃあ"),
+            ("りゅ", "りゅう"),
+            ("きょ", "きょう"),
+        ] {
+            let candidates = rules.generate(input);
+            let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+            assert!(
+                texts.contains(&expected),
+                "yoon long-vowel insertion missing for {input} → {expected}: {texts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn long_vowel_deletion_skips_extension_after_yoon_small_kana() {
+        // Mirror of consonant-mora deletion gating: う after ょ is the long
+        // vowel of しょ, but ょ is not a pure vowel mora, so deleting it would
+        // open the same word-initial swallow class as よ+う → よ. Keep the
+        // candidate out; doubled vowel-mora tails (しょうう → しょう) still
+        // delete via the following う+う pair.
+        let rules = AsrConfusionRules::default();
+        let candidates = rules.generate("しょうがっこう");
+        let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(
+            !texts.contains(&"しょがっこう"),
+            "yoon small-kana long-vowel deletion should not be generated: {texts:?}"
+        );
+        let doubled_candidates = rules.generate("しょうう");
+        let doubled: Vec<&str> = doubled_candidates.iter().map(|c| c.text.as_str()).collect();
+        assert!(
+            doubled.contains(&"しょう"),
+            "vowel-mora doubling after yoon long vowel must still delete: {doubled:?}"
+        );
     }
 
     #[test]
@@ -2021,6 +2075,14 @@ mod tests {
             ('や', 'あ'),
             ('ゆ', 'う'),
             ('よ', 'お'),
+            ('ゃ', 'あ'),
+            ('ゅ', 'う'),
+            ('ょ', 'お'),
+            ('ぁ', 'あ'),
+            ('ぃ', 'い'),
+            ('ぅ', 'う'),
+            ('ぇ', 'え'),
+            ('ぉ', 'お'),
             ('ら', 'あ'),
             ('り', 'い'),
             ('る', 'う'),
