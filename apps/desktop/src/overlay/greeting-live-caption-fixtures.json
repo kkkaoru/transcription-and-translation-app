@@ -176,6 +176,12 @@
       "input": "こんばんは会えますか",
       "expectedOverlay": "こんばんは聞こえますか",
       "note": "Evening greeting glued to 会えますか"
+    },
+    {
+      "id": "ohayou-hearing-kanji",
+      "input": "おはよう会えますか",
+      "expectedOverlay": "おはよう聞こえますか",
+      "note": "Short morning greeting glued to 会えますか"
     }
   ],
   "merge": [
