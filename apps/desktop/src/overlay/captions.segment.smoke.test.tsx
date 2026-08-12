@@ -63,9 +63,9 @@ describe("POS soft breaks before maxChars", () => {
       softBreakOffsets: [3, 5, 7, 10, 12, 16],
     });
     expect(lines.join("").length).toBeLessThanOrEqual(20);
-    expect(lines.join("").endsWith("そうですよみなさん") || lines.join("").endsWith("みなさん")).toBe(
-      true,
-    );
+    expect(
+      lines.join("").endsWith("そうですよみなさん") || lines.join("").endsWith("みなさん"),
+    ).toBe(true);
     expect(lines.join("")).not.toBe(text);
   });
 });
@@ -79,8 +79,12 @@ describe("caption display sanitization", () => {
     expect(repairHearingPhraseConfusion("こんにちはあえますか")).toBe("こんにちはきこえますか");
     expect(repairHearingPhraseConfusion("こんにちはーおえますか")).toBe("こんにちはーきこえますか");
     expect(repairHearingPhraseConfusion("こんにちは会えますか")).toBe("こんにちは聞こえますか");
-    expect(repairHearingPhraseConfusion("こんにちは。聞こえますか。")).toBe("こんにちは聞こえますか。");
-    expect(sanitizeCaptionDisplayText("こんにちは。聞こえますか。")).toBe("こんにちは聞こえますか。");
+    expect(repairHearingPhraseConfusion("こんにちは。聞こえますか。")).toBe(
+      "こんにちは聞こえますか。",
+    );
+    expect(sanitizeCaptionDisplayText("こんにちは。聞こえますか。")).toBe(
+      "こんにちは聞こえますか。",
+    );
     expect(sanitizeCaptionDisplayText("こんにちはあえますか")).toBe("こんにちはきこえますか");
   });
 
@@ -270,7 +274,11 @@ describe("captionTextLines and captionItems", () => {
       isFinal: false,
     });
     const source = items.find((item) => item.key === "source");
-    expect(captionTextLines(source!)).toEqual(["明日は雨"]);
+    expect(source).toBeDefined();
+    if (!source) {
+      throw new Error("missing source caption item");
+    }
+    expect(captionTextLines(source)).toEqual(["明日は雨"]);
   });
 
   it("pages past explicit punctuation on non-final captions", () => {
@@ -288,7 +296,11 @@ describe("captionTextLines and captionItems", () => {
       isFinal: false,
     });
     const source = items.find((item) => item.key === "source");
-    expect(captionTextLines(source!)).toEqual(["明日は雨"]);
+    expect(source).toBeDefined();
+    if (!source) {
+      throw new Error("missing source caption item");
+    }
+    expect(captionTextLines(source)).toEqual(["明日は雨"]);
   });
 
   it("pages soft sentence ends for finalized captions so prior clauses leave the plate", () => {
@@ -306,8 +318,12 @@ describe("captionTextLines and captionItems", () => {
       isFinal: true,
     });
     const source = items.find((item) => item.key === "source");
-    expect(source?.deferSentencePaging).toBe(false);
-    expect(captionTextLines(source!)).toEqual(["明日は雨"]);
+    expect(source).toBeDefined();
+    if (!source) {
+      throw new Error("missing source caption item");
+    }
+    expect(source.deferSentencePaging).toBe(false);
+    expect(captionTextLines(source)).toEqual(["明日は雨"]);
   });
 
   it("pages English translation by sentence punctuation", () => {

@@ -8,9 +8,7 @@ import {
 
 describe("streaming interim ASR setting", () => {
   it("pins the recommended Nemotron 3.5 160ms int8 model id", () => {
-    expect(STREAMING_INTERIM_ASR_MODEL_ID).toBe(
-      "nemotron_3_5_asr_streaming_0_6b_160ms_int8",
-    );
+    expect(STREAMING_INTERIM_ASR_MODEL_ID).toBe("nemotron_3_5_asr_streaming_0_6b_160ms_int8");
   });
 
   it("resolves the model when the desktop setting is enabled (default path)", () => {

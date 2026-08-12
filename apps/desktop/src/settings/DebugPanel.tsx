@@ -2194,10 +2194,10 @@ export function DebugPanel() {
                         </span>
                         <code className="debug-path">
                           {formatBytes(entry.installedBytes)}
-                          {entry.expectedBytes > 0
-                            ? ` / ${formatBytes(entry.expectedBytes)}`
+                          {entry.expectedBytes > 0 ? ` / ${formatBytes(entry.expectedBytes)}` : ""}
+                          {entry.sourceUrl
+                            ? ` · ${t("debug.modelSource")}: ${entry.sourceUrl}`
                             : ""}
-                          {entry.sourceUrl ? ` · ${t("debug.modelSource")}: ${entry.sourceUrl}` : ""}
                           {entry.localPath ? ` · ${t("debug.modelPath")}: ${entry.localPath}` : ""}
                           {entry.lastError ? ` · ${entry.lastError}` : ""}
                         </code>

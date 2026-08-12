@@ -239,10 +239,7 @@ const hasCloseSourceTiming = (current: CaptionPayload, next: CaptionPayload): bo
  * Prefer a painted greeting over a short ack that ASR sometimes emits instead
  * of `こんにちは` (acoustic confusion with はい).
  */
-const shouldKeepGreetingOverShortAck = (
-  current: CaptionPayload,
-  next: CaptionPayload,
-): boolean => {
+const shouldKeepGreetingOverShortAck = (current: CaptionPayload, next: CaptionPayload): boolean => {
   if (!isSourceStagePayload(current) || !isSourceStagePayload(next)) {
     return false;
   }
@@ -271,10 +268,7 @@ const shouldKeepGreetingOverShortAck = (
  * id and would normally replace the plate. Append so `こんにちは` + `きこえますか`
  * stay one visible utterance when timing is still within the continuation window.
  */
-const shouldAppendAfterGreetingTurn = (
-  current: CaptionPayload,
-  next: CaptionPayload,
-): boolean => {
+const shouldAppendAfterGreetingTurn = (current: CaptionPayload, next: CaptionPayload): boolean => {
   if (!isSourceStagePayload(current) || !isSourceStagePayload(next)) {
     return false;
   }
@@ -306,8 +300,7 @@ const shouldAppendAfterGreetingTurn = (
 const appendGreetingContinuation = (currentText: string, nextText: string): string => {
   const greeting = trim(currentText);
   const continuation = trim(nextText);
-  const separator =
-    /[A-Za-z0-9]$/u.test(greeting) && /^[A-Za-z0-9]/u.test(continuation) ? " " : "";
+  const separator = /[A-Za-z0-9]$/u.test(greeting) && /^[A-Za-z0-9]/u.test(continuation) ? " " : "";
   return collapseRunawayGraphemeRuns(`${greeting}${separator}${continuation}`);
 };
 

@@ -180,9 +180,7 @@ const preferNaturalBreakIndex = (
   floor: number,
   softBreakOffsets: number[] = [],
 ): number => {
-  const softSet = new Set(
-    softBreakOffsets.filter((offset) => offset > floor && offset <= limit),
-  );
+  const softSet = new Set(softBreakOffsets.filter((offset) => offset > floor && offset <= limit));
   let punctuationBreak = 0;
   for (let index = limit; index >= floor; index -= 1) {
     if (softSet.has(index)) {
@@ -265,7 +263,11 @@ const trimStartGraphemes = (graphemes: string[]): string[] => {
   return graphemes.slice(start);
 };
 
-const splitLongLine = (line: string, maxChars: number, softBreakOffsets: number[] = []): string[] => {
+const splitLongLine = (
+  line: string,
+  maxChars: number,
+  softBreakOffsets: number[] = [],
+): string[] => {
   const characters = captionGraphemes(line);
   const softGraphemes = softBreakGraphemeOffsets(line, softBreakOffsets);
 

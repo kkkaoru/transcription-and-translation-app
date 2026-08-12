@@ -27,9 +27,7 @@ describe("captionHoldClearDelayMs", () => {
     expect(CAPTION_HOLD_CLEAR_MS).toBeGreaterThanOrEqual(4_000);
     expect(captionHoldClearDelayMs(caption({ isFinal: true }))).toBe(CAPTION_HOLD_CLEAR_MS);
     expect(
-      captionHoldClearDelayMs(
-        caption({ isFinal: false, translationText: "It is sunny today" }),
-      ),
+      captionHoldClearDelayMs(caption({ isFinal: false, translationText: "It is sunny today" })),
     ).toBe(CAPTION_HOLD_CLEAR_MS);
   });
 

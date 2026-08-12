@@ -130,31 +130,30 @@ export const FontFamilyCombobox = ({
         }}
       />
       {open && options.length > 0 ? (
-        <ul
+        <div
           id="font-family-options-list"
           className="font-family-options"
           data-testid="font-family-options"
           role="listbox"
         >
           {options.map((family) => (
-            <li key={family}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={family === value}
-                style={{ fontFamily: family }}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  onChange(family);
-                  setQuery(family);
-                  setOpen(false);
-                }}
-              >
-                {family}
-              </button>
-            </li>
+            <button
+              key={family}
+              type="button"
+              role="option"
+              aria-selected={family === value}
+              style={{ fontFamily: family }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                onChange(family);
+                setQuery(family);
+                setOpen(false);
+              }}
+            >
+              {family}
+            </button>
           ))}
-        </ul>
+        </div>
       ) : null}
     </label>
   );

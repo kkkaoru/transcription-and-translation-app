@@ -69,7 +69,10 @@ describe("style editor controls", () => {
   });
 
   it("lists every available font family without an 80-item UI cap", async () => {
-    const many = Array.from({ length: 120 }, (_, index) => `Demo Font ${String(index).padStart(3, "0")}`);
+    const many = Array.from(
+      { length: 120 },
+      (_, index) => `Demo Font ${String(index).padStart(3, "0")}`,
+    );
     Object.assign(globalThis, {
       queryLocalFonts: async () => many.map((family) => ({ family })),
     });
@@ -78,7 +81,9 @@ describe("style editor controls", () => {
     );
 
     await act(() => {
-      root.render(<FontFamilyCombobox label="Font" value="Noto Sans JP" onChange={() => undefined} />);
+      root.render(
+        <FontFamilyCombobox label="Font" value="Noto Sans JP" onChange={() => undefined} />,
+      );
     });
     await act(async () => {
       await Promise.resolve();

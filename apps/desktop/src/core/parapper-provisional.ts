@@ -1,5 +1,5 @@
-import type { CaptionPayload } from "./types";
 import { selectParapperSurfaceText } from "./parapperStream";
+import type { CaptionPayload } from "./types";
 
 /** Parapper turn fields needed to synthesize an immediate provisional caption. */
 export type ParapperProvisionalInput = {
@@ -27,9 +27,7 @@ export const buildParapperProvisionalCaption = (
   nowMs: number = Date.now(),
 ): CaptionPayload | null => {
   const provisionalSurface =
-    selectParapperSurfaceText(output) ||
-    output.azookeyInputText?.trim() ||
-    output.text.trim();
+    selectParapperSurfaceText(output) || output.azookeyInputText?.trim() || output.text.trim();
   if (!provisionalSurface) {
     return null;
   }

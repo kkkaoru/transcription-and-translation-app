@@ -4,13 +4,14 @@
  * These helpers exist so CI / agents can verify the desktop → Parapper CLI
  * wiring without launching the Tauri UI or speaking into a microphone.
  */
+
+import { createDefaultConfig } from "./defaults";
 import {
   resolveStreamingInterimAsrCliValue,
   STREAMING_INTERIM_ASR_MODEL_ID,
   STREAMING_INTERIM_ASR_MODEL_OFF,
   type StreamingInterimAsrCliValue,
 } from "./streaming-interim-asr";
-import { createDefaultConfig } from "./defaults";
 
 export type StreamingInterimAsrHeadlessContract = {
   enabled: boolean;

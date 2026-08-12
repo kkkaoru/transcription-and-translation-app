@@ -19,7 +19,7 @@ export const captionHoldClearDelayMs = (caption: CaptionPayload): number | null 
   if (caption.id === "preview" || caption.id === "empty") {
     return null;
   }
-  if (caption.isFinal === true || Boolean(caption.translationText.trim())) {
+  if (caption.isFinal === true || caption.translationText.trim()) {
     return CAPTION_HOLD_CLEAR_MS;
   }
   return null;

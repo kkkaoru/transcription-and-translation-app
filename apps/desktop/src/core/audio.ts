@@ -1775,7 +1775,10 @@ export class MicrophoneCapture {
     ]
       .filter(Boolean)
       .join(" · ");
-    throw new AudioCaptureError("microphone-no-frames", detail || "no audio frames from capture graph");
+    throw new AudioCaptureError(
+      "microphone-no-frames",
+      detail || "no audio frames from capture graph",
+    );
   }
 
   private async waitForAudioFrames(timeoutMs: number): Promise<boolean> {

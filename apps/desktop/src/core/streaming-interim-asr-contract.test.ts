@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "./defaults";
 import {
+  STREAMING_INTERIM_ASR_MODEL_ID,
+  STREAMING_INTERIM_ASR_MODEL_OFF,
+} from "./streaming-interim-asr";
+import {
   buildStreamingInterimAsrHeadlessContract,
   verifyStreamingInterimAsrHeadlessContract,
 } from "./streaming-interim-asr-contract";
-import { STREAMING_INTERIM_ASR_MODEL_ID, STREAMING_INTERIM_ASR_MODEL_OFF } from "./streaming-interim-asr";
 
 describe("streaming interim ASR headless contract", () => {
   it("defaults streaming interim ASR off; enabling requests Nemotron 160ms int8", () => {

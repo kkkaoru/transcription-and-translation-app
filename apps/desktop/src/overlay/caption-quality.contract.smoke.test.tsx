@@ -10,10 +10,7 @@ import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary"
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  CAPTION_HOLD_CLEAR_MS,
-  captionHoldClearDelayMs,
-} from "../core/caption-hold-clear";
+import { CAPTION_HOLD_CLEAR_MS, captionHoldClearDelayMs } from "../core/caption-hold-clear";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import {
@@ -131,12 +128,11 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
     });
 
     it("pages mid-speech so the newest ending phrase owns the plate", () => {
-      const full =
-        "本日はウェビナーにご参加いただきありがとうございます最後に質問をお受けしますね";
+      const full = "本日はウェビナーにご参加いただきありがとうございます最後に質問をお受けしますね";
       expect(selectVisibleCaptionSentence(full)).toBe("最後に質問をお受けしますね");
-      expect(
-        captionTextLines({ key: "source", text: full, maxChars: 28 }).join(""),
-      ).toBe("最後に質問をお受けしますね");
+      expect(captionTextLines({ key: "source", text: full, maxChars: 28 }).join("")).toBe(
+        "最後に質問をお受けしますね",
+      );
       // While the ending phrase is still open, old thanks must already be gone.
       expect(
         selectVisibleCaptionSentence(
@@ -148,9 +144,7 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
     it("keeps elongated greetings with their continuation on the plate", () => {
       const spoken = "こんにちはーきこえますか";
       expect(selectVisibleCaptionSentence(spoken)).toBe(spoken);
-      expect(
-        selectVisibleCaptionSentence(spoken, { sentenceEndOffsets: [5] }),
-      ).toBe(spoken);
+      expect(selectVisibleCaptionSentence(spoken, { sentenceEndOffsets: [5] })).toBe(spoken);
       const lines = captionTextLines({ key: "source", text: spoken, maxChars: 28 });
       expect(lines.join("")).toBe(spoken);
       expect(lines).toEqual([spoken]);
@@ -216,9 +210,9 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
     });
 
     it("honors Vibrato/IPADIC sentenceEndOffsets over residual older surface", () => {
-      expect(
-        selectVisibleCaptionSentence("短いです続く文", { sentenceEndOffsets: [4] }),
-      ).toBe("続く文");
+      expect(selectVisibleCaptionSentence("短いです続く文", { sentenceEndOffsets: [4] })).toBe(
+        "続く文",
+      );
       expect(
         captionTextLines({
           key: "source",
@@ -238,8 +232,12 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
         isFinal: false,
       });
       const source = items.find((item) => item.key === "source");
-      expect(captionTextLines(source!)).toEqual(["明日は雨"]);
-      expect(captionTextLines(source!).length).toBe(1);
+      expect(source).toBeDefined();
+      if (!source) {
+        throw new Error("missing source caption item");
+      }
+      expect(captionTextLines(source)).toEqual(["明日は雨"]);
+      expect(captionTextLines(source).length).toBe(1);
     });
   });
 
@@ -393,7 +391,9 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
         );
       });
       expect(host.querySelectorAll(".caption-line")).toHaveLength(2);
-      expect(host.querySelector(".caption-line-translation")?.getAttribute("data-empty")).toBeNull();
+      expect(
+        host.querySelector(".caption-line-translation")?.getAttribute("data-empty"),
+      ).toBeNull();
       const orderWithTranslation = [...host.querySelectorAll(".caption-line")].map((node) =>
         node.className.includes("source") ? "source" : "translation",
       );

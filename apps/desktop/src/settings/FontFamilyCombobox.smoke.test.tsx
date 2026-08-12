@@ -38,7 +38,10 @@ describe("collectAvailableFontFamilies", () => {
   });
 
   it("falls back to Local Font Access outside desktop", async () => {
-    const queryLocalFonts = vi.fn(async () => [{ family: "Browser Font" }, { family: "Browser Font" }]);
+    const queryLocalFonts = vi.fn(async () => [
+      { family: "Browser Font" },
+      { family: "Browser Font" },
+    ]);
     Object.assign(globalThis, { queryLocalFonts });
     isDesktopMock.mockReturnValue(false);
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   NEMOTRON_35_160MS_SPEC,
-  REAZONSPEECH_K2_V2_SPEC,
   parapperAsrModelById,
+  REAZONSPEECH_K2_V2_SPEC,
   requiredParapperAsrModels,
 } from "./parapper-asr-models";
 import { STREAMING_INTERIM_ASR_MODEL_ID } from "./streaming-interim-asr";

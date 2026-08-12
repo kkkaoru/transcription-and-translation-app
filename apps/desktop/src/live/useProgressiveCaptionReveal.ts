@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { captionGraphemes } from "../overlay/captions";
 import {
   advanceProgressiveReveal,
   progressiveRevealStepMs,
   shouldProgressivelyReveal,
 } from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
+import { captionGraphemes } from "../overlay/captions";
 
 /**
  * Reveal newly recognized source graphemes one-by-one so Live/Syphon captions

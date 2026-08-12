@@ -80,8 +80,11 @@ const clickSave = async (container: HTMLElement): Promise<void> => {
     /設定を保存|Save settings|保存|Save/.test(button.textContent ?? ""),
   );
   expect(saveButton).toBeDefined();
+  if (!saveButton) {
+    throw new Error("missing save button");
+  }
   await act(async () => {
-    saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await Promise.resolve();
   });
   await flush();
@@ -130,11 +133,14 @@ describe("StyleEditorWindowApp config sync", () => {
     expect(fontSize).not.toBeNull();
     expect(fontSize?.value).toBe(String(baseline.overlay.source.fontSizePx));
 
+    if (!fontSize) {
+      throw new Error("missing source font size input");
+    }
     await act(async () => {
-      setInputValue(fontSize!, "72");
+      setInputValue(fontSize, "72");
       await Promise.resolve();
     });
-    expect(fontSize?.value).toBe("72");
+    expect(fontSize.value).toBe("72");
 
     const remote = withFontSize(baseline, 18);
     await act(async () => {
@@ -160,11 +166,14 @@ describe("StyleEditorWindowApp config sync", () => {
     );
     expect(fontSize).not.toBeNull();
 
+    if (!fontSize) {
+      throw new Error("missing source font size input");
+    }
     await act(async () => {
-      setInputValue(fontSize!, "72");
+      setInputValue(fontSize, "72");
       await Promise.resolve();
     });
-    expect(fontSize?.value).toBe("72");
+    expect(fontSize.value).toBe("72");
 
     const remote = withRecognitionMode(withFontSize(baseline, 18), "web-speech");
     await act(async () => {
