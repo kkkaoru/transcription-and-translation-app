@@ -188,6 +188,12 @@
       "input": "さようならーおえますか",
       "expectedOverlay": "さようならーきこえますか",
       "note": "Prolonged さようなら + おえますか"
+    },
+    {
+      "id": "konbanwa-hearing-prolonged",
+      "input": "こんばんはーおえますか",
+      "expectedOverlay": "こんばんはーきこえますか",
+      "note": "Prolonged こんばんは + おえますか"
     }
   ],
   "merge": [
