@@ -1,5 +1,6 @@
 import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { describe, expect, it } from "vitest";
+import { captionGraphemes } from "../overlay/captions";
 import {
   advanceProgressiveReveal,
   alignCaptionOffsetsToPaintedSource,
@@ -32,15 +33,20 @@ describe("progressive caption reveal", () => {
     expect(shouldProgressivelyReveal("あしたは", "明日は")).toBe(false);
   });
 
-  it("advances one grapheme at a time toward こんにちは", () => {
-    let displayed = "";
+  it("snaps an empty plate to the full first hypothesis in one step", () => {
+    expect(advanceProgressiveReveal("", "こんにちは")).toBe("こんにちは");
+    expect(advanceProgressiveReveal("   ", "明日は雨です")).toBe("明日は雨です");
+  });
+
+  it("advances one grapheme at a time after the first hypothesis is on the plate", () => {
+    let displayed = "こ";
     const target = "こんにちは";
     const steps: string[] = [];
     while (displayed !== target) {
       displayed = advanceProgressiveReveal(displayed, target);
       steps.push(displayed);
     }
-    expect(steps).toEqual(["こ", "こん", "こんに", "こんにち", "こんにちは"]);
+    expect(steps).toEqual(["こん", "こんに", "こんにち", "こんにちは"]);
   });
 
   it("snaps immediately on kana-to-kanji rewrites", () => {
@@ -85,7 +91,8 @@ describe("progressive caption reveal", () => {
     // finished-clause prefixes; overlay sentence paging then collapses mid-animation
     // to a one-grapheme fragment (e.g. 「今日は晴れです。明」 → 「明」).
     const rawSteps: string[] = [];
-    let rawDisplayed = "";
+    let rawDisplayed = captionGraphemes(fullSource)[0] ?? "";
+    rawSteps.push(rawDisplayed);
     while (rawDisplayed !== fullSource) {
       rawDisplayed = advanceProgressiveReveal(rawDisplayed, fullSource);
       rawSteps.push(rawDisplayed);
@@ -96,16 +103,15 @@ describe("progressive caption reveal", () => {
     expect(collapsedRawSteps.length).toBeGreaterThan(0);
     expect(collapsedRawSteps[0]).toBe("明");
 
-    // Revealing toward the already-paged sentence never recreates prior clauses,
-    // so pager collapse cannot fire mid-animation.
+    // Empty plate snaps to the already-paged sentence in one step, so pager
+    // collapse cannot fire mid-animation.
     let displayed = "";
     const steps: string[] = [];
     while (displayed !== revealTarget) {
       displayed = advanceProgressiveReveal(displayed, revealTarget);
       steps.push(displayed);
     }
-    expect(steps[0]).toBe("明");
-    expect(steps.at(-1)).toBe("明日は雨です");
+    expect(steps).toEqual(["明日は雨です"]);
     expect(steps.some((step) => step.includes("今日は晴れです"))).toBe(false);
     expect(
       steps

@@ -58,21 +58,23 @@ export const progressiveRevealStepMs = (remainingGraphemes: number): number => {
 };
 
 /**
- * Advance `displayed` by one grapheme toward `target` when target is a prefix
- * extension; otherwise snap to target.
+ * Advance `displayed` toward `target`. An empty plate snaps to the full first
+ * hypothesis; later prefix extensions grow one grapheme at a time; rewrites snap.
  */
 export const advanceProgressiveReveal = (displayed: string, target: string): string => {
   const next = target;
   if (displayed === next) {
     return next;
   }
+  // Empty plate must not typewriter the first hypothesis; that is a blank gap
+  // on Live/Syphon until the grapheme timer catches up.
+  if (!displayed.trim()) {
+    return immediateProgressiveRevealStart(displayed, next);
+  }
   if (!shouldProgressivelyReveal(displayed, next)) {
     return next;
   }
   const targetGraphemes = captionGraphemes(next);
-  if (!displayed.trim()) {
-    return targetGraphemes[0] ?? next;
-  }
   const displayedCount = captionGraphemes(displayed).length;
   if (displayedCount >= targetGraphemes.length) {
     return next;
