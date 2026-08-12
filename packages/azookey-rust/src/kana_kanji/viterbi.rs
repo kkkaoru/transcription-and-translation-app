@@ -110,6 +110,11 @@ const PRECIPITATION_STEM_AFTER_RAIN_BONUS: f32 = 4.5;
 /// Soft-demote the wave/shake stem after the same weather noun so it stays in
 /// n-best without winning live weather captions.
 const WAVE_STEM_AFTER_RAIN_PENALTY: f32 = -4.5;
+/// Soft-boost food-temperature `熱い` after a food subject (`料理が`/`スープは`)
+/// so `りょうりがあついのでさます` does not become weather `暑い`.
+const FOOD_HEAT_AFTER_FOOD_SUBJECT_BONUS: f32 = 4.5;
+/// Soft-demote weather `暑い` after the same food subject.
+const WEATHER_HEAT_AFTER_FOOD_SUBJECT_PENALTY: f32 = -4.5;
 /// Soft-demote raw Katakana ruby-id rows before a jodoushi identity when a
 /// conjugational Kanji stem exists for the same reading. Without this, loanword
 /// orthography such as `フリ`+`ます` can beat `降り`+`ます` after bare roots are
@@ -934,6 +939,8 @@ pub fn convert_with_dictionary(
                             )
                             + precipitation_stem_after_rain_bonus(&state, entry)
                             + wave_stem_after_rain_penalty(&state, entry)
+                            + food_heat_after_food_subject_bonus(&state, entry)
+                            + weather_heat_after_food_subject_penalty(&state, entry)
                             + short_head_before_person_suffix_penalty(
                                 dictionary, &chars, end, entry,
                             )
@@ -2053,6 +2060,35 @@ fn wave_stem_after_rain_penalty(state: &PathState, entry: &DictionaryEntry) -> f
     }
     if matches!(entry.surface.as_str(), "振り" | "振る" | "振っ") {
         WAVE_STEM_AFTER_RAIN_PENALTY
+    } else {
+        NO_SCORE
+    }
+}
+
+fn path_ends_with_food_subject(state: &PathState) -> bool {
+    let prefix = state.text.as_str();
+    prefix.ends_with("料理")
+        || prefix.ends_with("料理が")
+        || prefix.ends_with("料理は")
+        || prefix.ends_with("スープ")
+        || prefix.ends_with("スープが")
+        || prefix.ends_with("スープは")
+}
+
+/// Soft-boost `熱い` after a food subject so cooling/eating captions keep
+/// temperature, not weather (`料理が熱いのでさます`).
+fn food_heat_after_food_subject_bonus(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    if entry.surface == "熱い" && path_ends_with_food_subject(state) {
+        FOOD_HEAT_AFTER_FOOD_SUBJECT_BONUS
+    } else {
+        NO_SCORE
+    }
+}
+
+/// Soft-demote weather `暑い` after a food subject.
+fn weather_heat_after_food_subject_penalty(state: &PathState, entry: &DictionaryEntry) -> f32 {
+    if entry.surface == "暑い" && path_ends_with_food_subject(state) {
+        WEATHER_HEAT_AFTER_FOOD_SUBJECT_PENALTY
     } else {
         NO_SCORE
     }
@@ -4700,6 +4736,7 @@ mod tests {
             ("きょうのてんきはあつい", "今日の天気は暑い"),
             ("すーぷがあつい", "スープが熱い"),
             ("あついりょうりはおいしい", "熱い料理は美味しい"),
+            ("りょうりがあついのでさます", "料理が熱いのでさます"),
         ] {
             let candidate =
                 convert_with_dictionary(input, &dictionary, ConversionOptions::default())
@@ -4765,9 +4802,9 @@ mod tests {
         .into_iter()
         .next()
         .expect("public conversion should produce a candidate");
-        // The morphology-specific identity row is the valid kana continuation
-        // after the particle sequence; it must not be replaced by a homonym.
-        assert_eq!(candidate.text, "料理が暑いのでさます");
+        // Food subject + cooling verb: temperature 熱い, keep さます as the
+        // morphology identity rather than a homonym. Weather 暑い is unnatural.
+        assert_eq!(candidate.text, "料理が熱いのでさます");
     }
 
     #[test]
@@ -4780,7 +4817,7 @@ mod tests {
         .expect("configured public dictionary should load");
         for (input, expected) in [
             ("いただきます", "いただきます"),
-            ("りょうりがあついのでさます", "料理が暑いのでさます"),
+            ("りょうりがあついのでさます", "料理が熱いのでさます"),
         ] {
             let candidate =
                 convert_with_dictionary(input, &dictionary, ConversionOptions::default())
