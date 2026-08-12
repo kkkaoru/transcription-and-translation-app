@@ -112,12 +112,77 @@ pub(crate) fn numeric_surface_prefix(reading: &[char]) -> Option<(usize, String)
         if length == reading.len()
             || japanese_numeral_has_unit(&candidate)
             || japanese_counter_starts_at(&reading[length..])
+            || {
+                // Pure unit glyphs (°/℃/°C) often interrupt digit→percent
+                // attachment in ASR/neural garble. Skip them only when a
+                // percent-class counter still follows so `60°わらび` stays
+                // numeric without deleting ° before 回/度-class counters.
+                let skip = skip_intervening_numeric_unit_noise(&reading[length..]);
+                skip > 0 && japanese_percent_counter_starts_at(&reading[length + skip..])
+            }
             || reading.get(length).is_some_and(|character| is_boundary(*character))
         {
             return Some((length, surface));
         }
     }
     None
+}
+
+/// Glyphs that are temperature/angle unit marks, not kana readings.
+///
+/// Captions sometimes insert these between an arabic digit span and a spoken
+/// percent counter (`60°わらび`, `90℃ぱーせんと`). They are not themselves
+/// counters and must not split the digit run into dictionary fragments
+/// (`0`→`〇`) before the percent counter can attach.
+///
+/// Prime marks (`′` / `″`) are intentionally excluded: this repo has no ASR
+/// evidence of digit-prime-counter noise, and `5′30″` is digits-prime-digits.
+pub(crate) fn is_skippable_numeric_unit_glyph(character: char) -> bool {
+    matches!(character, '°' | '℃' | '℉' | '゜' | 'ﾟ')
+}
+
+/// Percent-class spoken counters that attach after arabic digits.
+///
+/// Only these surfaces authorize skipping intervening unit-mark noise. Generic
+/// counters such as `かい` / `ど` / `えん` must keep a preceding degree mark.
+pub(crate) fn japanese_percent_counter_starts_at(reading: &[char]) -> bool {
+    ["ぱーせんと", "わらび"].iter().any(|counter| {
+        let counter_chars = counter.chars().collect::<Vec<_>>();
+        reading.len() >= counter_chars.len()
+            && reading[..counter_chars.len()] == counter_chars
+            && reading.get(counter_chars.len()).is_none_or(|next| {
+                !matches!(next, 'ぁ' | 'ぃ' | 'ぅ' | 'ぇ' | 'ぉ' | 'ゃ' | 'ゅ' | 'ょ' | 'っ')
+            })
+    })
+}
+
+/// Count leading unit-mark noise before a percent counter reading.
+///
+/// Returns 0 unless a percent-class counter follows the marks, so legitimate
+/// degree text (`90°かいてん`, `90°ど`, bare `90°`) keeps its unit glyph.
+/// After one or more unit glyphs, an optional ASCII `C`/`F` (as in `°C` /
+/// `°F`) is consumed only when that percent counter still follows. Bare
+/// temperature letters without a percent counter (`90°Cてんき`, `90°Coffee`)
+/// are left untouched.
+pub(crate) fn skip_intervening_numeric_unit_noise(reading: &[char]) -> usize {
+    let mut index = 0;
+    while index < reading.len() && is_skippable_numeric_unit_glyph(reading[index]) {
+        index += 1;
+    }
+    if index == 0 {
+        return 0;
+    }
+    let mut after = index;
+    if after < reading.len() && matches!(reading[after], 'C' | 'F' | 'c' | 'f') {
+        if japanese_percent_counter_starts_at(&reading[after + 1..]) {
+            after += 1;
+        }
+    }
+    if japanese_percent_counter_starts_at(&reading[after..]) {
+        after
+    } else {
+        0
+    }
 }
 
 pub(crate) fn numeric_surface(reading: &str) -> Option<String> {
@@ -412,6 +477,71 @@ mod tests {
             numeric_surface_prefix(&sixty_warabi),
             Some((2, "60".to_string())),
             "digit percent readings must keep an ASCII numeric prefix"
+        );
+        let degree_warabi = "60°わらび".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_surface_prefix(&degree_warabi),
+            Some((2, "60".to_string())),
+            "intervening degree glyphs must not block a digit+percent prefix"
+        );
+        let celsius_warabi = "90℃わらび".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_surface_prefix(&celsius_warabi),
+            Some((2, "90".to_string())),
+            "intervening ℃ must not block a digit+percent prefix"
+        );
+        let degree_c_warabi = "90°Cわらび".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_surface_prefix(&degree_c_warabi),
+            Some((2, "90".to_string())),
+            "intervening °C must not block a digit+percent prefix"
+        );
+        let mixed_width_degree = "6０°わらび".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_surface_prefix(&mixed_width_degree),
+            Some((2, "60".to_string())),
+            "mixed-width digits plus degree must still expose an ASCII prefix"
+        );
+        assert_eq!(
+            super::skip_intervening_numeric_unit_noise(&"°わらび".chars().collect::<Vec<_>>()),
+            1,
+            "degree before percent counter is skippable noise"
+        );
+        assert_eq!(
+            super::skip_intervening_numeric_unit_noise(&"°Cわらび".chars().collect::<Vec<_>>()),
+            2,
+            "°C before percent counter is skippable noise"
+        );
+        assert_eq!(
+            super::skip_intervening_numeric_unit_noise(&"°かいてん".chars().collect::<Vec<_>>()),
+            0,
+            "degree before non-percent counter must not be skipped"
+        );
+        assert_eq!(
+            super::skip_intervening_numeric_unit_noise(&"°ど".chars().collect::<Vec<_>>()),
+            0,
+            "degree before 度 counter must not be skipped"
+        );
+        assert_eq!(
+            super::skip_intervening_numeric_unit_noise(&"°".chars().collect::<Vec<_>>()),
+            0,
+            "bare degree mark is not percent noise"
+        );
+        assert_eq!(
+            super::skip_intervening_numeric_unit_noise(&"°Cてんき".chars().collect::<Vec<_>>()),
+            0,
+            "°C without percent counter must not swallow C"
+        );
+        assert_eq!(
+            super::skip_intervening_numeric_unit_noise(&"°Coffee".chars().collect::<Vec<_>>()),
+            0,
+            "°C in ordinary Latin text must not swallow C"
+        );
+        let degree_kaiten = "90°かいてん".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_surface_prefix(&degree_kaiten),
+            None,
+            "degree plus non-percent counter must not form a digit+counter prefix that deletes °"
         );
         let separated = "いち、に".chars().collect::<Vec<_>>();
         assert_eq!(numeric_surface_prefix(&separated), Some((2, "1".to_string())));

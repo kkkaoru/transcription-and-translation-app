@@ -4,7 +4,8 @@ use super::dictionary::{
 };
 use super::normalization::{
     is_boundary, japanese_counter_starts_at, japanese_numeral_has_unit, numeric_counter_surface,
-    numeric_span_starts_with_digit, numeric_surface_prefix, to_hiragana, to_katakana,
+    numeric_span_starts_with_digit, numeric_surface_prefix, skip_intervening_numeric_unit_noise,
+    to_hiragana, to_katakana,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,13 +263,20 @@ fn numeric_prefix_context(
     let has_unit = japanese_numeral_has_unit(&reading);
     let has_digit_and_unit = has_unit && numeric_span_starts_with_digit(&reading);
     let suffix = &chars[start + length..];
-    let followed_by_counter = japanese_counter_starts_at(suffix);
+    // Skip temperature/angle unit glyphs (°/℃/°C) before percent-counter
+    // detection so digit+percent attachments survive ASR/neural unit-mark
+    // noise. The skip is percent-only and folds into the counter edge so the
+    // lattice advances past the noise without emitting it when `%` wins.
+    // Non-percent counters (`かい`/`ど`) leave the degree mark in place.
+    let unit_noise = skip_intervening_numeric_unit_noise(suffix);
+    let counter_suffix = &suffix[unit_noise..];
+    let followed_by_counter = japanese_counter_starts_at(counter_suffix);
     let followed_by_boundary = suffix.first().is_some_and(|character| is_boundary(*character));
     let starts_after_boundary = start > 0 && is_boundary(chars[start - 1]);
     // The counter reading `じ` uses the contracted `よじ` form; treating the
     // standalone `し` reading as four here creates `4時` from `しじ`.
     let invalid_shi_counter =
-        reading == "し" && suffix.first().is_some_and(|character| *character == 'じ');
+        reading == "し" && counter_suffix.first().is_some_and(|character| *character == 'じ');
     let starts_after_text = start > 0 && !starts_after_boundary;
     let unit_span_is_unbounded = has_unit
         && !has_digit_and_unit
@@ -277,7 +285,8 @@ fn numeric_prefix_context(
         && !followed_by_boundary;
     let numeric_context =
         has_unit || followed_by_counter || followed_by_boundary || starts_after_boundary;
-    let counter_span = numeric_counter_surface(suffix);
+    let counter_span = numeric_counter_surface(counter_suffix)
+        .map(|(counter_length, surface)| (unit_noise + counter_length, surface));
     let counter_numeric_surface =
         counter_span.as_ref().map(|(_, counter_surface)| format!("{}{}", surface, counter_surface));
     let counter_has_numeric_variant = counter_span.as_ref().is_some_and(|(counter_length, _)| {
@@ -4327,6 +4336,72 @@ mod tests {
         assert_eq!(convert_kana_to_kanji("さんにん"), "3人");
         assert_eq!(convert_kana_to_kanji("いちにち"), "1日");
         assert_eq!(convert_kana_to_kanji("ありがとうご"), "ありがとうご");
+    }
+
+    #[test]
+    fn digit_percent_counter_survives_intervening_unit_glyphs() {
+        // Invariant: an arabic (or mixed-width) digit span followed by a known
+        // percent-unit reading must emit `N%` even when a pure unit glyph
+        // (°/℃/ﾟ or °C) sits between them. Without skipping that noise, the
+        // lattice splits digits (`0`→`〇`) and ranks lexical `蕨` over `%`.
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        for (input, expected) in [
+            ("90わらび", "90%"),
+            ("90°わらび", "90%"),
+            ("6０°わらび", "60%"),
+            ("90℃わらび", "90%"),
+            ("90°ぱーせんと", "90%"),
+            ("90°Cわらび", "90%"),
+            ("こうすいかくりつは60°わらび", "降水確率は60%"),
+            ("こうすいかくりつは6０°わらび", "降水確率は60%"),
+        ] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            assert_eq!(candidate.text, expected, "input: {input}");
+            assert!(
+                !candidate.text.contains('蕨')
+                    && !candidate.text.contains('〇')
+                    && !candidate.text.contains('°')
+                    && !candidate.text.contains('℃'),
+                "must not emit degree/fern/ideographic-zero garble for {input}: {:?}",
+                candidate.text
+            );
+        }
+    }
+
+    #[test]
+    fn intervening_unit_glyphs_stay_before_non_percent_surfaces() {
+        // Percent-only skip must not silently delete degree/unit marks on bare
+        // temperatures or before non-percent counters (回/度-class).
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        for input in ["90°", "90℃", "90°C", "90°かいてん", "90°ど"] {
+            let candidate =
+                convert_with_dictionary(input, &dictionary, ConversionOptions::default())
+                    .into_iter()
+                    .next()
+                    .expect("public conversion should produce a candidate");
+            let keeps_unit = candidate.text.contains('°') || candidate.text.contains('℃');
+            assert!(
+                keeps_unit,
+                "degree/unit glyph must not be deleted for {input}: {:?}",
+                candidate.text
+            );
+        }
     }
 
     #[test]
