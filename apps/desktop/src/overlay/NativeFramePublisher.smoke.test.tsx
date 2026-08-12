@@ -4,10 +4,13 @@ import type { CaptionPayload } from "../core/types";
 import { createPreviewCaption } from "./captions";
 import {
   beginNativePublish,
+  captionFontCssIsReady,
   completeNativePublishFailure,
   completeNativePublishSuccess,
   createNativePublishGate,
+  fontCssForReadinessCheck,
   NATIVE_PUBLISH_MAX_FAILURES,
+  overlayCaptionFontCss,
   renderNativeFrame,
   wrapNativeText,
 } from "./NativeFramePublisher";
@@ -163,5 +166,43 @@ describe("native publish gate", () => {
       action: "publish",
       key: "recovered",
     });
+  });
+});
+
+describe("native caption font readiness", () => {
+  it("strips generic families so sans-serif cannot fake a loaded caption face", () => {
+    expect(fontCssForReadinessCheck('700 34px "Noto Sans JP Variable", sans-serif')).toBe(
+      '700 34px "Noto Sans JP Variable"',
+    );
+    expect(
+      fontCssForReadinessCheck(
+        '700 34px "Noto Sans JP Variable", "Noto Sans JP", sans-serif, system-ui',
+      ),
+    ).toBe('700 34px "Noto Sans JP Variable", "Noto Sans JP"');
+  });
+
+  it("builds overlay font CSS from source and translation styles", () => {
+    const config = createDefaultConfig();
+    const fonts = overlayCaptionFontCss(config);
+    expect(fonts).toHaveLength(2);
+    expect(fonts[0]).toMatch(/^\d+ \d+px /);
+    expect(fonts[1]).toMatch(/^\d+ \d+px /);
+    expect(fonts[0]).toContain("Noto Sans JP");
+  });
+
+  it("treats a loaded FontFaceSet as ready without waiting", () => {
+    const originalFonts = document.fonts;
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { status: "loaded", check: () => false },
+    });
+    try {
+      expect(captionFontCssIsReady('700 34px "Noto Sans JP Variable"')).toBe(true);
+    } finally {
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: originalFonts,
+      });
+    }
   });
 });

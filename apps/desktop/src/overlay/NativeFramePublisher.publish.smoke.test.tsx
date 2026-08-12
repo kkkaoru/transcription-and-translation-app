@@ -39,6 +39,7 @@ import {
   beginNativePublish,
   completeNativePublishSuccess,
   createNativePublishGate,
+  ensureFontsReady,
   NATIVE_FONTS_READY_TIMEOUT_MS,
   NATIVE_RAF_FALLBACK_MS,
   NativeFramePublisher,
@@ -374,6 +375,34 @@ describe("NativeFramePublisher publish failures", () => {
     expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
   });
 
+  it("publishes within one frame when rAF is dead and caption fonts are already usable", async () => {
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => 1);
+    vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const originalFonts = document.fonts;
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        status: "loaded",
+        ready: new Promise<void>(() => undefined),
+        check: () => true,
+      },
+    });
+    try {
+      await act(() => {
+        root.render(
+          <NativeFramePublisher config={smallConfig()} caption={captionWith("fonts-ready")} />,
+        );
+      });
+      await flush(NATIVE_RAF_FALLBACK_MS + 5);
+      expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: originalFonts,
+      });
+    }
+  });
+
   it("retries when the canvas context is unavailable instead of dropping the frame", async () => {
     getContextUnavailable = true;
 
@@ -595,6 +624,70 @@ describe("NativeFramePublisher coalesce and cancelled paths", () => {
       await flush(60);
       expect(mocks.publishOverlayFrame.mock.calls.length).toBeGreaterThanOrEqual(1);
       expect(readyCallbacks.length).toBe(1);
+    } finally {
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: originalFonts,
+      });
+    }
+  });
+});
+
+describe("ensureFontsReady", () => {
+  beforeEach(() => {
+    installFakeTimers();
+    __resetNativeFontsReadyForTests();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    __resetNativeFontsReadyForTests();
+  });
+
+  it("resolves immediately when the caption face is already usable", async () => {
+    const originalFonts = document.fonts;
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        status: "loading",
+        ready: new Promise<void>(() => undefined),
+        check: () => true,
+      },
+    });
+    try {
+      let resolved = false;
+      void ensureFontsReady(['700 34px "Noto Sans JP Variable"']).then(() => {
+        resolved = true;
+      });
+      await Promise.resolve();
+      expect(resolved).toBe(true);
+    } finally {
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: originalFonts,
+      });
+    }
+  });
+
+  it("still waits out the timeout when the caption face is not usable", async () => {
+    const originalFonts = document.fonts;
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        status: "loading",
+        ready: new Promise<void>(() => undefined),
+        check: () => false,
+      },
+    });
+    try {
+      let resolved = false;
+      void ensureFontsReady(['700 34px "Missing Caption Face"']).then(() => {
+        resolved = true;
+      });
+      await vi.advanceTimersByTimeAsync(NATIVE_FONTS_READY_TIMEOUT_MS - 1);
+      expect(resolved).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(resolved).toBe(true);
     } finally {
       Object.defineProperty(document, "fonts", {
         configurable: true,
