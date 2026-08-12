@@ -230,6 +230,12 @@
       "input": "おはよう終えますか",
       "expectedOverlay": "おはよう聞こえますか",
       "note": "Short morning greeting glued to 終えますか"
+    },
+    {
+      "id": "ohayou-gozaimasu-hearing-oe-kanji",
+      "input": "おはようございます終えますか",
+      "expectedOverlay": "おはようございます聞こえますか",
+      "note": "Full morning greeting glued to 終えますか"
     }
   ],
   "merge": [
