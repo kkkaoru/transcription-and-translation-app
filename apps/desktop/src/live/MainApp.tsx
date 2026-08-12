@@ -8,6 +8,7 @@ import {
   MicrophoneCapture,
 } from "../core/audio";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "../core/bridge";
+import { shouldApplyCaptionHoldClear } from "../core/caption-hold-clear";
 import {
   clearCaptionMergeDiagnostics,
   getCaptionMergeDiagnostics,
@@ -525,8 +526,11 @@ export const MainApp = () => {
   }, []);
 
   /** Blank the plate after hold without tearing down merge diagnostics / session. */
-  const blankDisplayedCaption = useCallback((): void => {
+  const blankDisplayedCaption = useCallback((expectedEpoch: string): void => {
     const current = captionRef.current;
+    if (!shouldApplyCaptionHoldClear(expectedEpoch, current)) {
+      return;
+    }
     if (!current.sourceText.trim() && !current.translationText.trim()) {
       return;
     }

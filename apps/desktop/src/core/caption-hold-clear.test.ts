@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CAPTION_HOLD_CLEAR_MS, captionHoldClearDelayMs } from "./caption-hold-clear";
+import {
+  CAPTION_HOLD_CLEAR_MS,
+  captionHoldClearDelayMs,
+  captionHoldClearEpoch,
+  shouldApplyCaptionHoldClear,
+} from "./caption-hold-clear";
 import type { CaptionPayload } from "./types";
 
 const caption = (partial: Partial<CaptionPayload>): CaptionPayload => ({
@@ -34,5 +39,25 @@ describe("captionHoldClearDelayMs", () => {
   it("does not auto-clear non-final captions during long speech gaps", () => {
     expect(captionHoldClearDelayMs(caption({ isFinal: false, provisional: true }))).toBeNull();
     expect(captionHoldClearDelayMs(caption({ isFinal: false }))).toBeNull();
+  });
+});
+
+describe("shouldApplyCaptionHoldClear", () => {
+  it("rejects a stale hold when a newer utterance already replaced the plate", () => {
+    const held = caption({
+      id: "parapper:s:t:1",
+      sourceText: "今日は晴れです",
+      isFinal: true,
+      receivedAt: 1_000,
+    });
+    const nextTurn = caption({
+      id: "parapper:s:t:2",
+      sourceText: "明日は雨です",
+      isFinal: true,
+      receivedAt: 1_000 + CAPTION_HOLD_CLEAR_MS,
+    });
+    const heldEpoch = captionHoldClearEpoch(held);
+    expect(shouldApplyCaptionHoldClear(heldEpoch, held)).toBe(true);
+    expect(shouldApplyCaptionHoldClear(heldEpoch, nextTurn)).toBe(false);
   });
 });

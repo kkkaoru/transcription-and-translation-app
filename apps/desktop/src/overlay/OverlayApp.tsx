@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { bridge } from "../core/bridge";
+import { shouldApplyCaptionHoldClear } from "../core/caption-hold-clear";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
@@ -58,8 +59,11 @@ export const OverlayApp = () => {
     transparentCapture ? createEmptyCaption() : createPreviewCaption(),
   );
 
-  const blankDisplayedCaption = useCallback((): void => {
+  const blankDisplayedCaption = useCallback((expectedEpoch: string): void => {
     setCaption((current) => {
+      if (!shouldApplyCaptionHoldClear(expectedEpoch, current)) {
+        return current;
+      }
       if (current.id === "preview") {
         return current;
       }

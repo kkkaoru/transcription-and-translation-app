@@ -7,6 +7,29 @@ import type { CaptionPayload } from "./types";
 export const CAPTION_HOLD_CLEAR_MS = 5_000;
 
 /**
+ * Identity of the held caption used to ignore stale hold-clear timers.
+ *
+ * A newer utterance can update `captionRef` / queue `setState` before React
+ * runs the previous effect cleanup. Comparing this epoch at fire time keeps
+ * that late timer from blanking the replacement caption.
+ */
+export const captionHoldClearEpoch = (caption: CaptionPayload): string =>
+  [
+    caption.id,
+    caption.sourceText,
+    caption.translationText,
+    String(caption.isFinal),
+    String(caption.provisional),
+    String(caption.receivedAt),
+  ].join("\u0000");
+
+/** True when a scheduled hold-clear still refers to the visible caption. */
+export const shouldApplyCaptionHoldClear = (
+  expectedEpoch: string,
+  current: CaptionPayload,
+): boolean => expectedEpoch === captionHoldClearEpoch(current);
+
+/**
  * Non-final captions must not auto-clear on a short idle: long utterances can
  * pause between ASR revisions for several seconds, and blanking the plate then
  * hides the only readable text. Only finalized/translated captions hold-clear.
