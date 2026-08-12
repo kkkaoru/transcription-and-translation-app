@@ -82,9 +82,14 @@ type ServerMessage = {
   elapsed_ms?: unknown;
   audio_duration_ms?: unknown;
   speech_start?: unknown;
+  speech_start_at?: unknown;
   asr_dispatch?: unknown;
+  asr_dispatch_at?: unknown;
   first_partial?: unknown;
+  first_partial_at?: unknown;
   final?: unknown;
+  asr_final_at?: unknown;
+  caption_latency?: unknown;
   code?: unknown;
   message?: unknown;
   fatal?: unknown;

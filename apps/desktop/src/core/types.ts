@@ -301,20 +301,30 @@ export interface ParapperRecognitionOutput {
   /** Native capture generation captured when the output entered the queue. */
   captureGeneration?: number;
   /**
-   * Optional ASR sidecar timestamps (sibling-owned). Snake_case names match
-   * the wire schema: speech_start, asr_dispatch, first_partial, final.
+   * Optional ASR sidecar timestamps (sibling-owned). Canonical names are
+   * session-origin monotonic ms: speech_start_at, asr_dispatch_at,
+   * first_partial_at, asr_final_at. Legacy aliases without `_at` are accepted
+   * when parsing the wire payload.
    */
   asrLatency?: AsrLatencyTimestamps;
 }
 
 /**
- * Epoch-ms timestamps owned by the Parapper ASR sidecar. Desktop joins on
- * `turn_id` and must not invent these values.
+ * Session-origin monotonic ms owned by the Parapper ASR sidecar. Desktop joins
+ * on `turn_id` and must not invent these values or treat them as Unix time.
  */
 export type AsrLatencyTimestamps = {
+  speech_start_at?: number | null;
+  asr_dispatch_at?: number | null;
+  first_partial_at?: number | null;
+  asr_final_at?: number | null;
+  /** @deprecated Wire alias for speech_start_at. */
   speech_start?: number | null;
+  /** @deprecated Wire alias for asr_dispatch_at. */
   asr_dispatch?: number | null;
+  /** @deprecated Wire alias for first_partial_at. */
   first_partial?: number | null;
+  /** @deprecated Wire alias for asr_final_at. */
   final?: number | null;
 };
 

@@ -1,16 +1,18 @@
 /**
  * End-to-end caption latency spans, joined on turn id with ASR sidecar timestamps.
  *
- * ASR sidecar (sibling workstream) owns these epoch-ms fields on the event:
- *   speech_start, asr_dispatch, first_partial, final
- * Desktop caption pipeline owns:
+ * ASR sidecar (sibling workstream) owns session-origin monotonic ms:
+ *   speech_start_at, asr_dispatch_at, first_partial_at, asr_final_at
+ * Legacy aliases (speech_start, asr_dispatch, first_partial, final) are still
+ * accepted on the wire. Those values are not Unix time; do not subtract them
+ * from Date.now(). speech_to_first_paint_ms = (asr_event_at - speech_start_at)
+ * + ipc_to_first_paint_ms, joining the two clock domains at IPC receipt.
+ *
+ * Desktop caption pipeline owns wall-clock:
  *   ipc_or_event_received_at
  *   convert_done_at / convert_duration_ms  (AzooKey/normalize duration only)
  *   first_caption_paint_at                 (text committed to overlay state)
  *   visible_caption_at                     (Syphon/Spout present; may lag paint)
- *   speech_to_first_paint_ms               when speech_start is present
- *
- * Do not invent ASR timestamps here. Pass sibling fields through when present.
  */
 
 import { appendStructuredLog } from "./structuredLog";
@@ -29,10 +31,11 @@ export type CaptionLatencySpan = {
   convert_duration_ms: number | null;
   first_caption_paint_at: number | null;
   visible_caption_at: number | null;
-  speech_start: number | null;
-  asr_dispatch: number | null;
-  first_partial: number | null;
-  final: number | null;
+  speech_start_at: number | null;
+  asr_dispatch_at: number | null;
+  first_partial_at: number | null;
+  asr_final_at: number | null;
+  speech_to_event_ms: number | null;
   speech_to_first_paint_ms: number | null;
   ipc_to_first_paint_ms: number | null;
   paint_to_visible_ms: number | null;
@@ -73,10 +76,11 @@ const emptySpan = (turnId: string): CaptionLatencySpan => ({
   convert_duration_ms: null,
   first_caption_paint_at: null,
   visible_caption_at: null,
-  speech_start: null,
-  asr_dispatch: null,
-  first_partial: null,
-  final: null,
+  speech_start_at: null,
+  asr_dispatch_at: null,
+  first_partial_at: null,
+  asr_final_at: null,
+  speech_to_event_ms: null,
   speech_to_first_paint_ms: null,
   ipc_to_first_paint_ms: null,
   paint_to_visible_ms: null,
@@ -88,15 +92,16 @@ const lagMs = (origin: number | null, at: number | null): number | null => {
     at == null ||
     !Number.isFinite(origin) ||
     !Number.isFinite(at) ||
-    origin <= 0
+    origin < 0
   ) {
     return null;
   }
   return Math.max(0, Math.round(at - origin));
 };
 
-const finitePositive = (value: number | null | undefined): number | null =>
-  typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+/** Session-origin monotonic ms may be 0; wall-clock Date.now() is never 0 in practice. */
+const finiteNonNegative = (value: number | null | undefined): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
 const notify = (): void => {
   revision += 1;
@@ -150,10 +155,11 @@ const spanFields = (
   convert_duration_ms: span.convert_duration_ms,
   first_caption_paint_at: span.first_caption_paint_at,
   visible_caption_at: span.visible_caption_at,
-  speech_start: span.speech_start,
-  asr_dispatch: span.asr_dispatch,
-  first_partial: span.first_partial,
-  final: span.final,
+  speech_start_at: span.speech_start_at,
+  asr_dispatch_at: span.asr_dispatch_at,
+  first_partial_at: span.first_partial_at,
+  asr_final_at: span.asr_final_at,
+  speech_to_event_ms: span.speech_to_event_ms,
   speech_to_first_paint_ms: span.speech_to_first_paint_ms,
   ipc_to_first_paint_ms: span.ipc_to_first_paint_ms,
   paint_to_visible_ms: span.paint_to_visible_ms,
@@ -194,20 +200,41 @@ export const parseNumericTurnId = (turnId: string): number | null => {
 };
 
 const readEpochField = (record: Record<string, unknown>, key: string): number | null =>
-  finitePositive(typeof record[key] === "number" ? record[key] : null);
+  finiteNonNegative(typeof record[key] === "number" ? record[key] : null);
+
+const pickAsrAt = (
+  record: Record<string, unknown>,
+  canonical: string,
+  alias: string,
+): number | null => readEpochField(record, canonical) ?? readEpochField(record, alias);
 
 export const parseAsrLatencyTimestamps = (
   record: Record<string, unknown>,
 ): AsrLatencyTimestamps | undefined => {
-  const speech_start = readEpochField(record, "speech_start");
-  const asr_dispatch = readEpochField(record, "asr_dispatch");
-  const first_partial = readEpochField(record, "first_partial");
-  const final = readEpochField(record, "final");
-  if (speech_start == null && asr_dispatch == null && first_partial == null && final == null) {
+  const nestedRaw = record["caption_latency"];
+  const nested =
+    nestedRaw && typeof nestedRaw === "object" ? (nestedRaw as Record<string, unknown>) : null;
+  const source = nested ?? record;
+  const speech_start_at = pickAsrAt(source, "speech_start_at", "speech_start");
+  const asr_dispatch_at = pickAsrAt(source, "asr_dispatch_at", "asr_dispatch");
+  const first_partial_at = pickAsrAt(source, "first_partial_at", "first_partial");
+  const asr_final_at = pickAsrAt(source, "asr_final_at", "final");
+  if (
+    speech_start_at == null &&
+    asr_dispatch_at == null &&
+    first_partial_at == null &&
+    asr_final_at == null
+  ) {
     return undefined;
   }
-  return { speech_start, asr_dispatch, first_partial, final };
+  return { speech_start_at, asr_dispatch_at, first_partial_at, asr_final_at };
 };
+
+const pickLatencyAt = (
+  asr: AsrLatencyTimestamps,
+  canonical: keyof AsrLatencyTimestamps,
+  alias: keyof AsrLatencyTimestamps,
+): number | null => finiteNonNegative(asr[canonical]) ?? finiteNonNegative(asr[alias]);
 
 export const setCaptionLatencyClockForTests = (next: CaptionLatencyClock | null): void => {
   clock = next ?? (() => Date.now());
@@ -257,11 +284,15 @@ export const markCaptionIpcReceived = (
   }
   const asr = input.asrLatency;
   if (asr) {
-    span.speech_start = span.speech_start ?? finitePositive(asr.speech_start) ?? null;
-    span.asr_dispatch = span.asr_dispatch ?? finitePositive(asr.asr_dispatch) ?? null;
-    span.first_partial = span.first_partial ?? finitePositive(asr.first_partial) ?? null;
-    if (finitePositive(asr.final) != null) {
-      span.final = finitePositive(asr.final);
+    span.speech_start_at =
+      span.speech_start_at ?? pickLatencyAt(asr, "speech_start_at", "speech_start");
+    span.asr_dispatch_at =
+      span.asr_dispatch_at ?? pickLatencyAt(asr, "asr_dispatch_at", "asr_dispatch");
+    span.first_partial_at =
+      span.first_partial_at ?? pickLatencyAt(asr, "first_partial_at", "first_partial");
+    const asrFinal = pickLatencyAt(asr, "asr_final_at", "final");
+    if (asrFinal != null) {
+      span.asr_final_at = asrFinal;
     }
   }
   rememberSpan(turnId, span);
@@ -281,7 +312,7 @@ export const markCaptionConvertDone = (
   if (span.convert_done_at != null) {
     return { ...span };
   }
-  const at = finitePositive(input.at) ?? clock();
+  const at = finiteNonNegative(input.at) ?? clock();
   span.convert_done_at = at;
   span.convert_duration_ms =
     typeof input.durationMs === "number" && Number.isFinite(input.durationMs)
@@ -305,10 +336,15 @@ export const markCaptionFirstPaint = (
   if (span.first_caption_paint_at != null) {
     return { ...span };
   }
-  const at = finitePositive(atMs) ?? clock();
+  const at = finiteNonNegative(atMs) ?? clock();
   span.first_caption_paint_at = at;
   span.ipc_to_first_paint_ms = lagMs(span.ipc_or_event_received_at, at);
-  span.speech_to_first_paint_ms = lagMs(span.speech_start, at);
+  const asrEventAt = span.first_partial_at ?? span.asr_final_at ?? span.asr_dispatch_at;
+  span.speech_to_event_ms = lagMs(span.speech_start_at, asrEventAt);
+  span.speech_to_first_paint_ms =
+    span.speech_to_event_ms == null
+      ? null
+      : span.speech_to_event_ms + (span.ipc_to_first_paint_ms ?? 0);
   rememberSpan(turnId, span);
   publishLatest(span, at);
   logSpan(
@@ -330,7 +366,7 @@ export const markCaptionVisible = (joinKey: string, atMs?: number): CaptionLaten
   if (span.visible_caption_at != null) {
     return { ...span };
   }
-  const at = finitePositive(atMs) ?? clock();
+  const at = finiteNonNegative(atMs) ?? clock();
   span.visible_caption_at = at;
   span.paint_to_visible_ms = lagMs(span.first_caption_paint_at, at);
   rememberSpan(turnId, span);

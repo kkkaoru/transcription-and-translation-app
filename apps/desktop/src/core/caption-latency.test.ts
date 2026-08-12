@@ -35,9 +35,9 @@ describe("caption latency spans", () => {
       turnId: 8,
       turnSessionId: 2,
       asrLatency: {
-        speech_start: 9_200,
-        asr_dispatch: 9_240,
-        first_partial: 9_800,
+        speech_start_at: 9_200,
+        asr_dispatch_at: 9_240,
+        first_partial_at: 9_800,
       },
     });
     now = 10_040;
@@ -56,16 +56,17 @@ describe("caption latency spans", () => {
       convert_done_at: 10_070,
       convert_duration_ms: 28,
       visible_caption_at: 10_120,
-      speech_start: 9_200,
-      asr_dispatch: 9_240,
-      first_partial: 9_800,
-      speech_to_first_paint_ms: 840,
+      speech_start_at: 9_200,
+      asr_dispatch_at: 9_240,
+      first_partial_at: 9_800,
+      speech_to_event_ms: 600,
+      speech_to_first_paint_ms: 640,
       ipc_to_first_paint_ms: 40,
       paint_to_visible_ms: 80,
     });
     expect(getCaptionLatencyStats()).toMatchObject({
       turnId,
-      speechToFirstPaintMs: 840,
+      speechToFirstPaintMs: 640,
       ipcToFirstPaintMs: 40,
       paintToVisibleMs: 80,
       convertDurationMs: 28,
@@ -75,14 +76,15 @@ describe("caption latency spans", () => {
     expect(logs.map((row) => row.message)).toEqual(["caption visible", "caption first paint"]);
     expect(logs.find((row) => row.message === "caption first paint")?.fields).toMatchObject({
       turn_id: 8,
-      speech_start: 9_200,
-      speech_to_first_paint_ms: 840,
+      speech_start_at: 9_200,
+      speech_to_event_ms: 600,
+      speech_to_first_paint_ms: 640,
       ipc_or_event_received_at: 10_000,
       first_caption_paint_at: 10_040,
     });
   });
 
-  it("omits speech_to_first_paint_ms when speech_start is absent", () => {
+  it("omits speech_to_first_paint_ms when speech_start_at is absent", () => {
     setCaptionLatencyClockForTests(() => 5_000);
     markCaptionIpcReceived("parapper:s:1:3", { turnId: 3 });
     markCaptionFirstPaint("parapper:s:1:3");
@@ -90,20 +92,29 @@ describe("caption latency spans", () => {
     expect(getCaptionLatencySpan("parapper:s:1:3")?.ipc_to_first_paint_ms).toBe(0);
   });
 
-  it("keeps the first ipc receipt and fills final later", () => {
+  it("does not mix session-origin speech_start_at with wall-clock paint time", () => {
+    setCaptionLatencyClockForTests(() => 1_700_000_000_000);
+    markCaptionIpcReceived("u-clock", {
+      asrLatency: { speech_start_at: 1_000 },
+    });
+    markCaptionFirstPaint("u-clock");
+    expect(getCaptionLatencySpan("u-clock")?.speech_to_first_paint_ms).toBeNull();
+  });
+
+  it("keeps the first ipc receipt and fills asr_final_at later", () => {
     let now = 1_000;
     setCaptionLatencyClockForTests(() => now);
     markCaptionIpcReceived("u-1", {
-      asrLatency: { first_partial: 900 },
+      asrLatency: { first_partial_at: 900 },
     });
     now = 1_500;
     markCaptionIpcReceived("u-1", {
-      asrLatency: { final: 1_400, first_partial: 880 },
+      asrLatency: { asr_final_at: 1_400, first_partial_at: 880 },
     });
     const span = getCaptionLatencySpan("u-1");
     expect(span?.ipc_or_event_received_at).toBe(1_000);
-    expect(span?.first_partial).toBe(900);
-    expect(span?.final).toBe(1_400);
+    expect(span?.first_partial_at).toBe(900);
+    expect(span?.asr_final_at).toBe(1_400);
   });
 
   it("records convert duration from the normalize stage without inventing ASR times", () => {
@@ -113,7 +124,7 @@ describe("caption latency spans", () => {
     expect(getCaptionLatencySpan("u-convert")).toMatchObject({
       convert_done_at: 8_040,
       convert_duration_ms: 19,
-      speech_start: null,
+      speech_start_at: null,
     });
     markCaptionConvertDone("u-convert", { at: 9_000, durationMs: 99 });
     expect(getCaptionLatencySpan("u-convert")?.convert_duration_ms).toBe(19);
@@ -154,18 +165,43 @@ describe("caption latency spans", () => {
   it("parses sibling ASR timestamp fields and skips empty payloads", () => {
     expect(
       parseAsrLatencyTimestamps({
+        speech_start_at: 10,
+        asr_dispatch_at: 11,
+        first_partial_at: 12,
+        asr_final_at: 13,
+      }),
+    ).toEqual({
+      speech_start_at: 10,
+      asr_dispatch_at: 11,
+      first_partial_at: 12,
+      asr_final_at: 13,
+    });
+    expect(
+      parseAsrLatencyTimestamps({
         speech_start: 10,
         asr_dispatch: 11,
         first_partial: 12,
         final: 13,
       }),
     ).toEqual({
-      speech_start: 10,
-      asr_dispatch: 11,
-      first_partial: 12,
-      final: 13,
+      speech_start_at: 10,
+      asr_dispatch_at: 11,
+      first_partial_at: 12,
+      asr_final_at: 13,
     });
-    expect(parseAsrLatencyTimestamps({ speech_start: 0, final: Number.NaN })).toBeUndefined();
+    expect(
+      parseAsrLatencyTimestamps({
+        speech_start_at: 1_000,
+        speech_start: 99,
+      }),
+    ).toEqual({
+      speech_start_at: 1_000,
+      asr_dispatch_at: null,
+      first_partial_at: null,
+      asr_final_at: null,
+    });
+    expect(parseAsrLatencyTimestamps({ speech_start: 0 })?.speech_start_at).toBe(0);
+    expect(parseAsrLatencyTimestamps({ final: Number.NaN })).toBeUndefined();
     expect(parseNumericTurnId("parapper:s:1:9")).toBe(9);
     expect(parseNumericTurnId("utterance-hello")).toBeNull();
     expect(parseNumericTurnId("")).toBeNull();

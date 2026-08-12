@@ -139,9 +139,9 @@ describe("ParapperRecognitionStream", () => {
       source_language: "ja",
       elapsed_ms: 18,
       detected_language: null,
-      speech_start: 1_000,
-      asr_dispatch: 1_040,
-      first_partial: 1_080,
+      speech_start_at: 1_000,
+      asr_dispatch_at: 1_040,
+      first_partial_at: 1_080,
     });
     socket?.message({
       version: 1,
@@ -180,9 +180,9 @@ describe("ParapperRecognitionStream", () => {
       turnId: 8,
       revision: 0,
       asrLatency: {
-        speech_start: 1_000,
-        asr_dispatch: 1_040,
-        first_partial: 1_080,
+        speech_start_at: 1_000,
+        asr_dispatch_at: 1_040,
+        first_partial_at: 1_080,
       },
     });
     expect(events[2]).toMatchObject({
