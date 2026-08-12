@@ -146,6 +146,12 @@
       "input": "さようなら。きこえますか",
       "expectedOverlay": "さようならきこえますか",
       "note": "ZenZ period before kana きこえますか must not page さようなら"
+    },
+    {
+      "id": "strip-konbanwa-period-kana",
+      "input": "こんばんは。きこえますか",
+      "expectedOverlay": "こんばんはきこえますか",
+      "note": "ZenZ period before kana きこえますか must not page こんばんは"
     }
   ],
   "merge": [

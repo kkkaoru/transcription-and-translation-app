@@ -101,6 +101,7 @@ const REQUIRED_SANITIZE_IDS = [
   "strip-konbanwa-period",
   "strip-ohayou-gozaimasu-period",
   "strip-sayonara-period-kana",
+  "strip-konbanwa-period-kana",
 ];
 const REQUIRED_MERGE_IDS = [
   "append-kikoemasu",
