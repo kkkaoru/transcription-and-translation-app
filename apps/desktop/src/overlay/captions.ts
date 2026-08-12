@@ -36,7 +36,7 @@ export interface CaptionItem {
   azookeyInputText?: string | null;
   sentenceEndOffsets?: number[];
   softBreakOffsets?: number[];
-  /** Skip mid-string sentence paging for provisional / non-final live captions. */
+  /** Skip heuristic copula/ます paging; punctuation and Vibrato offsets still page. */
   deferSentencePaging?: boolean;
 }
 
@@ -495,10 +495,10 @@ export const captionItems = (
   caption: CaptionPayload,
   placeholder = false,
 ): CaptionItem[] => {
-  // Non-final captions still page finished clauses (です/ます + new content)
-  // so long speech advances before the speaker finishes. Soft grammatical
-  // continuations (が/ので/て…) stay open inside sentence-boundary heuristics.
-  const deferSentencePaging = caption.provisional === true || caption.isFinal === false;
+  // Provisional first hypotheses keep the lead sentence (defer copula paging)
+  // so 「です＋次節」 does not drop the already-recognized head. Normalized
+  // live interims and finals still page finished clauses.
+  const deferSentencePaging = caption.provisional === true;
   const source: CaptionItem = {
     key: "source",
     text: placeholder

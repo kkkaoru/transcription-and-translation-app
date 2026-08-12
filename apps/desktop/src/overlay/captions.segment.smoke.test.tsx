@@ -251,7 +251,7 @@ describe("captionTextLines and captionItems", () => {
     expect(lines).toEqual(["明日は雨"]);
   });
 
-  it("pages finished clauses for live interim so old recognition leaves the plate", () => {
+  it("keeps the lead sentence when live interim marks deferSentencePaging", () => {
     const text = "今日は晴れです明日は雨";
     const lines = captionTextLines({
       key: "source",
@@ -260,7 +260,7 @@ describe("captionTextLines and captionItems", () => {
       maxChars: 28,
       deferSentencePaging: true,
     });
-    expect(lines).toEqual(["明日は雨"]);
+    expect(lines).toEqual([text]);
   });
 
   it("pages soft sentence ends for non-final captionItems using POS/heuristic restarts", () => {
@@ -282,7 +282,33 @@ describe("captionTextLines and captionItems", () => {
     if (!source) {
       throw new Error("missing source caption item");
     }
+    expect(source.deferSentencePaging).toBe(false);
     expect(captionTextLines(source)).toEqual(["明日は雨"]);
+  });
+
+  it("keeps the lead sentence on a provisional first hypothesis with です＋次節", () => {
+    const config = createDefaultConfig();
+    const text = "今日は晴れです明日は雨";
+    const items = captionItems(config, {
+      id: "u-1",
+      sourceText: text,
+      translationText: "",
+      sourceLanguage: "ja",
+      targetLanguage: "en",
+      startedAt: 1,
+      receivedAt: 2,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const source = items.find((item) => item.key === "source");
+    expect(source).toBeDefined();
+    if (!source) {
+      throw new Error("missing source caption item");
+    }
+    expect(source.deferSentencePaging).toBe(true);
+    expect(captionTextLines(source)).toEqual([text]);
   });
 
   it("pages past explicit punctuation on non-final captions", () => {

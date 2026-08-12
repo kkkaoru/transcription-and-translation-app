@@ -25,8 +25,9 @@ export interface CaptionSentenceHints {
   /** Mid-sentence POS wrap points for line breaks before maxChars. */
   softBreakOffsets?: number[];
   /**
-   * Retained for callers. Finished-clause paging is always active; this flag
-   * no longer suppresses です/ます pages when a new clause follows.
+   * Skip heuristic copula/ます paging so a first hypothesis like
+   * 「です＋次節」 keeps the lead sentence. Explicit punctuation and supplied
+   * Vibrato `sentenceEndOffsets` still page.
    */
   deferSentencePaging?: boolean;
 }
@@ -175,7 +176,7 @@ const startsClauseContinuation = (remainder: string, english: boolean): boolean 
   return english ? ENGLISH_CONTINUATION.test(next) : CLAUSE_CONTINUATION.test(next);
 };
 
-const isJapaneseSentenceEnd = (prefix: string): boolean => {
+const isJapaneseSentenceEnd = (prefix: string, allowCopula = true): boolean => {
   const trimmed = prefix.trimEnd();
   if (!trimmed) {
     return false;
@@ -183,6 +184,9 @@ const isJapaneseSentenceEnd = (prefix: string): boolean => {
   const last = trimmed.at(-1);
   if (last !== undefined && SENTENCE_PUNCT.test(last)) {
     return true;
+  }
+  if (!allowCopula) {
+    return false;
   }
   return COPULA_END.test(trimmed) || PAST_WITH_PARTICLE.test(trimmed);
 };
@@ -228,7 +232,7 @@ const shouldIgnoreSentenceEndBeforeContinuation = (
   return false;
 };
 
-const detectHeuristicEnds = (text: string, english: boolean): number[] => {
+const detectHeuristicEnds = (text: string, english: boolean, allowCopula = true): number[] => {
   const chars = codePoints(text);
   if (chars.length === 0) {
     return [];
@@ -236,7 +240,9 @@ const detectHeuristicEnds = (text: string, english: boolean): number[] => {
   const ends: number[] = [];
   for (let index = 1; index <= chars.length; index += 1) {
     const prefix = chars.slice(0, index).join("");
-    const isEnd = english ? isEnglishSentenceEnd(prefix) : isJapaneseSentenceEnd(prefix);
+    const isEnd = english
+      ? isEnglishSentenceEnd(prefix)
+      : isJapaneseSentenceEnd(prefix, allowCopula);
     if (!isEnd) {
       continue;
     }
@@ -272,6 +278,7 @@ export const detectCaptionSentenceEnds = (
   hints: CaptionSentenceHints = {},
 ): number[] => {
   const english = hints.key === "translation";
+  const allowCopula = hints.deferSentencePaging !== true;
   const chars = codePoints(text);
   const supplied = (hints.sentenceEndOffsets ?? []).filter((offset) => {
     if (!Number.isFinite(offset) || offset <= 0 || offset > chars.length) {
@@ -289,7 +296,7 @@ export const detectCaptionSentenceEnds = (
   if (supplied.length > 0) {
     return [...new Set(supplied)].sort((left, right) => left - right);
   }
-  const surfaceEnds = detectHeuristicEnds(text, english);
+  const surfaceEnds = detectHeuristicEnds(text, english, allowCopula);
   if (surfaceEnds.length > 0 || english) {
     return surfaceEnds;
   }
@@ -297,7 +304,7 @@ export const detectCaptionSentenceEnds = (
   // Provisional ASR paints the AzooKey reading itself. Do not apply reading
   // offsets onto a different kanji surface — those indices would not line up.
   if (reading && reading === text) {
-    return detectHeuristicEnds(reading, false);
+    return detectHeuristicEnds(reading, false, allowCopula);
   }
   return surfaceEnds;
 };
@@ -324,11 +331,8 @@ export const selectVisibleCaptionSentence = (
   if (!normalized) {
     return "";
   }
-  // Always page finished clauses (punctuation, Vibrato/IPADIC offsets, and
-  // copula/ます ends when the next span is not a grammatical continuation).
-  // Soft mid-clause continuations (が/ので/て/よ…) stay open. `deferSentencePaging`
-  // is retained for callers but does not suppress finished-clause paging — long
-  // speech must advance the plate before the speaker finishes.
-  void hints.deferSentencePaging;
+  // Punctuation and Vibrato/IPADIC offsets always page. Heuristic copula/ます
+  // paging stays off while `deferSentencePaging` is set so a first hypothesis
+  // like 「です＋次節」 keeps the already-recognized lead sentence.
   return sliceNewestSentence(normalized, detectCaptionSentenceEnds(normalized, hints));
 };
