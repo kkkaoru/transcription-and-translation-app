@@ -224,6 +224,12 @@
       "input": "こんばんは終えますか",
       "expectedOverlay": "こんばんは聞こえますか",
       "note": "Evening greeting glued to 終えますか"
+    },
+    {
+      "id": "ohayou-hearing-oe-kanji",
+      "input": "おはよう終えますか",
+      "expectedOverlay": "おはよう聞こえますか",
+      "note": "Short morning greeting glued to 終えますか"
     }
   ],
   "merge": [
