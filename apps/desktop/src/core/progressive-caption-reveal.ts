@@ -1,9 +1,29 @@
+import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { captionGraphemes } from "../overlay/captions";
+import type { CaptionPayload } from "./types";
 
 /** Delay between newly recognized graphemes while revealing a longer hypothesis. */
 export const PROGRESSIVE_REVEAL_MS_PER_GRAPHEME = 12;
 /** Cap so a long jump (e.g. silence interim) still finishes promptly. */
 export const PROGRESSIVE_REVEAL_MAX_MS = 160;
+
+/**
+ * Source string the progressive reveal should grow toward.
+ *
+ * Overlay/Syphon already page finished clauses to the newest sentence. Revealing
+ * the raw full `sourceText` character-by-character recreates those clause
+ * boundaries as temporary prefixes (`今日は晴れです。明`), and sentence paging
+ * then collapses the plate to a one-grapheme fragment mid-animation. Target the
+ * same visible sentence the final paint would show so reveal intermediates stay
+ * inside one clause.
+ */
+export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): string =>
+  selectVisibleCaptionSentence(caption.sourceText, {
+    key: "source",
+    azookeyInputText: caption.azookeyInputText,
+    sentenceEndOffsets: caption.sentenceEndOffsets,
+    softBreakOffsets: caption.softBreakOffsets,
+  });
 
 /**
  * True when `next` is a longer recognition of the same growing utterance as

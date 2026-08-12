@@ -101,4 +101,47 @@ describe("useProgressiveCaptionReveal", () => {
     );
     expect(paints.at(-1)).toBe("明日は晴れ");
   });
+
+  it("snaps immediately on same-turn kana-to-kanji rewrites", () => {
+    renderCaption(baseCaption({ sourceText: "" }));
+    renderCaption(baseCaption({ sourceText: "あしたは" }));
+    expect(paints.at(-1)).toBe("あ");
+
+    paints = [];
+    renderCaption(baseCaption({ sourceText: "明日は" }));
+    expect(paints.at(-1)).toBe("明日は");
+  });
+
+  it("does not flash prior clauses while revealing a multi-clause final", () => {
+    renderCaption(baseCaption({ sourceText: "" }));
+    paints = [];
+    renderCaption(
+      baseCaption({
+        sourceText: "今日は晴れです。明日は雨です",
+        isFinal: true,
+      }),
+    );
+
+    // Reveal targets the newest paged sentence. Intermediate paints may be
+    // prefixes of 「明日は雨です」 (including 「明」), but must never recreate
+    // the finished first clause that sentence paging would then collapse away.
+    const midRevealPaints: string[] = [];
+    act(() => {
+      for (let step = 0; step < 12; step += 1) {
+        vi.advanceTimersByTime(20);
+        const latest = paints.at(-1);
+        if (typeof latest === "string") {
+          midRevealPaints.push(latest);
+        }
+      }
+    });
+
+    expect(midRevealPaints.some((text) => text.includes("今日は晴れです"))).toBe(false);
+    expect(
+      midRevealPaints
+        .filter((text) => text.length > 0 && text !== "今日は晴れです。明日は雨です")
+        .every((text) => "明日は雨です".startsWith(text)),
+    ).toBe(true);
+    expect(paints.at(-1)).toBe("今日は晴れです。明日は雨です");
+  });
 });

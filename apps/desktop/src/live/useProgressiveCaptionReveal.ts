@@ -3,6 +3,7 @@ import {
   advanceProgressiveReveal,
   immediateProgressiveRevealStart,
   progressiveRevealStepMs,
+  resolveProgressiveRevealSourceTarget,
   shouldProgressivelyReveal,
 } from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
@@ -18,13 +19,17 @@ import { captionGraphemes } from "../overlay/captions";
  * Only characters already present in the latest recognition target are shown;
  * the helper never invents text ahead of ASR. An empty plate always paints the
  * first grapheme on the same update that starts progressive growth so viewers
- * never wait a full step interval on a blank caption.
+ * never wait a full step interval on a blank caption. The reveal target is the
+ * newest visible sentence (same paging as the overlay), not the raw
+ * multi-clause `sourceText`, so finished-clause paging cannot collapse a
+ * mid-reveal prefix to a single grapheme.
  */
 export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPayload => {
-  const [displayedSource, setDisplayedSource] = useState(caption.sourceText);
+  const revealTarget = resolveProgressiveRevealSourceTarget(caption);
+  const [displayedSource, setDisplayedSource] = useState(revealTarget);
   const [trackedId, setTrackedId] = useState(caption.id);
   const displayedRef = useRef(displayedSource);
-  const targetRef = useRef(caption.sourceText);
+  const targetRef = useRef(revealTarget);
   const idRef = useRef(caption.id);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -33,30 +38,30 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
   let paintSource = displayedSource;
   if (caption.id !== trackedId) {
     setTrackedId(caption.id);
-    setDisplayedSource(caption.sourceText);
-    paintSource = caption.sourceText;
-    displayedRef.current = caption.sourceText;
+    setDisplayedSource(revealTarget);
+    paintSource = revealTarget;
+    displayedRef.current = revealTarget;
     idRef.current = caption.id;
-    targetRef.current = caption.sourceText;
+    targetRef.current = revealTarget;
   } else if (
-    displayedSource !== caption.sourceText &&
-    !shouldProgressivelyReveal(displayedSource, caption.sourceText)
+    displayedSource !== revealTarget &&
+    !shouldProgressivelyReveal(displayedSource, revealTarget)
   ) {
-    setDisplayedSource(caption.sourceText);
-    paintSource = caption.sourceText;
-    displayedRef.current = caption.sourceText;
-    targetRef.current = caption.sourceText;
+    setDisplayedSource(revealTarget);
+    paintSource = revealTarget;
+    displayedRef.current = revealTarget;
+    targetRef.current = revealTarget;
   } else if (
-    displayedSource !== caption.sourceText &&
+    displayedSource !== revealTarget &&
     !displayedSource.trim() &&
-    shouldProgressivelyReveal(displayedSource, caption.sourceText)
+    shouldProgressivelyReveal(displayedSource, revealTarget)
   ) {
     // Empty plate → multi-grapheme: paint the first character this frame.
-    const firstStep = immediateProgressiveRevealStart(displayedSource, caption.sourceText);
+    const firstStep = immediateProgressiveRevealStart(displayedSource, revealTarget);
     setDisplayedSource(firstStep);
     paintSource = firstStep;
     displayedRef.current = firstStep;
-    targetRef.current = caption.sourceText;
+    targetRef.current = revealTarget;
   } else {
     displayedRef.current = displayedSource;
   }
@@ -97,13 +102,13 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
       }, progressiveRevealStepMs(remaining));
     };
 
-    const target = caption.sourceText;
+    const target = revealTarget;
     const idChanged = caption.id !== idRef.current;
     idRef.current = caption.id;
     targetRef.current = target;
 
     if (idChanged) {
-      // Render-phase sync already snapped to the full new turn.
+      // Render-phase sync already snapped to the new turn's visible sentence.
       clearTimer();
       displayedRef.current = target;
       setDisplayedSource(target);
@@ -122,9 +127,10 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
       setDisplayedSource(target);
     }
     return clearTimer;
-  }, [caption.id, caption.sourceText]);
+  }, [caption.id, revealTarget]);
 
-  if (paintSource === caption.sourceText) {
+  // Caught up: keep the full caption so overlay paging/offsets stay authoritative.
+  if (paintSource === revealTarget) {
     return caption;
   }
   return { ...caption, sourceText: paintSource };
