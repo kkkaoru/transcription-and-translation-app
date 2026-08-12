@@ -7,10 +7,11 @@
  * - finished-clause paging (punctuation + POS/Vibrato offsets)
  * - truncated-final must not erase longer painted conversion surfaces
  * - translation on/off must not vertically shift the source plate
+ * - greeting live-caption fixtures (こんにちは / きこえますか, no live audio)
  */
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const desktop = path.join(root, "apps/desktop");
@@ -34,6 +35,7 @@ const suites = [
       "src/overlay/captions.segment.smoke.test.tsx",
       "src/overlay/CaptionOverlay.maxChars.smoke.test.tsx",
       "src/overlay/NativeFramePublisher.maxChars.smoke.test.tsx",
+      "src/overlay/greeting-live-caption.harness.test.ts",
     ],
     label: "desktop-caption-quality",
   },
@@ -56,4 +58,6 @@ for (const suite of suites) {
 if (failed) {
   process.exit(1);
 }
-console.log("\n[verify:caption-quality] OK — caption quality contracts passed without human review");
+console.log(
+  "\n[verify:caption-quality] OK — caption quality contracts passed without human review",
+);

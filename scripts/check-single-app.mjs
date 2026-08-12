@@ -102,6 +102,12 @@ check(
   `build:app=${scripts["build:app"]}`,
 );
 check(
+  "greeting live-caption harness is a check-in-able root script",
+  scripts["verify:greeting-caption"] === "node scripts/verify-greeting-live-caption.mjs" &&
+    /verify-greeting-live-caption\.test\.mjs/.test(scripts["test:build-cleanup"] ?? ""),
+  `verify:greeting-caption=${scripts["verify:greeting-caption"]}`,
+);
+check(
   "macOS Tauri builds replace /Applications/Kotoba Beacon.app",
   scripts["install:macos-app"] === "node scripts/install-macos-app.mjs" &&
     /install-macos-app\.mjs/.test(read("scripts/run-desktop-tauri-build.mjs")),

@@ -1,0 +1,144 @@
+{
+  "playback": {
+    "env": "KOTOBA_BEACON_GREETING_WAV",
+    "command": "bun run verify:tauri:ui",
+    "note": "Optional live wav. The fixture table is the check-in gate; live audio is not required."
+  },
+  "sanitize": [
+    {
+      "id": "hearing-ae",
+      "input": "あえますか",
+      "expectedOverlay": "きこえますか",
+      "note": "ReazonSpeech drops the initial き of 聞こえる"
+    },
+    {
+      "id": "hearing-oe",
+      "input": "おえますか",
+      "expectedOverlay": "きこえますか",
+      "note": "ReazonSpeech おえますか slip"
+    },
+    {
+      "id": "hearing-ae-kanji",
+      "input": "会えますか",
+      "expectedOverlay": "聞こえますか",
+      "note": "AzooKey/ZenZ may pick 会えますか"
+    },
+    {
+      "id": "hearing-oe-kanji",
+      "input": "終えますか",
+      "expectedOverlay": "聞こえますか",
+      "note": "AzooKey/ZenZ may pick 終えますか"
+    },
+    {
+      "id": "concat-hearing-kana",
+      "input": "こんにちはあえますか",
+      "expectedOverlay": "こんにちはきこえますか",
+      "note": "Greeting glued to the き-dropped hearing check"
+    },
+    {
+      "id": "concat-hearing-prolonged",
+      "input": "こんにちはーおえますか",
+      "expectedOverlay": "こんにちはーきこえますか",
+      "note": "Prolonged greeting + おえますか"
+    },
+    {
+      "id": "concat-hearing-kanji",
+      "input": "こんにちは会えますか",
+      "expectedOverlay": "こんにちは聞こえますか",
+      "note": "Greeting glued to 会えますか"
+    },
+    {
+      "id": "strip-zenz-period",
+      "input": "こんにちは。聞こえますか。",
+      "expectedOverlay": "こんにちは聞こえますか。",
+      "note": "ZenZ inserts 。 after こんにちは which would page the greeting away"
+    },
+    {
+      "id": "evening-hearing",
+      "input": "こんばんはあえますか",
+      "expectedOverlay": "こんばんはきこえますか",
+      "note": "Evening greeting uses the same hearing repair"
+    }
+  ],
+  "merge": [
+    {
+      "id": "append-kikoemasu",
+      "current": {
+        "id": "parapper:session:turn:hello",
+        "sourceText": "こんにちは",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "next": {
+        "id": "parapper:session:turn:hello-cont",
+        "sourceText": "きこえますか",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1450,
+        "receivedAt": 1700
+      },
+      "expectedOverlay": "こんにちはきこえますか",
+      "note": "Early-finalized greeting + close Parapper continuation"
+    },
+    {
+      "id": "keep-greeting-over-ack",
+      "current": {
+        "id": "parapper:session:turn:hello2",
+        "sourceText": "こんにちは",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 1000,
+        "receivedAt": 1200
+      },
+      "next": {
+        "id": "parapper:session:turn:hello2",
+        "sourceText": "はい",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "expectedOverlay": "こんにちは",
+      "note": "Acoustic はい must not replace a painted こんにちは"
+    },
+    {
+      "id": "keep-longer-hearing-final",
+      "current": {
+        "id": "parapper:session:turn:b-trunc",
+        "sourceText": "こんにちはきこえますか",
+        "isFinal": true,
+        "startedAt": 2000,
+        "receivedAt": 3200
+      },
+      "next": {
+        "id": "parapper:session:turn:b-trunc",
+        "sourceText": "こんにちは",
+        "isFinal": true,
+        "startedAt": 800,
+        "receivedAt": 4000
+      },
+      "expectedOverlay": "こんにちはきこえますか",
+      "note": "Backdated truncated final must not erase the hearing check"
+    },
+    {
+      "id": "second-utterance-after-greeting",
+      "current": {
+        "id": "parapper:session:turn:1",
+        "sourceText": "こんばんは",
+        "isFinal": true,
+        "startedAt": 1000,
+        "receivedAt": 1400
+      },
+      "next": {
+        "id": "parapper:session:turn:2",
+        "sourceText": "こんにちはーきこえますかー",
+        "isFinal": false,
+        "provisional": true,
+        "startedAt": 2200,
+        "receivedAt": 2600
+      },
+      "expectedOverlayContains": "きこえますか",
+      "note": "A later Parapper turn after a finalized greeting must still paint"
+    }
+  ]
+}
