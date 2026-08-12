@@ -55,12 +55,19 @@ use crate::trie::NgramTrie;
 // ---------------------------------------------------------------------------
 
 /// Converts hiragana to katakana by adding 0x60 to each codepoint in the
-/// U+3041 to U+309E range. Non-hiragana characters pass through unchanged.
+/// hiragana *letter* ranges (U+3041-U+3096, plus the iteration marks
+/// U+309D-U+309E). Everything else passes through unchanged.
+///
+/// The combining/spacing sound marks U+3099-U+309C sit inside the naive
+/// U+3041-U+309E span but are shared punctuation, not hiragana letters --
+/// they have no katakana-only counterpart and must not be shifted, or a
+/// stray semi-voiced sound mark (゜, U+309C) turns into the katakana
+/// prolonged sound mark (ー, U+30FC).
 pub fn hiragana_to_katakana(s: &str) -> String {
     s.chars()
         .map(|c| {
             let code = c as u32;
-            if (0x3041..=0x309E).contains(&code) {
+            if (0x3041..=0x3096).contains(&code) || (0x309D..=0x309E).contains(&code) {
                 char::from_u32(code + 0x60).unwrap_or(c)
             } else {
                 c
@@ -69,13 +76,21 @@ pub fn hiragana_to_katakana(s: &str) -> String {
         .collect()
 }
 
-/// Converts katakana to hiragana by subtracting 0x60 from each codepoint in the
-/// U+30A1 to U+30FE range. Non-katakana characters pass through unchanged.
+/// Converts katakana to hiragana by subtracting 0x60 from each codepoint in
+/// the katakana *letter* ranges (U+30A1-U+30F6, plus the iteration marks
+/// U+30FD-U+30FE). Everything else passes through unchanged.
+///
+/// The naive U+30A1-U+30FE span also covers the katakana-only VU letters
+/// (U+30F7-U+30FA), the katakana middle dot (U+30FB, ・), and the katakana
+/// prolonged sound mark (U+30FC, ー) -- none of which have a hiragana
+/// counterpart. Shifting them corrupts extremely common text: every
+/// loanword written with a long-vowel mark (コーヒー, スーパー, …) would
+/// have its ー rewritten to the semi-voiced sound mark ゜.
 pub fn katakana_to_hiragana(s: &str) -> String {
     s.chars()
         .map(|c| {
             let code = c as u32;
-            if (0x30A1..=0x30FE).contains(&code) {
+            if (0x30A1..=0x30F6).contains(&code) || (0x30FD..=0x30FE).contains(&code) {
                 char::from_u32(code - 0x60).unwrap_or(c)
             } else {
                 c
@@ -1151,6 +1166,35 @@ mod tests {
     fn dakuten_handakuten_round_trip() {
         assert_eq!(hiragana_to_katakana("がぱ"), "ガパ");
         assert_eq!(katakana_to_hiragana("ガパ"), "がぱ");
+    }
+
+    #[test]
+    fn prolonged_sound_mark_is_not_corrupted_by_katakana_to_hiragana() {
+        // Regression: the naive U+30A1..=U+30FE range also covers the
+        // katakana prolonged sound mark ー (U+30FC), which has no hiragana
+        // counterpart. Subtracting 0x60 from it used to land on U+309C, the
+        // semi-voiced sound mark ゜, silently corrupting every loanword
+        // written with a long vowel (very common: コーヒー, スーパー, …).
+        assert_eq!(katakana_to_hiragana("コーヒー"), "こーひー");
+        assert_eq!(katakana_to_hiragana("スーパー"), "すーぱー");
+    }
+
+    #[test]
+    fn sound_marks_and_middle_dot_pass_through_conversion_unchanged() {
+        // Regression: U+3099-U+309C (combining/spacing voiced and
+        // semi-voiced sound marks) sit inside the naive hiragana range but
+        // are shared punctuation with no katakana-only counterpart; U+30FB
+        // (katakana middle dot) and U+30F7-U+30FA (katakana-only VU letters)
+        // sit inside the naive katakana range with no hiragana counterpart.
+        // None of these should ever be shifted.
+        for shared in ['\u{3099}', '\u{309A}', '\u{309B}', '\u{309C}'] {
+            assert_eq!(hiragana_to_katakana(&shared.to_string()), shared.to_string());
+            assert_eq!(katakana_to_hiragana(&shared.to_string()), shared.to_string());
+        }
+        assert_eq!(katakana_to_hiragana("・"), "・");
+        for vu in ['ヷ', 'ヸ', 'ヹ', 'ヺ'] {
+            assert_eq!(katakana_to_hiragana(&vu.to_string()), vu.to_string());
+        }
     }
 
     // --- Confusion rule: candidate generation ---
