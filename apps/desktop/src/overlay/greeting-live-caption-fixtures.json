@@ -182,6 +182,12 @@
       "input": "おはよう会えますか",
       "expectedOverlay": "おはよう聞こえますか",
       "note": "Short morning greeting glued to 会えますか"
+    },
+    {
+      "id": "sayonara-hearing-prolonged",
+      "input": "さようならーおえますか",
+      "expectedOverlay": "さようならーきこえますか",
+      "note": "Prolonged さようなら + おえますか"
     }
   ],
   "merge": [
