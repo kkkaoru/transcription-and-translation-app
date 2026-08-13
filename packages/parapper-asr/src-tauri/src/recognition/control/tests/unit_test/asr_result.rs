@@ -3031,13 +3031,46 @@ fn turn_runtime_closing_queued_interim_chunks_drain_before_rerecognition() {
     assert_eq!(tail.target.turn_id, TurnId(1));
     assert_eq!(
         tail.target.range,
-        AudioRange::new(GlobalSampleIndex(150), GlobalSampleIndex(470)),
-        "contiguous 160ms chunks may merge, but they must still drain as same-turn tail ASR"
+        AudioRange::new(GlobalSampleIndex(150), GlobalSampleIndex(310)),
+        "the first 160ms grid must dispatch alone instead of absorbing the later chunk"
     );
-    assert!(runtime.pending.asr_segments.is_empty());
+    assert_eq!(
+        runtime.pending.asr_segments.len(),
+        1,
+        "the later 160ms grid must stay queued until the first chunk finishes"
+    );
+    assert_eq!(runtime.pending.asr_segments.front().map(|segment| segment.segment_id), Some(3));
     assert!(!runtime.turn_store.finalized_turns.contains(&1));
 
     asr_handle.complete_request_with_text(&tail, "続き");
+    runtime.step();
+
+    let second = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("the later 160ms grid must take the slot before grammar rerecognition");
+    assert_eq!(second.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(second.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(
+        second.target.range,
+        AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(470)),
+        "the later 160ms grid must run as its own request"
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "draining 160ms grids must keep the visible prefix; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "the first 160ms chunk must keep its continuation; got {}",
+        draft.combined_text
+    );
+
+    asr_handle.complete_request_with_text(&second, "尾");
     runtime.step();
 
     assert_eq!(
@@ -3048,6 +3081,12 @@ fn turn_runtime_closing_queued_interim_chunks_drain_before_rerecognition() {
     assert_eq!(
         runtime.requests.in_flight_request.as_ref().map(|request| request.target.turn_id),
         Some(TurnId(1))
+    );
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "drained 160ms grids must keep the visible prefix; got {}",
+        draft.combined_text
     );
 }
 

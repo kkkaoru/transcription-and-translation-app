@@ -316,6 +316,14 @@ fn take_following_interim_segments(
         if next.kind() != AsrTaskKind::InterimDisplay || !last.is_contiguous_with(next) {
             break;
         }
+        // Nemotron 160ms chunks are a fixed ASR grid. Folding a later chunk
+        // into this request would run 320ms as one worker call and drop the
+        // second tick. Breath-chained InterimResultSilenceReached can still merge.
+        if last.reason == SegmentCloseReason::InterimChunkReached
+            || next.reason == SegmentCloseReason::InterimChunkReached
+        {
+            break;
+        }
         let next = pending.pop_front().expect("front pending segment should still exist");
         segments.push(next);
     }
@@ -347,6 +355,53 @@ mod tests {
 
         assert_eq!(plan.kind, AsrTaskKind::InterimDisplay);
         assert_eq!(plan.audio(), vec![1.0; 10]);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.front().map(|segment| segment.segment_id), Some(2));
+    }
+
+    #[test]
+    fn request_plan_does_not_merge_contiguous_160ms_chunks() {
+        let mut pending = VecDeque::from([
+            pending_segment(2, Some(1), SegmentCloseReason::InterimChunkReached, 150..310),
+            pending_segment(3, Some(2), SegmentCloseReason::InterimChunkReached, 310..470),
+        ]);
+
+        let plan = take_next_request_segment_plan(
+            &parapper_config! {
+                turn_detector: TurnDetector::Namo,
+                ..ParapperConfig::default()
+            },
+            &mut pending,
+        )
+        .expect("first 160ms chunk should be planned");
+
+        assert_eq!(plan.kind, AsrTaskKind::InterimDisplay);
+        assert_eq!(plan.first_reason(), SegmentCloseReason::InterimChunkReached);
+        assert_eq!(plan.range().start_sample, GlobalSampleIndex(150));
+        assert_eq!(plan.range().end_sample, GlobalSampleIndex(310));
+        assert_eq!(plan.audio().len(), 160);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.front().map(|segment| segment.segment_id), Some(3));
+    }
+
+    #[test]
+    fn request_plan_does_not_fold_160ms_into_end_silence_completion() {
+        let mut pending = VecDeque::from([
+            pending_segment(1, None, SegmentCloseReason::EndSilenceReached, 0..150),
+            pending_segment(2, Some(1), SegmentCloseReason::InterimChunkReached, 150..310),
+        ]);
+
+        let plan = take_next_request_segment_plan(
+            &parapper_config! {
+                turn_detector: TurnDetector::Namo,
+                ..ParapperConfig::default()
+            },
+            &mut pending,
+        )
+        .expect("end-silence completion should be planned");
+
+        assert_eq!(plan.kind, AsrTaskKind::CompletionCheck);
+        assert_eq!(plan.audio().len(), 150);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending.front().map(|segment| segment.segment_id), Some(2));
     }
