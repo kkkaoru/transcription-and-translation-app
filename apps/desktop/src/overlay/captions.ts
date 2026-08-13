@@ -132,15 +132,16 @@ const isSentencePagedRemainder = (original: string, shown: string): boolean => {
   return /[。．.]\s*$/u.test(prefix);
 };
 
-/** True when sentence-boundary would keep the tail because it dominates the lead. */
-const doesTailDominateDroppedHead = (source: string, shown: string): boolean => {
-  const prefix = prefixBeforeShown(source, shown);
-  if (prefix === null || !prefix.trim()) {
+/**
+ * True when `shown` follows bang/question punct. Sentence-boundary pages that
+ * remainder, but overlay still restores the recognized head.
+ */
+const isBangOrQuestionRemainder = (original: string, shown: string): boolean => {
+  const prefix = prefixBeforeShown(original, shown);
+  if (prefix === null) {
     return false;
   }
-  const prefixLen = [...stripElongationAndTrailingClausePunct(prefix)].length;
-  const shownLen = [...stripElongationAndTrailingClausePunct(shown)].length;
-  return prefixLen > 0 && shownLen >= prefixLen * 2;
+  return /[！？!?]\s*$/u.test(prefix);
 };
 
 /**
@@ -169,9 +170,10 @@ const isCollapsedContinuationSurface = (source: string, shown: string): boolean 
  * After the first overlay frame commits, paging can drop the recognized head
  * and leave only `ー`, an elongation-led tail, or a suffix of the same turn.
  * Keep the longer surface already in `original`. Do not concatenate a different
- * turn, and do not undo intentional `。` / `．` / `.` remainder paging. A bare
- * tail that already dominates the dropped head stays paged; an elongation-led
- * fragment (`ー続きがあります`) still restores the recognized head.
+ * turn, and do not undo intentional sentence paging: `。` remainder, or a
+ * copula 2× tail that `selectVisibleCaptionSentence` already chose. Glue,
+ * elongation-led, and bang/question suffixes restore the recognized head even
+ * when the tail is twice the lead (`おはようよろしくお願いします`).
  */
 export const restoreCollapsedContinuation = (original: string, visible: string): string => {
   const source = original.trim();
@@ -194,14 +196,13 @@ export const restoreCollapsedContinuation = (original: string, visible: string):
   if (!isCollapsedContinuationSurface(source, shown)) {
     return visible;
   }
-  // `ー続きがあります` is the same turn after paging dropped the head.
-  // A 2× tail still restores here; period remainder already returned above.
-  // Bare dominating suffixes without elongation keep copula/offset paging.
-  if (
-    !ELONGATION_LED.test(shown) &&
-    !ELONGATION_ONLY.test(shown) &&
-    doesTailDominateDroppedHead(source, shown)
-  ) {
+  // Sentence paging already selected this suffix (copula 2×). Glue that
+  // `selectVisibleCaptionSentence` still treats as one line must restore.
+  // Bang/question remainders are paged by the segmenter but overlay restores.
+  if (selectVisibleCaptionSentence(source) === shown) {
+    if (isBangOrQuestionRemainder(source, shown)) {
+      return sanitizeCaptionDisplayText(source);
+    }
     return visible;
   }
   return sanitizeCaptionDisplayText(source);

@@ -199,15 +199,14 @@ describe("caption surface A/B matrix (lead×tail, not greeting/hearing fixtures)
     }
   });
 
-  it("restores a collapsed suffix unless it is a period remainder or a dominating tail", () => {
+  it("restores a collapsed glue suffix unless sentence paging chose that suffix", () => {
     for (const row of MATRIX) {
       if (!row.tail) {
         continue;
       }
       const restored = restoreCollapsedContinuation(row.full, row.tail);
-      const leadLen = [...row.lead.replace(/[ー〜～]/gu, "")].length;
-      const tailLen = [...row.tail.replace(/[ー〜～]/gu, "")].length;
-      if (tailLen >= leadLen * 2) {
+      const paged = selectVisibleCaptionSentence(row.full);
+      if (paged === row.tail) {
         expect(restored, row.id).toBe(row.tail);
       } else {
         expect(restored, row.id).toBe(sanitizeCaptionDisplayText(row.full));
