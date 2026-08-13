@@ -576,9 +576,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     .then(main)
     .catch((error) => {
       console.error(
-        `partial-window CPU benchmark: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `partial-window CPU benchmark: ${error instanceof Error ? error.message : String(error)}`,
       );
       process.exitCode = 2;
     });

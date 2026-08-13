@@ -276,15 +276,15 @@ describe("Workers AI Nova-3 ASR adapter", () => {
 
     const missingFile = new FormData();
     missingFile.set("language", "ja");
-    await expect(
-      handleWorkersAiAsrTranscription(request(missingFile), {}),
-    ).resolves.toMatchObject({ status: 400 });
+    await expect(handleWorkersAiAsrTranscription(request(missingFile), {})).resolves.toMatchObject({
+      status: 400,
+    });
 
     const invalidWav = new FormData();
     invalidWav.set("file", new File(["not-wav"], "caption.wav", { type: "audio/wav" }));
-    await expect(
-      handleWorkersAiAsrTranscription(request(invalidWav), {}),
-    ).resolves.toMatchObject({ status: 400 });
+    await expect(handleWorkersAiAsrTranscription(request(invalidWav), {})).resolves.toMatchObject({
+      status: 400,
+    });
 
     const valid = new FormData();
     valid.set("file", wavFile());
@@ -295,10 +295,8 @@ describe("Workers AI Nova-3 ASR adapter", () => {
 
     const failed = new FormData();
     failed.set("file", wavFile());
-    const failedResponse = await handleWorkersAiAsrTranscription(
-      request(failed),
-      {},
-      () => Promise.reject(new Error("provider failed")),
+    const failedResponse = await handleWorkersAiAsrTranscription(request(failed), {}, () =>
+      Promise.reject(new Error("provider failed")),
     );
     await expect(failedResponse.json()).resolves.toMatchObject({
       error: { code: "asr_workers_ai_failed", message: "provider failed" },
