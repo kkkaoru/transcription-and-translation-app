@@ -84,7 +84,22 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     await expect(defaultLanguageResponse.json()).resolves.toMatchObject({
       language: "ja",
     });
-    expect(run).toHaveBeenCalledTimes(2);
+
+    const formWithBlankLanguage = new FormData();
+    formWithBlankLanguage.set("file", wavFile());
+    formWithBlankLanguage.set("language", "   ");
+    const blankLanguageResponse = await handleWorkersAiAsrTranscription(
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        body: formWithBlankLanguage,
+      }),
+      {},
+      run,
+    );
+    await expect(blankLanguageResponse.json()).resolves.toMatchObject({
+      language: "ja",
+    });
+    expect(run).toHaveBeenCalledTimes(3);
   });
 
   it("accepts the Workers AI raw response form", async () => {
