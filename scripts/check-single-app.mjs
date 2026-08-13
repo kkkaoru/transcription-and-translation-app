@@ -60,8 +60,8 @@ check(
 const commands = read("apps/desktop/src-tauri/src/commands.rs");
 const builderCount = (commands.match(/WebviewWindowBuilder::new/g) ?? []).length;
 check(
-  "commands.rs builds caption surfaces through one shared window helper",
-  builderCount === 1,
+  "commands.rs builds caption surfaces through one shared helper plus the style editor",
+  builderCount === 2 && /fn create_caption_surface_window\s*\(/.test(commands),
   `found ${builderCount} WebviewWindowBuilder::new calls`,
 );
 check(
@@ -69,7 +69,10 @@ check(
   /NATIVE_RENDERER_LABEL:\s*&str\s*=\s*"native-renderer"/.test(commands) &&
     /TRANSPARENT_CAPTURE_LABEL:\s*&str\s*=\s*"transparent"/.test(commands),
 );
-check("caption surface windows skip the taskbar/Dock", /\.skip_taskbar\(true\)/.test(commands));
+check(
+  "the off-screen native caption surface skips the taskbar/Dock",
+  /\.skip_taskbar\(offscreen\)/.test(commands),
+);
 
 // --- 3. One unified launch entry point in the root scripts --------------------
 const rootPkg = readJson("package.json");
