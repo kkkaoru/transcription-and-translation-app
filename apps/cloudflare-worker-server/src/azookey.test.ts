@@ -1198,7 +1198,7 @@ describe("xsmall request fallback quality regressions", () => {
     return convertAzookeyMessage(message, {
       timeoutMs: runtime.timeoutMs ?? 5_000,
       converter: runtime.converter,
-      modelRoutes: runtime.modelRoutes,
+      ...(runtime.modelRoutes ? { modelRoutes: runtime.modelRoutes } : {}),
       ...(runtime.fetcher ? { fetcher: runtime.fetcher } : {}),
     });
   };

@@ -292,7 +292,10 @@ const readWavFromMultipart = async (
   const languageValue = form.get("language");
   const language =
     typeof languageValue === "string" && languageValue.trim() ? languageValue.trim() : undefined;
-  return { wav: new Uint8Array(await fileValue.arrayBuffer()), language };
+  return {
+    wav: new Uint8Array(await fileValue.arrayBuffer()),
+    ...(language ? { language } : {}),
+  };
 };
 
 /**
