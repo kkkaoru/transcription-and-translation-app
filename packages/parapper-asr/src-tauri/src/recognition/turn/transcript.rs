@@ -600,26 +600,30 @@ impl RecognitionSession {
                 &draft.combined_text,
                 draft.last_emitted_interim_text.as_deref(),
             );
+            let keep_joined_tail = rerecognition_drops_joined_tail(
+                &draft.combined_text,
+                &transcript.text,
+                &draft.segment_texts,
+            );
             if prefer_streaming_interim_text_over_truncated_completion(
                 &longer_surface,
                 &transcript.text,
             ) || is_repeated_turn_append(&longer_surface, &transcript.text)
                 || rerecognition_is_truncated_joined_caption(&longer_surface, &transcript.text)
+                || keep_joined_tail
             {
-                // Truncated, rewritten-shorter, or repeated-string full-turn
-                // rerecognition must not replace a longer draft. Grammar ASR of
-                // prefix audio often returns a punctuated lead that is not a
-                // prefix of the joined streaming caption, and would drop the
-                // same-utterance tail.
-                if draft.combined_text == longer_surface {
+                // Truncated, rewritten-shorter, same-length lead substitution,
+                // or repeated-string full-turn rerecognition must not replace a
+                // longer joined draft. Grammar ASR of prefix audio often returns
+                // a punctuated lead that is not a prefix of the streaming concat
+                // and would drop the same-utterance tail.
+                let keep_text =
+                    if keep_joined_tail { draft.combined_text.clone() } else { longer_surface };
+                if draft.combined_text == keep_text {
                     draft.route = Some(request.route);
                     draft.processing_millis += elapsed_millis;
                 } else {
-                    draft.replace_text_preserving_sources(
-                        request.route,
-                        longer_surface,
-                        elapsed_millis,
-                    );
+                    draft.replace_text_preserving_sources(request.route, keep_text, elapsed_millis);
                 }
             } else {
                 draft.replace_text_preserving_sources(
@@ -827,6 +831,30 @@ fn rerecognition_is_truncated_joined_caption(existing: &str, incoming: &str) -> 
         return false;
     }
     incoming.chars().count() < existing.chars().count() && existing.starts_with(&incoming)
+}
+
+/// Keep a multi-segment joined caption when grammar rerecognition does not
+/// carry the already-applied tail. Same-length lead substitution
+/// ("全体。 続き 後半" vs "全体ですよね") is not a compact prefix, so
+/// `rerecognition_is_truncated_joined_caption` misses it. A single-segment
+/// short-utterance rewrite ("句読点つき。" → "再認識後。") still replaces.
+fn rerecognition_drops_joined_tail(
+    combined: &str,
+    incoming: &str,
+    segment_texts: &[String],
+) -> bool {
+    if segment_texts.len() < 2 {
+        return false;
+    }
+    let incoming = compact_turn_surface_for_prefix(incoming);
+    if incoming.is_empty() {
+        return false;
+    }
+    let tail = compact_turn_surface_for_prefix(&segment_texts[1..].join(""));
+    if tail.is_empty() {
+        return false;
+    }
+    compact_turn_surface_for_prefix(combined).contains(&tail) && !incoming.contains(&tail)
 }
 
 fn compact_turn_surface_for_prefix(text: &str) -> String {
@@ -1264,7 +1292,7 @@ mod tests {
         completion_incoming_is_blank, completion_is_full_longer_rewrite,
         completion_text_duplicates_existing, is_longer_turn_rewrite,
         leading_asr_only_padding_samples, leading_covered_source_samples, longer_turn_surface_text,
-        prefer_streaming_interim_text_over_truncated_completion,
+        prefer_streaming_interim_text_over_truncated_completion, rerecognition_drops_joined_tail,
         rerecognition_is_truncated_joined_caption, streaming_chunk_uncovered_source_start,
         uncovered_completion_source_start, visible_text_for_blank_replace,
     };
@@ -1302,6 +1330,21 @@ mod tests {
         assert!(rerecognition_is_truncated_joined_caption("全体。 続き 後半", "全体続き"));
         assert!(!rerecognition_is_truncated_joined_caption("句読点つき。", "再認識後。"));
         assert!(!rerecognition_is_truncated_joined_caption("全体。", "全体。続き後半"));
+        assert!(rerecognition_drops_joined_tail(
+            "全体。 続き 後半",
+            "全体ですよね",
+            &["全体。".into(), "続き".into(), "後半".into()],
+        ));
+        assert!(!rerecognition_drops_joined_tail(
+            "句読点つき。",
+            "再認識です。",
+            &["句読点つき。".into()],
+        ));
+        assert!(!rerecognition_drops_joined_tail(
+            "全体。 続き 後半",
+            "全体続き後半です",
+            &["全体。".into(), "続き".into(), "後半".into()],
+        ));
         assert_eq!(
             visible_text_for_blank_replace(
                 "。",
