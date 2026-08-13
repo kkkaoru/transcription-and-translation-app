@@ -22,6 +22,24 @@ const novaResult = (transcript = "明日の天気は晴れ") => ({
   },
 });
 
+const wavFile = (): File => {
+  const bytes = new Uint8Array(46);
+  const view = new DataView(bytes.buffer);
+  bytes.set(new TextEncoder().encode("RIFF"), 0);
+  view.setUint32(4, 38, true);
+  bytes.set(new TextEncoder().encode("WAVEfmt "), 8);
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 16_000, true);
+  view.setUint32(28, 32_000, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  bytes.set(new TextEncoder().encode("data"), 36);
+  view.setUint32(40, 2, true);
+  return new File([bytes], "caption.wav", { type: "audio/wav" });
+};
+
 describe("Workers AI Nova-3 ASR adapter", () => {
   it("parses a bounded timeout configuration", () => {
     expect(workersAiAsrTimeoutMs({})).toBe(WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS);
@@ -191,25 +209,8 @@ describe("Workers AI Nova-3 ASR adapter", () => {
 
   it("serves the explicit HTTP route without requiring ASR_PROVIDER", async () => {
     const run = vi.fn<WorkersAiAsrRun>(() => Promise.resolve(novaResult("Nova-3 route")));
-    const wav = (): File => {
-      const bytes = new Uint8Array(46);
-      const view = new DataView(bytes.buffer);
-      bytes.set(new TextEncoder().encode("RIFF"), 0);
-      view.setUint32(4, 38, true);
-      bytes.set(new TextEncoder().encode("WAVEfmt "), 8);
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true);
-      view.setUint16(22, 1, true);
-      view.setUint32(24, 16_000, true);
-      view.setUint32(28, 32_000, true);
-      view.setUint16(32, 2, true);
-      view.setUint16(34, 16, true);
-      bytes.set(new TextEncoder().encode("data"), 36);
-      view.setUint32(40, 2, true);
-      return new File([bytes], "caption.wav", { type: "audio/wav" });
-    };
     const form = new FormData();
-    form.set("file", wav());
+    form.set("file", wavFile());
     form.set("language", "ja");
     const response = await handleWorkersAiAsrTranscription(
       new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
@@ -227,5 +228,80 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       transport: "http",
     });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects non-record worker results and missing audio stream bodies", async () => {
+    await expect(
+      createWorkersAiAsrTranscriber({}, () => Promise.resolve(null))(pcm()),
+    ).rejects.toMatchObject({
+      status: 502,
+      code: "asr_workers_ai_invalid_response",
+    });
+
+    const NativeResponse = Response;
+    vi.stubGlobal(
+      "Response",
+      class {
+        body = null;
+      },
+    );
+    try {
+      await expect(
+        createWorkersAiAsrTranscriber({}, () => Promise.resolve(novaResult()))(pcm()),
+      ).rejects.toMatchObject({
+        status: 502,
+        code: "asr_workers_ai_failed",
+        message: "Workers AI ASR could not build the audio stream",
+      });
+    } finally {
+      vi.stubGlobal("Response", NativeResponse);
+    }
+  });
+
+  it("maps HTTP route method, multipart, WAV, and inference failures", async () => {
+    const request = (form?: FormData) =>
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        ...(form ? { body: form } : {}),
+      });
+    await expect(
+      handleWorkersAiAsrTranscription(request(), {}, () => Promise.resolve(novaResult())),
+    ).resolves.toMatchObject({ status: 400 });
+    await expect(
+      handleWorkersAiAsrTranscription(
+        new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, { method: "GET" }),
+        {},
+      ),
+    ).resolves.toMatchObject({ status: 405 });
+
+    const missingFile = new FormData();
+    missingFile.set("language", "ja");
+    await expect(
+      handleWorkersAiAsrTranscription(request(missingFile), {}),
+    ).resolves.toMatchObject({ status: 400 });
+
+    const invalidWav = new FormData();
+    invalidWav.set("file", new File(["not-wav"], "caption.wav", { type: "audio/wav" }));
+    await expect(
+      handleWorkersAiAsrTranscription(request(invalidWav), {}),
+    ).resolves.toMatchObject({ status: 400 });
+
+    const valid = new FormData();
+    valid.set("file", wavFile());
+    const unavailable = await handleWorkersAiAsrTranscription(request(valid), {});
+    await expect(unavailable.json()).resolves.toMatchObject({
+      error: { code: "asr_workers_ai_unavailable" },
+    });
+
+    const failed = new FormData();
+    failed.set("file", wavFile());
+    const failedResponse = await handleWorkersAiAsrTranscription(
+      request(failed),
+      {},
+      () => Promise.reject(new Error("provider failed")),
+    );
+    await expect(failedResponse.json()).resolves.toMatchObject({
+      error: { code: "asr_workers_ai_failed", message: "provider failed" },
+    });
   });
 });
