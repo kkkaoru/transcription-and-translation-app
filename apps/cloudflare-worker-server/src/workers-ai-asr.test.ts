@@ -297,6 +297,11 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     await expect(
       handleWorkersAiAsrTranscription(request(), {}, () => Promise.resolve(novaResult())),
     ).resolves.toMatchObject({ status: 400 });
+    const unexpectedMultipartFailure = request();
+    unexpectedMultipartFailure.formData = () => Promise.reject("multipart runtime failure");
+    await expect(
+      handleWorkersAiAsrTranscription(unexpectedMultipartFailure, {}),
+    ).rejects.toBe("multipart runtime failure");
     await expect(
       handleWorkersAiAsrTranscription(
         new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, { method: "GET" }),
@@ -330,6 +335,17 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     );
     await expect(failedResponse.json()).resolves.toMatchObject({
       error: { code: "asr_workers_ai_failed", message: "provider failed" },
+    });
+
+    const failedWithoutError = new FormData();
+    failedWithoutError.set("file", wavFile());
+    const failedWithoutErrorResponse = await handleWorkersAiAsrTranscription(
+      request(failedWithoutError),
+      {},
+      () => Promise.reject("provider failed without Error"),
+    );
+    await expect(failedWithoutErrorResponse.json()).resolves.toMatchObject({
+      error: { code: "asr_workers_ai_failed" },
     });
   });
 });
