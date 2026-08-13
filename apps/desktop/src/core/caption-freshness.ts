@@ -180,6 +180,12 @@ export const applyCaptionFreshnessWindow = (input: CaptionFreshnessInput): Capti
       translationText: "",
     };
   }
+  if (caption.id === "preview" || caption.id === "empty") {
+    return caption;
+  }
+  if (caption.isFinal !== true && !caption.translationText.trim()) {
+    return caption;
+  }
   const graphemes = captionGraphemes(sourceText);
   const paintedAt =
     previousSourceText === sourceText && input.graphemePaintedAt.length === graphemes.length

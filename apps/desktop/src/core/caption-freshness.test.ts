@@ -107,14 +107,45 @@ describe("caption freshness window", () => {
     const text = "もう走る次いく";
     expect(freshnessCloseOffsets(text, [])).toEqual([]);
     expect(windowOf(text, 0, { sentenceEndOffsets: [] }).sourceText).toBe(text);
-    expect(windowOf(text, CAPTION_FRESHNESS_MS, { sentenceEndOffsets: [] }).sourceText).toBe("");
+    expect(
+      applyCaptionFreshnessWindow({
+        caption: caption({ sourceText: text, isFinal: true, translationText: "It is sunny" }),
+        now: CAPTION_FRESHNESS_MS,
+        graphemePaintedAt: paintedAt(text),
+        lastGrowthAt: 0,
+        previousSourceText: text,
+      }).sourceText,
+    ).toBe("");
   });
 
-  it("allows a standalone うん to expire after 5s idle", () => {
-    const text = "うん";
-    expect(windowOf(text, 0).sourceText).toBe(text);
-    expect(windowOf(text, CAPTION_FRESHNESS_MS).sourceText).toBe("");
-    expect(windowOf(text, CAPTION_FRESHNESS_MS).translationText).toBe("");
+  it("keeps a pure interim without translation after 5s", () => {
+    const text = "もう走る次いく";
+    const display = applyCaptionFreshnessWindow({
+      caption: caption({ sourceText: text, isFinal: false, translationText: "" }),
+      now: CAPTION_FRESHNESS_MS,
+      graphemePaintedAt: paintedAt(text),
+      lastGrowthAt: 0,
+      previousSourceText: text,
+    });
+    expect(display.sourceText).toBe(text);
+  });
+
+  it("allows a finalized standalone うん to expire after 5s idle", () => {
+    const finalized = (sourceText: string, now: number): CaptionPayload =>
+      applyCaptionFreshnessWindow({
+        caption: caption({
+          sourceText,
+          isFinal: true,
+          translationText: "It is sunny",
+        }),
+        now,
+        graphemePaintedAt: paintedAt(sourceText),
+        lastGrowthAt: 0,
+        previousSourceText: sourceText,
+      });
+    expect(finalized("うん", 0).sourceText).toBe("うん");
+    expect(finalized("うん", CAPTION_FRESHNESS_MS).sourceText).toBe("");
+    expect(finalized("うん", CAPTION_FRESHNESS_MS).translationText).toBe("");
   });
 
   it("does not close 助動詞マス in 連用 or 基本, and does close です/でした/だった", () => {

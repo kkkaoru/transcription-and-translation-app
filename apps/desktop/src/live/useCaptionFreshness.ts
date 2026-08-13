@@ -84,6 +84,9 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
   if (caption.id === "preview" || caption.id === "empty") {
     return caption;
   }
+  if (!caption.isFinal && !caption.translationText.trim()) {
+    return caption;
+  }
 
   return applyCaptionFreshnessWindow({
     caption: captionWithOffsets,
