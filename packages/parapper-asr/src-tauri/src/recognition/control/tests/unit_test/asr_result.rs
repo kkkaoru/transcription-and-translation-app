@@ -1621,11 +1621,13 @@ fn turn_runtime_closing_interim_chunk_takes_rerecognition_slot_on_same_turn() {
 }
 
 #[test]
-fn turn_runtime_mid_clause_max_chunk_does_not_steal_rerecognition() {
+fn turn_runtime_mid_clause_max_chunk_dispatches_same_turn_then_restarts_rerecognition() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)
         .interim_display(false);
     let asr_handle = builder.use_manual_asr();
+    let _ = builder
+        .use_scripted_decisions(vec![TurnDecision { is_end_of_turn: false, confidence: 0.01 }]);
     let (mut runtime, _config) = builder.build();
 
     runtime_state(&mut runtime).pending_segment(
@@ -1649,13 +1651,212 @@ fn turn_runtime_mid_clause_max_chunk_does_not_steal_rerecognition() {
     asr_handle.complete_request_with_text(&completion, "しようとしたら");
     runtime.step();
 
+    let max_chunk =
+        runtime.requests.in_flight_request.as_ref().expect(
+            "a Continue-possible mid-clause must still dispatch same-turn max-chunk tail ASR",
+        );
+    assert_eq!(max_chunk.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    assert_eq!(max_chunk.target.turn_id, TurnId(1));
+    assert_eq!(
+        max_chunk.target.range,
+        AudioRange::new(GlobalSampleIndex(150), GlobalSampleIndex(250))
+    );
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "mid-clause max-chunk must not remint a new turn"
+    );
+    assert!(!runtime.turn_store.open_turn_is_closing);
+    assert!(runtime.pending.asr_segments.is_empty());
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "しようとしたら");
+    assert_eq!(draft.full_audio, vec![1.0; 150]);
+
+    let max_chunk = max_chunk.clone();
+    asr_handle.complete_request_with_text(&max_chunk, "追加");
+    runtime.step();
+
     assert_eq!(
         runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
         Some(AsrTaskKind::Rerecognition),
-        "a Continue-possible mid-clause must keep grammar rerecognition instead of yielding to max-chunk"
+        "grammar rerecognition must restart after the mid-clause tail so Continue can still run"
+    );
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.target.turn_id),
+        Some(TurnId(1))
     );
     assert!(!runtime.turn_store.finalized_turns.contains(&1));
-    assert_eq!(runtime.pending.asr_segments.len(), 1);
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("しようとしたら"),
+        "mid-clause tail ASR must not drop already-visible text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("追加"),
+        "mid-clause tail ASR must append the continuation; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 100]].concat(),
+        "mid-clause tail ASR must keep uncovered tail audio"
+    );
+
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("restarted grammar rerecognition must be in flight");
+    asr_handle.complete_request_with_text(&rerecognition, "しようとしたら追加");
+    runtime.step();
+
+    assert_eq!(
+        runtime.turn_store.open_turn_id,
+        Some(1),
+        "Namo Continue after restarted rerecognition must keep the same turn"
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("しようとしたら"),
+        "Continue must not drop the visible mid-clause; got {}",
+        draft.combined_text
+    );
+}
+
+#[test]
+fn turn_runtime_mid_clause_interim_chunk_dispatches_same_turn_then_restarts_rerecognition() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    asr_handle.complete_request_with_text(&completion, "しようとしたら");
+    runtime.step();
+
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("a Continue-possible mid-clause must still dispatch same-turn 160ms tail ASR");
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    assert!(!runtime.turn_store.open_turn_is_closing);
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "しようとしたら");
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "grammar rerecognition must restart after the 160ms tail so Continue can still run"
+    );
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.target.turn_id),
+        Some(TurnId(1))
+    );
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("しようとしたら"),
+        "160ms tail ASR must not drop already-visible text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "160ms tail ASR must append the continuation; got {}",
+        draft.combined_text
+    );
+}
+
+#[test]
+fn turn_runtime_mid_clause_in_flight_rerecognition_yields_to_later_max_chunk() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    asr_handle.complete_request_with_text(&completion, "しようとしたら");
+    runtime.step();
+
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("without a queued continuation, Namo still starts grammar rerecognition");
+    assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    runtime.step();
+
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "in-flight mid-clause rerecognition must yield the slot to same-turn max-chunk ASR",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(dispatched.target.turn_id, TurnId(1));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    assert!(!runtime.turn_store.open_turn_is_closing);
+
+    asr_handle.complete_request_with_text(&rerecognition, "短い");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.combined_text, "しようとしたら",
+        "a late grammar rerecognition result must not drop already-visible text"
+    );
+    assert_eq!(
+        draft.full_audio,
+        vec![1.0; 150],
+        "a late grammar rerecognition result must not drop uncovered tail audio"
+    );
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.target.turn_id),
+        Some(TurnId(1)),
+        "a mismatched late rerecognition result must keep the max-chunk request in flight"
+    );
 }
 
 #[test]

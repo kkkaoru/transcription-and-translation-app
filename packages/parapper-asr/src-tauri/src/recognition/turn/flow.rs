@@ -133,6 +133,7 @@ impl RecognitionSession {
         self.requests.in_flight_request = Some(request);
         self.requests.pending_rerecognition_purpose = Some(purpose);
         self.requests.last_dispatched = Some(in_flight);
+        self.requests.deferred_grammar_rerecognition_turn = None;
         self.stamp_asr_dispatch(turn_id);
         true
     }
@@ -209,25 +210,51 @@ impl RecognitionSession {
         turn_id: u64,
         purpose: RerecognitionPurpose,
     ) -> bool {
-        match purpose {
+        let grammar_already_completes = match purpose {
             RerecognitionPurpose::SimpleTurnCheckFinal | RerecognitionPurpose::TimeoutFinal => {
                 self.stop_accepting_root_while_closing(turn_id);
+                true
             }
             RerecognitionPurpose::GrammarAfterCompletion => {
-                // Mid-phrase Continue must keep grammar rerecognition. Only a
-                // draft that already completes the turn may give the slot to
-                // same-utterance tail ASR.
-                if !self.grammar_already_completes_turn(turn_id) {
-                    return false;
+                let completes = self.grammar_already_completes_turn(turn_id);
+                if completes {
+                    self.stop_accepting_root_while_closing(turn_id);
                 }
-                self.stop_accepting_root_while_closing(turn_id);
+                completes
             }
-        }
+        };
         if self.pending_asr_preempts_rerecognition(turn_id) {
             // A true next utterance remints via yield_rerecognition_slot_for_next_utterance.
             return false;
         }
-        self.pending_same_utterance_continuation(turn_id)
+        if !self.pending_same_utterance_continuation(turn_id) {
+            return false;
+        }
+        if matches!(purpose, RerecognitionPurpose::GrammarAfterCompletion)
+            && !grammar_already_completes
+        {
+            // Mid-clause Continue still needs grammar rerecognition, but the
+            // same-utterance tail must not wait behind it. Restart after the
+            // slot is free; do not mark the turn closing (that would remint).
+            self.requests.deferred_grammar_rerecognition_turn = Some(turn_id);
+        }
+        true
+    }
+
+    pub(in crate::recognition) fn dispatch_deferred_grammar_rerecognition_if_idle(&mut self) {
+        let Some(turn_id) = self.requests.deferred_grammar_rerecognition_turn else {
+            return;
+        };
+        if self.turn_store.finalized_turns.contains(&turn_id)
+            || !self.turn_store.turns.contains_key(&turn_id)
+        {
+            self.requests.deferred_grammar_rerecognition_turn = None;
+            return;
+        }
+        let _ = self.dispatch_rerecognition_for_turn_if_idle(
+            turn_id,
+            RerecognitionPurpose::GrammarAfterCompletion,
+        );
     }
 
     fn pending_same_utterance_continuation(&self, turn_id: u64) -> bool {
@@ -334,6 +361,7 @@ impl RecognitionSession {
         self.turn_store.open_turn_accepts_root_segment = false;
         self.turn_store.open_turn_is_closing = false;
         self.activity.open_turn_since_tick = None;
+        self.requests.deferred_grammar_rerecognition_turn = None;
     }
 
     fn reset_open_turn_timeout_origin(&mut self) {

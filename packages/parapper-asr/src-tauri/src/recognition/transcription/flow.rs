@@ -172,6 +172,10 @@ impl RecognitionSession {
         if self.requests.in_flight_request.is_some() {
             return;
         }
+        self.dispatch_deferred_grammar_rerecognition_if_idle();
+        if self.requests.in_flight_request.is_some() {
+            return;
+        }
         drop_front_interim_segments_covered_by_completion(&mut self.pending.asr_segments);
         let Some(request) = self.build_next_asr_request() else {
             self.apply_deferred_streaming_session_reset_if_ready();

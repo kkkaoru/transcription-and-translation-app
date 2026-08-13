@@ -467,4 +467,7 @@ pub(in crate::recognition) struct AsrRequestState {
     pub(in crate::recognition) in_flight_request: Option<AsrRequest>,
     pub(in crate::recognition) pending_rerecognition_purpose: Option<RerecognitionPurpose>,
     pub(in crate::recognition) last_dispatched: Option<AsrInFlight>,
+    /// Grammar rerecognition deferred so same-utterance tail ASR can run first.
+    /// Restart once the slot is idle and no max-chunk / streaming chunk remains.
+    pub(in crate::recognition) deferred_grammar_rerecognition_turn: Option<u64>,
 }
