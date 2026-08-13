@@ -137,6 +137,8 @@ const ASR_FOLD_LANGUAGES = { sourceLanguage: "ja", targetLanguage: "en" };
  * Same-turn disjoint join Overlay live uses so a tail-only stage is not
  * first-painted while the lead is already the tracked ASR surface. Equal
  * `startedAt` only: a later start is a new turn and must replace.
+ * After a joined surface, a shorter same-turn follow-up keeps the longer
+ * text instead of latest-wins collapsing to the lead or tail.
  */
 export const joinDisjointAsrStageOntoLead = <T extends OverlayAsrFoldStage>(
   lead: T | null | undefined,
@@ -158,6 +160,11 @@ export const joinDisjointAsrStageOntoLead = <T extends OverlayAsrFoldStage>(
   const leadText = asrStageSurface(lead);
   const nextText = asrStageSurface(incoming);
   if (!shouldAppendDisjointSameTurnSurfaces(leadText, nextText)) {
+    // After a joined lead+tail, a shorter same-turn follow-up must not
+    // replace the longer surface (latest-wins keep-longer).
+    if (leadText && isShorterSameUtteranceSurface(nextText, leadText)) {
+      return lead;
+    }
     return incoming;
   }
   const separator = /[A-Za-z0-9]$/u.test(leadText) && /^[A-Za-z0-9]/u.test(nextText) ? " " : "";

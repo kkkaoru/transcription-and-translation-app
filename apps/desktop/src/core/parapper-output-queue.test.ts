@@ -339,6 +339,105 @@ describe("Parapper output coalescing queue", () => {
     await queue.whenIdle();
   });
 
+  it("does not first-paint a shorter follow-up over a joined pending surface", async () => {
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.text);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+    queue.enqueue({
+      id: "in-flight",
+      text: "会議を始めます",
+      isFinal: false,
+      revision: 1,
+      ...turn,
+    });
+    await flush();
+    const joined = queue.enqueue({
+      id: "tail",
+      text: "続きがあります",
+      isFinal: false,
+      revision: 2,
+      ...turn,
+    });
+    expect(joined?.text).toContain("会議を始めます");
+    expect(joined?.text).toContain("続きがあります");
+    expect(
+      queue.enqueue({
+        id: "shorter-lead",
+        text: "会議を始めます",
+        isFinal: false,
+        revision: 3,
+        ...turn,
+      }),
+    ).toBeNull();
+    const shorterFinal = queue.enqueue({
+      id: "shorter-final",
+      text: "会議を始めます",
+      isFinal: true,
+      revision: 4,
+      ...turn,
+    });
+    expect(shorterFinal?.text).toContain("会議を始めます");
+    expect(shorterFinal?.text).toContain("続きがあります");
+    expect(shorterFinal?.text).not.toBe("会議を始めます");
+    release.shift()?.();
+    await flush();
+    release.shift()?.();
+    await flush();
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(
+      processed.some((text) => text.includes("会議を始めます") && text.includes("続きがあります")),
+    ).toBe(true);
+  });
+
+  it("does not first-paint a shorter partial after a joined surface has drained", async () => {
+    const processed: string[] = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.text);
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+    queue.enqueue({
+      id: "lead",
+      text: "おはよう",
+      isFinal: false,
+      revision: 1,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "tail",
+      text: "よろしくお願いします",
+      isFinal: false,
+      revision: 2,
+      ...turn,
+    });
+    await queue.whenIdle();
+    expect(
+      queue.enqueue({
+        id: "shorter-lead",
+        text: "おはよう",
+        isFinal: false,
+        revision: 3,
+        ...turn,
+      }),
+    ).toBeNull();
+    expect(processed.filter((text) => text === "おはよう")).toHaveLength(1);
+    expect(
+      processed.some((text) => text.includes("おはよう") && text.includes("よろしくお願いします")),
+    ).toBe(true);
+  });
+
   it("joins a key-less legacy disjoint tail onto the previous lead", async () => {
     const processed: string[] = [];
     const queue = createParapperOutputQueue<Item & { text: string }>((next) => {

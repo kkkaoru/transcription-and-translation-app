@@ -135,9 +135,11 @@ export const OverlayApp = () => {
       }
       // In-flight AzooKey of the lead can emit caption:update after overlay
       // already painted the joined ASR surface. Keep-longer of that join.
+      // Same id only: a later short turn must still replace the plate.
       if (
         current.id !== "preview" &&
         current.id !== "empty" &&
+        merged.id === current.id &&
         isShorterSameUtteranceSurface(merged.sourceText, current.sourceText)
       ) {
         return;
@@ -341,6 +343,17 @@ export const OverlayApp = () => {
           if (currentText && isShorterSameUtteranceSurface(nextText, currentText)) {
             return false;
           }
+        }
+        // Same-turn shorter follow-up after a joined paint: do not collapse
+        // lastJoined / the plate. A different utterance id still replaces.
+        if (
+          current.id !== "preview" &&
+          current.id !== "empty" &&
+          current.id === toPaint.utteranceId &&
+          currentText &&
+          isShorterSameUtteranceSurface(nextText, currentText)
+        ) {
+          return false;
         }
         const provisional = buildProvisionalCaptionFromAsrStage(toPaint, {
           sourceLanguage: captionRef.current.sourceLanguage,

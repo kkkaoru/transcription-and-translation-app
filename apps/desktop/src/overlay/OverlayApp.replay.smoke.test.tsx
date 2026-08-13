@@ -2021,6 +2021,12 @@ describe("OverlayApp caption replay", () => {
           row.tail === "終わりますか" &&
           row.structure === "glue",
       ),
+      matrix.find(
+        (row) =>
+          row.lead === "おはよう" &&
+          row.tail === "よろしくお願いします" &&
+          row.structure === "glue",
+      ),
     ];
     expect(rows.every((row) => row)).toBe(true);
     history.pushState({}, "", "/?native=1");
@@ -2081,6 +2087,26 @@ describe("OverlayApp caption replay", () => {
           nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "",
           row.id,
         ).toContain(row.tail);
+
+        await act(async () => {
+          pipelineListener?.({
+            stage: "asr",
+            utteranceId,
+            modelId: "parapper-ja",
+            inputSnippet: "",
+            outputText: row.lead,
+            startedAt: 10,
+            at: 85,
+            durationMs: 75,
+            ok: true,
+          });
+          await Promise.resolve();
+        });
+        await flush();
+        const afterShorterAsr =
+          nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+        expect(afterShorterAsr, row.id).toContain(row.lead);
+        expect(afterShorterAsr, row.id).toContain(row.tail);
 
         await act(async () => {
           captionListener?.({

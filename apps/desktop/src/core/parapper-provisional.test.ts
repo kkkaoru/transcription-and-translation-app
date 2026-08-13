@@ -301,6 +301,36 @@ describe("pickLatestSuccessfulAsrStage", () => {
     );
   });
 
+  it("keeps a folded join when a later same-id stage is only the lead", () => {
+    const lead = {
+      stage: "asr" as const,
+      ok: true,
+      utteranceId: "parapper:s:1:8",
+      outputText: "会議を始めます",
+      startedAt: 10,
+      at: 40,
+    };
+    const tail = {
+      stage: "asr" as const,
+      ok: true,
+      utteranceId: "parapper:s:1:8",
+      outputText: "続きがあります",
+      startedAt: 10,
+      at: 80,
+    };
+    const shorterLead = {
+      stage: "asr" as const,
+      ok: true,
+      utteranceId: "parapper:s:1:8",
+      outputText: "会議を始めます",
+      startedAt: 10,
+      at: 90,
+    };
+    const picked = pickLatestSuccessfulAsrStage([lead, tail, shorterLead]);
+    expect(picked?.outputText).toContain("会議を始めます");
+    expect(picked?.outputText).toContain("続きがあります");
+  });
+
   it("folds a same-id disjoint tail onto the lead instead of keep-longer of the lead", () => {
     const lead = {
       stage: "asr" as const,
@@ -380,6 +410,19 @@ describe("joinDisjointAsrStageOntoLead", () => {
     expect(
       joinDisjointAsrStageOntoLead(lead, { ...tail, utteranceId: "parapper:s:1:9" }).outputText,
     ).toBe("続きがあります");
+  });
+
+  it("keeps a joined surface when a shorter same-turn follow-up arrives", () => {
+    const joined = joinDisjointAsrStageOntoLead(lead, tail);
+    expect(joinDisjointAsrStageOntoLead(joined, lead).outputText).toBe(joined.outputText);
+    expect(joinDisjointAsrStageOntoLead(joined, tail).outputText).toBe(joined.outputText);
+    expect(
+      joinDisjointAsrStageOntoLead(joined, {
+        ...lead,
+        outputText: "おはようよろしくお願いします",
+        utteranceId: "parapper:s:1:9",
+      }).outputText,
+    ).toBe("おはようよろしくお願いします");
   });
 
   it("folds a live tail-only row with the lead once history is remembered", () => {

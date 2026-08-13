@@ -394,6 +394,45 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
         recordPipelineDrop("parapper-output-queue", 1, "truncated-rewrite-partial");
         return null;
       }
+      // After a joined/longer surface is already tracked, a shorter same-turn
+      // partial must not first-paint over it (pending may already have drained).
+      if (
+        !item.isFinal &&
+        tracked &&
+        sameTurnOrLegacy(item, tracked) &&
+        isShorterRewriteOfPending(item, tracked)
+      ) {
+        droppedPartials += 1;
+        recordPipelineDrop("parapper-output-queue", 1, "truncated-rewrite-partial");
+        return null;
+      }
+      // A shorter final still normalizes (conversion stitch) but must not
+      // replace the joined tracker or first-paint a truncated lead/tail.
+      if (
+        item.isFinal &&
+        tracked &&
+        sameTurnOrLegacy(item, tracked) &&
+        isShorterRewriteOfPending(item, tracked)
+      ) {
+        rememberAccepted(tracked);
+        while (
+          pending.length > 0 &&
+          !pending[pending.length - 1]?.isFinal &&
+          sameTurnOrLegacy(item, pending[pending.length - 1] as T)
+        ) {
+          const trailingPartial = pending[pending.length - 1] as T;
+          if (isShorterRewriteOfPending(item, trailingPartial)) {
+            break;
+          }
+          pending.pop();
+          droppedPartials += 1;
+          recordPipelineDrop("parapper-output-queue", 1, "final-superseded-partial");
+        }
+        pending.push(item);
+        boundPending();
+        void run();
+        return tracked;
+      }
       rememberAccepted(item);
       if (item.isFinal) {
         // Partials waiting for this same turn are superseded by its final,
