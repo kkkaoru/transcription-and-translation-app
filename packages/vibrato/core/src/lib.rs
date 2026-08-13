@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub use vibrato::Tokenizer;
 
 #[cfg(test)]
-pub(crate) static TOKENIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static TOKENIZE_CALLS: AtomicUsize = const { AtomicUsize::new(0) };
+}
 
 /// IPADIC comma-separated `reading` field used by the desktop pipeline.
 pub const IPADIC_READING_FEATURE_INDEX: usize = 7;
@@ -61,7 +63,9 @@ pub fn tokenizer_from_zstd(bytes: &[u8]) -> Result<Tokenizer, String> {
 
 pub fn tokenize(tokenizer: &Tokenizer, text: &str) -> Vec<MorphToken> {
     #[cfg(test)]
-    TOKENIZE_CALLS.fetch_add(1, Ordering::SeqCst);
+    TOKENIZE_CALLS.with(|calls| {
+        calls.fetch_add(1, Ordering::SeqCst);
+    });
     let mut worker = tokenizer.new_worker();
     worker.reset_sentence(text);
     worker.tokenize();
@@ -212,9 +216,9 @@ mod tests {
     fn caption_boundary_offsets_tokenizes_once() {
         let tokenizer = tokenizer_from_zstd(&tiny_dictionary_zstd())
             .expect("zstd dictionary should initialize");
-        TOKENIZE_CALLS.store(0, Ordering::SeqCst);
+        TOKENIZE_CALLS.with(|calls| calls.store(0, Ordering::SeqCst));
         let bounds = caption_boundary_offsets(&tokenizer, "東京都に京都");
-        assert_eq!(TOKENIZE_CALLS.load(Ordering::SeqCst), 1);
+        TOKENIZE_CALLS.with(|calls| assert_eq!(calls.load(Ordering::SeqCst), 1));
         assert_eq!(
             bounds.tokens.iter().map(|token| token.surface.as_str()).collect::<Vec<_>>(),
             ["東京都", "に", "京都"]
