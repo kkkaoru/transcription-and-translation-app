@@ -9,6 +9,7 @@ import { clearCaptionMergeDiagnostics, getCaptionMergeDiagnostics } from "../cor
 import { createDefaultConfig } from "../core/defaults";
 import * as displayTiming from "../core/display-timing";
 import type { CaptionPayload, PipelineStageEvent, RuntimeStatus, UnlistenFn } from "../core/types";
+import { buildCaptionAbMatrix } from "./caption-surface-ab.matrix";
 import { captionTextLines } from "./captions";
 import { isOverlayCaption, OverlayApp } from "./OverlayApp";
 
@@ -752,6 +753,77 @@ describe("OverlayApp caption replay", () => {
       const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
       expect(painted).toBe("こんにちはーきこえますかー");
       expect(painted).toContain("きこえますか");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
+  it("paints the full say/meeting lines when live ASR grows past the lead", async () => {
+    const matrix = buildCaptionAbMatrix();
+    const rows = [
+      matrix.find((row) => row.full === "こんにちはーーーきこえますかーーー？"),
+      matrix.find(
+        (row) =>
+          row.lead === "会議を始めます" &&
+          row.tail === "続きがあります" &&
+          row.structure === "elong-q",
+      ),
+    ];
+    expect(rows[0]).toBeDefined();
+    expect(rows[1]).toBeDefined();
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      for (const [index, row] of rows.entries()) {
+        if (!row) {
+          continue;
+        }
+        const utteranceId = `parapper:s:1:${30 + index}`;
+        await act(async () => {
+          pipelineListener?.({
+            stage: "asr",
+            utteranceId,
+            modelId: "parapper-ja",
+            inputSnippet: "",
+            outputText: row.lead,
+            startedAt: 10,
+            at: 40,
+            durationMs: 30,
+            ok: true,
+          });
+          await Promise.resolve();
+        });
+        await act(async () => {
+          pipelineListener?.({
+            stage: "asr",
+            utteranceId,
+            modelId: "parapper-ja",
+            inputSnippet: "",
+            outputText: row.full,
+            startedAt: 10,
+            at: 80,
+            durationMs: 70,
+            ok: true,
+          });
+          await Promise.resolve();
+        });
+        await flush();
+        const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+        expect(painted, row.id).toContain(row.lead);
+        expect(painted, row.id).toContain(row.tail);
+      }
     } finally {
       await act(async () => {
         root.unmount();

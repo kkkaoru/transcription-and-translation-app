@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { buildCaptionAbMatrix } from "../overlay/caption-surface-ab.matrix";
 import {
   compareParapperTurnCursor,
   createParapperOutputQueue,
@@ -630,6 +631,60 @@ describe("Parapper output coalescing queue", () => {
 
     await queue.whenIdle();
     expect(processed).toEqual(["こんにちは", "こんにちはーきこえますかー"]);
+  });
+
+  it("keeps a longer pending surface over a later short suffix across a lead×tail matrix", async () => {
+    const rows = buildCaptionAbMatrix().filter(
+      (row) => row.tail.length > 0 && (row.structure === "glue" || row.structure === "elong-q"),
+    );
+    expect(rows.length).toBeGreaterThanOrEqual(20);
+    expect(rows.some((row) => row.tail === "続きがあります")).toBe(true);
+    expect(rows.some((row) => row.tail === "終わりますか")).toBe(true);
+
+    for (const [index, row] of rows.entries()) {
+      const processed: string[] = [];
+      const release: Array<() => void> = [];
+      const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+        processed.push(next.text);
+        return new Promise<void>((resolve) => release.push(resolve));
+      });
+      const turn = {
+        sessionId: "socket-1",
+        turnSessionId: 4,
+        turnId: 40 + index,
+      };
+      queue.enqueue({
+        id: "in-flight",
+        text: row.lead,
+        isFinal: false,
+        revision: 1,
+        outputSequence: 1,
+        ...turn,
+      });
+      await flush();
+      queue.enqueue({
+        id: "full-utterance",
+        text: row.full,
+        isFinal: false,
+        revision: 5,
+        outputSequence: 5,
+        ...turn,
+      });
+      queue.enqueue({
+        id: "short-suffix",
+        text: row.tail,
+        isFinal: false,
+        revision: 6,
+        outputSequence: 6,
+        ...turn,
+      });
+      release.shift()?.();
+      await flush();
+      release.shift()?.();
+      await queue.whenIdle();
+      expect(processed, row.id).toEqual([row.lead, row.full]);
+      expect(processed[1], row.id).toContain(row.tail);
+    }
   });
 
   it("does not let an older final remove a newer turn's pending partial", async () => {
