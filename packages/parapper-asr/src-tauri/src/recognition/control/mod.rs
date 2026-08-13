@@ -34,7 +34,6 @@ pub(crate) use crate::recognition::turn::port::output_sink::{
 #[cfg(test)]
 pub(crate) use driver::replay_vad_frames_for_runtime;
 pub(crate) use driver::{RecognitionDriver, RecognitionDriverHandle, RecognitionShutdownResult};
-pub(in crate::recognition) use session::PartialWindowSnapshot;
 pub(crate) use input_source::{BoundedInputSendError, BoundedInputSender, RunningInputSource};
 pub(in crate::recognition) use pending::PendingFinalization;
 #[cfg(test)]
@@ -42,6 +41,7 @@ use pending::PendingTurnCheck;
 pub(in crate::recognition) use pending::RerecognitionPurpose;
 #[cfg(test)]
 pub(in crate::recognition) use session::LanguageIdRuntime;
+pub(in crate::recognition) use session::PartialWindowSnapshot;
 pub(crate) use session::RecognitionSession;
 
 #[cfg(test)]

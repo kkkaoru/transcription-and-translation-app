@@ -1170,10 +1170,7 @@ fn turn_runtime_suppresses_late_interim_when_turn_check_already_reached() {
 
     assert_eq!(
         *outputs.lock().expect("outputs should be readable"),
-        vec![
-            output_snapshot("hello...", false, 1, 1),
-            output_snapshot("hello。", true, 1, 1)
-        ]
+        vec![output_snapshot("hello...", false, 1, 1), output_snapshot("hello。", true, 1, 1)]
     );
 }
 
@@ -2453,7 +2450,11 @@ fn namo_continue_interim_display_flag_controls_partial_output_while_turn_stays_o
     }
 
     let cases = vec![
-        Case { name: "interim display disabled", interim_display: false, expected_output: Some(("東京駅...", false)) },
+        Case {
+            name: "interim display disabled",
+            interim_display: false,
+            expected_output: Some(("東京駅...", false)),
+        },
         Case {
             name: "interim display enabled",
             interim_display: true,
@@ -2761,10 +2762,7 @@ fn simple_turn_check_rerecognition_flag_controls_existing_interim_finalization()
         runtime.step();
 
         let expected_after_second_step = if rerecognize_full_on_complete {
-            vec![
-                output_snapshot("途中...", false, 1, 1),
-                output_snapshot("確定。", true, 1, 1),
-            ]
+            vec![output_snapshot("途中...", false, 1, 1), output_snapshot("確定。", true, 1, 1)]
         } else {
             vec![output_snapshot("途中。", true, 1, 1)]
         };

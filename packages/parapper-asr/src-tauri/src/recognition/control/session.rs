@@ -147,10 +147,8 @@ impl PartialWindowAsrState {
         });
         self.gap_millis = PARTIAL_WINDOW_MIN_GAP_MS;
         self.next_due_tick = Some(
-            current_tick.saturating_add(ticks_for_partial_window_gap(
-                self.gap_millis,
-                vad_interval_ms,
-            )),
+            current_tick
+                .saturating_add(ticks_for_partial_window_gap(self.gap_millis, vad_interval_ms)),
         );
     }
 
@@ -168,10 +166,7 @@ impl PartialWindowAsrState {
         if new_audio.is_empty() {
             return;
         }
-        let continues = self
-            .active
-            .as_ref()
-            .is_some_and(|active| active.segment_id == segment_id);
+        let continues = self.active.as_ref().is_some_and(|active| active.segment_id == segment_id);
         if !continues {
             self.start_segment(
                 segment_id,
@@ -201,9 +196,8 @@ impl PartialWindowAsrState {
         }
         // The request range always describes the bounded current snapshot, not
         // the full segment that may have grown past the safety cap.
-        active.range_start = GlobalSampleIndex(
-            end_sample.0.saturating_sub(active.audio.len() as u64),
-        );
+        active.range_start =
+            GlobalSampleIndex(end_sample.0.saturating_sub(active.audio.len() as u64));
     }
 
     pub(in crate::recognition) fn close_segment(&mut self, segment_id: u64) {
@@ -227,12 +221,10 @@ impl PartialWindowAsrState {
         if current_tick < due_tick {
             return None;
         }
-        self.next_due_tick = Some(
-            current_tick.saturating_add(ticks_for_partial_window_gap(
-                self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
-                vad_interval_ms,
-            )),
-        );
+        self.next_due_tick = Some(current_tick.saturating_add(ticks_for_partial_window_gap(
+            self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
+            vad_interval_ms,
+        )));
         let Some(active) = self.active.as_ref() else {
             return None;
         };
@@ -264,18 +256,12 @@ impl PartialWindowAsrState {
         })
     }
 
-    pub(in crate::recognition) fn skip_busy(
-        &mut self,
-        current_tick: u64,
-        vad_interval_ms: u32,
-    ) {
+    pub(in crate::recognition) fn skip_busy(&mut self, current_tick: u64, vad_interval_ms: u32) {
         self.skipped_busy = self.skipped_busy.saturating_add(1);
-        self.next_due_tick = Some(
-            current_tick.saturating_add(ticks_for_partial_window_gap(
-                self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
-                vad_interval_ms,
-            )),
-        );
+        self.next_due_tick = Some(current_tick.saturating_add(ticks_for_partial_window_gap(
+            self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
+            vad_interval_ms,
+        )));
         log::debug!(
             "{}",
             serde_json::json!({
@@ -341,10 +327,8 @@ impl PartialWindowAsrState {
         let decode_p95_millis = self.decode_p95_millis();
         let throttle_rate = self.throttle_rate();
         self.next_due_tick = Some(
-            current_tick.saturating_add(ticks_for_partial_window_gap(
-                self.gap_millis,
-                vad_interval_ms,
-            )),
+            current_tick
+                .saturating_add(ticks_for_partial_window_gap(self.gap_millis, vad_interval_ms)),
         );
         log::debug!(
             "{}",
@@ -366,9 +350,7 @@ impl PartialWindowAsrState {
     }
 
     #[cfg(test)]
-    pub(in crate::recognition) fn metrics(
-        &self,
-    ) -> (u64, u64, u64, u64, u128, u128, u128, f64) {
+    pub(in crate::recognition) fn metrics(&self) -> (u64, u64, u64, u64, u128, u128, u128, f64) {
         (
             self.dispatched,
             self.skipped_busy,
@@ -402,11 +384,7 @@ impl PartialWindowAsrState {
 
 fn ticks_for_partial_window_gap(gap_millis: u128, vad_interval_ms: u32) -> u64 {
     let interval = u128::from(vad_interval_ms.max(1));
-    gap_millis
-        .div_ceil(interval)
-        .max(1)
-        .try_into()
-        .unwrap_or(u64::MAX)
+    gap_millis.div_ceil(interval).max(1).try_into().unwrap_or(u64::MAX)
 }
 
 #[derive(Default)]

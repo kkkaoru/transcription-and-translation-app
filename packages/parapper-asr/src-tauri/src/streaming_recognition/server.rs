@@ -605,11 +605,7 @@ fn run_session_loop(
                     }
                 };
                 match action {
-                    ProtocolAction::Start {
-                        session_id,
-                        audio,
-                        partial_window_asr_enabled,
-                    } => {
+                    ProtocolAction::Start { session_id, audio, partial_window_asr_enabled } => {
                         logged_session_id = Some(session_id.clone());
                         let session_correlation = correlation.for_session(&session_id);
                         let (input_sender, source) = RunningInputSource::bounded_channel(

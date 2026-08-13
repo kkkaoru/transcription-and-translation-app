@@ -611,12 +611,12 @@ impl<'a> RecognitionOuterLoop<'a> {
             pending_vad_frames: PendingVadFrames::default(),
             audio_processor,
             vad_stage: Some(vad_stage),
-                driver: Some(Box::new(RecognitionDriver::new_for_production_with_output_sink(
-                    handle,
-                    config,
-                    Some(asr_startup_sender),
-                    partial_window_asr_enabled,
-                    output_sink,
+            driver: Some(Box::new(RecognitionDriver::new_for_production_with_output_sink(
+                handle,
+                config,
+                Some(asr_startup_sender),
+                partial_window_asr_enabled,
+                output_sink,
             ))),
         }
     }

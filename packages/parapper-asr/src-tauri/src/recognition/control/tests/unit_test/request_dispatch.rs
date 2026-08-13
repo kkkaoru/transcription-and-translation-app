@@ -59,8 +59,8 @@ fn turn_runtime_dispatches_completion_instead_of_covered_stale_interim() {
 }
 
 #[test]
-fn turn_runtime_builds_one_completion_request_with_following_interim_after_max_chunks_when_td_allows_it(
-) {
+fn turn_runtime_builds_one_completion_request_with_following_interim_after_max_chunks_when_td_allows_it()
+ {
     let (mut runtime, _config) =
         RecognitionSessionTestBuilder::new().turn_detector(TurnDetector::Namo).build();
     runtime_state(&mut runtime)
@@ -733,9 +733,12 @@ fn turn_runtime_dispatches_pending_asr_after_stale_turn_check_is_dropped() {
         .turn_detector(TurnDetector::Simple)
         .interim_display(true)
         .build();
-    runtime_state(&mut runtime)
-        .pending_turn_check(1)
-        .pending_segment(2, None, SegmentCloseReason::InterimResultSilenceReached, 100..200);
+    runtime_state(&mut runtime).pending_turn_check(1).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        100..200,
+    );
     runtime.activity.segment_activity_epoch =
         runtime.activity.segment_activity_epoch.saturating_add(1);
 
@@ -745,9 +748,11 @@ fn turn_runtime_dispatches_pending_asr_after_stale_turn_check_is_dropped() {
         runtime.pending.turn_check.is_none(),
         "a stale turn-check must be dropped in this step"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "queued ASR must dispatch in the same step that dropped the stale turn-check",
-    );
+    let dispatched = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("queued ASR must dispatch in the same step that dropped the stale turn-check");
     assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
     assert_eq!(dispatched.target.turn_id, TurnId(2));
     assert_eq!(
@@ -839,9 +844,12 @@ fn turn_runtime_dispatches_pending_asr_in_same_step_after_ignored_turn_check() {
         .turn_detector(TurnDetector::Simple)
         .interim_display(true)
         .build();
-    runtime_state(&mut runtime)
-        .pending_turn_check(1)
-        .pending_segment(2, None, SegmentCloseReason::InterimResultSilenceReached, 100..200);
+    runtime_state(&mut runtime).pending_turn_check(1).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        100..200,
+    );
 
     runtime.step();
 
@@ -849,9 +857,11 @@ fn turn_runtime_dispatches_pending_asr_in_same_step_after_ignored_turn_check() {
         runtime.pending.turn_check.is_none(),
         "an ignored turn-check must be dropped in this step"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "queued ASR must dispatch in the same step that ignored the stale turn-check",
-    );
+    let dispatched = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("queued ASR must dispatch in the same step that ignored the stale turn-check");
     assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
     assert_eq!(dispatched.target.turn_id, TurnId(2));
     assert_eq!(
@@ -887,9 +897,11 @@ fn turn_runtime_dispatches_next_utterance_instead_of_rerecognition_when_root_is_
         runtime.turn_store.finalized_turns.contains(&1),
         "turn 1 must finalize from the visible draft instead of waiting on rerecognition"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "queued next-utterance ASR must dispatch instead of rerecognition",
-    );
+    let dispatched = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("queued next-utterance ASR must dispatch instead of rerecognition");
     assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
     assert_eq!(dispatched.target.turn_id, TurnId(2));
     assert_eq!(
@@ -925,9 +937,11 @@ fn turn_runtime_dispatches_child_next_utterance_instead_of_rerecognition() {
         runtime.turn_store.finalized_turns.contains(&1),
         "turn 1 must finalize instead of merging the child into the same caption"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "queued child next-utterance ASR must remint onto a new turn",
-    );
+    let dispatched = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("queued child next-utterance ASR must remint onto a new turn");
     assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
     assert_eq!(dispatched.target.turn_id, TurnId(2));
     assert_eq!(
@@ -962,9 +976,11 @@ fn turn_runtime_dispatches_next_utterance_when_namo_turn_check_rerecognition_can
         runtime.turn_store.finalized_turns.contains(&1),
         "the open turn must finalize from its existing draft instead of stalling"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "queued next-utterance ASR must dispatch in the same step",
-    );
+    let dispatched = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("queued next-utterance ASR must dispatch in the same step");
     assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
     assert_eq!(dispatched.target.turn_id, TurnId(2));
     assert_eq!(
@@ -997,9 +1013,10 @@ fn turn_runtime_dispatches_next_utterance_when_namo_timeout_rerecognition_cannot
         runtime.turn_store.finalized_turns.contains(&1),
         "timed-out turn 1 must finalize from its existing draft instead of stalling"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "queued next-utterance ASR must dispatch in the same step as the timeout fallback",
-    );
+    let dispatched =
+        runtime.requests.in_flight_request.as_ref().expect(
+            "queued next-utterance ASR must dispatch in the same step as the timeout fallback",
+        );
     assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
     assert_eq!(dispatched.target.turn_id, TurnId(2));
     assert_eq!(

@@ -2387,11 +2387,7 @@ fn turn_runtime_160ms_then_after_interim_silence_emits_tail_on_current_caption()
         0..160,
     );
     runtime.step();
-    let lead = runtime
-        .requests
-        .in_flight_request
-        .clone()
-        .expect("first 160ms must dispatch");
+    let lead = runtime.requests.in_flight_request.clone().expect("first 160ms must dispatch");
     asr_handle.complete_request_with_text(&lead, "前半");
     runtime.step();
 
@@ -2425,7 +2421,10 @@ fn turn_runtime_160ms_then_after_interim_silence_emits_tail_on_current_caption()
             output.turn_id == 1 && output.text.contains("前半") && output.text.contains("後半")
         }),
         "same-utterance AfterInterimSilence after 160ms must emit on the current caption; got {:?}",
-        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+        outputs
+            .iter()
+            .map(|output| (output.turn_id, output.text.as_str(), output.is_final))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -3395,9 +3394,11 @@ fn turn_runtime_after_interim_silence_stays_after_160ms_without_stealing_grid() 
         !runtime.turn_store.finalized_turns.contains(&1),
         "same-utterance AfterInterimSilence after 160ms must stay on the current caption"
     );
-    let mut silence = runtime.requests.in_flight_request.clone().expect(
-        "AfterInterimSilence after 160ms must dispatch on the current turn",
-    );
+    let mut silence = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("AfterInterimSilence after 160ms must dispatch on the current turn");
     if silence.kind == AsrTaskKind::Rerecognition {
         asr_handle.complete_request_with_text(&silence, "全体。");
         runtime.step();
@@ -3427,7 +3428,10 @@ fn turn_runtime_after_interim_silence_stays_after_160ms_without_stealing_grid() 
                 && output.text.contains("後半")
         }),
         "same-utterance AfterInterimSilence must emit on the current caption; got {:?}",
-        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+        outputs
+            .iter()
+            .map(|output| (output.turn_id, output.text.as_str(), output.is_final))
+            .collect::<Vec<_>>()
     );
     let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
     assert_eq!(
@@ -3515,11 +3519,9 @@ fn turn_runtime_namo_grammar_does_not_close_lead_before_same_utterance_tail() {
         !runtime.turn_store.finalized_turns.contains(&1),
         "Namo grammar must not finalize the lead before the same-utterance tail applies"
     );
-    let silence = runtime
-        .requests
-        .in_flight_request
-        .clone()
-        .expect("same-utterance AfterInterimSilence must take the slot instead of grammar closing the lead");
+    let silence = runtime.requests.in_flight_request.clone().expect(
+        "same-utterance AfterInterimSilence must take the slot instead of grammar closing the lead",
+    );
     assert_eq!(
         silence.kind,
         AsrTaskKind::InterimDisplay,
@@ -3540,7 +3542,10 @@ fn turn_runtime_namo_grammar_does_not_close_lead_before_same_utterance_tail() {
                 && output.text.contains("後半")
         }),
         "same-utterance tail must emit on the current caption before Namo can close the lead; got {:?}",
-        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+        outputs
+            .iter()
+            .map(|output| (output.turn_id, output.text.as_str(), output.is_final))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -3674,7 +3679,10 @@ fn turn_runtime_in_flight_namo_grammar_yields_to_same_utterance_tail() {
                 && output.text.contains("後半")
         }),
         "same-utterance tail must stay on the current caption after in-flight grammar yields; got {:?}",
-        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+        outputs
+            .iter()
+            .map(|output| (output.turn_id, output.text.as_str(), output.is_final))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -3810,7 +3818,10 @@ fn turn_runtime_resumed_namo_grammar_does_not_rewrite_joined_caption_to_lead() {
         "resumed grammar must not rewrite the latest caption back to the lead; joined before grammar was {joined}; latest={} is_final={} all={:?}",
         last.text,
         last.is_final,
-        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+        outputs
+            .iter()
+            .map(|output| (output.turn_id, output.text.as_str(), output.is_final))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -3957,7 +3968,10 @@ fn turn_runtime_resumed_namo_grammar_does_not_replace_joined_caption_with_same_l
         "current caption must keep the same-utterance tail after same-length grammar lead; joined before grammar was {joined}; latest={} is_final={} all={:?}",
         last.text,
         last.is_final,
-        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+        outputs
+            .iter()
+            .map(|output| (output.turn_id, output.text.as_str(), output.is_final))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -4053,9 +4067,11 @@ fn turn_runtime_end_silence_child_remints_after_160ms_without_stealing_grid() {
         runtime.turn_store.finalized_turns.contains(&1),
         "child EndSilence after the 160ms grid must remint instead of continuing turn 1"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "the child EndSilence must remint onto a new turn after the 160ms grid",
-    );
+    let dispatched = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("the child EndSilence must remint onto a new turn after the 160ms grid");
     assert_eq!(dispatched.kind, AsrTaskKind::CompletionCheck);
     assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::EndSilenceReached));
     assert_ne!(
@@ -4183,9 +4199,11 @@ fn turn_runtime_after_interim_silence_root_stays_after_160ms_without_stealing_gr
         !runtime.turn_store.finalized_turns.contains(&1),
         "same-utterance AfterInterimSilence after 160ms must stay on the current caption"
     );
-    let mut silence = runtime.requests.in_flight_request.clone().expect(
-        "AfterInterimSilence root after 160ms must dispatch on the current turn",
-    );
+    let mut silence = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("AfterInterimSilence root after 160ms must dispatch on the current turn");
     if silence.kind == AsrTaskKind::Rerecognition {
         asr_handle.complete_request_with_text(&silence, "全体。");
         runtime.step();
@@ -4215,7 +4233,10 @@ fn turn_runtime_after_interim_silence_root_stays_after_160ms_without_stealing_gr
                 && output.text.contains("後半")
         }),
         "same-utterance AfterInterimSilence must emit on the current caption; got {:?}",
-        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+        outputs
+            .iter()
+            .map(|output| (output.turn_id, output.text.as_str(), output.is_final))
+            .collect::<Vec<_>>()
     );
     let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
     assert_eq!(
@@ -4347,9 +4368,11 @@ fn turn_runtime_later_160ms_after_interim_silence_does_not_attach_to_previous_tu
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason) }),
         Some((4, SegmentCloseReason::InterimChunkReached)),
         "later 160ms must stay queued for the next utterance"
     );
@@ -4498,9 +4521,11 @@ fn turn_runtime_later_child_160ms_after_interim_silence_does_not_attach_to_previ
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::InterimChunkReached, Some(2))),
         "later child 160ms must stay queued for the next utterance"
     );
@@ -4649,9 +4674,11 @@ fn turn_runtime_silence_naming_prefix_after_160ms_does_not_attach_tail_to_previo
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::InterimChunkReached, Some(1))),
         "later 160ms that names prefix must stay queued for the next utterance"
     );
@@ -4800,9 +4827,11 @@ fn turn_runtime_end_silence_naming_prefix_after_160ms_does_not_attach_tail_to_pr
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::SegmentMaxChunksReached, None)),
         "later root max-chunk must stay queued for the next utterance"
     );
@@ -4824,8 +4853,7 @@ fn turn_runtime_end_silence_naming_prefix_after_160ms_does_not_attach_tail_to_pr
         "queued root max-chunk must not return to the previous caption"
     );
     assert_eq!(
-        max_chunk.target.turn_id,
-        next_turn_id,
+        max_chunk.target.turn_id, next_turn_id,
         "queued root max-chunk must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -4982,9 +5010,11 @@ fn turn_runtime_root_160ms_after_reminted_end_silence_stays_on_next_utterance() 
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::InterimChunkReached, None)),
         "later root 160ms must stay queued for the next utterance"
     );
@@ -5006,8 +5036,7 @@ fn turn_runtime_root_160ms_after_reminted_end_silence_stays_on_next_utterance() 
         "queued root 160ms must not return to the previous caption"
     );
     assert_eq!(
-        later_chunk.target.turn_id,
-        next_turn_id,
+        later_chunk.target.turn_id, next_turn_id,
         "queued root 160ms must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -5170,9 +5199,12 @@ fn turn_runtime_root_160ms_after_reminted_160ms_stays_on_next_utterance() {
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::InterimChunkReached, None),
             (5, SegmentCloseReason::InterimChunkReached, None),
@@ -5198,9 +5230,11 @@ fn turn_runtime_root_160ms_after_reminted_160ms_stays_on_next_utterance() {
     );
     assert_eq!(later_chunk.target.turn_id, next_turn_id);
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((5, SegmentCloseReason::InterimChunkReached, None)),
         "following root 160ms must stay queued after reminted 160ms dispatches"
     );
@@ -5213,8 +5247,7 @@ fn turn_runtime_root_160ms_after_reminted_160ms_stays_on_next_utterance() {
         .as_ref()
         .expect("following root 160ms must not yield the in-flight reminted 160ms");
     assert_eq!(
-        still_in_flight.request_id,
-        later_chunk.request_id,
+        still_in_flight.request_id, later_chunk.request_id,
         "do not add 160ms-to-160ms yield after remint"
     );
     assert_eq!(
@@ -5248,8 +5281,7 @@ fn turn_runtime_root_160ms_after_reminted_160ms_stays_on_next_utterance() {
     );
     assert_ne!(following_chunk.target.turn_id, TurnId(1));
     assert_eq!(
-        following_chunk.target.turn_id,
-        next_turn_id,
+        following_chunk.target.turn_id, next_turn_id,
         "queued following root 160ms must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -5352,11 +5384,10 @@ fn turn_runtime_child_160ms_after_reminted_160ms_stays_on_next_utterance() {
     );
     runtime.step();
 
-    let in_flight = runtime
-        .requests
-        .in_flight_request
-        .as_ref()
-        .expect("later reminted 160ms and following child 160ms must not steal in-flight 160ms");
+    let in_flight =
+        runtime.requests.in_flight_request.as_ref().expect(
+            "later reminted 160ms and following child 160ms must not steal in-flight 160ms",
+        );
     assert_eq!(in_flight.request_id, chunk.request_id);
     assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::InterimChunkReached));
     assert_eq!(
@@ -5411,9 +5442,12 @@ fn turn_runtime_child_160ms_after_reminted_160ms_stays_on_next_utterance() {
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::InterimChunkReached, None),
             (5, SegmentCloseReason::InterimChunkReached, Some(4)),
@@ -5439,9 +5473,11 @@ fn turn_runtime_child_160ms_after_reminted_160ms_stays_on_next_utterance() {
     );
     assert_eq!(later_chunk.target.turn_id, next_turn_id);
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((5, SegmentCloseReason::InterimChunkReached, Some(4))),
         "following child 160ms must stay queued after reminted 160ms dispatches"
     );
@@ -5454,8 +5490,7 @@ fn turn_runtime_child_160ms_after_reminted_160ms_stays_on_next_utterance() {
         .as_ref()
         .expect("following child 160ms must not yield the in-flight reminted 160ms");
     assert_eq!(
-        still_in_flight.request_id,
-        later_chunk.request_id,
+        still_in_flight.request_id, later_chunk.request_id,
         "do not add 160ms-to-160ms yield after remint"
     );
     assert_eq!(
@@ -5489,8 +5524,7 @@ fn turn_runtime_child_160ms_after_reminted_160ms_stays_on_next_utterance() {
     );
     assert_ne!(following_chunk.target.turn_id, TurnId(1));
     assert_eq!(
-        following_chunk.target.turn_id,
-        next_turn_id,
+        following_chunk.target.turn_id, next_turn_id,
         "queued following child 160ms must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -5593,11 +5627,10 @@ fn turn_runtime_root_max_chunk_after_reminted_160ms_stays_on_next_utterance() {
     );
     runtime.step();
 
-    let in_flight = runtime
-        .requests
-        .in_flight_request
-        .as_ref()
-        .expect("later reminted 160ms and following root max-chunk must not steal in-flight 160ms");
+    let in_flight =
+        runtime.requests.in_flight_request.as_ref().expect(
+            "later reminted 160ms and following root max-chunk must not steal in-flight 160ms",
+        );
     assert_eq!(in_flight.request_id, chunk.request_id);
     assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::InterimChunkReached));
     assert_eq!(
@@ -5652,9 +5685,12 @@ fn turn_runtime_root_max_chunk_after_reminted_160ms_stays_on_next_utterance() {
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::InterimChunkReached, None),
             (5, SegmentCloseReason::SegmentMaxChunksReached, None),
@@ -5680,9 +5716,11 @@ fn turn_runtime_root_max_chunk_after_reminted_160ms_stays_on_next_utterance() {
     );
     assert_eq!(later_chunk.target.turn_id, next_turn_id);
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((5, SegmentCloseReason::SegmentMaxChunksReached, None)),
         "following root max-chunk must stay queued after reminted 160ms dispatches"
     );
@@ -5695,8 +5733,7 @@ fn turn_runtime_root_max_chunk_after_reminted_160ms_stays_on_next_utterance() {
         .as_ref()
         .expect("following root max-chunk must not yield the in-flight reminted 160ms");
     assert_eq!(
-        still_in_flight.request_id,
-        later_chunk.request_id,
+        still_in_flight.request_id, later_chunk.request_id,
         "do not add 160ms-to-160ms yield after remint"
     );
     assert_eq!(
@@ -5730,8 +5767,7 @@ fn turn_runtime_root_max_chunk_after_reminted_160ms_stays_on_next_utterance() {
     );
     assert_ne!(max_chunk.target.turn_id, TurnId(1));
     assert_eq!(
-        max_chunk.target.turn_id,
-        next_turn_id,
+        max_chunk.target.turn_id, next_turn_id,
         "queued following root max-chunk must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -5892,9 +5928,11 @@ fn turn_runtime_child_160ms_after_reminted_end_silence_stays_on_next_utterance()
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::InterimChunkReached, Some(3))),
         "later child 160ms must stay queued for the next utterance"
     );
@@ -5916,8 +5954,7 @@ fn turn_runtime_child_160ms_after_reminted_end_silence_stays_on_next_utterance()
         "queued child 160ms must not return to the previous caption"
     );
     assert_eq!(
-        later_chunk.target.turn_id,
-        next_turn_id,
+        later_chunk.target.turn_id, next_turn_id,
         "queued child 160ms must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -6079,9 +6116,11 @@ fn turn_runtime_child_max_chunk_after_reminted_end_silence_stays_on_next_utteran
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::SegmentMaxChunksReached, Some(3))),
         "later child max-chunk must stay queued for the next utterance"
     );
@@ -6112,8 +6151,7 @@ fn turn_runtime_child_max_chunk_after_reminted_end_silence_stays_on_next_utteran
         "queued child max-chunk must not return to the previous caption"
     );
     assert_eq!(
-        max_chunk.target.turn_id,
-        next_turn_id,
+        max_chunk.target.turn_id, next_turn_id,
         "queued child max-chunk must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -6275,9 +6313,12 @@ fn turn_runtime_child_160ms_after_reminted_max_chunk_stays_on_next_utterance() {
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::SegmentMaxChunksReached, None),
             (5, SegmentCloseReason::InterimChunkReached, Some(4)),
@@ -6290,11 +6331,9 @@ fn turn_runtime_child_160ms_after_reminted_max_chunk_stays_on_next_utterance() {
     asr_handle.complete_request_with_text(&end_silence, "追加");
     runtime.step();
 
-    let later = runtime
-        .requests
-        .in_flight_request
-        .clone()
-        .expect("queued max-chunk or child 160ms must dispatch for the next utterance after remint");
+    let later = runtime.requests.in_flight_request.clone().expect(
+        "queued max-chunk or child 160ms must dispatch for the next utterance after remint",
+    );
     assert_eq!(later.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
     assert_eq!(later.target.turn_id, next_turn_id);
     asr_handle.complete_request_with_text(&later, "追加した");
@@ -6316,14 +6355,10 @@ fn turn_runtime_child_160ms_after_reminted_max_chunk_stays_on_next_utterance() {
     assert_eq!(later.close_reason, Some(SegmentCloseReason::InterimChunkReached));
     assert_ne!(later.target.turn_id, TurnId(1));
     assert_eq!(
-        later.target.turn_id,
-        next_turn_id,
+        later.target.turn_id, next_turn_id,
         "queued child 160ms must stay on the reminted next utterance instead of opening a third turn"
     );
-    assert_eq!(
-        later.target.range,
-        AudioRange::new(GlobalSampleIndex(510), GlobalSampleIndex(670))
-    );
+    assert_eq!(later.target.range, AudioRange::new(GlobalSampleIndex(510), GlobalSampleIndex(670)));
 
     asr_handle.complete_request_with_text(&later, "もっと");
     runtime.step();
@@ -6483,9 +6518,12 @@ fn turn_runtime_child_max_chunk_after_reminted_root_max_chunk_stays_on_next_utte
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::SegmentMaxChunksReached, None),
             (5, SegmentCloseReason::SegmentMaxChunksReached, Some(4)),
@@ -6511,9 +6549,11 @@ fn turn_runtime_child_max_chunk_after_reminted_root_max_chunk_stays_on_next_utte
     );
     assert_eq!(later.target.turn_id, next_turn_id);
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((5, SegmentCloseReason::SegmentMaxChunksReached, Some(4))),
         "child max-chunk must stay queued after root max-chunk dispatches"
     );
@@ -6537,14 +6577,10 @@ fn turn_runtime_child_max_chunk_after_reminted_root_max_chunk_stays_on_next_utte
     assert_eq!(later.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
     assert_ne!(later.target.turn_id, TurnId(1));
     assert_eq!(
-        later.target.turn_id,
-        next_turn_id,
+        later.target.turn_id, next_turn_id,
         "queued child max-chunk must stay on the reminted next utterance instead of opening a third turn"
     );
-    assert_eq!(
-        later.target.range,
-        AudioRange::new(GlobalSampleIndex(510), GlobalSampleIndex(610))
-    );
+    assert_eq!(later.target.range, AudioRange::new(GlobalSampleIndex(510), GlobalSampleIndex(610)));
 
     asr_handle.complete_request_with_text(&later, "もっと");
     runtime.step();
@@ -6703,9 +6739,11 @@ fn turn_runtime_after_interim_silence_after_reminted_end_silence_stays_on_next_u
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::InterimResultSilenceReached, None)),
         "later AfterInterimSilence must stay queued for the next utterance"
     );
@@ -6727,8 +6765,7 @@ fn turn_runtime_after_interim_silence_after_reminted_end_silence_stays_on_next_u
         "queued AfterInterimSilence must not return to the previous caption"
     );
     assert_eq!(
-        silence.target.turn_id,
-        next_turn_id,
+        silence.target.turn_id, next_turn_id,
         "queued AfterInterimSilence must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -6891,9 +6928,12 @@ fn turn_runtime_after_interim_silence_after_reminted_160ms_stays_on_next_utteran
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::InterimChunkReached, None),
             (5, SegmentCloseReason::InterimResultSilenceReached, None),
@@ -6919,9 +6959,11 @@ fn turn_runtime_after_interim_silence_after_reminted_160ms_stays_on_next_utteran
     );
     assert_eq!(later_chunk.target.turn_id, next_turn_id);
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((5, SegmentCloseReason::InterimResultSilenceReached, None)),
         "AfterInterimSilence must stay queued after reminted 160ms dispatches"
     );
@@ -6948,8 +6990,7 @@ fn turn_runtime_after_interim_silence_after_reminted_160ms_stays_on_next_utteran
     assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
     assert_ne!(silence.target.turn_id, TurnId(1));
     assert_eq!(
-        silence.target.turn_id,
-        next_turn_id,
+        silence.target.turn_id, next_turn_id,
         "queued AfterInterimSilence must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -7052,11 +7093,9 @@ fn turn_runtime_child_after_interim_silence_after_reminted_160ms_stays_on_next_u
     );
     runtime.step();
 
-    let in_flight = runtime
-        .requests
-        .in_flight_request
-        .as_ref()
-        .expect("later reminted 160ms and child AfterInterimSilence must not steal in-flight 160ms");
+    let in_flight = runtime.requests.in_flight_request.as_ref().expect(
+        "later reminted 160ms and child AfterInterimSilence must not steal in-flight 160ms",
+    );
     assert_eq!(in_flight.request_id, chunk.request_id);
     assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::InterimChunkReached));
     assert_eq!(
@@ -7111,9 +7150,12 @@ fn turn_runtime_child_after_interim_silence_after_reminted_160ms_stays_on_next_u
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::InterimChunkReached, None),
             (5, SegmentCloseReason::InterimResultSilenceReached, Some(4)),
@@ -7139,9 +7181,11 @@ fn turn_runtime_child_after_interim_silence_after_reminted_160ms_stays_on_next_u
     );
     assert_eq!(later_chunk.target.turn_id, next_turn_id);
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((5, SegmentCloseReason::InterimResultSilenceReached, Some(4))),
         "child AfterInterimSilence must stay queued after reminted 160ms dispatches"
     );
@@ -7168,8 +7212,7 @@ fn turn_runtime_child_after_interim_silence_after_reminted_160ms_stays_on_next_u
     assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
     assert_ne!(silence.target.turn_id, TurnId(1));
     assert_eq!(
-        silence.target.turn_id,
-        next_turn_id,
+        silence.target.turn_id, next_turn_id,
         "queued child AfterInterimSilence must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -7326,9 +7369,11 @@ fn turn_runtime_child_after_interim_silence_after_reminted_end_silence_stays_on_
         "child AfterInterimSilence must not fold into the reminted EndSilence CompletionCheck"
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::InterimResultSilenceReached, Some(3))),
         "child AfterInterimSilence must stay queued for the next utterance"
     );
@@ -7338,11 +7383,9 @@ fn turn_runtime_child_after_interim_silence_after_reminted_end_silence_stays_on_
     asr_handle.complete_request_with_text(&end_silence, "追加");
     runtime.step();
 
-    let mut silence = runtime
-        .requests
-        .in_flight_request
-        .clone()
-        .expect("queued child AfterInterimSilence must dispatch for the next utterance after remint");
+    let mut silence = runtime.requests.in_flight_request.clone().expect(
+        "queued child AfterInterimSilence must dispatch for the next utterance after remint",
+    );
     if silence.kind == AsrTaskKind::Rerecognition {
         asr_handle.complete_request_with_text(&silence, "追加");
         runtime.step();
@@ -7360,8 +7403,7 @@ fn turn_runtime_child_after_interim_silence_after_reminted_end_silence_stays_on_
         "queued child AfterInterimSilence must not return to the previous caption"
     );
     assert_eq!(
-        silence.target.turn_id,
-        next_turn_id,
+        silence.target.turn_id, next_turn_id,
         "queued child AfterInterimSilence must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -7523,9 +7565,12 @@ fn turn_runtime_child_after_interim_silence_after_reminted_max_chunk_stays_on_ne
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::SegmentMaxChunksReached, Some(3)),
             (5, SegmentCloseReason::InterimResultSilenceReached, Some(4)),
@@ -7551,9 +7596,11 @@ fn turn_runtime_child_after_interim_silence_after_reminted_max_chunk_stays_on_ne
     );
     assert_eq!(max_chunk.target.turn_id, next_turn_id);
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((5, SegmentCloseReason::InterimResultSilenceReached, Some(4))),
         "child AfterInterimSilence must stay queued after max-chunk dispatches"
     );
@@ -7580,8 +7627,7 @@ fn turn_runtime_child_after_interim_silence_after_reminted_max_chunk_stays_on_ne
     assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
     assert_ne!(silence.target.turn_id, TurnId(1));
     assert_eq!(
-        silence.target.turn_id,
-        next_turn_id,
+        silence.target.turn_id, next_turn_id,
         "queued child AfterInterimSilence must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -7743,9 +7789,12 @@ fn turn_runtime_after_interim_silence_after_reminted_root_max_chunk_stays_on_nex
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.iter().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }).collect::<Vec<_>>(),
+        runtime
+            .pending
+            .asr_segments
+            .iter()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) })
+            .collect::<Vec<_>>(),
         vec![
             (4, SegmentCloseReason::SegmentMaxChunksReached, None),
             (5, SegmentCloseReason::InterimResultSilenceReached, Some(4)),
@@ -7771,9 +7820,11 @@ fn turn_runtime_after_interim_silence_after_reminted_root_max_chunk_stays_on_nex
     );
     assert_eq!(max_chunk.target.turn_id, next_turn_id);
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((5, SegmentCloseReason::InterimResultSilenceReached, Some(4))),
         "child AfterInterimSilence must stay queued after root max-chunk dispatches"
     );
@@ -7800,8 +7851,7 @@ fn turn_runtime_after_interim_silence_after_reminted_root_max_chunk_stays_on_nex
     assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
     assert_ne!(silence.target.turn_id, TurnId(1));
     assert_eq!(
-        silence.target.turn_id,
-        next_turn_id,
+        silence.target.turn_id, next_turn_id,
         "queued child AfterInterimSilence must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -7962,9 +8012,11 @@ fn turn_runtime_later_max_chunk_after_interim_silence_does_not_attach_to_previou
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::SegmentMaxChunksReached, Some(2))),
         "later max-chunk must stay queued for the next utterance"
     );
@@ -7986,8 +8038,7 @@ fn turn_runtime_later_max_chunk_after_interim_silence_does_not_attach_to_previou
         "queued max-chunk that still names applied 160ms must not return to the previous caption"
     );
     assert_eq!(
-        max_chunk.target.turn_id,
-        next_turn_id,
+        max_chunk.target.turn_id, next_turn_id,
         "queued max-chunk must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -8144,9 +8195,11 @@ fn turn_runtime_later_root_max_chunk_after_interim_silence_does_not_attach_to_pr
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
     assert_eq!(
-        runtime.pending.asr_segments.front().map(|segment| {
-            (segment.segment_id, segment.reason, segment.previous_segment_id)
-        }),
+        runtime
+            .pending
+            .asr_segments
+            .front()
+            .map(|segment| { (segment.segment_id, segment.reason, segment.previous_segment_id) }),
         Some((4, SegmentCloseReason::SegmentMaxChunksReached, None)),
         "later root max-chunk must stay queued for the next utterance"
     );
@@ -8168,8 +8221,7 @@ fn turn_runtime_later_root_max_chunk_after_interim_silence_does_not_attach_to_pr
         "queued root max-chunk must not return to the previous caption"
     );
     assert_eq!(
-        max_chunk.target.turn_id,
-        next_turn_id,
+        max_chunk.target.turn_id, next_turn_id,
         "queued root max-chunk must stay on the reminted next utterance instead of opening a third turn"
     );
 
@@ -8298,9 +8350,11 @@ fn turn_runtime_end_silence_root_remints_after_160ms_without_stealing_grid() {
         runtime.turn_store.finalized_turns.contains(&1),
         "EndSilence root after the 160ms grid must remint instead of continuing turn 1"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "the EndSilence root must remint onto a new turn after the 160ms grid",
-    );
+    let dispatched = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("the EndSilence root must remint onto a new turn after the 160ms grid");
     assert_eq!(dispatched.kind, AsrTaskKind::CompletionCheck);
     assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::EndSilenceReached));
     assert_ne!(

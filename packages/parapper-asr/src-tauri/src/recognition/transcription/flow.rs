@@ -1,34 +1,34 @@
 use crate::{
     delivery::{RecognizedTextMeta, RecognizedTextOutput},
     recognition::{
-    control::{RecognitionSession, RerecognitionPurpose},
-    control::events::RecognitionSourceMeta,
-    control::input::RecognitionStreamOutput,
-    segmentation::segment::builder::SegmentCloseReason,
-    segmentation::vad::engine::VadResult,
-    transcription::{
-        asr::{
-            engine::AsrTranscript,
-            task::{
-                AsrInFlight, AsrRequest, AsrRequestId, AsrResult, AsrTarget, AsrTaskKind,
-                AudioRange, GlobalSampleIndex, VadFrameIndex,
+        control::events::RecognitionSourceMeta,
+        control::input::RecognitionStreamOutput,
+        control::{RecognitionSession, RerecognitionPurpose},
+        segmentation::segment::builder::SegmentCloseReason,
+        segmentation::vad::engine::VadResult,
+        transcription::{
+            asr::{
+                engine::AsrTranscript,
+                task::{
+                    AsrInFlight, AsrRequest, AsrRequestId, AsrResult, AsrTarget, AsrTaskKind,
+                    AudioRange, GlobalSampleIndex, VadFrameIndex,
+                },
+            },
+            planner::{
+                PendingAsrSegment, drop_front_interim_segments_covered_by_completion,
+                take_next_request_segment_plan,
+            },
+            reducer::{
+                AsrRequestStaleInput, AsrResultAction, AsrResultCompletionAfterTranscript,
+                AsrResultCompletionFailureAction, AsrResultReductionInput,
+                AsrResultRerecognitionPurpose, reduce_asr_result,
+            },
+            route::{
+                RecognitionRoute, RecognitionRouteSelection,
+                language_id::LanguageDetector,
+                selection::{AsrInput, TurnInput, refresh_turn, select_asr},
             },
         },
-        planner::{
-            PendingAsrSegment, drop_front_interim_segments_covered_by_completion,
-            take_next_request_segment_plan,
-        },
-        reducer::{
-            AsrRequestStaleInput, AsrResultAction, AsrResultCompletionAfterTranscript,
-            AsrResultCompletionFailureAction, AsrResultReductionInput,
-            AsrResultRerecognitionPurpose, reduce_asr_result,
-        },
-        route::{
-            RecognitionRoute, RecognitionRouteSelection,
-            language_id::LanguageDetector,
-            selection::{AsrInput, TurnInput, refresh_turn, select_asr},
-        },
-    },
     },
 };
 
@@ -259,10 +259,11 @@ impl RecognitionSession {
             );
             return;
         }
-        let Some(snapshot) = self.pending.partial_window.take_due(
-            self.counters.next_runtime_tick,
-            self.config.segmentation.vad_interval_ms,
-        ) else {
+        let Some(snapshot) = self
+            .pending
+            .partial_window
+            .take_due(self.counters.next_runtime_tick, self.config.segmentation.vad_interval_ms)
+        else {
             return;
         };
         let Some(request) = self.build_partial_window_request(snapshot) else {
@@ -313,16 +314,15 @@ impl RecognitionSession {
             crate::recognition::transcription::asr::task::TurnId(target_turn_id),
             crate::recognition::transcription::asr::task::TurnRevision(revision),
             snapshot.range,
-            snapshot.previous_segment_id.map(
-                crate::recognition::transcription::asr::task::SegmentId,
-            ).or_else(|| {
-                Some(crate::recognition::transcription::asr::task::SegmentId(
-                    snapshot.segment_id,
-                ))
-            }),
-            Some(crate::recognition::transcription::asr::task::SegmentId(
-                snapshot.segment_id,
-            )),
+            snapshot
+                .previous_segment_id
+                .map(crate::recognition::transcription::asr::task::SegmentId)
+                .or_else(|| {
+                    Some(crate::recognition::transcription::asr::task::SegmentId(
+                        snapshot.segment_id,
+                    ))
+                }),
+            Some(crate::recognition::transcription::asr::task::SegmentId(snapshot.segment_id)),
         );
         Some(AsrRequest {
             request_id,
@@ -729,10 +729,10 @@ impl RecognitionSession {
                 self.counters.next_partial_window_sequence = sequence.saturating_add(1);
                 sequence
             },
-            segment_id: request.target.last_segment_id.map_or(
-                request.target.turn_id.0,
-                |segment_id| segment_id.0,
-            ),
+            segment_id: request
+                .target
+                .last_segment_id
+                .map_or(request.target.turn_id.0, |segment_id| segment_id.0),
             previous_segment_id: request.target.first_segment_id.and_then(|first| {
                 (Some(first) != request.target.last_segment_id).then_some(first.0)
             }),

@@ -1581,10 +1581,7 @@ mod tests {
             )
         );
         // Path::with_extension would truncate after the final dotted segment.
-        assert_ne!(
-            path.with_extension("download"),
-            path_with_marker_suffix(path, "download")
-        );
+        assert_ne!(path.with_extension("download"), path_with_marker_suffix(path, "download"));
     }
 
     #[test]

@@ -42,11 +42,7 @@ impl WebSocketTurnOutputSink {
 
 impl TurnOutputSink for WebSocketTurnOutputSink {
     fn emit_segment_closed(&mut self, segment_id: u64) {
-        if self
-            .sender
-            .send(RecognitionStreamEvent::SegmentClosed { segment_id })
-            .is_err()
-        {
+        if self.sender.send(RecognitionStreamEvent::SegmentClosed { segment_id }).is_err() {
             log::debug!("WebSocket recognition segment-closed receiver is gone");
         }
     }
