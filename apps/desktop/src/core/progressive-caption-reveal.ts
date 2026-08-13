@@ -123,6 +123,21 @@ export const shouldSnapProgressiveFirstPaint = (
   firstFramePending: boolean,
 ): boolean => firstFramePending && shouldProgressivelyReveal(displayed, target);
 
+/** True when `text` is exactly one user-visible grapheme. */
+export const isSingleGraphemeCaptionSurface = (text: string): boolean =>
+  captionGraphemes(text.trim()).length === 1;
+
+/**
+ * Hold an empty plate for one display frame when the first hypothesis is a
+ * single grapheme. ASR often extends `こ` → `こんにちは` before vsync; painting
+ * the one-character prefix makes Syphon first-paint too short.
+ */
+export const shouldHoldSingleGraphemeFirstPaint = (
+  displayed: string,
+  target: string,
+  firstFramePending: boolean,
+): boolean => firstFramePending && !displayed.trim() && isSingleGraphemeCaptionSurface(target);
+
 /**
  * Align a progressive paint with the offsets that describe that surface.
  *

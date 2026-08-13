@@ -3,9 +3,11 @@ import {
   advanceProgressiveReveal,
   alignCaptionOffsetsToPaintedSource,
   immediateProgressiveRevealStart,
+  isSingleGraphemeCaptionSurface,
   PROGRESSIVE_FIRST_PAINT_COALESCE_MS,
   progressiveRevealStepMs,
   resolveProgressiveRevealSourceTarget,
+  shouldHoldSingleGraphemeFirstPaint,
   shouldProgressivelyReveal,
   shouldSnapProgressiveFirstPaint,
 } from "../core/progressive-caption-reveal";
@@ -22,16 +24,20 @@ import { captionGraphemes } from "../overlay/captions";
  * Only characters already present in the latest recognition target are shown;
  * the helper never invents text ahead of ASR. An empty plate paints the full
  * first hypothesis on the same update so viewers never wait a grapheme timer
- * on a blank caption. A longer surface that arrives before that first frame
- * commits (one display frame / 16ms) snaps immediately so Syphon/overlay never
- * first-paints a short prefix. Later prefix extensions still reveal one grapheme
- * at a time. The reveal target is the newest visible sentence (same paging as the
+ * on a blank caption. A one-grapheme first hypothesis is held until that
+ * first frame commits (or a longer surface arrives) so Syphon/overlay never
+ * first-paints `こ` when `こんにちは` is about to replace it. A longer surface
+ * that arrives before that first frame commits (one display frame / 16ms) snaps
+ * immediately. Later prefix extensions still reveal one grapheme at a time.
+ * The reveal target is the newest visible sentence (same paging as the
  * overlay), not the raw multi-clause `sourceText`, so finished-clause paging
  * cannot collapse a mid-reveal prefix to a single grapheme.
  */
 export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPayload => {
   const revealTarget = resolveProgressiveRevealSourceTarget(caption);
-  const [displayedSource, setDisplayedSource] = useState(revealTarget);
+  const [displayedSource, setDisplayedSource] = useState(() =>
+    isSingleGraphemeCaptionSurface(revealTarget) ? "" : revealTarget,
+  );
   const [trackedId, setTrackedId] = useState(caption.id);
   const displayedRef = useRef(displayedSource);
   const targetRef = useRef(revealTarget);
@@ -44,12 +50,19 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
   let paintSource = displayedSource;
   if (caption.id !== trackedId) {
     setTrackedId(caption.id);
-    setDisplayedSource(revealTarget);
-    paintSource = revealTarget;
-    displayedRef.current = revealTarget;
+    firstFramePendingRef.current = true;
+    const nextPaint = isSingleGraphemeCaptionSurface(revealTarget) ? "" : revealTarget;
+    setDisplayedSource(nextPaint);
+    paintSource = nextPaint;
+    displayedRef.current = nextPaint;
     idRef.current = caption.id;
     targetRef.current = revealTarget;
-    firstFramePendingRef.current = true;
+  } else if (
+    shouldHoldSingleGraphemeFirstPaint(displayedSource, revealTarget, firstFramePendingRef.current)
+  ) {
+    paintSource = displayedSource;
+    displayedRef.current = displayedSource;
+    targetRef.current = revealTarget;
   } else if (
     displayedSource !== revealTarget &&
     !shouldProgressivelyReveal(displayedSource, revealTarget)
@@ -125,15 +138,20 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     targetRef.current = target;
 
     if (idChanged) {
-      // Render-phase sync already snapped to the new turn's visible sentence.
+      // Render-phase sync already snapped to the new turn's visible sentence,
+      // except a one-grapheme first hyp which stays empty until first frame.
       clearTimer();
-      displayedRef.current = target;
       firstFramePendingRef.current = true;
-      setDisplayedSource(target);
+      const nextPaint = isSingleGraphemeCaptionSurface(target) ? "" : target;
+      displayedRef.current = nextPaint;
+      setDisplayedSource(nextPaint);
       return clearTimer;
     }
 
     const current = displayedRef.current;
+    if (shouldHoldSingleGraphemeFirstPaint(current, target, firstFramePendingRef.current)) {
+      return clearTimer;
+    }
     if (shouldSnapProgressiveFirstPaint(current, target, firstFramePendingRef.current)) {
       clearTimer();
       displayedRef.current = target;
@@ -163,6 +181,10 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
         return;
       }
       firstFramePendingRef.current = false;
+      if (!displayedRef.current.trim() && isSingleGraphemeCaptionSurface(targetRef.current)) {
+        displayedRef.current = targetRef.current;
+        setDisplayedSource(targetRef.current);
+      }
     };
     if (typeof requestAnimationFrame === "function") {
       raf = requestAnimationFrame(commitFirstFrame);
@@ -179,6 +201,12 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
   // Caught up: keep the full caption so overlay paging/offsets stay authoritative.
   if (paintSource === revealTarget) {
     return caption;
+  }
+  if (shouldHoldSingleGraphemeFirstPaint(paintSource, revealTarget, firstFramePendingRef.current)) {
+    const held: CaptionPayload = { ...caption, sourceText: "" };
+    delete held.sentenceEndOffsets;
+    delete held.softBreakOffsets;
+    return held;
   }
   return alignCaptionOffsetsToPaintedSource(caption, paintSource);
 };

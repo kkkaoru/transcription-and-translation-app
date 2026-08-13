@@ -441,6 +441,49 @@ describe("OverlayApp caption replay", () => {
     }
   });
 
+  it("does not first-paint a one-grapheme hypothesis before the first overlay frame", async () => {
+    vi.useFakeTimers();
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:9",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "あ",
+          startedAt: 10,
+          at: 40,
+          durationMs: 30,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("あ");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      vi.useRealTimers();
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
   it("does not page a greeting continuation to a lone ー after the first native frame", async () => {
     history.pushState({}, "", "/?native=1");
     mocks.getLatestCaption.mockResolvedValue(null);
@@ -847,7 +890,9 @@ describe("OverlayApp caption replay", () => {
       ),
       matrix.find(
         (row) =>
-          row.lead === "これはテストです" && row.tail === "終わりますか" && row.structure === "glue",
+          row.lead === "これはテストです" &&
+          row.tail === "終わりますか" &&
+          row.structure === "glue",
       ),
     ];
     expect(rows.every((row) => row)).toBe(true);
@@ -995,7 +1040,9 @@ describe("OverlayApp caption replay", () => {
       ),
       matrix.find(
         (row) =>
-          row.lead === "これはテストです" && row.tail === "終わりますか" && row.structure === "glue",
+          row.lead === "これはテストです" &&
+          row.tail === "終わりますか" &&
+          row.structure === "glue",
       ),
     ];
     expect(rows.every((row) => row)).toBe(true);

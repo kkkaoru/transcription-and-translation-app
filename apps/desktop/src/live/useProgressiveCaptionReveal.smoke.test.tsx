@@ -77,6 +77,18 @@ describe("useProgressiveCaptionReveal", () => {
     expect(paints.at(-1)?.sourceText).toBe("こんにちは");
   });
 
+  it("does not first-paint a one-grapheme hypothesis before the first frame", () => {
+    renderCaption(baseCaption({ sourceText: "" }));
+    paints = [];
+    renderCaption(baseCaption({ sourceText: "こ" }));
+    expect(paints.at(-1)?.sourceText).toBe("");
+
+    act(() => {
+      vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("こ");
+  });
+
   it("snaps the first visible paint to a longer surface that arrives before the first frame", () => {
     renderCaption(baseCaption({ sourceText: "こ" }));
     paints = [];

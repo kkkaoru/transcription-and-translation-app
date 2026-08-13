@@ -482,6 +482,14 @@ export const NATIVE_FONTS_READY_TIMEOUT_MS = 500;
  */
 export const NATIVE_RAF_FALLBACK_MS = 16;
 
+/** Hold the first Syphon frame when the plate is empty or a single grapheme. */
+export const shouldDeferNativeFirstPaint = (caption: CaptionPayload): boolean => {
+  const visible =
+    captionGraphemes(caption.sourceText.trim()).length +
+    captionGraphemes(caption.translationText.trim()).length;
+  return visible <= 1;
+};
+
 const GENERIC_FONT_FALLBACK =
   /,\s*(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-sans-serif|ui-serif|ui-monospace|ui-rounded)(?:\s*,\s*(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-sans-serif|ui-serif|ui-monospace|ui-rounded))*\s*$/iu;
 
@@ -914,10 +922,16 @@ export const NativeFramePublisher = ({
     // document.fonts.ready (off-screen WKWebView can stall that for 500ms).
     void ensureFontsReady(overlayCaptionFontCss(config));
     // First caption of this publisher: do not wait rAF / the 16ms fallback
-    // before the first pixels. Skip the extra schedule() so a rejected first
-    // invoke is not immediately double-fired by the 16ms rAF fallback.
-    // Later updates still coalesce on rAF; failures retry via scheduleRetry.
-    if (gateRef.current.lastSuccessfulKey === "" && gateRef.current.inFlightKey === null) {
+    // before the first pixels, except an empty or one-grapheme plate that is
+    // likely to extend before vsync (`こ` → `こんにちは`). Skip the extra
+    // schedule() so a rejected first invoke is not immediately double-fired by
+    // the 16ms rAF fallback. Later updates still coalesce on rAF; failures
+    // retry via scheduleRetry.
+    if (
+      gateRef.current.lastSuccessfulKey === "" &&
+      gateRef.current.inFlightKey === null &&
+      !shouldDeferNativeFirstPaint(caption)
+    ) {
       paint();
     } else {
       schedule();

@@ -43,6 +43,7 @@ import {
   NATIVE_FONTS_READY_TIMEOUT_MS,
   NATIVE_RAF_FALLBACK_MS,
   NativeFramePublisher,
+  shouldDeferNativeFirstPaint,
 } from "./NativeFramePublisher";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -371,6 +372,41 @@ describe("NativeFramePublisher publish failures", () => {
       );
     });
 
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it("defers a one-grapheme first caption so a longer surface can win the first Syphon frame", async () => {
+    expect(shouldDeferNativeFirstPaint(captionWith(""))).toBe(true);
+    expect(shouldDeferNativeFirstPaint(captionWith("こ"))).toBe(true);
+    expect(shouldDeferNativeFirstPaint(captionWith("こんにちは"))).toBe(false);
+
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => 1);
+    vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("こ")} />);
+    });
+    expect(mocks.publishOverlayFrame).not.toHaveBeenCalled();
+
+    await act(() => {
+      root.render(
+        <NativeFramePublisher config={smallConfig()} caption={captionWith("こんにちは")} />,
+      );
+    });
+    // The 1-grapheme plate never succeeded, so the longer surface still uses
+    // the first-paint immediate path (no rAF / 16ms wait).
+    expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes a one-grapheme first caption after the rAF fallback when it does not grow", async () => {
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => 1);
+    vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    await act(() => {
+      root.render(<NativeFramePublisher config={smallConfig()} caption={captionWith("あ")} />);
+    });
+    expect(mocks.publishOverlayFrame).not.toHaveBeenCalled();
+    await flush(NATIVE_RAF_FALLBACK_MS + 5);
     expect(mocks.publishOverlayFrame).toHaveBeenCalledTimes(1);
   });
 

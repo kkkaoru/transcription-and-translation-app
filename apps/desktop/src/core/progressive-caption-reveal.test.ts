@@ -6,8 +6,10 @@ import {
   advanceProgressiveReveal,
   alignCaptionOffsetsToPaintedSource,
   immediateProgressiveRevealStart,
+  isSingleGraphemeCaptionSurface,
   progressiveRevealStepMs,
   resolveProgressiveRevealSourceTarget,
+  shouldHoldSingleGraphemeFirstPaint,
   shouldProgressivelyReveal,
   shouldSnapProgressiveFirstPaint,
 } from "./progressive-caption-reveal";
@@ -79,6 +81,16 @@ describe("progressive caption reveal", () => {
     expect(shouldSnapProgressiveFirstPaint("こ", "こんにちは", false)).toBe(false);
     expect(shouldSnapProgressiveFirstPaint("こんにちは", "こんにちは", true)).toBe(false);
     expect(shouldSnapProgressiveFirstPaint("", "こんにちは", true)).toBe(true);
+  });
+
+  it("holds a one-grapheme first hypothesis until the first frame commits", () => {
+    expect(shouldHoldSingleGraphemeFirstPaint("", "こ", true)).toBe(true);
+    expect(shouldHoldSingleGraphemeFirstPaint("", "あ", true)).toBe(true);
+    expect(shouldHoldSingleGraphemeFirstPaint("", "こんにちは", true)).toBe(false);
+    expect(shouldHoldSingleGraphemeFirstPaint("", "こ", false)).toBe(false);
+    expect(shouldHoldSingleGraphemeFirstPaint("こ", "こ", true)).toBe(false);
+    expect(isSingleGraphemeCaptionSurface("こ")).toBe(true);
+    expect(isSingleGraphemeCaptionSurface("こんにちは")).toBe(false);
   });
 
   it("still grows a committed lead into the concatenated line after the 16ms first frame", () => {
