@@ -8,6 +8,7 @@ import {
   progressiveRevealStepMs,
   resolveProgressiveRevealSourceTarget,
   shouldProgressivelyReveal,
+  shouldSnapProgressiveFirstPaint,
 } from "./progressive-caption-reveal";
 import type { CaptionPayload } from "./types";
 
@@ -70,6 +71,13 @@ describe("progressive caption reveal", () => {
     expect(immediateProgressiveRevealStart("こ", "こんにちは")).toBe("こ");
     expect(immediateProgressiveRevealStart("", "あ")).toBe("あ");
     expect(immediateProgressiveRevealStart("", "明日は")).toBe("明日は");
+  });
+
+  it("snaps the first visible paint to a longer surface that is already available", () => {
+    expect(shouldSnapProgressiveFirstPaint("こ", "こんにちは", true)).toBe(true);
+    expect(shouldSnapProgressiveFirstPaint("こ", "こんにちは", false)).toBe(false);
+    expect(shouldSnapProgressiveFirstPaint("こんにちは", "こんにちは", true)).toBe(false);
+    expect(shouldSnapProgressiveFirstPaint("", "こんにちは", true)).toBe(true);
   });
 
   it("keeps per-grapheme delay bounded for long jumps", () => {

@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROGRESSIVE_FIRST_PAINT_COALESCE_MS } from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
 import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
 
@@ -75,8 +76,18 @@ describe("useProgressiveCaptionReveal", () => {
     expect(paints.at(-1)?.sourceText).toBe("こんにちは");
   });
 
-  it("reveals a longer same-turn hypothesis one grapheme at a time after the first paint", () => {
+  it("snaps the first visible paint to a longer surface that arrives before the first frame", () => {
     renderCaption(baseCaption({ sourceText: "こ" }));
+    paints = [];
+    renderCaption(baseCaption({ sourceText: "こんにちは" }));
+    expect(paints.at(-1)?.sourceText).toBe("こんにちは");
+  });
+
+  it("reveals a longer same-turn hypothesis one grapheme at a time after the first frame", () => {
+    renderCaption(baseCaption({ sourceText: "こ" }));
+    act(() => {
+      vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+    });
     paints = [];
     renderCaption(baseCaption({ sourceText: "こんにちは" }));
     expect(paints.at(-1)?.sourceText).toBe("こ");
@@ -94,6 +105,9 @@ describe("useProgressiveCaptionReveal", () => {
 
   it("snaps immediately when the utterance id changes mid-reveal", () => {
     renderCaption(baseCaption({ sourceText: "こ" }));
+    act(() => {
+      vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+    });
     renderCaption(baseCaption({ sourceText: "こんにちは" }));
     expect(paints.at(-1)?.sourceText).toBe("こ");
 
@@ -146,6 +160,9 @@ describe("useProgressiveCaptionReveal", () => {
         softBreakOffsets: [3],
       }),
     );
+    act(() => {
+      vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+    });
     paints = [];
     renderCaption(
       baseCaption({
@@ -186,6 +203,9 @@ describe("useProgressiveCaptionReveal", () => {
         sentenceEndOffsets: [4],
       }),
     );
+    act(() => {
+      vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+    });
     paints = [];
     renderCaption(
       baseCaption({

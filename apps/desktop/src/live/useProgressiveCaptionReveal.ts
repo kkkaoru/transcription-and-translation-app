@@ -3,9 +3,11 @@ import {
   advanceProgressiveReveal,
   alignCaptionOffsetsToPaintedSource,
   immediateProgressiveRevealStart,
+  PROGRESSIVE_FIRST_PAINT_COALESCE_MS,
   progressiveRevealStepMs,
   resolveProgressiveRevealSourceTarget,
   shouldProgressivelyReveal,
+  shouldSnapProgressiveFirstPaint,
 } from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
 import { captionGraphemes } from "../overlay/captions";
@@ -20,8 +22,10 @@ import { captionGraphemes } from "../overlay/captions";
  * Only characters already present in the latest recognition target are shown;
  * the helper never invents text ahead of ASR. An empty plate paints the full
  * first hypothesis on the same update so viewers never wait a grapheme timer
- * on a blank caption. Later prefix extensions still reveal one grapheme at a
- * time. The reveal target is the newest visible sentence (same paging as the
+ * on a blank caption. A longer surface that arrives before that first frame
+ * commits (one display frame / 16ms) snaps immediately so Syphon/overlay never
+ * first-paints a short prefix. Later prefix extensions still reveal one grapheme
+ * at a time. The reveal target is the newest visible sentence (same paging as the
  * overlay), not the raw multi-clause `sourceText`, so finished-clause paging
  * cannot collapse a mid-reveal prefix to a single grapheme.
  */
@@ -33,6 +37,7 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
   const targetRef = useRef(revealTarget);
   const idRef = useRef(caption.id);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firstFramePendingRef = useRef(true);
 
   // Prefer the synced surface for this render so a new turn never commits with
   // the previous utterance's characters (React may also retry after setState).
@@ -44,6 +49,7 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     displayedRef.current = revealTarget;
     idRef.current = caption.id;
     targetRef.current = revealTarget;
+    firstFramePendingRef.current = true;
   } else if (
     displayedSource !== revealTarget &&
     !shouldProgressivelyReveal(displayedSource, revealTarget)
@@ -62,6 +68,16 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     setDisplayedSource(firstStep);
     paintSource = firstStep;
     displayedRef.current = firstStep;
+    targetRef.current = revealTarget;
+  } else if (
+    displayedSource !== revealTarget &&
+    shouldSnapProgressiveFirstPaint(displayedSource, revealTarget, firstFramePendingRef.current)
+  ) {
+    // Longer surface is already available (or about to paint) before the first
+    // visible frame committed. Do not emit the short prefix to Syphon/overlay.
+    setDisplayedSource(revealTarget);
+    paintSource = revealTarget;
+    displayedRef.current = revealTarget;
     targetRef.current = revealTarget;
   } else {
     displayedRef.current = displayedSource;
@@ -112,11 +128,18 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
       // Render-phase sync already snapped to the new turn's visible sentence.
       clearTimer();
       displayedRef.current = target;
+      firstFramePendingRef.current = true;
       setDisplayedSource(target);
       return clearTimer;
     }
 
     const current = displayedRef.current;
+    if (shouldSnapProgressiveFirstPaint(current, target, firstFramePendingRef.current)) {
+      clearTimer();
+      displayedRef.current = target;
+      setDisplayedSource(target);
+      return clearTimer;
+    }
     if (shouldProgressivelyReveal(current, target)) {
       scheduleToward(current, target);
       return clearTimer;
@@ -128,6 +151,29 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
       setDisplayedSource(target);
     }
     return clearTimer;
+  }, [caption.id, revealTarget]);
+
+  useEffect(() => {
+    if (!firstFramePendingRef.current) {
+      return;
+    }
+    let raf = 0;
+    const commitFirstFrame = (): void => {
+      if (idRef.current !== caption.id || targetRef.current !== revealTarget) {
+        return;
+      }
+      firstFramePendingRef.current = false;
+    };
+    if (typeof requestAnimationFrame === "function") {
+      raf = requestAnimationFrame(commitFirstFrame);
+    }
+    const fallback = setTimeout(commitFirstFrame, PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+    return () => {
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
+      clearTimeout(fallback);
+    };
   }, [caption.id, revealTarget]);
 
   // Caught up: keep the full caption so overlay paging/offsets stay authoritative.

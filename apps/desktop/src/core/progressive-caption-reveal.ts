@@ -6,6 +6,12 @@ import type { CaptionPayload } from "./types";
 export const PROGRESSIVE_REVEAL_MS_PER_GRAPHEME = 12;
 /** Cap so a long jump (e.g. silence interim) still finishes promptly. */
 export const PROGRESSIVE_REVEAL_MAX_MS = 160;
+/**
+ * Hold the first visible paint for one display frame so a short first
+ * hypothesis that is immediately extended does not become the Syphon/overlay
+ * first caption. Matches native-renderer 2nd-frame rAF coalescing.
+ */
+export const PROGRESSIVE_FIRST_PAINT_COALESCE_MS = 16;
 
 /**
  * Source string the progressive reveal should grow toward.
@@ -95,6 +101,18 @@ export const immediateProgressiveRevealStart = (displayed: string, target: strin
   }
   return target;
 };
+
+/**
+ * First visible caption of a growing utterance must be the longest surface
+ * already available. Typewriter steps start only after that first frame has
+ * been committed, so a short prefix that is about to be replaced does not
+ * paint to Syphon/overlay.
+ */
+export const shouldSnapProgressiveFirstPaint = (
+  displayed: string,
+  target: string,
+  firstFramePending: boolean,
+): boolean => firstFramePending && shouldProgressivelyReveal(displayed, target);
 
 /**
  * Align a progressive paint with the offsets that describe that surface.
