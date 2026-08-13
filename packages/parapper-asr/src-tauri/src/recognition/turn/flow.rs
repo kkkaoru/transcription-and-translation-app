@@ -917,18 +917,21 @@ impl RecognitionSession {
         segment: &PendingAsrSegment,
         turn_id: u64,
     ) -> bool {
-        if segment.reason != SegmentCloseReason::InterimChunkReached
-            || !self.config.can_connect_interim_after_completion()
+        if !matches!(
+            segment.reason,
+            SegmentCloseReason::InterimChunkReached | SegmentCloseReason::SegmentMaxChunksReached
+        ) || !self.config.can_connect_interim_after_completion()
         {
             return false;
         }
-        // Production Nemotron 160ms restarts as a new root after EndSilence
-        // flushes the stream (`previous_segment_id: None`, new display id).
-        // It still extends this utterance while prefix CompletionCheck or
-        // breath-silence InterimDisplay is in-flight or deferred, or while
-        // the open turn has not finalized. Once AfterInterimSilence already
-        // follows this turn's applied 160ms, a later 160ms belongs to that
-        // next utterance and must not attach here.
+        // Production Nemotron 160ms / max-chunk restart as a new root after
+        // EndSilence flushes the stream (`previous_segment_id: None`, new
+        // display id). They still extend this utterance while prefix
+        // CompletionCheck or breath-silence InterimDisplay is in-flight or
+        // deferred, or while the open turn has not finalized. Once
+        // AfterInterimSilence already follows this turn's applied 160ms, a
+        // later 160ms / max-chunk belongs to that next utterance and must
+        // not attach here.
         if self.pending_streaming_chunk_belongs_to_next_utterance(segment, turn_id) {
             return false;
         }
