@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildCaptionAbMatrix } from "../overlay/caption-surface-ab.matrix";
+import { shouldAppendDisjointSameTurnSurfaces } from "./caption-updates";
 import {
   compareParapperTurnCursor,
   createParapperOutputQueue,
@@ -690,6 +691,134 @@ describe("Parapper output coalescing queue", () => {
 
     await queue.whenIdle();
     expect(processed).toEqual(["こんにちは", "こんにちはーきこえますかー"]);
+  });
+
+  it("still processes a disjoint same-turn tail after an early-finalized lead", async () => {
+    const processed: string[] = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.text);
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+
+    queue.enqueue({
+      id: "early-final",
+      text: "会議を始めます",
+      isFinal: true,
+      revision: 2,
+      outputSequence: 2,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "disjoint-tail",
+      text: "続きがあります",
+      isFinal: false,
+      revision: 3,
+      outputSequence: 3,
+      ...turn,
+    });
+
+    await queue.whenIdle();
+    expect(
+      processed.some((text) => text.includes("会議を始めます") && text.includes("続きがあります")),
+    ).toBe(true);
+  });
+
+  it("joins a pending early final with a disjoint same-turn tail before drain", async () => {
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.text);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 11,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      text: "前置きです",
+      isFinal: false,
+      revision: 1,
+      outputSequence: 1,
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 10,
+    });
+    await flush();
+    queue.enqueue({
+      id: "early-final",
+      text: "会議を始めます",
+      isFinal: true,
+      revision: 2,
+      outputSequence: 2,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "disjoint-tail",
+      text: "続きがあります",
+      isFinal: false,
+      revision: 3,
+      outputSequence: 3,
+      ...turn,
+    });
+
+    release.shift()?.();
+    await flush();
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(
+      processed.some((text) => text.includes("会議を始めます") && text.includes("続きがあります")),
+    ).toBe(true);
+  });
+
+  it("forwards an early-final disjoint tail for every glue lead×tail row", async () => {
+    const rows = buildCaptionAbMatrix().filter(
+      (row) =>
+        row.structure === "glue" &&
+        row.tail.length > 0 &&
+        shouldAppendDisjointSameTurnSurfaces(row.lead, row.tail),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.some((row) => row.tail === "続きがあります")).toBe(true);
+
+    for (const [index, row] of rows.entries()) {
+      const processed: string[] = [];
+      const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+        processed.push(next.text);
+      });
+      const turn = {
+        sessionId: "socket-1",
+        turnSessionId: 4,
+        turnId: 80 + index,
+      };
+      queue.enqueue({
+        id: "early-final",
+        text: row.lead,
+        isFinal: true,
+        revision: 2,
+        outputSequence: 2,
+        ...turn,
+      });
+      queue.enqueue({
+        id: "disjoint-tail",
+        text: row.tail,
+        isFinal: false,
+        revision: 3,
+        outputSequence: 3,
+        ...turn,
+      });
+      await queue.whenIdle();
+      expect(
+        processed.some((text) => text.includes(row.lead) && text.includes(row.tail)),
+        row.id,
+      ).toBe(true);
+    }
   });
 
   it("keeps a longer pending surface over a later short suffix across a lead×tail matrix", async () => {

@@ -202,13 +202,18 @@ const shouldDropForCursor = (
     return false;
   }
   // A final closes the turn; a late partial can never reopen it — unless that
-  // partial is a longer same-utterance continuation of an early-finalized
-  // prefix (`こんにちは` then `こんにちはーきこえますかー`). Dropping it left
-  // overlay with greeting-only because the tail never reached caption:update.
+  // partial continues the same utterance after an early-finalized lead
+  // (prefix growth, or a disjoint same-turn tail). Dropping the tail left
+  // overlay with lead-only because merge never saw the second clause.
   if (current.isFinal && !candidate.isFinal) {
     const currentText = queueItemSurface(current);
     const candidateText = queueItemSurface(candidate);
-    if (currentText && candidateText && isShorterSameUtteranceSurface(currentText, candidateText)) {
+    if (
+      currentText &&
+      candidateText &&
+      (isShorterSameUtteranceSurface(currentText, candidateText) ||
+        shouldAppendDisjointSameTurnSurfaces(currentText, candidateText))
+    ) {
       return false;
     }
     return true;
@@ -330,18 +335,31 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
         }
       }
       const trailing = pending.length > 0 ? pending[pending.length - 1] : undefined;
-      if (
+      const tracked = key !== null ? latestByTurn.get(key) : undefined;
+      const joinLead =
         !item.isFinal &&
         trailing &&
-        !trailing.isFinal &&
         sameTurnOrLegacy(item, trailing) &&
         shouldAppendDisjointSameTurnSurfaces(queueItemSurface(trailing), queueItemSurface(item))
-      ) {
-        // Latest-wins keeps one pending partial. A disjoint same-turn tail must
-        // ride on that slot so merge still sees lead+tail instead of replacing
-        // the lead (or dropping a much-shorter tail).
-        const joined = joinDisjointQueueItem(trailing, item);
-        pending[pending.length - 1] = joined;
+          ? trailing
+          : !item.isFinal &&
+              tracked &&
+              shouldAppendDisjointSameTurnSurfaces(
+                queueItemSurface(tracked),
+                queueItemSurface(item),
+              )
+            ? tracked
+            : undefined;
+      if (joinLead) {
+        // Latest-wins keeps one pending slot. A disjoint same-turn tail must
+        // ride on the lead (pending or already-tracked early final) so merge
+        // sees a prefix-growing surface instead of a tail-only rewrite.
+        const joined = joinDisjointQueueItem(joinLead, item);
+        if (trailing && joinLead === trailing) {
+          pending[pending.length - 1] = joined;
+        } else {
+          pending.push(joined);
+        }
         if (key !== null) {
           rememberLatestTurn(key, joined);
         }
