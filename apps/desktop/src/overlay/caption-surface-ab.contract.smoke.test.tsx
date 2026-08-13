@@ -10,6 +10,7 @@ import { mergeCaptionPayload } from "../core/caption-updates";
 import {
   resolveProgressiveRevealSourceTarget,
   shouldProgressivelyReveal,
+  shouldSnapAvailablePrefixExtension,
   shouldSnapProgressiveFirstPaint,
 } from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
@@ -91,6 +92,8 @@ describe("caption surface A/B matrix (lead×tail, not greeting/hearing fixtures)
       }
       const target = resolveProgressiveRevealSourceTarget(caption({ sourceText: row.full }));
       expect(shouldSnapProgressiveFirstPaint(row.lead, target, false), row.id).toBe(false);
+      expect(shouldSnapAvailablePrefixExtension(row.lead, target, false), row.id).toBe(false);
+      expect(shouldSnapAvailablePrefixExtension(row.lead, target, true), row.id).toBe(true);
       expect(shouldProgressivelyReveal(row.lead, target), row.id).toBe(true);
       paintedKeepsFullLine(target, row);
     }

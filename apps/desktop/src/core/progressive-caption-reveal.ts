@@ -123,6 +123,18 @@ export const shouldSnapProgressiveFirstPaint = (
   firstFramePending: boolean,
 ): boolean => firstFramePending && shouldProgressivelyReveal(displayed, target);
 
+/**
+ * Overlay/Syphon: the longer same-turn surface is already in the caption, so
+ * paint it instead of typewriting from a committed lead. Does not wait for a
+ * missing tail, and does not widen the 16ms single-grapheme first-paint hold.
+ * Live keeps per-grapheme reveal after the first frame.
+ */
+export const shouldSnapAvailablePrefixExtension = (
+  displayed: string,
+  target: string,
+  enabled: boolean,
+): boolean => enabled && shouldProgressivelyReveal(displayed, target);
+
 /** True when `text` is exactly one user-visible grapheme. */
 export const isSingleGraphemeCaptionSurface = (text: string): boolean =>
   captionGraphemes(text.trim()).length === 1;

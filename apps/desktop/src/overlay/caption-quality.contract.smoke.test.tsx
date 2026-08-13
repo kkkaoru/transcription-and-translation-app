@@ -74,8 +74,9 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
 
       expect(overlayAppSource).toMatch(/useProgressiveCaptionReveal/);
       expect(overlayAppSource).toMatch(
-        /const progressiveCaption = useProgressiveCaptionReveal\(caption\)/,
+        /const progressiveCaption = useProgressiveCaptionReveal\(caption,\s*\{/,
       );
+      expect(overlayAppSource).toMatch(/snapAvailablePrefixExtensions:\s*true/);
       expect(overlayAppSource).toMatch(/caption=\{progressiveCaption\}/);
       expect(overlayAppSource).toMatch(/useCaptionHoldClear\(caption,/);
     });

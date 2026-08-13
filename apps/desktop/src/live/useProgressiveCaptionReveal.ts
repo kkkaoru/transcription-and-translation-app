@@ -9,10 +9,19 @@ import {
   resolveProgressiveRevealSourceTarget,
   shouldHoldSingleGraphemeFirstPaint,
   shouldProgressivelyReveal,
+  shouldSnapAvailablePrefixExtension,
   shouldSnapProgressiveFirstPaint,
 } from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
 import { captionGraphemes } from "../overlay/captions";
+
+export type ProgressiveCaptionRevealOptions = {
+  /**
+   * Overlay/Syphon: snap to an already-recognized longer prefix instead of
+   * typewriting from the committed lead. Live leaves this unset.
+   */
+  snapAvailablePrefixExtensions?: boolean;
+};
 
 /**
  * Reveal newly recognized source graphemes one-by-one so Live/Syphon captions
@@ -28,12 +37,18 @@ import { captionGraphemes } from "../overlay/captions";
  * first frame commits (or a longer surface arrives) so Syphon/overlay never
  * first-paints `こ` when `こんにちは` is about to replace it. A longer surface
  * that arrives before that first frame commits (one display frame / 16ms) snaps
- * immediately. Later prefix extensions still reveal one grapheme at a time.
+ * immediately. Later prefix extensions still reveal one grapheme at a time on
+ * Live. Overlay may snap those extensions once the longer surface is already
+ * in the caption so Syphon does not stay on the first piece.
  * The reveal target is the newest visible sentence (same paging as the
  * overlay), not the raw multi-clause `sourceText`, so finished-clause paging
  * cannot collapse a mid-reveal prefix to a single grapheme.
  */
-export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPayload => {
+export const useProgressiveCaptionReveal = (
+  caption: CaptionPayload,
+  options: ProgressiveCaptionRevealOptions = {},
+): CaptionPayload => {
+  const snapAvailablePrefixExtensions = options.snapAvailablePrefixExtensions === true;
   const revealTarget = resolveProgressiveRevealSourceTarget(caption);
   const [displayedSource, setDisplayedSource] = useState(() =>
     isSingleGraphemeCaptionSurface(revealTarget) ? "" : revealTarget,
@@ -84,10 +99,19 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     targetRef.current = revealTarget;
   } else if (
     displayedSource !== revealTarget &&
-    shouldSnapProgressiveFirstPaint(displayedSource, revealTarget, firstFramePendingRef.current)
+    (shouldSnapProgressiveFirstPaint(
+      displayedSource,
+      revealTarget,
+      firstFramePendingRef.current,
+    ) ||
+      shouldSnapAvailablePrefixExtension(
+        displayedSource,
+        revealTarget,
+        snapAvailablePrefixExtensions,
+      ))
   ) {
-    // Longer surface is already available (or about to paint) before the first
-    // visible frame committed. Do not emit the short prefix to Syphon/overlay.
+    // Longer surface is already available. Overlay snaps after first commit so
+    // the first piece does not remain on Syphon while the tail is in state.
     setDisplayedSource(revealTarget);
     paintSource = revealTarget;
     displayedRef.current = revealTarget;
@@ -152,7 +176,10 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
     if (shouldHoldSingleGraphemeFirstPaint(current, target, firstFramePendingRef.current)) {
       return clearTimer;
     }
-    if (shouldSnapProgressiveFirstPaint(current, target, firstFramePendingRef.current)) {
+    if (
+      shouldSnapProgressiveFirstPaint(current, target, firstFramePendingRef.current) ||
+      shouldSnapAvailablePrefixExtension(current, target, snapAvailablePrefixExtensions)
+    ) {
       clearTimer();
       displayedRef.current = target;
       setDisplayedSource(target);
@@ -169,7 +196,7 @@ export const useProgressiveCaptionReveal = (caption: CaptionPayload): CaptionPay
       setDisplayedSource(target);
     }
     return clearTimer;
-  }, [caption.id, revealTarget]);
+  }, [caption.id, revealTarget, snapAvailablePrefixExtensions]);
 
   useEffect(() => {
     if (!firstFramePendingRef.current) {

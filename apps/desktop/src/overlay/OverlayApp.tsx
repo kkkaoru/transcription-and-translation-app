@@ -90,9 +90,12 @@ export const OverlayApp = () => {
    * as MainApp.mergeAndCommitCaption).
    */
   const captionRef = useRef(caption);
-  // Match MainApp Live/Syphon: reveal growing source graphemes on the overlay
-  // paths. Hold-clear still keys off the merged caption, not reveal ticks.
-  const progressiveCaption = useProgressiveCaptionReveal(caption);
+  // Match MainApp: grow source graphemes on overlay/Syphon. Snap an already
+  // recognized longer same-turn surface so the plate is not stuck on the first
+  // piece after the 16ms first-commit. Hold-clear still keys off the merge.
+  const progressiveCaption = useProgressiveCaptionReveal(caption, {
+    snapAvailablePrefixExtensions: true,
+  });
 
   const blankDisplayedCaption = useCallback((expectedEpoch: string): void => {
     const current = captionRef.current;

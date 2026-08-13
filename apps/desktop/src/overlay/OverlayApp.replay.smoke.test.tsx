@@ -941,6 +941,12 @@ describe("OverlayApp caption replay", () => {
           row.tail === "終わりますか" &&
           row.structure === "glue",
       ),
+      matrix.find(
+        (row) =>
+          row.lead === "本日はよろしくお願いします" &&
+          row.tail === "終わりますか" &&
+          row.structure === "glue",
+      ),
     ];
     expect(rows.every((row) => row)).toBe(true);
     vi.useFakeTimers();
@@ -1003,14 +1009,214 @@ describe("OverlayApp caption replay", () => {
         });
         const mid = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
         expect(mid, row.id).not.toBe(row.tail);
-
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(400);
-        });
-        const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
-        expect(painted, row.id).toContain(row.lead);
-        expect(painted, row.id).toContain(row.tail);
+        expect(mid, row.id).toContain(row.lead);
+        expect(mid, row.id).toContain(row.tail);
       }
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      vi.useRealTimers();
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
+  it("keeps both lead and tail after first-commit for a general same-turn matrix", async () => {
+    const matrix = buildCaptionAbMatrix();
+    const longLead = matrix.find(
+      (row) =>
+        row.lead === "本日はよろしくお願いします" &&
+        row.tail === "終わりますか" &&
+        row.structure === "glue",
+    );
+    const elongGlue = matrix.find(
+      (row) =>
+        row.lead === "おはよう" &&
+        row.tail === "よろしくお願いします" &&
+        row.structure === "elong",
+    );
+    const disjoint = matrix.find(
+      (row) =>
+        row.lead === "会議を始めます" &&
+        row.tail === "続きがあります" &&
+        row.structure === "glue",
+    );
+    const glueFollow = matrix.find(
+      (row) =>
+        row.lead === "これはテストです" &&
+        row.tail === "終わりますか" &&
+        row.structure === "glue",
+    );
+    expect([longLead, elongGlue, disjoint, glueFollow].every(Boolean)).toBe(true);
+    if (!longLead || !elongGlue || !disjoint || !glueFollow) {
+      return;
+    }
+
+    type MatrixRow = typeof longLead;
+    type Scenario = {
+      id: string;
+      row: MatrixRow;
+      play: (utteranceId: string, row: MatrixRow) => Promise<void>;
+    };
+
+    const emitAsr = async (
+      utteranceId: string,
+      outputText: string,
+      at: number,
+      startedAt = 10,
+    ): Promise<void> => {
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId,
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText,
+          startedAt,
+          at,
+          durationMs: Math.max(0, at - startedAt),
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+    };
+
+    const paintedText = (): string =>
+      nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+
+    const expectBothHalves = (row: MatrixRow, painted: string): void => {
+      expect(painted, row.id).toContain(row.lead);
+      expect(painted, row.id).toContain(row.tail);
+    };
+
+    const remountNative = async (): Promise<void> => {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      container.replaceChildren();
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+    };
+
+    const scenarios: Scenario[] = [
+      {
+        id: "prefix-full",
+        row: longLead,
+        play: async (utteranceId, row) => {
+          await emitAsr(utteranceId, row.lead, 40);
+          expect(paintedText()).toBe(row.lead);
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+          });
+          await emitAsr(utteranceId, row.full, 80);
+          expectBothHalves(row, paintedText());
+        },
+      },
+      {
+        id: "elong-remainder",
+        row: elongGlue,
+        play: async (utteranceId, row) => {
+          await emitAsr(utteranceId, row.lead, 40);
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+          });
+          await emitAsr(utteranceId, `ー${row.tail}`, 80);
+          expectBothHalves(row, paintedText());
+        },
+      },
+      {
+        id: "disjoint-same-start",
+        row: disjoint,
+        play: async (utteranceId, row) => {
+          await emitAsr(utteranceId, row.lead, 40);
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+          });
+          await emitAsr(utteranceId, row.tail, 80);
+          expectBothHalves(row, paintedText());
+        },
+      },
+      {
+        id: "early-final-then-tail",
+        row: disjoint,
+        play: async (utteranceId, row) => {
+          await emitAsr(utteranceId, row.lead, 40);
+          await act(async () => {
+            captionListener?.({
+              id: utteranceId,
+              sourceText: row.lead,
+              azookeyInputText: row.lead,
+              translationText: "",
+              sourceLanguage: "ja",
+              targetLanguage: "en",
+              startedAt: 10,
+              receivedAt: 50,
+              stage: "source",
+              sequence: 0,
+              isFinal: true,
+              provisional: false,
+            });
+            await Promise.resolve();
+          });
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+          });
+          await emitAsr(utteranceId, row.tail, 80);
+          expectBothHalves(row, paintedText());
+        },
+      },
+      {
+        id: "joined-then-shorter",
+        row: glueFollow,
+        play: async (utteranceId, row) => {
+          await emitAsr(utteranceId, row.lead, 40);
+          await emitAsr(utteranceId, row.full, 70);
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+          });
+          await emitAsr(utteranceId, row.lead, 90);
+          expectBothHalves(row, paintedText());
+        },
+      },
+      {
+        id: "tail-before-lead",
+        row: disjoint,
+        play: async (utteranceId, row) => {
+          await emitAsr(utteranceId, row.tail, 40);
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+          });
+          await emitAsr(utteranceId, row.lead, 80);
+          expectBothHalves(row, paintedText());
+        },
+      },
+    ];
+
+    vi.useFakeTimers();
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      for (const [index, scenario] of scenarios.entries()) {
+        await remountNative();
+        await scenario.play(`parapper:s:1:${80 + index}`, scenario.row);
+      }
+
+      await remountNative();
+      await emitAsr("parapper:s:1:90", disjoint.lead, 40, 10);
+      await emitAsr("parapper:s:1:91", disjoint.tail, 80, 400);
+      const differentStart = paintedText();
+      expect(differentStart).toContain(disjoint.tail);
+      expect(differentStart.includes(disjoint.lead), "different startedAt must not concatenate").toBe(
+        false,
+      );
     } finally {
       await act(async () => {
         root.unmount();

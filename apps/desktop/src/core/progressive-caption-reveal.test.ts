@@ -11,6 +11,7 @@ import {
   resolveProgressiveRevealSourceTarget,
   shouldHoldSingleGraphemeFirstPaint,
   shouldProgressivelyReveal,
+  shouldSnapAvailablePrefixExtension,
   shouldSnapProgressiveFirstPaint,
 } from "./progressive-caption-reveal";
 import type { CaptionPayload } from "./types";
@@ -100,6 +101,8 @@ describe("progressive caption reveal", () => {
       }
       const target = resolveProgressiveRevealSourceTarget(caption({ sourceText: row.full }));
       expect(shouldSnapProgressiveFirstPaint(row.lead, target, false), row.id).toBe(false);
+      expect(shouldSnapAvailablePrefixExtension(row.lead, target, false), row.id).toBe(false);
+      expect(shouldSnapAvailablePrefixExtension(row.lead, target, true), row.id).toBe(true);
       expect(shouldProgressivelyReveal(row.lead, target), row.id).toBe(true);
       let displayed = row.lead;
       while (displayed !== target) {

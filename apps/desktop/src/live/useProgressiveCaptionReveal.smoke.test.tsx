@@ -27,11 +27,13 @@ const baseCaption = (partial: Partial<CaptionPayload> = {}): CaptionPayload => (
 const Probe = ({
   caption,
   onPaint,
+  snapAvailablePrefixExtensions,
 }: {
   caption: CaptionPayload;
   onPaint: (revealed: CaptionPayload) => void;
+  snapAvailablePrefixExtensions?: boolean;
 }) => {
-  const revealed = useProgressiveCaptionReveal(caption);
+  const revealed = useProgressiveCaptionReveal(caption, { snapAvailablePrefixExtensions });
   onPaint(revealed);
   return null;
 };
@@ -57,11 +59,15 @@ describe("useProgressiveCaptionReveal", () => {
     vi.useRealTimers();
   });
 
-  const renderCaption = (caption: CaptionPayload): void => {
+  const renderCaption = (
+    caption: CaptionPayload,
+    snapAvailablePrefixExtensions?: boolean,
+  ): void => {
     act(() => {
       root.render(
         <Probe
           caption={caption}
+          snapAvailablePrefixExtensions={snapAvailablePrefixExtensions}
           onPaint={(revealed) => {
             paints.push(revealed);
           }}
@@ -141,6 +147,27 @@ describe("useProgressiveCaptionReveal", () => {
       const done = paints.at(-1)?.sourceText ?? "";
       expect(done, row.id).toContain(row.lead);
       expect(done, row.id).toContain(row.tail);
+    }
+  });
+
+  it("overlay snaps a committed lead to the already-available concatenated line", () => {
+    const rows = buildCaptionAbMatrix().filter((row) => row.tail);
+    for (const [index, row] of rows.entries()) {
+      const id = `parapper:session:overlay:${index + 1}`;
+      renderCaption(baseCaption({ id, sourceText: "" }), true);
+      paints = [];
+      renderCaption(baseCaption({ id, sourceText: row.lead }), true);
+      expect(paints.at(-1)?.sourceText, row.id).toBe(row.lead);
+
+      act(() => {
+        vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+      });
+
+      paints = [];
+      renderCaption(baseCaption({ id, sourceText: row.full }), true);
+      const painted = paints.at(-1)?.sourceText ?? "";
+      expect(painted, row.id).toContain(row.lead);
+      expect(painted, row.id).toContain(row.tail);
     }
   });
 
