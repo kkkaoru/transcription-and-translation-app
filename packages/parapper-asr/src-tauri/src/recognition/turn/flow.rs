@@ -974,8 +974,17 @@ impl RecognitionSession {
         if self.turn_store.open_turn_id != Some(turn_id) {
             return false;
         }
-        if segment.reason != SegmentCloseReason::InterimResultSilenceReached {
-            return false;
+        match segment.reason {
+            SegmentCloseReason::InterimResultSilenceReached => {}
+            SegmentCloseReason::EndSilenceReached => {
+                // Same-utterance hole completion covers the flushed 160ms.
+                // A next-utterance child starts at or after the applied 160ms end.
+                if !self.end_silence_starts_after_applied_160ms(turn_id, segment) {
+                    return false;
+                }
+            }
+            SegmentCloseReason::SegmentMaxChunksReached
+            | SegmentCloseReason::InterimChunkReached => return false,
         }
         if self.in_flight_streaming_chunk_for_turn(turn_id) {
             // Do not remint while this turn's 160ms grid is still in flight.
@@ -1002,7 +1011,7 @@ impl RecognitionSession {
                 // Same-utterance turn-check promotion covers the flushed 160ms
                 // (range starts inside that grid). A stream-reset next utterance
                 // starts at or after the applied 160ms end.
-                if !self.root_end_silence_starts_after_applied_160ms(turn_id, segment) {
+                if !self.end_silence_starts_after_applied_160ms(turn_id, segment) {
                     return false;
                 }
             }
@@ -1016,7 +1025,7 @@ impl RecognitionSession {
         self.latest_applied_segment_is_streaming_chunk(turn_id)
     }
 
-    fn root_end_silence_starts_after_applied_160ms(
+    fn end_silence_starts_after_applied_160ms(
         &self,
         turn_id: u64,
         segment: &PendingAsrSegment,
