@@ -291,8 +291,34 @@ describe("pickLatestSuccessfulAsrStage", () => {
       startedAt: 10,
       at: 80,
     };
-    expect(pickLatestSuccessfulAsrStage([longer, truncated])).toEqual(longer);
-    expect(pickLatestSuccessfulAsrStage([truncated, longer])).toEqual(longer);
+    expect(pickLatestSuccessfulAsrStage([longer, truncated])?.outputText).toBe(
+      "こんにちはきこえますか",
+    );
+    expect(pickLatestSuccessfulAsrStage([truncated, longer])?.outputText).toBe(
+      "こんにちはきこえますか",
+    );
+  });
+
+  it("folds a same-id disjoint tail onto the lead instead of keep-longer of the lead", () => {
+    const lead = {
+      stage: "asr" as const,
+      ok: true,
+      utteranceId: "parapper:s:1:8",
+      outputText: "会議を始めます",
+      startedAt: 10,
+      at: 40,
+    };
+    const tail = {
+      stage: "asr" as const,
+      ok: true,
+      utteranceId: "parapper:s:1:8",
+      outputText: "続きがあります",
+      startedAt: 10,
+      at: 80,
+    };
+    const picked = pickLatestSuccessfulAsrStage([lead, tail]);
+    expect(picked?.outputText).toContain("会議を始めます");
+    expect(picked?.outputText).toContain("続きがあります");
   });
 
   it("still prefers the newest turn when a later utterance is shorter", () => {

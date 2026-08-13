@@ -695,6 +695,53 @@ describe("OverlayApp caption replay", () => {
     }
   });
 
+  it("replays a same-id disjoint ASR tail onto the lead from history instead of keep-longer of the lead", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+    mocks.getPipelineStageHistory.mockResolvedValue([
+      {
+        stage: "asr",
+        utteranceId: "parapper:s:1:8",
+        modelId: "parapper-ja",
+        inputSnippet: "",
+        outputText: "会議を始めます",
+        startedAt: 10,
+        at: 40,
+        durationMs: 30,
+        ok: true,
+      },
+      {
+        stage: "asr",
+        utteranceId: "parapper:s:1:8",
+        modelId: "parapper-ja",
+        inputSnippet: "",
+        outputText: "続きがあります",
+        startedAt: 10,
+        at: 80,
+        durationMs: 70,
+        ok: true,
+      },
+    ]);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+      const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+      expect(painted).toContain("会議を始めます");
+      expect(painted).toContain("続きがあります");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
   it("does not let a later live same-id ASR tail overwrite a longer greeting", async () => {
     history.pushState({}, "", "/?native=1");
     mocks.getLatestCaption.mockResolvedValue(null);

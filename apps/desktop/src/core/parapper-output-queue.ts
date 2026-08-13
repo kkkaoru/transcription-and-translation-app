@@ -9,7 +9,10 @@
  * can only wait for one in-flight normalizer call.
  */
 
-import { isShorterSameUtteranceSurface } from "./caption-updates";
+import {
+  isShorterSameUtteranceSurface,
+  shouldAppendDisjointSameTurnSurfaces,
+} from "./caption-updates";
 import { recordPipelineDrop } from "./dropDiagnostics";
 
 export type ParapperOutputQueueItem = {
@@ -145,10 +148,28 @@ const isShorterRewriteOfPending = (
   if (!candidateText || !pendingText) {
     return false;
   }
+  // A later disjoint clause is a continuation, not a truncated rewrite of the
+  // pending lead. Dropping it left overlay with lead-only because the tail
+  // never reached caption:update / merge.
+  if (shouldAppendDisjointSameTurnSurfaces(pendingText, candidateText)) {
+    return false;
+  }
   // Prefix cuts and much-shorter conversions are not enough: a later
   // `きこえますか` is a suffix of `こんにちはきこえますか` and is not always
   // "much shorter" by grapheme count. Latest-wins must keep the long surface.
   return isShorterSameUtteranceSurface(candidateText, pendingText);
+};
+
+const joinDisjointQueueItem = <T extends ParapperOutputQueueItem>(pending: T, incoming: T): T => {
+  const currentText = queueItemSurface(pending);
+  const nextText = queueItemSurface(incoming);
+  const separator = /[A-Za-z0-9]$/u.test(currentText) && /^[A-Za-z0-9]/u.test(nextText) ? " " : "";
+  const joined = `${currentText}${separator}${nextText}`;
+  return {
+    ...incoming,
+    text: joined,
+    sourceText: joined,
+  };
 };
 
 /** Skip AzooKey for a stale shorter partial when a longer same-id surface already painted. */
@@ -165,7 +186,12 @@ export const shouldSkipParapperNormalize = (
   ) {
     return false;
   }
-  return isShorterSameUtteranceSurface(queueItemSurface(output), painted.sourceText);
+  const incomingText = queueItemSurface(output);
+  // Keep-longer of the painted lead must not skip a disjoint same-turn tail.
+  if (shouldAppendDisjointSameTurnSurfaces(painted.sourceText, incomingText)) {
+    return false;
+  }
+  return isShorterSameUtteranceSurface(incomingText, painted.sourceText);
 };
 
 const shouldDropForCursor = (
@@ -304,6 +330,25 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
         }
       }
       const trailing = pending.length > 0 ? pending[pending.length - 1] : undefined;
+      if (
+        !item.isFinal &&
+        trailing &&
+        !trailing.isFinal &&
+        sameTurnOrLegacy(item, trailing) &&
+        shouldAppendDisjointSameTurnSurfaces(queueItemSurface(trailing), queueItemSurface(item))
+      ) {
+        // Latest-wins keeps one pending partial. A disjoint same-turn tail must
+        // ride on that slot so merge still sees lead+tail instead of replacing
+        // the lead (or dropping a much-shorter tail).
+        const joined = joinDisjointQueueItem(trailing, item);
+        pending[pending.length - 1] = joined;
+        if (key !== null) {
+          rememberLatestTurn(key, joined);
+        }
+        boundPending();
+        void run();
+        return;
+      }
       if (
         !item.isFinal &&
         trailing &&

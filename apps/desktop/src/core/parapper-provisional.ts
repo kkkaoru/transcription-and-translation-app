@@ -1,5 +1,5 @@
 import { asrLatencyFromUnknown } from "./caption-latency";
-import { isShorterSameUtteranceSurface } from "./caption-updates";
+import { isShorterSameUtteranceSurface, mergeCaptionPayload } from "./caption-updates";
 import { selectParapperSurfaceText } from "./parapperStream";
 import type { CaptionPayload, PipelineStageEvent } from "./types";
 
@@ -110,6 +110,46 @@ export const buildProvisionalCaptionFromAsrStage = (
 const asrStageSurface = (event: Pick<PipelineStageEvent, "outputText" | "surfaceText">): string =>
   event.surfaceText?.trim() || event.outputText.trim();
 
+const ASR_FOLD_LANGUAGES = { sourceLanguage: "ja", targetLanguage: "en" };
+
+/** Fold same-utterance ASR rows in time order so keep-longer cannot drop a disjoint tail. */
+const foldSameIdAsrSurface = (
+  events: readonly Pick<
+    PipelineStageEvent,
+    | "stage"
+    | "ok"
+    | "utteranceId"
+    | "outputText"
+    | "surfaceText"
+    | "startedAt"
+    | "at"
+    | "captureGeneration"
+    | "asrLatency"
+  >[],
+  utteranceId: string,
+): string | null => {
+  const sameId = events
+    .filter(
+      (event) =>
+        event.stage === "asr" &&
+        event.ok &&
+        event.utteranceId === utteranceId &&
+        Boolean(asrStageSurface(event)),
+    )
+    .slice()
+    .sort((left, right) => left.at - right.at || left.startedAt - right.startedAt);
+  let merged: CaptionPayload | null = null;
+  for (const event of sameId) {
+    const caption = buildProvisionalCaptionFromAsrStage(event, ASR_FOLD_LANGUAGES);
+    if (!caption) {
+      continue;
+    }
+    merged = merged ? (mergeCaptionPayload(merged, caption) ?? merged) : caption;
+  }
+  const folded = merged?.sourceText.trim() ?? "";
+  return folded || null;
+};
+
 /** Newest successful ASR row that can paint a provisional overlay caption. */
 export const pickLatestSuccessfulAsrStage = (
   events: readonly Pick<
@@ -145,10 +185,17 @@ export const pickLatestSuccessfulAsrStage = (
   if (!latest) {
     return null;
   }
-  // History replay must not first-paint a truncated same-id revision (きこえますか)
-  // over a longer greeting already in the buffer. A later similar-length rewrite
-  // of the newest turn still wins. Different utterance ids stay latest-wins so
-  // a new turn is not concatenated onto the previous one.
+  // History replay must not first-paint a truncated same-id revision over a
+  // longer surface already in the buffer, and must not keep-longer the lead
+  // when a later disjoint clause of the same turn is also in history.
+  const folded = foldSameIdAsrSurface(events, latest.utteranceId);
+  if (folded && folded !== asrStageSurface(latest)) {
+    return {
+      ...latest,
+      outputText: folded,
+      surfaceText: folded,
+    };
+  }
   let best = latest;
   let bestText = asrStageSurface(latest);
   for (const event of events) {

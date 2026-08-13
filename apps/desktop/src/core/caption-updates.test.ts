@@ -7,6 +7,7 @@ import {
   isStaleShorterCaptionSurface,
   isTruncatedCaptionRewrite,
   mergeCaptionPayload,
+  shouldAppendDisjointSameTurnSurfaces,
   takePendingCaptionTranslation,
 } from "./caption-updates";
 import type { CaptionPayload } from "./types";
@@ -3283,6 +3284,17 @@ describe("mergeCaptionPayload", () => {
     expect(isShorterSuffixSurface("晴れ", "明日の天気は")).toBe(false);
     expect(isShorterSameUtteranceSurface("こんにちはきこえますか", "きこえますか")).toBe(false);
     expect(isShorterSameUtteranceSurface("晴れです", "雨です")).toBe(false);
+    expect(shouldAppendDisjointSameTurnSurfaces("会議を始めます", "続きがあります")).toBe(true);
+    expect(
+      shouldAppendDisjointSameTurnSurfaces("本日はどうぞよろしくお願いします", "終わりますか"),
+    ).toBe(true);
+    expect(shouldAppendDisjointSameTurnSurfaces("こんにちはきこえますか", "きこえますか")).toBe(
+      false,
+    );
+    expect(shouldAppendDisjointSameTurnSurfaces("こんにちはーきこえますかー", "きこえますか")).toBe(
+      false,
+    );
+    expect(shouldAppendDisjointSameTurnSurfaces("雨です", "晴れです")).toBe(false);
     expect(merged?.sourceText).toBe("電車が遅延してたから僕は学校に行かない");
     expect(merged?.sourceText).toContain("に行かない");
     expect(merged?.provisional).toBe(true);

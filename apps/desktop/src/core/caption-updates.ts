@@ -341,6 +341,52 @@ const appendGreetingContinuation = (currentText: string, nextText: string): stri
 const stripElongationMarks = (text: string): string => text.replace(/[ー〜～]/gu, "");
 
 /**
+ * Surface-only half of a same-turn disjoint continuation. Queue latest-wins
+ * and history keep-longer use this so a later clause is not dropped as a
+ * "much shorter rewrite" of the painted lead.
+ */
+export const shouldAppendDisjointSameTurnSurfaces = (
+  currentText: string,
+  nextText: string,
+): boolean => {
+  const current = trim(currentText);
+  const next = trim(nextText);
+  if (!current || !next || current === next) {
+    return false;
+  }
+  if (SHORT_ACK_SURFACE.test(next)) {
+    return false;
+  }
+  if (
+    next.startsWith(current) ||
+    current.startsWith(next) ||
+    isShorterSuffixSurface(next, current)
+  ) {
+    return false;
+  }
+  const currentBare = stripElongationMarks(current).replace(/[。．.、！？!?]+$/u, "");
+  const nextBare = stripElongationMarks(next).replace(/[。．.、！？!?]+$/u, "");
+  if (
+    !currentBare ||
+    !nextBare ||
+    currentBare.includes(nextBare) ||
+    nextBare.includes(currentBare)
+  ) {
+    return false;
+  }
+  if (
+    [...currentBare].length < MIN_DISJOINT_CLAUSE_GRAPHEMES ||
+    [...nextBare].length < MIN_DISJOINT_CLAUSE_GRAPHEMES
+  ) {
+    return false;
+  }
+  if (!japaneseSourceText.test(currentBare) || !japaneseSourceText.test(nextBare)) {
+    return false;
+  }
+  return sharedGraphemePrefixLength(current, next) < MIN_OVERLAP_CHARS;
+};
+
+/**
  * Same-id ASR can emit two clauses of one turn without a shared prefix
  * (`会議を始めます` then `続きがあります`). That is not a shorter rewrite and
  * not an unrelated remint (those use a new id or a later `startedAt`).
@@ -362,33 +408,7 @@ const shouldAppendDisjointSameIdContinuation = (
   ) {
     return false;
   }
-  const currentText = trim(current.sourceText);
-  const nextText = trim(next.sourceText);
-  if (!currentText || !nextText || currentText === nextText) {
-    return false;
-  }
-  if (SHORT_ACK_SURFACE.test(nextText)) {
-    return false;
-  }
-  if (
-    nextText.startsWith(currentText) ||
-    currentText.startsWith(nextText) ||
-    isShorterSuffixSurface(nextText, currentText)
-  ) {
-    return false;
-  }
-  const currentBare = stripElongationMarks(currentText);
-  const nextBare = stripElongationMarks(nextText);
-  if (
-    [...currentBare].length < MIN_DISJOINT_CLAUSE_GRAPHEMES ||
-    [...nextBare].length < MIN_DISJOINT_CLAUSE_GRAPHEMES
-  ) {
-    return false;
-  }
-  if (!japaneseSourceText.test(currentBare) || !japaneseSourceText.test(nextBare)) {
-    return false;
-  }
-  return sharedGraphemePrefixLength(currentText, nextText) < MIN_OVERLAP_CHARS;
+  return shouldAppendDisjointSameTurnSurfaces(current.sourceText, next.sourceText);
 };
 
 /**

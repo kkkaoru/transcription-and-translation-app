@@ -250,6 +250,53 @@ describe("Parapper output coalescing queue", () => {
     expect(queue.getStats()).toMatchObject({ processed: 2, pending: 0, droppedPartials: 1 });
   });
 
+  it("joins a pending lead with a disjoint same-turn tail instead of replacing it", async () => {
+    const processed: string[] = [];
+    const surfaces: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.id);
+      surfaces.push(next.text);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      text: "会議を始めます",
+      isFinal: false,
+      revision: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "lead",
+      text: "会議を始めます",
+      isFinal: false,
+      revision: 2,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "tail",
+      text: "続きがあります",
+      isFinal: false,
+      revision: 3,
+      ...turn,
+    });
+
+    release.shift()?.();
+    await flush();
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(
+      surfaces.some((text) => text.includes("会議を始めます") && text.includes("続きがあります")),
+    ).toBe(true);
+  });
+
   it("does not let a truncated same-turn final discard a longer pending rewrite", async () => {
     // Completion ASR can finalize on a prefix while a longer Nemotron rewrite is
     // still queued behind an in-flight normalizer. Dropping that pending surface
@@ -410,6 +457,18 @@ describe("Parapper output coalescing queue", () => {
         },
       ),
     ).toBe(true);
+    expect(
+      shouldSkipParapperNormalize(
+        { id: "parapper:s:1:8", sourceText: "本日はどうぞよろしくお願いします" },
+        {
+          isFinal: false,
+          sessionId: "s",
+          turnSessionId: 1,
+          turnId: 8,
+          text: "終わりますか",
+        },
+      ),
+    ).toBe(false);
   });
 
   it("uses sourceText when deciding to keep a longer pending rewrite", async () => {
