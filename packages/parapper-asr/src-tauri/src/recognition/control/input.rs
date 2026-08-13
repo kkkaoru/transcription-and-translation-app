@@ -40,10 +40,6 @@ pub struct RunningRecognitionInput {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "output events stay owned to avoid an extra allocation per recognition chunk"
-)]
 pub(crate) enum RecognitionStreamEvent {
     SpeechStarted,
     SegmentClosed { segment_id: u64 },

@@ -59,7 +59,7 @@ pub(in crate::recognition) struct PendingRuntimeState {
     pub(in crate::recognition) interim_asr: InterimAsrState,
     /// The bounded audio snapshot used by the optional completion-model
     /// partial-window path.  It is deliberately independent from the
-    /// streaming Nemotron cache and from the mutable TurnDraft.
+    /// streaming Nemotron cache and from the mutable `TurnDraft`.
     pub(in crate::recognition) partial_window: PartialWindowAsrState,
     /// Reset Nemotron streaming cache only after flushed `InterimChunkReached`
     /// requests for the closing utterance have been submitted.
@@ -116,6 +116,7 @@ impl PartialWindowAsrState {
         self.next_due_tick = None;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::recognition) fn start_segment(
         &mut self,
         segment_id: u64,
@@ -152,6 +153,7 @@ impl PartialWindowAsrState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::recognition) fn extend_segment(
         &mut self,
         segment_id: u64,
@@ -215,9 +217,7 @@ impl PartialWindowAsrState {
         current_tick: u64,
         vad_interval_ms: u32,
     ) -> Option<PartialWindowSnapshot> {
-        let Some(due_tick) = self.next_due_tick else {
-            return None;
-        };
+        let due_tick = self.next_due_tick?;
         if current_tick < due_tick {
             return None;
         }
@@ -225,9 +225,7 @@ impl PartialWindowAsrState {
             self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
             vad_interval_ms,
         )));
-        let Some(active) = self.active.as_ref() else {
-            return None;
-        };
+        let active = self.active.as_ref()?;
         if active.capped {
             self.skipped_capped = self.skipped_capped.saturating_add(1);
             log::debug!(
@@ -377,7 +375,10 @@ impl PartialWindowAsrState {
         if self.completed == 0 {
             0.0
         } else {
-            self.throttled_completed as f64 / self.completed as f64
+            #[allow(clippy::cast_precision_loss)]
+            {
+                self.throttled_completed as f64 / self.completed as f64
+            }
         }
     }
 }
@@ -889,7 +890,7 @@ mod tests {
         assert_eq!(gap, 500);
         assert_eq!(total, 250);
         assert_eq!(p95, 250);
-        assert_eq!(throttle_rate, 1.0);
+        assert!((throttle_rate - 1.0).abs() < f64::EPSILON);
         assert!(state.take_due(12, 100).is_none());
         assert!(state.take_due(13, 100).is_some());
     }

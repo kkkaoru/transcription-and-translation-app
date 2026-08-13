@@ -9,6 +9,7 @@ fn partial_window_result_is_side_channel_only_and_does_not_mutate_turn_draft() {
     let (normal_outputs, partial_outputs) = builder.use_partial_window_recording_sink();
     let (mut runtime, _config) = builder.build();
     runtime.partial_window_asr_enabled = true;
+    runtime.counters.global_sample_cursor = 1_600;
 
     runtime.record_interim_segment_started(7, None, vec![0.25; 1_600], vec![vad(true)]);
     runtime_state(&mut runtime).next_runtime_tick(4);
@@ -43,6 +44,7 @@ fn partial_window_result_after_segment_close_is_dropped_without_throttle_or_turn
     let (normal_outputs, partial_outputs) = builder.use_partial_window_recording_sink();
     let (mut runtime, _config) = builder.build();
     runtime.partial_window_asr_enabled = true;
+    runtime.counters.global_sample_cursor = 1_600;
 
     runtime.record_interim_segment_started(8, None, vec![0.5; 1_600], vec![vad(true)]);
     runtime_state(&mut runtime).next_runtime_tick(4);
@@ -3808,11 +3810,8 @@ fn turn_runtime_resumed_namo_grammar_does_not_rewrite_joined_caption_to_lead() {
     }
 
     let outputs = outputs.lock().expect("outputs should be readable");
-    let last = outputs
-        .iter()
-        .filter(|output| output.turn_id == 1)
-        .next_back()
-        .expect("turn 1 must emit a caption");
+    let last =
+        outputs.iter().rfind(|output| output.turn_id == 1).expect("turn 1 must emit a caption");
     assert!(
         last.text.contains("全体") && last.text.contains("続き") && last.text.contains("後半"),
         "resumed grammar must not rewrite the latest caption back to the lead; joined before grammar was {joined}; latest={} is_final={} all={:?}",
@@ -3958,11 +3957,8 @@ fn turn_runtime_resumed_namo_grammar_does_not_replace_joined_caption_with_same_l
     }
 
     let outputs = outputs.lock().expect("outputs should be readable");
-    let last = outputs
-        .iter()
-        .filter(|output| output.turn_id == 1)
-        .next_back()
-        .expect("turn 1 must emit a caption");
+    let last =
+        outputs.iter().rfind(|output| output.turn_id == 1).expect("turn 1 must emit a caption");
     assert!(
         last.text.contains("全体") && last.text.contains("続き") && last.text.contains("後半"),
         "current caption must keep the same-utterance tail after same-length grammar lead; joined before grammar was {joined}; latest={} is_final={} all={:?}",

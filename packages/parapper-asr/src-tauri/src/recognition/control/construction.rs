@@ -112,6 +112,7 @@ impl RecognitionSession {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn with_io_and_session_id(
         config: &ParapperConfig,
         turn_session_id: u64,

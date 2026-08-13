@@ -317,11 +317,9 @@ impl RecognitionSession {
             snapshot
                 .previous_segment_id
                 .map(crate::recognition::transcription::asr::task::SegmentId)
-                .or_else(|| {
-                    Some(crate::recognition::transcription::asr::task::SegmentId(
-                        snapshot.segment_id,
-                    ))
-                }),
+                .or(Some(crate::recognition::transcription::asr::task::SegmentId(
+                    snapshot.segment_id,
+                ))),
             Some(crate::recognition::transcription::asr::task::SegmentId(snapshot.segment_id)),
         );
         Some(AsrRequest {
@@ -901,7 +899,7 @@ mod tests {
             None,
             vec![1.0],
             Vec::new(),
-            GlobalSampleIndex(0),
+            GlobalSampleIndex(1),
             VadFrameIndex(0),
             0,
             runtime.config.segmentation.vad_interval_ms,
@@ -919,11 +917,11 @@ mod tests {
             .expect("due partial window should be dispatched");
         assert_eq!(request.kind, AsrTaskKind::PartialWindow);
         assert!(
-            runtime.turn_store.caption_latency.get(&1).is_none(),
+            !runtime.turn_store.caption_latency.contains_key(&1),
             "partial-window dispatch must not become the canonical turn's ASR dispatch"
         );
         assert!(
-            runtime.turn_store.turns.get(&1).is_none(),
+            !runtime.turn_store.turns.contains_key(&1),
             "partial-window dispatch must not create or mutate a canonical TurnDraft"
         );
     }

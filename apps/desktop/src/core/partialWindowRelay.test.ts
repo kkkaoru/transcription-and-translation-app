@@ -80,4 +80,33 @@ describe("partial-window relay fence", () => {
     expect(state.text).toBe("OPEN suffix");
     expect(state.fence).toMatchObject({ outputSequence: 12, revision: 4, segmentId: 7 });
   });
+
+  it("rejects a mismatched turn and a segment older than the accepted OPEN segment", () => {
+    const state = { fence: null as PartialWindowRelayFence | null, text: "" };
+    apply(state, update({ relaySequence: 70 }));
+    apply(state, update({ relaySequence: 71, text: "wrong turn", turnId: 12 }));
+    apply(state, update({ relaySequence: 72, segmentId: 6, text: "older segment" }));
+
+    expect(state.text).toBe("OPEN suffix");
+    expect(state.fence).toMatchObject({ relaySequence: 70, segmentId: 7, turnId: 11 });
+  });
+
+  it("accepts a newer segment and a newer revision in the current segment", () => {
+    const state = { fence: null as PartialWindowRelayFence | null, text: "" };
+    apply(state, update({ relaySequence: 80 }));
+    apply(state, update({ outputSequence: 1, relaySequence: 81, revision: 1, segmentId: 8 }));
+    apply(
+      state,
+      update({
+        outputSequence: 2,
+        relaySequence: 82,
+        revision: 2,
+        segmentId: 8,
+        text: "newer suffix",
+      }),
+    );
+
+    expect(state.text).toBe("newer suffix");
+    expect(state.fence).toMatchObject({ outputSequence: 2, revision: 2, segmentId: 8 });
+  });
 });

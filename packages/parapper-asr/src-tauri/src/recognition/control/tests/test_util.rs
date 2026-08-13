@@ -727,6 +727,7 @@ impl RecognitionSessionTestBuilder {
         outputs
     }
 
+    #[allow(clippy::type_complexity)]
     fn use_partial_window_recording_sink(
         &mut self,
     ) -> (Arc<Mutex<Vec<OutputSnapshot>>>, Arc<Mutex<Vec<OutputSnapshot>>>) {

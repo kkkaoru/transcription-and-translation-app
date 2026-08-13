@@ -1053,13 +1053,10 @@ fn leading_covered_source_samples(
 ) -> usize {
     let mut cursor = request_range.start_sample;
     let end = request_range.end_sample;
-    loop {
-        let Some(hit) = existing_ranges
-            .iter()
-            .find(|range| range.start_sample <= cursor && cursor < range.end_sample)
-        else {
-            break;
-        };
+    while let Some(hit) = existing_ranges
+        .iter()
+        .find(|range| range.start_sample <= cursor && cursor < range.end_sample)
+    {
         let next = hit.end_sample.min(end);
         if next <= cursor {
             break;
