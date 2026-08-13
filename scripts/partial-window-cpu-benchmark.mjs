@@ -12,7 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
@@ -374,16 +374,16 @@ const startTopSampler = (pid, outputPath, durationMs) => {
   const samples = Math.max(3, Math.ceil(durationMs / 1_000) + 3);
   const child = spawn(
     "top",
-      [
-        "-l",
-        String(samples),
-        "-s",
-        "1",
-        "-pid",
-        String(pid),
-        "-stats",
-        "pid,cpu,mem,threads,command",
-      ],
+    [
+      "-l",
+      String(samples),
+      "-s",
+      "1",
+      "-pid",
+      String(pid),
+      "-stats",
+      "pid,cpu,mem,threads,command",
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let output = "";
@@ -430,28 +430,52 @@ const replay = async (options) => {
   try {
     const WebSocket = await loadWebSocket();
     const socket = new WebSocket(options.url);
-  const sessionId = `partial-window-benchmark-${Date.now().toString(36)}`;
+    const sessionId = `partial-window-benchmark-${Date.now().toString(36)}`;
     let done = false;
     let ready = false;
     let closed = false;
     let failure;
     attachSocketListener(socket, "message", async (raw) => {
-    try {
-      const parsed = JSON.parse(await socketMessageText(raw));
-      appendReceived("server_message", { payload: redactMessage(parsed) });
-      ready ||= parsed.type === "session.ready";
-      done ||= parsed.type === "session.done";
-      if (parsed.type === "error" && parsed.fatal) failure = `fatal server error: ${parsed.code ?? "unknown"}`;
-    } catch {
-      appendReceived("server_message_invalid_json");
-    }
+      try {
+        const parsed = JSON.parse(await socketMessageText(raw));
+        appendReceived("server_message", { payload: redactMessage(parsed) });
+        ready ||= parsed.type === "session.ready";
+        done ||= parsed.type === "session.done";
+        if (parsed.type === "error" && parsed.fatal)
+          failure = `fatal server error: ${parsed.code ?? "unknown"}`;
+      } catch {
+        appendReceived("server_message_invalid_json");
+      }
     });
-    attachSocketListener(socket, "close", () => { closed = true; });
-    attachSocketListener(socket, "error", (error) => { failure = error instanceof Error ? error.message : String(error); });
+    attachSocketListener(socket, "close", () => {
+      closed = true;
+    });
+    attachSocketListener(socket, "error", (error) => {
+      failure = error instanceof Error ? error.message : String(error);
+    });
     await new Promise((resolveOpen, rejectOpen) => {
-    const timer = setTimeout(() => rejectOpen(new Error(`WebSocket open timeout after ${options.readyTimeoutMs}ms`)), options.readyTimeoutMs);
-    attachSocketListener(socket, "open", () => { clearTimeout(timer); resolveOpen(); }, true);
-    attachSocketListener(socket, "error", (error) => { clearTimeout(timer); rejectOpen(error); }, true);
+      const timer = setTimeout(
+        () => rejectOpen(new Error(`WebSocket open timeout after ${options.readyTimeoutMs}ms`)),
+        options.readyTimeoutMs,
+      );
+      attachSocketListener(
+        socket,
+        "open",
+        () => {
+          clearTimeout(timer);
+          resolveOpen();
+        },
+        true,
+      );
+      attachSocketListener(
+        socket,
+        "error",
+        (error) => {
+          clearTimeout(timer);
+          rejectOpen(error);
+        },
+        true,
+      );
     });
     socket.send(
       JSON.stringify({
@@ -474,23 +498,34 @@ const replay = async (options) => {
     });
     const readyDeadline = performance.now() + options.readyTimeoutMs;
     while (!ready && !failure && performance.now() < readyDeadline) await delay(10);
-    if (!ready) throw new Error(failure ?? `session.ready timeout after ${options.readyTimeoutMs}ms`);
+    if (!ready)
+      throw new Error(failure ?? `session.ready timeout after ${options.readyTimeoutMs}ms`);
     let nextFrameAt = performance.now();
     let lateFrames = 0;
     for (let offset = 0; offset < fixture.bytes.length; offset += FRAME_BYTES) {
-    const wait = nextFrameAt - performance.now();
-    if (wait > 0) await delay(wait);
-    else if (wait < -FRAME_MILLIS) { lateFrames += 1; nextFrameAt = performance.now(); }
-    socket.send(fixture.bytes.subarray(offset, offset + FRAME_BYTES));
-    nextFrameAt += FRAME_MILLIS;
+      const wait = nextFrameAt - performance.now();
+      if (wait > 0) await delay(wait);
+      else if (wait < -FRAME_MILLIS) {
+        lateFrames += 1;
+        nextFrameAt = performance.now();
+      }
+      socket.send(fixture.bytes.subarray(offset, offset + FRAME_BYTES));
+      nextFrameAt += FRAME_MILLIS;
     }
-    appendReceived("client_audio_complete", { frames: fixture.bytes.length / FRAME_BYTES, late_frames: lateFrames });
+    appendReceived("client_audio_complete", {
+      frames: fixture.bytes.length / FRAME_BYTES,
+      late_frames: lateFrames,
+    });
     await delay(options.stopWaitMs);
     socket.send(JSON.stringify({ version: 1, type: "session.stop", session_id: sessionId }));
     appendReceived("client_session_stop", { wait_before_stop_ms: options.stopWaitMs });
     const doneDeadline = performance.now() + options.doneTimeoutMs;
     while (!done && !failure && !closed && performance.now() < doneDeadline) await delay(10);
-    try { socket.close(); } catch { /* already closed */ }
+    try {
+      socket.close();
+    } catch {
+      /* already closed */
+    }
     if (sampler) await sampler.finished;
     if (!done) throw new Error(failure ?? `session.done timeout after ${options.doneTimeoutMs}ms`);
     const output = {
@@ -509,9 +544,12 @@ const replay = async (options) => {
 };
 
 const report = (options) => {
-  if (!options.metrics || !options.cpu || !options.cpuPid) throw new Error("report requires --metrics, --cpu, and --cpu-pid");
-  if (!existsSync(options.metrics)) throw new Error(`metrics JSONL does not exist: ${resolve(options.metrics)}`);
-  if (!existsSync(options.cpu)) throw new Error(`CPU input does not exist: ${resolve(options.cpu)}`);
+  if (!options.metrics || !options.cpu || !options.cpuPid)
+    throw new Error("report requires --metrics, --cpu, and --cpu-pid");
+  if (!existsSync(options.metrics))
+    throw new Error(`metrics JSONL does not exist: ${resolve(options.metrics)}`);
+  if (!existsSync(options.cpu))
+    throw new Error(`CPU input does not exist: ${resolve(options.cpu)}`);
   const metrics = summarizePartialWindowMetrics(readFileSync(options.metrics, "utf8"));
   const cpu = parseCpuSamples(readFileSync(options.cpu, "utf8"), options.cpuPid, options.cpuFormat);
   const decision = acceptance(metrics, cpu, options);
@@ -525,7 +563,7 @@ const report = (options) => {
   if (!decision.accepted) process.exitCode = 1;
 };
 
-  const main = () => {
+const main = () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.command === "help") return console.log(usage());
   if (options.command === "replay") return replay(options);
@@ -534,8 +572,12 @@ const report = (options) => {
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch((error) => {
-    console.error(`partial-window CPU benchmark: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 2;
-  });
+  Promise.resolve()
+    .then(main)
+    .catch((error) => {
+      console.error(
+        `partial-window CPU benchmark: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exitCode = 2;
+    });
 }
