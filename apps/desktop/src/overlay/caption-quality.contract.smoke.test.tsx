@@ -60,9 +60,7 @@ const expectMerged = (value: CaptionPayload | null): CaptionPayload => {
 
 describe("caption quality contracts (automated, no human eyeball)", () => {
   describe("progressive reveal wiring (live + overlay)", () => {
-    // Policy (B): Live sticky is shipped; Overlay sticky is intentionally not
-    // wired yet and remains on progressiveCaption until a follow-up.
-    it("keeps Live DOM and Syphon on sticky displayCaption while overlay stays on progressiveCaption", () => {
+    it("shares sticky displayCaption across Live DOM, Syphon, and both Overlay paths", () => {
       // hold-clear once replaced this import and left grapheme reveal dead.
       expect(mainAppSource).toMatch(/useCaptionFreshness\(caption\)/);
       expect(mainAppSource).toMatch(/useProgressiveCaptionReveal/);
@@ -75,7 +73,7 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       );
       expect(mainAppSource).toMatch(/caption=\{displayCaption\}/);
       expect(mainAppSource).toMatch(
-        /<NativeFramePublisher config=\{config\} caption=\{displayCaption\} \/>/,
+        /<NativeFramePublisher\s+config=\{config\}\s+caption=\{displayCaption\}/,
       );
       expect(mainAppSource).toMatch(/useCaptionHoldClear\(caption,/);
 
@@ -85,8 +83,17 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
         /const progressiveCaption = useProgressiveCaptionReveal\(freshnessCaption,\s*\{/,
       );
       expect(overlayAppSource).toMatch(/snapAvailablePrefixExtensions:\s*true/);
-      expect(overlayAppSource).toMatch(/caption=\{progressiveCaption\}/);
+      expect(overlayAppSource).toMatch(
+        /const displayCaption = applyOverlayStickyDisplay\(progressiveCaption,\s*stickyRefs\)/,
+      );
+      expect(overlayAppSource).toMatch(
+        /<NativeFramePublisher\s+config=\{config\}\s+caption=\{displayCaption\}/,
+      );
+      expect(overlayAppSource).toMatch(
+        /<OverlayView\s+config=\{config\}\s+caption=\{displayCaption\}/,
+      );
       expect(overlayAppSource).toMatch(/useCaptionHoldClear\(caption,/);
+      expect(overlayAppSource).toMatch(/resetOverlayStickyRefs\(stickyRefs\)/);
     });
   });
 
