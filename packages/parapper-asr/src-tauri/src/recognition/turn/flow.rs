@@ -52,6 +52,11 @@ impl RecognitionSession {
             // slot with follow-up rerecognition would delay its first hypothesis.
             return false;
         }
+        if self.should_release_rerecognition_for_same_turn_continuation(turn_id, purpose) {
+            // Max-chunk / streaming-chunk audio is still this utterance.
+            // Occupying the slot would delay the tail caption; do not start.
+            return false;
+        }
         let Some((
             draft_route,
             mut detected_language,
@@ -154,6 +159,28 @@ impl RecognitionSession {
         self.complete_turn_without_grammar(turn_id);
     }
 
+    pub(in crate::recognition) fn yield_rerecognition_slot_for_same_turn_continuation(&mut self) {
+        let Some(request) = self.requests.in_flight_request.as_ref() else {
+            return;
+        };
+        if request.kind != AsrTaskKind::Rerecognition {
+            return;
+        }
+        let turn_id = request.target.turn_id.0;
+        let Some(purpose) = self.requests.pending_rerecognition_purpose else {
+            return;
+        };
+        if !self.should_release_rerecognition_for_same_turn_continuation(turn_id, purpose) {
+            return;
+        }
+        // Drop the slot so same-utterance tail ASR can run. Do not finalize or
+        // remint: max-chunk / streaming chunks still extend this turn. Visible
+        // text and uncovered tail already live on the draft. Late rerecognition
+        // is ignored (mismatch).
+        self.requests.in_flight_request = None;
+        self.requests.pending_rerecognition_purpose = None;
+    }
+
     fn should_yield_rerecognition_to_pending_next(
         &mut self,
         turn_id: u64,
@@ -175,6 +202,42 @@ impl RecognitionSession {
             }
         }
         self.pending_asr_preempts_rerecognition(turn_id)
+    }
+
+    pub(in crate::recognition) fn should_release_rerecognition_for_same_turn_continuation(
+        &mut self,
+        turn_id: u64,
+        purpose: RerecognitionPurpose,
+    ) -> bool {
+        match purpose {
+            RerecognitionPurpose::SimpleTurnCheckFinal | RerecognitionPurpose::TimeoutFinal => {
+                self.stop_accepting_root_while_closing(turn_id);
+            }
+            RerecognitionPurpose::GrammarAfterCompletion => {
+                // Mid-phrase Continue must keep grammar rerecognition. Only a
+                // draft that already completes the turn may give the slot to
+                // same-utterance tail ASR.
+                if !self.grammar_already_completes_turn(turn_id) {
+                    return false;
+                }
+                self.stop_accepting_root_while_closing(turn_id);
+            }
+        }
+        if self.pending_asr_preempts_rerecognition(turn_id) {
+            // A true next utterance remints via yield_rerecognition_slot_for_next_utterance.
+            return false;
+        }
+        self.pending_same_utterance_continuation(turn_id)
+    }
+
+    fn pending_same_utterance_continuation(&self, turn_id: u64) -> bool {
+        self.pending.asr_segments.iter().any(|segment| {
+            matches!(
+                segment.reason,
+                SegmentCloseReason::SegmentMaxChunksReached
+                    | SegmentCloseReason::InterimChunkReached
+            ) && self.pending_segment_blocks_finalization(segment, turn_id)
+        })
     }
 
     fn pending_asr_preempts_rerecognition(&self, rerecognition_turn_id: u64) -> bool {

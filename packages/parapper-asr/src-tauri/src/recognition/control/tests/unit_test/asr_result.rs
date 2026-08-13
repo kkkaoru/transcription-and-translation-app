@@ -1524,16 +1524,204 @@ fn turn_runtime_completion_without_interim_keeps_max_chunk_on_same_turn() {
     asr_handle.complete_request_with_text(&completion, "全体。");
     runtime.step();
 
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "a closing max-chunk continuation must take the slot instead of waiting on grammar rerecognition",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    assert_eq!(dispatched.target.turn_id, TurnId(1));
     assert_eq!(
-        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
-        Some(AsrTaskKind::Rerecognition),
-        "a max-chunk continuation must keep the slot instead of reminting as a new turn"
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(150), GlobalSampleIndex(250))
     );
     assert!(
         !runtime.turn_store.finalized_turns.contains(&1),
         "same-turn max-chunk audio must still extend the open utterance"
     );
+    assert!(runtime.pending.asr_segments.is_empty());
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "全体。");
+    assert_eq!(
+        draft.full_audio,
+        vec![1.0; 150],
+        "releasing rerecognition must keep uncovered tail audio on the draft"
+    );
+
+    let max_chunk = dispatched.clone();
+    asr_handle.complete_request_with_text(&max_chunk, "追加");
+    runtime.step();
+
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "applying max-chunk tail ASR must not remint a new turn"
+    );
+    assert_eq!(runtime.turn_store.open_turn_id, Some(1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "max-chunk tail ASR must not drop already-visible text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("追加"),
+        "max-chunk tail ASR must append the continuation; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 100]].concat(),
+        "max-chunk tail ASR must keep uncovered tail audio"
+    );
+}
+
+#[test]
+fn turn_runtime_closing_interim_chunk_takes_rerecognition_slot_on_same_turn() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    asr_handle.complete_request_with_text(&completion, "全体。");
+    runtime.step();
+
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "a closing streaming chunk must take the slot instead of waiting on grammar rerecognition",
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(dispatched.target.turn_id, TurnId(1));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(150), GlobalSampleIndex(310))
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    assert!(runtime.pending.asr_segments.is_empty());
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "全体。");
+    assert_eq!(draft.full_audio, vec![1.0; 150]);
+}
+
+#[test]
+fn turn_runtime_mid_clause_max_chunk_does_not_steal_rerecognition() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    asr_handle.complete_request_with_text(&completion, "しようとしたら");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "a Continue-possible mid-clause must keep grammar rerecognition instead of yielding to max-chunk"
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
     assert_eq!(runtime.pending.asr_segments.len(), 1);
+}
+
+#[test]
+fn turn_runtime_in_flight_rerecognition_yields_to_later_max_chunk_without_dropping_text() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    asr_handle.complete_request_with_text(&completion, "全体。");
+    runtime.step();
+
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("without a queued continuation, Namo still starts grammar rerecognition");
+    assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    runtime.step();
+
+    let dispatched =
+        runtime.requests.in_flight_request.as_ref().expect(
+            "in-flight grammar rerecognition must yield the slot to same-turn max-chunk ASR",
+        );
+    assert_eq!(dispatched.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(dispatched.target.turn_id, TurnId(1));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    asr_handle.complete_request_with_text(&rerecognition, "短い");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.combined_text, "全体。",
+        "a late grammar rerecognition result must not drop already-visible text"
+    );
+    assert_eq!(
+        draft.full_audio,
+        vec![1.0; 150],
+        "a late grammar rerecognition result must not drop uncovered tail audio"
+    );
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.target.turn_id),
+        Some(TurnId(1)),
+        "a mismatched late rerecognition result must keep the max-chunk request in flight"
+    );
 }
 
 #[test]

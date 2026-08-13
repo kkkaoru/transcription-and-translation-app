@@ -168,6 +168,7 @@ impl RecognitionSession {
 
     pub(in crate::recognition) fn dispatch_next_asr_request_if_idle(&mut self) {
         self.yield_rerecognition_slot_for_next_utterance();
+        self.yield_rerecognition_slot_for_same_turn_continuation();
         if self.requests.in_flight_request.is_some() {
             return;
         }
@@ -462,25 +463,23 @@ impl RecognitionSession {
                 let turn_id = self.apply_segment_transcript(request, transcript, elapsed_millis);
                 match after_transcript {
                     AsrResultCompletionAfterTranscript::RerecognizeIfIdle(purpose) => {
-                        if self.dispatch_rerecognition_for_turn_if_idle(
-                            turn_id,
-                            runtime_purpose_from_result(purpose),
-                        ) {
+                        let purpose = runtime_purpose_from_result(purpose);
+                        if self.dispatch_rerecognition_for_turn_if_idle(turn_id, purpose) {
                             // Paint the completion hypothesis before waiting on
                             // follow-up ASR so the caption is not blank for a
                             // full extra recognition round-trip.
                             self.emit_waiting_draft_if_blank_or_longer(turn_id);
-                            let previous_open_turn_id = self.turn_store.open_turn_id;
-                            if self
-                                .turn_store
-                                .open_turn_id
-                                .is_none_or(|open_turn_id| open_turn_id <= turn_id)
-                            {
-                                self.turn_store.open_turn_id = Some(turn_id);
-                                if previous_open_turn_id != Some(turn_id) {
-                                    self.turn_store.open_turn_accepts_root_segment = false;
-                                }
-                            }
+                            self.adopt_open_turn_after_completion(turn_id);
+                            return;
+                        }
+                        if self.should_release_rerecognition_for_same_turn_continuation(
+                            turn_id, purpose,
+                        ) {
+                            // Same-utterance tail ASR is queued. Keep the draft
+                            // open so max-chunk / streaming chunks extend it
+                            // instead of finalizing or reminting a new turn.
+                            self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                            self.adopt_open_turn_after_completion(turn_id);
                             return;
                         }
                     }
@@ -501,6 +500,16 @@ impl RecognitionSession {
                     purpose == AsrResultRerecognitionPurpose::GrammarAfterCompletion,
                 );
                 self.apply_rerecognition_follow_up(request.target.turn_id.0, purpose);
+            }
+        }
+    }
+
+    fn adopt_open_turn_after_completion(&mut self, turn_id: u64) {
+        let previous_open_turn_id = self.turn_store.open_turn_id;
+        if self.turn_store.open_turn_id.is_none_or(|open_turn_id| open_turn_id <= turn_id) {
+            self.turn_store.open_turn_id = Some(turn_id);
+            if previous_open_turn_id != Some(turn_id) {
+                self.turn_store.open_turn_accepts_root_segment = false;
             }
         }
     }
