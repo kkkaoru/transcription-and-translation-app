@@ -219,6 +219,18 @@ describe("progressive caption reveal", () => {
     expect(alignCaptionOffsetsToPaintedSource(payload, "ーきこえますか").sourceText).toBe(spoken);
   });
 
+  it("does not page a greeting to a hearing-check tail after bang/question punct", () => {
+    const spoken = "こんにちは！きこえますか";
+    const payload = caption({ sourceText: spoken });
+    expect(resolveProgressiveRevealSourceTarget(payload)).toBe("こんにちはきこえますか");
+    expect(alignCaptionOffsetsToPaintedSource(payload, "きこえますか").sourceText).toBe(
+      "こんにちはきこえますか",
+    );
+    expect(
+      resolveProgressiveRevealSourceTarget(caption({ sourceText: "こんにちは。終えますか" })),
+    ).toBe("こんにちは聞こえますか");
+  });
+
   it("drops full-text ends so last-sentence prefixes are not clipped mid-reveal", () => {
     // Reveal already targets the newest clause. Full-text offset 4 still sits
     // inside a 5-grapheme prefix of that clause and would page to 「て」.

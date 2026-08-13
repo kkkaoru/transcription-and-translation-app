@@ -197,6 +197,27 @@ describe("useProgressiveCaptionReveal", () => {
     expect(done?.softBreakOffsets).toEqual([3]);
   });
 
+  it("does not snap a committed greeting to a hearing-check tail after bang punct", () => {
+    renderCaption(baseCaption({ sourceText: "こんにちは" }));
+    act(() => {
+      vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+    });
+    paints = [];
+    renderCaption(baseCaption({ sourceText: "こんにちは！きこえますか" }));
+
+    const mid = paints.at(-1);
+    expect(mid?.sourceText).toBeTruthy();
+    expect(mid?.sourceText).not.toBe("きこえますか");
+    expect(mid?.sourceText?.startsWith("こ")).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    const done = paints.at(-1);
+    expect(done?.sourceText).toContain("こんにちは");
+    expect(done?.sourceText).not.toBe("きこえますか");
+  });
+
   it("does not carry full-text ends onto last-sentence progressive prefixes", () => {
     const full = "短いです今日はとても良い天気です";
     renderCaption(

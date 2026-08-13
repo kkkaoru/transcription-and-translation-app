@@ -91,6 +91,10 @@ describe("caption display sanitization", () => {
       "こんにちは聞こえますか。",
     );
     expect(sanitizeCaptionDisplayText("こんにちはあえますか")).toBe("こんにちはきこえますか");
+    expect(repairHearingPhraseConfusion("こんにちは！きこえますか")).toBe("こんにちはきこえますか");
+    expect(repairHearingPhraseConfusion("こんにちは？聞こえますか")).toBe("こんにちは聞こえますか");
+    expect(repairHearingPhraseConfusion("こんにちは。終えますか")).toBe("こんにちは聞こえますか");
+    expect(sanitizeCaptionDisplayText("さようなら!きこえますか")).toBe("さようならきこえますか");
   });
 
   it("does not collapse a greeting continuation to a lone ー after paging", () => {
@@ -102,6 +106,12 @@ describe("caption display sanitization", () => {
     );
     expect(restoreCollapsedGreetingContinuation("今日は晴れです", "明日は雨です")).toBe(
       "明日は雨です",
+    );
+    expect(restoreCollapsedGreetingContinuation("こんにちは！きこえますか", "きこえますか")).toBe(
+      "こんにちはきこえますか",
+    );
+    expect(restoreCollapsedGreetingContinuation("こんにちは。終えますか", "終えますか")).toBe(
+      "こんにちは聞こえますか",
     );
     expect(
       captionTextLines({
@@ -119,6 +129,20 @@ describe("caption display sanitization", () => {
         sentenceEndOffsets: [5],
       }),
     ).toEqual(["こんにちはー"]);
+    expect(
+      captionTextLines({
+        key: "source",
+        text: "こんにちは！きこえますか",
+        maxChars: 28,
+      }),
+    ).toEqual(["こんにちはきこえますか"]);
+    expect(
+      captionTextLines({
+        key: "source",
+        text: "こんにちは。終えますか",
+        maxChars: 28,
+      }).join(""),
+    ).toBe("こんにちは聞こえますか");
   });
 
   it("strips trailing Parapper continuation markers without touching mid-text ellipsis", () => {

@@ -118,6 +118,18 @@
       "note": "ZenZ period before kana きこえますか must not page the greeting"
     },
     {
+      "id": "strip-zenz-bang-kana",
+      "input": "こんにちは！きこえますか",
+      "expectedOverlay": "こんにちはきこえますか",
+      "note": "ZenZ bang before kana きこえますか must not page the greeting"
+    },
+    {
+      "id": "strip-period-before-oeru",
+      "input": "こんにちは。終えますか",
+      "expectedOverlay": "こんにちは聞こえますか",
+      "note": "Period before 終えますか must not page the greeting into a lone hearing check"
+    },
+    {
       "id": "strip-ohayou-period",
       "input": "おはよう。聞こえますか。",
       "expectedOverlay": "おはよう聞こえますか。",
@@ -1156,6 +1168,20 @@
       "sentenceEndOffsets": [5],
       "expectedVisible": "こんにちはー",
       "note": "Mid-reveal こんにちはー must not collapse to ー"
+    },
+    {
+      "id": "no-hearing-tail-after-bang",
+      "text": "こんにちは！きこえますか",
+      "expectedVisible": "こんにちはきこえますか",
+      "sanitize": true,
+      "note": "After first-frame commit, do not page the greeting continuation to きこえますか"
+    },
+    {
+      "id": "keep-greeting-across-period-oeru",
+      "text": "こんにちは。終えますか",
+      "expectedVisible": "こんにちは聞こえますか",
+      "sanitize": true,
+      "note": "Do not page こんにちは。終えますか to a lone 聞こえますか"
     }
   ]
 }

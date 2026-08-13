@@ -1,5 +1,9 @@
 import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
-import { captionGraphemes, restoreCollapsedGreetingContinuation } from "../overlay/captions";
+import {
+  captionGraphemes,
+  restoreCollapsedGreetingContinuation,
+  sanitizeCaptionDisplayText,
+} from "../overlay/captions";
 import type { CaptionPayload } from "./types";
 
 /** Delay between newly recognized graphemes while revealing a longer hypothesis. */
@@ -23,10 +27,11 @@ export const PROGRESSIVE_FIRST_PAINT_COALESCE_MS = 16;
  * Target the same visible sentence the final paint would show so reveal
  * intermediates stay inside one clause.
  */
-export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): string =>
-  restoreCollapsedGreetingContinuation(
-    caption.sourceText,
-    selectVisibleCaptionSentence(caption.sourceText, {
+export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): string => {
+  const source = sanitizeCaptionDisplayText(caption.sourceText);
+  return restoreCollapsedGreetingContinuation(
+    source,
+    selectVisibleCaptionSentence(source, {
       key: "source",
       azookeyInputText: caption.azookeyInputText,
       sentenceEndOffsets: caption.sentenceEndOffsets,
@@ -36,6 +41,7 @@ export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): s
       deferSentencePaging: caption.provisional === true,
     }),
   );
+};
 
 /**
  * True when `next` is a longer recognition of the same growing utterance as

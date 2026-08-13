@@ -97,11 +97,15 @@ export const stripCaptionContinuationMarker = (text: string): string =>
   text.replace(/(?:\.{3}|…|⋯)+$/u, "").trimEnd();
 
 const ELONGATION_LED = /^[ー〜～]+/u;
+const GREETING_LEAD = /^(?:こんにちは|こんばんは|おはようございます|おはよう|さようなら)/u;
+const HEARING_CHECK_REMAINDER =
+  /^(?:[ー〜～]*)(?:きこえますか|聞こえますか|あえますか|おえますか|会えますか|終えますか)[。．.、！？!?]*$/u;
 
 /**
  * After the first overlay frame commits, paging can drop a greeting and leave
- * only `ー` (or `ーきこえますか`) as the newest sentence. Keep the longer
- * surface already in `original`. Do not concatenate a different turn.
+ * only `ー`, `ーきこえますか`, or a hearing-check tail (`きこえますか` /
+ * `終えますか`). Keep the longer surface already in `original`. Do not
+ * concatenate a different turn.
  */
 export const restoreCollapsedGreetingContinuation = (original: string, visible: string): string => {
   const source = original.trim();
@@ -110,16 +114,20 @@ export const restoreCollapsedGreetingContinuation = (original: string, visible: 
     return visible;
   }
   if (!shown) {
-    return source;
+    return sanitizeCaptionDisplayText(source);
   }
   if (shown === source) {
     return visible;
   }
-  if (/^[ー〜～]+$/u.test(shown) && source.includes(shown) && source.length > shown.length) {
-    return source;
-  }
-  if (ELONGATION_LED.test(shown) && source.endsWith(shown) && source.length > shown.length) {
-    return source;
+  const keepLongerGreeting =
+    (/^[ー〜～]+$/u.test(shown) && source.includes(shown) && source.length > shown.length) ||
+    (ELONGATION_LED.test(shown) && source.endsWith(shown) && source.length > shown.length) ||
+    (GREETING_LEAD.test(source) &&
+      HEARING_CHECK_REMAINDER.test(shown) &&
+      source.length > shown.length &&
+      (source.endsWith(shown) || source.includes(shown)));
+  if (keepLongerGreeting) {
+    return sanitizeCaptionDisplayText(source);
   }
   return visible;
 };
@@ -166,7 +174,8 @@ export const collapseRunawayGraphemeRuns = (
  * ReazonSpeech often drops the initial き of 聞こえる, yielding あえますか /
  * おえますか (ZenZ/AzooKey may then pick 会えますか / 終えますか). Restore the
  * intended hearing check. ZenZ also inserts 。 after greetings
- * (`こんにちは。聞こえますか。`), which pages away the greeting — strip that.
+ * (`こんにちは。聞こえますか。` / `こんにちは！きこえますか`), which pages
+ * away the greeting — strip that punct before repairing 会え/終え slips.
  */
 export const repairHearingPhraseConfusion = (text: string): string => {
   if (!text) {
@@ -174,16 +183,16 @@ export const repairHearingPhraseConfusion = (text: string): string => {
   }
   let next = text;
   next = next.replace(
+    /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)[。．.、！？!?]+(きこえますか|聞こえますか|あえますか|おえますか|会えますか|終えますか)/gu,
+    "$1$2$3",
+  );
+  next = next.replace(
     /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)(?:あえ|おえ)ますか/gu,
     "$1$2きこえますか",
   );
   next = next.replace(
     /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)(?:会え|終え)ますか/gu,
     "$1$2聞こえますか",
-  );
-  next = next.replace(
-    /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)[。．.、](きこえますか|聞こえますか)/gu,
-    "$1$2$3",
   );
   const trimmed = next.trim();
   if (/^(?:あえますか|おえますか)$/u.test(trimmed)) {

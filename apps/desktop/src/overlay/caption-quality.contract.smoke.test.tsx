@@ -436,6 +436,17 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       );
     });
 
+    it("keeps greeting when bang/question punct would page to the hearing check", () => {
+      expect(
+        captionTextLines({ key: "source", text: "こんにちは！きこえますか", maxChars: 28 }).join(
+          "",
+        ),
+      ).toBe("こんにちはきこえますか");
+      expect(
+        captionTextLines({ key: "source", text: "こんにちは。終えますか", maxChars: 28 }).join(""),
+      ).toBe("こんにちは聞こえますか");
+    });
+
     it("does not page away the recognized head after a topic は offset", () => {
       const weather = "明日の天気は晴れ水確率は60%";
       expect(selectVisibleCaptionSentence(weather, { sentenceEndOffsets: [6] })).toBe(weather);
