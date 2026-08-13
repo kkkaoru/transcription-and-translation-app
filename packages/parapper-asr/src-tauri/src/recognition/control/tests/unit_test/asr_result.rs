@@ -2420,6 +2420,95 @@ fn turn_runtime_same_display_id_160ms_keeps_visible_prefix() {
 }
 
 #[test]
+fn turn_runtime_cumulative_160ms_does_not_restack_prefix_audio() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    asr_handle.complete_request_with_text(&prefix, "全体。");
+    runtime.step();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    if let Some(segment) = runtime.pending.asr_segments.back_mut() {
+        segment.audio = vec![2.0; 100];
+        segment.source_audio = vec![2.0; 100];
+    }
+    runtime.step();
+    let max_chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("applied prefix must still dispatch same-turn max-chunk");
+    assert_eq!(max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        0..410,
+    );
+    if let Some(segment) = runtime.pending.asr_segments.back_mut() {
+        // Production Nemotron chunk: cumulative source from stream start, delta audio.
+        segment.source_audio = [vec![9.0; 250], vec![3.0; 160]].concat();
+        segment.audio = vec![3.0; 160];
+    }
+    runtime.step();
+
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("in-flight max-chunk must yield to the later cumulative 160ms");
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "cumulative 160ms must not drop visible prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "cumulative 160ms must keep the continuation; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 100], vec![3.0; 160]].concat(),
+        "cumulative 160ms must append only the uncovered delta, not restack the stream prefix"
+    );
+    assert!(
+        !draft.full_audio.contains(&9.0),
+        "already-visible prefix audio must not be restacked from cumulative source"
+    );
+}
+
+#[test]
 fn turn_runtime_in_flight_max_chunk_does_not_yield_to_after_interim_silence() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)

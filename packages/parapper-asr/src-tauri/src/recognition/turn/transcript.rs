@@ -193,7 +193,11 @@ impl RecognitionSession {
                 } else {
                     0
                 };
-                range_skip.max(prefix_skip)
+                range_skip.max(prefix_skip).max(streaming_chunk_uncovered_source_start(
+                    request.close_reason,
+                    &request.source_audio,
+                    &request.audio,
+                ))
             };
             let append_vad_results;
             let source_vad_results = if append_source_start == 0 {
@@ -913,6 +917,33 @@ fn uncovered_completion_source_start(draft_audio: &[f32], source_audio: &[f32]) 
     0
 }
 
+/// Production Nemotron 160ms chunks carry cumulative `source_audio` and a
+/// delta `audio` tail. After a Reazon prefix the waveforms no longer match, so
+/// `replace_latest` does not run; appending the full source would restack the
+/// already-visible prefix. Keep only the uncovered delta.
+fn streaming_chunk_uncovered_source_start(
+    close_reason: Option<SegmentCloseReason>,
+    source_audio: &[f32],
+    audio: &[f32],
+) -> usize {
+    if close_reason != Some(SegmentCloseReason::InterimChunkReached)
+        || audio.is_empty()
+        || source_audio.len() < audio.len()
+    {
+        return 0;
+    }
+    let start = source_audio.len() - audio.len();
+    if source_audio[start..]
+        .iter()
+        .zip(audio)
+        .all(|(left, right)| left.to_bits() == right.to_bits())
+    {
+        start
+    } else {
+        0
+    }
+}
+
 fn samples_between(start: GlobalSampleIndex, end: GlobalSampleIndex) -> usize {
     usize::try_from(end.0.saturating_sub(start.0)).unwrap_or(usize::MAX)
 }
@@ -982,10 +1013,13 @@ mod tests {
         completion_text_duplicates_existing, is_longer_turn_rewrite,
         leading_asr_only_padding_samples, longer_turn_surface_text,
         prefer_streaming_interim_text_over_truncated_completion,
-        source_samples_covered_by_range_overlap, uncovered_completion_source_start,
-        visible_text_for_blank_replace,
+        source_samples_covered_by_range_overlap, streaming_chunk_uncovered_source_start,
+        uncovered_completion_source_start, visible_text_for_blank_replace,
     };
-    use crate::recognition::transcription::asr::task::{AudioRange, GlobalSampleIndex};
+    use crate::recognition::{
+        segmentation::segment::builder::SegmentCloseReason,
+        transcription::asr::task::{AudioRange, GlobalSampleIndex},
+    };
 
     fn range(start: u64, end: u64) -> AudioRange {
         AudioRange::new(GlobalSampleIndex(start), GlobalSampleIndex(end))
@@ -1091,6 +1125,32 @@ mod tests {
             leading_asr_only_padding_samples(&[0.0, 3.0, 4.0], &[2.0, 3.0]),
             0,
             "a longer audio prefix must not count as padding unless the suffix matches the source"
+        );
+        assert_eq!(
+            streaming_chunk_uncovered_source_start(
+                Some(SegmentCloseReason::InterimChunkReached),
+                &[vec![9.0; 150], vec![3.0; 160]].concat(),
+                &[3.0; 160],
+            ),
+            150
+        );
+        assert_eq!(
+            streaming_chunk_uncovered_source_start(
+                Some(SegmentCloseReason::InterimChunkReached),
+                &[3.0; 160],
+                &[3.0; 160],
+            ),
+            0,
+            "a non-cumulative chunk must keep its full source"
+        );
+        assert_eq!(
+            streaming_chunk_uncovered_source_start(
+                Some(SegmentCloseReason::InterimChunkReached),
+                &[2.0; 320],
+                &[1.0],
+            ),
+            0,
+            "a helper audio stub that is not a source suffix must not skip the streaming source"
         );
     }
 
