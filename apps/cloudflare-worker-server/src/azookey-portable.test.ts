@@ -276,7 +276,10 @@ describe("portable official AzooKey dictionary", () => {
       }),
     );
     const result = await convertAzookeyMessage(message, {
-      timeoutMs: 5_000,
+      // Coverage instrumentation can make the first real-WASM conversion much
+      // slower on shared CI runners. This test covers fallback correctness,
+      // not the production timeout boundary.
+      timeoutMs: 15_000,
       converter,
       modelRoutes: {},
     });
