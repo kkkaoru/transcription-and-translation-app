@@ -299,12 +299,12 @@ describe("soft wrap offsets before maxChars", () => {
     expect(detectCaptionSoftBreaks("今日、明日")).toContain(3);
     expect(detectCaptionSoftBreaks("晴れ，次")).toContain(3);
     expect(detectCaptionSoftBreaks("ok, next")).toContain(3);
-    expect(detectCaptionSoftBreaks("本日の会議", { softBreakOffsets: [0, Number.NaN, 99] })).toEqual(
-      [],
-    );
-    expect(detectCaptionSentenceEnds("本日の会議", { sentenceEndOffsets: [0, Number.NaN, 99] })).toEqual(
-      [],
-    );
+    expect(
+      detectCaptionSoftBreaks("本日の会議", { softBreakOffsets: [0, Number.NaN, 99] }),
+    ).toEqual([]);
+    expect(
+      detectCaptionSentenceEnds("本日の会議", { sentenceEndOffsets: [0, Number.NaN, 99] }),
+    ).toEqual([]);
   });
 });
 
@@ -314,7 +314,9 @@ const discardedLead = (text: string, visible: string): string => {
   if (visible === text || !text.endsWith(visible)) {
     return "";
   }
-  return Array.from(text).slice(0, scalarCount(text) - scalarCount(visible)).join("");
+  return Array.from(text)
+    .slice(0, scalarCount(text) - scalarCount(visible))
+    .join("");
 };
 
 describe("heuristic paging invariants (unknown utterances)", () => {

@@ -8,7 +8,11 @@ import {
   BROWSER_VIBRATO_MODE,
 } from "./azookey.js";
 import { createWorker, type Env, type WorkerHandler } from "./index.js";
-import { WORKERS_AI_ASR_MODEL, WORKERS_AI_ASR_HTTP_PATH, type WorkersAiAsrRun } from "./workers-ai-asr.js";
+import {
+  WORKERS_AI_ASR_HTTP_PATH,
+  WORKERS_AI_ASR_MODEL,
+  type WorkersAiAsrRun,
+} from "./workers-ai-asr.js";
 
 const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
 const VIBRATO_NOTICE_PATH = "/vibrato/NOTICE";

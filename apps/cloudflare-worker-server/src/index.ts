@@ -33,7 +33,12 @@ import {
   openAzookeySocket,
 } from "./azookey.js";
 import azookeyWasm from "./azookey-wasm.js";
-import { createWorkersAiAsrTranscriber, handleWorkersAiAsrTranscription, WORKERS_AI_ASR_HTTP_PATH, type WorkersAiAsrRun } from "./workers-ai-asr.js";
+import {
+  createWorkersAiAsrTranscriber,
+  handleWorkersAiAsrTranscription,
+  WORKERS_AI_ASR_HTTP_PATH,
+  type WorkersAiAsrRun,
+} from "./workers-ai-asr.js";
 
 export interface Env {
   AI?: Ai;

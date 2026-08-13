@@ -107,7 +107,9 @@ const run = () => {
     ? JSON.parse(readFileSync(projectConfigPath, "utf8"))
     : { mcpServers: {} };
   if (hasCloudflareCodeMode(projectConfig) || hasCloudflareCodeMode(homeConfig)) {
-    console.error("FAIL: Code Mode MCP is still configured. Use the Cursor Cloudflare plugin instead.");
+    console.error(
+      "FAIL: Code Mode MCP is still configured. Use the Cursor Cloudflare plugin instead.",
+    );
     return 2;
   }
   if (checkOnly) {

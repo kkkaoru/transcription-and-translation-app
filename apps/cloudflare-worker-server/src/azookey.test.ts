@@ -22,11 +22,11 @@ import {
   INFERENCE_PUBLIC_HOST,
   isPublicInferenceRequest,
   isWebSocketUpgrade,
+  isZenzConvertModel,
   openAzookeySocket,
   parseAzookeyMessage,
   readyAzookeyMessage,
   resolveAzookeyHandshakeAuthorization,
-  isZenzConvertModel,
   VIBRATO_MAX_RESPONSE_BYTES,
 } from "./azookey.js";
 
@@ -146,7 +146,9 @@ describe("AzooKey Worker text contract", () => {
     expect(
       parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "worker" })),
     ).toMatchObject({ vibratoExecution: "worker" });
-    expect(parseAzookeyMessage(JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }))).toMatchObject({
+    expect(
+      parseAzookeyMessage(JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL })),
+    ).toMatchObject({
       model: AZOOKEY_ZENZ_XSMALL_MODEL,
     });
     expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, model: "unknown-model" }))).toThrow(
@@ -232,7 +234,7 @@ describe("AzooKey Worker text contract", () => {
     // Local MODEL_ROUTES often points at 127.0.0.1:8081 for xsmall. When that
     // llama-server is down, fetch throws TypeError — not HTTP 5xx — and must
     // still use the portable dictionary instead of "AzooKey conversion failed".
-    const fetcher = vi.fn(async () => {
+    const fetcher = vi.fn(() => {
       throw new TypeError("fetch failed");
     });
     const message = parseAzookeyMessage(
@@ -260,8 +262,8 @@ describe("AzooKey Worker text contract", () => {
   });
 
   it("uses a configured Zenzai upstream when MODEL_ROUTES exposes the model", async () => {
-    const fetcher = vi.fn(async () =>
-      new Response(JSON.stringify({ content: "今日は配信です" }), { status: 200 }),
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ content: "今日は配信です" }), { status: 200 }),
     );
     const message = parseAzookeyMessage(
       JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_SMALL_MODEL }),
@@ -313,8 +315,8 @@ describe("AzooKey Worker text contract", () => {
   });
 
   it("falls back when a configured Zenzai upstream returns empty content", async () => {
-    const fetcher = vi.fn(async () =>
-      new Response(JSON.stringify({ content: "   " }), { status: 200 }),
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ content: "   " }), { status: 200 }),
     );
     const message = parseAzookeyMessage(
       JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
@@ -335,8 +337,8 @@ describe("AzooKey Worker text contract", () => {
 
   it("falls back when a configured Zenzai upstream returns oversized output", async () => {
     const oversized = "あ".repeat(AZOOKEY_MAX_TEXT_BYTES + 1);
-    const fetcher = vi.fn(async () =>
-      new Response(JSON.stringify({ content: oversized }), { status: 200 }),
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ content: oversized }), { status: 200 }),
     );
     const message = parseAzookeyMessage(
       JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
@@ -356,8 +358,8 @@ describe("AzooKey Worker text contract", () => {
   });
 
   it("rejects when the Zenzai deadline is spent before dictionary fallback can run", async () => {
-    const fetcher = vi.fn(async () =>
-      new Response(JSON.stringify({ content: "今日は配信です" }), { status: 200 }),
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ content: "今日は配信です" }), { status: 200 }),
     );
     let calls = 0;
     vi.stubGlobal("performance", {
@@ -1177,7 +1179,7 @@ describe("xsmall request fallback quality regressions", () => {
     return converter;
   };
 
-  const convertXsmall = async (
+  const convertXsmall = (
     vibratoInput: string,
     runtime: Pick<AzookeyRuntime, "converter" | "modelRoutes" | "fetcher" | "timeoutMs">,
   ) => {
@@ -1298,8 +1300,7 @@ describe("xsmall request fallback quality regressions", () => {
     // Successful /completion is real neural path: no modelFallback, model stays
     // zenz-v3.2-xsmall-gguf. Do not rewrite this into a dictionary surface.
     const fetcher = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ content: "降水確率は6０°蕨" }), { status: 200 }),
+      async () => new Response(JSON.stringify({ content: "降水確率は6０°蕨" }), { status: 200 }),
     );
     const result = await convertXsmall("こうすいかくりつは60わらび", {
       converter: (text) => `dict-must-not-run:${text}`,

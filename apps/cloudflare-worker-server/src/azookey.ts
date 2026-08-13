@@ -1354,9 +1354,7 @@ export const readyAzookeyMessage = (
   const availableModels = [
     AZOOKEY_MODEL,
     ...AZOOKEY_CONVERT_MODELS.filter(
-      (model) =>
-        model !== AZOOKEY_MODEL &&
-        (Boolean(modelRoutes[model]) || zenzDictionaryFallbackAvailable),
+      (model) => model !== AZOOKEY_MODEL && (Boolean(modelRoutes[model]) || zenzDictionaryFallbackAvailable),
     ),
   ];
   return jsonMessage({

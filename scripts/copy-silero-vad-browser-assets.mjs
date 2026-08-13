@@ -37,7 +37,8 @@ const ortDistCandidates = [
   resolve(root, "node_modules/onnxruntime-web/dist"),
 ];
 
-const isUsableOnnx = (path) => existsSync(path) && statSync(path).isFile() && statSync(path).size >= MIN_ONNX_BYTES;
+const isUsableOnnx = (path) =>
+  existsSync(path) && statSync(path).isFile() && statSync(path).size >= MIN_ONNX_BYTES;
 
 const ensureSileroOnnx = async () => {
   mkdirSync(dirname(publicOnnx), { recursive: true });

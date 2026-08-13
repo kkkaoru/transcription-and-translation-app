@@ -184,7 +184,12 @@ export const smokeWorkersAiAsr = async ({ origin, headers }) => {
     return { ok: false, stage: "bad_json", status: response.status };
   }
   if (response.status === 503 && payload?.error?.code === "asr_workers_ai_unavailable") {
-    return { ok: "skipped", stage: "unavailable", status: response.status, code: payload.error.code };
+    return {
+      ok: "skipped",
+      stage: "unavailable",
+      status: response.status,
+      code: payload.error.code,
+    };
   }
   if (!response.ok) {
     return {
@@ -192,7 +197,9 @@ export const smokeWorkersAiAsr = async ({ origin, headers }) => {
       stage: "http_error",
       status: response.status,
       code: payload?.error?.code,
-      message: present(payload?.error?.message) ? String(payload.error.message).slice(0, 160) : undefined,
+      message: present(payload?.error?.message)
+        ? String(payload.error.message).slice(0, 160)
+        : undefined,
     };
   }
   if (typeof payload?.text !== "string") {

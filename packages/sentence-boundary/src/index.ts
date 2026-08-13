@@ -121,12 +121,7 @@ export const detectCaptionSoftBreaks = (
     const remainder = chars.slice(index).join("");
     const next = remainder.trimStart();
     const first = next[0];
-    if (
-      next &&
-      first !== undefined &&
-      !SENTENCE_PUNCT.test(first) &&
-      !/\p{M}/u.test(first)
-    ) {
+    if (next && first !== undefined && !SENTENCE_PUNCT.test(first) && !/\p{M}/u.test(first)) {
       // Keep です/でした/でしょう intact — soft で is not a wrap point there.
       if (trimmed.endsWith("で") && COPULA_AFTER_DE.test(next)) {
         continue;
@@ -143,8 +138,7 @@ export const detectCaptionSoftBreaks = (
 
 const codePoints = (text: string): string[] => Array.from(text);
 
-const normalizeCaptionText = (text: string): string =>
-  text.replace(/\r\n?/gu, "\n").trim();
+const normalizeCaptionText = (text: string): string => text.replace(/\r\n?/gu, "\n").trim();
 
 const dedupeOffsets = (offsets: number[]): number[] =>
   [...new Set(offsets)].sort((left, right) => left - right);
@@ -282,13 +276,9 @@ const detectHeuristicEnds = (text: string, english: boolean, allowCopula = true)
  * copula/particle endings on the display surface and, for Japanese, the
  * phonetic `azookeyInputText` when the surface has no detectable end yet.
  */
-const normalizeForStickyCompare = (text: string): string =>
-  text.replace(/\r\n?/gu, "\n").trim();
+const normalizeForStickyCompare = (text: string): string => text.replace(/\r\n?/gu, "\n").trim();
 
-const resolvePreviousSentenceEnds = (
-  text: string,
-  hints: CaptionSentenceHints,
-): number[] => {
+const resolvePreviousSentenceEnds = (text: string, hints: CaptionSentenceHints): number[] => {
   const previousText = hints.previousText;
   if (typeof previousText !== "string") {
     return [];

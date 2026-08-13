@@ -39,12 +39,7 @@ const accessHeaders = (token) => ({
 
 export const handleCompareDevAsrAccessProxyRequest = async (
   request,
-  {
-    env = process.env,
-    dotenv = {},
-    fetchImpl = fetch,
-    compareOrigin = COMPARE_ORIGIN,
-  } = {},
+  { env = process.env, dotenv = {}, fetchImpl = fetch, compareOrigin = COMPARE_ORIGIN } = {},
 ) => {
   const pathname = new URL(request.url).pathname;
   if (pathname !== COMPARE_ASR_PATH) {

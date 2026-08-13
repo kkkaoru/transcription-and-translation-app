@@ -29,7 +29,7 @@ describe("compare-dev ASR Access proxy", () => {
 
   it("probes hosted compare health with Access ST and forwards ASR POST", async () => {
     const calls = [];
-    const fetchImpl = async (url, init) => {
+    const fetchImpl = (url, init) => {
       calls.push({ url: String(url), method: init?.method ?? "GET", headers: init?.headers });
       if (String(url).endsWith("/v1/azookey")) {
         return Response.json({ ok: true });
@@ -69,7 +69,7 @@ describe("compare-dev ASR Access proxy", () => {
   });
 
   it("strips upstream content-encoding so next.dev can parse Nova-3 JSON", async () => {
-    const fetchImpl = async (url, init) => {
+    const fetchImpl = (url, _init) => {
       if (String(url).endsWith("/v1/azookey")) {
         return Response.json({ ok: true });
       }
