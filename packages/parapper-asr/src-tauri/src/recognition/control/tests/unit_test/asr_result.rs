@@ -3721,6 +3721,157 @@ fn turn_runtime_later_160ms_after_interim_silence_does_not_attach_to_previous_tu
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "invariant covers in-flight 160ms hold, child next-utterance 160ms isolation, prefix, and uncovered tail"
+)]
+fn turn_runtime_later_child_160ms_after_interim_silence_does_not_attach_to_previous_turn() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    runtime.step();
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("in-flight prefix must yield to the same-turn 160ms tail");
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert_ne!(chunk.request_id, prefix.request_id);
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        Some(2),
+        SegmentCloseReason::InterimResultSilenceReached,
+        310..410,
+    );
+    runtime_state(&mut runtime).pending_segment(
+        4,
+        Some(2),
+        SegmentCloseReason::InterimChunkReached,
+        410..570,
+    );
+    runtime.step();
+
+    let in_flight = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("later child 160ms must not steal in-flight 160ms");
+    assert_eq!(in_flight.request_id, chunk.request_id);
+    assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(
+        runtime.pending.asr_segments.iter().map(|segment| segment.segment_id).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("deferred prefix CompletionCheck must resume before remint");
+    assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(resumed.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("続き"),
+        "holding child next-utterance 160ms must keep the uncovered 160ms tail; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        vec![2.0; 160],
+        "child next-utterance 160ms must not attach while prefix CompletionCheck resumes"
+    );
+
+    let resumed = resumed.clone();
+    asr_handle.complete_request_with_text(&resumed, "全体。");
+    runtime.step();
+
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "AfterInterimSilence after the 160ms grid must remint even with a later child 160ms queued"
+    );
+    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
+        "the next utterance must dispatch after remint instead of attaching later 160ms to turn 1",
+    );
+    assert_ne!(
+        dispatched.target.turn_id,
+        TurnId(1),
+        "the next utterance must not attach to the previous turn"
+    );
+    assert_ne!(
+        dispatched.close_reason,
+        Some(SegmentCloseReason::InterimChunkReached),
+        "later child 160ms must not take the previous turn's slot as a continuation tail"
+    );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
+    assert_eq!(
+        dispatched.target.range,
+        AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
+    );
+    assert_eq!(
+        runtime.pending.asr_segments.front().map(|segment| {
+            (segment.segment_id, segment.reason, segment.previous_segment_id)
+        }),
+        Some((4, SegmentCloseReason::InterimChunkReached, Some(2))),
+        "later child 160ms must stay queued for the next utterance"
+    );
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs
+        .iter()
+        .find(|output| output.is_final && output.turn_id == 1)
+        .expect("turn 1 must emit a final caption");
+    assert!(
+        final_output.text.contains("全体"),
+        "previous turn must keep prefix completion; got {}",
+        final_output.text
+    );
+    assert!(
+        final_output.text.contains("続き"),
+        "previous turn must keep the uncovered 160ms tail; got {}",
+        final_output.text
+    );
+    assert_eq!(
+        final_output.phrase,
+        [vec![1.0; 150], vec![2.0; 160]].concat(),
+        "previous turn must not keep the next utterance's later child 160ms tail"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "invariant covers in-flight 160ms hold, remint of a stream-reset EndSilence root, prefix, and uncovered tail"
 )]
 fn turn_runtime_end_silence_root_remints_after_160ms_without_stealing_grid() {
