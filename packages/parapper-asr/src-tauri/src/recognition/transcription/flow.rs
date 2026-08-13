@@ -654,7 +654,9 @@ mod tests {
     use crate::{
         config::{AsrLanguage, AsrModel, ParapperConfig, TurnDetector},
         recognition::{
-            transcription::asr::task::{AsrTarget, SegmentId, TurnId, TurnRevision},
+            transcription::asr::task::{
+                AsrTarget, AudioRange, GlobalSampleIndex, SegmentId, TurnId, TurnRevision,
+            },
             turn::Turn,
         },
     };
@@ -775,10 +777,8 @@ mod tests {
     }
 
     #[test]
-    fn turn_detector_can_connect_interim_after_completion_controls_request_merging() {
-        for (turn_detector, expected_audio_len, expected_remaining) in
-            [(TurnDetector::Namo, 20, 0), (TurnDetector::Simple, 10, 1)]
-        {
+    fn end_silence_completion_does_not_fold_following_after_interim_silence() {
+        for turn_detector in [TurnDetector::Namo, TurnDetector::Simple] {
             let mut runtime = RecognitionSession::new(&parapper_config! {
                 turn_detector: turn_detector,
                 ..ParapperConfig::default()
@@ -804,10 +804,16 @@ mod tests {
                 .as_ref()
                 .expect("completion request should be dispatched");
             assert_eq!(request.kind, AsrTaskKind::CompletionCheck);
-            assert_eq!(request.audio.len(), expected_audio_len, "turn_detector={turn_detector:?}");
+            assert_eq!(request.audio.len(), 10, "turn_detector={turn_detector:?}");
             assert_eq!(
-                runtime.pending.asr_segments.len(),
-                expected_remaining,
+                request.target.range,
+                AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(10)),
+                "turn_detector={turn_detector:?}"
+            );
+            assert_eq!(runtime.pending.asr_segments.len(), 1, "turn_detector={turn_detector:?}");
+            assert_eq!(
+                runtime.pending.asr_segments.front().map(|segment| segment.reason),
+                Some(SegmentCloseReason::InterimResultSilenceReached),
                 "turn_detector={turn_detector:?}"
             );
         }
