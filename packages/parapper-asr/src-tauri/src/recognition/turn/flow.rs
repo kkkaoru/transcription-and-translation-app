@@ -855,9 +855,9 @@ impl RecognitionSession {
             // previous, or restarts as a new root after a stream reset. Once
             // this turn is closing — or the child/root follows an applied 160ms
             // grid — that segment remints after finalize instead of merging
-            // into the caption as a same-turn continuation. A later 160ms that
-            // names the applied grid as previous still belongs to that next
-            // utterance, not this turn.
+            // into the caption as a same-turn continuation. A later 160ms or
+            // max-chunk that names the applied grid as previous still belongs
+            // to that next utterance, not this turn.
             return false;
         }
         if segment.turn_id().0 <= turn_id {
@@ -940,8 +940,10 @@ impl RecognitionSession {
         segment: &PendingAsrSegment,
         turn_id: u64,
     ) -> bool {
-        segment.reason == SegmentCloseReason::InterimChunkReached
-            && self.after_interim_silence_follows_applied_160ms(turn_id)
+        matches!(
+            segment.reason,
+            SegmentCloseReason::InterimChunkReached | SegmentCloseReason::SegmentMaxChunksReached
+        ) && self.after_interim_silence_follows_applied_160ms(turn_id)
     }
 
     fn prefix_request_is_active_for_turn(&self, turn_id: u64) -> bool {
