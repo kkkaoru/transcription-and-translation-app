@@ -1618,6 +1618,246 @@ fn turn_runtime_closing_interim_chunk_takes_rerecognition_slot_on_same_turn() {
     let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
     assert_eq!(draft.combined_text, "全体。");
     assert_eq!(draft.full_audio, vec![1.0; 150]);
+
+    let chunk = dispatched.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "closing 160ms tail must restart grammar rerecognition instead of waiting on timeout"
+    );
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.target.turn_id),
+        Some(TurnId(1))
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "closing 160ms tail must not drop already-visible text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "closing 160ms tail must append the continuation; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 160]].concat(),
+        "closing 160ms tail must keep uncovered tail audio"
+    );
+}
+
+#[test]
+fn turn_runtime_closing_interim_chunk_rerecognition_final_keeps_visible_text_and_tail() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let _ = builder
+        .use_scripted_decisions(vec![TurnDecision { is_end_of_turn: true, confidence: 0.99 }]);
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    asr_handle.complete_request_with_text(&completion, "全体。");
+    runtime.step();
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("closing streaming chunk must take the slot");
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("grammar rerecognition must restart after the closing 160ms tail");
+    assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+    asr_handle.complete_request_with_text(&rerecognition, "全体。続き");
+    runtime.step();
+
+    assert!(
+        runtime.turn_store.finalized_turns.contains(&1),
+        "restarted grammar rerecognition must be able to finalize instead of waiting on timeout"
+    );
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let final_output = outputs
+        .iter()
+        .find(|output| output.is_final && output.turn_id == 1)
+        .expect("turn 1 must keep its final caption");
+    assert!(
+        final_output.text.contains("全体"),
+        "final must not drop already-visible text; got {}",
+        final_output.text
+    );
+    assert!(
+        final_output.text.contains("続き"),
+        "final must keep the 160ms tail text; got {}",
+        final_output.text
+    );
+    assert_eq!(
+        final_output.phrase,
+        [vec![1.0; 150], vec![2.0; 160]].concat(),
+        "final must keep uncovered tail audio from the closing 160ms chunk"
+    );
+}
+
+#[test]
+fn turn_runtime_closing_queued_interim_chunks_drain_before_rerecognition() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime)
+        .pending_segment(2, Some(1), SegmentCloseReason::InterimChunkReached, 150..310)
+        .pending_segment(3, Some(2), SegmentCloseReason::InterimChunkReached, 310..470);
+    asr_handle.complete_request_with_text(&completion, "全体。");
+    runtime.step();
+
+    let tail = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("queued 160ms chunks must take the slot before grammar rerecognition");
+    assert_eq!(tail.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(tail.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(tail.target.turn_id, TurnId(1));
+    assert_eq!(
+        tail.target.range,
+        AudioRange::new(GlobalSampleIndex(150), GlobalSampleIndex(470)),
+        "contiguous 160ms chunks may merge, but they must still drain as same-turn tail ASR"
+    );
+    assert!(runtime.pending.asr_segments.is_empty());
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    asr_handle.complete_request_with_text(&tail, "続き");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "grammar rerecognition must restart only after queued 160ms tail ASR has drained"
+    );
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.target.turn_id),
+        Some(TurnId(1))
+    );
+}
+
+#[test]
+fn turn_runtime_closing_in_flight_rerecognition_yields_to_later_interim_chunk_then_restarts() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    asr_handle.complete_request_with_text(&completion, "全体。");
+    runtime.step();
+    let rerecognition = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("without a queued continuation, Namo still starts grammar rerecognition");
+    assert_eq!(rerecognition.kind, AsrTaskKind::Rerecognition);
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    runtime.step();
+
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("in-flight closing rerecognition must yield the slot to same-turn 160ms ASR");
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    asr_handle.complete_request_with_text(&rerecognition, "短い");
+    runtime.step();
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.combined_text, "全体。",
+        "a late grammar rerecognition result must not drop already-visible text"
+    );
+
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("the 160ms chunk must stay in flight after a mismatched late result");
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "grammar rerecognition must restart after the late-yielded 160ms tail"
+    );
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "restarted closing rerecognition must not drop visible text; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 160]].concat(),
+        "restarted closing rerecognition must keep uncovered tail audio"
+    );
 }
 
 #[test]

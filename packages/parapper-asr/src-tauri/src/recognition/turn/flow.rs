@@ -210,19 +210,16 @@ impl RecognitionSession {
         turn_id: u64,
         purpose: RerecognitionPurpose,
     ) -> bool {
-        let grammar_already_completes = match purpose {
+        match purpose {
             RerecognitionPurpose::SimpleTurnCheckFinal | RerecognitionPurpose::TimeoutFinal => {
                 self.stop_accepting_root_while_closing(turn_id);
-                true
             }
             RerecognitionPurpose::GrammarAfterCompletion => {
-                let completes = self.grammar_already_completes_turn(turn_id);
-                if completes {
+                if self.grammar_already_completes_turn(turn_id) {
                     self.stop_accepting_root_while_closing(turn_id);
                 }
-                completes
             }
-        };
+        }
         if self.pending_asr_preempts_rerecognition(turn_id) {
             // A true next utterance remints via yield_rerecognition_slot_for_next_utterance.
             return false;
@@ -230,12 +227,10 @@ impl RecognitionSession {
         if !self.pending_same_utterance_continuation(turn_id) {
             return false;
         }
-        if matches!(purpose, RerecognitionPurpose::GrammarAfterCompletion)
-            && !grammar_already_completes
-        {
-            // Mid-clause Continue still needs grammar rerecognition, but the
-            // same-utterance tail must not wait behind it. Restart after the
-            // slot is free; do not mark the turn closing (that would remint).
+        if matches!(purpose, RerecognitionPurpose::GrammarAfterCompletion) {
+            // Closing CompleteTurn used to skip this flag, so a 160ms tail that
+            // stole the slot never restarted rerecognition or final and waited
+            // on timeout. Restart after the tail; do not remint.
             self.requests.deferred_grammar_rerecognition_turn = Some(turn_id);
         }
         true
