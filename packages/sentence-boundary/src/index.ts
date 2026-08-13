@@ -33,6 +33,10 @@ export interface CaptionSentenceHints {
    * Polite ます stems are never sentence ends.
    */
   deferSentencePaging?: boolean;
+  /** Previous utterance text for sticky sentence-end carryover (normalized). */
+  previousText?: string | null;
+  /** Previous utterance sentence ends for sticky carryover. */
+  previousEnds?: number[] | null;
 }
 
 const SOFT_PARTICLE_SUFFIX =
@@ -273,6 +277,39 @@ const detectHeuristicEnds = (text: string, english: boolean, allowCopula = true)
  * copula/particle endings on the display surface and, for Japanese, the
  * phonetic `azookeyInputText` when the surface has no detectable end yet.
  */
+const resolveStickySuppliedEnds = (
+  text: string,
+  hints: CaptionSentenceHints,
+): number[] | null => {
+  const previousText = hints.previousText?.trim() ?? "";
+  const previousEnds = hints.previousEnds ?? [];
+  if (!previousText || previousEnds.length === 0) {
+    return null;
+  }
+  const normalized = text.replace(/\r\n?/gu, "\n").trim();
+  const previous = previousText.replace(/\r\n?/gu, "\n").trim();
+  if (!previous || !normalized.startsWith(previous)) {
+    return null;
+  }
+  const textLen = codePoints(normalized).length;
+  const previousLen = codePoints(previous).length;
+  const expected = previousEnds.filter(
+    (offset) => Number.isFinite(offset) && offset > 0 && offset <= previousLen && offset <= textLen,
+  );
+  if (expected.length === 0) {
+    return null;
+  }
+  const current = detectHeuristicEnds(normalized, hints.key === "translation", hints.deferSentencePaging !== true);
+  if (current.length > 0) {
+    return null;
+  }
+  const supplied = hints.sentenceEndOffsets ?? [];
+  if (supplied.length > 0) {
+    return null;
+  }
+  return expected;
+};
+
 export const detectCaptionSentenceEnds = (
   text: string,
   hints: CaptionSentenceHints = {},
@@ -280,6 +317,10 @@ export const detectCaptionSentenceEnds = (
   const english = hints.key === "translation";
   const allowCopula = hints.deferSentencePaging !== true;
   const chars = codePoints(text);
+  const stickyEnds = resolveStickySuppliedEnds(text, hints);
+  if (stickyEnds != null) {
+    return stickyEnds;
+  }
   const supplied = (hints.sentenceEndOffsets ?? []).filter((offset) => {
     if (!Number.isFinite(offset) || offset <= 0 || offset > chars.length) {
       return false;
@@ -320,6 +361,74 @@ const sliceNewestSentence = (normalized: string, ends: number[]): string => {
     return chars.slice(previousEnd, lastEnd).join("").trim();
   }
   return chars.slice(lastEnd).join("").trim() || normalized;
+};
+
+const normalizeForStickyCompare = (text: string): string =>
+  text.replace(/\r\n?/gu, "\n").trim();
+
+export interface CaptionSentenceStickyState {
+  previousText: string;
+  previousEnds: number[];
+}
+
+export const mergeCaptionSentenceEndsForStickyPrefix = (
+  text: string,
+  hints: CaptionSentenceHints,
+  sticky: CaptionSentenceStickyState | null | undefined,
+): number[] | null => {
+  if (!sticky || !sticky.previousText || sticky.previousEnds.length === 0) {
+    return null;
+  }
+  const normalized = normalizeForStickyCompare(text);
+  const previous = normalizeForStickyCompare(sticky.previousText);
+  if (!previous || !normalized.startsWith(previous)) {
+    return null;
+  }
+  const textScalars = codePoints(normalized).length;
+  const previousScalars = codePoints(previous).length;
+  const expected = sticky.previousEnds
+    .map((offset) => {
+      if (!Number.isFinite(offset) || offset <= 0) {
+        return null;
+      }
+      if (offset > previousScalars) {
+        return null;
+      }
+      const prefix = codePoints(previous).slice(0, offset).join("");
+      if (!normalizeForStickyCompare(previous).startsWith(normalizeForStickyCompare(prefix))) {
+        return null;
+      }
+      return offset;
+    })
+    .filter(
+      (value): value is number => value != null && value > 0 && value <= textScalars,
+    );
+  if (expected.length === 0) {
+    return null;
+  }
+  const current = detectCaptionSentenceEnds(normalized, hints);
+  const merged = [...new Set([...current, ...expected])].sort((left, right) => left - right);
+  const visibleWithMerged = sliceNewestSentence(normalized, merged);
+  if (visibleWithMerged === normalized) {
+    return null;
+  }
+  return merged;
+};
+
+export const selectVisibleCaptionSentenceWithSticky = (
+  text: string,
+  hints: CaptionSentenceHints = {},
+  sticky: CaptionSentenceStickyState | null | undefined = null,
+): string => {
+  const normalized = text.replace(/\r\n?/gu, "\n").trim();
+  if (!normalized) {
+    return "";
+  }
+  const merged = mergeCaptionSentenceEndsForStickyPrefix(normalized, hints, sticky);
+  if (merged != null) {
+    return sliceNewestSentence(normalized, merged);
+  }
+  return sliceNewestSentence(normalized, detectCaptionSentenceEnds(normalized, hints));
 };
 
 /** Newest complete sentence, or the in-progress sentence after the last end. */
