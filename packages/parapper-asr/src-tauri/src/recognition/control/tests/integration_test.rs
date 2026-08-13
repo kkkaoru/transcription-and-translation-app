@@ -894,6 +894,15 @@ fn turn_runtime_nemotron_interim_updates_same_segment_without_duplicating_turn_a
         NEMOTRON_CHUNK_SAMPLES * 2,
         "Turn replacement must still keep the cumulative source audio for UI output"
     );
+    assert_eq!(
+        second_request.target.range.start_sample,
+        GlobalSampleIndex(NEMOTRON_CHUNK_SAMPLES as u64),
+        "the 160ms request range must be the applied delta, not cumulative 0..emitted"
+    );
+    assert_eq!(
+        second_request.target.range.end_sample,
+        GlobalSampleIndex((NEMOTRON_CHUNK_SAMPLES * 2) as u64),
+    );
     asr_handle.complete_request_with_text(&second_request, "あいう");
     runtime.step();
 

@@ -244,7 +244,7 @@ impl StreamingInterimSegmentState {
         let (source_audio, source_vad_results) = self.audio_and_vad_range(0, emitted_samples);
         let (audio, vad_results) = self.audio_and_vad_range(delta_start, emitted_samples);
         let range = AudioRange::new(
-            self.range_start,
+            GlobalSampleIndex(self.range_start.0 + delta_start as u64),
             GlobalSampleIndex(self.range_start.0 + emitted_samples as u64),
         );
         PendingAsrSegment {

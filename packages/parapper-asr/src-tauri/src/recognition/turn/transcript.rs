@@ -45,7 +45,15 @@ impl RecognitionSession {
             )
         });
         let existing_audio_range = self.turn_store.audio_ranges.get(&turn_id).copied();
-        self.merge_turn_audio_range(turn_id, request.target.range);
+        let streaming_source_skip = streaming_chunk_uncovered_source_start(
+            request.close_reason,
+            &request.source_audio,
+            &request.audio,
+        );
+        self.merge_contiguous_turn_audio_range(
+            turn_id,
+            applied_streaming_chunk_range(request, streaming_source_skip),
+        );
         if completion_is_duplicate_tail {
             if request.kind == AsrTaskKind::CompletionCheck {
                 self.refresh_visible_draft_boundary_from_completion(turn_id, &transcript);
@@ -193,11 +201,7 @@ impl RecognitionSession {
                 } else {
                     0
                 };
-                range_skip.max(prefix_skip).max(streaming_chunk_uncovered_source_start(
-                    request.close_reason,
-                    &request.source_audio,
-                    &request.audio,
-                ))
+                range_skip.max(prefix_skip).max(streaming_source_skip)
             };
             let append_vad_results;
             let source_vad_results = if append_source_start == 0 {
@@ -243,11 +247,21 @@ impl RecognitionSession {
             }
         }
         if request.close_reason == Some(SegmentCloseReason::InterimChunkReached) {
-            self.turn_store
-                .streaming_interim_ranges
-                .entry(turn_id)
-                .and_modify(|range| *range = range.merge(request.target.range))
-                .or_insert(request.target.range);
+            let applied_range = applied_streaming_chunk_range(request, streaming_source_skip);
+            match self.turn_store.streaming_interim_ranges.entry(turn_id) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let current = *entry.get();
+                    if ranges_are_contiguous(current, applied_range) {
+                        entry.insert(current.merge(applied_range));
+                    } else {
+                        // A hole after a Reazon prefix must not inflate coverage to 0..emitted.
+                        entry.insert(applied_range);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(applied_range);
+                }
+            }
         } else if completion_replaces_streaming_interim {
             self.turn_store.streaming_interim_ranges.remove(&turn_id);
         }
@@ -410,6 +424,12 @@ impl RecognitionSession {
         if request.target.range.start_sample > streaming_range.start_sample {
             return false;
         }
+        // A prefix CompletionCheck that only covers the Reazon window must not
+        // replace a later 160ms delta just because the chunk's cumulative range
+        // was 0..emitted.
+        if request.target.range.end_sample < streaming_range.end_sample {
+            return false;
+        }
         let Some(draft) = self.turn_store.turns.get(&turn_id).map(Turn::draft) else {
             return false;
         };
@@ -442,11 +462,17 @@ impl RecognitionSession {
         if draft.latest_segment_id != Some(first_segment_id) {
             return None;
         }
-        // Completion ranges are measured over request.audio, which may start with
-        // ASR-only copied silence that source_audio deliberately omits. Token
-        // timestamps live in that audio space; turn-phrase audio uses source space.
-        let geometric_overlap =
-            samples_between(request.target.range.start_sample, streaming_range.end_sample);
+        // Prefix-trim only the leading completion samples that actually sit
+        // inside the applied streaming delta. A cumulative 0..emitted range
+        // must not make a later hole look already covered.
+        if request.target.range.start_sample < streaming_range.start_sample {
+            return None;
+        }
+        let overlap_end = request.target.range.end_sample.min(streaming_range.end_sample);
+        if overlap_end <= request.target.range.start_sample {
+            return None;
+        }
+        let geometric_overlap = samples_between(request.target.range.start_sample, overlap_end);
         let leading_padding =
             leading_asr_only_padding_samples(&request.audio, &request.source_audio);
         let source_samples =
@@ -465,11 +491,21 @@ impl RecognitionSession {
     }
 
     fn merge_turn_audio_range(&mut self, turn_id: u64, range: AudioRange) {
-        self.turn_store
-            .audio_ranges
-            .entry(turn_id)
-            .and_modify(|current| *current = current.merge(range))
-            .or_insert(range);
+        self.merge_contiguous_turn_audio_range(turn_id, range);
+    }
+
+    fn merge_contiguous_turn_audio_range(&mut self, turn_id: u64, range: AudioRange) {
+        match self.turn_store.audio_ranges.entry(turn_id) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let current = *entry.get();
+                if ranges_are_contiguous(current, range) {
+                    entry.insert(current.merge(range));
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(range);
+            }
+        }
     }
 
     pub(in crate::recognition) fn apply_rerecognition_transcript(
@@ -942,6 +978,33 @@ fn streaming_chunk_uncovered_source_start(
     } else {
         0
     }
+}
+
+/// Map a cumulative `0..emitted` 160ms range onto the suffix that was actually
+/// appended (`audio`). A 1-sample helper `audio` suffix must not collapse the
+/// window; production deltas are the full 160ms grid.
+fn applied_streaming_chunk_range(request: &AsrRequest, source_skip: usize) -> AudioRange {
+    if request.close_reason != Some(SegmentCloseReason::InterimChunkReached) || source_skip == 0 {
+        return request.target.range;
+    }
+    if request.audio.len() <= 1
+        || request.source_audio.len()
+            != samples_between(request.target.range.start_sample, request.target.range.end_sample)
+    {
+        return request.target.range;
+    }
+    let appended = request.source_audio.len() - source_skip;
+    let end = request.target.range.end_sample;
+    let start = GlobalSampleIndex(end.0.saturating_sub(appended as u64));
+    if start < end && start >= request.target.range.start_sample {
+        AudioRange::new(start, end)
+    } else {
+        request.target.range
+    }
+}
+
+fn ranges_are_contiguous(left: AudioRange, right: AudioRange) -> bool {
+    left.end_sample >= right.start_sample && right.end_sample >= left.start_sample
 }
 
 fn samples_between(start: GlobalSampleIndex, end: GlobalSampleIndex) -> usize {
