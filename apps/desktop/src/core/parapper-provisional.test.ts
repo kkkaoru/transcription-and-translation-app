@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildParapperProvisionalCaption,
   buildProvisionalCaptionFromAsrStage,
+  joinDisjointAsrStageOntoLead,
   pickLatestSuccessfulAsrStage,
+  rememberOverlayAsrStage,
 } from "./parapper-provisional";
 
 describe("buildParapperProvisionalCaption", () => {
@@ -342,5 +344,48 @@ describe("pickLatestSuccessfulAsrStage", () => {
         },
       ])?.utteranceId,
     ).toBe("parapper:s:1:9");
+  });
+});
+
+describe("joinDisjointAsrStageOntoLead", () => {
+  const lead = {
+    stage: "asr" as const,
+    ok: true,
+    utteranceId: "parapper:s:1:8",
+    outputText: "会議を始めます",
+    startedAt: 10,
+    at: 40,
+  };
+  const tail = {
+    stage: "asr" as const,
+    ok: true,
+    utteranceId: "parapper:s:1:8",
+    outputText: "続きがあります",
+    startedAt: 10,
+    at: 80,
+  };
+
+  it("joins a same-id equal-start disjoint tail onto the tracked lead", () => {
+    const joined = joinDisjointAsrStageOntoLead(lead, tail);
+    expect(joined.outputText).toContain("会議を始めます");
+    expect(joined.outputText).toContain("続きがあります");
+    expect(joined.outputText).not.toBe("続きがあります");
+  });
+
+  it("does not concatenate unrelated different-startedAt turns", () => {
+    expect(
+      joinDisjointAsrStageOntoLead(lead, { ...tail, startedAt: 90, utteranceId: "parapper:s:1:8" })
+        .outputText,
+    ).toBe("続きがあります");
+    expect(
+      joinDisjointAsrStageOntoLead(lead, { ...tail, utteranceId: "parapper:s:1:9" }).outputText,
+    ).toBe("続きがあります");
+  });
+
+  it("folds a live tail-only row with the lead once history is remembered", () => {
+    const buffered = rememberOverlayAsrStage(rememberOverlayAsrStage([], tail), lead);
+    const folded = pickLatestSuccessfulAsrStage(buffered);
+    expect(folded?.outputText).toContain("会議を始めます");
+    expect(folded?.outputText).toContain("続きがあります");
   });
 });

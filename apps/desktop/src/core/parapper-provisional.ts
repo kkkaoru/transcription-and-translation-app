@@ -1,7 +1,28 @@
 import { asrLatencyFromUnknown } from "./caption-latency";
-import { isShorterSameUtteranceSurface, mergeCaptionPayload } from "./caption-updates";
+import {
+  isShorterSameUtteranceSurface,
+  mergeCaptionPayload,
+  shouldAppendDisjointSameTurnSurfaces,
+} from "./caption-updates";
 import { selectParapperSurfaceText } from "./parapperStream";
 import type { CaptionPayload, PipelineStageEvent } from "./types";
+
+/** Pipeline ASR fields OverlayApp folds so live ingest matches queue join. */
+export type OverlayAsrFoldStage = Pick<
+  PipelineStageEvent,
+  | "stage"
+  | "ok"
+  | "utteranceId"
+  | "outputText"
+  | "surfaceText"
+  | "startedAt"
+  | "at"
+  | "captureGeneration"
+  | "asrLatency"
+>;
+
+/** Bound the overlay live+history ASR fold buffer. */
+export const OVERLAY_ASR_STAGE_BUFFER_MAX = 64;
 
 /** Parapper turn fields needed to synthesize an immediate provisional caption. */
 export type ParapperProvisionalInput = {
@@ -111,6 +132,64 @@ const asrStageSurface = (event: Pick<PipelineStageEvent, "outputText" | "surface
   event.surfaceText?.trim() || event.outputText.trim();
 
 const ASR_FOLD_LANGUAGES = { sourceLanguage: "ja", targetLanguage: "en" };
+
+/**
+ * Same-turn disjoint join Overlay live uses so a tail-only stage is not
+ * first-painted while the lead is already the tracked ASR surface. Equal
+ * `startedAt` only: a later start is a new turn and must replace.
+ */
+export const joinDisjointAsrStageOntoLead = <T extends OverlayAsrFoldStage>(
+  lead: T | null | undefined,
+  incoming: T,
+): T => {
+  if (lead?.stage !== "asr" || incoming.stage !== "asr" || !lead.ok || !incoming.ok) {
+    return incoming;
+  }
+  if (lead.utteranceId !== incoming.utteranceId) {
+    return incoming;
+  }
+  if (
+    Number.isFinite(lead.startedAt) &&
+    Number.isFinite(incoming.startedAt) &&
+    lead.startedAt !== incoming.startedAt
+  ) {
+    return incoming;
+  }
+  const leadText = asrStageSurface(lead);
+  const nextText = asrStageSurface(incoming);
+  if (!shouldAppendDisjointSameTurnSurfaces(leadText, nextText)) {
+    return incoming;
+  }
+  const separator = /[A-Za-z0-9]$/u.test(leadText) && /^[A-Za-z0-9]/u.test(nextText) ? " " : "";
+  const joined = `${leadText}${separator}${nextText}`;
+  return {
+    ...incoming,
+    outputText: joined,
+    surfaceText: joined,
+  };
+};
+
+/** Keep current-session ASR rows so history can still fold onto a live tail. */
+export const rememberOverlayAsrStage = <T extends OverlayAsrFoldStage>(
+  buffer: readonly T[],
+  incoming: T,
+): T[] => {
+  const surface = asrStageSurface(incoming);
+  if (
+    buffer.some(
+      (row) =>
+        row.utteranceId === incoming.utteranceId &&
+        row.at === incoming.at &&
+        asrStageSurface(row) === surface,
+    )
+  ) {
+    return [...buffer];
+  }
+  const next = [...buffer, incoming];
+  return next.length > OVERLAY_ASR_STAGE_BUFFER_MAX
+    ? next.slice(next.length - OVERLAY_ASR_STAGE_BUFFER_MAX)
+    : next;
+};
 
 /** Fold same-utterance ASR rows in time order so keep-longer cannot drop a disjoint tail. */
 const foldSameIdAsrSurface = (

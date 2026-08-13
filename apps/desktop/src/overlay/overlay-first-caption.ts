@@ -164,6 +164,27 @@ export const isStaleOverlayAsrStage = (
   return stage.utteranceId === fence.utteranceId && stage.at <= fence.at;
 };
 
+/**
+ * Same-turn older/equal-`at` rows are stale for latest-wins paint, but they
+ * must stay in the overlay fold buffer so a live tail-only first paint can
+ * still pick up the lead from history. Previous-session / idle rows stay out.
+ */
+export const shouldBufferOverlayAsrStageForFold = (
+  stage: OverlayAsrStageRef,
+  fence: OverlayAsrStageRef | null,
+  historyInvalidated: boolean,
+  source: "history" | "live",
+  idleAsrSessionKey: string | null = null,
+): boolean => {
+  if (!isStaleOverlayAsrStage(stage, fence, historyInvalidated, source, idleAsrSessionKey)) {
+    return true;
+  }
+  if (historyInvalidated || !fence) {
+    return false;
+  }
+  return stage.utteranceId === fence.utteranceId;
+};
+
 /** Stale-only history after idle must not settle the short-latest hold. */
 export const shouldSettleAsrHistoryReplay = (
   appliedNonStaleHistory: boolean,

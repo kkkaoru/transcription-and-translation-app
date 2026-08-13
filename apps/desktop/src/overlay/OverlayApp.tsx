@@ -6,12 +6,15 @@ import {
   markCaptionIpcReceived,
   parseNumericTurnId,
 } from "../core/caption-latency";
-import { mergeCaptionPayload } from "../core/caption-updates";
+import { isShorterSameUtteranceSurface, mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import { markCaptionDisplay } from "../core/display-timing";
 import {
   buildProvisionalCaptionFromAsrStage,
+  joinDisjointAsrStageOntoLead,
+  type OverlayAsrFoldStage,
   pickLatestSuccessfulAsrStage,
+  rememberOverlayAsrStage,
 } from "../core/parapper-provisional";
 import type { AppConfig, CaptionPayload, PipelineStageEvent } from "../core/types";
 import { useCaptionHoldClear } from "../live/useCaptionHoldClear";
@@ -26,6 +29,7 @@ import {
   overlayAsrStageFence,
   rearmPreviewHold,
   retainHeldOverlayCaption,
+  shouldBufferOverlayAsrStageForFold,
   shouldHoldCaptionOverPreview,
   shouldSettleAsrHistoryReplay,
 } from "./overlay-first-caption";
@@ -147,6 +151,8 @@ export const OverlayApp = () => {
     let asrHistoryInvalidated = false;
     let staleAsrFence: ReturnType<typeof overlayAsrStageFence> | null = null;
     let idleAsrSessionKey: string | null = null;
+    let asrStageBuffer: OverlayAsrFoldStage[] = [];
+    let lastJoinedAsrStage: OverlayAsrFoldStage | null = null;
     const flushHeldCaptionOverPreview = (): void => {
       const held = heldOverPreview;
       heldOverPreview = null;
@@ -259,6 +265,8 @@ export const OverlayApp = () => {
             // Native Syphon/Spout path restores sample text for OBS layout checks.
             // Transparent Window Capture clears so a stopped session does not look live.
             asrHistoryInvalidated = true;
+            asrStageBuffer = [];
+            lastJoinedAsrStage = null;
             staleAsrFence =
               staleAsrFence ?? overlayAsrFenceFromCaption(captionRef.current) ?? staleAsrFence;
             idleAsrSessionKey =
@@ -289,44 +297,77 @@ export const OverlayApp = () => {
     // here, native-renderer waits for AzooKey `caption:update` and the first
     // recognized words never reach OBS.
     if (typeof bridge.listenPipelineStages === "function") {
-      const applyAsrStage = (
-        stageEvent: Parameters<typeof buildProvisionalCaptionFromAsrStage>[0],
+      const asrStageRef = (
+        stageEvent: OverlayAsrFoldStage,
+      ): ReturnType<typeof overlayAsrStageFence> =>
+        overlayAsrStageFence({
+          utteranceId: stageEvent.utteranceId,
+          at: stageEvent.at,
+          startedAt: stageEvent.startedAt,
+          captureGeneration: stageEvent.captureGeneration,
+        });
+      const paintFoldedAsrStage = (
+        folded: OverlayAsrFoldStage,
         source: "history" | "live",
-      ): void => {
+      ): boolean => {
         if (!mounted || idle) {
-          return;
+          return false;
+        }
+        const toPaint = joinDisjointAsrStageOntoLead(lastJoinedAsrStage, folded);
+        const nextText = toPaint.surfaceText?.trim() || toPaint.outputText.trim();
+        const current = captionRef.current;
+        const currentText =
+          current.id === "preview" || current.id === "empty" ? "" : current.sourceText.trim();
+        const stale = isStaleOverlayAsrStage(
+          asrStageRef(toPaint),
+          staleAsrFence,
+          asrHistoryInvalidated,
+          source,
+          idleAsrSessionKey,
+        );
+        if (stale) {
+          if (!nextText || nextText === currentText) {
+            return false;
+          }
+          if (currentText && isShorterSameUtteranceSurface(nextText, currentText)) {
+            return false;
+          }
+        }
+        const provisional = buildProvisionalCaptionFromAsrStage(toPaint, {
+          sourceLanguage: captionRef.current.sourceLanguage,
+          targetLanguage: captionRef.current.targetLanguage,
+        });
+        if (!provisional) {
+          return false;
+        }
+        lastJoinedAsrStage = toPaint;
+        staleAsrFence = asrStageRef(toPaint);
+        asrHistoryInvalidated = false;
+        ingestCaption(provisional);
+        settleAsrHistory();
+        return true;
+      };
+      const applyAsrStage = (
+        stageEvent: OverlayAsrFoldStage,
+        source: "history" | "live",
+      ): boolean => {
+        if (!mounted || idle) {
+          return false;
         }
         if (
-          isStaleOverlayAsrStage(
-            {
-              utteranceId: stageEvent.utteranceId,
-              at: stageEvent.at,
-              startedAt: stageEvent.startedAt,
-              captureGeneration: stageEvent.captureGeneration,
-            },
+          !shouldBufferOverlayAsrStageForFold(
+            asrStageRef(stageEvent),
             staleAsrFence,
             asrHistoryInvalidated,
             source,
             idleAsrSessionKey,
           )
         ) {
-          return;
+          return false;
         }
-        const provisional = buildProvisionalCaptionFromAsrStage(stageEvent, {
-          sourceLanguage: captionRef.current.sourceLanguage,
-          targetLanguage: captionRef.current.targetLanguage,
-        });
-        if (provisional) {
-          staleAsrFence = overlayAsrStageFence({
-            utteranceId: stageEvent.utteranceId,
-            at: stageEvent.at,
-            startedAt: stageEvent.startedAt,
-            captureGeneration: stageEvent.captureGeneration,
-          });
-          asrHistoryInvalidated = false;
-          ingestCaption(provisional);
-          settleAsrHistory();
-        }
+        asrStageBuffer = rememberOverlayAsrStage(asrStageBuffer, stageEvent);
+        const folded = pickLatestSuccessfulAsrStage(asrStageBuffer);
+        return folded ? paintFoldedAsrStage(folded, source) : false;
       };
       replayLatestAsrStage = (): void => {
         if (typeof bridge.getPipelineStageHistory !== "function") {
@@ -346,29 +387,26 @@ export const OverlayApp = () => {
         }
         void replay
           .then((history) => {
-            const latest = pickLatestSuccessfulAsrStage(history);
-            if (!latest) {
-              if (shouldSettleAsrHistoryReplay(false, asrHistoryInvalidated)) {
-                settleAsrHistory();
+            for (const event of history) {
+              if (event.stage !== "asr" || !event.ok) {
+                continue;
               }
-              return;
+              if (
+                !shouldBufferOverlayAsrStageForFold(
+                  asrStageRef(event),
+                  staleAsrFence,
+                  asrHistoryInvalidated,
+                  "history",
+                  idleAsrSessionKey,
+                )
+              ) {
+                continue;
+              }
+              asrStageBuffer = rememberOverlayAsrStage(asrStageBuffer, event);
             }
-            const stale = isStaleOverlayAsrStage(
-              {
-                utteranceId: latest.utteranceId,
-                at: latest.at,
-                startedAt: latest.startedAt,
-                captureGeneration: latest.captureGeneration,
-              },
-              staleAsrFence,
-              asrHistoryInvalidated,
-              "history",
-              idleAsrSessionKey,
-            );
-            if (!stale) {
-              applyAsrStage(latest, "history");
-            }
-            if (shouldSettleAsrHistoryReplay(!stale, asrHistoryInvalidated)) {
+            const latest = pickLatestSuccessfulAsrStage(asrStageBuffer);
+            const applied = latest ? paintFoldedAsrStage(latest, "history") : false;
+            if (shouldSettleAsrHistoryReplay(applied, asrHistoryInvalidated)) {
               settleAsrHistory();
             }
           })

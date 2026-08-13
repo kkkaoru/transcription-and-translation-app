@@ -8,6 +8,7 @@ import {
   parapperSessionKey,
   rearmPreviewHold,
   retainHeldOverlayCaption,
+  shouldBufferOverlayAsrStageForFold,
   shouldHoldCaptionOverPreview,
   shouldSettleAsrHistoryReplay,
 } from "./overlay-first-caption";
@@ -315,6 +316,58 @@ describe("isStaleOverlayAsrStage", () => {
     expect(
       isStaleOverlayAsrStage(
         { utteranceId: "web-speech:2:10", at: 10, startedAt: 1 },
+        fence,
+        true,
+        "live",
+        overlayAsrSessionKey(fence.utteranceId),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("shouldBufferOverlayAsrStageForFold", () => {
+  const fence = overlayAsrStageFence({
+    utteranceId: "parapper:s:1:8",
+    at: 80,
+    startedAt: 10,
+  });
+
+  it("keeps same-turn older history rows after a live tail-only fence", () => {
+    expect(
+      shouldBufferOverlayAsrStageForFold(
+        { utteranceId: "parapper:s:1:8", at: 40, startedAt: 10 },
+        fence,
+        false,
+        "history",
+      ),
+    ).toBe(true);
+    expect(
+      shouldBufferOverlayAsrStageForFold(
+        { utteranceId: "parapper:s:1:8", at: 80, startedAt: 10 },
+        fence,
+        false,
+        "history",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not buffer previous-session or idle rows", () => {
+    expect(
+      shouldBufferOverlayAsrStageForFold(
+        { utteranceId: "parapper:s:1:8", at: 40, startedAt: 10, captureGeneration: 1 },
+        overlayAsrStageFence({
+          utteranceId: "parapper:s:1:8",
+          at: 80,
+          startedAt: 10,
+          captureGeneration: 2,
+        }),
+        true,
+        "history",
+      ),
+    ).toBe(false);
+    expect(
+      shouldBufferOverlayAsrStageForFold(
+        { utteranceId: "parapper:s:1:8", at: 200, startedAt: 150 },
         fence,
         true,
         "live",
