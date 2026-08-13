@@ -1,6 +1,5 @@
 import {
   type CaptionSentenceHints,
-  type CaptionSentenceStickyState,
   detectCaptionSentenceEnds,
   selectVisibleCaptionSentence,
 } from "@caption-bridge/sentence-boundary";
@@ -452,6 +451,17 @@ export const resolveLiveNoticeText = (
   return notice
     ? [translate(notice.key), notice.detail].filter((part) => part).join(" ")
     : fatalLastError;
+};
+
+/**
+ * Caller-owned display sentence carry. Local to MainApp: the sticky helper
+ * exports were removed from @caption-bridge/sentence-boundary (kept hints-only),
+ * so the presentation refs hold just the previous normalized full text and its
+ * accepted sentence-end offsets.
+ */
+type CaptionSentenceStickyState = {
+  previousText: string;
+  previousEnds: number[];
 };
 
 type MainStickyOwner = {
@@ -2682,7 +2692,7 @@ export const MainApp = () => {
         </main>
       </div>
       {status.nativeOutput === "syphon" || status.nativeOutput === "spout2" ? (
-        <NativeFramePublisher config={config} caption={progressiveCaption} />
+        <NativeFramePublisher config={config} caption={displayCaption} />
       ) : null}
     </div>
   );
