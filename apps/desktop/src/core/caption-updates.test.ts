@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearCaptionMergeDiagnostics,
   getCaptionMergeDiagnostics,
+  isShorterSameUtteranceSurface,
+  isShorterSuffixSurface,
   isStaleShorterCaptionSurface,
   isTruncatedCaptionRewrite,
   mergeCaptionPayload,
@@ -2653,6 +2655,33 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(current, truncated)?.sourceText).toBe("こんにちはきこえますか");
   });
 
+  it("keeps a longer same-id greeting when a later short ASR tail arrives live", () => {
+    const painted = caption({
+      id: "parapper:s:1:8",
+      sourceText: "こんにちはきこえますか",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 40,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const truncated = caption({
+      id: "parapper:s:1:8",
+      sourceText: "きこえますか",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 80,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(painted, truncated)?.sourceText).toBe("こんにちはきこえますか");
+  });
+
   it("returns the current final when a backdated duplicate final paints the same text", () => {
     const current = caption({
       id: "parapper:session:turn:b-dup",
@@ -3113,6 +3142,11 @@ describe("mergeCaptionPayload", () => {
     expect(isTruncatedCaptionRewrite(truncatedRewrite.sourceText, painted.sourceText)).toBe(true);
     expect(isStaleShorterCaptionSurface("今日は", "きょうはいいてんきですね")).toBe(true);
     expect(isStaleShorterCaptionSurface("今日は", "きょうは")).toBe(false);
+    expect(isShorterSameUtteranceSurface("きこえますか", "こんにちはきこえますか")).toBe(true);
+    expect(isShorterSuffixSurface("きこえますか", "こんにちはきこえますか")).toBe(true);
+    expect(isShorterSuffixSurface("晴れ", "明日の天気は")).toBe(false);
+    expect(isShorterSameUtteranceSurface("こんにちはきこえますか", "きこえますか")).toBe(false);
+    expect(isShorterSameUtteranceSurface("晴れです", "雨です")).toBe(false);
     expect(merged?.sourceText).toBe("電車が遅延してたから僕は学校に行かない");
     expect(merged?.sourceText).toContain("に行かない");
     expect(merged?.provisional).toBe(true);

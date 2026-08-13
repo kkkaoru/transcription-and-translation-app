@@ -661,6 +661,28 @@ export const isStaleShorterCaptionSurface = (incoming: string, painted: string):
   );
 };
 
+/**
+ * True when `incoming` is a shorter suffix of `painted` (hearing-check tail
+ * after a greeting). Prefix cuts and mid-span conversion rewrites are handled
+ * by stitch / isStaleShorterCaptionSurface instead.
+ */
+export const isShorterSuffixSurface = (incoming: string, painted: string): boolean => {
+  const nextText = incoming.trim();
+  const currentText = painted.trim();
+  if (!nextText || !currentText || [...nextText].length >= [...currentText].length) {
+    return false;
+  }
+  return currentText.endsWith(nextText);
+};
+
+/**
+ * Same-utterance ASR that dropped an already-painted tail, including a
+ * hearing-check suffix (`こんにちはきこえますか` → `きこえますか`) that is not
+ * a prefix cut and is not always "much shorter" by grapheme count.
+ */
+export const isShorterSameUtteranceSurface = (incoming: string, painted: string): boolean =>
+  isStaleShorterCaptionSurface(incoming, painted) || isShorterSuffixSurface(incoming, painted);
+
 const stitchConvertedHeadWithPaintedTail = (shorter: string, longer: string): string | null => {
   if (!shorter || !longer || [...longer].length <= [...shorter].length) {
     return null;
@@ -747,6 +769,19 @@ const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload
 };
 
 const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): string => {
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  // Live same-id ASR can rewrite a painted greeting+hearing plate down to the
+  // hearing tail. Keep the longer surface; do not concatenate a different turn.
+  if (
+    isSourceStagePayload(current) &&
+    isSourceStagePayload(next) &&
+    hasText(currentText) &&
+    hasText(nextText) &&
+    isShorterSuffixSurface(nextText, currentText)
+  ) {
+    return collapseRunawayGraphemeRuns(currentText);
+  }
   // Prefer a completed conversion/final, but do not let a truncated final erase
   // a longer already-painted surface (completion ASR often cuts the tail). That
   // truncation reads as worse 変換 quality on the overlay.

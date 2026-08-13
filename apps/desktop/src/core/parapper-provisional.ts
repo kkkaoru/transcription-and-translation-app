@@ -1,5 +1,5 @@
 import { asrLatencyFromUnknown } from "./caption-latency";
-import { isStaleShorterCaptionSurface } from "./caption-updates";
+import { isShorterSameUtteranceSurface } from "./caption-updates";
 import { selectParapperSurfaceText } from "./parapperStream";
 import type { CaptionPayload, PipelineStageEvent } from "./types";
 
@@ -110,19 +110,6 @@ export const buildProvisionalCaptionFromAsrStage = (
 const asrStageSurface = (event: Pick<PipelineStageEvent, "outputText" | "surfaceText">): string =>
   event.surfaceText?.trim() || event.outputText.trim();
 
-/** Same-id ASR that dropped a painted tail, including a hearing-check suffix. */
-const isShorterSameUtteranceAsr = (incoming: string, painted: string): boolean => {
-  if (isStaleShorterCaptionSurface(incoming, painted)) {
-    return true;
-  }
-  const nextText = incoming.trim();
-  const currentText = painted.trim();
-  if (!nextText || !currentText || [...nextText].length >= [...currentText].length) {
-    return false;
-  }
-  return currentText.endsWith(nextText);
-};
-
 /** Newest successful ASR row that can paint a provisional overlay caption. */
 export const pickLatestSuccessfulAsrStage = (
   events: readonly Pick<
@@ -172,10 +159,10 @@ export const pickLatestSuccessfulAsrStage = (
     if (!sourceText) {
       continue;
     }
-    if (isShorterSameUtteranceAsr(sourceText, bestText)) {
+    if (isShorterSameUtteranceSurface(sourceText, bestText)) {
       continue;
     }
-    if (isShorterSameUtteranceAsr(bestText, sourceText) || event.at >= best.at) {
+    if (isShorterSameUtteranceSurface(bestText, sourceText) || event.at >= best.at) {
       best = event;
       bestText = sourceText;
     }
