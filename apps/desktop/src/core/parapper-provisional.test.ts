@@ -272,4 +272,49 @@ describe("pickLatestSuccessfulAsrStage", () => {
       ]),
     ).toBeNull();
   });
+
+  it("keeps a longer same-id ASR surface over a later truncated hearing-check tail", () => {
+    const longer = {
+      stage: "asr" as const,
+      ok: true,
+      utteranceId: "parapper:s:1:8",
+      outputText: "こんにちはきこえますか",
+      startedAt: 10,
+      at: 40,
+      asrLatency: { speech_start_at: 1, first_partial_at: 20 },
+    };
+    const truncated = {
+      stage: "asr" as const,
+      ok: true,
+      utteranceId: "parapper:s:1:8",
+      outputText: "きこえますか",
+      startedAt: 10,
+      at: 80,
+    };
+    expect(pickLatestSuccessfulAsrStage([longer, truncated])).toEqual(longer);
+    expect(pickLatestSuccessfulAsrStage([truncated, longer])).toEqual(longer);
+  });
+
+  it("still prefers the newest turn when a later utterance is shorter", () => {
+    expect(
+      pickLatestSuccessfulAsrStage([
+        {
+          stage: "asr",
+          ok: true,
+          utteranceId: "parapper:s:1:8",
+          outputText: "こんにちはきこえますか",
+          startedAt: 10,
+          at: 40,
+        },
+        {
+          stage: "asr",
+          ok: true,
+          utteranceId: "parapper:s:1:9",
+          outputText: "はい",
+          startedAt: 90,
+          at: 100,
+        },
+      ])?.utteranceId,
+    ).toBe("parapper:s:1:9");
+  });
 });

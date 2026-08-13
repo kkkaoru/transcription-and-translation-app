@@ -1,4 +1,5 @@
 import { asrLatencyFromUnknown } from "./caption-latency";
+import { isStaleShorterCaptionSurface } from "./caption-updates";
 import { selectParapperSurfaceText } from "./parapperStream";
 import type { CaptionPayload, PipelineStageEvent } from "./types";
 
@@ -106,6 +107,22 @@ export const buildProvisionalCaptionFromAsrStage = (
   };
 };
 
+const asrStageSurface = (event: Pick<PipelineStageEvent, "outputText" | "surfaceText">): string =>
+  event.surfaceText?.trim() || event.outputText.trim();
+
+/** Same-id ASR that dropped a painted tail, including a hearing-check suffix. */
+const isShorterSameUtteranceAsr = (incoming: string, painted: string): boolean => {
+  if (isStaleShorterCaptionSurface(incoming, painted)) {
+    return true;
+  }
+  const nextText = incoming.trim();
+  const currentText = painted.trim();
+  if (!nextText || !currentText || [...nextText].length >= [...currentText].length) {
+    return false;
+  }
+  return currentText.endsWith(nextText);
+};
+
 /** Newest successful ASR row that can paint a provisional overlay caption. */
 export const pickLatestSuccessfulAsrStage = (
   events: readonly Pick<
@@ -118,6 +135,7 @@ export const pickLatestSuccessfulAsrStage = (
     | "startedAt"
     | "at"
     | "captureGeneration"
+    | "asrLatency"
   >[],
 ): (typeof events)[number] | null => {
   let latest: (typeof events)[number] | null = null;
@@ -125,7 +143,7 @@ export const pickLatestSuccessfulAsrStage = (
     if (event.stage !== "asr" || !event.ok) {
       continue;
     }
-    const sourceText = event.surfaceText?.trim() || event.outputText.trim();
+    const sourceText = asrStageSurface(event);
     if (!sourceText || !event.utteranceId.trim()) {
       continue;
     }
@@ -137,5 +155,30 @@ export const pickLatestSuccessfulAsrStage = (
       latest = event;
     }
   }
-  return latest;
+  if (!latest) {
+    return null;
+  }
+  // History replay must not first-paint a truncated same-id revision (きこえますか)
+  // over a longer greeting already in the buffer. A later similar-length rewrite
+  // of the newest turn still wins. Different utterance ids stay latest-wins so
+  // a new turn is not concatenated onto the previous one.
+  let best = latest;
+  let bestText = asrStageSurface(latest);
+  for (const event of events) {
+    if (event.stage !== "asr" || !event.ok || event.utteranceId !== latest.utteranceId) {
+      continue;
+    }
+    const sourceText = asrStageSurface(event);
+    if (!sourceText) {
+      continue;
+    }
+    if (isShorterSameUtteranceAsr(sourceText, bestText)) {
+      continue;
+    }
+    if (isShorterSameUtteranceAsr(bestText, sourceText) || event.at >= best.at) {
+      best = event;
+      bestText = sourceText;
+    }
+  }
+  return best;
 };

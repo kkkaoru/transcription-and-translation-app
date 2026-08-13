@@ -603,6 +603,53 @@ describe("OverlayApp caption replay", () => {
     }
   });
 
+  it("does not first-paint a truncated same-id ASR tail over a longer greeting in history", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+    mocks.getPipelineStageHistory.mockResolvedValue([
+      {
+        stage: "asr",
+        utteranceId: "parapper:s:1:8",
+        modelId: "parapper-ja",
+        inputSnippet: "",
+        outputText: "こんにちはきこえますか",
+        startedAt: 10,
+        at: 40,
+        durationMs: 30,
+        ok: true,
+      },
+      {
+        stage: "asr",
+        utteranceId: "parapper:s:1:8",
+        modelId: "parapper-ja",
+        inputSnippet: "",
+        outputText: "きこえますか",
+        startedAt: 10,
+        at: 80,
+        durationMs: 70,
+        ok: true,
+      },
+    ]);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+      const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+      expect(painted).toContain("こんにちは");
+      expect(painted).not.toBe("きこえますか");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
   it("does not first-paint a short getLatestCaption over preview before longer ASR history", async () => {
     history.pushState({}, "", "/?native=1");
     let resolveHistory!: (events: PipelineStageEvent[]) => void;
