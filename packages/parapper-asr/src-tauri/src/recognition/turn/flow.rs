@@ -851,12 +851,12 @@ impl RecognitionSession {
             || self.pending_root_is_after_interim_silence_following_160ms(segment, turn_id)
             || self.pending_root_streaming_chunk_belongs_to_next_utterance(segment, turn_id)
         {
-            // AfterInterimSilence names the last closed segment as previous, or
-            // restarts as a new root after a stream reset. Once this turn is
-            // closing — or the child/root follows an applied 160ms grid — that
-            // segment remints after finalize instead of merging into the
-            // caption as a same-turn continuation. A later root 160ms queued
-            // behind that next utterance belongs there, not on this turn.
+            // AfterInterimSilence / EndSilence names the last closed segment as
+            // previous, or restarts as a new root after a stream reset. Once
+            // this turn is closing — or the child/root follows an applied 160ms
+            // grid — that segment remints after finalize instead of merging
+            // into the caption as a same-turn continuation. A later root 160ms
+            // queued behind that next utterance belongs there, not on this turn.
             return false;
         }
         if segment.turn_id().0 <= turn_id {
@@ -996,14 +996,35 @@ impl RecognitionSession {
         if segment.previous_segment_id.is_some() {
             return false;
         }
-        if segment.reason != SegmentCloseReason::InterimResultSilenceReached {
-            return false;
+        match segment.reason {
+            SegmentCloseReason::InterimResultSilenceReached => {}
+            SegmentCloseReason::EndSilenceReached => {
+                // Same-utterance turn-check promotion covers the flushed 160ms
+                // (range starts inside that grid). A stream-reset next utterance
+                // starts at or after the applied 160ms end.
+                if !self.root_end_silence_starts_after_applied_160ms(turn_id, segment) {
+                    return false;
+                }
+            }
+            SegmentCloseReason::SegmentMaxChunksReached
+            | SegmentCloseReason::InterimChunkReached => return false,
         }
         if self.in_flight_streaming_chunk_for_turn(turn_id) {
             // Do not remint while this turn's 160ms grid is still in flight.
             return false;
         }
         self.latest_applied_segment_is_streaming_chunk(turn_id)
+    }
+
+    fn root_end_silence_starts_after_applied_160ms(
+        &self,
+        turn_id: u64,
+        segment: &PendingAsrSegment,
+    ) -> bool {
+        self.turn_store
+            .streaming_interim_ranges
+            .get(&turn_id)
+            .is_some_and(|streaming_range| segment.range.start_sample >= streaming_range.end_sample)
     }
 
     fn in_flight_streaming_chunk_for_turn(&self, turn_id: u64) -> bool {
