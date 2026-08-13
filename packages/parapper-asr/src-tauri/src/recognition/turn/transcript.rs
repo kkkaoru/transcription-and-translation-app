@@ -832,18 +832,11 @@ fn completion_prefix_is_before_existing_range(
     let Some(existing_start) = existing.iter().map(|range| range.start_sample).min() else {
         return false;
     };
-    match request.close_reason {
-        // Breath-silence may overlap the later 160ms (segment-builder padding
-        // copies prior end-silence into the next chunk). Still prepend the
-        // uncovered prefix; do not wait for a strict end <= existing.start.
-        Some(SegmentCloseReason::InterimResultSilenceReached) => {
-            request.target.range.start_sample < existing_start
-        }
-        _ if request.kind == AsrTaskKind::CompletionCheck => {
-            request.target.range.end_sample <= existing_start
-        }
-        _ => false,
-    }
+    let is_yielded_prefix = request.kind == AsrTaskKind::CompletionCheck
+        || request.close_reason == Some(SegmentCloseReason::InterimResultSilenceReached);
+    // Padding can copy prior end-silence into the later 160ms, so the prefix
+    // end may sit past existing.start. Prepend the uncovered prefix anyway.
+    is_yielded_prefix && request.target.range.start_sample < existing_start
 }
 
 fn prefix_source_len_before_existing(existing: &[AudioRange], request: &AsrRequest) -> usize {
