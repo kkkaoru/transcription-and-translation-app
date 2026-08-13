@@ -857,7 +857,8 @@ impl RecognitionSession {
             // grid — that segment remints after finalize instead of merging
             // into the caption as a same-turn continuation. A later 160ms or
             // max-chunk that names the applied grid as previous still belongs
-            // to that next utterance, not this turn.
+            // to that next utterance, not this turn. Silence that names an
+            // earlier prefix after the 160ms end is also the next utterance.
             return false;
         }
         if segment.turn_id().0 <= turn_id {
@@ -992,8 +993,18 @@ impl RecognitionSession {
             // Do not remint while this turn's 160ms grid is still in flight.
             return false;
         }
-        self.pending_child_is_after_interim_silence(segment, turn_id)
-            && self.latest_segment_is_applied_streaming_chunk(turn_id, segment.previous_segment_id)
+        if !self.pending_child_is_after_interim_silence(segment, turn_id) {
+            return false;
+        }
+        if self.latest_segment_is_applied_streaming_chunk(turn_id, segment.previous_segment_id) {
+            return true;
+        }
+        // Next-utterance silence can name an earlier prefix (non-160ms) as
+        // previous while the latest applied segment is already the 160ms grid.
+        // Same-utterance hole completion still overlaps that grid, so only a
+        // range that starts at or after the applied 160ms end remints.
+        self.latest_applied_segment_is_streaming_chunk(turn_id)
+            && self.end_silence_starts_after_applied_160ms(turn_id, segment)
     }
 
     fn pending_root_is_after_interim_silence_following_160ms(
