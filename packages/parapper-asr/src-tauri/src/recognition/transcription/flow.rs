@@ -181,6 +181,7 @@ impl RecognitionSession {
         if self.requests.in_flight_request.is_some() {
             return;
         }
+        self.finalize_open_turn_if_after_interim_silence_follows_160ms();
         drop_front_interim_segments_covered_by_completion(&mut self.pending.asr_segments);
         let Some(request) = self.build_next_asr_request() else {
             self.apply_deferred_streaming_session_reset_if_ready();

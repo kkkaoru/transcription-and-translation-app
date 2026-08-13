@@ -288,14 +288,16 @@ impl RecognitionSession {
                 self.stop_accepting_root_while_closing(turn_id);
             }
             RerecognitionPurpose::GrammarAfterCompletion => {
-                // Namo/Morph may still Continue. Only treat the pending segment
-                // as a true next utterance when the current draft already has a
-                // confirmed completing grammar boundary (split-after-genuine-
-                // end-silence). Mid-phrase Continue must keep the slot.
-                if !self.grammar_already_completes_turn(turn_id) {
+                // AfterInterimSilence after an applied 160ms tail is already the
+                // next utterance even when combined text ("prefix。続き") has no
+                // completing boundary at the text end. Do not occupy the slot.
+                if self.after_interim_silence_follows_applied_160ms(turn_id) {
+                    self.stop_accepting_root_while_closing(turn_id);
+                } else if !self.grammar_already_completes_turn(turn_id) {
                     return false;
+                } else {
+                    self.stop_accepting_root_while_closing(turn_id);
                 }
-                self.stop_accepting_root_while_closing(turn_id);
             }
         }
         self.pending_asr_preempts_rerecognition(turn_id)
@@ -844,10 +846,13 @@ impl RecognitionSession {
         segment: &PendingAsrSegment,
         turn_id: u64,
     ) -> bool {
-        if self.pending_child_is_next_utterance_of_closing_turn(segment, turn_id) {
+        if self.pending_child_is_next_utterance_of_closing_turn(segment, turn_id)
+            || self.pending_child_is_after_interim_silence_following_160ms(segment, turn_id)
+        {
             // AfterInterimSilence names the last closed segment as previous.
-            // Once this turn is closing, that child remints after finalize
-            // instead of blocking the caption and merging into it.
+            // Once this turn is closing — or the child follows an applied 160ms
+            // grid — that child remints after finalize instead of merging into
+            // the caption as a same-turn continuation.
             return false;
         }
         if segment.turn_id().0 <= turn_id {
@@ -939,6 +944,36 @@ impl RecognitionSession {
         if self.turn_store.open_turn_id != Some(turn_id) || !self.turn_store.open_turn_is_closing {
             return false;
         }
+        self.pending_child_is_after_interim_silence(segment, turn_id)
+    }
+
+    fn pending_child_is_after_interim_silence_following_160ms(
+        &self,
+        segment: &PendingAsrSegment,
+        turn_id: u64,
+    ) -> bool {
+        if self.turn_store.open_turn_id != Some(turn_id) {
+            return false;
+        }
+        if segment.reason != SegmentCloseReason::InterimResultSilenceReached {
+            return false;
+        }
+        if self.requests.in_flight_request.as_ref().is_some_and(|request| {
+            request.close_reason == Some(SegmentCloseReason::InterimChunkReached)
+                && request.target.turn_id.0 == turn_id
+        }) {
+            // Do not remint while this turn's 160ms grid is still in flight.
+            return false;
+        }
+        self.pending_child_is_after_interim_silence(segment, turn_id)
+            && self.latest_segment_is_applied_streaming_chunk(turn_id, segment.previous_segment_id)
+    }
+
+    fn pending_child_is_after_interim_silence(
+        &self,
+        segment: &PendingAsrSegment,
+        turn_id: u64,
+    ) -> bool {
         let Some(previous_segment_id) = segment.previous_segment_id else {
             return false;
         };
@@ -955,6 +990,61 @@ impl RecognitionSession {
         self.turn_store.turns.get(&turn_id).is_some_and(|turn| {
             turn.draft().segment_ids.contains(&previous_segment_id)
                 || turn.draft().latest_segment_id == Some(previous_segment_id)
+        })
+    }
+
+    fn latest_segment_is_applied_streaming_chunk(
+        &self,
+        turn_id: u64,
+        previous_segment_id: Option<u64>,
+    ) -> bool {
+        let Some(previous_segment_id) = previous_segment_id else {
+            return false;
+        };
+        let Some(streaming_range) = self.turn_store.streaming_interim_ranges.get(&turn_id).copied()
+        else {
+            return false;
+        };
+        let Some(turn) = self.turn_store.turns.get(&turn_id) else {
+            return false;
+        };
+        let draft = turn.draft();
+        if draft.latest_segment_id != Some(previous_segment_id) {
+            return false;
+        }
+        let latest_len = draft.segment_audio_lens.last().copied().unwrap_or(0);
+        let streaming_len = usize::try_from(
+            streaming_range.end_sample.0.saturating_sub(streaming_range.start_sample.0),
+        )
+        .unwrap_or(0);
+        latest_len > 0 && latest_len == streaming_len
+    }
+
+    pub(in crate::recognition) fn finalize_open_turn_if_after_interim_silence_follows_160ms(
+        &mut self,
+    ) {
+        let Some(turn_id) = self.turn_store.open_turn_id else {
+            return;
+        };
+        if self.requests.in_flight_request.is_some()
+            || self.has_deferred_completion()
+            || self
+                .pending
+                .asr_segments
+                .iter()
+                .any(|segment| segment.reason == SegmentCloseReason::InterimChunkReached)
+        {
+            return;
+        }
+        if !self.after_interim_silence_follows_applied_160ms(turn_id) {
+            return;
+        }
+        self.complete_turn_without_grammar(turn_id);
+    }
+
+    fn after_interim_silence_follows_applied_160ms(&self, turn_id: u64) -> bool {
+        self.pending.asr_segments.iter().any(|segment| {
+            self.pending_child_is_after_interim_silence_following_160ms(segment, turn_id)
         })
     }
 }
