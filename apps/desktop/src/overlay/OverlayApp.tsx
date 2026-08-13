@@ -133,6 +133,15 @@ export const OverlayApp = () => {
       if (merged === null || merged === current) {
         return;
       }
+      // In-flight AzooKey of the lead can emit caption:update after overlay
+      // already painted the joined ASR surface. Keep-longer of that join.
+      if (
+        current.id !== "preview" &&
+        current.id !== "empty" &&
+        isShorterSameUtteranceSurface(merged.sourceText, current.sourceText)
+      ) {
+        return;
+      }
       captionRef.current = merged;
       // Native-renderer is a separate webview from Live. Join `*_at` here so
       // Syphon first-paint spans are not missing speech_start_at when the

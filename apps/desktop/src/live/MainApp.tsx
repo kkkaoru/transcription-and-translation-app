@@ -1612,19 +1612,32 @@ export const MainApp = () => {
           try {
             // Paint again in case this item was drained after a long wait; the
             // enqueue path already painted the latest partial immediately.
-            const provisional = buildParapperProvisionalCaption(output, {
-              sourceLanguage: captureConfig.language.source,
-              targetLanguage: captureConfig.language.target,
-            });
-            if (provisional) {
-              mergeAndCommitCaption(provisional);
-              noteFirstCaption(provisional);
+            // Skip when a later same-turn join already first-painted a longer
+            // surface (in-flight lead must not flash lead-only over that join).
+            if (!shouldSkipParapperNormalize(captionRef.current, output)) {
+              const provisional = buildParapperProvisionalCaption(output, {
+                sourceLanguage: captureConfig.language.source,
+                targetLanguage: captureConfig.language.target,
+              });
+              if (provisional) {
+                mergeAndCommitCaption(provisional);
+                noteFirstCaption(provisional);
+              }
             }
             if (shouldSkipParapperNormalize(captionRef.current, output)) {
               return;
             }
             const nextCaption = await bridge.normalizeParapperOutput(output);
             if (attempt !== captureAttempt.current) {
+              return;
+            }
+            if (
+              shouldSkipParapperNormalize(captionRef.current, {
+                ...output,
+                text: nextCaption.sourceText,
+                sourceText: nextCaption.sourceText,
+              })
+            ) {
               return;
             }
             const elapsed = Math.max(

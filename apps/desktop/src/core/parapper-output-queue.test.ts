@@ -499,7 +499,7 @@ describe("Parapper output coalescing queue", () => {
           text: "今日は",
         },
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldSkipParapperNormalize(
         { id: "parapper:s:1:9", sourceText: "きょうはいいてんきですね" },
@@ -536,6 +536,30 @@ describe("Parapper output coalescing queue", () => {
         },
       ),
     ).toBe(false);
+    expect(
+      shouldSkipParapperNormalize(
+        { id: "parapper:s:1:8", sourceText: "会議を始めます続きがあります" },
+        {
+          isFinal: true,
+          sessionId: "s",
+          turnSessionId: 1,
+          turnId: 8,
+          text: "会議を始めます",
+        },
+      ),
+    ).toBe(true);
+    expect(
+      shouldSkipParapperNormalize(
+        { id: "parapper:s:1:8", sourceText: "これはテストです終わりますか" },
+        {
+          isFinal: false,
+          sessionId: "s",
+          turnSessionId: 1,
+          turnId: 8,
+          text: "これはテストです",
+        },
+      ),
+    ).toBe(true);
   });
 
   it("uses sourceText when deciding to keep a longer pending rewrite", async () => {

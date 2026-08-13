@@ -177,14 +177,18 @@ const joinDisjointQueueItem = <T extends ParapperOutputQueueItem>(pending: T, in
   };
 };
 
-/** Skip AzooKey for a stale shorter partial when a longer same-id surface already painted. */
+/**
+ * Skip AzooKey when a longer same-turn surface is already painted.
+ *
+ * In-flight normalize of the lead can finish after a later enqueue already
+ * first-painted the joined lead+tail. A truncated final must not replace that
+ * joined plate; the queued joined item still normalizes the full utterance.
+ * Disjoint tails are not "shorter rewrites" and still need normalize.
+ */
 export const shouldSkipParapperNormalize = (
   painted: { id: string; sourceText: string },
   output: ParapperOutputQueueItem,
 ): boolean => {
-  if (output.isFinal) {
-    return false;
-  }
   if (
     hasTurnIdentity(output) &&
     painted.id !== `parapper:${output.sessionId}:${output.turnSessionId}:${output.turnId}`
@@ -192,7 +196,6 @@ export const shouldSkipParapperNormalize = (
     return false;
   }
   const incomingText = queueItemSurface(output);
-  // Keep-longer of the painted lead must not skip a disjoint same-turn tail.
   if (shouldAppendDisjointSameTurnSurfaces(painted.sourceText, incomingText)) {
     return false;
   }
