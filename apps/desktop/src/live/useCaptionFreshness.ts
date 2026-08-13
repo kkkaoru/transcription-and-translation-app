@@ -74,6 +74,18 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
     previousSourceRef.current = caption.sourceText;
   }
 
+  // A pure interim is TTL-exempt in applyCaptionFreshnessWindow. When it later
+  // gains a translation or finalizes, restamp both clocks so the window starts
+  // from that transition instead of the stale first-paint time.
+  const isFreshnessTtlExempt = isCaptionFreshnessTtlExempt(caption);
+  if (!isFreshnessTtlExempt && freshnessTtlExemptRef.current) {
+    paintedAtRef.current = stampGraphemePaintedAt("", [], caption.sourceText, now);
+    lastGrowthAtRef.current = now;
+    previousSource = "";
+    previousSourceRef.current = caption.sourceText;
+  }
+  freshnessTtlExemptRef.current = isFreshnessTtlExempt;
+
   const captionWithOffsets =
     resolved.sourceText === caption.sourceText && captionMissingBoundaryOffsets(caption)
       ? {
@@ -87,21 +99,15 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
   );
 
   if (caption.id === "preview" || caption.id === "empty") {
-    freshnessTtlExemptRef.current = isCaptionFreshnessTtlExempt(caption);
     return caption;
   }
 
-  const result = applyCaptionFreshnessWindow({
+  return applyCaptionFreshnessWindow({
     caption: captionWithOffsets,
     now,
     graphemePaintedAt: paintedAtRef.current,
     lastGrowthAt: lastGrowthAtRef.current,
     previousSourceText: previousSource,
     tokenCharEnds,
-    wasTtlExempt: freshnessTtlExemptRef.current,
   });
-  paintedAtRef.current = result.graphemePaintedAt;
-  lastGrowthAtRef.current = result.lastGrowthAt;
-  freshnessTtlExemptRef.current = isCaptionFreshnessTtlExempt(caption);
-  return result.caption;
 };

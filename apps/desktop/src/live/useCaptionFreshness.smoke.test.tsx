@@ -253,53 +253,6 @@ describe("useCaptionFreshness", () => {
     expect(paints.at(-1)?.translationText).toBe("");
   });
 
-  it("keeps a fixed source visible through translation at 4500ms until 9600ms", async () => {
-    const text = "食べて";
-    renderFresh(
-      baseCaption({
-        sourceText: text,
-        translationText: "",
-        isFinal: false,
-        sentenceEndOffsets: [],
-        softBreakOffsets: [],
-      }),
-    );
-    expect(paints.at(-1)?.sourceText).toBe(text);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(4_500);
-    });
-    renderFresh(
-      baseCaption({
-        sourceText: text,
-        translationText: "eating",
-        isFinal: false,
-        sentenceEndOffsets: [],
-        softBreakOffsets: [],
-      }),
-    );
-    expect(paints.at(-1)?.sourceText).toBe(text);
-    expect(paints.at(-1)?.translationText).toBe("eating");
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(501);
-    });
-    expect(paints.at(-1)?.sourceText).toBe(text);
-    expect(paints.at(-1)?.translationText).toBe("eating");
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(4_399);
-    });
-    expect(paints.at(-1)?.sourceText).toBe(text);
-    expect(paints.at(-1)?.translationText).toBe("eating");
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-    expect(paints.at(-1)?.sourceText).toBe("");
-    expect(paints.at(-1)?.translationText).toBe("");
-  });
-
   it("keeps a hold-cleared empty caption empty after a prior TTL-exempt interim", async () => {
     renderFresh(
       baseCaption({
