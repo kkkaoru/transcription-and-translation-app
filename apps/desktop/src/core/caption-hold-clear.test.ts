@@ -168,13 +168,13 @@ describe("live hold-clear receipt barrier", () => {
     );
 
     const blankMatch = source.match(
-      /const blankDisplayedCaption = useCallback\(\(expectedEpoch: string\): void => \{([\s\S]*?)\}, \[\]\);/,
+      /const blankDisplayedCaption = useCallback\(\s*\(expectedEpoch: string\): void => \{([\s\S]*?)\},\s*\[stickyRefs\]\s*,\s*\);/,
     );
     expect(blankMatch?.[1]).toMatch(/createHoldClearedCaption\s*\(/);
     expect(blankMatch?.[1]).not.toMatch(/createEmptyCaption\s*\(/);
 
     const clearMatch = source.match(
-      /const clearCaptionState = useCallback\(\(\): void => \{([\s\S]*?)\}, \[\]\);/,
+      /const clearCaptionState = useCallback\(\(\): void => \{([\s\S]*?)\},\s*\[stickyRefs\]\s*\);/,
     );
     expect(clearMatch?.[1]).toMatch(/createEmptyCaption\s*\(/);
     expect(clearMatch?.[1]).not.toMatch(/createHoldClearedCaption\s*\(/);

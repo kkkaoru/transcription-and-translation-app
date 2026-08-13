@@ -60,7 +60,9 @@ const expectMerged = (value: CaptionPayload | null): CaptionPayload => {
 
 describe("caption quality contracts (automated, no human eyeball)", () => {
   describe("progressive reveal wiring (live + overlay)", () => {
-    it("keeps Live/Syphon and overlay display paths on progressiveCaption", () => {
+    // Policy (B): Live sticky is shipped; Overlay sticky is intentionally not
+    // wired yet and remains on progressiveCaption until a follow-up.
+    it("keeps Live DOM and Syphon on sticky displayCaption while overlay stays on progressiveCaption", () => {
       // hold-clear once replaced this import and left grapheme reveal dead.
       expect(mainAppSource).toMatch(/useCaptionFreshness\(caption\)/);
       expect(mainAppSource).toMatch(/useProgressiveCaptionReveal/);
@@ -68,9 +70,12 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
         /const progressiveCaption = useProgressiveCaptionReveal\(freshnessCaption,\s*\{/,
       );
       expect(mainAppSource).toMatch(/snapAvailablePrefixExtensions:\s*true/);
-      expect(mainAppSource).toMatch(/caption=\{progressiveCaption\}/);
       expect(mainAppSource).toMatch(
-        /<NativeFramePublisher config=\{config\} caption=\{progressiveCaption\} \/>/,
+        /const displayCaption = applyMainStickyDisplay\(progressiveCaption,\s*stickyRefs\)/,
+      );
+      expect(mainAppSource).toMatch(/caption=\{displayCaption\}/);
+      expect(mainAppSource).toMatch(
+        /<NativeFramePublisher config=\{config\} caption=\{displayCaption\} \/>/,
       );
       expect(mainAppSource).toMatch(/useCaptionHoldClear\(caption,/);
 
