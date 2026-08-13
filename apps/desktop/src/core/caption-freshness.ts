@@ -182,7 +182,7 @@ export const applyCaptionFreshnessWindow = (input: CaptionFreshnessInput): Capti
   }
   const graphemes = captionGraphemes(sourceText);
   const paintedAt =
-    input.graphemePaintedAt.length === graphemes.length
+    previousSourceText === sourceText && input.graphemePaintedAt.length === graphemes.length
       ? input.graphemePaintedAt
       : stampGraphemePaintedAt(previousSourceText, input.graphemePaintedAt, sourceText, now);
   const textLen = scalarCount(sourceText);

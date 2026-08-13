@@ -241,6 +241,19 @@ describe("caption freshness window", () => {
     expect(restamped.sourceText).toBe("明日は");
   });
 
+  it("keeps a same-length grammar lead substitution instead of inheriting stale paintedAt", () => {
+    const previous = "アイウ今日は晴れ";
+    const next = "エオカ今日は晴れ";
+    const display = applyCaptionFreshnessWindow({
+      caption: caption({ sourceText: next, translationText: "sunny" }),
+      now: 5_001,
+      graphemePaintedAt: paintedAt(previous, 0),
+      lastGrowthAt: 4_900,
+      previousSourceText: previous,
+    });
+    expect(display.sourceText.startsWith("エオカ")).toBe(true);
+  });
+
   it("clamps keepFrom back to the newest chunk start while that chunk is still growing", () => {
     const text = "今日は晴れです明日は雨です";
     const display = applyCaptionFreshnessWindow({
