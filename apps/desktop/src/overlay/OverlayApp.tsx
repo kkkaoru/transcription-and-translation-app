@@ -22,9 +22,9 @@ import {
   rememberOverlayAsrStage,
 } from "../core/parapper-provisional";
 import {
+  type PartialWindowRelayFence,
   partialWindowRelayFence,
   shouldApplyPartialWindowRelay,
-  type PartialWindowRelayFence,
 } from "../core/partialWindowRelay";
 import type {
   AppConfig,

@@ -3,8 +3,8 @@
 import {
   appendCaptureCorrelationLog,
   appendStructuredLog,
-  redactSensitiveText,
   type CaptureCorrelationPhase,
+  redactSensitiveText,
 } from "./structuredLog";
 import type { LogLevel } from "./types";
 
@@ -171,7 +171,7 @@ const retainCorrelation = (record: CaptureStartupCorrelation): void => {
   const generation = record.captureGeneration;
   const existingIndex =
     generation == null
-      ? correlationHistory.findIndex((entry) => entry === record)
+      ? correlationHistory.indexOf(record)
       : correlationHistory.findIndex((entry) => entry.captureGeneration === generation);
   if (existingIndex >= 0) {
     correlationHistory[existingIndex] = record;
@@ -360,11 +360,13 @@ export const beginCaptureStartupCorrelation = (input?: {
 }): CaptureStartupCorrelation => {
   const generation = normalizeOptionalGeneration(input?.captureGeneration);
   const mode =
-    typeof input?.mode === "string" && input.mode.trim() ? input.mode.trim() : (activeCorrelation?.mode ?? null);
+    typeof input?.mode === "string" && input.mode.trim()
+      ? input.mode.trim()
+      : (activeCorrelation?.mode ?? null);
   const at = nowMs(input?.epochMs);
   let record =
     generation != null
-      ? correlationHistory.find((entry) => entry.captureGeneration === generation) ?? null
+      ? (correlationHistory.find((entry) => entry.captureGeneration === generation) ?? null)
       : activeCorrelation;
   if (!record) {
     record = emptyCorrelation(generation, mode);

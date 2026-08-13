@@ -6,14 +6,14 @@ import {
   getActiveCaptureStartupCorrelation,
   getDiagnosticEvents,
   getDiagnosticStoreRevision,
+  MAX_CAPTURE_STARTUP_CORRELATION_EVENTS,
+  MAX_CAPTURE_STARTUP_CORRELATIONS,
   markCaptureFirstCaption,
   markCaptureFirstForwardedPcm,
   markCaptureFirstSpeech,
   markCapturePrerollStats,
   markCaptureSessionReady,
   markCaptureStartupDiscard,
-  MAX_CAPTURE_STARTUP_CORRELATION_EVENTS,
-  MAX_CAPTURE_STARTUP_CORRELATIONS,
   pushDiagnosticEvent,
   snapshotCaptureStartupCorrelations,
   subscribeDiagnosticEvents,
@@ -155,11 +155,9 @@ describe("capture startup correlation", () => {
 
   it("swallows diagnostic/log transport failures while recording milestones", () => {
     beginCaptureStartupCorrelation({ captureGeneration: 42, epochMs: 10 });
-    const append = vi
-      .spyOn(structuredLog, "appendCaptureCorrelationLog")
-      .mockImplementation(() => {
-        throw new Error("structured log unavailable");
-      });
+    const append = vi.spyOn(structuredLog, "appendCaptureCorrelationLog").mockImplementation(() => {
+      throw new Error("structured log unavailable");
+    });
     try {
       expect(() => markCaptureSessionReady({ captureGeneration: 42, epochMs: 20 })).not.toThrow();
       expect(getActiveCaptureStartupCorrelation()?.sessionReadyAtMs).toBe(20);

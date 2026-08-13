@@ -39,7 +39,9 @@ export const SCRIPT_PROCESSOR_BUFFER_SIZE = 4_096;
  */
 export const PCM_PREROLL_MAX_MS = 800;
 /** Max 16 kHz mono samples retained in the preroll ring buffer. */
-export const PCM_PREROLL_MAX_SAMPLES = Math.floor((TARGET_SAMPLE_RATE * PCM_PREROLL_MAX_MS) / 1_000);
+export const PCM_PREROLL_MAX_SAMPLES = Math.floor(
+  (TARGET_SAMPLE_RATE * PCM_PREROLL_MAX_MS) / 1_000,
+);
 
 /**
  * Seed the next ASR request with the preceding speech window. A 640 ms window
@@ -2392,9 +2394,7 @@ export class MicrophoneCapture {
         const sampleRate = this.context?.sampleRate ?? TARGET_SAMPLE_RATE;
         const target = resampleLinear(frame, sampleRate, TARGET_SAMPLE_RATE);
         const pcm = float32ToPcm16(target);
-        this.pushPrerollFrame(
-          new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength).slice(),
-        );
+        this.pushPrerollFrame(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength).slice());
       } catch {
         // A single bad frame must not disable preroll for the whole startup window.
       }

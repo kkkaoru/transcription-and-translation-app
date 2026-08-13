@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  type PartialWindowRelayFence,
   partialWindowRelayFence,
   shouldApplyPartialWindowRelay,
-  type PartialWindowRelayFence,
 } from "./partialWindowRelay";
 import type { PartialWindowCaption } from "./types";
 
@@ -46,10 +46,7 @@ describe("partial-window relay fence", () => {
 
   it("cannot paint a prior capture or session after a capture restart", () => {
     const state = { fence: null as PartialWindowRelayFence | null, text: "" };
-    apply(
-      state,
-      update({ captureGeneration: 4, relaySequence: 50, sessionId: "capture-4" }),
-    );
+    apply(state, update({ captureGeneration: 4, relaySequence: 50, sessionId: "capture-4" }));
     apply(
       state,
       update({
@@ -64,10 +61,7 @@ describe("partial-window relay fence", () => {
         turnSessionId: 1,
       }),
     );
-    apply(
-      state,
-      update({ captureGeneration: 4, relaySequence: 52, text: "late old capture" }),
-    );
+    apply(state, update({ captureGeneration: 4, relaySequence: 52, text: "late old capture" }));
     apply(state, update({ captureGeneration: 5, relaySequence: 53, sessionId: "wrong-session" }));
 
     expect(state.text).toBe("new capture");
@@ -81,10 +75,7 @@ describe("partial-window relay fence", () => {
       state,
       update({ outputSequence: 13, relaySequence: 61, revision: 3, text: "old revision" }),
     );
-    apply(
-      state,
-      update({ outputSequence: 12, relaySequence: 62, revision: 4, text: "duplicate" }),
-    );
+    apply(state, update({ outputSequence: 12, relaySequence: 62, revision: 4, text: "duplicate" }));
 
     expect(state.text).toBe("OPEN suffix");
     expect(state.fence).toMatchObject({ outputSequence: 12, revision: 4, segmentId: 7 });

@@ -1,4 +1,9 @@
-import { GatewayError, MAX_AUDIO_BYTES, pcm16FromWav, pcm16ToWav } from "@caption-bridge/inference-server-core";
+import {
+  GatewayError,
+  MAX_AUDIO_BYTES,
+  pcm16FromWav,
+  pcm16ToWav,
+} from "@caption-bridge/inference-server-core";
 import { byteLimitTransform, collectStream } from "./azookey.js";
 
 /** The Workers AI partner model used only by the explicit `workers-ai` route. */
@@ -271,7 +276,9 @@ const jsonResponse = (status: number, body: Record<string, unknown>): Response =
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 
-const readWavFromMultipart = async (request: Request): Promise<{ wav: Uint8Array; language?: string }> => {
+const readWavFromMultipart = async (
+  request: Request,
+): Promise<{ wav: Uint8Array; language?: string }> => {
   let form: FormData;
   try {
     form = await request.formData();
@@ -333,7 +340,10 @@ export const handleWorkersAiAsrTranscription = async (
       return jsonResponse(error.status, { error: { code: error.code, message: error.message } });
     }
     return jsonResponse(HTTP_BAD_GATEWAY, {
-      error: { code: "asr_workers_ai_failed", message: errorDetail(error, "Workers AI ASR failed") },
+      error: {
+        code: "asr_workers_ai_failed",
+        message: errorDetail(error, "Workers AI ASR failed"),
+      },
     });
   }
 };

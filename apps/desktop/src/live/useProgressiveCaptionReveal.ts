@@ -99,11 +99,7 @@ export const useProgressiveCaptionReveal = (
     targetRef.current = revealTarget;
   } else if (
     displayedSource !== revealTarget &&
-    (shouldSnapProgressiveFirstPaint(
-      displayedSource,
-      revealTarget,
-      firstFramePendingRef.current,
-    ) ||
+      (shouldSnapProgressiveFirstPaint(displayedSource, revealTarget, firstFramePendingRef.current) ||
       shouldSnapAvailablePrefixExtension(
         displayedSource,
         revealTarget,

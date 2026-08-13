@@ -1031,24 +1031,18 @@ describe("OverlayApp caption replay", () => {
         row.tail === "終わりますか" &&
         row.structure === "glue",
     );
-    const elongGlue = matrix.find(
-      (row) =>
-        row.lead === "おはよう" &&
-        row.tail === "よろしくお願いします" &&
-        row.structure === "elong",
-    );
-    const disjoint = matrix.find(
-      (row) =>
-        row.lead === "会議を始めます" &&
-        row.tail === "続きがあります" &&
-        row.structure === "glue",
-    );
-    const glueFollow = matrix.find(
-      (row) =>
-        row.lead === "これはテストです" &&
-        row.tail === "終わりますか" &&
-        row.structure === "glue",
-    );
+      const elongGlue = matrix.find(
+        (row) =>
+          row.lead === "おはよう" && row.tail === "よろしくお願いします" && row.structure === "elong",
+      );
+      const disjoint = matrix.find(
+        (row) =>
+          row.lead === "会議を始めます" && row.tail === "続きがあります" && row.structure === "glue",
+      );
+      const glueFollow = matrix.find(
+        (row) =>
+          row.lead === "これはテストです" && row.tail === "終わりますか" && row.structure === "glue",
+      );
     expect([longLead, elongGlue, disjoint, glueFollow].every(Boolean)).toBe(true);
     if (!longLead || !elongGlue || !disjoint || !glueFollow) {
       return;
@@ -1214,9 +1208,10 @@ describe("OverlayApp caption replay", () => {
       await emitAsr("parapper:s:1:91", disjoint.tail, 80, 400);
       const differentStart = paintedText();
       expect(differentStart).toContain(disjoint.tail);
-      expect(differentStart.includes(disjoint.lead), "different startedAt must not concatenate").toBe(
-        false,
-      );
+        expect(
+          differentStart.includes(disjoint.lead),
+          "different startedAt must not concatenate",
+        ).toBe(false);
     } finally {
       await act(async () => {
         root.unmount();
