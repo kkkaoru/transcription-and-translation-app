@@ -291,6 +291,7 @@ pub(in crate::recognition) fn drop_front_interim_segments_covered_by_completion(
 pub(in crate::recognition) fn take_next_request_segment_plan(
     config: &ParapperConfig,
     pending: &mut VecDeque<PendingAsrSegment>,
+    open_turn_id: Option<u64>,
 ) -> Option<AsrRequestSegmentPlan> {
     let first = pending.pop_front()?;
     let kind = first.kind();
@@ -298,10 +299,10 @@ pub(in crate::recognition) fn take_next_request_segment_plan(
 
     match kind {
         AsrTaskKind::CompletionCheck if config.can_connect_interim_after_completion() => {
-            take_following_interim_segments(pending, &mut segments);
+            take_following_interim_segments(pending, &mut segments, open_turn_id);
         }
         AsrTaskKind::InterimDisplay => {
-            take_following_interim_segments(pending, &mut segments);
+            take_following_interim_segments(pending, &mut segments, open_turn_id);
         }
         AsrTaskKind::CompletionCheck | AsrTaskKind::Rerecognition => {}
     }
@@ -312,6 +313,7 @@ pub(in crate::recognition) fn take_next_request_segment_plan(
 fn take_following_interim_segments(
     pending: &mut VecDeque<PendingAsrSegment>,
     segments: &mut Vec<PendingAsrSegment>,
+    open_turn_id: Option<u64>,
 ) {
     while let Some(next) = pending.front() {
         let Some(last) = segments.last() else {
@@ -323,15 +325,19 @@ fn take_following_interim_segments(
         // Nemotron 160ms chunks are a fixed ASR grid. Folding a later chunk
         // into this request would run 320ms as one worker call and drop the
         // second tick. Breath-chained InterimResultSilenceReached can still merge
-        // onto a root max-chunk CompletionCheck (same-utterance join). EndSilence
-        // and a child max-chunk (previous set after remint) must not swallow a
-        // following AfterInterimSilence: that would drop its next-utterance
-        // InterimDisplay.
+        // onto a root max-chunk CompletionCheck when no turn is open yet
+        // (same-utterance join). After remint the open turn already exists, so a
+        // stream-reset root max-chunk must not swallow the following
+        // AfterInterimSilence InterimDisplay. EndSilence and a child max-chunk
+        // also keep that silence off CompletionCheck.
         if last.reason == SegmentCloseReason::InterimChunkReached
             || next.reason == SegmentCloseReason::InterimChunkReached
             || last.reason == SegmentCloseReason::EndSilenceReached
             || (last.reason == SegmentCloseReason::SegmentMaxChunksReached
                 && last.previous_segment_id.is_some())
+            || (last.reason == SegmentCloseReason::SegmentMaxChunksReached
+                && last.previous_segment_id.is_none()
+                && open_turn_id.is_some())
         {
             break;
         }
@@ -361,6 +367,7 @@ mod tests {
                 ..ParapperConfig::default()
             },
             &mut pending,
+            None,
         )
         .expect("first interim request should be planned");
 
@@ -383,6 +390,7 @@ mod tests {
                 ..ParapperConfig::default()
             },
             &mut pending,
+            None,
         )
         .expect("first 160ms chunk should be planned");
 
@@ -408,6 +416,7 @@ mod tests {
                 ..ParapperConfig::default()
             },
             &mut pending,
+            None,
         )
         .expect("end-silence completion should be planned");
 
@@ -430,6 +439,7 @@ mod tests {
                 ..ParapperConfig::default()
             },
             &mut pending,
+            None,
         )
         .expect("end-silence completion should be planned");
 
@@ -458,6 +468,7 @@ mod tests {
                 ..ParapperConfig::default()
             },
             &mut pending,
+            None,
         )
         .expect("child max-chunk completion should be planned");
 
@@ -486,6 +497,7 @@ mod tests {
                 ..ParapperConfig::default()
             },
             &mut pending,
+            None,
         )
         .expect("root max-chunk completion should be planned");
 
@@ -495,6 +507,35 @@ mod tests {
         assert_eq!(plan.range().end_sample, GlobalSampleIndex(200));
         assert_eq!(plan.audio().len(), 200);
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn request_plan_does_not_fold_after_interim_silence_into_root_max_chunk_when_turn_is_open() {
+        let mut pending = VecDeque::from([
+            pending_segment(4, None, SegmentCloseReason::SegmentMaxChunksReached, 410..510),
+            pending_segment(5, Some(4), SegmentCloseReason::InterimResultSilenceReached, 510..610),
+        ]);
+
+        let plan = take_next_request_segment_plan(
+            &parapper_config! {
+                turn_detector: TurnDetector::Namo,
+                ..ParapperConfig::default()
+            },
+            &mut pending,
+            Some(2),
+        )
+        .expect("root max-chunk completion should be planned");
+
+        assert_eq!(plan.kind, AsrTaskKind::CompletionCheck);
+        assert_eq!(plan.first_reason(), SegmentCloseReason::SegmentMaxChunksReached);
+        assert_eq!(plan.range().start_sample, GlobalSampleIndex(410));
+        assert_eq!(plan.range().end_sample, GlobalSampleIndex(510));
+        assert_eq!(plan.audio().len(), 100);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending.front().map(|segment| (segment.segment_id, segment.reason)),
+            Some((5, SegmentCloseReason::InterimResultSilenceReached))
+        );
     }
 
     #[test]
@@ -547,7 +588,7 @@ mod tests {
 
         drop_front_interim_segments_covered_by_completion(&mut pending);
         let plan =
-            take_next_request_segment_plan(&ParapperConfig::default(), &mut pending).unwrap();
+            take_next_request_segment_plan(&ParapperConfig::default(), &mut pending, None).unwrap();
 
         assert_eq!(plan.kind, AsrTaskKind::CompletionCheck);
         assert_eq!(plan.audio(), vec![2.0; 20]);
@@ -573,6 +614,7 @@ mod tests {
                     ..ParapperConfig::default()
                 },
                 &mut pending,
+                None,
             )
             .expect("completion request should be planned");
 

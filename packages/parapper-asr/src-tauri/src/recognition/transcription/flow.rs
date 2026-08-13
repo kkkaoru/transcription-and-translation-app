@@ -205,8 +205,11 @@ impl RecognitionSession {
 
     fn build_next_asr_request(&mut self) -> Option<AsrRequest> {
         loop {
-            let plan =
-                take_next_request_segment_plan(&self.config, &mut self.pending.asr_segments)?;
+            let plan = take_next_request_segment_plan(
+                &self.config,
+                &mut self.pending.asr_segments,
+                self.turn_store.open_turn_id,
+            )?;
             let range = plan.range();
             if range.end_sample <= self.turn_store.confirmed_until_sample {
                 log::warn!(
