@@ -3373,6 +3373,113 @@ fn turn_runtime_after_interim_silence_stays_after_160ms_without_stealing_grid() 
 }
 
 #[test]
+fn turn_runtime_namo_grammar_does_not_close_lead_before_same_utterance_tail() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8);
+    let asr_handle = builder.use_manual_asr();
+    let _ = builder
+        .use_scripted_decisions(vec![TurnDecision { is_end_of_turn: true, confidence: 0.99 }]);
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    runtime.step();
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("in-flight prefix must yield to the same-turn 160ms tail");
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert_ne!(chunk.request_id, prefix.request_id);
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        310..410,
+    );
+    runtime.step();
+
+    let in_flight = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("AfterInterimSilence must not steal in-flight 160ms");
+    assert_eq!(in_flight.request_id, chunk.request_id);
+    assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("deferred prefix CompletionCheck must resume before grammar");
+    assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(resumed.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    let resumed = resumed.clone();
+    asr_handle.complete_request_with_text(&resumed, "全体。");
+    runtime.step();
+
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "Namo grammar must not finalize the lead before the same-utterance tail applies"
+    );
+    let silence = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("same-utterance AfterInterimSilence must take the slot instead of grammar closing the lead");
+    assert_eq!(
+        silence.kind,
+        AsrTaskKind::InterimDisplay,
+        "Namo grammar must not occupy the slot before the same-utterance tail applies"
+    );
+    assert_eq!(silence.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
+    assert_eq!(silence.target.turn_id, TurnId(1));
+
+    asr_handle.complete_request_with_text(&silence, "後半");
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    assert!(
+        outputs.iter().any(|output| {
+            output.turn_id == 1
+                && output.text.contains("全体")
+                && output.text.contains("続き")
+                && output.text.contains("後半")
+        }),
+        "same-utterance tail must emit on the current caption before Namo can close the lead; got {:?}",
+        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "invariant covers in-flight 160ms hold, remint of a next-utterance child EndSilence, prefix, and uncovered tail"

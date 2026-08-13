@@ -368,8 +368,10 @@ impl RecognitionSession {
 
     fn pending_root_after_interim_silence_follows_end_silence(&self, turn_id: u64) -> bool {
         // Root AfterInterimSilence after this turn's EndSilence is the same
-        // utterance's breath tail. AfterInterimSilence that already follows
-        // applied 160ms is the next utterance and must remint instead.
+        // utterance's breath tail. Same-breath AfterInterimSilence after an
+        // applied 160ms is deferred by
+        // `pending_same_utterance_after_interim_silence_following_160ms`
+        // instead; a later 160ms / EndSilence / max-chunk still remints.
         // Do not require open_turn / audio_ranges: reminted EndSilence is a
         // CompletionCheck, which does not merge ranges, and open_turn is
         // assigned only after grammar dispatch.
@@ -384,13 +386,31 @@ impl RecognitionSession {
         })
     }
 
+    fn pending_same_utterance_after_interim_silence_following_160ms(&self, turn_id: u64) -> bool {
+        // Same-breath AfterInterimSilence after the applied 160ms must apply
+        // before Namo grammar can close on the lead. Require a pending silence:
+        // `same_utterance_after_interim_silence_should_stay` is true whenever
+        // no later marker exists, including when nothing is queued.
+        if !self.latest_applied_segment_is_streaming_chunk(turn_id)
+            || self.in_flight_streaming_chunk_for_turn(turn_id)
+            || !self.same_utterance_after_interim_silence_should_stay(turn_id)
+        {
+            return false;
+        }
+        self.pending
+            .asr_segments
+            .iter()
+            .any(|segment| segment.reason == SegmentCloseReason::InterimResultSilenceReached)
+    }
+
     fn defer_grammar_for_root_after_interim_silence(
         &mut self,
         turn_id: u64,
         purpose: RerecognitionPurpose,
     ) -> bool {
         if purpose != RerecognitionPurpose::GrammarAfterCompletion
-            || !self.pending_root_after_interim_silence_follows_end_silence(turn_id)
+            || (!self.pending_root_after_interim_silence_follows_end_silence(turn_id)
+                && !self.pending_same_utterance_after_interim_silence_following_160ms(turn_id))
         {
             return false;
         }
