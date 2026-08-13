@@ -1575,6 +1575,376 @@ fn turn_runtime_completion_without_interim_keeps_max_chunk_on_same_turn() {
 }
 
 #[test]
+fn turn_runtime_in_flight_completion_yields_to_prequeued_max_chunk_then_resumes() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    assert_eq!(completion.kind, AsrTaskKind::CompletionCheck);
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    runtime.step();
+
+    let dispatched =
+        runtime.requests.in_flight_request.as_ref().expect(
+            "in-flight CompletionCheck must yield the slot to same-turn max-chunk tail ASR",
+        );
+    assert_eq!(dispatched.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    assert_eq!(dispatched.target.turn_id, TurnId(1));
+    assert_ne!(
+        dispatched.request_id, completion.request_id,
+        "yielding CompletionCheck must drop the original in-flight request"
+    );
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "yielding CompletionCheck to max-chunk must not remint a new turn"
+    );
+    assert!(runtime.requests.deferred_completion.is_some());
+    assert!(runtime.pending.asr_segments.is_empty());
+
+    let max_chunk = dispatched.clone();
+    asr_handle.complete_request_with_text(&max_chunk, "追加");
+    runtime.step();
+
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("prefix CompletionCheck must resume after the same-turn max-chunk tail");
+    assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(resumed.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(resumed.target.turn_id, TurnId(1));
+    assert_eq!(resumed.target.range, AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(150)));
+    assert_ne!(resumed.request_id, completion.request_id);
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "追加");
+    assert_eq!(draft.full_audio, vec![2.0; 100]);
+
+    let resumed = resumed.clone();
+    asr_handle.complete_request_with_text(&resumed, "全体。");
+    runtime.step();
+
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    assert_eq!(runtime.turn_store.open_turn_id, Some(1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "resumed CompletionCheck must keep prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("追加"),
+        "resumed CompletionCheck must keep the uncovered tail; got {}",
+        draft.combined_text
+    );
+    let overall_pos = draft.combined_text.find("全体").expect("prefix text");
+    let tail_pos = draft.combined_text.find("追加").expect("tail text");
+    assert!(
+        overall_pos < tail_pos,
+        "prefix completion must prepend before the tail; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 100]].concat(),
+        "resumed CompletionCheck must prepend uncovered prefix audio"
+    );
+}
+
+#[test]
+fn turn_runtime_in_flight_completion_yields_to_prequeued_160ms_then_resumes() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    runtime.step();
+
+    let dispatched = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("in-flight CompletionCheck must yield the slot to same-turn 160ms tail ASR");
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(dispatched.target.turn_id, TurnId(1));
+    assert_ne!(dispatched.request_id, completion.request_id);
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    let chunk = dispatched.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("prefix CompletionCheck must resume after the same-turn 160ms tail");
+    assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(resumed.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(resumed.target.turn_id, TurnId(1));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "続き");
+    assert_eq!(draft.full_audio, vec![2.0; 160]);
+
+    let resumed = resumed.clone();
+    asr_handle.complete_request_with_text(&resumed, "全体。");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "resumed CompletionCheck must keep prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "resumed CompletionCheck must keep the uncovered 160ms tail; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 160]].concat(),
+        "resumed CompletionCheck must prepend uncovered prefix audio"
+    );
+}
+
+#[test]
+fn turn_runtime_late_yielded_completion_result_does_not_clobber_tail() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    runtime.step();
+
+    let max_chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("max-chunk tail must be in flight after CompletionCheck yields");
+    asr_handle.complete_request_with_text(&completion, "短い");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.request_id),
+        Some(max_chunk.request_id),
+        "a late original CompletionCheck result must not steal the max-chunk slot"
+    );
+    assert!(
+        runtime
+            .turn_store
+            .turns
+            .get(&1)
+            .is_none_or(|turn| { !turn.draft().combined_text.contains("短い") }),
+        "a mismatched late CompletionCheck must not clobber the draft"
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+}
+
+#[test]
+fn turn_runtime_in_flight_completion_does_not_yield_to_after_interim_silence() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let _asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::InterimResultSilenceReached,
+        150..250,
+    );
+    runtime.step();
+
+    let in_flight = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("AfterInterimSilence must not steal in-flight CompletionCheck");
+    assert_eq!(in_flight.request_id, completion.request_id);
+    assert_eq!(in_flight.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(runtime.pending.asr_segments.len(), 1);
+    assert!(runtime.requests.deferred_completion.is_none());
+}
+
+#[test]
+fn turn_runtime_in_flight_completion_yields_to_160ms_keeping_visible_interim() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        0..160,
+    );
+    runtime.step();
+    let interim = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("streaming chunk must dispatch interim ASR");
+    asr_handle.complete_request_with_text(&interim, "前半");
+    runtime.step();
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::EndSilenceReached,
+        0..160,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR on the open turn");
+    assert_eq!(completion.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(completion.target.turn_id, TurnId(1));
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        Some(1),
+        SegmentCloseReason::InterimChunkReached,
+        160..320,
+    );
+    runtime.step();
+
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("in-flight CompletionCheck must yield to the later 160ms tail");
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.combined_text, "前半",
+        "yielding CompletionCheck must keep already-visible interim text"
+    );
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("prefix CompletionCheck must resume after the 160ms tail");
+    assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(resumed.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("前半"),
+        "160ms tail must not drop visible interim text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "160ms tail must append the continuation; got {}",
+        draft.combined_text
+    );
+
+    let resumed = resumed.clone();
+    asr_handle.complete_request_with_text(&resumed, "全体。");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "resumed CompletionCheck must update the prefix; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "resumed CompletionCheck must keep the uncovered tail; got {}",
+        draft.combined_text
+    );
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "same-turn 160ms continuation must not remint"
+    );
+}
+
+#[test]
 fn turn_runtime_closing_interim_chunk_takes_rerecognition_slot_on_same_turn() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)

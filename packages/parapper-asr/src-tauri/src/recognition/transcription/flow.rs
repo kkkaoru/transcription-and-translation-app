@@ -169,6 +169,11 @@ impl RecognitionSession {
     pub(in crate::recognition) fn dispatch_next_asr_request_if_idle(&mut self) {
         self.yield_rerecognition_slot_for_next_utterance();
         self.yield_rerecognition_slot_for_same_turn_continuation();
+        self.yield_completion_slot_for_same_turn_continuation();
+        if self.requests.in_flight_request.is_some() {
+            return;
+        }
+        self.dispatch_deferred_completion_if_idle();
         if self.requests.in_flight_request.is_some() {
             return;
         }
@@ -468,6 +473,15 @@ impl RecognitionSession {
                 match after_transcript {
                     AsrResultCompletionAfterTranscript::RerecognizeIfIdle(purpose) => {
                         let purpose = runtime_purpose_from_result(purpose);
+                        if self.requests.deferred_completion.is_some() {
+                            // Same-utterance tail applied first. Keep the draft
+                            // open and restart grammar rerecognition after the
+                            // deferred prefix CompletionCheck resumes.
+                            self.requests.deferred_rerecognition = Some((turn_id, purpose));
+                            self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                            self.adopt_open_turn_after_completion(turn_id);
+                            return;
+                        }
                         if self.dispatch_rerecognition_for_turn_if_idle(turn_id, purpose) {
                             // Paint the completion hypothesis before waiting on
                             // follow-up ASR so the caption is not blank for a
@@ -488,6 +502,11 @@ impl RecognitionSession {
                         }
                     }
                     AsrResultCompletionAfterTranscript::CompleteWithoutGrammar => {}
+                }
+                if self.requests.deferred_completion.is_some() {
+                    self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                    self.adopt_open_turn_after_completion(turn_id);
+                    return;
                 }
                 self.complete_turn_without_grammar(turn_id);
             }

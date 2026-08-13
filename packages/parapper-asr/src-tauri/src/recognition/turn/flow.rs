@@ -47,6 +47,11 @@ impl RecognitionSession {
         if self.requests.in_flight_request.is_some() {
             return false;
         }
+        if self.requests.deferred_completion.is_some() {
+            // Prefix CompletionCheck still has to apply before grammar ASR hears
+            // the full utterance (prefix + same-turn tail).
+            return false;
+        }
         if self.should_yield_rerecognition_to_pending_next(turn_id, purpose) {
             // A newer utterance is already queued. Occupying the single ASR
             // slot with follow-up rerecognition would delay its first hypothesis.
@@ -180,6 +185,67 @@ impl RecognitionSession {
         // is ignored (mismatch).
         self.requests.in_flight_request = None;
         self.requests.pending_rerecognition_purpose = None;
+    }
+
+    pub(in crate::recognition) fn yield_completion_slot_for_same_turn_continuation(&mut self) {
+        let Some(request) = self.requests.in_flight_request.as_ref() else {
+            return;
+        };
+        if request.kind != AsrTaskKind::CompletionCheck {
+            return;
+        }
+        // Max-chunk CompletionCheck is already the same-turn tail. Yielding it
+        // to a later 160ms chunk would drop that tail ASR while a deferred
+        // end-silence completion is still waiting.
+        if request.close_reason == Some(SegmentCloseReason::SegmentMaxChunksReached) {
+            return;
+        }
+        let turn_id = request.target.turn_id.0;
+        if !self.pending_same_utterance_continuation(turn_id) {
+            return;
+        }
+        // Drop the slot so 160ms / max-chunk tail ASR can run. Do not finalize
+        // or remint. Late original CompletionCheck is ignored (new request id
+        // on resume). Visible text already on the draft stays; prefix audio
+        // that has not applied yet is prepended when the request resumes.
+        let request = self.requests.in_flight_request.take().expect(
+            "in-flight CompletionCheck was present when yielding to same-turn continuation",
+        );
+        if self.requests.deferred_completion.is_none() {
+            self.requests.deferred_completion = Some(request);
+        }
+    }
+
+    pub(in crate::recognition) fn dispatch_deferred_completion_if_idle(&mut self) {
+        let Some(request) = self.requests.deferred_completion.as_ref() else {
+            return;
+        };
+        let turn_id = request.target.turn_id.0;
+        if self.requests.in_flight_request.is_some()
+            || self.pending_same_utterance_continuation(turn_id)
+        {
+            return;
+        }
+        if self.turn_store.finalized_turns.contains(&turn_id) {
+            self.requests.deferred_completion = None;
+            return;
+        }
+        let Some(mut request) = self.requests.deferred_completion.take() else {
+            return;
+        };
+        request.request_id = AsrRequestId(self.take_next_request_id());
+        let in_flight = AsrInFlight::from(&request);
+        if !self.io.asr_runner.submit(request.clone()) {
+            log::warn!(
+                "Dropping deferred completion ASR request after submit failure: request_id={:?} turn_id={turn_id}",
+                request.request_id,
+            );
+            self.requests.deferred_completion = Some(request);
+            return;
+        }
+        self.requests.in_flight_request = Some(request);
+        self.requests.last_dispatched = Some(in_flight);
+        self.stamp_asr_dispatch(turn_id);
     }
 
     fn should_yield_rerecognition_to_pending_next(
@@ -349,6 +415,7 @@ impl RecognitionSession {
         self.turn_store.open_turn_is_closing = false;
         self.activity.open_turn_since_tick = None;
         self.requests.deferred_rerecognition = None;
+        self.requests.deferred_completion = None;
     }
 
     fn reset_open_turn_timeout_origin(&mut self) {

@@ -129,7 +129,46 @@ impl RecognitionSession {
         } else {
             incoming_text.clone()
         };
-        if replace_latest_segment {
+        let earlier_prefix_segment_id = completion_earlier_segment_id(
+            &draft.segment_ids,
+            draft.latest_segment_id,
+            request,
+            segment_id,
+        );
+        if completion_prefix_is_before_existing_range(existing_audio_range, request) {
+            let prepend_id = request.target.first_segment_id.map_or(segment_id, |id| id.0);
+            draft.prepend_recognized_segment(
+                prepend_id,
+                previous_segment_id,
+                &request.source_audio,
+                &request.source_vad_results,
+                request.route,
+                recorded_text,
+                elapsed_millis,
+            );
+        } else if let Some(prefix_segment_id) = earlier_prefix_segment_id {
+            if !recorded_text.is_empty() {
+                let keep_visible_prefix = draft
+                    .segment_ids
+                    .iter()
+                    .position(|id| *id == prefix_segment_id)
+                    .and_then(|index| draft.segment_texts.get(index))
+                    .is_some_and(|visible| {
+                        prefer_streaming_interim_text_over_truncated_completion(
+                            visible,
+                            &incoming_text,
+                        )
+                    });
+                if !keep_visible_prefix {
+                    draft.replace_segment_text_preserving_audio(
+                        prefix_segment_id,
+                        request.route,
+                        incoming_text.clone(),
+                        elapsed_millis,
+                    );
+                }
+            }
+        } else if replace_latest_segment {
             draft.replace_latest_recognized_segment(
                 segment_id,
                 previous_segment_id,
@@ -643,6 +682,27 @@ fn completion_is_full_longer_rewrite(existing: &str, incoming: &str) -> bool {
     let existing = strip_turn_surface_noise(existing);
     let incoming = strip_turn_surface_noise(incoming);
     is_longer_turn_rewrite(existing, incoming) && incoming.starts_with(existing)
+}
+
+fn completion_prefix_is_before_existing_range(
+    existing: Option<AudioRange>,
+    request: &AsrRequest,
+) -> bool {
+    request.kind == AsrTaskKind::CompletionCheck
+        && existing.is_some_and(|range| request.target.range.end_sample <= range.start_sample)
+}
+
+fn completion_earlier_segment_id(
+    segment_ids: &[u64],
+    latest_segment_id: Option<u64>,
+    request: &AsrRequest,
+    segment_id: u64,
+) -> Option<u64> {
+    if request.kind != AsrTaskKind::CompletionCheck {
+        return None;
+    }
+    let prefix_id = request.target.first_segment_id.map_or(segment_id, |id| id.0);
+    (segment_ids.contains(&prefix_id) && latest_segment_id != Some(prefix_id)).then_some(prefix_id)
 }
 
 fn completion_text_duplicates_existing(existing: &str, incoming: &str) -> bool {
