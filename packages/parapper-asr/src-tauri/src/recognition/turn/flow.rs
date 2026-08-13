@@ -214,7 +214,16 @@ impl RecognitionSession {
             "in-flight CompletionCheck was present when yielding to same-turn continuation",
         );
         self.park_yielded_max_chunk_audio_on_draft(&request);
+        // Production 160ms after EndSilence is a new root (`previous=None`).
+        // Accept it onto this turn so `target_turn_id` does not remint.
+        self.adopt_open_turn_for_same_turn_streaming_chunk(request.target.turn_id.0);
         self.requests.deferred_completion.push_back(request);
+    }
+
+    fn adopt_open_turn_for_same_turn_streaming_chunk(&mut self, turn_id: u64) {
+        self.turn_store.open_turn_id = Some(turn_id);
+        self.turn_store.open_turn_accepts_root_segment = true;
+        self.turn_store.open_turn_is_closing = false;
     }
 
     pub(in crate::recognition) fn dispatch_deferred_completion_if_idle(&mut self) {
@@ -850,6 +859,8 @@ impl RecognitionSession {
             if self.completion_request_owns_segment(previous_segment_id, turn_id) {
                 return true;
             }
+        } else if self.pending_root_streaming_chunk_extends_turn(segment, turn_id) {
+            return true;
         } else if self.turn_store.open_turn_id.is_some_and(|open| open <= turn_id)
             && self.turn_store.open_turn_accepts_root_segment
             && self.config.can_connect_interim_after_completion()
@@ -867,6 +878,32 @@ impl RecognitionSession {
                 && request.target.turn_id.0 <= turn_id
                 && (request.target.last_segment_id.map(|id| id.0) == Some(segment_id)
                     || request.target.first_segment_id.map(|id| id.0) == Some(segment_id))
+        };
+        self.requests.in_flight_request.as_ref().is_some_and(owns)
+            || self.requests.deferred_completion.iter().any(owns)
+    }
+
+    fn pending_root_streaming_chunk_extends_turn(
+        &self,
+        segment: &PendingAsrSegment,
+        turn_id: u64,
+    ) -> bool {
+        if segment.reason != SegmentCloseReason::InterimChunkReached
+            || !self.config.can_connect_interim_after_completion()
+        {
+            return false;
+        }
+        // Production Nemotron 160ms restarts as a new root after EndSilence
+        // flushes the stream (`previous_segment_id: None`, new display id).
+        // It still extends this utterance while CompletionCheck is in-flight
+        // or deferred, or while the open turn has not finalized.
+        self.completion_is_active_for_turn(turn_id)
+            || self.turn_store.open_turn_id.is_some_and(|open| open <= turn_id)
+    }
+
+    fn completion_is_active_for_turn(&self, turn_id: u64) -> bool {
+        let owns = |request: &AsrRequest| {
+            request.kind == AsrTaskKind::CompletionCheck && request.target.turn_id.0 <= turn_id
         };
         self.requests.in_flight_request.as_ref().is_some_and(owns)
             || self.requests.deferred_completion.iter().any(owns)

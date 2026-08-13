@@ -141,6 +141,14 @@ impl AsrRequestSegmentPlan {
             return first.segment_id;
         }
         if first.previous_segment_id.is_none() && !open_turn_accepts_root_segment {
+            // Production Nemotron 160ms restarts as a new root after EndSilence
+            // flushes the stream. Keep it on the still-open utterance instead of
+            // reminting a same-turn tail.
+            if first.reason == SegmentCloseReason::InterimChunkReached
+                && let Some(open_turn_id) = open_turn_id
+            {
+                return open_turn_id;
+            }
             return first.segment_id;
         }
         open_turn_id.unwrap_or_else(|| first.turn_id().0)

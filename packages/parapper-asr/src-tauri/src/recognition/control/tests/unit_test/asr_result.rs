@@ -1753,6 +1753,96 @@ fn turn_runtime_in_flight_completion_yields_to_prequeued_160ms_then_resumes() {
 }
 
 #[test]
+fn turn_runtime_in_flight_end_silence_yields_to_root_160ms() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    assert!(
+        runtime.turn_store.open_turn_id.is_none(),
+        "completion without an interim must not already own an open turn"
+    );
+
+    // Production Nemotron 160ms after EndSilence: streaming was flushed, so the
+    // next chunk is a new root (previous=None, new display id).
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    runtime.step();
+
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("in-flight EndSilence CompletionCheck must yield to a later root 160ms tail");
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert_ne!(chunk.request_id, completion.request_id);
+    assert_eq!(runtime.requests.deferred_completion.len(), 1);
+    assert_eq!(
+        runtime.requests.deferred_completion[0].close_reason,
+        Some(SegmentCloseReason::EndSilenceReached)
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("prefix CompletionCheck must resume after the root 160ms tail");
+    assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(resumed.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(resumed.target.turn_id, TurnId(1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "続き");
+    assert_eq!(draft.full_audio, vec![2.0; 160]);
+
+    let resumed = resumed.clone();
+    asr_handle.complete_request_with_text(&resumed, "全体。");
+    runtime.step();
+
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "resumed prefix CompletionCheck must keep prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "resumed prefix CompletionCheck must keep the uncovered 160ms tail; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 160]].concat(),
+        "resumed prefix must prepend uncovered prefix audio ahead of the root 160ms tail"
+    );
+}
+
+#[test]
 fn turn_runtime_late_yielded_completion_result_does_not_clobber_tail() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)
@@ -2358,6 +2448,79 @@ fn turn_runtime_closing_interim_chunk_takes_rerecognition_slot_on_same_turn() {
         draft.full_audio,
         [vec![1.0; 150], vec![2.0; 160]].concat(),
         "closing 160ms tail must keep uncovered tail audio"
+    );
+}
+
+#[test]
+fn turn_runtime_closing_root_160ms_stays_on_same_turn() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let completion = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    asr_handle.complete_request_with_text(&completion, "全体。");
+    runtime.step();
+
+    let dispatched =
+        runtime.requests.in_flight_request.as_ref().expect(
+            "a closing root 160ms must take the slot on the same turn instead of reminting",
+        );
+    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(dispatched.target.turn_id, TurnId(1));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "全体。");
+    assert_eq!(draft.full_audio, vec![1.0; 150]);
+
+    let chunk = dispatched.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.kind),
+        Some(AsrTaskKind::Rerecognition),
+        "closing root 160ms must restart grammar rerecognition on the same turn"
+    );
+    assert_eq!(
+        runtime.requests.in_flight_request.as_ref().map(|request| request.target.turn_id),
+        Some(TurnId(1))
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "closing root 160ms must not drop already-visible text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "closing root 160ms must append the continuation; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 160]].concat(),
+        "closing root 160ms must keep uncovered tail audio"
     );
 }
 
