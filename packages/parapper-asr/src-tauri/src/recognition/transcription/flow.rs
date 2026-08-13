@@ -473,7 +473,7 @@ impl RecognitionSession {
                 match after_transcript {
                     AsrResultCompletionAfterTranscript::RerecognizeIfIdle(purpose) => {
                         let purpose = runtime_purpose_from_result(purpose);
-                        if self.requests.deferred_completion.is_some() {
+                        if self.has_deferred_completion() {
                             // Same-utterance tail applied first. Keep the draft
                             // open and restart grammar rerecognition after the
                             // deferred prefix CompletionCheck resumes.
@@ -503,7 +503,7 @@ impl RecognitionSession {
                     }
                     AsrResultCompletionAfterTranscript::CompleteWithoutGrammar => {}
                 }
-                if self.requests.deferred_completion.is_some() {
+                if self.has_deferred_completion() {
                     self.emit_waiting_draft_if_blank_or_longer(turn_id);
                     self.adopt_open_turn_after_completion(turn_id);
                     return;
@@ -527,7 +527,7 @@ impl RecognitionSession {
         }
     }
 
-    fn adopt_open_turn_after_completion(&mut self, turn_id: u64) {
+    pub(in crate::recognition) fn adopt_open_turn_after_completion(&mut self, turn_id: u64) {
         let previous_open_turn_id = self.turn_store.open_turn_id;
         if self.turn_store.open_turn_id.is_none_or(|open_turn_id| open_turn_id <= turn_id) {
             self.turn_store.open_turn_id = Some(turn_id);

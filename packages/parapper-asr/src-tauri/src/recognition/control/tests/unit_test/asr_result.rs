@@ -1618,7 +1618,10 @@ fn turn_runtime_in_flight_completion_yields_to_prequeued_max_chunk_then_resumes(
         !runtime.turn_store.finalized_turns.contains(&1),
         "yielding CompletionCheck to max-chunk must not remint a new turn"
     );
-    assert!(runtime.requests.deferred_completion.is_some());
+    assert!(
+        !runtime.requests.deferred_completion.is_empty(),
+        "yielding CompletionCheck must keep the prefix request deferred"
+    );
     assert!(runtime.pending.asr_segments.is_empty());
 
     let max_chunk = dispatched.clone();
@@ -1838,7 +1841,7 @@ fn turn_runtime_in_flight_completion_does_not_yield_to_after_interim_silence() {
     assert_eq!(in_flight.kind, AsrTaskKind::CompletionCheck);
     assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::EndSilenceReached));
     assert_eq!(runtime.pending.asr_segments.len(), 1);
-    assert!(runtime.requests.deferred_completion.is_none());
+    assert!(runtime.requests.deferred_completion.is_empty());
 }
 
 #[test]
@@ -1941,6 +1944,343 @@ fn turn_runtime_in_flight_completion_yields_to_160ms_keeping_visible_interim() {
     assert!(
         !runtime.turn_store.finalized_turns.contains(&1),
         "same-turn 160ms continuation must not remint"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "invariant covers prefix defer, max-chunk yield, 160ms apply, and resume order"
+)]
+fn turn_runtime_in_flight_max_chunk_yields_to_160ms_without_dropping_prefix() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    runtime.step();
+    let max_chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("prefix CompletionCheck must yield to same-turn max-chunk");
+    assert_eq!(max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    assert_eq!(runtime.requests.deferred_completion.len(), 1);
+    assert_eq!(
+        runtime.requests.deferred_completion[0].close_reason,
+        Some(SegmentCloseReason::EndSilenceReached)
+    );
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        Some(2),
+        SegmentCloseReason::InterimChunkReached,
+        250..410,
+    );
+    runtime.step();
+
+    let chunk =
+        runtime.requests.in_flight_request.as_ref().expect(
+            "in-flight max-chunk CompletionCheck must yield the slot to a later 160ms tail",
+        );
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert_ne!(chunk.request_id, max_chunk.request_id);
+    assert_eq!(runtime.requests.deferred_completion.len(), 2);
+    assert_eq!(
+        runtime.requests.deferred_completion[0].close_reason,
+        Some(SegmentCloseReason::EndSilenceReached),
+        "yielding max-chunk must keep the deferred prefix CompletionCheck"
+    );
+    assert_eq!(
+        runtime.requests.deferred_completion[1].close_reason,
+        Some(SegmentCloseReason::SegmentMaxChunksReached)
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.full_audio,
+        vec![2.0; 100],
+        "yielding max-chunk must park uncovered tail audio so 160ms can append"
+    );
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed_max_chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("max-chunk CompletionCheck must resume after the 160ms tail");
+    assert_eq!(resumed_max_chunk.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(resumed_max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    assert_eq!(resumed_max_chunk.target.turn_id, TurnId(1));
+    assert_eq!(runtime.requests.deferred_completion.len(), 1);
+    assert_eq!(
+        runtime.requests.deferred_completion[0].close_reason,
+        Some(SegmentCloseReason::EndSilenceReached)
+    );
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("続き"),
+        "160ms tail must stay visible; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![2.0; 100], vec![3.0; 160]].concat(),
+        "160ms tail must keep parked max-chunk audio"
+    );
+
+    let resumed_max_chunk = resumed_max_chunk.clone();
+    asr_handle.complete_request_with_text(&resumed_max_chunk, "追加");
+    runtime.step();
+
+    let resumed_prefix = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("prefix CompletionCheck must still resume after max-chunk");
+    assert_eq!(resumed_prefix.kind, AsrTaskKind::CompletionCheck);
+    assert_eq!(resumed_prefix.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    assert_eq!(resumed_prefix.target.turn_id, TurnId(1));
+    assert_ne!(resumed_prefix.request_id, prefix.request_id);
+    assert!(runtime.requests.deferred_completion.is_empty());
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("追加"),
+        "resumed max-chunk must keep tail text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "resumed max-chunk must keep the 160ms tail; got {}",
+        draft.combined_text
+    );
+    let extra_pos = draft.combined_text.find("追加").expect("max-chunk text");
+    let cont_pos = draft.combined_text.find("続き").expect("160ms text");
+    assert!(
+        extra_pos < cont_pos,
+        "max-chunk text must stay before the 160ms tail; got {}",
+        draft.combined_text
+    );
+
+    let resumed_prefix = resumed_prefix.clone();
+    asr_handle.complete_request_with_text(&resumed_prefix, "全体。");
+    runtime.step();
+
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    assert_eq!(runtime.turn_store.open_turn_id, Some(1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "resumed prefix CompletionCheck must keep prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("追加"),
+        "resumed prefix must keep max-chunk text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "resumed prefix must keep the 160ms tail; got {}",
+        draft.combined_text
+    );
+    let overall_pos = draft.combined_text.find("全体").expect("prefix text");
+    let extra_pos = draft.combined_text.find("追加").expect("max-chunk text");
+    let cont_pos = draft.combined_text.find("続き").expect("160ms text");
+    assert!(
+        overall_pos < extra_pos && extra_pos < cont_pos,
+        "prefix, max-chunk, and 160ms text must stay in audio order; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 100], vec![3.0; 160]].concat(),
+        "resumed prefix must prepend uncovered prefix audio ahead of parked max-chunk and 160ms"
+    );
+}
+
+#[test]
+fn turn_runtime_applied_prefix_max_chunk_yields_to_160ms_keeping_visible_text() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    asr_handle.complete_request_with_text(&prefix, "全体。");
+    runtime.step();
+
+    let max_chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("applied prefix must still dispatch same-turn max-chunk");
+    assert_eq!(max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "全体。");
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        Some(2),
+        SegmentCloseReason::InterimChunkReached,
+        250..410,
+    );
+    runtime.step();
+
+    let chunk = runtime.requests.in_flight_request.as_ref().expect(
+        "in-flight max-chunk must yield to a later 160ms tail after the prefix already applied",
+    );
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.combined_text, "全体。",
+        "yielding max-chunk must keep already-visible prefix text"
+    );
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed_max_chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("max-chunk CompletionCheck must resume after the 160ms tail");
+    assert_eq!(resumed_max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "160ms tail must not drop visible prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "160ms tail must append the continuation; got {}",
+        draft.combined_text
+    );
+
+    let resumed_max_chunk = resumed_max_chunk.clone();
+    asr_handle.complete_request_with_text(&resumed_max_chunk, "追加");
+    runtime.step();
+
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "resumed max-chunk must keep prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("追加"),
+        "resumed max-chunk must keep tail text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "resumed max-chunk must keep the 160ms tail; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 100], vec![3.0; 160]].concat(),
+        "resumed max-chunk must keep prefix, parked max-chunk, and 160ms audio"
+    );
+}
+
+#[test]
+fn turn_runtime_in_flight_max_chunk_does_not_yield_to_after_interim_silence() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(false);
+    let _asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    runtime.step();
+    let max_chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("prefix CompletionCheck must yield to same-turn max-chunk");
+    assert_eq!(max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    assert_eq!(runtime.requests.deferred_completion.len(), 1);
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        Some(2),
+        SegmentCloseReason::InterimResultSilenceReached,
+        250..350,
+    );
+    runtime.step();
+
+    let in_flight = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("AfterInterimSilence must not steal in-flight max-chunk CompletionCheck");
+    assert_eq!(in_flight.request_id, max_chunk.request_id);
+    assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    assert_eq!(runtime.pending.asr_segments.len(), 1);
+    assert_eq!(runtime.requests.deferred_completion.len(), 1);
+    assert_eq!(
+        runtime.requests.deferred_completion[0].close_reason,
+        Some(SegmentCloseReason::EndSilenceReached)
     );
 }
 

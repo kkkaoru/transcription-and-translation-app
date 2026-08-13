@@ -332,7 +332,7 @@ impl RecognitionSession {
             || self.pending.turn_check.is_some()
             || self.pending.finalization.is_some()
             || !self.pending.asr_segments.is_empty()
-            || self.requests.deferred_completion.is_some()
+            || self.has_deferred_completion()
             || self.requests.deferred_rerecognition.is_some()
     }
 }

@@ -471,8 +471,9 @@ pub(in crate::recognition) struct AsrRequestState {
     /// Restart once the slot is idle and no max-chunk / streaming chunk remains,
     /// including `TimeoutFinal` / `SimpleTurnCheckFinal` / `GrammarAfterCompletion`.
     pub(in crate::recognition) deferred_rerecognition: Option<(u64, RerecognitionPurpose)>,
-    /// End-silence `CompletionCheck` deferred so same-utterance 160ms / max-chunk
-    /// tail ASR can run first. Resubmit once the slot is idle and no same-turn
-    /// continuation remains. Late original results mismatch the new request id.
-    pub(in crate::recognition) deferred_completion: Option<AsrRequest>,
+    /// End-silence / max-chunk `CompletionCheck` requests deferred so a later
+    /// same-utterance 160ms tail can run first. Stack: later tails resume first
+    /// so prefix audio prepends in order. Late original results mismatch the
+    /// new request id.
+    pub(in crate::recognition) deferred_completion: VecDeque<AsrRequest>,
 }

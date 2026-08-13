@@ -47,7 +47,7 @@ impl RecognitionSession {
         if self.requests.in_flight_request.is_some() {
             return false;
         }
-        if self.requests.deferred_completion.is_some() {
+        if self.has_deferred_completion() {
             // Prefix CompletionCheck still has to apply before grammar ASR hears
             // the full utterance (prefix + same-turn tail).
             return false;
@@ -194,14 +194,16 @@ impl RecognitionSession {
         if request.kind != AsrTaskKind::CompletionCheck {
             return;
         }
-        // Max-chunk CompletionCheck is already the same-turn tail. Yielding it
-        // to a later 160ms chunk would drop that tail ASR while a deferred
-        // end-silence completion is still waiting.
-        if request.close_reason == Some(SegmentCloseReason::SegmentMaxChunksReached) {
-            return;
-        }
         let turn_id = request.target.turn_id.0;
-        if !self.pending_same_utterance_continuation(turn_id) {
+        let should_yield = match request.close_reason {
+            // Max-chunk is already a same-turn tail. Yield it only to a later
+            // 160ms chunk, and keep any deferred prefix CompletionCheck.
+            Some(SegmentCloseReason::SegmentMaxChunksReached) => {
+                self.pending_streaming_chunk_continuation(turn_id)
+            }
+            _ => self.pending_same_utterance_continuation(turn_id),
+        };
+        if !should_yield {
             return;
         }
         // Drop the slot so 160ms / max-chunk tail ASR can run. Do not finalize
@@ -211,13 +213,12 @@ impl RecognitionSession {
         let request = self.requests.in_flight_request.take().expect(
             "in-flight CompletionCheck was present when yielding to same-turn continuation",
         );
-        if self.requests.deferred_completion.is_none() {
-            self.requests.deferred_completion = Some(request);
-        }
+        self.park_yielded_max_chunk_audio_on_draft(&request);
+        self.requests.deferred_completion.push_back(request);
     }
 
     pub(in crate::recognition) fn dispatch_deferred_completion_if_idle(&mut self) {
-        let Some(request) = self.requests.deferred_completion.as_ref() else {
+        let Some(request) = self.requests.deferred_completion.back() else {
             return;
         };
         let turn_id = request.target.turn_id.0;
@@ -227,10 +228,10 @@ impl RecognitionSession {
             return;
         }
         if self.turn_store.finalized_turns.contains(&turn_id) {
-            self.requests.deferred_completion = None;
+            self.requests.deferred_completion.clear();
             return;
         }
-        let Some(mut request) = self.requests.deferred_completion.take() else {
+        let Some(mut request) = self.requests.deferred_completion.pop_back() else {
             return;
         };
         request.request_id = AsrRequestId(self.take_next_request_id());
@@ -240,12 +241,16 @@ impl RecognitionSession {
                 "Dropping deferred completion ASR request after submit failure: request_id={:?} turn_id={turn_id}",
                 request.request_id,
             );
-            self.requests.deferred_completion = Some(request);
+            self.requests.deferred_completion.push_back(request);
             return;
         }
         self.requests.in_flight_request = Some(request);
         self.requests.last_dispatched = Some(in_flight);
         self.stamp_asr_dispatch(turn_id);
+    }
+
+    pub(in crate::recognition) fn has_deferred_completion(&self) -> bool {
+        !self.requests.deferred_completion.is_empty()
     }
 
     fn should_yield_rerecognition_to_pending_next(
@@ -317,6 +322,13 @@ impl RecognitionSession {
                 SegmentCloseReason::SegmentMaxChunksReached
                     | SegmentCloseReason::InterimChunkReached
             ) && self.pending_segment_blocks_finalization(segment, turn_id)
+        })
+    }
+
+    fn pending_streaming_chunk_continuation(&self, turn_id: u64) -> bool {
+        self.pending.asr_segments.iter().any(|segment| {
+            segment.reason == SegmentCloseReason::InterimChunkReached
+                && self.pending_segment_blocks_finalization(segment, turn_id)
         })
     }
 
@@ -415,7 +427,7 @@ impl RecognitionSession {
         self.turn_store.open_turn_is_closing = false;
         self.activity.open_turn_since_tick = None;
         self.requests.deferred_rerecognition = None;
-        self.requests.deferred_completion = None;
+        self.requests.deferred_completion.clear();
     }
 
     fn reset_open_turn_timeout_origin(&mut self) {
@@ -831,6 +843,13 @@ impl RecognitionSession {
             }) {
                 return true;
             }
+
+            // Max-chunk / prefix CompletionCheck can still be in-flight (or
+            // deferred) before its segment id lands on the draft. A 160ms
+            // child that names that segment as previous is the same utterance.
+            if self.completion_request_owns_segment(previous_segment_id, turn_id) {
+                return true;
+            }
         } else if self.turn_store.open_turn_id.is_some_and(|open| open <= turn_id)
             && self.turn_store.open_turn_accepts_root_segment
             && self.config.can_connect_interim_after_completion()
@@ -840,6 +859,17 @@ impl RecognitionSession {
         }
 
         false
+    }
+
+    fn completion_request_owns_segment(&self, segment_id: u64, turn_id: u64) -> bool {
+        let owns = |request: &AsrRequest| {
+            request.kind == AsrTaskKind::CompletionCheck
+                && request.target.turn_id.0 <= turn_id
+                && (request.target.last_segment_id.map(|id| id.0) == Some(segment_id)
+                    || request.target.first_segment_id.map(|id| id.0) == Some(segment_id))
+        };
+        self.requests.in_flight_request.as_ref().is_some_and(owns)
+            || self.requests.deferred_completion.iter().any(owns)
     }
 
     fn pending_child_is_next_utterance_of_closing_turn(

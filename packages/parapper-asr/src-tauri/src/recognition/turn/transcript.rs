@@ -136,9 +136,8 @@ impl RecognitionSession {
             segment_id,
         );
         if completion_prefix_is_before_existing_range(existing_audio_range, request) {
-            let prepend_id = request.target.first_segment_id.map_or(segment_id, |id| id.0);
             draft.prepend_recognized_segment(
-                prepend_id,
+                segment_id,
                 previous_segment_id,
                 &request.source_audio,
                 &request.source_vad_results,
@@ -248,6 +247,70 @@ impl RecognitionSession {
             self.refresh_visible_draft_boundary_from_completion(turn_id, &transcript);
         }
         turn_id
+    }
+
+    pub(in crate::recognition) fn park_yielded_max_chunk_audio_on_draft(
+        &mut self,
+        request: &AsrRequest,
+    ) {
+        if request.kind != AsrTaskKind::CompletionCheck
+            || request.close_reason != Some(SegmentCloseReason::SegmentMaxChunksReached)
+        {
+            return;
+        }
+        let turn_id = request.target.turn_id.0;
+        let existing_audio_range = self.turn_store.audio_ranges.get(&turn_id).copied();
+        self.merge_turn_audio_range(turn_id, request.target.range);
+        let revision = *self.turn_store.revisions.entry(turn_id).or_insert(0);
+        let turn = self.turn_store.turns.entry(turn_id).or_insert_with(|| {
+            Turn::new(turn_event_id(self.counters.turn_session_id, turn_id, revision), revision)
+        });
+        let draft = turn.draft_mut();
+        draft.set_detected_language(request.detected_language.clone());
+        let segment_id = request
+            .target
+            .last_segment_id
+            .map_or(request.target.turn_id.0, |segment_id| segment_id.0);
+        let previous_segment_id = request.target.first_segment_id.and_then(|segment_id| {
+            (Some(segment_id) != request.target.last_segment_id).then_some(segment_id.0)
+        });
+        let range_skip = covered_completion_source_samples(existing_audio_range, request);
+        let prefix_skip =
+            uncovered_completion_source_start(&draft.full_audio, &request.source_audio);
+        let append_source_start = range_skip.max(prefix_skip);
+        if append_source_start < request.source_audio.len() {
+            let append_vad_results;
+            let source_vad_results = if append_source_start == 0 {
+                request.source_vad_results.as_slice()
+            } else {
+                append_vad_results = vad_suffix_after_sample(
+                    request.source_audio.len(),
+                    &request.source_vad_results,
+                    append_source_start,
+                );
+                append_vad_results.as_slice()
+            };
+            let uncovered_audio = &request.source_audio[append_source_start..];
+            if draft.latest_segment_id == Some(segment_id) {
+                draft.extend_latest_segment_audio(
+                    uncovered_audio,
+                    source_vad_results,
+                    request.route,
+                    0,
+                );
+            } else {
+                draft.append_recognized_segment(
+                    segment_id,
+                    previous_segment_id,
+                    uncovered_audio,
+                    source_vad_results,
+                    request.route,
+                    String::new(),
+                    0,
+                );
+            }
+        }
+        self.adopt_open_turn_after_completion(turn_id);
     }
 
     fn refresh_visible_draft_boundary_from_completion(
@@ -701,8 +764,14 @@ fn completion_earlier_segment_id(
     if request.kind != AsrTaskKind::CompletionCheck {
         return None;
     }
-    let prefix_id = request.target.first_segment_id.map_or(segment_id, |id| id.0);
-    (segment_ids.contains(&prefix_id) && latest_segment_id != Some(prefix_id)).then_some(prefix_id)
+    if segment_ids.contains(&segment_id) && latest_segment_id != Some(segment_id) {
+        return Some(segment_id);
+    }
+    if request.close_reason != Some(SegmentCloseReason::EndSilenceReached) {
+        return None;
+    }
+    let first_id = request.target.first_segment_id.map_or(segment_id, |id| id.0);
+    (segment_ids.contains(&first_id) && latest_segment_id != Some(first_id)).then_some(first_id)
 }
 
 fn completion_text_duplicates_existing(existing: &str, incoming: &str) -> bool {
