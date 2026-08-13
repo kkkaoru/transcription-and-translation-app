@@ -117,6 +117,21 @@ describe("caption display sanitization", () => {
     expect(restoreCollapsedContinuation("ー続きがあります", "ー続きがあります")).toBe(
       "ー続きがあります",
     );
+    expect(
+      restoreCollapsedContinuation(
+        "こんにちはーーーよろしくお願いします",
+        "ーよろしくお願いします",
+      ),
+    ).toBe("こんにちはーーーよろしくお願いします");
+    expect(
+      restoreCollapsedContinuation(
+        "おはようーーーよろしくお願いしますーーー？",
+        "ーーーよろしくお願いしますーーー？",
+      ),
+    ).toBe("おはようーーーよろしくお願いしますーーー？");
+    expect(
+      restoreCollapsedContinuation("会議を始めます。ー続きがあります", "ー続きがあります"),
+    ).toBe("ー続きがあります");
     expect(restoreCollapsedContinuation("今日は晴れです", "明日は雨です")).toBe("明日は雨です");
     expect(restoreCollapsedContinuation("会議を始めます続きがあります", "続きがあります")).toBe(
       "会議を始めます続きがあります",

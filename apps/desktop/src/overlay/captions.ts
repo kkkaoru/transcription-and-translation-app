@@ -169,8 +169,9 @@ const isCollapsedContinuationSurface = (source: string, shown: string): boolean 
  * After the first overlay frame commits, paging can drop the recognized head
  * and leave only `ー`, an elongation-led tail, or a suffix of the same turn.
  * Keep the longer surface already in `original`. Do not concatenate a different
- * turn, and do not undo intentional `。` / `．` / `.` remainder paging or a
- * tail that already dominates the dropped head.
+ * turn, and do not undo intentional `。` / `．` / `.` remainder paging. A bare
+ * tail that already dominates the dropped head stays paged; an elongation-led
+ * fragment (`ー続きがあります`) still restores the recognized head.
  */
 export const restoreCollapsedContinuation = (original: string, visible: string): string => {
   const source = original.trim();
@@ -193,7 +194,14 @@ export const restoreCollapsedContinuation = (original: string, visible: string):
   if (!isCollapsedContinuationSurface(source, shown)) {
     return visible;
   }
-  if (doesTailDominateDroppedHead(source, shown)) {
+  // `ー続きがあります` is the same turn after paging dropped the head.
+  // A 2× tail still restores here; period remainder already returned above.
+  // Bare dominating suffixes without elongation keep copula/offset paging.
+  if (
+    !ELONGATION_LED.test(shown) &&
+    !ELONGATION_ONLY.test(shown) &&
+    doesTailDominateDroppedHead(source, shown)
+  ) {
     return visible;
   }
   return sanitizeCaptionDisplayText(source);

@@ -216,4 +216,19 @@ describe("caption surface A/B matrix (lead×tail, not greeting/hearing fixtures)
       expect(restoreCollapsedContinuation(periodPaged, row.tail), row.id).toBe(row.tail);
     }
   });
+
+  it("restores an elongation-led collapsed tail even when that tail is twice the lead", () => {
+    for (const row of MATRIX) {
+      if (!row.tail || (row.structure !== "elong" && row.structure !== "elong-q")) {
+        continue;
+      }
+      const elongTail = `ー${row.tail}`;
+      const restored = restoreCollapsedContinuation(row.full, elongTail);
+      expect(restored, row.id).toContain(row.lead);
+      expect(restored, row.id).toContain(row.tail);
+      expect(restored, row.id).not.toBe(elongTail);
+      const periodPaged = `${row.lead}。ー${row.tail}`;
+      expect(restoreCollapsedContinuation(periodPaged, elongTail), row.id).toBe(elongTail);
+    }
+  });
 });
