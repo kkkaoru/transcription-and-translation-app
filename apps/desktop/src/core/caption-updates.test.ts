@@ -2736,6 +2736,36 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(greeting, hearing)?.sourceText).toBe("こんにちはきこえますか");
   });
 
+  it("appends a same-id disjoint tail after a normalized lead instead of dropping it", () => {
+    const normalizedLead = caption({
+      id: "parapper:s:1:1",
+      sourceText: "会議を始めます",
+      azookeyInputText: "かいぎをはじめます",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 40,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const asrTail = caption({
+      id: "parapper:s:1:1",
+      sourceText: "続きがあります",
+      azookeyInputText: "つづきがあります",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 80,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    const merged = mergeCaptionPayload(normalizedLead, asrTail)?.sourceText ?? "";
+    expect(merged).toContain("会議を始めます");
+    expect(merged).toContain("続きがあります");
+  });
+
   it("appends an elongated same-id hearing-check remainder onto the greeting", () => {
     const greeting = caption({
       id: "parapper:s:1:8",

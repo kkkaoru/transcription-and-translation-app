@@ -984,6 +984,101 @@ describe("OverlayApp caption replay", () => {
     }
   });
 
+  it("keeps lead plus tail when live ASR emits them as two same-id pieces", async () => {
+    const matrix = buildCaptionAbMatrix();
+    const rows = [
+      matrix.find(
+        (row) =>
+          row.lead === "会議を始めます" &&
+          row.tail === "続きがあります" &&
+          row.structure === "glue",
+      ),
+      matrix.find(
+        (row) =>
+          row.lead === "これはテストです" && row.tail === "終わりますか" && row.structure === "glue",
+      ),
+    ];
+    expect(rows.every((row) => row)).toBe(true);
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      for (const [index, row] of rows.entries()) {
+        if (!row) {
+          continue;
+        }
+        await act(async () => {
+          root.unmount();
+          await Promise.resolve();
+        });
+        container.replaceChildren();
+        root = createRoot(container);
+        await act(async () => {
+          root.render(<OverlayApp />);
+          await Promise.resolve();
+        });
+        await flush();
+
+        const utteranceId = `parapper:s:1:${50 + index}`;
+        await act(async () => {
+          pipelineListener?.({
+            stage: "asr",
+            utteranceId,
+            modelId: "parapper-ja",
+            inputSnippet: "",
+            outputText: row.lead,
+            startedAt: 10,
+            at: 40,
+            durationMs: 30,
+            ok: true,
+          });
+          await Promise.resolve();
+        });
+        await act(async () => {
+          captionListener?.({
+            id: utteranceId,
+            sourceText: row.lead,
+            azookeyInputText: row.lead,
+            translationText: "",
+            sourceLanguage: "ja",
+            targetLanguage: "en",
+            startedAt: 10,
+            receivedAt: 50,
+            stage: "source",
+            sequence: 0,
+            isFinal: false,
+          });
+          await Promise.resolve();
+        });
+        await act(async () => {
+          pipelineListener?.({
+            stage: "asr",
+            utteranceId,
+            modelId: "parapper-ja",
+            inputSnippet: "",
+            outputText: row.tail,
+            startedAt: 10,
+            at: 80,
+            durationMs: 70,
+            ok: true,
+          });
+          await Promise.resolve();
+        });
+        await flush();
+        const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+        expect(painted, row.id).toContain(row.lead);
+        expect(painted, row.id).toContain(row.tail);
+      }
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
   it("does not first-paint a short getLatestCaption over preview before longer ASR history", async () => {
     history.pushState({}, "", "/?native=1");
     let resolveHistory!: (events: PipelineStageEvent[]) => void;

@@ -141,6 +141,8 @@ const SOURCE_CONTINUATION_GAP_MS = 3_200;
  * word dictionary.
  */
 const SHORT_SOURCE_CONTINUATION_MAX_CHARS = 8;
+/** Disjoint same-start clauses shorter than this are corrections (`雨`→`晴れ`), not tails. */
+const MIN_DISJOINT_CLAUSE_GRAPHEMES = 4;
 const sourceBoundary = /[。．！？!?]$/u;
 const incompleteSourceEnding =
   /(?:は|が|を|に|へ|で|と|も|の|や|か|ね|よ|な|ま|て|is|are|the|a|an|to|of|and|but|with|for|in|on|at)$/iu;
@@ -336,6 +338,59 @@ const appendGreetingContinuation = (currentText: string, nextText: string): stri
   return collapseRunawayGraphemeRuns(`${greeting}${separator}${continuation}`);
 };
 
+const stripElongationMarks = (text: string): string => text.replace(/[ー〜～]/gu, "");
+
+/**
+ * Same-id ASR can emit two clauses of one turn without a shared prefix
+ * (`会議を始めます` then `続きがあります`). That is not a shorter rewrite and
+ * not an unrelated remint (those use a new id or a later `startedAt`).
+ * Append so overlay does not first-paint the lead and then drop the tail.
+ */
+const shouldAppendDisjointSameIdContinuation = (
+  current: CaptionPayload,
+  next: CaptionPayload,
+): boolean => {
+  if (current.id !== next.id || !isSourceStagePayload(current) || !isSourceStagePayload(next)) {
+    return false;
+  }
+  const currentStartedAt = startedAtOf(current);
+  const nextStartedAt = startedAtOf(next);
+  if (
+    currentStartedAt <= NO_TIME_MS ||
+    nextStartedAt <= NO_TIME_MS ||
+    currentStartedAt !== nextStartedAt
+  ) {
+    return false;
+  }
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  if (!currentText || !nextText || currentText === nextText) {
+    return false;
+  }
+  if (SHORT_ACK_SURFACE.test(nextText)) {
+    return false;
+  }
+  if (
+    nextText.startsWith(currentText) ||
+    currentText.startsWith(nextText) ||
+    isShorterSuffixSurface(nextText, currentText)
+  ) {
+    return false;
+  }
+  const currentBare = stripElongationMarks(currentText);
+  const nextBare = stripElongationMarks(nextText);
+  if (
+    [...currentBare].length < MIN_DISJOINT_CLAUSE_GRAPHEMES ||
+    [...nextBare].length < MIN_DISJOINT_CLAUSE_GRAPHEMES
+  ) {
+    return false;
+  }
+  if (!japaneseSourceText.test(currentBare) || !japaneseSourceText.test(nextBare)) {
+    return false;
+  }
+  return sharedGraphemePrefixLength(currentText, nextText) < MIN_OVERLAP_CHARS;
+};
+
 /**
  * Join source text from adjacent rolling-context revisions without duplicating
  * an overlap. A complete prior source starts a new caption; otherwise a
@@ -511,16 +566,32 @@ const isProgressiveProvisionalExtension = (
   const currentReading = trimmedAzookeyReading(current);
   const nextReading = trimmedAzookeyReading(next);
   if (currentReading && nextReading) {
-    // Growing reading = same turn still speaking. Equal reading with a kana
-    // surface is the late raw-ASR rewrite we still want to reject.
-    return nextReading.startsWith(currentReading) && nextReading !== currentReading;
+    // Growing reading = same turn still speaking.
+    if (nextReading.startsWith(currentReading) && nextReading !== currentReading) {
+      return true;
+    }
+    // Equal reading with a kana surface is the late raw-ASR rewrite we still
+    // want to reject. Unrelated readings still fall through: same-start
+    // disjoint tails (`会議を始めます` then `続きがあります`) share an id.
+    if (nextReading === currentReading) {
+      return false;
+    }
   }
   // Short kanji (今日は) then a longer kana ASR tail share no prefix. Treat
   // the painted surface as stale-shorter so overlay first paint can grow.
   if (isStaleShorterCaptionSurface(currentText, nextText)) {
     return true;
   }
-  if (shouldAppendHearingCheckAfterGreeting(current, next)) {
+  // A later shorter suffix/prefix of the painted lead is keep-longer, not a
+  // stale rewrite. Accept so merge can retain the longer surface instead of
+  // dropping the event as out-of-order (which tests as a missing caption).
+  if (isShorterSameUtteranceSurface(nextText, currentText)) {
+    return true;
+  }
+  if (
+    shouldAppendHearingCheckAfterGreeting(current, next) ||
+    shouldAppendDisjointSameIdContinuation(current, next)
+  ) {
     return true;
   }
   return nextText.startsWith(currentText) && nextText !== currentText;
@@ -781,7 +852,10 @@ const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload
   if (nextText.startsWith(currentText) && nextText !== currentText) {
     return false;
   }
-  if (shouldAppendHearingCheckAfterGreeting(current, next)) {
+  if (
+    shouldAppendHearingCheckAfterGreeting(current, next) ||
+    shouldAppendDisjointSameIdContinuation(current, next)
+  ) {
     return false;
   }
   const currentReading = trimmedAzookeyReading(current);
@@ -821,7 +895,10 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
   // Same-id ASR can emit the greeting first and the hearing-check next without
   // a shared prefix. Keep-longer of greeting-only would drop that tail; append
   // so the full spoken line can paint. Do not concatenate a reminted other turn.
-  if (shouldAppendHearingCheckAfterGreeting(current, next)) {
+  if (
+    shouldAppendHearingCheckAfterGreeting(current, next) ||
+    shouldAppendDisjointSameIdContinuation(current, next)
+  ) {
     return appendGreetingContinuation(currentText, nextText);
   }
   // Prefer a completed conversion/final, but do not let a truncated final erase
@@ -1015,7 +1092,12 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     ) {
       const currentText = trim(current.sourceText);
       const nextText = trim(next.sourceText);
-      if (nextText !== currentText && isMuchShorterSurface(nextText, currentText)) {
+      if (
+        nextText !== currentText &&
+        isMuchShorterSurface(nextText, currentText) &&
+        !shouldAppendHearingCheckAfterGreeting(current, next) &&
+        !shouldAppendDisjointSameIdContinuation(current, next)
+      ) {
         return true;
       }
     }

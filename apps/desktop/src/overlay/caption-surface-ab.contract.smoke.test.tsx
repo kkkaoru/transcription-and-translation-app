@@ -110,6 +110,38 @@ describe("caption surface A/B matrix (lead×tail, not greeting/hearing fixtures)
     }
   });
 
+  it("appends a same-start disjoint tail instead of dropping it after the lead", () => {
+    for (const row of MATRIX) {
+      if (!row.tail) {
+        continue;
+      }
+      const twoPiece =
+        mergeCaptionPayload(
+          caption({ sourceText: row.lead, azookeyInputText: row.lead }),
+          caption({
+            sourceText: row.tail,
+            azookeyInputText: row.tail,
+            receivedAt: 80,
+          }),
+        )?.sourceText ?? row.lead;
+      const afterNormalize =
+        mergeCaptionPayload(
+          caption({
+            sourceText: row.lead,
+            azookeyInputText: row.lead,
+            provisional: false,
+          }),
+          caption({
+            sourceText: row.tail,
+            azookeyInputText: row.tail,
+            receivedAt: 80,
+          }),
+        )?.sourceText ?? row.lead;
+      paintedKeepsFullLine(twoPiece ?? "", row);
+      paintedKeepsFullLine(afterNormalize ?? "", row);
+    }
+  });
+
   it("does not let a later prefix or suffix cut erase an already-painted full line", () => {
     for (const row of MATRIX) {
       if (row.full === row.lead) {
