@@ -1,43 +1,57 @@
 import { describe, expect, it } from "vitest";
-import {
-  mergeCaptionSentenceEndsForStickyPrefix,
-  selectVisibleCaptionSentenceWithSticky,
-} from "./index.js";
+import { detectCaptionSentenceEnds, selectVisibleCaptionSentence } from "./index.js";
 
-describe("sticky sentence-boundary state API", () => {
-  const sticky = {
-    previousText: "今日は晴れです",
-    previousEnds: [7],
-  };
-
-  it("carries a prior boundary when a longer prefix loses its fresh end", () => {
-    const currentText = "今日は晴れです明日は雨";
-
-    expect(mergeCaptionSentenceEndsForStickyPrefix(currentText, {}, sticky)).toEqual([7]);
-    expect(selectVisibleCaptionSentenceWithSticky(currentText, {}, sticky)).toBe("明日は雨");
-  });
-
-  it("merges a new punctuation boundary without restoring the stale lead", () => {
-    const currentText = "今日は晴れです明日は雨。";
-
-    expect(mergeCaptionSentenceEndsForStickyPrefix(currentText, {}, sticky)).toEqual([7, 12]);
-    expect(selectVisibleCaptionSentenceWithSticky(currentText, {}, sticky)).toBe("明日は雨。");
-  });
-
-  it("ignores sticky state when the hypothesis no longer has the previous prefix", () => {
-    const currentText = "明日は雨です";
-
-    expect(mergeCaptionSentenceEndsForStickyPrefix(currentText, {}, sticky)).toBeNull();
-    expect(selectVisibleCaptionSentenceWithSticky(currentText, {}, sticky)).toBe(currentText);
-  });
-
-  it("keeps carried offsets in Unicode-scalar units", () => {
-    const currentText = "😀です次";
-    const emojiSticky = {
+describe("hints-only sticky sentence-boundary regression", () => {
+  const cases = [
+    {
+      label: "carries the prior boundary when a longer prefix loses its fresh end",
+      previousText: "今日は晴れです",
+      previousEnds: [7],
+      text: "今日は晴れです明日は雨",
+      expectedEnds: [7],
+      expectedVisible: "明日は雨",
+    },
+    {
+      label: "unions the prior copula boundary with a fresh terminal boundary",
+      previousText: "今日は晴れです",
+      previousEnds: [7],
+      text: "今日は晴れです明日も晴れる予報です",
+      expectedEnds: [7, 17],
+      expectedVisible: "明日も晴れる予報です",
+    },
+    {
+      label: "keeps both carried and fresh punctuation boundaries",
+      previousText: "今日は晴れです",
+      previousEnds: [7],
+      text: "今日は晴れです明日は雨。",
+      expectedEnds: [7, 12],
+      expectedVisible: "明日は雨。",
+    },
+    {
+      label: "does not carry a boundary across a non-prefix hypothesis",
+      previousText: "今日は晴れです",
+      previousEnds: [7],
+      text: "明日は雨です",
+      expectedEnds: [6],
+      expectedVisible: "明日は雨です",
+    },
+    {
+      label: "keeps carried offsets in Unicode-scalar units",
       previousText: "😀です",
       previousEnds: [3],
-    };
+      text: "😀です次",
+      expectedEnds: [3],
+      expectedVisible: "次",
+    },
+  ] as const;
 
-    expect(selectVisibleCaptionSentenceWithSticky(currentText, {}, emojiSticky)).toBe("次");
-  });
+  it.each(cases)(
+    "$label",
+    ({ previousText, previousEnds, text, expectedEnds, expectedVisible }) => {
+      const hints = { previousText, previousEnds: [...previousEnds] };
+
+      expect(detectCaptionSentenceEnds(text, hints)).toEqual(expectedEnds);
+      expect(selectVisibleCaptionSentence(text, hints)).toBe(expectedVisible);
+    },
+  );
 });
