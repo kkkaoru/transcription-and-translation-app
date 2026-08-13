@@ -254,13 +254,13 @@ describe("progressive caption reveal", () => {
   it("does not page a greeting to a hearing-check tail after bang/question punct", () => {
     const spoken = "こんにちは！きこえますか";
     const payload = caption({ sourceText: spoken });
-    expect(resolveProgressiveRevealSourceTarget(payload)).toBe("こんにちはきこえますか");
+    expect(resolveProgressiveRevealSourceTarget(payload)).toBe("こんにちは！きこえますか");
     expect(alignCaptionOffsetsToPaintedSource(payload, "きこえますか").sourceText).toBe(
-      "こんにちはきこえますか",
+      "こんにちは！きこえますか",
     );
     expect(
       resolveProgressiveRevealSourceTarget(caption({ sourceText: "こんにちは。終えますか" })),
-    ).toBe("こんにちは聞こえますか");
+    ).toBe("聞こえますか");
   });
 
   it("drops full-text ends so last-sentence prefixes are not clipped mid-reveal", () => {

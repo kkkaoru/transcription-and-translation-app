@@ -240,38 +240,23 @@ export const collapseRunawayGraphemeRuns = (
   return out.join("");
 };
 
+/** ReazonSpeech き-drop of 聞こえる, before or after kana→kanji conversion. */
+const DROPPED_KIKOERU_KANA = /あえますか|おえますか/gu;
+const DROPPED_KIKOERU_KANJI = /会えますか|終えますか/gu;
+
 /**
  * ReazonSpeech often drops the initial き of 聞こえる, yielding あえますか /
- * おえますか (ZenZ/AzooKey may then pick 会えますか / 終えますか). Restore the
- * intended hearing check. ZenZ also inserts 。 after greetings
- * (`こんにちは。聞こえますか。` / `こんにちは！きこえますか`), which pages
- * away the greeting — strip that punct before repairing 会え/終え slips.
+ * おえますか (ZenZ/AzooKey may then pick 会えますか / 終えますか). Repair that
+ * slip as a phrase, with no lead-word list. Leave `。` / `．` / `.` in place so
+ * remainder paging can still show the newest clause.
  */
 export const repairHearingPhraseConfusion = (text: string): string => {
   if (!text) {
     return text;
   }
-  let next = text;
-  next = next.replace(
-    /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)[。．.、！？!?]+(きこえますか|聞こえますか|あえますか|おえますか|会えますか|終えますか)/gu,
-    "$1$2$3",
-  );
-  next = next.replace(
-    /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)(?:あえ|おえ)ますか/gu,
-    "$1$2きこえますか",
-  );
-  next = next.replace(
-    /(こんにちは|こんばんは|おはようございます|おはよう|さようなら)([ー〜～]*)(?:会え|終え)ますか/gu,
-    "$1$2聞こえますか",
-  );
-  const trimmed = next.trim();
-  if (/^(?:あえますか|おえますか)$/u.test(trimmed)) {
-    return "きこえますか";
-  }
-  if (/^(?:会えますか|終えますか)$/u.test(trimmed)) {
-    return "聞こえますか";
-  }
-  return next;
+  return text
+    .replace(DROPPED_KIKOERU_KANA, "きこえますか")
+    .replace(DROPPED_KIKOERU_KANJI, "聞こえますか");
 };
 
 /** Sanitize caption text before segmentation / display. */

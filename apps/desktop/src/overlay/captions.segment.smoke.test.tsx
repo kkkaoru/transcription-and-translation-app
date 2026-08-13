@@ -81,20 +81,33 @@ describe("caption display sanitization", () => {
     expect(repairHearingPhraseConfusion("おえますか")).toBe("きこえますか");
     expect(repairHearingPhraseConfusion("会えますか")).toBe("聞こえますか");
     expect(repairHearingPhraseConfusion("終えますか")).toBe("聞こえますか");
+    expect(repairHearingPhraseConfusion("会議を始めますあえますか")).toBe(
+      "会議を始めますきこえますか",
+    );
+    expect(repairHearingPhraseConfusion("会議を始めますーおえますか")).toBe(
+      "会議を始めますーきこえますか",
+    );
+    expect(repairHearingPhraseConfusion("会議を始めます会えますか")).toBe(
+      "会議を始めます聞こえますか",
+    );
     expect(repairHearingPhraseConfusion("こんにちはあえますか")).toBe("こんにちはきこえますか");
-    expect(repairHearingPhraseConfusion("こんにちはーおえますか")).toBe("こんにちはーきこえますか");
-    expect(repairHearingPhraseConfusion("こんにちは会えますか")).toBe("こんにちは聞こえますか");
     expect(repairHearingPhraseConfusion("こんにちは。聞こえますか。")).toBe(
-      "こんにちは聞こえますか。",
+      "こんにちは。聞こえますか。",
     );
     expect(sanitizeCaptionDisplayText("こんにちは。聞こえますか。")).toBe(
-      "こんにちは聞こえますか。",
+      "こんにちは。聞こえますか。",
     );
-    expect(sanitizeCaptionDisplayText("こんにちはあえますか")).toBe("こんにちはきこえますか");
-    expect(repairHearingPhraseConfusion("こんにちは！きこえますか")).toBe("こんにちはきこえますか");
-    expect(repairHearingPhraseConfusion("こんにちは？聞こえますか")).toBe("こんにちは聞こえますか");
-    expect(repairHearingPhraseConfusion("こんにちは。終えますか")).toBe("こんにちは聞こえますか");
-    expect(sanitizeCaptionDisplayText("さようなら!きこえますか")).toBe("さようならきこえますか");
+    expect(sanitizeCaptionDisplayText("会議を始めますあえますか")).toBe(
+      "会議を始めますきこえますか",
+    );
+    expect(repairHearingPhraseConfusion("こんにちは！きこえますか")).toBe(
+      "こんにちは！きこえますか",
+    );
+    expect(repairHearingPhraseConfusion("こんにちは？聞こえますか")).toBe(
+      "こんにちは？聞こえますか",
+    );
+    expect(repairHearingPhraseConfusion("こんにちは。終えますか")).toBe("こんにちは。聞こえますか");
+    expect(sanitizeCaptionDisplayText("さようなら!きこえますか")).toBe("さようなら!きこえますか");
   });
 
   it("does not collapse a continuation to a lone ー or suffix after paging", () => {
@@ -109,7 +122,7 @@ describe("caption display sanitization", () => {
       "会議を始めます続きがあります",
     );
     expect(restoreCollapsedContinuation("こんにちは！きこえますか", "きこえますか")).toBe(
-      "こんにちはきこえますか",
+      "こんにちは！きこえますか",
     );
     expect(restoreCollapsedContinuation("こんにちは。終えますか", "終えますか")).toBe("終えますか");
     expect(restoreCollapsedContinuation("会議を始めます。続きがあります", "続きがあります")).toBe(
@@ -137,14 +150,14 @@ describe("caption display sanitization", () => {
         text: "こんにちは！きこえますか",
         maxChars: 28,
       }),
-    ).toEqual(["こんにちはきこえますか"]);
+    ).toEqual(["こんにちは！きこえますか"]);
     expect(
       captionTextLines({
         key: "source",
         text: "こんにちは。終えますか",
         maxChars: 28,
       }).join(""),
-    ).toBe("こんにちは聞こえますか");
+    ).toBe("聞こえますか");
     expect(
       captionTextLines({
         key: "source",

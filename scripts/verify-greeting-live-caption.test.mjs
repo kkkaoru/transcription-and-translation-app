@@ -41,36 +41,36 @@ describe("greeting live-caption regression harness", () => {
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "strip-zenz-period")?.expectedOverlay,
-      "こんにちは聞こえますか。",
+      "こんにちは。聞こえますか。",
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "strip-sayonara-period")?.expectedOverlay,
-      "さようなら聞こえますか。",
+      "さようなら。聞こえますか。",
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "strip-konbanwa-period")?.expectedOverlay,
-      "こんばんは聞こえますか。",
+      "こんばんは。聞こえますか。",
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "strip-ohayou-gozaimasu-period")?.expectedOverlay,
-      "おはようございます聞こえますか。",
+      "おはようございます。聞こえますか。",
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "strip-sayonara-period-kana")?.expectedOverlay,
-      "さようならきこえますか",
+      "さようなら。きこえますか",
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "strip-konbanwa-period-kana")?.expectedOverlay,
-      "こんばんはきこえますか",
+      "こんばんは。きこえますか",
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "strip-ohayou-period-kana")?.expectedOverlay,
-      "おはようきこえますか",
+      "おはよう。きこえますか",
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "strip-ohayou-gozaimasu-period-kana")
         ?.expectedOverlay,
-      "おはようございますきこえますか",
+      "おはようございます。きこえますか",
     );
     assert.equal(
       fixtures.sanitize.find((row) => row.id === "sayonara-hearing-kanji")?.expectedOverlay,

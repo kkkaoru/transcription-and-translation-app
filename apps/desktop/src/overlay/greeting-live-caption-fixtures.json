@@ -84,8 +84,8 @@
     {
       "id": "strip-zenz-period",
       "input": "こんにちは。聞こえますか。",
-      "expectedOverlay": "こんにちは聞こえますか。",
-      "note": "ZenZ inserts 。 after こんにちは which would page the greeting away"
+      "expectedOverlay": "こんにちは。聞こえますか。",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "evening-hearing",
@@ -114,68 +114,68 @@
     {
       "id": "strip-zenz-period-kana",
       "input": "こんにちは。きこえますか",
-      "expectedOverlay": "こんにちはきこえますか",
-      "note": "ZenZ period before kana きこえますか must not page the greeting"
+      "expectedOverlay": "こんにちは。きこえますか",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "strip-zenz-bang-kana",
       "input": "こんにちは！きこえますか",
-      "expectedOverlay": "こんにちはきこえますか",
-      "note": "ZenZ bang before kana きこえますか must not page the greeting"
+      "expectedOverlay": "こんにちは！きこえますか",
+      "note": "Sanitize does not strip bang/question; overlay restore keeps the continuation"
     },
     {
       "id": "strip-period-before-oeru",
       "input": "こんにちは。終えますか",
-      "expectedOverlay": "こんにちは聞こえますか",
-      "note": "Period before 終えますか must not page the greeting into a lone hearing check"
+      "expectedOverlay": "こんにちは。聞こえますか",
+      "note": "Repair 終えますか slip; keep 。 so remainder paging can show the newest clause"
     },
     {
       "id": "strip-ohayou-period",
       "input": "おはよう。聞こえますか。",
-      "expectedOverlay": "おはよう聞こえますか。",
-      "note": "Morning greeting must not be paged away by ZenZ 。"
+      "expectedOverlay": "おはよう。聞こえますか。",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "strip-sayonara-period",
       "input": "さようなら。聞こえますか。",
-      "expectedOverlay": "さようなら聞こえますか。",
-      "note": "Farewell greeting must not be paged away by ZenZ 。"
+      "expectedOverlay": "さようなら。聞こえますか。",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "strip-konbanwa-period",
       "input": "こんばんは。聞こえますか。",
-      "expectedOverlay": "こんばんは聞こえますか。",
-      "note": "Evening greeting must not be paged away by ZenZ 。"
+      "expectedOverlay": "こんばんは。聞こえますか。",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "strip-ohayou-gozaimasu-period",
       "input": "おはようございます。聞こえますか。",
-      "expectedOverlay": "おはようございます聞こえますか。",
-      "note": "Full morning greeting must not be paged away by ZenZ 。"
+      "expectedOverlay": "おはようございます。聞こえますか。",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "strip-sayonara-period-kana",
       "input": "さようなら。きこえますか",
-      "expectedOverlay": "さようならきこえますか",
-      "note": "ZenZ period before kana きこえますか must not page さようなら"
+      "expectedOverlay": "さようなら。きこえますか",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "strip-konbanwa-period-kana",
       "input": "こんばんは。きこえますか",
-      "expectedOverlay": "こんばんはきこえますか",
-      "note": "ZenZ period before kana きこえますか must not page こんばんは"
+      "expectedOverlay": "こんばんは。きこえますか",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "strip-ohayou-period-kana",
       "input": "おはよう。きこえますか",
-      "expectedOverlay": "おはようきこえますか",
-      "note": "ZenZ period before kana きこえますか must not page おはよう"
+      "expectedOverlay": "おはよう。きこえますか",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "strip-ohayou-gozaimasu-period-kana",
       "input": "おはようございます。きこえますか",
-      "expectedOverlay": "おはようございますきこえますか",
-      "note": "ZenZ period before kana きこえますか must not page おはようございます"
+      "expectedOverlay": "おはようございます。きこえますか",
+      "note": "Sanitize leaves 。 in place so remainder paging can show the newest clause"
     },
     {
       "id": "sayonara-hearing-kanji",
@@ -1061,8 +1061,8 @@
       "id": "zenz-period-after-sanitize",
       "text": "こんにちは。聞こえますか。",
       "sanitize": true,
-      "expectedVisible": "こんにちは聞こえますか。",
-      "note": "Sanitize ZenZ 。 then keep greeting + hearing check on one plate"
+      "expectedVisible": "聞こえますか。",
+      "note": "Period remainder paging keeps the newest clause; do not strip 。 to glue the lead"
     },
     {
       "id": "no-soft-wrap-after-greeting",
@@ -1082,8 +1082,8 @@
       "id": "zenz-period-sayonara-after-sanitize",
       "text": "さようなら。聞こえますか。",
       "sanitize": true,
-      "expectedVisible": "さようなら聞こえますか。",
-      "note": "Sanitize ZenZ 。 then keep さようなら + hearing check on one plate"
+      "expectedVisible": "聞こえますか。",
+      "note": "Period remainder paging keeps the newest clause; do not strip 。 to glue the lead"
     },
     {
       "id": "no-soft-wrap-after-sayonara",
@@ -1103,8 +1103,8 @@
       "id": "zenz-period-konbanwa-after-sanitize",
       "text": "こんばんは。聞こえますか。",
       "sanitize": true,
-      "expectedVisible": "こんばんは聞こえますか。",
-      "note": "Sanitize ZenZ 。 then keep こんばんは + hearing check on one plate"
+      "expectedVisible": "聞こえますか。",
+      "note": "Period remainder paging keeps the newest clause; do not strip 。 to glue the lead"
     },
     {
       "id": "no-soft-wrap-after-konbanwa",
@@ -1124,8 +1124,8 @@
       "id": "zenz-period-ohayou-after-sanitize",
       "text": "おはよう。聞こえますか。",
       "sanitize": true,
-      "expectedVisible": "おはよう聞こえますか。",
-      "note": "Sanitize ZenZ 。 then keep おはよう + hearing check on one plate"
+      "expectedVisible": "聞こえますか。",
+      "note": "Period remainder paging keeps the newest clause; do not strip 。 to glue the lead"
     },
     {
       "id": "no-soft-wrap-after-ohayou",
@@ -1145,8 +1145,8 @@
       "id": "zenz-period-ohayou-gozaimasu-after-sanitize",
       "text": "おはようございます。聞こえますか。",
       "sanitize": true,
-      "expectedVisible": "おはようございます聞こえますか。",
-      "note": "Sanitize ZenZ 。 then keep おはようございます + hearing check on one plate"
+      "expectedVisible": "聞こえますか。",
+      "note": "Period remainder paging keeps the newest clause; do not strip 。 to glue the lead"
     },
     {
       "id": "no-soft-wrap-after-ohayou-gozaimasu",
@@ -1172,16 +1172,15 @@
     {
       "id": "no-hearing-tail-after-bang",
       "text": "こんにちは！きこえますか",
-      "expectedVisible": "こんにちはきこえますか",
-      "sanitize": true,
-      "note": "After first-frame commit, do not page the greeting continuation to きこえますか"
+      "expectedLines": ["こんにちは！きこえますか"],
+      "note": "Bang is not period paging; overlay restore keeps the lead+tail with ！ intact"
     },
     {
       "id": "keep-greeting-across-period-oeru",
       "text": "こんにちは。終えますか",
-      "expectedVisible": "こんにちは聞こえますか",
+      "expectedVisible": "聞こえますか",
       "sanitize": true,
-      "note": "Do not page こんにちは。終えますか to a lone 聞こえますか"
+      "note": "Repair 終えますか then page the 。 remainder; do not glue the lead back"
     }
   ]
 }

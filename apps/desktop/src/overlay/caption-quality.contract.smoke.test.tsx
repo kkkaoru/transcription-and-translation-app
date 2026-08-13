@@ -429,22 +429,22 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       expect(captionTextLines({ key: "source", text: spoken, maxChars: 28 })).toEqual([spoken]);
     });
 
-    it("keeps greeting when ZenZ inserts a period before 聞こえますか", () => {
+    it("pages a period remainder instead of stripping 。 to keep the lead", () => {
       const zenz = "こんにちは。聞こえますか。";
       expect(captionTextLines({ key: "source", text: zenz, maxChars: 28 }).join("")).toBe(
-        "こんにちは聞こえますか。",
+        "聞こえますか。",
       );
     });
 
-    it("keeps greeting when bang/question punct would page to the hearing check", () => {
+    it("restores bang/question continuations and pages a period remainder", () => {
       expect(
         captionTextLines({ key: "source", text: "こんにちは！きこえますか", maxChars: 28 }).join(
           "",
         ),
-      ).toBe("こんにちはきこえますか");
+      ).toBe("こんにちは！きこえますか");
       expect(
         captionTextLines({ key: "source", text: "こんにちは。終えますか", maxChars: 28 }).join(""),
-      ).toBe("こんにちは聞こえますか");
+      ).toBe("聞こえますか");
     });
 
     it("does not page away the recognized head after a topic は offset", () => {
