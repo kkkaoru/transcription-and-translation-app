@@ -299,9 +299,9 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     ).resolves.toMatchObject({ status: 400 });
     const unexpectedMultipartFailure = request();
     unexpectedMultipartFailure.formData = () => Promise.reject("multipart runtime failure");
-    await expect(
-      handleWorkersAiAsrTranscription(unexpectedMultipartFailure, {}),
-    ).rejects.toBe("multipart runtime failure");
+    await expect(handleWorkersAiAsrTranscription(unexpectedMultipartFailure, {})).rejects.toBe(
+      "multipart runtime failure",
+    );
     await expect(
       handleWorkersAiAsrTranscription(
         new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, { method: "GET" }),
