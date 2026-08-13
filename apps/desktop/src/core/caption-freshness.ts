@@ -15,7 +15,18 @@ export type CaptionFreshnessInput = {
   lastGrowthAt: number;
   previousSourceText: string;
   tokenCharEnds?: number[];
+  /** Prior tick was a pure non-final interim (no translation). */
+  wasTtlExempt?: boolean;
 };
+
+export type CaptionFreshnessResult = {
+  caption: CaptionPayload;
+  graphemePaintedAt: number[];
+  lastGrowthAt: number;
+};
+
+export const isCaptionFreshnessTtlExempt = (caption: CaptionPayload): boolean =>
+  caption.isFinal !== true && !(caption.translationText ?? "").trim();
 
 const unicodeScalars = (text: string): string[] => Array.from(text);
 
@@ -170,26 +181,42 @@ const newestChunkStart = (closes: number[]): number =>
  * Cut the display surface to the last 5s of speech, snapped to POS close/soft
  * boundaries. Does not mutate merge state, hold-clear epochs, or `captionRef`.
  */
-export const applyCaptionFreshnessWindow = (input: CaptionFreshnessInput): CaptionPayload => {
-  const { caption, now, lastGrowthAt, previousSourceText } = input;
+export const applyCaptionFreshnessWindow = (
+  input: CaptionFreshnessInput,
+): CaptionFreshnessResult => {
+  const { caption, now, previousSourceText } = input;
   const sourceText = caption.sourceText;
+  const clocks = (
+    nextCaption: CaptionPayload,
+    graphemePaintedAt = input.graphemePaintedAt,
+    lastGrowthAt = input.lastGrowthAt,
+  ): CaptionFreshnessResult => ({
+    caption: nextCaption,
+    graphemePaintedAt,
+    lastGrowthAt,
+  });
   if (!sourceText.trim()) {
-    return {
+    return clocks({
       ...caption,
       sourceText: "",
       translationText: "",
-    };
+    });
   }
   if (caption.id === "preview" || caption.id === "empty") {
-    return caption;
+    return clocks(caption);
   }
+  const isTtlExempt = isCaptionFreshnessTtlExempt(caption);
+  const wasTtlExempt = input.wasTtlExempt ?? isTtlExempt;
+  const leavingExemption = wasTtlExempt && !isTtlExempt;
   const graphemes = captionGraphemes(sourceText);
-  const paintedAt =
-    previousSourceText === sourceText && input.graphemePaintedAt.length === graphemes.length
+  const paintedAt = leavingExemption
+    ? stampGraphemePaintedAt("", [], sourceText, now)
+    : previousSourceText === sourceText && input.graphemePaintedAt.length === graphemes.length
       ? input.graphemePaintedAt
       : stampGraphemePaintedAt(previousSourceText, input.graphemePaintedAt, sourceText, now);
-  if (caption.isFinal !== true && !(caption.translationText ?? "").trim()) {
-    return caption;
+  const lastGrowthAt = leavingExemption ? now : input.lastGrowthAt;
+  if (isTtlExempt) {
+    return clocks(caption, paintedAt, lastGrowthAt);
   }
   const textLen = scalarCount(sourceText);
   const closes = freshnessCloseOffsets(sourceText, caption.sentenceEndOffsets);
@@ -207,7 +234,8 @@ export const applyCaptionFreshnessWindow = (input: CaptionFreshnessInput): Capti
     keepGrapheme = graphemes.length;
   }
   let keepFrom = scalarCount(graphemes.slice(0, keepGrapheme).join(""));
-  const grewThisTick = sourceText !== previousSourceText;
+  const windowPreviousSource = leavingExemption ? sourceText : previousSourceText;
+  const grewThisTick = sourceText !== windowPreviousSource;
   const chunkStart = newestChunkStart(closes);
   if (grewThisTick && keepFrom > chunkStart && keepFrom < textLen) {
     keepFrom = chunkStart;
@@ -231,5 +259,5 @@ export const applyCaptionFreshnessWindow = (input: CaptionFreshnessInput): Capti
   } else {
     display = { ...display, translationText: caption.translationText };
   }
-  return display;
+  return clocks(display, paintedAt, lastGrowthAt);
 };

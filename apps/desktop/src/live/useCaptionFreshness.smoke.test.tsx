@@ -137,6 +137,82 @@ describe("useCaptionFreshness", () => {
     expect(paints.at(-1)?.translationText).toBe("");
   });
 
+  it("keeps a late translation visible at t=5001 and blanks 5s after the restamp", async () => {
+    const text = "食べて";
+    const open = {
+      sourceText: text,
+      isFinal: false,
+      sentenceEndOffsets: [] as number[],
+      softBreakOffsets: [] as number[],
+    };
+    renderFresh(baseCaption({ ...open, translationText: "" }));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_500);
+    });
+    renderFresh(baseCaption({ ...open, translationText: "eating" }));
+    expect(paints.at(-1)?.sourceText).toBe(text);
+    expect(paints.at(-1)?.translationText).toBe("eating");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(501);
+    });
+    expect(paints.at(-1)?.sourceText).toBe(text);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_400 - 5_001);
+    });
+    expect(paints.at(-1)?.sourceText).toBe(text);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_600 - 9_400);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("");
+    expect(paints.at(-1)?.translationText).toBe("");
+  });
+
+  it("blanks an isFinal caption at 5s from first paint", async () => {
+    renderFresh(
+      baseCaption({
+        sourceText: "うん",
+        translationText: "",
+        isFinal: true,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_FRESHNESS_MS - 1);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("うん");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("");
+    expect(paints.at(-1)?.translationText).toBe("");
+  });
+
+  it("blanks a translated non-final caption at 5s from first paint", async () => {
+    renderFresh(
+      baseCaption({
+        sourceText: "うん",
+        translationText: "yeah",
+        isFinal: false,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_FRESHNESS_MS - 1);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("うん");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("");
+    expect(paints.at(-1)?.translationText).toBe("");
+  });
+
   it("starts freshness TTL when translation arrives after a pure interim idle", async () => {
     const text = "食べて";
     renderFresh(
@@ -172,6 +248,53 @@ describe("useCaptionFreshness", () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("");
+    expect(paints.at(-1)?.translationText).toBe("");
+  });
+
+  it("keeps a fixed source visible through translation at 4500ms until 9600ms", async () => {
+    const text = "食べて";
+    renderFresh(
+      baseCaption({
+        sourceText: text,
+        translationText: "",
+        isFinal: false,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+    expect(paints.at(-1)?.sourceText).toBe(text);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_500);
+    });
+    renderFresh(
+      baseCaption({
+        sourceText: text,
+        translationText: "eating",
+        isFinal: false,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+    expect(paints.at(-1)?.sourceText).toBe(text);
+    expect(paints.at(-1)?.translationText).toBe("eating");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(501);
+    });
+    expect(paints.at(-1)?.sourceText).toBe(text);
+    expect(paints.at(-1)?.translationText).toBe("eating");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_399);
+    });
+    expect(paints.at(-1)?.sourceText).toBe(text);
+    expect(paints.at(-1)?.translationText).toBe("eating");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
     });
     expect(paints.at(-1)?.sourceText).toBe("");
     expect(paints.at(-1)?.translationText).toBe("");

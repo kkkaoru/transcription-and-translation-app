@@ -4,7 +4,11 @@ import {
   captionMissingBoundaryOffsets,
   ensureCaptionBoundaryOffsets,
 } from "../core/caption-boundary-offsets";
-import { applyCaptionFreshnessWindow, stampGraphemePaintedAt } from "../core/caption-freshness";
+import {
+  applyCaptionFreshnessWindow,
+  isCaptionFreshnessTtlExempt,
+  stampGraphemePaintedAt,
+} from "../core/caption-freshness";
 import type { CaptionPayload } from "../core/types";
 
 const FRESHNESS_TICK_MS = 250;
@@ -20,7 +24,7 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
   const idRef = useRef(caption.id);
   const paintedAtRef = useRef<number[]>([]);
   const lastGrowthAtRef = useRef(Date.now());
-  const freshnessTtlExemptRef = useRef(caption.isFinal !== true && !caption.translationText.trim());
+  const freshnessTtlExemptRef = useRef(isCaptionFreshnessTtlExempt(caption));
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -70,18 +74,6 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
     previousSourceRef.current = caption.sourceText;
   }
 
-  // A pure interim (non-final, untranslated) is TTL-exempt and stays visible.
-  // When it later gains a translation or finalizes, restamp paintedAt so the
-  // freshness TTL runs from that transition, not the stale first-paint time.
-  const isFreshnessTtlExempt = caption.isFinal !== true && !caption.translationText.trim();
-  if (!isFreshnessTtlExempt && freshnessTtlExemptRef.current) {
-    paintedAtRef.current = stampGraphemePaintedAt("", [], caption.sourceText, now);
-    lastGrowthAtRef.current = now;
-    previousSource = "";
-    previousSourceRef.current = caption.sourceText;
-  }
-  freshnessTtlExemptRef.current = isFreshnessTtlExempt;
-
   const captionWithOffsets =
     resolved.sourceText === caption.sourceText && captionMissingBoundaryOffsets(caption)
       ? {
@@ -95,18 +87,21 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
   );
 
   if (caption.id === "preview" || caption.id === "empty") {
-    return caption;
-  }
-  if (isFreshnessTtlExempt) {
+    freshnessTtlExemptRef.current = isCaptionFreshnessTtlExempt(caption);
     return caption;
   }
 
-  return applyCaptionFreshnessWindow({
+  const result = applyCaptionFreshnessWindow({
     caption: captionWithOffsets,
     now,
     graphemePaintedAt: paintedAtRef.current,
     lastGrowthAt: lastGrowthAtRef.current,
     previousSourceText: previousSource,
     tokenCharEnds,
+    wasTtlExempt: freshnessTtlExemptRef.current,
   });
+  paintedAtRef.current = result.graphemePaintedAt;
+  lastGrowthAtRef.current = result.lastGrowthAt;
+  freshnessTtlExemptRef.current = isCaptionFreshnessTtlExempt(caption);
+  return result.caption;
 };

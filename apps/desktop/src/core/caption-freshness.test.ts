@@ -50,7 +50,7 @@ const windowOf = (
     lastGrowthAt: extra.lastGrowthAt ?? 0,
     previousSourceText: extra.previousSourceText ?? sourceText,
     tokenCharEnds: extra.tokenCharEnds,
-  });
+  }).caption;
 
 describe("caption freshness window", () => {
   it("closes after です and shows 明日は雨 after 5s even when 2× KEEP would retain the lead", () => {
@@ -114,7 +114,7 @@ describe("caption freshness window", () => {
         graphemePaintedAt: paintedAt(text),
         lastGrowthAt: 0,
         previousSourceText: text,
-      }).sourceText,
+      }).caption.sourceText,
     ).toBe("");
   });
 
@@ -126,7 +126,7 @@ describe("caption freshness window", () => {
       graphemePaintedAt: paintedAt(text),
       lastGrowthAt: 0,
       previousSourceText: text,
-    });
+    }).caption;
     expect(display.sourceText).toBe(text);
   });
 
@@ -142,7 +142,7 @@ describe("caption freshness window", () => {
         graphemePaintedAt: paintedAt(sourceText),
         lastGrowthAt: 0,
         previousSourceText: sourceText,
-      });
+      }).caption;
     expect(finalized("うん", 0).sourceText).toBe("うん");
     expect(finalized("うん", CAPTION_FRESHNESS_MS).sourceText).toBe("");
     expect(finalized("うん", CAPTION_FRESHNESS_MS).translationText).toBe("");
@@ -156,7 +156,7 @@ describe("caption freshness window", () => {
       graphemePaintedAt: paintedAt(text),
       lastGrowthAt: 0,
       previousSourceText: text,
-    });
+    }).caption;
     expect(held.sourceText).toBe(text);
     expect(held.translationText).toBe("yeah");
     const expired = applyCaptionFreshnessWindow({
@@ -165,7 +165,7 @@ describe("caption freshness window", () => {
       graphemePaintedAt: paintedAt(text),
       lastGrowthAt: 0,
       previousSourceText: text,
-    });
+    }).caption;
     expect(expired.sourceText).toBe("");
     expect(expired.translationText).toBe("");
   });
@@ -244,7 +244,7 @@ describe("caption freshness window", () => {
       graphemePaintedAt: paintedAt(text, 0),
       lastGrowthAt: 0,
       previousSourceText: text,
-    });
+    }).caption;
     expect(display.sourceText.startsWith("ー")).toBe(false);
   });
 
@@ -261,7 +261,7 @@ describe("caption freshness window", () => {
       lastGrowthAt: 7_500,
       previousSourceText: text,
       tokenCharEnds: [8],
-    });
+    }).caption;
     expect(display.sourceText).toBe("も良い");
   });
 
@@ -282,7 +282,7 @@ describe("caption freshness window", () => {
         graphemePaintedAt: [0],
         lastGrowthAt: 0,
         previousSourceText: "",
-      }).sourceText,
+      }).caption.sourceText,
     ).toBe("");
     const restamped = applyCaptionFreshnessWindow({
       caption: caption({ sourceText: "明日は", sentenceEndOffsets: [] }),
@@ -290,7 +290,7 @@ describe("caption freshness window", () => {
       graphemePaintedAt: [0],
       lastGrowthAt: 10,
       previousSourceText: "",
-    });
+    }).caption;
     expect(restamped.sourceText).toBe("明日は");
   });
 
@@ -303,7 +303,7 @@ describe("caption freshness window", () => {
       graphemePaintedAt: paintedAt(previous, 0),
       lastGrowthAt: 4_900,
       previousSourceText: previous,
-    });
+    }).caption;
     expect(display.sourceText.startsWith("エオカ")).toBe(true);
   });
 
@@ -319,7 +319,76 @@ describe("caption freshness window", () => {
       ],
       lastGrowthAt: 8_000,
       previousSourceText: "今日は晴れです明日は雨",
-    });
+    }).caption;
     expect(display.sourceText).toBe("明日は雨です");
+  });
+
+  it("blanks at t=5001 when clocks stay at first paint after a late translation", () => {
+    const text = "食べて";
+    const frozen = applyCaptionFreshnessWindow({
+      caption: caption({ sourceText: text, isFinal: false, translationText: "eating" }),
+      now: 5_001,
+      graphemePaintedAt: paintedAt(text, 0),
+      lastGrowthAt: 0,
+      previousSourceText: text,
+    }).caption;
+    expect(frozen.sourceText).toBe("");
+    expect(frozen.translationText).toBe("");
+  });
+
+  it("restamps paintedAt and lastGrowthAt when a frozen interim gains translation", () => {
+    const text = "食べて";
+    const atArrival = applyCaptionFreshnessWindow({
+      caption: caption({ sourceText: text, isFinal: false, translationText: "eating" }),
+      now: 4_500,
+      graphemePaintedAt: paintedAt(text, 0),
+      lastGrowthAt: 0,
+      previousSourceText: text,
+      wasTtlExempt: true,
+    });
+    expect(atArrival.caption.sourceText).toBe(text);
+    expect(atArrival.caption.translationText).toBe("eating");
+    expect(atArrival.lastGrowthAt).toBe(4_500);
+    expect(atArrival.graphemePaintedAt).toEqual(paintedAt(text, 4_500));
+
+    const later = (now: number) =>
+      applyCaptionFreshnessWindow({
+        caption: caption({ sourceText: text, isFinal: false, translationText: "eating" }),
+        now,
+        graphemePaintedAt: atArrival.graphemePaintedAt,
+        lastGrowthAt: atArrival.lastGrowthAt,
+        previousSourceText: text,
+        wasTtlExempt: false,
+      }).caption;
+
+    expect(later(5_001).sourceText).toBe(text);
+    expect(later(9_400).sourceText).toBe(text);
+    expect(later(9_600).sourceText).toBe("");
+    expect(later(9_600).translationText).toBe("");
+  });
+
+  it("restamps both clocks when a pure interim becomes final", () => {
+    const text = "うん";
+    const atFinal = applyCaptionFreshnessWindow({
+      caption: caption({ sourceText: text, isFinal: true, translationText: "" }),
+      now: 4_500,
+      graphemePaintedAt: paintedAt(text, 0),
+      lastGrowthAt: 0,
+      previousSourceText: text,
+      wasTtlExempt: true,
+    });
+    expect(atFinal.caption.sourceText).toBe(text);
+    expect(atFinal.lastGrowthAt).toBe(4_500);
+    expect(atFinal.graphemePaintedAt).toEqual(paintedAt(text, 4_500));
+    expect(
+      applyCaptionFreshnessWindow({
+        caption: caption({ sourceText: text, isFinal: true, translationText: "" }),
+        now: 5_001,
+        graphemePaintedAt: atFinal.graphemePaintedAt,
+        lastGrowthAt: atFinal.lastGrowthAt,
+        previousSourceText: text,
+        wasTtlExempt: false,
+      }).caption.sourceText,
+    ).toBe(text);
   });
 });
