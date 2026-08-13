@@ -278,6 +278,7 @@ const drawNativeCaption = (
   x: number,
   y: number,
   maxWidth: number,
+  inlineSuffix = "",
 ) => {
   const layout = measureNativeCaption(context, text, style, maxWidth);
   const letterSpacing = finiteNumber(style.letterSpacingPx, 0);
@@ -341,6 +342,31 @@ const drawNativeCaption = (
       "fill",
     );
   }
+  const suffix = inlineSuffix.trim();
+  const lastLine = layout.lines.at(-1) ?? "";
+  if (suffix && lastLine.trim()) {
+    const bodyWidth = measureNativeTextWidth(context, lastLine, letterSpacing);
+    const bodyStart =
+      style.textAlign === "left"
+        ? x
+        : style.textAlign === "right"
+          ? x - bodyWidth
+          : x - bodyWidth / 2;
+    const lastLineY = y + ((layout.lines.length - 1) * layout.lineHeight) / 2;
+    drawNativeCaption(
+      context,
+      ` ${suffix}`,
+      {
+        ...style,
+        textAlign: "left",
+        opacity: boundedNumber(style.opacity, 0, 1, 1) * 0.42,
+        cullingEnabled: false,
+      },
+      bodyStart + bodyWidth,
+      lastLineY,
+      maxWidth,
+    );
+  }
   context.restore();
 };
 
@@ -348,6 +374,7 @@ export const renderNativeFrame = (
   canvas: HTMLCanvasElement,
   config: AppConfig,
   caption: CaptionPayload,
+  partialWindowText = "",
 ): { height: number; pixels: Uint8Array; width: number } | null => {
   const width = Math.max(1, Math.round(finiteNumber(config.overlay.width, 1_280)));
   const height = Math.max(1, Math.round(finiteNumber(config.overlay.height, 720)));
@@ -386,6 +413,7 @@ export const renderNativeFrame = (
       style,
     );
     return {
+      key: item.key,
       layout,
       lineWidth,
       style,
@@ -450,6 +478,7 @@ export const renderNativeFrame = (
         textX,
         textY,
         Math.max(row.lineWidth, row.layout.maxLineWidth, 1),
+        row.hasText && row.key === "source" ? partialWindowText : "",
       );
     }
     rowY += row.height + gap;
@@ -558,11 +587,16 @@ export const ensureFontsReady = (fontCssList: readonly string[] = []): Promise<v
 };
 
 /** Stable key for display-relevant native frame inputs (skip identical republish). */
-export const framePaintKey = (config: AppConfig, caption: CaptionPayload): string =>
+export const framePaintKey = (
+  config: AppConfig,
+  caption: CaptionPayload,
+  partialWindowText = "",
+): string =>
   [
     caption.id,
     caption.sourceText,
     caption.translationText,
+    partialWindowText,
     caption.stage ?? "",
     config.overlay.width,
     config.overlay.height,
@@ -711,17 +745,19 @@ export const completeNativePublishFailure = (
 export const NativeFramePublisher = ({
   config,
   caption,
+  partialWindowText = "",
 }: {
   config: AppConfig;
   caption: CaptionPayload;
+  partialWindowText?: string;
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const lastSizeRef = useRef({ width: 0, height: 0 });
   const gateRef = useRef<NativePublishGate>(createNativePublishGate());
   // Always-latest props so an in-flight retry can paint the current caption
   // without republishing a stale frame that lost a race to a newer effect.
-  const latestRef = useRef({ config, caption });
-  latestRef.current = { config, caption };
+  const latestRef = useRef({ config, caption, partialWindowText });
+  latestRef.current = { config, caption, partialWindowText };
 
   useEffect(() => {
     if (!bridge.isDesktop()) {
@@ -729,7 +765,7 @@ export const NativeFramePublisher = ({
     }
     // Capture the prop revision that triggered this effect. Inner schedule()
     // still reads latestRef so a queued retry never paints a stale caption.
-    latestRef.current = { config, caption };
+    latestRef.current = { config, caption, partialWindowText };
 
     let cancelled = false;
     let raf = 0;
@@ -764,8 +800,12 @@ export const NativeFramePublisher = ({
       if (cancelled) {
         return;
       }
-      const { config: currentConfig, caption: currentCaption } = latestRef.current;
-      const nextKey = framePaintKey(currentConfig, currentCaption);
+      const {
+        config: currentConfig,
+        caption: currentCaption,
+        partialWindowText: currentPartialWindowText,
+      } = latestRef.current;
+      const nextKey = framePaintKey(currentConfig, currentCaption, currentPartialWindowText);
       const decision = beginNativePublish(gateRef.current, nextKey);
       if (decision.action === "exhausted") {
         appendStructuredLog({
@@ -804,7 +844,12 @@ export const NativeFramePublisher = ({
       }
       const publishedKey = nextKey;
       try {
-        const frame = renderNativeFrame(canvas, currentConfig, currentCaption);
+        const frame = renderNativeFrame(
+          canvas,
+          currentConfig,
+          currentCaption,
+          currentPartialWindowText,
+        );
         if (!frame) {
           gateRef.current.inFlightKey = null;
           scheduleRetry(16);
@@ -950,7 +995,11 @@ export const NativeFramePublisher = ({
       // dropping the stale in-flight claim. Without this, a B→A transition can
       // leave OBS on B forever because A was already successful before B began.
       if (gateRef.current.inFlightKey !== null) {
-        const latestKey = framePaintKey(latestRef.current.config, latestRef.current.caption);
+        const latestKey = framePaintKey(
+          latestRef.current.config,
+          latestRef.current.caption,
+          latestRef.current.partialWindowText,
+        );
         gateRef.current.inFlightKey = null;
         gateRef.current.pendingKey = latestKey;
         if (gateRef.current.lastSuccessfulKey === latestKey) {
@@ -958,7 +1007,7 @@ export const NativeFramePublisher = ({
         }
       }
     };
-  }, [caption, config]);
+  }, [caption, config, partialWindowText]);
 
   return <canvas ref={canvasRef} className="native-output-canvas" />;
 };

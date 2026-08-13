@@ -21,7 +21,12 @@ import {
   pickLatestSuccessfulAsrStage,
   rememberOverlayAsrStage,
 } from "../core/parapper-provisional";
-import type { AppConfig, CaptionPayload, PipelineStageEvent } from "../core/types";
+import type {
+  AppConfig,
+  CaptionPayload,
+  PartialWindowCaption,
+  PipelineStageEvent,
+} from "../core/types";
 import { useCaptionFreshness } from "../live/useCaptionFreshness";
 import { useCaptionHoldClear } from "../live/useCaptionHoldClear";
 import { useProgressiveCaptionReveal } from "../live/useProgressiveCaptionReveal";
@@ -276,6 +281,7 @@ export const OverlayApp = () => {
   const [caption, setCaption] = useState<CaptionPayload>(() =>
     transparentCapture ? createEmptyCaption() : createPreviewCaption(),
   );
+  const [partialWindow, setPartialWindow] = useState<PartialWindowCaption | null>(null);
   /**
    * Keep the latest committed caption outside React's state updater. Merge and
    * display-timing side effects must run once per event; StrictMode/concurrent
@@ -306,6 +312,7 @@ export const OverlayApp = () => {
         return;
       }
       const empty = createHoldClearedCaption();
+      setPartialWindow(null);
       resetOverlayStickyRefs(stickyRefs);
       captionRef.current = empty;
       setCaption(empty);
@@ -321,8 +328,11 @@ export const OverlayApp = () => {
     return () => {
       document.documentElement.classList.remove("overlay-document");
       document.body.classList.remove("overlay-document");
+      // Re-open gets fresh caller-owned sticky refs; no sentence end leaks
+      // across an Overlay webview lifetime.
+      resetOverlayStickyRefs(stickyRefs);
     };
-  }, []);
+  }, [stickyRefs]);
 
   useEffect(() => {
     let mounted = true;
@@ -332,6 +342,9 @@ export const OverlayApp = () => {
       if (!mounted || idle || !isOverlayCaption(nextCaption)) {
         return;
       }
+      // A normal interim/completion owns the committed body and invalidates
+      // the OPEN-segment suffix even if a clear IPC relay was missed.
+      setPartialWindow(null);
       const current = captionRef.current;
       // The preview is generated when the overlay mounts. A real caption
       // may legitimately have an older `startedAt` (for example when OBS
@@ -493,6 +506,7 @@ export const OverlayApp = () => {
               (staleAsrFence ? overlayAsrSessionKey(staleAsrFence.utteranceId) : null) ??
               idleAsrSessionKey;
             const cleared = nativeRenderer ? createPreviewCaption() : createEmptyCaption();
+            setPartialWindow(null);
             resetOverlayStickyRefs(stickyRefs);
             captionRef.current = cleared;
             setCaption(cleared);
@@ -503,6 +517,23 @@ export const OverlayApp = () => {
             asrHistorySettled = nextHold.asrHistorySettled;
             heldOverPreview = nextHold.heldOverPreview;
           }
+        })
+        .then((dispose) => {
+          if (mounted) {
+            disposers.push(dispose);
+          } else {
+            disposeSafely(dispose);
+          }
+        })
+        .catch(() => undefined);
+    }
+    if (typeof bridge.listenPartialWindows === "function") {
+      void bridge
+        .listenPartialWindows((next) => {
+          if (!mounted || idle) {
+            return;
+          }
+          setPartialWindow(next.text.trim() ? next : null);
         })
         .then((dispose) => {
           if (mounted) {
@@ -669,7 +700,7 @@ export const OverlayApp = () => {
         disposeSafely(dispose);
       }
     };
-  }, [nativeRenderer]);
+  }, [nativeRenderer, stickyRefs]);
 
   if (nativeRenderer) {
     return (
@@ -678,10 +709,20 @@ export const OverlayApp = () => {
         data-source-text={displayCaption.sourceText}
         data-translation-text={displayCaption.translationText}
       >
-        <NativeFramePublisher config={config} caption={displayCaption} />
+        <NativeFramePublisher
+          config={config}
+          caption={displayCaption}
+          partialWindowText={partialWindow?.text ?? ""}
+        />
       </div>
     );
   }
 
-  return <OverlayView config={config} caption={displayCaption} />;
+  return (
+    <OverlayView
+      config={config}
+      caption={displayCaption}
+      partialWindowText={partialWindow?.text ?? ""}
+    />
+  );
 };

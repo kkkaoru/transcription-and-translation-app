@@ -57,6 +57,21 @@ pub struct SourceCaptionInput {
     pub capture_generation: Option<u64>,
 }
 
+/// One display-only suffix from the sidecar's current OPEN segment. It is
+/// deliberately a separate IPC event: it must not enter source/translation
+/// merge, normalization, or sticky sentence state.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialWindowCaptionInput {
+    pub session_id: String,
+    pub turn_session_id: u64,
+    pub turn_id: u64,
+    pub segment_id: u64,
+    pub text: String,
+    #[serde(default)]
+    pub capture_generation: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptionBoundaryToken {
@@ -739,6 +754,24 @@ pub fn publish_source_caption(
             Ok(())
         }
     }
+}
+
+/// Relay the OPEN-segment suffix to Overlay/Syphon renderers. Empty text is a
+/// first-class clear signal. Older bundles simply lack this command, which is
+/// fail-closed at the frontend call site.
+#[tauri::command]
+pub fn publish_partial_window_caption(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    caption: PartialWindowCaptionInput,
+) -> Result<(), String> {
+    if let Some(generation) = caption.capture_generation {
+        if !state.is_capture_generation_current(generation) {
+            return Ok(());
+        }
+    }
+    app.emit("caption:partial-window", caption)
+        .map_err(|error| error.to_string())
 }
 
 /// Generation-aware publication for a source caption. `Ok(true)` means the

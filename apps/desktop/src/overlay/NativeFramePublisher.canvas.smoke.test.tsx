@@ -7,6 +7,7 @@ import {
   completeNativePublishFailure,
   completeNativePublishSuccess,
   createNativePublishGate,
+  framePaintKey,
   type NativePublishGate,
   renderNativeFrame,
   wrapNativeText,
@@ -22,12 +23,14 @@ interface CanvasHarness {
   canvas: HTMLCanvasElement;
   fillCalls: FillCall[];
   fillStyleValues: string[];
+  globalAlphaValues: number[];
 }
 
 const createCanvasHarness = (): CanvasHarness => {
   const canvas = document.createElement("canvas");
   const fillCalls: FillCall[] = [];
   const fillStyleValues: string[] = [];
+  const globalAlphaValues: number[] = [];
   const measureText = (text: string): TextMetrics =>
     ({ width: Array.from(text).length * 10 }) as TextMetrics;
   const context = {
@@ -59,8 +62,8 @@ const createCanvasHarness = (): CanvasHarness => {
     set font(_value: string) {
       /* no-op */
     },
-    set globalAlpha(_value: number) {
-      /* no-op */
+    set globalAlpha(value: number) {
+      globalAlphaValues.push(value);
     },
     set globalCompositeOperation(_value: string) {
       /* no-op */
@@ -93,7 +96,7 @@ const createCanvasHarness = (): CanvasHarness => {
       return context;
     },
   });
-  return { canvas, fillCalls, fillStyleValues };
+  return { canvas, fillCalls, fillStyleValues, globalAlphaValues };
 };
 
 const captionWith = (sourceText: string): CaptionPayload => ({
@@ -103,6 +106,21 @@ const captionWith = (sourceText: string): CaptionPayload => ({
 });
 
 describe("native caption canvas edge rendering", () => {
+  it("draws an OPEN-segment result inline with a dim alpha without replacing the body", () => {
+    const config = createDefaultConfig();
+    config.overlay.width = 320;
+    config.overlay.height = 240;
+    config.overlay.safeAreaPx = 0;
+    config.overlay.translation.backgroundEnabled = false;
+    const caption = captionWith("確定本文");
+    const { canvas, fillCalls, globalAlphaValues } = createCanvasHarness();
+
+    expect(renderNativeFrame(canvas, config, caption, "部分候補")).not.toBeNull();
+    expect(fillCalls.map((call) => call.text).join("")).toBe("確定本文 部分候補");
+    expect(globalAlphaValues).toContain(config.overlay.source.opacity * 0.42);
+    expect(framePaintKey(config, caption, "部分候補")).not.toBe(framePaintKey(config, caption));
+  });
+
   it("renders a background plate for an invalid hex color using the white fallback", () => {
     const config = createDefaultConfig();
     config.overlay.width = 320;

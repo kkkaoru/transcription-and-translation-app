@@ -182,6 +182,10 @@ const ja = {
   "settings.streamingInterimAsrHint":
     "audio.streamingInterimAsrEnabled。発話中の経過字幕に Nemotron 3.5 ASR Streaming（160ms int8）を併用します（任意・実験的）。確定認識は従来どおり ReazonSpeech です。モデルは有効化後の初回起動時に GitHub（k2-fsa/sherpa-onnx releases）から自動取得し、詳細設定のモデルダウンロードに状態・URL・保存先を表示します。保存後、アプリ再起動時にsidecarへ反映します。",
   "settings.streamingInterimAsrOn": "有効",
+  "settings.partialWindowAsr": "発話中の部分再認識（ReazonSpeech）",
+  "settings.partialWindowAsrHint":
+    "audio.partialWindowAsrEnabled。現在の OPEN 音声区間だけを約400msごとに再認識し、確定本文を置き換えず末尾に薄く表示します。既定ではオフです。設定は次のキャプチャ開始から有効です。Nemotron の途中認識がオンの間はこの機能は無効です。",
+  "settings.partialWindowAsrOn": "有効（次回キャプチャから）",
   "settings.autoGainControl": "オートゲイン（AGC）",
   "settings.autoGainControlHint":
     "マイク音量を自動調整します。静かな声でも無音判定されにくくなります。ノイズキャンセリングとは独立して切り替えられます。",
@@ -700,6 +704,10 @@ const en: Record<MessageKey, string> = {
   "settings.streamingInterimAsrHint":
     "audio.streamingInterimAsrEnabled. Optionally uses Nemotron 3.5 ASR Streaming (160ms int8) for mid-utterance captions while ReazonSpeech remains the final ASR. Experimental; off by default. After enabling, the sidecar downloads the archive from GitHub (k2-fsa/sherpa-onnx releases) on first launch. Debug → Model downloads shows status, source URL, and local path. Saved changes apply to the sidecar on the next app launch.",
   "settings.streamingInterimAsrOn": "Enabled",
+  "settings.partialWindowAsr": "In-speech partial recognition (ReazonSpeech)",
+  "settings.partialWindowAsrHint":
+    "audio.partialWindowAsrEnabled. Re-recognizes only the current OPEN audio segment about every 400 ms and shows a dim inline suffix without replacing the committed caption body. Off by default. Changes apply from the next capture start. This is inactive while Nemotron streaming interim ASR is enabled.",
+  "settings.partialWindowAsrOn": "Enabled (next capture)",
   "settings.autoGainControl": "Auto gain control (AGC)",
   "settings.autoGainControlHint":
     "Automatically levels microphone volume so quiet speech clears the silence gate. Independent from noise cancellation.",

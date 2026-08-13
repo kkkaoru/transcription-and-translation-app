@@ -62,6 +62,23 @@ describe("DOM overlay honours the configured caption line budget", () => {
     expect(lineTextOf("source")).not.toContain("\n");
   });
 
+  it("adds an OPEN-segment result as a dim inline source suffix without replacing body text", () => {
+    const config = configWithBudget(24, 24);
+    act(() => {
+      root.render(<CaptionLines config={config} caption={caption} partialWindowText="部分候補" />);
+    });
+
+    const source = host.querySelector(".caption-line-source");
+    const suffix = host.querySelector(".caption-partial-window");
+    expect(source?.textContent).toBe(`${SOURCE_TEXT} 部分候補`);
+    expect(suffix?.textContent).toBe(" 部分候補");
+    expect(suffix?.className).toBe("caption-partial-window");
+    // The committed body stays the supplied source only; suffix layout never
+    // enters captionTextLines and therefore cannot create a third logical row.
+    expect(source?.firstChild?.textContent).toBe(SOURCE_TEXT);
+    expect(host.querySelectorAll(".caption-line")).toHaveLength(2);
+  });
+
   it("re-splits both rows when the configured budget shrinks", () => {
     renderWith(configWithBudget(6, 8));
 

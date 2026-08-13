@@ -1595,6 +1595,13 @@ button:disabled {
   z-index: 2;
 }
 
+/* OPEN-segment ReazonSpeech suffix: inline only, never a third caption row. */
+.caption-partial-window {
+  display: inline;
+  opacity: 0.42;
+  white-space: nowrap;
+}
+
 /* Invisible reserved slot: keeps JA/EN vertical rhythm when translation is empty. */
 .caption-line-empty {
   opacity: 0;

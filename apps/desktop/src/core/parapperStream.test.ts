@@ -106,7 +106,12 @@ describe("ParapperRecognitionStream", () => {
       version: 1,
       type: "session.start",
       session_id: "session-1",
-      audio: { encoding: "pcm_s16le", sample_rate: 16_000, channels: 1 },
+      audio: {
+        encoding: "pcm_s16le",
+        sample_rate: 16_000,
+        channels: 1,
+        partial_window_asr_enabled: false,
+      },
     });
     socket?.message({
       version: 1,
@@ -190,6 +195,42 @@ describe("ParapperRecognitionStream", () => {
       sourceText: "今日は。",
       audioDurationMs: 640,
     });
+  });
+
+  it("sends the partial-window session flag and parses its separate event without changing turn types", async () => {
+    const events: ParapperStreamEvent[] = [];
+    const { socket } = await createReadyStream({
+      partialWindowAsrEnabled: true,
+      onEvent: (event) => events.push(event),
+    });
+    expect(jsonMessages(socket)[0]).toMatchObject({
+      audio: { partial_window_asr_enabled: true },
+    });
+    socket.message({
+      version: 1,
+      type: "turn.partial_window",
+      session_id: "ready-session",
+      turn_session_id: 1,
+      turn_id: 2,
+      revision: 3,
+      output_sequence: 4,
+      segment_id: 5,
+      previous_segment_id: null,
+      text: "末尾候補",
+      source_asr_model: "reazonspeech-k2-v2",
+      source_language: "ja",
+      elapsed_ms: 12,
+    });
+    socket.message({
+      version: 1,
+      type: "segment.closed",
+      session_id: "ready-session",
+      segment_id: 5,
+    });
+    expect(events).toMatchObject([
+      { type: "turn.partial_window", text: "末尾候補", turnId: 2, segmentId: 5 },
+      { type: "segment.closed", segmentId: 5 },
+    ]);
   });
 
   it("rejects startup errors instead of accepting audio without session.ready", async () => {

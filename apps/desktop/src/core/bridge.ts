@@ -17,6 +17,7 @@ import type {
   ModelCatalog,
   ModelStatusEntry,
   ParapperRecognitionOutput,
+  PartialWindowCaption,
   PipelineStageEvent,
   RelaunchResult,
   RuntimeDiagnostics,
@@ -442,6 +443,13 @@ export const bridge = {
     rememberCaption({ ...caption, sourceText, translationText: "", stage: "source", sequence: 0 });
   },
 
+  /** Forward a display-only OPEN-segment suffix to the independent Overlay webview. */
+  async publishPartialWindow(caption: PartialWindowCaption): Promise<void> {
+    if (isTauriRuntime()) {
+      await invoke("publish_partial_window_caption", { caption });
+    }
+  },
+
   getModels(): Promise<ModelCatalog> {
     if (isTauriRuntime()) {
       return invoke<ModelCatalog>("list_models");
@@ -578,6 +586,16 @@ export const bridge = {
         rememberCaption(event.payload);
         callback(event.payload);
       });
+    }
+    return Promise.resolve(() => undefined);
+  },
+
+  /** Display-only partial window events never enter the normalized caption merge path. */
+  listenPartialWindows(callback: (caption: PartialWindowCaption) => void): Promise<UnlistenFn> {
+    if (isTauriRuntime()) {
+      return listen<PartialWindowCaption>("caption:partial-window", (event) =>
+        callback(event.payload),
+      );
     }
     return Promise.resolve(() => undefined);
   },

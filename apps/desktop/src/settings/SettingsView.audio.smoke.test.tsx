@@ -247,6 +247,43 @@ describe("SettingsView audio tuning", () => {
     expect(container.textContent).toMatch(/このモードでは未使用|not used in this mode/i);
   });
 
+  it("keeps partial-window ASR opt-in and marks it for the next capture", async () => {
+    const Harness = () => {
+      const [config, setConfig] = useState(createDefaultConfig());
+      return (
+        <SettingsView
+          config={config}
+          models={DEFAULT_MODEL_CATALOG}
+          devices={[]}
+          saving={false}
+          onConfigChange={setConfig}
+          onModelChange={() => undefined}
+          onDeviceChange={() => undefined}
+          onRefreshDevices={() => undefined}
+          onSave={() => undefined}
+        />
+      );
+    };
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <Harness />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    const toggle = container.querySelector<HTMLInputElement>("#audio-partial-window-asr");
+    expect(toggle?.checked).toBe(false);
+    expect(toggle?.closest(".field")?.textContent).toMatch(/次のキャプチャ開始|next capture/i);
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+    expect(toggle?.checked).toBe(true);
+  });
+
   it("exposes VAD window and silence threshold as labeled sliders with reset", async () => {
     const onSave = vi.fn();
 

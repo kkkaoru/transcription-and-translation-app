@@ -89,8 +89,22 @@ InputLevelMeter.displayName = "InputLevelMeter";
 
 /** Caption preview is isolated so sibling panel updates do not re-layout the stage. */
 const LiveCaptionPreview = memo(
-  ({ config, caption }: { config: AppConfig; caption: CaptionPayload }) => (
-    <OverlayView config={config} caption={caption} preview placeholder={false} />
+  ({
+    config,
+    caption,
+    partialWindowText,
+  }: {
+    config: AppConfig;
+    caption: CaptionPayload;
+    partialWindowText: string;
+  }) => (
+    <OverlayView
+      config={config}
+      caption={caption}
+      partialWindowText={partialWindowText}
+      preview
+      placeholder={false}
+    />
   ),
 );
 LiveCaptionPreview.displayName = "LiveCaptionPreview";
@@ -99,6 +113,7 @@ export const LiveView = ({
   config,
   status,
   caption,
+  partialWindowText = "",
   devices,
   message,
   transparentCaptureOpen = false,
@@ -114,6 +129,7 @@ export const LiveView = ({
   config: AppConfig;
   status: RuntimeStatus;
   caption: CaptionPayload;
+  partialWindowText?: string;
   devices: AudioInputDevice[];
   message: string | null;
   transparentCaptureOpen?: boolean;
@@ -240,7 +256,11 @@ export const LiveView = ({
               style={scaleHostStyle}
               data-testid="preview-scale-host"
             >
-              <LiveCaptionPreview config={config} caption={caption} />
+              <LiveCaptionPreview
+                config={config}
+                caption={caption}
+                partialWindowText={partialWindowText}
+              />
             </div>
           )}
         </div>

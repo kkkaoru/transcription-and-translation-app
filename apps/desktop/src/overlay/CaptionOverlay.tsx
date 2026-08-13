@@ -10,10 +10,13 @@ export const CaptionLines = memo(
   ({
     config,
     caption,
+    partialWindowText = "",
     placeholder = false,
   }: {
     config: AppConfig;
     caption: CaptionPayload;
+    /** Display-only OPEN-segment suffix; never part of CaptionPayload.sourceText. */
+    partialWindowText?: string;
     placeholder?: boolean;
   }) => (
     <div className="caption-lines" style={overlayCaptionCss(config.overlay)}>
@@ -27,7 +30,16 @@ export const CaptionLines = memo(
             aria-hidden={hasText ? undefined : true}
             data-empty={hasText ? undefined : "true"}
           >
-            {hasText ? captionTextLines(item).join("\n") : CAPTION_SLOT_PLACEHOLDER}
+            {hasText ? (
+              <>
+                {captionTextLines(item).join("\n")}
+                {item.key === "source" && partialWindowText.trim() ? (
+                  <span className="caption-partial-window"> {partialWindowText.trim()}</span>
+                ) : null}
+              </>
+            ) : (
+              CAPTION_SLOT_PLACEHOLDER
+            )}
           </div>
         );
       })}
@@ -40,11 +52,13 @@ export const OverlayView = memo(
   ({
     config,
     caption,
+    partialWindowText,
     preview = false,
     placeholder = false,
   }: {
     config: AppConfig;
     caption: CaptionPayload;
+    partialWindowText?: string;
     /** CSS chrome for the in-app OBS preview stage (checkerboard host). */
     preview?: boolean;
     /**
@@ -54,7 +68,12 @@ export const OverlayView = memo(
     placeholder?: boolean;
   }) => (
     <main className={`overlay-root${preview ? " overlay-preview" : ""}`}>
-      <CaptionLines config={config} caption={caption} placeholder={placeholder} />
+      <CaptionLines
+        config={config}
+        caption={caption}
+        partialWindowText={partialWindowText}
+        placeholder={placeholder}
+      />
     </main>
   ),
 );

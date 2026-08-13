@@ -315,6 +315,8 @@ export const createDefaultConfig = (): AppConfig => ({
     adaptiveNoiseFloor: DEFAULT_ADAPTIVE_NOISE_FLOOR,
     // Progressive interim ASR (Nemotron 3.5 streaming) off by default; optional in settings.
     streamingInterimAsrEnabled: false,
+    // Open-segment ReazonSpeech window suffixes are opt-in and start next capture.
+    partialWindowAsrEnabled: false,
   },
   overlay: {
     width: 1_280,
@@ -546,6 +548,9 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   }
   if (typeof audio.streamingInterimAsrEnabled !== "boolean") {
     audio.streamingInterimAsrEnabled = false;
+  }
+  if (typeof audio.partialWindowAsrEnabled !== "boolean") {
+    audio.partialWindowAsrEnabled = false;
   }
   return {
     ...base,

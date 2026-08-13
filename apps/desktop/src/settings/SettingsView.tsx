@@ -679,6 +679,25 @@ export const SettingsView = ({
                 <span>{t("settings.streamingInterimAsrOn")}</span>
               </label>
             </Field>
+            <Field label={t("settings.partialWindowAsr")} hint={t("settings.partialWindowAsrHint")}>
+              <label className="checkbox-field">
+                <input
+                  id="audio-partial-window-asr"
+                  type="checkbox"
+                  checked={config.audio.partialWindowAsrEnabled === true}
+                  onChange={(event) =>
+                    onConfigChange({
+                      ...config,
+                      audio: {
+                        ...config.audio,
+                        partialWindowAsrEnabled: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                <span>{t("settings.partialWindowAsrOn")}</span>
+              </label>
+            </Field>
             <Field
               label={t("settings.autoGainControl")}
               hint={audioPipelineHint(t("settings.autoGainControlHint"))}

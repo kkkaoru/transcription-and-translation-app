@@ -105,6 +105,7 @@ pub fn run() {
             commands::transcribe_audio_chunk,
             commands::normalize_parapper_output,
             commands::publish_source_caption,
+            commands::publish_partial_window_caption,
             commands::caption_boundary_offsets,
             commands::open_transparent_capture,
             commands::close_transparent_capture,

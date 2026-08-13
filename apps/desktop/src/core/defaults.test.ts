@@ -59,6 +59,7 @@ describe("default configuration", () => {
     // Adaptive noise-floor gate is the default; silenceGateDb is the fallback.
     expect(config.audio.adaptiveNoiseFloor).toBe(true);
     expect(config.audio.streamingInterimAsrEnabled).toBe(false);
+    expect(config.audio.partialWindowAsrEnabled).toBe(false);
     expect(config.debug.verboseLogging).toBe(false);
     expect(config.debug.logLevel).toBe("info");
   });
@@ -115,6 +116,16 @@ describe("default configuration", () => {
     expect(on.audio.streamingInterimAsrEnabled).toBe(true);
     const off = mergeConfig({ audio: { streamingInterimAsrEnabled: false } });
     expect(off.audio.streamingInterimAsrEnabled).toBe(false);
+  });
+
+  it("defaults missing partialWindowAsrEnabled to false when merging legacy config", () => {
+    expect(mergeConfig({ audio: { chunkMs: 1000 } }).audio.partialWindowAsrEnabled).toBe(false);
+    expect(
+      mergeConfig({ audio: { partialWindowAsrEnabled: true } }).audio.partialWindowAsrEnabled,
+    ).toBe(true);
+    expect(
+      mergeConfig({ audio: { partialWindowAsrEnabled: false } }).audio.partialWindowAsrEnabled,
+    ).toBe(false);
   });
 
   it("keeps browser-only previews disabled until the native runtime supplies its platform default", () => {

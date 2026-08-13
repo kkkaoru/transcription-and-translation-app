@@ -57,6 +57,10 @@ fn default_streaming_interim_asr_enabled() -> bool {
     false
 }
 
+fn default_partial_window_asr_enabled() -> bool {
+    false
+}
+
 /// Headless Parapper interim model paired with ReazonSpeech completion ASR.
 pub const STREAMING_INTERIM_ASR_MODEL_ID: &str = "nemotron_3_5_asr_streaming_0_6b_160ms_int8";
 /// Explicit CLI sentinel that clears any persisted interim ASR model.
@@ -108,6 +112,9 @@ pub struct AudioConfig {
     /// the interim-only ASR alongside ReazonSpeech completion. Default on.
     #[serde(default = "default_streaming_interim_asr_enabled")]
     pub streaming_interim_asr_enabled: bool,
+    /// Ask each capture session to emit OPEN-segment display-only suffixes.
+    #[serde(default = "default_partial_window_asr_enabled")]
+    pub partial_window_asr_enabled: bool,
 }
 
 fn default_vad_interval_ms() -> u32 {
@@ -454,6 +461,7 @@ impl Default for AppConfig {
                 adaptive_noise_floor: true,
                 // Match frontend: Nemotron streaming interim ASR off by default.
                 streaming_interim_asr_enabled: false,
+                partial_window_asr_enabled: false,
             },
             overlay: OverlayConfig {
                 width: 1_280,
@@ -675,6 +683,7 @@ mod tests {
         assert!(config.audio.noise_suppression);
         assert!(config.audio.adaptive_noise_floor);
         assert!(!config.audio.streaming_interim_asr_enabled);
+        assert!(!config.audio.partial_window_asr_enabled);
         assert_eq!(config.audio.vad_interval_ms, DEFAULT_VAD_INTERVAL_MS);
         assert_eq!(config.audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
         assert_eq!(config.recognition_mode, DEFAULT_RECOGNITION_MODE);
@@ -723,6 +732,7 @@ mod tests {
         assert!(audio.noise_suppression);
         assert!(audio.adaptive_noise_floor);
         assert!(!audio.streaming_interim_asr_enabled);
+        assert!(!audio.partial_window_asr_enabled);
     }
 
     #[test]

@@ -19,6 +19,7 @@ export const PARAPPER_STREAM_SAMPLE_RATE = 16_000;
 export const PARAPPER_STREAM_CHANNELS = 1;
 
 export type ParapperTurnEventType = "turn.partial" | "turn.final";
+export type ParapperPartialWindowEventType = "turn.partial_window";
 
 export type ParapperTurnEvent = {
   type: ParapperTurnEventType;
@@ -41,9 +42,15 @@ export type ParapperTurnEvent = {
   asrLatency?: AsrLatencyTimestamps;
 };
 
+export type ParapperPartialWindowEvent = Omit<ParapperTurnEvent, "type"> & {
+  type: ParapperPartialWindowEventType;
+};
+
 export type ParapperStreamEvent =
   | { type: "speech.started"; version: number; sessionId: string }
-  | ParapperTurnEvent;
+  | { type: "segment.closed"; version: number; sessionId: string; segmentId: number }
+  | ParapperTurnEvent
+  | ParapperPartialWindowEvent;
 
 /**
  * Choose the surface text for a raw Parapper caption.
@@ -115,6 +122,8 @@ export type ParapperStreamOptions = {
   onEvent?: (event: ParapperStreamEvent) => void;
   /** Called once when an already-ready session loses its transport. */
   onError?: (error: Error) => void;
+  /** Opt-in OPEN-segment suffix ASR for this capture session only. */
+  partialWindowAsrEnabled?: boolean;
   /** Dependency injection keeps protocol tests independent of a browser DOM. */
   webSocketConstructor?: WebSocketConstructor;
 };
@@ -170,7 +179,19 @@ const toEvent = (message: ServerMessage, sessionId: string): ParapperStreamEvent
   if (message.type === "speech.started") {
     return { type: "speech.started", version: PARAPPER_STREAM_PROTOCOL_VERSION, sessionId };
   }
-  if (message.type !== "turn.partial" && message.type !== "turn.final") {
+  if (message.type === "segment.closed") {
+    return {
+      type: "segment.closed",
+      version: PARAPPER_STREAM_PROTOCOL_VERSION,
+      sessionId,
+      segmentId: finiteNumber(message.segment_id),
+    };
+  }
+  if (
+    message.type !== "turn.partial" &&
+    message.type !== "turn.final" &&
+    message.type !== "turn.partial_window"
+  ) {
     return null;
   }
   const text = nonEmptyString(message.text);
@@ -214,6 +235,7 @@ export class ParapperRecognitionStream {
   private readonly onEvent: (event: ParapperStreamEvent) => void;
   private readonly onError: (error: Error) => void;
   private readonly webSocketConstructor: WebSocketConstructor;
+  private readonly partialWindowAsrEnabled: boolean;
   private socket: WebSocketLike | null = null;
   private started = false;
   private startPromise: Promise<void> | null = null;
@@ -232,6 +254,7 @@ export class ParapperRecognitionStream {
     this.sessionId = options.sessionId?.trim() || createSessionId();
     this.onEvent = options.onEvent ?? (() => undefined);
     this.onError = options.onError ?? (() => undefined);
+    this.partialWindowAsrEnabled = options.partialWindowAsrEnabled === true;
     const webSocketCtor =
       options.webSocketConstructor ??
       (typeof globalThis.WebSocket === "function"
@@ -309,6 +332,7 @@ export class ParapperRecognitionStream {
                 encoding: "pcm_s16le",
                 sample_rate: PARAPPER_STREAM_SAMPLE_RATE,
                 channels: PARAPPER_STREAM_CHANNELS,
+                partial_window_asr_enabled: this.partialWindowAsrEnabled,
               },
             }),
           );

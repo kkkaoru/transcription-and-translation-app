@@ -101,6 +101,7 @@ import type {
   ModelCatalog,
   ModelFamily,
   ParapperRecognitionOutput,
+  PartialWindowCaption,
   RecognitionMode,
   RuntimeStatus,
 } from "../core/types";
@@ -649,6 +650,9 @@ export const MainApp = () => {
   /** Mutable caption cursor keeps merge side effects outside React state updaters. */
   const captionRef = useRef<CaptionPayload>(createPreviewCaption());
   const [caption, setCaption] = useState<CaptionPayload>(() => captionRef.current);
+  /** Separate OPEN-segment suffix; never merged into the committed caption body. */
+  const partialWindowRef = useRef<PartialWindowCaption | null>(null);
+  const [partialWindow, setPartialWindow] = useState<PartialWindowCaption | null>(null);
   /** Display-only sentence carry shared by the Live DOM and native publisher. */
   const stickyRefs = useRef<MainStickyRefs>({
     source: { current: null },
@@ -767,14 +771,31 @@ export const MainApp = () => {
     [],
   );
 
+  const setPartialWindowSlot = useCallback((next: PartialWindowCaption): void => {
+    partialWindowRef.current = next;
+    setPartialWindow(next);
+    void bridge.publishPartialWindow(next).catch(() => undefined);
+  }, []);
+
+  const clearPartialWindowSlot = useCallback((): void => {
+    const current = partialWindowRef.current;
+    if (!current) {
+      return;
+    }
+    partialWindowRef.current = null;
+    setPartialWindow(null);
+    void bridge.publishPartialWindow({ ...current, text: "" }).catch(() => undefined);
+  }, []);
+
   /** Reset the visible caption and any retained translation from this session. */
   const clearCaptionState = useCallback((): void => {
+    clearPartialWindowSlot();
     const empty = createEmptyCaption();
     resetMainStickyRefs(stickyRefs);
     captionRef.current = empty;
     setCaption(empty);
     clearCaptionMergeDiagnostics();
-  }, [stickyRefs]);
+  }, [clearPartialWindowSlot, stickyRefs]);
 
   /** Blank the plate after hold without tearing down merge diagnostics / session. */
   const blankDisplayedCaption = useCallback(
@@ -783,6 +804,7 @@ export const MainApp = () => {
       if (!shouldApplyCaptionHoldClear(expectedEpoch, current)) {
         return;
       }
+      clearPartialWindowSlot();
       if (!current.sourceText.trim() && !current.translationText.trim()) {
         return;
       }
@@ -791,7 +813,7 @@ export const MainApp = () => {
       captionRef.current = empty;
       setCaption(empty);
     },
-    [stickyRefs],
+    [clearPartialWindowSlot, stickyRefs],
   );
 
   useCaptionHoldClear(caption, blankDisplayedCaption);
@@ -1411,6 +1433,7 @@ export const MainApp = () => {
     const attempt = ++captureAttempt.current;
     capturePhase.current = "starting";
     resetMainStickyRefs(stickyRefs);
+    clearPartialWindowSlot();
     // Do not let a tagged stage from the superseded session paint while the
     // replacement's native start_capture is still resolving.
     activeCaptureGeneration.current = null;
@@ -1915,6 +1938,26 @@ export const MainApp = () => {
             }
             return;
           }
+          if (event.type === "segment.closed") {
+            clearPartialWindowSlot();
+            return;
+          }
+          if (event.type === "turn.partial_window") {
+            const text = selectParapperSurfaceText(event);
+            if (text) {
+              setPartialWindowSlot({
+                sessionId: event.sessionId,
+                turnSessionId: event.turnSessionId,
+                turnId: event.turnId,
+                segmentId: event.segmentId,
+                text,
+                captureGeneration: captureGenerationForAttempt,
+              });
+            }
+            return;
+          }
+          // An interim/completion owns the body and closes/replaces the suffix.
+          clearPartialWindowSlot();
           const output: ParapperRecognitionOutput = {
             text: event.text,
             sourceText: event.sourceText,
@@ -1964,6 +2007,7 @@ export const MainApp = () => {
         parapperOutputQueue.current = outputQueue;
         streamForAttempt = new ParapperRecognitionStream({
           url: DEFAULT_PARAPPER_STREAM_URL,
+          partialWindowAsrEnabled: captureConfig.audio.partialWindowAsrEnabled === true,
           onEvent: handleParapperEvent,
           onError: (error) => {
             if (attempt !== captureAttempt.current) {
@@ -2440,6 +2484,10 @@ export const MainApp = () => {
 
     const failure = microphoneFailure ?? bridgeFailure;
     capturePhase.current = "idle";
+    // A drained session may have ended without a normal Turn final (for
+    // example after a transport failure). The OPEN-segment suffix belongs only
+    // to the active capture and must never survive into the retained body.
+    clearPartialWindowSlot();
     resetMainStickyRefs(stickyRefs);
     if (!failure) {
       pushDiagnosticEvent("audio", "Capture stopped");
@@ -2656,6 +2704,7 @@ export const MainApp = () => {
               config={config}
               status={status}
               caption={displayCaption}
+              partialWindowText={partialWindow?.text ?? ""}
               devices={devices}
               message={noticeText}
               transparentCaptureOpen={transparentCaptureOpen}
@@ -2692,7 +2741,11 @@ export const MainApp = () => {
         </main>
       </div>
       {status.nativeOutput === "syphon" || status.nativeOutput === "spout2" ? (
-        <NativeFramePublisher config={config} caption={displayCaption} />
+        <NativeFramePublisher
+          config={config}
+          caption={displayCaption}
+          partialWindowText={partialWindow?.text ?? ""}
+        />
       ) : null}
     </div>
   );

@@ -83,6 +83,12 @@ export interface AudioConfig {
    * sidecar on its next launch.
    */
   streamingInterimAsrEnabled: boolean;
+  /**
+   * Re-recognize the current open speech segment into a display-only suffix.
+   * This is deliberately independent from the Nemotron streaming path and is
+   * sent with each Parapper session.start; missing legacy config means off.
+   */
+  partialWindowAsrEnabled: boolean;
 }
 
 export interface CaptionTextStyle {
@@ -313,6 +319,16 @@ export interface ParapperRecognitionOutput {
    * when parsing the wire payload.
    */
   asrLatency?: AsrLatencyTimestamps;
+}
+
+/** Display-only suffix produced from the current OPEN Parapper segment. */
+export interface PartialWindowCaption {
+  sessionId: string;
+  turnSessionId: number;
+  turnId: number;
+  segmentId: number;
+  text: string;
+  captureGeneration?: number;
 }
 
 /**
