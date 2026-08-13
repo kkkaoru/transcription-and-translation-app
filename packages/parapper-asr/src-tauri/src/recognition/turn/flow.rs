@@ -1042,10 +1042,8 @@ impl RecognitionSession {
             return false;
         }
         if segment.reason == SegmentCloseReason::InterimResultSilenceReached
-            && self.turn_store.finalized_turns.iter().any(|&id| id < turn_id)
+            && self.same_utterance_after_interim_silence_should_stay(turn_id)
         {
-            // Breath after a reminted utterance's 160ms stays on that turn.
-            // Breath after the first utterance's prefix-only 160ms still remints.
             return false;
         }
         if !self.pending_child_is_after_interim_silence(segment, turn_id) {
@@ -1091,13 +1089,43 @@ impl RecognitionSession {
             return false;
         }
         if segment.reason == SegmentCloseReason::InterimResultSilenceReached
-            && self.turn_store.finalized_turns.iter().any(|&id| id < turn_id)
+            && self.same_utterance_after_interim_silence_should_stay(turn_id)
         {
-            // Breath after a reminted utterance's 160ms stays on that turn.
-            // Breath after the first utterance's prefix-only 160ms still remints.
             return false;
         }
         self.latest_applied_segment_is_streaming_chunk(turn_id)
+    }
+
+    fn same_utterance_after_interim_silence_should_stay(&self, turn_id: u64) -> bool {
+        // Breath after a reminted utterance's 160ms stays on that turn.
+        if self.turn_store.finalized_turns.iter().any(|&id| id < turn_id) {
+            return true;
+        }
+        // Same-breath continuation after the first 160ms (no later EndSilence /
+        // 160ms / max-chunk queued) must stay on the current caption. A later
+        // next-utterance marker still remints.
+        !self.pending_has_later_next_utterance_after_silence()
+    }
+
+    fn pending_has_later_next_utterance_after_silence(&self) -> bool {
+        let mut seen_silence = false;
+        for segment in &self.pending.asr_segments {
+            if segment.reason == SegmentCloseReason::InterimResultSilenceReached {
+                seen_silence = true;
+                continue;
+            }
+            if seen_silence
+                && matches!(
+                    segment.reason,
+                    SegmentCloseReason::InterimChunkReached
+                        | SegmentCloseReason::EndSilenceReached
+                        | SegmentCloseReason::SegmentMaxChunksReached
+                )
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn end_silence_starts_after_applied_160ms(

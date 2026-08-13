@@ -2305,6 +2305,66 @@ fn turn_runtime_in_flight_completion_yields_to_160ms_keeping_visible_interim() {
 }
 
 #[test]
+fn turn_runtime_160ms_then_after_interim_silence_emits_tail_on_current_caption() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let outputs = builder.use_recording_sink();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        0..160,
+    );
+    runtime.step();
+    let lead = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("first 160ms must dispatch");
+    asr_handle.complete_request_with_text(&lead, "前半");
+    runtime.step();
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        160..260,
+    );
+    runtime.step();
+    let mut silence = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("AfterInterimSilence after 160ms must dispatch");
+    if silence.kind == AsrTaskKind::Rerecognition {
+        asr_handle.complete_request_with_text(&silence, "前半");
+        runtime.step();
+        silence = runtime
+            .requests
+            .in_flight_request
+            .clone()
+            .expect("AfterInterimSilence must dispatch after grammar");
+    }
+    asr_handle.complete_request_with_text(&silence, "後半");
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    assert!(
+        outputs.iter().any(|output| {
+            output.turn_id == 1 && output.text.contains("前半") && output.text.contains("後半")
+        }),
+        "same-utterance AfterInterimSilence after 160ms must emit on the current caption; got {:?}",
+        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "invariant covers prefix defer, max-chunk yield, 160ms apply, and resume order"
@@ -3182,9 +3242,9 @@ fn turn_runtime_in_flight_max_chunk_does_not_yield_to_after_interim_silence() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "invariant covers in-flight 160ms hold, remint after apply, prefix, and uncovered tail"
+    reason = "invariant covers in-flight 160ms hold, same-utterance AfterInterimSilence staying on the current caption, prefix, and uncovered tail"
 )]
-fn turn_runtime_after_interim_silence_remints_after_160ms_without_stealing_grid() {
+fn turn_runtime_after_interim_silence_stays_after_160ms_without_stealing_grid() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)
         .interim_display(true)
@@ -3251,7 +3311,7 @@ fn turn_runtime_after_interim_silence_remints_after_160ms_without_stealing_grid(
         .requests
         .in_flight_request
         .as_ref()
-        .expect("deferred prefix CompletionCheck must resume before remint");
+        .expect("deferred prefix CompletionCheck must resume before AfterInterimSilence");
     assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
     assert_eq!(resumed.close_reason, Some(SegmentCloseReason::EndSilenceReached));
     assert!(!runtime.turn_store.finalized_turns.contains(&1));
@@ -3267,44 +3327,48 @@ fn turn_runtime_after_interim_silence_remints_after_160ms_without_stealing_grid(
     runtime.step();
 
     assert!(
-        runtime.turn_store.finalized_turns.contains(&1),
-        "AfterInterimSilence after the 160ms grid must remint instead of continuing turn 1"
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "same-utterance AfterInterimSilence after 160ms must stay on the current caption"
     );
-    let dispatched =
-        runtime.requests.in_flight_request.as_ref().expect(
-            "the AfterInterimSilence child must remint onto a new turn after the 160ms grid",
-        );
-    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
-    assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
-    assert_ne!(
-        dispatched.target.turn_id,
-        TurnId(1),
-        "the next utterance must not attach to the previous turn as a continuation"
+    let mut silence = runtime.requests.in_flight_request.clone().expect(
+        "AfterInterimSilence after 160ms must dispatch on the current turn",
     );
+    if silence.kind == AsrTaskKind::Rerecognition {
+        asr_handle.complete_request_with_text(&silence, "全体。");
+        runtime.step();
+        silence = runtime
+            .requests
+            .in_flight_request
+            .clone()
+            .expect("AfterInterimSilence must dispatch as InterimDisplay after grammar");
+    }
+    assert_eq!(silence.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
+    assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(silence.target.turn_id, TurnId(1));
     assert_eq!(
-        dispatched.target.range,
+        silence.target.range,
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
 
+    asr_handle.complete_request_with_text(&silence, "後半");
+    runtime.step();
+
     let outputs = outputs.lock().expect("outputs should be readable");
-    let final_output = outputs
-        .iter()
-        .find(|output| output.is_final && output.turn_id == 1)
-        .expect("turn 1 must emit a final caption");
     assert!(
-        final_output.text.contains("全体"),
-        "previous turn must keep prefix completion; got {}",
-        final_output.text
+        outputs.iter().any(|output| {
+            output.turn_id == 1
+                && output.text.contains("全体")
+                && output.text.contains("続き")
+                && output.text.contains("後半")
+        }),
+        "same-utterance AfterInterimSilence must emit on the current caption; got {:?}",
+        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
     );
-    assert!(
-        final_output.text.contains("続き"),
-        "previous turn must keep the uncovered 160ms tail; got {}",
-        final_output.text
-    );
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
     assert_eq!(
-        final_output.phrase,
-        [vec![1.0; 150], vec![2.0; 160]].concat(),
-        "previous turn must keep uncovered 160ms tail audio"
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 160], vec![3.0; 100]].concat(),
+        "current turn must keep prefix, uncovered 160ms tail, and AfterInterimSilence audio"
     );
 }
 
@@ -3440,9 +3504,9 @@ fn turn_runtime_end_silence_child_remints_after_160ms_without_stealing_grid() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "invariant covers in-flight 160ms hold, remint of a stream-reset root, prefix, and uncovered tail"
+    reason = "invariant covers in-flight 160ms hold, same-utterance root AfterInterimSilence staying on the current caption, prefix, and uncovered tail"
 )]
-fn turn_runtime_after_interim_silence_root_remints_after_160ms_without_stealing_grid() {
+fn turn_runtime_after_interim_silence_root_stays_after_160ms_without_stealing_grid() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)
         .interim_display(true)
@@ -3511,7 +3575,7 @@ fn turn_runtime_after_interim_silence_root_remints_after_160ms_without_stealing_
         .requests
         .in_flight_request
         .as_ref()
-        .expect("deferred prefix CompletionCheck must resume before remint");
+        .expect("deferred prefix CompletionCheck must resume before AfterInterimSilence");
     assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
     assert_eq!(resumed.close_reason, Some(SegmentCloseReason::EndSilenceReached));
     assert!(!runtime.turn_store.finalized_turns.contains(&1));
@@ -3527,43 +3591,48 @@ fn turn_runtime_after_interim_silence_root_remints_after_160ms_without_stealing_
     runtime.step();
 
     assert!(
-        runtime.turn_store.finalized_turns.contains(&1),
-        "AfterInterimSilence root after the 160ms grid must remint instead of continuing turn 1"
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "same-utterance AfterInterimSilence after 160ms must stay on the current caption"
     );
-    let dispatched = runtime.requests.in_flight_request.as_ref().expect(
-        "the AfterInterimSilence root must remint onto a new turn after the 160ms grid",
+    let mut silence = runtime.requests.in_flight_request.clone().expect(
+        "AfterInterimSilence root after 160ms must dispatch on the current turn",
     );
-    assert_eq!(dispatched.kind, AsrTaskKind::InterimDisplay);
-    assert_eq!(dispatched.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
-    assert_ne!(
-        dispatched.target.turn_id,
-        TurnId(1),
-        "the next utterance must not be absorbed into the open turn as a continuation"
-    );
+    if silence.kind == AsrTaskKind::Rerecognition {
+        asr_handle.complete_request_with_text(&silence, "全体。");
+        runtime.step();
+        silence = runtime
+            .requests
+            .in_flight_request
+            .clone()
+            .expect("AfterInterimSilence must dispatch as InterimDisplay after grammar");
+    }
+    assert_eq!(silence.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
+    assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(silence.target.turn_id, TurnId(1));
     assert_eq!(
-        dispatched.target.range,
+        silence.target.range,
         AudioRange::new(GlobalSampleIndex(310), GlobalSampleIndex(410))
     );
 
+    asr_handle.complete_request_with_text(&silence, "後半");
+    runtime.step();
+
     let outputs = outputs.lock().expect("outputs should be readable");
-    let final_output = outputs
-        .iter()
-        .find(|output| output.is_final && output.turn_id == 1)
-        .expect("turn 1 must emit a final caption");
     assert!(
-        final_output.text.contains("全体"),
-        "previous turn must keep prefix completion; got {}",
-        final_output.text
+        outputs.iter().any(|output| {
+            output.turn_id == 1
+                && output.text.contains("全体")
+                && output.text.contains("続き")
+                && output.text.contains("後半")
+        }),
+        "same-utterance AfterInterimSilence must emit on the current caption; got {:?}",
+        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
     );
-    assert!(
-        final_output.text.contains("続き"),
-        "previous turn must keep the uncovered 160ms tail; got {}",
-        final_output.text
-    );
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
     assert_eq!(
-        final_output.phrase,
-        [vec![1.0; 150], vec![2.0; 160]].concat(),
-        "previous turn must keep uncovered 160ms tail audio"
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 160], vec![3.0; 100]].concat(),
+        "current turn must keep prefix, uncovered 160ms tail, and AfterInterimSilence audio"
     );
 }
 
