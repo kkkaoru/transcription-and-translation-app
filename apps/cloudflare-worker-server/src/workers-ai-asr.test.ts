@@ -49,6 +49,9 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     expect(workersAiAsrTimeoutMs({ WORKERS_AI_ASR_TIMEOUT_MS: "not-a-number" })).toBe(
       WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS,
     );
+    expect(workersAiAsrTimeoutMs({ WORKERS_AI_ASR_TIMEOUT_MS: "1.5" })).toBe(
+      WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS,
+    );
     expect(workersAiAsrTimeoutMs({ WORKERS_AI_ASR_TIMEOUT_MS: "0" })).toBe(
       WORKERS_AI_ASR_MIN_TIMEOUT_MS,
     );
