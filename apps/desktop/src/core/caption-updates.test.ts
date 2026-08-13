@@ -2989,6 +2989,35 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("appends a close disjoint continuation after an early-finalized lead on a new id", () => {
+    const lead = caption({
+      id: "parapper:session:turn:lead",
+      sourceText: "会議を始めます",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const tail = caption({
+      id: "parapper:session:turn:lead-cont",
+      sourceText: "続きがあります",
+      translationText: "",
+      startedAt: 1_450,
+      receivedAt: 1_700,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(lead, tail)).toMatchObject({
+      id: "parapper:session:turn:lead-cont",
+      sourceText: "会議を始めます続きがあります",
+    });
+  });
+
   it("keeps a painted greeting when ASR substitutes a short ack", () => {
     const greeting = caption({
       id: "parapper:session:turn:hello2",
@@ -3013,6 +3042,32 @@ describe("mergeCaptionPayload", () => {
     });
 
     expect(mergeCaptionPayload(greeting, ack)).toBeNull();
+  });
+
+  it("keeps a painted lead when ASR substitutes a short ack", () => {
+    const lead = caption({
+      id: "parapper:session:turn:ack-lead",
+      sourceText: "会議を始めます",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_200,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const ack = caption({
+      id: "parapper:session:turn:ack-lead",
+      sourceText: "はい",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(lead, ack)).toBeNull();
   });
 
   it("keeps a greeting plate when a later turn is only a short ack", () => {

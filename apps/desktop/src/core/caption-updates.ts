@@ -147,14 +147,8 @@ const sourceBoundary = /[。．！？!?]$/u;
 const incompleteSourceEnding =
   /(?:は|が|を|に|へ|で|と|も|の|や|か|ね|よ|な|ま|て|is|are|the|a|an|to|of|and|but|with|for|in|on|at)$/iu;
 const japaneseSourceText = /^[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]+$/u;
-/** Exact greeting plate (optional elongation). Must stay with a same-breath continuation. */
-const FIXED_GREETING_SURFACE =
-  /^(?:こんにちは|こんばんは|おはようございます|おはよう|さようなら)[ー〜～]*$/u;
-/** Short ack finals that ASR sometimes substitutes for a greeting. */
+/** Short ack finals that ASR sometimes substitutes for an already-painted clause. */
 const SHORT_ACK_SURFACE = /^(?:はい|うん|ええ|いいえ)$/u;
-/** Hearing-check remainder, including an elongation-led tail (`ーきこえますかー`). */
-const HEARING_CHECK_SURFACE =
-  /^(?:[ー〜～]*)(?:きこえますか|聞こえますか|あえますか|おえますか|会えますか|終えますか)[ー〜～]*[。．.、！？!?]*$/u;
 
 const isShortJapaneseContinuation = (current: CaptionPayload, next: CaptionPayload): boolean => {
   const currentText = trim(current.sourceText);
@@ -243,34 +237,26 @@ const hasCloseSourceTiming = (current: CaptionPayload, next: CaptionPayload): bo
 };
 
 /**
- * Prefer a painted greeting over a short ack that ASR sometimes emits instead
- * of `こんにちは` (acoustic confusion with はい).
+ * Prefer an already-painted longer surface over a short ack that ASR sometimes
+ * emits as a rewrite (`会議を始めます` → `はい`). Same-id always keeps the
+ * longer plate; cross-id only when the ack is still inside the continuation
+ * window, so a later real `はい` turn can replace.
  */
-const shouldKeepGreetingOverShortAck = (current: CaptionPayload, next: CaptionPayload): boolean => {
+const shouldKeepSurfaceOverShortAck = (current: CaptionPayload, next: CaptionPayload): boolean => {
   if (!isSourceStagePayload(current) || !isSourceStagePayload(next)) {
     return false;
   }
   const currentText = trim(current.sourceText);
   const nextText = trim(next.sourceText);
-  if (!FIXED_GREETING_SURFACE.test(currentText) || !SHORT_ACK_SURFACE.test(nextText)) {
+  if (!currentText || SHORT_ACK_SURFACE.test(currentText) || !SHORT_ACK_SURFACE.test(nextText)) {
     return false;
   }
-  // Same utterance id: treat as a bad rewrite of the greeting.
+  if ([...currentText].length <= [...nextText].length) {
+    return false;
+  }
   if (current.id === next.id) {
     return true;
   }
-  // Cross-id: only suppress a near-immediate ack substitute, not a later real はい.
-  const bothUnset = startedAtOf(current) === NO_TIME_MS && startedAtOf(next) === NO_TIME_MS;
-  const currentReceivedAt = receivedAtOf(current);
-  const nextReceivedAt = receivedAtOf(next);
-  const closeReceipt =
-    currentReceivedAt > NO_TIME_MS &&
-    nextReceivedAt >= currentReceivedAt &&
-    nextReceivedAt - currentReceivedAt <= SOURCE_CONTINUATION_GAP_MS;
-  return hasCloseSourceTiming(current, next) || bothUnset || closeReceipt;
-};
-
-const hasGreetingContinuationTiming = (current: CaptionPayload, next: CaptionPayload): boolean => {
   const bothUnset = startedAtOf(current) === NO_TIME_MS && startedAtOf(next) === NO_TIME_MS;
   const currentReceivedAt = receivedAtOf(current);
   const nextReceivedAt = receivedAtOf(next);
@@ -282,60 +268,44 @@ const hasGreetingContinuationTiming = (current: CaptionPayload, next: CaptionPay
 };
 
 /**
- * When Parapper seals a greeting turn early, the continuation arrives on a new
- * id and would normally replace the plate. Append so `こんにちは` + `きこえますか`
- * stay one visible utterance when timing is still within the continuation window.
+ * When Parapper seals a turn early, the continuation can arrive on a new id
+ * (`会議を始めます` then `続きがあります`). Append that disjoint tail while
+ * the tail's audio start is still inside the continuation window and not
+ * earlier than the sealed lead's receipt. Two finalized turns still replace,
+ * and a punctuated lead pages to the next caption instead of concatenating.
  */
-const shouldAppendAfterGreetingTurn = (current: CaptionPayload, next: CaptionPayload): boolean => {
-  if (!isSourceStagePayload(current) || !isSourceStagePayload(next)) {
-    return false;
-  }
-  const currentText = trim(current.sourceText);
-  const nextText = trim(next.sourceText);
-  if (!FIXED_GREETING_SURFACE.test(currentText) || !nextText) {
-    return false;
-  }
-  if (FIXED_GREETING_SURFACE.test(nextText) || SHORT_ACK_SURFACE.test(nextText)) {
-    return false;
-  }
-  if (nextText.startsWith(currentText.replace(/[ー〜～]+$/u, ""))) {
-    // Continuation already includes the greeting surface.
-    return false;
-  }
-  if (!hasGreetingContinuationTiming(current, next)) {
-    return false;
-  }
-  // Elongation marks (`ーきこえますかー`) are not Han/Kana script, but they
-  // are the same spoken hearing-check tail as `きこえますか`.
-  const nextWithoutElongation = nextText.replace(/[ー〜～]/gu, "");
-  return japaneseSourceText.test(nextWithoutElongation) && nextWithoutElongation.length > 0;
-};
-
-/**
- * Same-id ASR can emit the greeting first and the hearing-check next without a
- * shared prefix. Append that tail; do not keep greeting-only and do not treat
- * an unrelated rewrite (`こんにちは` → `今日は`) as a continuation.
- */
-const shouldAppendHearingCheckAfterGreeting = (
+const shouldAppendCloseDisjointTurnContinuation = (
   current: CaptionPayload,
   next: CaptionPayload,
 ): boolean => {
   if (!isSourceStagePayload(current) || !isSourceStagePayload(next)) {
     return false;
   }
-  const currentText = trim(current.sourceText);
-  const nextText = trim(next.sourceText);
-  if (!FIXED_GREETING_SURFACE.test(currentText) || !HEARING_CHECK_SURFACE.test(nextText)) {
+  if (current.id === next.id || current.isFinal !== true || next.isFinal === true) {
     return false;
   }
-  return hasGreetingContinuationTiming(current, next);
+  const currentText = trim(current.sourceText);
+  if (!currentText || sourceBoundary.test(currentText)) {
+    return false;
+  }
+  if (hasLexicalSourceContinuation(current, next)) {
+    return false;
+  }
+  if (!hasCloseSourceTiming(current, next)) {
+    return false;
+  }
+  const currentReceivedAt = receivedAtOf(current);
+  if (currentReceivedAt > NO_TIME_MS && startedAtOf(next) < currentReceivedAt) {
+    return false;
+  }
+  return shouldAppendDisjointSameTurnSurfaces(current.sourceText, next.sourceText);
 };
 
-const appendGreetingContinuation = (currentText: string, nextText: string): string => {
-  const greeting = trim(currentText);
-  const continuation = trim(nextText);
-  const separator = /[A-Za-z0-9]$/u.test(greeting) && /^[A-Za-z0-9]/u.test(continuation) ? " " : "";
-  return collapseRunawayGraphemeRuns(`${greeting}${separator}${continuation}`);
+const appendDisjointContinuation = (currentText: string, nextText: string): string => {
+  const lead = trim(currentText);
+  const tail = trim(nextText);
+  const separator = /[A-Za-z0-9]$/u.test(lead) && /^[A-Za-z0-9]/u.test(tail) ? " " : "";
+  return collapseRunawayGraphemeRuns(`${lead}${separator}${tail}`);
 };
 
 const stripElongationMarks = (text: string): string => text.replace(/[ー〜～]/gu, "");
@@ -608,10 +578,7 @@ const isProgressiveProvisionalExtension = (
   if (isShorterSameUtteranceSurface(nextText, currentText)) {
     return true;
   }
-  if (
-    shouldAppendHearingCheckAfterGreeting(current, next) ||
-    shouldAppendDisjointSameIdContinuation(current, next)
-  ) {
+  if (shouldAppendDisjointSameIdContinuation(current, next)) {
     return true;
   }
   return nextText.startsWith(currentText) && nextText !== currentText;
@@ -872,10 +839,7 @@ const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload
   if (nextText.startsWith(currentText) && nextText !== currentText) {
     return false;
   }
-  if (
-    shouldAppendHearingCheckAfterGreeting(current, next) ||
-    shouldAppendDisjointSameIdContinuation(current, next)
-  ) {
+  if (shouldAppendDisjointSameIdContinuation(current, next)) {
     return false;
   }
   const currentReading = trimmedAzookeyReading(current);
@@ -912,14 +876,10 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
   ) {
     return collapseRunawayGraphemeRuns(currentText);
   }
-  // Same-id ASR can emit the greeting first and the hearing-check next without
-  // a shared prefix. Keep-longer of greeting-only would drop that tail; append
-  // so the full spoken line can paint. Do not concatenate a reminted other turn.
-  if (
-    shouldAppendHearingCheckAfterGreeting(current, next) ||
-    shouldAppendDisjointSameIdContinuation(current, next)
-  ) {
-    return appendGreetingContinuation(currentText, nextText);
+  // Same-id ASR can emit two clauses without a shared prefix. Keep-longer of
+  // the lead would drop that tail; append so the full spoken line can paint.
+  if (shouldAppendDisjointSameIdContinuation(current, next)) {
+    return appendDisjointContinuation(currentText, nextText);
   }
   // Prefer a completed conversion/final, but do not let a truncated final erase
   // a longer already-painted surface (completion ASR often cuts the tail). That
@@ -927,7 +887,7 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
   if (next.isFinal === true && isSourceStagePayload(next) && hasText(next.sourceText)) {
     const currentText = trim(current.sourceText);
     const nextText = trim(next.sourceText);
-    if (shouldKeepGreetingOverShortAck(current, next)) {
+    if (shouldKeepSurfaceOverShortAck(current, next)) {
       return collapseRunawayGraphemeRuns(currentText);
     }
     // Prefer a completed conversion, but keep any already-painted tail when
@@ -1115,7 +1075,6 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
       if (
         nextText !== currentText &&
         isMuchShorterSurface(nextText, currentText) &&
-        !shouldAppendHearingCheckAfterGreeting(current, next) &&
         !shouldAppendDisjointSameIdContinuation(current, next)
       ) {
         return true;
@@ -1304,8 +1263,8 @@ export const mergeCaptionPayload = (
     return null;
   }
 
-  // Drop short-ack ASR substitutes for an already-painted greeting (こんにちは→はい).
-  if (shouldKeepGreetingOverShortAck(current, incoming)) {
+  // Drop short-ack ASR substitutes for an already-painted longer surface.
+  if (shouldKeepSurfaceOverShortAck(current, incoming)) {
     return null;
   }
 
@@ -1352,8 +1311,8 @@ export const mergeCaptionPayload = (
     if (sameChunk) {
       return mergeSameIdSourceText(current, incoming);
     }
-    if (shouldAppendAfterGreetingTurn(current, incoming)) {
-      return appendGreetingContinuation(current.sourceText, incoming.sourceText);
+    if (shouldAppendCloseDisjointTurnContinuation(current, incoming)) {
+      return appendDisjointContinuation(current.sourceText, incoming.sourceText);
     }
     if (isSourceStagePayload(incoming) && isLikelyCrossIdSourceRevision(current, incoming)) {
       return collapseRunawayGraphemeRuns(trim(incoming.sourceText));
