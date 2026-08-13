@@ -287,7 +287,6 @@ impl RecognitionSession {
         self.pending.partial_window.mark_dispatched();
         self.requests.in_flight_request = Some(request.clone());
         self.requests.last_dispatched = Some(AsrInFlight::from(&request));
-        self.stamp_asr_dispatch(request.target.turn_id.0);
     }
 
     fn build_partial_window_request(
@@ -891,6 +890,42 @@ mod tests {
         assert!(runtime.requests.in_flight_request.is_none());
         assert!(runtime.requests.last_dispatched.is_none());
         assert!(runtime.pending.asr_segments.is_empty());
+    }
+
+    #[test]
+    fn partial_window_dispatch_does_not_stamp_canonical_caption_latency_or_create_turn_draft() {
+        let mut runtime = RecognitionSession::new(&ParapperConfig::default());
+        runtime.partial_window_asr_enabled = true;
+        runtime.pending.partial_window.start_segment(
+            1,
+            None,
+            vec![1.0],
+            Vec::new(),
+            GlobalSampleIndex(0),
+            VadFrameIndex(0),
+            0,
+            runtime.config.segmentation.vad_interval_ms,
+        );
+        // Make the snapshot due without coupling this regression test to the
+        // adaptive partial-window interval.
+        runtime.counters.next_runtime_tick = u64::MAX;
+
+        runtime.dispatch_partial_window_if_idle();
+
+        let request = runtime
+            .requests
+            .in_flight_request
+            .as_ref()
+            .expect("due partial window should be dispatched");
+        assert_eq!(request.kind, AsrTaskKind::PartialWindow);
+        assert!(
+            runtime.turn_store.caption_latency.get(&1).is_none(),
+            "partial-window dispatch must not become the canonical turn's ASR dispatch"
+        );
+        assert!(
+            runtime.turn_store.turns.get(&1).is_none(),
+            "partial-window dispatch must not create or mutate a canonical TurnDraft"
+        );
     }
 
     #[test]
