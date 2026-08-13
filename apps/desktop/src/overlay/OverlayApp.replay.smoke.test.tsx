@@ -438,6 +438,62 @@ describe("OverlayApp caption replay", () => {
     }
   });
 
+  it("does not page a greeting continuation to a lone ー after the first native frame", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "こんにちは",
+          startedAt: 10,
+          at: 40,
+          durationMs: 30,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("こんにちは");
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "こんにちはーきこえますか",
+          startedAt: 10,
+          at: 80,
+          durationMs: 70,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+      await flush();
+      const painted = nativeRendererRoot(container)?.getAttribute("data-source-text");
+      expect(painted).not.toBe("ー");
+      expect(painted?.startsWith("ー")).toBe(false);
+      expect(painted).toContain("こんにちは");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
   it("replays the latest ASR stage from native history before caption:update", async () => {
     history.pushState({}, "", "/?native=1");
     mocks.getLatestCaption.mockResolvedValue(null);

@@ -1,5 +1,5 @@
 import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
-import { captionGraphemes } from "../overlay/captions";
+import { captionGraphemes, restoreCollapsedGreetingContinuation } from "../overlay/captions";
 import type { CaptionPayload } from "./types";
 
 /** Delay between newly recognized graphemes while revealing a longer hypothesis. */
@@ -24,15 +24,18 @@ export const PROGRESSIVE_FIRST_PAINT_COALESCE_MS = 16;
  * intermediates stay inside one clause.
  */
 export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): string =>
-  selectVisibleCaptionSentence(caption.sourceText, {
-    key: "source",
-    azookeyInputText: caption.azookeyInputText,
-    sentenceEndOffsets: caption.sentenceEndOffsets,
-    softBreakOffsets: caption.softBreakOffsets,
-    // Match overlay captionItems: only a provisional first hypothesis defers
-    // copula paging, so 「です＋次節」 does not drop the lead sentence mid-reveal.
-    deferSentencePaging: caption.provisional === true,
-  });
+  restoreCollapsedGreetingContinuation(
+    caption.sourceText,
+    selectVisibleCaptionSentence(caption.sourceText, {
+      key: "source",
+      azookeyInputText: caption.azookeyInputText,
+      sentenceEndOffsets: caption.sentenceEndOffsets,
+      softBreakOffsets: caption.softBreakOffsets,
+      // Match overlay captionItems: only a provisional first hypothesis defers
+      // copula paging, so 「です＋次節」 does not drop the lead sentence mid-reveal.
+      deferSentencePaging: caption.provisional === true,
+    }),
+  );
 
 /**
  * True when `next` is a longer recognition of the same growing utterance as
@@ -129,10 +132,11 @@ export const alignCaptionOffsetsToPaintedSource = (
   caption: CaptionPayload,
   paintSource: string,
 ): CaptionPayload => {
-  if (paintSource === caption.sourceText) {
+  const paint = restoreCollapsedGreetingContinuation(caption.sourceText, paintSource);
+  if (paint === caption.sourceText) {
     return caption;
   }
-  const aligned: CaptionPayload = { ...caption, sourceText: paintSource };
+  const aligned: CaptionPayload = { ...caption, sourceText: paint };
   delete aligned.sentenceEndOffsets;
   delete aligned.softBreakOffsets;
   return aligned;

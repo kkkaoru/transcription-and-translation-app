@@ -370,6 +370,22 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       const lines = captionTextLines({ key: "source", text: spoken, maxChars: 28 });
       expect(lines.join("")).toBe(spoken);
       expect(lines).toEqual([spoken]);
+      expect(
+        captionTextLines({
+          key: "source",
+          text: spoken,
+          maxChars: 28,
+          sentenceEndOffsets: [5],
+        }),
+      ).toEqual([spoken]);
+      expect(
+        captionTextLines({
+          key: "source",
+          text: "こんにちはー",
+          maxChars: 28,
+          sentenceEndOffsets: [5],
+        }).join(""),
+      ).not.toBe("ー");
     });
 
     it("does not page last-sentence prefixes to a 1-grapheme tail during progressive reveal", () => {

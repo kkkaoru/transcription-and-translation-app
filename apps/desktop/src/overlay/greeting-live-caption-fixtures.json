@@ -1142,6 +1142,20 @@
       "maxChars": 28,
       "expectedLines": ["おはようございますきこえますか"],
       "note": "Do not wrap after おはようございます so the hearing check stays visible"
+    },
+    {
+      "id": "no-lone-prolongation-after-greeting",
+      "text": "こんにちはーきこえますか",
+      "sentenceEndOffsets": [5],
+      "expectedVisible": "こんにちはーきこえますか",
+      "note": "After first-frame commit, do not page the greeting continuation to a lone ー"
+    },
+    {
+      "id": "keep-mid-reveal-greeting-prolongation",
+      "text": "こんにちはー",
+      "sentenceEndOffsets": [5],
+      "expectedVisible": "こんにちはー",
+      "note": "Mid-reveal こんにちはー must not collapse to ー"
     }
   ]
 }

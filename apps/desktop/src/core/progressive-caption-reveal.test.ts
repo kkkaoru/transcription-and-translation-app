@@ -208,6 +208,17 @@ describe("progressive caption reveal", () => {
     ).toBe(mid);
   });
 
+  it("does not paint a lone ー when a longer greeting continuation is already available", () => {
+    const spoken = "こんにちはーきこえますか";
+    const payload = caption({
+      sourceText: spoken,
+      sentenceEndOffsets: [5],
+    });
+    expect(resolveProgressiveRevealSourceTarget(payload)).toBe(spoken);
+    expect(alignCaptionOffsetsToPaintedSource(payload, "ー").sourceText).toBe(spoken);
+    expect(alignCaptionOffsetsToPaintedSource(payload, "ーきこえますか").sourceText).toBe(spoken);
+  });
+
   it("drops full-text ends so last-sentence prefixes are not clipped mid-reveal", () => {
     // Reveal already targets the newest clause. Full-text offset 4 still sits
     // inside a 5-grapheme prefix of that clause and would page to 「て」.

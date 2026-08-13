@@ -11,6 +11,7 @@ import {
   createHoldClearedCaption,
   createPreviewCaption,
   repairHearingPhraseConfusion,
+  restoreCollapsedGreetingContinuation,
   sanitizeCaptionDisplayText,
   segmentCaptionText,
   stripCaptionContinuationMarker,
@@ -90,6 +91,34 @@ describe("caption display sanitization", () => {
       "こんにちは聞こえますか。",
     );
     expect(sanitizeCaptionDisplayText("こんにちはあえますか")).toBe("こんにちはきこえますか");
+  });
+
+  it("does not collapse a greeting continuation to a lone ー after paging", () => {
+    const spoken = "こんにちはーきこえますか";
+    expect(restoreCollapsedGreetingContinuation(spoken, "ー")).toBe(spoken);
+    expect(restoreCollapsedGreetingContinuation(spoken, "ーきこえますか")).toBe(spoken);
+    expect(restoreCollapsedGreetingContinuation("ーきこえますか", "ーきこえますか")).toBe(
+      "ーきこえますか",
+    );
+    expect(restoreCollapsedGreetingContinuation("今日は晴れです", "明日は雨です")).toBe(
+      "明日は雨です",
+    );
+    expect(
+      captionTextLines({
+        key: "source",
+        text: spoken,
+        maxChars: 28,
+        sentenceEndOffsets: [5],
+      }),
+    ).toEqual([spoken]);
+    expect(
+      captionTextLines({
+        key: "source",
+        text: "こんにちはー",
+        maxChars: 28,
+        sentenceEndOffsets: [5],
+      }),
+    ).toEqual(["こんにちはー"]);
   });
 
   it("strips trailing Parapper continuation markers without touching mid-text ellipsis", () => {

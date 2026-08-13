@@ -185,12 +185,14 @@ describe("useProgressiveCaptionReveal", () => {
     expect(mid?.sentenceEndOffsets).toBeUndefined();
     expect(mid?.softBreakOffsets).toBeUndefined();
     expect(mid?.sourceText).not.toBe("ー");
+    expect(mid?.sourceText?.startsWith("こ")).toBe(true);
 
     act(() => {
       vi.advanceTimersByTime(400);
     });
     const done = paints.at(-1);
     expect(done?.sourceText).toBe(spoken);
+    expect(done?.sourceText).not.toBe("ー");
     expect(done?.sentenceEndOffsets).toEqual([5]);
     expect(done?.softBreakOffsets).toEqual([3]);
   });

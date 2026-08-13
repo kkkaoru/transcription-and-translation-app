@@ -96,6 +96,34 @@ const isVibratoMorphBreak = (graphemes: string[], endExclusive: number): boolean
 export const stripCaptionContinuationMarker = (text: string): string =>
   text.replace(/(?:\.{3}|…|⋯)+$/u, "").trimEnd();
 
+const ELONGATION_LED = /^[ー〜～]+/u;
+
+/**
+ * After the first overlay frame commits, paging can drop a greeting and leave
+ * only `ー` (or `ーきこえますか`) as the newest sentence. Keep the longer
+ * surface already in `original`. Do not concatenate a different turn.
+ */
+export const restoreCollapsedGreetingContinuation = (original: string, visible: string): string => {
+  const source = original.trim();
+  const shown = visible.trim();
+  if (!source) {
+    return visible;
+  }
+  if (!shown) {
+    return source;
+  }
+  if (shown === source) {
+    return visible;
+  }
+  if (/^[ー〜～]+$/u.test(shown) && source.includes(shown) && source.length > shown.length) {
+    return source;
+  }
+  if (ELONGATION_LED.test(shown) && source.endsWith(shown) && source.length > shown.length) {
+    return source;
+  }
+  return visible;
+};
+
 /**
  * Collapse pathological single-Kanji runs (e.g. 為為為為…) that can appear
  * when a one-character revision is appended repeatedly across rolling
@@ -325,7 +353,11 @@ export const trimCaptionToDisplayWindow = (
   maxLines: number = CAPTION_MAX_VISIBLE_LINES,
   hints: CaptionSentenceHints = {},
 ): string => {
-  const normalized = selectVisibleCaptionSentence(sanitizeCaptionDisplayText(text), hints);
+  const sanitized = sanitizeCaptionDisplayText(text);
+  const normalized = restoreCollapsedGreetingContinuation(
+    sanitized,
+    selectVisibleCaptionSentence(sanitized, hints),
+  );
   if (!normalized) {
     return "";
   }
