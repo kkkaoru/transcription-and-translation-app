@@ -130,13 +130,13 @@ describe("caption freshness window", () => {
     expect(display.sourceText).toBe(text);
   });
 
-  it("allows a translated standalone うん to expire after 5s idle", () => {
+  it("allows a finalized standalone うん to expire after 5s idle without a translation", () => {
     const finalized = (sourceText: string, now: number): CaptionPayload =>
       applyCaptionFreshnessWindow({
         caption: caption({
           sourceText,
           isFinal: true,
-          translationText: "yes",
+          translationText: "",
         }),
         now,
         graphemePaintedAt: paintedAt(sourceText),

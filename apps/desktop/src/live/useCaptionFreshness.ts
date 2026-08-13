@@ -70,6 +70,9 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
     previousSourceRef.current = caption.sourceText;
   }
 
+  // A pure interim (non-final, untranslated) is TTL-exempt and stays visible.
+  // When it later gains a translation or finalizes, restamp paintedAt so the
+  // freshness TTL runs from that transition, not the stale first-paint time.
   const isFreshnessTtlExempt = caption.isFinal !== true && !caption.translationText.trim();
   if (!isFreshnessTtlExempt && freshnessTtlExemptRef.current) {
     paintedAtRef.current = stampGraphemePaintedAt("", [], caption.sourceText, now);
