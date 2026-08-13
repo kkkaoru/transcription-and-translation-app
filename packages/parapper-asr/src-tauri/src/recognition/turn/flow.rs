@@ -849,12 +849,14 @@ impl RecognitionSession {
         if self.pending_child_is_next_utterance_of_closing_turn(segment, turn_id)
             || self.pending_child_is_after_interim_silence_following_160ms(segment, turn_id)
             || self.pending_root_is_after_interim_silence_following_160ms(segment, turn_id)
+            || self.pending_root_streaming_chunk_belongs_to_next_utterance(segment, turn_id)
         {
             // AfterInterimSilence names the last closed segment as previous, or
             // restarts as a new root after a stream reset. Once this turn is
             // closing — or the child/root follows an applied 160ms grid — that
             // segment remints after finalize instead of merging into the
-            // caption as a same-turn continuation.
+            // caption as a same-turn continuation. A later root 160ms queued
+            // behind that next utterance belongs there, not on this turn.
             return false;
         }
         if segment.turn_id().0 <= turn_id {
@@ -922,9 +924,24 @@ impl RecognitionSession {
         // flushes the stream (`previous_segment_id: None`, new display id).
         // It still extends this utterance while prefix CompletionCheck or
         // breath-silence InterimDisplay is in-flight or deferred, or while
-        // the open turn has not finalized.
+        // the open turn has not finalized. Once AfterInterimSilence already
+        // follows this turn's applied 160ms, a later root 160ms belongs to
+        // that next utterance and must not attach here.
+        if self.pending_root_streaming_chunk_belongs_to_next_utterance(segment, turn_id) {
+            return false;
+        }
         self.prefix_request_is_active_for_turn(turn_id)
             || self.turn_store.open_turn_id.is_some_and(|open| open <= turn_id)
+    }
+
+    fn pending_root_streaming_chunk_belongs_to_next_utterance(
+        &self,
+        segment: &PendingAsrSegment,
+        turn_id: u64,
+    ) -> bool {
+        segment.reason == SegmentCloseReason::InterimChunkReached
+            && segment.previous_segment_id.is_none()
+            && self.after_interim_silence_follows_applied_160ms(turn_id)
     }
 
     fn prefix_request_is_active_for_turn(&self, turn_id: u64) -> bool {
@@ -1063,11 +1080,7 @@ impl RecognitionSession {
         };
         if self.requests.in_flight_request.is_some()
             || self.has_deferred_completion()
-            || self
-                .pending
-                .asr_segments
-                .iter()
-                .any(|segment| segment.reason == SegmentCloseReason::InterimChunkReached)
+            || self.pending_streaming_chunk_continuation(turn_id)
         {
             return;
         }
