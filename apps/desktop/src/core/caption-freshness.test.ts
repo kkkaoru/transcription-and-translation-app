@@ -130,13 +130,13 @@ describe("caption freshness window", () => {
     expect(display.sourceText).toBe(text);
   });
 
-  it("allows a finalized standalone うん to expire after 5s idle", () => {
+  it("allows a translated standalone うん to expire after 5s idle", () => {
     const finalized = (sourceText: string, now: number): CaptionPayload =>
       applyCaptionFreshnessWindow({
         caption: caption({
           sourceText,
           isFinal: true,
-          translationText: "It is sunny",
+          translationText: "yes",
         }),
         now,
         graphemePaintedAt: paintedAt(sourceText),
@@ -146,6 +146,28 @@ describe("caption freshness window", () => {
     expect(finalized("うん", 0).sourceText).toBe("うん");
     expect(finalized("うん", CAPTION_FRESHNESS_MS).sourceText).toBe("");
     expect(finalized("うん", CAPTION_FRESHNESS_MS).translationText).toBe("");
+  });
+
+  it("allows a non-final translated caption to expire after 5s idle", () => {
+    const text = "うん";
+    const held = applyCaptionFreshnessWindow({
+      caption: caption({ sourceText: text, isFinal: false, translationText: "yeah" }),
+      now: CAPTION_FRESHNESS_MS - 1,
+      graphemePaintedAt: paintedAt(text),
+      lastGrowthAt: 0,
+      previousSourceText: text,
+    });
+    expect(held.sourceText).toBe(text);
+    expect(held.translationText).toBe("yeah");
+    const expired = applyCaptionFreshnessWindow({
+      caption: caption({ sourceText: text, isFinal: false, translationText: "yeah" }),
+      now: CAPTION_FRESHNESS_MS,
+      graphemePaintedAt: paintedAt(text),
+      lastGrowthAt: 0,
+      previousSourceText: text,
+    });
+    expect(expired.sourceText).toBe("");
+    expect(expired.translationText).toBe("");
   });
 
   it("does not close 助動詞マス in 連用 or 基本, and does close です/でした/だった", () => {

@@ -183,14 +183,14 @@ export const applyCaptionFreshnessWindow = (input: CaptionFreshnessInput): Capti
   if (caption.id === "preview" || caption.id === "empty") {
     return caption;
   }
-  if (caption.isFinal !== true && !caption.translationText.trim()) {
-    return caption;
-  }
   const graphemes = captionGraphemes(sourceText);
   const paintedAt =
     previousSourceText === sourceText && input.graphemePaintedAt.length === graphemes.length
       ? input.graphemePaintedAt
       : stampGraphemePaintedAt(previousSourceText, input.graphemePaintedAt, sourceText, now);
+  if (caption.isFinal !== true && !(caption.translationText ?? "").trim()) {
+    return caption;
+  }
   const textLen = scalarCount(sourceText);
   const closes = freshnessCloseOffsets(sourceText, caption.sentenceEndOffsets);
   const softs = [...new Set(caption.softBreakOffsets ?? [])]

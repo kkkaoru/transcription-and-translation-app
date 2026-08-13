@@ -20,6 +20,7 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
   const idRef = useRef(caption.id);
   const paintedAtRef = useRef<number[]>([]);
   const lastGrowthAtRef = useRef(Date.now());
+  const freshnessTtlExemptRef = useRef(caption.isFinal !== true && !caption.translationText.trim());
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -69,6 +70,15 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
     previousSourceRef.current = caption.sourceText;
   }
 
+  const isFreshnessTtlExempt = caption.isFinal !== true && !caption.translationText.trim();
+  if (!isFreshnessTtlExempt && freshnessTtlExemptRef.current) {
+    paintedAtRef.current = stampGraphemePaintedAt("", [], caption.sourceText, now);
+    lastGrowthAtRef.current = now;
+    previousSource = "";
+    previousSourceRef.current = caption.sourceText;
+  }
+  freshnessTtlExemptRef.current = isFreshnessTtlExempt;
+
   const captionWithOffsets =
     resolved.sourceText === caption.sourceText && captionMissingBoundaryOffsets(caption)
       ? {
@@ -84,7 +94,7 @@ export const useCaptionFreshness = (caption: CaptionPayload): CaptionPayload => 
   if (caption.id === "preview" || caption.id === "empty") {
     return caption;
   }
-  if (!caption.isFinal && !caption.translationText.trim()) {
+  if (isFreshnessTtlExempt) {
     return caption;
   }
 

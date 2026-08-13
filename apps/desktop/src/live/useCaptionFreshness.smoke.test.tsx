@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetCaptionBoundaryOffsetCache } from "../core/caption-boundary-offsets";
 import { CAPTION_FRESHNESS_MS } from "../core/caption-freshness";
+import { CAPTION_HOLD_CLEAR_MS } from "../core/caption-hold-clear";
 import type { CaptionPayload } from "../core/types";
 import { useCaptionFreshness } from "./useCaptionFreshness";
 import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
@@ -114,6 +115,93 @@ describe("useCaptionFreshness", () => {
     paints = [];
     renderFresh(baseCaption({ id: "parapper:session:turn:2" }));
     expect(paints.at(-1)?.sourceText).toBe("今日は晴れです明日は雨");
+  });
+
+  it("keeps a pure interim without translation visible after 5s", async () => {
+    const text = "食べて";
+    renderFresh(
+      baseCaption({
+        sourceText: text,
+        translationText: "",
+        isFinal: false,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_FRESHNESS_MS);
+    });
+
+    expect(paints.at(-1)?.sourceText).toBe(text);
+    expect(paints.at(-1)?.translationText).toBe("");
+  });
+
+  it("starts freshness TTL when translation arrives after a pure interim idle", async () => {
+    const text = "食べて";
+    renderFresh(
+      baseCaption({
+        sourceText: text,
+        translationText: "",
+        isFinal: false,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_FRESHNESS_MS + 1_000);
+    });
+    expect(paints.at(-1)?.sourceText).toBe(text);
+
+    renderFresh(
+      baseCaption({
+        sourceText: text,
+        translationText: "eating",
+        isFinal: false,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+    expect(paints.at(-1)?.sourceText).toBe(text);
+    expect(paints.at(-1)?.translationText).toBe("eating");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_FRESHNESS_MS - 1);
+    });
+    expect(paints.at(-1)?.sourceText).toBe(text);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("");
+    expect(paints.at(-1)?.translationText).toBe("");
+  });
+
+  it("keeps a hold-cleared empty caption empty after a prior TTL-exempt interim", async () => {
+    renderFresh(
+      baseCaption({
+        sourceText: "まだ話している",
+        translationText: "",
+        isFinal: false,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_HOLD_CLEAR_MS);
+    });
+
+    renderFresh(
+      baseCaption({
+        sourceText: "",
+        translationText: "",
+        isFinal: false,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    );
+    expect(paints.at(-1)?.sourceText).toBe("");
+    expect(paints.at(-1)?.translationText).toBe("");
   });
 
   it("keeps Overlay and Live on the same freshness result", async () => {
