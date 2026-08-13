@@ -2322,6 +2322,104 @@ fn turn_runtime_applied_prefix_max_chunk_yields_to_160ms_keeping_visible_text() 
 }
 
 #[test]
+fn turn_runtime_same_display_id_160ms_keeps_visible_prefix() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    asr_handle.complete_request_with_text(&prefix, "全体。");
+    runtime.step();
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "全体。");
+
+    // Production max-chunk closes the same display segment the stream started
+    // with, then continuation 160ms reuses that display_segment_id. Distinct
+    // samples keep prefix/max-chunk/tail from aliasing as one waveform.
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    if let Some(segment) = runtime.pending.asr_segments.back_mut() {
+        segment.audio = vec![2.0; 100];
+        segment.source_audio = vec![2.0; 100];
+    }
+    runtime.step();
+    let max_chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("applied prefix must still dispatch same-turn max-chunk");
+    assert_eq!(max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        250..410,
+    );
+    if let Some(segment) = runtime.pending.asr_segments.back_mut() {
+        segment.audio = vec![3.0; 160];
+        segment.source_audio = vec![3.0; 160];
+    }
+    runtime.step();
+
+    let chunk = runtime.requests.in_flight_request.as_ref().expect(
+        "in-flight max-chunk must yield to a later 160ms that reuses the display segment id",
+    );
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.combined_text, "全体。",
+        "yielding max-chunk must keep already-visible prefix text"
+    );
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed_max_chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("max-chunk CompletionCheck must resume after the 160ms tail");
+    assert_eq!(resumed_max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "same-display-id 160ms must not drop visible prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "same-display-id 160ms must keep the continuation; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 100], vec![3.0; 160]].concat(),
+        "same-display-id 160ms must keep prefix, parked max-chunk, and uncovered tail audio"
+    );
+}
+
+#[test]
 fn turn_runtime_in_flight_max_chunk_does_not_yield_to_after_interim_silence() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)

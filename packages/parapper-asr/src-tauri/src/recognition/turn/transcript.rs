@@ -82,9 +82,9 @@ impl RecognitionSession {
                 .all(|(left, right)| left.to_bits() == right.to_bits())
         };
         let replace_latest_segment = draft.latest_segment_id == Some(segment_id)
+            && latest_segment_audio_is_prefix()
             && (request.close_reason == Some(SegmentCloseReason::InterimChunkReached)
-                || (request.kind == AsrTaskKind::CompletionCheck
-                    && latest_segment_audio_is_prefix()))
+                || request.kind == AsrTaskKind::CompletionCheck)
             || completion_replaces_streaming_interim;
         // Dual-ASR: ReazonSpeech completion can truncate a longer Nemotron draft
         // ("…ですね" tails vanish). Keep the longer streaming surface when the
@@ -114,13 +114,18 @@ impl RecognitionSession {
             && !replace_combined_with_longer_rewrite
             && (skip_duplicate_completion_text || completion_incoming_is_blank(&incoming_text));
         let recorded_text = if replace_latest_segment {
-            visible_text_for_blank_replace(
+            let incoming = visible_text_for_blank_replace(
                 &incoming_text,
                 draft.segment_texts.last().map(String::as_str),
                 &existing_text,
                 draft.last_emitted_interim_text.as_deref(),
                 draft.segment_texts.len(),
-            )
+            );
+            if request.close_reason == Some(SegmentCloseReason::InterimChunkReached) {
+                streaming_chunk_text_keeping_visible_prefix(&existing_text, &incoming)
+            } else {
+                incoming
+            }
         } else if skip_duplicate_completion_text || skip_blank_completion_append {
             // Keep the visible utterance in combined_text. Appending the same
             // (or truncated) completion string doubled the final when
@@ -811,6 +816,29 @@ fn visible_text_for_blank_replace(
     } else {
         incoming.to_string()
     }
+}
+
+/// Same-display-id Nemotron 160ms ASR is run on the delta, so the transcript
+/// often does not repeat the already-visible prefix. Keep that prefix instead
+/// of letting `replace_latest` shrink the caption to the short tail.
+fn streaming_chunk_text_keeping_visible_prefix(existing: &str, incoming: &str) -> String {
+    let existing_surface = strip_turn_surface_noise(existing);
+    let incoming_surface = strip_turn_surface_noise(incoming);
+    if existing_surface.is_empty() {
+        return incoming.to_string();
+    }
+    if incoming_surface.is_empty() {
+        return existing.to_string();
+    }
+    if incoming_surface.starts_with(existing_surface) {
+        return incoming.to_string();
+    }
+    if prefer_streaming_interim_text_over_truncated_completion(existing, incoming)
+        || completion_text_duplicates_existing(existing, incoming)
+    {
+        return existing.to_string();
+    }
+    format!("{existing}{incoming}")
 }
 
 fn completion_incoming_is_blank(incoming: &str) -> bool {
