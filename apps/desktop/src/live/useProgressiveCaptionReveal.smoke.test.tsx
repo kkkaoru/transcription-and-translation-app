@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PROGRESSIVE_FIRST_PAINT_COALESCE_MS } from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
+import { buildCaptionAbMatrix } from "../overlay/caption-surface-ab.matrix";
 import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -101,6 +102,34 @@ describe("useProgressiveCaptionReveal", () => {
       vi.advanceTimersByTime(200);
     });
     expect(paints.at(-1)?.sourceText).toBe("こんにちは");
+  });
+
+  it("does not lock a 16ms first-commit of the lead when the concatenated line arrives later", () => {
+    const rows = buildCaptionAbMatrix().filter((row) => row.tail);
+    for (const [index, row] of rows.entries()) {
+      const id = `parapper:session:turn:${index + 1}`;
+      renderCaption(baseCaption({ id, sourceText: "" }));
+      paints = [];
+      renderCaption(baseCaption({ id, sourceText: row.lead }));
+      expect(paints.at(-1)?.sourceText, row.id).toBe(row.lead);
+
+      act(() => {
+        vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+      });
+
+      paints = [];
+      renderCaption(baseCaption({ id, sourceText: row.full }));
+      const mid = paints.at(-1)?.sourceText ?? "";
+      expect(mid, row.id).not.toBe(row.tail);
+      expect(mid.startsWith(row.lead.slice(0, 1)), row.id).toBe(true);
+
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      const done = paints.at(-1)?.sourceText ?? "";
+      expect(done, row.id).toContain(row.lead);
+      expect(done, row.id).toContain(row.tail);
+    }
   });
 
   it("snaps immediately when the utterance id changes mid-reveal", () => {

@@ -7,7 +7,11 @@
 import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { describe, expect, it } from "vitest";
 import { mergeCaptionPayload } from "../core/caption-updates";
-import { resolveProgressiveRevealSourceTarget } from "../core/progressive-caption-reveal";
+import {
+  resolveProgressiveRevealSourceTarget,
+  shouldProgressivelyReveal,
+  shouldSnapProgressiveFirstPaint,
+} from "../core/progressive-caption-reveal";
 import type { CaptionPayload } from "../core/types";
 import {
   buildCaptionAbMatrix,
@@ -77,6 +81,18 @@ describe("caption surface A/B matrix (lead×tail, not greeting/hearing fixtures)
       paintedKeepsFullLine(lines, row);
       const reveal = resolveProgressiveRevealSourceTarget(caption({ sourceText: row.full }));
       paintedKeepsFullLine(reveal, row);
+    }
+  });
+
+  it("keeps prefix growth after the 16ms first-commit so a later full line is not dropped", () => {
+    for (const row of MATRIX) {
+      if (!row.tail) {
+        continue;
+      }
+      const target = resolveProgressiveRevealSourceTarget(caption({ sourceText: row.full }));
+      expect(shouldSnapProgressiveFirstPaint(row.lead, target, false), row.id).toBe(false);
+      expect(shouldProgressivelyReveal(row.lead, target), row.id).toBe(true);
+      paintedKeepsFullLine(target, row);
     }
   });
 

@@ -8,6 +8,7 @@ import { clearCaptionLatency, getCaptionLatencySpan } from "../core/caption-late
 import { clearCaptionMergeDiagnostics, getCaptionMergeDiagnostics } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import * as displayTiming from "../core/display-timing";
+import { PROGRESSIVE_FIRST_PAINT_COALESCE_MS } from "../core/progressive-caption-reveal";
 import type { CaptionPayload, PipelineStageEvent, RuntimeStatus, UnlistenFn } from "../core/types";
 import { buildCaptionAbMatrix } from "./caption-surface-ab.matrix";
 import { captionTextLines } from "./captions";
@@ -829,6 +830,101 @@ describe("OverlayApp caption replay", () => {
         root.unmount();
         await Promise.resolve();
       });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
+  it("grows past a 16ms first-commit of the lead into the concatenated live ASR line", async () => {
+    const matrix = buildCaptionAbMatrix();
+    const rows = [
+      matrix.find((row) => row.full === "こんにちはーーーきこえますかーーー？"),
+      matrix.find(
+        (row) =>
+          row.lead === "会議を始めます" &&
+          row.tail === "続きがあります" &&
+          row.structure === "elong-q",
+      ),
+      matrix.find(
+        (row) =>
+          row.lead === "これはテストです" && row.tail === "終わりますか" && row.structure === "glue",
+      ),
+    ];
+    expect(rows.every((row) => row)).toBe(true);
+    vi.useFakeTimers();
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      for (const [index, row] of rows.entries()) {
+        if (!row) {
+          continue;
+        }
+        await act(async () => {
+          root.unmount();
+          await Promise.resolve();
+        });
+        container.replaceChildren();
+        root = createRoot(container);
+        await act(async () => {
+          root.render(<OverlayApp />);
+          await Promise.resolve();
+        });
+        await flush();
+
+        const utteranceId = `parapper:s:1:${40 + index}`;
+        await act(async () => {
+          pipelineListener?.({
+            stage: "asr",
+            utteranceId,
+            modelId: "parapper-ja",
+            inputSnippet: "",
+            outputText: row.lead,
+            startedAt: 10,
+            at: 40,
+            durationMs: 30,
+            ok: true,
+          });
+          await Promise.resolve();
+        });
+        expect(nativeRendererRoot(container)?.getAttribute("data-source-text"), row.id).toBe(
+          row.lead,
+        );
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+        });
+
+        await act(async () => {
+          pipelineListener?.({
+            stage: "asr",
+            utteranceId,
+            modelId: "parapper-ja",
+            inputSnippet: "",
+            outputText: row.full,
+            startedAt: 10,
+            at: 80,
+            durationMs: 70,
+            ok: true,
+          });
+          await Promise.resolve();
+        });
+        const mid = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+        expect(mid, row.id).not.toBe(row.tail);
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(400);
+        });
+        const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+        expect(painted, row.id).toContain(row.lead);
+        expect(painted, row.id).toContain(row.tail);
+      }
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      vi.useRealTimers();
       history.replaceState({}, "", "/");
       container.remove();
     }

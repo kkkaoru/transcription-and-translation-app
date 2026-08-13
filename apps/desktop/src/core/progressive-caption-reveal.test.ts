@@ -1,5 +1,6 @@
 import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { describe, expect, it } from "vitest";
+import { buildCaptionAbMatrix } from "../overlay/caption-surface-ab.matrix";
 import { captionGraphemes } from "../overlay/captions";
 import {
   advanceProgressiveReveal,
@@ -78,6 +79,25 @@ describe("progressive caption reveal", () => {
     expect(shouldSnapProgressiveFirstPaint("こ", "こんにちは", false)).toBe(false);
     expect(shouldSnapProgressiveFirstPaint("こんにちは", "こんにちは", true)).toBe(false);
     expect(shouldSnapProgressiveFirstPaint("", "こんにちは", true)).toBe(true);
+  });
+
+  it("still grows a committed lead into the concatenated line after the 16ms first frame", () => {
+    for (const row of buildCaptionAbMatrix()) {
+      if (!row.tail) {
+        continue;
+      }
+      const target = resolveProgressiveRevealSourceTarget(caption({ sourceText: row.full }));
+      expect(shouldSnapProgressiveFirstPaint(row.lead, target, false), row.id).toBe(false);
+      expect(shouldProgressivelyReveal(row.lead, target), row.id).toBe(true);
+      let displayed = row.lead;
+      while (displayed !== target) {
+        const next = advanceProgressiveReveal(displayed, target);
+        expect(next, row.id).not.toBe(displayed);
+        displayed = next;
+      }
+      expect(displayed, row.id).toContain(row.lead);
+      expect(displayed, row.id).toContain(row.tail);
+    }
   });
 
   it("keeps per-grapheme delay bounded for long jumps", () => {
