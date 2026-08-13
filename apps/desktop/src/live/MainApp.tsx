@@ -1716,18 +1716,21 @@ export const MainApp = () => {
               asrLatency: event.asrLatency,
             },
           );
-          // Paint before enqueue so recognized characters appear while an older
-          // revision is still awaiting AzooKey. The queue serializes normalize,
-          // but Live/Syphon must not wait on that serial chain.
-          const provisional = buildParapperProvisionalCaption(output, {
-            sourceLanguage: captureConfig.language.source,
-            targetLanguage: captureConfig.language.target,
-          });
-          if (provisional) {
-            mergeAndCommitCaption(provisional);
-            noteFirstCaption(provisional);
+          // Paint the accepted queue surface (joined lead+tail when the queue
+          // already folded a disjoint continuation) so first paint is not the
+          // raw lead or tail while the concatenated item sits in pending.
+          const queue = parapperOutputQueue.current;
+          const accepted = queue ? queue.enqueue(output) : output;
+          if (accepted) {
+            const provisional = buildParapperProvisionalCaption(accepted, {
+              sourceLanguage: captureConfig.language.source,
+              targetLanguage: captureConfig.language.target,
+            });
+            if (provisional) {
+              mergeAndCommitCaption(provisional);
+              noteFirstCaption(provisional);
+            }
           }
-          parapperOutputQueue.current?.enqueue(output);
         };
         const outputQueue = createParapperOutputQueue<ParapperRecognitionOutput>(processOutput);
         outputQueueForAttempt = outputQueue;

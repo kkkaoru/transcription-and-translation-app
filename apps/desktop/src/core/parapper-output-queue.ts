@@ -40,7 +40,12 @@ export type ParapperOutputQueueStats = {
 };
 
 export type ParapperOutputQueue<T extends ParapperOutputQueueItem> = {
-  enqueue: (item: T) => void;
+  /**
+   * Accept an item (possibly joining a disjoint same-turn tail onto the lead).
+   * Returns the queued surface so callers can first-paint that concatenated
+   * text instead of the raw tail. Returns `null` when the item is dropped.
+   */
+  enqueue: (item: T) => T | null;
   /**
    * Resolve once all accepted items have finished processing. Rejects after a
    * finite timeout so teardown cannot wait forever on a stuck normalizer.
@@ -234,6 +239,7 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
   let droppedPartials = 0;
   let droppedFinals = 0;
   const latestByTurn = new Map<string, T>();
+  let legacyLatest: T | undefined;
   const idleWaiters: IdleWaiter[] = [];
 
   const isIdle = (): boolean => !inFlight && pending.length === 0;
@@ -318,9 +324,17 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
   return {
     enqueue: (item) => {
       if (closed) {
-        return;
+        return null;
       }
       const key = turnKey(item);
+      const rememberAccepted = (accepted: T): T => {
+        if (key !== null) {
+          rememberLatestTurn(key, accepted);
+        } else {
+          legacyLatest = accepted;
+        }
+        return accepted;
+      };
       if (key !== null) {
         const current = latestByTurn.get(key);
         if (current && shouldDropForCursor(item, current)) {
@@ -331,11 +345,11 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
             droppedPartials += 1;
             recordPipelineDrop("parapper-output-queue", 1, "stale-partial-cursor");
           }
-          return;
+          return null;
         }
       }
       const trailing = pending.length > 0 ? pending[pending.length - 1] : undefined;
-      const tracked = key !== null ? latestByTurn.get(key) : undefined;
+      const tracked = key !== null ? latestByTurn.get(key) : legacyLatest;
       const joinLead =
         !item.isFinal &&
         trailing &&
@@ -352,20 +366,17 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
             : undefined;
       if (joinLead) {
         // Latest-wins keeps one pending slot. A disjoint same-turn tail must
-        // ride on the lead (pending or already-tracked early final) so merge
+        // ride on the lead (pending, tracked, or key-less legacy) so merge
         // sees a prefix-growing surface instead of a tail-only rewrite.
-        const joined = joinDisjointQueueItem(joinLead, item);
+        const joined = rememberAccepted(joinDisjointQueueItem(joinLead, item));
         if (trailing && joinLead === trailing) {
           pending[pending.length - 1] = joined;
         } else {
           pending.push(joined);
         }
-        if (key !== null) {
-          rememberLatestTurn(key, joined);
-        }
         boundPending();
         void run();
-        return;
+        return joined;
       }
       if (
         !item.isFinal &&
@@ -378,11 +389,9 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
         // truncated later partial. The longer surface still needs normalize.
         droppedPartials += 1;
         recordPipelineDrop("parapper-output-queue", 1, "truncated-rewrite-partial");
-        return;
+        return null;
       }
-      if (key !== null) {
-        rememberLatestTurn(key, item);
-      }
+      rememberAccepted(item);
       if (item.isFinal) {
         // Partials waiting for this same turn are superseded by its final,
         // except a longer pending rewrite that this final truncates.
@@ -420,6 +429,7 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
       }
       boundPending();
       void run();
+      return item;
     },
     whenIdle: (timeoutMs = DEFAULT_PARAPPER_OUTPUT_QUEUE_IDLE_TIMEOUT_MS) => {
       if (isIdle()) {
@@ -462,6 +472,7 @@ export const createParapperOutputQueue = <T extends ParapperOutputQueueItem>(
       }
       pending = [];
       latestByTurn.clear();
+      legacyLatest = undefined;
       // Close deliberately abandons the active normalization result, so
       // callers waiting to tear down must not remain blocked by that Promise.
       resolveIdle(true);

@@ -298,6 +298,72 @@ describe("Parapper output coalescing queue", () => {
     ).toBe(true);
   });
 
+  it("returns the concatenated surface so first paint is not lead-only while the join is queued", async () => {
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>(
+      () => new Promise<void>((resolve) => release.push(resolve)),
+    );
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+    queue.enqueue({
+      id: "in-flight",
+      text: "会議を始めます",
+      isFinal: false,
+      revision: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "lead",
+      text: "会議を始めます",
+      isFinal: false,
+      revision: 2,
+      ...turn,
+    });
+    const accepted = queue.enqueue({
+      id: "tail",
+      text: "続きがあります",
+      isFinal: false,
+      revision: 3,
+      ...turn,
+    });
+    expect(accepted?.text).toContain("会議を始めます");
+    expect(accepted?.text).toContain("続きがあります");
+    expect(accepted?.text).not.toBe("続きがあります");
+    release.shift()?.();
+    await flush();
+    release.shift()?.();
+    await queue.whenIdle();
+  });
+
+  it("joins a key-less legacy disjoint tail onto the previous lead", async () => {
+    const processed: string[] = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.text);
+    });
+    expect(
+      queue.enqueue({
+        id: "legacy-final",
+        text: "会議を始めます",
+        isFinal: true,
+      })?.text,
+    ).toBe("会議を始めます");
+    const accepted = queue.enqueue({
+      id: "legacy-tail",
+      text: "続きがあります",
+      isFinal: false,
+    });
+    expect(accepted?.text).toContain("会議を始めます");
+    expect(accepted?.text).toContain("続きがあります");
+    await queue.whenIdle();
+    expect(
+      processed.some((text) => text.includes("会議を始めます") && text.includes("続きがあります")),
+    ).toBe(true);
+  });
+
   it("does not let a truncated same-turn final discard a longer pending rewrite", async () => {
     // Completion ASR can finalize on a prefix while a longer Nemotron rewrite is
     // still queued behind an in-flight normalizer. Dropping that pending surface
