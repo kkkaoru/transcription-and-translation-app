@@ -848,11 +848,13 @@ impl RecognitionSession {
     ) -> bool {
         if self.pending_child_is_next_utterance_of_closing_turn(segment, turn_id)
             || self.pending_child_is_after_interim_silence_following_160ms(segment, turn_id)
+            || self.pending_root_is_after_interim_silence_following_160ms(segment, turn_id)
         {
-            // AfterInterimSilence names the last closed segment as previous.
-            // Once this turn is closing — or the child follows an applied 160ms
-            // grid — that child remints after finalize instead of merging into
-            // the caption as a same-turn continuation.
+            // AfterInterimSilence names the last closed segment as previous, or
+            // restarts as a new root after a stream reset. Once this turn is
+            // closing — or the child/root follows an applied 160ms grid — that
+            // segment remints after finalize instead of merging into the
+            // caption as a same-turn continuation.
             return false;
         }
         if segment.turn_id().0 <= turn_id {
@@ -958,15 +960,40 @@ impl RecognitionSession {
         if segment.reason != SegmentCloseReason::InterimResultSilenceReached {
             return false;
         }
-        if self.requests.in_flight_request.as_ref().is_some_and(|request| {
-            request.close_reason == Some(SegmentCloseReason::InterimChunkReached)
-                && request.target.turn_id.0 == turn_id
-        }) {
+        if self.in_flight_streaming_chunk_for_turn(turn_id) {
             // Do not remint while this turn's 160ms grid is still in flight.
             return false;
         }
         self.pending_child_is_after_interim_silence(segment, turn_id)
             && self.latest_segment_is_applied_streaming_chunk(turn_id, segment.previous_segment_id)
+    }
+
+    fn pending_root_is_after_interim_silence_following_160ms(
+        &self,
+        segment: &PendingAsrSegment,
+        turn_id: u64,
+    ) -> bool {
+        if self.turn_store.open_turn_id != Some(turn_id) {
+            return false;
+        }
+        if segment.previous_segment_id.is_some() {
+            return false;
+        }
+        if segment.reason != SegmentCloseReason::InterimResultSilenceReached {
+            return false;
+        }
+        if self.in_flight_streaming_chunk_for_turn(turn_id) {
+            // Do not remint while this turn's 160ms grid is still in flight.
+            return false;
+        }
+        self.latest_applied_segment_is_streaming_chunk(turn_id)
+    }
+
+    fn in_flight_streaming_chunk_for_turn(&self, turn_id: u64) -> bool {
+        self.requests.in_flight_request.as_ref().is_some_and(|request| {
+            request.close_reason == Some(SegmentCloseReason::InterimChunkReached)
+                && request.target.turn_id.0 == turn_id
+        })
     }
 
     fn pending_child_is_after_interim_silence(
@@ -1001,6 +1028,14 @@ impl RecognitionSession {
         let Some(previous_segment_id) = previous_segment_id else {
             return false;
         };
+        self.turn_store
+            .turns
+            .get(&turn_id)
+            .is_some_and(|turn| turn.draft().latest_segment_id == Some(previous_segment_id))
+            && self.latest_applied_segment_is_streaming_chunk(turn_id)
+    }
+
+    fn latest_applied_segment_is_streaming_chunk(&self, turn_id: u64) -> bool {
         let Some(streaming_range) = self.turn_store.streaming_interim_ranges.get(&turn_id).copied()
         else {
             return false;
@@ -1009,7 +1044,7 @@ impl RecognitionSession {
             return false;
         };
         let draft = turn.draft();
-        if draft.latest_segment_id != Some(previous_segment_id) {
+        if draft.latest_segment_id.is_none() {
             return false;
         }
         let latest_len = draft.segment_audio_lens.last().copied().unwrap_or(0);
@@ -1045,6 +1080,7 @@ impl RecognitionSession {
     fn after_interim_silence_follows_applied_160ms(&self, turn_id: u64) -> bool {
         self.pending.asr_segments.iter().any(|segment| {
             self.pending_child_is_after_interim_silence_following_160ms(segment, turn_id)
+                || self.pending_root_is_after_interim_silence_following_160ms(segment, turn_id)
         })
     }
 }
