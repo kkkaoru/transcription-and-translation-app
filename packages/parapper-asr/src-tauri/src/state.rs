@@ -393,6 +393,7 @@ impl AppState {
         source: RunningInputSource,
         output_sink: Box<dyn TurnOutputSink>,
         activity_sender: Sender<RecognitionStreamEvent>,
+        partial_window_asr_enabled: bool,
     ) -> Result<(), RecognitionStartError> {
         let owner = RecognitionSessionOwner::WebSocket { session_id };
         let mut recognition_session = self.recognition_session.lock().await;
@@ -408,6 +409,7 @@ impl AppState {
             source,
             output_sink,
             Some(activity_sender),
+            partial_window_asr_enabled,
         )?;
         recognition_session.insert(owner, running).map_err(|_| RecognitionStartError::Busy)?;
         drop(recognition_session);

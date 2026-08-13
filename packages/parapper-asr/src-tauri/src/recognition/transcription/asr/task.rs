@@ -43,6 +43,10 @@ pub(crate) enum AsrTaskKind {
     InterimDisplay,
     CompletionCheck,
     Rerecognition,
+    /// Stateless recognition of the currently open segment.  This is kept
+    /// separate from both interim and completion work so its result can never
+    /// mutate the turn body or enter grammar/rerecognition finalization.
+    PartialWindow,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +126,10 @@ pub(crate) struct AsrResult {
     pub(crate) status: AsrResultStatus,
     pub(crate) completed_at_frame: VadFrameIndex,
     pub(crate) elapsed_millis: u128,
+    /// Time spent inside the engine decode call, excluding audio preparation
+    /// and normalization. `None` is retained for scripted/test results that
+    /// do not execute an engine call.
+    pub(crate) decode_millis: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

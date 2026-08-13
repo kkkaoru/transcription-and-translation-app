@@ -2247,6 +2247,7 @@ fn english_punctuation_after_rerecognition_finalizes_as_strong_end_without_namo(
         status: AsrResultStatus::Ok(english_sentence_end_transcript("We should keep going.")),
         completed_at_frame: VadFrameIndex(0),
         elapsed_millis: 0,
+        decode_millis: None,
     });
     runtime.step();
 

@@ -109,6 +109,7 @@ impl ManualAsrHandle {
                 status: AsrResultStatus::Ok(AsrTranscript::from_text(text)),
                 completed_at_frame: VadFrameIndex(0),
                 elapsed_millis: 0,
+                decode_millis: None,
             });
     }
 
@@ -154,6 +155,7 @@ impl ManualAsrHandle {
                 status: AsrResultStatus::Ok(transcript),
                 completed_at_frame: VadFrameIndex(0),
                 elapsed_millis,
+                decode_millis: None,
             });
     }
 
@@ -169,6 +171,7 @@ impl ManualAsrHandle {
                 status: AsrResultStatus::Failed("scripted ASR failure".to_string()),
                 completed_at_frame: VadFrameIndex(0),
                 elapsed_millis: 0,
+                decode_millis: None,
             });
     }
 
@@ -309,6 +312,7 @@ impl AsrRequestRunner for ScriptedAsrRunner {
             status: AsrResultStatus::Ok(transcript),
             completed_at_frame: VadFrameIndex(0),
             elapsed_millis: 0,
+            decode_millis: None,
         });
         true
     }
@@ -361,6 +365,30 @@ impl TurnOutputSink for RecordingOutputSink {
             .lock()
             .expect("outputs should be writable")
             .push(OutputSnapshot::from(&output));
+    }
+}
+
+struct PartialWindowRecordingSink {
+    normal_outputs: Arc<Mutex<Vec<OutputSnapshot>>>,
+    partial_window_outputs: Arc<Mutex<Vec<OutputSnapshot>>>,
+}
+
+impl TurnOutputSink for PartialWindowRecordingSink {
+    fn emit(&mut self, output: RecognizedTextOutput) {
+        self.normal_outputs
+            .lock()
+            .expect("normal outputs should be writable")
+            .push(OutputSnapshot::from(&output));
+    }
+
+    fn emit_partial_window(
+        &mut self,
+        output: crate::recognition::control::input::RecognitionStreamOutput,
+    ) {
+        self.partial_window_outputs
+            .lock()
+            .expect("partial-window outputs should be writable")
+            .push(OutputSnapshot::from(&output.output));
     }
 }
 
@@ -697,6 +725,18 @@ impl RecognitionSessionTestBuilder {
             outputs: outputs.clone(),
         });
         outputs
+    }
+
+    fn use_partial_window_recording_sink(
+        &mut self,
+    ) -> (Arc<Mutex<Vec<OutputSnapshot>>>, Arc<Mutex<Vec<OutputSnapshot>>>) {
+        let normal_outputs = Arc::new(Mutex::new(Vec::new()));
+        let partial_window_outputs = Arc::new(Mutex::new(Vec::new()));
+        self.output_sink = Box::new(PartialWindowRecordingSink {
+            normal_outputs: normal_outputs.clone(),
+            partial_window_outputs: partial_window_outputs.clone(),
+        });
+        (normal_outputs, partial_window_outputs)
     }
 
     fn use_recording_phrase_sink(&mut self) -> Arc<Mutex<Vec<PhraseOutputSnapshot>>> {

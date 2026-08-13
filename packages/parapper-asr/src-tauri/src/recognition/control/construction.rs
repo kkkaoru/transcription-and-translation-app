@@ -39,6 +39,7 @@ impl RecognitionSession {
         Self::with_io_and_session_id(
             config,
             1,
+            false,
             Box::new(NoopAsrRequestRunner),
             Box::new(NoopTurnDecisionRunner),
             Box::new(NoopTurnOutputSink),
@@ -57,6 +58,7 @@ impl RecognitionSession {
             handle,
             config,
             asr_startup_sender,
+            false,
             Box::new(DeliveryTurnOutputSink::new(handle.clone(), config)),
         )
     }
@@ -69,11 +71,13 @@ impl RecognitionSession {
         handle: &AppHandle,
         config: &ParapperConfig,
         asr_startup_sender: Option<AsrWorkerStartupSender>,
+        partial_window_asr_enabled: bool,
         output_sink: Box<dyn TurnOutputSink>,
     ) -> Self {
         let mut runtime = Self::with_io_and_session_id(
             config,
             take_next_turn_session_id(),
+            partial_window_asr_enabled,
             Box::new(EngineAsrRequestRunner::new(handle.clone(), config, asr_startup_sender)),
             Box::new(EngineTurnDecisionRunner::new(handle, config)),
             output_sink,
@@ -99,6 +103,7 @@ impl RecognitionSession {
         Self::with_io_and_session_id(
             config,
             turn_session_id,
+            false,
             asr_runner,
             turn_decision_runner,
             output_sink,
@@ -110,6 +115,7 @@ impl RecognitionSession {
     fn with_io_and_session_id(
         config: &ParapperConfig,
         turn_session_id: u64,
+        partial_window_asr_enabled: bool,
         asr_runner: Box<dyn AsrRequestRunner>,
         turn_decision_runner: Box<dyn TurnDecisionRunner>,
         output_sink: Box<dyn TurnOutputSink>,
@@ -118,6 +124,7 @@ impl RecognitionSession {
     ) -> Self {
         Self {
             config: config.clone(),
+            partial_window_asr_enabled,
             pending: PendingRuntimeState::default(),
             io: RuntimeIo {
                 asr_runner,

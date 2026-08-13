@@ -73,6 +73,7 @@ impl RecognitionDriver {
         handle: &AppHandle,
         config: &ParapperConfig,
         asr_startup_sender: Option<AsrWorkerStartupSender>,
+        partial_window_asr_enabled: bool,
         output_sink: Box<dyn super::TurnOutputSink>,
     ) -> Self {
         Self::new(
@@ -80,6 +81,7 @@ impl RecognitionDriver {
                 handle,
                 config,
                 asr_startup_sender,
+                partial_window_asr_enabled,
                 output_sink,
             ),
             config,
@@ -223,6 +225,8 @@ impl RecognitionSession {
                     source_vad_results,
                     reason,
                 } => {
+                    self.reset_partial_window_for_segment(segment_id);
+                    self.io.output_sink.emit_segment_closed(segment_id);
                     if reason == SegmentCloseReason::EndSilenceReached {
                         self.reset_interim_streaming_for_completion(segment_id);
                     }

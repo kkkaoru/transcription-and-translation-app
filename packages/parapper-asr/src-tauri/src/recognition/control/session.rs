@@ -28,6 +28,11 @@ use super::{
 
 pub(crate) struct RecognitionSession {
     pub(in crate::recognition) config: ParapperConfig,
+    /// Session-scoped feature flag from the network `session.start` frame.
+    /// It is intentionally not part of persisted `ParapperConfig` so a new
+    /// capture observes the caller's current setting and missing fields stay
+    /// fail-closed.
+    pub(in crate::recognition) partial_window_asr_enabled: bool,
     pub(in crate::recognition) pending: PendingRuntimeState,
     pub(in crate::recognition) io: RuntimeIo,
     pub(in crate::recognition) turn_store: TurnStore,
@@ -52,9 +57,356 @@ pub(in crate::recognition) struct PendingRuntimeState {
     pub(in crate::recognition) finalization: Option<PendingFinalization>,
     pub(in crate::recognition) asr_segments: VecDeque<PendingAsrSegment>,
     pub(in crate::recognition) interim_asr: InterimAsrState,
+    /// The bounded audio snapshot used by the optional completion-model
+    /// partial-window path.  It is deliberately independent from the
+    /// streaming Nemotron cache and from the mutable TurnDraft.
+    pub(in crate::recognition) partial_window: PartialWindowAsrState,
     /// Reset Nemotron streaming cache only after flushed `InterimChunkReached`
     /// requests for the closing utterance have been submitted.
     pub(in crate::recognition) deferred_streaming_session_reset: bool,
+}
+
+pub(in crate::recognition) const PARTIAL_WINDOW_MIN_GAP_MS: u128 = 400;
+pub(in crate::recognition) const PARTIAL_WINDOW_MAX_AUDIO_SAMPLES: usize =
+    ASR_SAMPLE_RATE as usize * 6;
+
+#[derive(Default)]
+pub(in crate::recognition) struct PartialWindowAsrState {
+    active: Option<PartialWindowSegmentState>,
+    next_due_tick: Option<u64>,
+    gap_millis: u128,
+    dispatched: u64,
+    skipped_busy: u64,
+    skipped_capped: u64,
+    completed: u64,
+    total_decode_millis: u128,
+    /// A bounded recent sample is sufficient for adaptive scheduling telemetry;
+    /// retaining every decode for a long-lived capture would make observability
+    /// itself unbounded.
+    recent_decode_millis: VecDeque<u128>,
+    throttled_completed: u64,
+}
+
+const PARTIAL_WINDOW_DECODE_SAMPLE_CAPACITY: usize = 64;
+
+#[derive(Clone)]
+pub(in crate::recognition) struct PartialWindowSnapshot {
+    pub(in crate::recognition) segment_id: u64,
+    pub(in crate::recognition) previous_segment_id: Option<u64>,
+    pub(in crate::recognition) audio: Vec<f32>,
+    pub(in crate::recognition) vad_results: Vec<VadResult>,
+    pub(in crate::recognition) range: AudioRange,
+    pub(in crate::recognition) created_at_frame: VadFrameIndex,
+}
+
+struct PartialWindowSegmentState {
+    segment_id: u64,
+    previous_segment_id: Option<u64>,
+    audio: Vec<f32>,
+    vad_results: Vec<VadResult>,
+    range_start: GlobalSampleIndex,
+    range_end: GlobalSampleIndex,
+    created_at_frame: VadFrameIndex,
+    capped: bool,
+}
+
+impl PartialWindowAsrState {
+    pub(in crate::recognition) fn reset(&mut self) {
+        self.active = None;
+        self.next_due_tick = None;
+    }
+
+    pub(in crate::recognition) fn start_segment(
+        &mut self,
+        segment_id: u64,
+        previous_segment_id: Option<u64>,
+        audio: Vec<f32>,
+        vad_results: Vec<VadResult>,
+        end_sample: GlobalSampleIndex,
+        created_at_frame: VadFrameIndex,
+        current_tick: u64,
+        vad_interval_ms: u32,
+    ) {
+        self.reset();
+        if audio.is_empty() {
+            return;
+        }
+        let capped = audio.len() >= PARTIAL_WINDOW_MAX_AUDIO_SAMPLES;
+        let mut audio = audio;
+        audio.truncate(PARTIAL_WINDOW_MAX_AUDIO_SAMPLES);
+        let range_start = GlobalSampleIndex(end_sample.0.saturating_sub(audio.len() as u64));
+        self.active = Some(PartialWindowSegmentState {
+            segment_id,
+            previous_segment_id,
+            audio,
+            vad_results,
+            range_start,
+            range_end: end_sample,
+            created_at_frame,
+            capped,
+        });
+        self.gap_millis = PARTIAL_WINDOW_MIN_GAP_MS;
+        self.next_due_tick = Some(
+            current_tick.saturating_add(ticks_for_partial_window_gap(
+                self.gap_millis,
+                vad_interval_ms,
+            )),
+        );
+    }
+
+    pub(in crate::recognition) fn extend_segment(
+        &mut self,
+        segment_id: u64,
+        previous_segment_id: Option<u64>,
+        new_audio: Vec<f32>,
+        vad_result: VadResult,
+        end_sample: GlobalSampleIndex,
+        created_at_frame: VadFrameIndex,
+        current_tick: u64,
+        vad_interval_ms: u32,
+    ) {
+        if new_audio.is_empty() {
+            return;
+        }
+        let continues = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.segment_id == segment_id);
+        if !continues {
+            self.start_segment(
+                segment_id,
+                previous_segment_id,
+                new_audio,
+                vec![vad_result],
+                end_sample,
+                created_at_frame,
+                current_tick,
+                vad_interval_ms,
+            );
+            return;
+        }
+        let active = self.active.as_mut().expect("active segment checked above");
+        active.range_end = end_sample;
+        active.vad_results.push(vad_result);
+        if active.capped {
+            return;
+        }
+        let remaining = PARTIAL_WINDOW_MAX_AUDIO_SAMPLES.saturating_sub(active.audio.len());
+        if new_audio.len() > remaining {
+            active.audio.extend_from_slice(&new_audio[..remaining]);
+            active.capped = true;
+        } else {
+            active.audio.extend_from_slice(&new_audio);
+            active.capped = active.audio.len() >= PARTIAL_WINDOW_MAX_AUDIO_SAMPLES;
+        }
+        // The request range always describes the bounded current snapshot, not
+        // the full segment that may have grown past the safety cap.
+        active.range_start = GlobalSampleIndex(
+            end_sample.0.saturating_sub(active.audio.len() as u64),
+        );
+    }
+
+    pub(in crate::recognition) fn close_segment(&mut self, segment_id: u64) {
+        if self.active.as_ref().is_some_and(|active| active.segment_id == segment_id) {
+            self.reset();
+        }
+    }
+
+    pub(in crate::recognition) fn matches_segment(&self, segment_id: u64) -> bool {
+        self.active.as_ref().is_some_and(|active| active.segment_id == segment_id)
+    }
+
+    pub(in crate::recognition) fn take_due(
+        &mut self,
+        current_tick: u64,
+        vad_interval_ms: u32,
+    ) -> Option<PartialWindowSnapshot> {
+        let Some(due_tick) = self.next_due_tick else {
+            return None;
+        };
+        if current_tick < due_tick {
+            return None;
+        }
+        self.next_due_tick = Some(
+            current_tick.saturating_add(ticks_for_partial_window_gap(
+                self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
+                vad_interval_ms,
+            )),
+        );
+        let Some(active) = self.active.as_ref() else {
+            return None;
+        };
+        if active.capped {
+            self.skipped_capped = self.skipped_capped.saturating_add(1);
+            log::debug!(
+                "{}",
+                serde_json::json!({
+                    "event": "partial_window_asr_skip",
+                    "skip_reason": "cap",
+                    "segment_id": active.segment_id,
+                    "input_duration_ms": u64::try_from(active.audio.len()).unwrap_or(u64::MAX).saturating_mul(1_000) / u64::from(ASR_SAMPLE_RATE),
+                    "cap_samples": PARTIAL_WINDOW_MAX_AUDIO_SAMPLES,
+                    "dispatched": self.dispatched,
+                    "completed": self.completed,
+                    "skipped_busy": self.skipped_busy,
+                    "skipped_capped": self.skipped_capped,
+                })
+            );
+            return None;
+        }
+        Some(PartialWindowSnapshot {
+            segment_id: active.segment_id,
+            previous_segment_id: active.previous_segment_id,
+            audio: active.audio.clone(),
+            vad_results: active.vad_results.clone(),
+            range: AudioRange::new(active.range_start, active.range_end),
+            created_at_frame: active.created_at_frame,
+        })
+    }
+
+    pub(in crate::recognition) fn skip_busy(
+        &mut self,
+        current_tick: u64,
+        vad_interval_ms: u32,
+    ) {
+        self.skipped_busy = self.skipped_busy.saturating_add(1);
+        self.next_due_tick = Some(
+            current_tick.saturating_add(ticks_for_partial_window_gap(
+                self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
+                vad_interval_ms,
+            )),
+        );
+        log::debug!(
+            "{}",
+            serde_json::json!({
+                "event": "partial_window_asr_skip",
+                "skip_reason": "in_flight",
+                "gap_ms": self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
+                "dispatched": self.dispatched,
+                "completed": self.completed,
+                "skipped_busy": self.skipped_busy,
+                "skipped_capped": self.skipped_capped,
+            })
+        );
+    }
+
+    pub(in crate::recognition) fn skip_due_if_busy(
+        &mut self,
+        current_tick: u64,
+        vad_interval_ms: u32,
+    ) {
+        let Some(due_tick) = self.next_due_tick else {
+            return;
+        };
+        if current_tick < due_tick {
+            return;
+        }
+        if self.active.as_ref().is_some_and(|active| active.capped) {
+            // Let take_due own the cap metric/logging when the caller is not
+            // competing with another ASR task.  A busy clipped tick is still a
+            // cap skip, never a request that may be silently joined later.
+            let _ = self.take_due(current_tick, vad_interval_ms);
+            return;
+        }
+        self.skip_busy(current_tick, vad_interval_ms);
+    }
+
+    pub(in crate::recognition) fn gap_millis(&self) -> u128 {
+        self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS)
+    }
+
+    pub(in crate::recognition) fn mark_dispatched(&mut self) {
+        self.dispatched = self.dispatched.saturating_add(1);
+    }
+
+    pub(in crate::recognition) fn record_decode(
+        &mut self,
+        current_tick: u64,
+        end_to_end_millis: u128,
+        decode_millis: u128,
+        input_samples: usize,
+        vad_interval_ms: u32,
+    ) {
+        self.completed = self.completed.saturating_add(1);
+        self.total_decode_millis = self.total_decode_millis.saturating_add(decode_millis);
+        self.gap_millis = PARTIAL_WINDOW_MIN_GAP_MS.max(decode_millis.saturating_mul(2));
+        let throttle_applied = self.gap_millis > PARTIAL_WINDOW_MIN_GAP_MS;
+        if throttle_applied {
+            self.throttled_completed = self.throttled_completed.saturating_add(1);
+        }
+        if self.recent_decode_millis.len() == PARTIAL_WINDOW_DECODE_SAMPLE_CAPACITY {
+            self.recent_decode_millis.pop_front();
+        }
+        self.recent_decode_millis.push_back(decode_millis);
+        let decode_p95_millis = self.decode_p95_millis();
+        let throttle_rate = self.throttle_rate();
+        self.next_due_tick = Some(
+            current_tick.saturating_add(ticks_for_partial_window_gap(
+                self.gap_millis,
+                vad_interval_ms,
+            )),
+        );
+        log::debug!(
+            "{}",
+            serde_json::json!({
+                "event": "partial_window_asr_completed",
+                "input_duration_ms": u64::try_from(input_samples).unwrap_or(u64::MAX).saturating_mul(1_000) / u64::from(ASR_SAMPLE_RATE),
+                "decode_ms": decode_millis,
+                "decode_p95_ms": decode_p95_millis,
+                "end_to_end_ms": end_to_end_millis,
+                "gap_ms": self.gap_millis,
+                "throttle_applied": throttle_applied,
+                "throttle_rate": throttle_rate,
+                "dispatched": self.dispatched,
+                "completed": self.completed,
+                "skipped_busy": self.skipped_busy,
+                "skipped_capped": self.skipped_capped,
+            })
+        );
+    }
+
+    #[cfg(test)]
+    pub(in crate::recognition) fn metrics(
+        &self,
+    ) -> (u64, u64, u64, u64, u128, u128, u128, f64) {
+        (
+            self.dispatched,
+            self.skipped_busy,
+            self.skipped_capped,
+            self.completed,
+            self.gap_millis,
+            self.total_decode_millis,
+            self.decode_p95_millis(),
+            self.throttle_rate(),
+        )
+    }
+
+    fn decode_p95_millis(&self) -> u128 {
+        if self.recent_decode_millis.is_empty() {
+            return 0;
+        }
+        let mut samples: Vec<_> = self.recent_decode_millis.iter().copied().collect();
+        samples.sort_unstable();
+        let index = (samples.len() * 95).div_ceil(100).saturating_sub(1);
+        samples[index]
+    }
+
+    fn throttle_rate(&self) -> f64 {
+        if self.completed == 0 {
+            0.0
+        } else {
+            self.throttled_completed as f64 / self.completed as f64
+        }
+    }
+}
+
+fn ticks_for_partial_window_gap(gap_millis: u128, vad_interval_ms: u32) -> u64 {
+    let interval = u128::from(vad_interval_ms.max(1));
+    gap_millis
+        .div_ceil(interval)
+        .max(1)
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 #[derive(Default)]
@@ -433,6 +785,7 @@ pub(in crate::recognition) struct RuntimeCounters {
     pub(in crate::recognition) turn_session_id: u64,
     pub(in crate::recognition) next_turn_id: u64,
     pub(in crate::recognition) next_output_sequence: u64,
+    pub(in crate::recognition) next_partial_window_sequence: u64,
     pub(in crate::recognition) next_request_id: u64,
     pub(in crate::recognition) next_vad_frame_index: u64,
     pub(in crate::recognition) next_runtime_tick: u64,
@@ -445,6 +798,7 @@ impl RuntimeCounters {
             turn_session_id,
             next_turn_id: 1,
             next_output_sequence: 1,
+            next_partial_window_sequence: 1,
             next_request_id: 1,
             next_vad_frame_index: 0,
             next_runtime_tick: 0,
@@ -476,4 +830,106 @@ pub(in crate::recognition) struct AsrRequestState {
     /// so prefix audio prepends in order. Late original results mismatch the
     /// new request id.
     pub(in crate::recognition) deferred_completion: VecDeque<AsrRequest>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn speech_vad() -> VadResult {
+        VadResult { probability: 0.99, is_speech: true }
+    }
+
+    #[test]
+    fn partial_window_uses_only_the_current_segment_and_resets_on_close() {
+        let mut state = PartialWindowAsrState::default();
+        state.start_segment(
+            7,
+            Some(6),
+            vec![0.1; 100],
+            vec![speech_vad()],
+            GlobalSampleIndex(1_000),
+            VadFrameIndex(3),
+            0,
+            100,
+        );
+
+        assert!(state.matches_segment(7));
+        assert!(!state.matches_segment(6));
+        assert!(state.take_due(3, 100).is_none());
+        let snapshot = state.take_due(4, 100).expect("400 ms tick should be due");
+        assert_eq!(snapshot.segment_id, 7);
+        assert_eq!(snapshot.previous_segment_id, Some(6));
+        assert_eq!(snapshot.audio.len(), 100);
+
+        state.close_segment(7);
+        assert!(!state.matches_segment(7));
+        assert!(state.take_due(100, 100).is_none());
+    }
+
+    #[test]
+    fn exact_six_second_cap_consumes_due_tick_as_a_skip_without_dispatch() {
+        let mut state = PartialWindowAsrState::default();
+        state.start_segment(
+            8,
+            None,
+            vec![0.0; PARTIAL_WINDOW_MAX_AUDIO_SAMPLES],
+            vec![speech_vad()],
+            GlobalSampleIndex(PARTIAL_WINDOW_MAX_AUDIO_SAMPLES as u64),
+            VadFrameIndex(0),
+            0,
+            100,
+        );
+
+        assert!(state.take_due(4, 100).is_none());
+        let (_, _, skipped_capped, _, _, _, _, _) = state.metrics();
+        assert_eq!(skipped_capped, 1);
+        assert_eq!(state.gap_millis(), PARTIAL_WINDOW_MIN_GAP_MS);
+    }
+
+    #[test]
+    fn decode_duration_sets_adaptive_gap_and_busy_tick_is_not_queued() {
+        let mut state = PartialWindowAsrState::default();
+        state.start_segment(
+            9,
+            None,
+            vec![0.0; 100],
+            vec![speech_vad()],
+            GlobalSampleIndex(100),
+            VadFrameIndex(0),
+            0,
+            100,
+        );
+        state.skip_due_if_busy(4, 100);
+        let (_, skipped_busy, _, _, _, _, _, _) = state.metrics();
+        assert_eq!(skipped_busy, 1);
+        assert!(state.take_due(4, 100).is_none());
+
+        state.record_decode(8, 250, 250, 100, 100);
+        let (_, _, _, completed, gap, total, p95, throttle_rate) = state.metrics();
+        assert_eq!(completed, 1);
+        assert_eq!(gap, 500);
+        assert_eq!(total, 250);
+        assert_eq!(p95, 250);
+        assert_eq!(throttle_rate, 1.0);
+        assert!(state.take_due(12, 100).is_none());
+        assert!(state.take_due(13, 100).is_some());
+    }
+
+    #[test]
+    fn decode_telemetry_tracks_recent_p95_and_throttle_rate() {
+        let mut state = PartialWindowAsrState::default();
+        for (tick, decode_millis) in [(1, 100), (2, 250), (3, 500)] {
+            state.record_decode(tick, decode_millis, decode_millis, 1_600, 100);
+        }
+
+        let (_, _, _, completed, _, total, p95, throttle_rate) = state.metrics();
+        assert_eq!(completed, 3);
+        assert_eq!(total, 850);
+        assert_eq!(p95, 500, "p95 must report the high end of recent decode samples");
+        assert!(
+            (throttle_rate - (2.0 / 3.0)).abs() < f64::EPSILON,
+            "only decodes above the 400 ms minimum gap should count as throttled"
+        );
+    }
 }

@@ -3,6 +3,71 @@
 use super::super::*;
 
 #[test]
+fn partial_window_result_is_side_channel_only_and_does_not_mutate_turn_draft() {
+    let mut builder = RecognitionSessionTestBuilder::new().vad_interval_ms(100);
+    let asr_handle = builder.use_manual_asr();
+    let (normal_outputs, partial_outputs) = builder.use_partial_window_recording_sink();
+    let (mut runtime, _config) = builder.build();
+    runtime.partial_window_asr_enabled = true;
+
+    runtime.record_interim_segment_started(7, None, vec![0.25; 1_600], vec![vad(true)]);
+    runtime_state(&mut runtime).next_runtime_tick(4);
+    runtime.step();
+    let request = asr_handle
+        .submitted_requests()
+        .into_iter()
+        .next()
+        .expect("a due open segment must schedule exactly one partial window");
+    assert_eq!(request.kind, AsrTaskKind::PartialWindow);
+    assert_eq!(request.audio.len(), 1_600);
+
+    asr_handle.complete_request_with_text(&request, "現在の仮説");
+    runtime.step();
+
+    assert!(
+        normal_outputs.lock().expect("normal outputs should be readable").is_empty(),
+        "partial windows must bypass normal delivery, translation, and TTS fan-out"
+    );
+    assert_eq!(
+        *partial_outputs.lock().expect("partial outputs should be readable"),
+        vec![output_snapshot("現在の仮説", false, 7, 7)]
+    );
+    assert!(runtime.turn_store.turns.is_empty(), "a window must not create a TurnDraft");
+    assert!(runtime.turn_store.open_turn_id.is_none(), "a window must not open a turn");
+}
+
+#[test]
+fn partial_window_result_after_segment_close_is_dropped_without_throttle_or_turn_mutation() {
+    let mut builder = RecognitionSessionTestBuilder::new().vad_interval_ms(100);
+    let asr_handle = builder.use_manual_asr();
+    let (normal_outputs, partial_outputs) = builder.use_partial_window_recording_sink();
+    let (mut runtime, _config) = builder.build();
+    runtime.partial_window_asr_enabled = true;
+
+    runtime.record_interim_segment_started(8, None, vec![0.5; 1_600], vec![vad(true)]);
+    runtime_state(&mut runtime).next_runtime_tick(4);
+    runtime.step();
+    let request = asr_handle
+        .submitted_requests()
+        .into_iter()
+        .next()
+        .expect("a due open segment must schedule a partial window");
+    runtime.reset_partial_window_for_segment(8);
+    asr_handle.complete_request_with_text(&request, "閉鎖後の遅延結果");
+    runtime.step();
+
+    assert!(normal_outputs.lock().expect("normal outputs should be readable").is_empty());
+    assert!(partial_outputs.lock().expect("partial outputs should be readable").is_empty());
+    assert!(runtime.turn_store.turns.is_empty());
+    assert!(runtime.turn_store.open_turn_id.is_none());
+    assert_eq!(
+        runtime.pending.partial_window.metrics().3,
+        0,
+        "a stale result must not count as a completed partial decode"
+    );
+}
+
+#[test]
 fn turn_runtime_following_interim_keeps_previous_audio_visible_in_replaced_output() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .interim_display(true)
@@ -10106,6 +10171,7 @@ fn turn_runtime_mismatched_asr_result_keeps_in_flight_request_for_later_match() 
         status: AsrResultStatus::Ok(AsrTranscript::from_text("古い結果")),
         completed_at_frame: VadFrameIndex(0),
         elapsed_millis: 0,
+        decode_millis: None,
     });
 
     runtime.step();
@@ -10151,6 +10217,7 @@ fn turn_runtime_mismatched_asr_result_does_not_dispatch_pending_next_utterance()
         status: AsrResultStatus::Ok(AsrTranscript::from_text("古い結果")),
         completed_at_frame: VadFrameIndex(0),
         elapsed_millis: 0,
+        decode_millis: None,
     });
 
     runtime.step();
@@ -10346,6 +10413,7 @@ fn turn_runtime_empty_interim_transcript_clears_in_flight_without_opening_turn()
         status: AsrResultStatus::Ok(AsrTranscript::from_text("   ")),
         completed_at_frame: VadFrameIndex(0),
         elapsed_millis: 0,
+        decode_millis: None,
     });
 
     runtime.step();

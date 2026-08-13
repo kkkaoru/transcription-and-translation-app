@@ -1,13 +1,17 @@
-use crate::recognition::{
+use crate::{
+    delivery::{RecognizedTextMeta, RecognizedTextOutput},
+    recognition::{
     control::{RecognitionSession, RerecognitionPurpose},
+    control::events::RecognitionSourceMeta,
+    control::input::RecognitionStreamOutput,
     segmentation::segment::builder::SegmentCloseReason,
     segmentation::vad::engine::VadResult,
     transcription::{
         asr::{
             engine::AsrTranscript,
             task::{
-                AsrInFlight, AsrRequest, AsrRequestId, AsrResult, AsrTaskKind, AudioRange,
-                GlobalSampleIndex, VadFrameIndex,
+                AsrInFlight, AsrRequest, AsrRequestId, AsrResult, AsrTarget, AsrTaskKind,
+                AudioRange, GlobalSampleIndex, VadFrameIndex,
             },
         },
         planner::{
@@ -24,6 +28,7 @@ use crate::recognition::{
             language_id::LanguageDetector,
             selection::{AsrInput, TurnInput, refresh_turn, select_asr},
         },
+    },
     },
 };
 
@@ -80,6 +85,20 @@ impl RecognitionSession {
         audio_so_far: Vec<f32>,
         vad_results: Vec<VadResult>,
     ) {
+        if self.partial_window_asr_enabled && !self.streaming_interim_asr_enabled() {
+            self.pending.partial_window.start_segment(
+                segment_id,
+                previous_segment_id,
+                audio_so_far.clone(),
+                vad_results.clone(),
+                GlobalSampleIndex(self.counters.global_sample_cursor),
+                VadFrameIndex(self.counters.next_vad_frame_index),
+                self.counters.next_runtime_tick,
+                self.config.segmentation.vad_interval_ms,
+            );
+        } else {
+            self.pending.partial_window.reset();
+        }
         if !self.streaming_interim_asr_enabled() {
             self.pending.interim_asr.clear_streaming();
             return;
@@ -102,6 +121,18 @@ impl RecognitionSession {
         new_audio: Vec<f32>,
         vad_result: VadResult,
     ) {
+        if self.partial_window_asr_enabled && !self.streaming_interim_asr_enabled() {
+            self.pending.partial_window.extend_segment(
+                segment_id,
+                previous_segment_id,
+                new_audio.clone(),
+                vad_result,
+                GlobalSampleIndex(self.counters.global_sample_cursor),
+                VadFrameIndex(self.counters.next_vad_frame_index),
+                self.counters.next_runtime_tick,
+                self.config.segmentation.vad_interval_ms,
+            );
+        }
         if !self.streaming_interim_asr_enabled() {
             self.pending.interim_asr.clear_streaming();
             return;
@@ -115,6 +146,10 @@ impl RecognitionSession {
             VadFrameIndex(self.counters.next_vad_frame_index),
         );
         self.pending.asr_segments.extend(ready);
+    }
+
+    pub(in crate::recognition) fn reset_partial_window_for_segment(&mut self, segment_id: u64) {
+        self.pending.partial_window.close_segment(segment_id);
     }
 
     pub(in crate::recognition) fn reset_interim_streaming_for_completion(
@@ -171,6 +206,12 @@ impl RecognitionSession {
         self.yield_rerecognition_slot_for_same_turn_continuation();
         self.yield_completion_slot_for_same_turn_continuation();
         if self.requests.in_flight_request.is_some() {
+            if self.partial_window_asr_enabled && !self.streaming_interim_asr_enabled() {
+                self.pending.partial_window.skip_due_if_busy(
+                    self.counters.next_runtime_tick,
+                    self.config.segmentation.vad_interval_ms,
+                );
+            }
             return;
         }
         self.dispatch_deferred_completion_if_idle();
@@ -184,6 +225,7 @@ impl RecognitionSession {
         self.finalize_open_turn_if_after_interim_silence_follows_160ms();
         drop_front_interim_segments_covered_by_completion(&mut self.pending.asr_segments);
         let Some(request) = self.build_next_asr_request() else {
+            self.dispatch_partial_window_if_idle();
             self.apply_deferred_streaming_session_reset_if_ready();
             return;
         };
@@ -201,6 +243,104 @@ impl RecognitionSession {
         self.requests.last_dispatched = Some(in_flight);
         self.stamp_asr_dispatch(turn_id);
         self.apply_deferred_streaming_session_reset_if_ready();
+    }
+
+    /// Partial-window work is intentionally the last dispatch candidate.  It
+    /// never waits in a queue: a due tick is consumed while another ASR task is
+    /// in flight, and the next adaptive gap starts from the following tick.
+    fn dispatch_partial_window_if_idle(&mut self) {
+        if !self.partial_window_asr_enabled || self.streaming_interim_asr_enabled() {
+            return;
+        }
+        if self.requests.in_flight_request.is_some() {
+            self.pending.partial_window.skip_due_if_busy(
+                self.counters.next_runtime_tick,
+                self.config.segmentation.vad_interval_ms,
+            );
+            return;
+        }
+        let Some(snapshot) = self.pending.partial_window.take_due(
+            self.counters.next_runtime_tick,
+            self.config.segmentation.vad_interval_ms,
+        ) else {
+            return;
+        };
+        let Some(request) = self.build_partial_window_request(snapshot) else {
+            return;
+        };
+        if !self.io.asr_runner.submit(request.clone()) {
+            log::warn!(
+                "Dropping partial-window ASR request after submit failure: request_id={:?} segment_id={:?}",
+                request.request_id,
+                request.target.last_segment_id,
+            );
+            return;
+        }
+        log::debug!(
+            "partial_window_asr dispatched: request_id={:?} turn_id={} segment_id={:?} audio_samples={} gap_ms={}",
+            request.request_id,
+            request.target.turn_id.0,
+            request.target.last_segment_id,
+            request.audio.len(),
+            self.pending.partial_window.gap_millis(),
+        );
+        self.pending.partial_window.mark_dispatched();
+        self.requests.in_flight_request = Some(request.clone());
+        self.requests.last_dispatched = Some(AsrInFlight::from(&request));
+        self.stamp_asr_dispatch(request.target.turn_id.0);
+    }
+
+    fn build_partial_window_request(
+        &mut self,
+        snapshot: crate::recognition::control::PartialWindowSnapshot,
+    ) -> Option<AsrRequest> {
+        if snapshot.audio.is_empty() {
+            return None;
+        }
+        let target_turn_id = self
+            .turn_store
+            .open_turn_id
+            .filter(|turn_id| !self.turn_store.finalized_turns.contains(turn_id))
+            .unwrap_or(snapshot.segment_id);
+        let route_selection = self.route_selection_for_asr_request(
+            target_turn_id,
+            AsrTaskKind::PartialWindow,
+            SegmentCloseReason::SegmentMaxChunksReached,
+            snapshot.audio.as_slice(),
+        );
+        let revision = *self.turn_store.revisions.get(&target_turn_id).unwrap_or(&0);
+        let request_id = AsrRequestId(self.take_next_request_id());
+        let target = AsrTarget::new(
+            crate::recognition::transcription::asr::task::TurnId(target_turn_id),
+            crate::recognition::transcription::asr::task::TurnRevision(revision),
+            snapshot.range,
+            snapshot.previous_segment_id.map(
+                crate::recognition::transcription::asr::task::SegmentId,
+            ).or_else(|| {
+                Some(crate::recognition::transcription::asr::task::SegmentId(
+                    snapshot.segment_id,
+                ))
+            }),
+            Some(crate::recognition::transcription::asr::task::SegmentId(
+                snapshot.segment_id,
+            )),
+        );
+        Some(AsrRequest {
+            request_id,
+            kind: AsrTaskKind::PartialWindow,
+            target,
+            route: route_selection.route,
+            detected_language: route_selection.detected_language,
+            audio: snapshot.audio.clone(),
+            vad_results: snapshot.vad_results.clone(),
+            source_audio: snapshot.audio,
+            source_vad_results: snapshot.vad_results,
+            // Partial windows are not segment-close candidates.  Keeping the
+            // reason empty prevents the turn completion and Nemotron streaming
+            // paths from treating this request as a normal segment result.
+            close_reason: None,
+            created_at_frame: snapshot.created_at_frame,
+        })
     }
 
     fn build_next_asr_request(&mut self) -> Option<AsrRequest> {
@@ -393,11 +533,36 @@ impl RecognitionSession {
             );
             return true;
         };
+        if request.kind == AsrTaskKind::PartialWindow
+            && !request
+                .target
+                .last_segment_id
+                .is_some_and(|segment_id| self.pending.partial_window.matches_segment(segment_id.0))
+        {
+            // SegmentClosed resets the OPEN snapshot.  A completion-model
+            // result that races that reset belongs to the closed segment and
+            // must not repopulate the display suffix or affect throttle state.
+            log::debug!(
+                "partial_window_asr drop result after segment close: request_id={:?} segment_id={:?}",
+                request.request_id,
+                request.target.last_segment_id,
+            );
+            return true;
+        }
         let action = self.reduce_asr_result_for_runtime(&result, &request);
         if matches!(action, AsrResultAction::KeepInFlightForMismatchedResult { .. }) {
             self.apply_asr_result_action(&request, action);
             self.requests.in_flight_request = Some(request);
             return true;
+        }
+        if request.kind == AsrTaskKind::PartialWindow {
+            self.pending.partial_window.record_decode(
+                self.counters.next_runtime_tick,
+                result.elapsed_millis,
+                result.decode_millis.unwrap_or(result.elapsed_millis),
+                request.audio.len(),
+                self.config.segmentation.vad_interval_ms,
+            );
         }
         self.apply_asr_result_action(&request, action);
         self.apply_deferred_streaming_session_reset_if_ready();
@@ -440,6 +605,7 @@ impl RecognitionSession {
             }
             AsrResultAction::DropStaleResult
             | AsrResultAction::DropUnusableInterim
+            | AsrResultAction::DropUnusablePartialWindow
             | AsrResultAction::DropUnusableCompletionWithoutDraft => {}
             AsrResultAction::FallbackCompletionWithNamo { turn_id } => {
                 self.apply_unusable_completion_audio_keep_visible(request);
@@ -467,6 +633,9 @@ impl RecognitionSession {
                         self.turn_store.open_turn_accepts_root_segment = false;
                     }
                 }
+            }
+            AsrResultAction::ApplyPartialWindowTranscript { transcript, elapsed_millis } => {
+                self.emit_partial_window_output(request, transcript, elapsed_millis);
             }
             AsrResultAction::ApplyCompletionTranscript {
                 transcript,
@@ -541,6 +710,55 @@ impl RecognitionSession {
                 self.turn_store.open_turn_accepts_root_segment = false;
             }
         }
+    }
+
+    fn emit_partial_window_output(
+        &mut self,
+        request: &AsrRequest,
+        transcript: AsrTranscript,
+        elapsed_millis: u128,
+    ) {
+        if transcript.text.trim().is_empty() {
+            return;
+        }
+        let source = RecognitionSourceMeta {
+            turn_session_id: self.counters.turn_session_id,
+            turn_id: request.target.turn_id.0,
+            turn_revision: request.target.turn_revision.0,
+            output_sequence: {
+                let sequence = self.counters.next_partial_window_sequence;
+                self.counters.next_partial_window_sequence = sequence.saturating_add(1);
+                sequence
+            },
+            segment_id: request.target.last_segment_id.map_or(
+                request.target.turn_id.0,
+                |segment_id| segment_id.0,
+            ),
+            previous_segment_id: request.target.first_segment_id.and_then(|first| {
+                (Some(first) != request.target.last_segment_id).then_some(first.0)
+            }),
+        };
+        let meta = RecognizedTextMeta::replace_turn_output(
+            format!(
+                "partial-window-{}-{}-{}",
+                source.turn_session_id, source.turn_id, source.segment_id
+            ),
+            source,
+            false,
+        );
+        let output = RecognizedTextOutput::from_route(
+            request.source_audio.clone(),
+            transcript.text,
+            request.route,
+            request.detected_language.clone(),
+            meta,
+            elapsed_millis,
+        );
+        self.io.output_sink.emit_partial_window(RecognitionStreamOutput {
+            output,
+            source_text: None,
+            azookey_input_text: None,
+        });
     }
 
     fn stale_input_for_request(&self, request: &AsrRequest) -> AsrRequestStaleInput {

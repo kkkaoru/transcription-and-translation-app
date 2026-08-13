@@ -10,6 +10,13 @@ use tauri::AppHandle;
 pub(crate) trait TurnOutputSink: Send {
     fn update_config(&mut self, _config: &ParapperConfig) {}
     fn emit(&mut self, output: RecognizedTextOutput);
+    /// Tell protocol clients that the OPEN segment has been closed.  This is
+    /// a control event, not a caption, so delivery/translation sinks ignore it.
+    fn emit_segment_closed(&mut self, _segment_id: u64) {}
+    /// Emit a current-open-segment result into its own display slot.  The
+    /// default is intentionally a no-op so partial windows never enter the
+    /// normal delivery/translation/TTS path.
+    fn emit_partial_window(&mut self, _output: RecognitionStreamOutput) {}
 }
 
 pub(crate) struct WebSocketTurnOutputSink {
@@ -34,6 +41,16 @@ impl WebSocketTurnOutputSink {
 }
 
 impl TurnOutputSink for WebSocketTurnOutputSink {
+    fn emit_segment_closed(&mut self, segment_id: u64) {
+        if self
+            .sender
+            .send(RecognitionStreamEvent::SegmentClosed { segment_id })
+            .is_err()
+        {
+            log::debug!("WebSocket recognition segment-closed receiver is gone");
+        }
+    }
+
     fn emit(&mut self, mut output: RecognizedTextOutput) {
         let mut source_text = None;
         let mut azookey_input_text = None;
@@ -63,6 +80,27 @@ impl TurnOutputSink for WebSocketTurnOutputSink {
             log::debug!("WebSocket recognition output receiver is gone");
         }
     }
+
+    fn emit_partial_window(&mut self, mut stream_output: RecognitionStreamOutput) {
+        let mut source_text = None;
+        let mut azookey_input_text = None;
+        if self.text_format == StreamingRecognitionTextFormat::Hiragana
+            && stream_output.output.source_language == AsrLanguage::Japanese
+        {
+            let surface = stream_output.output.text.clone();
+            if let Some(analyzer) = &self.japanese_morph {
+                let reading = analyzer.hiragana_text(&surface);
+                stream_output.output.text.clone_from(&reading);
+                azookey_input_text = Some(reading);
+            }
+            source_text = Some(surface);
+        }
+        stream_output.source_text = source_text;
+        stream_output.azookey_input_text = azookey_input_text;
+        if self.sender.send(RecognitionStreamEvent::PartialWindow(stream_output)).is_err() {
+            log::debug!("WebSocket recognition partial-window receiver is gone");
+        }
+    }
 }
 
 pub(crate) struct CompositeTurnOutputSink {
@@ -90,6 +128,22 @@ impl TurnOutputSink for CompositeTurnOutputSink {
             sink.emit(output.clone());
         }
         last.emit(output);
+    }
+
+    fn emit_segment_closed(&mut self, segment_id: u64) {
+        for sink in &mut self.sinks {
+            sink.emit_segment_closed(segment_id);
+        }
+    }
+
+    fn emit_partial_window(&mut self, output: RecognitionStreamOutput) {
+        let Some((last, preceding)) = self.sinks.split_last_mut() else {
+            return;
+        };
+        for sink in preceding {
+            sink.emit_partial_window(output.clone());
+        }
+        last.emit_partial_window(output);
     }
 }
 

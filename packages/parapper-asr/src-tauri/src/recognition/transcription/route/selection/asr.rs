@@ -64,6 +64,10 @@ pub(crate) fn configured_split_route(
     match kind {
         AsrTaskKind::InterimDisplay => config.asr.interim_model.map(RecognitionRoute::from_model),
         AsrTaskKind::CompletionCheck | AsrTaskKind::Rerecognition => None,
+        // A partial window is intentionally stateless and must always use the
+        // completion model.  Routing it through InterimDisplay would send it
+        // to Nemotron when a streaming interim model is configured.
+        AsrTaskKind::PartialWindow => Some(RecognitionRoute::from_model(config.asr.model)),
     }
 }
 
@@ -144,6 +148,11 @@ mod tests {
             configured_split_route(&config, AsrTaskKind::Rerecognition),
             None,
             "rerecognition keeps the normal route selection path"
+        );
+        assert_eq!(
+            configured_split_route(&config, AsrTaskKind::PartialWindow),
+            Some(RecognitionRoute::from_model(AsrModel::ReazonSpeechK2V2)),
+            "partial windows must stay on the completion model instead of Nemotron"
         );
     }
 }

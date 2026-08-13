@@ -605,14 +605,23 @@ fn run_session_loop(
                     }
                 };
                 match action {
-                    ProtocolAction::Start { session_id, audio, .. } => {
+                    ProtocolAction::Start {
+                        session_id,
+                        audio,
+                        partial_window_asr_enabled,
+                    } => {
                         logged_session_id = Some(session_id.clone());
                         let session_correlation = correlation.for_session(&session_id);
                         let (input_sender, source) = RunningInputSource::bounded_channel(
                             audio.sample_rate,
                             MAX_QUEUED_AUDIO_SAMPLES,
                         );
-                        match backend.start(&session_id, source, output_mode) {
+                        match backend.start(
+                            &session_id,
+                            source,
+                            output_mode,
+                            partial_window_asr_enabled,
+                        ) {
                             Ok(recognition) => {
                                 active = Some(ActiveConnectionSession {
                                     session_id: session_id.clone(),
@@ -821,6 +830,16 @@ fn send_pending_events(
                     },
                 )?;
             }
+            RecognitionStreamEvent::SegmentClosed { segment_id } => {
+                send_message(
+                    websocket,
+                    &ServerMessage::SegmentClosed {
+                        version: PROTOCOL_VERSION,
+                        session_id: session.session_id.clone(),
+                        segment_id,
+                    },
+                )?;
+            }
             RecognitionStreamEvent::Output(output) => {
                 if !accept_output(&mut session.emitted_outputs, &output) {
                     log::debug!("{}", turn_skip_event(&session_correlation, &output));
@@ -830,6 +849,16 @@ fn send_pending_events(
                     log::info!("{}", turn_end_event(&session_correlation, &output));
                 }
                 send_message(websocket, &message_from_output(&session.session_id, output))?;
+            }
+            RecognitionStreamEvent::PartialWindow(output) => {
+                // Partial-window hypotheses have their own output cursor and
+                // are intentionally not fed through the canonical output
+                // deduplicator.  A normal interim/final output may arrive for
+                // the same segment without invalidating this side channel.
+                send_message(
+                    websocket,
+                    &message_from_partial_window_output(&session.session_id, output),
+                )?;
             }
         }
     }
@@ -901,6 +930,43 @@ fn message_from_output(
             first_partial_at: latency.first_partial_at,
             asr_final_at: latency.asr_final_at,
         }
+    }
+}
+
+fn message_from_partial_window_output(
+    session_id: &str,
+    stream_output: crate::recognition::control::input::RecognitionStreamOutput,
+) -> ServerMessage {
+    let crate::recognition::control::input::RecognitionStreamOutput {
+        output,
+        source_text,
+        azookey_input_text,
+    } = stream_output;
+    let source = &output.meta.source;
+    let source_asr_model = serde_json::to_value(output.source_asr_model)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    ServerMessage::TurnPartialWindow {
+        version: PROTOCOL_VERSION,
+        session_id: session_id.to_string(),
+        turn_session_id: source.turn_session_id,
+        turn_id: source.turn_id,
+        revision: source.turn_revision,
+        output_sequence: source.output_sequence,
+        segment_id: source.segment_id,
+        previous_segment_id: source.previous_segment_id,
+        text: output.text,
+        source_text,
+        azookey_input_text,
+        source_asr_model,
+        source_language: source_language_code(output.source_language).to_string(),
+        detected_language: output.detected_language,
+        elapsed_ms: u64::try_from(output.elapsed_millis).unwrap_or(u64::MAX),
+        speech_start_at: output.caption_latency.speech_start_at,
+        asr_dispatch_at: output.caption_latency.asr_dispatch_at,
+        first_partial_at: output.caption_latency.first_partial_at,
+        asr_final_at: output.caption_latency.asr_final_at,
     }
 }
 
@@ -1086,6 +1152,7 @@ impl RecognitionBackend for FakeBackend {
         _session_id: &str,
         source: RunningInputSource,
         _output_mode: NetworkOutputMode,
+        _partial_window_asr_enabled: bool,
     ) -> Result<StartedRecognitionSession, BackendStartError> {
         if self.active.swap(true, Ordering::AcqRel) {
             return Err(BackendStartError::Busy);

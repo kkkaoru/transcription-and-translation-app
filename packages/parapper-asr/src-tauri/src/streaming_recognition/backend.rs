@@ -40,6 +40,7 @@ pub(super) trait RecognitionBackend: Send + Sync {
         session_id: &str,
         source: RunningInputSource,
         output_mode: NetworkOutputMode,
+        partial_window_asr_enabled: bool,
     ) -> Result<StartedRecognitionSession, BackendStartError>;
 }
 
@@ -59,6 +60,7 @@ impl RecognitionBackend for AppRecognitionBackend {
         session_id: &str,
         source: RunningInputSource,
         output_mode: NetworkOutputMode,
+        partial_window_asr_enabled: bool,
     ) -> Result<StartedRecognitionSession, BackendStartError> {
         let (event_sender, event_receiver) = mpsc::channel();
         let state = self.handle.state::<AppState>();
@@ -94,6 +96,7 @@ impl RecognitionBackend for AppRecognitionBackend {
             source,
             output_sink,
             event_sender,
+            partial_window_asr_enabled,
         );
         tauri::async_runtime::block_on(start).map_err(|error| map_start_error(&error))?;
         let _ =

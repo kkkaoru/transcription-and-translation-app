@@ -46,7 +46,9 @@ pub struct RunningRecognitionInput {
 )]
 pub(crate) enum RecognitionStreamEvent {
     SpeechStarted,
+    SegmentClosed { segment_id: u64 },
     Output(RecognitionStreamOutput),
+    PartialWindow(RecognitionStreamOutput),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -229,7 +231,15 @@ impl RunningRecognitionInput {
             .start(config)
             .map_err(RecognitionStartError::AudioInput)?;
         let output_sink = Box::new(DeliveryTurnOutputSink::new(handle.clone(), config));
-        Self::start_with_source_and_sink(handle, config, runtime_config, source, output_sink, None)
+        Self::start_with_source_and_sink(
+            handle,
+            config,
+            runtime_config,
+            source,
+            output_sink,
+            None,
+            false,
+        )
     }
 
     pub(crate) fn start_with_source_and_sink(
@@ -239,6 +249,7 @@ impl RunningRecognitionInput {
         source: RunningInputSource,
         output_sink: Box<dyn TurnOutputSink>,
         activity_sender: Option<Sender<RecognitionStreamEvent>>,
+        partial_window_asr_enabled: bool,
     ) -> Result<Self, RecognitionStartError> {
         let source = source.into_parts();
         let source_lifetime = source.lifetime;
@@ -264,6 +275,7 @@ impl RunningRecognitionInput {
                     vad_stage,
                     asr_startup_sender,
                     output_sink,
+                    partial_window_asr_enabled,
                 };
                 run_recognition_input_worker(
                     &handle,
@@ -396,6 +408,7 @@ struct RecognitionWorkerStartup {
     vad_stage: RecognitionVadStage,
     asr_startup_sender: AsrWorkerStartupSender,
     output_sink: Box<dyn TurnOutputSink>,
+    partial_window_asr_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -587,6 +600,7 @@ impl<'a> RecognitionOuterLoop<'a> {
             vad_stage,
             asr_startup_sender,
             output_sink,
+            partial_window_asr_enabled,
         } = startup;
         Self {
             handle,
@@ -597,11 +611,12 @@ impl<'a> RecognitionOuterLoop<'a> {
             pending_vad_frames: PendingVadFrames::default(),
             audio_processor,
             vad_stage: Some(vad_stage),
-            driver: Some(Box::new(RecognitionDriver::new_for_production_with_output_sink(
-                handle,
-                config,
-                Some(asr_startup_sender),
-                output_sink,
+                driver: Some(Box::new(RecognitionDriver::new_for_production_with_output_sink(
+                    handle,
+                    config,
+                    Some(asr_startup_sender),
+                    partial_window_asr_enabled,
+                    output_sink,
             ))),
         }
     }

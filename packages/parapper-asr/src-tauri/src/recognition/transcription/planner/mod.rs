@@ -305,7 +305,9 @@ pub(in crate::recognition) fn take_next_request_segment_plan(
         AsrTaskKind::InterimDisplay => {
             take_following_interim_segments(pending, &mut segments, open_turn_id);
         }
-        AsrTaskKind::CompletionCheck | AsrTaskKind::Rerecognition => {}
+        AsrTaskKind::CompletionCheck
+        | AsrTaskKind::Rerecognition
+        | AsrTaskKind::PartialWindow => {}
     }
 
     Some(AsrRequestSegmentPlan { kind, segments })

@@ -9,12 +9,20 @@ pub(crate) struct AudioFormat {
     pub(crate) encoding: String,
     pub(crate) sample_rate: u32,
     pub(crate) channels: u8,
+    /// Optional per-capture feature switch.  Missing or malformed values are
+    /// deliberately treated as disabled for older clients.
+    pub(crate) partial_window_asr_enabled: bool,
 }
 
 impl AudioFormat {
     #[cfg(test)]
     pub(crate) fn pcm_s16le_16khz_mono() -> Self {
-        Self { encoding: "pcm_s16le".to_string(), sample_rate: 16_000, channels: 1 }
+        Self {
+            encoding: "pcm_s16le".to_string(),
+            sample_rate: 16_000,
+            channels: 1,
+            partial_window_asr_enabled: false,
+        }
     }
 }
 
@@ -164,7 +172,16 @@ fn parse_audio_format(object: &Map<String, Value>) -> Result<AudioFormat, Protoc
     if channels != 1 {
         return Err(ProtocolError::fatal(ErrorCode::UnsupportedChannelCount, "channels must be 1"));
     }
-    Ok(AudioFormat { encoding, sample_rate, channels })
+    let partial_window_asr_enabled = audio
+        .get("partial_window_asr_enabled")
+        .or_else(|| audio.get("partialWindowAsrEnabled"))
+        // Accept the early desktop preview shape as a compatibility alias,
+        // while keeping the canonical setting nested under `audio`.
+        .or_else(|| object.get("partial_window_asr_enabled"))
+        .or_else(|| object.get("partialWindowAsrEnabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(AudioFormat { encoding, sample_rate, channels, partial_window_asr_enabled })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +201,7 @@ pub(crate) enum ProtocolAction {
     Start {
         session_id: String,
         audio: AudioFormat,
+        partial_window_asr_enabled: bool,
     },
     Audio {
         byte_len: usize,
@@ -221,7 +239,11 @@ impl SessionProtocol {
             {
                 self.session_id = Some(session_id.clone());
                 self.state = ProtocolState::Active;
-                Ok(ProtocolAction::Start { session_id, audio })
+                Ok(ProtocolAction::Start {
+                    partial_window_asr_enabled: audio.partial_window_asr_enabled,
+                    session_id,
+                    audio,
+                })
             }
             ClientControl::Stop { session_id, .. } if self.state == ProtocolState::Active => {
                 self.require_session_id(&session_id)?;
@@ -324,6 +346,8 @@ pub(crate) enum ServerMessage {
     SessionReady { version: u32, session_id: String, capabilities: Capabilities },
     #[serde(rename = "speech.started")]
     SpeechStarted { version: u32, session_id: String },
+    #[serde(rename = "segment.closed")]
+    SegmentClosed { version: u32, session_id: String, segment_id: u64 },
     #[serde(rename = "turn.partial")]
     TurnPartial {
         version: u32,
@@ -348,6 +372,35 @@ pub(crate) enum ServerMessage {
         detected_language: Option<String>,
         elapsed_ms: u64,
         /// Monotonic ms from the recognition session clock. Omitted when unknown.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speech_start_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        asr_dispatch_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        first_partial_at: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        asr_final_at: Option<u64>,
+    },
+    #[serde(rename = "turn.partial_window")]
+    TurnPartialWindow {
+        version: u32,
+        session_id: String,
+        turn_session_id: u64,
+        turn_id: u64,
+        revision: u64,
+        #[serde(default)]
+        output_sequence: u64,
+        segment_id: u64,
+        previous_segment_id: Option<u64>,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_text: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        azookey_input_text: Option<String>,
+        source_asr_model: String,
+        source_language: String,
+        detected_language: Option<String>,
+        elapsed_ms: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         speech_start_at: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -455,6 +508,7 @@ mod tests {
             ProtocolAction::Start {
                 session_id: "client-1".to_string(),
                 audio: AudioFormat::pcm_s16le_16khz_mono(),
+                partial_window_asr_enabled: false,
             }
         );
         protocol
@@ -480,6 +534,40 @@ mod tests {
             let error = parse_client_control(raw).unwrap_err();
             assert_eq!(error.code, ErrorCode::SessionIdRequired, "raw={raw}");
         }
+    }
+
+    #[test]
+    fn partial_window_setting_is_opt_in_and_accepts_camel_or_legacy_top_level_aliases() {
+        let canonical = r#"{
+            "version": 1,
+            "type": "session.start",
+            "session_id": "client-1",
+            "audio": {
+                "encoding": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+                "partialWindowAsrEnabled": true
+            }
+        }"#;
+        let legacy = r#"{
+            "version": 1,
+            "type": "session.start",
+            "session_id": "client-1",
+            "partial_window_asr_enabled": true,
+            "audio": {
+                "encoding": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1
+            }
+        }"#;
+
+        for raw in [canonical, legacy] {
+            let ClientControl::Start { audio, .. } = parse_client_control(raw).unwrap() else {
+                panic!("expected session.start");
+            };
+            assert!(audio.partial_window_asr_enabled, "raw={raw}");
+        }
+        assert!(!AudioFormat::pcm_s16le_16khz_mono().partial_window_asr_enabled);
     }
 
     #[test]
@@ -813,5 +901,35 @@ mod tests {
         assert_eq!(value["asr_dispatch_at"], 1_100);
         assert_eq!(value["first_partial_at"], 1_300);
         assert!(value.get("asr_final_at").is_none());
+    }
+
+    #[test]
+    fn turn_partial_window_has_a_distinct_non_final_wire_type() {
+        let partial = ServerMessage::TurnPartialWindow {
+            version: 1,
+            session_id: "fixture-session".to_string(),
+            turn_session_id: 7,
+            turn_id: 3,
+            revision: 2,
+            output_sequence: 4,
+            segment_id: 8,
+            previous_segment_id: Some(7),
+            text: "後半".to_string(),
+            source_text: None,
+            azookey_input_text: None,
+            source_asr_model: "reazonspeech_k2_v2".to_string(),
+            source_language: "ja".to_string(),
+            detected_language: None,
+            elapsed_ms: 120,
+            speech_start_at: None,
+            asr_dispatch_at: None,
+            first_partial_at: None,
+            asr_final_at: None,
+        };
+        let value = serde_json::to_value(partial).unwrap();
+        assert_eq!(value["type"], "turn.partial_window");
+        assert_eq!(value["text"], "後半");
+        assert!(value.get("is_final").is_none());
+        assert!(value.get("audio_duration_ms").is_none());
     }
 }

@@ -237,6 +237,7 @@ pub(crate) fn run_engine_asr_request(
     let route = request.route;
     let completed_at_frame = request.created_at_frame;
     let started_at = Instant::now();
+    let mut decode_millis = None;
     let status = if is_nemotron_streaming_interim_request(request) {
         let session = request.streaming_session_key();
         let existing_leading_padding = asr.streaming_leading_padding_samples(session);
@@ -285,7 +286,24 @@ pub(crate) fn run_engine_asr_request(
             prepare_asr_input_audio(&request.audio, &request.vad_results)
         };
         let audio = normalize_asr_input_audio(config, prepared.audio.as_ref());
-        match asr.transcribe(route, audio.as_ref()) {
+        let decode_started_at = Instant::now();
+        let transcribe_result = asr.transcribe(route, audio.as_ref());
+        decode_millis = Some(decode_started_at.elapsed().as_millis());
+        if kind == AsrTaskKind::PartialWindow {
+            log::debug!(
+                "{}",
+                serde_json::json!({
+                    "event": "partial_window_asr_decode",
+                    "input_duration_ms": u64::try_from(audio.len()).unwrap_or(u64::MAX).saturating_mul(1_000) / u64::from(crate::audio::ASR_SAMPLE_RATE),
+                    "decode_ms": decode_millis,
+                    "end_to_end_ms": started_at.elapsed().as_millis(),
+                    "route": format!("{:?}", route),
+                    "model": format!("{:?}", route.model),
+                    "status": if transcribe_result.is_ok() { "ok" } else { "failed" },
+                })
+            );
+        }
+        match transcribe_result {
             Ok(mut transcript) => {
                 maybe_shift_transcript_timestamps_for_leading_padding(
                     &mut transcript,
@@ -308,6 +326,7 @@ pub(crate) fn run_engine_asr_request(
         status,
         completed_at_frame,
         elapsed_millis: started_at.elapsed().as_millis(),
+        decode_millis,
     }
 }
 

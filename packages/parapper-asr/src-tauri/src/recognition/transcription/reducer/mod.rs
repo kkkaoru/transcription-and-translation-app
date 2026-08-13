@@ -36,6 +36,7 @@ pub(in crate::recognition) enum AsrResultAction {
     },
     DropStaleResult,
     DropUnusableInterim,
+    DropUnusablePartialWindow,
     DropUnusableCompletionWithoutDraft,
     FallbackCompletionWithNamo {
         turn_id: u64,
@@ -51,6 +52,10 @@ pub(in crate::recognition) enum AsrResultAction {
         purpose: AsrResultRerecognitionPurpose,
     },
     ApplyInterimTranscript {
+        transcript: AsrTranscript,
+        elapsed_millis: u128,
+    },
+    ApplyPartialWindowTranscript {
         transcript: AsrTranscript,
         elapsed_millis: u128,
     },
@@ -121,6 +126,10 @@ pub(in crate::recognition) fn reduce_asr_result(
             transcript,
             elapsed_millis: result.elapsed_millis,
         },
+        AsrTaskKind::PartialWindow => AsrResultAction::ApplyPartialWindowTranscript {
+            transcript,
+            elapsed_millis: result.elapsed_millis,
+        },
         AsrTaskKind::CompletionCheck => AsrResultAction::ApplyCompletionTranscript {
             transcript,
             elapsed_millis: result.elapsed_millis,
@@ -164,6 +173,7 @@ fn unusable_result_action(request: &AsrRequest, input: AsrResultReductionInput) 
     let turn_id = request.target.turn_id.0;
     match request.kind {
         AsrTaskKind::InterimDisplay => AsrResultAction::DropUnusableInterim,
+        AsrTaskKind::PartialWindow => AsrResultAction::DropUnusablePartialWindow,
         AsrTaskKind::CompletionCheck => {
             if !input.completion_has_non_empty_draft {
                 return AsrResultAction::DropUnusableCompletionWithoutDraft;
@@ -405,6 +415,14 @@ mod tests {
                 },
             ),
             (
+                asr_request(AsrTaskKind::PartialWindow, route, None, 0..10),
+                reduction_input_for(route),
+                AsrResultAction::ApplyPartialWindowTranscript {
+                    transcript: AsrTranscript::from_text("hello"),
+                    elapsed_millis: 1,
+                },
+            ),
+            (
                 asr_request(AsrTaskKind::CompletionCheck, route, None, 0..10),
                 AsrResultReductionInput {
                     completion_rerecognition_purpose: Some(
@@ -453,6 +471,12 @@ mod tests {
                 AsrResultStatus::Failed("failed".to_string()),
                 reduction_input_for(route),
                 AsrResultAction::DropUnusableInterim,
+            ),
+            (
+                asr_request(AsrTaskKind::PartialWindow, route, None, 0..10),
+                AsrResultStatus::Failed("failed".to_string()),
+                reduction_input_for(route),
+                AsrResultAction::DropUnusablePartialWindow,
             ),
             (
                 asr_request(AsrTaskKind::CompletionCheck, route, None, 0..10),
@@ -570,6 +594,7 @@ mod tests {
             }),
             completed_at_frame: VadFrameIndex(2),
             elapsed_millis: 1,
+            decode_millis: None,
         }
     }
 
