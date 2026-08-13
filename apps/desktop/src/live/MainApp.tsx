@@ -1,3 +1,9 @@
+import {
+  type CaptionSentenceHints,
+  type CaptionSentenceStickyState,
+  detectCaptionSentenceEnds,
+  selectVisibleCaptionSentence,
+} from "@caption-bridge/sentence-boundary";
 import type { ChangeEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocaleSwitcher } from "../components/LocaleSwitcher";
@@ -448,6 +454,183 @@ export const resolveLiveNoticeText = (
     : fatalLastError;
 };
 
+type MainStickyOwner = {
+  id: string;
+  captureGeneration: number | null;
+};
+
+type MainStickyRefs = {
+  source: { current: CaptionSentenceStickyState | null };
+  translation: { current: CaptionSentenceStickyState | null };
+  owner: { current: MainStickyOwner | null };
+};
+
+const normalizeMainStickyText = (text: string): string => text.replace(/\r\n?/gu, "\n").trim();
+
+/** Reset display-only sentence carry; IPC caption state remains untouched. */
+const resetMainStickyRefs = (refs: MainStickyRefs): void => {
+  refs.source.current = null;
+  refs.translation.current = null;
+  refs.owner.current = null;
+};
+
+const compatibleMainStickyState = (
+  sticky: CaptionSentenceStickyState | null,
+  text: string,
+): CaptionSentenceStickyState | null => {
+  if (!sticky?.previousText || sticky.previousEnds.length === 0) {
+    return null;
+  }
+  const normalized = normalizeMainStickyText(text);
+  const previous = normalizeMainStickyText(sticky.previousText);
+  if (!normalized || !previous) {
+    return null;
+  }
+  // A revision may grow or temporarily shrink the same turn, but a rewrite
+  // with a different prefix must not inherit a sentence end from another turn.
+  if (normalized.startsWith(previous) || previous.startsWith(normalized)) {
+    return sticky;
+  }
+  return null;
+};
+
+const rememberMainStickyState = (
+  text: string,
+  hints: CaptionSentenceHints,
+  previous: CaptionSentenceStickyState | null,
+): CaptionSentenceStickyState | null => {
+  const normalized = normalizeMainStickyText(text);
+  if (!normalized) {
+    return null;
+  }
+  // Recompute fresh ends without feeding the old carry back into its own
+  // history. The caller-owned ref stores only boundaries accepted for this
+  // compatible prefix, not a module-global cache or an IPC field.
+  const freshEnds = detectCaptionSentenceEnds(normalized, {
+    ...hints,
+    previousText: undefined,
+    previousEnds: undefined,
+  });
+  const compatible = compatibleMainStickyState(previous, normalized);
+  const limit = Array.from(normalized).length;
+  const mergedEnds = [...new Set([...(compatible?.previousEnds ?? []), ...freshEnds])]
+    .filter((offset) => Number.isInteger(offset) && offset > 0 && offset <= limit)
+    .sort((left, right) => left - right);
+  if (mergedEnds.length === 0) {
+    return null;
+  }
+  return { previousText: normalized, previousEnds: mergedEnds };
+};
+
+/** Bang/question and elongation-only remainders keep the recognized head. */
+const shouldKeepMainHeadAfterStickyPage = (original: string, paged: string): boolean => {
+  const source = original.trim();
+  const shown = paged.trim();
+  if (!shown || shown === source || !source.endsWith(shown)) {
+    return false;
+  }
+  const prefix = source.slice(0, source.length - shown.length);
+  if (/[！？!?]\s*$/u.test(prefix)) {
+    return true;
+  }
+  return /^[ー〜～]+$/u.test(shown);
+};
+
+const applyMainStickyField = (
+  text: string,
+  hints: CaptionSentenceHints,
+  sticky: CaptionSentenceStickyState | null,
+): string => {
+  const paged = selectVisibleCaptionSentence(text, {
+    ...hints,
+    previousText: sticky?.previousText,
+    previousEnds: sticky?.previousEnds,
+  });
+  if (!paged || paged === text || shouldKeepMainHeadAfterStickyPage(text, paged)) {
+    return text;
+  }
+  return paged;
+};
+
+/**
+ * Apply the same caller-owned sentence carry to Live DOM and native output.
+ * This is intentionally a presentation clone: merge/replay/freshness keep the
+ * original CaptionPayload, while both display consumers receive one display
+ * surface with any stale boundary hints removed after paging.
+ */
+const applyMainStickyDisplay = (caption: CaptionPayload, refs: MainStickyRefs): CaptionPayload => {
+  if (caption.id === "preview" || caption.id === "empty") {
+    resetMainStickyRefs(refs);
+    return caption;
+  }
+
+  const generation =
+    typeof caption.captureGeneration === "number" ? caption.captureGeneration : null;
+  const owner = refs.owner.current;
+  const generationChanged =
+    owner != null &&
+    owner.captureGeneration !== generation &&
+    (owner.captureGeneration != null || generation != null);
+  if (owner && (owner.id !== caption.id || generationChanged)) {
+    refs.source.current = null;
+    refs.translation.current = null;
+  }
+  refs.owner.current = { id: caption.id, captureGeneration: generation };
+
+  const sourceHints: CaptionSentenceHints = {
+    key: "source",
+    azookeyInputText: caption.azookeyInputText,
+    sentenceEndOffsets: caption.sentenceEndOffsets,
+    softBreakOffsets: caption.softBreakOffsets,
+    deferSentencePaging: caption.provisional === true,
+  };
+  const translationHints: CaptionSentenceHints = {
+    key: "translation",
+    deferSentencePaging: caption.provisional === true,
+  };
+  const sourceSticky = compatibleMainStickyState(refs.source.current, caption.sourceText);
+  const translationSticky = compatibleMainStickyState(
+    refs.translation.current,
+    caption.translationText,
+  );
+
+  // Folded provisional ASR must keep the joined lead+tail; do not seed or
+  // apply copula carry on that surface. The following normalized caption can
+  // still seed from its own authoritative boundary hints.
+  if (caption.provisional === true) {
+    return caption;
+  }
+
+  refs.source.current = rememberMainStickyState(caption.sourceText, sourceHints, sourceSticky);
+  refs.translation.current = rememberMainStickyState(
+    caption.translationText,
+    translationHints,
+    translationSticky,
+  );
+
+  const nextSource = applyMainStickyField(caption.sourceText, sourceHints, sourceSticky);
+  const nextTranslation = applyMainStickyField(
+    caption.translationText,
+    translationHints,
+    translationSticky,
+  );
+  if (nextSource === caption.sourceText && nextTranslation === caption.translationText) {
+    return caption;
+  }
+  const next: CaptionPayload = {
+    ...caption,
+    sourceText: nextSource,
+    translationText: nextTranslation,
+  };
+  if (nextSource !== caption.sourceText) {
+    // Offsets are relative to the full IPC source surface; passing them to the
+    // suffix would page/cut again in captionItems and native rendering.
+    delete next.sentenceEndOffsets;
+    delete next.softBreakOffsets;
+  }
+  return next;
+};
+
 export const MainApp = () => {
   const { t } = useI18n();
   const [config, setConfig] = useState<AppConfig>(createDefaultConfig);
@@ -456,6 +639,12 @@ export const MainApp = () => {
   /** Mutable caption cursor keeps merge side effects outside React state updaters. */
   const captionRef = useRef<CaptionPayload>(createPreviewCaption());
   const [caption, setCaption] = useState<CaptionPayload>(() => captionRef.current);
+  /** Display-only sentence carry shared by the Live DOM and native publisher. */
+  const stickyRefs = useRef<MainStickyRefs>({
+    source: { current: null },
+    translation: { current: null },
+    owner: { current: null },
+  }).current;
   // Grow newly recognized graphemes onto Live/Syphon (こ→こんにちは). Snap an
   // already-recognized longer same-turn surface so the main-window publisher
   // cannot overwrite OverlayApp's full line with a typewriter lead. Hold-clear
@@ -464,6 +653,7 @@ export const MainApp = () => {
   const progressiveCaption = useProgressiveCaptionReveal(freshnessCaption, {
     snapAvailablePrefixExtensions: true,
   });
+  const displayCaption = applyMainStickyDisplay(progressiveCaption, stickyRefs);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);
@@ -570,24 +760,29 @@ export const MainApp = () => {
   /** Reset the visible caption and any retained translation from this session. */
   const clearCaptionState = useCallback((): void => {
     const empty = createEmptyCaption();
+    resetMainStickyRefs(stickyRefs);
     captionRef.current = empty;
     setCaption(empty);
     clearCaptionMergeDiagnostics();
-  }, []);
+  }, [stickyRefs]);
 
   /** Blank the plate after hold without tearing down merge diagnostics / session. */
-  const blankDisplayedCaption = useCallback((expectedEpoch: string): void => {
-    const current = captionRef.current;
-    if (!shouldApplyCaptionHoldClear(expectedEpoch, current)) {
-      return;
-    }
-    if (!current.sourceText.trim() && !current.translationText.trim()) {
-      return;
-    }
-    const empty = createHoldClearedCaption();
-    captionRef.current = empty;
-    setCaption(empty);
-  }, []);
+  const blankDisplayedCaption = useCallback(
+    (expectedEpoch: string): void => {
+      const current = captionRef.current;
+      if (!shouldApplyCaptionHoldClear(expectedEpoch, current)) {
+        return;
+      }
+      if (!current.sourceText.trim() && !current.translationText.trim()) {
+        return;
+      }
+      const empty = createHoldClearedCaption();
+      resetMainStickyRefs(stickyRefs);
+      captionRef.current = empty;
+      setCaption(empty);
+    },
+    [stickyRefs],
+  );
 
   useCaptionHoldClear(caption, blankDisplayedCaption);
 
@@ -721,6 +916,7 @@ export const MainApp = () => {
       }
       capturePhase.current = "stopping";
       activeCaptureGeneration.current = null;
+      resetMainStickyRefs(stickyRefs);
       const cleanupAttempt = ++captureAttempt.current;
       const backendStart = backendStartPromise.current;
       parapperStream.current?.cancel();
@@ -748,7 +944,7 @@ export const MainApp = () => {
         await bridge.stopCapture().catch(() => undefined);
       })();
     };
-  }, [refreshDevices]);
+  }, [refreshDevices, stickyRefs]);
 
   // Disable Start until required ASR models are ready and Parapper is healthy.
   // Poll faster while blocked (e.g. Nemotron download) so the button re-enables promptly.
@@ -1081,6 +1277,7 @@ export const MainApp = () => {
         // still drop pending cross-id translations so a same-id lookup in a
         // later session cannot pick up a stale entry.
         if (sanitized.status === "idle") {
+          resetMainStickyRefs(stickyRefs);
           if (sanitized.lastError || captionFailureMessage.current) {
             clearCaptionMergeDiagnostics();
           } else {
@@ -1127,7 +1324,7 @@ export const MainApp = () => {
         dispose();
       }
     };
-  }, [clearCaptionState, mergeAndCommitCaption]);
+  }, [clearCaptionState, mergeAndCommitCaption, stickyRefs]);
 
   const persistConfigLive = async (nextConfig: AppConfig, reason: string) => {
     try {
@@ -1203,6 +1400,7 @@ export const MainApp = () => {
     }
     const attempt = ++captureAttempt.current;
     capturePhase.current = "starting";
+    resetMainStickyRefs(stickyRefs);
     // Do not let a tagged stage from the superseded session paint while the
     // replacement's native start_capture is still resolving.
     activeCaptureGeneration.current = null;
@@ -2232,6 +2430,7 @@ export const MainApp = () => {
 
     const failure = microphoneFailure ?? bridgeFailure;
     capturePhase.current = "idle";
+    resetMainStickyRefs(stickyRefs);
     if (!failure) {
       pushDiagnosticEvent("audio", "Capture stopped");
       const retainedFailure = captionFailureMessage.current;
@@ -2446,7 +2645,7 @@ export const MainApp = () => {
             <LiveView
               config={config}
               status={status}
-              caption={progressiveCaption}
+              caption={displayCaption}
               devices={devices}
               message={noticeText}
               transparentCaptureOpen={transparentCaptureOpen}
