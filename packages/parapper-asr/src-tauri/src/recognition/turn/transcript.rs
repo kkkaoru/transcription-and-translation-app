@@ -815,7 +815,9 @@ fn completion_prefix_is_before_existing_range(
     existing: &[AudioRange],
     request: &AsrRequest,
 ) -> bool {
-    request.kind == AsrTaskKind::CompletionCheck
+    let is_yielded_prefix = request.kind == AsrTaskKind::CompletionCheck
+        || request.close_reason == Some(SegmentCloseReason::InterimResultSilenceReached);
+    is_yielded_prefix
         && existing
             .iter()
             .map(|range| range.start_sample)

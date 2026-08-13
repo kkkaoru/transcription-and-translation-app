@@ -1843,6 +1843,102 @@ fn turn_runtime_in_flight_end_silence_yields_to_root_160ms() {
 }
 
 #[test]
+fn turn_runtime_in_flight_silence_interim_yields_to_root_160ms() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let silence = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("silence interim must dispatch InterimDisplay ASR");
+    assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(silence.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
+
+    // Production Nemotron 160ms after a silence snapshot: streaming starts as a
+    // new root (previous=None, new display id).
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    runtime.step();
+
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("in-flight silence InterimDisplay must yield to a later root 160ms tail");
+    assert_eq!(chunk.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert_ne!(chunk.request_id, silence.request_id);
+    assert_eq!(runtime.requests.deferred_completion.len(), 1);
+    assert_eq!(
+        runtime.requests.deferred_completion[0].close_reason,
+        Some(SegmentCloseReason::InterimResultSilenceReached)
+    );
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("prefix silence InterimDisplay must resume after the root 160ms tail");
+    assert_eq!(resumed.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(resumed.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
+    assert_eq!(resumed.target.turn_id, TurnId(1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(draft.combined_text, "続き");
+    assert_eq!(draft.full_audio, vec![2.0; 160]);
+
+    let resumed = resumed.clone();
+    asr_handle.complete_request_with_text(&resumed, "全体");
+    runtime.step();
+
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "resumed silence prefix must keep prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "resumed silence prefix must keep the uncovered 160ms tail; got {}",
+        draft.combined_text
+    );
+    let prefix_pos = draft.combined_text.find("全体").expect("prefix text");
+    let tail_pos = draft.combined_text.find("続き").expect("tail text");
+    assert!(
+        prefix_pos < tail_pos,
+        "resumed silence prefix must prepend before the 160ms tail; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 160]].concat(),
+        "resumed silence prefix must prepend uncovered prefix audio ahead of the root 160ms tail"
+    );
+}
+
+#[test]
 fn turn_runtime_late_yielded_completion_result_does_not_clobber_tail() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)

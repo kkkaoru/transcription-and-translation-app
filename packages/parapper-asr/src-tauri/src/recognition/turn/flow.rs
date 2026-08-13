@@ -200,31 +200,38 @@ impl RecognitionSession {
         let Some(request) = self.requests.in_flight_request.as_ref() else {
             return;
         };
-        if request.kind != AsrTaskKind::CompletionCheck {
-            return;
-        }
         let turn_id = request.target.turn_id.0;
-        let should_yield = match request.close_reason {
+        let should_yield = match (request.kind, request.close_reason) {
             // Max-chunk is already a same-turn tail. Yield it only to a later
             // 160ms chunk, and keep any deferred prefix CompletionCheck.
-            Some(SegmentCloseReason::SegmentMaxChunksReached) => {
+            (AsrTaskKind::CompletionCheck, Some(SegmentCloseReason::SegmentMaxChunksReached)) => {
                 self.pending_streaming_chunk_continuation(turn_id)
             }
-            _ => self.pending_same_utterance_continuation(turn_id),
+            (AsrTaskKind::CompletionCheck, _) => self.pending_same_utterance_continuation(turn_id),
+            // Breath-silence interim occupies the same single ASR slot. Yield it
+            // to a later 160ms grid; do not yield in-flight 160ms to 160ms.
+            (
+                AsrTaskKind::InterimDisplay,
+                Some(SegmentCloseReason::InterimResultSilenceReached),
+            ) => self.pending_streaming_chunk_continuation(turn_id),
+            _ => false,
         };
         if !should_yield {
             return;
         }
         // Drop the slot so 160ms / max-chunk tail ASR can run. Do not finalize
-        // or remint. Late original CompletionCheck is ignored (new request id
-        // on resume). Visible text already on the draft stays; prefix audio
-        // that has not applied yet is prepended when the request resumes.
-        let request = self.requests.in_flight_request.take().expect(
-            "in-flight CompletionCheck was present when yielding to same-turn continuation",
-        );
+        // or remint. Late original prefix ASR is ignored (new request id on
+        // resume). Visible text already on the draft stays; prefix audio that
+        // has not applied yet is prepended when the request resumes.
+        let request = self
+            .requests
+            .in_flight_request
+            .take()
+            .expect("in-flight prefix ASR was present when yielding to same-turn continuation");
         self.park_yielded_max_chunk_audio_on_draft(&request);
-        // Production 160ms after EndSilence is a new root (`previous=None`).
-        // Accept it onto this turn so `target_turn_id` does not remint.
+        // Production 160ms after EndSilence / silence interim is a new root
+        // (`previous=None`). Accept it onto this turn so `target_turn_id` does
+        // not remint.
         self.adopt_open_turn_for_same_turn_streaming_chunk(request.target.turn_id.0);
         self.requests.deferred_completion.push_back(request);
     }
@@ -906,15 +913,19 @@ impl RecognitionSession {
         }
         // Production Nemotron 160ms restarts as a new root after EndSilence
         // flushes the stream (`previous_segment_id: None`, new display id).
-        // It still extends this utterance while CompletionCheck is in-flight
-        // or deferred, or while the open turn has not finalized.
-        self.completion_is_active_for_turn(turn_id)
+        // It still extends this utterance while prefix CompletionCheck or
+        // breath-silence InterimDisplay is in-flight or deferred, or while
+        // the open turn has not finalized.
+        self.prefix_request_is_active_for_turn(turn_id)
             || self.turn_store.open_turn_id.is_some_and(|open| open <= turn_id)
     }
 
-    fn completion_is_active_for_turn(&self, turn_id: u64) -> bool {
+    fn prefix_request_is_active_for_turn(&self, turn_id: u64) -> bool {
         let owns = |request: &AsrRequest| {
-            request.kind == AsrTaskKind::CompletionCheck && request.target.turn_id.0 <= turn_id
+            request.target.turn_id.0 <= turn_id
+                && (request.kind == AsrTaskKind::CompletionCheck
+                    || request.close_reason
+                        == Some(SegmentCloseReason::InterimResultSilenceReached))
         };
         self.requests.in_flight_request.as_ref().is_some_and(owns)
             || self.requests.deferred_completion.iter().any(owns)
