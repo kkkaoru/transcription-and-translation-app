@@ -117,6 +117,7 @@ import {
 import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
+import { useCaptionFreshness } from "./useCaptionFreshness";
 import { useCaptionHoldClear } from "./useCaptionHoldClear";
 import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
 
@@ -458,8 +459,9 @@ export const MainApp = () => {
   // Grow newly recognized graphemes onto Live/Syphon (こ→こんにちは). Snap an
   // already-recognized longer same-turn surface so the main-window publisher
   // cannot overwrite OverlayApp's full line with a typewriter lead. Hold-clear
-  // still watches the merged `caption`; display paths use the reveal.
-  const progressiveCaption = useProgressiveCaptionReveal(caption, {
+  // still watches the merged `caption`; display paths use freshness then reveal.
+  const freshnessCaption = useCaptionFreshness(caption);
+  const progressiveCaption = useProgressiveCaptionReveal(freshnessCaption, {
     snapAvailablePrefixExtensions: true,
   });
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);

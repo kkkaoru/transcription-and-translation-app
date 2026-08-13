@@ -17,6 +17,7 @@ import {
   rememberOverlayAsrStage,
 } from "../core/parapper-provisional";
 import type { AppConfig, CaptionPayload, PipelineStageEvent } from "../core/types";
+import { useCaptionFreshness } from "../live/useCaptionFreshness";
 import { useCaptionHoldClear } from "../live/useCaptionHoldClear";
 import { useProgressiveCaptionReveal } from "../live/useProgressiveCaptionReveal";
 import { OverlayView } from "./CaptionOverlay";
@@ -93,7 +94,8 @@ export const OverlayApp = () => {
   // Match MainApp: grow source graphemes on overlay/Syphon. Snap an already
   // recognized longer same-turn surface so the plate is not stuck on the first
   // piece after the 16ms first-commit. Hold-clear still keys off the merge.
-  const progressiveCaption = useProgressiveCaptionReveal(caption, {
+  const freshnessCaption = useCaptionFreshness(caption);
+  const progressiveCaption = useProgressiveCaptionReveal(freshnessCaption, {
     snapAvailablePrefixExtensions: true,
   });
 

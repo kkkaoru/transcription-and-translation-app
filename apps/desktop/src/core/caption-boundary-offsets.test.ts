@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyCaptionBoundaryOffsets,
   type CaptionBoundaryOffsets,
+  cachedCaptionBoundaryOffsets,
   captionMissingBoundaryOffsets,
   ensureCaptionBoundaryOffsets,
   fetchCaptionBoundaryOffsets,
@@ -37,10 +38,12 @@ describe("caption boundary offset recompute", () => {
   beforeEach(() => {
     resetCaptionBoundaryOffsetCache();
     vi.mocked(invoke).mockReset();
+    window.__TAURI_INTERNALS__ = {};
   });
 
   afterEach(() => {
     resetCaptionBoundaryOffsetCache();
+    window.__TAURI_INTERNALS__ = undefined;
   });
 
   it("detects merge-dropped offsets on a non-empty source", () => {
@@ -65,6 +68,7 @@ describe("caption boundary offset recompute", () => {
     expect(invoke).toHaveBeenCalledWith("caption_boundary_offsets", {
       text: "今日は晴れです明日は雨",
     });
+    expect(cachedCaptionBoundaryOffsets("今日は晴れです明日は雨")).toEqual(bounds());
 
     await ensureCaptionBoundaryOffsets(caption({ sourceText: "今日は晴れです明日は雨" }));
     expect(invoke).toHaveBeenCalledTimes(1);
@@ -91,6 +95,12 @@ describe("caption boundary offset recompute", () => {
     const current = caption();
     await expect(ensureCaptionBoundaryOffsets(current)).resolves.toBe(current);
     expect(current.sourceText).toBe("今日は晴れです明日は雨");
+  });
+
+  it("does not invoke outside the Tauri runtime", async () => {
+    window.__TAURI_INTERNALS__ = undefined;
+    await expect(fetchCaptionBoundaryOffsets("今日は晴れです明日は雨")).resolves.toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("applies fetched offsets without mutating the original caption", () => {

@@ -62,9 +62,10 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
   describe("progressive reveal wiring (live + overlay)", () => {
     it("keeps Live/Syphon and overlay display paths on progressiveCaption", () => {
       // hold-clear once replaced this import and left grapheme reveal dead.
+      expect(mainAppSource).toMatch(/useCaptionFreshness\(caption\)/);
       expect(mainAppSource).toMatch(/useProgressiveCaptionReveal/);
       expect(mainAppSource).toMatch(
-        /const progressiveCaption = useProgressiveCaptionReveal\(caption,\s*\{/,
+        /const progressiveCaption = useProgressiveCaptionReveal\(freshnessCaption,\s*\{/,
       );
       expect(mainAppSource).toMatch(/snapAvailablePrefixExtensions:\s*true/);
       expect(mainAppSource).toMatch(/caption=\{progressiveCaption\}/);
@@ -73,9 +74,10 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       );
       expect(mainAppSource).toMatch(/useCaptionHoldClear\(caption,/);
 
+      expect(overlayAppSource).toMatch(/useCaptionFreshness\(caption\)/);
       expect(overlayAppSource).toMatch(/useProgressiveCaptionReveal/);
       expect(overlayAppSource).toMatch(
-        /const progressiveCaption = useProgressiveCaptionReveal\(caption,\s*\{/,
+        /const progressiveCaption = useProgressiveCaptionReveal\(freshnessCaption,\s*\{/,
       );
       expect(overlayAppSource).toMatch(/snapAvailablePrefixExtensions:\s*true/);
       expect(overlayAppSource).toMatch(/caption=\{progressiveCaption\}/);
