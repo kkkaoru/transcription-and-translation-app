@@ -653,6 +653,10 @@ export const MainApp = () => {
   /** Separate OPEN-segment suffix; never merged into the committed caption body. */
   const partialWindowRef = useRef<PartialWindowCaption | null>(null);
   const [partialWindow, setPartialWindow] = useState<PartialWindowCaption | null>(null);
+  // Tauri invokes are asynchronous. Keep the independent Overlay relay in
+  // issue order so a delayed set cannot overtake a newer clear/reset.
+  const partialWindowRelayChain = useRef<Promise<void>>(Promise.resolve());
+  const partialWindowRelaySequence = useRef(0);
   /** Display-only sentence carry shared by the Live DOM and native publisher. */
   const stickyRefs = useRef<MainStickyRefs>({
     source: { current: null },
@@ -771,11 +775,29 @@ export const MainApp = () => {
     [],
   );
 
-  const setPartialWindowSlot = useCallback((next: PartialWindowCaption): void => {
-    partialWindowRef.current = next;
-    setPartialWindow(next);
-    void bridge.publishPartialWindow(next).catch(() => undefined);
-  }, []);
+  const relayPartialWindow = useCallback(
+    (next: Omit<PartialWindowCaption, "relaySequence">): PartialWindowCaption => {
+      const relayed: PartialWindowCaption = {
+        ...next,
+        relaySequence: ++partialWindowRelaySequence.current,
+      };
+      partialWindowRelayChain.current = partialWindowRelayChain.current
+        .catch(() => undefined)
+        .then(() => bridge.publishPartialWindow(relayed))
+        .catch(() => undefined);
+      return relayed;
+    },
+    [],
+  );
+
+  const setPartialWindowSlot = useCallback(
+    (next: Omit<PartialWindowCaption, "relaySequence">): void => {
+      const relayed = relayPartialWindow(next);
+      partialWindowRef.current = relayed;
+      setPartialWindow(relayed);
+    },
+    [relayPartialWindow],
+  );
 
   const clearPartialWindowSlot = useCallback((): void => {
     const current = partialWindowRef.current;
@@ -784,8 +806,8 @@ export const MainApp = () => {
     }
     partialWindowRef.current = null;
     setPartialWindow(null);
-    void bridge.publishPartialWindow({ ...current, text: "" }).catch(() => undefined);
-  }, []);
+    relayPartialWindow({ ...current, text: "" });
+  }, [relayPartialWindow]);
 
   /** Reset the visible caption and any retained translation from this session. */
   const clearCaptionState = useCallback((): void => {
@@ -1950,6 +1972,8 @@ export const MainApp = () => {
                 turnSessionId: event.turnSessionId,
                 turnId: event.turnId,
                 segmentId: event.segmentId,
+                revision: event.revision,
+                outputSequence: event.outputSequence,
                 text,
                 captureGeneration: captureGenerationForAttempt,
               });

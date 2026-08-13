@@ -67,6 +67,9 @@ pub struct PartialWindowCaptionInput {
     pub turn_session_id: u64,
     pub turn_id: u64,
     pub segment_id: u64,
+    pub revision: u64,
+    pub output_sequence: u64,
+    pub relay_sequence: u64,
     pub text: String,
     #[serde(default)]
     pub capture_generation: Option<u64>,

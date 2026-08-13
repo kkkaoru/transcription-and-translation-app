@@ -327,6 +327,11 @@ export interface PartialWindowCaption {
   turnSessionId: number;
   turnId: number;
   segmentId: number;
+  /** Sidecar ordering for this OPEN-segment result; never used by caption merge. */
+  revision: number;
+  outputSequence: number;
+  /** Main-process relay ordering, monotonically increasing for this app lifetime. */
+  relaySequence: number;
   text: string;
   captureGeneration?: number;
 }

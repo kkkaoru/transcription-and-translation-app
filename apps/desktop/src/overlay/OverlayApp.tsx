@@ -21,6 +21,11 @@ import {
   pickLatestSuccessfulAsrStage,
   rememberOverlayAsrStage,
 } from "../core/parapper-provisional";
+import {
+  partialWindowRelayFence,
+  shouldApplyPartialWindowRelay,
+  type PartialWindowRelayFence,
+} from "../core/partialWindowRelay";
 import type {
   AppConfig,
   CaptionPayload,
@@ -282,6 +287,9 @@ export const OverlayApp = () => {
     transparentCapture ? createEmptyCaption() : createPreviewCaption(),
   );
   const [partialWindow, setPartialWindow] = useState<PartialWindowCaption | null>(null);
+  // Retain this even after a clear: it prevents a delayed older IPC invoke
+  // from resurrecting an OPEN-segment suffix in this renderer.
+  const partialWindowFence = useRef<PartialWindowRelayFence | null>(null);
   /**
    * Keep the latest committed caption outside React's state updater. Merge and
    * display-timing side effects must run once per event; StrictMode/concurrent
@@ -533,6 +541,10 @@ export const OverlayApp = () => {
           if (!mounted || idle) {
             return;
           }
+          if (!shouldApplyPartialWindowRelay(partialWindowFence.current, next)) {
+            return;
+          }
+          partialWindowFence.current = partialWindowRelayFence(next);
           setPartialWindow(next.text.trim() ? next : null);
         })
         .then((dispose) => {
