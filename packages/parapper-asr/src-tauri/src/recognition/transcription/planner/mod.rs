@@ -141,11 +141,15 @@ impl AsrRequestSegmentPlan {
             return first.segment_id;
         }
         if first.previous_segment_id.is_none() && !open_turn_accepts_root_segment {
-            // Production Nemotron 160ms restarts as a new root after EndSilence
-            // flushes the stream. Keep it on the still-open utterance instead of
-            // reminting a same-turn tail.
-            if first.reason == SegmentCloseReason::InterimChunkReached
-                && let Some(open_turn_id) = open_turn_id
+            // Production Nemotron 160ms / max-chunk restart as a new root after
+            // EndSilence flushes the stream. Keep them on the still-open
+            // utterance instead of reminting a same-turn tail. After a
+            // next-utterance remint, that open id is the new turn.
+            if matches!(
+                first.reason,
+                SegmentCloseReason::InterimChunkReached
+                    | SegmentCloseReason::SegmentMaxChunksReached
+            ) && let Some(open_turn_id) = open_turn_id
             {
                 return open_turn_id;
             }
