@@ -64,8 +64,9 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       // hold-clear once replaced this import and left grapheme reveal dead.
       expect(mainAppSource).toMatch(/useProgressiveCaptionReveal/);
       expect(mainAppSource).toMatch(
-        /const progressiveCaption = useProgressiveCaptionReveal\(caption\)/,
+        /const progressiveCaption = useProgressiveCaptionReveal\(caption,\s*\{/,
       );
+      expect(mainAppSource).toMatch(/snapAvailablePrefixExtensions:\s*true/);
       expect(mainAppSource).toMatch(/caption=\{progressiveCaption\}/);
       expect(mainAppSource).toMatch(
         /<NativeFramePublisher config=\{config\} caption=\{progressiveCaption\} \/>/,

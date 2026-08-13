@@ -455,9 +455,13 @@ export const MainApp = () => {
   /** Mutable caption cursor keeps merge side effects outside React state updaters. */
   const captionRef = useRef<CaptionPayload>(createPreviewCaption());
   const [caption, setCaption] = useState<CaptionPayload>(() => captionRef.current);
-  // Grow newly recognized graphemes onto Live/Syphon one-by-one (こ→こんにちは).
-  // Hold-clear still watches the merged `caption`; display paths use the reveal.
-  const progressiveCaption = useProgressiveCaptionReveal(caption);
+  // Grow newly recognized graphemes onto Live/Syphon (こ→こんにちは). Snap an
+  // already-recognized longer same-turn surface so the main-window publisher
+  // cannot overwrite OverlayApp's full line with a typewriter lead. Hold-clear
+  // still watches the merged `caption`; display paths use the reveal.
+  const progressiveCaption = useProgressiveCaptionReveal(caption, {
+    snapAvailablePrefixExtensions: true,
+  });
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>("live");
   const [saving, setSaving] = useState(false);

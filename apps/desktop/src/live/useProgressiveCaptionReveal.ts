@@ -17,8 +17,9 @@ import { captionGraphemes } from "../overlay/captions";
 
 export type ProgressiveCaptionRevealOptions = {
   /**
-   * Overlay/Syphon: snap to an already-recognized longer prefix instead of
-   * typewriting from the committed lead. Live leaves this unset.
+   * Overlay/Syphon and Live: snap to an already-recognized longer prefix instead
+   * of typewriting from the committed lead. The default (unset) keeps
+   * per-grapheme reveal after the first frame.
    */
   snapAvailablePrefixExtensions?: boolean;
 };
@@ -37,9 +38,8 @@ export type ProgressiveCaptionRevealOptions = {
  * first frame commits (or a longer surface arrives) so Syphon/overlay never
  * first-paints `こ` when `こんにちは` is about to replace it. A longer surface
  * that arrives before that first frame commits (one display frame / 16ms) snaps
- * immediately. Later prefix extensions still reveal one grapheme at a time on
- * Live. Overlay may snap those extensions once the longer surface is already
- * in the caption so Syphon does not stay on the first piece.
+ * immediately. Later prefix extensions still reveal one grapheme at a time unless
+ * `snapAvailablePrefixExtensions` is set (OverlayApp and MainApp Syphon/Live).
  * The reveal target is the newest visible sentence (same paging as the
  * overlay), not the raw multi-clause `sourceText`, so finished-clause paging
  * cannot collapse a mid-reveal prefix to a single grapheme.
