@@ -1041,6 +1041,13 @@ impl RecognitionSession {
             // Do not remint while this turn's 160ms grid is still in flight.
             return false;
         }
+        if segment.reason == SegmentCloseReason::InterimResultSilenceReached
+            && self.turn_store.finalized_turns.iter().any(|&id| id < turn_id)
+        {
+            // Breath after a reminted utterance's 160ms stays on that turn.
+            // Breath after the first utterance's prefix-only 160ms still remints.
+            return false;
+        }
         if !self.pending_child_is_after_interim_silence(segment, turn_id) {
             return false;
         }
