@@ -90,6 +90,71 @@ impl TurnDraft {
         );
     }
 
+    pub(crate) fn extend_latest_segment_audio(
+        &mut self,
+        audio: &[f32],
+        vad_results: &[VadResult],
+        route: RecognitionRoute,
+        elapsed_millis: u128,
+    ) {
+        self.route = Some(route);
+        self.full_audio.extend_from_slice(audio);
+        self.vad_results.extend_from_slice(vad_results);
+        if let Some(len) = self.segment_audio_lens.last_mut() {
+            *len = len.saturating_add(audio.len());
+        }
+        if let Some(len) = self.segment_vad_lens.last_mut() {
+            *len = len.saturating_add(vad_results.len());
+        }
+        self.processing_millis += elapsed_millis;
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "TurnDraft keeps the prefix ASR segment text, audio, VAD, route, and source metadata together."
+    )]
+    pub(crate) fn prepend_recognized_segment(
+        &mut self,
+        segment_id: u64,
+        previous_segment_id: Option<u64>,
+        full_audio: &[f32],
+        vad_results: &[VadResult],
+        route: RecognitionRoute,
+        text: String,
+        elapsed_millis: u128,
+    ) {
+        self.full_audio.splice(0..0, full_audio.iter().copied());
+        self.vad_results.splice(0..0, vad_results.iter().copied());
+        self.segment_texts.insert(0, text);
+        self.segment_ids.insert(0, segment_id);
+        self.segment_audio_lens.insert(0, full_audio.len());
+        self.segment_vad_lens.insert(0, vad_results.len());
+        if self.latest_segment_id.is_none() {
+            self.latest_segment_id = Some(segment_id);
+            self.latest_previous_segment_id = previous_segment_id;
+        }
+        self.route = Some(route);
+        self.combined_text = join_turn_segments(&self.segment_texts, route.language);
+        self.processing_millis += elapsed_millis;
+    }
+
+    pub(crate) fn replace_segment_text_preserving_audio(
+        &mut self,
+        segment_id: u64,
+        route: RecognitionRoute,
+        text: String,
+        elapsed_millis: u128,
+    ) -> bool {
+        let Some(index) = self.segment_ids.iter().position(|id| *id == segment_id) else {
+            return false;
+        };
+        self.segment_texts[index] = text;
+        self.route = Some(route);
+        self.combined_text = join_turn_segments(&self.segment_texts, route.language);
+        self.processing_millis += elapsed_millis;
+        true
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "TurnDraft keeps the replacement ASR segment text, audio, VAD, route, and source metadata together."

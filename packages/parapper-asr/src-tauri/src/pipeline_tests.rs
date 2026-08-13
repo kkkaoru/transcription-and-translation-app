@@ -12,6 +12,7 @@ use crate::{
     delivery::{
         RecognitionSourceMeta, RecognizedTextMeta, RecognizedTextOutput, dispatch_recognized_text,
     },
+    recognition::control::events::TurnCaptionLatency,
 };
 
 fn source_meta() -> RecognitionSourceMeta {
@@ -34,6 +35,7 @@ fn recognized_output(id: &str, text: &str) -> RecognizedTextOutput {
         detected_language: Some("ja".to_string()),
         meta: RecognizedTextMeta::replace_turn(id.to_string(), source_meta(), true),
         elapsed_millis: 0,
+        caption_latency: TurnCaptionLatency::default(),
     }
 }
 

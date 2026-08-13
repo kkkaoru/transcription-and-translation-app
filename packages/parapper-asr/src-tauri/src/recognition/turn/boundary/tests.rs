@@ -1,6 +1,6 @@
 use super::{
     audio_window::{BoundaryAudioWindow, audio_window_for_boundary},
-    candidates_for_transcript,
+    candidates_for_transcript, candidates_for_visible_draft,
     japanese::{
         JapaneseMorphToken, has_pos1, hiragana_text_from_morph_tokens, is_nominal_suffix,
         japanese_morph_candidates,
@@ -109,6 +109,62 @@ fn boundary_candidates_require_every_visible_token_to_have_start_timestamp() {
     assert!(
         candidates.is_empty(),
         "punctuation boundaries must not be inferred when a visible token lacks alignment"
+    );
+}
+
+#[test]
+fn visible_draft_sentence_end_does_not_need_rerecognition_tokens() {
+    let audio = vec![0.0; 16_000];
+    let vad_results = vads(&[true]);
+
+    assert!(
+        candidates_for_transcript(
+            AsrLanguage::Japanese,
+            &AsrTranscript::from_text("全体。"),
+            &audio,
+            &vad_results,
+            None,
+        )
+        .is_empty(),
+        "token-aligned rerecognition must still refuse to invent boundaries without timestamps"
+    );
+
+    let candidates =
+        candidates_for_visible_draft(AsrLanguage::Japanese, "全体。", &audio, &vad_results, None);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].class, GrammarBoundaryClass::StrongEnd);
+    assert_eq!(candidates[0].char_end, "全体。".chars().count());
+}
+
+#[test]
+fn visible_draft_internal_sentence_end_is_not_at_text_end() {
+    let candidates = candidates_for_visible_draft(
+        AsrLanguage::Japanese,
+        "前半。続き",
+        &vec![0.0; 16_000],
+        &vads(&[true, true]),
+        None,
+    );
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].class, GrammarBoundaryClass::StrongEnd);
+    assert!(
+        candidates[0].char_end < "前半。続き".chars().count(),
+        "mid-clause punctuation must stay internal so Continue remains possible"
+    );
+}
+
+#[test]
+fn visible_draft_mid_clause_without_sentence_end_has_no_candidates() {
+    let candidates = candidates_for_visible_draft(
+        AsrLanguage::Japanese,
+        "しようとしたら",
+        &vec![0.0; 16_000],
+        &vads(&[true]),
+        None,
+    );
+    assert!(
+        candidates.is_empty(),
+        "a Continue-possible mid-clause must not become CompleteTurn without a completing boundary"
     );
 }
 

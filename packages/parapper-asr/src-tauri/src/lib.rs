@@ -91,16 +91,15 @@ fn parse_headless_interim_asr_model(
     index: &mut usize,
 ) -> Result<Option<AsrModel>, String> {
     *index += 1;
-    let value = arguments
-        .get(*index)
-        .ok_or_else(|| "--interim-asr-model requires a value".to_string())?;
+    let value =
+        arguments.get(*index).ok_or_else(|| "--interim-asr-model requires a value".to_string())?;
     match value.as_str() {
         "none" | "off" | "false" => Ok(None),
         other => {
-            let model: AsrModel = serde_json::from_value(serde_json::Value::String(other.to_string()))
-                .map_err(|_| {
-                    format!("--interim-asr-model is not a known ASR model, got {value:?}")
-                })?;
+            let model: AsrModel = serde_json::from_value(serde_json::Value::String(
+                other.to_string(),
+            ))
+            .map_err(|_| format!("--interim-asr-model is not a known ASR model, got {value:?}"))?;
             if !model.is_interim_only() {
                 return Err(format!(
                     "--interim-asr-model must be an interim-only model, got {value:?}"
@@ -634,17 +633,14 @@ async fn start_headless_recognition(
             match ensure_models_downloaded(&handle_for_download, &cfg).await {
                 Ok(_) => match state.set_config(cfg).await {
                     Ok(_) => log::info!(
-                        "Interim ASR model {:?} installed and enabled after background download",
-                        interim
+                        "Interim ASR model {interim:?} installed and enabled after background download"
                     ),
                     Err(err) => log::warn!(
-                        "Interim ASR model {:?} downloaded but failed to enable: {err}",
-                        interim
+                        "Interim ASR model {interim:?} downloaded but failed to enable: {err}"
                     ),
                 },
                 Err(err) => log::warn!(
-                    "Background download for interim ASR model {:?} failed: {err}",
-                    interim
+                    "Background download for interim ASR model {interim:?} failed: {err}"
                 ),
             }
         });
@@ -768,11 +764,8 @@ mod headless_tests {
         );
 
         for off in ["none", "off", "false"] {
-            let clear = vec![
-                "--headless".to_string(),
-                "--interim-asr-model".to_string(),
-                off.to_string(),
-            ];
+            let clear =
+                vec!["--headless".to_string(), "--interim-asr-model".to_string(), off.to_string()];
             assert_eq!(HeadlessOptions::parse(&clear).unwrap().interim_asr_model, None);
         }
     }

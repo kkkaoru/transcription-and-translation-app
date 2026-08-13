@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use tauri::AppHandle;
 use vibrato_rkyv::{Dictionary, LoadMode, Tokenizer};
 
-use super::{audio_window::audio_window_for_boundary, sample_end_for_char_end};
+use super::{audio_window::audio_window_for_boundary, sample_end_for_char_end_or_ratio};
 use crate::{
     model::{japanese_morph_dictionary_paths_from_root, models_root},
     recognition::{
@@ -166,7 +166,7 @@ pub(super) fn japanese_morph_candidates(
             let class =
                 japanese_morph_boundary_class(token, morph_tokens.get(index + 1), text_len)?;
             let char_end = token.char_range.end;
-            let sample_end = sample_end_for_char_end(transcript, char_end, audio_len)?;
+            let sample_end = sample_end_for_char_end_or_ratio(transcript, char_end, audio_len);
             let audio_window = audio_window_for_boundary(audio_len, vad_results, sample_end);
             Some(TurnBoundaryCandidate {
                 char_end,

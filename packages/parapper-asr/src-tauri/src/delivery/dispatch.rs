@@ -59,6 +59,7 @@ mod tests {
     use crate::{
         config::{AsrLanguage, AsrModel},
         delivery::{RecognitionSourceMeta, RecognizedTextMeta, RecognizedTextOutput},
+        recognition::control::events::TurnCaptionLatency,
     };
 
     #[test]
@@ -82,6 +83,7 @@ mod tests {
                 false,
             ),
             elapsed_millis: 0,
+            caption_latency: TurnCaptionLatency::default(),
         };
 
         assert!(!is_final_for_ync_delivery(&output));

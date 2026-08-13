@@ -35,6 +35,14 @@ struct DeveloperRecognitionEvent {
     recognized_at_ms: u64,
     elapsed_ms: u128,
     audio_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speech_start_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asr_dispatch_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_partial_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asr_final_at: Option<u64>,
 }
 
 impl RecognizedTextSink for DeveloperHttpSink {
@@ -86,6 +94,10 @@ fn build_event(
         recognized_at_ms: ctx.recognized_at_millis,
         elapsed_ms: ctx.elapsed_millis,
         audio_duration_ms: output.meta.is_final().then(|| audio_duration_millis(ctx.audio_seconds)),
+        speech_start_at: output.caption_latency.speech_start_at,
+        asr_dispatch_at: output.caption_latency.asr_dispatch_at,
+        first_partial_at: output.caption_latency.first_partial_at,
+        asr_final_at: output.caption_latency.asr_final_at,
     }
 }
 
@@ -160,6 +172,10 @@ mod tests {
             recognized_at_ms: 1_000,
             elapsed_ms: 96,
             audio_duration_ms: Some(1_280),
+            speech_start_at: None,
+            asr_dispatch_at: None,
+            first_partial_at: None,
+            asr_final_at: None,
         };
 
         assert_eq!(

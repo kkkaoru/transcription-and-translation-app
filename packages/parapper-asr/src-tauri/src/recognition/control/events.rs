@@ -38,6 +38,15 @@ pub(crate) struct RecognizedTextEvent {
     pub source_language: AsrLanguage,
     pub detected_language: Option<String>,
     pub recognized_at_millis: u64,
+    /// Monotonic ms from the recognition session clock origin. See [`TurnCaptionLatency`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_start_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_dispatch_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_partial_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_final_at: Option<u64>,
     pub audio_seconds: f64,
     pub elapsed_millis: u128,
     pub audio_frames: usize,
@@ -53,6 +62,27 @@ pub(crate) struct RecognitionSourceMeta {
     pub output_sequence: u64,
     pub segment_id: u64,
     pub previous_segment_id: Option<u64>,
+}
+
+/// Speech→caption spans for one turn, in monotonic milliseconds from the
+/// session clock origin (not Unix wall time). First-write wins: later ASR
+/// on the same turn (long utterances, rerecognition) must not reset earlier
+/// stamps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
+pub(crate) struct TurnCaptionLatency {
+    /// VAD speech onset attributed to this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_start_at: Option<u64>,
+    /// First successful ASR submit for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_dispatch_at: Option<u64>,
+    /// First non-final recognized-text emit for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_partial_at: Option<u64>,
+    /// Final recognized-text emit for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_final_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

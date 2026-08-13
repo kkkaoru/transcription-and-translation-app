@@ -249,14 +249,27 @@ impl RecognitionDriverHandle for RecognitionDriver {
 
     fn push_vad_frame(&mut self, samples: &[f32], vad_result: VadResult) {
         self.runtime.advance_runtime_tick();
+        self.runtime.note_vad_speech(vad_result.is_speech);
         let frame_events = self.segmentation_flow.push_vad_frame(samples, vad_result);
         self.runtime.push_segment_event_frame(frame_events);
     }
 
     fn step(&mut self) {
+        let in_flight_before =
+            self.runtime.requests.in_flight_request.as_ref().map(|request| request.request_id);
         let applied_asr = self.runtime.apply_completed_asr_result_if_ready();
-        if applied_asr && self.runtime.requests.in_flight_request.is_some() {
-            // Mismatched result kept the slot occupied; wait for the matching one.
+        if applied_asr
+            && self
+                .runtime
+                .requests
+                .in_flight_request
+                .as_ref()
+                .is_some_and(|request| Some(request.request_id) == in_flight_before)
+        {
+            // Only a mismatched result keeps the original in-flight request.
+            // Completion that starts grammar rerecognition occupies the slot
+            // with a *new* request; same-tick dispatch_next must still run so
+            // a yielded next utterance can take that slot immediately.
             return;
         }
 
@@ -276,6 +289,11 @@ impl RecognitionDriverHandle for RecognitionDriver {
             } else if self.runtime.handle_turn_check_silence_reached(turn_check.previous_segment_id)
             {
                 self.runtime.pending.turn_check = None;
+                // CompleteWithoutGrammar / Ignore used to return here, so a
+                // newer utterance already queued waited another VAD tick.
+                // Promote/rerecognition already occupy in-flight; dispatch is
+                // then a no-op.
+                self.runtime.dispatch_next_asr_request_if_idle();
                 return;
             } else {
                 return;
@@ -314,5 +332,7 @@ impl RecognitionSession {
             || self.pending.turn_check.is_some()
             || self.pending.finalization.is_some()
             || !self.pending.asr_segments.is_empty()
+            || self.has_deferred_completion()
+            || self.requests.deferred_rerecognition.is_some()
     }
 }

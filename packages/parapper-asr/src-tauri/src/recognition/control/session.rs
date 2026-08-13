@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
+};
 
 use super::pending::{PendingFinalization, PendingTurnCheck, RerecognitionPurpose};
 use crate::{
@@ -18,7 +21,10 @@ use crate::{
     },
 };
 
-use super::{AsrRequestRunner, TurnDecisionRunner, TurnOutputSink};
+use super::{
+    AsrRequestRunner, TurnDecisionRunner, TurnOutputSink, clock::CaptionClock,
+    events::TurnCaptionLatency,
+};
 
 pub(crate) struct RecognitionSession {
     pub(in crate::recognition) config: ParapperConfig,
@@ -28,6 +34,7 @@ pub(crate) struct RecognitionSession {
     pub(in crate::recognition) counters: RuntimeCounters,
     pub(in crate::recognition) activity: ActivityState,
     pub(in crate::recognition) requests: AsrRequestState,
+    pub(in crate::recognition) clock: Arc<dyn CaptionClock>,
 }
 
 pub(in crate::recognition) struct RuntimeIo {
@@ -45,7 +52,7 @@ pub(in crate::recognition) struct PendingRuntimeState {
     pub(in crate::recognition) finalization: Option<PendingFinalization>,
     pub(in crate::recognition) asr_segments: VecDeque<PendingAsrSegment>,
     pub(in crate::recognition) interim_asr: InterimAsrState,
-    /// Reset Nemotron streaming cache only after flushed InterimChunkReached
+    /// Reset Nemotron streaming cache only after flushed `InterimChunkReached`
     /// requests for the closing utterance have been submitted.
     pub(in crate::recognition) deferred_streaming_session_reset: bool,
 }
@@ -156,6 +163,7 @@ impl InterimAsrState {
         (!streaming_interim_enabled).then_some(segment)
     }
 
+    #[allow(dead_code)]
     pub(in crate::recognition) fn clear_streaming_if_segment(
         &mut self,
         segment_id: u64,
@@ -228,11 +236,15 @@ impl StreamingInterimSegmentState {
         self.chunks.iter().map(|chunk| chunk.audio.len()).sum()
     }
 
-    fn pending_chunk_segment(&self, delta_start: usize, emitted_samples: usize) -> PendingAsrSegment {
+    fn pending_chunk_segment(
+        &self,
+        delta_start: usize,
+        emitted_samples: usize,
+    ) -> PendingAsrSegment {
         let (source_audio, source_vad_results) = self.audio_and_vad_range(0, emitted_samples);
         let (audio, vad_results) = self.audio_and_vad_range(delta_start, emitted_samples);
         let range = AudioRange::new(
-            self.range_start,
+            GlobalSampleIndex(self.range_start.0 + delta_start as u64),
             GlobalSampleIndex(self.range_start.0 + emitted_samples as u64),
         );
         PendingAsrSegment {
@@ -387,7 +399,7 @@ pub(in crate::recognition) trait LanguageIdRuntime:
 
 pub(in crate::recognition) struct TurnStore {
     pub(in crate::recognition) turns: HashMap<u64, Turn>,
-    pub(in crate::recognition) audio_ranges: HashMap<u64, AudioRange>,
+    pub(in crate::recognition) audio_ranges: HashMap<u64, Vec<AudioRange>>,
     pub(in crate::recognition) revisions: HashMap<u64, u64>,
     pub(in crate::recognition) finalized_turns: HashSet<u64>,
     pub(in crate::recognition) streaming_interim_ranges: HashMap<u64, AudioRange>,
@@ -395,6 +407,8 @@ pub(in crate::recognition) struct TurnStore {
     pub(in crate::recognition) last_recognition_route: Option<RecognitionRoute>,
     pub(in crate::recognition) open_turn_id: Option<u64>,
     pub(in crate::recognition) open_turn_accepts_root_segment: bool,
+    pub(in crate::recognition) open_turn_is_closing: bool,
+    pub(in crate::recognition) caption_latency: HashMap<u64, TurnCaptionLatency>,
 }
 
 impl Default for TurnStore {
@@ -409,6 +423,8 @@ impl Default for TurnStore {
             last_recognition_route: None,
             open_turn_id: None,
             open_turn_accepts_root_segment: false,
+            open_turn_is_closing: false,
+            caption_latency: HashMap::new(),
         }
     }
 }
@@ -442,6 +458,8 @@ pub(in crate::recognition) struct ActivityState {
     pub(in crate::recognition) segment_activity_epoch: u64,
     pub(in crate::recognition) open_turn_activity_epoch: u64,
     pub(in crate::recognition) open_turn_since_tick: Option<u64>,
+    pub(in crate::recognition) vad_was_speech: bool,
+    pub(in crate::recognition) pending_speech_onset_at: Option<u64>,
 }
 
 #[derive(Default)]
@@ -449,4 +467,13 @@ pub(in crate::recognition) struct AsrRequestState {
     pub(in crate::recognition) in_flight_request: Option<AsrRequest>,
     pub(in crate::recognition) pending_rerecognition_purpose: Option<RerecognitionPurpose>,
     pub(in crate::recognition) last_dispatched: Option<AsrInFlight>,
+    /// Follow-up rerecognition deferred so same-utterance tail ASR can run first.
+    /// Restart once the slot is idle and no max-chunk / streaming chunk remains,
+    /// including `TimeoutFinal` / `SimpleTurnCheckFinal` / `GrammarAfterCompletion`.
+    pub(in crate::recognition) deferred_rerecognition: Option<(u64, RerecognitionPurpose)>,
+    /// End-silence / max-chunk `CompletionCheck` requests deferred so a later
+    /// same-utterance 160ms tail can run first. Stack: later tails resume first
+    /// so prefix audio prepends in order. Late original results mismatch the
+    /// new request id.
+    pub(in crate::recognition) deferred_completion: VecDeque<AsrRequest>,
 }

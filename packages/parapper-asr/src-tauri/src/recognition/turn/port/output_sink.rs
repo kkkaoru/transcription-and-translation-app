@@ -133,7 +133,7 @@ mod tests {
     use crate::{
         config::{AsrLanguage, AsrModel},
         delivery::{RecognitionSourceMeta, RecognizedTextMeta},
-        recognition::control::events::RecognizedTextEvent,
+        recognition::control::events::{RecognizedTextEvent, TurnCaptionLatency},
     };
 
     #[test]
@@ -235,6 +235,7 @@ mod tests {
                 true,
             ),
             elapsed_millis: 37,
+            caption_latency: TurnCaptionLatency::default(),
         }
     }
 

@@ -10,6 +10,8 @@
 mod asr_result;
 #[path = "unit_test/asr_runner.rs"]
 mod asr_runner;
+#[path = "unit_test/caption_latency.rs"]
+mod caption_latency;
 #[path = "unit_test/finalization.rs"]
 mod finalization;
 #[path = "unit_test/grammar_boundary_decision.rs"]

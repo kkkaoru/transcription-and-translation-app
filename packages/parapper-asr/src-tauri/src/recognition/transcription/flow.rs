@@ -3,9 +3,12 @@ use crate::recognition::{
     segmentation::segment::builder::SegmentCloseReason,
     segmentation::vad::engine::VadResult,
     transcription::{
-        asr::task::{
-            AsrInFlight, AsrRequest, AsrRequestId, AsrResult, AsrTaskKind, AudioRange,
-            GlobalSampleIndex, VadFrameIndex,
+        asr::{
+            engine::AsrTranscript,
+            task::{
+                AsrInFlight, AsrRequest, AsrRequestId, AsrResult, AsrTaskKind, AudioRange,
+                GlobalSampleIndex, VadFrameIndex,
+            },
         },
         planner::{
             PendingAsrSegment, drop_front_interim_segments_covered_by_completion,
@@ -164,9 +167,21 @@ impl RecognitionSession {
     }
 
     pub(in crate::recognition) fn dispatch_next_asr_request_if_idle(&mut self) {
+        self.yield_rerecognition_slot_for_next_utterance();
+        self.yield_rerecognition_slot_for_same_turn_continuation();
+        self.yield_completion_slot_for_same_turn_continuation();
         if self.requests.in_flight_request.is_some() {
             return;
         }
+        self.dispatch_deferred_completion_if_idle();
+        if self.requests.in_flight_request.is_some() {
+            return;
+        }
+        self.dispatch_deferred_rerecognition_if_idle();
+        if self.requests.in_flight_request.is_some() {
+            return;
+        }
+        self.finalize_open_turn_if_after_interim_silence_follows_160ms();
         drop_front_interim_segments_covered_by_completion(&mut self.pending.asr_segments);
         let Some(request) = self.build_next_asr_request() else {
             self.apply_deferred_streaming_session_reset_if_ready();
@@ -181,15 +196,20 @@ impl RecognitionSession {
             );
             return;
         }
+        let turn_id = request.target.turn_id.0;
         self.requests.in_flight_request = Some(request);
         self.requests.last_dispatched = Some(in_flight);
+        self.stamp_asr_dispatch(turn_id);
         self.apply_deferred_streaming_session_reset_if_ready();
     }
 
     fn build_next_asr_request(&mut self) -> Option<AsrRequest> {
         loop {
-            let plan =
-                take_next_request_segment_plan(&self.config, &mut self.pending.asr_segments)?;
+            let plan = take_next_request_segment_plan(
+                &self.config,
+                &mut self.pending.asr_segments,
+                self.turn_store.open_turn_id,
+            )?;
             let range = plan.range();
             if range.end_sample <= self.turn_store.confirmed_until_sample {
                 log::warn!(
@@ -422,12 +442,15 @@ impl RecognitionSession {
             | AsrResultAction::DropUnusableInterim
             | AsrResultAction::DropUnusableCompletionWithoutDraft => {}
             AsrResultAction::FallbackCompletionWithNamo { turn_id } => {
+                self.apply_unusable_completion_audio_keep_visible(request);
                 self.complete_or_continue_turn_with_namo(turn_id);
             }
             AsrResultAction::FallbackCompletionWithoutGrammar { turn_id } => {
+                self.apply_unusable_completion_audio_keep_visible(request);
                 self.complete_turn_without_grammar(turn_id);
             }
             AsrResultAction::FallbackCompletionKeepOpen { turn_id } => {
+                self.apply_unusable_completion_audio_keep_visible(request);
                 self.keep_turn_open(turn_id, true);
             }
             AsrResultAction::FallbackRerecognition { turn_id, purpose } => {
@@ -453,14 +476,43 @@ impl RecognitionSession {
                 let turn_id = self.apply_segment_transcript(request, transcript, elapsed_millis);
                 match after_transcript {
                     AsrResultCompletionAfterTranscript::RerecognizeIfIdle(purpose) => {
-                        if self.dispatch_rerecognition_for_turn_if_idle(
-                            turn_id,
-                            runtime_purpose_from_result(purpose),
-                        ) {
+                        let purpose = runtime_purpose_from_result(purpose);
+                        if self.has_deferred_completion() {
+                            // Same-utterance tail applied first. Keep the draft
+                            // open and restart grammar rerecognition after the
+                            // deferred prefix CompletionCheck resumes.
+                            self.requests.deferred_rerecognition = Some((turn_id, purpose));
+                            self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                            self.adopt_open_turn_after_completion(turn_id);
+                            return;
+                        }
+                        if self.dispatch_rerecognition_for_turn_if_idle(turn_id, purpose) {
+                            // Paint the completion hypothesis before waiting on
+                            // follow-up ASR so the caption is not blank for a
+                            // full extra recognition round-trip.
+                            self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                            self.adopt_open_turn_after_completion(turn_id);
+                            return;
+                        }
+                        if self.should_release_rerecognition_for_same_turn_continuation(
+                            turn_id, purpose,
+                        ) || self.requests.deferred_rerecognition.is_some()
+                        {
+                            // Same-utterance tail ASR is queued. Keep the draft
+                            // open so max-chunk / streaming chunks / root
+                            // AfterInterimSilence after EndSilence extend it
+                            // instead of finalizing or reminting a new turn.
+                            self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                            self.adopt_open_turn_after_completion(turn_id);
                             return;
                         }
                     }
                     AsrResultCompletionAfterTranscript::CompleteWithoutGrammar => {}
+                }
+                if self.has_deferred_completion() {
+                    self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                    self.adopt_open_turn_after_completion(turn_id);
+                    return;
                 }
                 self.complete_turn_without_grammar(turn_id);
             }
@@ -477,6 +529,16 @@ impl RecognitionSession {
                     purpose == AsrResultRerecognitionPurpose::GrammarAfterCompletion,
                 );
                 self.apply_rerecognition_follow_up(request.target.turn_id.0, purpose);
+            }
+        }
+    }
+
+    pub(in crate::recognition) fn adopt_open_turn_after_completion(&mut self, turn_id: u64) {
+        let previous_open_turn_id = self.turn_store.open_turn_id;
+        if self.turn_store.open_turn_id.is_none_or(|open_turn_id| open_turn_id <= turn_id) {
+            self.turn_store.open_turn_id = Some(turn_id);
+            if previous_open_turn_id != Some(turn_id) {
+                self.turn_store.open_turn_accepts_root_segment = false;
             }
         }
     }
@@ -536,6 +598,16 @@ impl RecognitionSession {
             .is_some_and(|turn| !turn.draft().combined_text.trim().is_empty())
     }
 
+    fn apply_unusable_completion_audio_keep_visible(&mut self, request: &AsrRequest) {
+        if request.kind != AsrTaskKind::CompletionCheck {
+            return;
+        }
+        if !self.turn_has_non_empty_draft(request.target.turn_id.0) {
+            return;
+        }
+        self.apply_segment_transcript(request, AsrTranscript::from_text(""), 0);
+    }
+
     fn completion_failure_action_for_request(&self) -> AsrResultCompletionFailureAction {
         match self.config.turn.detector {
             crate::config::TurnDetector::Namo => AsrResultCompletionFailureAction::DecideWithNamo,
@@ -585,7 +657,9 @@ mod tests {
     use crate::{
         config::{AsrLanguage, AsrModel, ParapperConfig, TurnDetector},
         recognition::{
-            transcription::asr::task::{AsrTarget, SegmentId, TurnId, TurnRevision},
+            transcription::asr::task::{
+                AsrTarget, AudioRange, GlobalSampleIndex, SegmentId, TurnId, TurnRevision,
+            },
             turn::Turn,
         },
     };
@@ -706,10 +780,8 @@ mod tests {
     }
 
     #[test]
-    fn turn_detector_can_connect_interim_after_completion_controls_request_merging() {
-        for (turn_detector, expected_audio_len, expected_remaining) in
-            [(TurnDetector::Namo, 20, 0), (TurnDetector::Simple, 10, 1)]
-        {
+    fn end_silence_completion_does_not_fold_following_after_interim_silence() {
+        for turn_detector in [TurnDetector::Namo, TurnDetector::Simple] {
             let mut runtime = RecognitionSession::new(&parapper_config! {
                 turn_detector: turn_detector,
                 ..ParapperConfig::default()
@@ -735,10 +807,16 @@ mod tests {
                 .as_ref()
                 .expect("completion request should be dispatched");
             assert_eq!(request.kind, AsrTaskKind::CompletionCheck);
-            assert_eq!(request.audio.len(), expected_audio_len, "turn_detector={turn_detector:?}");
+            assert_eq!(request.audio.len(), 10, "turn_detector={turn_detector:?}");
             assert_eq!(
-                runtime.pending.asr_segments.len(),
-                expected_remaining,
+                request.target.range,
+                AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(10)),
+                "turn_detector={turn_detector:?}"
+            );
+            assert_eq!(runtime.pending.asr_segments.len(), 1, "turn_detector={turn_detector:?}");
+            assert_eq!(
+                runtime.pending.asr_segments.front().map(|segment| segment.reason),
+                Some(SegmentCloseReason::InterimResultSilenceReached),
                 "turn_detector={turn_detector:?}"
             );
         }
