@@ -317,7 +317,20 @@ impl RecognitionSession {
         let turn_id = request.target.turn_id.0;
         let existing_audio_ranges =
             self.turn_store.audio_ranges.get(&turn_id).cloned().unwrap_or_default();
-        self.merge_turn_audio_range(turn_id, request.target.range);
+        // A later 160ms may start inside this max-chunk (segment-builder padding).
+        // Park only the uncovered prefix; the overlapping samples belong to the
+        // 160ms grid so they are not double-counted when the chunk appends.
+        let park_end = self
+            .pending_streaming_chunk_start_sample()
+            .filter(|chunk_start| {
+                *chunk_start > request.target.range.start_sample
+                    && *chunk_start < request.target.range.end_sample
+            })
+            .unwrap_or(request.target.range.end_sample);
+        let park_range = AudioRange::new(request.target.range.start_sample, park_end);
+        if park_end > request.target.range.start_sample {
+            self.merge_turn_audio_range(turn_id, park_range);
+        }
         let revision = *self.turn_store.revisions.entry(turn_id).or_insert(0);
         let turn = self.turn_store.turns.entry(turn_id).or_insert_with(|| {
             Turn::new(turn_event_id(self.counters.turn_session_id, turn_id, revision), revision)
@@ -337,24 +350,25 @@ impl RecognitionSession {
             &request.source_audio,
             draft.segment_audio_lens.last().copied().unwrap_or(0),
         );
-        let append_source_start = range_skip.max(prefix_skip);
-        if append_source_start < request.source_audio.len() {
-            let append_vad_results;
-            let source_vad_results = if append_source_start == 0 {
-                request.source_vad_results.as_slice()
+        let park_source_len = samples_between(request.target.range.start_sample, park_end)
+            .min(request.source_audio.len());
+        let append_source_start = range_skip.max(prefix_skip).min(park_source_len);
+        if append_source_start < park_source_len {
+            let parked_vad = vad_prefix_until_sample(
+                request.source_audio.len(),
+                &request.source_vad_results,
+                park_source_len,
+            );
+            let uncovered_vad = if append_source_start == 0 {
+                parked_vad
             } else {
-                append_vad_results = vad_suffix_after_sample(
-                    request.source_audio.len(),
-                    &request.source_vad_results,
-                    append_source_start,
-                );
-                append_vad_results.as_slice()
+                vad_suffix_after_sample(park_source_len, &parked_vad, append_source_start)
             };
-            let uncovered_audio = &request.source_audio[append_source_start..];
+            let uncovered_audio = &request.source_audio[append_source_start..park_source_len];
             if draft.latest_segment_id == Some(segment_id) {
                 draft.extend_latest_segment_audio(
                     uncovered_audio,
-                    source_vad_results,
+                    uncovered_vad.as_slice(),
                     request.route,
                     0,
                 );
@@ -363,14 +377,35 @@ impl RecognitionSession {
                     segment_id,
                     previous_segment_id,
                     uncovered_audio,
-                    source_vad_results,
+                    uncovered_vad.as_slice(),
                     request.route,
                     String::new(),
                     0,
                 );
             }
+        } else if park_source_len == 0 && draft.latest_segment_id != Some(segment_id) {
+            // Full overlap with the later 160ms: keep a placeholder so resume
+            // can attach max-chunk text before the uncovered tail.
+            draft.append_recognized_segment(
+                segment_id,
+                previous_segment_id,
+                &[],
+                &[],
+                request.route,
+                String::new(),
+                0,
+            );
         }
         self.adopt_open_turn_after_completion(turn_id);
+    }
+
+    fn pending_streaming_chunk_start_sample(&self) -> Option<GlobalSampleIndex> {
+        self.pending
+            .asr_segments
+            .iter()
+            .filter(|segment| segment.reason == SegmentCloseReason::InterimChunkReached)
+            .map(|segment| segment.range.start_sample)
+            .min()
     }
 
     fn refresh_visible_draft_boundary_from_completion(

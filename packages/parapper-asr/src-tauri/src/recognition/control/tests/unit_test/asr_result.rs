@@ -2481,6 +2481,146 @@ fn turn_runtime_in_flight_max_chunk_yields_to_160ms_without_dropping_prefix() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "invariant covers max-chunk park trim, 160ms apply, resume text order, and prefix audio"
+)]
+fn turn_runtime_max_chunk_yield_does_not_double_count_160ms_overlap() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    runtime.requests.in_flight_request.as_ref().expect("end-silence must dispatch completion ASR");
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        Some(1),
+        SegmentCloseReason::SegmentMaxChunksReached,
+        150..250,
+    );
+    runtime.step();
+    let max_chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("prefix CompletionCheck must yield to same-turn max-chunk");
+
+    // Segment-builder padding copies prior max-chunk end-silence into the next
+    // 160ms, so the grid starts before the parked max-chunk range ends.
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        200..360,
+    );
+    runtime.step();
+
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("in-flight max-chunk must yield to the overlapping 160ms tail");
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert_ne!(chunk.request_id, max_chunk.request_id);
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.full_audio,
+        vec![2.0; 50],
+        "yielding max-chunk must park only the uncovered prefix before the 160ms overlap"
+    );
+
+    let chunk = chunk.clone();
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let resumed_max_chunk = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("max-chunk CompletionCheck must resume after the 160ms tail");
+    assert_eq!(resumed_max_chunk.close_reason, Some(SegmentCloseReason::SegmentMaxChunksReached));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert_eq!(
+        draft.full_audio,
+        [vec![2.0; 50], vec![3.0; 160]].concat(),
+        "160ms must keep its full grid instead of stacking on parked overlap"
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "160ms tail must stay visible; got {}",
+        draft.combined_text
+    );
+
+    let resumed_max_chunk = resumed_max_chunk.clone();
+    asr_handle.complete_request_with_text(&resumed_max_chunk, "追加");
+    runtime.step();
+
+    let resumed_prefix = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("prefix CompletionCheck must still resume after max-chunk");
+    assert_eq!(resumed_prefix.close_reason, Some(SegmentCloseReason::EndSilenceReached));
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("追加"),
+        "resumed max-chunk must keep tail text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "resumed max-chunk must keep the 160ms tail; got {}",
+        draft.combined_text
+    );
+    let extra_pos = draft.combined_text.find("追加").expect("max-chunk text");
+    let cont_pos = draft.combined_text.find("続き").expect("160ms text");
+    assert!(
+        extra_pos < cont_pos,
+        "max-chunk text must stay before the 160ms tail; got {}",
+        draft.combined_text
+    );
+
+    let resumed_prefix = resumed_prefix.clone();
+    asr_handle.complete_request_with_text(&resumed_prefix, "全体。");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "resumed prefix must keep prefix text; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("追加") && draft.combined_text.contains("続き"),
+        "resumed prefix must keep max-chunk and 160ms text; got {}",
+        draft.combined_text
+    );
+    let overall_pos = draft.combined_text.find("全体").expect("prefix text");
+    let extra_pos = draft.combined_text.find("追加").expect("max-chunk text");
+    let cont_pos = draft.combined_text.find("続き").expect("160ms text");
+    assert!(
+        overall_pos < extra_pos && extra_pos < cont_pos,
+        "prefix, max-chunk, and 160ms text must stay in audio order; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![2.0; 50], vec![3.0; 160]].concat(),
+        "overlap must not double-count max-chunk samples ahead of the uncovered 160ms tail"
+    );
+}
+
+#[test]
 fn turn_runtime_applied_prefix_max_chunk_yields_to_160ms_keeping_visible_text() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)
