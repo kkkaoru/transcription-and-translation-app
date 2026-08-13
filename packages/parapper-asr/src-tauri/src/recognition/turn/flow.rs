@@ -39,6 +39,10 @@ impl RecognitionSession {
         completion::rerecognition_purpose(&self.config)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "grammar defer for root AfterInterimSilence after EndSilence sits with the other slot gates"
+    )]
     pub(in crate::recognition) fn dispatch_rerecognition_for_turn_if_idle(
         &mut self,
         turn_id: u64,
@@ -95,6 +99,9 @@ impl RecognitionSession {
             detected_language = None;
         }
         if audio.is_empty() {
+            return false;
+        }
+        if self.defer_grammar_for_root_after_interim_silence(turn_id, purpose) {
             return false;
         }
         let source_audio_len = audio.len();
@@ -357,6 +364,44 @@ impl RecognitionSession {
             segment.reason == SegmentCloseReason::InterimChunkReached
                 && self.pending_segment_blocks_finalization(segment, turn_id)
         })
+    }
+
+    fn pending_root_after_interim_silence_follows_end_silence(&self, turn_id: u64) -> bool {
+        // Root AfterInterimSilence after this turn's EndSilence is the same
+        // utterance's breath tail. AfterInterimSilence that already follows
+        // applied 160ms is the next utterance and must remint instead.
+        // Do not require open_turn / audio_ranges: reminted EndSilence is a
+        // CompletionCheck, which does not merge ranges, and open_turn is
+        // assigned only after grammar dispatch.
+        if self.latest_applied_segment_is_streaming_chunk(turn_id)
+            || self.in_flight_streaming_chunk_for_turn(turn_id)
+        {
+            return false;
+        }
+        self.pending.asr_segments.iter().any(|segment| {
+            segment.reason == SegmentCloseReason::InterimResultSilenceReached
+                && segment.previous_segment_id.is_none()
+        })
+    }
+
+    fn defer_grammar_for_root_after_interim_silence(
+        &mut self,
+        turn_id: u64,
+        purpose: RerecognitionPurpose,
+    ) -> bool {
+        if purpose != RerecognitionPurpose::GrammarAfterCompletion
+            || !self.pending_root_after_interim_silence_follows_end_silence(turn_id)
+        {
+            return false;
+        }
+        // Do not start grammar, and do not fold this into should_release:
+        // in-flight grammar must not yield to AfterInterimSilence. Adopt the
+        // open turn so target_turn_id keeps the silence on this utterance
+        // instead of opening a third turn. Empty-draft turn-check must still
+        // fall through and finalize.
+        self.adopt_open_turn_for_same_turn_streaming_chunk(turn_id);
+        self.requests.deferred_rerecognition = Some((turn_id, purpose));
+        true
     }
 
     fn pending_asr_preempts_rerecognition(&self, rerecognition_turn_id: u64) -> bool {

@@ -493,9 +493,11 @@ impl RecognitionSession {
                         }
                         if self.should_release_rerecognition_for_same_turn_continuation(
                             turn_id, purpose,
-                        ) {
+                        ) || self.requests.deferred_rerecognition.is_some()
+                        {
                             // Same-utterance tail ASR is queued. Keep the draft
-                            // open so max-chunk / streaming chunks extend it
+                            // open so max-chunk / streaming chunks / root
+                            // AfterInterimSilence after EndSilence extend it
                             // instead of finalizing or reminting a new turn.
                             self.emit_waiting_draft_if_blank_or_longer(turn_id);
                             self.adopt_open_turn_after_completion(turn_id);
