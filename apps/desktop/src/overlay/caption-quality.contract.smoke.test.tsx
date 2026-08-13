@@ -75,6 +75,12 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       expect(mainAppSource).toMatch(
         /<NativeFramePublisher\s+config=\{config\}\s+caption=\{displayCaption\}/,
       );
+      expect(mainAppSource).toMatch(
+        /<LiveView[\s\S]*?caption=\{displayCaption\}[\s\S]*?partialWindowText=\{partialWindow\?\.text \?\? ""\}/,
+      );
+      expect(mainAppSource).toMatch(
+        /<NativeFramePublisher[\s\S]*?caption=\{displayCaption\}[\s\S]*?partialWindowText=\{partialWindow\?\.text \?\? ""\}/,
+      );
       expect(mainAppSource).toMatch(/useCaptionHoldClear\(caption,/);
 
       expect(overlayAppSource).toMatch(/useCaptionFreshness\(caption\)/);
@@ -91,6 +97,12 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       );
       expect(overlayAppSource).toMatch(
         /<OverlayView\s+config=\{config\}\s+caption=\{displayCaption\}/,
+      );
+      expect(overlayAppSource).toMatch(
+        /<NativeFramePublisher[\s\S]*?caption=\{displayCaption\}[\s\S]*?partialWindowText=\{partialWindow\?\.text \?\? ""\}/,
+      );
+      expect(overlayAppSource).toMatch(
+        /<OverlayView[\s\S]*?caption=\{displayCaption\}[\s\S]*?partialWindowText=\{partialWindow\?\.text \?\? ""\}/,
       );
       expect(overlayAppSource).toMatch(/useCaptionHoldClear\(caption,/);
       expect(overlayAppSource).toMatch(/resetOverlayStickyRefs\(stickyRefs\)/);
