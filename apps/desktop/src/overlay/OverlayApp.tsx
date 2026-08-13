@@ -1,3 +1,8 @@
+import {
+  type CaptionSentenceHints,
+  detectCaptionSentenceEnds,
+  selectVisibleCaptionSentence,
+} from "@caption-bridge/sentence-boundary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../core/bridge";
 import { shouldBlankCaptionForHoldClear } from "../core/caption-hold-clear";
@@ -74,6 +79,194 @@ const isTransparentCaptureRoute = (): boolean => {
   return params.get("transparent") === "1" || params.get("overlay") === "1";
 };
 
+/**
+ * Caller-owned display sentence carry. Local to OverlayApp (separate WebView
+ * from Live/MainApp): hints-only sticky via previousText / previousEnds.
+ */
+type OverlayStickyState = {
+  previousText: string;
+  previousEnds: number[];
+};
+
+type OverlayStickyOwner = {
+  id: string;
+  captureGeneration: number | null;
+};
+
+type OverlayStickyRefs = {
+  source: { current: OverlayStickyState | null };
+  translation: { current: OverlayStickyState | null };
+  owner: { current: OverlayStickyOwner | null };
+};
+
+const normalizeOverlayStickyText = (text: string): string => text.replace(/\r\n?/gu, "\n").trim();
+
+/** Reset display-only sentence carry; IPC caption state remains untouched. */
+const resetOverlayStickyRefs = (refs: OverlayStickyRefs): void => {
+  refs.source.current = null;
+  refs.translation.current = null;
+  refs.owner.current = null;
+};
+
+const compatibleOverlayStickyState = (
+  sticky: OverlayStickyState | null,
+  text: string,
+): OverlayStickyState | null => {
+  if (!sticky?.previousText || sticky.previousEnds.length === 0) {
+    return null;
+  }
+  const normalized = normalizeOverlayStickyText(text);
+  const previous = normalizeOverlayStickyText(sticky.previousText);
+  if (!normalized || !previous) {
+    return null;
+  }
+  // A revision may grow or temporarily shrink the same turn, but a rewrite
+  // with a different prefix must not inherit a sentence end from another turn.
+  if (normalized.startsWith(previous) || previous.startsWith(normalized)) {
+    return sticky;
+  }
+  return null;
+};
+
+const rememberOverlayStickyState = (
+  text: string,
+  hints: CaptionSentenceHints,
+  previous: OverlayStickyState | null,
+): OverlayStickyState | null => {
+  const normalized = normalizeOverlayStickyText(text);
+  if (!normalized) {
+    return null;
+  }
+  // Recompute fresh ends without feeding the old carry back into its own
+  // history. The caller-owned ref stores only boundaries accepted for this
+  // compatible prefix, not a module-global cache or an IPC field.
+  const freshEnds = detectCaptionSentenceEnds(normalized, {
+    ...hints,
+    previousText: undefined,
+    previousEnds: undefined,
+  });
+  const compatible = compatibleOverlayStickyState(previous, normalized);
+  const limit = Array.from(normalized).length;
+  const mergedEnds = [...new Set([...(compatible?.previousEnds ?? []), ...freshEnds])]
+    .filter((offset) => Number.isInteger(offset) && offset > 0 && offset <= limit)
+    .sort((left, right) => left - right);
+  if (mergedEnds.length === 0) {
+    return null;
+  }
+  return { previousText: normalized, previousEnds: mergedEnds };
+};
+
+/** Bang/question and elongation-only remainders keep the recognized head. */
+const shouldKeepOverlayHeadAfterStickyPage = (original: string, paged: string): boolean => {
+  const source = original.trim();
+  const shown = paged.trim();
+  if (!shown || shown === source || !source.endsWith(shown)) {
+    return false;
+  }
+  const prefix = source.slice(0, source.length - shown.length);
+  if (/[！？!?]\s*$/u.test(prefix)) {
+    return true;
+  }
+  return /^[ー〜～]+$/u.test(shown);
+};
+
+const applyOverlayStickyField = (
+  text: string,
+  hints: CaptionSentenceHints,
+  sticky: OverlayStickyState | null,
+): string => {
+  const paged = selectVisibleCaptionSentence(text, {
+    ...hints,
+    previousText: sticky?.previousText,
+    previousEnds: sticky?.previousEnds,
+  });
+  if (!paged || paged === text || shouldKeepOverlayHeadAfterStickyPage(text, paged)) {
+    return text;
+  }
+  return paged;
+};
+
+/**
+ * Apply the same caller-owned sentence carry to Overlay DOM and native output.
+ * Merge/replay/freshness keep the original CaptionPayload; both display
+ * consumers receive one sticky-applied surface.
+ */
+const applyOverlayStickyDisplay = (
+  caption: CaptionPayload,
+  refs: OverlayStickyRefs,
+): CaptionPayload => {
+  if (caption.id === "preview" || caption.id === "empty") {
+    resetOverlayStickyRefs(refs);
+    return caption;
+  }
+
+  const generation =
+    typeof caption.captureGeneration === "number" ? caption.captureGeneration : null;
+  const owner = refs.owner.current;
+  const generationChanged =
+    owner != null &&
+    owner.captureGeneration !== generation &&
+    (owner.captureGeneration != null || generation != null);
+  if (owner && (owner.id !== caption.id || generationChanged)) {
+    refs.source.current = null;
+    refs.translation.current = null;
+  }
+  refs.owner.current = { id: caption.id, captureGeneration: generation };
+
+  const sourceHints: CaptionSentenceHints = {
+    key: "source",
+    azookeyInputText: caption.azookeyInputText,
+    sentenceEndOffsets: caption.sentenceEndOffsets,
+    softBreakOffsets: caption.softBreakOffsets,
+    deferSentencePaging: caption.provisional === true,
+  };
+  const translationHints: CaptionSentenceHints = {
+    key: "translation",
+    deferSentencePaging: caption.provisional === true,
+  };
+  const sourceSticky = compatibleOverlayStickyState(refs.source.current, caption.sourceText);
+  const translationSticky = compatibleOverlayStickyState(
+    refs.translation.current,
+    caption.translationText,
+  );
+
+  // Folded provisional ASR must keep the joined lead+tail; do not seed or
+  // apply copula carry on that surface. The following normalized caption can
+  // still seed from its own authoritative boundary hints.
+  if (caption.provisional === true) {
+    return caption;
+  }
+
+  refs.source.current = rememberOverlayStickyState(caption.sourceText, sourceHints, sourceSticky);
+  refs.translation.current = rememberOverlayStickyState(
+    caption.translationText,
+    translationHints,
+    translationSticky,
+  );
+
+  const nextSource = applyOverlayStickyField(caption.sourceText, sourceHints, sourceSticky);
+  const nextTranslation = applyOverlayStickyField(
+    caption.translationText,
+    translationHints,
+    translationSticky,
+  );
+  if (nextSource === caption.sourceText && nextTranslation === caption.translationText) {
+    return caption;
+  }
+  const next: CaptionPayload = {
+    ...caption,
+    sourceText: nextSource,
+    translationText: nextTranslation,
+  };
+  if (nextSource !== caption.sourceText) {
+    // Offsets are relative to the full IPC source surface; passing them to the
+    // suffix would page/cut again in captionItems and native rendering.
+    delete next.sentenceEndOffsets;
+    delete next.softBreakOffsets;
+  }
+  return next;
+};
+
 export const OverlayApp = () => {
   const nativeRenderer = isNativeRendererRoute();
   const transparentCapture = isTransparentCaptureRoute() && !nativeRenderer;
@@ -91,6 +284,12 @@ export const OverlayApp = () => {
    * as MainApp.mergeAndCommitCaption).
    */
   const captionRef = useRef(caption);
+  /** Display-only sentence carry shared by Overlay DOM and native publisher. */
+  const stickyRefs = useRef<OverlayStickyRefs>({
+    source: { current: null },
+    translation: { current: null },
+    owner: { current: null },
+  }).current;
   // Match MainApp: grow source graphemes on overlay/Syphon. Snap an already
   // recognized longer same-turn surface so the plate is not stuck on the first
   // piece after the 16ms first-commit. Hold-clear still keys off the merge.
@@ -98,16 +297,21 @@ export const OverlayApp = () => {
   const progressiveCaption = useProgressiveCaptionReveal(freshnessCaption, {
     snapAvailablePrefixExtensions: true,
   });
+  const displayCaption = applyOverlayStickyDisplay(progressiveCaption, stickyRefs);
 
-  const blankDisplayedCaption = useCallback((expectedEpoch: string): void => {
-    const current = captionRef.current;
-    if (!shouldBlankCaptionForHoldClear(expectedEpoch, current)) {
-      return;
-    }
-    const empty = createHoldClearedCaption();
-    captionRef.current = empty;
-    setCaption(empty);
-  }, []);
+  const blankDisplayedCaption = useCallback(
+    (expectedEpoch: string): void => {
+      const current = captionRef.current;
+      if (!shouldBlankCaptionForHoldClear(expectedEpoch, current)) {
+        return;
+      }
+      const empty = createHoldClearedCaption();
+      resetOverlayStickyRefs(stickyRefs);
+      captionRef.current = empty;
+      setCaption(empty);
+    },
+    [stickyRefs],
+  );
 
   useCaptionHoldClear(caption, blankDisplayedCaption);
 
@@ -289,6 +493,7 @@ export const OverlayApp = () => {
               (staleAsrFence ? overlayAsrSessionKey(staleAsrFence.utteranceId) : null) ??
               idleAsrSessionKey;
             const cleared = nativeRenderer ? createPreviewCaption() : createEmptyCaption();
+            resetOverlayStickyRefs(stickyRefs);
             captionRef.current = cleared;
             setCaption(cleared);
             const nextHold = rearmPreviewHold(
@@ -470,13 +675,13 @@ export const OverlayApp = () => {
     return (
       <div
         data-testid="native-renderer-root"
-        data-source-text={progressiveCaption.sourceText}
-        data-translation-text={progressiveCaption.translationText}
+        data-source-text={displayCaption.sourceText}
+        data-translation-text={displayCaption.translationText}
       >
-        <NativeFramePublisher config={config} caption={progressiveCaption} />
+        <NativeFramePublisher config={config} caption={displayCaption} />
       </div>
     );
   }
 
-  return <OverlayView config={config} caption={progressiveCaption} />;
+  return <OverlayView config={config} caption={displayCaption} />;
 };
