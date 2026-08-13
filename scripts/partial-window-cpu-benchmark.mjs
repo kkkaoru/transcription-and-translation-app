@@ -14,8 +14,8 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import { pathToFileURL } from "node:url";
 
 const SAMPLE_RATE = 16_000;
 const CHANNELS = 1;
@@ -131,12 +131,10 @@ export const summarizePartialWindowMetrics = (jsonl) => {
     .filter((value) => value !== null);
   const completed = events.filter((event) => event.event === "partial_window_asr_completed");
   const skips = events.filter((event) => event.event === "partial_window_asr_skip");
-  const latestCompletedWithRate = [...completed]
-    .reverse()
-    .find((event) => {
-      const rate = asFiniteNumber(event.throttle_rate);
-      return rate !== null && rate >= 0 && rate <= 1;
-    });
+  const latestCompletedWithRate = [...completed].reverse().find((event) => {
+    const rate = asFiniteNumber(event.throttle_rate);
+    return rate !== null && rate >= 0 && rate <= 1;
+  });
   const completedWithThrottleFlag = completed.filter(
     (event) => typeof event.throttle_applied === "boolean",
   );
@@ -150,7 +148,7 @@ export const summarizePartialWindowMetrics = (jsonl) => {
       ? fallbackThrottled / completedWithThrottleFlag.length
       : null;
   const throttleDenominator = latestCompletedWithRate
-    ? cumulativeCompleted ?? completed.length
+    ? (cumulativeCompleted ?? completed.length)
     : completedWithThrottleFlag.length;
   return {
     decodeSamples: decodeMs.length,
@@ -166,10 +164,7 @@ export const summarizePartialWindowMetrics = (jsonl) => {
       skips
         .map((event) => event.skip_reason ?? event.reason)
         .filter((reason) => typeof reason === "string")
-        .reduce(
-          (counts, reason) => counts.set(reason, (counts.get(reason) ?? 0) + 1),
-          new Map(),
-        ),
+        .reduce((counts, reason) => counts.set(reason, (counts.get(reason) ?? 0) + 1), new Map()),
     ),
   };
 };
@@ -201,15 +196,27 @@ export const loadPcmFixture = (inputPath, format = "auto") => {
   const path = resolve(inputPath);
   if (!existsSync(path)) throw new Error(`input fixture does not exist: ${path}`);
   const bytes = readFileSync(path);
-  const inferred = format === "auto" ? (extname(path).toLowerCase() === ".wav" ? "wav" : "pcm-s16le") : format;
+  const inferred =
+    format === "auto" ? (extname(path).toLowerCase() === ".wav" ? "wav" : "pcm-s16le") : format;
   if (inferred === "pcm-s16le") {
     if (bytes.length === 0 || bytes.length % FRAME_BYTES !== 0) {
-      throw new Error(`PCM fixture must be non-empty and a multiple of ${FRAME_BYTES} bytes (32 ms): ${path}`);
+      throw new Error(
+        `PCM fixture must be non-empty and a multiple of ${FRAME_BYTES} bytes (32 ms): ${path}`,
+      );
     }
-    return { bytes, inputFormat: inferred, inputName: basename(path), durationMs: (bytes.length / 2 / SAMPLE_RATE) * 1_000 };
+    return {
+      bytes,
+      inputFormat: inferred,
+      inputName: basename(path),
+      durationMs: (bytes.length / 2 / SAMPLE_RATE) * 1_000,
+    };
   }
   if (inferred !== "wav") throw new Error(`--input-format must be wav or pcm-s16le, got ${format}`);
-  if (bytes.length < 44 || bytes.subarray(0, 4).toString("ascii") !== "RIFF" || bytes.subarray(8, 12).toString("ascii") !== "WAVE") {
+  if (
+    bytes.length < 44 ||
+    bytes.subarray(0, 4).toString("ascii") !== "RIFF" ||
+    bytes.subarray(8, 12).toString("ascii") !== "WAVE"
+  ) {
     throw new Error(`WAV fixture has no RIFF/WAVE header: ${path}`);
   }
   let offset = 12;
@@ -225,21 +232,35 @@ export const loadPcmFixture = (inputPath, format = "auto") => {
     if (id === "data") dataChunk = bytes.subarray(start, end);
     offset = end + (length % 2);
   }
-  if (!formatChunk || !dataChunk || formatChunk.length < 16) throw new Error(`WAV fixture requires fmt and data chunks: ${path}`);
+  if (!formatChunk || !dataChunk || formatChunk.length < 16)
+    throw new Error(`WAV fixture requires fmt and data chunks: ${path}`);
   const audioFormat = readU16(formatChunk, 0);
   const channels = readU16(formatChunk, 2);
   const sampleRate = readU32(formatChunk, 4);
   const bitsPerSample = readU16(formatChunk, 14);
-  if (audioFormat !== 1 || channels !== CHANNELS || sampleRate !== SAMPLE_RATE || bitsPerSample !== 16) {
-    throw new Error(`WAV fixture must be PCM s16le, mono, 16000 Hz; got format=${audioFormat}, channels=${channels}, rate=${sampleRate}, bits=${bitsPerSample}`);
+  if (
+    audioFormat !== 1 ||
+    channels !== CHANNELS ||
+    sampleRate !== SAMPLE_RATE ||
+    bitsPerSample !== 16
+  ) {
+    throw new Error(
+      `WAV fixture must be PCM s16le, mono, 16000 Hz; got format=${audioFormat}, channels=${channels}, rate=${sampleRate}, bits=${bitsPerSample}`,
+    );
   }
   if (dataChunk.length === 0 || dataChunk.length % FRAME_BYTES !== 0) {
     throw new Error(`WAV data must be non-empty and a multiple of ${FRAME_BYTES} bytes (32 ms)`);
   }
-  return { bytes: dataChunk, inputFormat: inferred, inputName: basename(path), durationMs: (dataChunk.length / 2 / SAMPLE_RATE) * 1_000 };
+  return {
+    bytes: dataChunk,
+    inputFormat: inferred,
+    inputName: basename(path),
+    durationMs: (dataChunk.length / 2 / SAMPLE_RATE) * 1_000,
+  };
 };
 
-const delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+const delay = (milliseconds) =>
+  new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 
 const parseArgs = (argv) => {
   const [command = "help", ...rest] = argv;
@@ -317,13 +338,17 @@ const attachSocketListener = (socket, event, listener, once = false) => {
     return;
   }
   if (typeof socket.addEventListener === "function") {
-    socket.addEventListener(event, (message) => listener(event === "message" ? message.data : message), { once });
+    socket.addEventListener(
+      event,
+      (message) => listener(event === "message" ? message.data : message),
+      { once },
+    );
     return;
   }
   throw new Error("WebSocket implementation does not support event listeners");
 };
 
-const socketMessageText = async (raw) => {
+const socketMessageText = (raw) => {
   if (typeof raw === "string") return raw;
   if (raw instanceof Uint8Array) return new TextDecoder().decode(raw);
   if (raw && typeof raw.text === "function") return raw.text();
@@ -332,11 +357,15 @@ const socketMessageText = async (raw) => {
 
 const redactMessage = (value, key = "") => {
   if (/text|transcript|token|message|api.?key|secret/i.test(key)) return undefined;
-  if (Array.isArray(value)) return value.map((entry) => redactMessage(entry)).filter((entry) => entry !== undefined);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).flatMap(([entryKey, entryValue]) => {
-    const redacted = redactMessage(entryValue, entryKey);
-    return redacted === undefined ? [] : [[entryKey, redacted]];
-  }));
+  if (Array.isArray(value))
+    return value.map((entry) => redactMessage(entry)).filter((entry) => entry !== undefined);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).flatMap(([entryKey, entryValue]) => {
+        const redacted = redactMessage(entryValue, entryKey);
+        return redacted === undefined ? [] : [[entryKey, redacted]];
+      }),
+    );
   return value;
 };
 
@@ -345,18 +374,33 @@ const startTopSampler = (pid, outputPath, durationMs) => {
   const samples = Math.max(3, Math.ceil(durationMs / 1_000) + 3);
   const child = spawn(
     "top",
-    ["-l", String(samples), "-s", "1", "-pid", String(pid), "-stats", "pid,cpu,mem,threads,command"],
+      [
+        "-l",
+        String(samples),
+        "-s",
+        "1",
+        "-pid",
+        String(pid),
+        "-stats",
+        "pid,cpu,mem,threads,command",
+      ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let output = "";
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { output += chunk; });
-  child.stderr.on("data", (chunk) => { output += chunk; });
-  const finished = new Promise((resolveFinished) => child.once("close", () => {
-    writeFileSync(outputPath, output);
-    resolveFinished();
-  }));
+  child.stdout.on("data", (chunk) => {
+    output += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    output += chunk;
+  });
+  const finished = new Promise((resolveFinished) =>
+    child.once("close", () => {
+      writeFileSync(outputPath, output);
+      resolveFinished();
+    }),
+  );
   return { child, finished };
 };
 
@@ -481,7 +525,7 @@ const report = (options) => {
   if (!decision.accepted) process.exitCode = 1;
 };
 
-const main = async () => {
+  const main = () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.command === "help") return console.log(usage());
   if (options.command === "replay") return replay(options);

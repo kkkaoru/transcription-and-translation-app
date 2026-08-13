@@ -1,5 +1,5 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 
 import {
   acceptance,
@@ -17,12 +17,16 @@ test("percentile uses nearest-rank values deterministically", () => {
 });
 
 test("top text parser keeps only the requested process samples", () => {
-  const top = "Processes: 100 total\n123 3.1 20M 4 parapper\n999 87.0 30M 2 other\n123 5.9% 20M 4 parapper\n";
+  const top =
+    "Processes: 100 total\n123 3.1 20M 4 parapper\n999 87.0 30M 2 other\n123 5.9% 20M 4 parapper\n";
   assert.deepEqual(parseTopTextCpuSamples(top, 123), [3.1, 5.9]);
 });
 
 test("top JSON parser accepts document and JSONL collector output", () => {
-  assert.deepEqual(parseTopJsonCpuSamples('{"samples":[{"pid":42,"cpu_percent":4.5},{"pid":8,"cpu":90}]}', 42), [4.5]);
+  assert.deepEqual(
+    parseTopJsonCpuSamples('{"samples":[{"pid":42,"cpu_percent":4.5},{"pid":8,"cpu":90}]}', 42),
+    [4.5],
+  );
   assert.deepEqual(parseCpuSamples('{"pid":42,"cpu":6}\n{"pid":42,"pcpu":"7.5"}', 42), [6, 7.5]);
 });
 
