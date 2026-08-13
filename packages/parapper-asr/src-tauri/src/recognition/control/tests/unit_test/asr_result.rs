@@ -3482,6 +3482,140 @@ fn turn_runtime_namo_grammar_does_not_close_lead_before_same_utterance_tail() {
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "invariant covers in-flight 160ms hold, grammar yield to same-utterance AfterInterimSilence, prefix, and uncovered tail"
+)]
+fn turn_runtime_in_flight_namo_grammar_yields_to_same_utterance_tail() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8);
+    let asr_handle = builder.use_manual_asr();
+    let _ = builder
+        .use_scripted_decisions(vec![TurnDecision { is_end_of_turn: true, confidence: 0.99 }]);
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    runtime.step();
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("in-flight prefix must yield to the same-turn 160ms tail");
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert_ne!(chunk.request_id, prefix.request_id);
+
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("deferred prefix CompletionCheck must resume before grammar");
+    assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
+    asr_handle.complete_request_with_text(&resumed, "全体。");
+    runtime.step();
+
+    let grammar = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("Namo must start grammar when AfterInterimSilence is not queued yet");
+    assert_eq!(grammar.kind, AsrTaskKind::Rerecognition);
+    assert_eq!(
+        runtime.requests.pending_rerecognition_purpose,
+        Some(RerecognitionPurpose::GrammarAfterCompletion)
+    );
+    assert_ne!(
+        grammar.close_reason,
+        Some(SegmentCloseReason::InterimChunkReached),
+        "grammar must start only after the 160ms grid has applied"
+    );
+
+    runtime
+        .turn_store
+        .turns
+        .get_mut(&1)
+        .expect("turn 1 draft must still be open")
+        .draft_mut()
+        .boundary_candidates =
+        vec![boundary_candidate("全体。続き", 310, 310, 310, GrammarBoundaryClass::NormalEnd)];
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        310..410,
+    );
+    runtime.step();
+
+    assert!(
+        !runtime.turn_store.finalized_turns.contains(&1),
+        "in-flight grammar must not finalize the lead before the same-utterance tail applies"
+    );
+    let silence = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("same-utterance AfterInterimSilence must take the slot from in-flight grammar");
+    assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(silence.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
+    assert_eq!(silence.target.turn_id, TurnId(1));
+    assert_ne!(silence.request_id, grammar.request_id);
+    assert_ne!(
+        silence.close_reason,
+        Some(SegmentCloseReason::InterimChunkReached),
+        "yielding grammar must not steal an in-flight 160ms grid"
+    );
+
+    asr_handle.complete_request_with_text(&grammar, "全体。");
+    runtime.step();
+    let silence_after_late_grammar = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("a late grammar result must not steal the same-utterance tail slot");
+    assert_eq!(silence_after_late_grammar.request_id, silence.request_id);
+    assert!(!runtime.turn_store.finalized_turns.contains(&1));
+
+    asr_handle.complete_request_with_text(&silence, "後半");
+    runtime.step();
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    assert!(
+        outputs.iter().any(|output| {
+            output.turn_id == 1
+                && output.text.contains("全体")
+                && output.text.contains("続き")
+                && output.text.contains("後半")
+        }),
+        "same-utterance tail must stay on the current caption after in-flight grammar yields; got {:?}",
+        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "invariant covers in-flight 160ms hold, remint of a next-utterance child EndSilence, prefix, and uncovered tail"
 )]
 fn turn_runtime_end_silence_child_remints_after_160ms_without_stealing_grid() {

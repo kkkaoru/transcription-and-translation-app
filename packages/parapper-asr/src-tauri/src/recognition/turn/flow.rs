@@ -295,6 +295,11 @@ impl RecognitionSession {
                 self.stop_accepting_root_while_closing(turn_id);
             }
             RerecognitionPurpose::GrammarAfterCompletion => {
+                // Same-breath AfterInterimSilence after 160ms is still this
+                // caption. Do not finalize the lead to free the slot.
+                if self.pending_same_utterance_after_interim_silence_following_160ms(turn_id) {
+                    return false;
+                }
                 // AfterInterimSilence after an applied 160ms tail is already the
                 // next utterance even when combined text ("prefix。続き") has no
                 // completing boundary at the text end. Do not occupy the slot.
@@ -320,6 +325,15 @@ impl RecognitionSession {
                 self.stop_accepting_root_while_closing(turn_id);
             }
             RerecognitionPurpose::GrammarAfterCompletion => {
+                if self.pending_same_utterance_after_interim_silence_following_160ms(turn_id) {
+                    // Yield the grammar slot so the same-breath tail can apply.
+                    // Do not fold AfterInterimSilence into
+                    // `pending_same_utterance_continuation`: that would also
+                    // yield in-flight 160ms / prefix CompletionCheck.
+                    self.adopt_open_turn_for_same_turn_streaming_chunk(turn_id);
+                    self.requests.deferred_rerecognition = Some((turn_id, purpose));
+                    return true;
+                }
                 if self.grammar_already_completes_turn(turn_id) {
                     self.stop_accepting_root_while_closing(turn_id);
                 }
@@ -388,12 +402,14 @@ impl RecognitionSession {
 
     fn pending_same_utterance_after_interim_silence_following_160ms(&self, turn_id: u64) -> bool {
         // Same-breath AfterInterimSilence after the applied 160ms must apply
-        // before Namo grammar can close on the lead. Require a pending silence:
-        // `same_utterance_after_interim_silence_should_stay` is true whenever
-        // no later marker exists, including when nothing is queued.
+        // before Namo grammar can close on the lead. Require a pending silence
+        // with no remint marker: `should_stay` is true whenever no later marker
+        // exists after the silence, including when EndSilence is queued *before*
+        // it (next-utterance remint) or when nothing is queued.
         if !self.latest_applied_segment_is_streaming_chunk(turn_id)
             || self.in_flight_streaming_chunk_for_turn(turn_id)
             || !self.same_utterance_after_interim_silence_should_stay(turn_id)
+            || self.pending_has_next_utterance_close_reason()
         {
             return false;
         }
@@ -401,6 +417,17 @@ impl RecognitionSession {
             .asr_segments
             .iter()
             .any(|segment| segment.reason == SegmentCloseReason::InterimResultSilenceReached)
+    }
+
+    fn pending_has_next_utterance_close_reason(&self) -> bool {
+        self.pending.asr_segments.iter().any(|segment| {
+            matches!(
+                segment.reason,
+                SegmentCloseReason::InterimChunkReached
+                    | SegmentCloseReason::EndSilenceReached
+                    | SegmentCloseReason::SegmentMaxChunksReached
+            )
+        })
     }
 
     fn defer_grammar_for_root_after_interim_silence(
@@ -414,11 +441,11 @@ impl RecognitionSession {
         {
             return false;
         }
-        // Do not start grammar, and do not fold this into should_release:
-        // in-flight grammar must not yield to AfterInterimSilence. Adopt the
-        // open turn so target_turn_id keeps the silence on this utterance
-        // instead of opening a third turn. Empty-draft turn-check must still
-        // fall through and finalize.
+        // Do not start grammar while same-breath AfterInterimSilence is queued.
+        // In-flight grammar yields via should_release; in-flight 160ms / prefix
+        // CompletionCheck must not. Adopt the open turn so target_turn_id keeps
+        // the silence on this utterance instead of opening a third turn.
+        // Empty-draft turn-check must still fall through and finalize.
         self.adopt_open_turn_for_same_turn_streaming_chunk(turn_id);
         self.requests.deferred_rerecognition = Some((turn_id, purpose));
         true
@@ -896,6 +923,7 @@ impl RecognitionSession {
                 .asr_segments
                 .iter()
                 .any(|segment| self.pending_segment_blocks_finalization(segment, turn_id))
+            || self.pending_same_utterance_after_interim_silence_following_160ms(turn_id)
     }
 
     /// Whether a queued ASR segment may still extend `turn_id` or an older turn.
