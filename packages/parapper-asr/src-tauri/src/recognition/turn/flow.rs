@@ -133,7 +133,7 @@ impl RecognitionSession {
         self.requests.in_flight_request = Some(request);
         self.requests.pending_rerecognition_purpose = Some(purpose);
         self.requests.last_dispatched = Some(in_flight);
-        self.requests.deferred_grammar_rerecognition_turn = None;
+        self.requests.deferred_rerecognition = None;
         self.stamp_asr_dispatch(turn_id);
         true
     }
@@ -227,29 +227,21 @@ impl RecognitionSession {
         if !self.pending_same_utterance_continuation(turn_id) {
             return false;
         }
-        if matches!(purpose, RerecognitionPurpose::GrammarAfterCompletion) {
-            // Closing CompleteTurn used to skip this flag, so a 160ms tail that
-            // stole the slot never restarted rerecognition or final and waited
-            // on timeout. Restart after the tail; do not remint.
-            self.requests.deferred_grammar_rerecognition_turn = Some(turn_id);
-        }
+        self.requests.deferred_rerecognition = Some((turn_id, purpose));
         true
     }
 
-    pub(in crate::recognition) fn dispatch_deferred_grammar_rerecognition_if_idle(&mut self) {
-        let Some(turn_id) = self.requests.deferred_grammar_rerecognition_turn else {
+    pub(in crate::recognition) fn dispatch_deferred_rerecognition_if_idle(&mut self) {
+        let Some((turn_id, purpose)) = self.requests.deferred_rerecognition else {
             return;
         };
         if self.turn_store.finalized_turns.contains(&turn_id)
             || !self.turn_store.turns.contains_key(&turn_id)
         {
-            self.requests.deferred_grammar_rerecognition_turn = None;
+            self.requests.deferred_rerecognition = None;
             return;
         }
-        let _ = self.dispatch_rerecognition_for_turn_if_idle(
-            turn_id,
-            RerecognitionPurpose::GrammarAfterCompletion,
-        );
+        let _ = self.dispatch_rerecognition_for_turn_if_idle(turn_id, purpose);
     }
 
     fn pending_same_utterance_continuation(&self, turn_id: u64) -> bool {
@@ -356,7 +348,7 @@ impl RecognitionSession {
         self.turn_store.open_turn_accepts_root_segment = false;
         self.turn_store.open_turn_is_closing = false;
         self.activity.open_turn_since_tick = None;
-        self.requests.deferred_grammar_rerecognition_turn = None;
+        self.requests.deferred_rerecognition = None;
     }
 
     fn reset_open_turn_timeout_origin(&mut self) {
@@ -406,6 +398,12 @@ impl RecognitionSession {
                     // Existing draft must stay visible while grammar/full-turn
                     // rerecognition occupies the slot.
                     self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                    true
+                } else if self
+                    .should_release_rerecognition_for_same_turn_continuation(turn_id, purpose)
+                {
+                    // Same-utterance tail ASR will take the slot. Deferred
+                    // SimpleTurnCheckFinal / grammar rerecognition restarts after.
                     true
                 } else {
                     // Submit/route/audio failure must not hold the turn-check
@@ -639,15 +637,23 @@ impl RecognitionSession {
             }
             timeout::Action::Timeout { turn_id } => turn_id,
         };
-        if self.config.uses_deferred_turn_completion() && {
+        if self.config.uses_deferred_turn_completion() {
             self.refresh_turn_route_with_sli(turn_id);
-            self.dispatch_rerecognition_for_turn_if_idle(
+            if self.dispatch_rerecognition_for_turn_if_idle(
                 turn_id,
                 RerecognitionPurpose::TimeoutFinal,
-            )
-        } {
-            self.emit_waiting_draft_if_blank_or_longer(turn_id);
-            return true;
+            ) {
+                self.emit_waiting_draft_if_blank_or_longer(turn_id);
+                return true;
+            }
+            if self.should_release_rerecognition_for_same_turn_continuation(
+                turn_id,
+                RerecognitionPurpose::TimeoutFinal,
+            ) {
+                // Same-utterance tail ASR will take the slot. Deferred
+                // TimeoutFinal rerecognition restarts after it drains.
+                return true;
+            }
         }
         self.finalize_timeout_turn_after_rerecognition(turn_id);
         true

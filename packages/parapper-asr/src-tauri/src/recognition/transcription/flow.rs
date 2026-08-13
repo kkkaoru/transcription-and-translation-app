@@ -172,7 +172,7 @@ impl RecognitionSession {
         if self.requests.in_flight_request.is_some() {
             return;
         }
-        self.dispatch_deferred_grammar_rerecognition_if_idle();
+        self.dispatch_deferred_rerecognition_if_idle();
         if self.requests.in_flight_request.is_some() {
             return;
         }
