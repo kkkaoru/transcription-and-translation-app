@@ -155,17 +155,31 @@ impl RecognitionSession {
                 request,
                 segment_id,
             );
-            if completion_prefix_is_before_existing_range(&existing_audio_ranges, request) {
+            let prefix_len = prefix_source_len_before_existing(&existing_audio_ranges, request);
+            if completion_prefix_is_before_existing_range(&existing_audio_ranges, request)
+                && prefix_len > 0
+            {
+                let prefix_audio = &request.source_audio[..prefix_len];
+                let prefix_vad = vad_prefix_until_sample(
+                    request.source_audio.len(),
+                    &request.source_vad_results,
+                    prefix_len,
+                );
                 draft.prepend_recognized_segment(
                     segment_id,
                     previous_segment_id,
-                    &request.source_audio,
-                    &request.source_vad_results,
+                    prefix_audio,
+                    &prefix_vad,
                     request.route,
                     recorded_text,
                     elapsed_millis,
                 );
-                completion_range_to_merge = Some(request.target.range);
+                completion_range_to_merge = Some(AudioRange::new(
+                    request.target.range.start_sample,
+                    GlobalSampleIndex(
+                        request.target.range.start_sample.0.saturating_add(prefix_len as u64),
+                    ),
+                ));
             } else if let Some(prefix_segment_id) = earlier_prefix_segment_id {
                 if !recorded_text.is_empty() {
                     let keep_visible_prefix = draft
@@ -815,14 +829,35 @@ fn completion_prefix_is_before_existing_range(
     existing: &[AudioRange],
     request: &AsrRequest,
 ) -> bool {
-    let is_yielded_prefix = request.kind == AsrTaskKind::CompletionCheck
-        || request.close_reason == Some(SegmentCloseReason::InterimResultSilenceReached);
-    is_yielded_prefix
-        && existing
-            .iter()
-            .map(|range| range.start_sample)
-            .min()
-            .is_some_and(|start| request.target.range.end_sample <= start)
+    let Some(existing_start) = existing.iter().map(|range| range.start_sample).min() else {
+        return false;
+    };
+    match request.close_reason {
+        // Breath-silence may overlap the later 160ms (segment-builder padding
+        // copies prior end-silence into the next chunk). Still prepend the
+        // uncovered prefix; do not wait for a strict end <= existing.start.
+        Some(SegmentCloseReason::InterimResultSilenceReached) => {
+            request.target.range.start_sample < existing_start
+        }
+        _ if request.kind == AsrTaskKind::CompletionCheck => {
+            request.target.range.end_sample <= existing_start
+        }
+        _ => false,
+    }
+}
+
+fn prefix_source_len_before_existing(existing: &[AudioRange], request: &AsrRequest) -> usize {
+    let Some(existing_start) = existing.iter().map(|range| range.start_sample).min() else {
+        return request.source_audio.len();
+    };
+    if request.target.range.start_sample >= existing_start {
+        return 0;
+    }
+    samples_between(
+        request.target.range.start_sample,
+        existing_start.min(request.target.range.end_sample),
+    )
+    .min(request.source_audio.len())
 }
 
 fn completion_earlier_segment_id(
@@ -1108,6 +1143,27 @@ fn vad_has_speech_after_sample(
         .into_iter()
         .zip(vad_results)
         .any(|(range, vad)| vad.is_speech && range.end > start_sample)
+}
+
+fn vad_prefix_until_sample(
+    audio_len: usize,
+    vad_results: &[VadResult],
+    end_sample: usize,
+) -> Vec<VadResult> {
+    if end_sample == 0 {
+        return Vec::new();
+    }
+    if end_sample >= audio_len || vad_results.is_empty() {
+        return vad_results.to_vec();
+    }
+    let Some(ranges) = even_chunk_ranges(audio_len, vad_results.len()) else {
+        return vad_results.to_vec();
+    };
+    ranges
+        .into_iter()
+        .zip(vad_results)
+        .filter_map(|(range, vad)| (range.start < end_sample).then_some(*vad))
+        .collect()
 }
 
 fn vad_suffix_after_sample(
