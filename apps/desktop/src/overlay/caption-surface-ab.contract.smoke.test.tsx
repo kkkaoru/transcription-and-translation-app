@@ -20,7 +20,7 @@ import {
 } from "./caption-surface-ab.matrix";
 import {
   captionTextLines,
-  restoreCollapsedGreetingContinuation,
+  restoreCollapsedContinuation,
   sanitizeCaptionDisplayText,
 } from "./captions";
 
@@ -195,7 +195,25 @@ describe("caption surface A/B matrix (lead×tail, not greeting/hearing fixtures)
       if (row.full === row.lead) {
         continue;
       }
-      expect(restoreCollapsedGreetingContinuation(row.full, row.lead), row.id).toBe(row.lead);
+      expect(restoreCollapsedContinuation(row.full, row.lead), row.id).toBe(row.lead);
+    }
+  });
+
+  it("restores a collapsed suffix unless it is a period remainder or a dominating tail", () => {
+    for (const row of MATRIX) {
+      if (!row.tail) {
+        continue;
+      }
+      const restored = restoreCollapsedContinuation(row.full, row.tail);
+      const leadLen = [...row.lead.replace(/[ー〜～]/gu, "")].length;
+      const tailLen = [...row.tail.replace(/[ー〜～]/gu, "")].length;
+      if (tailLen >= leadLen * 2) {
+        expect(restored, row.id).toBe(row.tail);
+      } else {
+        expect(restored, row.id).toBe(sanitizeCaptionDisplayText(row.full));
+      }
+      const periodPaged = `${row.lead}。${row.tail}`;
+      expect(restoreCollapsedContinuation(periodPaged, row.tail), row.id).toBe(row.tail);
     }
   });
 });

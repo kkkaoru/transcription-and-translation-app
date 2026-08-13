@@ -97,17 +97,82 @@ export const stripCaptionContinuationMarker = (text: string): string =>
   text.replace(/(?:\.{3}|…|⋯)+$/u, "").trimEnd();
 
 const ELONGATION_LED = /^[ー〜～]+/u;
-const GREETING_LEAD = /^(?:こんにちは|こんばんは|おはようございます|おはよう|さようなら)/u;
-const HEARING_CHECK_REMAINDER =
-  /^(?:[ー〜～]*)(?:きこえますか|聞こえますか|あえますか|おえますか|会えますか|終えますか)[。．.、！？!?]*$/u;
+const ELONGATION_ONLY = /^[ー〜～]+$/u;
+
+const stripElongationAndTrailingClausePunct = (text: string): string =>
+  text.replace(/[ー〜～]/gu, "").replace(/[。．.、！？!?]+$/u, "");
 
 /**
- * After the first overlay frame commits, paging can drop a greeting and leave
- * only `ー`, `ーきこえますか`, or a hearing-check tail (`きこえますか` /
- * `終えますか`). Keep the longer surface already in `original`. Do not
- * concatenate a different turn.
+ * Head that paging dropped when `shown` is a suffix of `source`.
+ * Elongation / trailing clause punct are ignored so `ー続きがあります`
+ * still maps onto `会議を始めますー続きがあります`.
  */
-export const restoreCollapsedGreetingContinuation = (original: string, visible: string): string => {
+const prefixBeforeShown = (source: string, shown: string): string | null => {
+  if (shown && source.endsWith(shown) && shown.length < source.length) {
+    return source.slice(0, source.length - shown.length);
+  }
+  const sourceBare = stripElongationAndTrailingClausePunct(source);
+  const shownBare = stripElongationAndTrailingClausePunct(shown);
+  if (shownBare && sourceBare.endsWith(shownBare) && shownBare.length < sourceBare.length) {
+    return sourceBare.slice(0, sourceBare.length - shownBare.length);
+  }
+  return null;
+};
+
+/**
+ * True when `shown` is the clause after `。` / `．` / `.` in `original`.
+ * Overlay must not glue that remainder back onto the previous sentence.
+ * Bang/question (`！` `?`) are not period paging and may still restore.
+ */
+const isSentencePagedRemainder = (original: string, shown: string): boolean => {
+  const prefix = prefixBeforeShown(original, shown);
+  if (prefix === null) {
+    return false;
+  }
+  return /[。．.]\s*$/u.test(prefix);
+};
+
+/** True when sentence-boundary would keep the tail because it dominates the lead. */
+const doesTailDominateDroppedHead = (source: string, shown: string): boolean => {
+  const prefix = prefixBeforeShown(source, shown);
+  if (prefix === null || !prefix.trim()) {
+    return false;
+  }
+  const prefixLen = [...stripElongationAndTrailingClausePunct(prefix)].length;
+  const shownLen = [...stripElongationAndTrailingClausePunct(shown)].length;
+  return prefixLen > 0 && shownLen >= prefixLen * 2;
+};
+
+/**
+ * True when paging/reveal dropped the already-recognized head and left a
+ * continuation fragment (`ー`, an elongation-led tail, or a proper suffix).
+ */
+const isCollapsedContinuationSurface = (source: string, shown: string): boolean => {
+  if (!shown || shown === source || source.length <= shown.length) {
+    return false;
+  }
+  if (ELONGATION_ONLY.test(shown) && source.includes(shown)) {
+    return true;
+  }
+  const sourceBare = stripElongationAndTrailingClausePunct(source);
+  const shownBare = stripElongationAndTrailingClausePunct(shown);
+  if (!shownBare || [...shownBare].length < 2) {
+    return false;
+  }
+  if (ELONGATION_LED.test(shown) && (source.endsWith(shown) || sourceBare.endsWith(shownBare))) {
+    return true;
+  }
+  return source.endsWith(shown) || sourceBare.endsWith(shownBare);
+};
+
+/**
+ * After the first overlay frame commits, paging can drop the recognized head
+ * and leave only `ー`, an elongation-led tail, or a suffix of the same turn.
+ * Keep the longer surface already in `original`. Do not concatenate a different
+ * turn, and do not undo intentional `。` / `．` / `.` remainder paging or a
+ * tail that already dominates the dropped head.
+ */
+export const restoreCollapsedContinuation = (original: string, visible: string): string => {
   const source = original.trim();
   const shown = visible.trim();
   if (!source) {
@@ -119,18 +184,23 @@ export const restoreCollapsedGreetingContinuation = (original: string, visible: 
   if (shown === source) {
     return visible;
   }
-  const keepLongerGreeting =
-    (/^[ー〜～]+$/u.test(shown) && source.includes(shown) && source.length > shown.length) ||
-    (ELONGATION_LED.test(shown) && source.endsWith(shown) && source.length > shown.length) ||
-    (GREETING_LEAD.test(source) &&
-      HEARING_CHECK_REMAINDER.test(shown) &&
-      source.length > shown.length &&
-      (source.endsWith(shown) || source.includes(shown)));
-  if (keepLongerGreeting) {
+  if (ELONGATION_ONLY.test(shown) && source.includes(shown) && source.length > shown.length) {
     return sanitizeCaptionDisplayText(source);
   }
-  return visible;
+  if (isSentencePagedRemainder(source, shown)) {
+    return visible;
+  }
+  if (!isCollapsedContinuationSurface(source, shown)) {
+    return visible;
+  }
+  if (doesTailDominateDroppedHead(source, shown)) {
+    return visible;
+  }
+  return sanitizeCaptionDisplayText(source);
 };
+
+/** @deprecated Use {@link restoreCollapsedContinuation}. */
+export const restoreCollapsedGreetingContinuation = restoreCollapsedContinuation;
 
 /**
  * Collapse pathological single-Kanji runs (e.g. 為為為為…) that can appear
@@ -363,7 +433,7 @@ export const trimCaptionToDisplayWindow = (
   hints: CaptionSentenceHints = {},
 ): string => {
   const sanitized = sanitizeCaptionDisplayText(text);
-  const normalized = restoreCollapsedGreetingContinuation(
+  const normalized = restoreCollapsedContinuation(
     sanitized,
     selectVisibleCaptionSentence(sanitized, hints),
   );

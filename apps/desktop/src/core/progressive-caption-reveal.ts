@@ -1,7 +1,7 @@
 import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import {
   captionGraphemes,
-  restoreCollapsedGreetingContinuation,
+  restoreCollapsedContinuation,
   sanitizeCaptionDisplayText,
 } from "../overlay/captions";
 import type { CaptionPayload } from "./types";
@@ -29,7 +29,7 @@ export const PROGRESSIVE_FIRST_PAINT_COALESCE_MS = 16;
  */
 export const resolveProgressiveRevealSourceTarget = (caption: CaptionPayload): string => {
   const source = sanitizeCaptionDisplayText(caption.sourceText);
-  return restoreCollapsedGreetingContinuation(
+  return restoreCollapsedContinuation(
     source,
     selectVisibleCaptionSentence(source, {
       key: "source",
@@ -153,7 +153,7 @@ export const alignCaptionOffsetsToPaintedSource = (
   caption: CaptionPayload,
   paintSource: string,
 ): CaptionPayload => {
-  const paint = restoreCollapsedGreetingContinuation(caption.sourceText, paintSource);
+  const paint = restoreCollapsedContinuation(caption.sourceText, paintSource);
   if (paint === caption.sourceText) {
     return caption;
   }

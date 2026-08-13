@@ -11,7 +11,7 @@ import {
   createHoldClearedCaption,
   createPreviewCaption,
   repairHearingPhraseConfusion,
-  restoreCollapsedGreetingContinuation,
+  restoreCollapsedContinuation,
   sanitizeCaptionDisplayText,
   segmentCaptionText,
   stripCaptionContinuationMarker,
@@ -97,21 +97,23 @@ describe("caption display sanitization", () => {
     expect(sanitizeCaptionDisplayText("さようなら!きこえますか")).toBe("さようならきこえますか");
   });
 
-  it("does not collapse a greeting continuation to a lone ー after paging", () => {
-    const spoken = "こんにちはーきこえますか";
-    expect(restoreCollapsedGreetingContinuation(spoken, "ー")).toBe(spoken);
-    expect(restoreCollapsedGreetingContinuation(spoken, "ーきこえますか")).toBe(spoken);
-    expect(restoreCollapsedGreetingContinuation("ーきこえますか", "ーきこえますか")).toBe(
-      "ーきこえますか",
+  it("does not collapse a continuation to a lone ー or suffix after paging", () => {
+    const spoken = "会議を始めますー続きがあります";
+    expect(restoreCollapsedContinuation(spoken, "ー")).toBe(spoken);
+    expect(restoreCollapsedContinuation(spoken, "ー続きがあります")).toBe(spoken);
+    expect(restoreCollapsedContinuation("ー続きがあります", "ー続きがあります")).toBe(
+      "ー続きがあります",
     );
-    expect(restoreCollapsedGreetingContinuation("今日は晴れです", "明日は雨です")).toBe(
-      "明日は雨です",
+    expect(restoreCollapsedContinuation("今日は晴れです", "明日は雨です")).toBe("明日は雨です");
+    expect(restoreCollapsedContinuation("会議を始めます続きがあります", "続きがあります")).toBe(
+      "会議を始めます続きがあります",
     );
-    expect(restoreCollapsedGreetingContinuation("こんにちは！きこえますか", "きこえますか")).toBe(
+    expect(restoreCollapsedContinuation("こんにちは！きこえますか", "きこえますか")).toBe(
       "こんにちはきこえますか",
     );
-    expect(restoreCollapsedGreetingContinuation("こんにちは。終えますか", "終えますか")).toBe(
-      "こんにちは聞こえますか",
+    expect(restoreCollapsedContinuation("こんにちは。終えますか", "終えますか")).toBe("終えますか");
+    expect(restoreCollapsedContinuation("会議を始めます。続きがあります", "続きがあります")).toBe(
+      "続きがあります",
     );
     expect(
       captionTextLines({
@@ -143,6 +145,13 @@ describe("caption display sanitization", () => {
         maxChars: 28,
       }).join(""),
     ).toBe("こんにちは聞こえますか");
+    expect(
+      captionTextLines({
+        key: "source",
+        text: "会議を始めます。続きがあります",
+        maxChars: 28,
+      }),
+    ).toEqual(["続きがあります"]);
   });
 
   it("strips trailing Parapper continuation markers without touching mid-text ellipsis", () => {
