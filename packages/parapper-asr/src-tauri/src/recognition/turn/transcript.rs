@@ -44,207 +44,226 @@ impl RecognitionSession {
                 overlap.source_samples,
             )
         });
-        let existing_audio_range = self.turn_store.audio_ranges.get(&turn_id).copied();
+        let existing_audio_ranges =
+            self.turn_store.audio_ranges.get(&turn_id).cloned().unwrap_or_default();
         let streaming_source_skip = streaming_chunk_uncovered_source_start(
             request.close_reason,
             &request.source_audio,
             &request.audio,
         );
-        self.merge_contiguous_turn_audio_range(
-            turn_id,
-            applied_streaming_chunk_range(request, streaming_source_skip),
-        );
+        if request.close_reason == Some(SegmentCloseReason::InterimChunkReached) {
+            self.merge_contiguous_turn_audio_range(
+                turn_id,
+                applied_streaming_chunk_range(request, streaming_source_skip),
+            );
+        } else if request.kind != AsrTaskKind::CompletionCheck {
+            self.merge_contiguous_turn_audio_range(turn_id, request.target.range);
+        }
         if completion_is_duplicate_tail {
             if request.kind == AsrTaskKind::CompletionCheck {
                 self.refresh_visible_draft_boundary_from_completion(turn_id, &transcript);
             }
             return turn_id;
         }
-        let revision = *self.turn_store.revisions.entry(turn_id).or_insert(0);
-        let turn = self.turn_store.turns.entry(turn_id).or_insert_with(|| {
-            Turn::new(turn_event_id(self.counters.turn_session_id, turn_id, revision), revision)
-        });
-        let draft = turn.draft_mut();
-        draft.set_detected_language(request.detected_language.clone());
-        let segment_id = request
-            .target
-            .last_segment_id
-            .map_or(request.target.turn_id.0, |segment_id| segment_id.0);
-        let previous_segment_id = request.target.first_segment_id.and_then(|segment_id| {
-            (Some(segment_id) != request.target.last_segment_id).then_some(segment_id.0)
-        });
-        let latest_segment_audio_is_prefix = || {
-            let Some(latest_audio_len) = draft.segment_audio_lens.last().copied() else {
-                return false;
-            };
-            if latest_audio_len > request.source_audio.len()
-                || latest_audio_len > draft.full_audio.len()
-            {
-                return false;
-            }
-            let latest_start = draft.full_audio.len() - latest_audio_len;
-            draft.full_audio[latest_start..]
-                .iter()
-                .zip(request.source_audio.iter())
-                .take(latest_audio_len)
-                .all(|(left, right)| left.to_bits() == right.to_bits())
-        };
-        let replace_latest_segment = draft.latest_segment_id == Some(segment_id)
-            && latest_segment_audio_is_prefix()
-            && (request.close_reason == Some(SegmentCloseReason::InterimChunkReached)
-                || request.kind == AsrTaskKind::CompletionCheck)
-            || completion_replaces_streaming_interim;
-        // Dual-ASR: ReazonSpeech completion can truncate a longer Nemotron draft
-        // ("…ですね" tails vanish). Keep the longer streaming surface when the
-        // completion is clearly a prefix truncation; still swap to completion audio.
-        let incoming_text = if completion_replaces_streaming_interim
-            && prefer_streaming_interim_text_over_truncated_completion(
-                &draft.combined_text,
-                &transcript.text,
-            ) {
-            draft.combined_text.clone()
-        } else {
-            text_after_audio_overlap(
-                &transcript,
-                streaming_interim_overlap
-                    .map_or(0, |overlap| overlap.samples_for_transcript_tokens(&transcript)),
-            )
-        };
-        let existing_text = draft.combined_text.clone();
-        let completion_append =
-            request.kind == AsrTaskKind::CompletionCheck && !replace_latest_segment;
-        let replace_combined_with_longer_rewrite =
-            completion_append && completion_is_full_longer_rewrite(&existing_text, &incoming_text);
-        let skip_duplicate_completion_text = completion_append
-            && (replace_combined_with_longer_rewrite
-                || completion_text_duplicates_existing(&existing_text, &incoming_text));
-        let skip_blank_completion_append = completion_append
-            && !replace_combined_with_longer_rewrite
-            && (skip_duplicate_completion_text || completion_incoming_is_blank(&incoming_text));
-        let recorded_text = if replace_latest_segment {
-            let incoming = visible_text_for_blank_replace(
-                &incoming_text,
-                draft.segment_texts.last().map(String::as_str),
-                &existing_text,
-                draft.last_emitted_interim_text.as_deref(),
-                draft.segment_texts.len(),
-            );
-            if request.close_reason == Some(SegmentCloseReason::InterimChunkReached) {
-                streaming_chunk_text_keeping_visible_prefix(&existing_text, &incoming)
-            } else {
-                incoming
-            }
-        } else if skip_duplicate_completion_text || skip_blank_completion_append {
-            // Keep the visible utterance in combined_text. Appending the same
-            // (or truncated) completion string doubled the final when
-            // rerecognition did not run to replace the draft.
-            String::new()
-        } else {
-            incoming_text.clone()
-        };
-        let earlier_prefix_segment_id = completion_earlier_segment_id(
-            &draft.segment_ids,
-            draft.latest_segment_id,
-            request,
-            segment_id,
-        );
-        if completion_prefix_is_before_existing_range(existing_audio_range, request) {
-            draft.prepend_recognized_segment(
-                segment_id,
-                previous_segment_id,
-                &request.source_audio,
-                &request.source_vad_results,
-                request.route,
-                recorded_text,
-                elapsed_millis,
-            );
-        } else if let Some(prefix_segment_id) = earlier_prefix_segment_id {
-            if !recorded_text.is_empty() {
-                let keep_visible_prefix = draft
-                    .segment_ids
-                    .iter()
-                    .position(|id| *id == prefix_segment_id)
-                    .and_then(|index| draft.segment_texts.get(index))
-                    .is_some_and(|visible| {
-                        prefer_streaming_interim_text_over_truncated_completion(
-                            visible,
-                            &incoming_text,
-                        )
-                    });
-                if !keep_visible_prefix {
-                    draft.replace_segment_text_preserving_audio(
-                        prefix_segment_id,
-                        request.route,
-                        incoming_text.clone(),
-                        elapsed_millis,
-                    );
-                }
-            }
-        } else if replace_latest_segment {
-            draft.replace_latest_recognized_segment(
-                segment_id,
-                previous_segment_id,
-                &request.source_audio,
-                &request.source_vad_results,
-                request.route,
-                recorded_text,
-                elapsed_millis,
-            );
-        } else {
-            let append_source_start = if let Some(overlap) = streaming_interim_overlap {
-                overlap.source_samples
-            } else {
-                let range_skip = covered_completion_source_samples(existing_audio_range, request);
-                let prefix_skip = if skip_duplicate_completion_text || skip_blank_completion_append
-                {
-                    uncovered_completion_source_start(&draft.full_audio, &request.source_audio)
-                } else {
-                    0
+        let mut completion_range_to_merge = None;
+        {
+            let revision = *self.turn_store.revisions.entry(turn_id).or_insert(0);
+            let turn = self.turn_store.turns.entry(turn_id).or_insert_with(|| {
+                Turn::new(turn_event_id(self.counters.turn_session_id, turn_id, revision), revision)
+            });
+            let draft = turn.draft_mut();
+            draft.set_detected_language(request.detected_language.clone());
+            let segment_id = request
+                .target
+                .last_segment_id
+                .map_or(request.target.turn_id.0, |segment_id| segment_id.0);
+            let previous_segment_id = request.target.first_segment_id.and_then(|segment_id| {
+                (Some(segment_id) != request.target.last_segment_id).then_some(segment_id.0)
+            });
+            let latest_segment_audio_is_prefix = || {
+                let Some(latest_audio_len) = draft.segment_audio_lens.last().copied() else {
+                    return false;
                 };
-                range_skip.max(prefix_skip).max(streaming_source_skip)
-            };
-            let append_vad_results;
-            let source_vad_results = if append_source_start == 0 {
-                request.source_vad_results.as_slice()
-            } else {
-                append_vad_results = vad_suffix_after_sample(
-                    request.source_audio.len(),
-                    &request.source_vad_results,
-                    append_source_start,
-                );
-                append_vad_results.as_slice()
-            };
-            let uncovered_audio = &request.source_audio[append_source_start..];
-            if skip_blank_completion_append {
-                // Blank or duplicate completion used to push an empty segment and
-                // advance latest_segment_id, so later silence/overlap checks missed
-                // the still-open utterance. Keep uncovered tail audio on the current
-                // segment instead.
-                if uncovered_audio.is_empty() || draft.latest_segment_id.is_none() {
-                    draft.route = Some(request.route);
-                    draft.processing_millis += elapsed_millis;
-                } else {
-                    draft.extend_latest_segment_audio(
-                        uncovered_audio,
-                        source_vad_results,
-                        request.route,
-                        elapsed_millis,
-                    );
+                if latest_audio_len > request.source_audio.len()
+                    || latest_audio_len > draft.full_audio.len()
+                {
+                    return false;
                 }
+                let latest_start = draft.full_audio.len() - latest_audio_len;
+                draft.full_audio[latest_start..]
+                    .iter()
+                    .zip(request.source_audio.iter())
+                    .take(latest_audio_len)
+                    .all(|(left, right)| left.to_bits() == right.to_bits())
+            };
+            let replace_latest_segment = draft.latest_segment_id == Some(segment_id)
+                && latest_segment_audio_is_prefix()
+                && (request.close_reason == Some(SegmentCloseReason::InterimChunkReached)
+                    || request.kind == AsrTaskKind::CompletionCheck)
+                || completion_replaces_streaming_interim;
+            // Dual-ASR: ReazonSpeech completion can truncate a longer Nemotron draft
+            // ("…ですね" tails vanish). Keep the longer streaming surface when the
+            // completion is clearly a prefix truncation; still swap to completion audio.
+            let incoming_text = if completion_replaces_streaming_interim
+                && prefer_streaming_interim_text_over_truncated_completion(
+                    &draft.combined_text,
+                    &transcript.text,
+                ) {
+                draft.combined_text.clone()
             } else {
-                draft.append_recognized_segment(
+                text_after_audio_overlap(
+                    &transcript,
+                    streaming_interim_overlap
+                        .map_or(0, |overlap| overlap.samples_for_transcript_tokens(&transcript)),
+                )
+            };
+            let existing_text = draft.combined_text.clone();
+            let completion_append =
+                request.kind == AsrTaskKind::CompletionCheck && !replace_latest_segment;
+            let replace_combined_with_longer_rewrite = completion_append
+                && completion_is_full_longer_rewrite(&existing_text, &incoming_text);
+            let skip_duplicate_completion_text = completion_append
+                && (replace_combined_with_longer_rewrite
+                    || completion_text_duplicates_existing(&existing_text, &incoming_text));
+            let skip_blank_completion_append = completion_append
+                && !replace_combined_with_longer_rewrite
+                && (skip_duplicate_completion_text || completion_incoming_is_blank(&incoming_text));
+            let recorded_text = if replace_latest_segment {
+                let incoming = visible_text_for_blank_replace(
+                    &incoming_text,
+                    draft.segment_texts.last().map(String::as_str),
+                    &existing_text,
+                    draft.last_emitted_interim_text.as_deref(),
+                    draft.segment_texts.len(),
+                );
+                if request.close_reason == Some(SegmentCloseReason::InterimChunkReached) {
+                    streaming_chunk_text_keeping_visible_prefix(&existing_text, &incoming)
+                } else {
+                    incoming
+                }
+            } else if skip_duplicate_completion_text || skip_blank_completion_append {
+                // Keep the visible utterance in combined_text. Appending the same
+                // (or truncated) completion string doubled the final when
+                // rerecognition did not run to replace the draft.
+                String::new()
+            } else {
+                incoming_text.clone()
+            };
+            let earlier_prefix_segment_id = completion_earlier_segment_id(
+                &draft.segment_ids,
+                draft.latest_segment_id,
+                request,
+                segment_id,
+            );
+            if completion_prefix_is_before_existing_range(&existing_audio_ranges, request) {
+                draft.prepend_recognized_segment(
                     segment_id,
                     previous_segment_id,
-                    uncovered_audio,
-                    source_vad_results,
+                    &request.source_audio,
+                    &request.source_vad_results,
                     request.route,
                     recorded_text,
                     elapsed_millis,
                 );
-                if replace_combined_with_longer_rewrite {
-                    draft.replace_text_preserving_sources(request.route, incoming_text, 0);
+                completion_range_to_merge = Some(request.target.range);
+            } else if let Some(prefix_segment_id) = earlier_prefix_segment_id {
+                if !recorded_text.is_empty() {
+                    let keep_visible_prefix = draft
+                        .segment_ids
+                        .iter()
+                        .position(|id| *id == prefix_segment_id)
+                        .and_then(|index| draft.segment_texts.get(index))
+                        .is_some_and(|visible| {
+                            prefer_streaming_interim_text_over_truncated_completion(
+                                visible,
+                                &incoming_text,
+                            )
+                        });
+                    if !keep_visible_prefix {
+                        draft.replace_segment_text_preserving_audio(
+                            prefix_segment_id,
+                            request.route,
+                            incoming_text.clone(),
+                            elapsed_millis,
+                        );
+                    }
                 }
+            } else if replace_latest_segment {
+                draft.replace_latest_recognized_segment(
+                    segment_id,
+                    previous_segment_id,
+                    &request.source_audio,
+                    &request.source_vad_results,
+                    request.route,
+                    recorded_text,
+                    elapsed_millis,
+                );
+                completion_range_to_merge = Some(request.target.range);
+            } else {
+                let append_source_start = if let Some(overlap) = streaming_interim_overlap {
+                    overlap.source_samples
+                } else {
+                    let range_skip =
+                        covered_completion_source_samples(&existing_audio_ranges, request);
+                    let prefix_skip = if request.kind == AsrTaskKind::CompletionCheck {
+                        uncovered_completion_source_start(
+                            &draft.full_audio,
+                            &request.source_audio,
+                            draft.segment_audio_lens.last().copied().unwrap_or(0),
+                        )
+                    } else {
+                        0
+                    };
+                    range_skip.max(prefix_skip).max(streaming_source_skip)
+                };
+                let append_vad_results;
+                let source_vad_results = if append_source_start == 0 {
+                    request.source_vad_results.as_slice()
+                } else {
+                    append_vad_results = vad_suffix_after_sample(
+                        request.source_audio.len(),
+                        &request.source_vad_results,
+                        append_source_start,
+                    );
+                    append_vad_results.as_slice()
+                };
+                let uncovered_audio = &request.source_audio[append_source_start..];
+                if skip_blank_completion_append {
+                    // Blank or duplicate completion used to push an empty segment and
+                    // advance latest_segment_id, so later silence/overlap checks missed
+                    // the still-open utterance. Keep uncovered tail audio on the current
+                    // segment instead.
+                    if uncovered_audio.is_empty() || draft.latest_segment_id.is_none() {
+                        draft.route = Some(request.route);
+                        draft.processing_millis += elapsed_millis;
+                    } else {
+                        draft.extend_latest_segment_audio(
+                            uncovered_audio,
+                            source_vad_results,
+                            request.route,
+                            elapsed_millis,
+                        );
+                    }
+                } else {
+                    draft.append_recognized_segment(
+                        segment_id,
+                        previous_segment_id,
+                        uncovered_audio,
+                        source_vad_results,
+                        request.route,
+                        recorded_text,
+                        elapsed_millis,
+                    );
+                    if replace_combined_with_longer_rewrite {
+                        draft.replace_text_preserving_sources(request.route, incoming_text, 0);
+                    }
+                }
+                completion_range_to_merge =
+                    uncovered_completion_audio_range(request, append_source_start);
             }
+        }
+        if let Some(range) = completion_range_to_merge {
+            self.merge_contiguous_turn_audio_range(turn_id, range);
         }
         if request.close_reason == Some(SegmentCloseReason::InterimChunkReached) {
             let applied_range = applied_streaming_chunk_range(request, streaming_source_skip);
@@ -282,7 +301,8 @@ impl RecognitionSession {
             return;
         }
         let turn_id = request.target.turn_id.0;
-        let existing_audio_range = self.turn_store.audio_ranges.get(&turn_id).copied();
+        let existing_audio_ranges =
+            self.turn_store.audio_ranges.get(&turn_id).cloned().unwrap_or_default();
         self.merge_turn_audio_range(turn_id, request.target.range);
         let revision = *self.turn_store.revisions.entry(turn_id).or_insert(0);
         let turn = self.turn_store.turns.entry(turn_id).or_insert_with(|| {
@@ -297,9 +317,12 @@ impl RecognitionSession {
         let previous_segment_id = request.target.first_segment_id.and_then(|segment_id| {
             (Some(segment_id) != request.target.last_segment_id).then_some(segment_id.0)
         });
-        let range_skip = covered_completion_source_samples(existing_audio_range, request);
-        let prefix_skip =
-            uncovered_completion_source_start(&draft.full_audio, &request.source_audio);
+        let range_skip = covered_completion_source_samples(&existing_audio_ranges, request);
+        let prefix_skip = uncovered_completion_source_start(
+            &draft.full_audio,
+            &request.source_audio,
+            draft.segment_audio_lens.last().copied().unwrap_or(0),
+        );
         let append_source_start = range_skip.max(prefix_skip);
         if append_source_start < request.source_audio.len() {
             let append_vad_results;
@@ -424,6 +447,11 @@ impl RecognitionSession {
         if request.target.range.start_sample > streaming_range.start_sample {
             return false;
         }
+        // A wide 0..emitted CompletionCheck must not replace the latest 160ms
+        // delta with cumulative source that restacks the already-present tail.
+        if request.target.range.start_sample < streaming_range.start_sample {
+            return false;
+        }
         // A prefix CompletionCheck that only covers the Reazon window must not
         // replace a later 160ms delta just because the chunk's cumulative range
         // was 0..emitted.
@@ -495,17 +523,8 @@ impl RecognitionSession {
     }
 
     fn merge_contiguous_turn_audio_range(&mut self, turn_id: u64, range: AudioRange) {
-        match self.turn_store.audio_ranges.entry(turn_id) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                let current = *entry.get();
-                if ranges_are_contiguous(current, range) {
-                    entry.insert(current.merge(range));
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(range);
-            }
-        }
+        let ranges = self.turn_store.audio_ranges.entry(turn_id).or_default();
+        insert_contiguous_audio_range(ranges, range);
     }
 
     pub(in crate::recognition) fn apply_rerecognition_transcript(
@@ -793,11 +812,15 @@ fn completion_is_full_longer_rewrite(existing: &str, incoming: &str) -> bool {
 }
 
 fn completion_prefix_is_before_existing_range(
-    existing: Option<AudioRange>,
+    existing: &[AudioRange],
     request: &AsrRequest,
 ) -> bool {
     request.kind == AsrTaskKind::CompletionCheck
-        && existing.is_some_and(|range| request.target.range.end_sample <= range.start_sample)
+        && existing
+            .iter()
+            .map(|range| range.start_sample)
+            .min()
+            .is_some_and(|start| request.target.range.end_sample <= start)
 }
 
 fn completion_earlier_segment_id(
@@ -890,47 +913,51 @@ fn strip_turn_surface_noise(text: &str) -> &str {
 }
 
 fn covered_completion_source_samples(
-    existing_range: Option<AudioRange>,
+    existing_ranges: &[AudioRange],
     request: &AsrRequest,
 ) -> usize {
     if request.kind != AsrTaskKind::CompletionCheck {
         return 0;
     }
     let leading_padding = leading_asr_only_padding_samples(&request.audio, &request.source_audio);
-    source_samples_covered_by_range_overlap(
-        existing_range,
-        request.target.range,
-        request.source_audio.len(),
-        leading_padding,
-    )
-}
-
-fn source_samples_covered_by_range_overlap(
-    existing_range: Option<AudioRange>,
-    request_range: AudioRange,
-    source_len: usize,
-    leading_padding: usize,
-) -> usize {
-    // Copied previous-segment silence lives in request.audio, not source_audio.
-    // That child window can geometrically overlap the draft even though its
-    // source speech is new; do not treat it as a same-window re-ASR.
     if leading_padding > 0 {
         return 0;
     }
-    let Some(existing) = existing_range else {
-        return 0;
-    };
-    if request_range.start_sample >= existing.end_sample {
-        return 0;
-    }
-    let overlap_end = request_range.end_sample.min(existing.end_sample);
-    if overlap_end <= request_range.start_sample {
-        return 0;
-    }
-    samples_between(request_range.start_sample, overlap_end).min(source_len)
+    leading_covered_source_samples(
+        existing_ranges,
+        request.target.range,
+        request.source_audio.len(),
+    )
 }
 
-fn uncovered_completion_source_start(draft_audio: &[f32], source_audio: &[f32]) -> usize {
+fn leading_covered_source_samples(
+    existing_ranges: &[AudioRange],
+    request_range: AudioRange,
+    source_len: usize,
+) -> usize {
+    let mut cursor = request_range.start_sample;
+    let end = request_range.end_sample;
+    loop {
+        let Some(hit) = existing_ranges
+            .iter()
+            .find(|range| range.start_sample <= cursor && cursor < range.end_sample)
+        else {
+            break;
+        };
+        let next = hit.end_sample.min(end);
+        if next <= cursor {
+            break;
+        }
+        cursor = next;
+    }
+    samples_between(request_range.start_sample, cursor.min(end)).min(source_len)
+}
+
+fn uncovered_completion_source_start(
+    draft_audio: &[f32],
+    source_audio: &[f32],
+    latest_audio_len: usize,
+) -> usize {
     if source_audio.is_empty() || draft_audio.is_empty() {
         return 0;
     }
@@ -950,7 +977,60 @@ fn uncovered_completion_source_start(draft_audio: &[f32], source_audio: &[f32]) 
     {
         return source_audio.len();
     }
+    if draft_audio.len() >= source_audio.len()
+        && f32_slices_equal(&draft_audio[draft_audio.len() - source_audio.len()..], source_audio)
+    {
+        return source_audio.len();
+    }
+    let latest_len = latest_audio_len.min(draft_audio.len()).min(source_audio.len());
+    if latest_len == 0 {
+        return 0;
+    }
+    let latest = &draft_audio[draft_audio.len() - latest_len..];
+    if let Some(start) = find_f32_slice(source_audio, latest) {
+        return (start + latest_len).min(source_audio.len());
+    }
     0
+}
+
+fn f32_slices_equal(left: &[f32], right: &[f32]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| a.to_bits() == b.to_bits())
+}
+
+fn find_f32_slice(haystack: &[f32], needle: &[f32]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|window| f32_slices_equal(window, needle))
+}
+
+fn insert_contiguous_audio_range(ranges: &mut Vec<AudioRange>, range: AudioRange) {
+    if let Some(index) = ranges.iter().position(|current| ranges_are_contiguous(*current, range)) {
+        let merged = ranges.remove(index).merge(range);
+        insert_contiguous_audio_range(ranges, merged);
+        return;
+    }
+    ranges.push(range);
+    ranges.sort_by_key(|range| range.start_sample);
+}
+
+fn uncovered_completion_audio_range(
+    request: &AsrRequest,
+    append_source_start: usize,
+) -> Option<AudioRange> {
+    if request.kind != AsrTaskKind::CompletionCheck
+        || append_source_start >= request.source_audio.len()
+    {
+        return None;
+    }
+    let start = GlobalSampleIndex(
+        request.target.range.start_sample.0.saturating_add(append_source_start as u64),
+    );
+    if start >= request.target.range.end_sample {
+        None
+    } else {
+        Some(AudioRange::new(start, request.target.range.end_sample))
+    }
 }
 
 /// Production Nemotron 160ms chunks carry cumulative `source_audio` and a
@@ -1074,10 +1154,10 @@ mod tests {
     use super::{
         completion_incoming_is_blank, completion_is_full_longer_rewrite,
         completion_text_duplicates_existing, is_longer_turn_rewrite,
-        leading_asr_only_padding_samples, longer_turn_surface_text,
+        leading_asr_only_padding_samples, leading_covered_source_samples, longer_turn_surface_text,
         prefer_streaming_interim_text_over_truncated_completion,
-        source_samples_covered_by_range_overlap, streaming_chunk_uncovered_source_start,
-        uncovered_completion_source_start, visible_text_for_blank_replace,
+        streaming_chunk_uncovered_source_start, uncovered_completion_source_start,
+        visible_text_for_blank_replace,
     };
     use crate::recognition::{
         segmentation::segment::builder::SegmentCloseReason,
@@ -1157,26 +1237,27 @@ mod tests {
         assert!(completion_is_full_longer_rewrite("前半", "前半と末尾"));
         assert!(!completion_is_full_longer_rewrite("全体", "追加です"));
         assert_eq!(
-            uncovered_completion_source_start(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0, 3.0, 4.0]),
+            uncovered_completion_source_start(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0, 3.0, 4.0], 3),
             3
         );
-        assert_eq!(uncovered_completion_source_start(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0]), 3);
-        assert_eq!(uncovered_completion_source_start(&[0.0, 1.0], &[2.0, 3.0]), 0);
+        assert_eq!(uncovered_completion_source_start(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0], 3), 3);
+        assert_eq!(uncovered_completion_source_start(&[0.0, 1.0], &[2.0, 3.0], 2), 0);
         assert_eq!(
-            source_samples_covered_by_range_overlap(Some(range(0, 100)), range(0, 150), 150, 0),
-            100
-        );
-        assert_eq!(
-            source_samples_covered_by_range_overlap(Some(range(0, 100)), range(100, 150), 50, 0),
-            0
-        );
-        assert_eq!(
-            source_samples_covered_by_range_overlap(
-                Some(range(0, 1024)),
-                range(512, 2560),
-                1536,
-                512
+            uncovered_completion_source_start(
+                &[vec![1.0; 150], vec![3.0; 160]].concat(),
+                &[vec![9.0; 250], vec![3.0; 160]].concat(),
+                160,
             ),
+            410
+        );
+        assert_eq!(leading_covered_source_samples(&[range(0, 100)], range(0, 150), 150), 100);
+        assert_eq!(leading_covered_source_samples(&[range(0, 100)], range(100, 150), 50), 0);
+        assert_eq!(
+            leading_covered_source_samples(&[range(0, 150), range(250, 410)], range(250, 410), 160),
+            160
+        );
+        assert_eq!(
+            leading_covered_source_samples(&[range(0, 150), range(250, 410)], range(150, 250), 100),
             0
         );
         let source = vec![2.0; 200];

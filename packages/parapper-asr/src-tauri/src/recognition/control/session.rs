@@ -399,7 +399,7 @@ pub(in crate::recognition) trait LanguageIdRuntime:
 
 pub(in crate::recognition) struct TurnStore {
     pub(in crate::recognition) turns: HashMap<u64, Turn>,
-    pub(in crate::recognition) audio_ranges: HashMap<u64, AudioRange>,
+    pub(in crate::recognition) audio_ranges: HashMap<u64, Vec<AudioRange>>,
     pub(in crate::recognition) revisions: HashMap<u64, u64>,
     pub(in crate::recognition) finalized_turns: HashSet<u64>,
     pub(in crate::recognition) streaming_interim_ranges: HashMap<u64, AudioRange>,

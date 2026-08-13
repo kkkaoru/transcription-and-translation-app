@@ -495,7 +495,7 @@ impl RuntimeStateBuilder<'_> {
     fn turn_audio_range(self, turn_id: u64, range: std::ops::Range<u64>) -> Self {
         self.runtime.turn_store.audio_ranges.insert(
             turn_id,
-            AudioRange::new(GlobalSampleIndex(range.start), GlobalSampleIndex(range.end)),
+            vec![AudioRange::new(GlobalSampleIndex(range.start), GlobalSampleIndex(range.end))],
         );
         self
     }

@@ -104,9 +104,18 @@ impl RecognitionSession {
             &mut vad_results,
             AsrRequestEdgePadding::TrailingOnly,
         );
-        let range = self.turn_store.audio_ranges.get(&turn_id).copied().unwrap_or_else(|| {
-            AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(source_audio_len as u64))
-        });
+        let range = self
+            .turn_store
+            .audio_ranges
+            .get(&turn_id)
+            .and_then(|ranges| {
+                let start = ranges.iter().map(|range| range.start_sample).min()?;
+                let end = ranges.iter().map(|range| range.end_sample).max()?;
+                (start < end).then(|| AudioRange::new(start, end))
+            })
+            .unwrap_or_else(|| {
+                AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(source_audio_len as u64))
+            });
         let target = AsrTarget::new(
             TurnId(turn_id),
             TurnRevision(*self.turn_store.revisions.get(&turn_id).unwrap_or(&0)),
@@ -702,9 +711,11 @@ impl RecognitionSession {
     }
 
     fn finalize_turn_audio_range(&mut self, turn_id: u64) {
-        if let Some(range) = self.turn_store.audio_ranges.remove(&turn_id) {
+        if let Some(ranges) = self.turn_store.audio_ranges.remove(&turn_id)
+            && let Some(end) = ranges.iter().map(|range| range.end_sample).max()
+        {
             self.turn_store.confirmed_until_sample =
-                self.turn_store.confirmed_until_sample.max(range.end_sample);
+                self.turn_store.confirmed_until_sample.max(end);
         }
     }
 

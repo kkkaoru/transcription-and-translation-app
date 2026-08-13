@@ -2604,6 +2604,122 @@ fn turn_runtime_cumulative_160ms_range_does_not_drop_uncovered_completion_tail()
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "invariant covers gapped 160ms restack plus keeping the uncovered hole"
+)]
+fn turn_runtime_gapped_160ms_delta_is_not_restacked_by_same_display_completion() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8)
+        .rerecognize_full_on_complete(false);
+    let asr_handle = builder.use_manual_asr();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+    asr_handle.complete_request_with_text(&prefix, "全体。");
+    runtime.step();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        0..410,
+    );
+    if let Some(segment) = runtime.pending.asr_segments.back_mut() {
+        segment.source_audio = [vec![9.0; 250], vec![3.0; 160]].concat();
+        segment.audio = vec![3.0; 160];
+    }
+    runtime.step();
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("cumulative 160ms must dispatch after the visible prefix");
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+
+    let mut completion = interim_request_for_turn(3, 1);
+    completion.kind = AsrTaskKind::CompletionCheck;
+    completion.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    completion.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(0), GlobalSampleIndex(410)),
+        Some(SegmentId(1)),
+        Some(SegmentId(1)),
+    );
+    completion.audio = [vec![9.0; 250], vec![3.0; 160]].concat();
+    completion.source_audio = [vec![9.0; 250], vec![3.0; 160]].concat();
+    completion.source_vad_results = vec![vad(true)];
+    runtime_state(&mut runtime).in_flight(completion.clone());
+    asr_handle.complete_request_with_text(&completion, "続き");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体"),
+        "same-display completion of the 160ms delta must keep the visible prefix; got {}",
+        draft.combined_text
+    );
+    assert!(
+        draft.combined_text.contains("続き"),
+        "same-display completion of the 160ms delta must keep the continuation; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![3.0; 160]].concat(),
+        "already-present 160ms delta audio must not be restacked by a same-display CompletionCheck"
+    );
+    assert!(
+        !draft.full_audio.contains(&9.0),
+        "already-visible prefix audio must not be restacked from cumulative source"
+    );
+
+    let mut hole = interim_request_for_turn(4, 1);
+    hole.kind = AsrTaskKind::CompletionCheck;
+    hole.close_reason = Some(SegmentCloseReason::EndSilenceReached);
+    hole.target = AsrTarget::new(
+        TurnId(1),
+        TurnRevision(0),
+        AudioRange::new(GlobalSampleIndex(150), GlobalSampleIndex(250)),
+        Some(SegmentId(1)),
+        Some(SegmentId(2)),
+    );
+    hole.audio = vec![2.0; 100];
+    hole.source_audio = vec![2.0; 100];
+    hole.source_vad_results = vec![vad(true)];
+    runtime_state(&mut runtime).in_flight(hole.clone());
+    asr_handle.complete_request_with_text(&hole, "追加");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("追加"),
+        "uncovered hole completion must still be kept after recording the delta window; got {}",
+        draft.combined_text
+    );
+    assert_eq!(
+        draft.full_audio,
+        [vec![1.0; 150], vec![3.0; 160], vec![2.0; 100]].concat(),
+        "recording the 160ms delta must not treat the hole as covered"
+    );
+}
+
+#[test]
 fn turn_runtime_in_flight_max_chunk_does_not_yield_to_after_interim_silence() {
     let mut builder = RecognitionSessionTestBuilder::new()
         .turn_detector(TurnDetector::Namo)
