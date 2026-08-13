@@ -3616,6 +3616,142 @@ fn turn_runtime_in_flight_namo_grammar_yields_to_same_utterance_tail() {
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "invariant covers in-flight 160ms hold, tail apply, then resumed grammar not rewriting the joined caption to the lead"
+)]
+fn turn_runtime_resumed_namo_grammar_does_not_rewrite_joined_caption_to_lead() {
+    let mut builder = RecognitionSessionTestBuilder::new()
+        .turn_detector(TurnDetector::Namo)
+        .interim_display(true)
+        .interim_asr_model(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8);
+    let asr_handle = builder.use_manual_asr();
+    let _ = builder
+        .use_scripted_decisions(vec![TurnDecision { is_end_of_turn: true, confidence: 0.99 }]);
+    let outputs = builder.use_recording_phrase_sink();
+    let (mut runtime, _config) = builder.build();
+
+    runtime_state(&mut runtime).pending_segment(
+        1,
+        None,
+        SegmentCloseReason::EndSilenceReached,
+        0..150,
+    );
+    runtime.step();
+    let prefix = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("end-silence must dispatch completion ASR");
+
+    runtime_state(&mut runtime).pending_segment(
+        2,
+        None,
+        SegmentCloseReason::InterimChunkReached,
+        150..310,
+    );
+    runtime.step();
+    let chunk = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("in-flight prefix must yield to the same-turn 160ms tail");
+    assert_eq!(chunk.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+    assert_eq!(chunk.target.turn_id, TurnId(1));
+    assert_ne!(chunk.request_id, prefix.request_id);
+
+    runtime_state(&mut runtime).pending_segment(
+        3,
+        None,
+        SegmentCloseReason::InterimResultSilenceReached,
+        310..410,
+    );
+    runtime.step();
+    let in_flight = runtime
+        .requests
+        .in_flight_request
+        .as_ref()
+        .expect("AfterInterimSilence must not steal in-flight 160ms");
+    assert_eq!(in_flight.request_id, chunk.request_id);
+    assert_eq!(in_flight.close_reason, Some(SegmentCloseReason::InterimChunkReached));
+
+    asr_handle.complete_request_with_text(&chunk, "続き");
+    runtime.step();
+    let resumed = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("deferred prefix CompletionCheck must resume before grammar");
+    assert_eq!(resumed.kind, AsrTaskKind::CompletionCheck);
+    asr_handle.complete_request_with_text(&resumed, "全体。");
+    runtime.step();
+
+    let silence = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("same-utterance AfterInterimSilence must apply before resumed grammar");
+    assert_eq!(silence.kind, AsrTaskKind::InterimDisplay);
+    assert_eq!(silence.close_reason, Some(SegmentCloseReason::InterimResultSilenceReached));
+    assert_eq!(silence.target.turn_id, TurnId(1));
+    asr_handle.complete_request_with_text(&silence, "後半");
+    runtime.step();
+
+    let draft = runtime.turn_store.turns.get(&1).expect("turn 1 draft must stay open").draft();
+    assert!(
+        draft.combined_text.contains("全体")
+            && draft.combined_text.contains("続き")
+            && draft.combined_text.contains("後半"),
+        "joined caption must include the tail before resumed grammar; got {}",
+        draft.combined_text
+    );
+    let joined = draft.combined_text.clone();
+
+    let grammar = runtime
+        .requests
+        .in_flight_request
+        .clone()
+        .expect("deferred Namo grammar must resume after the same-utterance tail applies");
+    assert_eq!(grammar.kind, AsrTaskKind::Rerecognition);
+    assert_eq!(
+        runtime.requests.pending_rerecognition_purpose,
+        Some(RerecognitionPurpose::GrammarAfterCompletion)
+    );
+    assert_ne!(
+        grammar.close_reason,
+        Some(SegmentCloseReason::InterimChunkReached),
+        "resumed grammar must not steal an in-flight 160ms grid"
+    );
+
+    asr_handle.complete_request_with_text(&grammar, "全体続き");
+    runtime.step();
+
+    if let Some(turn) = runtime.turn_store.turns.get(&1) {
+        assert!(
+            turn.draft().combined_text.contains("全体")
+                && turn.draft().combined_text.contains("続き")
+                && turn.draft().combined_text.contains("後半"),
+            "resumed grammar must not rewrite the joined caption back to the lead; before={joined} after={}",
+            turn.draft().combined_text
+        );
+    }
+
+    let outputs = outputs.lock().expect("outputs should be readable");
+    let last = outputs
+        .iter()
+        .filter(|output| output.turn_id == 1)
+        .next_back()
+        .expect("turn 1 must emit a caption");
+    assert!(
+        last.text.contains("全体") && last.text.contains("続き") && last.text.contains("後半"),
+        "resumed grammar must not rewrite the latest caption back to the lead; joined before grammar was {joined}; latest={} is_final={} all={:?}",
+        last.text,
+        last.is_final,
+        outputs.iter().map(|output| (output.turn_id, output.text.as_str(), output.is_final)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "invariant covers in-flight 160ms hold, remint of a next-utterance child EndSilence, prefix, and uncovered tail"
 )]
 fn turn_runtime_end_silence_child_remints_after_160ms_without_stealing_grid() {

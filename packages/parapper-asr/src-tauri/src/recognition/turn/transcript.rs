@@ -604,10 +604,13 @@ impl RecognitionSession {
                 &longer_surface,
                 &transcript.text,
             ) || is_repeated_turn_append(&longer_surface, &transcript.text)
+                || rerecognition_is_truncated_joined_caption(&longer_surface, &transcript.text)
             {
-                // Truncated or repeated-string full-turn rerecognition must not
-                // replace a longer (or already-clean) draft. Doubled completion
-                // audio used to make ASR hear the utterance twice.
+                // Truncated, rewritten-shorter, or repeated-string full-turn
+                // rerecognition must not replace a longer draft. Grammar ASR of
+                // prefix audio often returns a punctuated lead that is not a
+                // prefix of the joined streaming caption, and would drop the
+                // same-utterance tail.
                 if draft.combined_text == longer_surface {
                     draft.route = Some(request.route);
                     draft.processing_millis += elapsed_millis;
@@ -810,6 +813,26 @@ fn prefer_streaming_interim_text_over_truncated_completion(
         return false;
     }
     existing.starts_with(completion) && existing != completion
+}
+
+/// Keep a longer joined caption when full-turn rerecognition returns a shorter
+/// rewrite of the same lead. Streaming concat ("全体。 続き 後半") and grammar
+/// ("全体続き") often disagree on punctuation/spacing, so a raw prefix check
+/// misses the truncation and would drop the tail. A full shorter rewrite of a
+/// short utterance ("句読点つき。" → "再認識後。") must still replace.
+fn rerecognition_is_truncated_joined_caption(existing: &str, incoming: &str) -> bool {
+    let existing = compact_turn_surface_for_prefix(existing);
+    let incoming = compact_turn_surface_for_prefix(incoming);
+    if existing.is_empty() || incoming.is_empty() {
+        return false;
+    }
+    incoming.chars().count() < existing.chars().count() && existing.starts_with(&incoming)
+}
+
+fn compact_turn_surface_for_prefix(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_whitespace() && !matches!(*ch, '.' | '。' | '、' | ',' | '…' | '⋯'))
+        .collect()
 }
 
 fn longer_turn_surface_text(combined: &str, last_emitted: Option<&str>) -> String {
@@ -1242,8 +1265,8 @@ mod tests {
         completion_text_duplicates_existing, is_longer_turn_rewrite,
         leading_asr_only_padding_samples, leading_covered_source_samples, longer_turn_surface_text,
         prefer_streaming_interim_text_over_truncated_completion,
-        streaming_chunk_uncovered_source_start, uncovered_completion_source_start,
-        visible_text_for_blank_replace,
+        rerecognition_is_truncated_joined_caption, streaming_chunk_uncovered_source_start,
+        uncovered_completion_source_start, visible_text_for_blank_replace,
     };
     use crate::recognition::{
         segmentation::segment::builder::SegmentCloseReason,
@@ -1276,6 +1299,9 @@ mod tests {
             "今日はいい天気ですね",
             "。"
         ));
+        assert!(rerecognition_is_truncated_joined_caption("全体。 続き 後半", "全体続き"));
+        assert!(!rerecognition_is_truncated_joined_caption("句読点つき。", "再認識後。"));
+        assert!(!rerecognition_is_truncated_joined_caption("全体。", "全体。続き後半"));
         assert_eq!(
             visible_text_for_blank_replace(
                 "。",
