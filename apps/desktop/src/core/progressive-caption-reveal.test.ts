@@ -198,7 +198,7 @@ describe("progressive caption reveal", () => {
     ).toBe("こんにちはーきこえますか");
   });
 
-  it("drops full-text sentenceEndOffsets on progressive partial paints", () => {
+  it("keeps prefix offsets that still sit on the paint without paging to 1 char", () => {
     const full = "今日は寒い明日は";
     const payload = caption({
       sourceText: full,
@@ -210,14 +210,15 @@ describe("progressive caption reveal", () => {
     expect(alignCaptionOffsetsToPaintedSource(payload, full)).toBe(payload);
     expect(selectVisibleCaptionSentence(full, { sentenceEndOffsets: [5] })).toBe(full);
 
-    // Mid-reveal prefixes with a stale full-text end also keep the longer lead.
+    // Mid-reveal prefixes keep transformed coordinates; remainder-dominance
+    // still refuses to page to a 1-grapheme tail.
     const partial = "今日は寒い明";
     expect(selectVisibleCaptionSentence(partial, { sentenceEndOffsets: [5] })).toBe(partial);
 
     const aligned = alignCaptionOffsetsToPaintedSource(payload, partial);
     expect(aligned.sourceText).toBe(partial);
-    expect(aligned.sentenceEndOffsets).toBeUndefined();
-    expect(aligned.softBreakOffsets).toBeUndefined();
+    expect(aligned.sentenceEndOffsets).toEqual([5]);
+    expect(aligned.softBreakOffsets).toEqual([3]);
     expect(
       selectVisibleCaptionSentence(aligned.sourceText, {
         sentenceEndOffsets: aligned.sentenceEndOffsets,
@@ -235,7 +236,7 @@ describe("progressive caption reveal", () => {
 
     const mid = "こんにちはー";
     const aligned = alignCaptionOffsetsToPaintedSource(payload, mid);
-    expect(aligned.sentenceEndOffsets).toBeUndefined();
+    expect(aligned.sentenceEndOffsets).toEqual([5]);
     expect(
       selectVisibleCaptionSentence(aligned.sourceText, {
         sentenceEndOffsets: aligned.sentenceEndOffsets,
@@ -266,9 +267,10 @@ describe("progressive caption reveal", () => {
     ).toBe("聞こえますか");
   });
 
-  it("drops full-text ends so last-sentence prefixes are not clipped mid-reveal", () => {
-    // Reveal already targets the newest clause. Full-text offset 4 still sits
-    // inside a 5-grapheme prefix of that clause and would page to 「て」.
+  it("does not page last-sentence prefixes to 1 char after offset coordinate transform", () => {
+    // Reveal already targets the newest clause. A naive `offset ≤ paintLen`
+    // clip of full-text offset 4 still sits inside a 5-grapheme prefix and
+    // would page to 「て」. Transform by the dropped prefix instead.
     const full = "短いです今日はとても良い天気です";
     const payload = caption({
       sourceText: full,
@@ -281,12 +283,16 @@ describe("progressive caption reveal", () => {
     expect(selectVisibleCaptionSentence(mid, { sentenceEndOffsets: [4] })).toBe(mid);
 
     const aligned = alignCaptionOffsetsToPaintedSource(payload, mid);
-    expect(aligned.sentenceEndOffsets).toBeUndefined();
     expect(
       selectVisibleCaptionSentence(aligned.sourceText, {
         sentenceEndOffsets: aligned.sentenceEndOffsets,
       }),
     ).toBe(mid);
+    expect(
+      selectVisibleCaptionSentence(aligned.sourceText, {
+        sentenceEndOffsets: aligned.sentenceEndOffsets,
+      }),
+    ).not.toBe("て");
 
     let displayed = "";
     const visibleSteps: string[] = [];
@@ -302,5 +308,32 @@ describe("progressive caption reveal", () => {
     expect(visibleSteps).not.toContain("て");
     expect(visibleSteps.at(-1)).toBe(revealTarget);
     expect(visibleSteps.some((step) => step.startsWith("今日はとて"))).toBe(true);
+  });
+
+  it("subtracts a dropped prefix for suffix paints and drops rewrite sentence ends", () => {
+    const full = "短いです今日はとても良い天気です";
+    const suffix = "今日はとても良い天気です";
+    const payload = caption({
+      sourceText: full,
+      sentenceEndOffsets: [4, 16],
+      softBreakOffsets: [3, 7],
+    });
+    const alignedSuffix = alignCaptionOffsetsToPaintedSource(payload, suffix);
+    expect(alignedSuffix.sourceText).toBe(suffix);
+    expect(alignedSuffix.sentenceEndOffsets).toEqual([12]);
+    expect(alignedSuffix.softBreakOffsets).toEqual([3]);
+    expect(
+      selectVisibleCaptionSentence(alignedSuffix.sourceText, {
+        sentenceEndOffsets: alignedSuffix.sentenceEndOffsets,
+      }),
+    ).not.toBe("て");
+
+    const rewritten = alignCaptionOffsetsToPaintedSource(
+      caption({ sourceText: "明日は雨", sentenceEndOffsets: [3], softBreakOffsets: [2] }),
+      "あしたはあめ",
+    );
+    expect(rewritten.sourceText).toBe("あしたはあめ");
+    expect(rewritten.sentenceEndOffsets).toBeUndefined();
+    expect(rewritten.softBreakOffsets).toBeUndefined();
   });
 });

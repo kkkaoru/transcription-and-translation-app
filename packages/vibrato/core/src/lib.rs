@@ -4,8 +4,13 @@
 //! through unchanged, and kanji surfaces are converted with IPADIC feature 7.
 
 use std::io::Read;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub use vibrato::Tokenizer;
+
+#[cfg(test)]
+pub(crate) static TOKENIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 /// IPADIC comma-separated `reading` field used by the desktop pipeline.
 pub const IPADIC_READING_FEATURE_INDEX: usize = 7;
@@ -55,6 +60,8 @@ pub fn tokenizer_from_zstd(bytes: &[u8]) -> Result<Tokenizer, String> {
 }
 
 pub fn tokenize(tokenizer: &Tokenizer, text: &str) -> Vec<MorphToken> {
+    #[cfg(test)]
+    TOKENIZE_CALLS.fetch_add(1, Ordering::SeqCst);
     let mut worker = tokenizer.new_worker();
     worker.reset_sentence(text);
     worker.tokenize();
@@ -109,30 +116,50 @@ pub fn reading_for_azookey(tokenizer: &Tokenizer, text: &str) -> String {
 
 pub mod sentence_boundary;
 
-fn tokenize_caption_offsets(tokenizer: &Tokenizer, text: &str) -> Vec<(String, String, usize)> {
-    tokenize(tokenizer, text)
-        .into_iter()
-        .map(|token| (token.surface, token.feature, token.char_end))
+fn morph_tokens_as_triples(tokens: &[MorphToken]) -> Vec<(String, String, usize)> {
+    tokens
+        .iter()
+        .map(|token| (token.surface.clone(), token.feature.clone(), token.char_end))
         .collect()
+}
+
+/// One tokenize pass for caption paging offsets and wrap points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptionBoundaryOffsets {
+    pub tokens: Vec<MorphToken>,
+    pub sentence_ends: Vec<usize>,
+    pub soft_breaks: Vec<usize>,
+}
+
+/// Tokenize `text` once and derive sentence-end plus soft-break offsets.
+pub fn caption_boundary_offsets(tokenizer: &Tokenizer, text: &str) -> CaptionBoundaryOffsets {
+    let tokens = tokenize(tokenizer, text);
+    let triples = morph_tokens_as_triples(&tokens);
+    CaptionBoundaryOffsets {
+        sentence_ends: sentence_boundary::caption_sentence_end_offsets(&triples, text),
+        soft_breaks: sentence_boundary::caption_soft_break_offsets(&triples, text),
+        tokens,
+    }
 }
 
 /// IPADIC POS ends unioned with plausible heuristic copulas.
 pub fn sentence_end_offsets(tokenizer: &Tokenizer, text: &str) -> Vec<usize> {
-    sentence_boundary::caption_sentence_end_offsets(&tokenize_caption_offsets(tokenizer, text), text)
+    caption_boundary_offsets(tokenizer, text).sentence_ends
 }
 
 /// Mid-sentence POS wrap points for caption line breaks before maxChars.
 pub fn soft_break_offsets(tokenizer: &Tokenizer, text: &str) -> Vec<usize> {
-    sentence_boundary::caption_soft_break_offsets(&tokenize_caption_offsets(tokenizer, text), text)
+    caption_boundary_offsets(tokenizer, text).soft_breaks
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_kanji, hiragana_with_feature_index, reading_for_azookey, to_hiragana,
-        tokenizer_from_zstd,
+        caption_boundary_offsets, contains_kanji, hiragana_with_feature_index, reading_for_azookey,
+        to_hiragana, tokenizer_from_zstd, TOKENIZE_CALLS,
     };
     use std::io::Cursor;
+    use std::sync::atomic::Ordering;
 
     fn tiny_dictionary_zstd() -> Vec<u8> {
         let lexicon = "京都,4,4,5,京都,名詞,固有名詞,地名,一般,*,*,キョウト,京都,*,A,*,*,*,1/5\n\
@@ -179,5 +206,24 @@ mod tests {
             .expect("zstd dictionary should initialize");
         assert_eq!(reading_for_azookey(&tokenizer, "きょうははれ"), "きょうははれ");
         assert_eq!(reading_for_azookey(&tokenizer, "東京都に京都"), "とうきょうとにきょうと");
+    }
+
+    #[test]
+    fn caption_boundary_offsets_tokenizes_once() {
+        let tokenizer = tokenizer_from_zstd(&tiny_dictionary_zstd())
+            .expect("zstd dictionary should initialize");
+        TOKENIZE_CALLS.store(0, Ordering::SeqCst);
+        let bounds = caption_boundary_offsets(&tokenizer, "東京都に京都");
+        assert_eq!(TOKENIZE_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            bounds.tokens.iter().map(|token| token.surface.as_str()).collect::<Vec<_>>(),
+            ["東京都", "に", "京都"]
+        );
+        assert_eq!(bounds.tokens.iter().map(|token| token.char_end).collect::<Vec<_>>(), [3, 4, 6]);
+        assert!(
+            !bounds.soft_breaks.is_empty(),
+            "格助詞 に should be a wrap point: {:?}",
+            bounds.soft_breaks
+        );
     }
 }

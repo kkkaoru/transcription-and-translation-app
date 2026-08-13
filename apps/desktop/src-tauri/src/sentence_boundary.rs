@@ -79,4 +79,20 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn caption_boundary_offsets_matches_sentence_and_soft_helpers() {
+        let reader = crate::vibrato_runtime::try_default()
+            .expect("bundled IPADIC system.dic.zst must be available");
+        let text = "今日は晴れです明日は雨";
+        let bounds = reader.caption_boundary_offsets(text);
+        assert_eq!(bounds.sentence_ends, reader.sentence_end_offsets(text));
+        assert_eq!(bounds.soft_breaks, reader.soft_break_offsets(text));
+        assert!(!bounds.tokens.is_empty());
+        assert!(
+            bounds.sentence_ends.contains(&7),
+            "です should close before 明日は: {:?}",
+            bounds.sentence_ends
+        );
+    }
 }

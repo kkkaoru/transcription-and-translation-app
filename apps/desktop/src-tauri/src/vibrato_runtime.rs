@@ -4,7 +4,7 @@
 //! desktop dictionary discovery and the cached reader used by the pipeline.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub use caption_bridge_vibrato_core::{contains_kanji, tokenizer_from_zstd, Tokenizer};
 
@@ -53,6 +53,14 @@ impl VibratoReader {
     pub fn soft_break_offsets(&self, text: &str) -> Vec<usize> {
         caption_bridge_vibrato_core::soft_break_offsets(&self.tokenizer, text)
     }
+
+    /// Tokenize once and return sentence-end plus soft-break offsets.
+    pub fn caption_boundary_offsets(
+        &self,
+        text: &str,
+    ) -> caption_bridge_vibrato_core::CaptionBoundaryOffsets {
+        caption_bridge_vibrato_core::caption_boundary_offsets(&self.tokenizer, text)
+    }
 }
 
 /// Candidate paths for the bundled / source-tree IPADIC dictionary.
@@ -83,9 +91,16 @@ pub fn load_from_path(path: &Path) -> Result<VibratoReader, String> {
 
 /// Load from the first existing IPADIC candidate path, if any.
 pub fn try_default() -> Option<VibratoReader> {
+    static CACHED: OnceLock<VibratoReader> = OnceLock::new();
+    if let Some(reader) = CACHED.get() {
+        return Some(reader.clone());
+    }
     let path = resolve_ipadic_path()?;
     match load_from_path(&path) {
-        Ok(reader) => Some(reader),
+        Ok(reader) => {
+            let _ = CACHED.set(reader.clone());
+            Some(reader)
+        }
         Err(error) => {
             log::warn!(
                 target: "pipeline_vibrato",

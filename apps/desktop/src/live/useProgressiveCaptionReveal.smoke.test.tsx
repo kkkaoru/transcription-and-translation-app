@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { selectVisibleCaptionSentence } from "@caption-bridge/sentence-boundary";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -241,8 +242,12 @@ describe("useProgressiveCaptionReveal", () => {
     );
 
     expect(paints.at(-1)?.sourceText).toBe("こ");
-    expect(paints.at(-1)?.sentenceEndOffsets).toBeUndefined();
-    expect(paints.at(-1)?.softBreakOffsets).toBeUndefined();
+    expect(paints.at(-1)?.sourceText).not.toBe("ー");
+    expect(
+      selectVisibleCaptionSentence(paints.at(-1)?.sourceText ?? "", {
+        sentenceEndOffsets: paints.at(-1)?.sentenceEndOffsets,
+      }),
+    ).toBe("こ");
 
     act(() => {
       vi.advanceTimersByTime(80);
@@ -250,10 +255,13 @@ describe("useProgressiveCaptionReveal", () => {
     const mid = paints.at(-1);
     expect(mid?.sourceText).toBeTruthy();
     expect(mid?.sourceText).not.toBe(spoken);
-    expect(mid?.sentenceEndOffsets).toBeUndefined();
-    expect(mid?.softBreakOffsets).toBeUndefined();
     expect(mid?.sourceText).not.toBe("ー");
     expect(mid?.sourceText?.startsWith("こ")).toBe(true);
+    expect(
+      selectVisibleCaptionSentence(mid?.sourceText ?? "", {
+        sentenceEndOffsets: mid?.sentenceEndOffsets,
+      }),
+    ).toBe(mid?.sourceText);
 
     act(() => {
       vi.advanceTimersByTime(400);
@@ -306,7 +314,11 @@ describe("useProgressiveCaptionReveal", () => {
     );
 
     expect(paints.at(-1)?.sourceText).toBe("今");
-    expect(paints.at(-1)?.sentenceEndOffsets).toBeUndefined();
+    expect(
+      selectVisibleCaptionSentence(paints.at(-1)?.sourceText ?? "", {
+        sentenceEndOffsets: paints.at(-1)?.sentenceEndOffsets,
+      }),
+    ).toBe("今");
 
     act(() => {
       vi.advanceTimersByTime(80);
@@ -315,8 +327,12 @@ describe("useProgressiveCaptionReveal", () => {
     expect(mid?.sourceText).toBeTruthy();
     expect(mid?.sourceText).not.toBe(full);
     expect("今日はとても良い天気です".startsWith(mid?.sourceText ?? "")).toBe(true);
-    expect(mid?.sentenceEndOffsets).toBeUndefined();
     expect(mid?.sourceText).not.toBe("て");
+    expect(
+      selectVisibleCaptionSentence(mid?.sourceText ?? "", {
+        sentenceEndOffsets: mid?.sentenceEndOffsets,
+      }),
+    ).toBe(mid?.sourceText);
 
     act(() => {
       vi.advanceTimersByTime(400);

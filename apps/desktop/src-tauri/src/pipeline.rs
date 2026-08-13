@@ -382,17 +382,22 @@ impl Pipeline {
         reader.reading_for_azookey(text)
     }
 
-    fn caption_sentence_end_offsets(&self, text: &str) -> Vec<usize> {
+    fn assign_caption_boundary_offsets(&self, ready: &mut CaptionPayload) {
         match self.vibrato_reader() {
-            Some(reader) => reader.sentence_end_offsets(text),
-            None => crate::sentence_boundary::heuristic_sentence_end_offsets(text, false),
-        }
-    }
-
-    fn caption_soft_break_offsets(&self, text: &str) -> Vec<usize> {
-        match self.vibrato_reader() {
-            Some(reader) => reader.soft_break_offsets(text),
-            None => crate::sentence_boundary::heuristic_soft_break_offsets(text),
+            Some(reader) => {
+                let bounds = reader.caption_boundary_offsets(&ready.source_text);
+                ready.sentence_end_offsets = bounds.sentence_ends;
+                ready.soft_break_offsets = bounds.soft_breaks;
+            }
+            None => {
+                ready.sentence_end_offsets =
+                    crate::sentence_boundary::heuristic_sentence_end_offsets(
+                        &ready.source_text,
+                        false,
+                    );
+                ready.soft_break_offsets =
+                    crate::sentence_boundary::heuristic_soft_break_offsets(&ready.source_text);
+            }
         }
     }
 
@@ -651,9 +656,7 @@ impl Pipeline {
         }
         let normalized = repair_hearing_phrase_confusion(&normalized);
         let mut ready = source_ready_caption(config, normalized, started_at, utterance_id);
-        ready.sentence_end_offsets = self.caption_sentence_end_offsets(&ready.source_text);
-        ready.soft_break_offsets = self.caption_soft_break_offsets(&ready.source_text);
-        ready.soft_break_offsets = self.caption_soft_break_offsets(&ready.source_text);
+        self.assign_caption_boundary_offsets(&mut ready);
         // Always emit the normalized source, even when it happens to match the
         // raw ASR string, so first-caption timing is tied to normalization.
         on_caption(&ready);
@@ -866,8 +869,7 @@ impl Pipeline {
             // Vibrato hiragana reading (stable phonetic merge key).
             Some(reading),
         );
-        ready.sentence_end_offsets = self.caption_sentence_end_offsets(&ready.source_text);
-        ready.soft_break_offsets = self.caption_soft_break_offsets(&ready.source_text);
+        self.assign_caption_boundary_offsets(&mut ready);
         ready.is_final = output.is_final;
         on_caption(&ready);
         Ok(Some(ready))
@@ -1152,13 +1154,7 @@ fn zenz_prompt(input: &str) -> String {
 /// (`こんにちは。聞こえますか。`), which pages the plate onto only the second
 /// clause and hides the greeting the speaker already said.
 fn repair_hearing_phrase_confusion(text: &str) -> String {
-    let greetings = [
-        "こんにちは",
-        "こんばんは",
-        "おはようございます",
-        "おはよう",
-        "さようなら",
-    ];
+    let greetings = ["こんにちは", "こんばんは", "おはようございます", "おはよう", "さようなら"];
     let mut next = text.to_string();
     for greeting in greetings {
         for (wrong, right) in [
@@ -1394,8 +1390,7 @@ pub fn source_ready_caption_with_input(
     let source_text = source_text.trim().to_string();
     let sentence_end_offsets =
         crate::sentence_boundary::heuristic_sentence_end_offsets(&source_text, false);
-    let soft_break_offsets =
-        crate::sentence_boundary::heuristic_soft_break_offsets(&source_text);
+    let soft_break_offsets = crate::sentence_boundary::heuristic_soft_break_offsets(&source_text);
     CaptionPayload {
         id,
         // Normalizers should already return a trimmed result, but remote Zenz
@@ -1631,11 +1626,11 @@ fn resolve_utterance_id(provided: Option<&str>) -> String {
 mod tests {
     use super::{
         clean_model_text, is_no_speech_response, normalize_azookey, normalize_azookey_with_cache,
-        record_stage, resolve_utterance_id, run_rescore_with_timeout, snippet,
-        source_ready_caption, source_ready_caption_with_input, stage_event,
-        stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload, NormalizeOutcome,
-        repair_hearing_phrase_confusion,
-        ParapperRecognitionInput, Pipeline, PipelineStageEvent, STAGE_SNIPPET_CHARS,
+        record_stage, repair_hearing_phrase_confusion, resolve_utterance_id,
+        run_rescore_with_timeout, snippet, source_ready_caption, source_ready_caption_with_input,
+        stage_event, stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload,
+        NormalizeOutcome, ParapperRecognitionInput, Pipeline, PipelineStageEvent,
+        STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;

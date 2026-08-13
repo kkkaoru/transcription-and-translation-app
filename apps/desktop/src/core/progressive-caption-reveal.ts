@@ -153,13 +153,14 @@ export const shouldHoldSingleGraphemeFirstPaint = (
 /**
  * Align a progressive paint with the offsets that describe that surface.
  *
- * Full-turn Vibrato/IPADIC `sentenceEndOffsets` (and soft-break indices) are
- * measured against the latest complete recognition. Applying them to an
- * intermediate progressive prefix pages away the head as soon as the paint
- * grows past an end (`selectVisibleCaptionSentence` → `sliceNewestSentence`).
- * After reveal already targets the newest clause, those full-text ends still
- * sit inside the last-sentence prefix (`今日はとて` + offset 4 → `て`).
- * Drop those pipeline ends until the paint has caught up to the reveal target.
+ * Full-turn Vibrato/IPADIC offsets are measured against the latest complete
+ * recognition. Mapping them onto an intermediate paint is a coordinate
+ * transform, not a delete: keep prefix offsets that still sit on the paint,
+ * subtract a dropped prefix for suffix paints, and drop rewrite paints that
+ * have no shared scalar span. After that, drop sentence ends that would page
+ * `selectVisibleCaptionSentence(paint)` to a shorter remainder (`今日はとて` →
+ * `て`). Elongation-led remainders (`ー`) keep the offset because paging
+ * already refuses to split there.
  */
 export const alignCaptionOffsetsToPaintedSource = (
   caption: CaptionPayload,
@@ -170,7 +171,84 @@ export const alignCaptionOffsetsToPaintedSource = (
     return caption;
   }
   const aligned: CaptionPayload = { ...caption, sourceText: paint };
-  delete aligned.sentenceEndOffsets;
-  delete aligned.softBreakOffsets;
+  const shift = paintedSourceShift(caption.sourceText, paint);
+  if (shift == null) {
+    delete aligned.sentenceEndOffsets;
+    delete aligned.softBreakOffsets;
+    return aligned;
+  }
+  const paintLen = unicodeScalarCount(paint);
+  aligned.softBreakOffsets = transformCaptionOffsets(caption.softBreakOffsets, shift, paintLen);
+  aligned.sentenceEndOffsets = dropSentenceEndsThatPageToShorterRemainder(
+    paint,
+    transformCaptionOffsets(caption.sentenceEndOffsets, shift, paintLen),
+  );
   return aligned;
+};
+
+const unicodeScalarCount = (text: string): number => Array.from(text).length;
+
+/**
+ * Scalar start of `paint` inside `full`, or `null` when the paint is a rewrite
+ * that does not share a contiguous span (kana→kanji).
+ *
+ * Prefix → 0. Suffix → dropped prefix length. Interior substring (paged
+ * remainder mid-reveal) → that start index. Never a naive `offset ≤ paintLen`
+ * clip of the full-text coordinates.
+ */
+const paintedSourceShift = (full: string, paint: string): number | null => {
+  if (!paint) {
+    return null;
+  }
+  if (full.startsWith(paint)) {
+    return 0;
+  }
+  const fullChars = Array.from(full);
+  const paintChars = Array.from(paint);
+  if (paintChars.length === 0 || paintChars.length > fullChars.length) {
+    return null;
+  }
+  if (full.endsWith(paint)) {
+    return fullChars.length - paintChars.length;
+  }
+  for (let start = 1; start <= fullChars.length - paintChars.length; start += 1) {
+    let matches = true;
+    for (let index = 0; index < paintChars.length; index += 1) {
+      if (fullChars[start + index] !== paintChars[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      return start;
+    }
+  }
+  return null;
+};
+
+const transformCaptionOffsets = (
+  offsets: number[] | undefined,
+  shift: number,
+  paintLen: number,
+): number[] | undefined => {
+  if (!offsets || offsets.length === 0) {
+    return offsets;
+  }
+  const next = offsets
+    .map((offset) => offset - shift)
+    .filter((offset) => offset > 0 && offset <= paintLen);
+  return next.length > 0 ? next : undefined;
+};
+
+const dropSentenceEndsThatPageToShorterRemainder = (
+  paint: string,
+  offsets: number[] | undefined,
+): number[] | undefined => {
+  if (!offsets || offsets.length === 0) {
+    return offsets;
+  }
+  const kept = offsets.filter(
+    (offset) => selectVisibleCaptionSentence(paint, { sentenceEndOffsets: [offset] }) === paint,
+  );
+  return kept.length > 0 ? kept : undefined;
 };

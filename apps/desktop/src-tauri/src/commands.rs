@@ -59,6 +59,48 @@ pub struct SourceCaptionInput {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CaptionBoundaryToken {
+    pub surface: String,
+    pub feature: String,
+    pub char_end: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionBoundaryOffsetsPayload {
+    pub tokens: Vec<CaptionBoundaryToken>,
+    pub sentence_ends: Vec<usize>,
+    pub soft_breaks: Vec<usize>,
+}
+
+fn caption_boundary_offsets_payload(text: &str) -> CaptionBoundaryOffsetsPayload {
+    match crate::vibrato_runtime::try_default() {
+        Some(reader) => {
+            let bounds = reader.caption_boundary_offsets(text);
+            CaptionBoundaryOffsetsPayload {
+                tokens: bounds
+                    .tokens
+                    .into_iter()
+                    .map(|token| CaptionBoundaryToken {
+                        surface: token.surface,
+                        feature: token.feature,
+                        char_end: token.char_end,
+                    })
+                    .collect(),
+                sentence_ends: bounds.sentence_ends,
+                soft_breaks: bounds.soft_breaks,
+            }
+        }
+        None => CaptionBoundaryOffsetsPayload {
+            tokens: Vec::new(),
+            sentence_ends: crate::sentence_boundary::heuristic_sentence_end_offsets(text, false),
+            soft_breaks: crate::sentence_boundary::heuristic_soft_break_offsets(text),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelaunchResult {
     /// `true` means capture is still active and the restart will be requested
     /// by `stop_capture` after the microphone/backend session is idle.
@@ -774,9 +816,10 @@ fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload,
     if source_text.is_empty() {
         return Err("source caption text is required".to_string());
     }
+    let bounds = caption_boundary_offsets_payload(&source_text);
     Ok(CaptionPayload {
         id: caption.id,
-        source_text: source_text.clone(),
+        source_text,
         azookey_input_text: None,
         translation_text: String::new(),
         source_language: caption.source_language,
@@ -787,12 +830,14 @@ fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload,
         sequence: 0,
         is_final: caption.is_final,
         confidence: caption.confidence,
-        sentence_end_offsets: crate::sentence_boundary::heuristic_sentence_end_offsets(
-            &source_text,
-            false,
-        ),
-        soft_break_offsets: crate::sentence_boundary::heuristic_soft_break_offsets(&source_text),
+        sentence_end_offsets: bounds.sentence_ends,
+        soft_break_offsets: bounds.soft_breaks,
     })
+}
+
+#[tauri::command]
+pub fn caption_boundary_offsets(text: String) -> CaptionBoundaryOffsetsPayload {
+    caption_boundary_offsets_payload(text.trim())
 }
 
 /// Run translation after the source caption has been returned to the UI.
@@ -1193,7 +1238,7 @@ fn empty_caption(config: &AppConfig, id: String) -> CaptionPayload {
         is_final: false,
         confidence: None,
         sentence_end_offsets: Vec::new(),
-            soft_break_offsets: Vec::new(),
+        soft_break_offsets: Vec::new(),
     }
 }
 
@@ -1525,12 +1570,8 @@ pub fn list_system_fonts() -> Vec<String> {
 #[tauri::command]
 pub fn open_style_editor(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(STYLE_EDITOR_LABEL) {
-        window
-            .show()
-            .map_err(|error| format!("could not show style editor: {error}"))?;
-        window
-            .set_focus()
-            .map_err(|error| format!("could not focus style editor: {error}"))?;
+        window.show().map_err(|error| format!("could not show style editor: {error}"))?;
+        window.set_focus().map_err(|error| format!("could not focus style editor: {error}"))?;
         return Ok(());
     }
     let window = WebviewWindowBuilder::new(
@@ -1548,12 +1589,8 @@ pub fn open_style_editor(app: AppHandle) -> Result<(), String> {
     .visible(true)
     .build()
     .map_err(|error| format!("could not create style editor window: {error}"))?;
-    window
-        .show()
-        .map_err(|error| format!("could not show style editor: {error}"))?;
-    window
-        .set_focus()
-        .map_err(|error| format!("could not focus style editor: {error}"))?;
+    window.show().map_err(|error| format!("could not show style editor: {error}"))?;
+    window.set_focus().map_err(|error| format!("could not focus style editor: {error}"))?;
     Ok(())
 }
 
@@ -2053,6 +2090,43 @@ mod tests {
         assert_eq!(payload.sequence, 0);
         assert!(payload.is_final);
         assert_eq!(payload.confidence, Some(0.87));
+    }
+
+    #[test]
+    fn source_caption_payload_uses_vibrato_when_dictionary_is_present() {
+        let source_text = "今日は寒い明日は";
+        let heuristic =
+            crate::sentence_boundary::heuristic_sentence_end_offsets(source_text, false);
+        assert!(
+            heuristic.is_empty(),
+            "this fixture must differ from the IPADIC path: {heuristic:?}"
+        );
+        let payload = source_caption_payload(SourceCaptionInput {
+            id: "webspeech:session:1".to_string(),
+            source_text: source_text.to_string(),
+            source_language: "ja".to_string(),
+            target_language: "en".to_string(),
+            started_at: 100,
+            received_at: 120,
+            is_final: false,
+            confidence: None,
+            capture_generation: None,
+        })
+        .expect("non-empty source text should be accepted");
+        let reader = crate::vibrato_runtime::try_default()
+            .expect("bundled IPADIC system.dic.zst must be available");
+        let bounds = reader.caption_boundary_offsets(source_text);
+        assert!(
+            !bounds.sentence_ends.is_empty(),
+            "形容詞基本形 + 明日は should complete: {:?}",
+            bounds.sentence_ends
+        );
+        assert_eq!(payload.sentence_end_offsets, bounds.sentence_ends);
+        assert_eq!(payload.soft_break_offsets, bounds.soft_breaks);
+        assert_ne!(
+            payload.sentence_end_offsets, heuristic,
+            "source_caption_payload must not call the heuristic when the dictionary is present"
+        );
     }
 
     #[test]
