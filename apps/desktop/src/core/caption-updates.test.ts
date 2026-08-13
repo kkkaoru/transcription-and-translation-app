@@ -2682,6 +2682,112 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(painted, truncated)?.sourceText).toBe("こんにちはきこえますか");
   });
 
+  it("grows a same-id greeting into the full elongated hearing-check line", () => {
+    const greeting = caption({
+      id: "parapper:s:1:8",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 40,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const full = caption({
+      id: "parapper:s:1:8",
+      sourceText: "こんにちはーきこえますかー",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 80,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(greeting, full)?.sourceText).toBe("こんにちはーきこえますかー");
+  });
+
+  it("appends a same-id hearing-check tail instead of keeping greeting-only", () => {
+    const greeting = caption({
+      id: "parapper:s:1:8",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 40,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const hearing = caption({
+      id: "parapper:s:1:8",
+      sourceText: "きこえますか",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 80,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(greeting, hearing)?.sourceText).toBe("こんにちはきこえますか");
+  });
+
+  it("appends an elongated same-id hearing-check remainder onto the greeting", () => {
+    const greeting = caption({
+      id: "parapper:s:1:8",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 40,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+    const remainder = caption({
+      id: "parapper:s:1:8",
+      sourceText: "ーきこえますかー",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 90,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+
+    expect(mergeCaptionPayload(greeting, remainder)?.sourceText).toBe("こんにちはーきこえますかー");
+  });
+
+  it("keeps the hearing-check tail when a later prefix cut would leave greeting-only", () => {
+    const full = caption({
+      id: "parapper:s:1:8",
+      sourceText: "こんにちはーきこえますかー",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 80,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const greetingOnly = caption({
+      id: "parapper:s:1:8",
+      sourceText: "こんにちは",
+      translationText: "",
+      startedAt: 10,
+      receivedAt: 120,
+      stage: "source",
+      sequence: 0,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(full, greetingOnly)?.sourceText).toBe("こんにちはーきこえますかー");
+  });
+
   it("returns the current final when a backdated duplicate final paints the same text", () => {
     const current = caption({
       id: "parapper:session:turn:b-dup",

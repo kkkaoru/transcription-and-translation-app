@@ -9,7 +9,7 @@
  * can only wait for one in-flight normalizer call.
  */
 
-import { isStaleShorterCaptionSurface } from "./caption-updates";
+import { isShorterSameUtteranceSurface } from "./caption-updates";
 import { recordPipelineDrop } from "./dropDiagnostics";
 
 export type ParapperOutputQueueItem = {
@@ -145,7 +145,10 @@ const isShorterRewriteOfPending = (
   if (!candidateText || !pendingText) {
     return false;
   }
-  return isStaleShorterCaptionSurface(candidateText, pendingText);
+  // Prefix cuts and much-shorter conversions are not enough: a later
+  // `きこえますか` is a suffix of `こんにちはきこえますか` and is not always
+  // "much shorter" by grapheme count. Latest-wins must keep the long surface.
+  return isShorterSameUtteranceSurface(candidateText, pendingText);
 };
 
 /** Skip AzooKey for a stale shorter partial when a longer same-id surface already painted. */
@@ -162,7 +165,7 @@ export const shouldSkipParapperNormalize = (
   ) {
     return false;
   }
-  return isStaleShorterCaptionSurface(queueItemSurface(output), painted.sourceText);
+  return isShorterSameUtteranceSurface(queueItemSurface(output), painted.sourceText);
 };
 
 const shouldDropForCursor = (
@@ -172,8 +175,16 @@ const shouldDropForCursor = (
   if (!sameTurn(candidate, current)) {
     return false;
   }
-  // A final closes the turn; a late partial can never reopen it.
+  // A final closes the turn; a late partial can never reopen it — unless that
+  // partial is a longer same-utterance continuation of an early-finalized
+  // prefix (`こんにちは` then `こんにちはーきこえますかー`). Dropping it left
+  // overlay with greeting-only because the tail never reached caption:update.
   if (current.isFinal && !candidate.isFinal) {
+    const currentText = queueItemSurface(current);
+    const candidateText = queueItemSurface(candidate);
+    if (currentText && candidateText && isShorterSameUtteranceSurface(currentText, candidateText)) {
+      return false;
+    }
     return true;
   }
   const order = compareParapperTurnCursor(candidate, current);

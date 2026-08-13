@@ -150,6 +150,9 @@ const FIXED_GREETING_SURFACE =
   /^(?:こんにちは|こんばんは|おはようございます|おはよう|さようなら)[ー〜～]*$/u;
 /** Short ack finals that ASR sometimes substitutes for a greeting. */
 const SHORT_ACK_SURFACE = /^(?:はい|うん|ええ|いいえ)$/u;
+/** Hearing-check remainder, including an elongation-led tail (`ーきこえますかー`). */
+const HEARING_CHECK_SURFACE =
+  /^(?:[ー〜～]*)(?:きこえますか|聞こえますか|あえますか|おえますか|会えますか|終えますか)[ー〜～]*[。．.、！？!?]*$/u;
 
 const isShortJapaneseContinuation = (current: CaptionPayload, next: CaptionPayload): boolean => {
   const currentText = trim(current.sourceText);
@@ -265,6 +268,17 @@ const shouldKeepGreetingOverShortAck = (current: CaptionPayload, next: CaptionPa
   return hasCloseSourceTiming(current, next) || bothUnset || closeReceipt;
 };
 
+const hasGreetingContinuationTiming = (current: CaptionPayload, next: CaptionPayload): boolean => {
+  const bothUnset = startedAtOf(current) === NO_TIME_MS && startedAtOf(next) === NO_TIME_MS;
+  const currentReceivedAt = receivedAtOf(current);
+  const nextReceivedAt = receivedAtOf(next);
+  const closeReceipt =
+    currentReceivedAt > NO_TIME_MS &&
+    nextReceivedAt >= currentReceivedAt &&
+    nextReceivedAt - currentReceivedAt <= SOURCE_CONTINUATION_GAP_MS;
+  return hasCloseSourceTiming(current, next) || bothUnset || closeReceipt;
+};
+
 /**
  * When Parapper seals a greeting turn early, the continuation arrives on a new
  * id and would normally replace the plate. Append so `こんにちは` + `きこえますか`
@@ -286,17 +300,33 @@ const shouldAppendAfterGreetingTurn = (current: CaptionPayload, next: CaptionPay
     // Continuation already includes the greeting surface.
     return false;
   }
-  const bothUnset = startedAtOf(current) === NO_TIME_MS && startedAtOf(next) === NO_TIME_MS;
-  const currentReceivedAt = receivedAtOf(current);
-  const nextReceivedAt = receivedAtOf(next);
-  const closeReceipt =
-    currentReceivedAt > NO_TIME_MS &&
-    nextReceivedAt >= currentReceivedAt &&
-    nextReceivedAt - currentReceivedAt <= SOURCE_CONTINUATION_GAP_MS;
-  if (!hasCloseSourceTiming(current, next) && !bothUnset && !closeReceipt) {
+  if (!hasGreetingContinuationTiming(current, next)) {
     return false;
   }
-  return japaneseSourceText.test(nextText);
+  // Elongation marks (`ーきこえますかー`) are not Han/Kana script, but they
+  // are the same spoken hearing-check tail as `きこえますか`.
+  const nextWithoutElongation = nextText.replace(/[ー〜～]/gu, "");
+  return japaneseSourceText.test(nextWithoutElongation) && nextWithoutElongation.length > 0;
+};
+
+/**
+ * Same-id ASR can emit the greeting first and the hearing-check next without a
+ * shared prefix. Append that tail; do not keep greeting-only and do not treat
+ * an unrelated rewrite (`こんにちは` → `今日は`) as a continuation.
+ */
+const shouldAppendHearingCheckAfterGreeting = (
+  current: CaptionPayload,
+  next: CaptionPayload,
+): boolean => {
+  if (!isSourceStagePayload(current) || !isSourceStagePayload(next)) {
+    return false;
+  }
+  const currentText = trim(current.sourceText);
+  const nextText = trim(next.sourceText);
+  if (!FIXED_GREETING_SURFACE.test(currentText) || !HEARING_CHECK_SURFACE.test(nextText)) {
+    return false;
+  }
+  return hasGreetingContinuationTiming(current, next);
 };
 
 const appendGreetingContinuation = (currentText: string, nextText: string): string => {
@@ -488,6 +518,9 @@ const isProgressiveProvisionalExtension = (
   // Short kanji (今日は) then a longer kana ASR tail share no prefix. Treat
   // the painted surface as stale-shorter so overlay first paint can grow.
   if (isStaleShorterCaptionSurface(currentText, nextText)) {
+    return true;
+  }
+  if (shouldAppendHearingCheckAfterGreeting(current, next)) {
     return true;
   }
   return nextText.startsWith(currentText) && nextText !== currentText;
@@ -748,6 +781,9 @@ const isStaleNonFinalAfterFinal = (current: CaptionPayload, next: CaptionPayload
   if (nextText.startsWith(currentText) && nextText !== currentText) {
     return false;
   }
+  if (shouldAppendHearingCheckAfterGreeting(current, next)) {
+    return false;
+  }
   const currentReading = trimmedAzookeyReading(current);
   const nextReading = trimmedAzookeyReading(next);
   if (currentReading && nextReading) {
@@ -781,6 +817,12 @@ const mergeSameIdSourceText = (current: CaptionPayload, next: CaptionPayload): s
     isShorterSuffixSurface(nextText, currentText)
   ) {
     return collapseRunawayGraphemeRuns(currentText);
+  }
+  // Same-id ASR can emit the greeting first and the hearing-check next without
+  // a shared prefix. Keep-longer of greeting-only would drop that tail; append
+  // so the full spoken line can paint. Do not concatenate a reminted other turn.
+  if (shouldAppendHearingCheckAfterGreeting(current, next)) {
+    return appendGreetingContinuation(currentText, nextText);
   }
   // Prefer a completed conversion/final, but do not let a truncated final erase
   // a longer already-painted surface (completion ASR often cuts the tail). That

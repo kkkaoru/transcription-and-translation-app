@@ -397,6 +397,18 @@ describe("Parapper output coalescing queue", () => {
         },
       ),
     ).toBe(false);
+    expect(
+      shouldSkipParapperNormalize(
+        { id: "parapper:s:1:8", sourceText: "こんにちはきこえますか" },
+        {
+          isFinal: false,
+          sessionId: "s",
+          turnSessionId: 1,
+          turnId: 8,
+          text: "きこえますか",
+        },
+      ),
+    ).toBe(true);
   });
 
   it("uses sourceText when deciding to keep a longer pending rewrite", async () => {
@@ -487,6 +499,137 @@ describe("Parapper output coalescing queue", () => {
     release.shift()?.();
     await queue.whenIdle();
     expect(queue.getStats()).toMatchObject({ processed: 2, pending: 0, droppedPartials: 1 });
+  });
+
+  it("does not let a later short hearing-check suffix replace a pending greeting line", async () => {
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.text);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      text: "こんにちは",
+      isFinal: false,
+      revision: 1,
+      outputSequence: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "full-utterance",
+      text: "こんにちはーきこえますかー",
+      isFinal: false,
+      revision: 5,
+      outputSequence: 5,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "hearing-suffix",
+      text: "きこえますか",
+      isFinal: false,
+      revision: 6,
+      outputSequence: 6,
+      ...turn,
+    });
+
+    expect(queue.getStats()).toMatchObject({ pending: 1, droppedPartials: 1, inFlight: true });
+
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["こんにちは", "こんにちはーきこえますかー"]);
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(processed).toEqual(["こんにちは", "こんにちはーきこえますかー"]);
+    expect(queue.getStats()).toMatchObject({ processed: 2, pending: 0, droppedPartials: 1 });
+  });
+
+  it("does not let a later short suffix replace a pending greeting+hearing line", async () => {
+    const processed: string[] = [];
+    const release: Array<() => void> = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.text);
+      return new Promise<void>((resolve) => release.push(resolve));
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 9,
+    };
+
+    queue.enqueue({
+      id: "in-flight",
+      text: "こんにちは",
+      isFinal: false,
+      revision: 1,
+      outputSequence: 1,
+      ...turn,
+    });
+    await flush();
+    queue.enqueue({
+      id: "full-utterance",
+      text: "こんにちはきこえますか",
+      isFinal: false,
+      revision: 5,
+      outputSequence: 5,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "hearing-suffix",
+      text: "きこえますか",
+      isFinal: false,
+      revision: 6,
+      outputSequence: 6,
+      ...turn,
+    });
+
+    expect(queue.getStats()).toMatchObject({ pending: 1, droppedPartials: 1, inFlight: true });
+
+    release.shift()?.();
+    await flush();
+    expect(processed).toEqual(["こんにちは", "こんにちはきこえますか"]);
+    release.shift()?.();
+    await queue.whenIdle();
+    expect(processed).toEqual(["こんにちは", "こんにちはきこえますか"]);
+  });
+
+  it("still processes a longer greeting continuation after an early same-turn final", async () => {
+    const processed: string[] = [];
+    const queue = createParapperOutputQueue<Item & { text: string }>((next) => {
+      processed.push(next.text);
+    });
+    const turn = {
+      sessionId: "socket-1",
+      turnSessionId: 4,
+      turnId: 8,
+    };
+
+    queue.enqueue({
+      id: "early-final",
+      text: "こんにちは",
+      isFinal: true,
+      revision: 2,
+      outputSequence: 2,
+      ...turn,
+    });
+    queue.enqueue({
+      id: "full-continuation",
+      text: "こんにちはーきこえますかー",
+      isFinal: false,
+      revision: 3,
+      outputSequence: 3,
+      ...turn,
+    });
+
+    await queue.whenIdle();
+    expect(processed).toEqual(["こんにちは", "こんにちはーきこえますかー"]);
   });
 
   it("does not let an older final remove a newer turn's pending partial", async () => {

@@ -707,6 +707,115 @@ describe("OverlayApp caption replay", () => {
     }
   });
 
+  it("paints the full greeting+hearing line when live ASR grows past こんにちは", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "こんにちは",
+          startedAt: 10,
+          at: 40,
+          durationMs: 30,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+      expect(nativeRendererRoot(container)?.getAttribute("data-source-text")).toBe("こんにちは");
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "こんにちはーきこえますかー",
+          startedAt: 10,
+          at: 80,
+          durationMs: 70,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+      await flush();
+      const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+      expect(painted).toBe("こんにちはーきこえますかー");
+      expect(painted).toContain("きこえますか");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
+  it("keeps greeting plus hearing check when live ASR emits them as two same-id pieces", async () => {
+    history.pushState({}, "", "/?native=1");
+    mocks.getLatestCaption.mockResolvedValue(null);
+
+    try {
+      await act(async () => {
+        root.render(<OverlayApp />);
+        await Promise.resolve();
+      });
+      await flush();
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "こんにちは",
+          startedAt: 10,
+          at: 40,
+          durationMs: 30,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        pipelineListener?.({
+          stage: "asr",
+          utteranceId: "parapper:s:1:8",
+          modelId: "parapper-ja",
+          inputSnippet: "",
+          outputText: "きこえますか",
+          startedAt: 10,
+          at: 80,
+          durationMs: 70,
+          ok: true,
+        });
+        await Promise.resolve();
+      });
+      await flush();
+      const painted = nativeRendererRoot(container)?.getAttribute("data-source-text") ?? "";
+      expect(painted).toContain("こんにちは");
+      expect(painted).toContain("きこえますか");
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      history.replaceState({}, "", "/");
+      container.remove();
+    }
+  });
+
   it("does not first-paint a short getLatestCaption over preview before longer ASR history", async () => {
     history.pushState({}, "", "/?native=1");
     let resolveHistory!: (events: PipelineStageEvent[]) => void;
