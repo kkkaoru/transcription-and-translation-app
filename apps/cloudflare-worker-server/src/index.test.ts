@@ -91,6 +91,14 @@ describe("Cloudflare Worker inference adapter", () => {
       auth: { configured: true },
     });
 
+    const malformedModelRoutes = await createWorker().fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      { ...env, MODEL_ROUTES: "not-json" },
+    );
+    await expect(malformedModelRoutes.json()).resolves.toMatchObject({
+      availableModels: ["azookey-rust-wasm"],
+    });
+
     const wasmDictionary = await createWorker().fetch(
       asWorkerRequest(new Request("https://worker.example/v1/azookey")),
       {
