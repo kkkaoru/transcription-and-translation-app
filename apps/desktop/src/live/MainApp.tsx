@@ -2733,7 +2733,7 @@ export const MainApp = () => {
               onSave={() => void save()}
             />
           ) : activeTab === "dictionary" ? (
-            <CustomDictionaryView />
+            <CustomDictionaryView normalizer={config.models.normalizer} />
           ) : (
             <SettingsView
               config={config}

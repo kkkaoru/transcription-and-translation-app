@@ -18,7 +18,7 @@ const createEntryId = (): string => {
   return `dictionary-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 };
 
-export const CustomDictionaryView = () => {
+export const CustomDictionaryView = ({ normalizer }: { normalizer?: string }) => {
   const { t } = useI18n();
   const [entries, setEntries] = useState<CustomDictionaryEntry[]>([]);
   const [readingQuery, setReadingQuery] = useState("");
@@ -188,6 +188,12 @@ export const CustomDictionaryView = () => {
           </button>
         </div>
       </div>
+
+      {ready && entries.length > 0 && normalizer && normalizer !== "azookey-rust" ? (
+        <div className="notice" role="alert" data-testid="custom-dictionary-normalizer-warning">
+          <span className="notice-text">{t("customDictionary.normalizerWarning")}</span>
+        </div>
+      ) : null}
 
       {notice ? (
         <div className="notice" role="status">

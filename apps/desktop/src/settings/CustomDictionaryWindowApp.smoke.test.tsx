@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridge } from "../core/bridge";
 import type { CustomDictionaryEntry } from "../core/types";
 import { I18nProvider } from "../i18n/I18nProvider";
-import { CustomDictionaryWindowApp } from "./CustomDictionaryWindowApp";
+import { CustomDictionaryView, CustomDictionaryWindowApp } from "./CustomDictionaryWindowApp";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -55,6 +55,34 @@ describe("CustomDictionaryWindowApp", () => {
       await Promise.resolve();
     });
   };
+
+  it("warns when saved entries cannot be used by the selected normalizer", async () => {
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <CustomDictionaryView normalizer="zenz-v3.2-small-gguf" />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      container.querySelector("[data-testid='custom-dictionary-normalizer-warning']"),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("AzooKey を選択しているときだけ有効");
+
+    act(() => {
+      root.render(
+        <I18nProvider>
+          <CustomDictionaryView normalizer="azookey-rust" />
+        </I18nProvider>,
+      );
+    });
+    expect(
+      container.querySelector("[data-testid='custom-dictionary-normalizer-warning']"),
+    ).toBeNull();
+  });
 
   it("loads entries and filters readings and words independently", async () => {
     await renderApp();

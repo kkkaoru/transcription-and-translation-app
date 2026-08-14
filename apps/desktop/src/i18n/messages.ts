@@ -92,6 +92,8 @@ const ja = {
   "settings.openCustomDictionary": "カスタム辞書を開く ↗",
   "customDictionary.title": "カスタム辞書",
   "customDictionary.lead": "よみから表示したい単語への変換を登録します。",
+  "customDictionary.normalizerWarning":
+    "カスタム辞書は AzooKey を選択しているときだけ有効です。現在の変換モデルでは登録内容が使用されません。",
   "customDictionary.readingLabel": "よみ",
   "customDictionary.wordLabel": "単語",
   "customDictionary.searchReading": "よみを検索",
@@ -213,7 +215,7 @@ const ja = {
   "settings.streamingInterimAsrOn": "有効",
   "settings.partialWindowAsr": "発話中の部分再認識（ReazonSpeech）",
   "settings.partialWindowAsrHint":
-    "audio.partialWindowAsrEnabled。現在の OPEN 音声区間だけを約400msごとに再認識し、確定本文を置き換えず末尾に薄く表示します。既定ではオフです。設定は次のキャプチャ開始から有効です。Nemotron の途中認識がオンの間はこの機能は無効です。",
+    "audio.partialWindowAsrEnabled。現在の OPEN 音声区間だけを約400msごとに再認識し、確定本文と翻訳を保持したまま別の半透明行に表示します。既定ではオンです。連続発話の計測では CPU p95 が74.1%から89.9%、平均が7.5%から23.9%（1コア基準）へ増加しました。設定は次のキャプチャ開始から有効です。Nemotron の途中認識がオンの間はこの機能は無効です。",
   "settings.partialWindowAsrOn": "有効（次回キャプチャから）",
   "settings.autoGainControl": "オートゲイン（AGC）",
   "settings.autoGainControlHint":
@@ -647,6 +649,8 @@ const en: Record<MessageKey, string> = {
   "settings.openCustomDictionary": "Open custom dictionary ↗",
   "customDictionary.title": "Custom dictionary",
   "customDictionary.lead": "Register the word that should be produced for each reading.",
+  "customDictionary.normalizerWarning":
+    "Custom dictionary entries are active only when AzooKey is selected. The current normalizer will not use them.",
   "customDictionary.readingLabel": "Reading",
   "customDictionary.wordLabel": "Word",
   "customDictionary.searchReading": "Search readings",
@@ -770,7 +774,7 @@ const en: Record<MessageKey, string> = {
   "settings.streamingInterimAsrOn": "Enabled",
   "settings.partialWindowAsr": "In-speech partial recognition (ReazonSpeech)",
   "settings.partialWindowAsrHint":
-    "audio.partialWindowAsrEnabled. Re-recognizes only the current OPEN audio segment about every 400 ms and shows a dim inline suffix without replacing the committed caption body. Off by default. Changes apply from the next capture start. This is inactive while Nemotron streaming interim ASR is enabled.",
+    "audio.partialWindowAsrEnabled. Re-recognizes only the current OPEN audio segment about every 400 ms and shows it on a separate dim row while preserving the committed source and translation. On by default. Continuous-speech measurements increased CPU p95 from 74.1% to 89.9% and mean from 7.5% to 23.9% (one-core basis). Changes apply from the next capture start. This is inactive while Nemotron streaming interim ASR is enabled.",
   "settings.partialWindowAsrOn": "Enabled (next capture)",
   "settings.autoGainControl": "Auto gain control (AGC)",
   "settings.autoGainControlHint":
