@@ -108,7 +108,7 @@ export const isRecognitionMode = (value: unknown): value is RecognitionMode =>
   typeof value === "string" && (RECOGNITION_MODES as readonly string[]).includes(value);
 
 export interface PartialAppConfig {
-  schemaVersion?: 1;
+  schemaVersion?: 1 | 2;
   recognitionMode?: RecognitionMode;
   language?: Partial<AppConfig["language"]>;
   endpoint?: Partial<AppConfig["endpoint"]>;
@@ -281,7 +281,7 @@ export const createTextStyle = (overrides: Partial<CaptionTextStyle> = {}): Capt
 });
 
 export const createDefaultConfig = (): AppConfig => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   recognitionMode: getDefaultRecognitionMode(),
   language: {
     source: "ja",
@@ -315,8 +315,9 @@ export const createDefaultConfig = (): AppConfig => ({
     adaptiveNoiseFloor: DEFAULT_ADAPTIVE_NOISE_FLOOR,
     // Progressive interim ASR (Nemotron 3.5 streaming) off by default; optional in settings.
     streamingInterimAsrEnabled: false,
-    // Open-segment ReazonSpeech window suffixes are opt-in and start next capture.
-    partialWindowAsrEnabled: false,
+    // Open-segment ReazonSpeech windows are enabled by default. This costs more
+    // CPU under continuous speech, so the setting remains user-toggleable.
+    partialWindowAsrEnabled: true,
   },
   overlay: {
     width: 1_280,
@@ -354,7 +355,7 @@ export const createDefaultConfig = (): AppConfig => ({
     lmWeight: 0.5,
     confusionWeight: 0.5,
     overcorrectionMargin: 2.0,
-    timeoutMs: 200,
+    timeoutMs: 500,
     modelPath: null,
   },
 });
@@ -549,20 +550,28 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
   if (typeof audio.streamingInterimAsrEnabled !== "boolean") {
     audio.streamingInterimAsrEnabled = false;
   }
-  if (typeof audio.partialWindowAsrEnabled !== "boolean") {
-    audio.partialWindowAsrEnabled = false;
+  const migratesV1 = input.schemaVersion !== 2;
+  if (migratesV1 || typeof audio.partialWindowAsrEnabled !== "boolean") {
+    audio.partialWindowAsrEnabled = true;
+  }
+  const models = {
+    ...base.models,
+    ...input.models,
+    paths: { ...base.models.paths, ...input.models?.paths },
+  };
+  const rescore = { ...base.rescore, ...input.rescore };
+  if (migratesV1) {
+    models.normalizer = "azookey-rust";
+    rescore.timeoutMs = 500;
   }
   return {
     ...base,
     ...input,
+    schemaVersion: 2,
     recognitionMode,
     language: { ...base.language, ...input.language },
     endpoint: { ...base.endpoint, ...input.endpoint },
-    models: {
-      ...base.models,
-      ...input.models,
-      paths: { ...base.models.paths, ...input.models?.paths },
-    },
+    models,
     audio,
     overlay: {
       ...base.overlay,
@@ -594,6 +603,6 @@ export const mergeConfig = (candidate: PartialAppConfig): AppConfig => {
           : base.overlay.nativeOutputEnabled,
     },
     debug: { ...base.debug, ...input.debug },
-    rescore: { ...base.rescore, ...input.rescore },
+    rescore,
   };
 };

@@ -162,11 +162,18 @@ fn load_config(app: &tauri::AppHandle) -> Result<AppConfig, String> {
         .app_config_dir()
         .map_err(|error| format!("could not resolve app config directory: {error}"))?
         .join("config.json");
-    let body = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let mut config: AppConfig = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let body = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let parsed: AppConfig = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let (mut config, migrated) = parsed.migrate();
     // Legacy default silenceGateDb=-55 let ambient ~-54 dBFS through to Parapper.
     config.audio.silence_gate_db = migrate_silence_gate_db(config.audio.silence_gate_db);
     config.validate()?;
+    if migrated {
+        let payload = serde_json::to_vec_pretty(&config)
+            .map_err(|error| format!("could not serialize migrated config: {error}"))?;
+        std::fs::write(path, payload)
+            .map_err(|error| format!("could not persist migrated config: {error}"))?;
+    }
     Ok(config)
 }
 

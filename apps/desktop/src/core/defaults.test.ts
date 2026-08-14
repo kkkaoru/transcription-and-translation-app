@@ -59,7 +59,9 @@ describe("default configuration", () => {
     // Adaptive noise-floor gate is the default; silenceGateDb is the fallback.
     expect(config.audio.adaptiveNoiseFloor).toBe(true);
     expect(config.audio.streamingInterimAsrEnabled).toBe(false);
-    expect(config.audio.partialWindowAsrEnabled).toBe(false);
+    expect(config.audio.partialWindowAsrEnabled).toBe(true);
+    expect(config.rescore.timeoutMs).toBe(500);
+    expect(config.schemaVersion).toBe(2);
     expect(config.debug.verboseLogging).toBe(false);
     expect(config.debug.logLevel).toBe("info");
   });
@@ -118,14 +120,41 @@ describe("default configuration", () => {
     expect(off.audio.streamingInterimAsrEnabled).toBe(false);
   });
 
-  it("defaults missing partialWindowAsrEnabled to false when merging legacy config", () => {
-    expect(mergeConfig({ audio: { chunkMs: 1000 } }).audio.partialWindowAsrEnabled).toBe(false);
-    expect(
-      mergeConfig({ audio: { partialWindowAsrEnabled: true } }).audio.partialWindowAsrEnabled,
-    ).toBe(true);
-    expect(
-      mergeConfig({ audio: { partialWindowAsrEnabled: false } }).audio.partialWindowAsrEnabled,
-    ).toBe(false);
+  it("migrates v1 runtime defaults together while preserving unrelated settings", () => {
+    const migrated = mergeConfig({
+      schemaVersion: 1,
+      audio: { partialWindowAsrEnabled: false, inputDeviceId: "preserved-device" },
+      models: {
+        normalizer: "zenz-v3.2-small-gguf",
+        paths: { "azookey-user-dictionary": "/tmp/user.tsv" },
+      },
+      overlay: {
+        x: 123,
+        source: { fontFamily: "Preserved Font" },
+      },
+      rescore: { timeoutMs: 200 },
+    });
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.audio.partialWindowAsrEnabled).toBe(true);
+    expect(migrated.models.normalizer).toBe("azookey-rust");
+    expect(migrated.rescore.timeoutMs).toBe(500);
+    expect(migrated.audio.inputDeviceId).toBe("preserved-device");
+    expect(migrated.models.paths["azookey-user-dictionary"]).toBe("/tmp/user.tsv");
+    expect(migrated.overlay.x).toBe(123);
+    expect(migrated.overlay.source.fontFamily).toBe("Preserved Font");
+  });
+
+  it("preserves explicit v2 runtime choices and remains idempotent", () => {
+    const v2 = mergeConfig({
+      schemaVersion: 2,
+      audio: { partialWindowAsrEnabled: false },
+      models: { normalizer: "zenz-v3.2-small-gguf" },
+      rescore: { timeoutMs: 350 },
+    });
+    expect(v2.audio.partialWindowAsrEnabled).toBe(false);
+    expect(v2.models.normalizer).toBe("zenz-v3.2-small-gguf");
+    expect(v2.rescore.timeoutMs).toBe(350);
+    expect(mergeConfig(v2)).toEqual(v2);
   });
 
   it("keeps browser-only previews disabled until the native runtime supplies its platform default", () => {
@@ -432,7 +461,7 @@ describe("input-LM rescore configuration", () => {
     expect(config.rescore.lmWeight).toBe(0.5);
     expect(config.rescore.confusionWeight).toBe(0.5);
     expect(config.rescore.overcorrectionMargin).toBe(2.0);
-    expect(config.rescore.timeoutMs).toBe(200);
+    expect(config.rescore.timeoutMs).toBe(500);
     expect(config.rescore.modelPath).toBeNull();
   });
 
@@ -451,11 +480,12 @@ describe("input-LM rescore configuration", () => {
     expect(merged.rescore.lmWeight).toBe(0.5);
     expect(merged.rescore.confusionWeight).toBe(0.5);
     expect(merged.rescore.overcorrectionMargin).toBe(2.0);
-    expect(merged.rescore.timeoutMs).toBe(200);
+    expect(merged.rescore.timeoutMs).toBe(500);
   });
 
   it("round-trips a custom rescore block through merge", () => {
     const merged = mergeConfig({
+      schemaVersion: 2,
       rescore: {
         enabled: true,
         lmWeight: 0.7,

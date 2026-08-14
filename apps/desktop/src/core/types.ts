@@ -197,7 +197,7 @@ export interface RescoreConfig {
 }
 
 export interface AppConfig {
-  schemaVersion: 1;
+  schemaVersion: 2;
   /** Recognition path selected for live/debug capture. */
   recognitionMode: RecognitionMode;
   language: LanguageConfig;

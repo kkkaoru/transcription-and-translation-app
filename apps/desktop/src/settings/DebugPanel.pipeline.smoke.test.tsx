@@ -29,7 +29,7 @@ vi.mock("../core/bridge", () => ({
   bridge: {
     isDesktop: () => false,
     getConfig: async () => ({
-      schemaVersion: 1,
+      schemaVersion: 2,
       language: { source: "ja", target: "en" },
       endpoint: {
         mode: "local",

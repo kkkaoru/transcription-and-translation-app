@@ -389,7 +389,7 @@ fn default_rescore_overcorrection_margin() -> f64 {
 }
 
 fn default_rescore_timeout_ms() -> u64 {
-    200
+    500
 }
 
 impl Default for RescoreConfig {
@@ -426,7 +426,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             recognition_mode: default_recognition_mode(),
             language: LanguageConfig { source: "ja".to_string(), target: "en".to_string() },
             endpoint: BackendEndpoint {
@@ -461,7 +461,7 @@ impl Default for AppConfig {
                 adaptive_noise_floor: true,
                 // Match frontend: Nemotron streaming interim ASR off by default.
                 streaming_interim_asr_enabled: false,
-                partial_window_asr_enabled: false,
+                partial_window_asr_enabled: true,
             },
             overlay: OverlayConfig {
                 width: 1_280,
@@ -486,8 +486,20 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Apply the one-time v1→v2 defaults while preserving every unrelated field.
+    pub fn migrate(mut self) -> (Self, bool) {
+        if self.schema_version == 1 {
+            self.audio.partial_window_asr_enabled = true;
+            self.models.normalizer = "azookey-rust".to_string();
+            self.rescore.timeout_ms = 500;
+            self.schema_version = 2;
+            return (self, true);
+        }
+        (self, false)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 1 {
+        if self.schema_version != 2 {
             return Err("unsupported config schema version".to_string());
         }
         if !is_recognition_mode(&self.recognition_mode) {
@@ -683,10 +695,55 @@ mod tests {
         assert!(config.audio.noise_suppression);
         assert!(config.audio.adaptive_noise_floor);
         assert!(!config.audio.streaming_interim_asr_enabled);
-        assert!(!config.audio.partial_window_asr_enabled);
+        assert!(config.audio.partial_window_asr_enabled);
+        assert_eq!(config.rescore.timeout_ms, 500);
+        assert_eq!(config.schema_version, 2);
         assert_eq!(config.audio.vad_interval_ms, DEFAULT_VAD_INTERVAL_MS);
         assert_eq!(config.audio.vad_threshold, DEFAULT_VAD_THRESHOLD);
         assert_eq!(config.recognition_mode, DEFAULT_RECOGNITION_MODE);
+    }
+
+    #[test]
+    fn v1_migration_updates_runtime_defaults_once_and_preserves_unrelated_settings() {
+        let mut v1 = AppConfig::default();
+        v1.schema_version = 1;
+        v1.audio.partial_window_asr_enabled = false;
+        v1.audio.input_device_id = "preserved-device".to_string();
+        v1.models.normalizer = "zenz-v3.2-small-gguf".to_string();
+        v1.models.paths.insert("azookey-user-dictionary".to_string(), "/tmp/user.tsv".to_string());
+        v1.overlay.source.font_family = "Preserved Font".to_string();
+        v1.overlay.x = 123;
+        v1.rescore.timeout_ms = 200;
+
+        let (migrated, changed) = v1.migrate();
+        assert!(changed);
+        assert_eq!(migrated.schema_version, 2);
+        assert!(migrated.audio.partial_window_asr_enabled);
+        assert_eq!(migrated.models.normalizer, "azookey-rust");
+        assert_eq!(migrated.rescore.timeout_ms, 500);
+        assert_eq!(migrated.audio.input_device_id, "preserved-device");
+        assert_eq!(migrated.models.paths["azookey-user-dictionary"], "/tmp/user.tsv");
+        assert_eq!(migrated.overlay.source.font_family, "Preserved Font");
+        assert_eq!(migrated.overlay.x, 123);
+
+        let expected = serde_json::to_value(&migrated).expect("serialize migrated config");
+        let (again, changed_again) = migrated.migrate();
+        assert!(!changed_again);
+        assert_eq!(serde_json::to_value(again).expect("serialize idempotent config"), expected);
+    }
+
+    #[test]
+    fn v2_explicit_runtime_choices_are_preserved() {
+        let mut v2 = AppConfig::default();
+        v2.audio.partial_window_asr_enabled = false;
+        v2.models.normalizer = "zenz-v3.2-small-gguf".to_string();
+        v2.rescore.timeout_ms = 350;
+
+        let (preserved, changed) = v2.migrate();
+        assert!(!changed);
+        assert!(!preserved.audio.partial_window_asr_enabled);
+        assert_eq!(preserved.models.normalizer, "zenz-v3.2-small-gguf");
+        assert_eq!(preserved.rescore.timeout_ms, 350);
     }
 
     #[test]
@@ -900,7 +957,7 @@ mod tests {
     fn adaptive_noise_floor_respects_explicit_false() {
         let config: AppConfig = serde_json::from_str(
             r##"{
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "language": { "source": "ja", "target": "en" },
             "endpoint": {
                 "mode": "local",
@@ -1148,7 +1205,7 @@ mod tests {
     #[test]
     fn legacy_config_without_browser_source_still_parses() {
         let raw = r##"{
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "recognitionMode": "web-speech",
             "language": { "source": "ja", "target": "en" },
             "endpoint": {
