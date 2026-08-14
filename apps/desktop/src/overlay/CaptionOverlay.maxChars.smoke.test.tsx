@@ -62,12 +62,12 @@ describe("DOM overlay honours the configured caption line budget", () => {
     expect(lineTextOf("source")).not.toContain("\n");
   });
 
-  it("adds an OPEN-segment result as a dim inline source suffix without replacing body text", () => {
+  it("adds an OPEN-segment result as an independent dim row without replacing body text", () => {
     const config = configWithBudget(24, 24);
     const active = {
       ...caption,
       sourceText: "あ".repeat(18),
-      translationText: "",
+      translationText: "Confirmed translation",
       isFinal: false,
     };
     act(() => {
@@ -75,14 +75,12 @@ describe("DOM overlay honours the configured caption line budget", () => {
     });
 
     const source = host.querySelector(".caption-line-source");
-    const suffix = host.querySelector(".caption-partial-window");
-    expect(source?.textContent).toBe(`${"あ".repeat(18)} 部分候補`);
-    expect(suffix?.textContent).toBe(" 部分候補");
-    expect(suffix?.className).toBe("caption-partial-window");
-    // The committed body stays the supplied source only; suffix layout never
-    // enters captionTextLines and therefore cannot create a third logical row.
-    expect(source?.firstChild?.textContent).toBe("あ".repeat(18));
-    expect(host.querySelectorAll(".caption-line")).toHaveLength(2);
+    const prediction = host.querySelector<HTMLElement>(".caption-line-prediction");
+    expect(source?.textContent).toBe("あ".repeat(18));
+    expect(lineTextOf("translation")).toBe("Confirmed translation");
+    expect(prediction?.textContent).toBe("部分候補");
+    expect(Number(prediction?.style.opacity)).toBeCloseTo(config.overlay.source.opacity * 0.42);
+    expect(host.querySelectorAll(".caption-line")).toHaveLength(3);
   });
 
   it("re-splits both rows when the configured budget shrinks", () => {

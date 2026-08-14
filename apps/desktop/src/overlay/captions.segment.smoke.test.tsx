@@ -339,15 +339,15 @@ describe("captionTextLines and captionItems", () => {
     expect(windowed.join("")).toBe("い".repeat(40));
   });
 
-  it("keeps the shared prediction suffix empty when no OPEN text is present", () => {
+  it("does not add a prediction row when no OPEN text is present", () => {
     const config = createDefaultConfig();
-    const source = captionItems(config, createEmptyCaption(), false, "   ").find(
-      (item) => item.key === "source",
+    const prediction = captionItems(config, createEmptyCaption(), false, "   ").find(
+      (item) => item.key === "prediction",
     );
-    expect(source?.partialWindowText).toBe("");
+    expect(prediction).toBeUndefined();
   });
 
-  it("bounds an OPEN prediction to the remaining shared source-line budget", () => {
+  it("bounds an OPEN prediction to one shared source-width line", () => {
     const config = createDefaultConfig();
     config.overlay.captionMaxChars = { source: 10, translation: 10 };
     const caption = {
@@ -356,15 +356,16 @@ describe("captionTextLines and captionItems", () => {
       translationText: "",
     };
 
-    const source = captionItems(config, caption, false, "あ".repeat(30)).find(
-      (item) => item.key === "source",
+    const prediction = captionItems(config, caption, false, "あ".repeat(30)).find(
+      (item) => item.key === "prediction",
     );
 
-    expect(source?.partialWindowText).toBe("あ".repeat(5));
-    expect(captionGraphemes(`${source?.text} ${source?.partialWindowText}`)).toHaveLength(10);
+    expect(prediction?.text).toBe("あ".repeat(10));
+    if (!prediction) throw new Error("prediction item should exist");
+    expect(captionTextLines(prediction)).toEqual(["あ".repeat(10)]);
   });
 
-  it("replaces a completed old plate immediately when the next OPEN prediction arrives", () => {
+  it("keeps the completed source and translation beside the next OPEN prediction", () => {
     const config = createDefaultConfig();
     const completed: CaptionPayload = {
       ...createPreviewCaption(),
@@ -377,10 +378,13 @@ describe("captionTextLines and captionItems", () => {
     const items = captionItems(config, completed, false, "新しい予測文字");
     const source = items.find((item) => item.key === "source");
     const translation = items.find((item) => item.key === "translation");
-    expect(source?.text).toBe("新しい予測文字");
-    expect(source?.partialWindowText).toBe("");
-    expect(source?.style.opacity).toBeCloseTo(config.overlay.source.opacity * 0.42);
-    expect(translation?.text).toBe("");
+    const prediction = items.find((item) => item.key === "prediction");
+    expect(source?.text).toBe("古い確定字幕");
+    expect(translation?.text).toBe("Old caption");
+    expect(prediction?.text).toBe("新しい予測文字");
+    expect(prediction?.style.opacity).toBeCloseTo(config.overlay.source.opacity * 0.42);
+    if (!prediction) throw new Error("prediction item should exist");
+    expect(captionTextLines(prediction)).toHaveLength(1);
   });
 
   it("keeps an ellipsis-terminated translation displayable", () => {
@@ -414,7 +418,6 @@ describe("captionTextLines and captionItems", () => {
       })),
     ).toEqual([
       { decisionSource: "display", reason: "displayed" },
-      { decisionSource: "display", reason: "prediction-only-plate" },
       { decisionSource: "display", reason: "no-displayable-translation" },
     ]);
   });
@@ -562,6 +565,15 @@ describe("captionTextLines and captionItems", () => {
       maxChars: 48,
     });
     expect(lines).toEqual(["It will rain tomorrow."]);
+  });
+
+  it("keeps a long translated surface within its two-line display window", () => {
+    const lines = captionTextLines({
+      key: "translation",
+      text: "A".repeat(120),
+      maxChars: 48,
+    });
+    expect(lines).toEqual(["A".repeat(48), "A".repeat(48)]);
   });
 
   it("uses Vibrato sentence offsets only when the next span dominates the lead", () => {

@@ -106,7 +106,7 @@ const captionWith = (sourceText: string): CaptionPayload => ({
 });
 
 describe("native caption canvas edge rendering", () => {
-  it("draws an OPEN-segment result inline with a dim alpha for every body alignment", () => {
+  it("draws an OPEN-segment result on an independent dim row for every body alignment", () => {
     for (const textAlign of ["left", "center", "right"] as const) {
       const config = createDefaultConfig();
       config.overlay.width = 320;
@@ -114,11 +114,17 @@ describe("native caption canvas edge rendering", () => {
       config.overlay.safeAreaPx = 0;
       config.overlay.source.textAlign = textAlign;
       config.overlay.translation.backgroundEnabled = false;
-      const caption = captionWith("確定本文");
+      const caption = {
+        ...captionWith("確定本文"),
+        translationText: "Confirmed translation",
+      };
       const { canvas, fillCalls, globalAlphaValues } = createCanvasHarness();
 
       expect(renderNativeFrame(canvas, config, caption, "部分候補")).not.toBeNull();
-      expect(fillCalls.map((call) => call.text).join("")).toBe("確定本文 部分候補");
+      expect(fillCalls.map((call) => call.text).join("")).toBe(
+        "確定本文Confirmed translation部分候補",
+      );
+      expect(new Set(fillCalls.map((call) => call.y)).size).toBeGreaterThanOrEqual(2);
       expect(globalAlphaValues).toContain(config.overlay.source.opacity * 0.42);
       expect(framePaintKey(config, caption, "部分候補")).not.toBe(framePaintKey(config, caption));
     }

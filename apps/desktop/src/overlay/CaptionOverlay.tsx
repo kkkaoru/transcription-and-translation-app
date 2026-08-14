@@ -30,16 +30,7 @@ export const CaptionLines = memo(
             aria-hidden={hasText ? undefined : true}
             data-empty={hasText ? undefined : "true"}
           >
-            {hasText ? (
-              <>
-                {captionTextLines(item).join("\n")}
-                {item.key === "source" && item.partialWindowText ? (
-                  <span className="caption-partial-window"> {item.partialWindowText}</span>
-                ) : null}
-              </>
-            ) : (
-              CAPTION_SLOT_PLACEHOLDER
-            )}
+            {hasText ? captionTextLines(item).join("\n") : CAPTION_SLOT_PLACEHOLDER}
           </div>
         );
       })}

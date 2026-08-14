@@ -29,7 +29,7 @@ export {
 };
 
 export interface CaptionItem {
-  key: "source" | "translation";
+  key: "source" | "translation" | "prediction";
   text: string;
   style: CaptionTextStyle;
   /** Resolved per-row character budget for one logical line. */
@@ -39,7 +39,9 @@ export interface CaptionItem {
   softBreakOffsets?: number[];
   /** Skip heuristic copula/ます paging; punctuation and Vibrato offsets still page. */
   deferSentencePaging?: boolean;
-  /** Bounded OPEN-segment prediction that fits the source line budget. */
+  /** Per-item line cap; source/translation default to the shared two-line limit. */
+  maxLines?: number;
+  /** Legacy inline suffix field; new OPEN predictions use their own item. */
   partialWindowText?: string;
 }
 
@@ -54,7 +56,10 @@ export interface CaptionItem {
 export const resolveCaptionMaxChars = (
   config: Pick<AppConfig, "overlay">,
   key: CaptionItem["key"],
-): number => clampCaptionMaxChars(config.overlay.captionMaxChars?.[key], key);
+): number => {
+  const styleKey = key === "prediction" ? "source" : key;
+  return clampCaptionMaxChars(config.overlay.captionMaxChars?.[styleKey], styleKey);
+};
 
 const preferredBreak = /[。．！？!?、,，；;：:]/u;
 
@@ -539,27 +544,28 @@ export const captionTextLines = (
         | "sentenceEndOffsets"
         | "softBreakOffsets"
         | "deferSentencePaging"
+        | "maxLines"
       >
     >,
 ): string[] => {
+  const styleKey = item.key === "prediction" ? "source" : item.key;
   const maxChars =
-    typeof item.maxChars === "number" ? item.maxChars : defaultCaptionMaxChars(item.key);
+    typeof item.maxChars === "number" ? item.maxChars : defaultCaptionMaxChars(styleKey);
+  const maxLines =
+    typeof item.maxLines === "number"
+      ? Math.max(1, Math.floor(item.maxLines))
+      : CAPTION_MAX_VISIBLE_LINES;
   const hints: CaptionSentenceHints = {
-    key: item.key,
+    key: styleKey,
     azookeyInputText: item.azookeyInputText,
     sentenceEndOffsets: item.sentenceEndOffsets,
     softBreakOffsets: item.softBreakOffsets,
     deferSentencePaging: item.deferSentencePaging,
   };
-  const windowed = trimCaptionToDisplayWindow(
-    item.text,
-    maxChars,
-    CAPTION_MAX_VISIBLE_LINES,
-    hints,
-  );
+  const windowed = trimCaptionToDisplayWindow(item.text, maxChars, maxLines, hints);
   return keepNewestCaptionLines(
     segmentCaptionText(windowed, maxChars, detectCaptionSoftBreaks(windowed, hints)),
-    CAPTION_MAX_VISIBLE_LINES,
+    maxLines,
   );
 };
 
@@ -607,13 +613,11 @@ export const createHoldClearedCaption = (clearedAt = Date.now()): CaptionPayload
 });
 
 export const boundPartialWindowText = (source: CaptionItem, partialWindowText: string): string => {
-  const suffix = partialWindowText.trim();
-  if (!suffix) {
+  const prediction = partialWindowText.trim();
+  if (!prediction) {
     return "";
   }
-  const lastLine = captionTextLines(source).at(-1) ?? "";
-  const available = Math.max(0, source.maxChars - captionGraphemes(lastLine).length - 1);
-  return captionGraphemes(suffix).slice(0, available).join("");
+  return captionGraphemes(prediction).slice(0, source.maxChars).join("");
 };
 
 export const captionItems = (
@@ -623,13 +627,6 @@ export const captionItems = (
   partialWindowText = "",
 ): CaptionItem[] => {
   const prediction = sanitizeCaptionDisplayText(partialWindowText).trim();
-  // A partial-window event belongs to the next OPEN segment. Replace the
-  // completed previous plate immediately instead of appending beyond its width
-  // and hiding the new speech until the old five-second hold expires.
-  const predictionOnly =
-    !placeholder &&
-    Boolean(prediction) &&
-    (caption.isFinal === true || hasDisplayableTranslationText(caption.translationText));
   // Provisional first hypotheses keep the lead sentence (defer copula paging)
   // so 「です＋次節」 does not drop the already-recognized head. Copula paging
   // on live interims/finals still requires punctuation or a 2× remainder.
@@ -638,34 +635,22 @@ export const captionItems = (
     key: "source",
     text: placeholder
       ? "日本語の音声認識結果がここに表示されます"
-      : predictionOnly
-        ? prediction
-        : sanitizeCaptionDisplayText(caption.sourceText),
-    style: predictionOnly
-      ? { ...config.overlay.source, opacity: config.overlay.source.opacity * 0.42 }
-      : config.overlay.source,
+      : sanitizeCaptionDisplayText(caption.sourceText),
+    style: config.overlay.source,
     maxChars: resolveCaptionMaxChars(config, "source"),
-    azookeyInputText: predictionOnly ? undefined : caption.azookeyInputText,
-    sentenceEndOffsets: predictionOnly ? undefined : caption.sentenceEndOffsets,
-    softBreakOffsets: predictionOnly ? undefined : caption.softBreakOffsets,
+    azookeyInputText: caption.azookeyInputText,
+    sentenceEndOffsets: caption.sentenceEndOffsets,
+    softBreakOffsets: caption.softBreakOffsets,
     deferSentencePaging,
   };
-  source.partialWindowText = predictionOnly
-    ? ""
-    : boundPartialWindowText(source, partialWindowText);
   const sanitizedTranslation = sanitizeCaptionDisplayText(caption.translationText);
   const translationDisplayable = hasDisplayableTranslationText(sanitizedTranslation);
-  const displayedTranslation =
-    !predictionOnly && translationDisplayable ? sanitizedTranslation : "";
+  const displayedTranslation = translationDisplayable ? sanitizedTranslation : "";
   if (!placeholder && caption.translationText.trim()) {
     recordCaptionTranslationDisplayDisposition(
       caption,
       displayedTranslation,
-      predictionOnly
-        ? "prediction-only-plate"
-        : translationDisplayable
-          ? "displayed"
-          : "no-displayable-translation",
+      translationDisplayable ? "displayed" : "no-displayable-translation",
     );
   }
   const translation: CaptionItem = {
@@ -675,5 +660,20 @@ export const captionItems = (
     maxChars: resolveCaptionMaxChars(config, "translation"),
     deferSentencePaging,
   };
-  return config.overlay.order === "source-first" ? [source, translation] : [translation, source];
+  const ordered =
+    config.overlay.order === "source-first" ? [source, translation] : [translation, source];
+  if (!placeholder && prediction) {
+    ordered.push({
+      key: "prediction",
+      text: boundPartialWindowText(source, prediction),
+      style: {
+        ...config.overlay.source,
+        opacity: config.overlay.source.opacity * 0.42,
+      },
+      maxChars: resolveCaptionMaxChars(config, "prediction"),
+      maxLines: 1,
+      deferSentencePaging: true,
+    });
+  }
+  return ordered;
 };
