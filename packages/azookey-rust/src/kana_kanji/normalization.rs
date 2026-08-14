@@ -173,10 +173,11 @@ pub(crate) fn skip_intervening_numeric_unit_noise(reading: &[char]) -> usize {
         return 0;
     }
     let mut after = index;
-    if after < reading.len() && matches!(reading[after], 'C' | 'F' | 'c' | 'f') {
-        if japanese_percent_counter_starts_at(&reading[after + 1..]) {
-            after += 1;
-        }
+    if after < reading.len()
+        && matches!(reading[after], 'C' | 'F' | 'c' | 'f')
+        && japanese_percent_counter_starts_at(&reading[after + 1..])
+    {
+        after += 1;
     }
     if japanese_percent_counter_starts_at(&reading[after..]) {
         after
