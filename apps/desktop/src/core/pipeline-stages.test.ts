@@ -126,6 +126,7 @@ describe("pipeline stage events", () => {
       at: 500,
       zenzContext: {
         enabled: true,
+        isFinal: false,
         characterCount: 18.4,
         turnCount: 2,
         discardedSessionCount: 3,
@@ -137,6 +138,7 @@ describe("pipeline stage events", () => {
     expect(event?.durationMs).toBe(123);
     expect(event?.zenzContext).toStrictEqual({
       enabled: true,
+      isFinal: false,
       characterCount: 18,
       turnCount: 2,
       discardedSessionCount: 3,
@@ -148,6 +150,7 @@ describe("pipeline stage events", () => {
       stage: "normalize",
       zenz_context: {
         enabled: false,
+        is_final: true,
         character_count: 0,
         turn_count: 0,
         discarded_session_count: 4,
@@ -155,6 +158,7 @@ describe("pipeline stage events", () => {
     });
     expect(snake?.zenzContext).toStrictEqual({
       enabled: false,
+      isFinal: true,
       characterCount: 0,
       turnCount: 0,
       discardedSessionCount: 4,
@@ -170,8 +174,15 @@ describe("pipeline stage events", () => {
     expect(
       normalizePipelineStageEvent({
         stage: "normalize",
+        zenzContext: { enabled: true, isFinal: "invalid" },
+      })?.zenzContext,
+    ).toBeUndefined();
+    expect(
+      normalizePipelineStageEvent({
+        stage: "normalize",
         zenzContext: {
           enabled: true,
+          isFinal: false,
           characterCount: Number.NaN,
           turnCount: 1,
           discardedSessionCount: 1,
@@ -183,6 +194,7 @@ describe("pipeline stage events", () => {
         stage: "normalize",
         zenzContext: {
           enabled: true,
+          isFinal: false,
           characterCount: 1,
           turnCount: "invalid",
           discardedSessionCount: 1,
@@ -194,6 +206,7 @@ describe("pipeline stage events", () => {
         stage: "normalize",
         zenzContext: {
           enabled: true,
+          isFinal: false,
           characterCount: 1,
           turnCount: Number.NaN,
           discardedSessionCount: 1,
@@ -205,6 +218,7 @@ describe("pipeline stage events", () => {
         stage: "normalize",
         zenzContext: {
           enabled: true,
+          isFinal: false,
           characterCount: 1,
           turnCount: 1,
           discardedSessionCount: "invalid",
@@ -216,6 +230,7 @@ describe("pipeline stage events", () => {
         stage: "normalize",
         zenzContext: {
           enabled: true,
+          isFinal: false,
           characterCount: 1,
           turnCount: 1,
           discardedSessionCount: Number.NaN,
@@ -227,6 +242,7 @@ describe("pipeline stage events", () => {
         stage: "normalize",
         zenzContext: {
           enabled: false,
+          isFinal: true,
           characterCount: -1,
           turnCount: -2,
           discardedSessionCount: -3,
@@ -234,6 +250,7 @@ describe("pipeline stage events", () => {
       })?.zenzContext,
     ).toStrictEqual({
       enabled: false,
+      isFinal: true,
       characterCount: 0,
       turnCount: 0,
       discardedSessionCount: 0,
@@ -423,13 +440,14 @@ describe("pipeline stage events", () => {
       at: 1_100,
       zenzContext: {
         enabled: true,
+        isFinal: false,
         characterCount: 18,
         turnCount: 2,
         discardedSessionCount: 3,
       },
     });
     expect(getDiagnosticEvents()[0]?.detail).toContain(
-      "zenzContext=on,chars=18,turns=2,discardedSessions=3",
+      "zenzContext=on,final=false,chars=18,turns=2,discardedSessions=3",
     );
     expect(getDiagnosticEvents()[0]?.detail).not.toContain("leftContext");
 

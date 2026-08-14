@@ -109,6 +109,7 @@ pub struct PipelineStageEvent {
 #[serde(rename_all = "camelCase")]
 pub struct ZenzContextDiagnostics {
     pub enabled: bool,
+    pub is_final: bool,
     pub character_count: u32,
     pub turn_count: u32,
     pub discarded_session_count: u64,
@@ -530,12 +531,14 @@ impl Pipeline {
         capture_generation: Option<u64>,
         turn_session_id: u64,
         turn_id: u64,
+        is_final: bool,
     ) -> ZenzContextSnapshot {
         let enabled = zenz_left_context_enabled();
         let empty_snapshot = || ZenzContextSnapshot {
             text: String::new(),
             diagnostics: ZenzContextDiagnostics {
                 enabled,
+                is_final,
                 character_count: 0,
                 turn_count: 0,
                 discarded_session_count: self
@@ -568,6 +571,7 @@ impl Pipeline {
             text,
             diagnostics: ZenzContextDiagnostics {
                 enabled,
+                is_final,
                 character_count: u32::try_from(character_count).unwrap_or(u32::MAX),
                 turn_count: u32::try_from(turn_count).unwrap_or(u32::MAX),
                 discarded_session_count: self
@@ -1035,6 +1039,7 @@ impl Pipeline {
             output.capture_generation,
             output.turn_session_id,
             output.turn_id,
+            output.is_final,
         );
         let zenz_context_diagnostics =
             config.models.normalizer.starts_with("zenz-").then_some(left_context.diagnostics);
@@ -2434,31 +2439,36 @@ mod tests {
     #[test]
     fn zenz_context_keeps_each_final_turn_once_and_resets_at_capture_boundaries() {
         let pipeline = Pipeline::default();
-        let empty = pipeline.zenz_left_context("session-a", Some(1), 10, 20);
+        let empty = pipeline.zenz_left_context("session-a", Some(1), 10, 20, false);
         assert_eq!(empty.text, "");
+        assert!(!empty.diagnostics.is_final);
         assert_eq!(empty.diagnostics.character_count, 0);
         assert_eq!(empty.diagnostics.turn_count, 0);
         assert_eq!(empty.diagnostics.discarded_session_count, 0);
 
         pipeline.append_zenz_context("session-a", Some(1), 10, 20, "今日は晴れです。");
         pipeline.append_zenz_context("session-a", Some(1), 10, 20, "今日は雨です。");
-        let revised = pipeline.zenz_left_context("session-a", Some(1), 10, 21);
+        let revised = pipeline.zenz_left_context("session-a", Some(1), 10, 21, false);
         assert_eq!(revised.text, "今日は雨です。");
         assert_eq!(revised.diagnostics.character_count, 7);
         assert_eq!(revised.diagnostics.turn_count, 1);
 
         pipeline.append_zenz_context("session-a", Some(1), 10, 21, "明日も晴れです。");
-        let combined = pipeline.zenz_left_context("session-a", Some(1), 10, 22);
+        let combined = pipeline.zenz_left_context("session-a", Some(1), 10, 22, false);
         assert_eq!(combined.text, "今日は雨です。明日も晴れです。");
         assert_eq!(combined.diagnostics.character_count, 15);
         assert_eq!(combined.diagnostics.turn_count, 2);
-        assert_eq!(pipeline.zenz_left_context("session-a", Some(1), 10, 21).text, "今日は雨です。");
-        let new_capture = pipeline.zenz_left_context("session-a", Some(2), 11, 1);
+        assert_eq!(
+            pipeline.zenz_left_context("session-a", Some(1), 10, 21, true).text,
+            "今日は雨です。"
+        );
+        let new_capture = pipeline.zenz_left_context("session-a", Some(2), 11, 1, true);
         assert_eq!(new_capture.text, "");
+        assert!(new_capture.diagnostics.is_final);
         assert_eq!(new_capture.diagnostics.discarded_session_count, 1);
 
         pipeline.append_zenz_context("session-a", Some(2), 11, 1, "新しい収録です。");
-        let new_session = pipeline.zenz_left_context("session-b", Some(2), 12, 1);
+        let new_session = pipeline.zenz_left_context("session-b", Some(2), 12, 1, false);
         assert_eq!(new_session.text, "");
         assert_eq!(new_session.diagnostics.discarded_session_count, 2);
     }
@@ -2781,6 +2791,7 @@ mod tests {
             error: None,
             zenz_context: Some(super::ZenzContextDiagnostics {
                 enabled: true,
+                is_final: false,
                 character_count: 12,
                 turn_count: 2,
                 discarded_session_count: 1,
@@ -2798,6 +2809,7 @@ mod tests {
         assert_eq!(value["durationMs"], 42);
         assert_eq!(value["ok"], true);
         assert_eq!(value["zenzContext"]["enabled"], true);
+        assert_eq!(value["zenzContext"]["isFinal"], false);
         assert_eq!(value["zenzContext"]["characterCount"], 12);
         assert_eq!(value["zenzContext"]["turnCount"], 2);
         assert_eq!(value["zenzContext"]["discardedSessionCount"], 1);

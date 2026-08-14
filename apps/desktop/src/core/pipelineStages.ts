@@ -118,7 +118,7 @@ const logStage = (event: PipelineStageEvent): void => {
     `startedAt=${event.startedAt}`,
     `endedAt=${event.at}`,
     event.zenzContext
-      ? `zenzContext=${event.zenzContext.enabled ? "on" : "off"},chars=${event.zenzContext.characterCount},turns=${event.zenzContext.turnCount},discardedSessions=${event.zenzContext.discardedSessionCount}`
+      ? `zenzContext=${event.zenzContext.enabled ? "on" : "off"},final=${event.zenzContext.isFinal},chars=${event.zenzContext.characterCount},turns=${event.zenzContext.turnCount},discardedSessions=${event.zenzContext.discardedSessionCount}`
       : null,
     event.inputSnippet ? `in=${event.inputSnippet}` : null,
     event.outputText ? `out=${event.outputText}` : null,
@@ -141,12 +141,14 @@ const zenzContextDiagnosticsFromUnknown = (value: unknown): ZenzContextDiagnosti
   }
   const record = Object.fromEntries(Object.entries(value));
   const enabled = record["enabled"];
+  const isFinal = record["isFinal"] ?? record["is_final"];
   const characterCount = record["characterCount"] ?? record["character_count"];
   const turnCount = record["turnCount"] ?? record["turn_count"];
   const discardedSessionCount =
     record["discardedSessionCount"] ?? record["discarded_session_count"];
   if (
     typeof enabled !== "boolean" ||
+    typeof isFinal !== "boolean" ||
     typeof characterCount !== "number" ||
     !Number.isFinite(characterCount) ||
     typeof turnCount !== "number" ||
@@ -158,6 +160,7 @@ const zenzContextDiagnosticsFromUnknown = (value: unknown): ZenzContextDiagnosti
   }
   return {
     enabled,
+    isFinal,
     characterCount: Math.max(0, Math.round(characterCount)),
     turnCount: Math.max(0, Math.round(turnCount)),
     discardedSessionCount: Math.max(0, Math.round(discardedSessionCount)),

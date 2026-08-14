@@ -361,6 +361,8 @@ export type PipelineStageName = "asr" | "normalize" | "translate";
 /** Privacy-safe metadata for comparing Zenz normalization with/without left context. */
 export interface ZenzContextDiagnostics {
   enabled: boolean;
+  /** Distinguishes 400ms interim normalization from a confirmed turn. */
+  isFinal: boolean;
   characterCount: number;
   turnCount: number;
   discardedSessionCount: number;
