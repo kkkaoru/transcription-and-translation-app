@@ -4,6 +4,7 @@ import {
   DEFAULT_INSTALL_APP,
   resolveInstallApp,
   shouldInstallMacosApp,
+  terminateJxaSource,
 } from "./install-macos-app.mjs";
 
 describe("macOS app install after Tauri build", () => {
@@ -30,5 +31,12 @@ describe("macOS app install after Tauri build", () => {
       resolveInstallApp({ KOTOBA_BEACON_INSTALL_APP: "/tmp/Kotoba Beacon.app" }),
       "/tmp/Kotoba Beacon.app",
     );
+  });
+
+  it("terminates only known running PIDs without resolving or launching a bundle", () => {
+    const source = terminateJxaSource([123, 456]);
+    assert.match(source, /runningApplicationWithProcessIdentifier\(pid\)/u);
+    assert.match(source, /\[123,456\]/u);
+    assert.doesNotMatch(source, /tell application|bundleIdentifier|open/u);
   });
 });

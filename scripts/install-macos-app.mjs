@@ -94,6 +94,14 @@ const signalPids = (pids, signal) => {
   }
 };
 
+export const terminateJxaSource = (pids) => `
+ObjC.import("AppKit");
+for (const pid of ${JSON.stringify(pids)}) {
+  const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
+  if (app) app.terminate;
+}
+`;
+
 export const quitKotobaProcesses = async (appBundles) => {
   const executables = appBundles
     .filter((app) => app)
@@ -101,7 +109,11 @@ export const quitKotobaProcesses = async (appBundles) => {
   const initial = pidsForExecutables(executables);
   if (initial.length === 0) return { quit: false, pids: [] };
 
-  spawnSync("/usr/bin/osascript", ["-e", `tell application id "${BUNDLE_ID}" to quit`], {
+  // Address only the process that is already running. `tell application id …`
+  // asks LaunchServices to resolve a bundle and can launch the newly built app
+  // while replacing an existing installation, stealing foreground focus at the
+  // end of an otherwise background-only build.
+  spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", terminateJxaSource(initial)], {
     stdio: "ignore",
   });
   if (await waitForPidsToExit(initial, 8_000)) {
