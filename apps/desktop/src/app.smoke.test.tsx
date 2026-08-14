@@ -47,10 +47,7 @@ describe("App routes", () => {
     expect(container.querySelector(".live-toolbar")).not.toBeNull();
     expect(container.querySelector('[data-testid="open-transparent-capture"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="hide-transparent-capture"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="open-style-editor"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="open-style-editor"]')?.textContent).toBe(
-      "文字の装飾を開く ↗",
-    );
+    expect(container.querySelector('[data-testid="open-style-editor"]')).toBeNull();
     expect(container.querySelector('.topbar [data-testid="build-info"]')).toBeNull();
 
     // In-app preview must render live caption payload without OBS / without forced placeholders.
@@ -76,9 +73,18 @@ describe("App routes", () => {
     expect(container.querySelector(".overlay-preview")?.classList.contains("overlay-preview")).toBe(
       true,
     );
-    // Style editing moved to a dedicated window opened from the Live tab.
-    expect(container.querySelector('[data-testid="nav-style"]')).toBeNull();
-    expect(container.textContent).not.toContain("文字の装飾設定");
+    const styleButton = container.querySelector('[data-testid="nav-style"]');
+    expect(styleButton?.textContent).toBe("文字の装飾");
+    act(() => styleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(container.querySelector('[data-testid="caption-style-workspace"]')).not.toBeNull();
+
+    const dictionaryButton = container.querySelector('[data-testid="nav-dictionary"]');
+    expect(dictionaryButton?.textContent).toBe("カスタム辞書");
+    await act(async () => {
+      dictionaryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="custom-dictionary-view"]')).not.toBeNull();
 
     const settingsButton = container.querySelector('[data-testid="nav-settings"]');
     expect(settingsButton?.textContent).toBe("アプリ設定");
@@ -109,8 +115,7 @@ describe("App routes", () => {
     expect(container.textContent).toContain("普段の設定");
     expect(container.textContent).toContain("詳細設定");
     expect(container.textContent).toContain("音声と認識");
-    expect(container.textContent).toContain("カスタム辞書");
-    expect(container.querySelector('[data-testid="open-custom-dictionary"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="open-custom-dictionary"]')).toBeNull();
     expect(container.textContent).toContain("字幕の出し方");
 
     const advancedTab = container.querySelector('[data-testid="settings-advanced-tab"]');
@@ -195,7 +200,7 @@ describe("App routes", () => {
     expect(container.querySelector('[data-testid="caption-style-preview"]')).not.toBeNull();
     expect(container.textContent).toContain("これはプレビュー用の字幕です。");
     expect(container.textContent).toContain("This is a preview caption.");
-    expect(container.querySelector(".content-heading h2")?.textContent).toBe("文字の装飾設定");
+    expect(container.querySelector(".content-heading h2")?.textContent).toBe("文字の装飾");
     expect(container.querySelector('[data-testid="caption-style-editors"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="caption-style-layout"]')).not.toBeNull();
   });

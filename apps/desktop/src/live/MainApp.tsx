@@ -120,13 +120,15 @@ import {
   createHoldClearedCaption,
   createPreviewCaption,
 } from "../overlay/captions";
+import { CaptionStyleView } from "../settings/CaptionStyleView";
+import { CustomDictionaryView } from "../settings/CustomDictionaryWindowApp";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
 import { useCaptionFreshness } from "./useCaptionFreshness";
 import { useCaptionHoldClear } from "./useCaptionHoldClear";
 import { useProgressiveCaptionReveal } from "./useProgressiveCaptionReveal";
 
-type ActiveTab = "live" | "settings";
+type ActiveTab = "live" | "style" | "dictionary" | "settings";
 
 type CapturePhase = "idle" | "starting" | "capturing" | "stopping";
 
@@ -2579,28 +2581,6 @@ export const MainApp = () => {
     }
   };
 
-  const openStyleEditor = async () => {
-    try {
-      await bridge.openStyleEditorWindow();
-      pushDiagnosticEvent("overlay", "Style editor window opened");
-    } catch (error) {
-      const notice = noticeFromError(error, "message.styleEditorOpenFailed");
-      pushDiagnosticEvent("error", "Style editor open failed", notice.detail ?? notice.key);
-      setNotice(notice);
-    }
-  };
-
-  const openCustomDictionary = async () => {
-    try {
-      await bridge.openCustomDictionaryWindow();
-      pushDiagnosticEvent("overlay", "Custom dictionary window opened");
-    } catch (error) {
-      const notice = noticeFromError(error, "message.customDictionaryOpenFailed");
-      pushDiagnosticEvent("error", "Custom dictionary open failed", notice.detail ?? notice.key);
-      setNotice(notice);
-    }
-  };
-
   const closeTransparentCapture = async () => {
     try {
       await bridge.closeTransparentCapture();
@@ -2713,6 +2693,24 @@ export const MainApp = () => {
               {t("sidebar.live")}
             </button>
             <button
+              className={activeTab === "style" ? "active" : ""}
+              type="button"
+              data-testid="nav-style"
+              aria-current={activeTab === "style" ? "page" : undefined}
+              onClick={() => setActiveTab("style")}
+            >
+              {t("sidebar.style")}
+            </button>
+            <button
+              className={activeTab === "dictionary" ? "active" : ""}
+              type="button"
+              data-testid="nav-dictionary"
+              aria-current={activeTab === "dictionary" ? "page" : undefined}
+              onClick={() => setActiveTab("dictionary")}
+            >
+              {t("sidebar.dictionary")}
+            </button>
+            <button
               className={activeTab === "settings" ? "active" : ""}
               type="button"
               data-testid="nav-settings"
@@ -2749,8 +2747,16 @@ export const MainApp = () => {
               onCloseMessage={() => setNotice(null)}
               onOpenTransparentCapture={() => void openTransparentCapture()}
               onCloseTransparentCapture={() => void closeTransparentCapture()}
-              onOpenStyleEditor={() => void openStyleEditor()}
             />
+          ) : activeTab === "style" ? (
+            <CaptionStyleView
+              config={config}
+              saving={saving}
+              onConfigChange={handleConfigChange}
+              onSave={() => void save()}
+            />
+          ) : activeTab === "dictionary" ? (
+            <CustomDictionaryView />
           ) : (
             <SettingsView
               config={config}
@@ -2770,7 +2776,6 @@ export const MainApp = () => {
               onSave={() => void save()}
               onOpenTransparentCapture={() => void openTransparentCapture()}
               onCloseTransparentCapture={() => void closeTransparentCapture()}
-              onOpenCustomDictionary={() => void openCustomDictionary()}
             />
           )}
         </main>

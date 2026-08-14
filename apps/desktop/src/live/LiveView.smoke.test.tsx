@@ -211,35 +211,6 @@ describe("LiveView in-app preview scaling", () => {
     expect(container.querySelector('.notice[role="status"]')).not.toBeNull();
   });
 
-  it("exposes a control to open the dedicated style-editor window", async () => {
-    const onOpenStyleEditor = vi.fn();
-    await act(async () => {
-      root.render(
-        <I18nProvider>
-          <LiveView
-            config={createDefaultConfig()}
-            status={DEFAULT_RUNTIME_STATUS}
-            caption={createPreviewCaption()}
-            devices={[]}
-            message={null}
-            onToggleCapture={() => {}}
-            onDeviceChange={() => {}}
-            onRefreshDevices={() => {}}
-            onCloseMessage={() => {}}
-            onOpenStyleEditor={onOpenStyleEditor}
-          />
-        </I18nProvider>,
-      );
-      await Promise.resolve();
-    });
-
-    const button = container.querySelector<HTMLButtonElement>('[data-testid="open-style-editor"]');
-    expect(button).not.toBeNull();
-    expect(button?.textContent).toBe("文字の装飾を開く ↗");
-    act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(onOpenStyleEditor).toHaveBeenCalledTimes(1);
-  });
-
   it("disables device controls only while capture is starting", async () => {
     const config = createDefaultConfig();
     const caption = createPreviewCaption();

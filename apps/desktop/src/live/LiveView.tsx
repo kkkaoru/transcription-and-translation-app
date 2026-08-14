@@ -123,7 +123,6 @@ export const LiveView = ({
   onCloseMessage,
   onOpenTransparentCapture,
   onCloseTransparentCapture,
-  onOpenStyleEditor,
   startBlockReason = null,
 }: {
   config: AppConfig;
@@ -139,7 +138,6 @@ export const LiveView = ({
   onCloseMessage: () => void;
   onOpenTransparentCapture?: () => void;
   onCloseTransparentCapture?: () => void;
-  onOpenStyleEditor?: () => void;
   /** When set, the Start button is disabled until capture becomes runnable. */
   startBlockReason?: CaptureStartBlockReason;
 }) => {
@@ -291,16 +289,6 @@ export const LiveView = ({
           </button>
         </div>
         <div className="live-toolbar-actions">
-          {onOpenStyleEditor ? (
-            <button
-              className="text-button"
-              type="button"
-              data-testid="open-style-editor"
-              onClick={onOpenStyleEditor}
-            >
-              {t("live.openStyleEditor")}
-            </button>
-          ) : null}
           {onOpenTransparentCapture ? (
             <button
               className="text-button"
