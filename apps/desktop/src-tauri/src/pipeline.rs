@@ -101,6 +101,10 @@ pub struct PipelineStageEvent {
 }
 
 const STAGE_SNIPPET_CHARS: usize = 160;
+const NORMALIZE_TEMPERATURE: f32 = 0.0;
+// Translation temperature has not been empirically evaluated. Preserve the existing
+// HY-MT2 sampling behavior until translation-quality measurements justify a change.
+const TRANSLATE_TEMPERATURE: f32 = 0.7;
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
@@ -179,6 +183,28 @@ pub struct ParapperRecognitionInput {
     pub capture_generation: Option<u64>,
 }
 
+fn chat_request<'a>(
+    config: &'a AppConfig,
+    model: &'a str,
+    prompt: String,
+    purpose: ChatPurpose,
+) -> ChatRequest<'a> {
+    ChatRequest {
+        model,
+        model_path: config
+            .models
+            .paths
+            .get(model)
+            .map(String::as_str)
+            .filter(|path| !path.trim().is_empty()),
+        messages: vec![ChatMessageRequest { role: "user", content: prompt }],
+        temperature: purpose.temperature(),
+        top_p: 0.6,
+        max_tokens: 512,
+        stream: false,
+    }
+}
+
 fn default_source_language() -> String {
     "ja".to_string()
 }
@@ -194,6 +220,21 @@ fn default_source_language() -> String {
 enum NormalizeOutcome {
     Success(String),
     Fallback { text: String, error: String },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ChatPurpose {
+    Normalize,
+    Translate,
+}
+
+impl ChatPurpose {
+    fn temperature(self) -> f32 {
+        match self {
+            Self::Normalize => NORMALIZE_TEMPERATURE,
+            Self::Translate => TRANSLATE_TEMPERATURE,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1049,7 +1090,7 @@ impl Pipeline {
                 // Katakana phonetic input (the upstream AzooKey prompt builder
                 // calls `toKatakana()` before sending the composing text).
                 let prompt = zenz_prompt(text);
-                self.chat(config, &config.models.normalizer, prompt)
+                self.chat(config, &config.models.normalizer, prompt, ChatPurpose::Normalize)
                     .await
                     .map(NormalizeOutcome::Success)
             }
@@ -1098,7 +1139,7 @@ impl Pipeline {
              Note that you must ONLY output the translated result without any \
              additional explanation:\n{text}"
         );
-        self.chat(config, &config.models.translator, prompt).await
+        self.chat(config, &config.models.translator, prompt, ChatPurpose::Translate).await
     }
 
     async fn chat(
@@ -1106,22 +1147,10 @@ impl Pipeline {
         config: &AppConfig,
         model: &str,
         prompt: String,
+        purpose: ChatPurpose,
     ) -> Result<String, PipelineError> {
         let url = endpoint_url(&config.endpoint.base_url, &config.endpoint.chat_path);
-        let request = ChatRequest {
-            model,
-            model_path: config
-                .models
-                .paths
-                .get(model)
-                .map(String::as_str)
-                .filter(|path| !path.trim().is_empty()),
-            messages: vec![ChatMessageRequest { role: "user", content: prompt }],
-            temperature: 0.7,
-            top_p: 0.6,
-            max_tokens: 512,
-            stream: false,
-        };
+        let request = chat_request(config, model, prompt, purpose);
         let response = self.client.post(url).timeout(timeout(config)).json(&request).send().await?;
         let status = response.status();
         let body = response.text().await?;
@@ -1682,11 +1711,12 @@ fn resolve_utterance_id(provided: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_model_text, has_translatable_content, is_no_speech_response, normalize_azookey,
-        normalize_azookey_with_cache, record_stage, repair_caption_phrase_confusions,
-        repair_hearing_phrase_confusion, repair_weather_reading_confusion, resolve_utterance_id,
-        run_rescore_with_timeout, snippet, source_ready_caption, source_ready_caption_with_input,
-        stage_event, stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload,
+        chat_request, clean_model_text, has_translatable_content, is_no_speech_response,
+        normalize_azookey, normalize_azookey_with_cache, record_stage,
+        repair_caption_phrase_confusions, repair_hearing_phrase_confusion,
+        repair_weather_reading_confusion, resolve_utterance_id, run_rescore_with_timeout, snippet,
+        source_ready_caption, source_ready_caption_with_input, stage_event,
+        stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload, ChatPurpose,
         NormalizeOutcome, ParapperRecognitionInput, Pipeline, PipelineStageEvent,
         STAGE_SNIPPET_CHARS,
     };
@@ -2110,6 +2140,28 @@ mod tests {
         assert_eq!(second, first);
         assert_eq!(cache.lock().expect("cache lock").len(), 1);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn chat_requests_use_deterministic_normalization_without_changing_translation_sampling() {
+        let config = AppConfig::default();
+        let normalizer = chat_request(
+            &config,
+            &config.models.normalizer,
+            "normalize".to_string(),
+            ChatPurpose::Normalize,
+        );
+        let translator = chat_request(
+            &config,
+            &config.models.translator,
+            "translate".to_string(),
+            ChatPurpose::Translate,
+        );
+
+        assert_eq!(translator.temperature, 0.7);
+        let normalizer_json =
+            serde_json::to_value(normalizer).expect("serialize normalizer request");
+        assert_eq!(normalizer_json["temperature"], 0.0);
     }
 
     #[test]
