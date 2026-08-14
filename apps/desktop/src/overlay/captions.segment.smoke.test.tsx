@@ -8,6 +8,7 @@ import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import type { CaptionPayload } from "../core/types";
 import {
+  boundPartialWindowText,
   captionGraphemes,
   captionItems,
   captionTextLines,
@@ -19,6 +20,7 @@ import {
   restoreCollapsedContinuation,
   sanitizeCaptionDisplayText,
   segmentCaptionText,
+  SOURCE_CAPTION_MAX_CHARS,
   stripCaptionContinuationMarker,
 } from "./captions";
 
@@ -116,6 +118,7 @@ describe("caption display sanitization", () => {
   });
 
   it("does not collapse a continuation to a lone ー or suffix after paging", () => {
+    expect(restoreCollapsedContinuation("本文", "")).toBe("本文");
     const spoken = "会議を始めますー続きがあります";
     expect(restoreCollapsedContinuation(spoken, "ー")).toBe(spoken);
     expect(restoreCollapsedContinuation(spoken, "ー続きがあります")).toBe(spoken);
@@ -214,12 +217,14 @@ describe("caption display sanitization", () => {
 
 describe("segmentCaptionText edge cases", () => {
   it("normalizes CRLF/CR line breaks and trims surrounding whitespace", () => {
+    expect(segmentCaptionText("first\n   \nsecond", 20)).toEqual(["first", "second"]);
     expect(segmentCaptionText(" あいう\r\nえお \r ", 10)).toEqual(["あいう", "えお"]);
   });
 
   it("returns an empty list for blank input", () => {
     expect(segmentCaptionText("   \n  ", 10)).toEqual([]);
     expect(segmentCaptionText("", 10)).toEqual([]);
+    expect(captionTextLines({ key: "source", text: "", maxChars: 10 })).toEqual([]);
   });
 
   it("splits a long line preferring punctuation near the limit", () => {
@@ -345,6 +350,11 @@ describe("captionTextLines and captionItems", () => {
       (item) => item.key === "prediction",
     );
     expect(prediction).toBeUndefined();
+    const source = captionItems(config, createEmptyCaption()).find(
+      (item) => item.key === "source",
+    );
+    if (!source) throw new Error("source item should exist");
+    expect(boundPartialWindowText(source, "   ")).toBe("");
   });
 
   it("bounds an OPEN prediction to one shared source-width line", () => {
@@ -365,6 +375,16 @@ describe("captionTextLines and captionItems", () => {
     expect(captionTextLines(prediction)).toEqual(["あ".repeat(10)]);
   });
 
+  it("clamps an external prediction item to one line with the source default budget", () => {
+    expect(
+      captionTextLines({
+        key: "prediction",
+        text: "あ".repeat(40),
+        maxLines: 0,
+      }),
+    ).toEqual(["あ".repeat(SOURCE_CAPTION_MAX_CHARS)]);
+  });
+
   it("keeps the completed source and translation beside the next OPEN prediction", () => {
     const config = createDefaultConfig();
     const completed: CaptionPayload = {
@@ -375,10 +395,12 @@ describe("captionTextLines and captionItems", () => {
       isFinal: true,
     };
 
+    config.overlay.order = "translation-first";
     const items = captionItems(config, completed, false, "新しい予測文字");
     const source = items.find((item) => item.key === "source");
     const translation = items.find((item) => item.key === "translation");
     const prediction = items.find((item) => item.key === "prediction");
+    expect(items.map((item) => item.key)).toEqual(["translation", "source", "prediction"]);
     expect(source?.text).toBe("古い確定字幕");
     expect(translation?.text).toBe("Old caption");
     expect(prediction?.text).toBe("新しい予測文字");
@@ -639,11 +661,12 @@ describe("captionTextLines and captionItems", () => {
     expect(lines.join("")).not.toContain("ふ");
   });
 
-  it("places placeholder copy when requested", () => {
+  it("places placeholder copy without a live prediction row when requested", () => {
     const config = createDefaultConfig();
-    const items = captionItems(config, createPreviewCaption(), true);
+    const items = captionItems(config, createPreviewCaption(), true, "ignored prediction");
     expect(items[0]?.text).toContain("日本語の音声認識");
     expect(items[1]?.text).toContain("English translation");
+    expect(items.some((item) => item.key === "prediction")).toBe(false);
   });
 });
 
