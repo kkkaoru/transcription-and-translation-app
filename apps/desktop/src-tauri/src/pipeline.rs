@@ -13,11 +13,12 @@ use reqwest::multipart;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -105,6 +106,8 @@ const NORMALIZE_TEMPERATURE: f32 = 0.0;
 // Translation temperature has not been empirically evaluated. Preserve the existing
 // HY-MT2 sampling behavior until translation-quality measurements justify a change.
 const TRANSLATE_TEMPERATURE: f32 = 0.7;
+const ZENZ_CONTEXT_MAX_GRAPHEMES: usize = 40;
+const ZENZ_CONTEXT_MAX_TURNS: usize = 64;
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
@@ -274,6 +277,34 @@ impl std::fmt::Debug for RescoreHandle {
     }
 }
 
+#[derive(Debug)]
+struct ZenzContextTurn {
+    turn_session_id: u64,
+    turn_id: u64,
+    text: String,
+}
+
+#[derive(Debug)]
+struct ZenzContextSession {
+    session_id: String,
+    capture_generation: Option<u64>,
+    finalized_turns: VecDeque<ZenzContextTurn>,
+}
+
+impl ZenzContextSession {
+    fn new(session_id: &str, capture_generation: Option<u64>) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            capture_generation,
+            finalized_turns: VecDeque::new(),
+        }
+    }
+
+    fn matches(&self, session_id: &str, capture_generation: Option<u64>) -> bool {
+        self.session_id == session_id && self.capture_generation == capture_generation
+    }
+}
+
 impl Default for RescoreHandle {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(None)))
@@ -362,6 +393,9 @@ pub struct Pipeline {
     rescorer: RescoreHandle,
     /// Lazy-loaded Vibrato IPADIC reader for kanji → hiragana before AzooKey.
     vibrato: Arc<Mutex<Option<Arc<VibratoReader>>>>,
+    /// Confirmed converted captions used as Zenz left context. Parapper does not
+    /// expose a speaker ID, so context cannot currently reset on speaker changes.
+    zenz_context: Arc<Mutex<Option<ZenzContextSession>>>,
 }
 
 impl Default for Pipeline {
@@ -371,6 +405,7 @@ impl Default for Pipeline {
             azookey_dictionaries: Arc::new(Mutex::new(HashMap::new())),
             rescorer: RescoreHandle::default(),
             vibrato: Arc::new(Mutex::new(None)),
+            zenz_context: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -430,6 +465,72 @@ impl Pipeline {
             }
         };
         reader.reading_for_azookey(text)
+    }
+
+    fn zenz_left_context(
+        &self,
+        session_id: &str,
+        capture_generation: Option<u64>,
+        turn_session_id: u64,
+        turn_id: u64,
+    ) -> String {
+        let Ok(mut context) = self.zenz_context.lock() else {
+            log::warn!(target: "pipeline_normalize", "Zenz context lock poisoned; omitting context");
+            return String::new();
+        };
+        if !context.as_ref().is_some_and(|current| current.matches(session_id, capture_generation))
+        {
+            *context = Some(ZenzContextSession::new(session_id, capture_generation));
+        }
+        let Some(current) = context.as_ref() else {
+            return String::new();
+        };
+        let prior_text = current
+            .finalized_turns
+            .iter()
+            .filter(|turn| turn.turn_session_id != turn_session_id || turn.turn_id != turn_id)
+            .map(|turn| turn.text.as_str())
+            .collect::<String>();
+        suffix_graphemes(&prior_text, ZENZ_CONTEXT_MAX_GRAPHEMES)
+    }
+
+    fn append_zenz_context(
+        &self,
+        session_id: &str,
+        capture_generation: Option<u64>,
+        turn_session_id: u64,
+        turn_id: u64,
+        converted_text: &str,
+    ) {
+        let Ok(mut context) = self.zenz_context.lock() else {
+            log::warn!(target: "pipeline_normalize", "Zenz context lock poisoned; dropping update");
+            return;
+        };
+        if !context.as_ref().is_some_and(|current| current.matches(session_id, capture_generation))
+        {
+            *context = Some(ZenzContextSession::new(session_id, capture_generation));
+        }
+        let Some(current) = context.as_mut() else {
+            return;
+        };
+        if let Some(turn) = current
+            .finalized_turns
+            .iter_mut()
+            .find(|turn| turn.turn_session_id == turn_session_id && turn.turn_id == turn_id)
+        {
+            // A corrected final revises its existing entry instead of appending
+            // the same turn twice to future prompts.
+            turn.text = suffix_graphemes(converted_text, ZENZ_CONTEXT_MAX_GRAPHEMES);
+            return;
+        }
+        current.finalized_turns.push_back(ZenzContextTurn {
+            turn_session_id,
+            turn_id,
+            text: suffix_graphemes(converted_text, ZENZ_CONTEXT_MAX_GRAPHEMES),
+        });
+        if current.finalized_turns.len() > ZENZ_CONTEXT_MAX_TURNS {
+            current.finalized_turns.pop_front();
+        }
     }
 
     fn assign_caption_boundary_offsets(&self, ready: &mut CaptionPayload) {
@@ -636,7 +737,7 @@ impl Pipeline {
         }
         let normalize_input = repair_weather_reading_confusion(&reading);
         let normalize_started = Instant::now();
-        let normalized = match self.normalize(config, &normalize_input).await {
+        let normalized = match self.normalize(config, &normalize_input, None).await {
             Ok(NormalizeOutcome::Success(text)) => {
                 record_stage(
                     stages,
@@ -848,8 +949,14 @@ impl Pipeline {
             repaired_reading
         };
 
+        let left_context = self.zenz_left_context(
+            &output.session_id,
+            output.capture_generation,
+            output.turn_session_id,
+            output.turn_id,
+        );
         let normalize_started = Instant::now();
-        let normalized = match self.normalize(config, &normalize_input).await {
+        let normalized = match self.normalize(config, &normalize_input, Some(&left_context)).await {
             Ok(NormalizeOutcome::Success(text)) => {
                 record_stage(
                     stages,
@@ -906,6 +1013,15 @@ impl Pipeline {
             return Ok(None);
         }
         let normalized = repair_caption_phrase_confusions(&normalized);
+        if output.is_final {
+            self.append_zenz_context(
+                &output.session_id,
+                output.capture_generation,
+                output.turn_session_id,
+                output.turn_id,
+                &normalized,
+            );
+        }
 
         let mut ready = source_ready_caption_with_input(
             config,
@@ -1079,6 +1195,7 @@ impl Pipeline {
         &self,
         config: &AppConfig,
         text: &str,
+        left_context: Option<&str>,
     ) -> Result<NormalizeOutcome, PipelineError> {
         match config.models.normalizer.as_str() {
             "azookey-rust" => {
@@ -1089,7 +1206,8 @@ impl Pipeline {
                 // Its model contract uses U+EE00 / U+EE01 delimiters around a
                 // Katakana phonetic input (the upstream AzooKey prompt builder
                 // calls `toKatakana()` before sending the composing text).
-                let prompt = zenz_prompt(text);
+                let prompt =
+                    zenz_prompt(&config.models.normalizer, text, left_context.unwrap_or_default());
                 self.chat(config, &config.models.normalizer, prompt, ChatPurpose::Normalize)
                     .await
                     .map(NormalizeOutcome::Success)
@@ -1199,8 +1317,25 @@ where
     }
 }
 
-fn zenz_prompt(input: &str) -> String {
-    format!("\u{EE00}{}\u{EE01}", to_katakana(input))
+fn suffix_graphemes(text: &str, max_graphemes: usize) -> String {
+    let graphemes = UnicodeSegmentation::graphemes(text, true).collect::<Vec<_>>();
+    graphemes[graphemes.len().saturating_sub(max_graphemes)..].concat()
+}
+
+/// Build the upstream Zenz candidate-evaluation prompt. V2 places left context
+/// after the composing input; v3/v3.2 conditions precede it. Real-time captions
+/// have no future utterance, so the optional v3 right-context tag is omitted.
+fn zenz_prompt(model: &str, input: &str, left_context: &str) -> String {
+    let input = to_katakana(input);
+    let context = suffix_graphemes(left_context, ZENZ_CONTEXT_MAX_GRAPHEMES);
+    if context.is_empty() {
+        return format!("\u{EE00}{input}\u{EE01}");
+    }
+    if model == "zenz-v2-q5-k-m-gguf" {
+        format!("\u{EE00}{input}\u{EE02}{context}\u{EE01}")
+    } else {
+        format!("\u{EE02}{context}\u{EE00}{input}\u{EE01}")
+    }
 }
 
 /// ReazonSpeech often drops the initial き of 聞こえる (`あえますか` /
@@ -2165,9 +2300,45 @@ mod tests {
     }
 
     #[test]
-    fn zenz_prompt_converts_hiragana_to_katakana_inside_protocol_tags() {
-        assert_eq!(zenz_prompt("きょうは配信です"), "\u{EE00}キョウハ配信デス\u{EE01}");
-        assert_eq!(zenz_prompt("カタカナ"), "\u{EE00}カタカナ\u{EE01}");
+    fn zenz_prompt_uses_versioned_left_context_and_katakana_input() {
+        assert_eq!(
+            zenz_prompt("zenz-v2-q5-k-m-gguf", "きょうは配信です", "前の字幕"),
+            "\u{EE00}キョウハ配信デス\u{EE02}前の字幕\u{EE01}"
+        );
+        assert_eq!(
+            zenz_prompt("zenz-v3.2-small-gguf", "カタカナ", "前の字幕"),
+            "\u{EE02}前の字幕\u{EE00}カタカナ\u{EE01}"
+        );
+        assert_eq!(zenz_prompt("zenz-v3.2-small-gguf", "きょう", ""), "\u{EE00}キョウ\u{EE01}");
+        assert_eq!(
+            zenz_prompt(
+                "zenz-v3.2-small-gguf",
+                "つづき",
+                &format!("{}{}", "前".repeat(5), "後".repeat(40)),
+            ),
+            format!("\u{EE02}{}\u{EE00}ツヅキ\u{EE01}", "後".repeat(40))
+        );
+    }
+
+    #[test]
+    fn zenz_context_keeps_each_final_turn_once_and_resets_at_capture_boundaries() {
+        let pipeline = Pipeline::default();
+        assert_eq!(pipeline.zenz_left_context("session-a", Some(1), 10, 20), "");
+
+        pipeline.append_zenz_context("session-a", Some(1), 10, 20, "今日は晴れです。");
+        pipeline.append_zenz_context("session-a", Some(1), 10, 20, "今日は雨です。");
+        assert_eq!(pipeline.zenz_left_context("session-a", Some(1), 10, 21), "今日は雨です。");
+
+        pipeline.append_zenz_context("session-a", Some(1), 10, 21, "明日も晴れです。");
+        assert_eq!(
+            pipeline.zenz_left_context("session-a", Some(1), 10, 22),
+            "今日は雨です。明日も晴れです。"
+        );
+        assert_eq!(pipeline.zenz_left_context("session-a", Some(1), 10, 21), "今日は雨です。");
+        assert_eq!(pipeline.zenz_left_context("session-a", Some(2), 11, 1), "");
+
+        pipeline.append_zenz_context("session-a", Some(2), 11, 1, "新しい収録です。");
+        assert_eq!(pipeline.zenz_left_context("session-b", Some(2), 12, 1), "");
     }
 
     #[test]
