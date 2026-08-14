@@ -46,24 +46,17 @@ describe("style editor controls", () => {
     Reflect.deleteProperty(globalThis, "queryLocalFonts");
   });
 
-  it("filters font families through the searchable combobox", async () => {
+  it("selects an available font family through the native select", async () => {
     const onChange = vi.fn();
     await act(() => {
       root.render(<FontFamilyCombobox label="Font" value="Noto Sans JP" onChange={onChange} />);
     });
-    const input = host.querySelector<HTMLInputElement>('[data-testid="font-family-combobox"]');
-    if (!input) throw new Error("missing combobox");
+    const select = host.querySelector<HTMLSelectElement>('[data-testid="font-family-select"]');
+    if (!select) throw new Error("missing font select");
+    expect(Array.from(select.options, (option) => option.value)).toContain("Helvetica Neue");
     await act(() => {
-      input.focus();
-      setInputValue(input, "helve");
-    });
-    const options = host.querySelector('[data-testid="font-family-options"]');
-    expect(options?.textContent).toContain("Helvetica Neue");
-    const helvetica = Array.from(
-      host.querySelectorAll<HTMLButtonElement>('button[role="option"]'),
-    ).find((button) => button.textContent === "Helvetica Neue");
-    await act(() => {
-      helvetica?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      select.value = "Helvetica Neue";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(onChange).toHaveBeenCalledWith("Helvetica Neue");
   });
@@ -90,15 +83,9 @@ describe("style editor controls", () => {
       await Promise.resolve();
     });
 
-    const input = host.querySelector<HTMLInputElement>('[data-testid="font-family-combobox"]');
-    if (!input) throw new Error("missing combobox");
-    await act(() => {
-      input.focus();
-      setInputValue(input, "Demo Font");
-    });
-
-    const buttons = host.querySelectorAll<HTMLButtonElement>('button[role="option"]');
-    expect(buttons.length).toBeGreaterThanOrEqual(120);
+    const select = host.querySelector<HTMLSelectElement>('[data-testid="font-family-select"]');
+    if (!select) throw new Error("missing font select");
+    expect(select.options.length).toBeGreaterThanOrEqual(120);
     expect(host.textContent).toContain("Demo Font 000");
     expect(host.textContent).toContain("Demo Font 119");
   });
@@ -151,7 +138,7 @@ describe("style editor controls", () => {
         </I18nProvider>,
       );
     });
-    expect(host.querySelector('[data-testid="font-family-combobox"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="font-family-select"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="style-source-opacity-slider"]')).not.toBeNull();
   });
 });

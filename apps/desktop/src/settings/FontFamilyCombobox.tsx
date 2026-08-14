@@ -68,13 +68,7 @@ export const FontFamilyCombobox = ({
   onChange: (next: string) => void;
   label: string;
 }) => {
-  const [query, setQuery] = useState(value);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    setQuery(value);
-  }, [value]);
 
   useEffect(() => {
     let mounted = true;
@@ -88,73 +82,23 @@ export const FontFamilyCombobox = ({
     };
   }, []);
 
-  const options = useMemo(() => {
-    const merged = mergeFontFamilyOptions(systemFonts, value);
-    const needle = query.trim().toLowerCase();
-    if (!needle) {
-      return merged;
-    }
-    return merged.filter((family) => family.toLowerCase().includes(needle));
-  }, [query, systemFonts, value]);
+  const options = useMemo(() => mergeFontFamilyOptions(systemFonts, value), [systemFonts, value]);
 
   return (
     <label className="field wide font-family-combobox">
       <span>{label}</span>
-      <input
-        type="search"
-        role="combobox"
-        aria-expanded={open}
-        aria-autocomplete="list"
-        aria-controls="font-family-options-list"
-        data-testid="font-family-combobox"
-        value={query}
-        placeholder={label}
-        onFocus={() => setOpen(true)}
-        onBlur={() => {
-          // Defer close so option mousedown can commit first.
-          window.setTimeout(() => setOpen(false), 120);
-        }}
-        onChange={(event) => {
-          const next = event.currentTarget.value;
-          setQuery(next);
-          setOpen(true);
-          onChange(next);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && options[0]) {
-            event.preventDefault();
-            onChange(options[0]);
-            setQuery(options[0]);
-            setOpen(false);
-          }
-        }}
-      />
-      {open && options.length > 0 ? (
-        <div
-          id="font-family-options-list"
-          className="font-family-options"
-          data-testid="font-family-options"
-          role="listbox"
-        >
-          {options.map((family) => (
-            <button
-              key={family}
-              type="button"
-              role="option"
-              aria-selected={family === value}
-              style={{ fontFamily: family }}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                onChange(family);
-                setQuery(family);
-                setOpen(false);
-              }}
-            >
-              {family}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <select
+        data-testid="font-family-select"
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        style={{ fontFamily: value }}
+      >
+        {options.map((family) => (
+          <option key={family} value={family} style={{ fontFamily: family }}>
+            {family}
+          </option>
+        ))}
+      </select>
     </label>
   );
 };
