@@ -245,7 +245,7 @@ describe("MainApp pipeline-drop notice wiring", () => {
     expect(getDiagnosticEvents().some((event) => event.message === "Runtime → error")).toBe(false);
   });
 
-  it("hides in-app captions when native output is active", async () => {
+  it("hides in-app captions without mounting a second native publisher", async () => {
     await act(async () => {
       root.render(
         <I18nProvider>
@@ -271,7 +271,9 @@ describe("MainApp pipeline-drop notice wiring", () => {
       "Syphon に出力中",
     );
     expect(container.querySelector(".caption-line-source")).toBeNull();
-    expect(container.querySelector(".native-output-canvas")).not.toBeNull();
+    // The off-screen `?native=1` Overlay route owns the sole Syphon/Spout
+    // publisher. Main must not race it with an idle transparent frame.
+    expect(container.querySelector(".native-output-canvas")).toBeNull();
   });
 
   it("hides in-app captions while transparent capture is open", async () => {
