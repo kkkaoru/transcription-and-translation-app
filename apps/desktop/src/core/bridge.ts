@@ -13,6 +13,7 @@ import type {
   AppConfig,
   AudioChunk,
   CaptionPayload,
+  CustomDictionaryEntry,
   DownloadProgress,
   ModelCatalog,
   ModelStatusEntry,
@@ -303,6 +304,7 @@ const demoCaption = (): CaptionPayload => {
 };
 
 const browserStoreKey = "caption-bridge.config.v1";
+const browserDictionaryStoreKey = "caption-bridge.custom-dictionary.v1";
 const readBrowserConfig = (): AppConfig => {
   if (typeof localStorage === "undefined") {
     return createDefaultConfig();
@@ -315,7 +317,29 @@ const readBrowserConfig = (): AppConfig => {
   }
 };
 
+const readBrowserDictionary = (): CustomDictionaryEntry[] => {
+  if (typeof localStorage === "undefined") {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(browserDictionaryStoreKey) ?? "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (entry): entry is CustomDictionaryEntry =>
+            typeof entry === "object" &&
+            entry !== null &&
+            typeof (entry as CustomDictionaryEntry).id === "string" &&
+            typeof (entry as CustomDictionaryEntry).reading === "string" &&
+            typeof (entry as CustomDictionaryEntry).word === "string",
+        )
+      : [];
+  } catch {
+    return [];
+  }
+};
+
 let browserConfig = readBrowserConfig();
+let browserDictionary = readBrowserDictionary();
 let browserStatus = { ...DEFAULT_RUNTIME_STATUS, platform: "unknown" as const };
 
 // Keep the most recent user-facing caption in the renderer as a second replay
@@ -397,6 +421,30 @@ export const bridge = {
     }
     if (isTauriRuntime()) {
       await invoke("save_config", { config });
+    }
+  },
+
+  getCustomDictionary(): Promise<CustomDictionaryEntry[]> {
+    if (isTauriRuntime()) {
+      return invoke<CustomDictionaryEntry[]>("get_custom_dictionary");
+    }
+    return Promise.resolve(browserDictionary.map((entry) => ({ ...entry })));
+  },
+
+  saveCustomDictionary(entries: CustomDictionaryEntry[]): Promise<CustomDictionaryEntry[]> {
+    if (isTauriRuntime()) {
+      return invoke<CustomDictionaryEntry[]>("save_custom_dictionary", { entries });
+    }
+    browserDictionary = entries.map((entry) => ({ ...entry }));
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(browserDictionaryStoreKey, JSON.stringify(browserDictionary));
+    }
+    return Promise.resolve(browserDictionary.map((entry) => ({ ...entry })));
+  },
+
+  async reloadCustomDictionary(): Promise<void> {
+    if (isTauriRuntime()) {
+      await invoke("reload_custom_dictionary");
     }
   },
 
@@ -542,6 +590,13 @@ export const bridge = {
   async openStyleEditorWindow(): Promise<void> {
     if (isTauriRuntime()) {
       await invoke("open_style_editor");
+    }
+  },
+
+  /** Dedicated custom dictionary manager opened from Settings. */
+  async openCustomDictionaryWindow(): Promise<void> {
+    if (isTauriRuntime()) {
+      await invoke("open_custom_dictionary");
     }
   },
 

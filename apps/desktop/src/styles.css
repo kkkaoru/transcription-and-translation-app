@@ -1182,6 +1182,67 @@ button:disabled {
   font-size: var(--font-size);
 }
 
+.custom-dictionary-content {
+  width: min(100%, 960px);
+  margin: 0 auto;
+}
+
+.custom-dictionary-content .settings-section > p,
+.settings-section > p {
+  margin: 8px 22px 0;
+  color: var(--muted-2);
+}
+
+.custom-dictionary-form,
+.custom-dictionary-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+  padding: 21px 22px 0;
+}
+
+.custom-dictionary-search {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.custom-dictionary-form-actions {
+  min-height: 38px;
+}
+
+.field-warning {
+  color: var(--warn);
+}
+
+.custom-dictionary-table-wrap {
+  overflow: auto;
+  margin: 18px 22px 0;
+}
+
+.custom-dictionary-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.custom-dictionary-table th,
+.custom-dictionary-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.custom-dictionary-table th:last-child,
+.custom-dictionary-table td:last-child {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.empty-state {
+  padding: 16px 22px 0;
+  color: var(--muted-2);
+}
+
 .settings-grid {
   display: grid;
   gap: 16px;
@@ -2491,6 +2552,11 @@ button:disabled {
   .settings-section-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .custom-dictionary-form,
+  .custom-dictionary-search {
+    grid-template-columns: 1fr;
   }
 
   .settings-section-actions .secondary-button {

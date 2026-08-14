@@ -504,6 +504,12 @@ export interface ModelStatusEntry {
   label?: string | null;
 }
 
+export interface CustomDictionaryEntry {
+  id: string;
+  reading: string;
+  word: string;
+}
+
 export interface DownloadProgress {
   modelId: string;
   downloadedBytes: number;

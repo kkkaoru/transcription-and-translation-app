@@ -491,7 +491,7 @@ const isLikelyCrossIdSourceRevision = (current: CaptionPayload, next: CaptionPay
   return Boolean(currentReading && nextReading && currentReading === nextReading);
 };
 
-const normalizeAzookeyReading = (value: string): string =>
+export const normalizeAzookeyReading = (value: string): string =>
   [...value.normalize("NFKC")]
     .map((character) => {
       const codePoint = character.codePointAt(0) ?? NO_TIME_MS;

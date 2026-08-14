@@ -5,6 +5,7 @@ mod azookey_runtime;
 mod browser_source;
 mod commands;
 mod config;
+mod custom_dictionary;
 mod dictionary_resolve;
 mod gateway;
 mod macos;
@@ -92,6 +93,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::save_config,
+            commands::get_custom_dictionary,
+            commands::save_custom_dictionary,
+            commands::reload_custom_dictionary,
             commands::list_models,
             commands::get_runtime_status,
             commands::get_latest_caption,
@@ -110,6 +114,7 @@ pub fn run() {
             commands::open_transparent_capture,
             commands::close_transparent_capture,
             commands::open_style_editor,
+            commands::open_custom_dictionary,
             commands::list_system_fonts,
             commands::open_overlay,
             commands::close_overlay,

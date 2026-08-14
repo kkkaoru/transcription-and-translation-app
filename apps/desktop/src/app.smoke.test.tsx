@@ -109,6 +109,8 @@ describe("App routes", () => {
     expect(container.textContent).toContain("普段の設定");
     expect(container.textContent).toContain("詳細設定");
     expect(container.textContent).toContain("音声と認識");
+    expect(container.textContent).toContain("カスタム辞書");
+    expect(container.querySelector('[data-testid="open-custom-dictionary"]')).not.toBeNull();
     expect(container.textContent).toContain("字幕の出し方");
 
     const advancedTab = container.querySelector('[data-testid="settings-advanced-tab"]');
@@ -157,6 +159,24 @@ describe("App routes", () => {
     expect(document.body.classList.contains("overlay-document--window")).toBe(false);
     // Live capture starts empty; preview copy is reserved for non-capture surfaces.
     expect(container.querySelector(".caption-lines")).not.toBeNull();
+  });
+
+  it("renders the custom dictionary manager route", async () => {
+    localStorage.setItem("caption-bridge.ui-locale.v1", "ja");
+    window.history.replaceState({}, "", "/?custom-dictionary=1");
+    await act(async () => {
+      root.render(<App />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="custom-dictionary-window"]')).not.toBeNull();
+    expect(container.querySelector(".nav-tabs")).toBeNull();
+    expect(container.querySelector('[data-testid="custom-dictionary-reading"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="custom-dictionary-word"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="save-custom-dictionary"]')).not.toBeNull();
+    expect(container.textContent).toContain("よみ");
+    expect(container.textContent).toContain("単語");
   });
 
   it("renders the style-editor window route with CaptionStyleView and shared save chrome", async () => {

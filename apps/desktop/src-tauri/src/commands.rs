@@ -1,6 +1,7 @@
 use crate::audio::{pcm_base64_to_wav, AudioChunk};
 use crate::browser_source;
 use crate::config::AppConfig;
+use crate::custom_dictionary::{self, CustomDictionaryEntry};
 use crate::gateway;
 use crate::macos;
 use crate::models::{catalog, ModelCatalog};
@@ -211,6 +212,38 @@ pub async fn save_config(
     app.emit("runtime:status", &next_status)
         .map_err(|error| format!("could not emit runtime status: {error}"))?;
     app.emit("config:update", &config).map_err(|error| format!("could not emit config: {error}"))
+}
+
+#[tauri::command]
+pub fn get_custom_dictionary(app: AppHandle) -> Result<Vec<CustomDictionaryEntry>, String> {
+    custom_dictionary::load(&app)
+}
+
+#[tauri::command]
+pub async fn save_custom_dictionary(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    entries: Vec<CustomDictionaryEntry>,
+) -> Result<Vec<CustomDictionaryEntry>, String> {
+    let _save_guard = state.config_save_lock.lock().await;
+    let (entries, dictionary_path) = custom_dictionary::save(&app, entries)?;
+    let mut config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
+    custom_dictionary::set_config_path(&mut config, dictionary_path.as_deref());
+    config.validate()?;
+    let path = config_path(&app)?;
+    let payload = serde_json::to_vec_pretty(&config)
+        .map_err(|error| format!("could not serialize config: {error}"))?;
+    std::fs::write(path, payload).map_err(|error| format!("could not write config: {error}"))?;
+    *state.config.lock().map_err(|_| "config lock poisoned".to_string())? = config.clone();
+    state.pipeline.invalidate_azookey_dictionaries();
+    app.emit("config:update", &config)
+        .map_err(|error| format!("could not emit config: {error}"))?;
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn reload_custom_dictionary(state: State<'_, AppState>) {
+    state.pipeline.invalidate_azookey_dictionaries();
 }
 
 #[tauri::command]
@@ -1404,6 +1437,11 @@ pub(crate) const STYLE_EDITOR_LABEL: &str = "style-editor";
 pub(crate) const STYLE_EDITOR_TITLE: &str = "Kotoba Beacon — Caption Style";
 const STYLE_EDITOR_DEFAULT_WIDTH: f64 = 1_000.0;
 const STYLE_EDITOR_DEFAULT_HEIGHT: f64 = 780.0;
+/// Dedicated opaque custom-dictionary manager.
+pub(crate) const CUSTOM_DICTIONARY_LABEL: &str = "custom-dictionary";
+pub(crate) const CUSTOM_DICTIONARY_TITLE: &str = "Kotoba Beacon — Custom Dictionary";
+const CUSTOM_DICTIONARY_DEFAULT_WIDTH: f64 = 880.0;
+const CUSTOM_DICTIONARY_DEFAULT_HEIGHT: f64 = 720.0;
 
 /// Create a caption surface window.
 ///
@@ -1632,6 +1670,36 @@ pub fn open_style_editor(app: AppHandle) -> Result<(), String> {
     .map_err(|error| format!("could not create style editor window: {error}"))?;
     window.show().map_err(|error| format!("could not show style editor: {error}"))?;
     window.set_focus().map_err(|error| format!("could not focus style editor: {error}"))?;
+    Ok(())
+}
+
+/// Open the dedicated custom dictionary manager (decorated opaque window).
+#[tauri::command]
+pub fn open_custom_dictionary(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(CUSTOM_DICTIONARY_LABEL) {
+        window.show().map_err(|error| format!("could not show custom dictionary: {error}"))?;
+        window
+            .set_focus()
+            .map_err(|error| format!("could not focus custom dictionary: {error}"))?;
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(
+        &app,
+        CUSTOM_DICTIONARY_LABEL,
+        WebviewUrl::App("index.html?custom-dictionary=1".into()),
+    )
+    .title(CUSTOM_DICTIONARY_TITLE)
+    .inner_size(CUSTOM_DICTIONARY_DEFAULT_WIDTH, CUSTOM_DICTIONARY_DEFAULT_HEIGHT)
+    .min_inner_size(640.0, 480.0)
+    .decorations(true)
+    .transparent(false)
+    .resizable(true)
+    .center()
+    .visible(true)
+    .build()
+    .map_err(|error| format!("could not create custom dictionary window: {error}"))?;
+    window.show().map_err(|error| format!("could not show custom dictionary: {error}"))?;
+    window.set_focus().map_err(|error| format!("could not focus custom dictionary: {error}"))?;
     Ok(())
 }
 

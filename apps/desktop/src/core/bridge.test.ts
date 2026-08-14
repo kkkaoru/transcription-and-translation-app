@@ -191,6 +191,29 @@ describe("browser updater bridge", () => {
   });
 });
 
+describe("custom dictionary bridge", () => {
+  it("uses the dedicated Tauri commands for load, save, reload, and window open", async () => {
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const entries = [{ id: "one", reading: "ことば", word: "Kotoba" }];
+    try {
+      vi.mocked(invoke).mockResolvedValueOnce(entries);
+      await expect(bridge.getCustomDictionary()).resolves.toEqual(entries);
+      expect(invoke).toHaveBeenCalledWith("get_custom_dictionary");
+
+      vi.mocked(invoke).mockResolvedValueOnce(entries);
+      await expect(bridge.saveCustomDictionary(entries)).resolves.toEqual(entries);
+      expect(invoke).toHaveBeenCalledWith("save_custom_dictionary", { entries });
+
+      await bridge.reloadCustomDictionary();
+      expect(invoke).toHaveBeenCalledWith("reload_custom_dictionary");
+      await bridge.openCustomDictionaryWindow();
+      expect(invoke).toHaveBeenCalledWith("open_custom_dictionary");
+    } finally {
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = undefined;
+    }
+  });
+});
+
 describe("caption replay bridge", () => {
   it("keeps browser replay non-fatal when native history is unavailable", async () => {
     expect(await bridge.getLatestCaption()).toBeNull();

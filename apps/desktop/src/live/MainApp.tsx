@@ -2591,6 +2591,17 @@ export const MainApp = () => {
     }
   };
 
+  const openCustomDictionary = async () => {
+    try {
+      await bridge.openCustomDictionaryWindow();
+      pushDiagnosticEvent("overlay", "Custom dictionary window opened");
+    } catch (error) {
+      const notice = noticeFromError(error, "message.customDictionaryOpenFailed");
+      pushDiagnosticEvent("error", "Custom dictionary open failed", notice.detail ?? notice.key);
+      setNotice(notice);
+    }
+  };
+
   const closeTransparentCapture = async () => {
     try {
       await bridge.closeTransparentCapture();
@@ -2760,6 +2771,7 @@ export const MainApp = () => {
               onSave={() => void save()}
               onOpenTransparentCapture={() => void openTransparentCapture()}
               onCloseTransparentCapture={() => void closeTransparentCapture()}
+              onOpenCustomDictionary={() => void openCustomDictionary()}
             />
           )}
         </main>

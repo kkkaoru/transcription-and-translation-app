@@ -69,6 +69,7 @@ export const SettingsView = ({
   onSave,
   onOpenTransparentCapture,
   onCloseTransparentCapture,
+  onOpenCustomDictionary,
   webSpeechSupported = isWebSpeechRecognitionSupported(),
 }: {
   config: AppConfig;
@@ -86,6 +87,7 @@ export const SettingsView = ({
   onSave: () => void;
   onOpenTransparentCapture?: () => void;
   onCloseTransparentCapture?: () => void;
+  onOpenCustomDictionary?: () => void;
   webSpeechSupported?: boolean;
 }) => {
   const { t } = useI18n();
@@ -291,6 +293,21 @@ export const SettingsView = ({
             {recognitionModeField}
             {languageFields}
             {deviceFields}
+          </div>
+        </section>
+        <section className="panel settings-section">
+          <SectionHeading title={t("settings.customDictionaryTitle")} />
+          <p>{t("settings.customDictionaryDescription")}</p>
+          <div className="heading-actions">
+            <button
+              className="text-button"
+              type="button"
+              data-testid="open-custom-dictionary"
+              onClick={onOpenCustomDictionary}
+              disabled={!onOpenCustomDictionary}
+            >
+              {t("settings.openCustomDictionary")}
+            </button>
           </div>
         </section>
         <section className="panel settings-section">

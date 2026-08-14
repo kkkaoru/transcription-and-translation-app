@@ -341,6 +341,14 @@ impl Pipeline {
         self.rescorer.clear();
     }
 
+    /// Drop loaded AzooKey dictionaries so a saved user TSV is visible on the
+    /// next conversion without restarting capture or the application.
+    pub fn invalidate_azookey_dictionaries(&self) {
+        if let Ok(mut dictionaries) = self.azookey_dictionaries.lock() {
+            dictionaries.clear();
+        }
+    }
+
     /// Convert kanji-bearing text to hiragana via Vibrato before AzooKey.
     ///
     /// Pure kana input is returned unchanged. On dictionary load failure the
@@ -2114,6 +2122,37 @@ mod tests {
 
         let outcome = normalize_azookey(&config, "はいしん").expect("normalize");
         assert_eq!(outcome, NormalizeOutcome::Success("配信中".to_string()));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalidating_azookey_cache_reloads_an_updated_user_dictionary() {
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
+        let path = temporary_dictionary_path("cache-reload");
+        fs::write(&path, "かすたむてすと\t最初\n").expect("first fixture should write");
+        let mut config = AppConfig::default();
+        config
+            .models
+            .paths
+            .insert("azookey-user-dictionary".to_string(), path.display().to_string());
+        let pipeline = Pipeline::default();
+
+        let first =
+            normalize_azookey_with_cache(&config, "かすたむてすと", &pipeline.azookey_dictionaries)
+                .expect("first dictionary should normalize");
+        assert_eq!(first, NormalizeOutcome::Success("最初".to_string()));
+
+        fs::write(&path, "かすたむてすと\t更新後\n").expect("updated fixture should write");
+        let cached =
+            normalize_azookey_with_cache(&config, "かすたむてすと", &pipeline.azookey_dictionaries)
+                .expect("cached dictionary should normalize");
+        assert_eq!(cached, NormalizeOutcome::Success("最初".to_string()));
+
+        pipeline.invalidate_azookey_dictionaries();
+        let reloaded =
+            normalize_azookey_with_cache(&config, "かすたむてすと", &pipeline.azookey_dictionaries)
+                .expect("updated dictionary should normalize");
+        assert_eq!(reloaded, NormalizeOutcome::Success("更新後".to_string()));
         let _ = fs::remove_file(path);
     }
 
