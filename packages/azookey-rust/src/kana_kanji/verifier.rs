@@ -108,6 +108,7 @@ pub struct VerificationResult {
 pub struct VerificationCacheKey {
     pub model_revision: String,
     pub tokenizer_revision: String,
+    pub prompt_hash: u64,
     pub input_bytes_hash: u64,
     pub left_context_hash: u64,
     pub right_context_hash: u64,
@@ -122,6 +123,7 @@ impl VerificationCacheKey {
         Self {
             model_revision: session.model_revision.clone(),
             tokenizer_revision: session.tokenizer_revision.clone(),
+            prompt_hash: hash_bytes(&draft.prompt),
             input_bytes_hash: hash_bytes(&session.context.input_prefix),
             left_context_hash: hash_optional_bytes(session.context.left_context.as_deref()),
             right_context_hash: hash_optional_bytes(session.context.right_context.as_deref()),
@@ -207,4 +209,39 @@ fn hash_constraints(constraints: &[Utf8BytePrefixConstraint]) -> u64 {
         bytes.push(0xff);
     }
     hash_bytes(&bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Draft, SessionContext, VerificationCacheKey, VerifierSession};
+    use crate::{CandidatePath, Utf8BytePrefixConstraint};
+
+    #[test]
+    fn cache_key_separates_prompt_and_constraint_revision_inputs() {
+        let session = VerifierSession {
+            session_id: 1,
+            context: SessionContext::new("入力", 7),
+            model_revision: "model-a".to_string(),
+            tokenizer_revision: "tokenizer-a".to_string(),
+            kv_reusable: true,
+        };
+        let candidate = CandidatePath {
+            edge_handles: vec![3],
+            text: "漢字".to_string(),
+            score: -1.0,
+            trailing: None,
+        };
+        let first = Draft::new("prompt-a", candidate.clone());
+        let second = Draft::new("prompt-b", candidate.clone());
+        let first_key = VerificationCacheKey::for_draft(&session, &first);
+        let second_key = VerificationCacheKey::for_draft(&session, &second);
+        assert_ne!(first_key.prompt_hash, second_key.prompt_hash);
+
+        let mut constrained = first.clone();
+        constrained
+            .constraints
+            .push(Utf8BytePrefixConstraint::from_surface(0, "漢"));
+        let constrained_key = VerificationCacheKey::for_draft(&session, &constrained);
+        assert_ne!(first_key.constraint_hash, constrained_key.constraint_hash);
+    }
 }
