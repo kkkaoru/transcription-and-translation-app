@@ -13,7 +13,7 @@
 //! submodule dictionary.
 
 use crate::{convert_with_dictionary, AzooKeyDictionary, ConversionOptions, DictionaryPaths};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 struct AnchorFixture {
     category: &'static str,
@@ -70,15 +70,23 @@ struct AccuracyCount {
     total: usize,
 }
 
-/// The locked dictionary-only anchor gate. Extended cases stay report-only
-/// until a separately reviewed phase-one baseline is committed. Changing an
-/// anchor expectation or the fingerprint requires independent Japanese-quality
-/// review; updating the hash only to make this test green is prohibited.
+/// The locked dictionary-only anchor gate. Expansion cases remain report-only
+/// until their labels and phase-one baseline are independently reviewed.
+/// Changing an expectation or fingerprint requires independent Japanese-quality
+/// review; updating a hash only to make this test green is prohibited.
 const ANCHOR_EXPECTED_TOTAL: usize = 119;
 const ANCHOR_MINIMUM_STRICT_PASSED: usize = ANCHOR_EXPECTED_TOTAL;
 const FNV1A_64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV1A_64_PRIME: u64 = 0x100000001b3;
 const ANCHOR_FINGERPRINT: u64 = 0xfbf0115acd1b873a;
+const INCOMPLETE_STREAMING_EXPECTED_TOTAL: usize = 20;
+const INCOMPLETE_STREAMING_MINIMUM_STRICT_PASSED: usize = 9;
+const INCOMPLETE_STREAMING_MINIMUM_VARIANT_PASSED: usize = 10;
+const INCOMPLETE_STREAMING_FINGERPRINT: u64 = 0x2269f712efa11d40;
+
+// Raise either expansion minimum after the same inputs produce the same higher
+// score in three consecutive runs. Never lower a minimum to accommodate a
+// regression, and never use equality: improvements must remain able to pass.
 const ANCHOR_CATEGORY_BASELINES: &[(&str, usize)] = &[
     ("compound_particles", 6),
     ("dates_times", 6),
@@ -516,6 +524,75 @@ fn anchor_cases() -> Vec<CorpusCase> {
         .collect()
 }
 
+/// Product policy for incomplete live-caption readings:
+///
+/// Convert completed words, but do not predict a kanji completion for the final
+/// incomplete morpheme. Unlike an IME, live captions give the viewer no chance
+/// to select or reject a candidate. A short-lived kana suffix is less harmful
+/// than a guessed kanji that visibly flickers away when the final audio arrives.
+fn incomplete_streaming_case(
+    case_id: &str,
+    input: &'static str,
+    expected: &'static str,
+) -> CorpusCase {
+    CorpusCase {
+        case_id: case_id.to_string(),
+        category: "incomplete_streaming",
+        input,
+        expected,
+        context_mode: ContextMode::LeftOnly,
+        expected_origin: ExpectedOrigin::Mixed,
+        requires_dictionary_origin: false,
+        source_kind: "hand_authored_caption_prefix",
+        provenance: "specialist_advisor_category_plan_2026-08-14",
+        pair_id: None,
+        accepted_variants: &[],
+        equivalence_group: None,
+        review_status: ReviewStatus::PendingIndependentReview,
+        reviewed_by: None,
+    }
+}
+
+fn incomplete_streaming_cases() -> Vec<CorpusCase> {
+    [
+        ("stream-001", "かいぎのしりょうをかくに", "会議の資料をかくに"),
+        ("stream-002", "あしたのよていをちょうせ", "明日の予定をちょうせ"),
+        ("stream-003", "ぷろじぇくとのしんちょくをほうこ", "プロジェクトの進捗をほうこ"),
+        ("stream-004", "しすてむのしょうがいをちょうさちゅ", "システムの障害を調査ちゅ"),
+        ("stream-005", "でんしゃがちえんしているた", "電車が遅延しているた"),
+        ("stream-006", "よやくのへんこうをおねがいし", "予約の変更をお願いし"),
+        ("stream-007", "あたらしいきのうをついかしてい", "新しい機能を追加してい"),
+        ("stream-008", "せつめいしょをよんでからそうさし", "説明書を読んでから操作し"),
+        ("stream-009", "かいしゃにもどってしりょうをつく", "会社に戻って資料をつく"),
+        ("stream-010", "たいおうほうほうをけんとうしてお", "対応方法を検討してお"),
+        ("stream-011", "しょうさいはのちほどごれんらくいたし", "詳細は後ほどご連絡いたし"),
+        ("stream-012", "ごふめいなてんがございましたらおし", "ご不明な点がございましたらおし"),
+        ("stream-013", "でーたのばっくあっぷをかくにんしてく", "データのバックアップを確認してく"),
+        ("stream-014", "もんだいのげんいんをとくていするた", "問題の原因を特定するた"),
+        ("stream-015", "あんぜんをかくにんしてからさぎょうをはじ", "安全を確認してから作業をはじ"),
+        ("stream-016", "けいやくしょのないようをさいどかくにんし", "契約書の内容を再度確認し"),
+        ("stream-017", "あぷりをさいきどうしてもういちどためし", "アプリを再起動してもう一度試し"),
+        ("stream-018", "しんせいしょるいをきげんまでにていしゅつし", "申請書類を期限までに提出し"),
+        ("stream-019", "かいぎがおわりしだいけっかをきょうゆうし", "会議が終わり次第結果を共有し"),
+        (
+            "stream-020",
+            "たんとうしゃにかくにんしておりかえしごれんらくし",
+            "担当者に確認して折り返しご連絡し",
+        ),
+    ]
+    .into_iter()
+    .map(|(case_id, input, expected)| {
+        let mut case = incomplete_streaming_case(case_id, input, expected);
+        if case_id == "stream-017" {
+            case.accepted_variants = &["アプリを再起動してもう1度試し"];
+        }
+        case.review_status = ReviewStatus::IndependentlyReviewed;
+        case.reviewed_by = Some("specialist-advisor");
+        case
+    })
+    .collect()
+}
+
 fn normalized_variant(value: &str) -> String {
     value
         .chars()
@@ -551,6 +628,20 @@ fn anchor_fingerprint(cases: &[CorpusCase]) -> u64 {
         let hash = fnv1a_update(hash, case.category);
         let hash = fnv1a_update(hash, case.input);
         fnv1a_update(hash, case.expected)
+    })
+}
+
+fn expansion_fingerprint(cases: &[CorpusCase]) -> u64 {
+    cases.iter().fold(FNV1A_64_OFFSET_BASIS, |hash, case| {
+        let hash = fnv1a_update(hash, &case.case_id);
+        let hash = fnv1a_update(hash, case.category);
+        let hash = fnv1a_update(hash, case.input);
+        let hash = fnv1a_update(hash, case.expected);
+        let hash =
+            case.accepted_variants.iter().fold(hash, |hash, variant| fnv1a_update(hash, variant));
+        let hash = fnv1a_update(hash, case.source_kind);
+        let hash = fnv1a_update(hash, case.provenance);
+        fnv1a_update(hash, case.reviewed_by.unwrap_or(""))
     })
 }
 
@@ -708,7 +799,9 @@ fn accuracy_corpus_schema_and_anchor_fingerprint_are_stable() {
     let cases = anchor_cases();
     assert_eq!(cases.len(), ANCHOR_EXPECTED_TOTAL);
     assert_eq!(anchor_fingerprint(&cases), ANCHOR_FINGERPRINT);
+    let mut case_ids = BTreeSet::new();
     for case in &cases {
+        assert!(case_ids.insert(case.case_id.as_str()), "duplicate case ID: {}", case.case_id);
         assert!(case.case_id.starts_with("anchor-"));
         assert_eq!(case.context_mode, ContextMode::None);
         assert_eq!(case.expected_origin, ExpectedOrigin::UnspecifiedLegacy);
@@ -720,6 +813,22 @@ fn accuracy_corpus_schema_and_anchor_fingerprint_are_stable() {
         assert_eq!(case.equivalence_group, None);
         assert_eq!(case.review_status, ReviewStatus::AnchorLocked);
         assert_eq!(case.reviewed_by, Some("legacy_anchor_lock"));
+        assert!(included_in_live_gate(case));
+    }
+
+    let expansion_cases = incomplete_streaming_cases();
+    assert_eq!(expansion_cases.len(), INCOMPLETE_STREAMING_EXPECTED_TOTAL);
+    assert_eq!(expansion_fingerprint(&expansion_cases), INCOMPLETE_STREAMING_FINGERPRINT);
+    for case in &expansion_cases {
+        assert!(case_ids.insert(case.case_id.as_str()), "duplicate case ID: {}", case.case_id);
+        assert!(case.case_id.starts_with("stream-"));
+        assert_eq!(case.category, "incomplete_streaming");
+        assert_eq!(case.context_mode, ContextMode::LeftOnly);
+        assert_eq!(case.expected_origin, ExpectedOrigin::Mixed);
+        assert_eq!(case.source_kind, "hand_authored_caption_prefix");
+        assert_eq!(case.provenance, "specialist_advisor_category_plan_2026-08-14");
+        assert_eq!(case.review_status, ReviewStatus::IndependentlyReviewed);
+        assert_eq!(case.reviewed_by, Some("specialist-advisor"));
         assert!(included_in_live_gate(case));
     }
 }
@@ -814,6 +923,106 @@ fn accuracy_corpus_report() {
         }
     }
     eprintln!();
+
+    let expansion_cases = incomplete_streaming_cases();
+    let mut expansion_stats: BTreeMap<&str, AccuracyCount> = BTreeMap::new();
+    let mut expansion_failures: Vec<(&CorpusCase, String)> = Vec::new();
+    let mut expansion_totals = AccuracyCount::default();
+    let mut pending_review = 0usize;
+    let mut independently_reviewed = 0usize;
+    let mut right_context_offline = 0usize;
+    let mut live_gate_eligible = 0usize;
+    for case in &expansion_cases {
+        let candidate =
+            convert_with_dictionary(case.input, &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next();
+        let actual = candidate.as_ref().map(|candidate| candidate.text.as_str()).unwrap_or("");
+        let strict_passed = actual == case.expected;
+        let variant_passed = matches_accepted_variant(case, actual);
+        let category = expansion_stats.entry(case.category).or_default();
+        category.total += 1;
+        expansion_totals.total += 1;
+        if strict_passed {
+            category.strict_passed += 1;
+            expansion_totals.strict_passed += 1;
+        } else {
+            expansion_failures.push((case, actual.to_string()));
+        }
+        if variant_passed {
+            category.variant_passed += 1;
+            expansion_totals.variant_passed += 1;
+        }
+        match case.review_status {
+            ReviewStatus::PendingIndependentReview => pending_review += 1,
+            ReviewStatus::IndependentlyReviewed => independently_reviewed += 1,
+            ReviewStatus::AnchorLocked => {}
+        }
+        if case.context_mode == ContextMode::RightAvailableOffline {
+            right_context_offline += 1;
+        }
+        if included_in_live_gate(case) {
+            live_gate_eligible += 1;
+        }
+    }
+
+    eprintln!("=== Reviewed Expansion Corpus Report ===");
+    eprintln!(
+        "Strict: {}/{} ({:.1}%), normalized variant: {}/{} ({:.1}%)",
+        expansion_totals.strict_passed,
+        expansion_totals.total,
+        expansion_totals.strict_passed as f32 / expansion_totals.total as f32 * 100.0,
+        expansion_totals.variant_passed,
+        expansion_totals.total,
+        expansion_totals.variant_passed as f32 / expansion_totals.total as f32 * 100.0,
+    );
+    eprintln!(
+        "Review: {pending_review} pending, {independently_reviewed} independently reviewed; \
+         context: {right_context_offline} right-offline; live-gate eligible: {live_gate_eligible}"
+    );
+    for (category, count) in &expansion_stats {
+        eprintln!(
+            "  {category:<22} {:>2}/{:<2} strict / {:>2}/{:<2} normalized variant",
+            count.strict_passed, count.total, count.variant_passed, count.total,
+        );
+    }
+    if expansion_failures.is_empty() {
+        eprintln!("Expansion strict failures: none");
+    } else {
+        eprintln!("Expansion strict failures:");
+        for (case, actual) in &expansion_failures {
+            eprintln!(
+                "  [{}] {} {:?} -> expected {:?}, got {:?}",
+                case.category, case.case_id, case.input, case.expected, actual
+            );
+        }
+    }
+    eprintln!();
+
+    assert_eq!(
+        expansion_totals.total, INCOMPLETE_STREAMING_EXPECTED_TOTAL,
+        "reviewed incomplete-streaming corpus size changed"
+    );
+    assert_eq!(pending_review, 0, "reviewed live-gate cases became pending");
+    assert_eq!(independently_reviewed, INCOMPLETE_STREAMING_EXPECTED_TOTAL);
+    assert_eq!(right_context_offline, 0);
+    assert_eq!(live_gate_eligible, INCOMPLETE_STREAMING_EXPECTED_TOTAL);
+    assert!(
+        expansion_totals.strict_passed >= INCOMPLETE_STREAMING_MINIMUM_STRICT_PASSED,
+        "incomplete-streaming strict accuracy regressed: {}/{} is below {}/{}",
+        expansion_totals.strict_passed,
+        expansion_totals.total,
+        INCOMPLETE_STREAMING_MINIMUM_STRICT_PASSED,
+        INCOMPLETE_STREAMING_EXPECTED_TOTAL,
+    );
+    assert!(
+        expansion_totals.variant_passed >= INCOMPLETE_STREAMING_MINIMUM_VARIANT_PASSED,
+        "incomplete-streaming variant accuracy regressed: {}/{} is below {}/{}",
+        expansion_totals.variant_passed,
+        expansion_totals.total,
+        INCOMPLETE_STREAMING_MINIMUM_VARIANT_PASSED,
+        INCOMPLETE_STREAMING_EXPECTED_TOTAL,
+    );
 
     assert_eq!(totals.total, ANCHOR_EXPECTED_TOTAL, "locked anchor size changed");
     for (category, baseline_passed) in ANCHOR_CATEGORY_BASELINES {
