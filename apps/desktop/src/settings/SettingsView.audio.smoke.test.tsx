@@ -247,7 +247,7 @@ describe("SettingsView audio tuning", () => {
     expect(container.textContent).toMatch(/このモードでは未使用|not used in this mode/i);
   });
 
-  it("keeps partial-window ASR opt-in and marks it for the next capture", async () => {
+  it("keeps partial-window ASR default-on and marks changes for the next capture", async () => {
     const Harness = () => {
       const [config, setConfig] = useState(createDefaultConfig());
       return (
@@ -275,13 +275,13 @@ describe("SettingsView audio tuning", () => {
     });
 
     const toggle = container.querySelector<HTMLInputElement>("#audio-partial-window-asr");
-    expect(toggle?.checked).toBe(false);
+    expect(toggle?.checked).toBe(true);
     expect(toggle?.closest(".field")?.textContent).toMatch(/次のキャプチャ開始|next capture/i);
     await act(async () => {
       toggle?.click();
       await Promise.resolve();
     });
-    expect(toggle?.checked).toBe(true);
+    expect(toggle?.checked).toBe(false);
   });
 
   it("exposes VAD window and silence threshold as labeled sliders with reset", async () => {
