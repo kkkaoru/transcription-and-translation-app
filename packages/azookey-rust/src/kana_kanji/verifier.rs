@@ -1,4 +1,4 @@
-use crate::viterbi::{CandidatePath, Utf8BytePrefixConstraint};
+use crate::viterbi::{CandidatePath, PrecedingContext, Utf8BytePrefixConstraint};
 use std::error::Error;
 use std::fmt;
 
@@ -89,8 +89,13 @@ pub struct VerificationResult {
 }
 
 /// Cache identity for one candidate verification. It includes both model
-/// layers, the complete session input/context, candidate-path/constraint
-/// hashes, dictionary revision, and protocol version.
+/// layers, the complete session input/context, every `Draft` field, every
+/// `CandidatePath` field, dictionary revision, and protocol version.
+///
+/// `VerifierSession.session_id` and `kv_reusable` are intentionally excluded:
+/// they describe a backend lifecycle/transport capability, not the semantic
+/// request. Reusing either value in the key would prevent equivalent requests
+/// from sharing a result without improving correctness.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VerificationCacheKey {
     pub model_revision: String,
@@ -185,6 +190,16 @@ fn hash_candidate_path(candidate: &CandidatePath) -> u64 {
     }
     bytes.extend_from_slice(candidate.text.as_bytes());
     bytes.extend_from_slice(&candidate.score.to_bits().to_le_bytes());
+    // The trailing connection state affects the next lattice transition. Keep
+    // an explicit Option discriminator so None cannot collide with Some(0, 0).
+    match candidate.trailing {
+        None => bytes.push(0),
+        Some(PrecedingContext { rcid, mid }) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&rcid.to_le_bytes());
+            bytes.extend_from_slice(&mid.to_le_bytes());
+        }
+    }
     hash_bytes(&bytes)
 }
 
@@ -228,5 +243,29 @@ mod tests {
         constrained.constraints.push(Utf8BytePrefixConstraint::from_surface(0, "漢"));
         let constrained_key = VerificationCacheKey::for_draft(&session, &constrained);
         assert_ne!(first_key.constraint_hash, constrained_key.constraint_hash);
+
+        let with_trailing = Draft::new(
+            "prompt-a",
+            CandidatePath {
+                trailing: Some(PrecedingContext { rcid: 12, mid: 34 }),
+                ..candidate.clone()
+            },
+        );
+        let with_trailing_key = VerificationCacheKey::for_draft(&session, &with_trailing);
+        assert_ne!(first_key.candidate_path_hash, with_trailing_key.candidate_path_hash);
+
+        let with_zero_trailing = Draft::new(
+            "prompt-a",
+            CandidatePath {
+                trailing: Some(PrecedingContext { rcid: 0, mid: 0 }),
+                ..candidate.clone()
+            },
+        );
+        let with_zero_trailing_key =
+            VerificationCacheKey::for_draft(&session, &with_zero_trailing);
+        assert_ne!(first_key.candidate_path_hash, with_zero_trailing_key.candidate_path_hash);
+
+        let identical_key = VerificationCacheKey::for_draft(&session, &first);
+        assert_eq!(first_key.candidate_path_hash, identical_key.candidate_path_hash);
     }
 }

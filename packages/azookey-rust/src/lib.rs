@@ -21,10 +21,12 @@ pub use verifier::{
 };
 pub use viterbi::{
     build_lattice, convert_kana_to_kanji, convert_kana_to_kanji_with_dictionary,
-    convert_kana_to_kanji_with_paths, convert_with_dictionary, search, BytePrefixConstraint,
-    CandidatePath, ConstrainedSearchRequest, ConversionCandidate, ConversionLattice,
-    ConversionOptions, ConversionRequest, DictionaryEntryId, EdgeHandle, EdgeOrigin, LatticeEdge,
-    UnknownPolicy, Utf8BytePrefixConstraint,
+    convert_kana_to_kanji_with_paths, convert_with_dictionary, convert_with_verifier,
+    convert_with_verifier_with_limit, search, BytePrefixConstraint, CandidatePath,
+    ConstrainedSearchRequest, ConversionCandidate, ConversionLattice, ConversionOptions,
+    ConversionRequest, ConversionWithVerification, DictionaryEntryId, EdgeHandle, EdgeOrigin,
+    LatticeEdge, PrecedingContext, UnknownPolicy, Utf8BytePrefixConstraint,
+    VerifierConversionOptions,
 };
 
 #[cfg(test)]
