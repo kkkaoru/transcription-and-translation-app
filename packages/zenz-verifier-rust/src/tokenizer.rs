@@ -92,8 +92,8 @@ mod tests {
         assert_eq!(tokenizer.encode_prompt(""), vec![2]);
         assert_eq!(
             tokenizer.encode_prompt(&build_candidate_prompt("", "", "")),
-            vec![2, 172, 120, 204, 172, 120, 209, 172, 120, 202, 172, 120, 203,],
-            "the complete empty-field prompt must preserve BOS and tag order"
+            vec![2, 172, 120, 202, 172, 120, 203],
+            "no-context v3 must contain only BOS, EE00, and EE01"
         );
 
         let measured = [

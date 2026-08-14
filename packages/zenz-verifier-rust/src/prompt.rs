@@ -20,14 +20,17 @@ pub struct CandidatePrompt<'a> {
 impl CandidatePrompt<'_> {
     /// Builds the exact v3 prompt consumed by the embedded verifier.
     ///
-    /// Tags are retained even when a context is empty. This keeps prompt shape
-    /// and cache identity stable across embedded and remote implementations.
+    /// A context tag is emitted only when that context is non-empty, matching
+    /// upstream `ZenzPromptBuilder.candidateEvaluationPrompt`. Empty tags are
+    /// not a neutral placeholder: they would make the model read a different,
+    /// unseen prompt.
     pub fn build(&self) -> String {
         build_candidate_prompt(self.left_context, self.right_context, self.input)
     }
 }
 
-/// `U+EE02{left} U+EE07{right} U+EE00{input} U+EE01`, without spaces.
+/// Optional `U+EE02{left}`, optional `U+EE07{right}`, then
+/// `U+EE00{input} U+EE01`, without spaces.
 pub fn build_candidate_prompt(left_context: &str, right_context: &str, input: &str) -> String {
     let left_graphemes = UnicodeSegmentation::graphemes(left_context, true).collect::<Vec<_>>();
     let left_start = left_graphemes.len().saturating_sub(DEFAULT_CONTEXT_MAX_GRAPHEMES);
@@ -37,10 +40,14 @@ pub fn build_candidate_prompt(left_context: &str, right_context: &str, input: &s
         .collect::<String>();
     let capacity = trimmed_left.len() + trimmed_right.len() + input.len() + 12;
     let mut prompt = String::with_capacity(capacity);
-    prompt.push(LEFT_CONTEXT_TAG);
-    prompt.push_str(&trimmed_left);
-    prompt.push(RIGHT_CONTEXT_TAG);
-    prompt.push_str(&trimmed_right);
+    if !trimmed_left.is_empty() {
+        prompt.push(LEFT_CONTEXT_TAG);
+        prompt.push_str(&trimmed_left);
+    }
+    if !trimmed_right.is_empty() {
+        prompt.push(RIGHT_CONTEXT_TAG);
+        prompt.push_str(&trimmed_right);
+    }
     prompt.push(INPUT_TAG);
     prompt.push_str(input);
     prompt.push(OUTPUT_TAG);
@@ -99,16 +106,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn candidate_prompt_pins_v3_tag_order() {
+    fn candidate_prompt_pins_all_v3_context_tag_combinations() {
         assert_eq!(
-            build_candidate_prompt("前", "後", "にゅうりょく"),
-            "\u{ee02}前\u{ee07}後\u{ee00}にゅうりょく\u{ee01}"
+            build_candidate_prompt("前", "後", "入力"),
+            "\u{ee02}前\u{ee07}後\u{ee00}入力\u{ee01}",
+            "left and right context tags must retain upstream order"
         );
-    }
-
-    #[test]
-    fn empty_contexts_keep_their_tags() {
-        assert_eq!(build_candidate_prompt("", "", "かな"), "\u{ee02}\u{ee07}\u{ee00}かな\u{ee01}");
+        assert_eq!(
+            build_candidate_prompt("前", "", "入力"),
+            "\u{ee02}前\u{ee00}入力\u{ee01}",
+            "an empty right context must omit EE07"
+        );
+        assert_eq!(
+            build_candidate_prompt("", "後", "入力"),
+            "\u{ee07}後\u{ee00}入力\u{ee01}",
+            "an empty left context must omit EE02"
+        );
+        assert_eq!(
+            build_candidate_prompt("", "", "入力"),
+            "\u{ee00}入力\u{ee01}",
+            "no-context v3 is the upstream compact form, without empty tags"
+        );
     }
 
     #[test]

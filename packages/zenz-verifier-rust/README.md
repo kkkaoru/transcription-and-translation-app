@@ -9,7 +9,7 @@ for WebAssembly by `azookey-wasm`; adding Candle to it would break that target.
 The default build here is model-free and contains:
 
 - `MockDraftVerifier`, a FIFO verifier double for retry/fallback integration;
-- the exact Zenz v3 prompt (`EE02 left`, `EE07 right`, `EE00 input`, `EE01`);
+- the exact Zenz v3 prompt (optional `EE02 left`, optional `EE07 right`, then `EE00 input`, `EE01`);
 - a BOS-aware adapter over `caption-bridge-input-lm::tokenizer::ZenzTokenizer`.
 
 The optional `candle` feature contains GGUFv3 validation and independently
