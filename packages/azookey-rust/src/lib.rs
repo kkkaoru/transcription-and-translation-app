@@ -9,13 +9,22 @@
 mod dictionary;
 #[path = "kana_kanji/normalization.rs"]
 mod normalization;
+#[path = "kana_kanji/verifier.rs"]
+mod verifier;
 #[path = "kana_kanji/viterbi.rs"]
 mod viterbi;
 
 pub use dictionary::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
 pub use viterbi::{
-    convert_kana_to_kanji, convert_kana_to_kanji_with_dictionary, convert_kana_to_kanji_with_paths,
-    convert_with_dictionary, ConversionCandidate, ConversionOptions,
+    build_lattice, convert_kana_to_kanji, convert_kana_to_kanji_with_dictionary,
+    convert_kana_to_kanji_with_paths, convert_with_dictionary, search, BytePrefixConstraint,
+    CandidatePath, ConstrainedSearchRequest, ConversionCandidate, ConversionLattice,
+    ConversionOptions, ConversionRequest, DictionaryEntryId, EdgeHandle, EdgeOrigin, LatticeEdge,
+    UnknownPolicy, Utf8BytePrefixConstraint,
+};
+pub use verifier::{
+    Draft, DraftVerifier, SessionContext, VerificationCacheKey, VerificationResult,
+    VerificationState, VerifierCapabilities, VerifierError, VerifierSession,
 };
 
 #[cfg(test)]

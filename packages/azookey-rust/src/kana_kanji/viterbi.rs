@@ -7,6 +7,8 @@ use super::normalization::{
     numeric_span_starts_with_digit, numeric_surface_prefix, skip_intervening_numeric_unit_noise,
     to_hiragana, to_katakana,
 };
+use std::collections::HashMap;
+use std::ops::Range;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrecedingContext {
@@ -240,6 +242,213 @@ pub struct ConversionCandidate {
     pub trailing: Option<PrecedingContext>,
 }
 
+/// Policy used when a reading position has no dictionary-backed edge.
+///
+/// `AllowOovIdentity` is the compatibility default: it keeps an unknown
+/// scalar as an explicit OOV edge so callers can distinguish it from a
+/// dictionary identity. `PreserveInput` has the same coverage guarantee but
+/// documents that the original source spelling is required by the caller.
+/// `StrictDictionary` omits OOV edges entirely; a strict lattice can therefore
+/// be empty for input that is not fully covered by dictionary/boundary edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnknownPolicy {
+    StrictDictionary,
+    AllowOovIdentity,
+    PreserveInput,
+}
+
+impl Default for UnknownPolicy {
+    fn default() -> Self {
+        Self::AllowOovIdentity
+    }
+}
+
+pub type EdgeHandle = usize;
+pub type DictionaryEntryId = u32;
+
+/// A conversion request used to construct the inspectable dictionary lattice.
+///
+/// The existing `ConversionOptions` API remains unchanged for v1 callers.
+/// This request deliberately owns its input so a lattice can be retained by a
+/// verifier session without borrowing an application buffer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversionRequest {
+    pub input: String,
+    pub left_context: Option<PrecedingContext>,
+    pub right_context: Option<PrecedingContext>,
+    pub beam_width: usize,
+    pub n_best: usize,
+    pub unknown_policy: UnknownPolicy,
+    pub max_dictionary_word_chars: usize,
+}
+
+impl ConversionRequest {
+    pub fn new(input: impl Into<String>) -> Self {
+        Self { input: input.into(), ..Self::default() }
+    }
+}
+
+impl Default for ConversionRequest {
+    fn default() -> Self {
+        Self {
+            input: String::new(),
+            left_context: None,
+            right_context: None,
+            beam_width: DEFAULT_BEAM_WIDTH,
+            n_best: 1,
+            unknown_policy: UnknownPolicy::default(),
+            max_dictionary_word_chars: DEFAULT_MAX_DICTIONARY_WORD_CHARS,
+        }
+    }
+}
+
+/// The provenance of an edge in a conversion lattice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EdgeOrigin {
+    Dictionary(DictionaryEntryId),
+    KnownIdentity,
+    NumericSynthesized,
+    OovIdentity,
+    Boundary,
+}
+
+/// A read-only edge description. Spans use normalized scalar positions for
+/// lattice traversal and source UTF-8 byte positions for wire/cache keys.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LatticeEdge {
+    pub scalar_span: Range<usize>,
+    pub byte_span: Range<usize>,
+    pub reading: String,
+    pub surface: String,
+    pub score: f32,
+    pub lcid: u16,
+    pub rcid: u16,
+    pub mid: u16,
+    pub origin: EdgeOrigin,
+}
+
+/// A candidate path is represented by edge handles, not copied dictionary
+/// entries. The rendered text is retained as a convenience for verifier
+/// protocols and is reconstructed from the lattice on every search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CandidatePath {
+    pub edge_handles: Vec<EdgeHandle>,
+    pub text: String,
+    pub score: f32,
+    pub trailing: Option<PrecedingContext>,
+}
+
+/// A UTF-8 byte-prefix constraint attached to the edge that begins at
+/// `scalar_position`. The prefix is compared against `surface.as_bytes()`;
+/// token IDs and Unicode scalar IDs never cross this API boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Utf8BytePrefixConstraint {
+    pub scalar_position: usize,
+    pub prefix: Vec<u8>,
+}
+
+impl Utf8BytePrefixConstraint {
+    pub fn new(scalar_position: usize, prefix: impl AsRef<[u8]>) -> Self {
+        Self { scalar_position, prefix: prefix.as_ref().to_vec() }
+    }
+
+    pub fn from_surface(scalar_position: usize, surface: &str) -> Self {
+        Self::new(scalar_position, surface.as_bytes())
+    }
+
+    /// A global output-prefix constraint. It is evaluated against the
+    /// reconstructed candidate text rather than an individual lattice edge.
+    pub fn output_prefix(prefix: impl AsRef<[u8]>) -> Self {
+        Self::new(usize::MAX, prefix)
+    }
+}
+
+pub type BytePrefixConstraint = Utf8BytePrefixConstraint;
+
+/// Request for a fresh lattice search. The optional candidate path is a hint
+/// from an earlier evaluator; it is never the sole search source, so a path
+/// pruned by an earlier beam can be recovered from the complete lattice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstrainedSearchRequest {
+    pub candidate_path: Option<CandidatePath>,
+    pub constraints: Vec<Utf8BytePrefixConstraint>,
+    pub beam_width: usize,
+    pub n_best: usize,
+}
+
+impl Default for ConstrainedSearchRequest {
+    fn default() -> Self {
+        Self {
+            candidate_path: None,
+            constraints: Vec::new(),
+            beam_width: DEFAULT_BEAM_WIDTH,
+            n_best: 1,
+        }
+    }
+}
+
+impl ConstrainedSearchRequest {
+    pub fn new() -> Self {
+        Self { beam_width: DEFAULT_BEAM_WIDTH, n_best: 1, ..Self::default() }
+    }
+
+    pub fn with_constraint(mut self, constraint: Utf8BytePrefixConstraint) -> Self {
+        self.constraints.push(constraint);
+        self
+    }
+
+    pub fn with_candidate_path(mut self, candidate_path: CandidatePath) -> Self {
+        self.candidate_path = Some(candidate_path);
+        self
+    }
+}
+
+/// An inspectable, complete dictionary lattice. `edges()` exposes a slice and
+/// therefore does not allow callers to mutate the lattice after construction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversionLattice {
+    source_input: String,
+    normalized_input: String,
+    terminal: usize,
+    edges: Vec<LatticeEdge>,
+    outgoing: Vec<Vec<EdgeHandle>>,
+    dictionary_revision: u64,
+}
+
+impl ConversionLattice {
+    pub fn input(&self) -> &str {
+        &self.source_input
+    }
+
+    pub fn normalized_input(&self) -> &str {
+        &self.normalized_input
+    }
+
+    pub fn terminal(&self) -> usize {
+        self.terminal
+    }
+
+    pub fn dictionary_revision(&self) -> u64 {
+        self.dictionary_revision
+    }
+
+    pub fn edges(&self) -> &[LatticeEdge] {
+        &self.edges
+    }
+
+    pub fn edge(&self, handle: EdgeHandle) -> Option<&LatticeEdge> {
+        self.edges.get(handle)
+    }
+
+    pub fn edge_handles_from(&self, scalar_position: usize) -> &[EdgeHandle] {
+        self.outgoing.get(scalar_position).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn search(&self, request: &ConstrainedSearchRequest) -> Vec<CandidatePath> {
+        search(self, request)
+    }
+}
+
 // A missing dictionary edge should lose to even a low-confidence system
 // entry (system rows below the -17 quality floor are filtered separately).
 // Keeping this as an explicit lattice penalty also prevents an all-kana
@@ -397,6 +606,429 @@ fn numeric_prefix_context(
         lexical_same_span,
         numeric_score,
     })
+}
+
+/// Construct the complete, inspectable dictionary lattice used by the
+/// verifier layer. Unlike `convert_with_dictionary`, this function does not
+/// prune short entries with the live beam: every dictionary edge is retained
+/// so a later UTF-8 prefix constraint can recover a path that was absent from
+/// the old top-N candidate list.
+pub fn build_lattice(
+    dictionary: &AzooKeyDictionary,
+    request: &ConversionRequest,
+) -> ConversionLattice {
+    let source_input = request.input.clone();
+    let normalized_input = to_hiragana(&source_input);
+    let source_chars = source_input.chars().collect::<Vec<_>>();
+    let chars = normalized_input.chars().collect::<Vec<_>>();
+    debug_assert_eq!(source_chars.len(), chars.len());
+    let terminal = chars.len();
+    let byte_offsets = scalar_byte_offsets(&source_input);
+    let max_dictionary_word_chars =
+        bounded_dictionary_word_chars(request.max_dictionary_word_chars);
+    let mut edges = Vec::new();
+    let mut outgoing = vec![Vec::<EdgeHandle>::new(); terminal + 1];
+    let mut dictionary_ids = HashMap::<String, DictionaryEntryId>::new();
+    let mut next_dictionary_id = 0u32;
+
+    for start in 0..terminal {
+        let entries = dictionary
+            .entries_starting_at(&chars, start, max_dictionary_word_chars)
+            .unwrap_or_default();
+        for entry in entries {
+            let entry_len = entry.reading.chars().count();
+            let end = start + entry_len;
+            if entry_len == 0
+                || end > terminal
+                || chars[start..end].iter().collect::<String>() != entry.reading
+            {
+                continue;
+            }
+            let source_span = &source_chars[start..end];
+            let surface = dictionary_surface_for_source(&entry, source_span);
+            let source_surface: String = source_span.iter().collect();
+            let origin = if is_known_identity_edge(&entry, &surface, &source_surface) {
+                EdgeOrigin::KnownIdentity
+            } else {
+                let key = dictionary_entry_key(&entry);
+                let entry_id = *dictionary_ids.entry(key).or_insert_with(|| {
+                    let id = next_dictionary_id;
+                    next_dictionary_id = next_dictionary_id.saturating_add(1);
+                    id
+                });
+                EdgeOrigin::Dictionary(entry_id)
+            };
+            let context_score = if start == 0 {
+                request
+                    .left_context
+                    .map(|context| dictionary.context_connection_cost(context.rcid, &entry))
+                    .unwrap_or_else(|| dictionary.beginning_connection_cost(&entry))
+            } else {
+                NO_SCORE
+            };
+            push_lattice_edge(
+                &mut edges,
+                &mut outgoing,
+                &byte_offsets,
+                start,
+                end,
+                entry.reading,
+                surface,
+                entry.value + context_score,
+                entry.lcid,
+                entry.rcid,
+                entry.mid,
+                origin,
+            );
+        }
+
+        // Numeric synthesis is deliberately independent of dictionary rows:
+        // the verifier must be able to constrain `さんびゃくえん` to `300円`
+        // even when the dictionary beam would prefer a lexical homophone.
+        if let Some((number_len, number_surface)) = numeric_surface_prefix(&chars[start..]) {
+            let reading: String = chars[start..start + number_len].iter().collect();
+            let next = start + number_len;
+            let suffix = &chars[next..];
+            let starts_at_boundary = start == 0 || is_boundary(chars[start - 1]);
+            let ends_at_boundary = next == terminal
+                || chars.get(next).is_some_and(|character| is_boundary(*character));
+            let has_counter = japanese_counter_starts_at(suffix);
+            let explicit_digit = numeric_span_starts_with_digit(&reading)
+                && reading.chars().next().is_some_and(|character| {
+                    character.is_ascii_digit() || ('０'..='９').contains(&character)
+                });
+            let has_unit = japanese_numeral_has_unit(&reading);
+            if starts_at_boundary || ends_at_boundary || has_counter || has_unit || explicit_digit {
+                let score = if starts_at_boundary || ends_at_boundary || has_counter {
+                    NUMERIC_BOUNDARY_SCORE
+                } else {
+                    NUMERIC_AMBIGUOUS_SCORE
+                };
+                push_lattice_edge(
+                    &mut edges,
+                    &mut outgoing,
+                    &byte_offsets,
+                    start,
+                    next,
+                    reading,
+                    number_surface.clone(),
+                    score,
+                    DEFAULT_CID,
+                    DEFAULT_CID,
+                    BOS_EOS_MID,
+                    EdgeOrigin::NumericSynthesized,
+                );
+                if let Some((counter_len, counter_surface)) = numeric_counter_surface(suffix) {
+                    let counter_end = next + counter_len;
+                    if counter_end <= terminal {
+                        let counter_reading: String = chars[start..counter_end].iter().collect();
+                        push_lattice_edge(
+                            &mut edges,
+                            &mut outgoing,
+                            &byte_offsets,
+                            start,
+                            counter_end,
+                            counter_reading,
+                            format!("{number_surface}{counter_surface}"),
+                            score + NUMERIC_COUNTER_SCORE_PENALTY,
+                            DEFAULT_CID,
+                            DEFAULT_CID,
+                            BOS_EOS_MID,
+                            EdgeOrigin::NumericSynthesized,
+                        );
+                    }
+                }
+            }
+        }
+
+        if is_boundary(chars[start]) {
+            push_lattice_edge(
+                &mut edges,
+                &mut outgoing,
+                &byte_offsets,
+                start,
+                start + 1,
+                chars[start].to_string(),
+                source_chars[start].to_string(),
+                NO_SCORE,
+                DEFAULT_CID,
+                DEFAULT_CID,
+                BOS_EOS_MID,
+                EdgeOrigin::Boundary,
+            );
+        }
+    }
+
+    if !matches!(request.unknown_policy, UnknownPolicy::StrictDictionary) {
+        for start in 0..terminal {
+            let has_non_oov_single_edge = outgoing[start].iter().any(|handle| {
+                edges[*handle].scalar_span == (start..start + 1)
+                    && !matches!(edges[*handle].origin, EdgeOrigin::OovIdentity)
+            });
+            if has_non_oov_single_edge || is_boundary(chars[start]) {
+                continue;
+            }
+            push_lattice_edge(
+                &mut edges,
+                &mut outgoing,
+                &byte_offsets,
+                start,
+                start + 1,
+                chars[start].to_string(),
+                source_chars[start].to_string(),
+                UNKNOWN_CHARACTER_PENALTY,
+                DEFAULT_CID,
+                DEFAULT_CID,
+                BOS_EOS_MID,
+                EdgeOrigin::OovIdentity,
+            );
+        }
+    }
+
+    ConversionLattice {
+        source_input,
+        normalized_input,
+        terminal,
+        edges,
+        outgoing,
+        dictionary_revision: dictionary.revision(),
+    }
+}
+
+impl AzooKeyDictionary {
+    pub fn build_lattice(&self, request: &ConversionRequest) -> ConversionLattice {
+        build_lattice(self, request)
+    }
+}
+
+fn scalar_byte_offsets(input: &str) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(input.chars().count() + 1);
+    offsets.push(0);
+    for (byte_index, character) in input.char_indices() {
+        offsets.push(byte_index + character.len_utf8());
+    }
+    offsets
+}
+
+fn dictionary_entry_key(entry: &DictionaryEntry) -> String {
+    format!(
+        "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        entry.reading,
+        entry.surface,
+        entry.lcid,
+        entry.rcid,
+        entry.mid,
+        entry.raw_ruby_identity as u8,
+        entry.user_supplied as u8,
+        entry.value.to_bits(),
+    )
+}
+
+fn is_known_identity_edge(entry: &DictionaryEntry, surface: &str, source: &str) -> bool {
+    entry.surface == entry.reading
+        || (surface == source
+            && !contains_kanji(&entry.surface)
+            && !contains_ascii_alphanumeric(&entry.surface))
+}
+
+fn push_lattice_edge(
+    edges: &mut Vec<LatticeEdge>,
+    outgoing: &mut [Vec<EdgeHandle>],
+    byte_offsets: &[usize],
+    start: usize,
+    end: usize,
+    reading: String,
+    surface: String,
+    score: f32,
+    lcid: u16,
+    rcid: u16,
+    mid: u16,
+    origin: EdgeOrigin,
+) {
+    let handle = edges.len();
+    let byte_start = byte_offsets.get(start).copied().unwrap_or_default();
+    let byte_end = byte_offsets.get(end).copied().unwrap_or(byte_start);
+    edges.push(LatticeEdge {
+        scalar_span: start..end,
+        byte_span: byte_start..byte_end,
+        reading,
+        surface,
+        score,
+        lcid,
+        rcid,
+        mid,
+        origin,
+    });
+    if let Some(bucket) = outgoing.get_mut(start) {
+        bucket.push(handle);
+    }
+}
+
+/// Re-run the complete lattice under byte-prefix constraints. Constraint
+/// filtering happens before beam truncation; when constraints are present the
+/// search intentionally retains every reachable path, which is what allows a
+/// low-scoring edge removed by the legacy beam to be recovered.
+pub fn search(
+    lattice: &ConversionLattice,
+    request: &ConstrainedSearchRequest,
+) -> Vec<CandidatePath> {
+    if lattice.terminal == 0 {
+        return vec![CandidatePath {
+            edge_handles: Vec::new(),
+            text: String::new(),
+            score: NO_SCORE,
+            trailing: None,
+        }];
+    }
+    let n_best = request.n_best.max(1);
+    let beam = if request.constraints.is_empty() {
+        request.beam_width.max(n_best).max(1)
+    } else {
+        usize::MAX
+    };
+    let mut states = vec![Vec::<LatticeSearchState>::new(); lattice.terminal + 1];
+    states[0].push(LatticeSearchState {
+        edge_handles: Vec::new(),
+        text: String::new(),
+        score: NO_SCORE,
+        trailing: None,
+    });
+
+    for start in 0..lattice.terminal {
+        let current = states[start].clone();
+        if current.is_empty() {
+            continue;
+        }
+        for state in current {
+            for &handle in lattice.edge_handles_from(start) {
+                let edge = &lattice.edges[handle];
+                if !edge_matches_constraints(edge, &request.constraints) {
+                    continue;
+                }
+                let end = edge.scalar_span.end;
+                if end > lattice.terminal {
+                    continue;
+                }
+                let mut edge_handles = state.edge_handles.clone();
+                edge_handles.push(handle);
+                let mut text = state.text.clone();
+                text.push_str(&edge.surface);
+                let trailing = if matches!(edge.origin, EdgeOrigin::Boundary) {
+                    state.trailing
+                } else {
+                    Some(PrecedingContext { rcid: edge.rcid, mid: edge.mid })
+                };
+                states[end].push(LatticeSearchState {
+                    edge_handles,
+                    text,
+                    score: state.score + edge.score,
+                    trailing,
+                });
+                trim_lattice_states(&mut states[end], beam);
+            }
+        }
+    }
+
+    let mut candidates = states[lattice.terminal]
+        .drain(..)
+        .into_iter()
+        .filter_map(|state| {
+            let candidate = CandidatePath {
+                edge_handles: state.edge_handles,
+                text: state.text,
+                score: state.score,
+                trailing: state.trailing,
+            };
+            path_matches_constraints(lattice, &candidate, &request.constraints).then_some(candidate)
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(candidate_path) = request.candidate_path.as_ref() {
+        if let Some(candidate) = reconstruct_candidate_path(lattice, &candidate_path.edge_handles) {
+            if path_matches_constraints(lattice, &candidate, &request.constraints) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates.sort_by(|left, right| right.score.total_cmp(&left.score));
+    let mut unique = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if !unique.iter().any(|kept: &CandidatePath| {
+            kept.edge_handles == candidate.edge_handles && kept.text == candidate.text
+        }) {
+            unique.push(candidate);
+        }
+    }
+    unique.truncate(n_best);
+    unique
+}
+
+#[derive(Debug, Clone)]
+struct LatticeSearchState {
+    edge_handles: Vec<EdgeHandle>,
+    text: String,
+    score: f32,
+    trailing: Option<PrecedingContext>,
+}
+
+fn edge_matches_constraints(edge: &LatticeEdge, constraints: &[Utf8BytePrefixConstraint]) -> bool {
+    constraints.iter().filter(|constraint| constraint.scalar_position != usize::MAX).all(
+        |constraint| {
+            constraint.scalar_position != edge.scalar_span.start
+                || edge.surface.as_bytes().starts_with(&constraint.prefix)
+        },
+    )
+}
+
+fn path_matches_constraints(
+    lattice: &ConversionLattice,
+    candidate: &CandidatePath,
+    constraints: &[Utf8BytePrefixConstraint],
+) -> bool {
+    constraints.iter().all(|constraint| {
+        if constraint.scalar_position == usize::MAX {
+            return candidate.text.as_bytes().starts_with(&constraint.prefix);
+        }
+        candidate.edge_handles.iter().any(|handle| {
+            lattice.edges[*handle].scalar_span.start == constraint.scalar_position
+                && lattice.edges[*handle].surface.as_bytes().starts_with(&constraint.prefix)
+        })
+    })
+}
+
+fn reconstruct_candidate_path(
+    lattice: &ConversionLattice,
+    edge_handles: &[EdgeHandle],
+) -> Option<CandidatePath> {
+    let mut position = 0usize;
+    let mut text = String::new();
+    let mut score = NO_SCORE;
+    let mut trailing = None;
+    for handle in edge_handles {
+        let edge = lattice.edges.get(*handle)?;
+        if edge.scalar_span.start != position {
+            return None;
+        }
+        position = edge.scalar_span.end;
+        text.push_str(&edge.surface);
+        score += edge.score;
+        if !matches!(edge.origin, EdgeOrigin::Boundary) {
+            trailing = Some(PrecedingContext { rcid: edge.rcid, mid: edge.mid });
+        }
+    }
+    (position == lattice.terminal).then_some(CandidatePath {
+        edge_handles: edge_handles.to_vec(),
+        text,
+        score,
+        trailing,
+    })
+}
+
+fn trim_lattice_states(states: &mut Vec<LatticeSearchState>, beam: usize) {
+    states.sort_by(|left, right| right.score.total_cmp(&left.score));
+    if beam != usize::MAX {
+        states.truncate(beam);
+    }
 }
 
 pub fn convert_kana_to_kanji(input: &str) -> String {
@@ -3823,8 +4455,9 @@ fn same_path_context(left: &PathState, right: &PathState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_kana_to_kanji, convert_kana_to_kanji_with_paths, convert_with_dictionary,
-        ConversionOptions,
+        build_lattice, convert_kana_to_kanji, convert_kana_to_kanji_with_paths,
+        convert_with_dictionary, ConstrainedSearchRequest, ConversionOptions, ConversionRequest,
+        EdgeOrigin, UnknownPolicy, Utf8BytePrefixConstraint,
     };
     use crate::dictionary::test_system_dictionary_path;
     use crate::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
@@ -5943,5 +6576,107 @@ mod tests {
             .next()
             .expect("public conversion should produce a candidate");
         assert_eq!(top.text, "雛");
+    }
+
+    #[test]
+    fn lattice_keeps_dictionary_identity_numeric_boundary_and_oov_origins() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-lattice-origins-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(&root, "かんじ\t漢字\t-1\nかんじ\tかんじ\t-2\n")
+            .expect("lattice fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("lattice fixture should load")
+        .without_builtin_entries_for_test();
+
+        let lattice =
+            build_lattice(&dictionary, &ConversionRequest::new("かんじ、xyzさんびゃくえん"));
+        assert!(lattice.edges().iter().any(|edge| {
+            matches!(edge.origin, EdgeOrigin::Dictionary(_)) && edge.surface == "漢字"
+        }));
+        assert!(lattice
+            .edges()
+            .iter()
+            .any(|edge| matches!(edge.origin, EdgeOrigin::KnownIdentity)));
+        assert!(lattice
+            .edges()
+            .iter()
+            .any(|edge| matches!(edge.origin, EdgeOrigin::Boundary) && edge.surface == "、"));
+        assert!(lattice
+            .edges()
+            .iter()
+            .any(|edge| matches!(edge.origin, EdgeOrigin::OovIdentity) && edge.surface == "x"));
+        assert!(lattice.edges().iter().any(|edge| {
+            matches!(edge.origin, EdgeOrigin::NumericSynthesized) && edge.surface == "300円"
+        }));
+        assert!(lattice.edges().iter().all(|edge| {
+            edge.byte_span.start <= edge.byte_span.end
+                && edge.byte_span.end <= lattice.input().len()
+        }));
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn constrained_search_recovers_a_low_scoring_dictionary_path() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-lattice-constraint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(&root, "かんじ\t漢字\t-1\nかんじ\t感じ\t-5\n")
+            .expect("constraint fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("constraint fixture should load")
+        .without_builtin_entries_for_test();
+        let lattice = build_lattice(&dictionary, &ConversionRequest::new("かんじ"));
+
+        let unconstrained = lattice.search(&ConstrainedSearchRequest {
+            beam_width: 1,
+            n_best: 1,
+            ..ConstrainedSearchRequest::default()
+        });
+        assert_eq!(unconstrained.first().map(|path| path.text.as_str()), Some("漢字"));
+
+        let constrained = lattice.search(&ConstrainedSearchRequest {
+            beam_width: 1,
+            n_best: 1,
+            constraints: vec![Utf8BytePrefixConstraint::from_surface(0, "感じ")],
+            ..ConstrainedSearchRequest::default()
+        });
+        assert_eq!(constrained.first().map(|path| path.text.as_str()), Some("感じ"));
+        assert!(constrained[0].edge_handles.iter().any(|handle| {
+            matches!(
+                lattice.edge(*handle).map(|edge| &edge.origin),
+                Some(EdgeOrigin::Dictionary(_))
+            )
+        }));
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn strict_dictionary_lattice_does_not_silently_add_oov_edges() {
+        let dictionary = AzooKeyDictionary::default();
+        let request = ConversionRequest {
+            input: "xyz".to_string(),
+            unknown_policy: UnknownPolicy::StrictDictionary,
+            ..ConversionRequest::default()
+        };
+        let lattice = build_lattice(&dictionary, &request);
+        assert!(lattice.edges().iter().all(|edge| !matches!(edge.origin, EdgeOrigin::OovIdentity)));
+        assert!(lattice.search(&ConstrainedSearchRequest::default()).is_empty());
     }
 }

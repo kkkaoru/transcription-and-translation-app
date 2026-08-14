@@ -401,6 +401,48 @@ impl AzooKeyDictionary {
         self.has_system_dictionary() && include_meaning_cost(entry)
     }
 
+    /// Return a stable fingerprint for the loaded dictionary sources.
+    ///
+    /// The lattice/verifier API carries this value so a cached constraint
+    /// result cannot be reused after the dictionary changes. Filesystem
+    /// dictionaries use their resolved root as the revision material while
+    /// portable dictionaries include their archive bytes; TSV/static entries
+    /// are always included in either case.
+    pub fn revision(&self) -> u64 {
+        let mut hash = 0xcbf29ce484222325u64;
+        revision_mix(&mut hash, b"azookey-dictionary-v1");
+        for entry in &self.static_entries {
+            revision_mix_entry(&mut hash, entry);
+        }
+        match &self.system {
+            Some(system) => {
+                revision_mix(&mut hash, b"system");
+                match &system.source {
+                    SystemDictionarySource::Filesystem(path) => {
+                        revision_mix(&mut hash, path.to_string_lossy().as_bytes());
+                    }
+                    SystemDictionarySource::Portable(store) => {
+                        revision_mix(&mut hash, &store.bytes);
+                    }
+                }
+            }
+            None => revision_mix(&mut hash, b"no-system"),
+        }
+        for (name, dictionary) in [("user", &self.user), ("memory", &self.memory)] {
+            revision_mix(&mut hash, name.as_bytes());
+            if let Some(dictionary) = dictionary {
+                revision_mix(&mut hash, dictionary.root.to_string_lossy().as_bytes());
+                revision_mix(&mut hash, dictionary.name.as_bytes());
+                if let Some(entries) = &dictionary.tsv_entries {
+                    for entry in entries {
+                        revision_mix_entry(&mut hash, entry);
+                    }
+                }
+            }
+        }
+        hash
+    }
+
     pub(crate) fn has_system_dictionary(&self) -> bool {
         self.system.is_some()
     }
@@ -429,6 +471,25 @@ impl AzooKeyDictionary {
         self.static_entries.retain(|entry| !builtin.contains(entry));
         self
     }
+}
+
+fn revision_mix(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
+    *hash ^= 0xff;
+    *hash = hash.wrapping_mul(0x100000001b3);
+}
+
+fn revision_mix_entry(hash: &mut u64, entry: &DictionaryEntry) {
+    revision_mix(hash, entry.reading.as_bytes());
+    revision_mix(hash, entry.surface.as_bytes());
+    revision_mix(hash, &entry.lcid.to_le_bytes());
+    revision_mix(hash, &entry.rcid.to_le_bytes());
+    revision_mix(hash, &entry.mid.to_le_bytes());
+    revision_mix(hash, &entry.value.to_bits().to_le_bytes());
+    revision_mix(hash, &[u8::from(entry.raw_ruby_identity), u8::from(entry.user_supplied)]);
 }
 
 fn path_exists_for_dictionary(path: &Path) -> bool {
