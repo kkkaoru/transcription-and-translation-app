@@ -705,8 +705,7 @@ mod tests {
 
     #[test]
     fn v1_migration_updates_runtime_defaults_once_and_preserves_unrelated_settings() {
-        let mut v1 = AppConfig::default();
-        v1.schema_version = 1;
+        let mut v1 = AppConfig { schema_version: 1, ..AppConfig::default() };
         v1.audio.partial_window_asr_enabled = false;
         v1.audio.input_device_id = "preserved-device".to_string();
         v1.models.normalizer = "zenz-v3.2-small-gguf".to_string();
