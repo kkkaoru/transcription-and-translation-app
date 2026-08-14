@@ -117,6 +117,129 @@ describe("pipeline stage events", () => {
     expect(derived?.startedAt).toBe(480);
   });
 
+  it("retains allow-listed Zenz counts while discarding context text and unknown fields", () => {
+    const event = normalizePipelineStageEvent({
+      stage: "normalize",
+      utteranceId: "zenz-1",
+      durationMs: 123,
+      ok: true,
+      at: 500,
+      zenzContext: {
+        enabled: true,
+        characterCount: 18.4,
+        turnCount: 2,
+        discardedSessionCount: 3,
+        leftContextText: "must never survive normalization",
+      },
+      unknownDiagnostic: "discard me",
+    });
+
+    expect(event?.durationMs).toBe(123);
+    expect(event?.zenzContext).toStrictEqual({
+      enabled: true,
+      characterCount: 18,
+      turnCount: 2,
+      discardedSessionCount: 3,
+    });
+    expect(event).not.toHaveProperty("unknownDiagnostic");
+    expect(event).not.toHaveProperty("zenzContext.leftContextText");
+
+    const snake = normalizePipelineStageEvent({
+      stage: "normalize",
+      zenz_context: {
+        enabled: false,
+        character_count: 0,
+        turn_count: 0,
+        discarded_session_count: 4,
+      },
+    });
+    expect(snake?.zenzContext).toStrictEqual({
+      enabled: false,
+      characterCount: 0,
+      turnCount: 0,
+      discardedSessionCount: 4,
+    });
+
+    expect(
+      normalizePipelineStageEvent({ stage: "normalize", zenzContext: { enabled: true } })
+        ?.zenzContext,
+    ).toBeUndefined();
+    expect(
+      normalizePipelineStageEvent({ stage: "normalize", zenzContext: [] })?.zenzContext,
+    ).toBeUndefined();
+    expect(
+      normalizePipelineStageEvent({
+        stage: "normalize",
+        zenzContext: {
+          enabled: true,
+          characterCount: Number.NaN,
+          turnCount: 1,
+          discardedSessionCount: 1,
+        },
+      })?.zenzContext,
+    ).toBeUndefined();
+    expect(
+      normalizePipelineStageEvent({
+        stage: "normalize",
+        zenzContext: {
+          enabled: true,
+          characterCount: 1,
+          turnCount: "invalid",
+          discardedSessionCount: 1,
+        },
+      })?.zenzContext,
+    ).toBeUndefined();
+    expect(
+      normalizePipelineStageEvent({
+        stage: "normalize",
+        zenzContext: {
+          enabled: true,
+          characterCount: 1,
+          turnCount: Number.NaN,
+          discardedSessionCount: 1,
+        },
+      })?.zenzContext,
+    ).toBeUndefined();
+    expect(
+      normalizePipelineStageEvent({
+        stage: "normalize",
+        zenzContext: {
+          enabled: true,
+          characterCount: 1,
+          turnCount: 1,
+          discardedSessionCount: "invalid",
+        },
+      })?.zenzContext,
+    ).toBeUndefined();
+    expect(
+      normalizePipelineStageEvent({
+        stage: "normalize",
+        zenzContext: {
+          enabled: true,
+          characterCount: 1,
+          turnCount: 1,
+          discardedSessionCount: Number.NaN,
+        },
+      })?.zenzContext,
+    ).toBeUndefined();
+    expect(
+      normalizePipelineStageEvent({
+        stage: "normalize",
+        zenzContext: {
+          enabled: false,
+          characterCount: -1,
+          turnCount: -2,
+          discardedSessionCount: -3,
+        },
+      })?.zenzContext,
+    ).toStrictEqual({
+      enabled: false,
+      characterCount: 0,
+      turnCount: 0,
+      discardedSessionCount: 0,
+    });
+  });
+
   it("treats error fields as failed stages", () => {
     const failed = normalizePipelineStageEvent({
       stage: "translate",
@@ -288,6 +411,27 @@ describe("pipeline stage events", () => {
     expect(structured[0]?.fields["outputText"]).toBe("Hello");
     expect(structured[0]?.durationMs).toBe(80);
     expect(getDiagnosticEvents()[0]?.message).toContain("translate");
+
+    pushPipelineStageEvent({
+      stage: "normalize",
+      utteranceId: "zenz",
+      modelId: "zenz-v3.2-small-gguf",
+      inputSnippet: "reading",
+      outputText: "converted",
+      durationMs: 125,
+      ok: true,
+      at: 1_100,
+      zenzContext: {
+        enabled: true,
+        characterCount: 18,
+        turnCount: 2,
+        discardedSessionCount: 3,
+      },
+    });
+    expect(getDiagnosticEvents()[0]?.detail).toContain(
+      "zenzContext=on,chars=18,turns=2,discardedSessions=3",
+    );
+    expect(getDiagnosticEvents()[0]?.detail).not.toContain("leftContext");
 
     setVerbosePipelineLogging(false);
     expect(localStorage.getItem("kotoba-beacon.debug.verbosePipeline")).toBeNull();

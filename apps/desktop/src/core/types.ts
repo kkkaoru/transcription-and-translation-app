@@ -358,6 +358,14 @@ export type AsrLatencyTimestamps = {
 /** Independent pipeline stage for debug mode (parapper / azookey / HY-MT2). */
 export type PipelineStageName = "asr" | "normalize" | "translate";
 
+/** Privacy-safe metadata for comparing Zenz normalization with/without left context. */
+export interface ZenzContextDiagnostics {
+  enabled: boolean;
+  characterCount: number;
+  turnCount: number;
+  discardedSessionCount: number;
+}
+
 export interface PipelineStageEvent {
   stage: PipelineStageName | string;
   utteranceId: string;
@@ -376,6 +384,8 @@ export interface PipelineStageEvent {
   error?: string | null;
   /** Native capture generation for stale-session diagnostics. */
   captureGeneration?: number;
+  /** Counts only; the left-context caption text is never included. */
+  zenzContext?: ZenzContextDiagnostics;
   /** Optional ASR sidecar timestamps when the stage payload already carries `*_at`. */
   asrLatency?: AsrLatencyTimestamps;
 }

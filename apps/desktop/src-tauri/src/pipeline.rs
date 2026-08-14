@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -99,6 +100,25 @@ pub struct PipelineStageEvent {
     /// have an empty output and abort the pipeline.
     pub ok: bool,
     pub error: Option<String>,
+    /// Privacy-safe Zenz prompt metadata. Caption contents are deliberately excluded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zenz_context: Option<ZenzContextDiagnostics>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ZenzContextDiagnostics {
+    pub enabled: bool,
+    pub character_count: u32,
+    pub turn_count: u32,
+    pub discarded_session_count: u64,
+}
+
+impl PipelineStageEvent {
+    fn with_zenz_context(mut self, diagnostics: Option<ZenzContextDiagnostics>) -> Self {
+        self.zenz_context = diagnostics;
+        self
+    }
 }
 
 const STAGE_SNIPPET_CHARS: usize = 160;
@@ -278,6 +298,12 @@ impl std::fmt::Debug for RescoreHandle {
 }
 
 #[derive(Debug)]
+struct ZenzContextSnapshot {
+    text: String,
+    diagnostics: ZenzContextDiagnostics,
+}
+
+#[derive(Debug)]
 struct ZenzContextTurn {
     turn_session_id: u64,
     turn_id: u64,
@@ -303,6 +329,35 @@ impl ZenzContextSession {
     fn matches(&self, session_id: &str, capture_generation: Option<u64>) -> bool {
         self.session_id == session_id && self.capture_generation == capture_generation
     }
+}
+
+fn ensure_zenz_context_session(
+    context: &mut Option<ZenzContextSession>,
+    session_id: &str,
+    capture_generation: Option<u64>,
+) -> bool {
+    if context.as_ref().is_some_and(|current| current.matches(session_id, capture_generation)) {
+        return false;
+    }
+    let discarded = context.is_some();
+    *context = Some(ZenzContextSession::new(session_id, capture_generation));
+    discarded
+}
+
+fn contributing_zenz_turn_count(turns: &[&ZenzContextTurn], character_count: usize) -> usize {
+    let mut remaining = character_count;
+    turns
+        .iter()
+        .rev()
+        .take_while(|turn| {
+            if remaining == 0 {
+                return false;
+            }
+            remaining = remaining.saturating_sub(grapheme_count(&turn.text));
+            true
+        })
+        .filter(|turn| !turn.text.is_empty())
+        .count()
 }
 
 impl Default for RescoreHandle {
@@ -396,6 +451,7 @@ pub struct Pipeline {
     /// Confirmed converted captions used as Zenz left context. Parapper does not
     /// expose a speaker ID, so context cannot currently reset on speaker changes.
     zenz_context: Arc<Mutex<Option<ZenzContextSession>>>,
+    zenz_context_discarded_sessions: Arc<AtomicU64>,
 }
 
 impl Default for Pipeline {
@@ -406,6 +462,7 @@ impl Default for Pipeline {
             rescorer: RescoreHandle::default(),
             vibrato: Arc::new(Mutex::new(None)),
             zenz_context: Arc::new(Mutex::new(None)),
+            zenz_context_discarded_sessions: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -473,25 +530,51 @@ impl Pipeline {
         capture_generation: Option<u64>,
         turn_session_id: u64,
         turn_id: u64,
-    ) -> String {
+    ) -> ZenzContextSnapshot {
+        let enabled = zenz_left_context_enabled();
+        let empty_snapshot = || ZenzContextSnapshot {
+            text: String::new(),
+            diagnostics: ZenzContextDiagnostics {
+                enabled,
+                character_count: 0,
+                turn_count: 0,
+                discarded_session_count: self
+                    .zenz_context_discarded_sessions
+                    .load(Ordering::Relaxed),
+            },
+        };
         let Ok(mut context) = self.zenz_context.lock() else {
             log::warn!(target: "pipeline_normalize", "Zenz context lock poisoned; omitting context");
-            return String::new();
+            return empty_snapshot();
         };
-        if !context.as_ref().is_some_and(|current| current.matches(session_id, capture_generation))
-        {
-            *context = Some(ZenzContextSession::new(session_id, capture_generation));
-        }
+        let discarded = ensure_zenz_context_session(&mut context, session_id, capture_generation);
+        self.zenz_context_discarded_sessions.fetch_add(u64::from(discarded), Ordering::Relaxed);
         let Some(current) = context.as_ref() else {
-            return String::new();
+            return empty_snapshot();
         };
-        let prior_text = current
+        if !enabled {
+            return empty_snapshot();
+        }
+        let prior_turns = current
             .finalized_turns
             .iter()
             .filter(|turn| turn.turn_session_id != turn_session_id || turn.turn_id != turn_id)
-            .map(|turn| turn.text.as_str())
-            .collect::<String>();
-        suffix_graphemes(&prior_text, ZENZ_CONTEXT_MAX_GRAPHEMES)
+            .collect::<Vec<_>>();
+        let prior_text = prior_turns.iter().map(|turn| turn.text.as_str()).collect::<String>();
+        let text = suffix_graphemes(&prior_text, ZENZ_CONTEXT_MAX_GRAPHEMES);
+        let character_count = grapheme_count(&text);
+        let turn_count = contributing_zenz_turn_count(&prior_turns, character_count);
+        ZenzContextSnapshot {
+            text,
+            diagnostics: ZenzContextDiagnostics {
+                enabled,
+                character_count: u32::try_from(character_count).unwrap_or(u32::MAX),
+                turn_count: u32::try_from(turn_count).unwrap_or(u32::MAX),
+                discarded_session_count: self
+                    .zenz_context_discarded_sessions
+                    .load(Ordering::Relaxed),
+            },
+        }
     }
 
     fn append_zenz_context(
@@ -506,10 +589,8 @@ impl Pipeline {
             log::warn!(target: "pipeline_normalize", "Zenz context lock poisoned; dropping update");
             return;
         };
-        if !context.as_ref().is_some_and(|current| current.matches(session_id, capture_generation))
-        {
-            *context = Some(ZenzContextSession::new(session_id, capture_generation));
-        }
+        let discarded = ensure_zenz_context_session(&mut context, session_id, capture_generation);
+        self.zenz_context_discarded_sessions.fetch_add(u64::from(discarded), Ordering::Relaxed);
         let Some(current) = context.as_mut() else {
             return;
         };
@@ -955,60 +1036,66 @@ impl Pipeline {
             output.turn_session_id,
             output.turn_id,
         );
+        let zenz_context_diagnostics =
+            config.models.normalizer.starts_with("zenz-").then_some(left_context.diagnostics);
         let normalize_started = Instant::now();
-        let normalized = match self.normalize(config, &normalize_input, Some(&left_context)).await {
-            Ok(NormalizeOutcome::Success(text)) => {
-                record_stage(
-                    stages,
-                    on_stage,
-                    stage_event(
-                        "normalize",
-                        &utterance_id,
-                        config.models.normalizer.as_str(),
-                        &normalize_input,
-                        &text,
-                        elapsed_ms(normalize_started),
-                        true,
-                        None,
-                    ),
-                );
-                text
-            }
-            Ok(NormalizeOutcome::Fallback { text, error }) => {
-                record_stage(
-                    stages,
-                    on_stage,
-                    stage_event(
-                        "normalize",
-                        &utterance_id,
-                        config.models.normalizer.as_str(),
-                        &normalize_input,
-                        &text,
-                        elapsed_ms(normalize_started),
-                        false,
-                        Some(error),
-                    ),
-                );
-                text
-            }
-            Err(error) => {
-                record_stage(
-                    stages,
-                    on_stage,
-                    stage_event(
-                        "normalize",
-                        &utterance_id,
-                        config.models.normalizer.as_str(),
-                        &normalize_input,
-                        "",
-                        elapsed_ms(normalize_started),
-                        false,
-                        Some(error.to_string()),
-                    ),
-                );
-                return Err(error);
-            }
-        };
+        let normalized =
+            match self.normalize(config, &normalize_input, Some(&left_context.text)).await {
+                Ok(NormalizeOutcome::Success(text)) => {
+                    record_stage(
+                        stages,
+                        on_stage,
+                        stage_event(
+                            "normalize",
+                            &utterance_id,
+                            config.models.normalizer.as_str(),
+                            &normalize_input,
+                            &text,
+                            elapsed_ms(normalize_started),
+                            true,
+                            None,
+                        )
+                        .with_zenz_context(zenz_context_diagnostics),
+                    );
+                    text
+                }
+                Ok(NormalizeOutcome::Fallback { text, error }) => {
+                    record_stage(
+                        stages,
+                        on_stage,
+                        stage_event(
+                            "normalize",
+                            &utterance_id,
+                            config.models.normalizer.as_str(),
+                            &normalize_input,
+                            &text,
+                            elapsed_ms(normalize_started),
+                            false,
+                            Some(error),
+                        )
+                        .with_zenz_context(zenz_context_diagnostics),
+                    );
+                    text
+                }
+                Err(error) => {
+                    record_stage(
+                        stages,
+                        on_stage,
+                        stage_event(
+                            "normalize",
+                            &utterance_id,
+                            config.models.normalizer.as_str(),
+                            &normalize_input,
+                            "",
+                            elapsed_ms(normalize_started),
+                            false,
+                            Some(error.to_string()),
+                        )
+                        .with_zenz_context(zenz_context_diagnostics),
+                    );
+                    return Err(error);
+                }
+            };
         if normalized.trim().is_empty() {
             return Ok(None);
         }
@@ -1315,6 +1402,20 @@ where
             Err(format!("rescore timed out after {timeout_ms}ms"))
         }
     }
+}
+
+fn zenz_left_context_enabled_for(disable_flag: Option<&str>) -> bool {
+    !matches!(disable_flag, Some("1" | "true" | "on"))
+}
+
+fn zenz_left_context_enabled() -> bool {
+    // Build with CAPTION_BRIDGE_DISABLE_ZENZ_LEFT_CONTEXT=1 for an A/B baseline.
+    // The production default keeps upstream Zenz left-context conditioning enabled.
+    zenz_left_context_enabled_for(option_env!("CAPTION_BRIDGE_DISABLE_ZENZ_LEFT_CONTEXT"))
+}
+
+fn grapheme_count(text: &str) -> usize {
+    UnicodeSegmentation::graphemes(text, true).count()
 }
 
 fn suffix_graphemes(text: &str, max_graphemes: usize) -> String {
@@ -1679,6 +1780,7 @@ fn stage_event_with_surface(
         duration_ms,
         ok,
         error,
+        zenz_context: None,
     }
 }
 
@@ -1851,9 +1953,9 @@ mod tests {
         repair_caption_phrase_confusions, repair_hearing_phrase_confusion,
         repair_weather_reading_confusion, resolve_utterance_id, run_rescore_with_timeout, snippet,
         source_ready_caption, source_ready_caption_with_input, stage_event,
-        stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload, ChatPurpose,
-        NormalizeOutcome, ParapperRecognitionInput, Pipeline, PipelineStageEvent,
-        STAGE_SNIPPET_CHARS,
+        stage_event_with_surface, with_translation, zenz_left_context_enabled_for, zenz_prompt,
+        CaptionPayload, ChatPurpose, NormalizeOutcome, ParapperRecognitionInput, Pipeline,
+        PipelineStageEvent, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;
@@ -2321,24 +2423,44 @@ mod tests {
     }
 
     #[test]
+    fn zenz_context_build_flag_defaults_on_and_accepts_explicit_disable_values() {
+        assert!(zenz_left_context_enabled_for(None));
+        assert!(zenz_left_context_enabled_for(Some("0")));
+        assert!(!zenz_left_context_enabled_for(Some("1")));
+        assert!(!zenz_left_context_enabled_for(Some("true")));
+        assert!(!zenz_left_context_enabled_for(Some("on")));
+    }
+
+    #[test]
     fn zenz_context_keeps_each_final_turn_once_and_resets_at_capture_boundaries() {
         let pipeline = Pipeline::default();
-        assert_eq!(pipeline.zenz_left_context("session-a", Some(1), 10, 20), "");
+        let empty = pipeline.zenz_left_context("session-a", Some(1), 10, 20);
+        assert_eq!(empty.text, "");
+        assert_eq!(empty.diagnostics.character_count, 0);
+        assert_eq!(empty.diagnostics.turn_count, 0);
+        assert_eq!(empty.diagnostics.discarded_session_count, 0);
 
         pipeline.append_zenz_context("session-a", Some(1), 10, 20, "今日は晴れです。");
         pipeline.append_zenz_context("session-a", Some(1), 10, 20, "今日は雨です。");
-        assert_eq!(pipeline.zenz_left_context("session-a", Some(1), 10, 21), "今日は雨です。");
+        let revised = pipeline.zenz_left_context("session-a", Some(1), 10, 21);
+        assert_eq!(revised.text, "今日は雨です。");
+        assert_eq!(revised.diagnostics.character_count, 7);
+        assert_eq!(revised.diagnostics.turn_count, 1);
 
         pipeline.append_zenz_context("session-a", Some(1), 10, 21, "明日も晴れです。");
-        assert_eq!(
-            pipeline.zenz_left_context("session-a", Some(1), 10, 22),
-            "今日は雨です。明日も晴れです。"
-        );
-        assert_eq!(pipeline.zenz_left_context("session-a", Some(1), 10, 21), "今日は雨です。");
-        assert_eq!(pipeline.zenz_left_context("session-a", Some(2), 11, 1), "");
+        let combined = pipeline.zenz_left_context("session-a", Some(1), 10, 22);
+        assert_eq!(combined.text, "今日は雨です。明日も晴れです。");
+        assert_eq!(combined.diagnostics.character_count, 15);
+        assert_eq!(combined.diagnostics.turn_count, 2);
+        assert_eq!(pipeline.zenz_left_context("session-a", Some(1), 10, 21).text, "今日は雨です。");
+        let new_capture = pipeline.zenz_left_context("session-a", Some(2), 11, 1);
+        assert_eq!(new_capture.text, "");
+        assert_eq!(new_capture.diagnostics.discarded_session_count, 1);
 
         pipeline.append_zenz_context("session-a", Some(2), 11, 1, "新しい収録です。");
-        assert_eq!(pipeline.zenz_left_context("session-b", Some(2), 12, 1), "");
+        let new_session = pipeline.zenz_left_context("session-b", Some(2), 12, 1);
+        assert_eq!(new_session.text, "");
+        assert_eq!(new_session.diagnostics.discarded_session_count, 2);
     }
 
     #[test]
@@ -2657,6 +2779,12 @@ mod tests {
             duration_ms: 42,
             ok: true,
             error: None,
+            zenz_context: Some(super::ZenzContextDiagnostics {
+                enabled: true,
+                character_count: 12,
+                turn_count: 2,
+                discarded_session_count: 1,
+            }),
         };
         let value = serde_json::to_value(&event).expect("serialize");
         assert_eq!(value["stage"], "asr");
@@ -2669,6 +2797,10 @@ mod tests {
         assert_eq!(value["at"], 99);
         assert_eq!(value["durationMs"], 42);
         assert_eq!(value["ok"], true);
+        assert_eq!(value["zenzContext"]["enabled"], true);
+        assert_eq!(value["zenzContext"]["characterCount"], 12);
+        assert_eq!(value["zenzContext"]["turnCount"], 2);
+        assert_eq!(value["zenzContext"]["discardedSessionCount"], 1);
         assert!(value["error"].is_null());
     }
 

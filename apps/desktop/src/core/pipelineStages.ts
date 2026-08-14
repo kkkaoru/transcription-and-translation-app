@@ -11,6 +11,7 @@ import type {
   PipelineStageEvent,
   PipelineStageName,
   UtteranceStageGroup,
+  ZenzContextDiagnostics,
 } from "./types";
 
 const MAX_STAGE_EVENTS = 96;
@@ -116,6 +117,9 @@ const logStage = (event: PipelineStageEvent): void => {
     event.modelId ? `model=${event.modelId}` : null,
     `startedAt=${event.startedAt}`,
     `endedAt=${event.at}`,
+    event.zenzContext
+      ? `zenzContext=${event.zenzContext.enabled ? "on" : "off"},chars=${event.zenzContext.characterCount},turns=${event.zenzContext.turnCount},discardedSessions=${event.zenzContext.discardedSessionCount}`
+      : null,
     event.inputSnippet ? `in=${event.inputSnippet}` : null,
     event.outputText ? `out=${event.outputText}` : null,
     event.error ? `error=${event.error}` : null,
@@ -129,6 +133,35 @@ const logStage = (event: PipelineStageEvent): void => {
     detail,
     { mirrorStructured: false },
   );
+};
+
+const zenzContextDiagnosticsFromUnknown = (value: unknown): ZenzContextDiagnostics | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = Object.fromEntries(Object.entries(value));
+  const enabled = record["enabled"];
+  const characterCount = record["characterCount"] ?? record["character_count"];
+  const turnCount = record["turnCount"] ?? record["turn_count"];
+  const discardedSessionCount =
+    record["discardedSessionCount"] ?? record["discarded_session_count"];
+  if (
+    typeof enabled !== "boolean" ||
+    typeof characterCount !== "number" ||
+    !Number.isFinite(characterCount) ||
+    typeof turnCount !== "number" ||
+    !Number.isFinite(turnCount) ||
+    typeof discardedSessionCount !== "number" ||
+    !Number.isFinite(discardedSessionCount)
+  ) {
+    return undefined;
+  }
+  return {
+    enabled,
+    characterCount: Math.max(0, Math.round(characterCount)),
+    turnCount: Math.max(0, Math.round(turnCount)),
+    discardedSessionCount: Math.max(0, Math.round(discardedSessionCount)),
+  };
 };
 
 /** Normalize partial/unknown payloads from Tauri into a stable event shape. */
@@ -186,6 +219,9 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
       ? Math.max(0, Math.round(captureGenerationRaw))
       : undefined;
   const asrLatency = asrLatencyFromUnknown(record);
+  const zenzContext = zenzContextDiagnosticsFromUnknown(
+    record["zenzContext"] ?? record["zenz_context"],
+  );
   return {
     stage,
     utteranceId: utteranceId || `stage-${Date.now()}-${sequence}`,
@@ -200,6 +236,7 @@ export const normalizePipelineStageEvent = (raw: unknown): PipelineStageEvent | 
     error,
     ...(captureGeneration !== undefined ? { captureGeneration } : {}),
     ...(asrLatency ? { asrLatency } : {}),
+    ...(zenzContext ? { zenzContext } : {}),
   };
 };
 

@@ -908,6 +908,7 @@ mod tests {
             duration_ms: 1,
             ok: true,
             error: None,
+            zenz_context: None,
         }
     }
 
