@@ -16,9 +16,9 @@ This checklist is for manual verification without automating the UI or changing 
    - Switch between **1行表示** and **2行表示**.
    - Confirm the font-family select contains the current value and installed OS fonts, and selecting a font updates the sample.
 5. In **配信**, without changing the selected input device:
-   - Confirm an OPEN-segment prediction stays within the configured caption width.
-   - Start a new utterance after a completed translated caption. The old caption should switch immediately to the low-opacity new prediction instead of hiding the new text behind the five-second hold.
-   - Confirm the completed source and translation replace that prediction normally.
+   - Confirm an OPEN-segment prediction is appended after the completed source in low opacity and wraps within the shared two-line source area.
+   - Start a new utterance after a completed translated caption. The completed translation should remain visible while the low-opacity prediction updates.
+   - Confirm the prediction is replaced normally when the new source caption is committed.
 
 ## Copying diagnostics
 
@@ -28,13 +28,13 @@ Record the installed build/commit with every diagnostic report. This prevents ev
 
 ## Translation decision guide
 
-Inspect the retained pipeline stages and `captionTranslationDispositions` in the copied JSON:
+Inspect the retained pipeline stages and `captionTranslationDispositions` in the copied JSON. For kana-to-kanji corruption, first check the recorded `normalize` model: custom dictionary and AzooKey quality conclusions apply only when it is `azookey-rust`; a Zenz output must not be diagnosed as an AzooKey conversion.
 
 | Evidence | Interpretation |
 | --- | --- |
+| `normalize` model is not `azookey-rust` | AzooKey and its custom dictionary were not used; resolve the selected normalizer before investigating AzooKey quality |
 | No successful Rust `translate` stage, or a failed stage | Translation backend/pipeline issue |
 | `decisionSource: "merge"` with a drop reason | The merge reason rejected the translation |
-| `decisionSource: "display"`, `reason: "prediction-only-plate"` | Translation was merged, then intentionally hidden because the next utterance prediction replaced the completed plate |
 | `decisionSource: "display"`, `reason: "no-displayable-translation"` | The merged output contained no displayable letter or number |
 | `decisionSource: "display"`, `reason: "displayed"` | The shared display gate emitted the translation; investigate downstream DOM/CSS/native canvas/Syphon rendering |
 | No merge or display decision despite a successful translate stage | Check IPC/event delivery and include the full diagnostic JSON |
