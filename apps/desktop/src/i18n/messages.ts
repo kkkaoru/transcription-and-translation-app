@@ -252,6 +252,9 @@ const ja = {
   "settings.translationStyle": "English（翻訳結果）",
   "settings.stylePreviewTitle": "字幕プレビュー",
   "settings.stylePreviewLive": "リアルタイム",
+  "settings.previewLines": "プレビュー行数",
+  "settings.previewOneLine": "1行表示",
+  "settings.previewTwoLines": "2行表示",
   "settings.stylePreviewHint": "設定の変更は保存前でもプレビューにすぐ反映されます。",
   "settings.transparentTitle": "字幕表示ウィンドウ",
   "settings.transparentDetail":
@@ -806,6 +809,9 @@ const en: Record<MessageKey, string> = {
   "settings.translationStyle": "English (translation)",
   "settings.stylePreviewTitle": "Caption preview",
   "settings.stylePreviewLive": "LIVE",
+  "settings.previewLines": "Preview lines",
+  "settings.previewOneLine": "1 line",
+  "settings.previewTwoLines": "2 lines",
   "settings.stylePreviewHint": "Changes appear here immediately, before you save.",
   "settings.transparentTitle": "Caption display window",
   "settings.transparentDetail":

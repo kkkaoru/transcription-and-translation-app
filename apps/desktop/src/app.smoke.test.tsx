@@ -203,5 +203,21 @@ describe("App routes", () => {
     expect(container.querySelector(".content-heading h2")?.textContent).toBe("文字の装飾");
     expect(container.querySelector('[data-testid="caption-style-editors"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="caption-style-layout"]')).not.toBeNull();
+    const oneLine = Array.from(container.querySelectorAll(".preview-line-toggle button")).find(
+      (button) => button.textContent === "1行表示",
+    );
+    const twoLines = Array.from(container.querySelectorAll(".preview-line-toggle button")).find(
+      (button) => button.textContent === "2行表示",
+    );
+    expect(oneLine).not.toBeUndefined();
+    expect(twoLines).not.toBeUndefined();
+    act(() => oneLine?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(container.querySelector(".caption-line-translation")?.getAttribute("data-empty")).toBe(
+      "true",
+    );
+    act(() => twoLines?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(container.querySelector(".caption-line-translation")?.getAttribute("data-empty")).toBe(
+      null,
+    );
   });
 });

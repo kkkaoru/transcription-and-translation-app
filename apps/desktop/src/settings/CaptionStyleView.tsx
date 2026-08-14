@@ -2,6 +2,10 @@ import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Field } from "../components/Field";
 import {
+  type CaptionStylePreviewLines,
+  captionForStylePreviewLines,
+} from "../core/caption-style-preview";
+import {
   CAPTION_MAX_CHARS_MAX,
   CAPTION_MAX_CHARS_MIN,
   CAPTION_POSITION_MAX_PERCENT,
@@ -23,7 +27,11 @@ const CaptionStylePreview = ({ config }: { config: AppConfig }) => {
   const { t } = useI18n();
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
-  const caption = useMemo(() => createPreviewCaption(), []);
+  const [previewLines, setPreviewLines] = useState<CaptionStylePreviewLines>(2);
+  const caption = useMemo(
+    () => captionForStylePreviewLines(createPreviewCaption(), previewLines),
+    [previewLines],
+  );
   const overlayWidth = Number.isFinite(config.overlay.width)
     ? Math.max(1, config.overlay.width)
     : 1_280;
@@ -84,6 +92,25 @@ const CaptionStylePreview = ({ config }: { config: AppConfig }) => {
         <div>
           <h3>{t("settings.stylePreviewTitle")}</h3>
         </div>
+        <fieldset className="preview-line-toggle">
+          <legend className="visually-hidden">{t("settings.previewLines")}</legend>
+          <button
+            type="button"
+            className={previewLines === 1 ? "active" : ""}
+            aria-pressed={previewLines === 1}
+            onClick={() => setPreviewLines(1)}
+          >
+            {t("settings.previewOneLine")}
+          </button>
+          <button
+            type="button"
+            className={previewLines === 2 ? "active" : ""}
+            aria-pressed={previewLines === 2}
+            onClick={() => setPreviewLines(2)}
+          >
+            {t("settings.previewTwoLines")}
+          </button>
+        </fieldset>
         <span className="live-badge">{t("settings.stylePreviewLive")}</span>
       </div>
       <div
@@ -237,8 +264,8 @@ export const CaptionStyleView = ({
       </div>
 
       {showPreview ? (
-        <div className="live-grid" data-testid="caption-style-workspace">
-          <div>{editor}</div>
+        <div className="live-grid caption-style-workspace" data-testid="caption-style-workspace">
+          <div className="caption-style-controls">{editor}</div>
           <CaptionStylePreview config={config} />
         </div>
       ) : (
