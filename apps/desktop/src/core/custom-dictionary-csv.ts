@@ -15,7 +15,7 @@ const parseCsvRecords = (input: string): string[][] => {
   let field = "";
   let quoted = false;
   for (let index = 0; index < input.length; index += 1) {
-    const character = input[index] ?? "";
+    const character = input[index] as string;
     if (quoted) {
       if (character === '"') {
         if (input[index + 1] === '"') {
@@ -77,8 +77,8 @@ export const importCustomDictionaryCsv = (csv: string): CustomDictionaryCsvRow[]
       if (record.length !== 2) {
         throw new Error(`CSV row ${index + 1} must contain exactly two columns`);
       }
-      const reading = (record[0] ?? "").trim();
-      const word = (record[1] ?? "").trim();
+      const reading = (record[0] as string).trim();
+      const word = (record[1] as string).trim();
       if (!reading || !word || /[\t\r\n]/u.test(reading) || /[\t\r\n]/u.test(word)) {
         throw new Error(`CSV row ${index + 1} contains an invalid reading or word`);
       }
