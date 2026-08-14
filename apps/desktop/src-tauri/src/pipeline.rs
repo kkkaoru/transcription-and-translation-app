@@ -593,8 +593,9 @@ impl Pipeline {
                 ),
             );
         }
+        let normalize_input = repair_weather_reading_confusion(&reading);
         let normalize_started = Instant::now();
-        let normalized = match self.normalize(config, &reading).await {
+        let normalized = match self.normalize(config, &normalize_input).await {
             Ok(NormalizeOutcome::Success(text)) => {
                 record_stage(
                     stages,
@@ -603,7 +604,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         normalize_model,
-                        &reading,
+                        &normalize_input,
                         &text,
                         elapsed_ms(normalize_started),
                         true,
@@ -626,7 +627,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         normalize_model,
-                        &reading,
+                        &normalize_input,
                         &text,
                         elapsed_ms(normalize_started),
                         false,
@@ -643,7 +644,7 @@ impl Pipeline {
                         "normalize",
                         &utterance_id,
                         normalize_model,
-                        &reading,
+                        &normalize_input,
                         "",
                         elapsed_ms(normalize_started),
                         false,
@@ -663,7 +664,7 @@ impl Pipeline {
             // the UI keeps the previous non-empty caption unchanged.
             return Ok(None);
         }
-        let normalized = repair_hearing_phrase_confusion(&normalized);
+        let normalized = repair_caption_phrase_confusions(&normalized);
         let mut ready = source_ready_caption(config, normalized, started_at, utterance_id);
         self.assign_caption_boundary_offsets(&mut ready);
         // Always emit the normalized source, even when it happens to match the
@@ -782,9 +783,10 @@ impl Pipeline {
         // tasks. The final runs once per turn with the configured timeout.
         // The merge key (`azookey_input_text`) always retains the post-vibrato,
         // unrescored reading, including when interim rescoring is skipped.
+        let repaired_reading = repair_weather_reading_confusion(&reading);
         let normalize_input = if config.rescore.enabled && output.is_final {
             let rescore_started = Instant::now();
-            let (rescored, rescore_error) = self.rescore_reading(config, &reading).await;
+            let (rescored, rescore_error) = self.rescore_reading(config, &repaired_reading).await;
             record_stage(
                 stages,
                 on_stage,
@@ -792,7 +794,7 @@ impl Pipeline {
                     "rescore",
                     &utterance_id,
                     "input-n5-lm-v1",
-                    &reading,
+                    &repaired_reading,
                     &rescored,
                     elapsed_ms(rescore_started),
                     rescore_error.is_none(),
@@ -802,7 +804,7 @@ impl Pipeline {
             );
             rescored
         } else {
-            reading.clone()
+            repaired_reading
         };
 
         let normalize_started = Instant::now();
@@ -862,7 +864,7 @@ impl Pipeline {
         if normalized.trim().is_empty() {
             return Ok(None);
         }
-        let normalized = repair_hearing_phrase_confusion(&normalized);
+        let normalized = repair_caption_phrase_confusions(&normalized);
 
         let mut ready = source_ready_caption_with_input(
             config,
@@ -1179,6 +1181,25 @@ fn zenz_prompt(input: &str) -> String {
 /// ZenZ also inserts a sentence period after fixed greetings
 /// (`こんにちは。聞こえますか。`), which pages the plate onto only the second
 /// clause and hides the greeting the speaker already said.
+fn repair_weather_reading_confusion(text: &str) -> String {
+    // ReazonSpeech occasionally confuses the vowel in the highly constrained
+    // weather phrase. Restrict the repair to 天気は晴れ…確率 so ordinary
+    // こうせい words (構成・校正・公正) remain untouched. If contextual ASR
+    // repairs grow beyond this isolated phrase, move them into reviewed data
+    // instead of extending this function into a general rewrite list.
+    text.replace("てんきははれこうせいかくりつ", "てんきははれこうすいかくりつ")
+}
+
+fn repair_weather_surface_confusion(text: &str) -> String {
+    // The official AzooKey dictionary can rank the stem-only 晴 immediately
+    // before 降水. Restore the spoken れ only in this weather collocation.
+    text.replace("晴降水確率", "晴れ降水確率")
+}
+
+fn repair_caption_phrase_confusions(text: &str) -> String {
+    repair_weather_surface_confusion(&repair_hearing_phrase_confusion(text))
+}
+
 #[allow(clippy::excessive_nesting)]
 fn repair_hearing_phrase_confusion(text: &str) -> String {
     let greetings = ["こんにちは", "こんばんは", "おはようございます", "おはよう", "さようなら"];
@@ -1662,11 +1683,12 @@ fn resolve_utterance_id(provided: Option<&str>) -> String {
 mod tests {
     use super::{
         clean_model_text, has_translatable_content, is_no_speech_response, normalize_azookey,
-        normalize_azookey_with_cache, record_stage, repair_hearing_phrase_confusion,
-        resolve_utterance_id, run_rescore_with_timeout, snippet, source_ready_caption,
-        source_ready_caption_with_input, stage_event, stage_event_with_surface, with_translation,
-        zenz_prompt, CaptionPayload, NormalizeOutcome, ParapperRecognitionInput, Pipeline,
-        PipelineStageEvent, STAGE_SNIPPET_CHARS,
+        normalize_azookey_with_cache, record_stage, repair_caption_phrase_confusions,
+        repair_hearing_phrase_confusion, repair_weather_reading_confusion, resolve_utterance_id,
+        run_rescore_with_timeout, snippet, source_ready_caption, source_ready_caption_with_input,
+        stage_event, stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload,
+        NormalizeOutcome, ParapperRecognitionInput, Pipeline, PipelineStageEvent,
+        STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;
@@ -1998,6 +2020,30 @@ mod tests {
     }
 
     #[test]
+    fn azookey_weather_percent_conversion_avoids_zenz_garble() {
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
+        let mut config = AppConfig::default();
+        config.models.paths.insert(
+            "azookey-rust".to_string(),
+            official_system_dictionary_path().to_string_lossy().into_owned(),
+        );
+
+        assert_eq!(
+            normalize_azookey(&config, "ろくじゅうぱーせんと").expect("percent normalize"),
+            NormalizeOutcome::Success("60%".to_string())
+        );
+        let NormalizeOutcome::Success(weather) = normalize_azookey(
+            &config,
+            "あしたのてんきははれこうすいかくりつはろくじゅうぱーせんと",
+        )
+        .expect("weather normalize") else {
+            panic!("official dictionary should normalize the weather phrase");
+        };
+        assert_eq!(repair_caption_phrase_confusions(&weather), "明日の天気は晴れ降水確率は60%");
+        assert!(!weather.contains('蕨') && !weather.contains('丑') && !weather.contains('酉'));
+    }
+
+    #[test]
     fn azookey_official_dictionary_default_conversion_is_phrase_neutral_for_hashi_no_haji() {
         let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         // Official system dictionary only: no user/phrase or learning-memory rows.
@@ -2070,6 +2116,24 @@ mod tests {
     fn zenz_prompt_converts_hiragana_to_katakana_inside_protocol_tags() {
         assert_eq!(zenz_prompt("きょうは配信です"), "\u{EE00}キョウハ配信デス\u{EE01}");
         assert_eq!(zenz_prompt("カタカナ"), "\u{EE00}カタカナ\u{EE01}");
+    }
+
+    #[test]
+    fn weather_phrase_repairs_are_narrow_and_preserve_percent_text() {
+        assert_eq!(
+            repair_weather_reading_confusion(
+                "あしたのてんきははれこうせいかくりつはろくじゅうぱーせんと"
+            ),
+            "あしたのてんきははれこうすいかくりつはろくじゅうぱーせんと"
+        );
+        assert_eq!(
+            repair_weather_reading_confusion("こうせいについてせつめいします"),
+            "こうせいについてせつめいします"
+        );
+        assert_eq!(
+            repair_caption_phrase_confusions("明日の天気は晴降水確率は60%"),
+            "明日の天気は晴れ降水確率は60%"
+        );
     }
 
     #[test]
