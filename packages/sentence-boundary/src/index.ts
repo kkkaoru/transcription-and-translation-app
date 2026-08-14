@@ -257,6 +257,15 @@ const detectHeuristicEnds = (text: string, english: boolean, allowCopula = true)
       continue;
     }
     const remainder = chars.slice(index).join("");
+    const punctuationContinues = english
+      ? /[.!?]$/u.test(prefix) && /^[.!?]/u.test(remainder)
+      : /[。．！？!?]$/u.test(prefix) && /^[。．！？!?]/u.test(remainder);
+    // Treat an ellipsis or mixed punctuation run as one sentence terminator.
+    // Recording every character in "..." / "!?" as an end makes the newest
+    // completed sentence collapse to the final punctuation character.
+    if (punctuationContinues) {
+      continue;
+    }
     // Do not page after は when ー continues the same spoken phrase.
     if (shouldIgnoreSentenceEndBeforeContinuation(prefix, remainder, english)) {
       continue;

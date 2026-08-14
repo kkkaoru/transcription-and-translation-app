@@ -190,6 +190,13 @@ describe("Vibrato POS offsets page messy live speech", () => {
 });
 
 describe("English sentence paging", () => {
+  it("keeps consecutive terminal punctuation as one sentence end", () => {
+    expect(selectVisibleCaptionSentence("Yes...", { key: "translation" })).toBe("Yes...");
+    expect(selectVisibleCaptionSentence("Really!?", { key: "translation" })).toBe("Really!?");
+    expect(selectVisibleCaptionSentence("Wait... Next", { key: "translation" })).toBe("Next");
+    expect(selectVisibleCaptionSentence("本当！？")).toBe("本当！？");
+  });
+
   it("switches after . ? ! without splitting abbreviations mid-token", () => {
     expect(
       selectVisibleCaptionSentence("It is sunny today. It will rain tomorrow.", {
