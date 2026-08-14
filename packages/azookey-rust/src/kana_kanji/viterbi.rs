@@ -250,17 +250,12 @@ pub struct ConversionCandidate {
 /// documents that the original source spelling is required by the caller.
 /// `StrictDictionary` omits OOV edges entirely; a strict lattice can therefore
 /// be empty for input that is not fully covered by dictionary/boundary edges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UnknownPolicy {
     StrictDictionary,
+    #[default]
     AllowOovIdentity,
     PreserveInput,
-}
-
-impl Default for UnknownPolicy {
-    fn default() -> Self {
-        Self::AllowOovIdentity
-    }
 }
 
 pub type EdgeHandle = usize;
@@ -670,15 +665,17 @@ pub fn build_lattice(
                 &mut edges,
                 &mut outgoing,
                 &byte_offsets,
-                start,
-                end,
-                entry.reading,
-                surface,
-                entry.value + context_score,
-                entry.lcid,
-                entry.rcid,
-                entry.mid,
-                origin,
+                LatticeEdgeSpec {
+                    start,
+                    end,
+                    reading: entry.reading,
+                    surface,
+                    score: entry.value + context_score,
+                    lcid: entry.lcid,
+                    rcid: entry.rcid,
+                    mid: entry.mid,
+                    origin,
+                },
             );
         }
 
@@ -708,15 +705,17 @@ pub fn build_lattice(
                     &mut edges,
                     &mut outgoing,
                     &byte_offsets,
-                    start,
-                    next,
-                    reading,
-                    number_surface.clone(),
-                    score,
-                    DEFAULT_CID,
-                    DEFAULT_CID,
-                    BOS_EOS_MID,
-                    EdgeOrigin::NumericSynthesized,
+                    LatticeEdgeSpec {
+                        start,
+                        end: next,
+                        reading,
+                        surface: number_surface.clone(),
+                        score,
+                        lcid: DEFAULT_CID,
+                        rcid: DEFAULT_CID,
+                        mid: BOS_EOS_MID,
+                        origin: EdgeOrigin::NumericSynthesized,
+                    },
                 );
                 if let Some((counter_len, counter_surface)) = numeric_counter_surface(suffix) {
                     let counter_end = next + counter_len;
@@ -726,15 +725,17 @@ pub fn build_lattice(
                             &mut edges,
                             &mut outgoing,
                             &byte_offsets,
-                            start,
-                            counter_end,
-                            counter_reading,
-                            format!("{number_surface}{counter_surface}"),
-                            score + NUMERIC_COUNTER_SCORE_PENALTY,
-                            DEFAULT_CID,
-                            DEFAULT_CID,
-                            BOS_EOS_MID,
-                            EdgeOrigin::NumericSynthesized,
+                            LatticeEdgeSpec {
+                                start,
+                                end: counter_end,
+                                reading: counter_reading,
+                                surface: format!("{number_surface}{counter_surface}"),
+                                score: score + NUMERIC_COUNTER_SCORE_PENALTY,
+                                lcid: DEFAULT_CID,
+                                rcid: DEFAULT_CID,
+                                mid: BOS_EOS_MID,
+                                origin: EdgeOrigin::NumericSynthesized,
+                            },
                         );
                     }
                 }
@@ -746,15 +747,17 @@ pub fn build_lattice(
                 &mut edges,
                 &mut outgoing,
                 &byte_offsets,
-                start,
-                start + 1,
-                chars[start].to_string(),
-                source_chars[start].to_string(),
-                NO_SCORE,
-                DEFAULT_CID,
-                DEFAULT_CID,
-                BOS_EOS_MID,
-                EdgeOrigin::Boundary,
+                LatticeEdgeSpec {
+                    start,
+                    end: start + 1,
+                    reading: chars[start].to_string(),
+                    surface: source_chars[start].to_string(),
+                    score: NO_SCORE,
+                    lcid: DEFAULT_CID,
+                    rcid: DEFAULT_CID,
+                    mid: BOS_EOS_MID,
+                    origin: EdgeOrigin::Boundary,
+                },
             );
         }
     }
@@ -772,15 +775,17 @@ pub fn build_lattice(
                 &mut edges,
                 &mut outgoing,
                 &byte_offsets,
-                start,
-                start + 1,
-                chars[start].to_string(),
-                source_chars[start].to_string(),
-                UNKNOWN_CHARACTER_PENALTY,
-                DEFAULT_CID,
-                DEFAULT_CID,
-                BOS_EOS_MID,
-                EdgeOrigin::OovIdentity,
+                LatticeEdgeSpec {
+                    start,
+                    end: start + 1,
+                    reading: chars[start].to_string(),
+                    surface: source_chars[start].to_string(),
+                    score: UNKNOWN_CHARACTER_PENALTY,
+                    lcid: DEFAULT_CID,
+                    rcid: DEFAULT_CID,
+                    mid: BOS_EOS_MID,
+                    origin: EdgeOrigin::OovIdentity,
+                },
             );
         }
     }
@@ -831,10 +836,7 @@ fn is_known_identity_edge(entry: &DictionaryEntry, surface: &str, source: &str) 
             && !contains_ascii_alphanumeric(&entry.surface))
 }
 
-fn push_lattice_edge(
-    edges: &mut Vec<LatticeEdge>,
-    outgoing: &mut [Vec<EdgeHandle>],
-    byte_offsets: &[usize],
+struct LatticeEdgeSpec {
     start: usize,
     end: usize,
     reading: String,
@@ -844,22 +846,29 @@ fn push_lattice_edge(
     rcid: u16,
     mid: u16,
     origin: EdgeOrigin,
+}
+
+fn push_lattice_edge(
+    edges: &mut Vec<LatticeEdge>,
+    outgoing: &mut [Vec<EdgeHandle>],
+    byte_offsets: &[usize],
+    spec: LatticeEdgeSpec,
 ) {
     let handle = edges.len();
-    let byte_start = byte_offsets.get(start).copied().unwrap_or_default();
-    let byte_end = byte_offsets.get(end).copied().unwrap_or(byte_start);
+    let byte_start = byte_offsets.get(spec.start).copied().unwrap_or_default();
+    let byte_end = byte_offsets.get(spec.end).copied().unwrap_or(byte_start);
     edges.push(LatticeEdge {
-        scalar_span: start..end,
+        scalar_span: spec.start..spec.end,
         byte_span: byte_start..byte_end,
-        reading,
-        surface,
-        score,
-        lcid,
-        rcid,
-        mid,
-        origin,
+        reading: spec.reading,
+        surface: spec.surface,
+        score: spec.score,
+        lcid: spec.lcid,
+        rcid: spec.rcid,
+        mid: spec.mid,
+        origin: spec.origin,
     });
-    if let Some(bucket) = outgoing.get_mut(start) {
+    if let Some(bucket) = outgoing.get_mut(spec.start) {
         bucket.push(handle);
     }
 }
@@ -931,7 +940,6 @@ pub fn search(
 
     let mut candidates = states[lattice.terminal]
         .drain(..)
-        .into_iter()
         .filter_map(|state| {
             let candidate = CandidatePath {
                 edge_handles: state.edge_handles,

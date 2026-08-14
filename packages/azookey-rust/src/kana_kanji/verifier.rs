@@ -5,7 +5,7 @@ use std::fmt;
 /// Capabilities exposed by a verifier backend. A caller must inspect these
 /// flags before choosing a verification strategy; unsupported features are
 /// represented explicitly instead of silently falling back to baseline text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VerifierCapabilities {
     pub prefix_constraints: bool,
     pub session_kv: bool,
@@ -13,19 +13,6 @@ pub struct VerifierCapabilities {
     pub max_candidates: usize,
     pub model_revision: String,
     pub tokenizer_revision: String,
-}
-
-impl Default for VerifierCapabilities {
-    fn default() -> Self {
-        Self {
-            prefix_constraints: false,
-            session_kv: false,
-            right_context: false,
-            max_candidates: 0,
-            model_revision: String::new(),
-            tokenizer_revision: String::new(),
-        }
-    }
 }
 
 /// Input/context identity for one conversion session. The byte representation
