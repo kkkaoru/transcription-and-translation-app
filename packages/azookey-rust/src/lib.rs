@@ -9,12 +9,15 @@
 mod dictionary;
 #[path = "kana_kanji/normalization.rs"]
 mod normalization;
+#[path = "kana_kanji/verification_cache.rs"]
+mod verification_cache;
 #[path = "kana_kanji/verifier.rs"]
 mod verifier;
 #[path = "kana_kanji/viterbi.rs"]
 mod viterbi;
 
 pub use dictionary::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
+pub use verification_cache::{VerificationCache, VerificationCacheStats};
 pub use verifier::{
     Draft, DraftVerifier, SessionContext, VerificationCacheKey, VerificationResult,
     VerificationState, VerifierCapabilities, VerifierError, VerifierSession,
