@@ -35,6 +35,11 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const desktopSrc = dirname(fileURLToPath(import.meta.url));
 const mainAppSource = readFileSync(join(desktopSrc, "..", "live", "MainApp.tsx"), "utf8");
 const overlayAppSource = readFileSync(join(desktopSrc, "OverlayApp.tsx"), "utf8");
+const captionOverlaySource = readFileSync(join(desktopSrc, "CaptionOverlay.tsx"), "utf8");
+const nativeFramePublisherSource = readFileSync(
+  join(desktopSrc, "NativeFramePublisher.tsx"),
+  "utf8",
+);
 
 const caption = (partial: Partial<CaptionPayload>): CaptionPayload => ({
   id: "u-1",
@@ -106,6 +111,13 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       );
       expect(overlayAppSource).toMatch(/useCaptionHoldClear\(caption,/);
       expect(overlayAppSource).toMatch(/resetOverlayStickyRefs\(stickyRefs\)/);
+    });
+  });
+
+  describe("translation display gate wiring", () => {
+    it("routes Live, Overlay, and native/Syphon rows through captionItems", () => {
+      expect(captionOverlaySource).toMatch(/captionItems\(config, caption, placeholder\)/);
+      expect(nativeFramePublisherSource).toMatch(/captionItems\(config, caption\)/);
     });
   });
 

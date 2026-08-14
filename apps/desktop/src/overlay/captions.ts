@@ -274,6 +274,14 @@ export const sanitizeCaptionDisplayText = (text: string): string =>
     repairHearingPhraseConfusion(stripCaptionContinuationMarker(text.replace(/\r\n?/gu, "\n"))),
   );
 
+/**
+ * A translation containing no Unicode letter or number is not useful caption
+ * content. Keep this display-side guard even though the pipeline rejects the
+ * same degenerate model output, so stale or external payloads cannot paint `.`.
+ */
+export const hasDisplayableTranslationText = (text: string): boolean =>
+  /[\p{L}\p{N}]/u.test(text.trim());
+
 /** Pick the best wrap index in `[floor, limit]` preferring soft POS then morph/punct. */
 const preferNaturalBreakIndex = (
   graphemes: string[],
@@ -616,11 +624,14 @@ export const captionItems = (
     softBreakOffsets: caption.softBreakOffsets,
     deferSentencePaging,
   };
+  const sanitizedTranslation = sanitizeCaptionDisplayText(caption.translationText);
   const translation: CaptionItem = {
     key: "translation",
     text: placeholder
       ? "English translation will appear here"
-      : sanitizeCaptionDisplayText(caption.translationText),
+      : hasDisplayableTranslationText(sanitizedTranslation)
+        ? sanitizedTranslation
+        : "",
     style: config.overlay.translation,
     maxChars: resolveCaptionMaxChars(config, "translation"),
     deferSentencePaging,

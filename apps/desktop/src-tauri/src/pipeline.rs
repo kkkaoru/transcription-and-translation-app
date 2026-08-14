@@ -887,11 +887,28 @@ impl Pipeline {
         caption: CaptionPayload,
         stages: &mut Vec<PipelineStageEvent>,
         on_stage: &mut (dyn FnMut(&PipelineStageEvent) + Send),
-    ) -> Result<CaptionPayload, PipelineError> {
+    ) -> Result<Option<CaptionPayload>, PipelineError> {
         let translate_started = Instant::now();
         let source = caption.source_text.clone();
         let utterance_id = caption.id.clone();
         let translate_model = config.models.translator.as_str();
+        if !has_translatable_content(&source) {
+            record_stage(
+                stages,
+                on_stage,
+                stage_event(
+                    "translate",
+                    &utterance_id,
+                    translate_model,
+                    &source,
+                    "",
+                    elapsed_ms(translate_started),
+                    true,
+                    None,
+                ),
+            );
+            return Ok(None);
+        }
         match self.translate(config, &source).await {
             Ok(translation) => {
                 let finished = with_translation(caption, &translation, now_millis());
@@ -909,7 +926,7 @@ impl Pipeline {
                         None,
                     ),
                 );
-                Ok(finished)
+                Ok(Some(finished))
             }
             Err(error) => {
                 record_stage(
@@ -950,7 +967,7 @@ impl Pipeline {
         else {
             return Ok(None);
         };
-        Ok(Some(self.complete_translation(config, partial, stages, on_stage).await?))
+        self.complete_translation(config, partial, stages, on_stage).await
     }
 
     async fn transcribe(&self, config: &AppConfig, wav: Vec<u8>) -> Result<String, PipelineError> {
@@ -1106,7 +1123,7 @@ impl Pipeline {
             .choices
             .first()
             .map(|choice| choice.message.content.clone())
-            .filter(|text| !text.trim().is_empty())
+            .filter(|text| has_translatable_content(text))
             .ok_or(PipelineError::MissingText)
     }
 }
@@ -1524,6 +1541,15 @@ fn endpoint_url(base: &str, path: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), path.trim_start_matches('/'))
 }
 
+/// Translation requires at least one Unicode letter or number.
+///
+/// Empty, whitespace-only, punctuation-only, and symbol-only fragments carry no
+/// translatable content and can make small local models emit degenerate output
+/// such as `.`. The same predicate guards both model input and output.
+fn has_translatable_content(text: &str) -> bool {
+    text.trim().chars().any(char::is_alphanumeric)
+}
+
 fn language_name(code: &str) -> &str {
     match code {
         "ja" => "Japanese",
@@ -1627,12 +1653,12 @@ fn resolve_utterance_id(provided: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_model_text, is_no_speech_response, normalize_azookey, normalize_azookey_with_cache,
-        record_stage, repair_hearing_phrase_confusion, resolve_utterance_id,
-        run_rescore_with_timeout, snippet, source_ready_caption, source_ready_caption_with_input,
-        stage_event, stage_event_with_surface, with_translation, zenz_prompt, CaptionPayload,
-        NormalizeOutcome, ParapperRecognitionInput, Pipeline, PipelineStageEvent,
-        STAGE_SNIPPET_CHARS,
+        clean_model_text, has_translatable_content, is_no_speech_response, normalize_azookey,
+        normalize_azookey_with_cache, record_stage, repair_hearing_phrase_confusion,
+        resolve_utterance_id, run_rescore_with_timeout, snippet, source_ready_caption,
+        source_ready_caption_with_input, stage_event, stage_event_with_surface, with_translation,
+        zenz_prompt, CaptionPayload, NormalizeOutcome, ParapperRecognitionInput, Pipeline,
+        PipelineStageEvent, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;
@@ -1676,6 +1702,50 @@ mod tests {
             checked_in.display()
         );
         checked_in
+    }
+
+    #[test]
+    fn translation_content_guard_rejects_empty_and_symbol_only_text() {
+        for text in ["", "   \n\t", ".", "。", "!?", "！？", "___", "🗣️"] {
+            assert!(!has_translatable_content(text), "expected {text:?} to be rejected");
+        }
+        for text in ["はい", "うん", "A", "OK", "Yes", "東京", "東京🗣️", "2026", "配信!", "€100"]
+        {
+            assert!(has_translatable_content(text), "expected {text:?} to be accepted");
+        }
+    }
+
+    async fn assert_translation_soft_skips(
+        pipeline: &Pipeline,
+        config: &AppConfig,
+        source: &str,
+        index: usize,
+    ) {
+        let caption = source_ready_caption(config, source.to_string(), 42, format!("skip-{index}"));
+        let mut stages = Vec::new();
+        let result = pipeline
+            .complete_translation(config, caption, &mut stages, &mut ignore_pipeline_stage)
+            .await
+            .expect("non-translatable input should be a successful no-op");
+
+        assert!(result.is_none());
+        assert_eq!(stages.len(), 1);
+        assert!(stages[0].ok);
+        assert_eq!(stages[0].stage, "translate");
+        assert!(stages[0].output_text.is_empty());
+        assert!(stages[0].error.is_none());
+    }
+
+    #[tokio::test]
+    async fn complete_translation_soft_skips_non_translatable_source() {
+        let config = AppConfig::default();
+        let pipeline = Pipeline::default();
+
+        assert_translation_soft_skips(&pipeline, &config, "", 0).await;
+        assert_translation_soft_skips(&pipeline, &config, "   ", 1).await;
+        assert_translation_soft_skips(&pipeline, &config, ".", 2).await;
+        assert_translation_soft_skips(&pipeline, &config, "。", 3).await;
+        assert_translation_soft_skips(&pipeline, &config, "!?", 4).await;
     }
 
     #[test]

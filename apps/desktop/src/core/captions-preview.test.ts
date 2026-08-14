@@ -6,6 +6,7 @@ import {
   captionTextLines,
   createEmptyCaption,
   createPreviewCaption,
+  hasDisplayableTranslationText,
   resolveCaptionMaxChars,
   SOURCE_CAPTION_MAX_CHARS,
   segmentCaptionText,
@@ -92,6 +93,37 @@ describe("caption preview content", () => {
     expect(empty.startedAt).toBe(0);
     expect(empty.receivedAt).toBe(0);
     expect(captionItems(createDefaultConfig(), empty).map((item) => item.text)).toEqual(["", ""]);
+  });
+
+  it("hides empty and symbol-only translations while preserving real short translations", () => {
+    const config = createDefaultConfig();
+    for (const translationText of ["", "   ", ".", "。", "!?", "！？", "___", "🗣️"]) {
+      const translation = captionItems(config, {
+        ...createPreviewCaption(),
+        translationText,
+      }).find((item) => item.key === "translation");
+      expect(translation?.text, translationText).toBe("");
+      expect(hasDisplayableTranslationText(translationText)).toBe(false);
+    }
+
+    for (const translationText of [
+      "はい",
+      "うん",
+      "A",
+      "OK",
+      "Yes",
+      "東京",
+      "東京🗣️",
+      "2026",
+      "€100",
+    ]) {
+      const translation = captionItems(config, {
+        ...createPreviewCaption(),
+        translationText,
+      }).find((item) => item.key === "translation");
+      expect(translation?.text).toBe(translationText);
+      expect(hasDisplayableTranslationText(translationText)).toBe(true);
+    }
   });
 
   it("segments long source and translation text without dropping characters", () => {

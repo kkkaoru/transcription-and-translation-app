@@ -927,7 +927,7 @@ async fn translate_caption(
 fn handle_translation_result(
     app: &AppHandle,
     ticket: TranslationTicket,
-    result: Result<CaptionPayload, PipelineError>,
+    result: Result<Option<CaptionPayload>, PipelineError>,
 ) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
@@ -938,11 +938,15 @@ fn handle_translation_result(
         // into it. The helper records the caption and invokes the raw emit
         // closure while holding runtime status, so the closure must not
         // re-lock status.
-        Ok(caption) => {
+        Ok(Some(caption)) => {
             state.publish_translation_for_ticket(ticket, &caption, |payload| {
                 emit_caption_event(app, payload);
             });
         }
+        // A non-translatable source fragment is a successful no-op. The caller
+        // still finishes the ticket, but no duplicate caption or runtime error
+        // is emitted.
+        Ok(None) => {}
         // A stale translation failure must not poison the replacement
         // session's runtime status either; same ticket-atomic gate.
         Err(error) => {
