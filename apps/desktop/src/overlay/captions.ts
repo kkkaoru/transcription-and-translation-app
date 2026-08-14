@@ -1,6 +1,7 @@
 import {
   type CaptionSentenceHints,
   detectCaptionSoftBreaks,
+  rebaseCaptionSoftBreakOffsets,
   selectVisibleCaptionSentence,
 } from "@caption-bridge/sentence-boundary";
 import { recordCaptionTranslationDisplayDisposition } from "../core/caption-translation-diagnostics";
@@ -563,8 +564,16 @@ export const captionTextLines = (
     deferSentencePaging: item.deferSentencePaging,
   };
   const windowed = trimCaptionToDisplayWindow(item.text, maxChars, maxLines, hints);
+  const windowHints: CaptionSentenceHints = {
+    ...hints,
+    softBreakOffsets: rebaseCaptionSoftBreakOffsets(
+      sanitizeCaptionDisplayText(item.text),
+      windowed,
+      item.softBreakOffsets ?? [],
+    ),
+  };
   return keepNewestCaptionLines(
-    segmentCaptionText(windowed, maxChars, detectCaptionSoftBreaks(windowed, hints)),
+    segmentCaptionText(windowed, maxChars, detectCaptionSoftBreaks(windowed, windowHints)),
     maxLines,
   );
 };

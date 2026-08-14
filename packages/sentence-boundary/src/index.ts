@@ -140,6 +140,31 @@ const codePoints = (text: string): string[] => Array.from(text);
 
 const normalizeCaptionText = (text: string): string => text.replace(/\r\n?/gu, "\n").trim();
 
+/**
+ * Rebase full-caption Unicode-scalar soft-break offsets onto a suffix display window.
+ * Offsets before the retained suffix are discarded rather than reused at false positions.
+ */
+export const rebaseCaptionSoftBreakOffsets = (
+  fullText: string,
+  windowedText: string,
+  offsets: number[],
+): number[] => {
+  if (offsets.length === 0) {
+    return [];
+  }
+  const full = codePoints(normalizeCaptionText(fullText));
+  const windowed = codePoints(normalizeCaptionText(windowedText));
+  const start = full.length - windowed.length;
+  if (start < 0 || full.slice(start).join("") !== windowed.join("")) {
+    return [];
+  }
+  return dedupeOffsets(
+    offsets
+      .filter((offset) => Number.isInteger(offset) && offset > start && offset <= full.length)
+      .map((offset) => offset - start),
+  );
+};
+
 const dedupeOffsets = (offsets: number[]): number[] =>
   [...new Set(offsets)].sort((left, right) => left - right);
 

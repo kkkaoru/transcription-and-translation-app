@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectCaptionSentenceEnds,
   detectCaptionSoftBreaks,
+  rebaseCaptionSoftBreakOffsets,
   selectVisibleCaptionSentence,
 } from "./index.js";
 
@@ -264,6 +265,19 @@ describe("heuristic edge cases", () => {
         sentenceEndOffsets: [4],
       }),
     ).toBe("短いです続く文");
+  });
+});
+
+describe("caption soft-break offset rebasing", () => {
+  it("discards breaks before a retained suffix and rebases retained breaks", () => {
+    expect(rebaseCaptionSoftBreakOffsets("あ".repeat(60), "あ".repeat(20), [8])).toStrictEqual([]);
+    expect(
+      rebaseCaptionSoftBreakOffsets("あ".repeat(60), "あ".repeat(20), [8, 48, 60]),
+    ).toStrictEqual([8, 20]);
+  });
+
+  it("fails closed when the display text is not a suffix", () => {
+    expect(rebaseCaptionSoftBreakOffsets("前半と後半", "別の表示", [3])).toStrictEqual([]);
   });
 });
 

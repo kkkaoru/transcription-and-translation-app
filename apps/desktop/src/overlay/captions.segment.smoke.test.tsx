@@ -345,6 +345,18 @@ describe("captionTextLines and captionItems", () => {
     expect(windowed.join("")).toBe("い".repeat(40));
   });
 
+  it("rebases full-caption soft breaks after trimming to the display window", () => {
+    const lines = captionTextLines({
+      key: "source",
+      text: "あ".repeat(60),
+      maxChars: 10,
+      softBreakOffsets: [8],
+    });
+
+    expect(lines).toStrictEqual(["あ".repeat(10), "あ".repeat(10)]);
+    expect(lines.join("")).toBe("あ".repeat(20));
+  });
+
   it("does not add a prediction row when no OPEN text is present", () => {
     const config = createDefaultConfig();
     const prediction = captionItems(config, createEmptyCaption(), false, "   ").find(
