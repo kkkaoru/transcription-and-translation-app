@@ -274,6 +274,7 @@ const parseArgs = (argv) => {
     cpuFormat: "auto",
     decodeP95LimitMs: 400,
     throttleLimit: 0.1,
+    partialWindowEnabled: true,
   };
   const optionKeys = {
     "--input": "input",
@@ -289,6 +290,7 @@ const parseArgs = (argv) => {
     "--stop-wait-ms": "stopWaitMs",
     "--ready-timeout-ms": "readyTimeoutMs",
     "--done-timeout-ms": "doneTimeoutMs",
+    "--partial-window-enabled": "partialWindowEnabled",
   };
   const numericKeys = new Set([
     "decodeP95LimitMs",
@@ -305,17 +307,20 @@ const parseArgs = (argv) => {
       const value = rest[++index];
       if (!value) throw new Error(`${flag} requires a value`);
       const key = optionKeys[flag];
-      options[key] = numericKeys.has(key) ? Number(value) : value;
+      if (key === "partialWindowEnabled") {
+        if (value !== "true" && value !== "false") throw new Error(`${flag} must be true or false`);
+        options[key] = value === "true";
+      } else options[key] = numericKeys.has(key) ? Number(value) : value;
     } else throw new Error(`unknown option: ${flag}`);
   }
   return options;
 };
 
 const usage = () => `Usage:
-  node scripts/partial-window-cpu-benchmark.mjs replay --input PATH (--out-dir DIR) [--url WS_URL] [--cpu-pid PID]
+  node scripts/partial-window-cpu-benchmark.mjs replay --input PATH (--out-dir DIR) [--url WS_URL] [--cpu-pid PID] [--partial-window-enabled true|false]
   node scripts/partial-window-cpu-benchmark.mjs report --metrics SIDECAR.jsonl --cpu TOP.txt --cpu-pid PID [--cpu-format auto|text|json]
 
-Input is WAV PCM s16le/16kHz/mono or raw PCM s16le/16kHz/mono. Its byte length must be a 32ms frame multiple (${FRAME_BYTES} bytes). The replay always sends audio.partial_window_asr_enabled=true, waits 1500ms before session.stop, and writes received.jsonl without transcript text.`;
+Input is WAV PCM s16le/16kHz/mono or raw PCM s16le/16kHz/mono. Its byte length must be a 32ms frame multiple (${FRAME_BYTES} bytes). Replay defaults audio.partial_window_asr_enabled to true, waits 1500ms before session.stop, and writes received.jsonl without transcript text.`;
 
 const loadWebSocket = async () => {
   if (typeof globalThis.WebSocket === "function") return globalThis.WebSocket;
@@ -486,7 +491,7 @@ const replay = async (options) => {
           encoding: "pcm_s16le",
           sample_rate: SAMPLE_RATE,
           channels: CHANNELS,
-          partial_window_asr_enabled: true,
+          partial_window_asr_enabled: options.partialWindowEnabled,
         },
       }),
     );
@@ -494,7 +499,7 @@ const replay = async (options) => {
       input_name: fixture.inputName,
       input_format: fixture.inputFormat,
       input_duration_ms: fixture.durationMs,
-      partial_window_asr_enabled: true,
+      partial_window_asr_enabled: options.partialWindowEnabled,
     });
     const readyDeadline = performance.now() + options.readyTimeoutMs;
     while (!ready && !failure && performance.now() < readyDeadline) await delay(10);
