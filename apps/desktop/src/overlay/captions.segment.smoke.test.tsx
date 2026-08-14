@@ -12,6 +12,7 @@ import {
   captionGraphemes,
   captionItems,
   captionTextLines,
+  captionTextSegmentLines,
   collapseRunawayGraphemeRuns,
   createEmptyCaption,
   createHoldClearedCaption,
@@ -355,7 +356,7 @@ describe("captionTextLines and captionItems", () => {
     expect(boundPartialWindowText(source, "   ")).toBe("");
   });
 
-  it("bounds an OPEN prediction to one shared source-width line", () => {
+  it("bounds an OPEN prediction to one source-width line before combined wrapping", () => {
     const config = createDefaultConfig();
     config.overlay.captionMaxChars = { source: 10, translation: 10 };
     const caption = {
@@ -364,13 +365,26 @@ describe("captionTextLines and captionItems", () => {
       translationText: "",
     };
 
-    const prediction = captionItems(config, caption, false, "あ".repeat(30)).find(
-      (item) => item.key === "prediction",
+    const source = captionItems(config, caption, false, "あ".repeat(30)).find(
+      (item) => item.key === "source",
     );
 
-    expect(prediction?.text).toBe("あ".repeat(10));
-    if (!prediction) throw new Error("prediction item should exist");
-    expect(captionTextLines(prediction)).toEqual(["あ".repeat(10)]);
+    if (!source) throw new Error("source item should exist");
+    expect(source.partialWindowText).toBe("あ".repeat(10));
+    const segments = captionTextSegmentLines(source);
+    expect(segments).toHaveLength(2);
+    expect(
+      segments
+        .flat()
+        .filter((segment) => segment.dimmed)
+        .map((segment) => segment.text)
+        .join(""),
+    ).toBe("あ".repeat(10));
+    expect(
+      segments.every(
+        (line) => captionGraphemes(line.map((part) => part.text).join("")).length <= 10,
+      ),
+    ).toBe(true);
   });
 
   it("clamps an external prediction item to one line with the source default budget", () => {
@@ -383,7 +397,7 @@ describe("captionTextLines and captionItems", () => {
     ).toEqual(["あ".repeat(SOURCE_CAPTION_MAX_CHARS)]);
   });
 
-  it("keeps the completed source and translation beside the next OPEN prediction", () => {
+  it("keeps translation and appends the OPEN prediction inside the source block", () => {
     const config = createDefaultConfig();
     const completed: CaptionPayload = {
       ...createPreviewCaption(),
@@ -397,14 +411,17 @@ describe("captionTextLines and captionItems", () => {
     const items = captionItems(config, completed, false, "新しい予測文字");
     const source = items.find((item) => item.key === "source");
     const translation = items.find((item) => item.key === "translation");
-    const prediction = items.find((item) => item.key === "prediction");
-    expect(items.map((item) => item.key)).toEqual(["translation", "source", "prediction"]);
+    expect(items.map((item) => item.key)).toEqual(["translation", "source"]);
     expect(source?.text).toBe("古い確定字幕");
+    expect(source?.partialWindowText).toBe("新しい予測文字");
     expect(translation?.text).toBe("Old caption");
-    expect(prediction?.text).toBe("新しい予測文字");
-    expect(prediction?.style.opacity).toBeCloseTo(config.overlay.source.opacity * 0.42);
-    if (!prediction) throw new Error("prediction item should exist");
-    expect(captionTextLines(prediction)).toHaveLength(1);
+    if (!source) throw new Error("source item should exist");
+    expect(captionTextSegmentLines(source)).toEqual([
+      [
+        { text: "古い確定字幕 ", dimmed: false },
+        { text: "新しい予測文字", dimmed: true },
+      ],
+    ]);
   });
 
   it("keeps an ellipsis-terminated translation displayable", () => {

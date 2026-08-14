@@ -1710,7 +1710,7 @@ button:disabled {
 .caption-partial-window {
   display: inline;
   opacity: 0.42;
-  white-space: nowrap;
+  white-space: inherit;
 }
 
 /* Invisible reserved slot: keeps JA/EN vertical rhythm when translation is empty. */

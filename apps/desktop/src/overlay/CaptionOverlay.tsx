@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { overlayCaptionCss, toCaptionCss } from "../core/style";
 import type { AppConfig, CaptionPayload } from "../core/types";
-import { captionItems, captionTextLines } from "./captions";
+import { captionItems, captionTextSegmentLines } from "./captions";
 
 /** Keep an invisible line box so empty translation/source slots do not shift layout. */
 const CAPTION_SLOT_PLACEHOLDER = "\u00a0";
@@ -21,7 +21,8 @@ export const CaptionLines = memo(
   }) => (
     <div className="caption-lines" style={overlayCaptionCss(config.overlay)}>
       {captionItems(config, caption, placeholder, partialWindowText).map((item) => {
-        const hasText = item.text.trim().length > 0;
+        const segmentLines = captionTextSegmentLines(item);
+        const hasText = segmentLines.some((line) => line.some((segment) => segment.text.trim()));
         return (
           <div
             className={`caption-line caption-line-${item.key}${hasText ? "" : " caption-line-empty"}`}
@@ -30,7 +31,22 @@ export const CaptionLines = memo(
             aria-hidden={hasText ? undefined : true}
             data-empty={hasText ? undefined : "true"}
           >
-            {hasText ? captionTextLines(item).join("\n") : CAPTION_SLOT_PLACEHOLDER}
+            {hasText
+              ? segmentLines.map((line, lineIndex, lines) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: presentational wrapped lines have no local state.
+                  <span key={`${item.key}-${lineIndex}`}>
+                    {line.map((segment) => (
+                      <span
+                        className={segment.dimmed ? "caption-partial-window" : undefined}
+                        key={`${item.key}-${segment.dimmed}-${segment.text}`}
+                      >
+                        {segment.text}
+                      </span>
+                    ))}
+                    {lineIndex < lines.length - 1 ? "\n" : null}
+                  </span>
+                ))
+              : CAPTION_SLOT_PLACEHOLDER}
           </div>
         );
       })}

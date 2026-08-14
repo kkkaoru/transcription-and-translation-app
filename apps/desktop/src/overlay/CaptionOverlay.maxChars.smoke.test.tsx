@@ -62,7 +62,7 @@ describe("DOM overlay honours the configured caption line budget", () => {
     expect(lineTextOf("source")).not.toContain("\n");
   });
 
-  it("adds an OPEN-segment result as an independent dim row without replacing body text", () => {
+  it("appends an OPEN-segment result as a dim source span within the shared wrap budget", () => {
     const config = configWithBudget(24, 24);
     const active = {
       ...caption,
@@ -75,12 +75,12 @@ describe("DOM overlay honours the configured caption line budget", () => {
     });
 
     const source = host.querySelector(".caption-line-source");
-    const prediction = host.querySelector<HTMLElement>(".caption-line-prediction");
-    expect(source?.textContent).toBe("あ".repeat(18));
+    const prediction = source?.querySelector<HTMLElement>(".caption-partial-window");
+    expect(source?.textContent).toBe(`${"あ".repeat(18)} 部分候補`);
     expect(lineTextOf("translation")).toBe("Confirmed translation");
     expect(prediction?.textContent).toBe("部分候補");
-    expect(Number(prediction?.style.opacity)).toBeCloseTo(config.overlay.source.opacity * 0.42);
-    expect(host.querySelectorAll(".caption-line")).toHaveLength(3);
+    expect(host.querySelector(".caption-line-prediction")).toBeNull();
+    expect(host.querySelectorAll(".caption-line")).toHaveLength(2);
   });
 
   it("re-splits both rows when the configured budget shrinks", () => {

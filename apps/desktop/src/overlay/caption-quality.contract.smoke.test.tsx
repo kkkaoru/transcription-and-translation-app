@@ -139,6 +139,8 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       expect(nativeFramePublisherSource).toMatch(
         /captionItems\(config, caption, false, partialWindowText\)/,
       );
+      expect(captionOverlaySource).toMatch(/captionTextSegmentLines\(item\)/);
+      expect(nativeFramePublisherSource).toMatch(/captionTextSegmentLines\(item\)/);
     });
   });
 

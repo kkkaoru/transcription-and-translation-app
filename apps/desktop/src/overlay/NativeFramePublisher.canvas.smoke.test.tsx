@@ -106,7 +106,7 @@ const captionWith = (sourceText: string): CaptionPayload => ({
 });
 
 describe("native caption canvas edge rendering", () => {
-  it("draws an OPEN-segment result on an independent dim row for every body alignment", () => {
+  it("draws an OPEN-segment result inline with the source for every body alignment", () => {
     for (const textAlign of ["left", "center", "right"] as const) {
       const config = createDefaultConfig();
       config.overlay.width = 320;
@@ -122,7 +122,7 @@ describe("native caption canvas edge rendering", () => {
 
       expect(renderNativeFrame(canvas, config, caption, "部分候補")).not.toBeNull();
       expect(fillCalls.map((call) => call.text).join("")).toBe(
-        "確定本文Confirmed translation部分候補",
+        "確定本文 部分候補Confirmed translation",
       );
       expect(new Set(fillCalls.map((call) => call.y)).size).toBeGreaterThanOrEqual(2);
       expect(globalAlphaValues).toContain(config.overlay.source.opacity * 0.42);

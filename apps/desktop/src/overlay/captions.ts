@@ -41,7 +41,7 @@ export interface CaptionItem {
   deferSentencePaging?: boolean;
   /** Per-item line cap; source/translation default to the shared two-line limit. */
   maxLines?: number;
-  /** Legacy inline suffix field; new OPEN predictions use their own item. */
+  /** Display-only OPEN prediction appended to the source before shared wrapping. */
   partialWindowText?: string;
 }
 
@@ -620,6 +620,61 @@ export const boundPartialWindowText = (source: CaptionItem, partialWindowText: s
   return captionGraphemes(prediction).slice(0, source.maxChars).join("");
 };
 
+export interface CaptionTextSegment {
+  text: string;
+  dimmed: boolean;
+}
+
+/**
+ * Wrap source and OPEN prediction as one bounded block, then expose the shared
+ * style boundary for DOM and native/Syphon renderers. The final prediction is
+ * kept intact (it is bounded to one source-width line); older source head text
+ * yields only when the combined two-line budget is full.
+ */
+export const captionTextSegmentLines = (item: CaptionItem): CaptionTextSegment[][] => {
+  const prediction =
+    item.key === "source" ? sanitizeCaptionDisplayText(item.partialWindowText ?? "").trim() : "";
+  const baseItem = { ...item, partialWindowText: undefined };
+  const baseLines = captionTextLines(baseItem);
+  if (!prediction) {
+    return baseLines.map((line) => [{ text: line, dimmed: false }]);
+  }
+
+  const combined = `${baseLines.join("\n").trimEnd()}${baseLines.length > 0 ? " " : ""}${prediction}`;
+  const maxLines = item.maxLines ?? CAPTION_MAX_VISIBLE_LINES;
+  const budget = Math.max(1, Math.floor(item.maxChars)) * Math.max(1, Math.floor(maxLines));
+  const graphemes = captionGraphemes(combined);
+  const bounded = trimStartGraphemes(graphemes.slice(Math.max(0, graphemes.length - budget))).join(
+    "",
+  );
+  const lines = keepNewestCaptionLines(
+    segmentCaptionText(bounded, item.maxChars, detectCaptionSoftBreaks(bounded)),
+    maxLines,
+  );
+  const predictionLength = captionGraphemes(prediction).length;
+  const totalLength = lines.reduce((total, line) => total + captionGraphemes(line).length, 0);
+  const predictionStart = Math.max(0, totalLength - predictionLength);
+  let offset = 0;
+
+  return lines.map((line) => {
+    const lineGraphemes = captionGraphemes(line);
+    const lineStart = offset;
+    const lineEnd = lineStart + lineGraphemes.length;
+    offset = lineEnd;
+    if (predictionStart <= lineStart) {
+      return [{ text: line, dimmed: true }];
+    }
+    if (predictionStart >= lineEnd) {
+      return [{ text: line, dimmed: false }];
+    }
+    const splitAt = predictionStart - lineStart;
+    return [
+      { text: lineGraphemes.slice(0, splitAt).join(""), dimmed: false },
+      { text: lineGraphemes.slice(splitAt).join(""), dimmed: true },
+    ].filter((segment) => segment.text.length > 0);
+  });
+};
+
 export const captionItems = (
   config: AppConfig,
   caption: CaptionPayload,
@@ -660,20 +715,7 @@ export const captionItems = (
     maxChars: resolveCaptionMaxChars(config, "translation"),
     deferSentencePaging,
   };
-  const ordered =
-    config.overlay.order === "source-first" ? [source, translation] : [translation, source];
-  if (!placeholder && prediction) {
-    ordered.push({
-      key: "prediction",
-      text: boundPartialWindowText(source, prediction),
-      style: {
-        ...config.overlay.source,
-        opacity: config.overlay.source.opacity * 0.42,
-      },
-      maxChars: resolveCaptionMaxChars(config, "prediction"),
-      maxLines: 1,
-      deferSentencePaging: true,
-    });
-  }
-  return ordered;
+  source.partialWindowText =
+    !placeholder && prediction ? boundPartialWindowText(source, prediction) : "";
+  return config.overlay.order === "source-first" ? [source, translation] : [translation, source];
 };

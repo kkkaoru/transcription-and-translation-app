@@ -4,7 +4,12 @@ import { bridge, formatBridgeError } from "../core/bridge";
 import { markCaptionVisible } from "../core/caption-latency";
 import { appendStructuredLog } from "../core/structuredLog";
 import type { AppConfig, CaptionPayload, CaptionTextStyle } from "../core/types";
-import { captionGraphemes, captionItems, captionTextLines } from "./captions";
+import {
+  type CaptionTextSegment,
+  captionGraphemes,
+  captionItems,
+  captionTextSegmentLines,
+} from "./captions";
 
 const hexToRgba = (value: string, alpha: number): string => {
   const match = /^#([\da-f]{6})$/i.exec(value);
@@ -278,16 +283,32 @@ const drawNativeCaption = (
   x: number,
   y: number,
   maxWidth: number,
-  inlineSuffix = "",
+  segmentLines?: CaptionTextSegment[][],
 ) => {
   const layout = measureNativeCaption(context, text, style, maxWidth);
   const letterSpacing = finiteNumber(style.letterSpacingPx, 0);
+  const baseOpacity = boundedNumber(style.opacity, 0, 1, 1);
   context.textBaseline = "middle";
   context.lineJoin = "round";
 
-  const drawLine = (textLine: string, lineY: number, operation: "fill" | "stroke"): void => {
-    const characters = captionGraphemes(textLine);
-    const characterWidths = characters.map((character) => context.measureText(character).width);
+  const drawLine = (
+    textLine: string,
+    lineIndex: number,
+    lineY: number,
+    operation: "fill" | "stroke",
+  ): void => {
+    const sharedSegments = segmentLines?.[lineIndex];
+    const segments =
+      sharedSegments && sharedSegments.map((segment) => segment.text).join("") === textLine
+        ? sharedSegments
+        : [{ text: textLine, dimmed: false }];
+    const characters = segments.flatMap((segment) =>
+      captionGraphemes(segment.text).map((character) => ({
+        character,
+        dimmed: segment.dimmed,
+      })),
+    );
+    const characterWidths = characters.map(({ character }) => context.measureText(character).width);
     const rawWidth = measureNativeTextWidth(context, textLine, letterSpacing);
     // A single glyph can still exceed a very narrow configured width. Scale
     // only that individual line; never scale a whole multi-line caption.
@@ -301,7 +322,8 @@ const drawNativeCaption = (
           ? x - drawWidth
           : x - drawWidth / 2;
     let cursor = startX;
-    for (const [index, character] of characters.entries()) {
+    for (const [index, { character, dimmed }] of characters.entries()) {
+      context.globalAlpha = baseOpacity * (dimmed ? 0.42 : 1);
       if (operation === "stroke") {
         context.strokeText(character, cursor, lineY);
       } else {
@@ -312,7 +334,6 @@ const drawNativeCaption = (
   };
 
   context.save();
-  context.globalAlpha = boundedNumber(style.opacity, 0, 1, 1);
   if (style.shadowEnabled) {
     context.shadowColor = style.shadowColor;
     context.shadowBlur = Math.max(0, finiteNumber(style.shadowBlurPx, 0));
@@ -329,6 +350,7 @@ const drawNativeCaption = (
     for (const [index, line] of layout.lines.entries()) {
       drawLine(
         line,
+        index,
         y - ((layout.lines.length - 1) * layout.lineHeight) / 2 + index * layout.lineHeight,
         "stroke",
       );
@@ -338,33 +360,9 @@ const drawNativeCaption = (
   for (const [index, line] of layout.lines.entries()) {
     drawLine(
       line,
+      index,
       y - ((layout.lines.length - 1) * layout.lineHeight) / 2 + index * layout.lineHeight,
       "fill",
-    );
-  }
-  const suffix = inlineSuffix.trim();
-  const lastLine = layout.lines.at(-1) ?? "";
-  if (suffix && lastLine.trim()) {
-    const bodyWidth = measureNativeTextWidth(context, lastLine, letterSpacing);
-    const bodyStart =
-      style.textAlign === "left"
-        ? x
-        : style.textAlign === "right"
-          ? x - bodyWidth
-          : x - bodyWidth / 2;
-    const lastLineY = y + ((layout.lines.length - 1) * layout.lineHeight) / 2;
-    drawNativeCaption(
-      context,
-      ` ${suffix}`,
-      {
-        ...style,
-        textAlign: "left",
-        opacity: boundedNumber(style.opacity, 0, 1, 1) * 0.42,
-        cullingEnabled: false,
-      },
-      bodyStart + bodyWidth,
-      lastLineY,
-      maxWidth,
     );
   }
   context.restore();
@@ -404,17 +402,15 @@ export const renderNativeFrame = (
       blockWidth * (boundedNumber(style.maxWidthPercent, 1, 100, 86) / 100),
       Math.max(1, blockWidth - paddingX * 2),
     );
-    const hasText = item.text.trim().length > 0;
+    const segmentLines = captionTextSegmentLines(item);
+    const textLines = segmentLines.map((line) => line.map((segment) => segment.text).join(""));
+    const hasText = textLines.some((line) => line.trim().length > 0);
     // Always reserve both source and translation row heights so the native
     // plate does not jump when translation arrives or clears.
-    const layout = measurePrewrappedNativeCaption(
-      context,
-      hasText ? captionTextLines(item) : [""],
-      style,
-    );
+    const layout = measurePrewrappedNativeCaption(context, hasText ? textLines : [""], style);
     return {
       key: item.key,
-      itemPartialWindowText: item.partialWindowText,
+      segmentLines,
       layout,
       lineWidth,
       style,
@@ -495,7 +491,7 @@ export const renderNativeFrame = (
         textX,
         textY,
         Math.max(row.lineWidth, row.layout.maxLineWidth, 1),
-        row.hasText && row.key === "source" ? (row.itemPartialWindowText ?? "") : "",
+        row.segmentLines,
       );
       if (supportsClip) {
         context.restore();
