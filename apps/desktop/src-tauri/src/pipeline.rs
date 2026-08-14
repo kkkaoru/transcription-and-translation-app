@@ -776,13 +776,13 @@ impl Pipeline {
             );
         }
 
-        // --- Rescore stage (opt-in) ---
-        // When enabled, rescore the kana reading with the input-LM before
-        // kana-kanji conversion. The merge key (`azookey_input_text`) always
-        // retains the post-vibrato, unrescored reading so the frontend
-        // caption-merge logic (`hasSameOrExtendedAzookeyReading`) is unaffected.
-        // Only the text fed to the normalizer changes.
-        let normalize_input = if config.rescore.enabled {
+        // --- Rescore stage (opt-in, final only) ---
+        // Interim windows are frequent and spawn_blocking work cannot be
+        // cancelled after a timeout, so rescoring each one can accumulate CPU
+        // tasks. The final runs once per turn with the configured timeout.
+        // The merge key (`azookey_input_text`) always retains the post-vibrato,
+        // unrescored reading, including when interim rescoring is skipped.
+        let normalize_input = if config.rescore.enabled && output.is_final {
             let rescore_started = Instant::now();
             let (rescored, rescore_error) = self.rescore_reading(config, &reading).await;
             record_stage(
@@ -2550,7 +2550,8 @@ mod tests {
         config.rescore.model_path = Some("/nonexistent/model/lm".into());
 
         let pipeline = Pipeline::default();
-        let output = parapper_test_output("きょうははいしんです", "今日は配信です");
+        let mut output = parapper_test_output("きょうははいしんです", "今日は配信です");
+        output.is_final = true;
         let mut stages = Vec::new();
         let partial = pipeline
             .normalize_parapper_output(
@@ -2587,11 +2588,8 @@ mod tests {
         assert_eq!(partial.source_text, "今日は配信です");
     }
 
-    /// The merge key (`azookey_input_text`) must always be the original reading,
-    /// never the rescored one. This is the invariant that prevents the
-    /// caption-append regression fixed at commit e393070. Verified by checking
-    /// that even when a second call to the same pipeline would rescore
-    /// differently, the azookey_input_text is unchanged.
+    /// Interim outputs skip rescore without changing the merge key. This is the
+    /// invariant that prevents the caption-append regression fixed at e393070.
     #[tokio::test]
     async fn merge_key_always_original_reading_regardless_of_rescore() {
         let _dictionary_env_guard = DICTIONARY_ENV_LOCK.lock().await;
@@ -2601,7 +2599,7 @@ mod tests {
 
         let pipeline = Pipeline::default();
 
-        // First call with one reading.
+        // Both calls remain interim and must not invoke the missing model.
         let output1 = parapper_test_output("おはよございます", "おはようございます");
         let partial1 = pipeline
             .normalize_parapper_output(
@@ -2642,6 +2640,10 @@ mod tests {
             Some("きてください"),
             "merge key must be the original unrescored reading for each caption"
         );
+        assert!(
+            pipeline.rescorer.0.lock().expect("rescorer lock").is_none(),
+            "interim skip must not load or invoke the rescorer"
+        );
     }
 
     /// When the real model is available and rescore is ON, the rescorer may
@@ -2665,7 +2667,8 @@ mod tests {
         let pipeline = Pipeline::default();
         // "おはよございます" (missing long-vowel う) is the one repair the sweep
         // measured: the rescorer should return "おはようございます".
-        let output = parapper_test_output("おはよございます", "おはようございます");
+        let mut output = parapper_test_output("おはよございます", "おはようございます");
+        output.is_final = true;
         let mut stages = Vec::new();
         let partial = pipeline
             .normalize_parapper_output(
