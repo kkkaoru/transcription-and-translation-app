@@ -1760,13 +1760,13 @@ pub fn publish_overlay_frame(
 }
 
 fn ensure_native_publisher_window(label: &str) -> Result<(), String> {
-    // Off-screen `native-renderer` is the primary Syphon/Spout publisher.
-    // The main window remains allowed as a fallback if that surface failed to mount.
-    if label == NATIVE_RENDERER_LABEL || label == "main" {
+    // The off-screen `native-renderer` is the sole Syphon/Spout publisher.
+    // Multiple latest-wins writers can race an idle transparent clear against
+    // a live caption and leave native clients displaying a stale blank frame.
+    if label == NATIVE_RENDERER_LABEL {
         Ok(())
     } else {
-        Err("native output frames may only be published by the main or native-renderer window"
-            .to_string())
+        Err("native output frames may only be published by the native-renderer window".to_string())
     }
 }
 
@@ -2148,7 +2148,7 @@ mod tests {
     #[test]
     fn only_the_native_renderer_window_can_publish_a_native_frame() {
         assert!(ensure_native_publisher_window(NATIVE_RENDERER_LABEL).is_ok());
-        assert!(ensure_native_publisher_window("main").is_ok());
+        assert!(ensure_native_publisher_window("main").is_err());
         assert!(ensure_native_publisher_window(TRANSPARENT_CAPTURE_LABEL).is_err());
         assert!(ensure_native_publisher_window("overlay").is_err());
     }

@@ -120,7 +120,6 @@ import {
   createHoldClearedCaption,
   createPreviewCaption,
 } from "../overlay/captions";
-import { NativeFramePublisher } from "../overlay/NativeFramePublisher";
 import { SettingsView } from "../settings/SettingsView";
 import { LiveView } from "./LiveView";
 import { useCaptionFreshness } from "./useCaptionFreshness";
@@ -2776,13 +2775,6 @@ export const MainApp = () => {
           )}
         </main>
       </div>
-      {status.nativeOutput === "syphon" || status.nativeOutput === "spout2" ? (
-        <NativeFramePublisher
-          config={config}
-          caption={displayCaption}
-          partialWindowText={partialWindow?.text ?? ""}
-        />
-      ) : null}
     </div>
   );
 };

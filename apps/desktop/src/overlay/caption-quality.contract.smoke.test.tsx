@@ -65,7 +65,7 @@ const expectMerged = (value: CaptionPayload | null): CaptionPayload => {
 
 describe("caption quality contracts (automated, no human eyeball)", () => {
   describe("progressive reveal wiring (live + overlay)", () => {
-    it("shares sticky displayCaption across Live DOM, Syphon, and both Overlay paths", () => {
+    it("has one native publisher while Live and Overlay DOM render their own displayCaption", () => {
       // hold-clear once replaced this import and left grapheme reveal dead.
       expect(mainAppSource).toMatch(/useCaptionFreshness\(caption\)/);
       expect(mainAppSource).toMatch(/useProgressiveCaptionReveal/);
@@ -78,13 +78,7 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       );
       expect(mainAppSource).toMatch(/caption=\{displayCaption\}/);
       expect(mainAppSource).toMatch(
-        /<NativeFramePublisher\s+config=\{config\}\s+caption=\{displayCaption\}/,
-      );
-      expect(mainAppSource).toMatch(
         /<LiveView[\s\S]*?caption=\{displayCaption\}[\s\S]*?partialWindowText=\{partialWindow\?\.text \?\? ""\}/,
-      );
-      expect(mainAppSource).toMatch(
-        /<NativeFramePublisher[\s\S]*?caption=\{displayCaption\}[\s\S]*?partialWindowText=\{partialWindow\?\.text \?\? ""\}/,
       );
       expect(mainAppSource).toMatch(/useCaptionHoldClear\(caption,/);
 
@@ -111,6 +105,13 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       );
       expect(overlayAppSource).toMatch(/useCaptionHoldClear\(caption,/);
       expect(overlayAppSource).toMatch(/resetOverlayStickyRefs\(stickyRefs\)/);
+
+      // The native mailbox is latest-wins. More than one publisher lets an
+      // idle transparent clear race and overwrite the native renderer's frame.
+      const nativePublisherMounts = `${mainAppSource}\n${overlayAppSource}`.match(
+        /<NativeFramePublisher\b/g,
+      );
+      expect(nativePublisherMounts).toHaveLength(1);
     });
   });
 
