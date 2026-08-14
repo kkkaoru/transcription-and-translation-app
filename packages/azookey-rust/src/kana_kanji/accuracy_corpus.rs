@@ -15,67 +15,170 @@
 use crate::{convert_with_dictionary, AzooKeyDictionary, ConversionOptions, DictionaryPaths};
 use std::collections::BTreeMap;
 
-struct CorpusCase {
+struct AnchorFixture {
     category: &'static str,
     input: &'static str,
     expected: &'static str,
 }
 
-/// Minimum fraction of cases that must pass.  Set just below the measured
-/// baseline (93/106 = 87.7%) so the test is a regression guard; raised as
-/// accuracy improves.
-const MINIMUM_PASS_RATE: f32 = 0.87;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextMode {
+    None,
+    LeftOnly,
+    RightAvailableOffline,
+}
 
-const CORPUS: &[CorpusCase] = &[
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedOrigin {
+    UnspecifiedLegacy,
+    Dictionary,
+    KnownIdentity,
+    NumericSynthesized,
+    OovIdentity,
+    Boundary,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewStatus {
+    AnchorLocked,
+    PendingIndependentReview,
+    IndependentlyReviewed,
+}
+
+struct CorpusCase {
+    case_id: String,
+    category: &'static str,
+    input: &'static str,
+    expected: &'static str,
+    context_mode: ContextMode,
+    expected_origin: ExpectedOrigin,
+    requires_dictionary_origin: bool,
+    source_kind: &'static str,
+    provenance: &'static str,
+    pair_id: Option<&'static str>,
+    accepted_variants: &'static [&'static str],
+    equivalence_group: Option<&'static str>,
+    review_status: ReviewStatus,
+    reviewed_by: Option<&'static str>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct AccuracyCount {
+    strict_passed: usize,
+    variant_passed: usize,
+    total: usize,
+}
+
+/// The locked dictionary-only anchor gate. Extended cases stay report-only
+/// until a separately reviewed phase-one baseline is committed. Changing an
+/// anchor expectation or the fingerprint requires independent Japanese-quality
+/// review; updating the hash only to make this test green is prohibited.
+const ANCHOR_EXPECTED_TOTAL: usize = 119;
+const ANCHOR_MINIMUM_STRICT_PASSED: usize = ANCHOR_EXPECTED_TOTAL;
+const FNV1A_64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV1A_64_PRIME: u64 = 0x100000001b3;
+const ANCHOR_FINGERPRINT: u64 = 0xfbf0115acd1b873a;
+const ANCHOR_CATEGORY_BASELINES: &[(&str, usize)] = &[
+    ("compound_particles", 6),
+    ("dates_times", 6),
+    ("fillers_interjections", 6),
+    ("full_sentences", 34),
+    ("honorifics", 6),
+    ("loanword_particle", 11),
+    ("numbers_counters", 11),
+    ("particle_tails", 12),
+    ("proper_nouns", 7),
+    ("sentence_final", 6),
+    ("single_mora_kanji", 2),
+    ("verbs_inflections", 12),
+];
+
+const CONTEXT_MODE_SCHEMA: &[ContextMode] =
+    &[ContextMode::None, ContextMode::LeftOnly, ContextMode::RightAvailableOffline];
+const EXPECTED_ORIGIN_SCHEMA: &[ExpectedOrigin] = &[
+    ExpectedOrigin::UnspecifiedLegacy,
+    ExpectedOrigin::Dictionary,
+    ExpectedOrigin::KnownIdentity,
+    ExpectedOrigin::NumericSynthesized,
+    ExpectedOrigin::OovIdentity,
+    ExpectedOrigin::Boundary,
+    ExpectedOrigin::Mixed,
+];
+const REVIEW_STATUS_SCHEMA: &[ReviewStatus] = &[
+    ReviewStatus::AnchorLocked,
+    ReviewStatus::PendingIndependentReview,
+    ReviewStatus::IndependentlyReviewed,
+];
+
+const ANCHOR_FIXTURES: &[AnchorFixture] = &[
     // -----------------------------------------------------------------------
     // Particle tails — a particle attached to a converted content word.
     // -----------------------------------------------------------------------
-    CorpusCase { category: "particle_tails", input: "きょうは", expected: "今日は" },
-    CorpusCase { category: "particle_tails", input: "わたしが", expected: "私が" },
-    CorpusCase { category: "particle_tails", input: "ほんを", expected: "本を" },
-    CorpusCase { category: "particle_tails", input: "えきに", expected: "駅に" },
-    CorpusCase { category: "particle_tails", input: "カフェで", expected: "カフェで" },
-    CorpusCase { category: "particle_tails", input: "ともだちと", expected: "友達と" },
-    CorpusCase { category: "particle_tails", input: "きょうから", expected: "今日から" },
-    CorpusCase {
+    AnchorFixture { category: "particle_tails", input: "きょうは", expected: "今日は" },
+    AnchorFixture { category: "particle_tails", input: "わたしが", expected: "私が" },
+    AnchorFixture { category: "particle_tails", input: "ほんを", expected: "本を" },
+    AnchorFixture { category: "particle_tails", input: "えきに", expected: "駅に" },
+    AnchorFixture { category: "particle_tails", input: "カフェで", expected: "カフェで" },
+    AnchorFixture { category: "particle_tails", input: "ともだちと", expected: "友達と" },
+    AnchorFixture {
+        category: "particle_tails", input: "きょうから", expected: "今日から"
+    },
+    AnchorFixture {
         category: "particle_tails", input: "やまださんより", expected: "山田さんより"
     },
-    CorpusCase {
+    AnchorFixture {
         category: "particle_tails", input: "としょかんへ", expected: "図書館へ"
     },
-    CorpusCase { category: "particle_tails", input: "がくせいの", expected: "学生の" },
-    CorpusCase { category: "particle_tails", input: "みずをのむ", expected: "水を飲む" },
-    CorpusCase { category: "particle_tails", input: "ねこがねる", expected: "猫が寝る" },
+    AnchorFixture { category: "particle_tails", input: "がくせいの", expected: "学生の" },
+    AnchorFixture {
+        category: "particle_tails", input: "みずをのむ", expected: "水を飲む"
+    },
+    AnchorFixture {
+        category: "particle_tails", input: "ねこがねる", expected: "猫が寝る"
+    },
     // -----------------------------------------------------------------------
     // Loanword + particle — katakana loanwords followed by a particle.
     // -----------------------------------------------------------------------
-    CorpusCase { category: "loanword_particle", input: "すーぷが", expected: "スープが" },
-    CorpusCase { category: "loanword_particle", input: "すーぷは", expected: "スープは" },
-    CorpusCase { category: "loanword_particle", input: "でーたを", expected: "データを" },
-    CorpusCase {
+    AnchorFixture {
+        category: "loanword_particle", input: "すーぷが", expected: "スープが"
+    },
+    AnchorFixture {
+        category: "loanword_particle", input: "すーぷは", expected: "スープは"
+    },
+    AnchorFixture {
+        category: "loanword_particle", input: "でーたを", expected: "データを"
+    },
+    AnchorFixture {
         category: "loanword_particle", input: "こーひーは", expected: "コーヒーは"
     },
-    CorpusCase { category: "loanword_particle", input: "めーるで", expected: "メールで" },
-    CorpusCase {
+    AnchorFixture {
+        category: "loanword_particle", input: "めーるで", expected: "メールで"
+    },
+    AnchorFixture {
         category: "loanword_particle",
         input: "すーぷはのみたい",
         expected: "スープは飲みたい",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "loanword_particle",
         input: "すーぷはたべたくない",
         expected: "スープは食べたくない",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "loanword_particle",
         input: "すーぷはください",
         expected: "スープはください",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "loanword_particle", input: "ぱそこんが", expected: "パソコンが"
     },
-    CorpusCase { category: "loanword_particle", input: "かめらで", expected: "カメラで" },
-    CorpusCase { category: "loanword_particle", input: "ほてるに", expected: "ホテルに" },
+    AnchorFixture {
+        category: "loanword_particle", input: "かめらで", expected: "カメラで"
+    },
+    AnchorFixture {
+        category: "loanword_particle", input: "ほてるに", expected: "ホテルに"
+    },
     // -----------------------------------------------------------------------
     // Fillers / interjections — hesitation sounds that must stay hiragana.
     //
@@ -84,16 +187,16 @@ const CORPUS: &[CorpusCase] = &[
     // leading mora (`絵ーっと`) or emitting a katakana fragment (`エーッと`)
     // is spurious, so the katakana-preferring guard must not reach them.
     // -----------------------------------------------------------------------
-    CorpusCase {
+    AnchorFixture {
         category: "fillers_interjections", input: "えーっと", expected: "えーっと"
     },
-    CorpusCase { category: "fillers_interjections", input: "えーと", expected: "えーと" },
-    CorpusCase { category: "fillers_interjections", input: "あのー", expected: "あのー" },
-    CorpusCase { category: "fillers_interjections", input: "そのー", expected: "そのー" },
-    CorpusCase { category: "fillers_interjections", input: "うーん", expected: "うーん" },
+    AnchorFixture { category: "fillers_interjections", input: "えーと", expected: "えーと" },
+    AnchorFixture { category: "fillers_interjections", input: "あのー", expected: "あのー" },
+    AnchorFixture { category: "fillers_interjections", input: "そのー", expected: "そのー" },
+    AnchorFixture { category: "fillers_interjections", input: "うーん", expected: "うーん" },
     // Loanword counterpart: the same prolonged mark must still convert, so an
     // over-broad relaxation of the guard fails here instead of passing quietly.
-    CorpusCase { category: "fillers_interjections", input: "すーぷ", expected: "スープ" },
+    AnchorFixture { category: "fillers_interjections", input: "すーぷ", expected: "スープ" },
     // -----------------------------------------------------------------------
     // Single-mora lexical conversions — one-character readings that do have a
     // legitimate kanji spelling, guarding against the filler fix suppressing
@@ -104,73 +207,87 @@ const CORPUS: &[CorpusCase] = &[
     // expectation either way would encode ranking noise rather than a
     // requirement.
     // -----------------------------------------------------------------------
-    CorpusCase { category: "single_mora_kanji", input: "き", expected: "木" },
-    CorpusCase { category: "single_mora_kanji", input: "て", expected: "手" },
+    AnchorFixture { category: "single_mora_kanji", input: "き", expected: "木" },
+    AnchorFixture { category: "single_mora_kanji", input: "て", expected: "手" },
     // -----------------------------------------------------------------------
     // Numbers / counters — spoken numerals followed by counters.
     // -----------------------------------------------------------------------
-    CorpusCase {
+    AnchorFixture {
         category: "numbers_counters", input: "いち、に、さん", expected: "1、2、3"
     },
-    CorpusCase { category: "numbers_counters", input: "ごねん", expected: "5年" },
-    CorpusCase { category: "numbers_counters", input: "しがつ", expected: "4月" },
-    CorpusCase { category: "numbers_counters", input: "じゅう、", expected: "10、" },
-    CorpusCase { category: "numbers_counters", input: "さんにん", expected: "3人" },
-    CorpusCase { category: "numbers_counters", input: "いちにち", expected: "1日" },
-    CorpusCase { category: "numbers_counters", input: "ごふん", expected: "5分" },
-    CorpusCase { category: "numbers_counters", input: "さんじ", expected: "3時" },
-    CorpusCase { category: "numbers_counters", input: "よっか", expected: "4日" },
-    CorpusCase { category: "numbers_counters", input: "さんびゃくえん", expected: "300円" },
-    CorpusCase { category: "numbers_counters", input: "にせんえん", expected: "2000円" },
+    AnchorFixture { category: "numbers_counters", input: "ごねん", expected: "5年" },
+    AnchorFixture { category: "numbers_counters", input: "しがつ", expected: "4月" },
+    AnchorFixture { category: "numbers_counters", input: "じゅう、", expected: "10、" },
+    AnchorFixture { category: "numbers_counters", input: "さんにん", expected: "3人" },
+    AnchorFixture { category: "numbers_counters", input: "いちにち", expected: "1日" },
+    AnchorFixture { category: "numbers_counters", input: "ごふん", expected: "5分" },
+    AnchorFixture { category: "numbers_counters", input: "さんじ", expected: "3時" },
+    AnchorFixture { category: "numbers_counters", input: "よっか", expected: "4日" },
+    AnchorFixture {
+        category: "numbers_counters", input: "さんびゃくえん", expected: "300円"
+    },
+    AnchorFixture { category: "numbers_counters", input: "にせんえん", expected: "2000円" },
     // -----------------------------------------------------------------------
     // Dates / times — full date and time expressions.
     // -----------------------------------------------------------------------
-    CorpusCase { category: "dates_times", input: "さんがつついたち", expected: "3月1日" },
-    CorpusCase { category: "dates_times", input: "しちじはん", expected: "7時半" },
-    CorpusCase { category: "dates_times", input: "じゅうじ", expected: "10時" },
-    CorpusCase { category: "dates_times", input: "ごじはん", expected: "5時半" },
-    CorpusCase { category: "dates_times", input: "しちがつ", expected: "7月" },
-    CorpusCase { category: "dates_times", input: "じゅうがつ", expected: "10月" },
+    AnchorFixture {
+        category: "dates_times", input: "さんがつついたち", expected: "3月1日"
+    },
+    AnchorFixture { category: "dates_times", input: "しちじはん", expected: "7時半" },
+    AnchorFixture { category: "dates_times", input: "じゅうじ", expected: "10時" },
+    AnchorFixture { category: "dates_times", input: "ごじはん", expected: "5時半" },
+    AnchorFixture { category: "dates_times", input: "しちがつ", expected: "7月" },
+    AnchorFixture { category: "dates_times", input: "じゅうがつ", expected: "10月" },
     // -----------------------------------------------------------------------
     // Common verbs and their inflections.
     // -----------------------------------------------------------------------
-    CorpusCase { category: "verbs_inflections", input: "いきます", expected: "行きます" },
-    CorpusCase { category: "verbs_inflections", input: "たべたい", expected: "食べたい" },
-    CorpusCase { category: "verbs_inflections", input: "おもった", expected: "思った" },
-    CorpusCase { category: "verbs_inflections", input: "おこなわ", expected: "行わ" },
-    CorpusCase { category: "verbs_inflections", input: "つかった", expected: "使った" },
-    CorpusCase { category: "verbs_inflections", input: "みている", expected: "見ている" },
-    CorpusCase { category: "verbs_inflections", input: "きいて", expected: "聞いて" },
-    CorpusCase { category: "verbs_inflections", input: "かいて", expected: "書いて" },
-    CorpusCase { category: "verbs_inflections", input: "はしる", expected: "走る" },
-    CorpusCase { category: "verbs_inflections", input: "おしえて", expected: "教えて" },
-    CorpusCase {
+    AnchorFixture {
+        category: "verbs_inflections", input: "いきます", expected: "行きます"
+    },
+    AnchorFixture {
+        category: "verbs_inflections", input: "たべたい", expected: "食べたい"
+    },
+    AnchorFixture { category: "verbs_inflections", input: "おもった", expected: "思った" },
+    AnchorFixture { category: "verbs_inflections", input: "おこなわ", expected: "行わ" },
+    AnchorFixture { category: "verbs_inflections", input: "つかった", expected: "使った" },
+    AnchorFixture {
+        category: "verbs_inflections", input: "みている", expected: "見ている"
+    },
+    AnchorFixture { category: "verbs_inflections", input: "きいて", expected: "聞いて" },
+    AnchorFixture { category: "verbs_inflections", input: "かいて", expected: "書いて" },
+    AnchorFixture { category: "verbs_inflections", input: "はしる", expected: "走る" },
+    AnchorFixture { category: "verbs_inflections", input: "おしえて", expected: "教えて" },
+    AnchorFixture {
         category: "verbs_inflections", input: "きをきって", expected: "木を切って"
     },
-    CorpusCase {
-        category: "verbs_inflections", input: "でんわをかける", expected: "電話をかける"
+    AnchorFixture {
+        category: "verbs_inflections",
+        input: "でんわをかける",
+        expected: "電話をかける",
     },
     // -----------------------------------------------------------------------
     // Honorifics / polite expressions.
     // -----------------------------------------------------------------------
-    CorpusCase {
+    AnchorFixture {
         category: "honorifics", input: "おつかれさまです", expected: "お疲れ様です"
     },
-    CorpusCase {
-        category: "honorifics", input: "おつかれさまでした", expected: "お疲れ様でした"
+    AnchorFixture {
+        category: "honorifics",
+        input: "おつかれさまでした",
+        expected: "お疲れ様でした",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "honorifics",
         input: "よろしくおねがいします",
         expected: "よろしくお願いします",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "honorifics", input: "いただきます", expected: "いただきます"
     },
-    CorpusCase {
+    AnchorFixture {
         category: "honorifics", input: "ごめんなさい", expected: "ごめんなさい"
     },
-    CorpusCase {
+    AnchorFixture {
         category: "honorifics",
         input: "ありがとうございます",
         expected: "ありがとうございます",
@@ -178,201 +295,276 @@ const CORPUS: &[CorpusCase] = &[
     // -----------------------------------------------------------------------
     // Proper nouns — place names and common proper nouns.
     // -----------------------------------------------------------------------
-    CorpusCase { category: "proper_nouns", input: "とうきょう", expected: "東京" },
-    CorpusCase { category: "proper_nouns", input: "おおさか", expected: "大阪" },
-    CorpusCase { category: "proper_nouns", input: "よこはま", expected: "横浜" },
-    CorpusCase { category: "proper_nouns", input: "きょうと", expected: "京都" },
-    CorpusCase { category: "proper_nouns", input: "ほっかいどう", expected: "北海道" },
-    CorpusCase { category: "proper_nouns", input: "にほん", expected: "日本" },
-    CorpusCase { category: "proper_nouns", input: "とうきょうえき", expected: "東京駅" },
+    AnchorFixture { category: "proper_nouns", input: "とうきょう", expected: "東京" },
+    AnchorFixture { category: "proper_nouns", input: "おおさか", expected: "大阪" },
+    AnchorFixture { category: "proper_nouns", input: "よこはま", expected: "横浜" },
+    AnchorFixture { category: "proper_nouns", input: "きょうと", expected: "京都" },
+    AnchorFixture { category: "proper_nouns", input: "ほっかいどう", expected: "北海道" },
+    AnchorFixture { category: "proper_nouns", input: "にほん", expected: "日本" },
+    AnchorFixture {
+        category: "proper_nouns", input: "とうきょうえき", expected: "東京駅"
+    },
     // -----------------------------------------------------------------------
     // Compound particles — の/で/と/へ + particle combinations.
     // -----------------------------------------------------------------------
-    CorpusCase {
-        category: "compound_particles", input: "としょかんでの", expected: "図書館での"
+    AnchorFixture {
+        category: "compound_particles",
+        input: "としょかんでの",
+        expected: "図書館での",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "compound_particles", input: "ともだちとの", expected: "友達との"
     },
-    CorpusCase { category: "compound_particles", input: "えきへの", expected: "駅への" },
-    CorpusCase {
+    AnchorFixture { category: "compound_particles", input: "えきへの", expected: "駅への" },
+    AnchorFixture {
         category: "compound_particles", input: "がっこうでの", expected: "学校での"
     },
-    CorpusCase {
+    AnchorFixture {
         category: "compound_particles", input: "せんせいへの", expected: "先生への"
     },
-    CorpusCase {
+    AnchorFixture {
         category: "compound_particles", input: "かいしゃとの", expected: "会社との"
     },
     // -----------------------------------------------------------------------
     // Sentence-final forms — polite and plain endings.
     // -----------------------------------------------------------------------
-    CorpusCase {
-        category: "sentence_final", input: "たべるでしょう", expected: "食べるでしょう"
+    AnchorFixture {
+        category: "sentence_final",
+        input: "たべるでしょう",
+        expected: "食べるでしょう",
     },
-    CorpusCase { category: "sentence_final", input: "はれます", expected: "晴れます" },
-    CorpusCase {
+    AnchorFixture { category: "sentence_final", input: "はれます", expected: "晴れます" },
+    AnchorFixture {
         category: "sentence_final", input: "あめがふります", expected: "雨が降ります"
     },
-    CorpusCase {
+    AnchorFixture {
         category: "sentence_final",
         input: "きょうははれです",
         expected: "今日は晴れです",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "sentence_final",
         input: "あしたははれるでしょう",
         expected: "明日は晴れるでしょう",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "sentence_final", input: "ほんをよみます", expected: "本を読みます"
     },
     // -----------------------------------------------------------------------
     // Full sentences — realistic ASR caption output.
     // -----------------------------------------------------------------------
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "きょうのてんきはあつい",
         expected: "今日の天気は暑い",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences", input: "すーぷがあつい", expected: "スープが熱い"
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "あついりょうりはおいしい",
         expected: "熱い料理は美味しい",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "わたしたちはがくせいです",
         expected: "私たちは学生です",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "かんじのしょりをかいぜん",
         expected: "漢字の処理を改善",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "おんりょうをちょうせい",
         expected: "音量を調整",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "しょうぼう、しょうか、ほのお",
         expected: "消防、消火、炎",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "かたち、こうし、もよう",
         expected: "形、格子、模様",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "せんそう、しんこう、しんりゃく",
         expected: "戦争、侵攻、侵略",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "かせん、かこう、かわべ",
         expected: "河川、河口、川辺",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "にゅうきん、しゅうし、かくにん",
         expected: "入金、収支、確認",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "もじ、かんじ、ぞくじ",
         expected: "文字、漢字、俗字",
     },
-    CorpusCase { category: "full_sentences", input: "かきくう", expected: "柿食う" },
-    CorpusCase {
+    AnchorFixture { category: "full_sentences", input: "かきくう", expected: "柿食う" },
+    AnchorFixture {
         category: "full_sentences",
         input: "となりのきゃくはよくかきくうきゃくだ",
         expected: "隣の客は良く柿食う客だ",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "りょうりがあついのでさます",
         expected: "料理が熱いのでさます",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "きょうはとてもさむい",
         expected: "今日はとても寒い",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "すーぷはおいしい",
         expected: "スープは美味しい",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences", input: "すーぷはあつい", expected: "スープは熱い"
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "おいしいすーぷは",
         expected: "美味しいスープは",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "あついすーぷはたべたくない",
         expected: "熱いスープは食べたくない",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "きょうははいしんです",
         expected: "今日は配信です",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "ほんじつはじかんの説明です",
         expected: "本日は時間の説明です",
     },
-    CorpusCase { category: "full_sentences", input: "にほんご", expected: "日本語" },
-    CorpusCase {
+    AnchorFixture { category: "full_sentences", input: "にほんご", expected: "日本語" },
+    AnchorFixture {
         category: "full_sentences",
         input: "おつかれさまでした",
         expected: "お疲れ様でした",
     },
-    CorpusCase {
-        category: "full_sentences", input: "とてもおいしい", expected: "とても美味しい"
+    AnchorFixture {
+        category: "full_sentences",
+        input: "とてもおいしい",
+        expected: "とても美味しい",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "あしたははれるでしょう",
         expected: "明日は晴れるでしょう",
     },
-    CorpusCase { category: "full_sentences", input: "けいさん", expected: "計算" },
-    CorpusCase { category: "full_sentences", input: "そうじゅう", expected: "操縦" },
-    CorpusCase { category: "full_sentences", input: "しけい", expected: "死刑" },
-    CorpusCase { category: "full_sentences", input: "しじ", expected: "支持" },
-    CorpusCase { category: "full_sentences", input: "よけい", expected: "余計" },
-    CorpusCase {
+    AnchorFixture { category: "full_sentences", input: "けいさん", expected: "計算" },
+    AnchorFixture { category: "full_sentences", input: "そうじゅう", expected: "操縦" },
+    AnchorFixture { category: "full_sentences", input: "しけい", expected: "死刑" },
+    AnchorFixture { category: "full_sentences", input: "しじ", expected: "支持" },
+    AnchorFixture { category: "full_sentences", input: "よけい", expected: "余計" },
+    AnchorFixture {
         category: "full_sentences",
         input: "きょうははれです",
         expected: "今日は晴れです",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "あついりょうりはおいしい",
         expected: "熱い料理は美味しい",
     },
-    CorpusCase {
+    AnchorFixture {
         category: "full_sentences",
         input: "きょうははいしんです",
         expected: "今日は配信です",
     },
 ];
 
+fn anchor_cases() -> Vec<CorpusCase> {
+    ANCHOR_FIXTURES
+        .iter()
+        .enumerate()
+        .map(|(index, fixture)| CorpusCase {
+            case_id: format!("anchor-{:03}", index + 1),
+            category: fixture.category,
+            input: fixture.input,
+            expected: fixture.expected,
+            context_mode: ContextMode::None,
+            expected_origin: ExpectedOrigin::UnspecifiedLegacy,
+            requires_dictionary_origin: false,
+            source_kind: "legacy_anchor",
+            provenance: "accuracy_corpus_v1",
+            pair_id: None,
+            accepted_variants: &[],
+            equivalence_group: None,
+            review_status: ReviewStatus::AnchorLocked,
+            reviewed_by: Some("legacy_anchor_lock"),
+        })
+        .collect()
+}
+
+fn normalized_variant(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '％' => '%',
+            '０'..='９' => {
+                char::from_u32(u32::from(character) - u32::from('０') + u32::from('0'))
+                    .unwrap_or(character)
+            }
+            _ => character,
+        })
+        .collect()
+}
+
+fn matches_accepted_variant(case: &CorpusCase, actual: &str) -> bool {
+    let actual = normalized_variant(actual);
+    std::iter::once(case.expected)
+        .chain(case.accepted_variants.iter().copied())
+        .any(|variant| normalized_variant(variant) == actual)
+}
+
+fn fnv1a_update(mut hash: u64, value: &str) -> u64 {
+    for byte in value.as_bytes().iter().copied().chain(std::iter::once(0)) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV1A_64_PRIME);
+    }
+    hash
+}
+
+fn anchor_fingerprint(cases: &[CorpusCase]) -> u64 {
+    cases.iter().fold(FNV1A_64_OFFSET_BASIS, |hash, case| {
+        let hash = fnv1a_update(hash, &case.case_id);
+        let hash = fnv1a_update(hash, case.category);
+        let hash = fnv1a_update(hash, case.input);
+        fnv1a_update(hash, case.expected)
+    })
+}
+
+fn included_in_live_gate(case: &CorpusCase) -> bool {
+    let independently_approved =
+        case.review_status == ReviewStatus::IndependentlyReviewed && case.reviewed_by.is_some();
+    case.context_mode != ContextMode::RightAvailableOffline
+        && (case.review_status == ReviewStatus::AnchorLocked || independently_approved)
+}
+
 /// Cases that must convert exactly, not merely often enough.
 ///
-/// `accuracy_corpus_report` only enforces an aggregate pass rate, so a
-/// handful of broken cases can hide inside a healthy percentage.  These pairs
-/// encode the two halves of one invariant and are asserted individually:
+/// The locked anchor now gates every strict case, while these pairs keep the
+/// most safety-critical invariants explicit and independently diagnosable:
 ///
 /// * hesitation fillers keep their natural hiragana spelling, and
 /// * loanwords sharing the same prolonged sound mark still become katakana.
@@ -508,6 +700,52 @@ fn official_dictionary_default_conversion_is_phrase_neutral_for_hashi_no_haji() 
 }
 
 #[test]
+fn accuracy_corpus_schema_and_anchor_fingerprint_are_stable() {
+    assert_eq!(CONTEXT_MODE_SCHEMA.len(), 3);
+    assert_eq!(EXPECTED_ORIGIN_SCHEMA.len(), 7);
+    assert_eq!(REVIEW_STATUS_SCHEMA.len(), 3);
+
+    let cases = anchor_cases();
+    assert_eq!(cases.len(), ANCHOR_EXPECTED_TOTAL);
+    assert_eq!(anchor_fingerprint(&cases), ANCHOR_FINGERPRINT);
+    for case in &cases {
+        assert!(case.case_id.starts_with("anchor-"));
+        assert_eq!(case.context_mode, ContextMode::None);
+        assert_eq!(case.expected_origin, ExpectedOrigin::UnspecifiedLegacy);
+        assert!(!case.requires_dictionary_origin);
+        assert_eq!(case.source_kind, "legacy_anchor");
+        assert_eq!(case.provenance, "accuracy_corpus_v1");
+        assert_eq!(case.pair_id, None);
+        assert!(case.accepted_variants.is_empty());
+        assert_eq!(case.equivalence_group, None);
+        assert_eq!(case.review_status, ReviewStatus::AnchorLocked);
+        assert_eq!(case.reviewed_by, Some("legacy_anchor_lock"));
+        assert!(included_in_live_gate(case));
+    }
+}
+
+#[test]
+fn variant_and_review_metrics_remain_separate_from_the_live_gate() {
+    let mut cases = anchor_cases();
+    let mut case = cases.remove(0);
+    case.expected = "60%";
+    case.accepted_variants = &["六十％"];
+
+    assert_ne!("６０％", case.expected);
+    assert!(matches_accepted_variant(&case, "６０％"));
+
+    case.review_status = ReviewStatus::PendingIndependentReview;
+    case.reviewed_by = None;
+    assert!(!included_in_live_gate(&case));
+    case.review_status = ReviewStatus::IndependentlyReviewed;
+    assert!(!included_in_live_gate(&case));
+    case.reviewed_by = Some("specialist-advisor");
+    assert!(included_in_live_gate(&case));
+    case.context_mode = ContextMode::RightAvailableOffline;
+    assert!(!included_in_live_gate(&case));
+}
+
+#[test]
 fn accuracy_corpus_report() {
     let root = crate::dictionary::test_system_dictionary_path();
     let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
@@ -516,66 +754,82 @@ fn accuracy_corpus_report() {
     })
     .expect("official AzooKey dictionary should load");
 
-    let mut category_stats: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
-    let mut failures: Vec<(&CorpusCase, String)> = Vec::new();
-    let mut total_passed = 0usize;
+    let cases = anchor_cases();
+    let mut category_stats: BTreeMap<&str, AccuracyCount> = BTreeMap::new();
+    let mut strict_failures: Vec<(&CorpusCase, String)> = Vec::new();
+    let mut totals = AccuracyCount::default();
 
-    for case in CORPUS {
+    for case in &cases {
         let candidate =
             convert_with_dictionary(case.input, &dictionary, ConversionOptions::default())
                 .into_iter()
                 .next();
-
         let actual = candidate.as_ref().map(|candidate| candidate.text.as_str()).unwrap_or("");
-
-        let passed = actual == case.expected;
-        let (mut passed_count, mut total_count) =
-            *category_stats.entry(case.category).or_insert((0, 0));
-        total_count += 1;
-        if passed {
-            total_passed += 1;
-            passed_count += 1;
+        let strict_passed = actual == case.expected;
+        let variant_passed = matches_accepted_variant(case, actual);
+        let category = category_stats.entry(case.category).or_default();
+        category.total += 1;
+        totals.total += 1;
+        if strict_passed {
+            category.strict_passed += 1;
+            totals.strict_passed += 1;
         } else {
-            failures.push((case, actual.to_string()));
+            strict_failures.push((case, actual.to_string()));
         }
-        category_stats.insert(case.category, (passed_count, total_count));
+        if variant_passed {
+            category.variant_passed += 1;
+            totals.variant_passed += 1;
+        }
     }
 
-    let total = CORPUS.len();
-    let pass_rate = if total > 0 { total_passed as f32 / total as f32 } else { 0.0 };
-
-    // Always print the full report so the numbers are visible with --nocapture.
     eprintln!();
     eprintln!("=== AzooKey Accuracy Corpus Report ===");
     eprintln!(
-        "Total: {total} cases, {total_passed} passed, {} failed ({:.1}%)",
-        total - total_passed,
-        pass_rate * 100.0
+        "Anchor strict: {}/{} ({:.1}%), normalized variant: {}/{} ({:.1}%)",
+        totals.strict_passed,
+        totals.total,
+        totals.strict_passed as f32 / totals.total as f32 * 100.0,
+        totals.variant_passed,
+        totals.total,
+        totals.variant_passed as f32 / totals.total as f32 * 100.0,
     );
     eprintln!();
-    eprintln!("Per-category:");
-    for (category, (passed, total_cat)) in &category_stats {
-        let rate = if *total_cat > 0 { *passed as f32 / *total_cat as f32 * 100.0 } else { 0.0 };
-        eprintln!("  {category:<22} {passed:>2}/{total_cat:<2} ({rate:>5.1}%)");
+    eprintln!("Per-category (strict / normalized variant):");
+    for (category, count) in &category_stats {
+        eprintln!(
+            "  {category:<22} {:>2}/{:<2} / {:>2}/{:<2}",
+            count.strict_passed, count.total, count.variant_passed, count.total,
+        );
     }
     eprintln!();
-    if failures.is_empty() {
-        eprintln!("Failures: none");
+    if strict_failures.is_empty() {
+        eprintln!("Strict failures: none");
     } else {
-        eprintln!("Failures:");
-        for (case, actual) in &failures {
+        eprintln!("Strict failures:");
+        for (case, actual) in &strict_failures {
             eprintln!(
-                "  [{}] {:?} -> expected {:?}, got {:?}",
-                case.category, case.input, case.expected, actual
+                "  [{}] {} {:?} -> expected {:?}, got {:?}",
+                case.category, case.case_id, case.input, case.expected, actual
             );
         }
     }
     eprintln!();
 
-    assert!(
-        pass_rate >= MINIMUM_PASS_RATE,
-        "accuracy corpus pass rate {pass_rate:.1}% is below the minimum {:.1}%",
-        MINIMUM_PASS_RATE * 100.0,
+    assert_eq!(totals.total, ANCHOR_EXPECTED_TOTAL, "locked anchor size changed");
+    for (category, baseline_passed) in ANCHOR_CATEGORY_BASELINES {
+        let count = category_stats
+            .get(category)
+            .unwrap_or_else(|| panic!("locked anchor category {category:?} disappeared"));
+        assert_eq!(count.total, *baseline_passed, "locked anchor category size changed");
+        assert_eq!(
+            count.strict_passed, *baseline_passed,
+            "anchor category {category:?} strict baseline regressed"
+        );
+    }
+    assert_eq!(category_stats.len(), ANCHOR_CATEGORY_BASELINES.len());
+    assert_eq!(
+        totals.strict_passed, ANCHOR_MINIMUM_STRICT_PASSED,
+        "locked anchor strict baseline regressed"
     );
 }
 
