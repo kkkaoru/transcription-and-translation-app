@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -8,8 +11,10 @@ import {
   parseTopJsonCpuSamples,
   parseTopTextCpuSamples,
   percentile,
+  reportPartialWindowMetrics,
   summarizeFinalCaptionMetrics,
   summarizePartialWindowMetrics,
+  validateReportManifest,
 } from "./partial-window-cpu-benchmark.mjs";
 
 test("percentile uses nearest-rank values deterministically", () => {
@@ -118,10 +123,28 @@ test("OFF mode accepts zero PartialWindow events while requiring final caption l
     e2eP50Ms: 120,
     e2eP95Ms: 120,
   };
-  assert.equal(
-    acceptance(metrics, [10, 20], { partialWindowEnabled: false }, finalCaption).accepted,
-    true,
-  );
+  const decision = acceptance(metrics, [10, 20], { partialWindowEnabled: false }, finalCaption);
+  assert.equal(decision.accepted, true);
+  assert.equal(decision.decodeAvailable, false);
+  assert.equal(decision.throttleAvailable, false);
+  assert.deepEqual(reportPartialWindowMetrics(metrics, false), {
+    partialEventCount: 0,
+    decodeSamples: null,
+    decodeP50Ms: null,
+    decodeP95Ms: null,
+    completedEvents: null,
+    throttleDenominator: null,
+    throttledCompletions: null,
+    throttleRate: null,
+    dispatched: 0,
+    completed: 0,
+    skippedCapped: 0,
+    skippedInFlight: 0,
+    opportunities: 0,
+    capSkipRate: null,
+    inFlightSkipRate: null,
+    skipReasons: {},
+  });
   assert.equal(
     acceptance(
       summarizePartialWindowMetrics('{"event":"partial_window_asr_skip","skip_reason":"cap"}'),
@@ -130,6 +153,54 @@ test("OFF mode accepts zero PartialWindow events while requiring final caption l
       finalCaption,
     ).accepted,
     false,
+  );
+});
+
+test("report manifest rejects mismatched session and non-isolated metrics paths", () => {
+  const directory = mkdtempSync(join(tmpdir(), "partial-window-benchmark-"));
+  const received = join(directory, "received.jsonl");
+  const metrics = join(directory, "parapper.jsonl");
+  writeFileSync(
+    received,
+    '{"event":"client_session_start","session_id":"session-a","partial_window_asr_enabled":true,"input_name":"fixture.wav","input_duration_ms":1000}\n',
+  );
+  writeFileSync(metrics, "");
+  const manifest = {
+    schemaVersion: 1,
+    sessionId: "session-a",
+    partialWindowEnabled: true,
+    fixture: { name: "fixture.wav", durationMs: 1000, sha256: "fixture-sha" },
+    artifacts: { receivedJsonl: received, sidecarJsonl: metrics },
+    replay: { status: "passed" },
+    run: { startedAt: new Date(0).toISOString() },
+  };
+  assert.doesNotThrow(() =>
+    validateReportManifest(manifest, {
+      received,
+      metrics,
+      sessionId: "session-a",
+      partialWindowEnabled: true,
+    }),
+  );
+  assert.throws(
+    () =>
+      validateReportManifest(manifest, {
+        received,
+        metrics,
+        sessionId: "other",
+        partialWindowEnabled: true,
+      }),
+    /session-id/,
+  );
+  assert.throws(
+    () =>
+      validateReportManifest(manifest, {
+        received,
+        metrics: join(directory, "mixed.jsonl"),
+        sessionId: "session-a",
+        partialWindowEnabled: true,
+      }),
+    /isolated sidecar artifact/,
   );
 });
 

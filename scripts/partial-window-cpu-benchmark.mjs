@@ -13,8 +13,15 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, extname, resolve } from "node:path";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, extname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
@@ -271,14 +278,66 @@ export const acceptance = (metrics, cpu, thresholds = {}, finalCaption = null) =
     cpuSamples: cpu.length,
     cpuMeanPercent: cpu.length ? cpu.reduce((sum, value) => sum + value, 0) / cpu.length : null,
     cpuP95Percent: percentile(cpu, 0.95),
-    decodeAvailable: partialWindowEnabled ? metrics.decodeP95Ms !== null : true,
-    throttleAvailable: partialWindowEnabled ? metrics.throttleRate !== null : true,
+    decodeAvailable: partialWindowEnabled && metrics.decodeP95Ms !== null,
+    throttleAvailable: partialWindowEnabled && metrics.throttleRate !== null,
     finalCaptionAvailable,
     observabilityAvailable:
       finalCaptionAvailable && (partialWindowEnabled ? partialAvailable : partialDisabledClean),
     failedChecks,
     accepted: failedChecks.length === 0,
   };
+};
+
+export const reportPartialWindowMetrics = (metrics, partialWindowEnabled) => {
+  if (partialWindowEnabled) return metrics;
+  return {
+    partialEventCount: metrics.partialEventCount,
+    decodeSamples: null,
+    decodeP50Ms: null,
+    decodeP95Ms: null,
+    completedEvents: null,
+    throttleDenominator: null,
+    throttledCompletions: null,
+    throttleRate: null,
+    dispatched: 0,
+    completed: 0,
+    skippedCapped: 0,
+    skippedInFlight: 0,
+    opportunities: 0,
+    capSkipRate: null,
+    inFlightSkipRate: null,
+    skipReasons: {},
+  };
+};
+
+const sha256File = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+
+export const validateReportManifest = (manifest, options) => {
+  const expectedReceived = resolve(manifest.artifacts?.receivedJsonl ?? "");
+  const expectedMetrics = resolve(manifest.artifacts?.sidecarJsonl ?? "");
+  if (manifest.schemaVersion !== 1 || !manifest.fixture?.sha256)
+    throw new Error("manifest is missing the benchmark schema or fixture hash");
+  if (manifest.sessionId !== options.sessionId)
+    throw new Error("--session-id does not match the replay manifest");
+  if (manifest.partialWindowEnabled !== options.partialWindowEnabled)
+    throw new Error("PartialWindow mode does not match the replay manifest");
+  if (expectedReceived !== resolve(options.received))
+    throw new Error("--received must be the replay manifest received.jsonl artifact");
+  if (expectedMetrics !== resolve(options.metrics))
+    throw new Error("--metrics must be the replay manifest isolated sidecar artifact");
+  if (manifest.replay?.status !== "passed") throw new Error("replay manifest is not successful");
+  const received = jsonObjects(readFileSync(options.received, "utf8"));
+  const started = received.find(
+    (event) =>
+      event.event === "client_session_start" &&
+      event.session_id === manifest.sessionId &&
+      event.partial_window_asr_enabled === manifest.partialWindowEnabled &&
+      event.input_name === manifest.fixture.name &&
+      event.input_duration_ms === manifest.fixture.durationMs,
+  );
+  if (!started) throw new Error("received JSONL does not belong to the replay manifest run");
+  if (statSync(options.metrics).mtimeMs < Date.parse(manifest.run.startedAt))
+    throw new Error("sidecar metrics predate the replay manifest run boundary");
 };
 
 export const compareResults = (baseline, candidate, thresholds = {}) => {
@@ -436,6 +495,8 @@ const parseArgs = (argv) => {
     "--received": "received",
     "--session-id": "sessionId",
     "--out": "out",
+    "--manifest": "manifest",
+    "--sidecar-jsonl": "sidecarJsonl",
     "--baseline": "baseline",
     "--candidate": "candidate",
     "--cap-skip-rate-limit": "capSkipRateLimit",
@@ -480,8 +541,8 @@ const parseArgs = (argv) => {
 };
 
 const usage = () => `Usage:
-  node scripts/partial-window-cpu-benchmark.mjs replay --input PATH (--out-dir DIR) [--url WS_URL] [--cpu-pid PID] [--partial-window-enabled true|false]
-  node scripts/partial-window-cpu-benchmark.mjs report --metrics SIDECAR.jsonl --cpu TOP.txt --cpu-pid PID --received RECEIVED.jsonl --session-id ID --out RESULT.json [--partial-window-enabled true|false]
+  node scripts/partial-window-cpu-benchmark.mjs replay --input PATH (--out-dir DIR) [--sidecar-jsonl SIDECAR.jsonl] [--url WS_URL] [--cpu-pid PID] [--partial-window-enabled true|false]
+  node scripts/partial-window-cpu-benchmark.mjs report --metrics SIDECAR.jsonl --cpu TOP.txt --cpu-pid PID --received RECEIVED.jsonl --session-id ID --out RESULT.json [--manifest MANIFEST.json] [--partial-window-enabled true|false]
   node scripts/partial-window-cpu-benchmark.mjs compare --baseline BASELINE.json --candidate CANDIDATE.json --out DIFF.json [--final-p95-delta-limit-ms 50]
 
 Input is WAV PCM s16le/16kHz/mono or raw PCM s16le/16kHz/mono. Its byte length must be a 32ms frame multiple (${FRAME_BYTES} bytes). Replay defaults audio.partial_window_asr_enabled to true, writes manifest.json and received.jsonl without transcript text.`;
@@ -597,8 +658,9 @@ const replay = async (options) => {
     artifacts: {
       receivedJsonl: receivedPath,
       cpuTop: options.cpuPid ? topPath : null,
-      sidecarJsonl: null,
+      sidecarJsonl: resolve(options.sidecarJsonl ?? resolve(options.outDir, "parapper.jsonl")),
     },
+    run: { startedAt: new Date().toISOString() },
     replay: { status: "running", exitCode: null },
   };
   const writeManifest = () => writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -683,6 +745,7 @@ const replay = async (options) => {
       }),
     );
     appendReceived("client_session_start", {
+      session_id: sessionId,
       input_name: fixture.inputName,
       input_format: fixture.inputFormat,
       input_duration_ms: fixture.durationMs,
@@ -761,6 +824,12 @@ const report = (options) => {
     throw new Error(`CPU input does not exist: ${resolve(options.cpu)}`);
   if (!existsSync(options.received))
     throw new Error(`received JSONL does not exist: ${resolve(options.received)}`);
+  const manifestPath = resolve(
+    options.manifest ?? resolve(dirname(options.received), "manifest.json"),
+  );
+  if (!existsSync(manifestPath)) throw new Error(`replay manifest does not exist: ${manifestPath}`);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  validateReportManifest(manifest, options);
   const metrics = summarizePartialWindowMetrics(readFileSync(options.metrics, "utf8"));
   const cpu = parseCpuSamples(readFileSync(options.cpu, "utf8"), options.cpuPid, options.cpuFormat);
   const finalCaption = summarizeFinalCaptionMetrics(
@@ -780,7 +849,16 @@ const report = (options) => {
       p95Percent: decision.cpuP95Percent,
     },
     finalCaption,
-    partialWindow: metrics,
+    partialWindow: reportPartialWindowMetrics(metrics, options.partialWindowEnabled),
+    provenance: {
+      manifestPath,
+      manifestSha256: sha256File(manifestPath),
+      metricsPath: resolve(options.metrics),
+      metricsSha256: sha256File(options.metrics),
+      receivedPath: resolve(options.received),
+      receivedSha256: sha256File(options.received),
+      runStartedAt: manifest.run.startedAt,
+    },
     thresholds: {
       decodeP95LimitMs: decision.decodeP95LimitMs,
       throttleLimit: decision.throttleLimit,
