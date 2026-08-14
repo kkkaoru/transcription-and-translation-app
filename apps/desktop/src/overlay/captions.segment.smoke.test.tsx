@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CAPTION_HOLD_CLEAR_MS, captionHoldClearDelayMs } from "../core/caption-hold-clear";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import type { CaptionPayload } from "../core/types";
@@ -332,6 +333,59 @@ describe("captionTextLines and captionItems", () => {
     // CAPTION_MAX_VISIBLE_LINES=2 → keep the newest maxChars×2 graphemes.
     expect(windowed.join("").length).toBe(40);
     expect(windowed.join("")).toBe("い".repeat(40));
+  });
+
+  it("keeps the shared prediction suffix empty when no OPEN text is present", () => {
+    const config = createDefaultConfig();
+    const source = captionItems(config, createEmptyCaption(), false, "   ").find(
+      (item) => item.key === "source",
+    );
+    expect(source?.partialWindowText).toBe("");
+  });
+
+  it("bounds an OPEN prediction to the remaining shared source-line budget", () => {
+    const config = createDefaultConfig();
+    config.overlay.captionMaxChars = { source: 10, translation: 10 };
+    const caption = {
+      ...createPreviewCaption(),
+      sourceText: "確定済み",
+      translationText: "",
+    };
+
+    const source = captionItems(config, caption, false, "あ".repeat(30)).find(
+      (item) => item.key === "source",
+    );
+
+    expect(source?.partialWindowText).toBe("あ".repeat(5));
+    expect(captionGraphemes(`${source?.text} ${source?.partialWindowText}`)).toHaveLength(10);
+  });
+
+  it("replaces a completed old plate immediately when the next OPEN prediction arrives", () => {
+    const config = createDefaultConfig();
+    const completed: CaptionPayload = {
+      ...createPreviewCaption(),
+      id: "old-turn",
+      sourceText: "古い確定字幕",
+      translationText: "Old caption",
+      isFinal: true,
+    };
+
+    const items = captionItems(config, completed, false, "新しい予測文字");
+    const source = items.find((item) => item.key === "source");
+    const translation = items.find((item) => item.key === "translation");
+    expect(source?.text).toBe("新しい予測文字");
+    expect(source?.partialWindowText).toBe("");
+    expect(source?.style.opacity).toBeCloseTo(config.overlay.source.opacity * 0.42);
+    expect(translation?.text).toBe("");
+  });
+
+  it("keeps system caption behavior unchanged when no OPEN prediction exists", () => {
+    const config = createDefaultConfig();
+    const completed = { ...createPreviewCaption(), id: "held-turn", isFinal: true };
+    const items = captionItems(config, completed);
+    expect(items.find((item) => item.key === "source")?.text).toBe(completed.sourceText);
+    expect(items.find((item) => item.key === "translation")?.text).toBe(completed.translationText);
+    expect(captionHoldClearDelayMs(completed)).toBe(CAPTION_HOLD_CLEAR_MS);
   });
 
   it("switches to the newest Japanese sentence instead of stacking two finished lines", () => {

@@ -20,7 +20,7 @@ export const CaptionLines = memo(
     placeholder?: boolean;
   }) => (
     <div className="caption-lines" style={overlayCaptionCss(config.overlay)}>
-      {captionItems(config, caption, placeholder).map((item) => {
+      {captionItems(config, caption, placeholder, partialWindowText).map((item) => {
         const hasText = item.text.trim().length > 0;
         return (
           <div
@@ -33,8 +33,8 @@ export const CaptionLines = memo(
             {hasText ? (
               <>
                 {captionTextLines(item).join("\n")}
-                {item.key === "source" && partialWindowText.trim() ? (
-                  <span className="caption-partial-window"> {partialWindowText.trim()}</span>
+                {item.key === "source" && item.partialWindowText ? (
+                  <span className="caption-partial-window"> {item.partialWindowText}</span>
                 ) : null}
               </>
             ) : (

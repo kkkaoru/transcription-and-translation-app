@@ -117,8 +117,12 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
 
   describe("translation display gate wiring", () => {
     it("routes Live, Overlay, and native/Syphon rows through captionItems", () => {
-      expect(captionOverlaySource).toMatch(/captionItems\(config, caption, placeholder\)/);
-      expect(nativeFramePublisherSource).toMatch(/captionItems\(config, caption\)/);
+      expect(captionOverlaySource).toMatch(
+        /captionItems\(config, caption, placeholder, partialWindowText\)/,
+      );
+      expect(nativeFramePublisherSource).toMatch(
+        /captionItems\(config, caption, false, partialWindowText\)/,
+      );
     });
   });
 

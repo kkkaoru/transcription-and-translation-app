@@ -38,6 +38,8 @@ export interface CaptionItem {
   softBreakOffsets?: number[];
   /** Skip heuristic copula/ます paging; punctuation and Vibrato offsets still page. */
   deferSentencePaging?: boolean;
+  /** Bounded OPEN-segment prediction that fits the source line budget. */
+  partialWindowText?: string;
 }
 
 /**
@@ -603,11 +605,30 @@ export const createHoldClearedCaption = (clearedAt = Date.now()): CaptionPayload
   receivedAt: Math.max(1, clearedAt),
 });
 
+export const boundPartialWindowText = (source: CaptionItem, partialWindowText: string): string => {
+  const suffix = partialWindowText.trim();
+  if (!suffix) {
+    return "";
+  }
+  const lastLine = captionTextLines(source).at(-1) ?? "";
+  const available = Math.max(0, source.maxChars - captionGraphemes(lastLine).length - 1);
+  return captionGraphemes(suffix).slice(0, available).join("");
+};
+
 export const captionItems = (
   config: AppConfig,
   caption: CaptionPayload,
   placeholder = false,
+  partialWindowText = "",
 ): CaptionItem[] => {
+  const prediction = sanitizeCaptionDisplayText(partialWindowText).trim();
+  // A partial-window event belongs to the next OPEN segment. Replace the
+  // completed previous plate immediately instead of appending beyond its width
+  // and hiding the new speech until the old five-second hold expires.
+  const predictionOnly =
+    !placeholder &&
+    Boolean(prediction) &&
+    (caption.isFinal === true || hasDisplayableTranslationText(caption.translationText));
   // Provisional first hypotheses keep the lead sentence (defer copula paging)
   // so 「です＋次節」 does not drop the already-recognized head. Copula paging
   // on live interims/finals still requires punctuation or a 2× remainder.
@@ -616,20 +637,27 @@ export const captionItems = (
     key: "source",
     text: placeholder
       ? "日本語の音声認識結果がここに表示されます"
-      : sanitizeCaptionDisplayText(caption.sourceText),
-    style: config.overlay.source,
+      : predictionOnly
+        ? prediction
+        : sanitizeCaptionDisplayText(caption.sourceText),
+    style: predictionOnly
+      ? { ...config.overlay.source, opacity: config.overlay.source.opacity * 0.42 }
+      : config.overlay.source,
     maxChars: resolveCaptionMaxChars(config, "source"),
-    azookeyInputText: caption.azookeyInputText,
-    sentenceEndOffsets: caption.sentenceEndOffsets,
-    softBreakOffsets: caption.softBreakOffsets,
+    azookeyInputText: predictionOnly ? undefined : caption.azookeyInputText,
+    sentenceEndOffsets: predictionOnly ? undefined : caption.sentenceEndOffsets,
+    softBreakOffsets: predictionOnly ? undefined : caption.softBreakOffsets,
     deferSentencePaging,
   };
+  source.partialWindowText = predictionOnly
+    ? ""
+    : boundPartialWindowText(source, partialWindowText);
   const sanitizedTranslation = sanitizeCaptionDisplayText(caption.translationText);
   const translation: CaptionItem = {
     key: "translation",
     text: placeholder
       ? "English translation will appear here"
-      : hasDisplayableTranslationText(sanitizedTranslation)
+      : !predictionOnly && hasDisplayableTranslationText(sanitizedTranslation)
         ? sanitizedTranslation
         : "",
     style: config.overlay.translation,

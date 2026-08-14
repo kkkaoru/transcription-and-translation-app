@@ -1648,14 +1648,13 @@ button:disabled {
   display: block;
   flex: 0 0 auto;
   max-width: 100%;
-  /* Logical newlines come from captionTextLines (max 2). Do not re-wrap by
-     pixel width — overflow-wrap:anywhere was dropping ~1 glyph per line and
-     turning a 2-line plate into 3–4 visual rows. Keep overflow visible so the
-     utterance tail on the second line is not clipped by the plate. */
+  /* Logical newlines come from captionTextLines (max 2). The shared character
+     budget is primary; clipping is the final safety net for unusually wide
+     glyphs and must keep prediction inside the configured pixel width. */
   overflow-wrap: normal;
   word-break: keep-all;
   white-space: pre-wrap;
-  overflow: visible;
+  overflow: hidden;
   text-overflow: clip;
   isolation: isolate;
 }

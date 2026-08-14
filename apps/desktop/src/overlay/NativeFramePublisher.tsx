@@ -397,7 +397,7 @@ export const renderNativeFrame = (
   );
   const blockX = (width * boundedNumber(config.overlay.captionXPercent, 0, 100, 50)) / 100;
   const blockY = (height * boundedNumber(config.overlay.captionYPercent, 0, 100, 88)) / 100;
-  const rows = captionItems(config, caption).map((item) => {
+  const rows = captionItems(config, caption, false, partialWindowText).map((item) => {
     const style = item.style;
     const paddingX = Math.max(0, finiteNumber(style.paddingX, 0));
     const lineWidth = Math.min(
@@ -414,6 +414,7 @@ export const renderNativeFrame = (
     );
     return {
       key: item.key,
+      itemPartialWindowText: item.partialWindowText,
       layout,
       lineWidth,
       style,
@@ -469,8 +470,24 @@ export const renderNativeFrame = (
     }
     if (row.hasText) {
       const textY = rowY + row.height / 2;
-      // Pass a non-binding width so drawNativeCaption does not soft-wrap again;
-      // layout.lines are already budget-segmented and capped to two rows.
+      const clipLeft =
+        style.textAlign === "left"
+          ? textX
+          : style.textAlign === "right"
+            ? textX - row.lineWidth
+            : textX - row.lineWidth / 2;
+      const supportsClip =
+        typeof context.beginPath === "function" &&
+        typeof context.rect === "function" &&
+        typeof context.clip === "function";
+      if (supportsClip) {
+        context.save();
+        context.beginPath();
+        context.rect(clipLeft, rowY, row.lineWidth, row.height);
+        context.clip();
+      }
+      // Shared captionItems/captionTextLines owns character removal. This clip
+      // is only a final pixel-width safety net for unusually wide glyphs.
       drawNativeCaption(
         context,
         row.layout.lines.join("\n"),
@@ -478,8 +495,11 @@ export const renderNativeFrame = (
         textX,
         textY,
         Math.max(row.lineWidth, row.layout.maxLineWidth, 1),
-        row.hasText && row.key === "source" ? partialWindowText : "",
+        row.hasText && row.key === "source" ? (row.itemPartialWindowText ?? "") : "",
       );
+      if (supportsClip) {
+        context.restore();
+      }
     }
     rowY += row.height + gap;
   }
