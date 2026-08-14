@@ -1642,10 +1642,10 @@ pub fn list_system_fonts() -> Vec<String> {
     crate::system_fonts::list_system_font_families()
 }
 
-/// Open the dedicated caption style editor (decorated opaque window).
+/// Legacy direct caption-style window retained while the main-tab workflow is reviewed.
 ///
-/// Separate from transparent-capture / native-renderer: those are OBS / Syphon
-/// surfaces. Focus an existing editor instead of spawning a second one.
+/// There is no current UI entry point. Separate from transparent-capture /
+/// native-renderer: those are OBS / Syphon surfaces.
 #[tauri::command]
 pub fn open_style_editor(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(STYLE_EDITOR_LABEL) {
@@ -1673,7 +1673,8 @@ pub fn open_style_editor(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the dedicated custom dictionary manager (decorated opaque window).
+/// Legacy direct dictionary window retained while the main-tab workflow is reviewed.
+/// There is no current UI entry point.
 #[tauri::command]
 pub fn open_custom_dictionary(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(CUSTOM_DICTIONARY_LABEL) {

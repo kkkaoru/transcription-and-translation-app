@@ -15,13 +15,13 @@ const isCaptionSurfaceRoute = (): boolean => {
   );
 };
 
-/** Dedicated opaque custom-dictionary manager opened from Settings. */
+/** Legacy direct-window route; current UI exposes dictionary management as a main tab. */
 const isCustomDictionaryRoute = (): boolean => {
   const params = new URLSearchParams(window.location.search);
   return params.get("custom-dictionary") === "1";
 };
 
-/** Dedicated opaque caption-style editor window opened from 配信. */
+/** Legacy direct-window route; current UI exposes caption styling as a main tab. */
 const isStyleEditorRoute = (): boolean => {
   const params = new URLSearchParams(window.location.search);
   return params.get("style-editor") === "1";

@@ -586,14 +586,14 @@ export const bridge = {
     }
   },
 
-  /** Dedicated opaque style-editor window (not OBS transparent capture). */
+  /** Legacy direct style-editor window; the current UI uses the main style tab. */
   async openStyleEditorWindow(): Promise<void> {
     if (isTauriRuntime()) {
       await invoke("open_style_editor");
     }
   },
 
-  /** Dedicated custom dictionary manager opened from Settings. */
+  /** Legacy direct dictionary window; the current UI uses the main dictionary tab. */
   async openCustomDictionaryWindow(): Promise<void> {
     if (isTauriRuntime()) {
       await invoke("open_custom_dictionary");
