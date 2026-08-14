@@ -12,6 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -114,15 +115,18 @@ const parseJsonLine = (line) => {
   }
 };
 
+const jsonObjects = (jsonl) =>
+  String(jsonl)
+    .split(/\r?\n/u)
+    .map(parseJsonLine)
+    .filter((value) => value && typeof value === "object");
+
 /**
  * Reads the production PartialWindow structured events. `decode_ms` is the
  * pure recognizer interval; `worker_ms` is deliberately not used for p95.
  */
 export const summarizePartialWindowMetrics = (jsonl) => {
-  const events = String(jsonl)
-    .split(/\r?\n/u)
-    .map(parseJsonLine)
-    .filter((value) => value && typeof value === "object");
+  const events = jsonObjects(jsonl);
   const decodes = events.filter(
     (event) => event.event === "partial_window_asr_decode" && event.status === "ok",
   );
@@ -150,7 +154,17 @@ export const summarizePartialWindowMetrics = (jsonl) => {
   const throttleDenominator = latestCompletedWithRate
     ? (cumulativeCompleted ?? completed.length)
     : completedWithThrottleFlag.length;
+  const cumulative = (field) =>
+    events.reduce((maximum, event) => {
+      const value = asFiniteNumber(event[field]);
+      return value === null ? maximum : Math.max(maximum, value);
+    }, 0);
+  const dispatched = cumulative("dispatched");
+  const skippedCapped = cumulative("skipped_capped");
+  const skippedInFlight = cumulative("skipped_busy");
+  const opportunities = dispatched + skippedCapped + skippedInFlight;
   return {
+    partialEventCount: decodes.length + completed.length + skips.length,
     decodeSamples: decodeMs.length,
     decodeP50Ms: percentile(decodeMs, 0.5),
     decodeP95Ms: percentile(decodeMs, 0.95),
@@ -160,6 +174,13 @@ export const summarizePartialWindowMetrics = (jsonl) => {
       ? Math.round(throttleRate * throttleDenominator)
       : fallbackThrottled,
     throttleRate,
+    dispatched,
+    completed: cumulative("completed"),
+    skippedCapped,
+    skippedInFlight,
+    opportunities,
+    capSkipRate: opportunities ? skippedCapped / opportunities : null,
+    inFlightSkipRate: opportunities ? skippedInFlight / opportunities : null,
     skipReasons: Object.fromEntries(
       skips
         .map((event) => event.skip_reason ?? event.reason)
@@ -169,22 +190,140 @@ export const summarizePartialWindowMetrics = (jsonl) => {
   };
 };
 
-export const acceptance = (metrics, cpu, thresholds = {}) => {
+export const summarizeFinalCaptionMetrics = (receivedJsonl, sessionId) => {
+  const finals = jsonObjects(receivedJsonl).filter(
+    (event) =>
+      event.event === "server_message" &&
+      event.payload?.type === "turn.final" &&
+      event.payload?.session_id === sessionId,
+  );
+  const seen = new Set();
+  const e2eSamplesMs = [];
+  let missingLatencyCount = 0;
+  for (const { payload } of finals) {
+    const key = [
+      payload.session_id,
+      payload.turn_session_id,
+      payload.turn_id,
+      payload.revision,
+      payload.output_sequence,
+    ].join(":");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const speechStart = asFiniteNumber(payload.speech_start_at);
+    const asrFinal = asFiniteNumber(payload.asr_final_at);
+    if (speechStart === null || asrFinal === null || asrFinal < speechStart) {
+      missingLatencyCount += 1;
+    } else {
+      e2eSamplesMs.push(asrFinal - speechStart);
+    }
+  }
+  return {
+    finalCount: seen.size,
+    missingLatencyCount,
+    e2eSamplesMs,
+    e2eP50Ms: percentile(e2eSamplesMs, 0.5),
+    e2eP95Ms: percentile(e2eSamplesMs, 0.95),
+  };
+};
+
+export const acceptance = (metrics, cpu, thresholds = {}, finalCaption = null) => {
   const decodeP95LimitMs = thresholds.decodeP95LimitMs ?? 400;
   const throttleLimit = thresholds.throttleLimit ?? 0.1;
+  const partialWindowEnabled = thresholds.partialWindowEnabled ?? true;
+  const scenario = thresholds.scenario ?? "normal_conversation";
+  const capSkipRateLimit =
+    thresholds.capSkipRateLimit ?? (scenario === "continuous_speech" ? 0.3 : 0);
+  const inFlightSkipRateLimit = thresholds.inFlightSkipRateLimit ?? 0.05;
+  const inFlightSkipCountLimit = thresholds.inFlightSkipCountLimit ?? 2;
+  const finalCaptionAvailable =
+    finalCaption !== null &&
+    finalCaption.finalCount > 0 &&
+    finalCaption.missingLatencyCount === 0 &&
+    finalCaption.e2eP95Ms !== null;
+  const partialAvailable = metrics.decodeP95Ms !== null && metrics.throttleRate !== null;
+  const partialDisabledClean = metrics.partialEventCount === 0;
+  const failedChecks = [];
+  if (!finalCaptionAvailable) failedChecks.push("final_caption_latency_unavailable");
+  if (partialWindowEnabled) {
+    if (!partialAvailable) failedChecks.push("partial_window_metrics_unavailable");
+    if (metrics.decodeP95Ms !== null && metrics.decodeP95Ms >= decodeP95LimitMs)
+      failedChecks.push("decode_p95_limit");
+    if (metrics.throttleRate !== null && metrics.throttleRate >= throttleLimit)
+      failedChecks.push("throttle_rate_limit");
+    if (metrics.capSkipRate !== null && metrics.capSkipRate > capSkipRateLimit)
+      failedChecks.push("cap_skip_rate_limit");
+    if (metrics.inFlightSkipRate !== null && metrics.inFlightSkipRate > inFlightSkipRateLimit)
+      failedChecks.push("in_flight_skip_rate_limit");
+    if (metrics.skippedInFlight > inFlightSkipCountLimit)
+      failedChecks.push("in_flight_skip_count_limit");
+  } else if (!partialDisabledClean) {
+    failedChecks.push("partial_window_activity_while_disabled");
+  }
   return {
     decodeP95LimitMs,
     throttleLimit,
+    capSkipRateLimit,
+    inFlightSkipRateLimit,
+    inFlightSkipCountLimit,
+    partialWindowEnabled,
+    scenario,
     cpuSamples: cpu.length,
     cpuMeanPercent: cpu.length ? cpu.reduce((sum, value) => sum + value, 0) / cpu.length : null,
     cpuP95Percent: percentile(cpu, 0.95),
-    decodeAvailable: metrics.decodeP95Ms !== null,
-    throttleAvailable: metrics.throttleRate !== null,
-    accepted:
-      metrics.decodeP95Ms !== null &&
-      metrics.throttleRate !== null &&
-      metrics.decodeP95Ms < decodeP95LimitMs &&
-      metrics.throttleRate < throttleLimit,
+    decodeAvailable: partialWindowEnabled ? metrics.decodeP95Ms !== null : true,
+    throttleAvailable: partialWindowEnabled ? metrics.throttleRate !== null : true,
+    finalCaptionAvailable,
+    observabilityAvailable:
+      finalCaptionAvailable && (partialWindowEnabled ? partialAvailable : partialDisabledClean),
+    failedChecks,
+    accepted: failedChecks.length === 0,
+  };
+};
+
+export const compareResults = (baseline, candidate, thresholds = {}) => {
+  const baselineCpu = baseline.cpu ?? {};
+  const candidateCpu = candidate.cpu ?? {};
+  const baselineFinal = baseline.finalCaption ?? {};
+  const candidateFinal = candidate.finalCaption ?? {};
+  const baselinePartial = baseline.partialWindow ?? {};
+  const candidatePartial = candidate.partialWindow ?? {};
+  const finalP95DeltaLimitMs = thresholds.finalP95DeltaLimitMs ?? 50;
+  const baselineFinalP95 = asFiniteNumber(baselineFinal.e2eP95Ms);
+  const candidateFinalP95 = asFiniteNumber(candidateFinal.e2eP95Ms);
+  const finalP95DeltaMs =
+    baselineFinalP95 === null || candidateFinalP95 === null
+      ? null
+      : candidateFinalP95 - baselineFinalP95;
+  const failedChecks = [];
+  if (finalP95DeltaMs === null) failedChecks.push("final_caption_p95_delta_unavailable");
+  else if (finalP95DeltaMs > finalP95DeltaLimitMs)
+    failedChecks.push("final_caption_p95_delta_limit");
+  const delta = (left, right) =>
+    asFiniteNumber(left) === null || asFiniteNumber(right) === null ? null : right - left;
+  return {
+    finalP95DeltaLimitMs,
+    cpu: {
+      meanPercentDelta: delta(baselineCpu.meanPercent, candidateCpu.meanPercent),
+      p95PercentDelta: delta(baselineCpu.p95Percent, candidateCpu.p95Percent),
+      candidateP95RedCandidate: asFiniteNumber(candidateCpu.p95Percent) >= 100,
+    },
+    finalCaption: { p95DeltaMs: finalP95DeltaMs },
+    partialWindow: {
+      capSkipCountDelta: delta(baselinePartial.skippedCapped, candidatePartial.skippedCapped),
+      inFlightSkipCountDelta: delta(
+        baselinePartial.skippedInFlight,
+        candidatePartial.skippedInFlight,
+      ),
+      capSkipRateDelta: delta(baselinePartial.capSkipRate, candidatePartial.capSkipRate),
+      inFlightSkipRateDelta: delta(
+        baselinePartial.inFlightSkipRate,
+        candidatePartial.inFlightSkipRate,
+      ),
+    },
+    observabilityAvailable: finalP95DeltaMs !== null,
+    failedChecks,
+    accepted: failedChecks.length === 0,
   };
 };
 
@@ -275,6 +414,8 @@ const parseArgs = (argv) => {
     decodeP95LimitMs: 400,
     throttleLimit: 0.1,
     partialWindowEnabled: true,
+    scenario: "normal_conversation",
+    finalP95DeltaLimitMs: 50,
   };
   const optionKeys = {
     "--input": "input",
@@ -291,6 +432,16 @@ const parseArgs = (argv) => {
     "--ready-timeout-ms": "readyTimeoutMs",
     "--done-timeout-ms": "doneTimeoutMs",
     "--partial-window-enabled": "partialWindowEnabled",
+    "--scenario": "scenario",
+    "--received": "received",
+    "--session-id": "sessionId",
+    "--out": "out",
+    "--baseline": "baseline",
+    "--candidate": "candidate",
+    "--cap-skip-rate-limit": "capSkipRateLimit",
+    "--in-flight-skip-rate-limit": "inFlightSkipRateLimit",
+    "--in-flight-skip-count-limit": "inFlightSkipCountLimit",
+    "--final-p95-delta-limit-ms": "finalP95DeltaLimitMs",
   };
   const numericKeys = new Set([
     "decodeP95LimitMs",
@@ -299,6 +450,10 @@ const parseArgs = (argv) => {
     "readyTimeoutMs",
     "doneTimeoutMs",
     "cpuPid",
+    "capSkipRateLimit",
+    "inFlightSkipRateLimit",
+    "inFlightSkipCountLimit",
+    "finalP95DeltaLimitMs",
   ]);
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
@@ -310,17 +465,26 @@ const parseArgs = (argv) => {
       if (key === "partialWindowEnabled") {
         if (value !== "true" && value !== "false") throw new Error(`${flag} must be true or false`);
         options[key] = value === "true";
-      } else options[key] = numericKeys.has(key) ? Number(value) : value;
+      } else {
+        options[key] = numericKeys.has(key) ? Number(value) : value;
+        if (numericKeys.has(key) && !Number.isFinite(options[key]))
+          throw new Error(`${flag} must be finite`);
+      }
     } else throw new Error(`unknown option: ${flag}`);
   }
+  if (!["normal_conversation", "continuous_speech"].includes(options.scenario))
+    throw new Error("--scenario must be normal_conversation or continuous_speech");
+  if (!["auto", "text", "json"].includes(options.cpuFormat))
+    throw new Error("--cpu-format must be auto, text, or json");
   return options;
 };
 
 const usage = () => `Usage:
   node scripts/partial-window-cpu-benchmark.mjs replay --input PATH (--out-dir DIR) [--url WS_URL] [--cpu-pid PID] [--partial-window-enabled true|false]
-  node scripts/partial-window-cpu-benchmark.mjs report --metrics SIDECAR.jsonl --cpu TOP.txt --cpu-pid PID [--cpu-format auto|text|json]
+  node scripts/partial-window-cpu-benchmark.mjs report --metrics SIDECAR.jsonl --cpu TOP.txt --cpu-pid PID --received RECEIVED.jsonl --session-id ID --out RESULT.json [--partial-window-enabled true|false]
+  node scripts/partial-window-cpu-benchmark.mjs compare --baseline BASELINE.json --candidate CANDIDATE.json --out DIFF.json [--final-p95-delta-limit-ms 50]
 
-Input is WAV PCM s16le/16kHz/mono or raw PCM s16le/16kHz/mono. Its byte length must be a 32ms frame multiple (${FRAME_BYTES} bytes). Replay defaults audio.partial_window_asr_enabled to true, waits 1500ms before session.stop, and writes received.jsonl without transcript text.`;
+Input is WAV PCM s16le/16kHz/mono or raw PCM s16le/16kHz/mono. Its byte length must be a 32ms frame multiple (${FRAME_BYTES} bytes). Replay defaults audio.partial_window_asr_enabled to true, writes manifest.json and received.jsonl without transcript text.`;
 
 const loadWebSocket = async () => {
   if (typeof globalThis.WebSocket === "function") return globalThis.WebSocket;
@@ -415,6 +579,30 @@ const replay = async (options) => {
   mkdirSync(options.outDir, { recursive: true });
   const receivedPath = resolve(options.outDir, "received.jsonl");
   const topPath = resolve(options.outDir, "cpu.top.txt");
+  const manifestPath = resolve(options.outDir, "manifest.json");
+  const sessionId = `partial-window-benchmark-${Date.now().toString(36)}`;
+  const manifest = {
+    schemaVersion: 1,
+    sessionId,
+    partialWindowEnabled: options.partialWindowEnabled,
+    scenario: options.scenario,
+    fixture: {
+      name: fixture.inputName,
+      format: fixture.inputFormat,
+      durationMs: fixture.durationMs,
+      frames: fixture.bytes.length / FRAME_BYTES,
+      sha256: createHash("sha256").update(fixture.bytes).digest("hex"),
+    },
+    cpuPid: options.cpuPid ?? null,
+    artifacts: {
+      receivedJsonl: receivedPath,
+      cpuTop: options.cpuPid ? topPath : null,
+      sidecarJsonl: null,
+    },
+    replay: { status: "running", exitCode: null },
+  };
+  const writeManifest = () => writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeManifest();
   writeFileSync(receivedPath, "");
   const startedAt = performance.now();
   const appendReceived = (event, payload = {}) => {
@@ -435,7 +623,6 @@ const replay = async (options) => {
   try {
     const WebSocket = await loadWebSocket();
     const socket = new WebSocket(options.url);
-    const sessionId = `partial-window-benchmark-${Date.now().toString(36)}`;
     let done = false;
     let ready = false;
     let closed = false;
@@ -534,12 +721,20 @@ const replay = async (options) => {
     if (sampler) await sampler.finished;
     if (!done) throw new Error(failure ?? `session.done timeout after ${options.doneTimeoutMs}ms`);
     const output = {
+      manifest: manifestPath,
+      sessionId,
       receivedJsonl: receivedPath,
       cpuTop: sampler ? topPath : null,
       inputDurationMs: fixture.durationMs,
       frames: fixture.bytes.length / FRAME_BYTES,
     };
+    manifest.replay = { status: "passed", exitCode: 0 };
+    writeManifest();
     console.log(JSON.stringify(output));
+  } catch (error) {
+    manifest.replay = { status: "harness_error", exitCode: 2 };
+    writeManifest();
+    throw error;
   } finally {
     if (sampler && sampler.child.exitCode === null) {
       sampler.child.kill("SIGTERM");
@@ -549,23 +744,80 @@ const replay = async (options) => {
 };
 
 const report = (options) => {
-  if (!options.metrics || !options.cpu || !options.cpuPid)
-    throw new Error("report requires --metrics, --cpu, and --cpu-pid");
+  if (
+    !options.metrics ||
+    !options.cpu ||
+    !options.cpuPid ||
+    !options.received ||
+    !options.sessionId ||
+    !options.out
+  )
+    throw new Error(
+      "report requires --metrics, --cpu, --cpu-pid, --received, --session-id, and --out",
+    );
   if (!existsSync(options.metrics))
     throw new Error(`metrics JSONL does not exist: ${resolve(options.metrics)}`);
   if (!existsSync(options.cpu))
     throw new Error(`CPU input does not exist: ${resolve(options.cpu)}`);
+  if (!existsSync(options.received))
+    throw new Error(`received JSONL does not exist: ${resolve(options.received)}`);
   const metrics = summarizePartialWindowMetrics(readFileSync(options.metrics, "utf8"));
   const cpu = parseCpuSamples(readFileSync(options.cpu, "utf8"), options.cpuPid, options.cpuFormat);
-  const decision = acceptance(metrics, cpu, options);
-  const output = { metrics, ...decision };
+  const finalCaption = summarizeFinalCaptionMetrics(
+    readFileSync(options.received, "utf8"),
+    options.sessionId,
+  );
+  const decision = acceptance(metrics, cpu, options, finalCaption);
+  const output = {
+    schemaVersion: 1,
+    sessionId: options.sessionId,
+    partialWindowEnabled: options.partialWindowEnabled,
+    scenario: options.scenario,
+    rawMetrics: { cpuSamplesPercent: cpu, finalCaptionE2eMs: finalCaption.e2eSamplesMs },
+    cpu: {
+      samples: cpu.length,
+      meanPercent: decision.cpuMeanPercent,
+      p95Percent: decision.cpuP95Percent,
+    },
+    finalCaption,
+    partialWindow: metrics,
+    thresholds: {
+      decodeP95LimitMs: decision.decodeP95LimitMs,
+      throttleLimit: decision.throttleLimit,
+      capSkipRateLimit: decision.capSkipRateLimit,
+      inFlightSkipRateLimit: decision.inFlightSkipRateLimit,
+      inFlightSkipCountLimit: decision.inFlightSkipCountLimit,
+    },
+    acceptance: decision,
+  };
+  writeFileSync(resolve(options.out), `${JSON.stringify(output, null, 2)}\n`);
   console.log(JSON.stringify(output, null, 2));
-  if (!decision.decodeAvailable || !decision.throttleAvailable) {
+  if (!decision.observabilityAvailable) {
     throw new Error(
-      "required PartialWindow JSONL metrics are missing; expected partial_window_asr_decode.decode_ms and partial_window_asr_completed.throttle_rate",
+      "required benchmark telemetry is unavailable for the selected PartialWindow mode",
     );
   }
   if (!decision.accepted) process.exitCode = 1;
+};
+
+const compare = (options) => {
+  if (!options.baseline || !options.candidate || !options.out)
+    throw new Error("compare requires --baseline, --candidate, and --out");
+  if (!existsSync(options.baseline) || !existsSync(options.candidate))
+    throw new Error("compare inputs must exist");
+  const baseline = JSON.parse(readFileSync(options.baseline, "utf8"));
+  const candidate = JSON.parse(readFileSync(options.candidate, "utf8"));
+  const output = {
+    schemaVersion: 1,
+    baseline: resolve(options.baseline),
+    candidate: resolve(options.candidate),
+    comparison: compareResults(baseline, candidate, options),
+  };
+  writeFileSync(resolve(options.out), `${JSON.stringify(output, null, 2)}\n`);
+  console.log(JSON.stringify(output, null, 2));
+  if (!output.comparison.observabilityAvailable)
+    throw new Error("comparison requires final caption p95 from both result artifacts");
+  if (!output.comparison.accepted) process.exitCode = 1;
 };
 
 const main = () => {
@@ -573,6 +825,7 @@ const main = () => {
   if (options.command === "help") return console.log(usage());
   if (options.command === "replay") return replay(options);
   if (options.command === "report") return report(options);
+  if (options.command === "compare") return compare(options);
   throw new Error(`unknown command: ${options.command}\n${usage()}`);
 };
 

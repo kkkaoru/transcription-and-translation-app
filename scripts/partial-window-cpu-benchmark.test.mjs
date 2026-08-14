@@ -3,10 +3,12 @@ import test from "node:test";
 
 import {
   acceptance,
+  compareResults,
   parseCpuSamples,
   parseTopJsonCpuSamples,
   parseTopTextCpuSamples,
   percentile,
+  summarizeFinalCaptionMetrics,
   summarizePartialWindowMetrics,
 } from "./partial-window-cpu-benchmark.mjs";
 
@@ -42,15 +44,127 @@ test("metric summary uses the latest cumulative completed throttle rate", () => 
   const metrics = summarizePartialWindowMetrics(jsonl);
   assert.deepEqual(metrics, {
     decodeSamples: 2,
+    partialEventCount: 6,
     decodeP50Ms: 100,
     decodeP95Ms: 390,
     completedEvents: 1,
     throttleDenominator: 2,
     throttledCompletions: 1,
     throttleRate: 0.5,
+    dispatched: 0,
+    completed: 2,
+    skippedCapped: 0,
+    skippedInFlight: 0,
+    opportunities: 0,
+    capSkipRate: null,
+    inFlightSkipRate: null,
     skipReasons: { disabled: 1, nemotron: 1, busy: 1 },
   });
   assert.equal(acceptance(metrics, [10, 20, 30]).accepted, false);
+});
+
+test("partial metrics use latest cumulative counters for cap and in-flight skip rates", () => {
+  const metrics = summarizePartialWindowMetrics(
+    [
+      '{"event":"partial_window_asr_completed","dispatched":2,"completed":1,"skipped_busy":0,"skipped_capped":0,"throttle_rate":0}',
+      '{"event":"partial_window_asr_skip","skip_reason":"in_flight","dispatched":3,"skipped_busy":1,"skipped_capped":0}',
+      '{"event":"partial_window_asr_skip","skip_reason":"cap","dispatched":4,"skipped_busy":1,"skipped_capped":2}',
+    ].join("\n"),
+  );
+  assert.deepEqual(
+    {
+      dispatched: metrics.dispatched,
+      completed: metrics.completed,
+      skippedCapped: metrics.skippedCapped,
+      skippedInFlight: metrics.skippedInFlight,
+      opportunities: metrics.opportunities,
+      capSkipRate: metrics.capSkipRate,
+      inFlightSkipRate: metrics.inFlightSkipRate,
+    },
+    {
+      dispatched: 4,
+      completed: 1,
+      skippedCapped: 2,
+      skippedInFlight: 1,
+      opportunities: 7,
+      capSkipRate: 2 / 7,
+      inFlightSkipRate: 1 / 7,
+    },
+  );
+});
+
+test("final caption E2E uses sidecar timestamps and deduplicates revisions", () => {
+  const received = [
+    '{"event":"server_message","payload":{"type":"turn.final","session_id":"session-a","turn_session_id":1,"turn_id":2,"revision":1,"output_sequence":3,"speech_start_at":100,"asr_final_at":240}}',
+    '{"event":"server_message","payload":{"type":"turn.final","session_id":"session-a","turn_session_id":1,"turn_id":2,"revision":1,"output_sequence":3,"speech_start_at":100,"asr_final_at":999}}',
+    '{"event":"server_message","payload":{"type":"turn.final","session_id":"session-a","turn_session_id":1,"turn_id":3,"revision":1,"output_sequence":4,"speech_start_at":300}}',
+    '{"event":"server_message","payload":{"type":"turn.final","session_id":"other","turn_session_id":1,"turn_id":4,"revision":1,"output_sequence":5,"speech_start_at":1,"asr_final_at":2}}',
+  ].join("\n");
+  assert.deepEqual(summarizeFinalCaptionMetrics(received, "session-a"), {
+    finalCount: 2,
+    missingLatencyCount: 1,
+    e2eSamplesMs: [140],
+    e2eP50Ms: 140,
+    e2eP95Ms: 140,
+  });
+});
+
+test("OFF mode accepts zero PartialWindow events while requiring final caption latency", () => {
+  const metrics = summarizePartialWindowMetrics("");
+  const finalCaption = {
+    finalCount: 1,
+    missingLatencyCount: 0,
+    e2eSamplesMs: [120],
+    e2eP50Ms: 120,
+    e2eP95Ms: 120,
+  };
+  assert.equal(
+    acceptance(metrics, [10, 20], { partialWindowEnabled: false }, finalCaption).accepted,
+    true,
+  );
+  assert.equal(
+    acceptance(
+      summarizePartialWindowMetrics('{"event":"partial_window_asr_skip","skip_reason":"cap"}'),
+      [10],
+      { partialWindowEnabled: false },
+      finalCaption,
+    ).accepted,
+    false,
+  );
+});
+
+test("comparison records signed CPU, final p95, and skip deltas", () => {
+  const comparison = compareResults(
+    {
+      cpu: { meanPercent: 10, p95Percent: 20 },
+      finalCaption: { e2eP95Ms: 100 },
+      partialWindow: {
+        skippedCapped: 0,
+        skippedInFlight: 1,
+        capSkipRate: 0,
+        inFlightSkipRate: 0.1,
+      },
+    },
+    {
+      cpu: { meanPercent: 13, p95Percent: 120 },
+      finalCaption: { e2eP95Ms: 145 },
+      partialWindow: {
+        skippedCapped: 2,
+        skippedInFlight: 3,
+        capSkipRate: 0.2,
+        inFlightSkipRate: 0.3,
+      },
+    },
+  );
+  assert.equal(comparison.accepted, true);
+  assert.deepEqual(comparison.cpu, {
+    meanPercentDelta: 3,
+    p95PercentDelta: 100,
+    candidateP95RedCandidate: true,
+  });
+  assert.equal(comparison.finalCaption.p95DeltaMs, 45);
+  assert.equal(comparison.partialWindow.capSkipCountDelta, 2);
+  assert.equal(comparison.partialWindow.inFlightSkipRateDelta, 0.19999999999999998);
 });
 
 test("acceptance requires observable decode and throttle data", () => {
