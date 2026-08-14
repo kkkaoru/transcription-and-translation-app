@@ -238,9 +238,7 @@ mod tests {
         assert_ne!(first_key.prompt_hash, second_key.prompt_hash);
 
         let mut constrained = first.clone();
-        constrained
-            .constraints
-            .push(Utf8BytePrefixConstraint::from_surface(0, "漢"));
+        constrained.constraints.push(Utf8BytePrefixConstraint::from_surface(0, "漢"));
         let constrained_key = VerificationCacheKey::for_draft(&session, &constrained);
         assert_ne!(first_key.constraint_hash, constrained_key.constraint_hash);
     }

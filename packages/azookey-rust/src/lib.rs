@@ -15,16 +15,16 @@ mod verifier;
 mod viterbi;
 
 pub use dictionary::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
+pub use verifier::{
+    Draft, DraftVerifier, SessionContext, VerificationCacheKey, VerificationResult,
+    VerificationState, VerifierCapabilities, VerifierError, VerifierSession,
+};
 pub use viterbi::{
     build_lattice, convert_kana_to_kanji, convert_kana_to_kanji_with_dictionary,
     convert_kana_to_kanji_with_paths, convert_with_dictionary, search, BytePrefixConstraint,
     CandidatePath, ConstrainedSearchRequest, ConversionCandidate, ConversionLattice,
     ConversionOptions, ConversionRequest, DictionaryEntryId, EdgeHandle, EdgeOrigin, LatticeEdge,
     UnknownPolicy, Utf8BytePrefixConstraint,
-};
-pub use verifier::{
-    Draft, DraftVerifier, SessionContext, VerificationCacheKey, VerificationResult,
-    VerificationState, VerifierCapabilities, VerifierError, VerifierSession,
 };
 
 #[cfg(test)]
