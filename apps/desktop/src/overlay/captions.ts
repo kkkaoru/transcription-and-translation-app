@@ -3,6 +3,7 @@ import {
   detectCaptionSoftBreaks,
   selectVisibleCaptionSentence,
 } from "@caption-bridge/sentence-boundary";
+import { recordCaptionTranslationDisplayDisposition } from "../core/caption-translation-diagnostics";
 import {
   CAPTION_MAX_CHARS_MAX,
   CAPTION_MAX_CHARS_MIN,
@@ -653,13 +654,23 @@ export const captionItems = (
     ? ""
     : boundPartialWindowText(source, partialWindowText);
   const sanitizedTranslation = sanitizeCaptionDisplayText(caption.translationText);
+  const translationDisplayable = hasDisplayableTranslationText(sanitizedTranslation);
+  const displayedTranslation =
+    !predictionOnly && translationDisplayable ? sanitizedTranslation : "";
+  if (!placeholder && caption.translationText.trim()) {
+    recordCaptionTranslationDisplayDisposition(
+      caption,
+      displayedTranslation,
+      predictionOnly
+        ? "prediction-only-plate"
+        : translationDisplayable
+          ? "displayed"
+          : "no-displayable-translation",
+    );
+  }
   const translation: CaptionItem = {
     key: "translation",
-    text: placeholder
-      ? "English translation will appear here"
-      : !predictionOnly && hasDisplayableTranslationText(sanitizedTranslation)
-        ? sanitizedTranslation
-        : "",
+    text: placeholder ? "English translation will appear here" : displayedTranslation,
     style: config.overlay.translation,
     maxChars: resolveCaptionMaxChars(config, "translation"),
     deferSentencePaging,

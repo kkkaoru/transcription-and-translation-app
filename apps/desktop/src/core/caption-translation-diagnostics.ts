@@ -4,6 +4,7 @@ const MAX_TRANSLATION_DISPOSITIONS = 32;
 
 export type CaptionTranslationDisposition = {
   at: number;
+  decisionSource: "merge" | "display";
   captionId: string;
   reason: string;
   incomingTranslationChars: number;
@@ -17,6 +18,13 @@ export type CaptionTranslationDisposition = {
 };
 
 const dispositions: CaptionTranslationDisposition[] = [];
+
+const pushDisposition = (entry: CaptionTranslationDisposition): void => {
+  dispositions.push(entry);
+  if (dispositions.length > MAX_TRANSLATION_DISPOSITIONS) {
+    dispositions.splice(0, dispositions.length - MAX_TRANSLATION_DISPOSITIONS);
+  }
+};
 
 const normalizedReading = (caption: CaptionPayload): string => {
   if (typeof caption.azookeyInputText !== "string") {
@@ -52,8 +60,9 @@ export const recordCaptionTranslationDisposition = (
   const incomingSourceIdentity = incoming.sourceText
     .normalize("NFKC")
     .replace(/[\p{P}\p{Z}]/gu, "");
-  dispositions.push({
+  pushDisposition({
     at: Date.now(),
+    decisionSource: "merge",
     captionId: incoming.id,
     reason,
     incomingTranslationChars: [...incomingTranslation].length,
@@ -71,9 +80,47 @@ export const recordCaptionTranslationDisposition = (
       currentReading && incomingReading && currentReading === incomingReading,
     ),
   });
-  if (dispositions.length > MAX_TRANSLATION_DISPOSITIONS) {
-    dispositions.splice(0, dispositions.length - MAX_TRANSLATION_DISPOSITIONS);
+};
+
+/** Record the display gate after a translation has already survived merge. */
+export const recordCaptionTranslationDisplayDisposition = (
+  caption: CaptionPayload,
+  outputTranslationText: string,
+  reason: "displayed" | "prediction-only-plate" | "no-displayable-translation",
+): void => {
+  const incomingTranslation = caption.translationText.trim();
+  if (!incomingTranslation) {
+    return;
   }
+  const incomingTranslationChars = [...incomingTranslation].length;
+  const outputTranslationChars = [...outputTranslationText.trim()].length;
+  const sourceChars = [...caption.sourceText.trim()].length;
+  const duplicate = dispositions.some(
+    (entry) =>
+      entry.decisionSource === "display" &&
+      entry.captionId === caption.id &&
+      entry.reason === reason &&
+      entry.incomingTranslationChars === incomingTranslationChars &&
+      entry.outputTranslationChars === outputTranslationChars &&
+      entry.currentSourceChars === sourceChars,
+  );
+  if (duplicate) {
+    return;
+  }
+  pushDisposition({
+    at: Date.now(),
+    decisionSource: "display",
+    captionId: caption.id,
+    reason,
+    incomingTranslationChars,
+    outputTranslationChars,
+    incomingTranslationPreserved: outputTranslationText.trim() === incomingTranslation,
+    currentSourceChars: sourceChars,
+    incomingSourceChars: sourceChars,
+    sourceMatched: true,
+    sourceEquivalentIgnoringPunctuation: true,
+    readingMatched: true,
+  });
 };
 
 export const snapshotCaptionTranslationDispositions = (): CaptionTranslationDisposition[] =>

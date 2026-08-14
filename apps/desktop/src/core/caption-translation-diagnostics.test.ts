@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearCaptionTranslationDispositions,
+  recordCaptionTranslationDisplayDisposition,
   recordCaptionTranslationDisposition,
   snapshotCaptionTranslationDispositions,
 } from "./caption-translation-diagnostics";
@@ -40,6 +41,7 @@ describe("caption translation dispositions", () => {
 
     expect(snapshotCaptionTranslationDispositions()).toEqual([
       expect.objectContaining({
+        decisionSource: "merge",
         reason: "accepted",
         incomingTranslationChars: 5,
         outputTranslationChars: 5,
@@ -57,6 +59,46 @@ describe("caption translation dispositions", () => {
     ]);
     expect(JSON.stringify(snapshotCaptionTranslationDispositions())).not.toContain("Hello");
     expect(JSON.stringify(snapshotCaptionTranslationDispositions())).not.toContain("こんにちは");
+  });
+
+  it("records and deduplicates display-layer translation decisions", () => {
+    const translated = caption({
+      translationText: "Hello",
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    recordCaptionTranslationDisplayDisposition(translated, "Hello", "displayed");
+    recordCaptionTranslationDisplayDisposition(translated, "Hello", "displayed");
+    recordCaptionTranslationDisplayDisposition(translated, "", "prediction-only-plate");
+    recordCaptionTranslationDisplayDisposition(translated, "", "no-displayable-translation");
+
+    expect(snapshotCaptionTranslationDispositions()).toEqual([
+      expect.objectContaining({
+        decisionSource: "display",
+        reason: "displayed",
+        incomingTranslationPreserved: true,
+        outputTranslationChars: 5,
+      }),
+      expect.objectContaining({
+        decisionSource: "display",
+        reason: "prediction-only-plate",
+        incomingTranslationPreserved: false,
+        outputTranslationChars: 0,
+      }),
+      expect.objectContaining({
+        decisionSource: "display",
+        reason: "no-displayable-translation",
+        incomingTranslationPreserved: false,
+        outputTranslationChars: 0,
+      }),
+    ]);
+  });
+
+  it("ignores display decisions when no incoming translation exists", () => {
+    recordCaptionTranslationDisplayDisposition(caption(), "", "no-displayable-translation");
+    expect(snapshotCaptionTranslationDispositions()).toEqual([]);
   });
 
   it("identifies punctuation-only source revisions even when readings differ", () => {

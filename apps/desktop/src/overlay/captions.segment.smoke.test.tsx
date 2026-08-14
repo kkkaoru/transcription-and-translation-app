@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { CAPTION_HOLD_CLEAR_MS, captionHoldClearDelayMs } from "../core/caption-hold-clear";
+import {
+  clearCaptionTranslationDispositions,
+  snapshotCaptionTranslationDispositions,
+} from "../core/caption-translation-diagnostics";
 import { mergeCaptionPayload } from "../core/caption-updates";
 import { createDefaultConfig } from "../core/defaults";
 import type { CaptionPayload } from "../core/types";
@@ -377,6 +381,31 @@ describe("captionTextLines and captionItems", () => {
     expect(source?.partialWindowText).toBe("");
     expect(source?.style.opacity).toBeCloseTo(config.overlay.source.opacity * 0.42);
     expect(translation?.text).toBe("");
+  });
+
+  it("records each display-layer reason after translation merge", () => {
+    const config = createDefaultConfig();
+    const translated: CaptionPayload = {
+      ...createPreviewCaption(),
+      id: "diagnostic-turn",
+      isFinal: true,
+    };
+
+    clearCaptionTranslationDispositions();
+    captionItems(config, translated);
+    captionItems(config, translated, false, "次の発話");
+    captionItems(config, { ...translated, id: "symbol-turn", translationText: "." });
+
+    expect(
+      snapshotCaptionTranslationDispositions().map(({ decisionSource, reason }) => ({
+        decisionSource,
+        reason,
+      })),
+    ).toEqual([
+      { decisionSource: "display", reason: "displayed" },
+      { decisionSource: "display", reason: "prediction-only-plate" },
+      { decisionSource: "display", reason: "no-displayable-translation" },
+    ]);
   });
 
   it("keeps system caption behavior unchanged when no OPEN prediction exists", () => {
