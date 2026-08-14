@@ -39,6 +39,7 @@ mod mac {
     const SERVER_NAME: &str = "Kotoba Beacon";
     const SELF_TEST_NAME: &str = "Kotoba Beacon Inspect Self-Test";
 
+    #[allow(clippy::excessive_nesting)]
     pub(crate) fn main() {
         let args: Vec<String> = std::env::args().skip(1).collect();
         if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -106,6 +107,7 @@ mod mac {
         rgba: Vec<u8>,
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn run_self_test() -> Result<(), String> {
         let width = 64u32;
         let height = 36u32;
@@ -142,8 +144,7 @@ mod mac {
 
         ready_rx
             .recv_timeout(Duration::from_secs(3))
-            .map_err(|_| "server readiness timed out".to_string())?
-            .map_err(|error| error)?;
+            .map_err(|_| "server readiness timed out".to_string())??;
 
         let out = PathBuf::from("tmp/syphon-inspect-self-test.ppm");
         let stats = inspect_named(SELF_TEST_NAME, Duration::from_secs(2), &out, 64)?;
@@ -166,6 +167,7 @@ mod mac {
         inspect_named(SERVER_NAME, timeout, out, min_opaque)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn inspect_named(
         name: &str,
         timeout: Duration,
@@ -204,6 +206,7 @@ mod mac {
         Err(last_error)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn sample_server(
         desc: &syphon_rs::ServerDescription,
         deadline: Instant,
@@ -273,6 +276,7 @@ mod mac {
         })
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn open_metal_client_matching<F>(
         matches: F,
     ) -> Result<objc2::rc::Retained<objc2::runtime::AnyObject>, String>
@@ -395,6 +399,7 @@ mod mac {
         Ok(rgba)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn alpha_stats(rgba: &[u8]) -> (usize, u8) {
         let mut opaque = 0usize;
         let mut max_alpha = 0u8;
@@ -408,6 +413,7 @@ mod mac {
         (opaque, max_alpha)
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn write_checkerboard_ppm(
         path: &Path,
         width: u32,

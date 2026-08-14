@@ -22,6 +22,7 @@ impl std::fmt::Debug for VibratoReader {
     }
 }
 
+#[allow(dead_code)]
 impl VibratoReader {
     pub fn new(tokenizer: Tokenizer) -> Self {
         Self { tokenizer: Arc::new(tokenizer) }

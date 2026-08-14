@@ -1406,6 +1406,7 @@ const STYLE_EDITOR_DEFAULT_HEIGHT: f64 = 780.0;
 /// Off-screen Syphon/Spout publisher stays out of the way. OBS Window Capture
 /// needs a chromeless, truly transparent surface — a decorated opaque plate
 /// composites as a solid rectangle and drops alpha.
+#[allow(clippy::too_many_arguments)]
 fn create_caption_surface_window(
     app: &AppHandle,
     config: &AppConfig,
@@ -1453,6 +1454,7 @@ fn create_caption_surface_window(
 /// clients to keep seeing a directory entry. Replacing the handle forces
 /// `SyphonMetalServer::stop` / Spout teardown now, and closing the publisher
 /// webviews stops further frame invokes.
+#[allow(clippy::excessive_nesting)]
 pub(crate) fn shutdown_native_output(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
         match state.native_output.lock() {

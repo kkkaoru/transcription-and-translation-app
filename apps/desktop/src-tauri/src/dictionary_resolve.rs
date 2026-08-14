@@ -318,6 +318,7 @@ async fn download_https_bytes(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes.to_vec())
 }
 
+#[allow(clippy::excessive_nesting)]
 fn install_downloaded_bytes(
     bytes: &[u8],
     url: &str,
@@ -440,6 +441,7 @@ fn gunzip_to_file(bytes: &[u8], destination: &Path) -> Result<(), String> {
         .map_err(|error| format!("could not write decompressed dictionary: {error}"))
 }
 
+#[allow(clippy::excessive_nesting)]
 fn locate_system_dictionary(root: &Path) -> Option<PathBuf> {
     if has_system_dictionary(root) {
         return Some(effective_system_dictionary_root(root));

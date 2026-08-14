@@ -345,6 +345,7 @@ impl Pipeline {
     ///
     /// Pure kana input is returned unchanged. On dictionary load failure the
     /// original text is returned (fail-open) so captions keep flowing.
+    #[allow(clippy::excessive_nesting)]
     fn ensure_azookey_reading(&self, text: &str) -> String {
         if !contains_kanji(text) {
             return text.to_string();
@@ -1153,6 +1154,7 @@ fn zenz_prompt(input: &str) -> String {
 /// ZenZ also inserts a sentence period after fixed greetings
 /// (`こんにちは。聞こえますか。`), which pages the plate onto only the second
 /// clause and hides the greeting the speaker already said.
+#[allow(clippy::excessive_nesting)]
 fn repair_hearing_phrase_confusion(text: &str) -> String {
     let greetings = ["こんにちは", "こんばんは", "おはようございます", "おはよう", "さようなら"];
     let mut next = text.to_string();
@@ -1654,6 +1656,7 @@ mod tests {
         ))
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn official_system_dictionary_path() -> PathBuf {
         if let Ok(raw) = std::env::var("AZOOKEY_DICTIONARY_ROOT") {
             let candidate = PathBuf::from(raw.trim());

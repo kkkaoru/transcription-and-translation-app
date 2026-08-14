@@ -147,6 +147,7 @@ fn required_files_present(model_dir: &Path, required_files: &[&str]) -> bool {
     required_files.iter().all(|file| model_dir.join(file).is_file())
 }
 
+#[allow(clippy::excessive_nesting)]
 fn directory_byte_size(path: &Path) -> Option<u64> {
     let entries = std::fs::read_dir(path).ok()?;
     let mut total = 0_u64;

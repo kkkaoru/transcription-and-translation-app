@@ -570,6 +570,7 @@ pub fn classify_archive_model_status(
 /// **Fail-open**: if the download fails or is cancelled, the pipeline rescorer
 /// simply stays inactive — no caption is ever dropped.
 #[tauri::command]
+#[allow(clippy::excessive_nesting)]
 pub async fn download_input_lm_model(app: AppHandle) -> Result<String, String> {
     let cache_root = input_lm_cache_root();
     let spec = &INPUT_LM_ARCHIVE_SPEC;

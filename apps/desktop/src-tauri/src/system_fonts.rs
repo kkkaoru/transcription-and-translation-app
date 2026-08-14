@@ -46,6 +46,7 @@ mod macos {
     type CFArrayRef = *const c_void;
     type CFStringRef = *const c_void;
 
+    #[allow(clippy::duplicated_attributes)]
     #[link(name = "CoreText", kind = "framework")]
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {

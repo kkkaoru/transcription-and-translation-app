@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 const INSTANCE_LOCK_FILE: &str = "instance.lock";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SMOKE_BACKGROUND_FLAG: &str = "--kotoba-smoke-background";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SMOKE_BACKGROUND_ENV: &str = "KOTOBA_BEACON_SMOKE_BACKGROUND";
 
 #[derive(Debug)]
@@ -119,6 +121,7 @@ fn acquire_macos_instance(lock_path: &Path) -> Result<InstanceGuard, InstanceErr
 /// Smoke / verification launches opt out of activation so the harness can
 /// keep working in another app. Default double-click / Dock launches still
 /// come to the front.
+#[allow(clippy::excessive_nesting)]
 pub fn configure_foreground_activation(app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -140,11 +143,13 @@ pub fn configure_foreground_activation(app: &AppHandle) -> Result<(), String> {
 }
 
 /// True when this process was started by the native smoke harness.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn smoke_background_requested() -> bool {
     smoke_background_requested_from(std::env::args())
         || std::env::var_os(SMOKE_BACKGROUND_ENV).is_some()
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn smoke_background_requested_from(args: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
     args.into_iter().any(|arg| arg.as_ref() == SMOKE_BACKGROUND_FLAG)
 }
