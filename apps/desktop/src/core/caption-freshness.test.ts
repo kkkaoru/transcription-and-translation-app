@@ -206,6 +206,19 @@ describe("caption freshness window", () => {
     expect(display.sourceText).toBe(text);
   });
 
+  it("restores the newest chunk when every grapheme expires on a growth tick", () => {
+    const lead = "今日は晴れです";
+    const text = `${lead}明日は`;
+    const display = windowOf(text, CAPTION_FRESHNESS_MS, {
+      sentenceEndOffsets: [7],
+      previousSourceText: lead,
+      lastGrowthAt: CAPTION_FRESHNESS_MS,
+      graphemePaintedAt: paintedAt(text, 0),
+    });
+
+    expect(display.sourceText).toBe("明日は");
+  });
+
   it("empties an idle open chunk at lastGrowthAt+5000 and clears translation with it", () => {
     const text = "食べて";
     const empty = windowOf(text, CAPTION_FRESHNESS_MS, {
@@ -292,6 +305,20 @@ describe("caption freshness window", () => {
       previousSourceText: "",
     });
     expect(restamped.sourceText).toBe("明日は");
+  });
+
+  it.each(["preview", "empty"])("keeps the %s plate outside the freshness TTL", (id) => {
+    const plate = caption({ id, sourceText: "表示を維持", translationText: "keep visible" });
+
+    expect(
+      applyCaptionFreshnessWindow({
+        caption: plate,
+        now: CAPTION_FRESHNESS_MS * 2,
+        graphemePaintedAt: paintedAt(plate.sourceText, 0),
+        lastGrowthAt: 0,
+        previousSourceText: plate.sourceText,
+      }),
+    ).toBe(plate);
   });
 
   it("keeps a same-length grammar lead substitution instead of inheriting stale paintedAt", () => {

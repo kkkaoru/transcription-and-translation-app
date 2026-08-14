@@ -343,6 +343,43 @@ describe("useCaptionFreshness", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("ignores boundary offsets that resolve after a replacement caption", async () => {
+    let resolveOffsets: ((value: unknown) => void) | undefined;
+    vi.mocked(invoke).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveOffsets = resolve;
+        }),
+    );
+    renderFresh(
+      baseCaption({
+        sourceText: "古い字幕",
+        sentenceEndOffsets: undefined,
+        softBreakOffsets: undefined,
+      }),
+    );
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    renderFresh(
+      baseCaption({
+        id: "parapper:session:turn:2",
+        sourceText: "新しい字幕",
+        sentenceEndOffsets: [5],
+        softBreakOffsets: [3],
+      }),
+    );
+    const paintCountAfterReplacement = paints.length;
+
+    await act(async () => {
+      resolveOffsets?.({ tokens: [], sentenceEnds: [4], softBreaks: [2] });
+      await Promise.resolve();
+    });
+
+    expect(paints).toHaveLength(paintCountAfterReplacement);
+    expect(paints.at(-1)?.sourceText).toBe("新しい字幕");
+    expect(paints.at(-1)?.sentenceEndOffsets).toEqual([5]);
+  });
+
   it("leaves preview and empty plates untouched", () => {
     renderFresh(baseCaption({ id: "preview", sourceText: "サンプル字幕" }));
     expect(paints.at(-1)?.sourceText).toBe("サンプル字幕");

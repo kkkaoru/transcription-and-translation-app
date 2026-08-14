@@ -12,7 +12,17 @@ export default defineConfig({
     ],
     coverage: {
       provider: "v8",
-      include: ["src/core/**/*.ts", "src/i18n/messages.ts", "src/overlay/**/*.{ts,tsx}"],
+      include: [
+        "src/core/**/*.ts",
+        "src/i18n/messages.ts",
+        // Measure display decisions at their hook boundary. MainApp.tsx is
+        // Tauri orchestration; move reusable display logic into core/hooks and
+        // add it here rather than locking its implementation to broad mocks.
+        "src/live/useCaptionFreshness.ts",
+        "src/live/useCaptionHoldClear.ts",
+        "src/live/useProgressiveCaptionReveal.ts",
+        "src/overlay/**/*.{ts,tsx}",
+      ],
       exclude: [
         "src/core/**/*.test.ts",
         "src/i18n/**/*.test.ts",

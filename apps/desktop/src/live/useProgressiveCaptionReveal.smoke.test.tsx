@@ -103,6 +103,30 @@ describe("useProgressiveCaptionReveal", () => {
     expect(paints.at(-1)?.sourceText).toBe("こんにちは");
   });
 
+  it("ignores a stale first-frame callback after the reveal target changes", () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        frameCallbacks.push(callback);
+        return frameCallbacks.length;
+      });
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    renderCaption(baseCaption({ sourceText: "こ" }));
+    const staleCallback = frameCallbacks[0];
+    renderCaption(baseCaption({ sourceText: "こんにちは" }));
+    expect(paints.at(-1)?.sourceText).toBe("こんにちは");
+
+    act(() => {
+      staleCallback?.(0);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("こんにちは");
+
+    requestFrame.mockRestore();
+    cancelFrame.mockRestore();
+  });
+
   it("reveals a longer same-turn hypothesis one grapheme at a time after the first frame", () => {
     renderCaption(baseCaption({ sourceText: "こ" }));
     act(() => {
@@ -188,6 +212,24 @@ describe("useProgressiveCaptionReveal", () => {
       }),
     );
     expect(paints.at(-1)?.sourceText).toBe("明日は晴れ");
+  });
+
+  it("holds a one-grapheme first hypothesis when the utterance id changes", () => {
+    renderCaption(baseCaption({ sourceText: "前の字幕" }));
+    paints = [];
+
+    renderCaption(
+      baseCaption({
+        id: "parapper:session:turn:2",
+        sourceText: "次",
+      }),
+    );
+    expect(paints.at(-1)?.sourceText).toBe("");
+
+    act(() => {
+      vi.advanceTimersByTime(PROGRESSIVE_FIRST_PAINT_COALESCE_MS);
+    });
+    expect(paints.at(-1)?.sourceText).toBe("次");
   });
 
   it("snaps immediately on same-turn kana-to-kanji rewrites", () => {
