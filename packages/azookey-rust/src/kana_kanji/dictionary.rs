@@ -1,7 +1,7 @@
 use super::normalization::{is_boundary, to_hiragana, to_katakana};
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -421,10 +421,11 @@ impl AzooKeyDictionary {
                     SystemDictionarySource::Filesystem(path) => {
                         revision_mix(&mut hash, path.to_string_lossy().as_bytes());
                     }
-                    SystemDictionarySource::Portable(store) => {
-                        revision_mix(&mut hash, &store.bytes);
+                    SystemDictionarySource::Portable(_) => {
+                        revision_mix(&mut hash, b"portable");
                     }
                 }
+                revision_mix(&mut hash, &system.content_revision.to_le_bytes());
             }
             None => revision_mix(&mut hash, b"no-system"),
         }
@@ -433,6 +434,7 @@ impl AzooKeyDictionary {
             if let Some(dictionary) = dictionary {
                 revision_mix(&mut hash, dictionary.root.to_string_lossy().as_bytes());
                 revision_mix(&mut hash, dictionary.name.as_bytes());
+                revision_mix(&mut hash, &dictionary.content_revision.to_le_bytes());
                 if let Some(entries) = &dictionary.tsv_entries {
                     for entry in entries {
                         revision_mix_entry(&mut hash, entry);
@@ -473,6 +475,63 @@ impl AzooKeyDictionary {
     }
 }
 
+fn filesystem_dictionary_content_revision(path: &Path) -> Result<u64, String> {
+    let mut files = Vec::new();
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        collect_dictionary_files(path, path, &mut HashSet::new(), &mut files)?;
+    }
+    files.sort();
+
+    let mut hash = 0xcbf29ce484222325u64;
+    revision_mix(&mut hash, b"azookey-filesystem-content-v1");
+    for file in files {
+        let relative = file.strip_prefix(path).unwrap_or(&file);
+        let name = if relative.as_os_str().is_empty() {
+            file.file_name().unwrap_or_default().to_string_lossy()
+        } else {
+            relative.to_string_lossy()
+        };
+        revision_mix(&mut hash, name.as_bytes());
+        let bytes = fs::read(&file)
+            .map_err(|error| format!("could not fingerprint {}: {error}", file.display()))?;
+        revision_mix(&mut hash, &bytes);
+    }
+    Ok(hash)
+}
+
+fn collect_dictionary_files(
+    root: &Path,
+    directory: &Path,
+    visited: &mut HashSet<PathBuf>,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let canonical = directory.canonicalize().map_err(|error| {
+        format!("could not resolve dictionary directory {}: {error}", directory.display())
+    })?;
+    if !visited.insert(canonical) {
+        return Ok(());
+    }
+    let entries = fs::read_dir(directory).map_err(|error| {
+        format!("could not list dictionary directory {}: {error}", directory.display())
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!("could not read an entry under {}: {error}", root.display())
+        })?;
+        let path = entry.path();
+        let metadata = fs::metadata(&path)
+            .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+        if metadata.is_dir() {
+            collect_dictionary_files(root, &path, visited, files)?;
+        } else if metadata.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
 fn revision_mix(hash: &mut u64, bytes: &[u8]) {
     for byte in bytes {
         *hash ^= u64::from(*byte);
@@ -499,6 +558,7 @@ fn path_exists_for_dictionary(path: &Path) -> bool {
 #[derive(Debug, Clone)]
 struct SystemDictionary {
     source: SystemDictionarySource,
+    content_revision: u64,
     char_ids: HashMap<char, u8>,
     mm: Vec<f32>,
     cc_cache: RefCell<HashMap<u16, Vec<f32>>>,
@@ -530,6 +590,12 @@ impl SystemDictionary {
     }
 
     fn from_source(source: SystemDictionarySource) -> Result<Self, String> {
+        // Hash once while loading. `AzooKeyDictionary::revision` is read for
+        // every lattice, so rescanning the 34 MB official dictionary there
+        // would add I/O to every interim caption. Content hashing (rather than
+        // path/size/mtime metadata) detects same-size rewrites and edits that
+        // preserve timestamps; the cost is paid only when a dictionary reloads.
+        let content_revision = source.content_revision()?;
         let chars = source.read_utf8("louds/charID.chid")?;
         let mut char_ids = HashMap::new();
         for (index, character) in chars.chars().enumerate() {
@@ -548,6 +614,7 @@ impl SystemDictionary {
         }
         Ok(Self {
             source,
+            content_revision,
             char_ids,
             mm,
             cc_cache: RefCell::new(HashMap::new()),
@@ -664,6 +731,17 @@ impl SystemDictionary {
 }
 
 impl SystemDictionarySource {
+    fn content_revision(&self) -> Result<u64, String> {
+        match self {
+            Self::Filesystem(root) => filesystem_dictionary_content_revision(root),
+            Self::Portable(store) => {
+                let mut hash = 0xcbf29ce484222325u64;
+                revision_mix(&mut hash, &store.bytes);
+                Ok(hash)
+            }
+        }
+    }
+
     fn read(&self, relative_path: &str) -> Result<Cow<'_, [u8]>, String> {
         match self {
             Self::Filesystem(root) => {
@@ -1207,6 +1285,7 @@ fn is_katakana_char(character: char) -> bool {
 struct ExternalTrieDictionary {
     root: PathBuf,
     name: String,
+    content_revision: u64,
     char_ids: HashMap<char, u8>,
     tsv_entries: Option<Vec<DictionaryEntry>>,
 }
@@ -1217,10 +1296,12 @@ impl ExternalTrieDictionary {
         name: &str,
         inherited_char_ids: &HashMap<char, u8>,
     ) -> Result<Self, String> {
+        let content_revision = filesystem_dictionary_content_revision(path)?;
         if path.is_file() {
             return Ok(Self {
                 root: path.to_path_buf(),
                 name: name.to_string(),
+                content_revision,
                 char_ids: HashMap::new(),
                 tsv_entries: Some(parse_tsv(path, name == "user")?),
             });
@@ -1245,7 +1326,13 @@ impl ExternalTrieDictionary {
         } else {
             inherited_char_ids.clone()
         };
-        Ok(Self { root: path.to_path_buf(), name: name.to_string(), char_ids, tsv_entries: None })
+        Ok(Self {
+            root: path.to_path_buf(),
+            name: name.to_string(),
+            content_revision,
+            char_ids,
+            tsv_entries: None,
+        })
     }
 
     fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
@@ -1901,11 +1988,79 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
 #[cfg(test)]
 mod tests {
     use super::{
-        escaped_identifier, filter_system_entries, is_postposition_cid, parse_loudstxt3_record,
-        prediction_usable_rcid, system_entry_is_usable, word_type, AzooKeyDictionary,
-        DictionaryEntry, DictionaryPaths, WordType, BOS_CID, COMPETITIVE_CONVERTED_VALUE_MARGIN,
-        EOS_CID, MID_COUNT, PORTABLE_DICTIONARY_MAGIC,
+        escaped_identifier, filesystem_dictionary_content_revision, filter_system_entries,
+        is_postposition_cid, parse_loudstxt3_record, prediction_usable_rcid,
+        system_entry_is_usable, word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths,
+        WordType, BOS_CID, COMPETITIVE_CONVERTED_VALUE_MARGIN, EOS_CID, MID_COUNT,
+        PORTABLE_DICTIONARY_MAGIC,
     };
+
+    #[test]
+    fn filesystem_revision_tracks_same_path_same_size_content_changes() {
+        let suffix = format!(
+            "caption-bridge-revision-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(suffix);
+        std::fs::create_dir_all(root.join("louds")).expect("fixture directory should be created");
+        let file = root.join("louds").join("user.loudstxt3");
+        std::fs::write(&file, b"alpha").expect("first fixture should write");
+        let first = filesystem_dictionary_content_revision(&root).expect("first revision");
+
+        std::fs::write(&file, b"omega").expect("same-size replacement should write");
+        let changed = filesystem_dictionary_content_revision(&root).expect("changed revision");
+        assert_ne!(first, changed);
+
+        std::fs::write(&file, b"alpha").expect("original content should write again");
+        let restored = filesystem_dictionary_content_revision(&root).expect("restored revision");
+        assert_eq!(first, restored);
+
+        std::fs::remove_dir_all(root).expect("fixture directory should be removed");
+    }
+
+    #[test]
+    fn dictionary_revision_changes_after_same_size_custom_dictionary_rewrite() {
+        let suffix = format!(
+            "caption-bridge-custom-revision-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(format!("{suffix}.tsv"));
+        std::fs::write(&path, "かな\t仮名\n").expect("first custom dictionary should write");
+        let first = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            user: Some(path.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("first custom dictionary should load")
+        .revision();
+
+        std::fs::write(&path, "かな\t加奈\n").expect("same-size custom dictionary should write");
+        let changed = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            user: Some(path.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("changed custom dictionary should load")
+        .revision();
+        assert_ne!(first, changed);
+
+        std::fs::write(&path, "かな\t仮名\n").expect("original custom dictionary should write");
+        let restored = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            user: Some(path.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("restored custom dictionary should load")
+        .revision();
+        assert_eq!(first, restored);
+
+        std::fs::remove_file(path).expect("custom dictionary fixture should be removed");
+    }
 
     #[test]
     fn preserves_the_upstream_shard_escaping() {
