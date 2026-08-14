@@ -874,9 +874,9 @@ fn push_lattice_edge(
 }
 
 /// Re-run the complete lattice under byte-prefix constraints. Constraint
-/// filtering happens before beam truncation; when constraints are present the
-/// search intentionally retains every reachable path, which is what allows a
-/// low-scoring edge removed by the legacy beam to be recovered.
+/// filtering happens before k-best truncation, so an edge removed by the
+/// legacy candidate beam can still be recovered without enumerating every
+/// exponential path in a long caption.
 pub fn search(
     lattice: &ConversionLattice,
     request: &ConstrainedSearchRequest,
@@ -893,7 +893,11 @@ pub fn search(
     let beam = if request.constraints.is_empty() {
         request.beam_width.max(n_best).max(1)
     } else {
-        usize::MAX
+        // With additive edge scores, the n best prefixes reaching a scalar
+        // position dominate every lower-scoring prefix for the same future
+        // constrained suffix. Keep exactly that protected k-best set rather
+        // than restoring the old beam or retaining an unbounded path list.
+        n_best
     };
     let mut states = vec![Vec::<LatticeSearchState>::new(); lattice.terminal + 1];
     states[0].push(LatticeSearchState {
@@ -922,6 +926,9 @@ pub fn search(
                 edge_handles.push(handle);
                 let mut text = state.text.clone();
                 text.push_str(&edge.surface);
+                if !text_matches_prefix_constraints(&text, &request.constraints) {
+                    continue;
+                }
                 let trailing = if matches!(edge.origin, EdgeOrigin::Boundary) {
                     state.trailing
                 } else {
@@ -985,6 +992,13 @@ fn edge_matches_constraints(edge: &LatticeEdge, constraints: &[Utf8BytePrefixCon
             constraint.scalar_position != edge.scalar_span.start
                 || edge.surface.as_bytes().starts_with(&constraint.prefix)
         },
+    )
+}
+
+fn text_matches_prefix_constraints(text: &str, constraints: &[Utf8BytePrefixConstraint]) -> bool {
+    let bytes = text.as_bytes();
+    constraints.iter().filter(|constraint| constraint.scalar_position == usize::MAX).all(
+        |constraint| bytes.starts_with(&constraint.prefix) || constraint.prefix.starts_with(bytes),
     )
 }
 
@@ -6672,6 +6686,14 @@ mod tests {
                 Some(EdgeOrigin::Dictionary(_))
             )
         }));
+
+        let globally_constrained = lattice.search(&ConstrainedSearchRequest {
+            beam_width: 1,
+            n_best: 1,
+            constraints: vec![Utf8BytePrefixConstraint::output_prefix("感じ")],
+            ..ConstrainedSearchRequest::default()
+        });
+        assert_eq!(globally_constrained.first().map(|path| path.text.as_str()), Some("感じ"));
         let _ = fs::remove_file(root);
     }
 
