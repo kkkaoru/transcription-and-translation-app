@@ -1208,6 +1208,37 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("accepts a newer final translation when completion backdates a punctuation-only revision", () => {
+    const translatedInterim = caption({
+      id: "u-backdated-translation",
+      sourceText: "今日は晴れです...",
+      azookeyInputText: "きょうははれです...",
+      translationText: "It is sunny today...",
+      startedAt: 200,
+      receivedAt: 300,
+      stage: "translation",
+      sequence: 1,
+      isFinal: false,
+    });
+    const translatedFinal = caption({
+      id: "u-backdated-translation",
+      sourceText: "今日は晴れです。",
+      azookeyInputText: "きょうははれです。",
+      translationText: "It is sunny today.",
+      startedAt: 100,
+      receivedAt: 400,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(translatedInterim, translatedFinal)).toMatchObject({
+      sourceText: "今日は晴れです。",
+      translationText: "It is sunny today.",
+      isFinal: true,
+    });
+  });
+
   it("keeps translation across a punctuation-only same-reading source revision", () => {
     const translated = caption({
       id: "u-1",

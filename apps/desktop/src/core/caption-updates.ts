@@ -1106,6 +1106,20 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     const nextSequence = sequenceOf(next);
     const currentSequence = sequenceOf(current);
 
+    // Parapper completion backdates the final payload to the full audio-window
+    // start. A newer final translation for the same punctuation-insensitive
+    // source must replace its translated interim instead of looking stale by
+    // startedAt. Receipt ordering still rejects genuinely late old revisions.
+    if (
+      nextSequence >= TRANSLATION_SEQUENCE &&
+      currentSequence >= TRANSLATION_SEQUENCE &&
+      next.isFinal === true &&
+      hasEquivalentTranslationSource(current, next) &&
+      receivedAtOf(next) >= receivedAtOf(current)
+    ) {
+      return false;
+    }
+
     // A completed source turn rejects late shorter/equal interims, but must
     // still accept a same-id continuation or rewrite so new characters paint
     // after an early final instead of freezing the previous surface.
