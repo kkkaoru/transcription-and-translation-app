@@ -114,6 +114,38 @@ describe("configurable budget changes the native/Syphon line split", () => {
     expect(framePaintKey(base, caption)).toBe(framePaintKey({ ...base }, caption));
   });
 
+  it.each([
+    ["provisional paging", { provisional: true }],
+    ["AzooKey input", { azookeyInputText: "きょうははれ" }],
+    ["sentence boundaries", { sentenceEndOffsets: [3, 6] }],
+    ["soft breaks", { softBreakOffsets: [2, 5] }],
+  ] satisfies [string, Partial<CaptionPayload>][])(
+    "repaints when %s changes without changing the caption text",
+    (_label, changedCaption) => {
+      const config = createDefaultConfig();
+      const caption = createPreviewCaption();
+      const baseKey = framePaintKey(config, caption);
+
+      expect(framePaintKey(config, { ...caption, ...changedCaption })).not.toBe(baseKey);
+    },
+  );
+
+  it("keeps paint-equivalent absent sentence hints on the same key", () => {
+    const config = createDefaultConfig();
+    const caption = createPreviewCaption();
+    const baseKey = framePaintKey(config, caption);
+
+    expect(
+      framePaintKey(config, {
+        ...caption,
+        provisional: false,
+        azookeyInputText: null,
+        sentenceEndOffsets: [],
+        softBreakOffsets: [],
+      }),
+    ).toBe(baseKey);
+  });
+
   it("applies the DOM gap floor and frontend fallbacks so the native frame matches", () => {
     // The DOM overlay and OBS page render `gap: max(10, gapPx)`; the native
     // canvas must use the same floor so a user setting gapPx < 10 does not

@@ -586,7 +586,14 @@ export const ensureFontsReady = (fontCssList: readonly string[] = []): Promise<v
   return fontsReady;
 };
 
-/** Stable key for display-relevant native frame inputs (skip identical republish). */
+/**
+ * Stable key for display-relevant native frame inputs (skip identical republish).
+ *
+ * Keep the caption fields synchronized with every input that `captionItems`
+ * forwards to `captionTextLines`. Missing one leaves a stale native frame when
+ * sentence selection or wrapping changes without a text change; an extra key
+ * component only causes one harmless repaint.
+ */
 export const framePaintKey = (
   config: AppConfig,
   caption: CaptionPayload,
@@ -598,6 +605,12 @@ export const framePaintKey = (
     caption.translationText,
     partialWindowText,
     caption.stage ?? "",
+    // `captionItems` and `captionTextLines` use these hints to select and wrap
+    // the visible sentence even when the caption text itself is unchanged.
+    caption.provisional === true ? "1" : "0",
+    caption.azookeyInputText ?? "",
+    JSON.stringify(caption.sentenceEndOffsets ?? []),
+    JSON.stringify(caption.softBreakOffsets ?? []),
     config.overlay.width,
     config.overlay.height,
     config.overlay.order,
