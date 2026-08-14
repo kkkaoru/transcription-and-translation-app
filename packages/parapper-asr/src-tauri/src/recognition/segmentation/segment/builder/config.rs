@@ -1,6 +1,6 @@
 use crate::config::ParapperConfig;
 
-const MAX_PHRASE_MILLIS: u32 = 25_000;
+const MAX_PHRASE_MILLIS: u32 = 8_000;
 
 #[derive(Debug, Clone)]
 pub(super) struct SegmentBuilderConfig {

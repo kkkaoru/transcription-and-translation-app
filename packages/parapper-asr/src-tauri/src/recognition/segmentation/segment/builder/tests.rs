@@ -121,57 +121,52 @@ fn segment_builder_waits_for_segment_start_speech_ms_before_starting() {
 }
 
 #[test]
-fn segment_builder_closes_with_max_chunks_reason_when_audio_too_long() {
+fn segment_builder_closes_at_the_eight_second_default_vad_boundary() {
     let config = parapper_config! {
-        vad_interval_ms: 25_000,
+        vad_interval_ms: CHUNK_MS,
         segment_start_speech_ms: START_IMMEDIATELY_MS,
         ..ParapperConfig::default()
     };
     let mut segment_builder = SegmentBuilder::new(&config);
 
-    assert_eq!(
-        segment_builder.push(&[1.0], speech_vad()),
-        vec![SegmentBuilderEvent::SegmentStarted {
-            segment_id: 1,
-            previous_segment_id: None,
-            audio_so_far: vec![1.0],
-            vad_results: vads(&[true]),
-        }]
-    );
-    assert_eq!(
-        segment_builder.push(&[2.0], speech_vad()),
-        vec![
-            SegmentBuilderEvent::SegmentExtended {
-                segment_id: 1,
-                previous_segment_id: None,
-                new_audio: vec![2.0],
-                vad_result: speech_vad(),
-            },
+    assert!(matches!(
+        segment_builder.push(&[1.0], speech_vad()).as_slice(),
+        [SegmentBuilderEvent::SegmentStarted { .. }]
+    ));
+    for sample in 2..250 {
+        assert!(matches!(
+            segment_builder.push(&[sample as f32], speech_vad()).as_slice(),
+            [SegmentBuilderEvent::SegmentExtended { .. }]
+        ));
+    }
+    assert!(matches!(
+        segment_builder.push(&[250.0], speech_vad()).as_slice(),
+        [
+            SegmentBuilderEvent::SegmentExtended { segment_id: 1, .. },
             SegmentBuilderEvent::SegmentClosed {
                 segment_id: 1,
-                previous_segment_id: None,
-                full_audio: vec![1.0, 2.0],
-                vad_results: vads(&[true, true]),
-                source_audio: vec![1.0, 2.0],
-                source_vad_results: vads(&[true, true]),
-                reason: SegmentCloseReason::SegmentMaxChunksReached
-            }
+                reason: SegmentCloseReason::SegmentMaxChunksReached,
+                ..
+            },
         ]
-    );
+    ));
 }
 
 #[test]
-fn segment_after_max_chunks_points_to_previous_segment() {
+fn segment_after_eight_second_max_points_to_previous_segment() {
     let config = parapper_config! {
-        vad_interval_ms: 25_000,
+        vad_interval_ms: CHUNK_MS,
         segment_start_speech_ms: START_IMMEDIATELY_MS,
         ..ParapperConfig::default()
     };
     let mut segment_builder = SegmentBuilder::new(&config);
 
     let _ = segment_builder.push(&[1.0], speech_vad());
+    for sample in 2..250 {
+        let _ = segment_builder.push(&[sample as f32], speech_vad());
+    }
     assert!(matches!(
-        segment_builder.push(&[2.0], speech_vad()).as_slice(),
+        segment_builder.push(&[250.0], speech_vad()).as_slice(),
         [
             SegmentBuilderEvent::SegmentExtended { segment_id: 1, .. },
             SegmentBuilderEvent::SegmentClosed {
@@ -191,6 +186,31 @@ fn segment_after_max_chunks_points_to_previous_segment() {
             vad_results: vads(&[true]),
         }]
     );
+}
+
+#[test]
+fn segment_builder_prefers_eight_second_max_over_simultaneous_end_silence() {
+    let config = parapper_config! {
+        vad_interval_ms: CHUNK_MS,
+        turn_check_silence_ms: CHUNK_MS * 249,
+        segment_start_speech_ms: START_IMMEDIATELY_MS,
+        ..ParapperConfig::default()
+    };
+    let mut segment_builder = SegmentBuilder::new(&config);
+    let _ = segment_builder.push(&[1.0], speech_vad());
+    for _ in 0..248 {
+        let _ = segment_builder.push(&[0.0], silence_vad());
+    }
+    assert!(matches!(
+        segment_builder.push(&[0.0], silence_vad()).as_slice(),
+        [
+            SegmentBuilderEvent::SegmentExtended { .. },
+            SegmentBuilderEvent::SegmentClosed {
+                reason: SegmentCloseReason::SegmentMaxChunksReached,
+                ..
+            },
+        ]
+    ));
 }
 
 #[test]
