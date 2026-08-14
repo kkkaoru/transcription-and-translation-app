@@ -11,6 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants as osConstants, tmpdir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,6 +48,37 @@ export const isCurrentOwner = (owner) => {
   } catch {
     // Under severe memory pressure even `ps` can fail. Conservatively retain
     // the lock rather than launching a second quality gate.
+    return true;
+  }
+};
+
+export const processGroupIsRunning = (processGroupId, kill = process.kill) => {
+  if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) return false;
+  try {
+    kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    if (error.code === "EPERM") return true;
+    throw error;
+  }
+};
+
+export const residualProcessTreeIsRunning = (owner) => {
+  if (!Number.isSafeInteger(owner?.childProcessGroupId) || owner.childProcessGroupId <= 0) {
+    return false;
+  }
+  try {
+    if (owner.childPlatform !== "win32") {
+      return processGroupIsRunning(owner.childProcessGroupId);
+    }
+    process.kill(owner.childProcessGroupId, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    // A permissions failure means the PID still exists. Retain the lock rather
+    // than risk overlapping it with a new quality gate.
+    if (error.code === "EPERM") return true;
     return true;
   }
 };
@@ -112,6 +144,7 @@ export const acquireLock = ({
   lockPath,
   owner = createOwner(),
   ownerIsCurrent = isCurrentOwner,
+  residualIsCurrent = residualProcessTreeIsRunning,
   now = Date.now,
 } = {}) => {
   if (!lockPath) throw new Error("lockPath is required");
@@ -128,7 +161,7 @@ export const acquireLock = ({
     const snapshot = readFileSnapshot(lockPath);
     if (snapshot === null) continue;
     const existingOwner = parseOwner(snapshot);
-    if (existingOwner && ownerIsCurrent(existingOwner)) {
+    if (existingOwner && (ownerIsCurrent(existingOwner) || residualIsCurrent(existingOwner))) {
       return { acquired: false, owner: existingOwner };
     }
 
@@ -147,6 +180,20 @@ export const acquireLock = ({
   }
 };
 
+export const updateLockOwner = (lock, updates) => {
+  if (!lock?.lockPath || typeof lock.ownerContent !== "string" || !lock.owner) {
+    throw new Error("an acquired lock is required");
+  }
+  if (readFileSnapshot(lock.lockPath) !== lock.ownerContent) {
+    throw new Error("quality-gate lock changed before child metadata could be recorded");
+  }
+  const owner = { ...lock.owner, ...updates };
+  const ownerContent = `${JSON.stringify(owner)}\n`;
+  writeFileSync(lock.lockPath, ownerContent, { encoding: "utf8", mode: 0o600 });
+  lock.owner = owner;
+  lock.ownerContent = ownerContent;
+};
+
 export const releaseLock = (lock) => {
   if (!lock?.lockPath || typeof lock.ownerContent !== "string") return false;
   return reclaimSnapshot(lock.lockPath, lock.ownerContent);
@@ -154,44 +201,159 @@ export const releaseLock = (lock) => {
 
 const formatOwner = (owner) => {
   if (!owner) return "  owner: metadata is unavailable (a new lock may still be initializing)";
-  return `  owner: PID ${owner.pid}, cwd ${owner.cwd}, started ${owner.startedAt}, command ${owner.command}`;
+  const residual = owner.childProcessGroupId
+    ? `, child process group ${owner.childProcessGroupId}`
+    : "";
+  return `  owner: PID ${owner.pid}${residual}, cwd ${owner.cwd}, started ${owner.startedAt}, command ${owner.command}`;
 };
 
-const runUnlockedGate = () =>
+const waitForProcessGroupExit = async (
+  processGroupId,
+  { kill = process.kill, pollMs = 25, timeoutMs } = {},
+) => {
+  const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+  while (processGroupIsRunning(processGroupId, kill)) {
+    if (deadline !== undefined && Date.now() >= deadline) return false;
+    await delay(pollMs);
+  }
+  return true;
+};
+
+const sendToProcessTree = ({ child, platform, runSync, kill, signal }) => {
+  if (!child?.pid) return;
+  if (platform === "win32") {
+    const result = runSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    // taskkill returns 128 when the process finished between the exit check and
+    // this command. Any still-running tree is reported by a different status.
+    if (result.error) throw result.error;
+    if (result.status !== 0 && result.status !== 128) {
+      throw new Error(result.stderr.trim() || `taskkill exited with status ${result.status}`);
+    }
+    return;
+  }
+
+  try {
+    kill(-child.pid, signal);
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+};
+
+/**
+ * Run the unlocked gate in its own process group. Signal handling targets the
+ * whole group, and this promise does not settle until every descendant has
+ * exited, so the caller cannot release the quality-gate lock prematurely.
+ */
+export const runUnlockedGate = ({
+  command = "bun",
+  args = ["run", "check:all:unlocked"],
+  cwd = repositoryRoot,
+  env = process.env,
+  signalSource = process,
+  platform = process.platform,
+  spawnProcess = spawn,
+  runSync = spawnSync,
+  kill = process.kill,
+  stderr = console.error,
+  registerProcessTree = () => {},
+  descendantGraceMs = 250,
+  forceKillAfterMs = 5_000,
+} = {}) =>
   new Promise((resolvePromise) => {
     let child = null;
+    let forwardedSignal = null;
+    let registrationFailed = false;
     let settled = false;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      process.removeListener("SIGINT", handleSigint);
-      process.removeListener("SIGTERM", handleSigterm);
+      signalSource.removeListener("SIGINT", handleSigint);
+      signalSource.removeListener("SIGTERM", handleSigterm);
       resolvePromise(exitCode);
     };
     const forwardSignal = (signal) => {
-      if (child && !child.killed) child.kill(signal);
+      if (!child?.pid) return;
+      forwardedSignal = signal;
+      try {
+        sendToProcessTree({ child, platform, runSync, kill, signal });
+      } catch (error) {
+        stderr(`[quality-gate] unable to stop child process tree: ${error.message}`);
+      }
     };
     const handleSigint = () => forwardSignal("SIGINT");
     const handleSigterm = () => forwardSignal("SIGTERM");
-    process.once("SIGINT", handleSigint);
-    process.once("SIGTERM", handleSigterm);
+    signalSource.once("SIGINT", handleSigint);
+    signalSource.once("SIGTERM", handleSigterm);
 
-    child = spawn("bun", ["run", "check:all:unlocked"], {
-      cwd: repositoryRoot,
-      env: process.env,
+    child = spawnProcess(command, args, {
+      cwd,
+      env,
       stdio: "inherit",
+      detached: true,
+      windowsHide: true,
     });
     child.once("error", (error) => {
-      console.error(`[quality-gate] unable to start checks: ${error.message}`);
+      stderr(`[quality-gate] unable to start checks: ${error.message}`);
       finish(1);
     });
+    try {
+      registerProcessTree({ processGroupId: child.pid, platform });
+    } catch (error) {
+      registrationFailed = true;
+      stderr(`[quality-gate] unable to record child process tree: ${error.message}`);
+      forwardSignal("SIGTERM");
+    }
     child.once("exit", (code, signal) => {
-      if (Number.isInteger(code)) {
-        finish(code);
-        return;
-      }
-      const signalNumber = signal ? osConstants.signals[signal] : undefined;
-      finish(signalNumber ? 128 + signalNumber : 1);
+      void (async () => {
+        if (platform !== "win32" && child?.pid) {
+          const exitedDuringGrace = await waitForProcessGroupExit(child.pid, {
+            kill,
+            timeoutMs: descendantGraceMs,
+          });
+          if (!exitedDuringGrace) {
+            if (!forwardedSignal) {
+              stderr(
+                `[quality-gate] direct child exited but descendants remain in process group ${child.pid}; stopping them`,
+              );
+              sendToProcessTree({ child, platform, runSync, kill, signal: "SIGTERM" });
+            }
+            const exitedGracefully = await waitForProcessGroupExit(child.pid, {
+              kill,
+              timeoutMs: forceKillAfterMs,
+            });
+            if (!exitedGracefully) {
+              stderr(
+                `[quality-gate] process group ${child.pid} ignored termination; sending SIGKILL`,
+              );
+              sendToProcessTree({ child, platform, runSync, kill, signal: "SIGKILL" });
+              // Deliberately wait without a timeout. Releasing the lock while a
+              // known descendant remains would recreate the resource race this
+              // wrapper exists to prevent.
+              await waitForProcessGroupExit(child.pid, { kill });
+            }
+          }
+        }
+
+        if (registrationFailed) {
+          finish(1);
+          return;
+        }
+        if (Number.isInteger(code)) {
+          finish(code);
+          return;
+        }
+        const signalNumber = signal ? osConstants.signals[signal] : undefined;
+        finish(signalNumber ? 128 + signalNumber : 1);
+      })().catch((error) => {
+        stderr(`[quality-gate] failed while collecting child processes: ${error.message}`);
+        stderr("[quality-gate] lock retained because descendant shutdown could not be verified");
+        // Do not settle: main must keep the lock while a descendant may still
+        // be running. A second external signal can still stop this wrapper,
+        // leaving the normal stale-owner recovery path for the next invocation.
+      });
     });
   });
 
@@ -213,7 +375,13 @@ export async function main({
   }
 
   try {
-    return await execute();
+    return await execute({
+      registerProcessTree: ({ processGroupId, platform }) =>
+        updateLockOwner(lock, {
+          childProcessGroupId: processGroupId,
+          childPlatform: platform,
+        }),
+    });
   } finally {
     releaseLock(lock);
   }

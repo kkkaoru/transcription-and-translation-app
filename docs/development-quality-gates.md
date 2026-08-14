@@ -15,12 +15,12 @@ The local full gate must complete within the memory available alongside the alwa
 - distinguishes a live owner using both PID and process start time, avoiding stale locks after PID reuse;
 - safely reclaims dead owners only when the lock snapshot has not changed;
 - exits with status 75 when another gate is active and explicitly states that checks were not run;
-- forwards signals, preserves the child exit status, and holds the lock until the child exits; and
+- records the unlocked gate's process-group ID in the lock, refuses to reclaim a dead wrapper's lock while that group survives, forwards signals to the full descendant tree, preserves the child exit status, and verifies that the group is empty before releasing the lock; and
 - supports the emergency escape hatch `QUALITY_GATE_NO_LOCK=1`.
 
 The actual check sequence remains in `package.json` as `check:all:unlocked`. The lock wrapper therefore cannot silently omit or reorder checks.
 
-Implemented in commit `0acf5c0`.
+The original implementation in commit `0acf5c0` signaled only its direct Bun child. Stopping a gate demonstrated that the Node wrapper, Cargo process, and Rust test binary could become orphans while the lock was already free. The regression test now starts a child and grandchild, stops the wrapper's signal source, and verifies that every PID and the process group have disappeared before the wrapper returns.
 
 ### CI superset contract
 
