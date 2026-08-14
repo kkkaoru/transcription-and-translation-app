@@ -1133,6 +1133,52 @@ describe("mergeCaptionPayload", () => {
     expect(merged?.provisional).toBeUndefined();
   });
 
+  it("merges translation after a kana provisional is replaced by a kanji-normalized source", () => {
+    const provisional = caption({
+      id: "u-kanji",
+      sourceText: "いちああっそうかんたんしゅっそう",
+      azookeyInputText: "いちああっそうかんたんしゅっそう",
+      translationText: "",
+      startedAt: 5,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      provisional: true,
+    });
+    const normalized = caption({
+      id: "u-kanji",
+      sourceText: "位置ああっそう感嘆出走。",
+      azookeyInputText: "いちああっそうかんたんしゅっそう",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const translated = caption({
+      id: "u-kanji",
+      sourceText: "位置ああっそう感嘆出走。",
+      azookeyInputText: "いちああっそうかんたんしゅっそう",
+      translationText: "A translated sentence.",
+      startedAt: 1,
+      receivedAt: 30,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    const normalizedMerge = mergeCaptionPayload(provisional, normalized);
+    expect(normalizedMerge?.sourceText).toBe("位置ああっそう感嘆出走。");
+    if (!normalizedMerge) throw new Error("normalized source should merge");
+    expect(mergeCaptionPayload(normalizedMerge, translated)).toMatchObject({
+      sourceText: "位置ああっそう感嘆出走。",
+      translationText: "A translated sentence.",
+      stage: "translation",
+      isFinal: true,
+    });
+  });
+
   it("merges punctuation-only translation revisions when pre-vibrato and post-vibrato readings differ", () => {
     const provisional = caption({
       id: "u-1",
