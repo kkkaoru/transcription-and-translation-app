@@ -216,7 +216,7 @@ fn hash_constraints(constraints: &[Utf8BytePrefixConstraint]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{Draft, SessionContext, VerificationCacheKey, VerifierSession};
-    use crate::{CandidatePath, Utf8BytePrefixConstraint};
+    use crate::{CandidatePath, PrecedingContext, Utf8BytePrefixConstraint};
 
     #[test]
     fn cache_key_separates_prompt_and_constraint_revision_inputs() {
@@ -261,8 +261,7 @@ mod tests {
                 ..candidate.clone()
             },
         );
-        let with_zero_trailing_key =
-            VerificationCacheKey::for_draft(&session, &with_zero_trailing);
+        let with_zero_trailing_key = VerificationCacheKey::for_draft(&session, &with_zero_trailing);
         assert_ne!(first_key.candidate_path_hash, with_zero_trailing_key.candidate_path_hash);
 
         let identical_key = VerificationCacheKey::for_draft(&session, &first);

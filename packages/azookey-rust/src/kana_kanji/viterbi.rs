@@ -7,6 +7,7 @@ use super::normalization::{
     numeric_span_starts_with_digit, numeric_surface_prefix, skip_intervening_numeric_unit_noise,
     to_hiragana, to_katakana,
 };
+use super::verifier::{Draft, DraftVerifier, SessionContext, VerificationState};
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -17,6 +18,7 @@ pub struct PrecedingContext {
 }
 
 const DEFAULT_BEAM_WIDTH: usize = 64;
+const DEFAULT_VERIFIER_MAX_ITERATIONS: usize = 4;
 const MIN_BEAM_WIDTH: usize = 1;
 const MAX_BEAM_WIDTH: usize = 256;
 const DEFAULT_MAX_DICTIONARY_WORD_CHARS: usize = 24;
@@ -240,6 +242,41 @@ pub struct ConversionCandidate {
     pub text: String,
     pub score: f32,
     pub trailing: Option<PrecedingContext>,
+}
+
+/// Controls how many draft/constraint rounds a verifier may request before
+/// conversion falls back to the dictionary result. The fallback is bounded
+/// even when a backend repeatedly returns a prefix constraint, so a verifier
+/// cannot make caption production unbounded or prevent a result from being
+/// emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifierConversionOptions {
+    pub max_iterations: usize,
+}
+
+impl Default for VerifierConversionOptions {
+    fn default() -> Self {
+        Self { max_iterations: DEFAULT_VERIFIER_MAX_ITERATIONS }
+    }
+}
+
+/// The conversion result always contains a text candidate. `verification_state`
+/// preserves whether that candidate was verified or came from the dictionary
+/// fallback, without retaining backend diagnostics or input text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversionWithVerification {
+    pub candidate: ConversionCandidate,
+    pub verification_state: VerificationState,
+}
+
+impl ConversionWithVerification {
+    pub fn text(&self) -> &str {
+        &self.candidate.text
+    }
+
+    pub fn is_verified(&self) -> bool {
+        self.verification_state == VerificationState::Verified
+    }
 }
 
 /// Policy used when a reading position has no dictionary-backed edge.
@@ -1738,6 +1775,183 @@ pub fn convert_with_dictionary(
         });
     }
     results
+}
+
+/// Convert with an optional verifier while preserving the dictionary result
+/// as a total fallback. A missing verifier is reported as
+/// `CapabilityUnavailable`; backend/session/evaluation failures retain their
+/// corresponding `VerificationState` and never turn a non-empty caption into
+/// an empty string.
+pub fn convert_with_verifier(
+    input: &str,
+    dictionary: &AzooKeyDictionary,
+    options: ConversionOptions,
+    verifier: Option<&mut dyn DraftVerifier>,
+) -> ConversionWithVerification {
+    convert_with_verifier_with_limit(
+        input,
+        dictionary,
+        options,
+        verifier,
+        VerifierConversionOptions::default(),
+    )
+}
+
+/// Variant of [`convert_with_verifier`] with an explicit verifier iteration
+/// limit. A zero limit is an intentional, diagnosed `Exhausted` fallback and
+/// still returns the dictionary candidate.
+pub fn convert_with_verifier_with_limit(
+    input: &str,
+    dictionary: &AzooKeyDictionary,
+    options: ConversionOptions,
+    verifier: Option<&mut dyn DraftVerifier>,
+    verifier_options: VerifierConversionOptions,
+) -> ConversionWithVerification {
+    let fallback = safe_dictionary_candidate(input, dictionary, options);
+    let Some(verifier) = verifier else {
+        return fallback_with_state(fallback, VerificationState::CapabilityUnavailable);
+    };
+    if !verifier.capabilities().prefix_constraints {
+        return fallback_with_state(fallback, VerificationState::CapabilityUnavailable);
+    }
+    if verifier_options.max_iterations == 0 {
+        return fallback_with_state(fallback, VerificationState::Exhausted);
+    }
+
+    let session_context = SessionContext::new(input.as_bytes(), dictionary.revision());
+    let mut session = match verifier.open_session(session_context) {
+        Ok(session) => session,
+        Err(_) => return fallback_with_state(fallback, VerificationState::Error),
+    };
+
+    let mut current_path = candidate_path_from_conversion(&fallback);
+    let mut constraints = Vec::new();
+    let mut selected = fallback.clone();
+    let mut final_state = VerificationState::UnverifiedFallback;
+    let mut lattice = None;
+
+    for attempt in 0..verifier_options.max_iterations {
+        let mut draft = Draft::new(input.as_bytes(), current_path.clone());
+        draft.constraints = constraints.clone();
+        let evaluation = verifier.evaluate(&mut session, &draft);
+        match evaluation {
+            Err(_) => {
+                final_state = VerificationState::Error;
+                break;
+            }
+            Ok(result) => match result.state {
+                VerificationState::Verified => {
+                    if let Some(candidate) = conversion_candidate_from_path(&result.candidate_path)
+                    {
+                        selected = candidate;
+                        final_state = VerificationState::Verified;
+                    } else {
+                        // A verifier claiming success with no text is still a
+                        // degraded result. Keep the baseline and expose that
+                        // fallback instead of allowing captions to disappear.
+                        final_state = VerificationState::UnverifiedFallback;
+                    }
+                    break;
+                }
+                VerificationState::PrefixConstraintReturned => {
+                    let Some(prefix_constraint) = result.prefix_constraint else {
+                        final_state = VerificationState::Error;
+                        break;
+                    };
+                    constraints.push(prefix_constraint);
+                    if attempt + 1 >= verifier_options.max_iterations {
+                        final_state = VerificationState::Exhausted;
+                        break;
+                    }
+                    let lattice_ref = lattice.get_or_insert_with(|| {
+                        build_lattice(
+                            dictionary,
+                            &ConversionRequest {
+                                input: input.to_string(),
+                                left_context: options.preceding,
+                                right_context: None,
+                                beam_width: options.n_best.max(1),
+                                n_best: options.n_best.max(1),
+                                unknown_policy: UnknownPolicy::default(),
+                                max_dictionary_word_chars: options.max_dictionary_word_chars,
+                            },
+                        )
+                    });
+                    let candidates = lattice_ref.search(&ConstrainedSearchRequest {
+                        candidate_path: Some(result.candidate_path),
+                        constraints: constraints.clone(),
+                        beam_width: options.n_best.max(1),
+                        n_best: 1,
+                    });
+                    let Some(next_path) = candidates.into_iter().next() else {
+                        final_state = VerificationState::Exhausted;
+                        break;
+                    };
+                    current_path = next_path;
+                }
+                state => {
+                    // CapabilityUnavailable, Error, Exhausted, and an
+                    // already-labelled UnverifiedFallback all deliberately
+                    // keep the dictionary candidate. The state is retained
+                    // for diagnostics rather than being swallowed.
+                    final_state = state;
+                    break;
+                }
+            },
+        }
+    }
+
+    // Cleanup must not be allowed to erase a successful caption. If cleanup
+    // itself fails, return the dictionary candidate and expose the failure.
+    if verifier.close_session(session).is_err() && final_state == VerificationState::Verified {
+        selected = fallback;
+        final_state = VerificationState::Error;
+    }
+    ConversionWithVerification { candidate: selected, verification_state: final_state }
+}
+
+fn safe_dictionary_candidate(
+    input: &str,
+    dictionary: &AzooKeyDictionary,
+    options: ConversionOptions,
+) -> ConversionCandidate {
+    let baseline = convert_with_dictionary(input, dictionary, options)
+        .into_iter()
+        .find(|candidate| !candidate.text.is_empty())
+        .unwrap_or_else(|| ConversionCandidate {
+            text: String::new(),
+            score: NO_SCORE,
+            trailing: None,
+        });
+    if baseline.text.is_empty() && !input.is_empty() {
+        ConversionCandidate { text: input.to_string(), ..baseline }
+    } else {
+        baseline
+    }
+}
+
+fn candidate_path_from_conversion(candidate: &ConversionCandidate) -> CandidatePath {
+    CandidatePath {
+        edge_handles: Vec::new(),
+        text: candidate.text.clone(),
+        score: candidate.score,
+        trailing: candidate.trailing,
+    }
+}
+
+fn conversion_candidate_from_path(path: &CandidatePath) -> Option<ConversionCandidate> {
+    (!path.text.is_empty()).then(|| ConversionCandidate {
+        text: path.text.clone(),
+        score: path.score,
+        trailing: path.trailing,
+    })
+}
+
+fn fallback_with_state(
+    candidate: ConversionCandidate,
+    verification_state: VerificationState,
+) -> ConversionWithVerification {
+    ConversionWithVerification { candidate, verification_state }
 }
 
 /// Some public-dictionary rows expose an inflected surface for a stem reading
@@ -4478,12 +4692,108 @@ fn same_path_context(left: &PathState, right: &PathState) -> bool {
 mod tests {
     use super::{
         build_lattice, convert_kana_to_kanji, convert_kana_to_kanji_with_paths,
-        convert_with_dictionary, ConstrainedSearchRequest, ConversionOptions, ConversionRequest,
-        EdgeOrigin, UnknownPolicy, Utf8BytePrefixConstraint,
+        convert_with_dictionary, convert_with_verifier, convert_with_verifier_with_limit,
+        ConstrainedSearchRequest, ConversionOptions, ConversionRequest, EdgeOrigin, UnknownPolicy,
+        Utf8BytePrefixConstraint, VerifierConversionOptions,
     };
     use crate::dictionary::test_system_dictionary_path;
-    use crate::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
+    use crate::{
+        AzooKeyDictionary, CandidatePath, DictionaryEntry, DictionaryPaths, Draft, DraftVerifier,
+        SessionContext, VerificationCacheKey, VerificationResult, VerificationState,
+        VerifierCapabilities, VerifierError, VerifierSession,
+    };
     use std::fs;
+
+    #[derive(Debug, Clone, Copy)]
+    enum FallbackVerifierMode {
+        OpenError,
+        EvaluateError,
+        EvaluateStateError,
+        Exhausted,
+        PrefixConstraint,
+        UnverifiedFallback,
+        VerifiedEmpty,
+        NoPrefixCapability,
+    }
+
+    struct FallbackVerifier {
+        mode: FallbackVerifierMode,
+    }
+
+    impl DraftVerifier for FallbackVerifier {
+        fn capabilities(&self) -> VerifierCapabilities {
+            if matches!(self.mode, FallbackVerifierMode::NoPrefixCapability) {
+                return VerifierCapabilities::default();
+            }
+            VerifierCapabilities {
+                prefix_constraints: true,
+                max_candidates: 1,
+                model_revision: "test-model".to_string(),
+                tokenizer_revision: "test-tokenizer".to_string(),
+                ..VerifierCapabilities::default()
+            }
+        }
+
+        fn open_session(
+            &mut self,
+            context: SessionContext,
+        ) -> Result<VerifierSession, VerifierError> {
+            if matches!(self.mode, FallbackVerifierMode::OpenError) {
+                return Err(VerifierError::Backend("open failed".to_string()));
+            }
+            Ok(VerifierSession {
+                session_id: 1,
+                context,
+                model_revision: "test-model".to_string(),
+                tokenizer_revision: "test-tokenizer".to_string(),
+                kv_reusable: false,
+            })
+        }
+
+        fn evaluate(
+            &mut self,
+            session: &mut VerifierSession,
+            draft: &Draft,
+        ) -> Result<VerificationResult, VerifierError> {
+            if matches!(self.mode, FallbackVerifierMode::EvaluateError) {
+                return Err(VerifierError::Backend("evaluate failed".to_string()));
+            }
+            let state = match self.mode {
+                FallbackVerifierMode::EvaluateStateError => VerificationState::Error,
+                FallbackVerifierMode::Exhausted => VerificationState::Exhausted,
+                FallbackVerifierMode::PrefixConstraint => {
+                    VerificationState::PrefixConstraintReturned
+                }
+                FallbackVerifierMode::UnverifiedFallback => VerificationState::UnverifiedFallback,
+                FallbackVerifierMode::VerifiedEmpty => VerificationState::Verified,
+                FallbackVerifierMode::OpenError
+                | FallbackVerifierMode::EvaluateError
+                | FallbackVerifierMode::NoPrefixCapability => VerificationState::Verified,
+            };
+            let prefix_constraint = matches!(self.mode, FallbackVerifierMode::PrefixConstraint)
+                .then(|| Utf8BytePrefixConstraint::output_prefix("感じ"));
+            let candidate_path = if matches!(self.mode, FallbackVerifierMode::VerifiedEmpty) {
+                CandidatePath {
+                    edge_handles: Vec::new(),
+                    text: String::new(),
+                    score: 0.0,
+                    trailing: None,
+                }
+            } else {
+                draft.candidate_path.clone()
+            };
+            Ok(VerificationResult {
+                state,
+                candidate_path,
+                prefix_constraint,
+                cache_key: VerificationCacheKey::for_draft(session, draft),
+            })
+        }
+
+        fn close_session(&mut self, _session: VerifierSession) -> Result<(), VerifierError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn converts_known_readings_through_the_convenience_api() {
@@ -6695,6 +7005,121 @@ mod tests {
         });
         assert_eq!(globally_constrained.first().map(|path| path.text.as_str()), Some("感じ"));
         let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn missing_verifier_returns_the_dictionary_result() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let baseline = convert_with_dictionary("かんじ", &dictionary, options)
+            .into_iter()
+            .next()
+            .expect("dictionary conversion should produce a candidate");
+        let result = convert_with_verifier("かんじ", &dictionary, options, None);
+
+        assert_eq!(result.verification_state, VerificationState::CapabilityUnavailable);
+        assert_eq!(result.candidate.text, baseline.text);
+        assert!(!result.text().is_empty(), "capability fallback must emit text");
+    }
+
+    #[test]
+    fn unsupported_verifier_capability_returns_the_dictionary_result() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::NoPrefixCapability };
+        let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+
+        assert_eq!(result.verification_state, VerificationState::CapabilityUnavailable);
+        assert!(!result.text().is_empty(), "unsupported capability must emit text");
+    }
+
+    #[test]
+    fn open_session_failure_returns_the_dictionary_result() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let baseline = convert_with_dictionary("かんじ", &dictionary, options)
+            .into_iter()
+            .next()
+            .expect("dictionary conversion should produce a candidate");
+        let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::OpenError };
+        let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+
+        assert_eq!(result.verification_state, VerificationState::Error);
+        assert_eq!(result.candidate.text, baseline.text);
+        assert!(!result.text().is_empty(), "session failure must emit text");
+    }
+
+    #[test]
+    fn evaluate_error_returns_the_dictionary_result() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let baseline = convert_with_dictionary("かんじ", &dictionary, options)
+            .into_iter()
+            .next()
+            .expect("dictionary conversion should produce a candidate");
+        let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::EvaluateError };
+        let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+
+        assert_eq!(result.verification_state, VerificationState::Error);
+        assert_eq!(result.candidate.text, baseline.text);
+        assert!(!result.text().is_empty(), "evaluation failure must emit text");
+    }
+
+    #[test]
+    fn evaluate_error_state_returns_the_dictionary_result() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let baseline = convert_with_dictionary("かんじ", &dictionary, options)
+            .into_iter()
+            .next()
+            .expect("dictionary conversion should produce a candidate");
+        let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::EvaluateStateError };
+        let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+
+        assert_eq!(result.verification_state, VerificationState::Error);
+        assert_eq!(result.candidate.text, baseline.text);
+        assert!(!result.text().is_empty(), "error state must emit text");
+    }
+
+    #[test]
+    fn verifier_iteration_limit_returns_the_dictionary_result() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let baseline = convert_with_dictionary("かんじ", &dictionary, options)
+            .into_iter()
+            .next()
+            .expect("dictionary conversion should produce a candidate");
+        let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::PrefixConstraint };
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            VerifierConversionOptions { max_iterations: 1 },
+        );
+
+        assert_eq!(result.verification_state, VerificationState::Exhausted);
+        assert_eq!(result.candidate.text, baseline.text);
+        assert!(!result.text().is_empty(), "exhaustion fallback must emit text");
+    }
+
+    #[test]
+    fn every_verifier_fallback_state_keeps_non_empty_text() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let modes = [
+            FallbackVerifierMode::Exhausted,
+            FallbackVerifierMode::UnverifiedFallback,
+            FallbackVerifierMode::VerifiedEmpty,
+            FallbackVerifierMode::NoPrefixCapability,
+        ];
+        for mode in modes {
+            let mut verifier = FallbackVerifier { mode };
+            let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+            assert!(!result.text().is_empty(), "fallback state {mode:?} returned empty text");
+        }
+        let missing = convert_with_verifier("かんじ", &dictionary, options, None);
+        assert!(!missing.text().is_empty(), "missing verifier returned empty text");
     }
 
     #[test]
