@@ -133,9 +133,9 @@ fn segment_builder_closes_at_the_eight_second_default_vad_boundary() {
         segment_builder.push(&[1.0], speech_vad()).as_slice(),
         [SegmentBuilderEvent::SegmentStarted { .. }]
     ));
-    for sample in 2..250 {
+    for sample in 2_u16..250 {
         assert!(matches!(
-            segment_builder.push(&[sample as f32], speech_vad()).as_slice(),
+            segment_builder.push(&[f32::from(sample)], speech_vad()).as_slice(),
             [SegmentBuilderEvent::SegmentExtended { .. }]
         ));
     }
@@ -162,8 +162,8 @@ fn segment_after_eight_second_max_points_to_previous_segment() {
     let mut segment_builder = SegmentBuilder::new(&config);
 
     let _ = segment_builder.push(&[1.0], speech_vad());
-    for sample in 2..250 {
-        let _ = segment_builder.push(&[sample as f32], speech_vad());
+    for sample in 2_u16..250 {
+        let _ = segment_builder.push(&[f32::from(sample)], speech_vad());
     }
     assert!(matches!(
         segment_builder.push(&[250.0], speech_vad()).as_slice(),
