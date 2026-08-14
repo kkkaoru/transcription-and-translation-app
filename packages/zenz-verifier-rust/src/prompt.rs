@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn session_bytes_are_validated_per_field() {
-        let mut context = SessionContext::new("かな", 1);
+        let mut context = SessionContext::new("かな", 1, "mock-v1");
         context.left_context = Some(vec![0xff]);
         assert_eq!(CandidatePrompt::try_from(&context), Err(PromptError::InvalidLeftContextUtf8));
     }

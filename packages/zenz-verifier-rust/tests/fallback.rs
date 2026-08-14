@@ -26,6 +26,7 @@ fn every_terminal_mock_state_preserves_non_empty_conversion() {
             &dictionary,
             ConversionOptions::default(),
             Some(&mut verifier),
+            "mock-v1",
         );
         assert_eq!(result.verification_state, expected_state);
         assert!(!result.text().is_empty());
@@ -43,7 +44,7 @@ fn prefix_retry_exhaustion_and_backend_failure_preserve_non_empty_conversion() {
         &dictionary,
         ConversionOptions::default(),
         Some(&mut prefix_verifier),
-        VerifierConversionOptions { max_iterations: 1 },
+        VerifierConversionOptions::new(1, "mock-v1"),
     );
     assert_eq!(exhausted.verification_state, VerificationState::Exhausted);
     assert!(!exhausted.text().is_empty());
@@ -55,12 +56,13 @@ fn prefix_retry_exhaustion_and_backend_failure_preserve_non_empty_conversion() {
         &dictionary,
         ConversionOptions::default(),
         Some(&mut failed_verifier),
+        "mock-v1",
     );
     assert_eq!(failed.verification_state, VerificationState::Error);
     assert!(!failed.text().is_empty());
 
     let unavailable =
-        convert_with_verifier("かんじ", &dictionary, ConversionOptions::default(), None);
+        convert_with_verifier("かんじ", &dictionary, ConversionOptions::default(), None, "mock-v1");
     assert_eq!(unavailable.verification_state, VerificationState::CapabilityUnavailable);
     assert!(!unavailable.text().is_empty());
 }

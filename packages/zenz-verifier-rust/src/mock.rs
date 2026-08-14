@@ -156,7 +156,8 @@ mod tests {
             MockDecision::PrefixConstraint(constraint.clone()),
             MockDecision::Verified,
         ]);
-        let mut session = verifier.open_session(SessionContext::new("かんじ", 7)).unwrap();
+        let mut session =
+            verifier.open_session(SessionContext::new("かんじ", 7, "mock-v1")).unwrap();
 
         let first = verifier.evaluate(&mut session, &draft("感じ")).unwrap();
         assert_eq!(first.state, VerificationState::PrefixConstraintReturned);
@@ -172,7 +173,7 @@ mod tests {
     #[test]
     fn closed_session_is_rejected() {
         let mut verifier = MockDraftVerifier::new([]);
-        let mut session = verifier.open_session(SessionContext::new("かな", 1)).unwrap();
+        let mut session = verifier.open_session(SessionContext::new("かな", 1, "mock-v1")).unwrap();
         verifier.close_session(session.clone()).unwrap();
         assert_eq!(
             verifier.evaluate(&mut session, &draft("仮名")),
@@ -192,7 +193,7 @@ mod tests {
         ];
         let mut verifier =
             MockDraftVerifier::new(decisions.iter().map(|(decision, _)| decision.clone()));
-        let mut session = verifier.open_session(SessionContext::new("かな", 1)).unwrap();
+        let mut session = verifier.open_session(SessionContext::new("かな", 1, "mock-v1")).unwrap();
         for (_, expected) in decisions {
             let result = verifier.evaluate(&mut session, &draft("仮名")).unwrap();
             assert_eq!(result.state, expected);
@@ -203,7 +204,7 @@ mod tests {
     #[test]
     fn backend_failure_is_not_disguised_as_verification() {
         let mut verifier = MockDraftVerifier::new([MockDecision::Fail("offline".to_string())]);
-        let mut session = verifier.open_session(SessionContext::new("かな", 1)).unwrap();
+        let mut session = verifier.open_session(SessionContext::new("かな", 1, "mock-v1")).unwrap();
         assert_eq!(
             verifier.evaluate(&mut session, &draft("仮名")),
             Err(VerifierError::Backend("offline".to_string()))
