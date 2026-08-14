@@ -22,6 +22,12 @@ cargo test --manifest-path packages/zenz-verifier-rust/Cargo.toml
 cargo test --manifest-path packages/zenz-verifier-rust/Cargo.toml --features candle
 ```
 
+The workspace `check:all` gate deliberately runs the default, Candle-free
+build. This continuously protects the lightweight/WASM-safe dependency
+boundary without paying Candle's native compile cost on every full gate.
+`bun run rust:zenz-verifier:candle` is the separate native-model gate and must
+run whenever GGUF or forward code changes.
+
 ## Forward-pass gate
 
 `DraftVerifier` inference is deliberately not implemented yet. Before adding
