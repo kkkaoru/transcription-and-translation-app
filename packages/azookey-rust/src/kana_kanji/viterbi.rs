@@ -798,7 +798,8 @@ pub fn convert_with_dictionary(
                 // mixed-case brand spellings (`iPhone`) and numeric rows
                 // available when the generic spoken-number parser has no
                 // special form.
-                if source_is_hiragana_surface(&source_chars[start..end])
+                if !entry.user_supplied
+                    && source_is_hiragana_surface(&source_chars[start..end])
                     && is_rejected_latin_transliteration(&entry.surface)
                 {
                     continue;
@@ -814,7 +815,8 @@ pub fn convert_with_dictionary(
                 // (`エーッと`) is spurious.  Key the suppression on the
                 // DEFAULT_CID loanword orthography so genuine loanwords keep
                 // converting while morphology-bearing filler identities stay.
-                if prolonged_mark_adjacent_to_span(&source_chars, &chars, start, end)
+                if !entry.user_supplied
+                    && prolonged_mark_adjacent_to_span(&source_chars, &chars, start, end)
                     && !entry.surface.chars().any(|character| is_katakana(&character))
                     && entry.lcid == DEFAULT_CID
                     && entry.rcid == DEFAULT_CID
@@ -3204,6 +3206,7 @@ fn identity_fallback_entry(
         rcid: candidate.rcid,
         mid: candidate.mid,
         raw_ruby_identity: false,
+        user_supplied: false,
         value,
     })
 }
@@ -3823,6 +3826,7 @@ mod tests {
         convert_kana_to_kanji, convert_kana_to_kanji_with_paths, convert_with_dictionary,
         ConversionOptions,
     };
+    use crate::dictionary::test_system_dictionary_path;
     use crate::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
     use std::fs;
 
@@ -4626,6 +4630,26 @@ mod tests {
     }
 
     #[test]
+    fn system_dictionary_still_rejects_unintentional_short_latin_transliteration() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-system-latin-noise-{}-{}.tsv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(&root, "さん\tSun\t100\n").expect("fixture should write");
+        let converted = super::convert_kana_to_kanji_with_paths(
+            "さん",
+            DictionaryPaths { system: Some(root.clone()), ..DictionaryPaths::default() },
+        )
+        .expect("system TSV should load");
+        assert_ne!(converted, "Sun");
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
     fn normalizes_fullwidth_numeric_special_conversion() {
         assert_eq!(convert_kana_to_kanji("１２３"), "123");
     }
@@ -4769,6 +4793,53 @@ mod tests {
             ConversionOptions { n_best: 2, ..ConversionOptions::default() },
         );
         assert_eq!(results[0].text, "配信中");
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn explicit_user_dictionary_can_emit_a_short_uppercase_acronym() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-user-acronym-{}-{}.tsv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(&root, "ぶいあーるちゃっと\tVRC\n").expect("fixture should write");
+        let system_path = test_system_dictionary_path();
+        let baseline = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(system_path.clone()),
+            user: None,
+            memory: None,
+        })
+        .expect("system dictionary should load");
+        assert_eq!(
+            convert_with_dictionary("ぶいあーるちゃっと", &baseline, ConversionOptions::default(),)
+                [0]
+            .text,
+            "VRChat"
+        );
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(system_path),
+            user: Some(root.clone()),
+            memory: None,
+        })
+        .expect("system and user dictionaries should load");
+        let lookup = dictionary.lookup_exact("ぶいあーるちゃっと").expect("reading should lookup");
+        let user = lookup
+            .into_iter()
+            .find(|entry| entry.surface == "VRC")
+            .expect("user acronym should be present");
+        assert!(user.user_supplied);
+        assert_eq!(user.value, -1.0);
+
+        let results = convert_with_dictionary(
+            "ぶいあーるちゃっと",
+            &dictionary,
+            ConversionOptions::default(),
+        );
+        assert_eq!(results[0].text, "VRC", "results={results:?}");
         let _ = fs::remove_file(root);
     }
 

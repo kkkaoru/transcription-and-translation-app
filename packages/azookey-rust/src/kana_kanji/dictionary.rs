@@ -22,6 +22,9 @@ const DEFAULT_CONNECTION_COST: f32 = -25.0;
 const NEUTRAL_CONNECTION_COST: f32 = 0.0;
 const BUILTIN_SURFACE_SCORE_BONUS: f32 = 1.5;
 const DEFAULT_TSV_ENTRY_VALUE: f32 = -10.0;
+/// Explicit two-column user rows are intentional and should beat ordinary
+/// official alternatives while still participating in lattice context.
+const DEFAULT_USER_TSV_ENTRY_VALUE: f32 = -1.0;
 const BUILTIN_HIGH_FREQUENCY_VALUE: f32 = -5.0;
 const BUILTIN_DEFAULT_VALUE: f32 = -10.0;
 const CID_DEFAULT_RECORD: i32 = -1;
@@ -75,6 +78,9 @@ pub struct DictionaryEntry {
     /// provenance used by the lattice; ordinary TSV/builtin/Katakana lexical
     /// rows remain false.
     pub raw_ruby_identity: bool,
+    /// Explicit user dictionaries may intentionally emit acronyms that the
+    /// system-dictionary transliteration guard rejects as noisy Latin.
+    pub user_supplied: bool,
     /// AzooKey stores log-probability-like scores where a higher value is
     /// preferred (for example, -5 beats -15).
     pub value: f32,
@@ -89,6 +95,7 @@ impl DictionaryEntry {
             rcid: DEFAULT_CID,
             mid: DEFAULT_MID,
             raw_ruby_identity: false,
+            user_supplied: false,
             value,
         }
     }
@@ -222,7 +229,7 @@ impl AzooKeyDictionary {
         if let Some(path) = paths.system.as_deref() {
             if path.is_file() {
                 // Explicit TSV must parse; a missing file is soft-skipped below.
-                dictionary.static_entries.extend(parse_tsv(path)?);
+                dictionary.static_entries.extend(parse_tsv(path, false)?);
             } else if system_dictionary_present(path) {
                 dictionary.system = Some(SystemDictionary::load(path)?);
             }
@@ -1154,7 +1161,7 @@ impl ExternalTrieDictionary {
                 root: path.to_path_buf(),
                 name: name.to_string(),
                 char_ids: HashMap::new(),
-                tsv_entries: Some(parse_tsv(path)?),
+                tsv_entries: Some(parse_tsv(path, name == "user")?),
             });
         }
         let char_ids = if inherited_char_ids.is_empty() {
@@ -1199,10 +1206,16 @@ impl ExternalTrieDictionary {
         };
         let shard = node_index >> SHARD_SHIFT;
         let local_index = node_index & LOCAL_MASK;
-        read_loudstxt3_entry(
+        let mut entries = read_loudstxt3_entry(
             &self.root.join(format!("{}{}.loudstxt3", self.name, shard)),
             local_index,
-        )
+        )?;
+        if self.name == "user" {
+            for entry in &mut entries {
+                entry.user_supplied = true;
+            }
+        }
+        Ok(entries)
     }
 }
 
@@ -1317,7 +1330,7 @@ impl Louds {
     }
 }
 
-fn parse_tsv(path: &Path) -> Result<Vec<DictionaryEntry>, String> {
+fn parse_tsv(path: &Path, user_supplied: bool) -> Result<Vec<DictionaryEntry>, String> {
     let body = fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
     let entries = body
@@ -1333,14 +1346,18 @@ fn parse_tsv(path: &Path) -> Result<Vec<DictionaryEntry>, String> {
             (!reading.is_empty() && !surface.is_empty()).then(|| DictionaryEntry {
                 reading: to_hiragana(reading),
                 surface: surface.to_string(),
-                value: columns
-                    .get(2)
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(DEFAULT_TSV_ENTRY_VALUE),
+                value: columns.get(2).and_then(|value| value.parse().ok()).unwrap_or(
+                    if user_supplied {
+                        DEFAULT_USER_TSV_ENTRY_VALUE
+                    } else {
+                        DEFAULT_TSV_ENTRY_VALUE
+                    },
+                ),
                 lcid: columns.get(3).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_CID),
                 rcid: columns.get(4).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_CID),
                 mid: columns.get(5).and_then(|value| value.parse().ok()).unwrap_or(DEFAULT_MID),
                 raw_ruby_identity: false,
+                user_supplied,
             })
         })
         .collect::<Vec<_>>();
@@ -1426,6 +1443,7 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
             rcid: read_u16(bytes, base + U16_BYTES)?,
             mid: read_u16(bytes, base + U16_BYTES * 2)?,
             raw_ruby_identity,
+            user_supplied: false,
             value: read_f32(bytes, base + LOUDSTXT3_VALUE_OFFSET)?,
         });
     }
@@ -1858,6 +1876,7 @@ mod tests {
                     rcid: 1285,
                     mid: 501,
                     raw_ruby_identity: false,
+                    user_supplied: false,
                     value: -3.0
                 },
                 DictionaryEntry {
@@ -1867,6 +1886,7 @@ mod tests {
                     rcid: 1288,
                     mid: 344,
                     raw_ruby_identity: false,
+                    user_supplied: false,
                     value: -4.0
                 },
             ]
@@ -2328,9 +2348,9 @@ mod tests {
         );
         let user = std::env::temp_dir().join(format!("{suffix}-user.tsv"));
         let memory = std::env::temp_dir().join(format!("{suffix}-memory.tsv"));
-        std::fs::write(&user, "はいしん\t配信中\t-1\n").expect("user fixture should write");
-        std::fs::write(&memory, "はいしん\t配信メモリ\t-0.5\n")
-            .expect("memory fixture should write");
+        std::fs::write(&user, "はいしん\t配信中\nはいしん\t配信弱め\t-6\n")
+            .expect("user fixture should write");
+        std::fs::write(&memory, "はいしん\t配信メモリ\n").expect("memory fixture should write");
 
         let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
             user: Some(user.clone()),
@@ -2339,8 +2359,24 @@ mod tests {
         })
         .expect("portable external dictionaries should load");
         let entries = dictionary.lookup_exact("はいしん").expect("external lookup should complete");
-        assert!(entries.iter().any(|entry| entry.surface == "配信中"));
-        assert!(entries.iter().any(|entry| entry.surface == "配信メモリ"));
+        let default_user = entries
+            .iter()
+            .find(|entry| entry.surface == "配信中")
+            .expect("default user entry should exist");
+        assert!(default_user.user_supplied);
+        assert_eq!(default_user.value, -1.0);
+        let explicit_user = entries
+            .iter()
+            .find(|entry| entry.surface == "配信弱め")
+            .expect("explicit user entry should exist");
+        assert!(explicit_user.user_supplied);
+        assert_eq!(explicit_user.value, -6.0);
+        let memory_entry = entries
+            .iter()
+            .find(|entry| entry.surface == "配信メモリ")
+            .expect("memory entry should exist");
+        assert!(!memory_entry.user_supplied);
+        assert_eq!(memory_entry.value, -10.0);
 
         let _ = std::fs::remove_file(user);
         let _ = std::fs::remove_file(memory);

@@ -63,7 +63,10 @@ pub fn run() {
                 Err(error) => return Err(error.into()),
             }
             macos::configure_foreground_activation(app.handle())?;
-            let config = load_config(app.handle()).unwrap_or_default();
+            let mut config = load_config(app.handle()).unwrap_or_default();
+            if let Err(error) = custom_dictionary::initialize(app.handle(), &mut config) {
+                log::warn!("custom dictionary initialization failed: {error}");
+            }
             let state = AppState::new(config.clone(), output::runtime_output());
             let native_output_kind = state
                 .status

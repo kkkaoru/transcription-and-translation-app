@@ -12,6 +12,9 @@ const MAX_ENTRIES: usize = 10_000;
 const MAX_ID_CHARS: usize = 128;
 const MAX_READING_CHARS: usize = 256;
 const MAX_WORD_CHARS: usize = 512;
+const DEFAULT_SAMPLE_ID: &str = "sample-vrchat-vrc";
+const DEFAULT_SAMPLE_READING: &str = "ぶいあーるちゃっと";
+const DEFAULT_SAMPLE_WORD: &str = "VRC";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +44,12 @@ pub fn save(
     save_to_directory(&directory, entries)
 }
 
+/// Seed the documented sample only when no dictionary file has ever existed.
+/// An existing empty file means the user intentionally deleted every entry.
+pub fn initialize(app: &AppHandle, config: &mut AppConfig) -> Result<(), String> {
+    initialize_in_directory(&config_directory(app)?, config)
+}
+
 pub fn set_config_path(config: &mut AppConfig, dictionary_path: Option<&Path>) {
     match dictionary_path {
         Some(path) => {
@@ -59,6 +68,33 @@ fn config_directory(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
         .map_err(|error| format!("could not resolve app config directory: {error}"))
+}
+
+fn initialize_in_directory(directory: &Path, config: &mut AppConfig) -> Result<(), String> {
+    let json_path = directory.join(CUSTOM_DICTIONARY_JSON);
+    let tsv_path = directory.join(CUSTOM_DICTIONARY_TSV);
+    if !json_path.exists()
+        && (tsv_path.exists() || config.models.paths.contains_key(CUSTOM_DICTIONARY_PATH_KEY))
+    {
+        // A legacy/external user dictionary predates the JSON manager. Never
+        // overwrite or replace its configured path with the sample.
+        if tsv_path.exists() && !config.models.paths.contains_key(CUSTOM_DICTIONARY_PATH_KEY) {
+            set_config_path(config, Some(&tsv_path));
+        }
+        return Ok(());
+    }
+    let entries = if json_path.exists() {
+        load_from_directory(directory)?
+    } else {
+        vec![CustomDictionaryEntry {
+            id: DEFAULT_SAMPLE_ID.to_string(),
+            reading: DEFAULT_SAMPLE_READING.to_string(),
+            word: DEFAULT_SAMPLE_WORD.to_string(),
+        }]
+    };
+    let (_, dictionary_path) = save_to_directory(directory, entries)?;
+    set_config_path(config, dictionary_path.as_deref());
+    Ok(())
 }
 
 fn load_from_directory(directory: &Path) -> Result<Vec<CustomDictionaryEntry>, String> {
@@ -159,8 +195,8 @@ fn validate_field(number: usize, name: &str, value: &str, max_chars: usize) -> R
 #[cfg(test)]
 mod tests {
     use super::{
-        load_from_directory, save_to_directory, set_config_path, CustomDictionaryEntry,
-        CUSTOM_DICTIONARY_PATH_KEY,
+        initialize_in_directory, load_from_directory, save_to_directory, set_config_path,
+        CustomDictionaryEntry, CUSTOM_DICTIONARY_JSON, CUSTOM_DICTIONARY_PATH_KEY,
     };
     use crate::config::AppConfig;
     use std::path::PathBuf;
@@ -185,6 +221,63 @@ mod tests {
     fn missing_dictionary_loads_as_empty() {
         let directory = temporary_directory("missing");
         assert_eq!(load_from_directory(&directory).expect("missing file is empty"), Vec::new());
+    }
+
+    #[test]
+    fn first_initialization_seeds_vrc_sample_and_generates_conversion_tsv() {
+        let directory = temporary_directory("default-sample");
+        let mut config = AppConfig::default();
+        initialize_in_directory(&directory, &mut config).expect("initialization should succeed");
+        let tsv_path = PathBuf::from(
+            config
+                .models
+                .paths
+                .get(CUSTOM_DICTIONARY_PATH_KEY)
+                .expect("sample should configure TSV"),
+        );
+        assert_eq!(
+            load_from_directory(&directory).expect("sample should load"),
+            vec![entry("sample-vrchat-vrc", "ぶいあーるちゃっと", "VRC")]
+        );
+        assert_eq!(
+            std::fs::read_to_string(tsv_path).expect("sample TSV should read"),
+            "ぶいあーるちゃっと\tVRC\n"
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn initialization_respects_an_existing_intentionally_empty_dictionary() {
+        let directory = temporary_directory("existing-empty");
+        save_to_directory(&directory, Vec::new()).expect("empty dictionary should save");
+        let mut config = AppConfig::default();
+        initialize_in_directory(&directory, &mut config).expect("initialization should succeed");
+        assert!(load_from_directory(&directory).expect("dictionary should load").is_empty());
+        assert!(!config.models.paths.contains_key(CUSTOM_DICTIONARY_PATH_KEY));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn initialization_preserves_a_configured_external_user_dictionary() {
+        let directory = temporary_directory("external-path");
+        let external = directory.join("external.tsv");
+        std::fs::create_dir_all(&directory).expect("directory should exist");
+        std::fs::write(&external, "おりじなる\tOriginal\n").expect("external TSV should write");
+        let mut config = AppConfig::default();
+        set_config_path(&mut config, Some(&external));
+
+        initialize_in_directory(&directory, &mut config).expect("initialization should succeed");
+
+        assert_eq!(
+            config.models.paths.get(CUSTOM_DICTIONARY_PATH_KEY).map(String::as_str),
+            Some(external.to_string_lossy().as_ref())
+        );
+        assert!(!directory.join(CUSTOM_DICTIONARY_JSON).exists());
+        assert_eq!(
+            std::fs::read_to_string(&external).expect("external TSV should read"),
+            "おりじなる\tOriginal\n"
+        );
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

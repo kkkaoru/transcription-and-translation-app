@@ -2126,6 +2126,22 @@ mod tests {
     }
 
     #[test]
+    fn default_vrc_sample_user_dictionary_converts_the_documented_reading() {
+        let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
+        let path = temporary_dictionary_path("default-vrc-sample");
+        fs::write(&path, "ぶいあーるちゃっと\tVRC\n").expect("fixture should write");
+        let mut config = AppConfig::default();
+        config
+            .models
+            .paths
+            .insert("azookey-user-dictionary".to_string(), path.display().to_string());
+
+        let outcome = normalize_azookey(&config, "ぶいあーるちゃっと").expect("normalize");
+        assert_eq!(outcome, NormalizeOutcome::Success("VRC".to_string()));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn invalidating_azookey_cache_reloads_an_updated_user_dictionary() {
         let _guard = DICTIONARY_ENV_LOCK.blocking_lock();
         let path = temporary_dictionary_path("cache-reload");

@@ -492,6 +492,7 @@ fn synthetic_entry(
         rcid,
         mid: 501,
         raw_ruby_identity: false,
+        user_supplied: false,
         value,
     }
 }
