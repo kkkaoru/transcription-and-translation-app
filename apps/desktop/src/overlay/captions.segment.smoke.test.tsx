@@ -387,6 +387,25 @@ describe("captionTextLines and captionItems", () => {
     ).toBe(true);
   });
 
+  it("keeps a full two-line completed source instead of deleting it for a prediction", () => {
+    const config = createDefaultConfig();
+    config.overlay.captionMaxChars = { source: 10, translation: 10 };
+    const source = captionItems(
+      config,
+      { ...createPreviewCaption(), sourceText: "い".repeat(30), translationText: "" },
+      false,
+      "新しい予測",
+    ).find((item) => item.key === "source");
+
+    if (!source) throw new Error("source item should exist");
+    const segments = captionTextSegmentLines(source);
+    expect(segments.map((line) => line.map((segment) => segment.text).join(""))).toEqual([
+      "い".repeat(10),
+      "い".repeat(10),
+    ]);
+    expect(segments.flat().some((segment) => segment.dimmed)).toBe(false);
+  });
+
   it("clamps an external prediction item to one line with the source default budget", () => {
     expect(
       captionTextLines({

@@ -627,9 +627,9 @@ export interface CaptionTextSegment {
 
 /**
  * Wrap source and OPEN prediction as one bounded block, then expose the shared
- * style boundary for DOM and native/Syphon renderers. The final prediction is
- * kept intact (it is bounded to one source-width line); older source head text
- * yields only when the combined two-line budget is full.
+ * style boundary for DOM and native/Syphon renderers. Completed source always
+ * wins the shared two-line budget; only the prediction prefix that fits in the
+ * remaining space is exposed.
  */
 export const captionTextSegmentLines = (item: CaptionItem): CaptionTextSegment[][] => {
   const prediction =
@@ -640,18 +640,22 @@ export const captionTextSegmentLines = (item: CaptionItem): CaptionTextSegment[]
     return baseLines.map((line) => [{ text: line, dimmed: false }]);
   }
 
-  const combined = `${baseLines.join("\n").trimEnd()}${baseLines.length > 0 ? " " : ""}${prediction}`;
+  const body = baseLines.join("").trimEnd();
   const maxLines = item.maxLines ?? CAPTION_MAX_VISIBLE_LINES;
   const budget = Math.max(1, Math.floor(item.maxChars)) * Math.max(1, Math.floor(maxLines));
-  const graphemes = captionGraphemes(combined);
-  const bounded = trimStartGraphemes(graphemes.slice(Math.max(0, graphemes.length - budget))).join(
-    "",
-  );
+  const bodyLength = captionGraphemes(body).length;
+  const separator = body ? " " : "";
+  const availablePrediction = Math.max(0, budget - bodyLength - captionGraphemes(separator).length);
+  const visiblePrediction = captionGraphemes(prediction).slice(0, availablePrediction).join("");
+  if (!visiblePrediction) {
+    return baseLines.map((line) => [{ text: line, dimmed: false }]);
+  }
+  const combined = `${body}${separator}${visiblePrediction}`;
   const lines = keepNewestCaptionLines(
-    segmentCaptionText(bounded, item.maxChars, detectCaptionSoftBreaks(bounded)),
+    segmentCaptionText(combined, item.maxChars, detectCaptionSoftBreaks(combined)),
     maxLines,
   );
-  const predictionLength = captionGraphemes(prediction).length;
+  const predictionLength = captionGraphemes(visiblePrediction).length;
   const totalLength = lines.reduce((total, line) => total + captionGraphemes(line).length, 0);
   const predictionStart = Math.max(0, totalLength - predictionLength);
   let offset = 0;
