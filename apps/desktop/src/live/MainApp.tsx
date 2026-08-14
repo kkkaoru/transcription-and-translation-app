@@ -473,7 +473,6 @@ type MainStickyOwner = {
 
 type MainStickyRefs = {
   source: { current: CaptionSentenceStickyState | null };
-  translation: { current: CaptionSentenceStickyState | null };
   owner: { current: MainStickyOwner | null };
 };
 
@@ -482,7 +481,6 @@ const normalizeMainStickyText = (text: string): string => text.replace(/\r\n?/gu
 /** Reset display-only sentence carry; IPC caption state remains untouched. */
 const resetMainStickyRefs = (refs: MainStickyRefs): void => {
   refs.source.current = null;
-  refs.translation.current = null;
   refs.owner.current = null;
 };
 
@@ -585,7 +583,6 @@ const applyMainStickyDisplay = (caption: CaptionPayload, refs: MainStickyRefs): 
     (owner.captureGeneration != null || generation != null);
   if (owner && (owner.id !== caption.id || generationChanged)) {
     refs.source.current = null;
-    refs.translation.current = null;
   }
   refs.owner.current = { id: caption.id, captureGeneration: generation };
 
@@ -596,15 +593,7 @@ const applyMainStickyDisplay = (caption: CaptionPayload, refs: MainStickyRefs): 
     softBreakOffsets: caption.softBreakOffsets,
     deferSentencePaging: caption.provisional === true,
   };
-  const translationHints: CaptionSentenceHints = {
-    key: "translation",
-    deferSentencePaging: caption.provisional === true,
-  };
   const sourceSticky = compatibleMainStickyState(refs.source.current, caption.sourceText);
-  const translationSticky = compatibleMainStickyState(
-    refs.translation.current,
-    caption.translationText,
-  );
 
   // Folded provisional ASR must keep the joined lead+tail; do not seed or
   // apply copula carry on that surface. The following normalized caption can
@@ -614,25 +603,14 @@ const applyMainStickyDisplay = (caption: CaptionPayload, refs: MainStickyRefs): 
   }
 
   refs.source.current = rememberMainStickyState(caption.sourceText, sourceHints, sourceSticky);
-  refs.translation.current = rememberMainStickyState(
-    caption.translationText,
-    translationHints,
-    translationSticky,
-  );
 
   const nextSource = applyMainStickyField(caption.sourceText, sourceHints, sourceSticky);
-  const nextTranslation = applyMainStickyField(
-    caption.translationText,
-    translationHints,
-    translationSticky,
-  );
-  if (nextSource === caption.sourceText && nextTranslation === caption.translationText) {
+  if (nextSource === caption.sourceText) {
     return caption;
   }
   const next: CaptionPayload = {
     ...caption,
     sourceText: nextSource,
-    translationText: nextTranslation,
   };
   if (nextSource !== caption.sourceText) {
     // Offsets are relative to the full IPC source surface; passing them to the
@@ -661,7 +639,6 @@ export const MainApp = () => {
   /** Display-only sentence carry shared by the Live DOM and native publisher. */
   const stickyRefs = useRef<MainStickyRefs>({
     source: { current: null },
-    translation: { current: null },
     owner: { current: null },
   }).current;
   // Grow newly recognized graphemes onto Live/Syphon (こ→こんにちは). Snap an

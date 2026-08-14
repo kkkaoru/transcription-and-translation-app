@@ -383,6 +383,17 @@ describe("captionTextLines and captionItems", () => {
     expect(translation?.text).toBe("");
   });
 
+  it("keeps an ellipsis-terminated translation displayable", () => {
+    const translation = captionItems(createDefaultConfig(), {
+      ...createPreviewCaption(),
+      translationText: "Even so, the translation remains visible...",
+    }).find((item) => item.key === "translation");
+
+    expect(translation?.text).toBe("Even so, the translation remains visible");
+    if (!translation) throw new Error("translation item should exist");
+    expect(captionTextLines(translation)).toEqual(["Even so, the translation remains visible"]);
+  });
+
   it("records each display-layer reason after translation merge", () => {
     const config = createDefaultConfig();
     const translated: CaptionPayload = {

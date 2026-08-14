@@ -65,6 +65,22 @@ const expectMerged = (value: CaptionPayload | null): CaptionPayload => {
 
 describe("caption quality contracts (automated, no human eyeball)", () => {
   describe("progressive reveal wiring (live + overlay)", () => {
+    it("keeps translation out of caller-owned sticky sentence paging", () => {
+      const mainStickyDisplay = mainAppSource.match(
+        /const applyMainStickyDisplay[\s\S]*?\n};/,
+      )?.[0];
+      const overlayStickyDisplay = overlayAppSource.match(
+        /const applyOverlayStickyDisplay[\s\S]*?\n};/,
+      )?.[0];
+
+      expect(mainStickyDisplay).toBeDefined();
+      expect(overlayStickyDisplay).toBeDefined();
+      expect(mainStickyDisplay).not.toMatch(/translationHints|translationSticky|translationText/);
+      expect(overlayStickyDisplay).not.toMatch(
+        /translationHints|translationSticky|translationText/,
+      );
+    });
+
     it("has one native publisher while Live and Overlay DOM render their own displayCaption", () => {
       // hold-clear once replaced this import and left grapheme reveal dead.
       expect(mainAppSource).toMatch(/useCaptionFreshness\(caption\)/);

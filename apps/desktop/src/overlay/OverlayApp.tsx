@@ -105,7 +105,6 @@ type OverlayStickyOwner = {
 
 type OverlayStickyRefs = {
   source: { current: OverlayStickyState | null };
-  translation: { current: OverlayStickyState | null };
   owner: { current: OverlayStickyOwner | null };
 };
 
@@ -114,7 +113,6 @@ const normalizeOverlayStickyText = (text: string): string => text.replace(/\r\n?
 /** Reset display-only sentence carry; IPC caption state remains untouched. */
 const resetOverlayStickyRefs = (refs: OverlayStickyRefs): void => {
   refs.source.current = null;
-  refs.translation.current = null;
   refs.owner.current = null;
 };
 
@@ -219,7 +217,6 @@ const applyOverlayStickyDisplay = (
     (owner.captureGeneration != null || generation != null);
   if (owner && (owner.id !== caption.id || generationChanged)) {
     refs.source.current = null;
-    refs.translation.current = null;
   }
   refs.owner.current = { id: caption.id, captureGeneration: generation };
 
@@ -230,15 +227,7 @@ const applyOverlayStickyDisplay = (
     softBreakOffsets: caption.softBreakOffsets,
     deferSentencePaging: caption.provisional === true,
   };
-  const translationHints: CaptionSentenceHints = {
-    key: "translation",
-    deferSentencePaging: caption.provisional === true,
-  };
   const sourceSticky = compatibleOverlayStickyState(refs.source.current, caption.sourceText);
-  const translationSticky = compatibleOverlayStickyState(
-    refs.translation.current,
-    caption.translationText,
-  );
 
   // Folded provisional ASR must keep the joined lead+tail; do not seed or
   // apply copula carry on that surface. The following normalized caption can
@@ -248,25 +237,14 @@ const applyOverlayStickyDisplay = (
   }
 
   refs.source.current = rememberOverlayStickyState(caption.sourceText, sourceHints, sourceSticky);
-  refs.translation.current = rememberOverlayStickyState(
-    caption.translationText,
-    translationHints,
-    translationSticky,
-  );
 
   const nextSource = applyOverlayStickyField(caption.sourceText, sourceHints, sourceSticky);
-  const nextTranslation = applyOverlayStickyField(
-    caption.translationText,
-    translationHints,
-    translationSticky,
-  );
-  if (nextSource === caption.sourceText && nextTranslation === caption.translationText) {
+  if (nextSource === caption.sourceText) {
     return caption;
   }
   const next: CaptionPayload = {
     ...caption,
     sourceText: nextSource,
-    translationText: nextTranslation,
   };
   if (nextSource !== caption.sourceText) {
     // Offsets are relative to the full IPC source surface; passing them to the
@@ -301,7 +279,6 @@ export const OverlayApp = () => {
   /** Display-only sentence carry shared by Overlay DOM and native publisher. */
   const stickyRefs = useRef<OverlayStickyRefs>({
     source: { current: null },
-    translation: { current: null },
     owner: { current: null },
   }).current;
   // Match MainApp: grow source graphemes on overlay/Syphon. Snap an already
