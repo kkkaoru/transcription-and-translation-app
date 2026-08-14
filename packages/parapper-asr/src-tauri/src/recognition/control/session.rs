@@ -228,7 +228,7 @@ impl PartialWindowAsrState {
         let active = self.active.as_ref()?;
         if active.capped {
             self.skipped_capped = self.skipped_capped.saturating_add(1);
-            log::debug!(
+            log::info!(
                 "{}",
                 serde_json::json!({
                     "event": "partial_window_asr_skip",
@@ -260,7 +260,7 @@ impl PartialWindowAsrState {
             self.gap_millis.max(PARTIAL_WINDOW_MIN_GAP_MS),
             vad_interval_ms,
         )));
-        log::debug!(
+        log::info!(
             "{}",
             serde_json::json!({
                 "event": "partial_window_asr_skip",
@@ -328,7 +328,7 @@ impl PartialWindowAsrState {
             current_tick
                 .saturating_add(ticks_for_partial_window_gap(self.gap_millis, vad_interval_ms)),
         );
-        log::debug!(
+        log::info!(
             "{}",
             serde_json::json!({
                 "event": "partial_window_asr_completed",

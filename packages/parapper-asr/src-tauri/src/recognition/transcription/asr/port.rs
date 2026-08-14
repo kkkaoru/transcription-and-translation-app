@@ -290,7 +290,7 @@ pub(crate) fn run_engine_asr_request(
         let transcribe_result = asr.transcribe(route, audio.as_ref());
         decode_millis = Some(decode_started_at.elapsed().as_millis());
         if kind == AsrTaskKind::PartialWindow {
-            log::debug!(
+            log::info!(
                 "{}",
                 serde_json::json!({
                     "event": "partial_window_asr_decode",
