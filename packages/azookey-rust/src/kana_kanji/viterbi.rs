@@ -249,14 +249,15 @@ pub struct ConversionCandidate {
 /// even when a backend repeatedly returns a prefix constraint, so a verifier
 /// cannot make caption production unbounded or prevent a result from being
 /// emitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifierConversionOptions {
     pub max_iterations: usize,
+    pub inference_config_revision: String,
 }
 
-impl Default for VerifierConversionOptions {
-    fn default() -> Self {
-        Self { max_iterations: DEFAULT_VERIFIER_MAX_ITERATIONS }
+impl VerifierConversionOptions {
+    pub fn new(max_iterations: usize, inference_config_revision: impl Into<String>) -> Self {
+        Self { max_iterations, inference_config_revision: inference_config_revision.into() }
     }
 }
 
@@ -1787,13 +1788,14 @@ pub fn convert_with_verifier(
     dictionary: &AzooKeyDictionary,
     options: ConversionOptions,
     verifier: Option<&mut dyn DraftVerifier>,
+    inference_config_revision: impl Into<String>,
 ) -> ConversionWithVerification {
     convert_with_verifier_with_limit(
         input,
         dictionary,
         options,
         verifier,
-        VerifierConversionOptions::default(),
+        VerifierConversionOptions::new(DEFAULT_VERIFIER_MAX_ITERATIONS, inference_config_revision),
     )
 }
 
@@ -1818,7 +1820,11 @@ pub fn convert_with_verifier_with_limit(
         return fallback_with_state(fallback, VerificationState::Exhausted);
     }
 
-    let session_context = SessionContext::new(input.as_bytes(), dictionary.revision());
+    let session_context = SessionContext::new(
+        input.as_bytes(),
+        dictionary.revision(),
+        verifier_options.inference_config_revision.clone(),
+    );
     let mut session = match verifier.open_session(session_context) {
         Ok(session) => session,
         Err(_) => return fallback_with_state(fallback, VerificationState::Error),
@@ -7015,7 +7021,8 @@ mod tests {
             .into_iter()
             .next()
             .expect("dictionary conversion should produce a candidate");
-        let result = convert_with_verifier("かんじ", &dictionary, options, None);
+        let result =
+            convert_with_verifier("かんじ", &dictionary, options, None, "test-inference-v1");
 
         assert_eq!(result.verification_state, VerificationState::CapabilityUnavailable);
         assert_eq!(result.candidate.text, baseline.text);
@@ -7027,7 +7034,13 @@ mod tests {
         let dictionary = AzooKeyDictionary::default();
         let options = ConversionOptions::default();
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::NoPrefixCapability };
-        let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+        let result = convert_with_verifier(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            "test-inference-v1",
+        );
 
         assert_eq!(result.verification_state, VerificationState::CapabilityUnavailable);
         assert!(!result.text().is_empty(), "unsupported capability must emit text");
@@ -7042,7 +7055,13 @@ mod tests {
             .next()
             .expect("dictionary conversion should produce a candidate");
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::OpenError };
-        let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+        let result = convert_with_verifier(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            "test-inference-v1",
+        );
 
         assert_eq!(result.verification_state, VerificationState::Error);
         assert_eq!(result.candidate.text, baseline.text);
@@ -7058,7 +7077,13 @@ mod tests {
             .next()
             .expect("dictionary conversion should produce a candidate");
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::EvaluateError };
-        let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+        let result = convert_with_verifier(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            "test-inference-v1",
+        );
 
         assert_eq!(result.verification_state, VerificationState::Error);
         assert_eq!(result.candidate.text, baseline.text);
@@ -7074,7 +7099,13 @@ mod tests {
             .next()
             .expect("dictionary conversion should produce a candidate");
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::EvaluateStateError };
-        let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+        let result = convert_with_verifier(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            "test-inference-v1",
+        );
 
         assert_eq!(result.verification_state, VerificationState::Error);
         assert_eq!(result.candidate.text, baseline.text);
@@ -7095,7 +7126,7 @@ mod tests {
             &dictionary,
             options,
             Some(&mut verifier),
-            VerifierConversionOptions { max_iterations: 1 },
+            VerifierConversionOptions::new(1, "test-inference-v1"),
         );
 
         assert_eq!(result.verification_state, VerificationState::Exhausted);
@@ -7115,10 +7146,17 @@ mod tests {
         ];
         for mode in modes {
             let mut verifier = FallbackVerifier { mode };
-            let result = convert_with_verifier("かんじ", &dictionary, options, Some(&mut verifier));
+            let result = convert_with_verifier(
+                "かんじ",
+                &dictionary,
+                options,
+                Some(&mut verifier),
+                "test-inference-v1",
+            );
             assert!(!result.text().is_empty(), "fallback state {mode:?} returned empty text");
         }
-        let missing = convert_with_verifier("かんじ", &dictionary, options, None);
+        let missing =
+            convert_with_verifier("かんじ", &dictionary, options, None, "test-inference-v1");
         assert!(!missing.text().is_empty(), "missing verifier returned empty text");
     }
 

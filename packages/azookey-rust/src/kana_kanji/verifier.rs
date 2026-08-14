@@ -25,16 +25,27 @@ pub struct SessionContext {
     pub right_context: Option<Vec<u8>>,
     pub dictionary_revision: u64,
     pub protocol_version: u16,
+    /// Canonical backend sampling/inference settings identity. Backends must
+    /// encode temperature, top-p, max tokens, seed, and equivalent settings
+    /// into this single revision before opening a session. Omitting a setting
+    /// from the folded revision lets the cache serve results from old
+    /// inference settings, so an empty revision is accepted but discouraged.
+    pub inference_config_revision: String,
 }
 
 impl SessionContext {
-    pub fn new(input_prefix: impl AsRef<[u8]>, dictionary_revision: u64) -> Self {
+    pub fn new(
+        input_prefix: impl AsRef<[u8]>,
+        dictionary_revision: u64,
+        inference_config_revision: impl Into<String>,
+    ) -> Self {
         Self {
             input_prefix: input_prefix.as_ref().to_vec(),
             left_context: None,
             right_context: None,
             dictionary_revision,
             protocol_version: 1,
+            inference_config_revision: inference_config_revision.into(),
         }
     }
 }
@@ -88,9 +99,12 @@ pub struct VerificationResult {
     pub cache_key: VerificationCacheKey,
 }
 
-/// Cache identity for one candidate verification. It includes both model
-/// layers, the complete session input/context, every `Draft` field, every
-/// `CandidatePath` field, dictionary revision, and protocol version.
+/// Cache identity for one candidate verification. The included semantic
+/// inputs are: model/tokenizer revisions; inference-config revision; prompt
+/// bytes; session input bytes, left/right context, dictionary revision, and
+/// protocol version; every `CandidatePath` field (`edge_handles`, `text`,
+/// `score`, `trailing`); and every constraint field (`scalar_position`,
+/// `prefix`).
 ///
 /// `VerifierSession.session_id` and `kv_reusable` are intentionally excluded:
 /// they describe a backend lifecycle/transport capability, not the semantic
@@ -100,6 +114,7 @@ pub struct VerificationResult {
 pub struct VerificationCacheKey {
     pub model_revision: String,
     pub tokenizer_revision: String,
+    pub inference_config_revision: String,
     pub prompt_hash: u64,
     pub input_bytes_hash: u64,
     pub left_context_hash: u64,
@@ -115,6 +130,7 @@ impl VerificationCacheKey {
         Self {
             model_revision: session.model_revision.clone(),
             tokenizer_revision: session.tokenizer_revision.clone(),
+            inference_config_revision: session.context.inference_config_revision.clone(),
             prompt_hash: hash_bytes(&draft.prompt),
             input_bytes_hash: hash_bytes(&session.context.input_prefix),
             left_context_hash: hash_optional_bytes(session.context.left_context.as_deref()),
@@ -222,7 +238,7 @@ mod tests {
     fn cache_key_separates_prompt_and_constraint_revision_inputs() {
         let session = VerifierSession {
             session_id: 1,
-            context: SessionContext::new("入力", 7),
+            context: SessionContext::new("入力", 7, "default-test-v1"),
             model_revision: "model-a".to_string(),
             tokenizer_revision: "tokenizer-a".to_string(),
             kv_reusable: true,
@@ -243,6 +259,13 @@ mod tests {
         constrained.constraints.push(Utf8BytePrefixConstraint::from_surface(0, "漢"));
         let constrained_key = VerificationCacheKey::for_draft(&session, &constrained);
         assert_ne!(first_key.constraint_hash, constrained_key.constraint_hash);
+
+        let configured_session = VerifierSession {
+            context: SessionContext::new("入力", 7, "temperature=0;top_p=1;max_tokens=64;seed=7"),
+            ..session.clone()
+        };
+        let configured_key = VerificationCacheKey::for_draft(&configured_session, &first);
+        assert_ne!(first_key.inference_config_revision, configured_key.inference_config_revision);
 
         let with_trailing = Draft::new(
             "prompt-a",
