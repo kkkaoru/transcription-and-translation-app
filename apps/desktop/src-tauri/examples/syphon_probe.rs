@@ -20,6 +20,13 @@
 //! For a real end-to-end check, run this while OBS (with its Syphon input
 //! plugin) is open and confirm "Kotoba Beacon Probe" appears as a source.
 
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("syphon_probe is macOS-only");
+    std::process::exit(2);
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
