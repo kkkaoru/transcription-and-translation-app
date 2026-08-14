@@ -96,7 +96,10 @@ export const savePendingCaptionTranslation = (caption: CaptionPayload): boolean 
   }
 
   const previous = pendingCrossIdTranslations.get(caption.id);
-  const shouldStore = !previous || !isOlderSameIdRevision(previous, caption);
+  const shouldStore =
+    !previous ||
+    isNewerFinalTranslationRevision(previous, caption) ||
+    !isOlderSameIdRevision(previous, caption);
   if (!shouldStore) {
     return false;
   }
@@ -507,19 +510,6 @@ const trimmedAzookeyReading = (caption: CaptionPayload): string =>
     ? normalizeAzookeyReading(caption.azookeyInputText.trim())
     : "";
 
-/**
- * A normalizer can rewrite the same rolling span from kana to kanji. When the
- * incoming AzooKey reading is the current reading or a strict continuation of
- * it, the two surfaces describe one span and the incoming normalized surface
- * replaces the old one. If either reading is missing, retain the historical
- * lexical/rolling merge behavior instead of guessing from surface text.
- */
-const hasSameAzookeyReading = (current: CaptionPayload, next: CaptionPayload): boolean => {
-  const currentReading = trimmedAzookeyReading(current);
-  const nextReading = trimmedAzookeyReading(next);
-  return Boolean(currentReading && nextReading && nextReading === currentReading);
-};
-
 const punctuationInsensitiveSource = (caption: CaptionPayload): string =>
   trim(caption.sourceText)
     .normalize("NFKC")
@@ -527,13 +517,21 @@ const punctuationInsensitiveSource = (caption: CaptionPayload): string =>
 
 /** A normalizer may insert punctuation without changing the spoken revision. */
 const hasEquivalentTranslationSource = (current: CaptionPayload, next: CaptionPayload): boolean => {
-  if (hasSameAzookeyReading(current, next)) {
-    return true;
-  }
   const currentSource = punctuationInsensitiveSource(current);
   const nextSource = punctuationInsensitiveSource(next);
   return Boolean(currentSource && nextSource && currentSource === nextSource);
 };
+
+/**
+ * Parapper finals are backdated to the full audio-window start. For equivalent
+ * translated surfaces, receipt order identifies the newer final revision.
+ */
+const isNewerFinalTranslationRevision = (current: CaptionPayload, next: CaptionPayload): boolean =>
+  sequenceOf(current) >= TRANSLATION_SEQUENCE &&
+  sequenceOf(next) >= TRANSLATION_SEQUENCE &&
+  next.isFinal === true &&
+  hasEquivalentTranslationSource(current, next) &&
+  receivedAtOf(next) >= receivedAtOf(current);
 
 const hasSameOrExtendedAzookeyReading = (
   current: CaptionPayload,
@@ -1110,13 +1108,7 @@ const isOutOfOrder = (current: CaptionPayload, next: CaptionPayload): boolean =>
     // start. A newer final translation for the same punctuation-insensitive
     // source must replace its translated interim instead of looking stale by
     // startedAt. Receipt ordering still rejects genuinely late old revisions.
-    if (
-      nextSequence >= TRANSLATION_SEQUENCE &&
-      currentSequence >= TRANSLATION_SEQUENCE &&
-      next.isFinal === true &&
-      hasEquivalentTranslationSource(current, next) &&
-      receivedAtOf(next) >= receivedAtOf(current)
-    ) {
+    if (isNewerFinalTranslationRevision(current, next)) {
       return false;
     }
 

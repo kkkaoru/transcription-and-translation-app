@@ -691,6 +691,47 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("replaces a pending interim translation with its newer backdated final", () => {
+    const visible = caption({
+      id: "new-id",
+      sourceText: "次の発話",
+      translationText: "",
+      startedAt: 500,
+      receivedAt: 500,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const translatedInterim = caption({
+      id: "old-id",
+      sourceText: "今日は晴れ...",
+      translationText: "It is sunny...",
+      startedAt: 200,
+      receivedAt: 300,
+      stage: "translation",
+      sequence: 1,
+      isFinal: false,
+    });
+    const translatedFinal = caption({
+      id: "old-id",
+      sourceText: "今日は晴れ。",
+      translationText: "It is sunny.",
+      startedAt: 100,
+      receivedAt: 400,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(visible, translatedInterim)).toBeNull();
+    expect(mergeCaptionPayload(visible, translatedFinal)).toBeNull();
+    const pending = takePendingCaptionTranslation("old-id");
+    expect(pending?.translationText).toBe("It is sunny.");
+    expect(pending?.startedAt).toBe(100);
+    expect(pending?.receivedAt).toBe(400);
+    expect(pending?.isFinal).toBe(true);
+  });
+
   it("does not increment the saved counter when discarding an older revision of an existing pending entry", () => {
     const current = caption({
       id: "live",
@@ -1237,6 +1278,34 @@ describe("mergeCaptionPayload", () => {
       translationText: "It is sunny today.",
       isFinal: true,
     });
+  });
+
+  it("clears a stale translation when a same-reading homophone changes surface", () => {
+    const translated = caption({
+      id: "u-homophone",
+      sourceText: "雨",
+      azookeyInputText: "あめ",
+      translationText: "rain",
+      startedAt: 1,
+      receivedAt: 10,
+      stage: "translation",
+      sequence: 1,
+    });
+    const homophoneRevision = caption({
+      id: "u-homophone",
+      sourceText: "飴",
+      azookeyInputText: "あめ",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    const merged = mergeCaptionPayload(translated, homophoneRevision);
+    expect(merged?.sourceText).toBe("飴");
+    expect(merged?.translationText).toBe("");
   });
 
   it("keeps translation across a punctuation-only same-reading source revision", () => {
