@@ -18,9 +18,9 @@ import {
   createPreviewCaption,
   repairHearingPhraseConfusion,
   restoreCollapsedContinuation,
+  SOURCE_CAPTION_MAX_CHARS,
   sanitizeCaptionDisplayText,
   segmentCaptionText,
-  SOURCE_CAPTION_MAX_CHARS,
   stripCaptionContinuationMarker,
 } from "./captions";
 
@@ -350,9 +350,7 @@ describe("captionTextLines and captionItems", () => {
       (item) => item.key === "prediction",
     );
     expect(prediction).toBeUndefined();
-    const source = captionItems(config, createEmptyCaption()).find(
-      (item) => item.key === "source",
-    );
+    const source = captionItems(config, createEmptyCaption()).find((item) => item.key === "source");
     if (!source) throw new Error("source item should exist");
     expect(boundPartialWindowText(source, "   ")).toBe("");
   });
