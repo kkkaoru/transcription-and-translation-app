@@ -505,7 +505,9 @@ pub async fn list_model_status(app: AppHandle) -> Result<Vec<ModelStatusEntry>, 
     // the isolated sidecar runtime directory, not the GGUF model cache.
     let streaming_interim = app
         .try_state::<AppState>()
-        .and_then(|state| state.config.lock().ok().map(|config| config.audio.streaming_interim_asr_enabled))
+        .and_then(|state| {
+            state.config.lock().ok().map(|config| config.audio.streaming_interim_asr_enabled)
+        })
         .unwrap_or(true);
     let parapper_runtime = app
         .path()

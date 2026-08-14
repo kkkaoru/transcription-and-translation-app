@@ -773,8 +773,7 @@ pub fn publish_partial_window_caption(
             return Ok(());
         }
     }
-    app.emit("caption:partial-window", caption)
-        .map_err(|error| error.to_string())
+    app.emit("caption:partial-window", caption).map_err(|error| error.to_string())
 }
 
 /// Generation-aware publication for a source caption. `Ok(true)` means the

@@ -40,15 +40,12 @@ pub const NEMOTRON_35_160MS: ParapperAsrModelSpec = ParapperAsrModelSpec {
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/",
         "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-160ms-int8-2026-06-11.tar.bz2"
     ),
-    required_files: &[
-        "encoder.int8.onnx",
-        "decoder.int8.onnx",
-        "joiner.int8.onnx",
-        "tokens.txt",
-    ],
+    required_files: &["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"],
 };
 
-pub fn required_parapper_asr_models(streaming_interim_asr_enabled: bool) -> Vec<ParapperAsrModelSpec> {
+pub fn required_parapper_asr_models(
+    streaming_interim_asr_enabled: bool,
+) -> Vec<ParapperAsrModelSpec> {
     if streaming_interim_asr_enabled {
         vec![REAZONSPEECH_K2_V2, NEMOTRON_35_160MS]
     } else {
@@ -182,9 +179,9 @@ mod tests {
 
     #[test]
     fn nemotron_source_url_points_at_sherpa_onnx_github_release() {
-        assert!(NEMOTRON_35_160MS.source_url.starts_with(
-            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
-        ));
+        assert!(NEMOTRON_35_160MS
+            .source_url
+            .starts_with("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"));
         assert!(NEMOTRON_35_160MS.source_url.ends_with(".tar.bz2"));
         assert_eq!(NEMOTRON_35_160MS.id, STREAMING_INTERIM_ASR_MODEL_ID);
     }

@@ -89,10 +89,7 @@ mod macos {
                     continue;
                 }
                 // UTF-8 needs up to 4 bytes per UTF-16 code unit, plus NUL.
-                let buf_len = (char_len as usize)
-                    .saturating_mul(4)
-                    .saturating_add(1)
-                    .max(64);
+                let buf_len = (char_len as usize).saturating_mul(4).saturating_add(1).max(64);
                 let mut buffer = vec![0i8; buf_len];
                 let ok = CFStringGetCString(
                     value,

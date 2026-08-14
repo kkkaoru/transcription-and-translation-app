@@ -1,7 +1,5 @@
 use crate::{
-    config::{
-        AppConfig, STREAMING_INTERIM_ASR_MODEL_ID, STREAMING_INTERIM_ASR_MODEL_OFF,
-    },
+    config::{AppConfig, STREAMING_INTERIM_ASR_MODEL_ID, STREAMING_INTERIM_ASR_MODEL_OFF},
     model_runtime::{self, ModelRuntimeSpec},
 };
 use std::{
@@ -1085,10 +1083,7 @@ mod tests {
         let config = AppConfig::default();
         let args = parapper_headless_args(&config);
 
-        assert!(args.ends_with(&[
-            "--interim-asr-model".to_string(),
-            "none".to_string(),
-        ]));
+        assert!(args.ends_with(&["--interim-asr-model".to_string(), "none".to_string(),]));
     }
 
     #[test]
@@ -1099,10 +1094,7 @@ mod tests {
         assert!(args.windows(2).any(|window| {
             window == ["--noise-cancellation-enabled".to_string(), "false".to_string()]
         }));
-        assert!(args.ends_with(&[
-            "--interim-asr-model".to_string(),
-            "none".to_string(),
-        ]));
+        assert!(args.ends_with(&["--interim-asr-model".to_string(), "none".to_string(),]));
     }
 
     #[test]
