@@ -514,6 +514,27 @@ const trimmedAzookeyReading = (caption: CaptionPayload): string =>
  * replaces the old one. If either reading is missing, retain the historical
  * lexical/rolling merge behavior instead of guessing from surface text.
  */
+const hasSameAzookeyReading = (current: CaptionPayload, next: CaptionPayload): boolean => {
+  const currentReading = trimmedAzookeyReading(current);
+  const nextReading = trimmedAzookeyReading(next);
+  return Boolean(currentReading && nextReading && nextReading === currentReading);
+};
+
+const punctuationInsensitiveSource = (caption: CaptionPayload): string =>
+  trim(caption.sourceText)
+    .normalize("NFKC")
+    .replace(/[\p{P}\p{Z}]/gu, "");
+
+/** A normalizer may insert punctuation without changing the spoken revision. */
+const hasEquivalentTranslationSource = (current: CaptionPayload, next: CaptionPayload): boolean => {
+  if (hasSameAzookeyReading(current, next)) {
+    return true;
+  }
+  const currentSource = punctuationInsensitiveSource(current);
+  const nextSource = punctuationInsensitiveSource(next);
+  return Boolean(currentSource && nextSource && currentSource === nextSource);
+};
+
 const hasSameOrExtendedAzookeyReading = (
   current: CaptionPayload,
   next: CaptionPayload,
@@ -1298,7 +1319,8 @@ export const mergeCaptionPayload = (
     current.stage === "source" &&
     incomingIsTranslation &&
     hasIncomingTranslation &&
-    sourceChanged
+    sourceChanged &&
+    !hasEquivalentTranslationSource(current, incoming)
   ) {
     return finish(current, "source-changed-translation");
   }
@@ -1339,7 +1361,8 @@ export const mergeCaptionPayload = (
     !currentSource ||
     !nextSource ||
     nextSource === currentSource ||
-    nextSource.startsWith(currentSource);
+    nextSource.startsWith(currentSource) ||
+    hasEquivalentTranslationSource(current, incoming);
 
   const currentWithoutProvisional = { ...current };
   delete currentWithoutProvisional.provisional;

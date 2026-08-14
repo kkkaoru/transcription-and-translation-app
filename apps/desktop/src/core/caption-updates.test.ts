@@ -1099,6 +1099,149 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(source, translated)).toEqual(translated);
   });
 
+  it("merges a normalized translation onto a same-reading provisional surface", () => {
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "こんにちは聞こえますか",
+      azookeyInputText: "こんにちはきこえますか",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      provisional: true,
+    });
+    const translated = caption({
+      id: "u-1",
+      sourceText: "こんにちは。聞こえますか",
+      azookeyInputText: "こんにちはきこえますか",
+      translationText: "Hello, can you hear me?",
+      startedAt: 1,
+      receivedAt: 20,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    const merged = mergeCaptionPayload(provisional, translated);
+    expect(merged).toMatchObject({
+      sourceText: "こんにちは。聞こえますか",
+      translationText: "Hello, can you hear me?",
+      stage: "translation",
+    });
+    expect(merged?.provisional).toBeUndefined();
+  });
+
+  it("merges punctuation-only translation revisions when pre-vibrato and post-vibrato readings differ", () => {
+    const provisional = caption({
+      id: "u-1",
+      sourceText: "もう一度",
+      azookeyInputText: "もういち度",
+      translationText: "",
+      receivedAt: 10,
+      stage: "source",
+      sequence: 0,
+      provisional: true,
+    });
+    const translated = caption({
+      id: "u-1",
+      sourceText: "もう一度。",
+      azookeyInputText: "もういちど",
+      translationText: "Once more.",
+      receivedAt: 20,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(provisional, translated)).toMatchObject({
+      sourceText: "もう一度。",
+      translationText: "Once more.",
+      stage: "translation",
+    });
+  });
+
+  it("keeps translation across a punctuation-only same-reading source revision", () => {
+    const translated = caption({
+      id: "u-1",
+      sourceText: "こんにちは聞こえますか",
+      azookeyInputText: "こんにちはきこえますか",
+      translationText: "Hello, can you hear me?",
+      startedAt: 1,
+      receivedAt: 10,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+    const normalizedRevision = caption({
+      id: "u-1",
+      sourceText: "こんにちは。聞こえますか",
+      azookeyInputText: "こんにちはきこえますか",
+      translationText: "",
+      startedAt: 1,
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+
+    expect(mergeCaptionPayload(translated, normalizedRevision)).toMatchObject({
+      sourceText: "こんにちは。聞こえますか",
+      translationText: "Hello, can you hear me?",
+      stage: "source",
+    });
+  });
+
+  it("does not attach a cross-id translation even when the phonetic reading matches", () => {
+    const visible = caption({
+      id: "new-turn",
+      sourceText: "今日は",
+      azookeyInputText: "きょうは",
+      translationText: "",
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+    });
+    const olderTranslation = caption({
+      id: "old-turn",
+      sourceText: "今日は",
+      azookeyInputText: "きょうは",
+      translationText: "Today",
+      receivedAt: 30,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(visible, olderTranslation)).toBe(visible);
+  });
+
+  it("does not attach an older translation when the phonetic revision changed", () => {
+    const revisedSource = caption({
+      id: "u-1",
+      sourceText: "こんにちは聞こえますか",
+      azookeyInputText: "こんにちはきこえますか",
+      translationText: "",
+      receivedAt: 20,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const staleTranslation = caption({
+      id: "u-1",
+      sourceText: "こんにちは",
+      azookeyInputText: "こんにちは",
+      translationText: "Hello",
+      receivedAt: 30,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    expect(mergeCaptionPayload(revisedSource, staleTranslation)).toBe(revisedSource);
+  });
+
   it("upgrades progressive ASR text to normalized source on the same utterance id", () => {
     const rawAsr = caption({
       id: "u-1",
