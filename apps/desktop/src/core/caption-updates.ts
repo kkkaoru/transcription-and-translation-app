@@ -1,4 +1,5 @@
 import { collapseRunawayGraphemeRuns } from "../overlay/captions";
+import { recordCaptionTranslationDisposition } from "./caption-translation-diagnostics";
 import type { CaptionPayload } from "./types";
 
 const NO_TIME_MS = 0;
@@ -1244,6 +1245,10 @@ export const mergeCaptionPayload = (
   const hasIncomingTranslation = hasText(incoming.translationText);
   const incomingIsTranslationPayload = sequenceOf(incoming) >= TRANSLATION_SEQUENCE;
   const crossIdTranslation = !sameChunk && incomingIsTranslationPayload && hasIncomingTranslation;
+  const finish = (output: CaptionPayload | null, reason: string): CaptionPayload | null => {
+    recordCaptionTranslationDisposition(current, incoming, output, reason);
+    return output;
+  };
 
   // A translator may finish turn N after turn N+1 has already become the
   // visible caption. Never merge that text into N+1 (whether the payload also
@@ -1255,17 +1260,17 @@ export const mergeCaptionPayload = (
   if (crossIdTranslation) {
     savePendingCaptionTranslation(incoming);
     if (!hasIncomingSource) {
-      return current;
+      return finish(current, "cross-id-translation-retained");
     }
   }
 
   if (isOutOfOrder(current, incoming)) {
-    return null;
+    return finish(null, "out-of-order");
   }
 
   // Drop short-ack ASR substitutes for an already-painted longer surface.
   if (shouldKeepSurfaceOverShortAck(current, incoming)) {
-    return null;
+    return finish(null, "short-ack-surface-kept");
   }
 
   if (crossIdTranslation) {
@@ -1273,7 +1278,7 @@ export const mergeCaptionPayload = (
     // replace the current live slot. The older source-bearing path reaches
     // here only when its timing is not stale; retain the current caption while
     // the side channel holds the original payload.
-    return current;
+    return finish(current, "cross-id-translation-retained");
   }
 
   // A source revision may arrive after an earlier translation was painted.
@@ -1295,13 +1300,13 @@ export const mergeCaptionPayload = (
     hasIncomingTranslation &&
     sourceChanged
   ) {
-    return current;
+    return finish(current, "source-changed-translation");
   }
 
   // New chunk updates that are missing source text can still be stale diagnostics,
   // placeholder updates, or partial transport events. Keep the live source visible.
   if (!sameChunk && !hasIncomingSource) {
-    return current;
+    return finish(current, "cross-id-missing-source");
   }
 
   const resolveMergedSourceText = (): string => {
@@ -1448,8 +1453,8 @@ export const mergeCaptionPayload = (
 
   // Preserve React identity when event + invoke deliver the same paint payload.
   if (captionsDisplayEqual(current, merged)) {
-    return current;
+    return finish(current, "duplicate-visible-caption");
   }
 
-  return merged;
+  return finish(merged, "accepted");
 };

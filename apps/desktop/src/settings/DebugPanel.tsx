@@ -10,6 +10,7 @@ import {
   getCaptionLatencyStats,
   subscribeCaptionLatency,
 } from "../core/caption-latency";
+import { snapshotCaptionTranslationDispositions } from "../core/caption-translation-diagnostics";
 import { type ChunkTimingStats, getChunkTimingStats } from "../core/chunkQueue";
 import { DEFAULT_RECOGNITION_MODE, isRecognitionMode, mergeConfig } from "../core/defaults";
 import {
@@ -740,6 +741,7 @@ export function DebugPanel() {
       captionLatency,
       chunkTiming,
       pipelineDrops,
+      captionTranslationDispositions: snapshotCaptionTranslationDispositions(),
       translationRetired: readTranslationRetired(backendInfo),
       parapperOutputSuperseded: readParapperOutputSuperseded(backendInfo),
       sourceCaptionStaleDropped: readSourceCaptionStaleDropped(backendInfo),
