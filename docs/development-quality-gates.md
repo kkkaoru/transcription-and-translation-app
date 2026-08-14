@@ -49,6 +49,8 @@ The measurements that triggered this work were taken under severe system pressur
 
 This explains the observed Git failures and inflated gate duration. It also means those durations must not be used to claim an optimization benefit.
 
+By 2026-08-14 22:07 UTC, before the controlled benchmark, the machine had recovered to a potential healthy baseline: `memory_pressure -Q` reported 76% system-wide memory free, swap usage was 0 MB, and the VM RSS was 8.71 GiB. A separate sentence-boundary test was still using about 875 MiB RSS and one CPU at that instant, so the AzooKey benchmark was correctly delayed until it exited. Record a fresh snapshot immediately before the benchmark; use the recovered values—not the earlier swap-exhausted values—as the comparison baseline.
+
 Static inspection of `packages/azookey-rust` found:
 
 - 109 Rust tests in total;
@@ -59,39 +61,29 @@ Static inspection of `packages/azookey-rust` found:
 
 Consequently, libtest's machine-default concurrency can keep multiple dictionaries and caches live at once, while it cannot shorten the longest 303-case serial test. This makes crate-specific test concurrency a plausible peak-memory control, but its effect must be measured in a healthy memory state.
 
-## Prepared but not committed
+## Benchmark isolation and healthy baseline
 
-`scripts/run-azookey-rust-test.mjs` and its unit test are prepared locally. The wrapper limits only the AzooKey crate:
+All agents work only in the shared `main` checkout. Creating branches or Git worktrees for measurement is prohibited. When a fixed source snapshot is required, export an unmanaged copy instead:
 
-- unset `RUST_TEST_THREADS`: use 2;
-- positive integer: use the requested value; and
-- `RUST_TEST_THREADS=default`: remove the variable and restore libtest's machine default.
+```bash
+snapshot="$(git rev-parse HEAD)"
+measure_dir="$(mktemp -d /tmp/kotoba-measure.XXXXXX)"
+git archive "$snapshot" | tar -x -C "$measure_dir"
+```
 
-It preserves the Cargo exit status and supplies the existing dictionary root. Do not commit the default of 2 until the benchmark below establishes its time/memory tradeoff.
+Run the benchmark from that directory, record `snapshot`, and delete the directory afterward. An archive has no Git metadata, cannot create a merge conflict, and is isolated from concurrent edits in the shared checkout. Its `target/` is also independent, so report compilation and test execution separately. Read-only assets such as the dictionary may be supplied with an absolute path to the main checkout when they are not under concurrent modification.
 
-The one-time timing runner `scripts/check-all.mjs` and its test are also local-only. They preserve the full ordered step list and exist solely to collect a clean baseline. Remove them after measurement unless the data justifies a permanent timing runner.
+Use `/usr/bin/time -l` on macOS so maximum resident set size includes descendants. Record wall time, child-tree peak RSS, exit status, Cargo's compile time, libtest's runtime, and a memory-pressure snapshot.
 
-## Required measurements
+The first valid healthy baseline was captured from exported-equivalent fixed commit `465277926a7e05bdb5df28cf2ee11f185a7bfbcb` on 2026-08-14:
 
-Wait until other Rust builds, coverage runs, and model loads are stopped. Use `/usr/bin/time -l` so maximum resident set size includes descendants.
+| libtest threads | Tests | Wall time | Compile time | Test runtime | Peak child-tree RSS | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| machine default | 99 | 430.37 s | 1.21 s | 428.79 s | 284.9 MiB | pass |
 
-Measure `rust:azookey:test` sequentially with warm build artifacts:
+The run started with 72% system-wide memory free, no swap, and no competing repository build or test. Compilation was 0.28% of wall time; the 428.79-second libtest execution is the optimization target.
 
-1. `RUST_TEST_THREADS=default`
-2. `RUST_TEST_THREADS=2`
-3. `RUST_TEST_THREADS=1`
-
-Record for every run:
-
-- wall-clock time;
-- child-tree maximum resident set size;
-- exit status;
-- whether compilation occurred and how long it took; and
-- enough system memory context to reject a pressure-contaminated run.
-
-Only adopt the default of 2 if it materially lowers peak RSS without an unacceptable wall-time regression. If the tradeoff is ambiguous, consult the advisor before committing.
-
-Then run one clean `check:all` profile to obtain per-step elapsed time and peak RSS. This also validates commits `0acf5c0` and `40084bd` together. Do not run multiple full gates for measurement: the new mutex intentionally rejects overlap.
+Earlier shared-checkout exploratory runs reported 426.18 seconds at machine-default concurrency and 535.71 seconds with two threads, but a concurrent corpus edit made that comparison non-reproducible. Do not use the apparent 25.7% difference as a benchmark result. It still established that machine-default peak RSS is only about 285 MiB, which is not a meaningful constraint on this 48 GB host. The proposed thread limit was therefore not adopted, and the temporary thread wrapper was removed. Repeat concurrency measurements only if the test topology or memory profile changes materially.
 
 ## Possible follow-ups
 
