@@ -16,7 +16,7 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use unicode_segmentation::UnicodeSegmentation;
@@ -129,6 +129,7 @@ const NORMALIZE_TEMPERATURE: f32 = 0.0;
 const TRANSLATE_TEMPERATURE: f32 = 0.7;
 const ZENZ_CONTEXT_MAX_GRAPHEMES: usize = 40;
 const ZENZ_CONTEXT_MAX_TURNS: usize = 64;
+static ZENZ_LEFT_CONTEXT_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
@@ -532,8 +533,8 @@ impl Pipeline {
         turn_session_id: u64,
         turn_id: u64,
         is_final: bool,
+        enabled: bool,
     ) -> ZenzContextSnapshot {
-        let enabled = zenz_left_context_enabled();
         let empty_snapshot = || ZenzContextSnapshot {
             text: String::new(),
             diagnostics: ZenzContextDiagnostics {
@@ -1040,6 +1041,7 @@ impl Pipeline {
             output.turn_session_id,
             output.turn_id,
             output.is_final,
+            zenz_left_context_enabled(),
         );
         let zenz_context_diagnostics =
             config.models.normalizer.starts_with("zenz-").then_some(left_context.diagnostics);
@@ -1409,14 +1411,43 @@ where
     }
 }
 
-fn zenz_left_context_enabled_for(disable_flag: Option<&str>) -> bool {
-    !matches!(disable_flag, Some("1" | "true" | "on"))
+fn parse_zenz_left_context_setting(value: Option<&str>) -> Option<bool> {
+    let value = value?.trim();
+    if ["1", "true", "on"].iter().any(|candidate| value.eq_ignore_ascii_case(candidate)) {
+        return Some(true);
+    }
+    if ["0", "false", "off"].iter().any(|candidate| value.eq_ignore_ascii_case(candidate)) {
+        return Some(false);
+    }
+    None
+}
+
+fn zenz_left_context_enabled_for(
+    runtime_setting: Option<&str>,
+    build_disable_flag: Option<&str>,
+) -> bool {
+    parse_zenz_left_context_setting(runtime_setting)
+        .unwrap_or_else(|| !parse_zenz_left_context_setting(build_disable_flag).unwrap_or(false))
 }
 
 fn zenz_left_context_enabled() -> bool {
-    // Build with CAPTION_BRIDGE_DISABLE_ZENZ_LEFT_CONTEXT=1 for an A/B baseline.
-    // The production default keeps upstream Zenz left-context conditioning enabled.
-    zenz_left_context_enabled_for(option_env!("CAPTION_BRIDGE_DISABLE_ZENZ_LEFT_CONTEXT"))
+    *ZENZ_LEFT_CONTEXT_ENABLED.get_or_init(|| {
+        let runtime_setting = std::env::var("CAPTION_BRIDGE_ZENZ_LEFT_CONTEXT").ok();
+        let enabled = zenz_left_context_enabled_for(
+            runtime_setting.as_deref(),
+            option_env!("CAPTION_BRIDGE_DISABLE_ZENZ_LEFT_CONTEXT"),
+        );
+        if runtime_setting
+            .as_deref()
+            .is_some_and(|value| parse_zenz_left_context_setting(Some(value)).is_none())
+        {
+            log::warn!(
+                target: "pipeline_normalize",
+                "ignoring invalid CAPTION_BRIDGE_ZENZ_LEFT_CONTEXT value; expected on/off, true/false, or 1/0"
+            );
+        }
+        enabled
+    })
 }
 
 fn grapheme_count(text: &str) -> usize {
@@ -2428,18 +2459,25 @@ mod tests {
     }
 
     #[test]
-    fn zenz_context_build_flag_defaults_on_and_accepts_explicit_disable_values() {
-        assert!(zenz_left_context_enabled_for(None));
-        assert!(zenz_left_context_enabled_for(Some("0")));
-        assert!(!zenz_left_context_enabled_for(Some("1")));
-        assert!(!zenz_left_context_enabled_for(Some("true")));
-        assert!(!zenz_left_context_enabled_for(Some("on")));
+    fn zenz_context_runtime_setting_overrides_the_build_default() {
+        assert!(zenz_left_context_enabled_for(None, None));
+        assert!(!zenz_left_context_enabled_for(None, Some("1")));
+        assert!(!zenz_left_context_enabled_for(None, Some("true")));
+        assert!(!zenz_left_context_enabled_for(None, Some("on")));
+
+        assert!(zenz_left_context_enabled_for(Some("1"), Some("1")));
+        assert!(zenz_left_context_enabled_for(Some(" TRUE "), Some("1")));
+        assert!(zenz_left_context_enabled_for(Some("on"), Some("1")));
+        assert!(!zenz_left_context_enabled_for(Some("0"), None));
+        assert!(!zenz_left_context_enabled_for(Some("false"), None));
+        assert!(!zenz_left_context_enabled_for(Some(" OFF "), None));
+        assert!(zenz_left_context_enabled_for(Some("invalid"), None));
     }
 
     #[test]
     fn zenz_context_keeps_each_final_turn_once_and_resets_at_capture_boundaries() {
         let pipeline = Pipeline::default();
-        let empty = pipeline.zenz_left_context("session-a", Some(1), 10, 20, false);
+        let empty = pipeline.zenz_left_context("session-a", Some(1), 10, 20, false, true);
         assert_eq!(empty.text, "");
         assert!(!empty.diagnostics.is_final);
         assert_eq!(empty.diagnostics.character_count, 0);
@@ -2448,27 +2486,32 @@ mod tests {
 
         pipeline.append_zenz_context("session-a", Some(1), 10, 20, "今日は晴れです。");
         pipeline.append_zenz_context("session-a", Some(1), 10, 20, "今日は雨です。");
-        let revised = pipeline.zenz_left_context("session-a", Some(1), 10, 21, false);
+        let revised = pipeline.zenz_left_context("session-a", Some(1), 10, 21, false, true);
         assert_eq!(revised.text, "今日は雨です。");
         assert_eq!(revised.diagnostics.character_count, 7);
         assert_eq!(revised.diagnostics.turn_count, 1);
 
         pipeline.append_zenz_context("session-a", Some(1), 10, 21, "明日も晴れです。");
-        let combined = pipeline.zenz_left_context("session-a", Some(1), 10, 22, false);
+        let combined = pipeline.zenz_left_context("session-a", Some(1), 10, 22, false, true);
         assert_eq!(combined.text, "今日は雨です。明日も晴れです。");
         assert_eq!(combined.diagnostics.character_count, 15);
         assert_eq!(combined.diagnostics.turn_count, 2);
+        let disabled = pipeline.zenz_left_context("session-a", Some(1), 10, 23, false, false);
+        assert!(!disabled.diagnostics.enabled);
+        assert_eq!(disabled.text, "");
+        assert_eq!(disabled.diagnostics.character_count, 0);
+        assert_eq!(disabled.diagnostics.turn_count, 0);
         assert_eq!(
-            pipeline.zenz_left_context("session-a", Some(1), 10, 21, true).text,
+            pipeline.zenz_left_context("session-a", Some(1), 10, 21, true, true).text,
             "今日は雨です。"
         );
-        let new_capture = pipeline.zenz_left_context("session-a", Some(2), 11, 1, true);
+        let new_capture = pipeline.zenz_left_context("session-a", Some(2), 11, 1, true, true);
         assert_eq!(new_capture.text, "");
         assert!(new_capture.diagnostics.is_final);
         assert_eq!(new_capture.diagnostics.discarded_session_count, 1);
 
         pipeline.append_zenz_context("session-a", Some(2), 11, 1, "新しい収録です。");
-        let new_session = pipeline.zenz_left_context("session-b", Some(2), 12, 1, false);
+        let new_session = pipeline.zenz_left_context("session-b", Some(2), 12, 1, false, true);
         assert_eq!(new_session.text, "");
         assert_eq!(new_session.diagnostics.discarded_session_count, 2);
     }

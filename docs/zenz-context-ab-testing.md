@@ -14,13 +14,13 @@ This procedure compares Zenz normalization latency with and without preceding co
 
 ## Run A: context enabled (default)
 
-Build without the disable flag:
+Set the runtime override before launching the app:
 
 ```bash
-env -u CAPTION_BRIDGE_DISABLE_ZENZ_LEFT_CONTEXT bun run build:app:release
+launchctl setenv CAPTION_BRIDGE_ZENZ_LEFT_CONTEXT on
 ```
 
-Launch the resulting app, select the Zenz model being evaluated, start a fresh capture, and speak the fixed script. Open the Debug panel and copy diagnostics after the run.
+Fully quit and relaunch Kotoba Beacon so the new process inherits the setting. Select the Zenz model being evaluated, start a fresh capture, and speak the fixed script. Open the Debug panel and copy diagnostics after the run.
 
 A Zenz `normalize` event should contain metadata shaped like:
 
@@ -41,15 +41,23 @@ A Zenz `normalize` event should contain metadata shaped like:
 
 ## Run B: context disabled
 
-Rebuild with the compile-time disable flag:
+Change the runtime override without rebuilding:
 
 ```bash
-CAPTION_BRIDGE_DISABLE_ZENZ_LEFT_CONTEXT=1 bun run build:app:release
+launchctl setenv CAPTION_BRIDGE_ZENZ_LEFT_CONTEXT off
 ```
 
-Repeat the same fresh-session script and copy diagnostics. Zenz `normalize` events should report `enabled: false`, `characterCount: 0`, and `turnCount: 0`.
+Fully quit and relaunch the app, then repeat the same fresh-session script and copy diagnostics. Zenz `normalize` events should report `enabled: false`, `characterCount: 0`, and `turnCount: 0`.
 
-The accepted disable values are `1`, `true`, and `on`. Any other value, or an unset variable, keeps context enabled. Because this is a compile-time flag, changing it requires rebuilding the Rust desktop app.
+The runtime setting accepts `on`, `true`, or `1` for enabled and `off`, `false`, or `0` for disabled (case-insensitive). An invalid or unset runtime value falls back to the build default, which is enabled in normal builds. Always verify the effective value in `zenzContext.enabled` rather than assuming the override worked.
+
+After the experiment, restore the normal default and relaunch:
+
+```bash
+launchctl unsetenv CAPTION_BRIDGE_ZENZ_LEFT_CONTEXT
+```
+
+For automated build-level baselines, `CAPTION_BRIDGE_DISABLE_ZENZ_LEFT_CONTEXT=1|true|on` remains available at compile time. A valid runtime override takes precedence over that build default.
 
 ## Compare the results
 
