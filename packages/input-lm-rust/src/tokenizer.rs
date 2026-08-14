@@ -577,13 +577,8 @@ mod tests {
         token_to_id.insert("axb".to_string(), 1);
         token_to_id.insert("ax".to_string(), 2);
         token_to_id.insert("b".to_string(), 3);
-        let tables = BpeTables {
-            token_to_id,
-            id_to_token: vec![String::new(); 4],
-            ranks,
-        };
-        let parts =
-            vec!["a".to_string(), "xb".to_string(), "ax".to_string(), "b".to_string()];
+        let tables = BpeTables { token_to_id, id_to_token: vec![String::new(); 4], ranks };
+        let parts = vec!["a".to_string(), "xb".to_string(), "ax".to_string(), "b".to_string()];
         // Correct: merge only the ranked pair → ["axb","ax","b"] → ids [1,2,3].
         // Buggy concat match would also merge ("ax","b") → ["axb","axb"] → [1,1].
         assert_eq!(merge_bpe_parts(parts, &tables), vec![1, 2, 3]);
