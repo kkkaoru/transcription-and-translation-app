@@ -64,10 +64,7 @@ impl VibratoTokenizer {
     /// Mid-sentence POS wrap points for caption line breaks before maxChars.
     #[wasm_bindgen(js_name = softBreakOffsets)]
     pub fn soft_break_offsets(&self, text: &str) -> Vec<u32> {
-        soft_break_offsets(&self.tokenizer, text)
-            .into_iter()
-            .map(|offset| offset as u32)
-            .collect()
+        soft_break_offsets(&self.tokenizer, text).into_iter().map(|offset| offset as u32).collect()
     }
 }
 

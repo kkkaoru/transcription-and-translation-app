@@ -417,9 +417,37 @@ pub fn heuristic_soft_break_offsets(text: &str) -> Vec<usize> {
         return Vec::new();
     }
     const PARTICLE_SUFFIXES: &[&str] = &[
-        "から", "まで", "より", "など", "って", "では", "には", "とは", "のは", "けど", "けれど",
-        "けれども", "ので", "が", "を", "に", "へ", "で", "と", "も", "の", "や", "か", "は", "ね",
-        "よ", "な", "て", "、", "，", ",",
+        "から",
+        "まで",
+        "より",
+        "など",
+        "って",
+        "では",
+        "には",
+        "とは",
+        "のは",
+        "けど",
+        "けれど",
+        "けれども",
+        "ので",
+        "が",
+        "を",
+        "に",
+        "へ",
+        "で",
+        "と",
+        "も",
+        "の",
+        "や",
+        "か",
+        "は",
+        "ね",
+        "よ",
+        "な",
+        "て",
+        "、",
+        "，",
+        ",",
     ];
     let mut ends = Vec::new();
     for index in 1..=chars.len() {
@@ -473,12 +501,8 @@ fn should_ignore_soft_break_in_greeting(prefix: &str, remainder: &str) -> bool {
     if remainder.trim_start().is_empty() {
         return false;
     }
-    let trimmed = prefix
-        .trim_end()
-        .trim_end_matches(['ー', '〜', '～']);
-    FIXED_GREETINGS
-        .iter()
-        .any(|greeting| greeting.starts_with(trimmed) || *greeting == trimmed)
+    let trimmed = prefix.trim_end().trim_end_matches(['ー', '〜', '～']);
+    FIXED_GREETINGS.iter().any(|greeting| greeting.starts_with(trimmed) || *greeting == trimmed)
 }
 
 /// Vibrato IPADIC POS combinations that are safe mid-sentence wrap points.
@@ -513,7 +537,8 @@ fn ipadic_combination_soft_breaks(current: IpadicPos<'_>, next: Option<IpadicPos
     if current.is_predicate() && current.is_conclusive_form() && following.is_nounish() {
         return false;
     }
-    if current.is_rentaishi() || (current.is_predicate() && current.is_adnominal_or_continuative_form())
+    if current.is_rentaishi()
+        || (current.is_predicate() && current.is_adnominal_or_continuative_form())
     {
         return false;
     }
@@ -921,10 +946,7 @@ mod tests {
     fn soft_breaks_do_not_split_relativizers() {
         let (text, toks) = tokens(&[("走る", VERB_BASE), ("人", NOUN), ("だ", DA_CONJ)]);
         let soft = ipadic_soft_break_offsets(&toks, text.chars().count());
-        assert!(
-            !soft.contains(&2),
-            "走る人 must stay glued: text={text:?} soft={soft:?}"
-        );
+        assert!(!soft.contains(&2), "走る人 must stay glued: text={text:?} soft={soft:?}");
     }
 
     #[test]
