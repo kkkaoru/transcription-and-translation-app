@@ -59,10 +59,28 @@ check(
 // --- 2. Caption surfaces are auxiliary, taskbar-skipping same-process windows -
 const commands = read("apps/desktop/src-tauri/src/commands.rs");
 const builderCount = (commands.match(/WebviewWindowBuilder::new/g) ?? []).length;
+const rustFunction = (name) => {
+  const start = commands.search(new RegExp(`fn ${name}\\s*\\(`));
+  if (start < 0) return "";
+  const open = commands.indexOf("{", start);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let index = open; index < commands.length; index += 1) {
+    if (commands[index] === "{") depth += 1;
+    if (commands[index] === "}") depth -= 1;
+    if (depth === 0) return commands.slice(start, index + 1);
+  }
+  return "";
+};
+const allowedWindowBuilders = [
+  "create_caption_surface_window",
+  "open_style_editor",
+  "open_custom_dictionary",
+].map((name) => (rustFunction(name).match(/WebviewWindowBuilder::new/g) ?? []).length);
 check(
-  "commands.rs builds caption surfaces through one shared helper plus the style editor",
-  builderCount === 2 && /fn create_caption_surface_window\s*\(/.test(commands),
-  `found ${builderCount} WebviewWindowBuilder::new calls`,
+  "commands.rs creates windows only through the caption helper or explicit settings tools",
+  builderCount === 3 && allowedWindowBuilders.every((count) => count === 1),
+  `found ${builderCount} builders; allowed function counts=${allowedWindowBuilders.join(",")}`,
 );
 check(
   "native-renderer and transparent capture window labels are defined",
