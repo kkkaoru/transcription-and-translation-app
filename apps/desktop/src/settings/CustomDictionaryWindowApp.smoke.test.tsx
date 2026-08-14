@@ -79,6 +79,40 @@ describe("CustomDictionaryWindowApp", () => {
     expect(container.textContent).toContain("京都");
   });
 
+  it("appends imported CSV rows and exports the current dictionary", async () => {
+    await renderApp();
+    const fileInput = container.querySelector<HTMLInputElement>(
+      '[data-testid="custom-dictionary-import-input"]',
+    );
+    if (!fileInput) throw new Error("CSV input missing");
+    const csvFile = { text: vi.fn(async () => "よみ,単語\nぶいあーるちゃっと,VRC\n") };
+    Object.defineProperty(fileInput, "files", { configurable: true, value: [csvFile] });
+    await act(async () => {
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("ぶいあーるちゃっと");
+    expect(container.textContent).toContain("VRC");
+    expect(container.textContent).toContain("1件を追記");
+
+    const createObjectURL = vi.fn(() => "blob:dictionary");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+    const exportButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("CSVをエクスポート"),
+    );
+    await act(async () => exportButton?.click());
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:dictionary");
+    expect(container.textContent).toContain("3件をCSVへエクスポート");
+  });
+
   it("adds, edits, deletes, warns without blocking, and saves entries", async () => {
     await renderApp();
     const readingInput = container.querySelector<HTMLInputElement>(
