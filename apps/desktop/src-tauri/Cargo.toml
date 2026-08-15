@@ -17,9 +17,9 @@ tauri-build = { version = "2.0.0", features = [] }
 base64 = "0.22"
 caption-bridge-azookey-rust = { path = "../../../packages/azookey-rust" }
 caption-bridge-input-lm = { path = "../../../packages/input-lm-rust", features = ["rsmarisa"] }
-# Off by default: this pulls in Candle, and through it the onig C library.
-# Dependency resolution succeeds for all six targets but no non-macOS build
-# has been run.
+# Enabled by default for the embedded verifier. This pulls in Candle, and
+# through it the onig C library. Dependency resolution succeeds for all six
+# targets but no non-macOS build has been run.
 caption-bridge-zenz-verifier = {
     path = "../../../packages/zenz-verifier-rust",
     optional = true,
@@ -91,13 +91,12 @@ strip = "symbols"
 panic = "abort"
 
 [features]
-default = ["native-output"]
+default = ["native-output", "candle"]
 # Kept for build-script compatibility. Platform-specific native output is on by
 # default so macOS exposes Syphon and Windows exposes Spout2 in release builds.
 native-output = []
-# The embedded verifier is opt-in at build time as well as at runtime. Keeping
-# Candle out of the default feature set avoids adding its native onig dependency
-# to the normal desktop quality gate.
+# Keep this feature explicit so `--no-default-features` remains a genuine
+# verifier-free desktop build for diagnosis and constrained environments.
 candle = [
     "dep:caption-bridge-zenz-verifier",
     "dep:candle-core",

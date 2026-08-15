@@ -1002,65 +1002,69 @@ impl Pipeline {
         }
         #[cfg(feature = "candle")]
         {
-            let Some(model_path) = zenz_verifier_model_path(config) else {
-                self.zenz_verifier_metrics
-                    .record_load_failure(ZenzVerifierLoadFailureReason::ModelNotFound);
-                warn_zenz_verifier_load_once(
-                    "embedded Zenz verifier load failed reason=model_not_found; using dictionary fallback",
-                );
-                return;
-            };
-            let tokenizer_directory = crate::model_runtime::input_lm_tokenizer_cache_dir();
-            if self.zenz_verifier.is_loaded_for(&model_path, &tokenizer_directory) {
-                return;
-            }
-            // Do not retain a verifier loaded from a previous model path while
-            // a new identity is being checked. A failed replacement must fall
-            // back to the dictionary, never silently use the old model.
-            self.zenz_verifier.clear();
-            if !model_path.is_file() {
-                self.zenz_verifier_metrics
-                    .record_load_failure(ZenzVerifierLoadFailureReason::ModelNotFound);
-                warn_zenz_verifier_load_once(
-                    "embedded Zenz verifier load failed reason=model_not_found; using dictionary fallback",
-                );
-                return;
-            }
-            match EmbeddedZenzDraftVerifier::load(
-                &model_path,
-                &tokenizer_directory,
-                ZENZ_VERIFIER_MODEL_REVISION,
-                &Device::Cpu,
-            ) {
-                Ok(verifier) => {
-                    let elapsed_ms = verifier.load_elapsed().as_millis();
-                    if !self.zenz_verifier.install(
-                        Box::new(verifier),
-                        model_path.clone(),
-                        tokenizer_directory.clone(),
-                    ) {
-                        self.zenz_verifier_metrics
-                            .record_load_failure(ZenzVerifierLoadFailureReason::Other);
-                        warn_zenz_verifier_load_once(
-                            "embedded Zenz verifier load failed reason=other; using dictionary fallback",
-                        );
-                        return;
-                    }
-                    log::info!(
-                        target: "pipeline_normalize",
-                        "embedded Zenz verifier loaded elapsed_ms={elapsed_ms}"
-                    );
-                }
-                Err(error) => {
-                    let reason = zenz_verifier_load_failure_reason(&error);
-                    self.zenz_verifier_metrics.record_load_failure(reason);
-                    warn_zenz_verifier_load_once(&format!(
-                        "embedded Zenz verifier load failed reason={}; using dictionary fallback",
-                        reason.as_str()
-                    ));
-                }
-            }
+            self.load_zenz_verifier(config);
         }
+    }
+
+    #[cfg(feature = "candle")]
+    fn load_zenz_verifier(&self, config: &AppConfig) {
+        let Some(model_path) = zenz_verifier_model_path(config) else {
+            self.zenz_verifier_metrics
+                .record_load_failure(ZenzVerifierLoadFailureReason::ModelNotFound);
+            warn_zenz_verifier_load_once(
+                "embedded Zenz verifier load failed reason=model_not_found; using dictionary fallback",
+            );
+            return;
+        };
+        let tokenizer_directory = crate::model_runtime::input_lm_tokenizer_cache_dir();
+        if self.zenz_verifier.is_loaded_for(&model_path, &tokenizer_directory) {
+            return;
+        }
+        // Do not retain a verifier loaded from a previous model path while a
+        // new identity is being checked. A failed replacement must fall back
+        // to the dictionary, never silently use the old model.
+        self.zenz_verifier.clear();
+        if !model_path.is_file() {
+            self.zenz_verifier_metrics
+                .record_load_failure(ZenzVerifierLoadFailureReason::ModelNotFound);
+            warn_zenz_verifier_load_once(
+                "embedded Zenz verifier load failed reason=model_not_found; using dictionary fallback",
+            );
+            return;
+        }
+        let verifier = match EmbeddedZenzDraftVerifier::load(
+            &model_path,
+            &tokenizer_directory,
+            ZENZ_VERIFIER_MODEL_REVISION,
+            &Device::Cpu,
+        ) {
+            Ok(verifier) => verifier,
+            Err(error) => {
+                let reason = zenz_verifier_load_failure_reason(&error);
+                self.zenz_verifier_metrics.record_load_failure(reason);
+                warn_zenz_verifier_load_once(&format!(
+                    "embedded Zenz verifier load failed reason={}; using dictionary fallback",
+                    reason.as_str()
+                ));
+                return;
+            }
+        };
+        let elapsed_ms = verifier.load_elapsed().as_millis();
+        if !self.zenz_verifier.install(
+            Box::new(verifier),
+            model_path.clone(),
+            tokenizer_directory.clone(),
+        ) {
+            self.zenz_verifier_metrics.record_load_failure(ZenzVerifierLoadFailureReason::Other);
+            warn_zenz_verifier_load_once(
+                "embedded Zenz verifier load failed reason=other; using dictionary fallback",
+            );
+            return;
+        }
+        log::info!(
+            target: "pipeline_normalize",
+            "embedded Zenz verifier loaded elapsed_ms={elapsed_ms}"
+        );
     }
 
     fn zenz_verifier_diagnostics(&self) -> ZenzVerifierDiagnostics {
@@ -1963,7 +1967,7 @@ fn zenz_verifier_enabled_for(
     build_enable_flag: Option<&str>,
 ) -> bool {
     parse_zenz_left_context_setting(runtime_setting)
-        .unwrap_or_else(|| parse_zenz_left_context_setting(build_enable_flag).unwrap_or(false))
+        .unwrap_or_else(|| parse_zenz_left_context_setting(build_enable_flag).unwrap_or(true))
 }
 
 fn zenz_verifier_enabled() -> bool {
@@ -1997,17 +2001,25 @@ fn zenz_verifier_model_path(config: &AppConfig) -> Option<PathBuf> {
         .map(str::trim)
         .filter(|path| !path.is_empty())
     {
-        let path = expand_model_path(path);
-        return Some(if path.is_dir() { path.join(spec.hf_file) } else { path });
+        return Some(resolve_zenz_model_path_override(expand_model_path(path), spec.hf_file));
     }
     if let Ok(path) = std::env::var(ZENZ_VERIFIER_MODEL_PATH_ENV) {
         let path = expand_model_path(path.trim());
         if !path.as_os_str().is_empty() {
-            return Some(if path.is_dir() { path.join(spec.hf_file) } else { path });
+            return Some(resolve_zenz_model_path_override(path, spec.hf_file));
         }
     }
     default_zenz_model_runtime_dir()
         .map(|models_dir| crate::model_runtime::model_path(&models_dir, spec))
+}
+
+#[cfg(feature = "candle")]
+fn resolve_zenz_model_path_override(path: PathBuf, file_name: &str) -> PathBuf {
+    if path.is_dir() {
+        path.join(file_name)
+    } else {
+        path
+    }
 }
 
 #[cfg(feature = "candle")]
@@ -2018,27 +2030,24 @@ fn default_zenz_model_runtime_dir() -> Option<PathBuf> {
             return Some(path);
         }
     }
+    // `warm_azookey_dictionary` intentionally has no AppHandle dependency.
+    // Mirror `model_runtime::model_runtime_dir` here using Tauri's documented
+    // per-platform app-data layout; the explicit env override remains useful
+    // for tests and unpackaged developer runs.
     #[cfg(target_os = "macos")]
-    {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join("Library/Application Support/com.kotobabeacon.desktop/models"));
-    }
+    let default = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Library/Application Support/com.kotobabeacon.desktop/models"));
     #[cfg(target_os = "windows")]
-    {
-        return std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .map(|app_data| app_data.join("com.kotobabeacon.desktop/models"));
-    }
+    let default = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|app_data| app_data.join("com.kotobabeacon.desktop/models"));
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
-            })
-            .map(|data_dir| data_dir.join("com.kotobabeacon.desktop/models"))
-    }
+    let default = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .map(|data_dir| data_dir.join("com.kotobabeacon.desktop/models"));
+    default
 }
 
 #[cfg(feature = "candle")]
@@ -3122,9 +3131,9 @@ mod tests {
     }
 
     #[test]
-    fn zenz_verifier_runtime_setting_defaults_off_and_runtime_wins() {
-        assert!(!zenz_verifier_enabled_for(None, None));
-        assert!(!zenz_verifier_enabled_for(None, Some("invalid")));
+    fn zenz_verifier_runtime_setting_defaults_on_and_runtime_wins() {
+        assert!(zenz_verifier_enabled_for(None, None));
+        assert!(zenz_verifier_enabled_for(None, Some("invalid")));
         assert!(zenz_verifier_enabled_for(None, Some("1")));
         assert!(zenz_verifier_enabled_for(None, Some(" TRUE ")));
         assert!(zenz_verifier_enabled_for(None, Some("on")));
@@ -3135,7 +3144,7 @@ mod tests {
         assert!(!zenz_verifier_enabled_for(Some("off"), Some("1")));
         // Invalid runtime values deliberately fall back to the build default.
         assert!(zenz_verifier_enabled_for(Some("invalid"), Some("1")));
-        assert!(!zenz_verifier_enabled_for(Some("invalid"), None));
+        assert!(zenz_verifier_enabled_for(Some("invalid"), None));
     }
 
     #[cfg(feature = "candle")]
@@ -3208,14 +3217,52 @@ mod tests {
     }
 
     #[test]
-    fn verifier_slot_is_empty_in_default_build_and_diagnostics_say_unavailable() {
+    fn verifier_slot_is_empty_before_capture_and_diagnostics_expose_default_build() {
         let pipeline = Pipeline::default();
         assert!(!pipeline.zenz_verifier.is_loaded());
         assert_eq!(zenz_verifier_build_available(), cfg!(feature = "candle"));
         let diagnostics: ZenzVerifierDiagnostics = pipeline.zenz_verifier_diagnostics();
-        assert!(!diagnostics.enabled);
+        assert!(diagnostics.enabled);
         assert_eq!(diagnostics.build_available, cfg!(feature = "candle"));
         assert!(!diagnostics.loaded);
+    }
+
+    #[cfg(feature = "candle")]
+    #[test]
+    fn missing_zenz_model_fails_open_and_reports_model_not_found() {
+        let _dictionary_env_guard = DICTIONARY_ENV_LOCK.blocking_lock();
+        let mut config = AppConfig::default();
+        config.models.paths.insert(
+            "azookey-rust".to_string(),
+            official_system_dictionary_path().display().to_string(),
+        );
+        config.models.paths.insert(
+            super::ZENZ_VERIFIER_MODEL_ID.to_string(),
+            temporary_dictionary_path("missing-zenz-model").display().to_string(),
+        );
+        let pipeline = Pipeline::default();
+        pipeline.load_zenz_verifier(&config);
+
+        let diagnostics = pipeline.zenz_verifier_diagnostics();
+        assert!(!pipeline.zenz_verifier.is_loaded());
+        assert_eq!(diagnostics.load_failure_count, 1);
+        assert_eq!(
+            diagnostics.load_failure_reason,
+            Some(super::ZenzVerifierLoadFailureReason::ModelNotFound)
+        );
+
+        let outcome = pipeline
+            .normalize_azookey_with_verifier(&config, "きょうははいしんです", Some("前の字幕"))
+            .expect("missing verifier model must keep dictionary conversion alive");
+        match outcome {
+            NormalizeOutcome::Fallback { text, error } => {
+                assert!(!text.is_empty());
+                assert!(error.contains("capability_unavailable"));
+            }
+            NormalizeOutcome::Success(text) => {
+                panic!("an unavailable verifier must not report success: {text}")
+            }
+        }
     }
 
     #[test]
