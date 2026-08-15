@@ -151,6 +151,9 @@ describe("AzooKey Worker client connection lifecycle", () => {
         convertedText: "今日の天気",
         mode: "worker-vibrato",
         elapsedMs: 12,
+        conversionStatus: 1,
+        contextUsed: true,
+        contextDiscarded: "dictionary-revision",
       }),
     );
     await expect(pending).resolves.toMatchObject({
@@ -159,6 +162,9 @@ describe("AzooKey Worker client connection lifecycle", () => {
       convertedText: "今日の天気",
       elapsedMs: 12,
       mode: "worker-vibrato",
+      conversionStatus: 1,
+      contextUsed: true,
+      contextDiscarded: "dictionary-revision",
     });
     expect(states).toEqual(["connecting", "open"]);
   });

@@ -10,6 +10,8 @@ import {
   AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
   AZOOKEY_ZENZ_SMALL_MODEL,
   AZOOKEY_ZENZ_XSMALL_MODEL,
+  type AzookeyConnectionState,
+  type AzookeyConverter,
   type AzookeyRuntime,
   attachAzookeySocket,
   azookeyDictionaryTimeoutMs,
@@ -49,6 +51,10 @@ class FakeSocket extends EventTarget {
 
   emit(value: unknown): void {
     this.dispatchEvent(new MessageEvent("message", { data: value }));
+  }
+
+  emitClose(): void {
+    this.dispatchEvent(new Event("close"));
   }
 }
 
@@ -159,6 +165,17 @@ describe("AzooKey Worker text contract", () => {
     expect(() =>
       parseAzookeyMessage(JSON.stringify({ ...valid, vibratoExecution: "heuristic" })),
     ).toThrow("vibratoExecution");
+    expect(
+      parseAzookeyMessage(
+        JSON.stringify({ ...valid, utteranceId: "capture-1", resetContext: true }),
+      ),
+    ).toMatchObject({ utteranceId: "capture-1", resetContext: true });
+    expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, utteranceId: "" }))).toThrow(
+      "utteranceId",
+    );
+    expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, resetContext: "yes" }))).toThrow(
+      "resetContext",
+    );
   });
 
   it("enforces UTF-8 input limits before conversion", () => {
@@ -184,6 +201,117 @@ describe("AzooKey Worker text contract", () => {
       mode: "worker-vibrato",
     });
     expect(result.elapsedMs).toBeGreaterThanOrEqual(AZOOKEY_MIN_ELAPSED_MS);
+    expect(result).toMatchObject({ conversionStatus: 0, contextUsed: false });
+  });
+
+  it("passes trailing context to the next chunk on the same connection", async () => {
+    const precedingCalls: Array<AzookeyConnectionState["preceding"]> = [];
+    const converter = ((
+      text: string,
+      _signal: AbortSignal | undefined,
+      preceding: AzookeyConnectionState["preceding"],
+    ) => {
+      precedingCalls.push(preceding);
+      return {
+        text: preceding ? `with-context:${text}` : `first:${text}`,
+        status: 0,
+        trailing: preceding ? undefined : { rcid: 17, mid: 23 },
+        dictionaryRevision: "rev-a",
+      };
+    }) as unknown as AzookeyConverter;
+    converter.dictionaryRevision = "rev-a";
+    const state: AzookeyConnectionState = {};
+    const first = await convertAzookeyMessage(
+      parseAzookeyMessage(JSON.stringify({ ...valid, utteranceId: "capture-1" })),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    const second = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          requestId: "req-2",
+          vibratoInput: "つづき",
+          utteranceId: "capture-1",
+        }),
+      ),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    expect(first).toMatchObject({
+      convertedText: "first:きょうははいしんです",
+      contextUsed: false,
+    });
+    expect(second).toMatchObject({
+      convertedText: "with-context:つづき",
+      contextUsed: true,
+      conversionStatus: 0,
+    });
+    expect(precedingCalls).toEqual([undefined, { rcid: 17, mid: 23 }]);
+    expect(state.preceding).toBeUndefined();
+  });
+
+  it("discards connection context at an utterance boundary and exposes the discard", async () => {
+    const precedingCalls: Array<AzookeyConnectionState["preceding"]> = [];
+    const converter = ((
+      text: string,
+      _signal: AbortSignal | undefined,
+      preceding: AzookeyConnectionState["preceding"],
+    ) => {
+      precedingCalls.push(preceding);
+      return {
+        text,
+        status: 0,
+        trailing: { rcid: 3, mid: 5 },
+        dictionaryRevision: "rev-a",
+      };
+    }) as unknown as AzookeyConverter;
+    converter.dictionaryRevision = "rev-a";
+    const state: AzookeyConnectionState = {};
+    await convertAzookeyMessage(
+      parseAzookeyMessage(JSON.stringify({ ...valid, utteranceId: "capture-1" })),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({ ...valid, requestId: "req-2", utteranceId: "capture-2" }),
+      ),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    expect(precedingCalls).toEqual([undefined, undefined]);
+    expect(result).toMatchObject({ contextUsed: false, contextDiscarded: "utterance-boundary" });
+  });
+
+  it("discards connection context when the dictionary revision changes", async () => {
+    let revision = "rev-a";
+    const precedingCalls: Array<AzookeyConnectionState["preceding"]> = [];
+    const converter = ((
+      text: string,
+      _signal: AbortSignal | undefined,
+      preceding: AzookeyConnectionState["preceding"],
+    ) => {
+      precedingCalls.push(preceding);
+      return { text, status: 0, trailing: { rcid: 7, mid: 9 }, dictionaryRevision: revision };
+    }) as unknown as AzookeyConverter;
+    Object.defineProperty(converter, "dictionaryRevision", { get: () => revision });
+    const state: AzookeyConnectionState = {};
+    await convertAzookeyMessage(
+      parseAzookeyMessage(JSON.stringify({ ...valid, utteranceId: "capture-1" })),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    revision = "rev-b";
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({ ...valid, requestId: "req-2", utteranceId: "capture-1" }),
+      ),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    expect(precedingCalls).toEqual([undefined, undefined]);
+    expect(result).toMatchObject({ contextUsed: false, contextDiscarded: "dictionary-revision" });
   });
 
   it("falls back to portable WASM when Zenzai models are absent from MODEL_ROUTES", async () => {
@@ -855,6 +983,38 @@ describe("AzooKey Worker text contract", () => {
       requestId: "bad",
       error: { code: "invalid_contract" },
     });
+  });
+
+  it("keeps context per WebSocket and clears it when the connection closes", async () => {
+    const precedingCalls: Array<AzookeyConnectionState["preceding"]> = [];
+    const converter = ((
+      text: string,
+      _signal: AbortSignal | undefined,
+      preceding: AzookeyConnectionState["preceding"],
+    ) => {
+      precedingCalls.push(preceding);
+      return {
+        text,
+        status: 0,
+        trailing: { rcid: 11, mid: 13 },
+        dictionaryRevision: "rev-a",
+      };
+    }) as unknown as AzookeyConverter;
+    converter.dictionaryRevision = "rev-a";
+    const firstSocket = new FakeSocket();
+    attachAzookeySocket(firstSocket as unknown as WebSocket, { timeoutMs: 250, converter });
+    firstSocket.emit(JSON.stringify({ ...valid, utteranceId: "capture-1" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    firstSocket.emit(JSON.stringify({ ...valid, requestId: "req-2", utteranceId: "capture-1" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(precedingCalls).toEqual([undefined, { rcid: 11, mid: 13 }]);
+
+    firstSocket.emitClose();
+    const secondSocket = new FakeSocket();
+    attachAzookeySocket(secondSocket as unknown as WebSocket, { timeoutMs: 250, converter });
+    secondSocket.emit(JSON.stringify({ ...valid, requestId: "req-3", utteranceId: "capture-1" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(precedingCalls).toEqual([undefined, { rcid: 11, mid: 13 }, undefined]);
   });
 
   it("rejects binary and oversized frames, and returns busy while a conversion is pending", async () => {

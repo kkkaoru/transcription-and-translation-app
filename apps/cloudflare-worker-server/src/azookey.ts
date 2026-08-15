@@ -88,6 +88,13 @@ export const AZOOKEY_ZENZ_UPSTREAM_MAX_MS = 400;
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
 export const AZOOKEY_WASM_ABI_VERSION = 2;
+/** Status bits emitted by `azookey_convert_n_best`. */
+export const AZOOKEY_CONVERSION_STATUS_OK = 0;
+export const AZOOKEY_CONVERSION_STATUS_FALLBACK = 1 << 0;
+export const AZOOKEY_CONVERSION_STATUS_INVALID_UTF8 = 1 << 1;
+export const AZOOKEY_CONVERSION_STATUS_INVALID_ARGUMENT = 1 << 2;
+/** Match the legacy converter's default beam while returning its first candidate. */
+export const AZOOKEY_N_BEST_WIDTH = 64;
 /**
  * Protocol timing for `azookey.result.elapsedMs`.
  * Field name stays `elapsedMs`. Value is a finite integer millisecond count:
@@ -108,6 +115,45 @@ export const HTTP_SERVICE_UNAVAILABLE = 503;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const U64_MASK = 0xffff_ffff_ffff_ffffn;
+const FNV64_OFFSET = 0xcbf2_9ce4_8422_2325n;
+const FNV64_PRIME = 0x100_0000_01b3n;
+const BUILTIN_DICTIONARY_REVISION = "builtin-static";
+
+/** Match azookey-rust's revision_mix for the portable archive. */
+const revisionMix = (hash: bigint, bytes: Uint8Array): bigint => {
+  let next = hash;
+  for (const byte of bytes) {
+    next ^= BigInt(byte);
+    next = (next * FNV64_PRIME) & U64_MASK;
+  }
+  next ^= 0xffn;
+  return (next * FNV64_PRIME) & U64_MASK;
+};
+
+const u64LittleEndian = (value: bigint): Uint8Array => {
+  const bytes = new Uint8Array(8);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number((value >> BigInt(index * 8)) & 0xffn);
+  }
+  return bytes;
+};
+
+/**
+ * Compute the same revision material as AzooKeyDictionary::revision for a
+ * portable system archive. This is calculated once per loaded dictionary and
+ * never placed in module-level request state.
+ */
+const portableDictionaryRevision = (dictionary: Uint8Array): string => {
+  let revision = revisionMix(FNV64_OFFSET, encoder.encode("azookey-dictionary-v1"));
+  revision = revisionMix(revision, encoder.encode("system"));
+  revision = revisionMix(revision, encoder.encode("portable"));
+  const contentRevision = revisionMix(FNV64_OFFSET, dictionary);
+  revision = revisionMix(revision, u64LittleEndian(contentRevision));
+  revision = revisionMix(revision, encoder.encode("user"));
+  revision = revisionMix(revision, encoder.encode("memory"));
+  return revision.toString(16).padStart(16, "0");
+};
 
 export interface AzookeyEnv {
   AZOOKEY_API_TOKEN?: string;
@@ -137,16 +183,48 @@ export interface AzookeyWasmExports {
   azookey_alloc: (length: number) => number;
   azookey_dealloc: (pointer: number, length: number) => void;
   azookey_convert: (pointer: number, length: number) => bigint | number;
+  /** Additive ABI entrypoint. Older test modules may omit it and use fallback. */
+  azookey_convert_n_best?: (
+    pointer: number,
+    length: number,
+    nBest: number,
+    hasPreceding: number,
+    precedingRcid: number,
+    precedingMid: number,
+  ) => bigint | number;
   azookey_abi_version: () => number;
   azookey_dictionary_init_owned: (pointer: number, length: number) => number;
+}
+
+export interface AzookeyPrecedingContext {
+  rcid: number;
+  mid: number;
+}
+
+export interface AzookeyConversionResult {
+  text: string;
+  /** Raw status bits from the additive n-best ABI, or zero for injected adapters. */
+  status: number;
+  trailing?: AzookeyPrecedingContext;
+  /** Stable loaded-dictionary fingerprint, kept internal to the connection. */
+  dictionaryRevision?: string;
 }
 
 export type AzookeyConverter = ((
   text: string,
   signal?: AbortSignal,
+  preceding?: AzookeyPrecedingContext,
 ) => string | Promise<string>) & {
   /** Optional cold-start hook used by the WebSocket upgrade path. */
   warmup?: () => Promise<void>;
+  /** Revision of the loaded dictionary used by this converter. */
+  dictionaryRevision?: string;
+  /** Context-aware additive path; the callable surface remains text-only. */
+  convertWithContext?: (
+    text: string,
+    signal?: AbortSignal,
+    preceding?: AzookeyPrecedingContext,
+  ) => string | AzookeyConversionResult | Promise<string | AzookeyConversionResult>;
 };
 
 export type AzookeyVibratoConverter = ((
@@ -221,6 +299,19 @@ export interface AzookeyRequestDependencies {
   dictionaryTimeoutMs?: number;
 }
 
+export type AzookeyContextDiscardReason =
+  | "utterance-boundary"
+  | "dictionary-revision"
+  | "model-change";
+
+/** State owned by one WebSocket connection; never shared through the module cache. */
+export interface AzookeyConnectionState {
+  preceding?: AzookeyPrecedingContext;
+  dictionaryRevision?: string;
+  model?: AzookeyConvertModel;
+  utteranceId?: string;
+}
+
 export interface AzookeyMessage {
   type: "azookey.convert";
   requestId: string;
@@ -233,6 +324,10 @@ export interface AzookeyMessage {
   model: AzookeyConvertModel;
   /** Explicitly records where the required Vibrato pre-pass ran. */
   vibratoExecution?: typeof WORKER_VIBRATO_EXECUTION | typeof BROWSER_VIBRATO_EXECUTION;
+  /** Optional caller-owned utterance key; a change starts a fresh context. */
+  utteranceId?: string;
+  /** Explicitly discard the previous chunk context before converting this frame. */
+  resetContext?: boolean;
   auth?: AzookeyAuth;
 }
 
@@ -259,6 +354,12 @@ export interface AzookeyResultMessage {
   /** Original Zenzai model id when the Worker used a dictionary fallback. */
   requestedModel?: AzookeyConvertModel;
   modelFallback?: AzookeyModelFallback;
+  /** Raw n-best status bits; non-zero means a degraded/invalid ABI path. */
+  conversionStatus: number;
+  /** True when a prior candidate context was passed into this conversion. */
+  contextUsed: boolean;
+  /** If context was discarded, expose why instead of silently resetting. */
+  contextDiscarded?: AzookeyContextDiscardReason;
 }
 
 export interface AzookeyErrorMessage {
@@ -362,6 +463,16 @@ const requiredText = (value: unknown, field: string): string => {
   return value;
 };
 
+const optionalBoolean = (value: unknown, field: string): boolean | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new AzookeyProtocolError("invalid_contract", `${field} must be a boolean`);
+  }
+  return value;
+};
+
 const optionalAuth = (value: unknown): AzookeyAuth | undefined => {
   if (value === undefined) {
     return undefined;
@@ -416,6 +527,8 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
   let sourceText: string;
   let vibratoInput: string;
   let auth: AzookeyAuth | undefined;
+  let utteranceId: string | undefined;
+  let resetContext: boolean | undefined;
   try {
     language = requiredString(parsed["language"], "language", AZOOKEY_MAX_LANGUAGE_BYTES);
     sourceText = requiredText(parsed["sourceText"], "sourceText");
@@ -455,6 +568,11 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
   }
   try {
     auth = optionalAuth(parsed["auth"]);
+    const rawUtteranceId = parsed["utteranceId"];
+    if (rawUtteranceId !== undefined) {
+      utteranceId = requiredString(rawUtteranceId, "utteranceId", AZOOKEY_MAX_ID_BYTES);
+    }
+    resetContext = optionalBoolean(parsed["resetContext"], "resetContext");
   } catch (error) {
     if (error instanceof AzookeyProtocolError && error.requestId === undefined) {
       throw new AzookeyProtocolError(error.code, error.message, requestId);
@@ -486,6 +604,8 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
     mode: AZOOKEY_MODE,
     model,
     ...(vibratoExecution === undefined ? {} : { vibratoExecution }),
+    ...(utteranceId === undefined ? {} : { utteranceId }),
+    ...(resetContext === undefined ? {} : { resetContext }),
     ...(auth === undefined ? {} : { auth }),
   };
 };
@@ -502,6 +622,81 @@ const unpackResult = (exports: AzookeyWasmExports, packed: bigint | number): str
   }
   try {
     return decoder.decode(new Uint8Array(exports.memory.buffer, pointer, length));
+  } finally {
+    exports.azookey_dealloc(pointer, length);
+  }
+};
+
+const unpackNBestResult = (
+  exports: AzookeyWasmExports,
+  packed: bigint | number,
+  dictionaryRevision: string,
+): AzookeyConversionResult => {
+  const value = typeof packed === "bigint" ? packed : BigInt(packed);
+  const pointer = Number((value >> BigInt(AZOOKEY_WASM_POINTER_BITS)) & AZOOKEY_WASM_U32_MASK);
+  const length = Number(value & AZOOKEY_WASM_U32_MASK);
+  if (pointer === 0 && length !== 0) {
+    throw new Error("AzooKey Wasm returned a null n-best output pointer");
+  }
+  if (
+    pointer > exports.memory.buffer.byteLength ||
+    length > exports.memory.buffer.byteLength - pointer
+  ) {
+    throw new Error("AzooKey Wasm returned an invalid n-best output range");
+  }
+  try {
+    if (length < 8) {
+      throw new Error("AzooKey Wasm returned a truncated n-best header");
+    }
+    const bytes = new Uint8Array(exports.memory.buffer, pointer, length);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const status = view.getUint32(0, true);
+    const count = view.getUint32(4, true);
+    if (count === 0 || count > 64) {
+      throw new Error("AzooKey Wasm returned an invalid n-best count");
+    }
+    let offset = 8;
+    let first: AzookeyConversionResult | undefined;
+    for (let index = 0; index < count; index += 1) {
+      if (offset > length - 4) {
+        throw new Error("AzooKey Wasm returned a truncated n-best text length");
+      }
+      const textLength = view.getUint32(offset, true);
+      offset += 4;
+      const remaining = length - offset;
+      if (textLength > remaining || remaining - textLength < 9) {
+        throw new Error("AzooKey Wasm returned a truncated n-best candidate");
+      }
+      const textEnd = offset + textLength;
+      const text = decoder.decode(bytes.subarray(offset, textEnd));
+      offset = textEnd;
+      const score = view.getFloat32(offset, true);
+      offset += 4;
+      if (!Number.isFinite(score)) {
+        throw new Error("AzooKey Wasm returned a non-finite n-best score");
+      }
+      const hasTrailing = bytes[offset];
+      offset += 1;
+      if (hasTrailing === undefined || hasTrailing > 1) {
+        throw new Error("AzooKey Wasm returned an invalid trailing flag");
+      }
+      const rcid = view.getUint16(offset, true);
+      offset += 2;
+      const mid = view.getUint16(offset, true);
+      offset += 2;
+      if (index === 0) {
+        first = {
+          text,
+          status,
+          dictionaryRevision,
+          ...(hasTrailing === 1 ? { trailing: { rcid, mid } } : {}),
+        };
+      }
+    }
+    if (offset !== length || !first) {
+      throw new Error("AzooKey Wasm returned an invalid n-best record");
+    }
+    return first;
   } finally {
     exports.azookey_dealloc(pointer, length);
   }
@@ -537,7 +732,14 @@ const instantiateWasmConverter = (
     initializeWasmDictionary(checkedExports, dictionary);
   }
 
-  return (text: string): string => {
+  const dictionaryRevision = dictionary
+    ? portableDictionaryRevision(dictionary)
+    : BUILTIN_DICTIONARY_REVISION;
+  const convertWithContext = (
+    text: string,
+    _signal?: AbortSignal,
+    preceding?: AzookeyPrecedingContext,
+  ): AzookeyConversionResult => {
     const bytes = encoder.encode(text);
     const pointer = checkedExports.azookey_alloc(bytes.byteLength);
     if (pointer === 0 && bytes.byteLength !== 0) {
@@ -545,15 +747,39 @@ const instantiateWasmConverter = (
     }
     try {
       new Uint8Array(checkedExports.memory.buffer, pointer, bytes.byteLength).set(bytes);
+      if (checkedExports.azookey_convert_n_best) {
+        const hasPreceding = preceding === undefined ? 0 : 1;
+        const packed = checkedExports.azookey_convert_n_best(
+          pointer,
+          bytes.byteLength,
+          AZOOKEY_N_BEST_WIDTH,
+          hasPreceding,
+          preceding?.rcid ?? 0,
+          preceding?.mid ?? 0,
+        );
+        if (packed === 0 || packed === 0n) {
+          throw new Error("AzooKey Wasm n-best conversion allocation failed");
+        }
+        return unpackNBestResult(checkedExports, packed, dictionaryRevision);
+      }
       const packed = checkedExports.azookey_convert(pointer, bytes.byteLength);
       if (packed === 0 || packed === 0n) {
         throw new Error("AzooKey Wasm conversion allocation failed");
       }
-      return unpackResult(checkedExports, packed);
+      return {
+        text: unpackResult(checkedExports, packed),
+        status: AZOOKEY_CONVERSION_STATUS_FALLBACK,
+        dictionaryRevision,
+      } satisfies AzookeyConversionResult;
     } finally {
       checkedExports.azookey_dealloc(pointer, bytes.byteLength);
     }
   };
+  const converter = ((text: string, signal?: AbortSignal): string =>
+    convertWithContext(text, signal).text) as AzookeyConverter;
+  converter.dictionaryRevision = dictionaryRevision;
+  converter.convertWithContext = convertWithContext;
+  return converter;
 };
 
 const initializeWasmDictionary = (exports: AzookeyWasmExports, dictionary: Uint8Array): void => {
@@ -743,14 +969,22 @@ export const createWasmConverter = (
     );
   }
   const cache = moduleConverterCache(module, fetcher);
+  let loadedConverter: AzookeyConverter | undefined;
   const loadConverter = (): Promise<AzookeyConverter> => {
     const cached = cache.get(normalizedUrl);
     if (cached) {
-      return cached;
+      return cached.then((loaded) => {
+        loadedConverter = loaded;
+        return loaded;
+      });
     }
     let pending!: Promise<AzookeyConverter>;
     pending = fetchPortableDictionary(normalizedUrl, fetcher, dictionaryTimeoutMs)
       .then((dictionary) => instantiateWasmConverter(module, dictionary))
+      .then((loaded) => {
+        loadedConverter = loaded;
+        return loaded;
+      })
       .catch((error: unknown) => {
         // A late rejection must not evict a newer retry for the same URL.
         if (cache.get(normalizedUrl) === pending) {
@@ -763,10 +997,29 @@ export const createWasmConverter = (
     cache.set(normalizedUrl, pending);
     return pending;
   };
-  const converter = (async (text: string): Promise<string> => {
+  const converter = (async (text: string, signal?: AbortSignal): Promise<string> => {
     const loaded = await loadConverter();
-    return loaded(text);
+    if (loaded.convertWithContext) {
+      const result = await loaded.convertWithContext(text, signal);
+      return typeof result === "string" ? result : result.text;
+    }
+    return loaded(text, signal);
   }) as AzookeyConverter;
+  converter.convertWithContext = async (
+    text: string,
+    signal?: AbortSignal,
+    preceding?: AzookeyPrecedingContext,
+  ): Promise<string | AzookeyConversionResult> => {
+    const loaded = await loadConverter();
+    return loaded.convertWithContext
+      ? loaded.convertWithContext(text, signal, preceding)
+      : loaded(text, signal);
+  };
+  Object.defineProperty(converter, "dictionaryRevision", {
+    configurable: true,
+    enumerable: true,
+    get: () => loadedConverter?.dictionaryRevision,
+  });
   converter.warmup = async (): Promise<void> => {
     await loadConverter();
   };
@@ -1042,9 +1295,57 @@ const convertWithZenzModel = async (
   return content.trim();
 };
 
+const normalizeAzookeyConversion = (
+  candidate: string | AzookeyConversionResult,
+  dictionaryRevision: string | undefined,
+): AzookeyConversionResult => {
+  if (typeof candidate === "string") {
+    return {
+      text: candidate,
+      status: AZOOKEY_CONVERSION_STATUS_OK,
+      ...(dictionaryRevision === undefined ? {} : { dictionaryRevision }),
+    };
+  }
+  if (!candidate || typeof candidate !== "object" || typeof candidate.text !== "string") {
+    throw new AzookeyProtocolError("conversion_failed", "AzooKey conversion returned no text");
+  }
+  if (
+    !Number.isInteger(candidate.status) ||
+    candidate.status < 0 ||
+    candidate.status > 0xffff_ffff
+  ) {
+    throw new AzookeyProtocolError(
+      "conversion_failed",
+      "AzooKey conversion returned an invalid status",
+    );
+  }
+  if (
+    candidate.trailing !== undefined &&
+    (!Number.isInteger(candidate.trailing.rcid) ||
+      !Number.isInteger(candidate.trailing.mid) ||
+      candidate.trailing.rcid < 0 ||
+      candidate.trailing.rcid > 0xffff ||
+      candidate.trailing.mid < 0 ||
+      candidate.trailing.mid > 0xffff)
+  ) {
+    throw new AzookeyProtocolError(
+      "conversion_failed",
+      "AzooKey conversion returned an invalid trailing context",
+    );
+  }
+  return {
+    ...candidate,
+    status: candidate.status >>> 0,
+    ...(candidate.dictionaryRevision === undefined && dictionaryRevision !== undefined
+      ? { dictionaryRevision }
+      : {}),
+  };
+};
+
 export const convertAzookeyMessage = async (
   message: AzookeyMessage,
   runtime: AzookeyRuntime,
+  state?: AzookeyConnectionState,
 ): Promise<AzookeyResultMessage> => {
   const deadlineMs = runtime.timeoutMs;
   const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -1058,6 +1359,41 @@ export const convertAzookeyMessage = async (
       : message.vibratoExecution === BROWSER_VIBRATO_EXECUTION
         ? BROWSER_VIBRATO_EXECUTION
         : VIBRATO_NOT_REQUESTED;
+  let contextUsed = false;
+  let contextDiscarded: AzookeyContextDiscardReason | undefined;
+  const activeDictionaryRevision = runtime.converter.dictionaryRevision;
+  const clearContext = (reason: AzookeyContextDiscardReason): void => {
+    if (state && (state.preceding !== undefined || state.dictionaryRevision !== undefined)) {
+      contextDiscarded ??= reason;
+    }
+    if (state) {
+      delete state.preceding;
+      delete state.dictionaryRevision;
+    }
+  };
+  if (state) {
+    if (message.resetContext === true) {
+      clearContext("utterance-boundary");
+    }
+    if (state.utteranceId !== undefined && state.utteranceId !== message.utteranceId) {
+      clearContext("utterance-boundary");
+    }
+    if (state.model !== undefined && state.model !== message.model) {
+      clearContext("model-change");
+    }
+    if (message.model !== AZOOKEY_MODEL && state.preceding !== undefined) {
+      clearContext("model-change");
+    }
+    if (
+      message.model === AZOOKEY_MODEL &&
+      state.dictionaryRevision !== undefined &&
+      state.dictionaryRevision !== activeDictionaryRevision
+    ) {
+      clearContext("dictionary-revision");
+    }
+  }
+  const preceding = state?.preceding;
+  contextUsed = preceding !== undefined;
   let conversionInput = message.vibratoInput;
   if (message.vibratoExecution === WORKER_VIBRATO_EXECUTION) {
     if (!runtime.vibrato) {
@@ -1113,7 +1449,10 @@ export const convertAzookeyMessage = async (
   } else if (deadlineExpired()) {
     throw new AzookeyProtocolError("conversion_timeout", "conversion timed out", message.requestId);
   }
-  const runDictionaryConversion = async (): Promise<string> => {
+  let dictionaryResult: AzookeyConversionResult | undefined;
+  const runDictionaryConversion = async (
+    precedingContext: AzookeyPrecedingContext | undefined,
+  ): Promise<AzookeyConversionResult> => {
     if (remainingMs() <= 0) {
       throw new AzookeyProtocolError(
         "conversion_timeout",
@@ -1122,7 +1461,10 @@ export const convertAzookeyMessage = async (
       );
     }
     const candidate = await withTimeout(
-      (signal) => runtime.converter(conversionInput, signal),
+      (signal) =>
+        runtime.converter.convertWithContext
+          ? runtime.converter.convertWithContext(conversionInput, signal, precedingContext)
+          : runtime.converter(conversionInput, signal, precedingContext),
       remainingMs(),
     );
     if (deadlineExpired()) {
@@ -1132,17 +1474,15 @@ export const convertAzookeyMessage = async (
         message.requestId,
       );
     }
-    if (typeof candidate !== "string") {
-      throw new AzookeyProtocolError("conversion_failed", "AzooKey conversion returned no text");
-    }
-    if (encoder.encode(candidate).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+    const normalized = normalizeAzookeyConversion(candidate, activeDictionaryRevision);
+    if (encoder.encode(normalized.text).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
       throw new AzookeyProtocolError(
         "conversion_failed",
         "AzooKey conversion output exceeds the text byte limit",
         message.requestId,
       );
     }
-    return candidate;
+    return normalized;
   };
 
   let converted: string;
@@ -1151,12 +1491,14 @@ export const convertAzookeyMessage = async (
   let modelFallback: AzookeyModelFallback | undefined;
   try {
     if (message.model === AZOOKEY_MODEL) {
-      converted = await runDictionaryConversion();
+      dictionaryResult = await runDictionaryConversion(preceding);
+      converted = dictionaryResult.text;
     } else if (!runtime.modelRoutes?.[message.model]) {
       requestedModel = message.model;
       modelFallback = AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE;
       resultModel = AZOOKEY_MODEL;
-      converted = await runDictionaryConversion();
+      dictionaryResult = await runDictionaryConversion(preceding);
+      converted = dictionaryResult.text;
     } else {
       try {
         if (remainingMs() <= 0) {
@@ -1216,7 +1558,8 @@ export const convertAzookeyMessage = async (
         requestedModel = message.model;
         modelFallback = AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED;
         resultModel = AZOOKEY_MODEL;
-        converted = await runDictionaryConversion();
+        dictionaryResult = await runDictionaryConversion(preceding);
+        converted = dictionaryResult.text;
       }
     }
   } catch (error) {
@@ -1231,6 +1574,26 @@ export const convertAzookeyMessage = async (
       "AzooKey conversion failed",
       message.requestId,
     );
+  }
+  if (state) {
+    if (message.utteranceId === undefined) {
+      delete state.utteranceId;
+    } else {
+      state.utteranceId = message.utteranceId;
+    }
+    state.model = resultModel;
+    if (dictionaryResult?.trailing !== undefined) {
+      state.preceding = dictionaryResult.trailing;
+      const revision = dictionaryResult.dictionaryRevision ?? activeDictionaryRevision;
+      if (revision === undefined) {
+        delete state.dictionaryRevision;
+      } else {
+        state.dictionaryRevision = revision;
+      }
+    } else {
+      delete state.preceding;
+      delete state.dictionaryRevision;
+    }
   }
   const elapsed = nowMs() - startedAt;
   return {
@@ -1247,6 +1610,9 @@ export const convertAzookeyMessage = async (
     model: resultModel,
     ...(requestedModel ? { requestedModel } : {}),
     ...(modelFallback ? { modelFallback } : {}),
+    conversionStatus: dictionaryResult?.status ?? AZOOKEY_CONVERSION_STATUS_OK,
+    contextUsed,
+    ...(contextDiscarded === undefined ? {} : { contextDiscarded }),
   };
 };
 
@@ -1266,7 +1632,24 @@ const requestAuthorized = (message: AzookeyMessage, runtime: AzookeyRuntime): bo
 
 export const attachAzookeySocket = (socket: WebSocket, runtime: AzookeyRuntime): void => {
   let processing = false;
+  let closed = false;
+  const state: AzookeyConnectionState = {};
+  const clearConnectionState = (): void => {
+    delete state.preceding;
+    delete state.dictionaryRevision;
+    delete state.model;
+    delete state.utteranceId;
+  };
+  const handleSocketEnd = (): void => {
+    closed = true;
+    clearConnectionState();
+  };
+  socket.addEventListener("close", handleSocketEnd);
+  socket.addEventListener("error", handleSocketEnd);
   socket.addEventListener("message", (event) => {
+    if (closed) {
+      return;
+    }
     const raw = event.data;
     if (typeof raw !== "string") {
       socket.send(
@@ -1313,7 +1696,7 @@ export const attachAzookeySocket = (socket: WebSocket, runtime: AzookeyRuntime):
       return;
     }
     processing = true;
-    void convertAzookeyMessage(message, runtime)
+    void convertAzookeyMessage(message, runtime, state)
       .then((result) => socket.send(jsonMessage(result)))
       .catch((error: unknown) => {
         const protocolError =
@@ -1332,6 +1715,9 @@ export const attachAzookeySocket = (socket: WebSocket, runtime: AzookeyRuntime):
       })
       .finally(() => {
         processing = false;
+        if (closed) {
+          clearConnectionState();
+        }
       });
   });
 };

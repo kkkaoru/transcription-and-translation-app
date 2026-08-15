@@ -33,6 +33,10 @@ export interface AzooKeyConvertRequest {
   comparisonMode?: ComparisonMode;
   /** Where Vibrato ran before the Worker received this frame. */
   vibratoExecution?: VibratoExecution;
+  /** Optional utterance boundary key; the Worker owns preceding context. */
+  utteranceId?: string;
+  /** Ask the Worker to drop the previous connection-local context. */
+  resetContext?: boolean;
   auth?: ComparisonAuth;
 }
 
@@ -46,6 +50,9 @@ export interface AzooKeyConvertResult {
   model?: string;
   requestedModel?: string;
   modelFallback?: string;
+  conversionStatus?: number;
+  contextUsed?: boolean;
+  contextDiscarded?: string;
 }
 
 interface PendingRequest {
@@ -113,6 +120,16 @@ const readNumber = (record: UnknownRecord, ...keys: string[]): number | undefine
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const readBoolean = (record: UnknownRecord, ...keys: string[]): boolean | undefined => {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") {
       return value;
     }
   }
@@ -229,6 +246,9 @@ interface ParsedWorkerMessage {
   model?: string;
   requestedModel?: string;
   modelFallback?: string;
+  conversionStatus?: number;
+  contextUsed?: boolean;
+  contextDiscarded?: string;
 }
 
 const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
@@ -280,6 +300,15 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
   const modelFallback =
     readString(payload, "modelFallback") ??
     (nested ? readString(nested, "modelFallback") : undefined);
+  const conversionStatus =
+    readNumber(payload, "conversionStatus", "conversion_status") ??
+    (nested ? readNumber(nested, "conversionStatus", "conversion_status") : undefined);
+  const contextUsed =
+    readBoolean(payload, "contextUsed", "context_used") ??
+    (nested ? readBoolean(nested, "contextUsed", "context_used") : undefined);
+  const contextDiscarded =
+    readString(payload, "contextDiscarded", "context_discarded") ??
+    (nested ? readString(nested, "contextDiscarded", "context_discarded") : undefined);
   return {
     requestId,
     convertedText,
@@ -289,6 +318,9 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
     ...(model ? { model } : {}),
     ...(requestedModel ? { requestedModel } : {}),
     ...(modelFallback ? { modelFallback } : {}),
+    ...(conversionStatus !== undefined ? { conversionStatus } : {}),
+    ...(contextUsed !== undefined ? { contextUsed } : {}),
+    ...(contextDiscarded ? { contextDiscarded } : {}),
   };
 };
 
@@ -685,6 +717,11 @@ export class AzooKeyWorkerClient {
       ...(parsed.model ? { model: parsed.model } : {}),
       ...(parsed.requestedModel ? { requestedModel: parsed.requestedModel } : {}),
       ...(parsed.modelFallback ? { modelFallback: parsed.modelFallback } : {}),
+      ...(parsed.conversionStatus !== undefined
+        ? { conversionStatus: parsed.conversionStatus }
+        : {}),
+      ...(parsed.contextUsed !== undefined ? { contextUsed: parsed.contextUsed } : {}),
+      ...(parsed.contextDiscarded ? { contextDiscarded: parsed.contextDiscarded } : {}),
       receivedAt: Date.now(),
     });
   }
