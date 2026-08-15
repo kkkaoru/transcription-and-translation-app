@@ -64,6 +64,17 @@ export const previousConvertedLeftContext = (
   return trimmed.length > 0 ? trimmed : undefined;
 };
 
+/** UI path: Zenz worker frames always carry a leftContext key, even if empty. */
+export const zenzWorkerLeftContextField = (
+  converterModel: ConverterModel,
+  convertedTexts: readonly (string | undefined)[],
+): { leftContext: string } | Record<string, never> => {
+  if (!isZenzConverterModel(converterModel)) {
+    return {};
+  }
+  return { leftContext: previousConvertedLeftContext(convertedTexts) ?? "" };
+};
+
 export interface ConversionPipelineInput {
   sourceText: string;
   mode: ComparisonMode;
@@ -309,7 +320,7 @@ export const runComparisonConversion = async (
     model: input.converterModel,
     vibratoExecution,
     auth: input.auth,
-    ...(input.leftContext ? { leftContext: input.leftContext } : {}),
+    ...(input.leftContext === undefined ? {} : { leftContext: input.leftContext }),
   });
   const trace = assembleConversionTrace({
     rawSource,
