@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 const KATAKANA_START: u32 = 0x30a1;
 const KATAKANA_END: u32 = 0x30f6;
 const HIRAGANA_START: u32 = 0x3041;
@@ -7,20 +9,34 @@ const FULLWIDTH_ASCII_END: u32 = 0xff5e;
 const FULLWIDTH_ASCII_OFFSET: u32 = 0xfee0;
 const KANA_SCRIPT_OFFSET: u32 = 0x60;
 
+pub(crate) fn to_hiragana_cow(input: &str) -> Cow<'_, str> {
+    let needs_conversion = input.chars().any(|character| {
+        let code = character as u32;
+        (KATAKANA_START..=KATAKANA_END).contains(&code)
+            || (FULLWIDTH_ASCII_START..=FULLWIDTH_ASCII_END).contains(&code)
+    });
+    if !needs_conversion {
+        return Cow::Borrowed(input);
+    }
+    Cow::Owned(
+        input
+            .chars()
+            .map(|character| {
+                let code = character as u32;
+                if (KATAKANA_START..=KATAKANA_END).contains(&code) {
+                    char::from_u32(code - KANA_SCRIPT_OFFSET).unwrap_or(character)
+                } else if (FULLWIDTH_ASCII_START..=FULLWIDTH_ASCII_END).contains(&code) {
+                    char::from_u32(code - FULLWIDTH_ASCII_OFFSET).unwrap_or(character)
+                } else {
+                    character
+                }
+            })
+            .collect(),
+    )
+}
+
 pub(crate) fn to_hiragana(input: &str) -> String {
-    input
-        .chars()
-        .map(|character| {
-            let code = character as u32;
-            if (KATAKANA_START..=KATAKANA_END).contains(&code) {
-                char::from_u32(code - KANA_SCRIPT_OFFSET).unwrap_or(character)
-            } else if (FULLWIDTH_ASCII_START..=FULLWIDTH_ASCII_END).contains(&code) {
-                char::from_u32(code - FULLWIDTH_ASCII_OFFSET).unwrap_or(character)
-            } else {
-                character
-            }
-        })
-        .collect()
+    to_hiragana_cow(input).into_owned()
 }
 
 pub(crate) fn to_katakana(input: &str) -> String {
@@ -417,8 +433,17 @@ fn parse_japanese_numeral(reading: &str) -> Option<u128> {
 #[cfg(test)]
 mod tests {
     use super::{
-        numeric_counter_surface, numeric_surface, numeric_surface_prefix, to_hiragana, to_katakana,
+        numeric_counter_surface, numeric_surface, numeric_surface_prefix, to_hiragana,
+        to_hiragana_cow, to_katakana,
     };
+    use std::borrow::Cow;
+
+    #[test]
+    fn borrows_normalized_hiragana_and_owns_converted_text() {
+        assert!(matches!(to_hiragana_cow("ひらがな"), Cow::Borrowed("ひらがな")));
+        assert!(matches!(to_hiragana_cow("カタカナ"), Cow::Owned(ref text) if text == "かたかな"));
+        assert!(matches!(to_hiragana_cow("ＡＢＣ"), Cow::Owned(ref text) if text == "ABC"));
+    }
 
     #[test]
     fn normalizes_katakana_and_fullwidth_ascii() {

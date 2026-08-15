@@ -1,4 +1,4 @@
-use super::normalization::{is_boundary, to_hiragana, to_katakana};
+use super::normalization::{is_boundary, to_hiragana, to_hiragana_cow, to_katakana};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -276,7 +276,11 @@ impl AzooKeyDictionary {
     }
 
     pub fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
-        let normalized = to_hiragana(reading);
+        // Viterbi supplies normalized hiragana for nearly every lookup. Borrow
+        // that hot-path key instead of allocating an identical String for each
+        // lattice span; Katakana and full-width callers still normalize once.
+        let normalized = to_hiragana_cow(reading);
+        let normalized = normalized.as_ref();
         let mut entries: Vec<DictionaryEntry> = self
             .static_entries
             .iter()
@@ -286,17 +290,17 @@ impl AzooKeyDictionary {
         // Optional dictionaries must not poison built-in hits. Unknown characters
         // or a partial LOUDS install previously returned Err and erased matches.
         if let Some(system) = &self.system {
-            if let Ok(system_entries) = system.lookup_exact(&normalized) {
+            if let Ok(system_entries) = system.lookup_exact(normalized) {
                 entries.extend(system_entries);
             }
         }
         if let Some(user) = &self.user {
-            if let Ok(user_entries) = user.lookup_exact(&normalized) {
+            if let Ok(user_entries) = user.lookup_exact(normalized) {
                 entries.extend(user_entries);
             }
         }
         if let Some(memory) = &self.memory {
-            if let Ok(memory_entries) = memory.lookup_exact(&normalized) {
+            if let Ok(memory_entries) = memory.lookup_exact(normalized) {
                 entries.extend(memory_entries);
             }
         }
