@@ -11,6 +11,13 @@ import {
   VIBRATO_MAX_DICTIONARY_BYTES,
 } from "@caption-bridge/dictionaries";
 import { initSync as initVibratoSync, VibratoTokenizer } from "./vibrato_wasm.js";
+import {
+  orchestrateOneCompletion,
+  trimZenzLeftContext,
+  ZENZ_CONTEXT_MAX_GRAPHEMES,
+  ZENZ_ONE_COMPLETION_MAX_ITERATIONS,
+  zenzCandidatePrompt,
+} from "./zenz-one-completion.js";
 
 export {
   AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS,
@@ -85,6 +92,7 @@ export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
 export const AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS = 1_500;
 /** Hard cap on one Zenzai `/completion` attempt so hung sockets cannot starve WASM. */
 export const AZOOKEY_ZENZ_UPSTREAM_MAX_MS = 400;
+export { ZENZ_CONTEXT_MAX_GRAPHEMES, ZENZ_ONE_COMPLETION_MAX_ITERATIONS, zenzCandidatePrompt };
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
 export const AZOOKEY_WASM_ABI_VERSION = 2;
@@ -194,6 +202,24 @@ export interface AzookeyWasmExports {
   ) => bigint | number;
   azookey_abi_version: () => number;
   azookey_dictionary_init_owned: (pointer: number, length: number) => number;
+  azookey_lattice_open?: (
+    pointer: number,
+    length: number,
+    hasPreceding: number,
+    precedingRcid: number,
+    precedingMid: number,
+    beam: number,
+    nBest: number,
+  ) => number;
+  azookey_lattice_search_output_prefix?: (
+    handle: number,
+    prefixPointer: number,
+    prefixLength: number,
+    beam: number,
+    nBest: number,
+  ) => bigint | number;
+  azookey_lattice_close?: (handle: number) => number;
+  azookey_lattice_live_count?: () => number;
 }
 
 export interface AzookeyPrecedingContext {
@@ -225,7 +251,17 @@ export type AzookeyConverter = ((
     signal?: AbortSignal,
     preceding?: AzookeyPrecedingContext,
   ) => string | AzookeyConversionResult | Promise<string | AzookeyConversionResult>;
+  /** Optional constrained lattice used by one-completion Zenz orchestration. */
+  openLattice?: (
+    text: string,
+    preceding?: AzookeyPrecedingContext,
+  ) => AzookeyLatticeSession | undefined;
 };
+
+export interface AzookeyLatticeSession {
+  searchOutputPrefix: (prefix: Uint8Array) => string | undefined;
+  close: () => void;
+}
 
 export type AzookeyVibratoConverter = ((
   text: string,
@@ -328,6 +364,8 @@ export interface AzookeyMessage {
   utteranceId?: string;
   /** Explicitly discard the previous chunk context before converting this frame. */
   resetContext?: boolean;
+  /** Converted caption text used as Zenz left context. Distinct from preceding.rcid/mid. */
+  leftContext?: string;
   auth?: AzookeyAuth;
 }
 
@@ -529,6 +567,7 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
   let auth: AzookeyAuth | undefined;
   let utteranceId: string | undefined;
   let resetContext: boolean | undefined;
+  let leftContext: string | undefined;
   try {
     language = requiredString(parsed["language"], "language", AZOOKEY_MAX_LANGUAGE_BYTES);
     sourceText = requiredText(parsed["sourceText"], "sourceText");
@@ -573,6 +612,16 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
       utteranceId = requiredString(rawUtteranceId, "utteranceId", AZOOKEY_MAX_ID_BYTES);
     }
     resetContext = optionalBoolean(parsed["resetContext"], "resetContext");
+    const rawLeftContext = parsed["leftContext"];
+    if (rawLeftContext !== undefined) {
+      if (typeof rawLeftContext !== "string") {
+        throw new AzookeyProtocolError("invalid_contract", "leftContext must be a string");
+      }
+      if (encoder.encode(rawLeftContext).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+        throw new AzookeyProtocolError("text_too_large", "leftContext exceeds its byte limit");
+      }
+      leftContext = trimZenzLeftContext(rawLeftContext);
+    }
   } catch (error) {
     if (error instanceof AzookeyProtocolError && error.requestId === undefined) {
       throw new AzookeyProtocolError(error.code, error.message, requestId);
@@ -606,6 +655,7 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
     ...(vibratoExecution === undefined ? {} : { vibratoExecution }),
     ...(utteranceId === undefined ? {} : { utteranceId }),
     ...(resetContext === undefined ? {} : { resetContext }),
+    ...(leftContext === undefined || leftContext.length === 0 ? {} : { leftContext }),
     ...(auth === undefined ? {} : { auth }),
   };
 };
@@ -779,6 +829,77 @@ const instantiateWasmConverter = (
     convertWithContext(text, signal).text) as AzookeyConverter;
   converter.dictionaryRevision = dictionaryRevision;
   converter.convertWithContext = convertWithContext;
+  if (
+    typeof checkedExports.azookey_lattice_open === "function" &&
+    typeof checkedExports.azookey_lattice_search_output_prefix === "function" &&
+    typeof checkedExports.azookey_lattice_close === "function"
+  ) {
+    const latticeOpen = checkedExports.azookey_lattice_open;
+    const latticeSearch = checkedExports.azookey_lattice_search_output_prefix;
+    const latticeClose = checkedExports.azookey_lattice_close;
+    converter.openLattice = (text, preceding) => {
+      const bytes = encoder.encode(text);
+      const pointer = checkedExports.azookey_alloc(bytes.byteLength);
+      if (pointer === 0 && bytes.byteLength !== 0) {
+        throw new Error("AzooKey Wasm lattice input allocation failed");
+      }
+      let handle = 0;
+      try {
+        new Uint8Array(checkedExports.memory.buffer, pointer, bytes.byteLength).set(bytes);
+        handle = latticeOpen(
+          pointer,
+          bytes.byteLength,
+          preceding === undefined ? 0 : 1,
+          preceding?.rcid ?? 0,
+          preceding?.mid ?? 0,
+          AZOOKEY_N_BEST_WIDTH,
+          1,
+        );
+      } finally {
+        checkedExports.azookey_dealloc(pointer, bytes.byteLength);
+      }
+      if (handle === 0) {
+        return undefined;
+      }
+      let closed = false;
+      return {
+        searchOutputPrefix: (prefix) => {
+          if (closed) {
+            return undefined;
+          }
+          const prefixPointer = checkedExports.azookey_alloc(prefix.byteLength);
+          if (prefixPointer === 0 && prefix.byteLength !== 0) {
+            throw new Error("AzooKey Wasm lattice prefix allocation failed");
+          }
+          try {
+            new Uint8Array(checkedExports.memory.buffer, prefixPointer, prefix.byteLength).set(
+              prefix,
+            );
+            const packed = latticeSearch(
+              handle,
+              prefixPointer,
+              prefix.byteLength,
+              AZOOKEY_N_BEST_WIDTH,
+              1,
+            );
+            if (packed === 0 || packed === 0n) {
+              return undefined;
+            }
+            return unpackNBestResult(checkedExports, packed, dictionaryRevision).text;
+          } finally {
+            checkedExports.azookey_dealloc(prefixPointer, prefix.byteLength);
+          }
+        },
+        close: () => {
+          if (closed) {
+            return;
+          }
+          closed = true;
+          latticeClose(handle);
+        },
+      };
+    };
+  }
   return converter;
 };
 
@@ -1212,10 +1333,8 @@ const withTimeout = async <T>(
   }
 };
 
-const toKatakana = (input: string): string =>
-  input.replace(/[\u3041-\u3096]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0x60));
-
-export const zenzPrompt = (input: string): string => `\u{EE00}${toKatakana(input)}\u{EE01}`;
+export const zenzPrompt = (input: string, leftContext = ""): string =>
+  zenzCandidatePrompt(input, leftContext);
 
 export const parseModelRoutes = (
   raw: string | undefined,
@@ -1259,6 +1378,7 @@ const convertWithZenzModel = async (
   text: string,
   runtime: AzookeyRuntime,
   signal?: AbortSignal,
+  leftContext = "",
 ): Promise<string> => {
   const route = runtime.modelRoutes?.[model];
   if (!route) {
@@ -1273,7 +1393,7 @@ const convertWithZenzModel = async (
     method: "POST",
     headers: { "content-type": "application/json; charset=utf-8" },
     body: JSON.stringify({
-      prompt: zenzPrompt(text),
+      prompt: zenzPrompt(text, leftContext),
       n_predict: 256,
       temperature: 0,
       stream: false,
@@ -1513,32 +1633,56 @@ export const convertAzookeyMessage = async (
           available > AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS
             ? available - AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS
             : Math.max(AZOOKEY_MIN_TIMEOUT_MS, Math.floor(available / 2));
-        const zenzBudget = Math.min(reservedBudget, AZOOKEY_ZENZ_UPSTREAM_MAX_MS);
-        const candidate = await withTimeout(
-          (signal) => convertWithZenzModel(message.model, conversionInput, runtime, signal),
-          zenzBudget,
-        );
-        if (deadlineExpired()) {
-          throw new AzookeyProtocolError(
-            "conversion_timeout",
-            "conversion timed out",
-            message.requestId,
+        dictionaryResult = await runDictionaryConversion(preceding);
+        const leftContext = message.leftContext ?? "";
+        if (trimZenzLeftContext(leftContext).length === 0) {
+          converted = dictionaryResult.text;
+        } else {
+          const zenzBudget = Math.min(reservedBudget, AZOOKEY_ZENZ_UPSTREAM_MAX_MS);
+          const completion = await withTimeout(
+            (signal) =>
+              convertWithZenzModel(message.model, conversionInput, runtime, signal, leftContext),
+            zenzBudget,
           );
+          if (deadlineExpired()) {
+            throw new AzookeyProtocolError(
+              "conversion_timeout",
+              "conversion timed out",
+              message.requestId,
+            );
+          }
+          if (typeof completion !== "string") {
+            throw new AzookeyProtocolError(
+              "conversion_failed",
+              "AzooKey conversion returned no text",
+            );
+          }
+          if (encoder.encode(completion).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+            throw new AzookeyProtocolError(
+              "conversion_failed",
+              "AzooKey conversion output exceeds the text byte limit",
+              message.requestId,
+            );
+          }
+          const lattice = runtime.converter.openLattice?.(conversionInput, preceding);
+          if (!lattice) {
+            converted = dictionaryResult.text;
+          } else {
+            try {
+              const orchestrated = orchestrateOneCompletion({
+                input: conversionInput,
+                leftContext,
+                baseline: dictionaryResult.text,
+                completion,
+                remainingMs,
+                search: lattice,
+              });
+              converted = orchestrated.text;
+            } finally {
+              lattice.close();
+            }
+          }
         }
-        if (typeof candidate !== "string") {
-          throw new AzookeyProtocolError(
-            "conversion_failed",
-            "AzooKey conversion returned no text",
-          );
-        }
-        if (encoder.encode(candidate).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
-          throw new AzookeyProtocolError(
-            "conversion_failed",
-            "AzooKey conversion output exceeds the text byte limit",
-            message.requestId,
-          );
-        }
-        converted = candidate;
       } catch (error) {
         // HTTP status / empty-body failures become AzookeyProtocolError
         // (conversion_failed). Timeouts are conversion_timeout. Raw fetch

@@ -80,8 +80,8 @@ The configuration panel includes a **変換モデル** select:
 | Option | When it works |
 | --- | --- |
 | AzooKey WASM（Worker 内蔵） | Default. No extra model server. |
-| AzooKey Zenzai v3.2 xsmall | Worker `MODEL_ROUTES` must include `zenz-v3.2-xsmall-gguf` |
-| AzooKey Zenzai v3.2 small | Worker `MODEL_ROUTES` must include `zenz-v3.2-small-gguf` |
+| AzooKey Zenzai v3.2 xsmall | Worker `MODEL_ROUTES` must include `zenz-v3.2-xsmall-gguf`. Sends input and left context to a remote model. **Not browser-complete.** Production `MODEL_ROUTES` is empty, so quality stays dictionary-only until an upstream is configured. |
+| AzooKey Zenzai v3.2 small | Worker `MODEL_ROUTES` must include `zenz-v3.2-small-gguf`. Sends input and left context to a remote model. **Not browser-complete.** Production `MODEL_ROUTES` is empty, so quality stays dictionary-only until an upstream is configured. |
 
 ### Conversion modes (UI labels vs wire values)
 

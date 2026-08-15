@@ -37,6 +37,8 @@ export interface AzooKeyConvertRequest {
   utteranceId?: string;
   /** Ask the Worker to drop the previous connection-local context. */
   resetContext?: boolean;
+  /** Converted caption text for Zenz left context. Distinct from preceding.rcid/mid. */
+  leftContext?: string;
   auth?: ComparisonAuth;
 }
 

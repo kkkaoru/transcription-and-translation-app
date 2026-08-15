@@ -202,3 +202,20 @@ the secret, CORS, and post-deploy checks. For local overrides, copy
 `.dev.vars.example` to `.dev.vars`; the latter is git-ignored. Keep model route
 URLs public and put any upstream bearer value in the untracked file locally or
 in a Cloudflare secret in production.
+
+## One-completion Zenz orchestration
+
+When a client requests `zenz-v3.2-small-gguf` or `zenz-v3.2-xsmall-gguf` **and**
+`MODEL_ROUTES` exposes that id, the Worker does not treat the GGUF completion as
+the caption. It keeps the portable-dictionary baseline, sends one greedy
+`/completion` with the Zenz v3 prompt (`U+EE02` left context when present, then
+`U+EE00` katakana input `U+EE01`), and re-searches the local lattice with the
+shared UTF-8 scalar prefix plus the next generated scalar. Fetch, search, and
+deadline failures fall open to the dictionary baseline.
+
+This path sends the input and converted left context to the remote model
+service. It is **not** browser-complete. Production `wrangler.jsonc` keeps
+`MODEL_ROUTES` as `{}`; without a configured GGUF upstream the quality stays
+dictionary-only even if the client asks for a Zenz model. The optional
+`leftContext` WebSocket field is converted caption text (max 40 graphemes) and
+is distinct from the morphological `preceding.rcid` / `preceding.mid` fields.

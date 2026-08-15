@@ -23,6 +23,10 @@ describe("converter model catalog", () => {
     expect(isZenzConverterModel("zenz-v3.2-small-gguf")).toBe(true);
     expect(converterModelOptions[0]?.description).toContain("ブラウザ完結");
     expect(converterModelOptions[0]?.description).not.toContain("ブラウザ簡潔");
-    expect(converterModelOptions[1]?.description).toContain("LOUDS 辞書");
+    expect(converterModelOptions[1]?.description).toContain("browser-complete ではありません");
+    expect(converterModelOptions[1]?.description).toContain(
+      "MODEL_ROUTES が空なら品質は辞書のまま",
+    );
+    expect(converterModelOptions[2]?.description).toContain("入力と左文脈を remote へ送ります");
   });
 });

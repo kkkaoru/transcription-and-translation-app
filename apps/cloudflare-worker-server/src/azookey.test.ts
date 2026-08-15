@@ -157,6 +157,19 @@ describe("AzooKey Worker text contract", () => {
     ).toMatchObject({
       model: AZOOKEY_ZENZ_XSMALL_MODEL,
     });
+    expect(
+      parseAzookeyMessage(
+        JSON.stringify({ ...valid, leftContext: "子供がお菓子を食べています。" }),
+      ),
+    ).toMatchObject({
+      leftContext: "子供がお菓子を食べています。",
+    });
+    expect(
+      parseAzookeyMessage(JSON.stringify({ ...valid, leftContext: " " })).leftContext,
+    ).toBeUndefined();
+    expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, leftContext: 1 }))).toThrow(
+      "leftContext must be a string",
+    );
     expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, model: "unknown-model" }))).toThrow(
       "model must be azookey-rust-wasm",
     );
@@ -463,7 +476,11 @@ describe("AzooKey Worker text contract", () => {
   it("falls back to portable WASM when a configured Zenzai upstream fails", async () => {
     const fetcher = vi.fn(async () => new Response("upstream offline", { status: 503 }));
     const message = parseAzookeyMessage(
-      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+      JSON.stringify({
+        ...valid,
+        model: AZOOKEY_ZENZ_XSMALL_MODEL,
+        leftContext: "子供がお菓子を食べています。",
+      }),
     );
     const result = await convertAzookeyMessage(message, {
       timeoutMs: 250,
@@ -485,7 +502,7 @@ describe("AzooKey Worker text contract", () => {
     });
   });
 
-  it("returns configured Zenzai output when the upstream responds with content", async () => {
+  it("keeps the dictionary baseline when a configured Zenz model has no left context", async () => {
     const fetcher = vi.fn(
       async () =>
         new Response(JSON.stringify({ content: "設定済みの変換" }), {
@@ -502,12 +519,9 @@ describe("AzooKey Worker text contract", () => {
         fetcher,
       },
     );
-    expect(fetcher).toHaveBeenCalledWith(
-      "https://zenz.example/completion",
-      expect.objectContaining({ method: "POST" }),
-    );
+    expect(fetcher).not.toHaveBeenCalled();
     expect(result).toMatchObject({
-      convertedText: "設定済みの変換",
+      convertedText: `dict:${valid.vibratoInput}`,
       model: AZOOKEY_ZENZ_XSMALL_MODEL,
       conversionStatus: 0,
     });
@@ -521,7 +535,11 @@ describe("AzooKey Worker text contract", () => {
       throw new TypeError("fetch failed");
     });
     const message = parseAzookeyMessage(
-      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+      JSON.stringify({
+        ...valid,
+        model: AZOOKEY_ZENZ_XSMALL_MODEL,
+        leftContext: "子供がお菓子を食べています。",
+      }),
     );
     const result = await convertAzookeyMessage(message, {
       timeoutMs: 250,
@@ -560,11 +578,56 @@ describe("AzooKey Worker text contract", () => {
       fetcher,
     });
     expect(result).toMatchObject({
-      convertedText: "今日は配信です",
+      convertedText: `dict:${valid.vibratoInput}`,
       model: AZOOKEY_ZENZ_SMALL_MODEL,
     });
     expect(result.requestedModel).toBeUndefined();
     expect(result.modelFallback).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("orchestrates one Zenz completion against the local lattice when left context is present", async () => {
+    const captured: string[] = [];
+    const fetcher: AzookeyRuntime["fetcher"] = (_input, init) => {
+      captured.push(String(init?.body ?? ""));
+      return new Response(JSON.stringify({ content: "感じ" }), { status: 200 });
+    };
+    const prefixes: string[] = [];
+    const converter = ((text: string) => `dict:${text}`) as AzookeyConverter;
+    converter.openLattice = () => ({
+      searchOutputPrefix: (prefix) => {
+        prefixes.push(new TextDecoder().decode(prefix));
+        return "感じ";
+      },
+      close: vi.fn(),
+    });
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher,
+      },
+    );
+    expect(captured).toHaveLength(1);
+    const body = JSON.parse(captured[0] ?? "{}") as { prompt?: string };
+    expect(body.prompt).toBe(
+      "\u{EE02}子供がお菓子を食べています。\u{EE00}キョウハハイシンデス\u{EE01}",
+    );
+    expect(prefixes).toStrictEqual(["感"]);
+    expect(result).toMatchObject({
+      convertedText: "感じ",
+      model: AZOOKEY_ZENZ_SMALL_MODEL,
+    });
   });
 
   it("falls back when a configured Zenzai upstream times out", async () => {
@@ -579,7 +642,11 @@ describe("AzooKey Worker text contract", () => {
         }),
     );
     const message = parseAzookeyMessage(
-      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+      JSON.stringify({
+        ...valid,
+        model: AZOOKEY_ZENZ_XSMALL_MODEL,
+        leftContext: "子供がお菓子を食べています。",
+      }),
     );
     const result = await convertAzookeyMessage(message, {
       timeoutMs: 2_000,
@@ -602,7 +669,11 @@ describe("AzooKey Worker text contract", () => {
       async () => new Response(JSON.stringify({ content: "   " }), { status: 200 }),
     );
     const message = parseAzookeyMessage(
-      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+      JSON.stringify({
+        ...valid,
+        model: AZOOKEY_ZENZ_XSMALL_MODEL,
+        leftContext: "子供がお菓子を食べています。",
+      }),
     );
     const result = await convertAzookeyMessage(message, {
       timeoutMs: 250,
@@ -624,7 +695,11 @@ describe("AzooKey Worker text contract", () => {
       async () => new Response(JSON.stringify({ content: oversized }), { status: 200 }),
     );
     const message = parseAzookeyMessage(
-      JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+      JSON.stringify({
+        ...valid,
+        model: AZOOKEY_ZENZ_XSMALL_MODEL,
+        leftContext: "子供がお菓子を食べています。",
+      }),
     );
     const result = await convertAzookeyMessage(message, {
       timeoutMs: 250,
@@ -1771,11 +1846,11 @@ describe("xsmall request fallback quality regressions", () => {
       timeoutMs: 5_000,
     });
     expect(dual).toMatchObject({
-      model: AZOOKEY_MODEL,
-      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
-      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+      model: AZOOKEY_ZENZ_XSMALL_MODEL,
       convertedText: "暑い日は熱い食べ物を食べたくない",
     });
+    expect(dual.modelFallback).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
 
     const percent = await convertXsmall("こうすいかくりつは60わらび", {
       converter,
@@ -1786,35 +1861,31 @@ describe("xsmall request fallback quality regressions", () => {
       timeoutMs: 5_000,
     });
     expect(percent).toMatchObject({
-      model: AZOOKEY_MODEL,
-      requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
-      modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+      model: AZOOKEY_ZENZ_XSMALL_MODEL,
       convertedText: "降水確率は60%",
     });
+    expect(percent.modelFallback).toBeUndefined();
     expect(percent.convertedText).not.toContain("蕨");
-    expect(fetcher).toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
   }, 30_000);
 
-  it("keeps neural xsmall success metadata distinct from dictionary fallback", async () => {
-    // Successful /completion is real neural path: no modelFallback, model stays
-    // zenz-v3.2-xsmall-gguf. Do not rewrite this into a dictionary surface.
+  it("keeps the dictionary baseline when a configured xsmall request has no left context", async () => {
     const fetcher = vi.fn(
       async () => new Response(JSON.stringify({ content: "降水確率は6０°蕨" }), { status: 200 }),
     );
     const result = await convertXsmall("こうすいかくりつは60わらび", {
-      converter: (text) => `dict-must-not-run:${text}`,
+      converter: (text) => `dict:${text}`,
       modelRoutes: {
         [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
       },
       fetcher,
       timeoutMs: 250,
     });
+    expect(fetcher).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       model: AZOOKEY_ZENZ_XSMALL_MODEL,
-      convertedText: "降水確率は6０°蕨",
+      convertedText: "dict:こうすいかくりつは60わらび",
     });
     expect(result.modelFallback).toBeUndefined();
-    expect(result.requestedModel).toBeUndefined();
-    expect(result.convertedText).not.toMatch(/^dict-must-not-run:/);
   });
 });

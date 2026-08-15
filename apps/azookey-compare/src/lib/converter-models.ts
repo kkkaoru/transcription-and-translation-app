@@ -34,13 +34,13 @@ export const converterModelOptions: readonly ConverterModelOption[] = [
     value: "zenz-v3.2-xsmall-gguf",
     label: "AzooKey Zenzai v3.2 xsmall",
     description:
-      "低レイテンシー向け Zenzai。ブラウザ完結では LOUDS 辞書（system.azkdict.gz）のみ。Cloudflare Worker 依存でも同じ辞書で変換し、MODEL_ROUTES に zenz-v3.2-xsmall-gguf を設定したときだけ GGUF 推論を試します。",
+      "低レイテンシー向け Zenzai。入力と左文脈を remote へ送ります。browser-complete ではありません。本番 MODEL_ROUTES が空なら品質は辞書のままです。GGUF を載せた Worker 依存でのみ 1 回の completion と lattice 再探索を試します。",
   },
   {
     value: "zenz-v3.2-small-gguf",
     label: "AzooKey Zenzai v3.2 small",
     description:
-      "精度寄り Zenzai。ブラウザ完結では LOUDS 辞書のみ。Cloudflare Worker 依存でも同じ辞書で変換し、MODEL_ROUTES に zenz-v3.2-small-gguf を設定したときだけ GGUF 推論を試します。",
+      "精度寄り Zenzai。入力と左文脈を remote へ送ります。browser-complete ではありません。本番 MODEL_ROUTES が空なら品質は辞書のままです。GGUF を載せた Worker 依存でのみ 1 回の completion と lattice 再探索を試します。",
   },
 ] as const;
 
