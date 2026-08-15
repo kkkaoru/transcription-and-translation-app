@@ -36,6 +36,10 @@ TRANSLATE_STAGE_RE = re.compile(
     r"\[(\d{4}-\d{2}-\d{2})\]\[(\d{2}:\d{2}:\d{2})\].*"
     r"stage=translate .* ok=(true|false) duration_ms=(\d+)"
 )
+DISPLAY_RE = re.compile(
+    r"caption display lifecycle=(visible|hold|clear) age_ms=(\d+) generation=(\S+)"
+)
+STALE_DISPLAY_MS = 8000
 
 SUCCESS_MAX = 100
 SUCCESS_P95 = 48
@@ -168,6 +172,29 @@ def judge_translation(
     }
 
 
+def judge_display(events: list[tuple[str, int, str]]) -> dict[str, object]:
+    visible = sum(1 for event in events if event[0] == "visible")
+    hold = sum(1 for event in events if event[0] == "hold")
+    clear = sum(1 for event in events if event[0] == "clear")
+    stale = [event for event in events if event[1] >= STALE_DISPLAY_MS]
+    if not events:
+        verdict = "no_display_events"
+    elif stale:
+        verdict = "stale_caption_held"
+    elif hold > 0 and clear == 0:
+        verdict = "hold_without_clear"
+    else:
+        verdict = "cleared"
+    return {
+        "verdict": verdict,
+        "visible": visible,
+        "hold": hold,
+        "clear": clear,
+        "stale": len(stale),
+        "max_age_ms": max((event[1] for event in events), default=None),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -187,6 +214,7 @@ def main() -> int:
     decisions: list[tuple[str, ...]] = []
     results: list[tuple[str, ...]] = []
     translate_stages: list[tuple[str, ...]] = []
+    display_events: list[tuple[str, int, str]] = []
     for line in path.read_text(errors="replace").splitlines():
         if match := NORMALIZE_RE.search(line):
             stamp = parse_stamp(match.group(1), match.group(2))
@@ -214,6 +242,9 @@ def main() -> int:
             stamp = parse_stamp(match.group(1), match.group(2))
             if in_window(stamp, args.after, args.before):
                 translate_stages.append(match.group(1, 2, 3, 4))
+            continue
+        if match := DISPLAY_RE.search(line):
+            display_events.append((match.group(1), int(match.group(2)), match.group(3)))
 
     turns: dict[str, list[int]] = defaultdict(list)
     durations: list[int] = []
@@ -223,6 +254,7 @@ def main() -> int:
     max_per_turn = [max(values) for values in turns.values()]
     turn_report = judge_turns(max_per_turn)
     translation_report = judge_translation(finals, decisions, results, translate_stages)
+    display_report = judge_display(display_events)
     normalize_p95 = percentile(durations, 95)
     print("gates success: max<=100 p95<=48 ge129=0")
     print("gates strong_success: max<=40")
@@ -258,6 +290,13 @@ def main() -> int:
             "translation_results "
             + " ".join(f"{key}={value}" for key, value in translation_report["result_kinds"].items())
         )
+    print(
+        "display "
+        + " ".join(
+            f"{key}={value}" for key, value in display_report.items() if key != "verdict"
+        )
+        + f" verdict={display_report['verdict']}"
+    )
     return 0
 
 

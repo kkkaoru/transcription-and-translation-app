@@ -5,7 +5,10 @@ import {
 } from "@caption-bridge/sentence-boundary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../core/bridge";
-import { shouldBlankCaptionForHoldClear } from "../core/caption-hold-clear";
+import {
+  logCaptionDisplayLifecycle,
+  shouldBlankCaptionForHoldClear,
+} from "../core/caption-hold-clear";
 import {
   asrLatencyFromUnknown,
   markCaptionIpcReceived,
@@ -296,6 +299,7 @@ export const OverlayApp = () => {
       if (!shouldBlankCaptionForHoldClear(expectedEpoch, current)) {
         return;
       }
+      logCaptionDisplayLifecycle("clear", current);
       const empty = createHoldClearedCaption();
       setPartialWindow(null);
       resetOverlayStickyRefs(stickyRefs);

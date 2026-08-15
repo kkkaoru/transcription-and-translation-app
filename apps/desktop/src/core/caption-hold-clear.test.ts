@@ -7,9 +7,11 @@ import {
   CAPTION_HOLD_CLEAR_MS,
   captionHoldClearDelayMs,
   captionHoldClearEpoch,
+  logCaptionDisplayLifecycle,
   shouldApplyCaptionHoldClear,
   shouldBlankCaptionForHoldClear,
 } from "./caption-hold-clear";
+import { clearStructuredLogs, getStructuredLogs } from "./structuredLog";
 import { mergeCaptionPayload } from "./caption-updates";
 import type { CaptionPayload } from "./types";
 
@@ -25,6 +27,35 @@ const caption = (partial: Partial<CaptionPayload>): CaptionPayload => ({
   sequence: 0,
   isFinal: false,
   ...partial,
+});
+
+describe("logCaptionDisplayLifecycle", () => {
+  it("records numeric lifecycle changes without caption text", () => {
+    clearStructuredLogs();
+    logCaptionDisplayLifecycle(
+      "hold",
+      caption({
+        id: "parapper:s:1:2",
+        sourceText: "秘密の字幕",
+        translationText: "secret",
+        receivedAt: 1_000,
+        captureGeneration: 4,
+      }),
+      9_500,
+    );
+    const row = getStructuredLogs({ limit: 1 })[0];
+    expect(row?.message).toBe(
+      "caption display lifecycle=hold age_ms=8500 generation=4 has_translation=true",
+    );
+    expect(row?.fields).toMatchObject({
+      lifecycle: "hold",
+      ageMs: 8500,
+      generation: 4,
+      hasTranslation: true,
+    });
+    expect(JSON.stringify(row)).not.toContain("秘密の字幕");
+    expect(JSON.stringify(row)).not.toContain("secret");
+  });
 });
 
 describe("captionHoldClearDelayMs", () => {

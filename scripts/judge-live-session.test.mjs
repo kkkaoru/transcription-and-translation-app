@@ -35,3 +35,12 @@ test("does not echo transcript text from normalize rows", () => {
   assert.doesNotMatch(stdout, /秘密の発話/);
   assert.match(stdout, /normalize n=1/);
 });
+
+test("flags a caption held longer than eight seconds", () => {
+  const { status, stdout } = runJudge(
+    "[2026-08-16][01:00:00][INFO][frontend] [display] caption display lifecycle=visible age_ms=0 generation=2\n" +
+      "[2026-08-16][01:00:09][INFO][frontend] [display] caption display lifecycle=hold age_ms=9000 generation=2\n",
+  );
+  assert.equal(status, 0);
+  assert.match(stdout, /display visible=1 hold=1 clear=0 stale=1 max_age_ms=9000 verdict=stale_caption_held/);
+});

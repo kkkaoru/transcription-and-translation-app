@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
-import { captionHoldClearDelayMs, captionHoldClearEpoch } from "../core/caption-hold-clear";
+import {
+  captionHoldClearDelayMs,
+  captionHoldClearEpoch,
+  logCaptionDisplayLifecycle,
+} from "../core/caption-hold-clear";
 import type { CaptionPayload } from "../core/types";
 
 /**
@@ -25,6 +29,7 @@ export const useCaptionHoldClear = (
       return;
     }
     const scheduledEpoch = holdClearEpoch;
+    logCaptionDisplayLifecycle("hold", caption);
     const timer = setTimeout(() => {
       onClearRef.current(scheduledEpoch);
     }, holdClearDelay);

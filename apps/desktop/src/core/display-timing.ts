@@ -9,6 +9,7 @@
  * - sinceFirstPaint: wall ms from first source paint → translation paint
  */
 
+import { logCaptionDisplayLifecycle } from "./caption-hold-clear";
 import { clearCaptionLatency, markCaptionFirstPaint } from "./caption-latency";
 import { isVerbosePipelineLogging } from "./pipelineStages";
 import { appendStructuredLog } from "./structuredLog";
@@ -117,6 +118,7 @@ export const markCaptionDisplay = (caption: CaptionPayload): void => {
       sourceEventToPaintMs: sourceEventToPaint,
       utteranceId: caption.id,
     });
+    logCaptionDisplayLifecycle("visible", caption, wall);
     if (!isVerbosePipelineLogging()) {
       return;
     }

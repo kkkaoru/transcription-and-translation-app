@@ -14,7 +14,10 @@ import {
   TARGET_SAMPLE_RATE,
 } from "../core/audio";
 import { bridge, formatBridgeError, isNoSpeechBridgeError } from "../core/bridge";
-import { shouldApplyCaptionHoldClear } from "../core/caption-hold-clear";
+import {
+  logCaptionDisplayLifecycle,
+  shouldApplyCaptionHoldClear,
+} from "../core/caption-hold-clear";
 import {
   asrLatencyFromUnknown,
   markCaptionIpcReceived,
@@ -808,6 +811,7 @@ export const MainApp = () => {
       if (!current.sourceText.trim() && !current.translationText.trim()) {
         return;
       }
+      logCaptionDisplayLifecycle("clear", current);
       const empty = createHoldClearedCaption();
       resetMainStickyRefs(stickyRefs);
       captionRef.current = empty;

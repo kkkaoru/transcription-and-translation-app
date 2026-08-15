@@ -1,3 +1,4 @@
+import { appendStructuredLog } from "./structuredLog";
 import type { CaptionPayload } from "./types";
 
 /**
@@ -5,6 +6,36 @@ import type { CaptionPayload } from "./types";
  * viewers after updates stop. Short holds make captions unreadable on air.
  */
 export const CAPTION_HOLD_CLEAR_MS = 5_000;
+
+export type CaptionDisplayLifecycle = "visible" | "hold" | "clear";
+
+export const logCaptionDisplayLifecycle = (
+  lifecycle: CaptionDisplayLifecycle,
+  caption: CaptionPayload,
+  nowMs: number = Date.now(),
+): void => {
+  const publishedAt = Math.max(0, Math.trunc(caption.receivedAt || caption.startedAt || 0));
+  const ageMs = publishedAt > 0 ? Math.max(0, nowMs - publishedAt) : 0;
+  const generation =
+    typeof caption.captureGeneration === "number" && Number.isFinite(caption.captureGeneration)
+      ? Math.trunc(caption.captureGeneration)
+      : null;
+  appendStructuredLog({
+    level: "info",
+    source: "frontend",
+    stage: "display",
+    chunkId: caption.id || null,
+    message: `caption display lifecycle=${lifecycle} age_ms=${ageMs} generation=${generation ?? "none"} has_translation=${caption.translationText.trim().length > 0}`,
+    durationMs: ageMs,
+    fields: {
+      lifecycle,
+      ageMs,
+      generation,
+      isFinal: caption.isFinal === true,
+      hasTranslation: caption.translationText.trim().length > 0,
+    },
+  });
+};
 
 /**
  * Identity of the held caption used to ignore stale hold-clear timers.
