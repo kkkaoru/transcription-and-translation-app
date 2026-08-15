@@ -219,3 +219,11 @@ service. It is **not** browser-complete. Production `wrangler.jsonc` keeps
 dictionary-only even if the client asks for a Zenz model. The optional
 `leftContext` WebSocket field is converted caption text (max 40 graphemes) and
 is distinct from the morphological `preceding.rcid` / `preceding.mid` fields.
+
+C ABI one-completion was checked against the Rust spike with the installed
+`zenz-v3.2-small` GGUF. Strict accuracy matched (21/23, word-boundary 7/7).
+Exact outputs matched 22/23. `measured-012` diverged
+(`売り上げました` vs `売上ました`); both miss the expected `123万円を売り上げました`.
+The C ABI search returns candidate text only and does not carry the previous
+`CandidatePath` hint. Do not claim 23/23 C ABI equivalence until that case is
+resolved. Production `MODEL_ROUTES` remains empty, so this path is unused.

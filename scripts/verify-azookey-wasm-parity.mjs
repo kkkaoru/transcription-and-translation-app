@@ -23,7 +23,14 @@ export const REQUIRED_WASM_EXPORTS = [
   "azookey_alloc",
   "azookey_dealloc",
   "azookey_convert",
+  "azookey_convert_n_best",
   "azookey_dictionary_init_owned",
+  "azookey_lattice_open",
+  "azookey_lattice_search_output_prefix",
+  "azookey_lattice_close",
+  "azookey_lattice_live_count",
+  "azookey_lattice_opened_count",
+  "azookey_lattice_closed_count",
 ];
 export const SPOT_CHECK_CASES = [
   ["きょうはいいてんき", "今日はいい天気"],
