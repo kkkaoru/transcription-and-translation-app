@@ -96,9 +96,30 @@ The run started with 72% system-wide memory free, no swap, and no competing repo
 
 Earlier shared-checkout exploratory runs reported 426.18 seconds at machine-default concurrency and 535.71 seconds with two threads, but a concurrent corpus edit made that comparison non-reproducible. Do not use the apparent 25.7% difference as a benchmark result. It still established that machine-default peak RSS is only about 285 MiB, which is not a meaningful constraint on this 48 GB host. The proposed thread limit was therefore not adopted, and the temporary thread wrapper was removed. Repeat concurrency measurements only if the test topology or memory profile changes materially.
 
+## `rust:azookey:test` wall time
+
+`bun run rust:azookey:test` is about 54 seconds on this machine
+(2026-08-16: 54.2 s in `check:all`, 55.18 s when remeasured alone). That time
+is the official-dictionary quality gate, not dictionary-open overhead. The
+longest tests convert the locked 119-case accuracy anchor plus the 303-case
+adversarial report. Do not drop those cases to make the gate faster.
+
+Sharing the immutable official-system payload behind a test-only `OnceLock`
+was measured on 2026-08-16. Each caller still owned empty lookup caches, so
+one test could not warm or poison another. Wall time went from 55.18 s to
+55.61 s (129 passed, 3 ignored). The change was reverted. The remaining wall
+is lattice search on those corpora, already overlapped with loads by the
+default libtest pool.
+
+The three ignored tests are intentional manual benches
+(`benchmark_privacy_safe_streaming_load`,
+`benchmark_filesystem_dictionary_lookups`,
+`benchmark_linear_lru_at_final_caption_frequency`). They are not forgotten CI
+gaps.
+
 ## Possible follow-ups
 
 1. Add a configurable memory-pressure warning that prints the largest RSS consumers. Start with warning-only; a refusal threshold needs clean measurements and an override.
 2. Measure `CARGO_BUILD_JOBS` values before limiting concurrent rustc processes. Do not apply a global setting without evidence.
-3. Investigate sharing immutable AzooKey dictionary data separately from mutable caches. Converting `RefCell` caches to synchronized shared state is a production design change, not a development-tool quick fix.
+3. Sharing immutable AzooKey dictionary data separately from mutable caches was already measured for the test gate (see above). Do not retry that test-only `OnceLock` unless the corpus shape changes. Converting production `RefCell` caches to synchronized shared state is still a production design change, not a development-tool quick fix.
 4. Delete the local-only measurement scripts when the benchmark is complete.

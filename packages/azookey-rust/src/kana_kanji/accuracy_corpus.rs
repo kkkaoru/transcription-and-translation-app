@@ -10,7 +10,11 @@
 //!
 //! CI visibility: `bun run rust:azookey:test` runs this module through
 //! `cargo test` with `AZOOKEY_DICTIONARY_ROOT` pointing at the pinned
-//! submodule dictionary.
+//! submodule dictionary. The ~54 s crate wall is this quality gate (119
+//! locked anchors plus the 303-case adversarial report), not dictionary-open
+//! cost. A test-only `OnceLock` share of the official payload was measured
+//! at 55.18 s → 55.61 s on 2026-08-16 and reverted. The three ignored tests
+//! in this crate are intentional manual benches, not forgotten CI gaps.
 
 use crate::{convert_with_dictionary, AzooKeyDictionary, ConversionOptions, DictionaryPaths};
 use std::collections::{BTreeMap, BTreeSet};
