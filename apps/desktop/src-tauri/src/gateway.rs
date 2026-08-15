@@ -27,10 +27,12 @@ const PARAPPER_PORT: u16 = 18082;
 /// values explicit in the desktop-to-sidecar command contract so a persisted
 /// interactive Parapper profile cannot reintroduce 96ms/320ms segmentation.
 const PARAPPER_INTERIM_RESULT_SILENCE_MS: u32 = 96;
-// Match the headless sidecar default: 960ms keeps a normal Japanese clause
-// together across an ordinary breath, with a bounded finalization delay for
-// genuinely short utterances.
-const PARAPPER_TURN_CHECK_SILENCE_MS: u32 = 960;
+// A four-threshold synthetic-speech comparison (320/480/640/960ms) selected
+// 480ms: the longest turn fell from 85 characters at 960ms to 27 characters,
+// with no measured over-segmentation. 320ms split clauses prematurely. Keep
+// this synchronized with Parapper's headless default; changing only one lets
+// sidecar tests pass while leaving the real desktop behavior unchanged.
+const PARAPPER_TURN_CHECK_SILENCE_MS: u32 = 480;
 /// Quality settings from Parapper's built-in rich Japanese preset. These are
 /// passed explicitly so a stale sidecar config cannot fall back to Simple turns
 /// or skip the final full-turn re-recognition.
@@ -1057,7 +1059,7 @@ mod tests {
                 "--interim-result-silence-ms",
                 "96",
                 "--turn-check-silence-ms",
-                "960",
+                "480",
                 "--noise-cancellation-enabled",
                 "true",
                 "--interim-asr-model",
@@ -1109,7 +1111,7 @@ mod tests {
         assert_eq!(health["vadIntervalMs"], 128);
         assert_eq!(health["vadThreshold"], 1.0);
         assert_eq!(health["interimResultSilenceMs"], 96);
-        assert_eq!(health["turnCheckSilenceMs"], 960);
+        assert_eq!(health["turnCheckSilenceMs"], 480);
         assert_eq!(health["turnDetector"], "namo");
         assert_eq!(health["interimResultEnabled"], true);
         assert_eq!(health["rerecognizeFullOnComplete"], true);
