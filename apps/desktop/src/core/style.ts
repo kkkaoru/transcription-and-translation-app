@@ -1,5 +1,113 @@
 import type { CSSProperties } from "react";
+import { appendStructuredLog } from "./structuredLog";
 import type { CaptionTextStyle, OverlayConfig } from "./types";
+
+export interface CaptionOverflowMeasurement {
+  contentWidth: number;
+  containerWidth: number;
+  overflowed: boolean;
+  lineCount: number;
+}
+
+const CAPTION_OVERFLOW_LINE_SELECTOR = ".caption-line";
+
+export const measureCaptionOverflow = (input: {
+  contentWidth: number;
+  containerWidth: number;
+  lineCount: number;
+}): CaptionOverflowMeasurement => {
+  const contentWidth = Math.max(0, Math.round(input.contentWidth));
+  const containerWidth = Math.max(0, Math.round(input.containerWidth));
+  const lineCount = Math.max(0, Math.round(input.lineCount));
+  return {
+    contentWidth,
+    containerWidth,
+    overflowed: contentWidth > containerWidth,
+    lineCount,
+  };
+};
+
+export const isMeasurableCaptionOverflow = (measurement: CaptionOverflowMeasurement): boolean =>
+  measurement.contentWidth > 0 || measurement.containerWidth > 0;
+
+export const shouldLogCaptionOverflow = (
+  previousOverflowed: boolean | null,
+  next: CaptionOverflowMeasurement,
+): boolean => {
+  if (!isMeasurableCaptionOverflow(next)) {
+    return false;
+  }
+  return previousOverflowed !== next.overflowed;
+};
+
+const overflowAmount = (measurement: CaptionOverflowMeasurement): number =>
+  measurement.contentWidth - measurement.containerWidth;
+
+const pickCaptionOverflow = (
+  current: CaptionOverflowMeasurement | null,
+  candidate: CaptionOverflowMeasurement,
+): CaptionOverflowMeasurement => {
+  if (current == null) {
+    return candidate;
+  }
+  if (candidate.overflowed !== current.overflowed) {
+    return candidate.overflowed ? candidate : current;
+  }
+  return overflowAmount(candidate) > overflowAmount(current) ? candidate : current;
+};
+
+const captionLineCount = (node: HTMLElement): number => {
+  const declared = node.querySelectorAll(":scope > span").length;
+  if (declared > 0) {
+    return declared;
+  }
+  return node.textContent?.trim() ? 1 : 0;
+};
+
+export const readCaptionOverflow = (container: {
+  clientWidth: number;
+  querySelectorAll: (selector: string) => Iterable<Element>;
+}): CaptionOverflowMeasurement => {
+  const fallbackWidth = Math.max(0, Math.round(container.clientWidth));
+  let selected: CaptionOverflowMeasurement | null = null;
+  for (const node of container.querySelectorAll(CAPTION_OVERFLOW_LINE_SELECTOR)) {
+    if (!(node instanceof HTMLElement) || node.dataset["empty"] === "true") {
+      continue;
+    }
+    const lineBox = Math.max(0, Math.round(node.clientWidth));
+    selected = pickCaptionOverflow(
+      selected,
+      measureCaptionOverflow({
+        contentWidth: node.scrollWidth,
+        containerWidth: lineBox > 0 ? lineBox : fallbackWidth,
+        lineCount: captionLineCount(node),
+      }),
+    );
+  }
+  return (
+    selected ??
+    measureCaptionOverflow({ contentWidth: 0, containerWidth: fallbackWidth, lineCount: 0 })
+  );
+};
+
+export const logCaptionOverflow = (
+  measurement: CaptionOverflowMeasurement,
+  nowMs: number = Date.now(),
+): void => {
+  appendStructuredLog({
+    level: "info",
+    source: "frontend",
+    stage: "display",
+    message: `caption overflow content_width=${measurement.contentWidth} container_width=${measurement.containerWidth} overflowed=${measurement.overflowed} line_count=${measurement.lineCount}`,
+    epochMs: nowMs,
+    fields: {
+      contentWidth: measurement.contentWidth,
+      containerWidth: measurement.containerWidth,
+      overflowed: measurement.overflowed,
+      lineCount: measurement.lineCount,
+    },
+  });
+};
 
 export const clampNumber = (value: number, minimum: number, maximum: number): number =>
   Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? value : minimum));

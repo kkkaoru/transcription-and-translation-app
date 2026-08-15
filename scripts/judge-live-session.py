@@ -39,6 +39,10 @@ TRANSLATE_STAGE_RE = re.compile(
 DISPLAY_RE = re.compile(
     r"caption display lifecycle=(visible|hold|clear) age_ms=(\d+) generation=(\S+)"
 )
+OVERFLOW_RE = re.compile(
+    r"caption overflow content_width=(\d+) container_width=(\d+) "
+    r"overflowed=(true|false) line_count=(\d+)"
+)
 STALE_DISPLAY_MS = 8000
 
 SUCCESS_MAX = 100
@@ -195,6 +199,29 @@ def judge_display(events: list[tuple[str, int, str]]) -> dict[str, object]:
     }
 
 
+def judge_overflow(events: list[tuple[int, int, bool, int]]) -> dict[str, object]:
+    overflowed = [event for event in events if event[2]]
+    single_line_overflow = [event for event in overflowed if event[3] <= 1]
+    wrapped_overflow = [event for event in overflowed if event[3] >= 2]
+    max_content = max((event[0] for event in events), default=None)
+    max_container = max((event[1] for event in events), default=None)
+    if not events:
+        verdict = "no_overflow_events"
+    elif overflowed:
+        verdict = "overflowed"
+    else:
+        verdict = "fits"
+    return {
+        "verdict": verdict,
+        "events": len(events),
+        "overflowed": len(overflowed),
+        "single_line_overflow": len(single_line_overflow),
+        "wrapped_overflow": len(wrapped_overflow),
+        "max_content_width": max_content,
+        "max_container_width": max_container,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -215,6 +242,7 @@ def main() -> int:
     results: list[tuple[str, ...]] = []
     translate_stages: list[tuple[str, ...]] = []
     display_events: list[tuple[str, int, str]] = []
+    overflow_events: list[tuple[int, int, bool, int]] = []
     for line in path.read_text(errors="replace").splitlines():
         if match := NORMALIZE_RE.search(line):
             stamp = parse_stamp(match.group(1), match.group(2))
@@ -245,6 +273,16 @@ def main() -> int:
             continue
         if match := DISPLAY_RE.search(line):
             display_events.append((match.group(1), int(match.group(2)), match.group(3)))
+            continue
+        if match := OVERFLOW_RE.search(line):
+            overflow_events.append(
+                (
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    match.group(3) == "true",
+                    int(match.group(4)),
+                )
+            )
 
     turns: dict[str, list[int]] = defaultdict(list)
     durations: list[int] = []
@@ -255,6 +293,7 @@ def main() -> int:
     turn_report = judge_turns(max_per_turn)
     translation_report = judge_translation(finals, decisions, results, translate_stages)
     display_report = judge_display(display_events)
+    overflow_report = judge_overflow(overflow_events)
     normalize_p95 = percentile(durations, 95)
     print("gates success: max<=100 p95<=48 ge129=0")
     print("gates strong_success: max<=40")
@@ -296,6 +335,13 @@ def main() -> int:
             f"{key}={value}" for key, value in display_report.items() if key != "verdict"
         )
         + f" verdict={display_report['verdict']}"
+    )
+    print(
+        "overflow "
+        + " ".join(
+            f"{key}={value}" for key, value in overflow_report.items() if key != "verdict"
+        )
+        + f" verdict={overflow_report['verdict']}"
     )
     return 0
 
