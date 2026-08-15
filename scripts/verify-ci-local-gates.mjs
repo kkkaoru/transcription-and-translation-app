@@ -5,7 +5,7 @@
  * every repository quality gate that CI runs. Local-only checks are allowed.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUALITY_GATE_STEPS } from "./quality-gate-steps.mjs";
@@ -36,6 +36,8 @@ export const ciGateMappings = new Map([
  * CI gates which cannot or should not be reproduced by a cross-platform local
  * source gate. Every exclusion is exact and has a required explanation.
  */
+export const buildCleanupTestExclusions = new Map();
+
 export const ciGateExclusions = new Map([
   [
     matrixCommand,
@@ -50,6 +52,32 @@ export const ciGateExclusions = new Map([
     "This launches the built macOS app and is unavailable on other local platforms.",
   ],
 ]);
+
+const buildCleanupTestsFromCommand = (command) =>
+  new Set(command.split(/\s+/u).filter((value) => /^scripts\/[^/]+\.test\.mjs$/u.test(value)));
+
+export const assertBuildCleanupTestManifest = ({
+  command,
+  scriptsDirectory,
+  discoveredTests = readdirSync(scriptsDirectory, { recursive: true })
+    .filter((name) => name.endsWith(".test.mjs"))
+    .map((name) => `scripts/${name.replaceAll("\\", "/")}`),
+  exclusions = buildCleanupTestExclusions,
+}) => {
+  for (const [path, reason] of exclusions) {
+    if (!reason.trim()) throw new Error(`scripts test exclusion has no reason: ${path}`);
+  }
+  const discovered = new Set(discoveredTests.filter((path) => !exclusions.has(path)));
+  const listed = buildCleanupTestsFromCommand(command);
+  const unlisted = [...discovered].filter((path) => !listed.has(path)).sort();
+  const missing = [...listed].filter((path) => !discovered.has(path)).sort();
+  const failures = [];
+  if (unlisted.length > 0) failures.push(`unlisted scripts tests: ${unlisted.join(", ")}`);
+  if (missing.length > 0) {
+    failures.push(`listed scripts tests missing from disk: ${missing.join(", ")}`);
+  }
+  if (failures.length > 0) throw new Error(failures.join("; "));
+};
 
 const isGateCommand = (command) =>
   command === matrixCommand ||

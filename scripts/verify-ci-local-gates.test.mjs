@@ -4,6 +4,8 @@ import { dirname, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  assertBuildCleanupTestManifest,
+  buildCleanupTestExclusions,
   ciGateExclusions,
   extractCiGateCommands,
   extractLocalGateScripts,
@@ -59,12 +61,34 @@ describe("CI and local quality-gate parity", () => {
     );
   });
 
-  it("runs the wasm parity suite from the local test:build-cleanup gate", () => {
-    const command = packageJson.scripts["test:build-cleanup"];
-    assert.match(
-      command,
-      /scripts\/verify-azookey-wasm-parity\.test\.mjs/,
-      "check:all must execute wasm parity, not only keep the script on disk",
+  it("runs every scripts test exactly through the local test:build-cleanup gate", () => {
+    assert.equal(buildCleanupTestExclusions.size, 0);
+    assert.doesNotThrow(() =>
+      assertBuildCleanupTestManifest({
+        command: packageJson.scripts["test:build-cleanup"],
+        scriptsDirectory: resolve(root, "scripts"),
+      }),
+    );
+  });
+
+  it("names both an unlisted test and a listed file missing from disk", () => {
+    assert.throws(
+      () =>
+        assertBuildCleanupTestManifest({
+          command: "node --test scripts/listed-but-deleted.test.mjs",
+          discoveredTests: ["scripts/new-but-unlisted.test.mjs"],
+        }),
+      (error) => {
+        assert.match(
+          error.message,
+          /unlisted scripts tests: scripts\/new-but-unlisted\.test\.mjs/u,
+        );
+        assert.match(
+          error.message,
+          /listed scripts tests missing from disk: scripts\/listed-but-deleted\.test\.mjs/u,
+        );
+        return true;
+      },
     );
   });
 
