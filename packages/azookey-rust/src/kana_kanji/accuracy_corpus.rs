@@ -85,7 +85,7 @@ const INCOMPLETE_STREAMING_MINIMUM_VARIANT_PASSED: usize = 10;
 const INCOMPLETE_STREAMING_FINGERPRINT: u64 = 0x2269f712efa11d40;
 const MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL: usize = 13;
 const MEASURED_COMPLETED_FAILURE_MINIMUM_VARIANT_PASSED: usize = 3;
-const MEASURED_COMPLETED_FAILURE_FINGERPRINT: u64 = 0xb9d401c6270ab423;
+const MEASURED_COMPLETED_FAILURE_FINGERPRINT: u64 = 0x27eaa1596c55dae9;
 
 // Raise either expansion minimum after the same inputs produce the same higher
 // score in three consecutive runs. Never lower a minimum to accommodate a
@@ -606,6 +606,8 @@ fn measured_completed_failure_cases() -> Vec<CorpusCase> {
             ExpectedOrigin::NumericSynthesized,
             "contracted-juttu-percent",
         ),
+        // Live-caption numerals use ASCII digits for faster scanning, matching
+        // the existing numeric-synthesis policy; prefer `3分の2` to `三分の二`.
         (
             "measured-002",
             "completed_numeric_symbols",
@@ -657,8 +659,8 @@ fn measured_completed_failure_cases() -> Vec<CorpusCase> {
         (
             "measured-008",
             "completed_contextual_homophones",
-            "やさいのせいかをあつかうみせです",
-            "野菜の青果を扱う店です",
+            "せいかうりばはにかいです",
+            "青果売り場は2階です",
             ExpectedOrigin::Mixed,
             "produce-context",
         ),
@@ -673,8 +675,8 @@ fn measured_completed_failure_cases() -> Vec<CorpusCase> {
         (
             "measured-010",
             "completed_contextual_homophones",
-            "あたらしいきのうのしようをせつめいします",
-            "新しい機能の仕様を説明します",
+            "あたらしいきのうのしようしょをかくにんします",
+            "新しい機能の仕様書を確認します",
             ExpectedOrigin::Mixed,
             "function-specification-context",
         ),
