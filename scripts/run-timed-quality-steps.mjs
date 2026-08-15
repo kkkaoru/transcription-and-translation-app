@@ -58,6 +58,8 @@ export const runTimedQualitySteps = ({
 } = {}) => {
   const plannedSteps = describeQualitySteps(steps);
   const startedAt = now();
+  let lastDoneAt = startedAt;
+  let exitCode = 0;
   const records = [];
   for (const step of plannedSteps) {
     const outputLabel = `${String(step.index).padStart(2, "0")}/${plannedSteps.length} ${step.label}`;
@@ -74,21 +76,28 @@ export const runTimedQualitySteps = ({
     stdout(
       `[quality-gate] done  ${outputLabel} ${formatDuration(durationMs)} exit=${result.status ?? "null"}`,
     );
+    lastDoneAt = now();
     if (result.error) {
       stderr(`[quality-gate] unable to start ${step.script}: ${result.error.message}`);
-      return { exitCode: 1, records };
+      exitCode = 1;
+      break;
     }
     if (result.status !== 0) {
-      return { exitCode: result.status ?? 1, records };
+      exitCode = result.status ?? 1;
+      break;
     }
   }
-  const totalMs = Math.max(0, now() - startedAt);
-  stdout("[quality-gate] timing summary");
-  for (const record of records) {
-    stdout(`  ${record.label} ${formatDuration(record.durationMs)}`);
+  const totalMs = Math.max(0, lastDoneAt - startedAt);
+  const stepsTotalMs = records.reduce((sum, record) => sum + record.durationMs, 0);
+  const overheadMs = Math.max(0, totalMs - stepsTotalMs);
+  if (exitCode === 0) {
+    stdout("[quality-gate] timing summary");
+    for (const record of records) {
+      stdout(`  ${record.label} ${formatDuration(record.durationMs)}`);
+    }
+    stdout(`[quality-gate] total ${formatDuration(totalMs)}`);
   }
-  stdout(`[quality-gate] total ${formatDuration(totalMs)}`);
-  return { exitCode: 0, records, totalMs };
+  return { exitCode, records, totalMs, stepsTotalMs, overheadMs };
 };
 
 const writeTimingSummary = (result) => {
@@ -99,8 +108,9 @@ const writeTimingSummary = (result) => {
     `${JSON.stringify(
       {
         recordedAt: new Date().toISOString(),
-        totalMs:
-          result.totalMs ?? result.records.reduce((sum, record) => sum + record.durationMs, 0),
+        totalMs: result.totalMs,
+        stepsTotalMs: result.stepsTotalMs,
+        overheadMs: result.overheadMs,
         steps: result.records,
       },
       null,

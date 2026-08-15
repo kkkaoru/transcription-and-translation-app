@@ -36,7 +36,25 @@ describe("timed quality steps", () => {
     assert.throws(() => describeQualitySteps(["lint", "lint"]), /duplicate quality-step id: lint/u);
   });
 
-  it("records stable identities and stops after the first failure", () => {
+  it("uses whole-run totals and separate step overhead on success", () => {
+    let clock = 1_000;
+    const result = runTimedQualitySteps({
+      steps: ["lint", "format:check"],
+      now: () => {
+        clock += 100;
+        return clock;
+      },
+      runSync: () => ({ status: 0, signal: null }),
+      stdout: () => {},
+      stderr: () => {},
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.totalMs, 600);
+    assert.equal(result.stepsTotalMs, 200);
+    assert.equal(result.overheadMs, 400);
+  });
+
+  it("records stable identities and uses the same whole-run total on child failure", () => {
     let clock = 1_000;
     const invoked = [];
     const result = runTimedQualitySteps({
@@ -84,5 +102,37 @@ describe("timed quality steps", () => {
       ],
     );
     assert.ok(result.records.every((record) => record.durationMs >= 0));
+    assert.equal(result.totalMs, 1_500);
+    assert.equal(result.stepsTotalMs, 500);
+    assert.equal(result.overheadMs, 1_000);
   });
+
+  for (const scenario of [
+    {
+      name: "spawn error",
+      child: { status: null, signal: null, error: new Error("spawn failed") },
+    },
+    {
+      name: "signal",
+      child: { status: null, signal: "SIGTERM" },
+    },
+  ]) {
+    it(`uses the whole-run total after a ${scenario.name}`, () => {
+      let clock = 0;
+      const result = runTimedQualitySteps({
+        steps: ["lint"],
+        now: () => {
+          clock += 10;
+          return clock;
+        },
+        runSync: () => scenario.child,
+        stdout: () => {},
+        stderr: () => {},
+      });
+      assert.equal(result.exitCode, 1);
+      assert.equal(result.totalMs, 30);
+      assert.equal(result.stepsTotalMs, 10);
+      assert.equal(result.overheadMs, 20);
+    });
+  }
 });
