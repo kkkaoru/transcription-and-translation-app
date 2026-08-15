@@ -56,9 +56,11 @@ const JAPANESE_NUMERAL_LEXEMES: &[(&str, NumeralToken)] = &[
     ("ちょう", NumeralToken::LargeUnit(1_000_000_000_000)),
     ("きゅう", NumeralToken::Digit(9)),
     ("ひゃく", NumeralToken::SmallUnit(100)),
+    ("ひゃっ", NumeralToken::SmallUnit(100)),
     ("びゃく", NumeralToken::SmallUnit(100)),
     ("ぴゃく", NumeralToken::SmallUnit(100)),
     ("じゅう", NumeralToken::SmallUnit(10)),
+    ("じゅっ", NumeralToken::SmallUnit(10)),
     ("せん", NumeralToken::SmallUnit(1_000)),
     ("ぜん", NumeralToken::SmallUnit(1_000)),
     ("まん", NumeralToken::LargeUnit(10_000)),
@@ -441,6 +443,21 @@ mod tests {
             ("いちおくにせんまん", "120000000"),
         ] {
             assert_eq!(numeric_surface(reading).as_deref(), Some(expected), "reading: {reading}");
+        }
+    }
+
+    #[test]
+    fn keeps_expanded_and_contracted_numeral_units_equivalent() {
+        for (expanded, contracted, expected) in [
+            ("ろくじゅう", "ろくじゅっ", "60"),
+            ("よんじゅう", "よんじゅっ", "40"),
+            ("ななじゅう", "ななじゅっ", "70"),
+            ("はちじゅう", "はちじゅっ", "80"),
+            ("きゅうじゅう", "きゅうじゅっ", "90"),
+            ("ひゃく", "ひゃっ", "100"),
+        ] {
+            assert_eq!(numeric_surface(expanded).as_deref(), Some(expected));
+            assert_eq!(numeric_surface(contracted).as_deref(), Some(expected));
         }
     }
 

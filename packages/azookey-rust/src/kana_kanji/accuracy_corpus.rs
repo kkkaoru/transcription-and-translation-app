@@ -84,7 +84,7 @@ const INCOMPLETE_STREAMING_MINIMUM_STRICT_PASSED: usize = 9;
 const INCOMPLETE_STREAMING_MINIMUM_VARIANT_PASSED: usize = 10;
 const INCOMPLETE_STREAMING_FINGERPRINT: u64 = 0x2269f712efa11d40;
 const MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL: usize = 13;
-const MEASURED_COMPLETED_FAILURE_MINIMUM_VARIANT_PASSED: usize = 3;
+const MEASURED_COMPLETED_FAILURE_MINIMUM_VARIANT_PASSED: usize = 4;
 const MEASURED_COMPLETED_FAILURE_FINGERPRINT: u64 = 0x27eaa1596c55dae9;
 
 // Raise either expansion minimum after the same inputs produce the same higher
@@ -834,6 +834,14 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     ("はれです", "晴れです"),
     ("はれます", "晴れます"),
     ("いち、に、さん", "1、2、3"),
+    // Expanded and contracted numeral units must reach the same ASCII counter
+    // surface instead of splitting the leading digit into an unrelated word.
+    ("ろくじゅうぱーせんと", "60%"),
+    ("ろくじゅっぱーせんと", "60%"),
+    ("ろくじゅうこ", "60個"),
+    ("ろくじゅっこ", "60個"),
+    ("ひゃくぱーせんと", "100%"),
+    ("ひゃっぱーせんと", "100%"),
     // Phrase-neutral official system dictionary + ConversionOptions::default().
     ("はしのはじからものがおちてます", "橋の端から物が落ちてます"),
     ("あついひなのであついすーぷをのみたくない", "暑い日なので熱いスープを飲みたくない"),
