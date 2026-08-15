@@ -85,6 +85,12 @@ describe("AzooKey Worker text contract", () => {
       protocol: "azookey.text.v1",
       timeoutMs: 125,
     });
+    expect(JSON.parse(readyAzookeyMessage(125, true))).toMatchObject({
+      vibrato: { workerStage: "configured" },
+    });
+    expect(JSON.parse(readyAzookeyMessage(125, false))).toMatchObject({
+      vibrato: { workerStage: "unconfigured" },
+    });
     expect(JSON.parse(readyAzookeyMessage(125, "passthrough"))).toMatchObject({
       vibrato: {
         workerStage: "passthrough",
@@ -1555,6 +1561,12 @@ describe("AzooKey Worker text contract", () => {
         }),
       ),
     ).toBe(false);
+    const brokenUrl = {
+      get url() {
+        throw new Error("unreadable url");
+      },
+    } as unknown as Request;
+    expect(isPublicInferenceRequest(brokenUrl)).toBe(false);
     expect(
       resolveAzookeyHandshakeAuthorization({
         expectedToken: "secret",
@@ -1579,6 +1591,22 @@ describe("AzooKey Worker text contract", () => {
         publicInferenceHost: false,
       }),
     ).toEqual({ handshakeAuthorized: false, unauthorized: true });
+    expect(
+      resolveAzookeyHandshakeAuthorization({
+        expectedToken: undefined,
+        hasAuthorizationHeader: false,
+        tokenMatches: false,
+        publicInferenceHost: true,
+      }),
+    ).toEqual({ handshakeAuthorized: false, unauthorized: false });
+    expect(
+      resolveAzookeyHandshakeAuthorization({
+        expectedToken: "secret",
+        hasAuthorizationHeader: true,
+        tokenMatches: true,
+        publicInferenceHost: true,
+      }),
+    ).toEqual({ handshakeAuthorized: true, unauthorized: false });
 
     const bindingUnauthorized = await openAzookeySocket(
       new Request("https://azookey-compare.kaoru.workers.dev/ws/azookey", {
@@ -1778,6 +1806,25 @@ describe("AzooKey Worker text contract", () => {
     );
     expect(wasmPairResponse.status).toBe(101);
     vi.unstubAllGlobals();
+  });
+
+  it("still upgrades when an injected socket close throws during warmup failure", async () => {
+    const throwingClose = {
+      close: () => {
+        throw new Error("close rejected");
+      },
+    } as unknown as WebSocket;
+    const response = await openAzookeySocket(
+      new Request("https://worker.example/ws/azookey", { headers: { upgrade: "websocket" } }),
+      { AZOOKEY_DICTIONARY_URL: "/azookey/system.azkdict.gz" },
+      {
+        converter: Object.assign((text: string) => text, {
+          warmup: () => Promise.reject(new Error("dictionary unavailable")),
+        }) as AzookeyConverter,
+        socketPair: () => ({ client: throwingClose, server: throwingClose }),
+      },
+    );
+    expect(response.status).toBe(503);
   });
 });
 

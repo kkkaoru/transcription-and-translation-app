@@ -580,6 +580,7 @@ describe("Cloudflare Worker inference adapter", () => {
       ...env,
       AI: ai,
       ASR_PROVIDER: "workers-ai",
+      WORKERS_AI_ASR_TIMEOUT_MS: "1500",
     });
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ text: "AI binding", language: "ja" });
@@ -720,6 +721,31 @@ describe("Cloudflare Worker inference adapter", () => {
     } finally {
       parse.mockRestore();
     }
+  });
+
+  it("routes Workers AI ASR through the bound AI run when the provider is enabled", async () => {
+    const run = vi.fn(() =>
+      Promise.resolve({ results: { channels: [{ alternatives: [{ transcript: "bound" }] }] } }),
+    );
+    const form = new FormData();
+    form.set("file", wav());
+    const response = await createWorker().fetch(
+      asWorkerRequest(
+        new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+          method: "POST",
+          body: form,
+        }),
+      ),
+      {
+        ...env,
+        ASR_PROVIDER: "workers-ai",
+        WORKERS_AI_ASR_TIMEOUT_MS: "1500",
+        AI: { run } as unknown as NonNullable<Env["AI"]>,
+      },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ text: "bound" });
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it("rejects malformed model route configuration and handles preflight", async () => {

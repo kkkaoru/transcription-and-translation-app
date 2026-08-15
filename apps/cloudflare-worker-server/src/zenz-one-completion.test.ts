@@ -17,6 +17,29 @@ describe("one-completion Zenz orchestration", () => {
     expect(trimZenzLeftContext("👨‍👩‍👧‍👦x".repeat(21)).length).toBeGreaterThan(0);
   });
 
+  it("falls back to code-point iteration when Intl.Segmenter is absent", () => {
+    const intl = globalThis.Intl;
+    const { Segmenter, ...rest } = intl as typeof Intl & { Segmenter?: unknown };
+    Object.defineProperty(globalThis, "Intl", { configurable: true, value: rest });
+    try {
+      expect(trimZenzLeftContext("短いあ".repeat(21))).toBe("短いあ".repeat(21).slice(-40));
+    } finally {
+      Object.defineProperty(globalThis, "Intl", { configurable: true, value: intl });
+    }
+    expect(Segmenter).toBeDefined();
+  });
+
+  it("falls back to code-point iteration when Intl itself is absent", () => {
+    const intl = globalThis.Intl;
+    // biome-ignore lint/performance/noDelete: this test must hit the missing-Intl branch
+    delete (globalThis as { Intl?: typeof Intl }).Intl;
+    try {
+      expect(trimZenzLeftContext("短いあ".repeat(21))).toBe("短いあ".repeat(21).slice(-40));
+    } finally {
+      Object.defineProperty(globalThis, "Intl", { configurable: true, value: intl });
+    }
+  });
+
   it("omits the left-context tag when context is empty", () => {
     expect(zenzCandidatePrompt("かんじ", "")).toBe(`${ZENZ_INPUT_TAG}カンジ${ZENZ_OUTPUT_TAG}`);
     expect(zenzCandidatePrompt("かんじ")).toBe(`${ZENZ_INPUT_TAG}カンジ${ZENZ_OUTPUT_TAG}`);
