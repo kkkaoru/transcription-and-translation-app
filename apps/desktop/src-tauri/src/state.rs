@@ -909,6 +909,7 @@ mod tests {
             ok: true,
             error: None,
             zenz_context: None,
+            zenz_verifier: None,
         }
     }
 

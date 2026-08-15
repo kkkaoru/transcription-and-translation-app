@@ -1,8 +1,9 @@
 use crate::config::AppConfig;
 use crate::config::RescoreConfig;
 use crate::kana_kanji::{
-    convert_kana_to_kanji, convert_with_dictionary, AzooKeyDictionary, ConversionOptions,
-    DictionaryPaths,
+    convert_kana_to_kanji, convert_with_dictionary, convert_with_verifier_with_limit,
+    AzooKeyDictionary, ConversionOptions, DictionaryPaths, DraftVerifier, VerificationState,
+    VerifierConversionOptions, VerifierPolicy,
 };
 use crate::vibrato_runtime::{contains_kanji, VibratoReader};
 use caption_bridge_input_lm::marisa::{open_model, MarisaTrie};
@@ -16,7 +17,7 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use unicode_segmentation::UnicodeSegmentation;
@@ -103,6 +104,11 @@ pub struct PipelineStageEvent {
     /// Privacy-safe Zenz prompt metadata. Caption contents are deliberately excluded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zenz_context: Option<ZenzContextDiagnostics>,
+    /// Privacy-safe verifier counters. Caption and prompt text are deliberately
+    /// excluded; the optional object is emitted only for the AzooKey verifier
+    /// path so callers can distinguish disabled, unavailable, and loaded builds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zenz_verifier: Option<ZenzVerifierDiagnostics>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -115,9 +121,42 @@ pub struct ZenzContextDiagnostics {
     pub discarded_session_count: u64,
 }
 
+/// Privacy-safe verifier diagnostics attached to normalize stage events.
+///
+/// `enabled` is the runtime switch, `build_available` tells whether the
+/// optional Candle backend was compiled into this binary, and `loaded` tells
+/// whether its model/tokenizer assets were loaded successfully. Keeping these
+/// three values separate avoids treating a disabled runtime, a feature-off
+/// build, and a load failure as the same silent quality downgrade.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ZenzVerifierDiagnostics {
+    pub enabled: bool,
+    pub build_available: bool,
+    pub loaded: bool,
+    pub called_count: u64,
+    pub skipped_count: u64,
+    pub verified_count: u64,
+    pub prefix_constraint_returned_count: u64,
+    pub exhausted_count: u64,
+    pub exhausted_with_constrained_candidate_count: u64,
+    pub exhausted_with_dictionary_fallback_count: u64,
+    pub skipped_by_policy_count: u64,
+    pub deadline_exceeded_count: u64,
+    pub capability_unavailable_count: u64,
+    pub error_count: u64,
+    pub unverified_fallback_count: u64,
+    pub iteration_count: u64,
+}
+
 impl PipelineStageEvent {
     fn with_zenz_context(mut self, diagnostics: Option<ZenzContextDiagnostics>) -> Self {
         self.zenz_context = diagnostics;
+        self
+    }
+
+    fn with_zenz_verifier(mut self, diagnostics: Option<ZenzVerifierDiagnostics>) -> Self {
+        self.zenz_verifier = diagnostics;
         self
     }
 }
@@ -129,7 +168,12 @@ const NORMALIZE_TEMPERATURE: f32 = 0.0;
 const TRANSLATE_TEMPERATURE: f32 = 0.7;
 const ZENZ_CONTEXT_MAX_GRAPHEMES: usize = 40;
 const ZENZ_CONTEXT_MAX_TURNS: usize = 64;
+const ZENZ_VERIFIER_MAX_ITERATIONS: usize = 10;
+const ZENZ_VERIFIER_INFERENCE_CONFIG_REVISION: &str =
+    "desktop-zenz-verifier-v1;temperature=0;top_p=0.6;max_tokens=512";
 static ZENZ_LEFT_CONTEXT_ENABLED: OnceLock<bool> = OnceLock::new();
+static ZENZ_VERIFIER_ENABLED: OnceLock<bool> = OnceLock::new();
+static ZENZ_VERIFIER_LOAD_WARNING: Once = Once::new();
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
@@ -403,6 +447,131 @@ impl RescoreHandle {
     }
 }
 
+/// Process-wide counters shared by cloned [`Pipeline`] handles. Counters are
+/// intentionally numeric only; no model prompt, candidate, or context text is
+/// retained in diagnostics.
+#[derive(Debug, Default)]
+struct ZenzVerifierMetrics {
+    called: AtomicU64,
+    skipped: AtomicU64,
+    verified: AtomicU64,
+    prefix_constraint_returned: AtomicU64,
+    exhausted: AtomicU64,
+    exhausted_with_constrained_candidate: AtomicU64,
+    exhausted_with_dictionary_fallback: AtomicU64,
+    skipped_by_policy: AtomicU64,
+    deadline_exceeded: AtomicU64,
+    capability_unavailable: AtomicU64,
+    error: AtomicU64,
+    unverified_fallback: AtomicU64,
+    iterations: AtomicU64,
+}
+
+impl ZenzVerifierMetrics {
+    fn record_disabled(&self) {
+        self.skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_result(&self, state: &VerificationState, iterations: usize) {
+        if matches!(state, VerificationState::SkippedByPolicy) {
+            self.skipped.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.called.fetch_add(1, Ordering::Relaxed);
+        }
+        self.iterations.fetch_add(iterations as u64, Ordering::Relaxed);
+        match state {
+            VerificationState::Verified => {
+                self.verified.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::PrefixConstraintReturned => {
+                self.prefix_constraint_returned.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::Exhausted => {
+                self.exhausted.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::ExhaustedWithConstrainedCandidate => {
+                self.exhausted_with_constrained_candidate.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::ExhaustedWithDictionaryFallback => {
+                self.exhausted_with_dictionary_fallback.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::SkippedByPolicy => {
+                self.skipped_by_policy.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::DeadlineExceeded => {
+                self.deadline_exceeded.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::CapabilityUnavailable => {
+                self.capability_unavailable.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::Error => {
+                self.error.fetch_add(1, Ordering::Relaxed);
+            }
+            VerificationState::UnverifiedFallback => {
+                self.unverified_fallback.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn snapshot(&self, enabled: bool, loaded: bool) -> ZenzVerifierDiagnostics {
+        ZenzVerifierDiagnostics {
+            enabled,
+            build_available: zenz_verifier_build_available(),
+            loaded,
+            called_count: self.called.load(Ordering::Relaxed),
+            skipped_count: self.skipped.load(Ordering::Relaxed),
+            verified_count: self.verified.load(Ordering::Relaxed),
+            prefix_constraint_returned_count: self
+                .prefix_constraint_returned
+                .load(Ordering::Relaxed),
+            exhausted_count: self.exhausted.load(Ordering::Relaxed),
+            exhausted_with_constrained_candidate_count: self
+                .exhausted_with_constrained_candidate
+                .load(Ordering::Relaxed),
+            exhausted_with_dictionary_fallback_count: self
+                .exhausted_with_dictionary_fallback
+                .load(Ordering::Relaxed),
+            skipped_by_policy_count: self.skipped_by_policy.load(Ordering::Relaxed),
+            deadline_exceeded_count: self.deadline_exceeded.load(Ordering::Relaxed),
+            capability_unavailable_count: self.capability_unavailable.load(Ordering::Relaxed),
+            error_count: self.error.load(Ordering::Relaxed),
+            unverified_fallback_count: self.unverified_fallback.load(Ordering::Relaxed),
+            iteration_count: self.iterations.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Shared mutable verifier slot. The Candle implementation is intentionally
+/// hidden behind a mutex because the AzooKey contract is synchronous and a
+/// model session is mutable across verification rounds.
+struct ZenzVerifierHandle {
+    inner: Arc<Mutex<Option<Box<dyn DraftVerifier + Send>>>>,
+}
+
+impl Clone for ZenzVerifierHandle {
+    fn clone(&self) -> Self {
+        Self { inner: Arc::clone(&self.inner) }
+    }
+}
+
+impl std::fmt::Debug for ZenzVerifierHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ZenzVerifierHandle").field("loaded", &self.is_loaded()).finish()
+    }
+}
+
+impl Default for ZenzVerifierHandle {
+    fn default() -> Self {
+        Self { inner: Arc::new(Mutex::new(None)) }
+    }
+}
+
+impl ZenzVerifierHandle {
+    fn is_loaded(&self) -> bool {
+        self.inner.lock().map(|guard| guard.is_some()).unwrap_or(false)
+    }
+}
+
 /// Prefer the user-cache tokenizer (copied from the app bundle / download),
 /// then fall back to the source-tree submodule for developer builds.
 fn load_input_lm_tokenizer() -> Result<ZenzTokenizer, String> {
@@ -454,6 +623,8 @@ pub struct Pipeline {
     /// expose a speaker ID, so context cannot currently reset on speaker changes.
     zenz_context: Arc<Mutex<Option<ZenzContextSession>>>,
     zenz_context_discarded_sessions: Arc<AtomicU64>,
+    zenz_verifier: ZenzVerifierHandle,
+    zenz_verifier_metrics: Arc<ZenzVerifierMetrics>,
 }
 
 impl Default for Pipeline {
@@ -465,6 +636,8 @@ impl Default for Pipeline {
             vibrato: Arc::new(Mutex::new(None)),
             zenz_context: Arc::new(Mutex::new(None)),
             zenz_context_discarded_sessions: Arc::new(AtomicU64::new(0)),
+            zenz_verifier: ZenzVerifierHandle::default(),
+            zenz_verifier_metrics: Arc::new(ZenzVerifierMetrics::default()),
         }
     }
 }
@@ -655,6 +828,10 @@ impl Pipeline {
     /// A malformed optional path is recoverable and remains visible in the
     /// normalizer stage, so this warm-up never makes capture fail.
     pub fn warm_azookey_dictionary(&self, config: &AppConfig) -> Result<(), String> {
+        // The verifier is optional and fail-open. Warm it on the same capture
+        // boundary as the dictionary so a model load can never block a live
+        // subtitle midway through an utterance.
+        self.warm_zenz_verifier(config);
         if config.models.normalizer != "azookey-rust" {
             return Ok(());
         }
@@ -673,6 +850,29 @@ impl Pipeline {
         let dictionary = AzooKeyDictionary::from_paths(&paths)?;
         dictionaries.insert(cache_key, dictionary);
         Ok(())
+    }
+
+    /// Reserve the capture-start load boundary for the optional embedded Zenz
+    /// verifier. The first-stage desktop build intentionally has no backend,
+    /// so an enabled switch records `CapabilityUnavailable` and keeps the
+    /// dictionary path alive. The follow-up optional Candle integration will
+    /// populate the same slot here; it must remain non-fatal on load failure.
+    fn warm_zenz_verifier(&self, config: &AppConfig) {
+        if config.models.normalizer != "azookey-rust" || !zenz_verifier_enabled() {
+            return;
+        }
+        // The native verifier feature is intentionally not part of this first
+        // wiring step. An empty slot is an honest capability boundary, and the
+        // shared converter reports `CapabilityUnavailable` instead of claiming
+        // a dictionary-only result was verified. The optional constructor will
+        // populate this slot in the follow-up integration.
+        warn_zenz_verifier_load_once(
+            "verifier runtime switch is on but this build has no zenz-verifier backend; using dictionary fallback",
+        );
+    }
+
+    fn zenz_verifier_diagnostics(&self) -> ZenzVerifierDiagnostics {
+        self.zenz_verifier_metrics.snapshot(zenz_verifier_enabled(), self.zenz_verifier.is_loaded())
     }
 
     /// ASR → normalize only. Translation is intentionally left empty so the UI
@@ -837,6 +1037,10 @@ impl Pipeline {
                         elapsed_ms(normalize_started),
                         true,
                         None,
+                    )
+                    .with_zenz_verifier(
+                        (normalize_model == "azookey-rust")
+                            .then(|| self.zenz_verifier_diagnostics()),
                     ),
                 );
                 text
@@ -860,6 +1064,10 @@ impl Pipeline {
                         elapsed_ms(normalize_started),
                         false,
                         Some(error),
+                    )
+                    .with_zenz_verifier(
+                        (normalize_model == "azookey-rust")
+                            .then(|| self.zenz_verifier_diagnostics()),
                     ),
                 );
                 text
@@ -877,6 +1085,10 @@ impl Pipeline {
                         elapsed_ms(normalize_started),
                         false,
                         Some(error.to_string()),
+                    )
+                    .with_zenz_verifier(
+                        (normalize_model == "azookey-rust")
+                            .then(|| self.zenz_verifier_diagnostics()),
                     ),
                 );
                 // Do not fall back to raw ASR on the standard caption surface:
@@ -1043,8 +1255,9 @@ impl Pipeline {
             output.is_final,
             zenz_left_context_enabled(),
         );
-        let zenz_context_diagnostics =
-            config.models.normalizer.starts_with("zenz-").then_some(left_context.diagnostics);
+        let zenz_context_diagnostics = (config.models.normalizer.starts_with("zenz-")
+            || (config.models.normalizer == "azookey-rust" && zenz_verifier_enabled()))
+        .then_some(left_context.diagnostics);
         let normalize_started = Instant::now();
         let normalized =
             match self.normalize(config, &normalize_input, Some(&left_context.text)).await {
@@ -1062,7 +1275,11 @@ impl Pipeline {
                             true,
                             None,
                         )
-                        .with_zenz_context(zenz_context_diagnostics),
+                        .with_zenz_context(zenz_context_diagnostics)
+                        .with_zenz_verifier(
+                            (config.models.normalizer == "azookey-rust")
+                                .then(|| self.zenz_verifier_diagnostics()),
+                        ),
                     );
                     text
                 }
@@ -1080,7 +1297,11 @@ impl Pipeline {
                             false,
                             Some(error),
                         )
-                        .with_zenz_context(zenz_context_diagnostics),
+                        .with_zenz_context(zenz_context_diagnostics)
+                        .with_zenz_verifier(
+                            (config.models.normalizer == "azookey-rust")
+                                .then(|| self.zenz_verifier_diagnostics()),
+                        ),
                     );
                     text
                 }
@@ -1098,7 +1319,11 @@ impl Pipeline {
                             false,
                             Some(error.to_string()),
                         )
-                        .with_zenz_context(zenz_context_diagnostics),
+                        .with_zenz_context(zenz_context_diagnostics)
+                        .with_zenz_verifier(
+                            (config.models.normalizer == "azookey-rust")
+                                .then(|| self.zenz_verifier_diagnostics()),
+                        ),
                     );
                     return Err(error);
                 }
@@ -1293,7 +1518,12 @@ impl Pipeline {
     ) -> Result<NormalizeOutcome, PipelineError> {
         match config.models.normalizer.as_str() {
             "azookey-rust" => {
-                normalize_azookey_with_cache(config, text, &self.azookey_dictionaries)
+                if !zenz_verifier_enabled() {
+                    self.zenz_verifier_metrics.record_disabled();
+                    normalize_azookey_with_cache(config, text, &self.azookey_dictionaries)
+                } else {
+                    self.normalize_azookey_with_verifier(config, text, left_context)
+                }
             }
             "zenz-v2-q5-k-m-gguf" | "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf" => {
                 // Zenz is a dedicated kana-kanji converter, not an instruction-tuned chat model.
@@ -1307,6 +1537,86 @@ impl Pipeline {
                     .map(NormalizeOutcome::Success)
             }
             other => Err(PipelineError::UnsupportedModel(other.to_string())),
+        }
+    }
+
+    fn normalize_azookey_with_verifier(
+        &self,
+        config: &AppConfig,
+        text: &str,
+        left_context: Option<&str>,
+    ) -> Result<NormalizeOutcome, PipelineError> {
+        // Keep the same empty-input contract as the dictionary-only path. An
+        // empty ASR result is not a verifier skip and should not inflate the
+        // per-caption skipped counter.
+        if text.trim().is_empty() {
+            return Ok(NormalizeOutcome::Success(String::new()));
+        }
+
+        let paths = azookey_dictionary_paths(config);
+        if let Some(error) = azookey_dictionary_paths_error(&paths) {
+            self.zenz_verifier_metrics.record_disabled();
+            return Ok(azookey_fallback(text, error));
+        }
+
+        let cache_key = azookey_dictionary_cache_key(&paths);
+        let mut dictionaries = self.azookey_dictionaries.lock().map_err(|_| {
+            PipelineError::Model("AzooKey dictionary cache lock poisoned".to_string())
+        })?;
+        if !dictionaries.contains_key(&cache_key) {
+            let dictionary = match AzooKeyDictionary::from_paths(&paths) {
+                Ok(dictionary) => dictionary,
+                Err(error) => {
+                    self.zenz_verifier_metrics.record_disabled();
+                    return Ok(azookey_fallback(text, error));
+                }
+            };
+            dictionaries.insert(cache_key.clone(), dictionary);
+        }
+        let dictionary =
+            dictionaries.get(&cache_key).expect("dictionary inserted or already present");
+
+        let mut verifier_options = VerifierConversionOptions::new(
+            ZENZ_VERIFIER_MAX_ITERATIONS,
+            ZENZ_VERIFIER_INFERENCE_CONFIG_REVISION,
+        )
+        .with_policy(VerifierPolicy::require_left_context());
+        if let Some(left_context) = left_context {
+            // Do not decide in the desktop layer whether context is usable.
+            // The shared AzooKey policy owns that decision and reports
+            // `SkippedByPolicy` when the snapshot is empty or whitespace-only.
+            verifier_options = verifier_options.with_left_context(left_context.as_bytes());
+        }
+
+        let mut verifier_guard = self
+            .zenz_verifier
+            .inner
+            .lock()
+            .map_err(|_| PipelineError::Model("Zenz verifier lock poisoned".to_string()))?;
+        let verifier =
+            verifier_guard.as_mut().map(|verifier| verifier.as_mut() as &mut dyn DraftVerifier);
+        let conversion = convert_with_verifier_with_limit(
+            text,
+            dictionary,
+            ConversionOptions::default(),
+            verifier,
+            verifier_options,
+        );
+
+        self.zenz_verifier_metrics
+            .record_result(&conversion.verification_state, conversion.verification_iterations);
+        let converted = conversion.candidate.text;
+        if conversion.verification_state == VerificationState::Verified {
+            Ok(NormalizeOutcome::Success(converted))
+        } else {
+            Ok(NormalizeOutcome::Fallback {
+                text: converted,
+                error: format!(
+                    "Zenz verifier state={} iterations={}",
+                    verification_state_label(&conversion.verification_state),
+                    conversion.verification_iterations
+                ),
+            })
         }
     }
 
@@ -1448,6 +1758,61 @@ fn zenz_left_context_enabled() -> bool {
         }
         enabled
     })
+}
+
+fn zenz_verifier_enabled_for(
+    runtime_setting: Option<&str>,
+    build_enable_flag: Option<&str>,
+) -> bool {
+    parse_zenz_left_context_setting(runtime_setting)
+        .unwrap_or_else(|| parse_zenz_left_context_setting(build_enable_flag).unwrap_or(false))
+}
+
+fn zenz_verifier_enabled() -> bool {
+    *ZENZ_VERIFIER_ENABLED.get_or_init(|| {
+        let runtime_setting = std::env::var("CAPTION_BRIDGE_ZENZ_VERIFIER").ok();
+        let enabled = zenz_verifier_enabled_for(
+            runtime_setting.as_deref(),
+            option_env!("CAPTION_BRIDGE_ENABLE_ZENZ_VERIFIER"),
+        );
+        if runtime_setting
+            .as_deref()
+            .is_some_and(|value| parse_zenz_left_context_setting(Some(value)).is_none())
+        {
+            log::warn!(
+                target: "pipeline_normalize",
+                "ignoring invalid CAPTION_BRIDGE_ZENZ_VERIFIER value; expected on/off, true/false, or 1/0"
+            );
+        }
+        enabled
+    })
+}
+
+fn verification_state_label(state: &VerificationState) -> &'static str {
+    match state {
+        VerificationState::Verified => "verified",
+        VerificationState::PrefixConstraintReturned => "prefix_constraint_returned",
+        VerificationState::Exhausted => "exhausted",
+        VerificationState::ExhaustedWithConstrainedCandidate => {
+            "exhausted_with_constrained_candidate"
+        }
+        VerificationState::ExhaustedWithDictionaryFallback => "exhausted_with_dictionary_fallback",
+        VerificationState::SkippedByPolicy => "skipped_by_policy",
+        VerificationState::DeadlineExceeded => "deadline_exceeded",
+        VerificationState::CapabilityUnavailable => "capability_unavailable",
+        VerificationState::Error => "error",
+        VerificationState::UnverifiedFallback => "unverified_fallback",
+    }
+}
+
+fn zenz_verifier_build_available() -> bool {
+    false
+}
+
+fn warn_zenz_verifier_load_once(message: &str) {
+    ZENZ_VERIFIER_LOAD_WARNING.call_once(|| {
+        log::warn!(target: "pipeline_normalize", "{message}");
+    });
 }
 
 fn grapheme_count(text: &str) -> usize {
@@ -1817,6 +2182,7 @@ fn stage_event_with_surface(
         ok,
         error,
         zenz_context: None,
+        zenz_verifier: None,
     }
 }
 
@@ -1989,9 +2355,11 @@ mod tests {
         repair_caption_phrase_confusions, repair_hearing_phrase_confusion,
         repair_weather_reading_confusion, resolve_utterance_id, run_rescore_with_timeout, snippet,
         source_ready_caption, source_ready_caption_with_input, stage_event,
-        stage_event_with_surface, with_translation, zenz_left_context_enabled_for, zenz_prompt,
-        CaptionPayload, ChatPurpose, NormalizeOutcome, ParapperRecognitionInput, Pipeline,
-        PipelineStageEvent, STAGE_SNIPPET_CHARS,
+        stage_event_with_surface, verification_state_label, with_translation,
+        zenz_left_context_enabled_for, zenz_prompt, zenz_verifier_build_available,
+        zenz_verifier_enabled_for, CaptionPayload, ChatPurpose, NormalizeOutcome,
+        ParapperRecognitionInput, Pipeline, PipelineStageEvent, ZenzVerifierDiagnostics,
+        ZenzVerifierMetrics, STAGE_SNIPPET_CHARS,
     };
     use crate::config::AppConfig;
     use std::collections::HashMap;
@@ -2475,6 +2843,124 @@ mod tests {
     }
 
     #[test]
+    fn zenz_verifier_runtime_setting_defaults_off_and_runtime_wins() {
+        assert!(!zenz_verifier_enabled_for(None, None));
+        assert!(!zenz_verifier_enabled_for(None, Some("invalid")));
+        assert!(zenz_verifier_enabled_for(None, Some("1")));
+        assert!(zenz_verifier_enabled_for(None, Some(" TRUE ")));
+        assert!(zenz_verifier_enabled_for(None, Some("on")));
+        assert!(!zenz_verifier_enabled_for(None, Some("0")));
+        assert!(!zenz_verifier_enabled_for(None, Some("false")));
+        assert!(!zenz_verifier_enabled_for(None, Some(" OFF ")));
+        assert!(zenz_verifier_enabled_for(Some("on"), Some("0")));
+        assert!(!zenz_verifier_enabled_for(Some("off"), Some("1")));
+        // Invalid runtime values deliberately fall back to the build default.
+        assert!(zenz_verifier_enabled_for(Some("invalid"), Some("1")));
+        assert!(!zenz_verifier_enabled_for(Some("invalid"), None));
+    }
+
+    #[test]
+    fn zenz_verifier_metrics_expose_each_state_without_text() {
+        let metrics = ZenzVerifierMetrics::default();
+        use crate::kana_kanji::VerificationState;
+        let states = [
+            VerificationState::Verified,
+            VerificationState::PrefixConstraintReturned,
+            VerificationState::Exhausted,
+            VerificationState::ExhaustedWithConstrainedCandidate,
+            VerificationState::ExhaustedWithDictionaryFallback,
+            VerificationState::SkippedByPolicy,
+            VerificationState::DeadlineExceeded,
+            VerificationState::CapabilityUnavailable,
+            VerificationState::Error,
+            VerificationState::UnverifiedFallback,
+        ];
+        for (iterations, state) in states.iter().enumerate() {
+            metrics.record_result(state, iterations + 1);
+        }
+        let diagnostics = metrics.snapshot(false, false);
+        assert!(!diagnostics.enabled);
+        assert!(!diagnostics.build_available);
+        assert!(!diagnostics.loaded);
+        assert_eq!(diagnostics.called_count, states.len() as u64 - 1);
+        assert_eq!(diagnostics.skipped_count, 1);
+        assert_eq!(diagnostics.verified_count, 1);
+        assert_eq!(diagnostics.prefix_constraint_returned_count, 1);
+        assert_eq!(diagnostics.exhausted_count, 1);
+        assert_eq!(diagnostics.exhausted_with_constrained_candidate_count, 1);
+        assert_eq!(diagnostics.exhausted_with_dictionary_fallback_count, 1);
+        assert_eq!(diagnostics.skipped_by_policy_count, 1);
+        assert_eq!(diagnostics.deadline_exceeded_count, 1);
+        assert_eq!(diagnostics.capability_unavailable_count, 1);
+        assert_eq!(diagnostics.error_count, 1);
+        assert_eq!(diagnostics.unverified_fallback_count, 1);
+        assert_eq!(diagnostics.iteration_count, (1..=states.len()).sum::<usize>() as u64);
+        assert_eq!(
+            verification_state_label(&VerificationState::DeadlineExceeded),
+            "deadline_exceeded"
+        );
+    }
+
+    #[test]
+    fn verifier_slot_is_empty_in_default_build_and_diagnostics_say_unavailable() {
+        let pipeline = Pipeline::default();
+        assert!(!pipeline.zenz_verifier.is_loaded());
+        assert!(!zenz_verifier_build_available());
+        let diagnostics: ZenzVerifierDiagnostics = pipeline.zenz_verifier_diagnostics();
+        assert!(!diagnostics.enabled);
+        assert!(!diagnostics.build_available);
+        assert!(!diagnostics.loaded);
+    }
+
+    #[test]
+    fn verifier_none_path_keeps_dictionary_caption_and_reports_capability_unavailable() {
+        let dictionary = crate::kana_kanji::AzooKeyDictionary::default();
+        let result = crate::kana_kanji::convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            crate::kana_kanji::ConversionOptions::default(),
+            None,
+            crate::kana_kanji::VerifierConversionOptions::new(
+                super::ZENZ_VERIFIER_MAX_ITERATIONS,
+                super::ZENZ_VERIFIER_INFERENCE_CONFIG_REVISION,
+            )
+            .with_left_context("左文脈"),
+        );
+        assert_eq!(
+            result.verification_state,
+            crate::kana_kanji::VerificationState::CapabilityUnavailable
+        );
+        assert!(!result.candidate.text.is_empty());
+    }
+
+    #[test]
+    fn pipeline_verifier_slot_falls_back_without_erasing_dictionary_text() {
+        let _dictionary_env_guard = DICTIONARY_ENV_LOCK.blocking_lock();
+        let mut config = AppConfig::default();
+        config.models.paths.insert(
+            "azookey-rust".to_string(),
+            official_system_dictionary_path().display().to_string(),
+        );
+        let pipeline = Pipeline::default();
+        let outcome = pipeline
+            .normalize_azookey_with_verifier(&config, "きょうははいしんです", Some("前の字幕"))
+            .expect("dictionary conversion should remain available");
+        match outcome {
+            NormalizeOutcome::Fallback { text, error } => {
+                assert!(!text.is_empty());
+                assert!(error.contains("capability_unavailable"));
+            }
+            NormalizeOutcome::Success(text) => {
+                panic!("an empty verifier slot must not report success: {text}")
+            }
+        }
+        let diagnostics = pipeline.zenz_verifier_diagnostics();
+        assert_eq!(diagnostics.called_count, 1);
+        assert_eq!(diagnostics.capability_unavailable_count, 1);
+        assert_eq!(diagnostics.iteration_count, 0);
+    }
+
+    #[test]
     fn zenz_context_keeps_each_final_turn_once_and_resets_at_capture_boundaries() {
         let pipeline = Pipeline::default();
         let empty = pipeline.zenz_left_context("session-a", Some(1), 10, 20, false, true);
@@ -2839,6 +3325,24 @@ mod tests {
                 turn_count: 2,
                 discarded_session_count: 1,
             }),
+            zenz_verifier: Some(super::ZenzVerifierDiagnostics {
+                enabled: false,
+                build_available: false,
+                loaded: false,
+                called_count: 0,
+                skipped_count: 1,
+                verified_count: 0,
+                prefix_constraint_returned_count: 0,
+                exhausted_count: 0,
+                exhausted_with_constrained_candidate_count: 0,
+                exhausted_with_dictionary_fallback_count: 0,
+                skipped_by_policy_count: 0,
+                deadline_exceeded_count: 0,
+                capability_unavailable_count: 0,
+                error_count: 0,
+                unverified_fallback_count: 0,
+                iteration_count: 0,
+            }),
         };
         let value = serde_json::to_value(&event).expect("serialize");
         assert_eq!(value["stage"], "asr");
@@ -2856,6 +3360,10 @@ mod tests {
         assert_eq!(value["zenzContext"]["characterCount"], 12);
         assert_eq!(value["zenzContext"]["turnCount"], 2);
         assert_eq!(value["zenzContext"]["discardedSessionCount"], 1);
+        assert_eq!(value["zenzVerifier"]["enabled"], false);
+        assert_eq!(value["zenzVerifier"]["buildAvailable"], false);
+        assert_eq!(value["zenzVerifier"]["skippedCount"], 1);
+        assert!(value["zenzVerifier"].get("text").is_none());
         assert!(value["error"].is_null());
     }
 
