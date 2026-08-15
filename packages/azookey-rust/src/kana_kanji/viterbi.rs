@@ -879,7 +879,7 @@ pub fn build_lattice(
                 LatticeEdgeSpec {
                     start,
                     end,
-                    reading: entry.reading,
+                    reading: entry.reading.to_string(),
                     surface,
                     score: entry.value + context_score,
                     lcid: entry.lcid,
@@ -2634,7 +2634,7 @@ fn particle_following_shorter_prefix_penalty(
     let has_strictly_longer_content = entries.iter().any(|other| {
         let other_len = other.reading.chars().count();
         other_len > len
-            && other.reading.starts_with(&entry.reading)
+            && other.reading.starts_with(entry.reading.as_str())
             && is_longer_lexical_content_entry(other)
     });
     if has_strictly_longer_content {
@@ -2803,8 +2803,8 @@ fn single_kanji_before_verb_bonus(
     let has_longer_extension = same_start_entries.iter().any(|candidate| {
         let candidate_len = candidate.reading.chars().count();
         candidate_len > entry_len
-            && candidate.reading.starts_with(&entry.reading)
-            && candidate.surface.starts_with(&entry.surface)
+            && candidate.reading.starts_with(entry.reading.as_str())
+            && candidate.surface.starts_with(entry.surface.as_str())
             && contains_kanji(&candidate.surface)
             && candidate.surface.chars().any(is_hiragana)
     });
@@ -2876,7 +2876,7 @@ fn bare_kanji_stem_before_verb_penalty(
     let has_conjugational_stem_alternative =
         dictionary.lookup_exact(&entry.reading).unwrap_or_default().iter().any(|candidate| {
             candidate.surface != entry.surface
-                && candidate.surface.starts_with(&entry.surface)
+                && candidate.surface.starts_with(entry.surface.as_str())
                 && candidate.surface.chars().count() > entry.surface.chars().count()
                 && is_conjugational_content_cid(candidate.lcid)
                 && candidate.surface.chars().any(is_hiragana)
@@ -3908,7 +3908,7 @@ fn dictionary_surface_for_source(entry: &DictionaryEntry, source: &[char]) -> St
     // for readings that already carry `ー` (`すーぷ` → `スープ`).
     if entry.raw_ruby_identity {
         return if should_emit_raw_ruby_surface(entry, source) {
-            entry.surface.clone()
+            entry.surface.to_string()
         } else {
             source_surface
         };
@@ -3920,7 +3920,7 @@ fn dictionary_surface_for_source(entry: &DictionaryEntry, source: &[char]) -> St
     {
         return source_surface;
     }
-    entry.surface.clone()
+    entry.surface.to_string()
 }
 
 fn continues_numeric_chain_through_comma(state: &PathState, surface: &str, reading: &str) -> bool {
@@ -4045,7 +4045,7 @@ fn contextual_entry_bonus(
             .iter()
             .any(|candidate| {
                 candidate.reading.chars().count() > 1
-                    && candidate.reading.starts_with(&entry.reading)
+                    && candidate.reading.starts_with(entry.reading.as_str())
                     && contains_kanji(&candidate.surface)
             })
     {
@@ -4236,8 +4236,8 @@ fn identity_fallback_entry(
                 * IDENTITY_FALLBACK_LENGTH_PENALTY)
     };
     Some(DictionaryEntry {
-        reading: reading.iter().collect(),
-        surface: reading.iter().collect(),
+        reading: reading.iter().collect::<String>().into(),
+        surface: reading.iter().collect::<String>().into(),
         lcid: candidate.lcid,
         rcid: candidate.rcid,
         mid: candidate.mid,
@@ -4434,7 +4434,7 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
             && leftover != 1
             && !leftover_starts_with_small_kana
             && !cuts_into_following_verb
-            && other.reading.starts_with(&entry.reading)
+            && other.reading.starts_with(entry.reading.as_str())
             && other.surface != other.reading
             && contains_kanji(&other.surface)
             && !is_particle_reading(&other.reading)
@@ -4573,7 +4573,7 @@ fn grammatical_lattice_continuations_from_lookup(
         .entries_starting_at(start)
         .iter()
         .filter(|continuation| is_grammatical_continuation_entry(continuation))
-        .map(|continuation| continuation.reading.clone())
+        .map(|continuation| continuation.reading.to_string())
         .collect()
 }
 
@@ -4585,7 +4585,7 @@ fn particle_continuations_from_lookup(lookup: &SpanLookup<'_>, start: usize) -> 
         .entries_starting_at(start)
         .iter()
         .filter(|continuation| is_particle_reading(&continuation.reading))
-        .map(|continuation| continuation.reading.clone())
+        .map(|continuation| continuation.reading.to_string())
         .collect()
 }
 
@@ -4609,7 +4609,7 @@ fn grammatical_continuations_starting_at(
                 && start + continuation_len <= chars.len()
                 && keep(&continuation)
             {
-                Some(continuation.reading)
+                Some(continuation.reading.to_string())
             } else {
                 None
             }
@@ -4672,7 +4672,7 @@ fn longer_lexical_row_eats_into_following_particle(
         }
         let short_is_kanji = contains_kanji(&short.surface);
         let short_piece = short_is_kanji || short.surface == short.reading;
-        if !short_piece || !entry.reading.starts_with(&short.reading) {
+        if !short_piece || !entry.reading.starts_with(short.reading.as_str()) {
             return false;
         }
         let leftover = entry.reading.chars().skip(short_len).collect::<String>();
@@ -4712,11 +4712,11 @@ fn longer_lexical_row_glues_leading_particle_to_one_mora(
         if particle_len == 0 || particle_len >= reading_len {
             return false;
         }
-        if !entry.reading.starts_with(&particle.reading) {
+        if !entry.reading.starts_with(particle.reading.as_str()) {
             return false;
         }
         let leftover: String = entry.reading.chars().skip(particle_len).collect();
-        if leftover.chars().count() != 1 || !entry.surface.starts_with(&particle.reading) {
+        if leftover.chars().count() != 1 || !entry.surface.starts_with(particle.reading.as_str()) {
             return false;
         }
         let after_particle = start + particle_len;

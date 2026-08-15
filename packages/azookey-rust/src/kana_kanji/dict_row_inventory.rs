@@ -486,8 +486,8 @@ fn synthetic_entry(
     value: f32,
 ) -> DictionaryEntry {
     DictionaryEntry {
-        reading: reading.to_string(),
-        surface: surface.to_string(),
+        reading: reading.into(),
+        surface: surface.into(),
         lcid,
         rcid,
         mid: 501,

@@ -1,12 +1,14 @@
 use super::normalization::{is_boundary, to_hiragana, to_hiragana_cow, to_katakana};
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs;
-use std::ops::Range;
+use std::ops::{Deref, Range};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 // Upstream `DicdataStore.midCount` is 502. MID 501 is the highest current
 // index; `MIDData.totalCount` is an enum bookkeeping value, not matrix width.
@@ -68,10 +70,103 @@ const PORTABLE_LOUDS_TEXT_FILE_COUNT: usize = 422;
 // rows for repeated lattice work, but never retain arbitrary misses forever.
 const SYSTEM_ENTRY_CACHE_MAX_ENTRIES: usize = 1_024;
 
+/// Interned dictionary text. Cheap to clone and still dereferences as `str`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InternedText(Arc<str>);
+
+impl InternedText {
+    pub fn new(text: impl AsRef<str>) -> Self {
+        Self(Arc::<str>::from(text.as_ref()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for InternedText {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for InternedText {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for InternedText {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for InternedText {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for InternedText {
+    fn from(value: String) -> Self {
+        Self(Arc::<str>::from(value))
+    }
+}
+
+impl PartialEq<str> for InternedText {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for InternedText {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for InternedText {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<InternedText> for str {
+    fn eq(&self, other: &InternedText) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<InternedText> for &str {
+    fn eq(&self, other: &InternedText) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl PartialEq<InternedText> for String {
+    fn eq(&self, other: &InternedText) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl From<InternedText> for String {
+    fn from(value: InternedText) -> Self {
+        value.as_str().to_string()
+    }
+}
+
+impl fmt::Display for InternedText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictionaryEntry {
-    pub reading: String,
-    pub surface: String,
+    pub reading: InternedText,
+    pub surface: InternedText,
     pub lcid: u16,
     pub rcid: u16,
     pub mid: u16,
@@ -89,10 +184,10 @@ pub struct DictionaryEntry {
 }
 
 impl DictionaryEntry {
-    pub fn plain(reading: impl Into<String>, surface: impl Into<String>, value: f32) -> Self {
+    pub fn plain(reading: impl AsRef<str>, surface: impl AsRef<str>, value: f32) -> Self {
         Self {
-            reading: reading.into(),
-            surface: surface.into(),
+            reading: InternedText::new(reading),
+            surface: InternedText::new(surface),
             lcid: DEFAULT_CID,
             rcid: DEFAULT_CID,
             mid: DEFAULT_MID,
@@ -1596,8 +1691,8 @@ fn parse_tsv(path: &Path, user_supplied: bool) -> Result<Vec<DictionaryEntry>, S
             let reading = columns.first()?.trim();
             let surface = columns.get(1)?.trim();
             (!reading.is_empty() && !surface.is_empty()).then(|| DictionaryEntry {
-                reading: to_hiragana(reading),
-                surface: surface.to_string(),
+                reading: InternedText::new(to_hiragana(reading)),
+                surface: InternedText::new(surface),
                 value: columns.get(2).and_then(|value| value.parse().ok()).unwrap_or(
                     if user_supplied {
                         DEFAULT_USER_TSV_ENTRY_VALUE
@@ -1663,7 +1758,8 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
     // is then rejected by the full-conversion quality filter and loses the
     // usable identity candidate entirely.
     let raw_reading = fields.next().unwrap_or_default().to_string();
-    let reading = to_hiragana(&raw_reading);
+    let reading = InternedText::new(to_hiragana(&raw_reading));
+    let raw_reading = InternedText::new(raw_reading);
     let repeated_reading_bytes = count
         .checked_mul(reading.len())
         .and_then(|bytes| bytes.checked_mul(2))
@@ -1682,9 +1778,10 @@ fn parse_loudstxt3_record(bytes: &[u8]) -> Result<Vec<DictionaryEntry>, String> 
     for index in 0..count {
         let base = LOUDSTXT3_COUNT_BYTES + index * LOUDSTXT3_ENTRY_BYTES;
         let serialized_surface = fields.next().unwrap_or_default();
-        let raw_ruby_identity = serialized_surface.is_empty() && raw_reading != reading;
+        let raw_ruby_identity =
+            serialized_surface.is_empty() && raw_reading.as_str() != reading.as_str();
         let surface = if !serialized_surface.is_empty() {
-            serialized_surface.to_string()
+            InternedText::new(serialized_surface)
         } else {
             raw_reading.clone()
         };
