@@ -121,19 +121,40 @@ coverage thresholds.
 ## Bundle-size decision
 
 A measured macOS arm64 release attributed almost all of the gateway executable
-to Bun's statically embedded runtime, not to this repository's gateway code:
+to Bun's statically embedded runtime, not to this repository's gateway code.
+Remeasured 2026-08-16 from the 08:07 install plus `/tmp` compiles. The app was
+not reinstalled.
 
-- the signed gateway was 63,113,408 bytes;
-- an empty stripped Bun standalone executable was 62,954,328 bytes;
-- the minified gateway payload added one 16,384-byte Mach-O page;
-- `bun build --compile` already uses `--minify`, and the macOS finalizer already
-  runs `strip -Sx`; stripping the installed gateway again removed zero bytes.
+| Artifact | Bytes |
+| --- | ---: |
+| Installed `kotoba-inference-gateway` | 63,113,408 (60.2 MiB, 37% of the 161 MiB `.app`) |
+| `bun build --compile --minify` of this gateway | 63,462,626 |
+| Same flags on `console.log("ok")` | 63,446,114 |
+| Gateway minus hello-world | **16,512** |
+| Minified JS (`--target=bun`, 10 modules) | 24,692 |
+| `--compile --minify --bytecode` | 63,726,818 (**+264 KiB**) |
+| `strip -x` of the installed gateway | 63,113,408 (unchanged) |
 
-Cargo release-profile settings such as LTO and `codegen-units` cannot reduce
-this executable because the gateway is a Bun standalone binary, not a Rust
-binary. A material reduction requires replacing the Bun executable boundary
-with a smaller runtime or reimplementing the gateway; sharing a Bun runtime
-would not currently help because no other bundled sidecar uses Bun.
+`size -m` on the installed file: `__TEXT` 61,276,160 B, of which `__text`
+52,820,332 B. 716 symbols. This is JavaScriptCore, not debug info and not
+the TypeScript sources.
+
+Desktop Cargo knobs (`strip = "symbols"`, `lto = false` / `thin`) apply to
+`kotoba-beacon` only. The gateway is `bun build --compile --minify
+--target=bun-darwin-arm64` in `scripts/build-sidecar.ts`. LTO on this binary
+is **zero bytes**.
+
+Build settings therefore cannot shrink it. The only reductions are:
+
+1. Stop shipping Bun. Run the 25 KB JS with a system `bun` / `tsx`. The
+   installer drops ~60 MiB (161 → ~100). The single-`.app` contract dies;
+   the user must have a runtime.
+2. Rewrite the gateway in Rust or Go. Parapper (16.7 MiB) is the size floor
+   to aim at. Months, not a profile flag.
+
+**This 60 MiB is Bun. The +1.12 GiB installer question is GGUF weights.**
+Skipping model bundling does not remove the 60 MiB. Compiling the gateway
+smaller does not change whether Hy-MT2 Q4 ships in the `.app`.
 
 We also measured fat LTO plus one codegen unit for the Rust Parapper sidecar.
 It reduced a controlled stripped release from 16,925,552 to 13,585,888 bytes
