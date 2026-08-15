@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   assembleConversionTrace,
@@ -12,6 +13,9 @@ import {
   buildVibratoFallbackStep,
   buildVibratoSkippedStep,
   buildWorkerWsStep,
+  CONVERSION_STATUS_FALLBACK,
+  CONVERSION_STATUS_INVALID_ARGUMENT,
+  CONVERSION_STATUS_INVALID_UTF8,
   conversionTraceDisplayLines,
   describeConversionStatus,
   describeWorkerConversionDiagnostics,
@@ -22,6 +26,33 @@ import {
 } from "./conversion-trace";
 
 describe("conversion trace helpers", () => {
+  it("keeps conversion-status bits identical across wasm, worker, and compare", () => {
+    const workerSource = readFileSync(
+      new URL("../../../cloudflare-worker-server/src/azookey.ts", import.meta.url),
+      "utf8",
+    );
+    const wasmSource = readFileSync(
+      new URL("../../../../packages/azookey-wasm/src/lib.rs", import.meta.url),
+      "utf8",
+    );
+    const expected = {
+      fallback: 1,
+      invalidUtf8: 2,
+      invalidArgument: 4,
+    };
+    expect({
+      fallback: CONVERSION_STATUS_FALLBACK,
+      invalidUtf8: CONVERSION_STATUS_INVALID_UTF8,
+      invalidArgument: CONVERSION_STATUS_INVALID_ARGUMENT,
+    }).toStrictEqual(expected);
+    expect(workerSource).toMatch(/AZOOKEY_CONVERSION_STATUS_FALLBACK = 1 << 0/);
+    expect(workerSource).toMatch(/AZOOKEY_CONVERSION_STATUS_INVALID_UTF8 = 1 << 1/);
+    expect(workerSource).toMatch(/AZOOKEY_CONVERSION_STATUS_INVALID_ARGUMENT = 1 << 2/);
+    expect(wasmSource).toMatch(/N_BEST_STATUS_FALLBACK: u32 = 1 << 0/);
+    expect(wasmSource).toMatch(/N_BEST_STATUS_INVALID_UTF8: u32 = 1 << 1/);
+    expect(wasmSource).toMatch(/N_BEST_STATUS_INVALID_ARGUMENT: u32 = 1 << 2/);
+  });
+
   it("normalizes source text and labels locations in Japanese", () => {
     expect(normalizeSourceText("  きょう  ")).toBe("きょう");
     expect(traceStepLocationLabel("cloudflare-worker")).toBe("Cloudflare Worker");
