@@ -35,6 +35,34 @@ const SOURCE_INPUT_PATHS = [
   "scripts/build-azookey-wasm.mjs",
 ];
 
+// Non-production inputs under the tracked prefixes. Keep auto-discovery, but
+// never force a WASM rebuild when only tests/examples/fixtures change.
+export const azookeyWasmSourceDigestExclusions = new Map([
+  ["packages/azookey-rust/examples/", "example binaries are not inputs to the published wasm"],
+  ["packages/azookey-rust/testdata/", "test fixtures are not inputs to the published wasm"],
+  [
+    "packages/azookey-rust/src/kana_kanji/accuracy_corpus.rs",
+    "cfg(test)-only module; not linked into wasm release",
+  ],
+  [
+    "packages/azookey-rust/src/kana_kanji/adversarial_corpus.rs",
+    "cfg(test)-only module; not linked into wasm release",
+  ],
+  [
+    "packages/azookey-rust/src/kana_kanji/dict_row_inventory.rs",
+    "cfg(test)-only module; not linked into wasm release",
+  ],
+]);
+
+const isExcludedAzookeyWasmSourcePath = (path) => {
+  if (path === AZOOKEY_WASM_SOURCE_DIGEST_PATH) return true;
+  for (const [excluded, reason] of azookeyWasmSourceDigestExclusions) {
+    if (!reason.trim()) throw new Error(`AzooKey WASM digest exclusion has no reason: ${excluded}`);
+    if (path === excluded || path.startsWith(excluded)) return true;
+  }
+  return false;
+};
+
 const gitPaths = (repositoryRoot, args) =>
   execFileSync("git", ["-C", repositoryRoot, "ls-files", "-z", ...args], {
     encoding: "buffer",
@@ -57,7 +85,7 @@ export const calculateAzookeyWasmSourceDigest = (repositoryRoot = root) => {
     );
   }
   const paths = gitPaths(repositoryRoot, ["--", ...SOURCE_INPUT_PATHS]).filter(
-    (path) => path !== AZOOKEY_WASM_SOURCE_DIGEST_PATH,
+    (path) => !isExcludedAzookeyWasmSourcePath(path),
   );
   const aggregate = createHash("sha256");
   for (const path of paths) {

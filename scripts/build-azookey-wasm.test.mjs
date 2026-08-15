@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import {
   AZOOKEY_WASM_SOURCE_DIGEST_PATH,
+  azookeyWasmSourceDigestExclusions,
   calculateAzookeyWasmSourceDigest,
   reproducibleRustFlags,
 } from "./build-azookey-wasm.mjs";
@@ -61,6 +62,56 @@ describe("AzooKey WASM reproducible build", () => {
       const after = calculateAzookeyWasmSourceDigest(root);
       assert.equal(after.paths.includes("packages/azookey-rust/src/new_module.rs"), true);
       assert.notEqual(after.sha256, changedGenerator.sha256);
+    });
+  });
+
+  it("excludes examples, testdata, and cfg(test)-only modules from the digest", () => {
+    withSourceRepository(({ root, write }) => {
+      write("packages/azookey-rust/examples/probe.rs", "fn main() {}\n");
+      write("packages/azookey-rust/testdata/case.tsv", "input\texpected\n");
+      write(
+        "packages/azookey-rust/src/kana_kanji/accuracy_corpus.rs",
+        "#[cfg(test)] pub fn corpus() {}\n",
+      );
+      write(
+        "packages/azookey-rust/src/kana_kanji/adversarial_corpus.rs",
+        "#[cfg(test)] pub fn adversarial() {}\n",
+      );
+      write(
+        "packages/azookey-rust/src/kana_kanji/dict_row_inventory.rs",
+        "#[cfg(test)] pub fn inventory() {}\n",
+      );
+      write("packages/azookey-rust/src/kana_kanji/viterbi.rs", "pub fn convert() {}\n");
+      execFileSync("git", ["-C", root, "add", "."]);
+
+      const before = calculateAzookeyWasmSourceDigest(root);
+      assert.equal(before.paths.includes("packages/azookey-rust/examples/probe.rs"), false);
+      assert.equal(before.paths.includes("packages/azookey-rust/testdata/case.tsv"), false);
+      assert.equal(
+        before.paths.includes("packages/azookey-rust/src/kana_kanji/accuracy_corpus.rs"),
+        false,
+      );
+      assert.equal(
+        before.paths.includes("packages/azookey-rust/src/kana_kanji/adversarial_corpus.rs"),
+        false,
+      );
+      assert.equal(
+        before.paths.includes("packages/azookey-rust/src/kana_kanji/dict_row_inventory.rs"),
+        false,
+      );
+      assert.equal(before.paths.includes("packages/azookey-rust/src/kana_kanji/viterbi.rs"), true);
+
+      write("packages/azookey-rust/examples/probe.rs", "fn main() { /* changed */ }\n");
+      write("packages/azookey-rust/testdata/case.tsv", "changed\n");
+      write(
+        "packages/azookey-rust/src/kana_kanji/accuracy_corpus.rs",
+        "#[cfg(test)] pub fn corpus_changed() {}\n",
+      );
+      assert.equal(calculateAzookeyWasmSourceDigest(root).sha256, before.sha256);
+
+      for (const [path, reason] of azookeyWasmSourceDigestExclusions) {
+        assert.match(reason, /\S/u, `${path} needs a reason`);
+      }
     });
   });
 
