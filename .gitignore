@@ -14,6 +14,7 @@ apps/desktop/src-tauri/target
 packages/**/target
 packages/**/src-tauri/target
 apps/desktop/src-tauri/gen
+apps/desktop/src-tauri/generated
 .tools
 .codex/
 .claude/
