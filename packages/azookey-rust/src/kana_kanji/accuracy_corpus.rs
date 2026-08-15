@@ -1489,6 +1489,110 @@ fn portable_archive_matches_filesystem_on_caption_fixtures() {
 }
 
 #[test]
+#[ignore = "release-only privacy-safe streaming load benchmark"]
+fn benchmark_privacy_safe_streaming_load() {
+    use std::time::Instant;
+
+    const SYNTHETIC_CLAUSES: &[&str] = &[
+        "きょうのよていをかくにんしてつぎのさぎょうをはじめます",
+        "しりょうのないようをみなおしてひつようなこうもくをせいりします",
+        "じゅんばんをたしかめながらひとつずつけっかをきろくします",
+        "せっていをほぞんしてからもういちどどうさをかくにんします",
+        "さいごにぜんたいをみなおしてつぎのてじゅんをあんないします",
+    ];
+    const TURN_SHAPES: &[(&str, usize, &[usize])] = &[
+        ("synthetic-live-p50", 0, &[16, 32]),
+        ("synthetic-live-p75", 1, &[15, 29, 43, 57, 71, 84, 93]),
+        ("synthetic-live-p90", 2, &[12, 23, 34, 46, 57, 68, 79, 91, 102, 113, 124, 136, 147, 158]),
+        (
+            "synthetic-live-max-revisions",
+            3,
+            &[
+                7, 14, 20, 27, 33, 40, 47, 53, 60, 66, 73, 79, 86, 93, 99, 106, 112, 119, 125, 132,
+                139, 145, 152, 158,
+            ],
+        ),
+        ("synthetic-live-long-growth", 4, &[90, 117, 153, 240, 373, 409]),
+    ];
+
+    fn synthetic_prefix(seed: usize, target_chars: usize) -> String {
+        SYNTHETIC_CLAUSES
+            .iter()
+            .cycle()
+            .skip(seed % SYNTHETIC_CLAUSES.len())
+            .flat_map(|clause| clause.chars())
+            .take(target_chars)
+            .collect()
+    }
+
+    fn percentile(values: &[u128], percentile: usize) -> u128 {
+        let mut sorted = values.to_vec();
+        sorted.sort_unstable();
+        let index = (sorted.len().saturating_sub(1) * percentile).div_ceil(100);
+        sorted[index]
+    }
+
+    let root = crate::dictionary::test_system_dictionary_path();
+    let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(root),
+        ..DictionaryPaths::default()
+    })
+    .expect("official AzooKey dictionary should load");
+    let options = ConversionOptions::default();
+    let mut all_elapsed_us = Vec::new();
+    let mut invocation_count = 0usize;
+
+    for (case_id, seed, revision_lengths) in TURN_SHAPES {
+        let mut previous = String::new();
+        let mut cumulative_us = 0u128;
+        for (revision, target_chars) in revision_lengths.iter().copied().enumerate() {
+            let input = synthetic_prefix(*seed, target_chars);
+            assert_eq!(input.chars().count(), target_chars, "wrong length for {case_id}");
+            assert!(
+                input.starts_with(&previous) && input.len() > previous.len(),
+                "revisions must be strictly growing prefixes for {case_id}"
+            );
+
+            let started = Instant::now();
+            let candidate = convert_with_dictionary(&input, &dictionary, options)
+                .into_iter()
+                .next()
+                .expect("every synthetic revision should produce a candidate");
+            let elapsed_us = started.elapsed().as_micros();
+            assert!(!candidate.text.trim().is_empty());
+            eprintln!(
+                "streaming_load case={case_id} revision={} input_chars={target_chars} elapsed_us={elapsed_us}",
+                revision + 1,
+            );
+            all_elapsed_us.push(elapsed_us);
+            cumulative_us += elapsed_us;
+            invocation_count += 1;
+            previous = input;
+        }
+        eprintln!(
+            "streaming_load_turn case={case_id} revisions={} final_chars={} cumulative_us={cumulative_us}",
+            revision_lengths.len(),
+            revision_lengths.last().copied().unwrap_or_default(),
+        );
+    }
+
+    assert_eq!(invocation_count, 53);
+    eprintln!(
+        "streaming_load_summary profile={} invocations={} dictionary_revision={} n_best={} max_dictionary_word_chars={} preceding={} p50_us={} p95_us={} max_us={} total_us={}",
+        if cfg!(debug_assertions) { "debug" } else { "release" },
+        invocation_count,
+        dictionary.revision(),
+        options.n_best,
+        options.max_dictionary_word_chars,
+        options.preceding.is_some(),
+        percentile(&all_elapsed_us, 50),
+        percentile(&all_elapsed_us, 95),
+        all_elapsed_us.iter().copied().max().unwrap_or_default(),
+        all_elapsed_us.iter().sum::<u128>(),
+    );
+}
+
+#[test]
 #[ignore = "manual filesystem dictionary I/O and timing benchmark"]
 fn benchmark_filesystem_dictionary_lookups() {
     use crate::dictionary::{filesystem_source_read_count, reset_filesystem_source_read_count};
