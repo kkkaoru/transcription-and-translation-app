@@ -635,10 +635,15 @@ pub async fn normalize_parapper_output(
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
     // Preserve the protocol's turn.final marker before moving the full input
     // into normalization. Translation scheduling belongs to the transport
-    // event that closed the turn, not to a derived caption revision.
+    // event that closed the turn, not to a derived caption revision. The
+    // current pipeline copies this flag onto CaptionPayload, so these checks
+    // are logically equivalent today; keeping the transport value and logging
+    // it distinguishes a queue/IPC drop from later scheduling failure.
     let output_is_final = output.is_final;
+    let output_turn_session_id = output.turn_session_id;
+    let output_turn_id = output.turn_id;
     let empty_id =
-        format!("parapper:{}:{}:{}", output.session_id, output.turn_session_id, output.turn_id);
+        format!("parapper:{}:{}:{}", output.session_id, output_turn_session_id, output_turn_id);
     // The frontend queue (`parapper-output-queue.ts`) keeps at most one
     // pending partial and can serialize this item behind a slow in-flight
     // normalizer call, so it can still reach this command after a Stop+Start
@@ -650,7 +655,19 @@ pub async fn normalize_parapper_output(
     // unconditionally current by construction and changes no behavior.
     let capture_generation =
         output.capture_generation.unwrap_or_else(|| state.current_capture_generation());
+    if output_is_final {
+        log::info!(
+            target: "translation_schedule",
+            "turn.final received turn_session_id={output_turn_session_id} turn_id={output_turn_id} is_final=true generation={capture_generation}"
+        );
+    }
     if !parapper_output_generation_is_current(&state, output.capture_generation) {
+        if output_is_final {
+            log::info!(
+                target: "translation_schedule",
+                "translation decision=skip reason=superseded-before-normalize turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}"
+            );
+        }
         // Superseded before any pipeline work started: drop, not error, the
         // same contract as the ASR-empty and translation-backlog superseded
         // paths below. Count it so `get_debug_info` can explain a Parapper
@@ -706,21 +723,38 @@ pub async fn normalize_parapper_output(
     {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state, capture_generation);
-            if should_spawn_parapper_translation(output_is_final)
-                && state.is_capture_generation_current(capture_generation)
-            {
-                spawn_translation(
-                    app.clone(),
-                    config.clone(),
-                    state.pipeline.clone(),
-                    partial.clone(),
-                    capture_generation,
-                    &state,
-                );
+            if should_spawn_parapper_translation(output_is_final) {
+                if state.is_capture_generation_current(capture_generation) {
+                    let spawned = spawn_translation(
+                        app.clone(),
+                        config.clone(),
+                        state.pipeline.clone(),
+                        partial.clone(),
+                        capture_generation,
+                        &state,
+                    );
+                    log::info!(
+                        target: "translation_schedule",
+                        "translation decision={} reason={} turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}",
+                        if spawned { "spawn" } else { "skip" },
+                        if spawned { "protocol-final" } else { "generation-unavailable" },
+                    );
+                } else {
+                    log::info!(
+                        target: "translation_schedule",
+                        "translation decision=skip reason=stale-generation turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}"
+                    );
+                }
             }
             Ok(partial)
         }
         Ok(None) => {
+            if output_is_final {
+                log::info!(
+                    target: "translation_schedule",
+                    "translation decision=skip reason=empty-normalized-final turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}"
+                );
+            }
             // Persistent Parapper output is produced only after its VAD has
             // identified a speech turn. Treat one/two blank revisions as a
             // soft skip, but surface a bounded run as ASR result loss instead
@@ -751,6 +785,12 @@ pub async fn normalize_parapper_output(
             }
         }
         Err(error) => {
+            if output_is_final {
+                log::info!(
+                    target: "translation_schedule",
+                    "translation decision=skip reason=normalization-error turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}"
+                );
+            }
             let detail = redact_runtime_text(&error.to_string());
             if let Some(status) =
                 state.apply_transcription_error_for_generation(capture_generation, &detail)
@@ -933,12 +973,12 @@ fn spawn_translation(
     caption: CaptionPayload,
     generation: u64,
     state: &State<'_, AppState>,
-) {
+) -> bool {
     let Some((ticket, superseded)) = state.register_translation_for_generation(generation) else {
         // Stop has already frozen this generation, or this source result
         // arrived outside an active native capture session.
         log::debug!("skipped background translation because its capture generation is unavailable");
-        return;
+        return false;
     };
     if superseded.is_some() {
         // Keep the current source caption immediate while making translator
@@ -952,6 +992,7 @@ fn spawn_translation(
     tauri::async_runtime::spawn(async move {
         translate_caption(app, config, pipeline, caption, ticket).await;
     });
+    true
 }
 
 async fn translate_caption(
@@ -963,9 +1004,24 @@ async fn translate_caption(
 ) {
     let mut stages: Vec<PipelineStageEvent> = Vec::with_capacity(1);
     let generation = ticket.generation();
+    let caption_id = caption.id.clone();
+    let turn_id = caption_id.rsplit(':').next().filter(|value| value.parse::<u64>().is_ok());
     let mut on_stage =
         |stage: &PipelineStageEvent| emit_pipeline_stage(&app, &config, stage, generation);
     let result = pipeline.complete_translation(&config, caption, &mut stages, &mut on_stage).await;
+    let result_label = match &result {
+        Ok(Some(_)) => "completed",
+        Ok(None) => "completed-noop",
+        Err(_) => "failed",
+    };
+    let publishable =
+        app.try_state::<AppState>().is_some_and(|state| state.translation_is_current(ticket));
+    log::info!(
+        target: "translation_schedule",
+        "translation result={result_label} disposition={} turn_id={} generation={generation}",
+        if publishable { "publishable" } else { "discarded" },
+        turn_id.unwrap_or("unknown"),
+    );
     handle_translation_result(&app, ticket, result);
     if let Some(state) = app.try_state::<AppState>() {
         state.finish_translation(ticket);
