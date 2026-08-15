@@ -7,6 +7,13 @@ const tauriLintConfig = JSON.stringify({
     resources: null,
   },
 });
+const includeCandle = process.env.CAPTION_BRIDGE_DESKTOP_CANDLE_LINT === "1";
+
+// The desktop candle feature pulls in Candle and, through it, a C
+// library. Linting with --all-features would add minutes to every gate
+// run and would build a configuration no CI target builds today.
+// Opt into that separate, non-gate check explicitly when needed.
+const featureArgs = includeCandle ? ["--features", "candle"] : [];
 
 const result = spawnSync(
   "cargo",
@@ -15,7 +22,7 @@ const result = spawnSync(
     "--manifest-path",
     desktopManifest,
     "--all-targets",
-    "--all-features",
+    ...featureArgs,
     "--",
     "-D",
     "warnings",

@@ -6,17 +6,21 @@ use crate::kana_kanji::{
     VerifierConversionOptions, VerifierPolicy,
 };
 use crate::vibrato_runtime::{contains_kanji, VibratoReader};
+#[cfg(feature = "candle")]
+use candle_core::Device;
 use caption_bridge_input_lm::marisa::{open_model, MarisaTrie};
 use caption_bridge_input_lm::model::NgramParams;
 use caption_bridge_input_lm::rescore::{AsrConfusionRules, LmScorer, Rescorer};
 use caption_bridge_input_lm::tokenizer::ZenzTokenizer;
+#[cfg(feature = "candle")]
+use caption_bridge_zenz_verifier::{EmbeddedVerifierLoadError, EmbeddedZenzDraftVerifier};
 use reqwest::multipart;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{hash_map::Entry, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -134,6 +138,8 @@ pub struct ZenzVerifierDiagnostics {
     pub enabled: bool,
     pub build_available: bool,
     pub loaded: bool,
+    pub load_failure_count: u64,
+    pub load_failure_reason: Option<ZenzVerifierLoadFailureReason>,
     pub called_count: u64,
     pub skipped_count: u64,
     pub verified_count: u64,
@@ -147,6 +153,49 @@ pub struct ZenzVerifierDiagnostics {
     pub error_count: u64,
     pub unverified_fallback_count: u64,
     pub iteration_count: u64,
+}
+
+/// Stable, privacy-safe identifiers for failures while loading the optional
+/// embedded verifier. The diagnostic exposes the identifier, never the model
+/// path or the underlying error text.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ZenzVerifierLoadFailureReason {
+    ModelNotFound,
+    TokenizerMismatch,
+    DecodeError,
+    Other,
+}
+
+impl ZenzVerifierLoadFailureReason {
+    #[cfg(feature = "candle")]
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ModelNotFound => "model_not_found",
+            Self::TokenizerMismatch => "tokenizer_mismatch",
+            Self::DecodeError => "decode_error",
+            Self::Other => "other",
+        }
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            Self::ModelNotFound => 1,
+            Self::TokenizerMismatch => 2,
+            Self::DecodeError => 3,
+            Self::Other => 4,
+        }
+    }
+
+    fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::ModelNotFound),
+            2 => Some(Self::TokenizerMismatch),
+            3 => Some(Self::DecodeError),
+            4 => Some(Self::Other),
+            _ => None,
+        }
+    }
 }
 
 impl PipelineStageEvent {
@@ -171,6 +220,15 @@ const ZENZ_CONTEXT_MAX_TURNS: usize = 64;
 const ZENZ_VERIFIER_MAX_ITERATIONS: usize = 10;
 const ZENZ_VERIFIER_INFERENCE_CONFIG_REVISION: &str =
     "desktop-zenz-verifier-v1;temperature=0;top_p=0.6;max_tokens=512";
+#[cfg(feature = "candle")]
+const ZENZ_VERIFIER_MODEL_ID: &str = "zenz-v3.2-small-gguf";
+#[cfg(feature = "candle")]
+const ZENZ_VERIFIER_MODEL_REVISION: &str =
+    "zenz-v3.2-small-gguf@c67e03e07d215c869f591b274c1631170d3e11fe";
+#[cfg(feature = "candle")]
+const ZENZ_VERIFIER_MODEL_PATH_ENV: &str = "CAPTION_BRIDGE_ZENZ_MODEL_PATH";
+#[cfg(feature = "candle")]
+const ZENZ_VERIFIER_MODEL_RUNTIME_DIR_ENV: &str = "CAPTION_BRIDGE_MODEL_RUNTIME_DIR";
 static ZENZ_LEFT_CONTEXT_ENABLED: OnceLock<bool> = OnceLock::new();
 static ZENZ_VERIFIER_ENABLED: OnceLock<bool> = OnceLock::new();
 static ZENZ_VERIFIER_LOAD_WARNING: Once = Once::new();
@@ -452,6 +510,8 @@ impl RescoreHandle {
 /// retained in diagnostics.
 #[derive(Debug, Default)]
 struct ZenzVerifierMetrics {
+    load_failure: AtomicU64,
+    load_failure_reason: AtomicU8,
     called: AtomicU64,
     skipped: AtomicU64,
     verified: AtomicU64,
@@ -468,6 +528,11 @@ struct ZenzVerifierMetrics {
 }
 
 impl ZenzVerifierMetrics {
+    fn record_load_failure(&self, reason: ZenzVerifierLoadFailureReason) {
+        self.load_failure.fetch_add(1, Ordering::Relaxed);
+        self.load_failure_reason.store(reason.code(), Ordering::Relaxed);
+    }
+
     fn record_disabled(&self) {
         self.skipped.fetch_add(1, Ordering::Relaxed);
     }
@@ -518,6 +583,10 @@ impl ZenzVerifierMetrics {
             enabled,
             build_available: zenz_verifier_build_available(),
             loaded,
+            load_failure_count: self.load_failure.load(Ordering::Relaxed),
+            load_failure_reason: ZenzVerifierLoadFailureReason::from_code(
+                self.load_failure_reason.load(Ordering::Relaxed),
+            ),
             called_count: self.called.load(Ordering::Relaxed),
             skipped_count: self.skipped.load(Ordering::Relaxed),
             verified_count: self.verified.load(Ordering::Relaxed),
@@ -546,11 +615,17 @@ impl ZenzVerifierMetrics {
 /// model session is mutable across verification rounds.
 struct ZenzVerifierHandle {
     inner: Arc<Mutex<Option<Box<dyn DraftVerifier + Send>>>>,
+    model_path: Arc<Mutex<Option<PathBuf>>>,
+    tokenizer_directory: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl Clone for ZenzVerifierHandle {
     fn clone(&self) -> Self {
-        Self { inner: Arc::clone(&self.inner) }
+        Self {
+            inner: Arc::clone(&self.inner),
+            model_path: Arc::clone(&self.model_path),
+            tokenizer_directory: Arc::clone(&self.tokenizer_directory),
+        }
     }
 }
 
@@ -562,13 +637,70 @@ impl std::fmt::Debug for ZenzVerifierHandle {
 
 impl Default for ZenzVerifierHandle {
     fn default() -> Self {
-        Self { inner: Arc::new(Mutex::new(None)) }
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+            model_path: Arc::new(Mutex::new(None)),
+            tokenizer_directory: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
 impl ZenzVerifierHandle {
     fn is_loaded(&self) -> bool {
         self.inner.lock().map(|guard| guard.is_some()).unwrap_or(false)
+    }
+
+    #[cfg(feature = "candle")]
+    fn is_loaded_for(&self, model_path: &Path, tokenizer_directory: &Path) -> bool {
+        let loaded = self.inner.lock().map(|guard| guard.is_some()).unwrap_or(false);
+        let same_model = self
+            .model_path
+            .lock()
+            .ok()
+            .and_then(|path| path.as_deref().map(|path| path == model_path))
+            .unwrap_or(false);
+        let same_tokenizer = self
+            .tokenizer_directory
+            .lock()
+            .ok()
+            .and_then(|path| path.as_deref().map(|path| path == tokenizer_directory))
+            .unwrap_or(false);
+        loaded && same_model && same_tokenizer
+    }
+
+    #[cfg(feature = "candle")]
+    fn install(
+        &self,
+        verifier: Box<dyn DraftVerifier + Send>,
+        model_path: PathBuf,
+        tokenizer_directory: PathBuf,
+    ) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        let Ok(mut path) = self.model_path.lock() else {
+            return false;
+        };
+        let Ok(mut tokenizer) = self.tokenizer_directory.lock() else {
+            return false;
+        };
+        *inner = Some(verifier);
+        *path = Some(model_path);
+        *tokenizer = Some(tokenizer_directory);
+        true
+    }
+
+    #[cfg(feature = "candle")]
+    fn clear(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            *inner = None;
+        }
+        if let Ok(mut path) = self.model_path.lock() {
+            *path = None;
+        }
+        if let Ok(mut tokenizer) = self.tokenizer_directory.lock() {
+            *tokenizer = None;
+        }
     }
 }
 
@@ -852,23 +984,83 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Reserve the capture-start load boundary for the optional embedded Zenz
-    /// verifier. The first-stage desktop build intentionally has no backend,
-    /// so an enabled switch records `CapabilityUnavailable` and keeps the
-    /// dictionary path alive. The follow-up optional Candle integration will
-    /// populate the same slot here; it must remain non-fatal on load failure.
+    /// Load the optional embedded Zenz verifier at the capture boundary. Model
+    /// and tokenizer failures are deliberately recoverable: capture continues
+    /// with the dictionary path and diagnostics expose the failure category.
     fn warm_zenz_verifier(&self, config: &AppConfig) {
         if config.models.normalizer != "azookey-rust" || !zenz_verifier_enabled() {
             return;
         }
-        // The native verifier feature is intentionally not part of this first
-        // wiring step. An empty slot is an honest capability boundary, and the
-        // shared converter reports `CapabilityUnavailable` instead of claiming
-        // a dictionary-only result was verified. The optional constructor will
-        // populate this slot in the follow-up integration.
-        warn_zenz_verifier_load_once(
-            "verifier runtime switch is on but this build has no zenz-verifier backend; using dictionary fallback",
-        );
+        #[cfg(not(feature = "candle"))]
+        {
+            // An empty slot is an honest capability boundary, and the shared
+            // converter reports `CapabilityUnavailable` instead of claiming a
+            // dictionary-only result was verified.
+            warn_zenz_verifier_load_once(
+                "verifier runtime switch is on but this build has no zenz-verifier backend; using dictionary fallback",
+            );
+        }
+        #[cfg(feature = "candle")]
+        {
+            let Some(model_path) = zenz_verifier_model_path(config) else {
+                self.zenz_verifier_metrics
+                    .record_load_failure(ZenzVerifierLoadFailureReason::ModelNotFound);
+                warn_zenz_verifier_load_once(
+                    "embedded Zenz verifier load failed reason=model_not_found; using dictionary fallback",
+                );
+                return;
+            };
+            let tokenizer_directory = crate::model_runtime::input_lm_tokenizer_cache_dir();
+            if self.zenz_verifier.is_loaded_for(&model_path, &tokenizer_directory) {
+                return;
+            }
+            // Do not retain a verifier loaded from a previous model path while
+            // a new identity is being checked. A failed replacement must fall
+            // back to the dictionary, never silently use the old model.
+            self.zenz_verifier.clear();
+            if !model_path.is_file() {
+                self.zenz_verifier_metrics
+                    .record_load_failure(ZenzVerifierLoadFailureReason::ModelNotFound);
+                warn_zenz_verifier_load_once(
+                    "embedded Zenz verifier load failed reason=model_not_found; using dictionary fallback",
+                );
+                return;
+            }
+            match EmbeddedZenzDraftVerifier::load(
+                &model_path,
+                &tokenizer_directory,
+                ZENZ_VERIFIER_MODEL_REVISION,
+                &Device::Cpu,
+            ) {
+                Ok(verifier) => {
+                    let elapsed_ms = verifier.load_elapsed().as_millis();
+                    if !self.zenz_verifier.install(
+                        Box::new(verifier),
+                        model_path.clone(),
+                        tokenizer_directory.clone(),
+                    ) {
+                        self.zenz_verifier_metrics
+                            .record_load_failure(ZenzVerifierLoadFailureReason::Other);
+                        warn_zenz_verifier_load_once(
+                            "embedded Zenz verifier load failed reason=other; using dictionary fallback",
+                        );
+                        return;
+                    }
+                    log::info!(
+                        target: "pipeline_normalize",
+                        "embedded Zenz verifier loaded elapsed_ms={elapsed_ms}"
+                    );
+                }
+                Err(error) => {
+                    let reason = zenz_verifier_load_failure_reason(&error);
+                    self.zenz_verifier_metrics.record_load_failure(reason);
+                    warn_zenz_verifier_load_once(&format!(
+                        "embedded Zenz verifier load failed reason={}; using dictionary fallback",
+                        reason.as_str()
+                    ));
+                }
+            }
+        }
     }
 
     fn zenz_verifier_diagnostics(&self) -> ZenzVerifierDiagnostics {
@@ -1794,6 +1986,76 @@ fn zenz_verifier_enabled() -> bool {
     })
 }
 
+#[cfg(feature = "candle")]
+fn zenz_verifier_model_path(config: &AppConfig) -> Option<PathBuf> {
+    let spec = crate::model_runtime::spec(ZENZ_VERIFIER_MODEL_ID)?;
+    if let Some(path) = config
+        .models
+        .paths
+        .get(ZENZ_VERIFIER_MODEL_ID)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let path = expand_model_path(path);
+        return Some(if path.is_dir() { path.join(spec.hf_file) } else { path });
+    }
+    if let Ok(path) = std::env::var(ZENZ_VERIFIER_MODEL_PATH_ENV) {
+        let path = expand_model_path(path.trim());
+        if !path.as_os_str().is_empty() {
+            return Some(if path.is_dir() { path.join(spec.hf_file) } else { path });
+        }
+    }
+    default_zenz_model_runtime_dir()
+        .map(|models_dir| crate::model_runtime::model_path(&models_dir, spec))
+}
+
+#[cfg(feature = "candle")]
+fn default_zenz_model_runtime_dir() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var(ZENZ_VERIFIER_MODEL_RUNTIME_DIR_ENV) {
+        let path = expand_model_path(path.trim());
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library/Application Support/com.kotobabeacon.desktop/models"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|app_data| app_data.join("com.kotobabeacon.desktop/models"));
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
+            .map(|data_dir| data_dir.join("com.kotobabeacon.desktop/models"))
+    }
+}
+
+#[cfg(feature = "candle")]
+fn zenz_verifier_load_failure_reason(
+    error: &EmbeddedVerifierLoadError,
+) -> ZenzVerifierLoadFailureReason {
+    match error {
+        EmbeddedVerifierLoadError::TokenizerMismatch(_) => {
+            ZenzVerifierLoadFailureReason::TokenizerMismatch
+        }
+        EmbeddedVerifierLoadError::Model(_) => ZenzVerifierLoadFailureReason::DecodeError,
+        EmbeddedVerifierLoadError::Io(_)
+        | EmbeddedVerifierLoadError::Tokenizer(_)
+        | EmbeddedVerifierLoadError::InvalidRevision(_) => ZenzVerifierLoadFailureReason::Other,
+    }
+}
+
 fn verification_state_label(state: &VerificationState) -> &'static str {
     match state {
         VerificationState::Verified => "verified",
@@ -1812,7 +2074,7 @@ fn verification_state_label(state: &VerificationState) -> &'static str {
 }
 
 fn zenz_verifier_build_available() -> bool {
-    false
+    cfg!(feature = "candle")
 }
 
 fn warn_zenz_verifier_load_once(message: &str) {
@@ -2876,6 +3138,18 @@ mod tests {
         assert!(!zenz_verifier_enabled_for(Some("invalid"), None));
     }
 
+    #[cfg(feature = "candle")]
+    #[test]
+    fn zenz_verifier_model_path_prefers_config_override() {
+        let mut config = AppConfig::default();
+        let override_path = PathBuf::from("/tmp/zenz-verifier-test.gguf");
+        config
+            .models
+            .paths
+            .insert(super::ZENZ_VERIFIER_MODEL_ID.to_string(), override_path.display().to_string());
+        assert_eq!(super::zenz_verifier_model_path(&config), Some(override_path));
+    }
+
     #[test]
     fn zenz_verifier_metrics_expose_each_state_without_text() {
         let metrics = ZenzVerifierMetrics::default();
@@ -2897,8 +3171,10 @@ mod tests {
         }
         let diagnostics = metrics.snapshot(false, false);
         assert!(!diagnostics.enabled);
-        assert!(!diagnostics.build_available);
+        assert_eq!(diagnostics.build_available, cfg!(feature = "candle"));
         assert!(!diagnostics.loaded);
+        assert_eq!(diagnostics.load_failure_count, 0);
+        assert_eq!(diagnostics.load_failure_reason, None);
         assert_eq!(diagnostics.called_count, states.len() as u64 - 1);
         assert_eq!(diagnostics.skipped_count, 1);
         assert_eq!(diagnostics.verified_count, 1);
@@ -2919,13 +3195,26 @@ mod tests {
     }
 
     #[test]
+    fn zenz_verifier_metrics_expose_load_failure_category_without_error_text() {
+        let metrics = ZenzVerifierMetrics::default();
+        metrics.record_load_failure(super::ZenzVerifierLoadFailureReason::TokenizerMismatch);
+        metrics.record_load_failure(super::ZenzVerifierLoadFailureReason::DecodeError);
+        let diagnostics = metrics.snapshot(false, false);
+        assert_eq!(diagnostics.load_failure_count, 2);
+        assert_eq!(
+            diagnostics.load_failure_reason,
+            Some(super::ZenzVerifierLoadFailureReason::DecodeError)
+        );
+    }
+
+    #[test]
     fn verifier_slot_is_empty_in_default_build_and_diagnostics_say_unavailable() {
         let pipeline = Pipeline::default();
         assert!(!pipeline.zenz_verifier.is_loaded());
-        assert!(!zenz_verifier_build_available());
+        assert_eq!(zenz_verifier_build_available(), cfg!(feature = "candle"));
         let diagnostics: ZenzVerifierDiagnostics = pipeline.zenz_verifier_diagnostics();
         assert!(!diagnostics.enabled);
-        assert!(!diagnostics.build_available);
+        assert_eq!(diagnostics.build_available, cfg!(feature = "candle"));
         assert!(!diagnostics.loaded);
     }
 
@@ -3346,6 +3635,8 @@ mod tests {
                 enabled: false,
                 build_available: false,
                 loaded: false,
+                load_failure_count: 0,
+                load_failure_reason: None,
                 called_count: 0,
                 skipped_count: 1,
                 verified_count: 0,
