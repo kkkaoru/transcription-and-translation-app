@@ -4,6 +4,7 @@
 //! output projections. Forward evaluation is not implemented until its argmax
 //! is proven equal to the forked `kotoba-zenz-server` reference.
 
+use crate::ZenzPromptTokenizer;
 use candle_core::quantized::gguf_file::{Content, Value, VersionedMagic};
 use candle_core::quantized::QTensor;
 use candle_core::Device;
@@ -51,6 +52,53 @@ pub fn inspect_gguf(path: &Path) -> Result<ZenzGgufManifest, GgufLoadError> {
     let mut file = File::open(path)?;
     let content = Content::read(&mut file)?;
     validate_content(path, &content)
+}
+
+pub(crate) fn tokenizer_alignment_mismatch(
+    path: &Path,
+    tokenizer: &ZenzPromptTokenizer,
+) -> Result<Option<String>, GgufLoadError> {
+    let mut file = File::open(path)?;
+    let content = Content::read(&mut file)?;
+    let gguf_tokens = string_array_metadata(&content, "tokenizer.ggml.tokens")?;
+    let local_tables = tokenizer.tables();
+    if gguf_tokens.len() != local_tables.id_to_token.len() {
+        return Ok(Some(format!(
+            "vocabulary size differs: GGUF={}, tokenizer files={}",
+            gguf_tokens.len(),
+            local_tables.id_to_token.len()
+        )));
+    }
+    for (token_id, (gguf_token, local_token)) in
+        gguf_tokens.iter().zip(&local_tables.id_to_token).enumerate()
+    {
+        if gguf_token != local_token {
+            return Ok(Some(format!(
+                "vocabulary token {token_id} differs: GGUF={gguf_token:?}, tokenizer files={local_token:?}"
+            )));
+        }
+    }
+
+    let gguf_merges = string_array_metadata(&content, "tokenizer.ggml.merges")?;
+    let mut local_merges = local_tables.ranks.iter().collect::<Vec<_>>();
+    local_merges.sort_by_key(|(_, rank)| **rank);
+    if gguf_merges.len() != local_merges.len() {
+        return Ok(Some(format!(
+            "merge count differs: GGUF={}, tokenizer files={}",
+            gguf_merges.len(),
+            local_merges.len()
+        )));
+    }
+    for (rank, (gguf_merge, ((left, right), _))) in gguf_merges.iter().zip(local_merges).enumerate()
+    {
+        let local_merge = format!("{left} {right}");
+        if gguf_merge != &local_merge {
+            return Ok(Some(format!(
+                "merge rank {rank} differs: GGUF={gguf_merge:?}, tokenizer files={local_merge:?}"
+            )));
+        }
+    }
+    Ok(None)
 }
 
 pub fn load_untied_embedding_weights(
@@ -197,6 +245,28 @@ fn f64_metadata(content: &Content, key: &str) -> Result<f64, GgufLoadError> {
         Some(value) => Err(GgufLoadError::InvalidModel(format!(
             "metadata {key:?} is not floating point: {value:?}"
         ))),
+        None => Err(GgufLoadError::MissingMetadata(key.to_string())),
+    }
+}
+
+fn string_array_metadata<'a>(
+    content: &'a Content,
+    key: &str,
+) -> Result<Vec<&'a str>, GgufLoadError> {
+    match content.metadata.get(key) {
+        Some(Value::Array(values)) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| match value {
+                Value::String(value) => Ok(value.as_str()),
+                value => Err(GgufLoadError::InvalidModel(format!(
+                    "metadata {key:?} element {index} is not a string: {value:?}"
+                ))),
+            })
+            .collect(),
+        Some(value) => {
+            Err(GgufLoadError::InvalidModel(format!("metadata {key:?} is not an array: {value:?}")))
+        }
         None => Err(GgufLoadError::MissingMetadata(key.to_string())),
     }
 }

@@ -45,6 +45,14 @@ impl EmbeddedZenzDraftVerifier {
         }
         let tokenizer_revision = tokenizer_revision(tokenizer_directory)?;
         let tokenizer = ZenzPromptTokenizer::from_dir(tokenizer_directory)?;
+        // The GGUF carries its own vocabulary and merges. The tokenizer files
+        // ship separately, so a model swap can leave them behind, and a
+        // tokenizer that is one token off makes the model read a different
+        // sentence without erroring. Compare every ID/rank and refuse to load
+        // rather than converting quietly wrong.
+        if let Some(mismatch) = crate::gguf::tokenizer_alignment_mismatch(model_path, &tokenizer)? {
+            return Err(EmbeddedVerifierLoadError::TokenizerMismatch(mismatch));
+        }
         let model = ZenzForwardModel::load(model_path, device)?;
         Ok(Self {
             model,
@@ -267,6 +275,7 @@ pub enum EmbeddedVerifierLoadError {
     Io(std::io::Error),
     Tokenizer(PromptTokenizerError),
     Model(crate::gguf::GgufLoadError),
+    TokenizerMismatch(String),
     InvalidRevision(String),
 }
 
@@ -276,6 +285,9 @@ impl fmt::Display for EmbeddedVerifierLoadError {
             Self::Io(error) => write!(formatter, "tokenizer asset I/O error: {error}"),
             Self::Tokenizer(error) => write!(formatter, "tokenizer load error: {error}"),
             Self::Model(error) => write!(formatter, "model load error: {error}"),
+            Self::TokenizerMismatch(message) => {
+                write!(formatter, "GGUF/tokenizer asset mismatch: {message}")
+            }
             Self::InvalidRevision(message) => formatter.write_str(message),
         }
     }
@@ -287,7 +299,7 @@ impl Error for EmbeddedVerifierLoadError {
             Self::Io(error) => Some(error),
             Self::Tokenizer(error) => Some(error),
             Self::Model(error) => Some(error),
-            Self::InvalidRevision(_) => None,
+            Self::TokenizerMismatch(_) | Self::InvalidRevision(_) => None,
         }
     }
 }

@@ -70,7 +70,13 @@ Loading is eager. A failed GGUF/tokenizer load returns
 `EmbeddedVerifierLoadError`, so no object can advertise capabilities for an
 unavailable backend. `model_revision` is mandatory and should contain the
 pinned model ID and revision; tokenizer identity is a deterministic fingerprint
-of `vocab.json` and `merges.txt`. `load_elapsed()` reports model initialization
+of `vocab.json` and `merges.txt`. Because those files ship separately from the
+GGUF, eager loading also compares all 6000 vocabulary entries by ID and all
+5764 merges by rank against the GGUF metadata. Any drift returns the distinct
+`TokenizerMismatch` error rather than silently making the model read different
+tokens. A future loader may construct the existing tokenizer directly from GGUF
+metadata and remove the separate directory; full validation provides a safe
+boundary until that adapter exists. `load_elapsed()` reports model initialization
 separately from conversion latency. Desktop wiring should load at recording
 start when its opt-in toggle is enabled, and fail open if loading fails.
 

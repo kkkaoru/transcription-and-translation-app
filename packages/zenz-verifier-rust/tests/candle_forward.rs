@@ -4,7 +4,8 @@ use candle_core::{Device, IndexOp};
 use caption_bridge_azookey_rust::{
     CandidatePath, Draft, DraftVerifier, SessionContext, VerificationState,
 };
-use caption_bridge_zenz_verifier::EmbeddedZenzDraftVerifier;
+use caption_bridge_zenz_verifier::{EmbeddedVerifierLoadError, EmbeddedZenzDraftVerifier};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 // BOS + EE00 + トウキョウ + EE01 + 東京, measured with the shared tokenizer.
@@ -99,4 +100,37 @@ fn small_gguf_keeps_untied_weights_and_verifies_tokyo() {
     assert_eq!(verified.state, VerificationState::Verified);
     assert_eq!(verified.prefix_constraint, None);
     verifier.close_session(session).expect("session should close");
+}
+
+#[test]
+#[ignore = "requires ZENZ_V32_SMALL_GGUF; run this test explicitly with --ignored"]
+fn small_gguf_rejects_a_drifted_tokenizer_snapshot() {
+    let model_path = std::env::var("ZENZ_V32_SMALL_GGUF")
+        .expect("ZENZ_V32_SMALL_GGUF must point to zenz-v3.2-small GGUF");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../submodules/AzooKeyKanaKanjiConverter/Sources/EfficientNGram/tokenizer");
+    let temporary =
+        std::env::temp_dir().join(format!("zenz-tokenizer-mismatch-test-{}", std::process::id()));
+    fs::create_dir_all(&temporary).expect("temporary tokenizer directory should be created");
+    fs::copy(source.join("merges.txt"), temporary.join("merges.txt"))
+        .expect("merge fixture should copy");
+    let vocab = fs::read_to_string(source.join("vocab.json")).expect("vocab fixture should read");
+    let drifted = vocab.replacen("\"[UNK]\":0", "\"[DRIFTED]\":0", 1);
+    assert_ne!(drifted, vocab, "vocab fixture shape changed");
+    fs::write(temporary.join("vocab.json"), drifted).expect("drifted vocab should write");
+
+    let result = EmbeddedZenzDraftVerifier::load(
+        Path::new(&model_path),
+        &temporary,
+        "zenz-v3.2-small-mismatch-test",
+        &Device::Cpu,
+    );
+    fs::remove_dir_all(&temporary).expect("temporary tokenizer directory should be removed");
+    match result {
+        Err(EmbeddedVerifierLoadError::TokenizerMismatch(message)) => {
+            assert!(message.contains("vocabulary token 0 differs"));
+        }
+        Err(error) => panic!("expected tokenizer mismatch, got {error}"),
+        Ok(_) => panic!("drifted tokenizer must not load"),
+    }
 }
