@@ -1041,6 +1041,24 @@ mod tests {
     }
 
     #[test]
+    fn embedded_parapper_argv_keeps_measured_turn_silence_and_rejects_legacy_override() {
+        let args = parapper_headless_args(&AppConfig::default());
+        let turn_flag = args.iter().position(|flag| flag == "--turn-check-silence-ms");
+        let Some(index) = turn_flag else {
+            panic!("headless argv must include --turn-check-silence-ms");
+        };
+        assert_eq!(
+            args.get(index + 1).map(String::as_str),
+            Some("480"),
+            "desktop must pass the measured 480ms turn silence, not a stale helper default",
+        );
+        assert!(
+            !args.iter().any(|flag| flag == "960"),
+            "legacy 960ms must not remain on the sidecar argv",
+        );
+    }
+
+    #[test]
     fn embedded_parapper_receives_desktop_vad_settings_on_startup() {
         let mut config = AppConfig::default();
         config.audio.vad_interval_ms = 64;
