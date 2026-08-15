@@ -1189,16 +1189,36 @@ describe("AzooKey Worker text contract", () => {
     expect(client.closed).toBe(true);
   });
 
-  it("guards raw Wasm allocation and output ranges", () => {
+  it("rejects a Wasm module that only exposes the 1-best convert export", () => {
+    const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const instance = vi.spyOn(WebAssembly, "Instance");
+    try {
+      instance.mockImplementation(
+        () =>
+          ({
+            exports: {
+              memory,
+              azookey_alloc: vi.fn(() => 8),
+              azookey_dealloc: vi.fn(),
+              azookey_convert: vi.fn(() => 1n),
+              azookey_abi_version: vi.fn(() => 2),
+            },
+          }) as unknown as WebAssembly.Instance,
+      );
+      expect(() => createWasmConverter(emptyModule)).toThrow("required raw ABI");
+    } finally {
+      instance.mockRestore();
+    }
+  });
+
+  it("guards raw Wasm allocation before n-best conversion", () => {
     const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
     const memory = new WebAssembly.Memory({ initial: 1 });
     const instance = vi.spyOn(WebAssembly, "Instance");
     const dealloc = vi.fn();
     const alloc = vi.fn(() => 8);
-    const convert = vi.fn(
-      (_pointer: number, _length: number): bigint | number => (BigInt(32) << 32n) | 2n,
-    );
-    new Uint8Array(memory.buffer, 32, 2).set(new TextEncoder().encode("OK"));
+    const nBest = vi.fn(() => 0n);
     instance.mockImplementation(
       () =>
         ({
@@ -1206,26 +1226,17 @@ describe("AzooKey Worker text contract", () => {
             memory,
             azookey_alloc: alloc,
             azookey_dealloc: dealloc,
-            azookey_convert: convert,
+            azookey_convert: vi.fn(() => 0n),
+            azookey_convert_n_best: nBest,
             azookey_abi_version: vi.fn(() => 2),
           },
         }) as unknown as WebAssembly.Instance,
     );
     const converter = createWasmConverter(emptyModule);
-    expect(converter("入力")).toBe("OK");
-    expect(dealloc).toHaveBeenCalledTimes(2);
-
-    convert.mockReturnValueOnce(Number((32n << 32n) | 2n));
-    expect(converter("入力")).toBe("OK");
-
     alloc.mockReturnValueOnce(0);
     expect(() => converter("入力")).toThrow("input allocation failed");
-    convert.mockReturnValueOnce(0n);
-    expect(() => converter("入力")).toThrow("conversion allocation failed");
-    convert.mockReturnValueOnce((0n << 32n) | 2n);
-    expect(() => converter("入力")).toThrow("null output pointer");
-    convert.mockReturnValueOnce((1n << 32n) | 70_000n);
-    expect(() => converter("入力")).toThrow("invalid output range");
+    expect(() => converter("入力")).toThrow("n-best conversion allocation failed");
+    expect(dealloc).toHaveBeenCalled();
     instance.mockRestore();
   });
 
@@ -1362,6 +1373,7 @@ describe("AzooKey Worker text contract", () => {
               azookey_alloc: vi.fn(() => 8),
               azookey_dealloc: vi.fn(),
               azookey_convert: vi.fn(() => 1n),
+              azookey_convert_n_best: vi.fn(() => 1n),
               azookey_abi_version: vi.fn(() => 99),
             },
           }) as unknown as WebAssembly.Instance,

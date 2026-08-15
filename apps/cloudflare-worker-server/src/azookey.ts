@@ -197,8 +197,7 @@ export interface AzookeyWasmExports {
   azookey_alloc: (length: number) => number;
   azookey_dealloc: (pointer: number, length: number) => void;
   azookey_convert: (pointer: number, length: number) => bigint | number;
-  /** Additive ABI entrypoint. Older test modules may omit it and use fallback. */
-  azookey_convert_n_best?: (
+  azookey_convert_n_best: (
     pointer: number,
     length: number,
     nBest: number,
@@ -670,23 +669,6 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
   };
 };
 
-const unpackResult = (exports: AzookeyWasmExports, packed: bigint | number): string => {
-  const value = typeof packed === "bigint" ? packed : BigInt(packed);
-  const pointer = Number((value >> BigInt(AZOOKEY_WASM_POINTER_BITS)) & AZOOKEY_WASM_U32_MASK);
-  const length = Number(value & AZOOKEY_WASM_U32_MASK);
-  if (pointer === 0 && length !== 0) {
-    throw new Error("AzooKey Wasm returned a null output pointer");
-  }
-  if (length > exports.memory.buffer.byteLength - pointer) {
-    throw new Error("AzooKey Wasm returned an invalid output range");
-  }
-  try {
-    return decoder.decode(new Uint8Array(exports.memory.buffer, pointer, length));
-  } finally {
-    exports.azookey_dealloc(pointer, length);
-  }
-};
-
 const unpackNBestResult = (
   exports: AzookeyWasmExports,
   packed: bigint | number,
@@ -772,7 +754,8 @@ const instantiateWasmConverter = (
     !(exports.memory instanceof WebAssembly.Memory) ||
     typeof exports.azookey_alloc !== "function" ||
     typeof exports.azookey_dealloc !== "function" ||
-    typeof exports.azookey_convert !== "function"
+    typeof exports.azookey_convert !== "function" ||
+    typeof exports.azookey_convert_n_best !== "function"
   ) {
     throw new Error("AzooKey Wasm module is missing the required raw ABI");
   }
@@ -807,30 +790,19 @@ const instantiateWasmConverter = (
     }
     try {
       new Uint8Array(checkedExports.memory.buffer, pointer, bytes.byteLength).set(bytes);
-      if (checkedExports.azookey_convert_n_best) {
-        const hasPreceding = preceding === undefined ? 0 : 1;
-        const packed = checkedExports.azookey_convert_n_best(
-          pointer,
-          bytes.byteLength,
-          AZOOKEY_N_BEST_WIDTH,
-          hasPreceding,
-          preceding?.rcid ?? 0,
-          preceding?.mid ?? 0,
-        );
-        if (packed === 0 || packed === 0n) {
-          throw new Error("AzooKey Wasm n-best conversion allocation failed");
-        }
-        return unpackNBestResult(checkedExports, packed, dictionaryRevision);
-      }
-      const packed = checkedExports.azookey_convert(pointer, bytes.byteLength);
+      const hasPreceding = preceding === undefined ? 0 : 1;
+      const packed = checkedExports.azookey_convert_n_best(
+        pointer,
+        bytes.byteLength,
+        AZOOKEY_N_BEST_WIDTH,
+        hasPreceding,
+        preceding?.rcid ?? 0,
+        preceding?.mid ?? 0,
+      );
       if (packed === 0 || packed === 0n) {
-        throw new Error("AzooKey Wasm conversion allocation failed");
+        throw new Error("AzooKey Wasm n-best conversion allocation failed");
       }
-      return {
-        text: unpackResult(checkedExports, packed),
-        status: AZOOKEY_CONVERSION_STATUS_FALLBACK,
-        dictionaryRevision,
-      } satisfies AzookeyConversionResult;
+      return unpackNBestResult(checkedExports, packed, dictionaryRevision);
     } finally {
       checkedExports.azookey_dealloc(pointer, bytes.byteLength);
     }

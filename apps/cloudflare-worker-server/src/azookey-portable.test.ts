@@ -33,6 +33,7 @@ const wasmExports = (overrides: Partial<AzookeyWasmExports> = {}): AzookeyWasmEx
   azookey_alloc: vi.fn(() => 8),
   azookey_dealloc: vi.fn(),
   azookey_convert: vi.fn(() => 1n),
+  azookey_convert_n_best: vi.fn(() => 1n),
   azookey_abi_version: vi.fn(() => 2),
   azookey_dictionary_init_owned: vi.fn(() => 0),
   ...overrides,
