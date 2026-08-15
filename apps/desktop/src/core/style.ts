@@ -20,6 +20,9 @@ export const toCaptionCss = (style: CaptionTextStyle): CSSProperties => {
     lineHeight: style.lineHeight,
     textAlign: style.textAlign,
     maxWidth: `${clampNumber(style.maxWidthPercent, 1, 100)}%`,
+    // Keep horizontal padding inside maxWidth so DOM captions use the same
+    // available line width as the native canvas renderer.
+    boxSizing: "border-box",
     WebkitTextStroke: style.cullingEnabled
       ? `${style.cullingWidthPx}px ${cullingColor}`
       : "0 transparent",
