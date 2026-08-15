@@ -83,6 +83,9 @@ const INCOMPLETE_STREAMING_EXPECTED_TOTAL: usize = 20;
 const INCOMPLETE_STREAMING_MINIMUM_STRICT_PASSED: usize = 9;
 const INCOMPLETE_STREAMING_MINIMUM_VARIANT_PASSED: usize = 10;
 const INCOMPLETE_STREAMING_FINGERPRINT: u64 = 0x2269f712efa11d40;
+const MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL: usize = 13;
+const MEASURED_COMPLETED_FAILURE_MINIMUM_VARIANT_PASSED: usize = 3;
+const MEASURED_COMPLETED_FAILURE_FINGERPRINT: u64 = 0xb9d401c6270ab423;
 
 // Raise either expansion minimum after the same inputs produce the same higher
 // score in three consecutive runs. Never lower a minimum to accommodate a
@@ -593,6 +596,148 @@ fn incomplete_streaming_cases() -> Vec<CorpusCase> {
     .collect()
 }
 
+fn measured_completed_failure_cases() -> Vec<CorpusCase> {
+    [
+        (
+            "measured-001",
+            "completed_numeric_symbols",
+            "こうすいかくりつはろくじゅっぱーせんとです",
+            "降水確率は60%です",
+            ExpectedOrigin::NumericSynthesized,
+            "contracted-juttu-percent",
+        ),
+        (
+            "measured-002",
+            "completed_numeric_symbols",
+            "さんぶんのにがさんせいしました",
+            "3分の2が賛成しました",
+            ExpectedOrigin::NumericSynthesized,
+            "fraction-numeric",
+        ),
+        (
+            "measured-003",
+            "completed_contextual_homophones",
+            "こどもがあめをなめています",
+            "子供が飴を舐めています",
+            ExpectedOrigin::Mixed,
+            "ame-candy",
+        ),
+        (
+            "measured-004",
+            "completed_contextual_homophones",
+            "せんきょはこうせいにおこなわれました",
+            "選挙は公正に行われました",
+            ExpectedOrigin::Mixed,
+            "kousei-fair",
+        ),
+        (
+            "measured-005",
+            "completed_contextual_homophones",
+            "こうせいどなそくていがひつようです",
+            "高精度な測定が必要です",
+            ExpectedOrigin::Mixed,
+            "high-precision",
+        ),
+        (
+            "measured-006",
+            "completed_contextual_homophones",
+            "かみをとかしてからでかけます",
+            "髪をとかしてから出かけます",
+            ExpectedOrigin::Mixed,
+            "hair-context",
+        ),
+        (
+            "measured-007",
+            "completed_contextual_homophones",
+            "はしでぱすたをたべます",
+            "箸でパスタを食べます",
+            ExpectedOrigin::Mixed,
+            "chopsticks-context",
+        ),
+        (
+            "measured-008",
+            "completed_contextual_homophones",
+            "やさいのせいかをあつかうみせです",
+            "野菜の青果を扱う店です",
+            ExpectedOrigin::Mixed,
+            "produce-context",
+        ),
+        (
+            "measured-009",
+            "completed_contextual_homophones",
+            "じどうはんばいきにこうかをいれます",
+            "自動販売機に硬貨を入れます",
+            ExpectedOrigin::Mixed,
+            "coin-context",
+        ),
+        (
+            "measured-010",
+            "completed_contextual_homophones",
+            "あたらしいきのうのしようをせつめいします",
+            "新しい機能の仕様を説明します",
+            ExpectedOrigin::Mixed,
+            "function-specification-context",
+        ),
+        (
+            "measured-011",
+            "completed_accepted_variants",
+            "さんじゅうどをこえるあつさです",
+            "30度を超える暑さです",
+            ExpectedOrigin::Mixed,
+            "koeru-orthography",
+        ),
+        (
+            "measured-012",
+            "completed_accepted_variants",
+            "ひゃくにじゅうさんまんえんをうりあげました",
+            "123万円を売り上げました",
+            ExpectedOrigin::Mixed,
+            "large-number-notation",
+        ),
+        (
+            "measured-013",
+            "completed_accepted_variants",
+            "えきのちかくにしょうがいしゃようのすろーぷがあります",
+            "駅の近くに障害者用のスロープがあります",
+            ExpectedOrigin::Mixed,
+            "disability-orthography",
+        ),
+    ]
+    .into_iter()
+    .map(|(case_id, category, input, expected, expected_origin, equivalence_group)| CorpusCase {
+        case_id: case_id.to_string(),
+        category,
+        input,
+        expected,
+        context_mode: ContextMode::None,
+        expected_origin,
+        requires_dictionary_origin: false,
+        source_kind: "measured_dictionary_failure",
+        provenance: "official_dictionary_probe_2026-08-14",
+        pair_id: None,
+        accepted_variants: &[],
+        equivalence_group: Some(equivalence_group),
+        review_status: ReviewStatus::PendingIndependentReview,
+        reviewed_by: None,
+    })
+    .map(|mut case| {
+        match case.case_id.as_str() {
+            // `超える` is standard for exceeding a numeric threshold, while
+            // the widely used `越える` remains acceptable caption text.
+            "measured-011" => case.accepted_variants = &["30度を越える暑さです"],
+            // The values are numerically equivalent and `123万円` is easier to
+            // read in captions, but the current `1230000円` remains acceptable.
+            "measured-012" => case.accepted_variants = &["1230000円を売り上げました"],
+            "measured-013" => {
+                case.accepted_variants = &["駅の近くに障がい者用のスロープがあります"];
+            }
+            _ => {}
+        }
+        case
+    })
+    .collect()
+}
+
 fn normalized_variant(value: &str) -> String {
     value
         .chars()
@@ -831,6 +976,22 @@ fn accuracy_corpus_schema_and_anchor_fingerprint_are_stable() {
         assert_eq!(case.reviewed_by, Some("specialist-advisor"));
         assert!(included_in_live_gate(case));
     }
+
+    let measured_cases = measured_completed_failure_cases();
+    assert_eq!(measured_cases.len(), MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL);
+    assert_eq!(expansion_fingerprint(&measured_cases), MEASURED_COMPLETED_FAILURE_FINGERPRINT);
+    for case in &measured_cases {
+        assert!(case_ids.insert(case.case_id.as_str()), "duplicate case ID: {}", case.case_id);
+        assert!(case.case_id.starts_with("measured-"));
+        assert!(case.category.starts_with("completed_"));
+        assert_eq!(case.context_mode, ContextMode::None);
+        assert_eq!(case.source_kind, "measured_dictionary_failure");
+        assert_eq!(case.provenance, "official_dictionary_probe_2026-08-14");
+        assert!(case.equivalence_group.is_some());
+        assert_eq!(case.review_status, ReviewStatus::PendingIndependentReview);
+        assert_eq!(case.reviewed_by, None);
+        assert!(!included_in_live_gate(case));
+    }
 }
 
 #[test]
@@ -1039,6 +1200,55 @@ fn accuracy_corpus_report() {
     assert_eq!(
         totals.strict_passed, ANCHOR_MINIMUM_STRICT_PASSED,
         "locked anchor strict baseline regressed"
+    );
+}
+
+#[test]
+fn measured_completed_failure_corpus_report() {
+    let root = crate::dictionary::test_system_dictionary_path();
+    let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(root),
+        ..DictionaryPaths::default()
+    })
+    .expect("official AzooKey dictionary should load");
+    let cases = measured_completed_failure_cases();
+    let mut strict_passed = 0usize;
+    let mut variant_passed = 0usize;
+    for case in &cases {
+        let actual = convert_with_dictionary(case.input, &dictionary, ConversionOptions::default())
+            .into_iter()
+            .next()
+            .map(|candidate| candidate.text)
+            .unwrap_or_default();
+        if actual == case.expected {
+            strict_passed += 1;
+        } else {
+            eprintln!(
+                "[{}] {} {:?} -> expected {:?}, got {:?}",
+                case.category, case.case_id, case.input, case.expected, actual
+            );
+        }
+        if matches_accepted_variant(case, &actual) {
+            variant_passed += 1;
+        }
+    }
+    eprintln!(
+        "Measured completed dictionary baseline: {strict_passed}/{} strict, {variant_passed}/{} variant",
+        cases.len(),
+        cases.len()
+    );
+
+    assert_eq!(cases.len(), MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL);
+    // The strict baseline intentionally starts at zero because these cases
+    // were selected from measured failures. Gate the accepted-variant score;
+    // this starts at three reviewed-equivalent surfaces and can be raised with
+    // each demonstrated converter or verifier improvement.
+    assert!(
+        variant_passed >= MEASURED_COMPLETED_FAILURE_MINIMUM_VARIANT_PASSED,
+        "measured completed-sentence variant baseline regressed: {variant_passed}/{} is below {}/{}",
+        cases.len(),
+        MEASURED_COMPLETED_FAILURE_MINIMUM_VARIANT_PASSED,
+        MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL,
     );
 }
 
