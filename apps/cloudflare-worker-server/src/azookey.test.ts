@@ -1753,6 +1753,16 @@ describe("xsmall request fallback quality regressions", () => {
     return converter;
   };
 
+  it("forwards openLattice through the lazy dictionary wrapper", async () => {
+    const converter = await loadPortableConverter();
+    const lattice = converter.openLattice?.("かんじ");
+    expect(lattice).toBeDefined();
+    const unconstrained = lattice?.searchOutputPrefix(new Uint8Array());
+    expect(typeof unconstrained).toBe("string");
+    expect((unconstrained ?? "").length).toBeGreaterThan(0);
+    lattice?.close();
+  });
+
   const convertXsmall = (
     vibratoInput: string,
     runtime: Pick<AzookeyRuntime, "converter" | "modelRoutes" | "fetcher" | "timeoutMs">,

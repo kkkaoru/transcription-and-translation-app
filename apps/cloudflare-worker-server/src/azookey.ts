@@ -1144,6 +1144,7 @@ export const createWasmConverter = (
   converter.warmup = async (): Promise<void> => {
     await loadConverter();
   };
+  converter.openLattice = (text, preceding) => loadedConverter?.openLattice?.(text, preceding);
   return converter;
 };
 
