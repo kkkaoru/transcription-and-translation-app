@@ -28,9 +28,28 @@ boundary without paying Candle's native compile cost on every full gate.
 `bun run rust:zenz-verifier:candle` is the separate native-model gate and must
 run whenever GGUF or forward code changes.
 
-## Forward-pass gate
+## Candle forward gate
 
-`DraftVerifier` inference is deliberately not implemented yet. Before adding
-it, Candle logits must reproduce the forked `kotoba-zenz-server` argmax for a
-fixed prompt/token sequence. Tokenizer parity alone proves only identical input
-IDs, not identical verification decisions.
+The Candle feature includes a metadata-driven GPT-2 forward pass. It reads the
+block count and dimensions from GGUF rather than assuming xsmall or small, uses
+GPT-2's tanh GELU approximation (not `gelu_erf`), and keeps the Q5_K input
+embedding separate from the Q6_K output projection.
+
+Production targets `Miwa-Keita/zenz-v3.2-small-gguf` at revision
+`c67e03e07d215c869f591b274c1631170d3e11fe`. The xsmall layout can load, but it
+is not a product candidate because measurement found that it echoes proper-noun
+readings as katakana. The real-model regression is visibly ignored when the
+model is absent. Run it explicitly with:
+
+```sh
+ZENZ_V32_SMALL_GGUF=/path/to/ggml-model-Q5_K_M.gguf \
+  cargo test --release --manifest-path packages/zenz-verifier-rust/Cargo.toml \
+  --features candle --test candle_forward -- --ignored
+```
+
+That test pins a semantic result, not arbitrary logits: for the prompt
+`BOS + EE00 + トウキョウ + EE01`, Candle predicts both tokens of candidate
+`東京`, so the candidate verifies. Constraint-returning `DraftVerifier`
+integration remains separate from this forward layer. Whether to invoke a
+verifier is also a caller policy; no length/context threshold is embedded in
+this crate.
