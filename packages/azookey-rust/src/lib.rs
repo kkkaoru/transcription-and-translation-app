@@ -29,7 +29,7 @@ pub use viterbi::{
     ConstrainedSearchRequest, ConversionCandidate, ConversionLattice, ConversionOptions,
     ConversionRequest, ConversionWithVerification, DictionaryEntryId, EdgeHandle, EdgeOrigin,
     LatticeEdge, PrecedingContext, UnknownPolicy, Utf8BytePrefixConstraint,
-    VerifierConversionOptions,
+    VerifierConversionOptions, VerifierPolicy,
 };
 
 #[cfg(test)]

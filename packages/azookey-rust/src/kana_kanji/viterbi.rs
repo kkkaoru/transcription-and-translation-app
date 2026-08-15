@@ -10,6 +10,8 @@ use super::normalization::{
 use super::verifier::{Draft, DraftVerifier, SessionContext, VerificationState};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Once;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrecedingContext {
@@ -19,6 +21,7 @@ pub struct PrecedingContext {
 
 const DEFAULT_BEAM_WIDTH: usize = 64;
 const DEFAULT_VERIFIER_MAX_ITERATIONS: usize = 10;
+static INVALID_LEFT_CONTEXT_WARNING: Once = Once::new();
 const MIN_BEAM_WIDTH: usize = 1;
 const MAX_BEAM_WIDTH: usize = 256;
 const DEFAULT_MAX_DICTIONARY_WORD_CHARS: usize = 24;
@@ -244,6 +247,66 @@ pub struct ConversionCandidate {
     pub trailing: Option<PrecedingContext>,
 }
 
+/// Controls whether a verifier should be applied to a conversion.
+///
+/// The policy is deliberately owned by the caller rather than hidden inside
+/// the verifier backend.  This keeps the same decision available to embedded,
+/// HTTP, and WASM callers and leaves room for additional application rules
+/// (speaker turns, utterance type, and so on) without changing the backend
+/// contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifierPolicy {
+    /// When true, verification requires a non-empty, non-whitespace left
+    /// context.  When false, verification is attempted even without context.
+    pub require_left_context: bool,
+}
+
+impl VerifierPolicy {
+    /// Require usable left context before starting verification.
+    pub const fn require_left_context() -> Self {
+        Self { require_left_context: true }
+    }
+
+    /// Always attempt verification, including for a context-free utterance.
+    /// This is intended for offline measurement or diagnostics; production
+    /// caption conversion should use the default context-required policy.
+    pub const fn always_verify() -> Self {
+        Self { require_left_context: false }
+    }
+
+    /// Returns whether the caller's context satisfies this policy.
+    ///
+    /// Context is transported as UTF-8 bytes so the same predicate can be
+    /// applied before both embedded and HTTP sessions. Invalid UTF-8 is not a
+    /// usable text context and therefore fails the requirement rather than
+    /// being silently interpreted as arbitrary bytes.
+    pub fn should_verify(&self, left_context: Option<&[u8]>) -> bool {
+        matches!(self.decision(left_context), VerifierPolicyDecision::Verify)
+    }
+
+    fn decision(&self, left_context: Option<&[u8]>) -> VerifierPolicyDecision {
+        if !self.require_left_context {
+            return VerifierPolicyDecision::Verify;
+        }
+        match left_context {
+            None => VerifierPolicyDecision::MissingContext,
+            Some(bytes) => match std::str::from_utf8(bytes) {
+                Err(_) => VerifierPolicyDecision::InvalidContext,
+                Ok(text) if text.chars().any(|character| !character.is_whitespace()) => {
+                    VerifierPolicyDecision::Verify
+                }
+                Ok(_) => VerifierPolicyDecision::MissingContext,
+            },
+        }
+    }
+}
+
+impl Default for VerifierPolicy {
+    fn default() -> Self {
+        Self::require_left_context()
+    }
+}
+
 /// Controls how many draft/constraint rounds a verifier may request before
 /// conversion returns the latest constrained candidate or, if none can be
 /// constructed, the dictionary result. The loop is bounded even when a
@@ -253,11 +316,60 @@ pub struct ConversionCandidate {
 pub struct VerifierConversionOptions {
     pub max_iterations: usize,
     pub inference_config_revision: String,
+    /// Optional left context supplied to the verifier session.
+    pub left_context: Option<Vec<u8>>,
+    /// The application policy used before opening a verifier session.
+    pub policy: VerifierPolicy,
+    /// Optional wall-clock budget for verifier setup and evaluation. The
+    /// conversion loop checks this budget before and after backend calls; a
+    /// synchronous backend call that is already in progress cannot be
+    /// forcefully preempted by this Rust boundary.
+    pub deadline: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifierPolicyDecision {
+    Verify,
+    MissingContext,
+    InvalidContext,
 }
 
 impl VerifierConversionOptions {
+    /// Create options with the production-safe context-required policy.
     pub fn new(max_iterations: usize, inference_config_revision: impl Into<String>) -> Self {
-        Self { max_iterations, inference_config_revision: inference_config_revision.into() }
+        Self {
+            max_iterations,
+            inference_config_revision: inference_config_revision.into(),
+            left_context: None,
+            policy: VerifierPolicy::default(),
+            deadline: None,
+        }
+    }
+
+    /// Attach UTF-8 left context. Empty and whitespace-only context is
+    /// therefore observable as a policy skip rather than an attempted model
+    /// call under the default policy.
+    pub fn with_left_context(mut self, left_context: impl AsRef<[u8]>) -> Self {
+        self.left_context = Some(left_context.as_ref().to_vec());
+        self
+    }
+
+    /// Override the application policy supplied by the caller.
+    pub fn with_policy(mut self, policy: VerifierPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Set the caller-owned verification wall-clock budget.
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Disable a previously configured verification deadline.
+    pub fn without_deadline(mut self) -> Self {
+        self.deadline = None;
+        self
     }
 }
 
@@ -1786,7 +1898,11 @@ pub fn convert_with_dictionary(
 }
 
 /// Convert with an optional verifier while preserving the dictionary result
-/// as a total fallback. A missing verifier is reported as
+/// as a total fallback. The convenience API uses the production-safe default
+/// policy, so a context-free request is reported as `SkippedByPolicy`; callers
+/// that need to supply left context or an explicit policy should use
+/// [`convert_with_verifier_with_limit`] and [`VerifierConversionOptions`]. A
+/// missing verifier after policy admission is reported as
 /// `CapabilityUnavailable`; backend/session/evaluation failures retain their
 /// corresponding `VerificationState` and never turn a non-empty caption into
 /// an empty string.
@@ -1807,9 +1923,13 @@ pub fn convert_with_verifier(
 }
 
 /// Variant of [`convert_with_verifier`] with an explicit verifier iteration
-/// limit. A zero limit returns the dictionary candidate with
-/// `ExhaustedWithDictionaryFallback`, matching Zenzai's behavior of returning
-/// the current draft before starting model evaluation.
+/// limit. The default options policy skips verification when left context is
+/// absent or whitespace-only and returns `SkippedByPolicy`. A zero limit
+/// returns the dictionary candidate with `ExhaustedWithDictionaryFallback`,
+/// matching Zenzai's behavior of returning the current draft before starting
+/// model evaluation. Use [`VerifierPolicy::always_verify`] only for explicit
+/// offline measurement or diagnostics. If the caller's deadline expires,
+/// `DeadlineExceeded` is returned with the dictionary candidate.
 pub fn convert_with_verifier_with_limit(
     input: &str,
     dictionary: &AzooKeyDictionary,
@@ -1818,6 +1938,18 @@ pub fn convert_with_verifier_with_limit(
     verifier_options: VerifierConversionOptions,
 ) -> ConversionWithVerification {
     let fallback = safe_dictionary_candidate(input, dictionary, options);
+    match verifier_options.policy.decision(verifier_options.left_context.as_deref()) {
+        VerifierPolicyDecision::Verify => {}
+        VerifierPolicyDecision::MissingContext => {
+            return fallback_with_state(fallback, VerificationState::SkippedByPolicy);
+        }
+        VerifierPolicyDecision::InvalidContext => {
+            INVALID_LEFT_CONTEXT_WARNING.call_once(|| {
+                eprintln!("warning: invalid UTF-8 left context; skipping verification")
+            });
+            return fallback_with_state(fallback, VerificationState::SkippedByPolicy);
+        }
+    }
     let Some(verifier) = verifier else {
         return fallback_with_state(fallback, VerificationState::CapabilityUnavailable);
     };
@@ -1828,11 +1960,17 @@ pub fn convert_with_verifier_with_limit(
         return fallback_with_state(fallback, VerificationState::ExhaustedWithDictionaryFallback);
     }
 
-    let session_context = SessionContext::new(
+    let verification_started = Instant::now();
+    if deadline_exceeded(verification_started, verifier_options.deadline) {
+        return fallback_with_state(fallback, VerificationState::DeadlineExceeded);
+    }
+
+    let mut session_context = SessionContext::new(
         input.as_bytes(),
         dictionary.revision(),
         verifier_options.inference_config_revision.clone(),
     );
+    session_context.left_context = verifier_options.left_context.clone();
     let mut session = match verifier.open_session(session_context) {
         Ok(session) => session,
         Err(_) => return fallback_with_state(fallback, VerificationState::Error),
@@ -1846,10 +1984,18 @@ pub fn convert_with_verifier_with_limit(
     let mut verification_iterations = 0;
 
     for attempt in 0..verifier_options.max_iterations {
+        if deadline_exceeded(verification_started, verifier_options.deadline) {
+            final_state = VerificationState::DeadlineExceeded;
+            break;
+        }
         verification_iterations += 1;
         let mut draft = Draft::new(input.as_bytes(), current_path.clone());
         draft.constraints = constraints.clone();
         let evaluation = verifier.evaluate(&mut session, &draft);
+        if deadline_exceeded(verification_started, verifier_options.deadline) {
+            final_state = VerificationState::DeadlineExceeded;
+            break;
+        }
         match evaluation {
             Err(_) => {
                 final_state = VerificationState::Error;
@@ -1895,6 +2041,10 @@ pub fn convert_with_verifier_with_limit(
                         beam_width: options.n_best.max(1),
                         n_best: 1,
                     });
+                    if deadline_exceeded(verification_started, verifier_options.deadline) {
+                        final_state = VerificationState::DeadlineExceeded;
+                        break;
+                    }
                     let Some(next_path) = candidates.into_iter().next() else {
                         final_state = VerificationState::ExhaustedWithDictionaryFallback;
                         break;
@@ -1932,6 +2082,10 @@ pub fn convert_with_verifier_with_limit(
         verification_state: final_state,
         verification_iterations,
     }
+}
+
+fn deadline_exceeded(started: Instant, deadline: Option<Duration>) -> bool {
+    deadline.is_some_and(|limit| started.elapsed() >= limit)
 }
 
 fn safe_dictionary_candidate(
@@ -4718,7 +4872,7 @@ mod tests {
         build_lattice, convert_kana_to_kanji, convert_kana_to_kanji_with_paths,
         convert_with_dictionary, convert_with_verifier, convert_with_verifier_with_limit,
         ConstrainedSearchRequest, ConversionOptions, ConversionRequest, EdgeOrigin, UnknownPolicy,
-        Utf8BytePrefixConstraint, VerifierConversionOptions,
+        Utf8BytePrefixConstraint, VerifierConversionOptions, VerifierPolicy,
     };
     use crate::dictionary::test_system_dictionary_path;
     use crate::{
@@ -4727,6 +4881,7 @@ mod tests {
         VerifierCapabilities, VerifierError, VerifierSession,
     };
     use std::fs;
+    use std::time::Duration;
 
     #[derive(Debug, Clone, Copy)]
     enum FallbackVerifierMode {
@@ -4810,6 +4965,73 @@ mod tests {
                 state,
                 candidate_path,
                 prefix_constraint,
+                cache_key: VerificationCacheKey::for_draft(session, draft),
+            })
+        }
+
+        fn close_session(&mut self, _session: VerifierSession) -> Result<(), VerifierError> {
+            Ok(())
+        }
+    }
+
+    struct CountingVerifier {
+        evaluate_calls: usize,
+        observed_left_context: Option<Vec<u8>>,
+        evaluation_delay: Duration,
+    }
+
+    impl CountingVerifier {
+        fn new() -> Self {
+            Self {
+                evaluate_calls: 0,
+                observed_left_context: None,
+                evaluation_delay: Duration::ZERO,
+            }
+        }
+
+        fn with_evaluation_delay(delay: Duration) -> Self {
+            Self { evaluation_delay: delay, ..Self::new() }
+        }
+    }
+
+    impl DraftVerifier for CountingVerifier {
+        fn capabilities(&self) -> VerifierCapabilities {
+            VerifierCapabilities {
+                prefix_constraints: true,
+                max_candidates: 1,
+                model_revision: "counting-model".to_string(),
+                tokenizer_revision: "counting-tokenizer".to_string(),
+                ..VerifierCapabilities::default()
+            }
+        }
+
+        fn open_session(
+            &mut self,
+            context: SessionContext,
+        ) -> Result<VerifierSession, VerifierError> {
+            self.observed_left_context = context.left_context.clone();
+            Ok(VerifierSession {
+                session_id: 1,
+                context,
+                model_revision: "counting-model".to_string(),
+                tokenizer_revision: "counting-tokenizer".to_string(),
+                kv_reusable: false,
+            })
+        }
+
+        fn evaluate(
+            &mut self,
+            session: &mut VerifierSession,
+            draft: &Draft,
+        ) -> Result<VerificationResult, VerifierError> {
+            self.evaluate_calls += 1;
+            if !self.evaluation_delay.is_zero() {
+                std::thread::sleep(self.evaluation_delay);
+            }
+            Ok(VerificationResult {
+                state: VerificationState::Verified,
+                candidate_path: draft.candidate_path.clone(),
+                prefix_constraint: None,
                 cache_key: VerificationCacheKey::for_draft(session, draft),
             })
         }
@@ -7039,8 +7261,14 @@ mod tests {
             .into_iter()
             .next()
             .expect("dictionary conversion should produce a candidate");
-        let result =
-            convert_with_verifier("かんじ", &dictionary, options, None, "test-inference-v1");
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            None,
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify()),
+        );
 
         assert_eq!(result.verification_state, VerificationState::CapabilityUnavailable);
         assert_eq!(result.candidate.text, baseline.text);
@@ -7052,12 +7280,13 @@ mod tests {
         let dictionary = AzooKeyDictionary::default();
         let options = ConversionOptions::default();
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::NoPrefixCapability };
-        let result = convert_with_verifier(
+        let result = convert_with_verifier_with_limit(
             "かんじ",
             &dictionary,
             options,
             Some(&mut verifier),
-            "test-inference-v1",
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify()),
         );
 
         assert_eq!(result.verification_state, VerificationState::CapabilityUnavailable);
@@ -7073,12 +7302,13 @@ mod tests {
             .next()
             .expect("dictionary conversion should produce a candidate");
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::OpenError };
-        let result = convert_with_verifier(
+        let result = convert_with_verifier_with_limit(
             "かんじ",
             &dictionary,
             options,
             Some(&mut verifier),
-            "test-inference-v1",
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify()),
         );
 
         assert_eq!(result.verification_state, VerificationState::Error);
@@ -7095,12 +7325,13 @@ mod tests {
             .next()
             .expect("dictionary conversion should produce a candidate");
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::EvaluateError };
-        let result = convert_with_verifier(
+        let result = convert_with_verifier_with_limit(
             "かんじ",
             &dictionary,
             options,
             Some(&mut verifier),
-            "test-inference-v1",
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify()),
         );
 
         assert_eq!(result.verification_state, VerificationState::Error);
@@ -7117,12 +7348,13 @@ mod tests {
             .next()
             .expect("dictionary conversion should produce a candidate");
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::EvaluateStateError };
-        let result = convert_with_verifier(
+        let result = convert_with_verifier_with_limit(
             "かんじ",
             &dictionary,
             options,
             Some(&mut verifier),
-            "test-inference-v1",
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify()),
         );
 
         assert_eq!(result.verification_state, VerificationState::Error);
@@ -7160,7 +7392,8 @@ mod tests {
             &dictionary,
             options,
             Some(&mut verifier),
-            VerifierConversionOptions::new(1, "test-inference-v1"),
+            VerifierConversionOptions::new(1, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify()),
         );
 
         assert_eq!(result.verification_state, VerificationState::ExhaustedWithConstrainedCandidate);
@@ -7184,13 +7417,132 @@ mod tests {
             &dictionary,
             options,
             Some(&mut verifier),
-            VerifierConversionOptions::new(0, "test-inference-v1"),
+            VerifierConversionOptions::new(0, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify()),
         );
 
         assert_eq!(result.verification_state, VerificationState::ExhaustedWithDictionaryFallback);
         assert_eq!(result.candidate.text, baseline.text);
         assert_eq!(result.verification_iterations(), 0);
         assert!(!result.text().is_empty(), "zero-limit result must emit text");
+    }
+
+    #[test]
+    fn verifier_policy_skips_empty_left_context_without_calling_backend() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let mut verifier = CountingVerifier::new();
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_left_context(" \u{3000}\n"),
+        );
+
+        assert_eq!(result.verification_state, VerificationState::SkippedByPolicy);
+        assert_eq!(verifier.evaluate_calls, 0);
+        assert_eq!(result.verification_iterations(), 0);
+        assert!(!result.text().is_empty(), "policy skip must emit dictionary text");
+    }
+
+    #[test]
+    fn verifier_policy_calls_backend_with_left_context() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let mut verifier = CountingVerifier::new();
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            VerifierConversionOptions::new(10, "test-inference-v1").with_left_context("前の発話"),
+        );
+
+        assert_eq!(result.verification_state, VerificationState::Verified);
+        assert_eq!(verifier.evaluate_calls, 1);
+        assert_eq!(verifier.observed_left_context.as_deref(), Some("前の発話".as_bytes()));
+        assert!(!result.text().is_empty(), "verified conversion must emit text");
+    }
+
+    #[test]
+    fn verifier_policy_can_be_overridden_for_context_free_measurement() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let mut verifier = CountingVerifier::new();
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify()),
+        );
+
+        assert_eq!(result.verification_state, VerificationState::Verified);
+        assert_eq!(verifier.evaluate_calls, 1);
+        assert_eq!(verifier.observed_left_context, None);
+        assert!(!result.text().is_empty(), "measurement override must emit text");
+    }
+
+    #[test]
+    fn invalid_left_context_is_skipped_without_calling_backend() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let mut verifier = CountingVerifier::new();
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            VerifierConversionOptions::new(10, "test-inference-v1").with_left_context([0xff, 0xfe]),
+        );
+
+        assert_eq!(result.verification_state, VerificationState::SkippedByPolicy);
+        assert_eq!(verifier.evaluate_calls, 0);
+        assert!(!result.text().is_empty(), "invalid context must emit text");
+    }
+
+    #[test]
+    fn expired_deadline_returns_dictionary_result_without_calling_backend() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let mut verifier = CountingVerifier::new();
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify())
+                .with_deadline(Duration::ZERO),
+        );
+
+        assert_eq!(result.verification_state, VerificationState::DeadlineExceeded);
+        assert_eq!(verifier.evaluate_calls, 0);
+        assert_eq!(result.verification_iterations(), 0);
+        assert!(!result.text().is_empty(), "deadline fallback must emit text");
+    }
+
+    #[test]
+    fn deadline_after_backend_call_discards_late_verified_candidate() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let mut verifier = CountingVerifier::with_evaluation_delay(Duration::from_millis(5));
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            VerifierConversionOptions::new(10, "test-inference-v1")
+                .with_policy(VerifierPolicy::always_verify())
+                .with_deadline(Duration::from_millis(1)),
+        );
+
+        assert_eq!(result.verification_state, VerificationState::DeadlineExceeded);
+        assert_eq!(verifier.evaluate_calls, 1);
+        assert!(!result.text().is_empty(), "late deadline fallback must emit text");
     }
 
     #[test]

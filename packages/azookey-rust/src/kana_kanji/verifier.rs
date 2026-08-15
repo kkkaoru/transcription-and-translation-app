@@ -94,6 +94,13 @@ pub enum VerificationState {
     /// The conversion iteration limit was reached without a usable
     /// constrained candidate, so the dictionary baseline was returned.
     ExhaustedWithDictionaryFallback,
+    /// Verification was intentionally not started because the caller's
+    /// application policy was not satisfied (for example, no usable left
+    /// context was available).
+    SkippedByPolicy,
+    /// The caller's verification deadline was reached. The dictionary
+    /// baseline was returned without exposing a partially verified candidate.
+    DeadlineExceeded,
     CapabilityUnavailable,
     Error,
     UnverifiedFallback,
