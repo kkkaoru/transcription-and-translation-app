@@ -158,9 +158,13 @@ export const convertSpotChecks = (convert, cases = SPOT_CHECK_CASES) =>
   });
 
 const trackedCompareAzookeyAssets = (root = repositoryRoot) => {
-  const listed = execFileSync("git", ["-C", root, "ls-files", "-z", "--", ...COMPARE_MUST_NOT_SHIP], {
-    encoding: "buffer",
-  })
+  const listed = execFileSync(
+    "git",
+    ["-C", root, "ls-files", "-z", "--", ...COMPARE_MUST_NOT_SHIP],
+    {
+      encoding: "buffer",
+    },
+  )
     .toString("utf8")
     .split("\0")
     .filter(Boolean);
