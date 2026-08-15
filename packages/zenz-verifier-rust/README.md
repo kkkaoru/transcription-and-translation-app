@@ -49,7 +49,40 @@ ZENZ_V32_SMALL_GGUF=/path/to/ggml-model-Q5_K_M.gguf \
 
 That test pins a semantic result, not arbitrary logits: for the prompt
 `BOS + EE00 + トウキョウ + EE01`, Candle predicts both tokens of candidate
-`東京`, so the candidate verifies. Constraint-returning `DraftVerifier`
-integration remains separate from this forward layer. Whether to invoke a
-verifier is also a caller policy; no length/context threshold is embedded in
-this crate.
+`東京`, so the candidate verifies. The embedded verifier rejects the katakana
+echo, returns the byte prefix `東`, then verifies `東京` after the caller's
+ constrained lattice retry.
+
+## Embedded integration API
+
+The implementation is available only with feature `candle`:
+
+```rust,ignore
+pub fn EmbeddedZenzDraftVerifier::load(
+    model_path: &Path,
+    tokenizer_directory: &Path,
+    model_revision: impl Into<String>,
+    device: &candle_core::Device,
+) -> Result<EmbeddedZenzDraftVerifier, EmbeddedVerifierLoadError>
+```
+
+Loading is eager. A failed GGUF/tokenizer load returns
+`EmbeddedVerifierLoadError`, so no object can advertise capabilities for an
+unavailable backend. `model_revision` is mandatory and should contain the
+pinned model ID and revision; tokenizer identity is a deterministic fingerprint
+of `vocab.json` and `merges.txt`. `load_elapsed()` reports model initialization
+separately from conversion latency. Desktop wiring should load at recording
+start when its opt-in toggle is enabled, and fail open if loading fails.
+
+`capabilities()` currently reports:
+
+| Capability | Value | Reason |
+| --- | ---: | --- |
+| `prefix_constraints` | `true` | The first token mismatch returns a raw UTF-8 byte output-prefix constraint. Lattice search remains the caller's responsibility. |
+| `session_kv` | `false` | Each evaluation is full teacher-forced inference; no KV cache is implemented. Measured forward latency did not justify the extra complexity. |
+| `right_context` | `true` | Non-empty right context is encoded with the upstream EE07 prompt form. |
+| `max_candidates` | `1` | One trait call evaluates one `Draft`; n-best iteration belongs to the caller. |
+
+Whether to invoke the verifier is caller policy. The current product rule
+requires non-empty left context; no length/context threshold is duplicated
+inside this crate.
