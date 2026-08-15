@@ -45,7 +45,8 @@ OVERFLOW_RE = re.compile(
 )
 STALE_DISPLAY_MS = 8000
 RUNTIME_CONFIG_RE = re.compile(
-    r"runtime config turn_check_silence_ms=(\d+) normalizer=(\S+) "
+    r"runtime config(?: app_version=(\S+) build_id=(\S+))? "
+    r"turn_check_silence_ms=(\d+) normalizer=(\S+) "
     r"translator=(\S+) hold_clear_ms=(\d+) source_max_chars=(\d+) "
     r"translation_max_chars=(\d+) streaming_interim_asr=(true|false)"
 )
@@ -321,7 +322,19 @@ def main() -> int:
     runtime_configs: list[tuple[str, str, str, str, str, str, str]] = []
     for line in path.read_text(errors="replace").splitlines():
         if match := RUNTIME_CONFIG_RE.search(line):
-            runtime_configs.append(match.group(1, 2, 3, 4, 5, 6, 7))
+            runtime_configs.append(
+                (
+                    match.group(1) or "unknown",
+                    match.group(2) or "unknown",
+                    match.group(3),
+                    match.group(4),
+                    match.group(5),
+                    match.group(6),
+                    match.group(7),
+                    match.group(8),
+                    match.group(9),
+                )
+            )
             continue
         if match := NORMALIZE_RE.search(line):
             stamp = parse_stamp(match.group(1), match.group(2))
@@ -393,13 +406,15 @@ def main() -> int:
         latest = runtime_configs[-1]
         print(
             "runtime_config "
-            f"turn_check_silence_ms={latest[0]} "
-            f"normalizer={latest[1]} "
-            f"translator={latest[2]} "
-            f"hold_clear_ms={latest[3]} "
-            f"source_max_chars={latest[4]} "
-            f"translation_max_chars={latest[5]} "
-            f"streaming_interim_asr={latest[6]} "
+            f"app_version={latest[0]} "
+            f"build_id={latest[1]} "
+            f"turn_check_silence_ms={latest[2]} "
+            f"normalizer={latest[3]} "
+            f"translator={latest[4]} "
+            f"hold_clear_ms={latest[5]} "
+            f"source_max_chars={latest[6]} "
+            f"translation_max_chars={latest[7]} "
+            f"streaming_interim_asr={latest[8]} "
             f"rows={len(runtime_configs)}"
         )
     else:

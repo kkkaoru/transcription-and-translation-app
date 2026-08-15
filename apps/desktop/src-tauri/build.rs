@@ -1,4 +1,23 @@
+fn emit_frontend_build_identity() {
+    let path = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("generated/build-identity.txt");
+    println!("cargo:rerun-if-changed={}", path.display());
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines = contents.lines().map(str::trim);
+    let app_version = lines.next().unwrap_or("");
+    let build_id = lines.next().unwrap_or("");
+    println!(
+        "cargo:rustc-env=KOTOBA_APP_VERSION={}",
+        if app_version.is_empty() { "unknown" } else { app_version }
+    );
+    println!(
+        "cargo:rustc-env=KOTOBA_BUILD_ID={}",
+        if build_id.is_empty() { "unknown" } else { build_id }
+    );
+}
+
 fn main() {
+    emit_frontend_build_identity();
     let rustc_version = std::process::Command::new("rustc")
         .arg("--version")
         .output()

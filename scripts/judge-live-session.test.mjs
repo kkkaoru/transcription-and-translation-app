@@ -145,15 +145,26 @@ test("judges single-line and wrapped overflow as separate verdicts", () => {
 
 test("reads every runtime setting from one log line", () => {
   const { status, stdout } = runJudge(
-    "[2026-08-16][00:59:00][INFO][caption_bridge_lib] runtime config turn_check_silence_ms=320 normalizer=zenz-v3.2-small-gguf translator=hy-mt2-1.8b-gguf hold_clear_ms=5000 source_max_chars=28 translation_max_chars=48 streaming_interim_asr=false\n" +
-      "[2026-08-16][01:00:00][INFO][caption_bridge_lib] runtime config turn_check_silence_ms=480 normalizer=azookey-rust translator=hy-mt2-7b-gguf hold_clear_ms=5000 source_max_chars=32 translation_max_chars=40 streaming_interim_asr=true\n",
+    "[2026-08-16][00:59:00][INFO][caption_bridge_lib] runtime config app_version=0.1.1 build_id=dev turn_check_silence_ms=320 normalizer=zenz-v3.2-small-gguf translator=hy-mt2-1.8b-gguf hold_clear_ms=5000 source_max_chars=28 translation_max_chars=48 streaming_interim_asr=false\n" +
+      "[2026-08-16][01:00:00][INFO][caption_bridge_lib] runtime config app_version=0.1.1 build_id=b20260816071000123-8c81f05-0123abcd turn_check_silence_ms=480 normalizer=azookey-rust translator=hy-mt2-7b-gguf hold_clear_ms=5000 source_max_chars=32 translation_max_chars=40 streaming_interim_asr=true\n",
   );
   assert.equal(status, 0);
   assert.match(
     stdout,
-    /runtime_config turn_check_silence_ms=480 normalizer=azookey-rust translator=hy-mt2-7b-gguf hold_clear_ms=5000 source_max_chars=32 translation_max_chars=40 streaming_interim_asr=true rows=2/,
+    /runtime_config app_version=0.1.1 build_id=b20260816071000123-8c81f05-0123abcd turn_check_silence_ms=480 normalizer=azookey-rust translator=hy-mt2-7b-gguf hold_clear_ms=5000 source_max_chars=32 translation_max_chars=40 streaming_interim_asr=true rows=2/,
   );
   assert.doesNotMatch(stdout, /runtime_config verdict=unknown/);
+});
+
+test("marks a pre-identity runtime config line as unknown build", () => {
+  const { status, stdout } = runJudge(
+    "[2026-08-16][01:00:00][INFO][caption_bridge_lib] runtime config turn_check_silence_ms=480 normalizer=azookey-rust translator=hy-mt2-1.8b-gguf hold_clear_ms=5000 source_max_chars=28 translation_max_chars=48 streaming_interim_asr=false\n",
+  );
+  assert.equal(status, 0);
+  assert.match(
+    stdout,
+    /runtime_config app_version=unknown build_id=unknown turn_check_silence_ms=480 /,
+  );
 });
 
 test("reports fits when no overflow occurs across events", () => {

@@ -505,10 +505,13 @@ impl AppConfig {
     }
 
     /// One judge-readable line of the settings that change later verdicts.
-    /// Numbers and booleans only. No paths, prompts, or speech text.
+    /// Numbers, booleans, and the Vite build identity only. No paths, prompts,
+    /// or speech text. Missing embed values become `unknown`, never empty.
     pub fn runtime_config_log_line(&self) -> String {
         format!(
-            "runtime config turn_check_silence_ms={} normalizer={} translator={} hold_clear_ms={} source_max_chars={} translation_max_chars={} streaming_interim_asr={}",
+            "runtime config app_version={} build_id={} turn_check_silence_ms={} normalizer={} translator={} hold_clear_ms={} source_max_chars={} translation_max_chars={} streaming_interim_asr={}",
+            crate::build_identity::APP_VERSION,
+            crate::build_identity::BUILD_ID,
             TURN_CHECK_SILENCE_MS,
             self.models.normalizer,
             self.models.translator,
@@ -720,6 +723,20 @@ mod tests {
         assert!(line.contains("source_max_chars=28"), "{line}");
         assert!(line.contains("translation_max_chars=48"), "{line}");
         assert!(line.contains("streaming_interim_asr=false"), "{line}");
+        assert!(line.contains("app_version="), "{line}");
+        assert!(line.contains("build_id="), "{line}");
+        assert!(!line.contains("app_version= "), "{line}");
+        assert!(!line.contains("build_id= "), "{line}");
+        let app_version = line
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("app_version="))
+            .unwrap_or_else(|| panic!("{line}"));
+        let build_id = line
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("build_id="))
+            .unwrap_or_else(|| panic!("{line}"));
+        assert!(!app_version.is_empty(), "{line}");
+        assert!(!build_id.is_empty(), "{line}");
     }
 
     #[test]

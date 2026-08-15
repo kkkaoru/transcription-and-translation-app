@@ -3,6 +3,7 @@
 mod audio;
 mod azookey_runtime;
 mod browser_source;
+mod build_identity;
 mod commands;
 mod config;
 mod custom_dictionary;
