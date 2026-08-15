@@ -51,7 +51,29 @@ That test pins a semantic result, not arbitrary logits: for the prompt
 `BOS + EE00 + トウキョウ + EE01`, Candle predicts both tokens of candidate
 `東京`, so the candidate verifies. The embedded verifier rejects the katakana
 echo, returns the byte prefix `東`, then verifies `東京` after the caller's
- constrained lattice retry.
+constrained lattice retry.
+
+## Measured corpus gate
+
+An ignored real-model test compares dictionary-only conversion with the
+embedded verifier over the measured completed-sentence corpus, including its
+word-boundary category. Every case has a hand-written **artificial** left
+context that supplies a semantic clue without copying its expected surface.
+The test deliberately disables the verification deadline to measure the
+model's accuracy ceiling separately from the product time budget. It prints
+case-level results, per-category before/after counts, iterations, and every
+`VerificationState` count (including zero `DeadlineExceeded` cases).
+
+The shared TSV lives under `azookey-rust/testdata/`; AzooKey's schema test
+requires its IDs, categories, inputs, and expectations to match the Rust corpus
+exactly, preventing the measurement fixture from drifting silently. Run the
+measurement explicitly with:
+
+```sh
+ZENZ_V32_SMALL_GGUF=/path/to/ggml-model-Q5_K_M.gguf \
+  cargo test --release --manifest-path packages/zenz-verifier-rust/Cargo.toml \
+  --features candle --test measured_corpus -- --ignored --nocapture
+```
 
 ## Embedded integration API
 

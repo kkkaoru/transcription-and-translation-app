@@ -854,6 +854,19 @@ fn measured_completed_failure_cases() -> Vec<CorpusCase> {
     .collect()
 }
 
+fn zenz_measured_fixture_rows() -> Vec<[&'static str; 5]> {
+    include_str!("../../testdata/zenz_measured_completed.tsv")
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .skip(1)
+        .map(|line| {
+            let columns = line.split('\t').collect::<Vec<_>>();
+            assert_eq!(columns.len(), 5, "invalid measured Zenz TSV row: {line:?}");
+            [columns[0], columns[1], columns[2], columns[3], columns[4]]
+        })
+        .collect()
+}
+
 fn normalized_variant(value: &str) -> String {
     value
         .chars()
@@ -1106,6 +1119,22 @@ fn accuracy_corpus_schema_and_anchor_fingerprint_are_stable() {
     let measured_cases = measured_completed_failure_cases();
     assert_eq!(measured_cases.len(), MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL);
     assert_eq!(expansion_fingerprint(&measured_cases), MEASURED_COMPLETED_FAILURE_FINGERPRINT);
+    let zenz_rows = zenz_measured_fixture_rows();
+    assert_eq!(zenz_rows.len(), measured_cases.len());
+    for (case, [case_id, category, input, expected, artificial_left_context]) in
+        measured_cases.iter().zip(&zenz_rows)
+    {
+        assert_eq!(case.case_id, *case_id);
+        assert_eq!(case.category, *category);
+        assert_eq!(case.input, *input);
+        assert_eq!(case.expected, *expected);
+        assert!(!artificial_left_context.trim().is_empty());
+        assert!(
+            !artificial_left_context.contains(case.expected),
+            "artificial context repeats the expected surface for {}",
+            case.case_id
+        );
+    }
     for case in &measured_cases {
         assert!(case_ids.insert(case.case_id.as_str()), "duplicate case ID: {}", case.case_id);
         assert!(case.case_id.starts_with("measured-"));
