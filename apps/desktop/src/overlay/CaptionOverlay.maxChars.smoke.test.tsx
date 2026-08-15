@@ -2,10 +2,11 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultConfig } from "../core/defaults";
+import { clearStructuredLogs } from "../core/structuredLog";
 import type { AppConfig, CaptionPayload } from "../core/types";
-import { CaptionLines } from "./CaptionOverlay";
+import { CaptionLines, OverlayView } from "./CaptionOverlay";
 import { createPreviewCaption } from "./captions";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -185,5 +186,50 @@ describe("DOM overlay honours the configured caption line budget", () => {
     // window the full 4-grapheme sample still fits.
     expect(renderedGraphemes.length).toBe(4);
     expect(renderedGraphemes.join("")).toBe(text);
+  });
+
+  it("measures caption overflow and responds to ResizeObserver and font loading", () => {
+    clearStructuredLogs();
+    let resizeCallback: (() => void) | null = null;
+    class MockResizeObserver {
+      constructor(callback: () => void) {
+        resizeCallback = callback;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    let loadingDoneListener: (() => void) | null = null;
+    const mockFonts = {
+      addEventListener: (event: string, listener: () => void) => {
+        if (event === "loadingdone") {
+          loadingDoneListener = listener;
+        }
+      },
+      removeEventListener: () => {},
+      ready: Promise.resolve(),
+    };
+    const originalFonts = document.fonts;
+    Object.defineProperty(document, "fonts", { value: mockFonts, configurable: true });
+
+    try {
+      renderWith(configWithBudget(24, 24));
+      // Re-trigger from resize observer
+      act(() => {
+        resizeCallback?.();
+      });
+      // Re-trigger from font loadingdone
+      act(() => {
+        loadingDoneListener?.();
+      });
+      // Render OverlayView container
+      act(() => {
+        root.render(<OverlayView config={createDefaultConfig()} caption={caption} />);
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      Object.defineProperty(document, "fonts", { value: originalFonts, configurable: true });
+    }
   });
 });

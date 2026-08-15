@@ -190,9 +190,6 @@ export const computePreviewFitScale = (
     return 1;
   }
   const fit = Math.min(stageW / overlayW, stageH / overlayH);
-  if (!Number.isFinite(fit) || fit <= 0) {
-    return 1;
-  }
   // Keep a tiny lower bound so extremely small stages still paint something visible.
   return Math.min(1, Math.max(0.05, fit));
 };

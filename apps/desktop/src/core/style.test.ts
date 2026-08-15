@@ -72,7 +72,9 @@ describe("caption styles", () => {
     expect(computePreviewFitScale(2_560, 1_440, 1_280, 720)).toBe(1);
     // Unknown / zero stage → fill-mode fallback scale.
     expect(computePreviewFitScale(0, 0, 1_280, 720)).toBe(1);
+    expect(computePreviewFitScale(-10, 100, 1_280, 720)).toBe(1);
     expect(computePreviewFitScale(Number.NaN, 100, 1_280, 720)).toBe(1);
+    expect(computePreviewFitScale(100, Number.NaN, 1_280, 720)).toBe(1);
     // Tiny stage still returns a positive floor so captions remain paintable.
     expect(computePreviewFitScale(2, 2, 1_280, 720)).toBe(0.05);
   });
@@ -149,9 +151,17 @@ describe("caption overflow measurement", () => {
     expect(shouldLogCaptionOverflow(true, fitting)).toBe(true);
   });
 
-  it("reads overflow from DOM container and lines", () => {
+  it("reads overflow from DOM container and lines with multiple rows", () => {
     const host = document.createElement("div");
     Object.defineProperty(host, "clientWidth", { value: 600, configurable: true });
+
+    // Empty container fallback
+    expect(readCaptionOverflow(host)).toStrictEqual({
+      contentWidth: 0,
+      containerWidth: 600,
+      overflowed: false,
+      lineCount: 0,
+    });
 
     const emptyLine = document.createElement("div");
     emptyLine.className = "caption-line caption-line-empty";
@@ -160,6 +170,15 @@ describe("caption overflow measurement", () => {
     Object.defineProperty(emptyLine, "clientWidth", { value: 600, configurable: true });
     host.appendChild(emptyLine);
 
+    // Single line without span children
+    const textOnlyLine = document.createElement("div");
+    textOnlyLine.className = "caption-line caption-line-source";
+    textOnlyLine.textContent = "short text";
+    Object.defineProperty(textOnlyLine, "scrollWidth", { value: 400, configurable: true });
+    Object.defineProperty(textOnlyLine, "clientWidth", { value: 600, configurable: true });
+    host.appendChild(textOnlyLine);
+
+    // Multi-span overflowing line
     const sourceLine = document.createElement("div");
     sourceLine.className = "caption-line caption-line-source";
     Object.defineProperty(sourceLine, "scrollWidth", { value: 720, configurable: true });
@@ -170,12 +189,35 @@ describe("caption overflow measurement", () => {
     sourceLine.appendChild(span2);
     host.appendChild(sourceLine);
 
+    // Wider non-overflowing line (less overflow than sourceLine)
+    const translationLine = document.createElement("div");
+    translationLine.className = "caption-line caption-line-translation";
+    Object.defineProperty(translationLine, "scrollWidth", { value: 550, configurable: true });
+    Object.defineProperty(translationLine, "clientWidth", { value: 600, configurable: true });
+    host.appendChild(translationLine);
+
     const measurement = readCaptionOverflow(host);
     expect(measurement).toStrictEqual({
       contentWidth: 720,
       containerWidth: 600,
       overflowed: true,
       lineCount: 2,
+    });
+
+    // Even wider overflowing line replaces previous overflow candidate
+    const widerLine = document.createElement("div");
+    widerLine.className = "caption-line caption-line-wider";
+    widerLine.textContent = "even wider overflowing text";
+    Object.defineProperty(widerLine, "scrollWidth", { value: 850, configurable: true });
+    Object.defineProperty(widerLine, "clientWidth", { value: 600, configurable: true });
+    host.appendChild(widerLine);
+
+    const widerMeasurement = readCaptionOverflow(host);
+    expect(widerMeasurement).toStrictEqual({
+      contentWidth: 850,
+      containerWidth: 600,
+      overflowed: true,
+      lineCount: 1,
     });
   });
 
