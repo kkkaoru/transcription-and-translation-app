@@ -2,8 +2,8 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
+import { pathToFileURL } from "node:url";
 
 const root = resolve(import.meta.dirname, "..");
 const workerRoot = resolve(root, "apps/cloudflare-worker-server");
@@ -14,7 +14,9 @@ const { convertAzookeyMessage, createWasmConverter, parseAzookeyMessage } = awai
 const wasmBytes = readFileSync(resolve(workerRoot, "wasm/azookey.wasm"));
 const dictionaryGzip = readFileSync(resolve(workerRoot, "public/azookey/system.azkdict.gz"));
 const module = new WebAssembly.Module(wasmBytes);
-const fetcher = async (input, init) => {
+// Not async: every branch resolves without awaiting, and the caller only
+// needs a promise-compatible fetch.
+const fetcher = (input, init) => {
   if (typeof input === "string" && input.endsWith("/azookey/system.azkdict.gz")) {
     return new Response(dictionaryGzip, {
       status: 200,

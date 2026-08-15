@@ -57,7 +57,7 @@ const isGateCommand = (command) =>
   /^cargo (?:build|test|clippy|fmt)\b/u.test(command);
 
 export const extractQualityJob = (workflow) => {
-  const match = workflow.match(/\n  quality:\n([\s\S]*?)(?=\n  [A-Za-z0-9_-]+:|\n?$)/u);
+  const match = workflow.match(/\n {2}quality:\n([\s\S]*?)(?=\n {2}[A-Za-z0-9_-]+:|\n?$)/u);
   return match?.[1] ?? "";
 };
 

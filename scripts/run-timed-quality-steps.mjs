@@ -33,7 +33,9 @@ export const runTimedQualitySteps = ({
       status: result.status,
       signal: result.signal,
     });
-    stdout(`[quality-gate] done  ${label} ${formatDuration(durationMs)} exit=${result.status ?? "null"}`);
+    stdout(
+      `[quality-gate] done  ${label} ${formatDuration(durationMs)} exit=${result.status ?? "null"}`,
+    );
     if (result.error) {
       stderr(`[quality-gate] unable to start ${script}: ${result.error.message}`);
       return { exitCode: 1, records };
@@ -59,7 +61,8 @@ const writeTimingSummary = (result) => {
     `${JSON.stringify(
       {
         recordedAt: new Date().toISOString(),
-        totalMs: result.totalMs ?? result.records.reduce((sum, record) => sum + record.durationMs, 0),
+        totalMs:
+          result.totalMs ?? result.records.reduce((sum, record) => sum + record.durationMs, 0),
         steps: result.records,
       },
       null,
