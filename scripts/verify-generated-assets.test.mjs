@@ -1,9 +1,19 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { REQUIRED_WASM_EXPORTS } from "./verify-azookey-wasm-parity.mjs";
-import { verifyGeneratedAssets } from "./verify-generated-assets.mjs";
+import {
+  assertAzookeyWasmSourceDigest,
+  verifyGeneratedAssets,
+} from "./verify-generated-assets.mjs";
 
 describe("checked-in runtime assets", () => {
+  it("gives the exact regeneration command when the WASM source digest is stale", () => {
+    assert.throws(
+      () => assertAzookeyWasmSourceDigest({ recorded: "a".repeat(64), current: "b".repeat(64) }),
+      /AzooKey WASM is stale:.*regenerate it with `bun --filter=@caption-bridge\/cloudflare-worker-server run build:wasm`/u,
+    );
+  });
+
   it("keeps every generated copy byte-identical and valid", () => {
     const result = verifyGeneratedAssets();
     assert.equal(

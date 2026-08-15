@@ -10,6 +10,10 @@ import {
   AZOOKEY_DICTIONARY_ARCHIVE_SHA256,
   AZOOKEY_DICTIONARY_REVISION,
 } from "./build-azookey-dictionary.mjs";
+import {
+  AZOOKEY_WASM_SOURCE_DIGEST_PATH,
+  calculateAzookeyWasmSourceDigest,
+} from "./build-azookey-wasm.mjs";
 import { REQUIRED_WASM_EXPORTS } from "./verify-azookey-wasm-parity.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -61,6 +65,8 @@ const VIBRATO_GLUE_DTS_PATHS = [
 const VIBRATO_GLUE_BG_DTS_PATH = "packages/vibrato/wasm/pkg-web/vibrato_wasm_bg.wasm.d.ts";
 const AZOOKEY_DICTIONARY_PATH = "apps/cloudflare-worker-server/public/azookey/system.azkdict.gz";
 const AZOOKEY_WASM_PATH = "apps/cloudflare-worker-server/wasm/azookey.wasm";
+const REGENERATE_AZOOKEY_WASM_COMMAND =
+  "bun --filter=@caption-bridge/cloudflare-worker-server run build:wasm";
 const COMPARE_AZOOKEY_DIR = "apps/azookey-compare/public/azookey";
 const COMPARE_AZOOKEY_WASM_PATH = `${COMPARE_AZOOKEY_DIR}/azookey.wasm`;
 const COMPARE_AZOOKEY_DICTIONARY_PATH = `${COMPARE_AZOOKEY_DIR}/system.azkdict.gz`;
@@ -171,6 +177,17 @@ const assertCompareAzookeyCopiesMatchWhenPresent = (root, workerWasmHash, worker
   }
 };
 
+export const assertAzookeyWasmSourceDigest = ({ recorded, current }) => {
+  if (!/^[0-9a-f]{64}$/u.test(recorded)) {
+    throw new Error(`AzooKey WASM source digest is invalid: ${recorded || "empty"}`);
+  }
+  if (recorded !== current) {
+    throw new Error(
+      `AzooKey WASM is stale: source digest ${recorded} does not match ${current}; regenerate it with \`${REGENERATE_AZOOKEY_WASM_COMMAND}\``,
+    );
+  }
+};
+
 const verifyAzookeyWasm = (root) => {
   const bytes = readAsset(root, AZOOKEY_WASM_PATH);
   let module;
@@ -210,6 +227,7 @@ export const verifyGeneratedAssets = ({ root = repositoryRoot, requireTracked = 
       VIBRATO_GLUE_BG_DTS_PATH,
       AZOOKEY_DICTIONARY_PATH,
       AZOOKEY_WASM_PATH,
+      AZOOKEY_WASM_SOURCE_DIGEST_PATH,
     ],
     { requireTracked },
   );
@@ -265,6 +283,13 @@ export const verifyGeneratedAssets = ({ root = repositoryRoot, requireTracked = 
     throw new Error(`AzooKey dictionary hash mismatch: ${azookeyDictionaryHash}`);
   }
   const azookeyWasm = verifyAzookeyWasm(root);
+  const azookeyWasmSourceDigestBytes = readAsset(root, AZOOKEY_WASM_SOURCE_DIGEST_PATH);
+  const recordedAzookeyWasmSourceDigest = azookeyWasmSourceDigestBytes.toString("utf8").trim();
+  const currentAzookeyWasmSourceDigest = calculateAzookeyWasmSourceDigest(root).sha256;
+  assertAzookeyWasmSourceDigest({
+    recorded: recordedAzookeyWasmSourceDigest,
+    current: currentAzookeyWasmSourceDigest,
+  });
   assertCompareAzookeyIgnored(root);
   assertCompareAzookeyCopiesMatchWhenPresent(root, azookeyWasm.sha256, azookeyDictionaryHash);
   return {
@@ -285,6 +310,11 @@ export const verifyGeneratedAssets = ({ root = repositoryRoot, requireTracked = 
       paths: [AZOOKEY_DICTIONARY_PATH],
     },
     azookeyWasm,
+    azookeyWasmSourceDigest: {
+      bytes: azookeyWasmSourceDigestBytes,
+      sha256: currentAzookeyWasmSourceDigest,
+      paths: [AZOOKEY_WASM_SOURCE_DIGEST_PATH],
+    },
   };
 };
 

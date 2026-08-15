@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
@@ -16,6 +24,52 @@ const source = resolve(
   "packages/azookey-wasm/target/wasm32-unknown-unknown/release/caption_bridge_azookey_wasm.wasm",
 );
 const destination = resolve(root, "apps/cloudflare-worker-server/wasm/azookey.wasm");
+export const AZOOKEY_WASM_SOURCE_DIGEST_PATH =
+  "apps/cloudflare-worker-server/wasm/azookey.source.sha256";
+const sourceDigestDestination = resolve(root, AZOOKEY_WASM_SOURCE_DIGEST_PATH);
+const SOURCE_INPUT_PATHS = [
+  "packages/azookey-rust",
+  "packages/azookey-wasm",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "scripts/build-azookey-wasm.mjs",
+];
+
+const gitPaths = (repositoryRoot, args) =>
+  execFileSync("git", ["-C", repositoryRoot, "ls-files", "-z", ...args], {
+    encoding: "buffer",
+  })
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean)
+    .sort();
+
+export const calculateAzookeyWasmSourceDigest = (repositoryRoot = root) => {
+  const untracked = gitPaths(repositoryRoot, [
+    "--others",
+    "--exclude-standard",
+    "--",
+    ...SOURCE_INPUT_PATHS,
+  ]);
+  if (untracked.length > 0) {
+    throw new Error(
+      `untracked AzooKey WASM source inputs cannot be recorded; git add them first: ${untracked.join(", ")}`,
+    );
+  }
+  const paths = gitPaths(repositoryRoot, ["--", ...SOURCE_INPUT_PATHS]).filter(
+    (path) => path !== AZOOKEY_WASM_SOURCE_DIGEST_PATH,
+  );
+  const aggregate = createHash("sha256");
+  for (const path of paths) {
+    const bytes = readFileSync(resolve(repositoryRoot, path));
+    const blob = createHash("sha256")
+      .update(`blob ${bytes.byteLength}\0`)
+      .update(bytes)
+      .digest("hex");
+    aggregate.update(`${Buffer.byteLength(path)}:${path}\0${blob}\n`);
+  }
+  return { sha256: aggregate.digest("hex"), paths };
+};
 
 export const reproducibleRustFlags = ({ repositoryRoot, rustSysroot }) => [
   `--remap-path-prefix=${realpathSync(repositoryRoot)}=.`,
@@ -49,7 +103,9 @@ export const buildAzookeyWasm = () => {
   );
   mkdirSync(dirname(destination), { recursive: true });
   copyFileSync(source, destination);
-  console.log(`Built ${destination}`);
+  const sourceDigest = calculateAzookeyWasmSourceDigest(root);
+  writeFileSync(sourceDigestDestination, `${sourceDigest.sha256}\n`);
+  console.log(`Built ${destination} (source sha256=${sourceDigest.sha256})`);
   const dictionaryRoot = resolve(root, "submodules/azooKey_dictionary_storage/Dictionary");
   const dictionaryAvailable = existsSync(resolve(dictionaryRoot, "louds/charID.chid"));
   let dictionary;
