@@ -1898,6 +1898,7 @@ pub async fn get_debug_info(
     // Snapshot independently of completed normalize stages so an in-progress
     // synchronous model load remains visible while capture startup is waiting.
     let zenz_verifier_load = state.pipeline.zenz_verifier_load_diagnostics();
+    let zenz_verifier_deadline = zenz_verifier_deadline_diagnostics();
     let latest_caption = state.latest_caption();
     let app_data = app.path().app_data_dir().unwrap_or_default();
     let config_dir = app.path().app_config_dir().unwrap_or_default();
@@ -1954,6 +1955,12 @@ pub async fn get_debug_info(
         // Alias kept for callers that describe the same rows as a history.
         "stageHistory": safe_pipeline_stages,
         "zenzVerifierLoad": zenz_verifier_load,
+        // Optional verifier wall-clock budget. Default is unset so the current
+        // product path stays unbounded until a measured timeout is chosen.
+        // `applied` is false until the normalize path actually calls
+        // `VerifierConversionOptions::with_deadline`; that call lives in
+        // pipeline.rs and is not wired yet.
+        "zenzVerifierDeadline": zenz_verifier_deadline,
         // Latest normalized source/translation caption for late overlay/debug
         // consumers. Raw ASR is not stored in AppState and cannot appear here.
         "latestCaption": safe_latest_caption,
@@ -2025,6 +2032,82 @@ fn capture_is_active(status: &str) -> bool {
     matches!(status, "starting" | "capturing")
 }
 
+/// Runtime env that can attach `VerifierConversionOptions::with_deadline`.
+/// Empty / unset keeps the historical unbounded verifier loop.
+const ZENZ_VERIFIER_DEADLINE_ENV: &str = "CAPTION_BRIDGE_ZENZ_VERIFIER_DEADLINE_MS";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZenzVerifierDeadlineSource {
+    Unset,
+    Disabled,
+    Configured,
+    Invalid,
+}
+
+impl ZenzVerifierDeadlineSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unset => "unset",
+            Self::Disabled => "disabled",
+            Self::Configured => "configured",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ZenzVerifierDeadlineSetting {
+    configured: bool,
+    timeout_ms: Option<u64>,
+    source: ZenzVerifierDeadlineSource,
+}
+
+/// Parse an optional millisecond budget. Zero and empty mean "no deadline".
+fn parse_zenz_verifier_deadline_ms(raw: Option<&str>) -> ZenzVerifierDeadlineSetting {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return ZenzVerifierDeadlineSetting {
+            configured: false,
+            timeout_ms: None,
+            source: ZenzVerifierDeadlineSource::Unset,
+        };
+    };
+    match raw.parse::<u64>() {
+        Ok(0) => ZenzVerifierDeadlineSetting {
+            configured: false,
+            timeout_ms: None,
+            source: ZenzVerifierDeadlineSource::Disabled,
+        },
+        Ok(timeout_ms) => ZenzVerifierDeadlineSetting {
+            configured: true,
+            timeout_ms: Some(timeout_ms),
+            source: ZenzVerifierDeadlineSource::Configured,
+        },
+        Err(_) => ZenzVerifierDeadlineSetting {
+            configured: false,
+            timeout_ms: None,
+            source: ZenzVerifierDeadlineSource::Invalid,
+        },
+    }
+}
+
+fn zenz_verifier_deadline_setting() -> ZenzVerifierDeadlineSetting {
+    parse_zenz_verifier_deadline_ms(std::env::var(ZENZ_VERIFIER_DEADLINE_ENV).ok().as_deref())
+}
+
+fn zenz_verifier_deadline_diagnostics() -> serde_json::Value {
+    let setting = zenz_verifier_deadline_setting();
+    serde_json::json!({
+        "configured": setting.configured,
+        "timeoutMs": setting.timeout_ms,
+        "source": setting.source.as_str(),
+        // The normalize path does not yet call `with_deadline`, so a configured
+        // value is visible but not applied. Keep this explicit so an unset
+        // budget cannot be mistaken for "wired, default off".
+        "applied": false,
+        "env": ZENZ_VERIFIER_DEADLINE_ENV,
+    })
+}
+
 /// A stop issued for generation zero is the idle/no-op path. For an active
 /// generation, only the session that began the drain may finish the idle
 /// transition; a later start invalidates this stop completion.
@@ -2069,12 +2152,13 @@ mod tests {
     use super::{
         capture_is_active, ensure_native_publisher_window, log_caption_publish_success,
         native_output_uses_render_publish, observe_http_empty_asr,
-        parapper_output_generation_is_current, persistent_asr_loss_message,
-        publish_parapper_caption, publish_source_caption_gated, redact_runtime_text,
-        reset_caption_publish_success_log_for_tests, sanitize_debug_json, sanitize_export_body,
-        should_spawn_parapper_translation, source_caption_payload, stop_generation_is_current,
-        validate_overlay_frame_dimensions, NativeOverlayFrame, SourceCaptionInput,
-        NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL,
+        parapper_output_generation_is_current, parse_zenz_verifier_deadline_ms,
+        persistent_asr_loss_message, publish_parapper_caption, publish_source_caption_gated,
+        redact_runtime_text, reset_caption_publish_success_log_for_tests, sanitize_debug_json,
+        sanitize_export_body, should_spawn_parapper_translation, source_caption_payload,
+        stop_generation_is_current, validate_overlay_frame_dimensions, NativeOverlayFrame,
+        SourceCaptionInput, ZenzVerifierDeadlineSource, NATIVE_RENDERER_LABEL,
+        TRANSPARENT_CAPTURE_LABEL,
     };
     use crate::config::AppConfig;
     use crate::native_output::NativeOutputHandle;
@@ -2082,6 +2166,33 @@ mod tests {
     use crate::pipeline::{CaptionPayload, ParapperRecognitionInput};
     use crate::state::{AppState, ExpectedEmptyAsrResult, ASR_EMPTY_RESULT_WINDOW};
     use base64::Engine;
+
+    #[test]
+    fn verifier_deadline_defaults_unset_and_keeps_zero_disabled() {
+        let unset = parse_zenz_verifier_deadline_ms(None);
+        assert!(!unset.configured);
+        assert_eq!(unset.timeout_ms, None);
+        assert_eq!(unset.source, ZenzVerifierDeadlineSource::Unset);
+
+        let empty = parse_zenz_verifier_deadline_ms(Some("  "));
+        assert!(!empty.configured);
+        assert_eq!(empty.source, ZenzVerifierDeadlineSource::Unset);
+
+        let disabled = parse_zenz_verifier_deadline_ms(Some("0"));
+        assert!(!disabled.configured);
+        assert_eq!(disabled.timeout_ms, None);
+        assert_eq!(disabled.source, ZenzVerifierDeadlineSource::Disabled);
+
+        let configured = parse_zenz_verifier_deadline_ms(Some("500"));
+        assert!(configured.configured);
+        assert_eq!(configured.timeout_ms, Some(500));
+        assert_eq!(configured.source, ZenzVerifierDeadlineSource::Configured);
+
+        let invalid = parse_zenz_verifier_deadline_ms(Some("soon"));
+        assert!(!invalid.configured);
+        assert_eq!(invalid.timeout_ms, None);
+        assert_eq!(invalid.source, ZenzVerifierDeadlineSource::Invalid);
+    }
 
     #[test]
     fn translation_spawns_only_for_protocol_turn_final_events() {
