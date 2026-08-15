@@ -57,6 +57,9 @@ impl ZenzPromptTokenizer {
     /// Returning bytes rather than `String` is required for prefix constraints:
     /// byte-level BPE tokens such as the first token of an EE marker are not
     /// individually valid UTF-8.
+    // Only the embedded verifier compares these against the GGUF's own
+    // vocabulary, so the tables are not reachable without Candle.
+    #[cfg(feature = "candle")]
     pub(crate) fn tables(&self) -> &caption_bridge_input_lm::tokenizer::BpeTables {
         self.tokenizer.tables()
     }
