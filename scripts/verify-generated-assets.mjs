@@ -10,6 +10,7 @@ import {
   AZOOKEY_DICTIONARY_ARCHIVE_SHA256,
   AZOOKEY_DICTIONARY_REVISION,
 } from "./build-azookey-dictionary.mjs";
+import { REQUIRED_WASM_EXPORTS } from "./verify-azookey-wasm-parity.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const EXPECTED_VIBRATO_DICTIONARY_SHA256 =
@@ -179,14 +180,7 @@ const verifyAzookeyWasm = (root) => {
     throw new Error(`AzooKey WASM is not a valid module: ${error.message}`);
   }
   const exports = new Set(WebAssembly.Module.exports(module).map(({ name }) => name));
-  for (const name of [
-    "memory",
-    "azookey_abi_version",
-    "azookey_alloc",
-    "azookey_dealloc",
-    "azookey_convert",
-    "azookey_dictionary_init_owned",
-  ]) {
+  for (const name of REQUIRED_WASM_EXPORTS) {
     if (!exports.has(name)) {
       throw new Error(`AzooKey WASM export is missing: ${name}`);
     }

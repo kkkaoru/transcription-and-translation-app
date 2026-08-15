@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
+import { REQUIRED_WASM_EXPORTS } from "./verify-azookey-wasm-parity.mjs";
 import { verifyGeneratedAssets } from "./verify-generated-assets.mjs";
 
 describe("checked-in runtime assets", () => {
@@ -38,5 +39,10 @@ describe("checked-in runtime assets", () => {
       "84f605a5c76e09480ef1a0a02d91982fb8c9426a8a7a18fb64d9f27210641b22",
     );
     assert.ok(result.azookeyWasm.bytes.byteLength > 0);
+    const module = new WebAssembly.Module(result.azookeyWasm.bytes);
+    const exportNames = new Set(WebAssembly.Module.exports(module).map(({ name }) => name));
+    for (const name of REQUIRED_WASM_EXPORTS) {
+      assert.equal(exportNames.has(name), true, `assets:verify must require ${name}`);
+    }
   });
 });
