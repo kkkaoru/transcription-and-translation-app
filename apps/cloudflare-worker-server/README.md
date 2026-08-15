@@ -225,7 +225,8 @@ C ABI one-completion was checked against the Rust spike with the installed
 Exact outputs matched 22/23. `measured-012` diverged
 (`売り上げました` vs `売上ました`); both miss the expected `123万円を売り上げました`.
 A follow-up experiment ruled out the missing `candidate_path` hint: hint-on and
-hint-off lattice search both produced `売上ました`. The split is the unconstrained
-baseline. `convert_with_dictionary` ranks `売り上げました`; `build_lattice` +
-search ranks `売上ました`. The C ABI starts from the latter. Do not claim 23/23
-C ABI equivalence. Production `MODEL_ROUTES` remains empty, so this path is unused.
+hint-off lattice search both produced `売上ました`. Do not reopen that hypothesis.
+Rust spike / embedded start from `convert_with_dictionary`; the C ABI starts from
+`build_lattice` + search. That unconstrained-baseline difference is why exact
+output is 22/23. Do not claim 23/23 C ABI equivalence. Production `MODEL_ROUTES`
+remains empty, so this path is unused.
