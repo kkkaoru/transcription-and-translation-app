@@ -66,8 +66,25 @@ case-level results, per-category before/after counts, iterations, and every
 
 The shared TSV lives under `azookey-rust/testdata/`; AzooKey's schema test
 requires its IDs, categories, inputs, and expectations to match the Rust corpus
-exactly, preventing the measurement fixture from drifting silently. Run the
-measurement explicitly with:
+exactly, preventing the measurement fixture from drifting silently.
+
+The pinned small model at revision
+`c67e03e07d215c869f591b274c1631170d3e11fe` produced the following accuracy-ceiling
+result over all 23 measured cases:
+
+| Metric | Dictionary only | Embedded verifier |
+| --- | ---: | ---: |
+| Strict accuracy | 2/23 | 21/23 |
+| Word-boundary strict accuracy | 0/7 | 7/7 |
+| New regressions | — | 0 |
+
+The verifier states were 22 `Verified`, one
+`ExhaustedWithDictionaryFallback`, zero `SkippedByPolicy`, and zero
+`DeadlineExceeded`. The iteration distribution was 1×3, 2×6, 3×10, 4×1, and
+5×3. This is an accuracy ceiling without a deadline, not the product-latency
+result.
+
+Run the measurement explicitly with:
 
 ```sh
 ZENZ_V32_SMALL_GGUF=/path/to/ggml-model-Q5_K_M.gguf \
