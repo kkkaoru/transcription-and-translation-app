@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -156,12 +157,20 @@ export const convertSpotChecks = (convert, cases = SPOT_CHECK_CASES) =>
     return { input, output, expected };
   });
 
+const trackedCompareAzookeyAssets = (root = repositoryRoot) => {
+  const listed = execFileSync("git", ["-C", root, "ls-files", "-z", "--", ...COMPARE_MUST_NOT_SHIP], {
+    encoding: "buffer",
+  })
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean);
+  return COMPARE_MUST_NOT_SHIP.filter((relativePath) => listed.includes(relativePath));
+};
+
 export const assertCompareDoesNotShipAzookeyAssets = (root = repositoryRoot) => {
-  const present = COMPARE_MUST_NOT_SHIP.filter((relativePath) =>
-    existsSync(resolve(root, relativePath)),
-  );
-  if (present.length > 0) {
-    throw new Error(`compare must not ship AzooKey wasm/dict copies: ${present.join(", ")}`);
+  const tracked = trackedCompareAzookeyAssets(root);
+  if (tracked.length > 0) {
+    throw new Error(`compare must not ship AzooKey wasm/dict copies: ${tracked.join(", ")}`);
   }
 };
 

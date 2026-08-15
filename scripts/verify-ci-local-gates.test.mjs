@@ -59,6 +59,15 @@ describe("CI and local quality-gate parity", () => {
     );
   });
 
+  it("runs the wasm parity suite from the local test:build-cleanup gate", () => {
+    const command = packageJson.scripts["test:build-cleanup"];
+    assert.match(
+      command,
+      /scripts\/verify-azookey-wasm-parity\.test\.mjs/,
+      "check:all must execute wasm parity, not only keep the script on disk",
+    );
+  });
+
   it("requires the local gate to keep the post-build assets:verify after worker:typecheck", () => {
     const localScripts = extractLocalGateScripts(packageJson);
     const first = localScripts.indexOf("assets:verify");
