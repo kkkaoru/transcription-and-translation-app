@@ -14,7 +14,7 @@ use reqwest::multipart;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{hash_map::Entry, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
@@ -1517,14 +1517,13 @@ impl Pipeline {
         left_context: Option<&str>,
     ) -> Result<NormalizeOutcome, PipelineError> {
         match config.models.normalizer.as_str() {
-            "azookey-rust" => {
-                if !zenz_verifier_enabled() {
+            "azookey-rust" => match zenz_verifier_enabled() {
+                true => self.normalize_azookey_with_verifier(config, text, left_context),
+                false => {
                     self.zenz_verifier_metrics.record_disabled();
                     normalize_azookey_with_cache(config, text, &self.azookey_dictionaries)
-                } else {
-                    self.normalize_azookey_with_verifier(config, text, left_context)
                 }
-            }
+            },
             "zenz-v2-q5-k-m-gguf" | "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf" => {
                 // Zenz is a dedicated kana-kanji converter, not an instruction-tuned chat model.
                 // Its model contract uses U+EE00 / U+EE01 delimiters around a
@@ -1563,18 +1562,13 @@ impl Pipeline {
         let mut dictionaries = self.azookey_dictionaries.lock().map_err(|_| {
             PipelineError::Model("AzooKey dictionary cache lock poisoned".to_string())
         })?;
-        if !dictionaries.contains_key(&cache_key) {
-            let dictionary = match AzooKeyDictionary::from_paths(&paths) {
-                Ok(dictionary) => dictionary,
-                Err(error) => {
-                    self.zenz_verifier_metrics.record_disabled();
-                    return Ok(azookey_fallback(text, error));
-                }
-            };
-            dictionaries.insert(cache_key.clone(), dictionary);
-        }
-        let dictionary =
-            dictionaries.get(&cache_key).expect("dictionary inserted or already present");
+        let dictionary = match cached_azookey_dictionary(&mut dictionaries, &cache_key, &paths) {
+            Ok(dictionary) => dictionary,
+            Err(error) => {
+                self.zenz_verifier_metrics.record_disabled();
+                return Ok(azookey_fallback(text, error));
+            }
+        };
 
         let mut verifier_options = VerifierConversionOptions::new(
             ZENZ_VERIFIER_MAX_ITERATIONS,
@@ -1934,6 +1928,17 @@ fn to_katakana(input: &str) -> String {
 }
 
 type AzooKeyDictionaryCache = Arc<Mutex<HashMap<String, AzooKeyDictionary>>>;
+
+fn cached_azookey_dictionary<'a>(
+    dictionaries: &'a mut HashMap<String, AzooKeyDictionary>,
+    cache_key: &str,
+    paths: &DictionaryPaths,
+) -> Result<&'a AzooKeyDictionary, String> {
+    match dictionaries.entry(cache_key.to_owned()) {
+        Entry::Occupied(entry) => Ok(entry.into_mut()),
+        Entry::Vacant(entry) => Ok(entry.insert(AzooKeyDictionary::from_paths(paths)?)),
+    }
+}
 
 /// Compatibility wrapper used by focused unit tests and non-live callers.
 /// The live `Pipeline` passes its long-lived cache through
