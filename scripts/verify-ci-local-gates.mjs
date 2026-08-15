@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { QUALITY_GATE_STEPS } from "./quality-gate-steps.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -55,30 +56,41 @@ const isGateCommand = (command) =>
   /^bun run \S+$/u.test(command) ||
   /^cargo (?:build|test|clippy|fmt)\b/u.test(command);
 
-export const extractCiGateCommands = (workflow) => {
-  const commands = new Set();
-  for (const line of workflow.split("\n")) {
+export const extractQualityJob = (workflow) => {
+  const match = workflow.match(/\n  quality:\n([\s\S]*?)(?=\n  [A-Za-z0-9_-]+:|\n?$)/u);
+  return match?.[1] ?? "";
+};
+
+const extractGateCommandsFromText = (text) => {
+  const commands = [];
+  for (const line of text.split("\n")) {
     const match = line.match(/^\s*(?:-\s*)?run:\s+([^|].*?)\s*$/u);
     if (!match) continue;
     const command = normalizeCiCommand(match[1]);
-    if (isGateCommand(command)) commands.add(command);
+    if (isGateCommand(command)) commands.push(command);
   }
   return commands;
 };
 
+export const extractCiGateCommands = (workflow) => extractGateCommandsFromText(workflow);
+
+export const extractQualityGateCommands = (workflow) =>
+  extractGateCommandsFromText(extractQualityJob(workflow));
+
 export const extractLocalGateScripts = (packageJson) => {
   const command = packageJson.scripts?.["check:all:unlocked"];
-  if (typeof command !== "string") {
-    throw new Error("package.json must define scripts.check:all:unlocked");
+  if (command !== "node scripts/run-timed-quality-steps.mjs") {
+    throw new Error("package.json check:all:unlocked must run the timed quality-step runner");
   }
+  return [...QUALITY_GATE_STEPS];
+};
 
-  const scripts = new Set();
-  for (const step of command.split(" && ")) {
-    const match = step.match(/^bun run (\S+)$/u);
-    if (!match) throw new Error(`unsupported local quality-gate step: ${step}`);
-    scripts.add(match[1]);
+const countOccurrences = (values) => {
+  const counts = new Map();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
   }
-  return scripts;
+  return counts;
 };
 
 const localScriptForCiCommand = (command) => {
@@ -88,24 +100,46 @@ const localScriptForCiCommand = (command) => {
 
 export const verifyCiLocalGateParity = ({ workflow, packageJson }) => {
   const ciCommands = extractCiGateCommands(workflow);
+  const qualityCommands = extractQualityGateCommands(workflow);
   const localScripts = extractLocalGateScripts(packageJson);
+  const localCounts = countOccurrences(localScripts);
+  const requiredCounts = new Map();
   const missingLocalScripts = [];
   const unknownCiCommands = [];
 
-  for (const command of ciCommands) {
+  for (const command of qualityCommands) {
     if (ciGateExclusions.has(command)) continue;
     const localScript = localScriptForCiCommand(command);
     if (!localScript) {
       unknownCiCommands.push(command);
-    } else if (!localScripts.has(localScript)) {
-      missingLocalScripts.push(`${localScript} (CI: ${command})`);
+      continue;
+    }
+    requiredCounts.set(localScript, (requiredCounts.get(localScript) ?? 0) + 1);
+  }
+  for (const command of ciCommands) {
+    if (ciGateExclusions.has(command) || qualityCommands.includes(command)) continue;
+    const localScript = localScriptForCiCommand(command);
+    if (!localScript) {
+      unknownCiCommands.push(command);
+    } else if (!localCounts.has(localScript)) {
+      requiredCounts.set(localScript, Math.max(requiredCounts.get(localScript) ?? 0, 1));
+    }
+  }
+  for (const [script, required] of requiredCounts) {
+    const actual = localCounts.get(script) ?? 0;
+    if (actual < required) {
+      missingLocalScripts.push(
+        actual === 0
+          ? `${script} (CI: bun run ${script})`
+          : `${script} x${required} (local has ${actual})`,
+      );
     }
   }
 
   const staleExclusions = [];
   for (const [command, reason] of ciGateExclusions) {
     if (!reason.trim()) throw new Error(`CI gate exclusion has no reason: ${command}`);
-    if (!ciCommands.has(command)) staleExclusions.push(command);
+    if (!ciCommands.includes(command)) staleExclusions.push(command);
   }
 
   return { missingLocalScripts, unknownCiCommands, staleExclusions };

@@ -28,18 +28,21 @@ describe("CI and local quality-gate parity", () => {
     const localScripts = extractLocalGateScripts(packageJson);
 
     assert.equal(
-      ciCommands.has(
+      ciCommands.includes(
         "cargo build --locked --manifest-path packages/vibrato/wasm/Cargo.toml --target wasm32-unknown-unknown --release",
       ),
       true,
     );
-    assert.equal(localScripts.has("rust:vibrato:wasm:build"), true);
-    assert.equal(localScripts.has("parapper:rust:test"), true);
+    assert.equal(localScripts.includes("rust:vibrato:wasm:build"), true);
+    assert.equal(localScripts.includes("parapper:rust:test"), true);
   });
 
   it("fails closed when CI adds a local script that is not in the full gate", () => {
     const result = verifyCiLocalGateParity({
-      workflow: `${workflow}\n      - run: bun run future:quality-gate\n`,
+      workflow: workflow.replace(
+        "      - run: bun run worker:typecheck\n",
+        "      - run: bun run worker:typecheck\n      - run: bun run future:quality-gate\n",
+      ),
       packageJson,
     });
     assert.deepEqual(result.missingLocalScripts, [
@@ -49,19 +52,28 @@ describe("CI and local quality-gate parity", () => {
 
   it("reports a classified CI script omitted from the local full gate", () => {
     const withoutLint = structuredClone(packageJson);
-    withoutLint.scripts["check:all:unlocked"] = withoutLint.scripts["check:all:unlocked"].replace(
-      "bun run lint && ",
-      "",
+    withoutLint.scripts["check:all:unlocked"] = "bun run format:check";
+    assert.throws(
+      () => verifyCiLocalGateParity({ workflow, packageJson: withoutLint }),
+      /timed quality-step runner/,
     );
+  });
 
-    const result = verifyCiLocalGateParity({ workflow, packageJson: withoutLint });
-    assert.deepEqual(result.missingLocalScripts, ["lint (CI: bun run lint)"]);
+  it("requires the local gate to keep the post-build assets:verify after worker:typecheck", () => {
+    const localScripts = extractLocalGateScripts(packageJson);
+    const first = localScripts.indexOf("assets:verify");
+    const second = localScripts.indexOf("assets:verify", first + 1);
+    const workerTypecheck = localScripts.indexOf("worker:typecheck");
+    assert.notEqual(first, -1);
+    assert.notEqual(second, -1);
+    assert.ok(first < workerTypecheck);
+    assert.ok(workerTypecheck < second);
   });
 
   it("requires every platform-specific exclusion to exist and explain itself", () => {
     for (const [command, reason] of ciGateExclusions) {
       assert.match(reason, /\S/u, `${command} needs a reason`);
-      assert.equal(extractCiGateCommands(workflow).has(command), true, `${command} is stale`);
+      assert.equal(extractCiGateCommands(workflow).includes(command), true, `${command} is stale`);
     }
   });
 });

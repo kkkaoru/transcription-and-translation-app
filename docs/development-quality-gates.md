@@ -32,11 +32,22 @@ The audit found that CI built `packages/vibrato/wasm` for `wasm32-unknown-unknow
 
 Implemented in commit `40084bd`.
 
-### Duplicate work removed
+### Duplicate work removed, then restored as a post-build check
 
-The second identical `assets:verify` invocation was removed without changing the set of checks.
+An earlier cleanup removed a second identical `assets:verify` from the local
+gate because a Set comparison treated two invocations as one check. CI still
+runs `assets:verify` twice in the quality job: once against the checkout, and
+again after `worker:typecheck` regenerates the checked-in AzooKey WASM. The
+local gate now keeps that second invocation so post-build bytes are verified.
 
-Implemented in commit `2c604b8`.
+`rust:zenz-verifier:candle` stays out of `check:all` on purpose. The default
+verifier crate gate remains Candle-free so WASM-safe dependency boundaries stay
+cheap to check. Desktop already compiles Candle through `rust:desktop:test`.
+The all-features verifier unit/clippy run is a separate native-model gate and
+must be invoked explicitly when GGUF or forward code changes.
+
+`check:all:unlocked` runs `scripts/run-timed-quality-steps.mjs`, which prints a
+monotonic start/end line for every step and writes `tmp/check-all-timing.json`.
 
 ## Memory incident and static findings
 
