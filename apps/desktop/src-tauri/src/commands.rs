@@ -633,7 +633,10 @@ pub async fn normalize_parapper_output(
     output: ParapperRecognitionInput,
 ) -> Result<CaptionPayload, String> {
     let config = state.config.lock().map_err(|_| "config lock poisoned".to_string())?.clone();
-    let _output_is_final = output.is_final;
+    // Preserve the protocol's turn.final marker before moving the full input
+    // into normalization. Translation scheduling belongs to the transport
+    // event that closed the turn, not to a derived caption revision.
+    let output_is_final = output.is_final;
     let empty_id =
         format!("parapper:{}:{}:{}", output.session_id, output.turn_session_id, output.turn_id);
     // The frontend queue (`parapper-output-queue.ts`) keeps at most one
@@ -703,7 +706,7 @@ pub async fn normalize_parapper_output(
     {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state, capture_generation);
-            if should_spawn_translation(&partial)
+            if should_spawn_parapper_translation(output_is_final)
                 && state.is_capture_generation_current(capture_generation)
             {
                 spawn_translation(
@@ -912,12 +915,12 @@ pub fn caption_boundary_offsets(text: String) -> CaptionBoundaryOffsetsPayload {
     caption_boundary_offsets_payload(text.trim())
 }
 
-/// Translate only immutable persistent-turn results. Progressive interim
-/// revisions can arrive faster than the single-slot translator can run;
-/// submitting each one leaves retired llama.cpp requests occupying the slot
-/// ahead of the final.
-fn should_spawn_translation(caption: &CaptionPayload) -> bool {
-    caption.is_final
+/// Translate only the WebSocket event that explicitly closes a persistent
+/// turn. Progressive revisions can arrive faster than the single-slot
+/// translator can run, while the normalized caption is a derived value and is
+/// not the authority for the transport lifecycle.
+fn should_spawn_parapper_translation(output_is_final: bool) -> bool {
+    output_is_final
 }
 
 /// Run translation after the source caption has been returned to the UI.
@@ -2008,12 +2011,12 @@ pub async fn export_debug_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_is_active, empty_caption, ensure_native_publisher_window,
-        log_caption_publish_success, native_output_uses_render_publish, observe_http_empty_asr,
+        capture_is_active, ensure_native_publisher_window, log_caption_publish_success,
+        native_output_uses_render_publish, observe_http_empty_asr,
         parapper_output_generation_is_current, persistent_asr_loss_message,
         publish_parapper_caption, publish_source_caption_gated, redact_runtime_text,
         reset_caption_publish_success_log_for_tests, sanitize_debug_json, sanitize_export_body,
-        should_spawn_translation, source_caption_payload, stop_generation_is_current,
+        should_spawn_parapper_translation, source_caption_payload, stop_generation_is_current,
         validate_overlay_frame_dimensions, NativeOverlayFrame, SourceCaptionInput,
         NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL,
     };
@@ -2025,15 +2028,24 @@ mod tests {
     use base64::Engine;
 
     #[test]
-    fn translation_spawns_only_for_final_captions_without_cross_turn_blocking_state() {
-        let config = AppConfig::default();
-        let interim = empty_caption(&config, "turn-1".to_string());
-        assert!(!should_spawn_translation(&interim));
+    fn translation_spawns_only_for_protocol_turn_final_events() {
+        assert!(!should_spawn_parapper_translation(false));
 
-        let first_final = CaptionPayload { is_final: true, ..interim };
-        let second_final = CaptionPayload { id: "turn-2".to_string(), ..first_final.clone() };
-        assert!(should_spawn_translation(&first_final));
-        assert!(should_spawn_translation(&second_final));
+        let final_output: ParapperRecognitionInput = serde_json::from_value(serde_json::json!({
+            "text": "こんにちは。",
+            "sessionId": "session-1",
+            "turnSessionId": 2,
+            "turnId": 24,
+            "revision": 0,
+            "outputSequence": 7,
+            "segmentId": 24,
+            "sourceAsrModel": "reazonspeech-k2-v2",
+            "sourceLanguage": "ja",
+            "elapsedMs": 50,
+            "isFinal": true
+        }))
+        .expect("turn.final bridge payload should deserialize");
+        assert!(should_spawn_parapper_translation(final_output.is_final));
     }
 
     #[test]
