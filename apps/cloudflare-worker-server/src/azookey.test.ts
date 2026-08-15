@@ -314,6 +314,133 @@ describe("AzooKey Worker text contract", () => {
     expect(result).toMatchObject({ contextUsed: false, contextDiscarded: "dictionary-revision" });
   });
 
+  it("resets context for an explicit boundary and for a model change", async () => {
+    const precedingCalls: Array<AzookeyConnectionState["preceding"]> = [];
+    const converter = ((
+      text: string,
+      _signal: AbortSignal | undefined,
+      preceding: AzookeyConnectionState["preceding"],
+    ) => {
+      precedingCalls.push(preceding);
+      return {
+        text,
+        status: 0,
+        trailing: { rcid: 31, mid: 37 },
+        dictionaryRevision: "rev-a",
+      };
+    }) as unknown as AzookeyConverter;
+    converter.dictionaryRevision = "rev-a";
+    const state: AzookeyConnectionState = {};
+
+    await convertAzookeyMessage(
+      parseAzookeyMessage(JSON.stringify({ ...valid, utteranceId: "capture-1" })),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    const resetResult = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          requestId: "req-2",
+          utteranceId: "capture-1",
+          resetContext: true,
+        }),
+      ),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    expect(resetResult).toMatchObject({
+      contextUsed: false,
+      contextDiscarded: "utterance-boundary",
+    });
+
+    const modelChangeState: AzookeyConnectionState = {
+      model: AZOOKEY_ZENZ_XSMALL_MODEL,
+      preceding: { rcid: 41, mid: 43 },
+      dictionaryRevision: "rev-a",
+    };
+    const modelChangeResult = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({ ...valid, requestId: "req-3", model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+      ),
+      { timeoutMs: 250, converter, modelRoutes: {} },
+      modelChangeState,
+    );
+    expect(modelChangeResult).toMatchObject({
+      contextUsed: false,
+      contextDiscarded: "model-change",
+      modelFallback: AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE,
+    });
+
+    const azookeyToZenzState: AzookeyConnectionState = {
+      model: AZOOKEY_MODEL,
+      preceding: { rcid: 71, mid: 73 },
+      dictionaryRevision: "rev-a",
+    };
+    const azookeyToZenzResult = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({ ...valid, requestId: "req-4", model: AZOOKEY_ZENZ_XSMALL_MODEL }),
+      ),
+      { timeoutMs: 250, converter, modelRoutes: {} },
+      azookeyToZenzState,
+    );
+    expect(azookeyToZenzResult.contextDiscarded).toBe("model-change");
+    expect(precedingCalls).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  it("does not invent a dictionary revision for an adapter that omits one", async () => {
+    const converter = ((
+      text: string,
+      _signal: AbortSignal | undefined,
+      _preceding: AzookeyConnectionState["preceding"],
+    ) => ({ text, status: 0, trailing: { rcid: 47, mid: 53 } })) as unknown as AzookeyConverter;
+    const state: AzookeyConnectionState = {};
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(JSON.stringify(valid)),
+      { timeoutMs: 250, converter },
+      state,
+    );
+    expect(result.contextUsed).toBe(false);
+    expect(state.preceding).toEqual({ rcid: 47, mid: 53 });
+    expect(state.dictionaryRevision).toBeUndefined();
+  });
+
+  it("fills the active dictionary revision for legacy object results", async () => {
+    const converter = ((text: string) => ({ text, status: 0 })) as unknown as AzookeyConverter;
+    converter.dictionaryRevision = "rev-legacy";
+    const result = await convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+      timeoutMs: 250,
+      converter,
+    });
+    expect(result.conversionStatus).toBe(0);
+    expect(result.convertedText).toBe(valid.vibratoInput);
+  });
+
+  it("rejects invalid status and trailing metadata from a context-aware adapter", async () => {
+    const invalidStatus = ((text: string) => ({
+      text,
+      status: Number.NaN,
+    })) as unknown as AzookeyConverter;
+    await expect(
+      convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+        timeoutMs: 250,
+        converter: invalidStatus,
+      }),
+    ).rejects.toMatchObject({ code: "conversion_failed" });
+
+    const invalidTrailing = ((text: string) => ({
+      text,
+      status: 0,
+      trailing: { rcid: 0x1_0000, mid: 1 },
+    })) as unknown as AzookeyConverter;
+    await expect(
+      convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+        timeoutMs: 250,
+        converter: invalidTrailing,
+      }),
+    ).rejects.toMatchObject({ code: "conversion_failed" });
+  });
+
   it("falls back to portable WASM when Zenzai models are absent from MODEL_ROUTES", async () => {
     const runtime: AzookeyRuntime = {
       timeoutMs: 250,
@@ -355,6 +482,34 @@ describe("AzooKey Worker text contract", () => {
       model: AZOOKEY_MODEL,
       requestedModel: AZOOKEY_ZENZ_XSMALL_MODEL,
       modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+    });
+  });
+
+  it("returns configured Zenzai output when the upstream responds with content", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ content: "設定済みの変換" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(JSON.stringify({ ...valid, model: AZOOKEY_ZENZ_XSMALL_MODEL })),
+      {
+        timeoutMs: 1_000,
+        converter: (text) => `dict:${text}`,
+        modelRoutes: { [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" } },
+        fetcher,
+      },
+    );
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://zenz.example/completion",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result).toMatchObject({
+      convertedText: "設定済みの変換",
+      model: AZOOKEY_ZENZ_XSMALL_MODEL,
+      conversionStatus: 0,
     });
   });
 
@@ -922,6 +1077,126 @@ describe("AzooKey Worker text contract", () => {
     instance.mockRestore();
   });
 
+  it("validates the n-best Wasm record before exposing context metadata", () => {
+    const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const instance = vi.spyOn(WebAssembly, "Instance");
+    const dealloc = vi.fn();
+    const alloc = vi.fn(() => 8);
+    const nBest =
+      vi.fn<
+        (
+          _pointer: number,
+          _length: number,
+          _nBest: number,
+          _hasPreceding: number,
+          _rcid: number,
+          _mid: number,
+        ) => bigint | number
+      >();
+    const packed = (pointer: number, length: number): bigint =>
+      (BigInt(pointer) << 32n) | BigInt(length);
+    const view = new DataView(memory.buffer);
+    const clearOutput = (): void => {
+      new Uint8Array(memory.buffer, 32, 128).fill(0);
+    };
+    const writeHeader = (status: number, count: number): void => {
+      clearOutput();
+      view.setUint32(32, status, true);
+      view.setUint32(36, count, true);
+    };
+    const writeCandidate = (
+      options: { score?: number; trailing?: number; append?: number } = {},
+    ): number => {
+      const text = new TextEncoder().encode("候補");
+      let offset = 40;
+      view.setUint32(offset, text.byteLength, true);
+      offset += 4;
+      new Uint8Array(memory.buffer, offset, text.byteLength).set(text);
+      offset += text.byteLength;
+      view.setFloat32(offset, options.score ?? -1.5, true);
+      offset += 4;
+      new Uint8Array(memory.buffer)[offset] = options.trailing ?? 1;
+      offset += 1;
+      view.setUint16(offset, 61, true);
+      offset += 2;
+      view.setUint16(offset, 67, true);
+      offset += 2;
+      return offset - 32 + (options.append ?? 0);
+    };
+    instance.mockImplementation(
+      () =>
+        ({
+          exports: {
+            memory,
+            azookey_alloc: alloc,
+            azookey_dealloc: dealloc,
+            azookey_convert: vi.fn(() => 0n),
+            azookey_convert_n_best: nBest,
+            azookey_abi_version: vi.fn(() => 2),
+          },
+        }) as unknown as WebAssembly.Instance,
+    );
+    try {
+      const converter = createWasmConverter(emptyModule);
+      const convertWithContext = converter.convertWithContext;
+      if (!convertWithContext) {
+        throw new Error("context-aware converter was not installed");
+      }
+
+      nBest.mockReturnValue(packed(0, 2));
+      expect(() => convertWithContext("入力")).toThrow("null n-best output pointer");
+      nBest.mockReturnValue(packed(memory.buffer.byteLength, 1));
+      expect(() => convertWithContext("入力")).toThrow("invalid n-best output range");
+      nBest.mockReturnValue(packed(32, 7));
+      expect(() => convertWithContext("入力")).toThrow("truncated n-best header");
+
+      writeHeader(0, 0);
+      nBest.mockReturnValue(packed(32, 8));
+      expect(() => convertWithContext("入力")).toThrow("invalid n-best count");
+      writeHeader(0, 65);
+      expect(() => convertWithContext("入力")).toThrow("invalid n-best count");
+
+      writeHeader(0, 1);
+      nBest.mockReturnValue(packed(32, 8));
+      expect(() => convertWithContext("入力")).toThrow("truncated n-best text length");
+      writeHeader(0, 1);
+      view.setUint32(40, 1, true);
+      nBest.mockReturnValue(packed(32, 12));
+      expect(() => convertWithContext("入力")).toThrow("truncated n-best candidate");
+
+      writeHeader(0, 1);
+      view.setUint32(40, 0, true);
+      view.setFloat32(44, Number.NaN, true);
+      nBest.mockReturnValue(packed(32, 21));
+      expect(() => convertWithContext("入力")).toThrow("non-finite n-best score");
+
+      writeHeader(0, 1);
+      const invalidTrailingLength = writeCandidate({ trailing: 2 });
+      nBest.mockReturnValue(packed(32, invalidTrailingLength));
+      expect(() => convertWithContext("入力")).toThrow("invalid trailing flag");
+
+      writeHeader(0, 1);
+      const extraRecordLength = writeCandidate({ trailing: 0, append: 1 });
+      nBest.mockReturnValue(packed(32, extraRecordLength));
+      expect(() => convertWithContext("入力")).toThrow("invalid n-best record");
+
+      writeHeader(1, 1);
+      const validLength = writeCandidate();
+      nBest.mockReturnValue(packed(32, validLength));
+      expect(convertWithContext("入力", undefined, { rcid: 5, mid: 7 })).toMatchObject({
+        text: "候補",
+        status: 1,
+        trailing: { rcid: 61, mid: 67 },
+      });
+      nBest.mockReturnValue(0n);
+      expect(() => convertWithContext("入力")).toThrow("n-best conversion allocation failed");
+      expect(dealloc).toHaveBeenCalled();
+    } finally {
+      instance.mockRestore();
+    }
+  });
+
   it("rejects a Wasm module whose ABI version mismatches even without a dictionary", () => {
     const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
     const memory = new WebAssembly.Memory({ initial: 1 });
@@ -1010,11 +1285,75 @@ describe("AzooKey Worker text contract", () => {
     expect(precedingCalls).toEqual([undefined, { rcid: 11, mid: 13 }]);
 
     firstSocket.emitClose();
+    const sentBeforeClosedFrame = firstSocket.sent.length;
+    firstSocket.emit(JSON.stringify({ ...valid, requestId: "ignored-after-close" }));
+    expect(firstSocket.sent).toHaveLength(sentBeforeClosedFrame);
     const secondSocket = new FakeSocket();
     attachAzookeySocket(secondSocket as unknown as WebSocket, { timeoutMs: 250, converter });
     secondSocket.emit(JSON.stringify({ ...valid, requestId: "req-3", utteranceId: "capture-1" }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(precedingCalls).toEqual([undefined, { rcid: 11, mid: 13 }, undefined]);
+  });
+
+  it("clears state after a conversion finishes on a closed socket", async () => {
+    let resolveConversion:
+      | ((value: { text: string; status: number; trailing: { rcid: number; mid: number } }) => void)
+      | undefined;
+    const socket = new FakeSocket();
+    const converter = (() =>
+      new Promise((resolve) => {
+        resolveConversion = resolve;
+      })) as unknown as AzookeyConverter;
+    attachAzookeySocket(socket as unknown as WebSocket, { timeoutMs: 250, converter });
+    socket.emit(JSON.stringify({ ...valid, utteranceId: "capture-1" }));
+    await Promise.resolve();
+    socket.emitClose();
+    resolveConversion?.({ text: "完了", status: 0, trailing: { rcid: 79, mid: 83 } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(socket.sent.some((value) => value.includes('"convertedText":"完了"'))).toBe(true);
+  });
+
+  it("maps an unexpected response-send failure to a protocol error", async () => {
+    class FlakySocket extends FakeSocket {
+      private sendCount = 0;
+
+      override send(value: string): void {
+        this.sendCount += 1;
+        if (this.sendCount === 1) {
+          throw new Error("send failed");
+        }
+        super.send(value);
+      }
+    }
+    const socket = new FlakySocket();
+    attachAzookeySocket(socket as unknown as WebSocket, {
+      timeoutMs: 250,
+      converter: (text) => `converted:${text}`,
+    });
+    socket.emit(JSON.stringify(valid));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toMatchObject({
+      type: "azookey.error",
+      requestId: "req-1",
+      error: { code: "conversion_failed", message: "AzooKey conversion failed" },
+    });
+  });
+
+  it("forwards a converter protocol error through the socket error envelope", async () => {
+    const socket = new FakeSocket();
+    attachAzookeySocket(socket as unknown as WebSocket, {
+      timeoutMs: 250,
+      converter: () => {
+        throw new Error("converter exploded");
+      },
+    });
+    socket.emit(JSON.stringify(valid));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toMatchObject({
+      type: "azookey.error",
+      requestId: "req-1",
+      error: { code: "conversion_failed" },
+    });
   });
 
   it("rejects binary and oversized frames, and returns busy while a conversion is pending", async () => {
