@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUALITY_GATE_STEPS } from "./quality-gate-steps.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+export const TIMING_ARTIFACT_EXIT_CODE = 74;
 
 const formatDuration = (ms) => `${(ms / 1000).toFixed(1)}s`;
 
@@ -100,36 +103,63 @@ export const runTimedQualitySteps = ({
   return { exitCode, records, totalMs, stepsTotalMs, overheadMs };
 };
 
-const writeTimingSummary = (result) => {
-  const destination = resolve(repositoryRoot, "tmp", "check-all-timing.json");
-  mkdirSync(dirname(destination), { recursive: true });
-  writeFileSync(
-    destination,
-    `${JSON.stringify(
-      {
-        recordedAt: new Date().toISOString(),
-        totalMs: result.totalMs,
-        stepsTotalMs: result.stepsTotalMs,
-        overheadMs: result.overheadMs,
-        steps: result.records,
-      },
-      null,
-      2,
-    )}\n`,
-  );
+export const writeTimingSummary = (
+  result,
+  {
+    destination = resolve(repositoryRoot, "tmp", "check-all-timing.json"),
+    makeDirectory = mkdirSync,
+    writeFile = writeFileSync,
+    renameFile = renameSync,
+    removeFile = rmSync,
+    createTemporaryPath = (path) => `${path}.${process.pid}.${randomUUID()}.tmp`,
+    getRecordedAt = () => new Date().toISOString(),
+  } = {},
+) => {
+  makeDirectory(dirname(destination), { recursive: true });
+  const temporaryPath = createTemporaryPath(destination);
+  const payload = `${JSON.stringify(
+    {
+      recordedAt: getRecordedAt(),
+      totalMs: result.totalMs,
+      stepsTotalMs: result.stepsTotalMs,
+      overheadMs: result.overheadMs,
+      steps: result.records,
+    },
+    null,
+    2,
+  )}\n`;
+  try {
+    writeFile(temporaryPath, payload);
+    renameFile(temporaryPath, destination);
+  } catch (error) {
+    try {
+      removeFile(temporaryPath, { force: true });
+    } catch {
+      // Preserve the primary write or rename error.
+    }
+    throw error;
+  }
   return destination;
 };
 
 const isMainModule =
   process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
-if (isMainModule) {
-  const result = runTimedQualitySteps();
+export const runTimedQualityStepsMain = ({
+  runSteps = runTimedQualitySteps,
+  writeSummary = writeTimingSummary,
+  stdout = console.log,
+  stderr = console.error,
+} = {}) => {
+  const result = runSteps();
   try {
-    const destination = writeTimingSummary(result);
-    console.log(`[quality-gate] wrote ${destination}`);
+    const destination = writeSummary(result);
+    stdout(`[quality-gate] wrote ${destination}`);
   } catch (error) {
-    console.error(`[quality-gate] unable to write timing summary: ${error.message}`);
+    stderr(`[quality-gate] unable to write timing summary: ${error.message}`);
+    return result.exitCode === 0 ? TIMING_ARTIFACT_EXIT_CODE : result.exitCode;
   }
-  process.exitCode = result.exitCode;
-}
+  return result.exitCode;
+};
+
+if (isMainModule) process.exitCode = runTimedQualityStepsMain();

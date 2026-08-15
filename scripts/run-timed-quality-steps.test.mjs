@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { QUALITY_GATE_STEPS } from "./quality-gate-steps.mjs";
-import { describeQualitySteps, runTimedQualitySteps } from "./run-timed-quality-steps.mjs";
+import {
+  describeQualitySteps,
+  runTimedQualitySteps,
+  runTimedQualityStepsMain,
+  TIMING_ARTIFACT_EXIT_CODE,
+  writeTimingSummary,
+} from "./run-timed-quality-steps.mjs";
 
 describe("timed quality steps", () => {
   it("keeps the post-build assets:verify after worker:typecheck", () => {
@@ -135,4 +144,102 @@ describe("timed quality steps", () => {
       assert.equal(result.overheadMs, 20);
     });
   }
+
+  const timingResult = {
+    exitCode: 0,
+    totalMs: 30,
+    stepsTotalMs: 10,
+    overheadMs: 20,
+    records: [],
+  };
+
+  it("atomically replaces the timing artifact with a complete temporary file", () => {
+    const directory = mkdtempSync(join(tmpdir(), "quality-timing-"));
+    const destination = join(directory, "check-all-timing.json");
+    const temporaryPath = `${destination}.fixed.tmp`;
+    try {
+      writeFileSync(destination, "old artifact\n");
+      assert.equal(
+        writeTimingSummary(timingResult, {
+          destination,
+          createTemporaryPath: () => temporaryPath,
+          getRecordedAt: () => "2026-08-15T18:37:00.000Z",
+        }),
+        destination,
+      );
+      assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), {
+        recordedAt: "2026-08-15T18:37:00.000Z",
+        totalMs: 30,
+        stepsTotalMs: 10,
+        overheadMs: 20,
+        steps: [],
+      });
+      assert.equal(existsSync(temporaryPath), false);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  for (const failure of ["write", "rename"]) {
+    it(`preserves the previous artifact and removes the temporary file on ${failure} failure`, () => {
+      const directory = mkdtempSync(join(tmpdir(), "quality-timing-"));
+      const destination = join(directory, "check-all-timing.json");
+      const temporaryPath = `${destination}.fixed.tmp`;
+      try {
+        writeFileSync(destination, "old artifact\n");
+        const options = {
+          destination,
+          createTemporaryPath: () => temporaryPath,
+        };
+        if (failure === "write") {
+          options.writeFile = (path) => {
+            writeFileSync(path, "partial");
+            throw new Error("write failed");
+          };
+        } else {
+          options.renameFile = () => {
+            throw new Error("rename failed");
+          };
+        }
+        assert.throws(
+          () => writeTimingSummary(timingResult, options),
+          new RegExp(`${failure} failed`, "u"),
+        );
+        assert.equal(readFileSync(destination, "utf8"), "old artifact\n");
+        assert.equal(existsSync(temporaryPath), false);
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    });
+  }
+
+  it("fails closed with exit 74 when green steps cannot write the artifact", () => {
+    const errors = [];
+    assert.equal(
+      runTimedQualityStepsMain({
+        runSteps: () => timingResult,
+        writeSummary: () => {
+          throw new Error("disk full");
+        },
+        stdout: () => {},
+        stderr: (message) => errors.push(message),
+      }),
+      TIMING_ARTIFACT_EXIT_CODE,
+    );
+    assert.deepEqual(errors, ["[quality-gate] unable to write timing summary: disk full"]);
+  });
+
+  it("preserves a quality-step failure when writing its artifact also fails", () => {
+    assert.equal(
+      runTimedQualityStepsMain({
+        runSteps: () => ({ ...timingResult, exitCode: 2 }),
+        writeSummary: () => {
+          throw new Error("disk full");
+        },
+        stdout: () => {},
+        stderr: () => {},
+      }),
+      2,
+    );
+  });
 });
