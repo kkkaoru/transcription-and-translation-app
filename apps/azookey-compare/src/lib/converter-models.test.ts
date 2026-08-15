@@ -29,4 +29,16 @@ describe("converter model catalog", () => {
     );
     expect(converterModelOptions[2]?.description).toContain("入力と左文脈を remote へ送ります");
   });
+
+  it("keeps the remote-not-browser-complete label on the selectable Zenz options", () => {
+    const values = converterModelOptions.map((option) => option.value);
+    expect(values).toStrictEqual([
+      "azookey-rust-wasm",
+      "zenz-v3.2-xsmall-gguf",
+      "zenz-v3.2-small-gguf",
+    ]);
+    expect(converterModelOptions[1]?.description).toContain("入力と左文脈を remote へ送ります");
+    expect(converterModelOptions[1]?.description).toContain("browser-complete ではありません");
+    expect(converterModelOptions[2]?.description).toContain("browser-complete ではありません");
+  });
 });
