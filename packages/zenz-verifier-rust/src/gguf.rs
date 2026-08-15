@@ -17,7 +17,7 @@ pub const OUTPUT_PROJECTION_NAME: &str = "output.weight";
 pub const EXPECTED_VOCAB_SIZE: usize = 6000;
 pub const EXPECTED_MERGE_COUNT: usize = 5764;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ZenzGgufManifest {
     pub path: PathBuf,
     pub architecture: String,
@@ -25,6 +25,12 @@ pub struct ZenzGgufManifest {
     pub tokenizer_pre: String,
     pub vocabulary_size: usize,
     pub merge_count: usize,
+    pub block_count: usize,
+    pub context_length: usize,
+    pub embedding_length: usize,
+    pub head_count: usize,
+    pub feed_forward_length: usize,
+    pub layer_norm_epsilon: f64,
     pub token_embedding_dtype: String,
     pub output_projection_dtype: String,
     pub token_embedding_shape: Vec<usize>,
@@ -70,7 +76,10 @@ pub fn load_untied_embedding_weights(
     Ok((manifest, UntiedEmbeddingWeights { token_embedding, output_projection }))
 }
 
-fn validate_content(path: &Path, content: &Content) -> Result<ZenzGgufManifest, GgufLoadError> {
+pub(crate) fn validate_content(
+    path: &Path,
+    content: &Content,
+) -> Result<ZenzGgufManifest, GgufLoadError> {
     if content.magic != VersionedMagic::GgufV3 {
         return Err(GgufLoadError::InvalidModel(format!(
             "expected GGUFv3, got {:?}",
@@ -107,6 +116,21 @@ fn validate_content(path: &Path, content: &Content) -> Result<ZenzGgufManifest, 
             "expected {EXPECTED_MERGE_COUNT} BPE merges, got {merge_count}"
         )));
     }
+    let block_count = usize_metadata(content, "gpt2.block_count")?;
+    let context_length = usize_metadata(content, "gpt2.context_length")?;
+    let embedding_length = usize_metadata(content, "gpt2.embedding_length")?;
+    let head_count = usize_metadata(content, "gpt2.attention.head_count")?;
+    let feed_forward_length = usize_metadata(content, "gpt2.feed_forward_length")?;
+    let layer_norm_epsilon = f64_metadata(content, "gpt2.attention.layer_norm_epsilon")?;
+    if block_count == 0
+        || embedding_length == 0
+        || head_count == 0
+        || !embedding_length.is_multiple_of(head_count)
+    {
+        return Err(GgufLoadError::InvalidModel(format!(
+            "invalid GPT-2 dimensions: blocks={block_count}, embedding={embedding_length}, heads={head_count}"
+        )));
+    }
 
     let token_info = content
         .tensor_infos
@@ -129,6 +153,12 @@ fn validate_content(path: &Path, content: &Content) -> Result<ZenzGgufManifest, 
         tokenizer_pre: tokenizer_pre.to_string(),
         vocabulary_size,
         merge_count,
+        block_count,
+        context_length,
+        embedding_length,
+        head_count,
+        feed_forward_length,
+        layer_norm_epsilon,
         token_embedding_dtype: format!("{:?}", token_info.ggml_dtype),
         output_projection_dtype: format!("{:?}", output_info.ggml_dtype),
         token_embedding_shape: token_info.shape.dims().to_vec(),
@@ -142,6 +172,31 @@ fn string_metadata<'a>(content: &'a Content, key: &str) -> Result<&'a str, GgufL
         Some(value) => {
             Err(GgufLoadError::InvalidModel(format!("metadata {key:?} is not a string: {value:?}")))
         }
+        None => Err(GgufLoadError::MissingMetadata(key.to_string())),
+    }
+}
+
+fn usize_metadata(content: &Content, key: &str) -> Result<usize, GgufLoadError> {
+    let value = match content.metadata.get(key) {
+        Some(Value::U32(value)) => usize::try_from(*value).ok(),
+        Some(Value::U64(value)) => usize::try_from(*value).ok(),
+        Some(value) => {
+            return Err(GgufLoadError::InvalidModel(format!(
+                "metadata {key:?} is not an unsigned integer: {value:?}"
+            )));
+        }
+        None => return Err(GgufLoadError::MissingMetadata(key.to_string())),
+    };
+    value.ok_or_else(|| GgufLoadError::InvalidModel(format!("metadata {key:?} exceeds usize")))
+}
+
+fn f64_metadata(content: &Content, key: &str) -> Result<f64, GgufLoadError> {
+    match content.metadata.get(key) {
+        Some(Value::F32(value)) => Ok(f64::from(*value)),
+        Some(Value::F64(value)) => Ok(*value),
+        Some(value) => Err(GgufLoadError::InvalidModel(format!(
+            "metadata {key:?} is not floating point: {value:?}"
+        ))),
         None => Err(GgufLoadError::MissingMetadata(key.to_string())),
     }
 }

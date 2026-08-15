@@ -11,6 +11,8 @@ mod prompt;
 mod tokenizer;
 
 #[cfg(feature = "candle")]
+mod forward;
+#[cfg(feature = "candle")]
 pub mod gguf;
 
 pub use mock::{MockDecision, MockDraftVerifier};
@@ -18,3 +20,6 @@ pub use prompt::{
     build_candidate_prompt, CandidatePrompt, PromptError, DEFAULT_CONTEXT_MAX_GRAPHEMES,
 };
 pub use tokenizer::{PromptTokenizerError, ZenzPromptTokenizer};
+
+#[cfg(feature = "candle")]
+pub use forward::ZenzForwardModel;
