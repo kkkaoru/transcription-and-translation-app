@@ -80,12 +80,20 @@ impl Draft {
 
 /// Result state deliberately separates successful verification from every
 /// degradation mode. `PrefixConstraintReturned` is not a failure: it asks the
-/// lattice caller to re-search and submit a new draft.
+/// lattice caller to re-search and submit a new draft. The two
+/// `ExhaustedWith*` states identify which candidate source was returned when
+/// the conversion-side iteration limit was reached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationState {
     Verified,
     PrefixConstraintReturned,
     Exhausted,
+    /// The conversion iteration limit was reached after a constrained lattice
+    /// candidate had been selected for return.
+    ExhaustedWithConstrainedCandidate,
+    /// The conversion iteration limit was reached without a usable
+    /// constrained candidate, so the dictionary baseline was returned.
+    ExhaustedWithDictionaryFallback,
     CapabilityUnavailable,
     Error,
     UnverifiedFallback,

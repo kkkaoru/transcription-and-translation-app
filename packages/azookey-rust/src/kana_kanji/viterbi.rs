@@ -18,7 +18,7 @@ pub struct PrecedingContext {
 }
 
 const DEFAULT_BEAM_WIDTH: usize = 64;
-const DEFAULT_VERIFIER_MAX_ITERATIONS: usize = 4;
+const DEFAULT_VERIFIER_MAX_ITERATIONS: usize = 10;
 const MIN_BEAM_WIDTH: usize = 1;
 const MAX_BEAM_WIDTH: usize = 256;
 const DEFAULT_MAX_DICTIONARY_WORD_CHARS: usize = 24;
@@ -245,10 +245,10 @@ pub struct ConversionCandidate {
 }
 
 /// Controls how many draft/constraint rounds a verifier may request before
-/// conversion falls back to the dictionary result. The fallback is bounded
-/// even when a backend repeatedly returns a prefix constraint, so a verifier
-/// cannot make caption production unbounded or prevent a result from being
-/// emitted.
+/// conversion returns the latest constrained candidate or, if none can be
+/// constructed, the dictionary result. The loop is bounded even when a
+/// backend repeatedly returns a prefix constraint, so a verifier cannot make
+/// caption production unbounded or prevent a result from being emitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifierConversionOptions {
     pub max_iterations: usize,
@@ -262,12 +262,15 @@ impl VerifierConversionOptions {
 }
 
 /// The conversion result always contains a text candidate. `verification_state`
-/// preserves whether that candidate was verified or came from the dictionary
-/// fallback, without retaining backend diagnostics or input text.
+/// preserves whether that candidate was verified, came from constrained
+/// lattice search, or came from the dictionary fallback, without retaining
+/// backend diagnostics or input text. The iteration counter is numeric-only
+/// diagnostic data and records how many verifier evaluations were attempted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversionWithVerification {
     pub candidate: ConversionCandidate,
     pub verification_state: VerificationState,
+    pub verification_iterations: usize,
 }
 
 impl ConversionWithVerification {
@@ -277,6 +280,10 @@ impl ConversionWithVerification {
 
     pub fn is_verified(&self) -> bool {
         self.verification_state == VerificationState::Verified
+    }
+
+    pub fn verification_iterations(&self) -> usize {
+        self.verification_iterations
     }
 }
 
@@ -1800,8 +1807,9 @@ pub fn convert_with_verifier(
 }
 
 /// Variant of [`convert_with_verifier`] with an explicit verifier iteration
-/// limit. A zero limit is an intentional, diagnosed `Exhausted` fallback and
-/// still returns the dictionary candidate.
+/// limit. A zero limit returns the dictionary candidate with
+/// `ExhaustedWithDictionaryFallback`, matching Zenzai's behavior of returning
+/// the current draft before starting model evaluation.
 pub fn convert_with_verifier_with_limit(
     input: &str,
     dictionary: &AzooKeyDictionary,
@@ -1817,7 +1825,7 @@ pub fn convert_with_verifier_with_limit(
         return fallback_with_state(fallback, VerificationState::CapabilityUnavailable);
     }
     if verifier_options.max_iterations == 0 {
-        return fallback_with_state(fallback, VerificationState::Exhausted);
+        return fallback_with_state(fallback, VerificationState::ExhaustedWithDictionaryFallback);
     }
 
     let session_context = SessionContext::new(
@@ -1835,8 +1843,10 @@ pub fn convert_with_verifier_with_limit(
     let mut selected = fallback.clone();
     let mut final_state = VerificationState::UnverifiedFallback;
     let mut lattice = None;
+    let mut verification_iterations = 0;
 
     for attempt in 0..verifier_options.max_iterations {
+        verification_iterations += 1;
         let mut draft = Draft::new(input.as_bytes(), current_path.clone());
         draft.constraints = constraints.clone();
         let evaluation = verifier.evaluate(&mut session, &draft);
@@ -1865,10 +1875,6 @@ pub fn convert_with_verifier_with_limit(
                         break;
                     };
                     constraints.push(prefix_constraint);
-                    if attempt + 1 >= verifier_options.max_iterations {
-                        final_state = VerificationState::Exhausted;
-                        break;
-                    }
                     let lattice_ref = lattice.get_or_insert_with(|| {
                         build_lattice(
                             dictionary,
@@ -1890,16 +1896,24 @@ pub fn convert_with_verifier_with_limit(
                         n_best: 1,
                     });
                     let Some(next_path) = candidates.into_iter().next() else {
-                        final_state = VerificationState::Exhausted;
+                        final_state = VerificationState::ExhaustedWithDictionaryFallback;
                         break;
                     };
                     current_path = next_path;
+                    if attempt + 1 >= verifier_options.max_iterations {
+                        if let Some(candidate) = conversion_candidate_from_path(&current_path) {
+                            selected = candidate;
+                            final_state = VerificationState::ExhaustedWithConstrainedCandidate;
+                        } else {
+                            final_state = VerificationState::ExhaustedWithDictionaryFallback;
+                        }
+                        break;
+                    }
                 }
                 state => {
-                    // CapabilityUnavailable, Error, Exhausted, and an
-                    // already-labelled UnverifiedFallback all deliberately
-                    // keep the dictionary candidate. The state is retained
-                    // for diagnostics rather than being swallowed.
+                    // Non-success states deliberately keep the dictionary
+                    // candidate. The state is retained for diagnostics rather
+                    // than being swallowed.
                     final_state = state;
                     break;
                 }
@@ -1913,7 +1927,11 @@ pub fn convert_with_verifier_with_limit(
         selected = fallback;
         final_state = VerificationState::Error;
     }
-    ConversionWithVerification { candidate: selected, verification_state: final_state }
+    ConversionWithVerification {
+        candidate: selected,
+        verification_state: final_state,
+        verification_iterations,
+    }
 }
 
 fn safe_dictionary_candidate(
@@ -1957,7 +1975,7 @@ fn fallback_with_state(
     candidate: ConversionCandidate,
     verification_state: VerificationState,
 ) -> ConversionWithVerification {
-    ConversionWithVerification { candidate, verification_state }
+    ConversionWithVerification { candidate, verification_state, verification_iterations: 0 }
 }
 
 /// Some public-dictionary rows expose an inflected surface for a stem reading
@@ -7113,13 +7131,29 @@ mod tests {
     }
 
     #[test]
-    fn verifier_iteration_limit_returns_the_dictionary_result() {
-        let dictionary = AzooKeyDictionary::default();
+    fn default_verifier_iteration_limit_matches_zenzai() {
+        assert_eq!(super::DEFAULT_VERIFIER_MAX_ITERATIONS, 10);
+    }
+
+    #[test]
+    fn verifier_iteration_limit_returns_the_latest_constrained_candidate() {
+        let root = std::env::temp_dir().join(format!(
+            "caption-bridge-verifier-limit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::write(&root, "かんじ\t漢字\t-1\nかんじ\t感じ\t-5\n")
+            .expect("verifier limit fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("verifier limit fixture should load")
+        .without_builtin_entries_for_test();
         let options = ConversionOptions::default();
-        let baseline = convert_with_dictionary("かんじ", &dictionary, options)
-            .into_iter()
-            .next()
-            .expect("dictionary conversion should produce a candidate");
         let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::PrefixConstraint };
         let result = convert_with_verifier_with_limit(
             "かんじ",
@@ -7129,9 +7163,34 @@ mod tests {
             VerifierConversionOptions::new(1, "test-inference-v1"),
         );
 
-        assert_eq!(result.verification_state, VerificationState::Exhausted);
+        assert_eq!(result.verification_state, VerificationState::ExhaustedWithConstrainedCandidate);
+        assert_eq!(result.candidate.text, "感じ");
+        assert_eq!(result.verification_iterations(), 1);
+        assert!(!result.text().is_empty(), "exhaustion result must emit text");
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn zero_verifier_limit_returns_the_dictionary_baseline_without_evaluation() {
+        let dictionary = AzooKeyDictionary::default();
+        let options = ConversionOptions::default();
+        let baseline = convert_with_dictionary("かんじ", &dictionary, options)
+            .into_iter()
+            .next()
+            .expect("dictionary conversion should produce a candidate");
+        let mut verifier = FallbackVerifier { mode: FallbackVerifierMode::OpenError };
+        let result = convert_with_verifier_with_limit(
+            "かんじ",
+            &dictionary,
+            options,
+            Some(&mut verifier),
+            VerifierConversionOptions::new(0, "test-inference-v1"),
+        );
+
+        assert_eq!(result.verification_state, VerificationState::ExhaustedWithDictionaryFallback);
         assert_eq!(result.candidate.text, baseline.text);
-        assert!(!result.text().is_empty(), "exhaustion fallback must emit text");
+        assert_eq!(result.verification_iterations(), 0);
+        assert!(!result.text().is_empty(), "zero-limit result must emit text");
     }
 
     #[test]
