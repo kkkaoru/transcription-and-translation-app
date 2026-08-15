@@ -590,6 +590,8 @@ describe("AzooKey Worker text contract", () => {
     expect(result).toMatchObject({
       convertedText: `dict:${valid.vibratoInput}`,
       model: AZOOKEY_ZENZ_SMALL_MODEL,
+      usedCompletion: false,
+      completionSkipReason: "empty-left-context",
     });
     expect(result.requestedModel).toBeUndefined();
     expect(result.modelFallback).toBeUndefined();
@@ -639,6 +641,7 @@ describe("AzooKey Worker text contract", () => {
       model: AZOOKEY_ZENZ_SMALL_MODEL,
       usedCompletion: true,
     });
+    expect(result.completionSkipReason).toBeUndefined();
   });
 
   it("keeps the dictionary baseline when lattice open is unavailable", async () => {
@@ -665,6 +668,7 @@ describe("AzooKey Worker text contract", () => {
       convertedText: `dict:${valid.vibratoInput}`,
       model: AZOOKEY_ZENZ_SMALL_MODEL,
       usedCompletion: false,
+      completionSkipReason: "lattice-unavailable",
     });
     expect(result.modelFallback).toBeUndefined();
   });

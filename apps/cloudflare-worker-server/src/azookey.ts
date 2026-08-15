@@ -49,6 +49,12 @@ export const AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED = "upstream-failed";
 export type AzookeyModelFallback =
   | typeof AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE
   | typeof AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED;
+/** Zenz was requested but the completion was never inspected. */
+export const AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT = "empty-left-context";
+export const AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE = "lattice-unavailable";
+export type AzookeyCompletionSkipReason =
+  | typeof AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT
+  | typeof AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE;
 export const AZOOKEY_MODE = "worker-vibrato" as const;
 export const BROWSER_VIBRATO_MODE = "browser-vibrato" as const;
 /** Where the Vibrato pre-pass is executed for a comparison request. */
@@ -394,6 +400,8 @@ export interface AzookeyResultMessage {
   modelFallback?: AzookeyModelFallback;
   /** True when a Zenz completion was inspected, even if the text stayed the dictionary baseline. */
   usedCompletion: boolean;
+  /** Why a requested Zenz completion was not inspected. Absent when usedCompletion is true or Zenz was not requested. */
+  completionSkipReason?: AzookeyCompletionSkipReason;
   /** Raw n-best status bits; non-zero means a degraded/invalid ABI path. */
   conversionStatus: number;
   /** True when a prior candidate context was passed into this conversion. */
@@ -1613,6 +1621,7 @@ export const convertAzookeyMessage = async (
   let requestedModel: AzookeyConvertModel | undefined;
   let modelFallback: AzookeyModelFallback | undefined;
   let usedCompletion = false;
+  let completionSkipReason: AzookeyCompletionSkipReason | undefined;
   try {
     if (message.model === AZOOKEY_MODEL) {
       dictionaryResult = await runDictionaryConversion(preceding);
@@ -1641,6 +1650,7 @@ export const convertAzookeyMessage = async (
         const leftContext = message.leftContext ?? "";
         if (trimZenzLeftContext(leftContext).length === 0) {
           converted = dictionaryResult.text;
+          completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT;
         } else {
           const zenzBudget = Math.min(reservedBudget, AZOOKEY_ZENZ_UPSTREAM_MAX_MS);
           const completion = await withTimeout(
@@ -1671,6 +1681,7 @@ export const convertAzookeyMessage = async (
           const lattice = runtime.converter.openLattice?.(conversionInput, preceding);
           if (!lattice) {
             converted = dictionaryResult.text;
+            completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE;
           } else {
             try {
               const orchestrated = orchestrateOneCompletion({
@@ -1760,6 +1771,7 @@ export const convertAzookeyMessage = async (
     ...(requestedModel ? { requestedModel } : {}),
     ...(modelFallback ? { modelFallback } : {}),
     usedCompletion,
+    ...(completionSkipReason === undefined ? {} : { completionSkipReason }),
     conversionStatus: dictionaryResult?.status ?? AZOOKEY_CONVERSION_STATUS_OK,
     contextUsed,
     ...(contextDiscarded === undefined ? {} : { contextDiscarded }),
