@@ -20,11 +20,40 @@ This checklist is for manual verification without automating the UI or changing 
    - Start a new utterance after a completed translated caption. The completed translation should remain visible while the low-opacity prediction updates.
    - Confirm the prediction is replaced normally when the new source caption is committed.
 
-## Copying diagnostics
+## Reading diagnostics
 
-After reproducing an issue, open **設定** and select **診断 JSON をコピー**. The translation decision ring survives capture stop.
+On macOS, inspect the application's existing log before asking the user to copy
+diagnostic JSON:
 
-Record the installed build/commit with every diagnostic report. This prevents events from one display policy being interpreted against another version.
+```bash
+LOG="$HOME/Library/Logs/com.kotobabeacon.desktop/kotoba-beacon.log"
+rg '\[pipeline_stage\]' "$LOG"
+```
+
+Completed ASR, normalize, and translation stages are written there with model,
+status, duration, utterance ID, capture generation, and bounded input/output
+samples. Current builds also append `input_chars` and `output_chars`, which are
+counts from the complete stage values before the 160-character samples are
+truncated. These fields distinguish a genuinely short input from a censored
+long-caption sample.
+
+The log can contain speech samples. Read it locally, do not attach or persist a
+copy by default, and report numeric aggregates or redacted rows. For a
+privacy-safe timing view that removes the bounded text fields:
+
+```bash
+rg '\[pipeline_stage\]' "$LOG" \
+  | sed -E 's/ in=.* out=.* generation=/ generation=/'
+```
+
+Use **設定 → 診断 JSON をコピー** only when the local log is unavailable or
+the investigation needs current configuration, sidecar health, the retained
+translation decision ring, or the in-progress `zenzVerifierLoad` snapshot. The
+snapshot is top-level diagnostics rather than a completed stage, so it can show
+`status: "loading"` while capture startup is still waiting for the verifier.
+
+Record the installed build/commit with every diagnostic report. This prevents
+events from one display policy being interpreted against another version.
 
 ## Translation decision guide
 

@@ -117,3 +117,27 @@ translation prompt whose response is restricted to translated text.
 The gateway has HTTP contract tests, a real local WebSocket fake for the
 Parapper protocol, malformed-audio tests, model-routing tests, and 95% minimum
 coverage thresholds.
+
+## Bundle-size decision
+
+A measured macOS arm64 release attributed almost all of the gateway executable
+to Bun's statically embedded runtime, not to this repository's gateway code:
+
+- the signed gateway was 63,113,408 bytes;
+- an empty stripped Bun standalone executable was 62,954,328 bytes;
+- the minified gateway payload added one 16,384-byte Mach-O page;
+- `bun build --compile` already uses `--minify`, and the macOS finalizer already
+  runs `strip -Sx`; stripping the installed gateway again removed zero bytes.
+
+Cargo release-profile settings such as LTO and `codegen-units` cannot reduce
+this executable because the gateway is a Bun standalone binary, not a Rust
+binary. A material reduction requires replacing the Bun executable boundary
+with a smaller runtime or reimplementing the gateway; sharing a Bun runtime
+would not currently help because no other bundled sidecar uses Bun.
+
+We also measured fat LTO plus one codegen unit for the Rust Parapper sidecar.
+It reduced a controlled stripped release from 16,925,552 to 13,585,888 bytes
+(19.7%), but increased the measured release build time from 65.7 to 172.6
+seconds (about 2.6 times). After gzip, the reduction was only about 0.71 MB.
+This tradeoff is intentionally not adopted: it materially slows release builds
+without changing the bundle's dominant Bun-runtime cost.
