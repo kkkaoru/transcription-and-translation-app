@@ -47,3 +47,26 @@ test("flags a caption held longer than eight seconds", () => {
     /display visible=1 hold=1 clear=0 stale=1 max_age_ms=9000 verdict=stale_caption_held/,
   );
 });
+
+test("judges measured caption overflow from structured logs", () => {
+  const { status, stdout } = runJudge(
+    "[2026-08-16][01:00:00][INFO][frontend] [display] caption overflow content_width=500 container_width=600 overflowed=false line_count=1\n" +
+      "[2026-08-16][01:00:01][INFO][frontend] [display] caption overflow content_width=750 container_width=600 overflowed=true line_count=2\n",
+  );
+  assert.equal(status, 0);
+  assert.match(
+    stdout,
+    /overflow events=2 overflowed=1 single_line_overflow=0 wrapped_overflow=1 max_content_width=750 max_container_width=600 verdict=overflowed/,
+  );
+});
+
+test("reports fits when no overflow occurs across events", () => {
+  const { status, stdout } = runJudge(
+    "[2026-08-16][01:00:00][INFO][frontend] [display] caption overflow content_width=400 container_width=600 overflowed=false line_count=1\n",
+  );
+  assert.equal(status, 0);
+  assert.match(
+    stdout,
+    /overflow events=1 overflowed=0 single_line_overflow=0 wrapped_overflow=0 max_content_width=400 max_container_width=600 verdict=fits/,
+  );
+});

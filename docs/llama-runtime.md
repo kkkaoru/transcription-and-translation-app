@@ -22,6 +22,11 @@ start.
 | `hy-mt2-1.8b-gguf` | upstream | `tencent/Hy-MT2-1.8B-GGUF@1cd5208` | `Hy-MT2-1.8B-Q4_K_M.gguf` | 1.13 GB |
 | `hy-mt2-7b-gguf` | upstream | `tencent/Hy-MT2-7B-GGUF@ab84726` | `Hy-MT2-7B-Q4_K_M.gguf` | 4.62 GB |
 
+`hy-mt2-7b-gguf` remains selectable. It has **not** been loaded on the bundled
+`kotoba-llama-server` in this checkout. The file is a regular Q4_K_M GGUF, not
+the STQ 2-bit / 1.25-bit layout that this server rejects, but readiness is
+unverified.
+
 The 2-bit and 1.25-bit Hy-MT2 GGUFs are not in this catalog. The bundled
 `kotoba-llama-server` rejects those files at load (`gguf_init_from_reader`
 tensor offset mismatch). Offering them would download hundreds of megabytes
