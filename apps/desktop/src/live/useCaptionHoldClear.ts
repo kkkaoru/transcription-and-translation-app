@@ -20,6 +20,10 @@ export const useCaptionHoldClear = (
 ): void => {
   const onClearRef = useRef(onClear);
   onClearRef.current = onClear;
+  // Read the latest plate without listing `caption` as an effect dependency.
+  // Adding it would reset the hold timer on every revision and keep stale text.
+  const captionRef = useRef(caption);
+  captionRef.current = caption;
 
   const holdClearDelay = captionHoldClearDelayMs(caption);
   const holdClearEpoch = captionHoldClearEpoch(caption);
@@ -29,7 +33,7 @@ export const useCaptionHoldClear = (
       return;
     }
     const scheduledEpoch = holdClearEpoch;
-    logCaptionDisplayLifecycle("hold", caption);
+    logCaptionDisplayLifecycle("hold", captionRef.current);
     const timer = setTimeout(() => {
       onClearRef.current(scheduledEpoch);
     }, holdClearDelay);

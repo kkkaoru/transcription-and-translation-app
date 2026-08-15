@@ -11,8 +11,8 @@ import {
   shouldApplyCaptionHoldClear,
   shouldBlankCaptionForHoldClear,
 } from "./caption-hold-clear";
-import { clearStructuredLogs, getStructuredLogs } from "./structuredLog";
 import { mergeCaptionPayload } from "./caption-updates";
+import { clearStructuredLogs, getStructuredLogs } from "./structuredLog";
 import type { CaptionPayload } from "./types";
 
 const caption = (partial: Partial<CaptionPayload>): CaptionPayload => ({
