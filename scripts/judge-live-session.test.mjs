@@ -42,5 +42,8 @@ test("flags a caption held longer than eight seconds", () => {
       "[2026-08-16][01:00:09][INFO][frontend] [display] caption display lifecycle=hold age_ms=9000 generation=2\n",
   );
   assert.equal(status, 0);
-  assert.match(stdout, /display visible=1 hold=1 clear=0 stale=1 max_age_ms=9000 verdict=stale_caption_held/);
+  assert.match(
+    stdout,
+    /display visible=1 hold=1 clear=0 stale=1 max_age_ms=9000 verdict=stale_caption_held/,
+  );
 });
