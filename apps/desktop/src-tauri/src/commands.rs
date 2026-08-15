@@ -662,12 +662,15 @@ pub async fn normalize_parapper_output(
         );
     }
     if !parapper_output_generation_is_current(&state, output.capture_generation) {
-        if output_is_final {
-            log::info!(
-                target: "translation_schedule",
-                "translation decision=skip reason=superseded-before-normalize turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}"
-            );
-        }
+        log_translation_schedule(
+            TranslationScheduleDecision::skip_if_final(
+                output_is_final,
+                TranslationScheduleReason::SupersededBeforeNormalize,
+            ),
+            output_turn_session_id,
+            output_turn_id,
+            capture_generation,
+        );
         // Superseded before any pipeline work started: drop, not error, the
         // same contract as the ASR-empty and translation-backlog superseded
         // paths below. Count it so `get_debug_info` can explain a Parapper
@@ -723,38 +726,39 @@ pub async fn normalize_parapper_output(
     {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state, capture_generation);
-            if should_spawn_parapper_translation(output_is_final) {
-                if state.is_capture_generation_current(capture_generation) {
-                    let spawned = spawn_translation(
-                        app.clone(),
-                        config.clone(),
-                        state.pipeline.clone(),
-                        partial.clone(),
-                        capture_generation,
-                        &state,
-                    );
-                    log::info!(
-                        target: "translation_schedule",
-                        "translation decision={} reason={} turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}",
-                        if spawned { "spawn" } else { "skip" },
-                        if spawned { "protocol-final" } else { "generation-unavailable" },
-                    );
-                } else {
-                    log::info!(
-                        target: "translation_schedule",
-                        "translation decision=skip reason=stale-generation turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}"
-                    );
-                }
-            }
+            let generation_current = state.is_capture_generation_current(capture_generation);
+            let spawned = should_spawn_parapper_translation(output_is_final)
+                && generation_current
+                && spawn_translation(
+                    app.clone(),
+                    config.clone(),
+                    state.pipeline.clone(),
+                    partial.clone(),
+                    capture_generation,
+                    &state,
+                );
+            log_translation_schedule(
+                TranslationScheduleDecision::for_protocol_final(
+                    output_is_final,
+                    generation_current,
+                    spawned,
+                ),
+                output_turn_session_id,
+                output_turn_id,
+                capture_generation,
+            );
             Ok(partial)
         }
         Ok(None) => {
-            if output_is_final {
-                log::info!(
-                    target: "translation_schedule",
-                    "translation decision=skip reason=empty-normalized-final turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}"
-                );
-            }
+            log_translation_schedule(
+                TranslationScheduleDecision::skip_if_final(
+                    output_is_final,
+                    TranslationScheduleReason::EmptyNormalizedFinal,
+                ),
+                output_turn_session_id,
+                output_turn_id,
+                capture_generation,
+            );
             // Persistent Parapper output is produced only after its VAD has
             // identified a speech turn. Treat one/two blank revisions as a
             // soft skip, but surface a bounded run as ASR result loss instead
@@ -785,12 +789,15 @@ pub async fn normalize_parapper_output(
             }
         }
         Err(error) => {
-            if output_is_final {
-                log::info!(
-                    target: "translation_schedule",
-                    "translation decision=skip reason=normalization-error turn_session_id={output_turn_session_id} turn_id={output_turn_id} generation={capture_generation}"
-                );
-            }
+            log_translation_schedule(
+                TranslationScheduleDecision::skip_if_final(
+                    output_is_final,
+                    TranslationScheduleReason::NormalizationError,
+                ),
+                output_turn_session_id,
+                output_turn_id,
+                capture_generation,
+            );
             let detail = redact_runtime_text(&error.to_string());
             if let Some(status) =
                 state.apply_transcription_error_for_generation(capture_generation, &detail)
@@ -961,6 +968,85 @@ pub fn caption_boundary_offsets(text: String) -> CaptionBoundaryOffsetsPayload {
 /// not the authority for the transport lifecycle.
 fn should_spawn_parapper_translation(output_is_final: bool) -> bool {
     output_is_final
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranslationScheduleReason {
+    ProtocolFinal,
+    GenerationUnavailable,
+    StaleGeneration,
+    SupersededBeforeNormalize,
+    EmptyNormalizedFinal,
+    NormalizationError,
+}
+
+impl TranslationScheduleReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ProtocolFinal => "protocol-final",
+            Self::GenerationUnavailable => "generation-unavailable",
+            Self::StaleGeneration => "stale-generation",
+            Self::SupersededBeforeNormalize => "superseded-before-normalize",
+            Self::EmptyNormalizedFinal => "empty-normalized-final",
+            Self::NormalizationError => "normalization-error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranslationScheduleDecision {
+    Spawn(TranslationScheduleReason),
+    Skip(TranslationScheduleReason),
+    Ignore,
+}
+
+impl TranslationScheduleDecision {
+    fn for_protocol_final(output_is_final: bool, generation_current: bool, spawned: bool) -> Self {
+        if !output_is_final {
+            return Self::Ignore;
+        }
+        if !generation_current {
+            return Self::Skip(TranslationScheduleReason::StaleGeneration);
+        }
+        if spawned {
+            Self::Spawn(TranslationScheduleReason::ProtocolFinal)
+        } else {
+            Self::Skip(TranslationScheduleReason::GenerationUnavailable)
+        }
+    }
+
+    fn skip_if_final(output_is_final: bool, reason: TranslationScheduleReason) -> Self {
+        if output_is_final {
+            Self::Skip(reason)
+        } else {
+            Self::Ignore
+        }
+    }
+}
+
+fn log_translation_schedule(
+    decision: TranslationScheduleDecision,
+    turn_session_id: u64,
+    turn_id: u64,
+    generation: u64,
+) {
+    match decision {
+        TranslationScheduleDecision::Ignore => {}
+        TranslationScheduleDecision::Spawn(reason) => {
+            log::info!(
+                target: "translation_schedule",
+                "translation decision=spawn reason={} turn_session_id={turn_session_id} turn_id={turn_id} generation={generation}",
+                reason.as_str(),
+            );
+        }
+        TranslationScheduleDecision::Skip(reason) => {
+            log::info!(
+                target: "translation_schedule",
+                "translation decision=skip reason={} turn_session_id={turn_session_id} turn_id={turn_id} generation={generation}",
+                reason.as_str(),
+            );
+        }
+    }
 }
 
 /// Run translation after the source caption has been returned to the UI.
@@ -2155,8 +2241,8 @@ mod tests {
         redact_runtime_text, reset_caption_publish_success_log_for_tests, sanitize_debug_json,
         sanitize_export_body, should_spawn_parapper_translation, source_caption_payload,
         stop_generation_is_current, validate_overlay_frame_dimensions, NativeOverlayFrame,
-        SourceCaptionInput, ZenzVerifierDeadlineSource, NATIVE_RENDERER_LABEL,
-        TRANSPARENT_CAPTURE_LABEL,
+        SourceCaptionInput, TranslationScheduleDecision, TranslationScheduleReason,
+        ZenzVerifierDeadlineSource, NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL,
     };
     use crate::config::AppConfig;
     use crate::native_output::NativeOutputHandle;
@@ -2190,6 +2276,44 @@ mod tests {
         assert!(!invalid.configured);
         assert_eq!(invalid.timeout_ms, None);
         assert_eq!(invalid.source, ZenzVerifierDeadlineSource::Invalid);
+    }
+
+    #[test]
+    fn translation_schedule_reasons_cover_final_and_skip_paths() {
+        assert_eq!(
+            TranslationScheduleDecision::for_protocol_final(false, true, false),
+            TranslationScheduleDecision::Ignore,
+        );
+        assert_eq!(
+            TranslationScheduleDecision::for_protocol_final(true, true, true),
+            TranslationScheduleDecision::Spawn(TranslationScheduleReason::ProtocolFinal),
+        );
+        assert_eq!(
+            TranslationScheduleDecision::for_protocol_final(true, true, false),
+            TranslationScheduleDecision::Skip(TranslationScheduleReason::GenerationUnavailable),
+        );
+        assert_eq!(
+            TranslationScheduleDecision::for_protocol_final(true, false, false),
+            TranslationScheduleDecision::Skip(TranslationScheduleReason::StaleGeneration),
+        );
+        assert_eq!(
+            TranslationScheduleDecision::skip_if_final(
+                true,
+                TranslationScheduleReason::EmptyNormalizedFinal,
+            ),
+            TranslationScheduleDecision::Skip(TranslationScheduleReason::EmptyNormalizedFinal),
+        );
+        assert_eq!(
+            TranslationScheduleDecision::skip_if_final(
+                false,
+                TranslationScheduleReason::NormalizationError,
+            ),
+            TranslationScheduleDecision::Ignore,
+        );
+        assert_eq!(
+            TranslationScheduleReason::SupersededBeforeNormalize.as_str(),
+            "superseded-before-normalize",
+        );
     }
 
     #[test]
