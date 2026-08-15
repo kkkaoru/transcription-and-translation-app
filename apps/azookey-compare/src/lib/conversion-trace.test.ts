@@ -116,7 +116,7 @@ describe("conversion trace helpers", () => {
         },
       ).detail,
     ).toBe(
-      "モデル: azookey-rust-wasm · 変換異常: 辞書フォールバック経路 · 前の候補文脈を使いました · Zenz の完了を検査しました",
+      "モデル: azookey-rust-wasm · 変換異常: 指定の辞書を使えず内蔵辞書で変換しました · 前の候補文脈を使いました · Zenz の完了を検査しました",
     );
     expect(
       buildConverterOutputStep(
@@ -137,7 +137,7 @@ describe("conversion trace helpers", () => {
     );
     expect(describeConversionStatus(0)).toBeUndefined();
     expect(describeConversionStatus(7)).toBe(
-      "変換異常: 辞書フォールバック経路、入力が不正な UTF-8、格子または引数が無効",
+      "変換異常: 指定の辞書を使えず内蔵辞書で変換しました、入力が不正な UTF-8 だったので空文字として変換しました、継続文脈または格子ハンドルが無効でした",
     );
     expect(describeConversionStatus(8)).toBe("変換異常: 未定義ビット 0x8");
     expect(

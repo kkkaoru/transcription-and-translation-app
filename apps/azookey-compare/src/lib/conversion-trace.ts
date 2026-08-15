@@ -260,13 +260,13 @@ export const describeConversionStatus = (status: number): string | undefined => 
   }
   const parts: string[] = [];
   if ((status & CONVERSION_STATUS_FALLBACK) !== 0) {
-    parts.push("辞書フォールバック経路");
+    parts.push("指定の辞書を使えず内蔵辞書で変換しました");
   }
   if ((status & CONVERSION_STATUS_INVALID_UTF8) !== 0) {
-    parts.push("入力が不正な UTF-8");
+    parts.push("入力が不正な UTF-8 だったので空文字として変換しました");
   }
   if ((status & CONVERSION_STATUS_INVALID_ARGUMENT) !== 0) {
-    parts.push("格子または引数が無効");
+    parts.push("継続文脈または格子ハンドルが無効でした");
   }
   const unknown =
     status &

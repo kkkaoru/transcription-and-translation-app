@@ -163,7 +163,7 @@ describe("comparison conversion pipeline", () => {
     expect(result.usedCompletion).toBe(false);
     expect(result.completionSkipReason).toBe("lattice-unavailable");
     expect(result.trace.steps.find((step) => step.id === "converter-output")?.detail).toBe(
-      "モデル: azookey-rust-wasm · 変換異常: 辞書フォールバック経路 · 辞書の版が変わったため前の候補文脈を捨てました · 格子を開けなかったため Zenz の完了を捨てました",
+      "モデル: azookey-rust-wasm · 変換異常: 指定の辞書を使えず内蔵辞書で変換しました · 辞書の版が変わったため前の候補文脈を捨てました · 格子を開けなかったため Zenz の完了を捨てました",
     );
   });
 
