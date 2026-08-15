@@ -78,7 +78,7 @@ const ANCHOR_EXPECTED_TOTAL: usize = 119;
 const ANCHOR_MINIMUM_STRICT_PASSED: usize = 118;
 const FNV1A_64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV1A_64_PRIME: u64 = 0x100000001b3;
-const ANCHOR_FINGERPRINT: u64 = 0x326e2cc52be54623;
+const ANCHOR_FINGERPRINT: u64 = 0x58dd29431e71c2c7;
 const INCOMPLETE_STREAMING_EXPECTED_TOTAL: usize = 20;
 const INCOMPLETE_STREAMING_MINIMUM_STRICT_PASSED: usize = 9;
 const INCOMPLETE_STREAMING_MINIMUM_VARIANT_PASSED: usize = 10;
@@ -95,7 +95,8 @@ const ANCHOR_CATEGORY_BASELINES: &[(&str, usize, usize)] = &[
     ("compound_particles", 6, 6),
     ("dates_times", 6, 6),
     ("fillers_interjections", 6, 6),
-    ("full_sentences", 34, 33),
+    ("full_sentences", 18, 17),
+    ("isolated_words_phrases", 16, 16),
     ("honorifics", 6, 6),
     ("loanword_particle", 11, 11),
     ("numbers_counters", 11, 11),
@@ -363,7 +364,12 @@ const ANCHOR_FIXTURES: &[AnchorFixture] = &[
         category: "sentence_final", input: "ほんをよみます", expected: "本を読みます"
     },
     // -----------------------------------------------------------------------
-    // Full sentences — realistic ASR caption output.
+    // Full sentences and isolated dictionary coverage.
+    //
+    // `full_sentences` previously held single words alongside sentences, so
+    // its pass rate said nothing about sentence conversion. The verifier only
+    // runs with left context, which isolated entries never have; splitting the
+    // groups makes their dictionary-coverage and sentence-quality roles clear.
     // -----------------------------------------------------------------------
     AnchorFixture {
         category: "full_sentences",
@@ -384,46 +390,50 @@ const ANCHOR_FIXTURES: &[AnchorFixture] = &[
         expected: "私たちは学生です",
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "かんじのしょりをかいぜん",
         expected: "漢字の処理を改善",
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "おんりょうをちょうせい",
         expected: "音量を調整",
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "しょうぼう、しょうか、ほのお",
         expected: "消防、消火、炎",
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "かたち、こうし、もよう",
         expected: "形、格子、模様",
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "せんそう、しんこう、しんりゃく",
         expected: "戦争、侵攻、侵略",
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "かせん、かこう、かわべ",
         expected: "河川、河口、川辺",
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "にゅうきん、しゅうし、かくにん",
         expected: "入金、収支、確認",
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "もじ、かんじ、ぞくじ",
         expected: "文字、漢字、俗字",
     },
-    AnchorFixture { category: "full_sentences", input: "かきくう", expected: "柿食う" },
+    // `柿食う` drops the particle from `柿を食う` and only occurs as a
+    // fragment of the tongue twister, unlike a complete predicate utterance.
+    AnchorFixture {
+        category: "isolated_words_phrases", input: "かきくう", expected: "柿食う"
+    },
     AnchorFixture {
         category: "full_sentences",
         input: "となりのきゃくはよくかきくうきゃくだ",
@@ -450,7 +460,7 @@ const ANCHOR_FIXTURES: &[AnchorFixture] = &[
         category: "full_sentences", input: "すーぷはあつい", expected: "スープは熱い"
     },
     AnchorFixture {
-        category: "full_sentences",
+        category: "isolated_words_phrases",
         input: "おいしいすーぷは",
         expected: "美味しいスープは",
     },
@@ -469,7 +479,9 @@ const ANCHOR_FIXTURES: &[AnchorFixture] = &[
         input: "ほんじつはじかんの説明です",
         expected: "本日は時間の説明です",
     },
-    AnchorFixture { category: "full_sentences", input: "にほんご", expected: "日本語" },
+    AnchorFixture {
+        category: "isolated_words_phrases", input: "にほんご", expected: "日本語"
+    },
     AnchorFixture {
         category: "full_sentences",
         input: "おつかれさまでした",
@@ -485,11 +497,13 @@ const ANCHOR_FIXTURES: &[AnchorFixture] = &[
         input: "あしたははれるでしょう",
         expected: "明日は晴れるでしょう",
     },
-    AnchorFixture { category: "full_sentences", input: "けいさん", expected: "計算" },
-    AnchorFixture { category: "full_sentences", input: "そうじゅう", expected: "操縦" },
-    AnchorFixture { category: "full_sentences", input: "しけい", expected: "死刑" },
-    AnchorFixture { category: "full_sentences", input: "しじ", expected: "支持" },
-    AnchorFixture { category: "full_sentences", input: "よけい", expected: "余計" },
+    AnchorFixture { category: "isolated_words_phrases", input: "けいさん", expected: "計算" },
+    AnchorFixture {
+        category: "isolated_words_phrases", input: "そうじゅう", expected: "操縦"
+    },
+    AnchorFixture { category: "isolated_words_phrases", input: "しけい", expected: "死刑" },
+    AnchorFixture { category: "isolated_words_phrases", input: "しじ", expected: "支持" },
+    AnchorFixture { category: "isolated_words_phrases", input: "よけい", expected: "余計" },
     AnchorFixture {
         category: "full_sentences",
         input: "きょうははれです",
