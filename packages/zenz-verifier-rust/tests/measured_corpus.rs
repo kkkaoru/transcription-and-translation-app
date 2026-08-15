@@ -2,10 +2,11 @@
 
 use candle_core::{Device, IndexOp};
 use caption_bridge_azookey_rust::{
-    convert_with_dictionary, convert_with_verifier_with_limit, AzooKeyDictionary,
-    ConversionOptions, DictionaryPaths, Draft, DraftVerifier, SessionContext,
-    Utf8BytePrefixConstraint, VerificationCacheKey, VerificationResult, VerificationState,
-    VerifierCapabilities, VerifierConversionOptions, VerifierError, VerifierSession,
+    build_lattice, convert_with_dictionary, convert_with_verifier_with_limit, AzooKeyDictionary,
+    ConstrainedSearchRequest, ConversionOptions, ConversionRequest, DictionaryPaths, Draft,
+    DraftVerifier, SessionContext, Utf8BytePrefixConstraint, VerificationCacheKey,
+    VerificationResult, VerificationState, VerifierCapabilities, VerifierConversionOptions,
+    VerifierError, VerifierSession,
 };
 use caption_bridge_zenz_verifier::{
     CandidatePrompt, EmbeddedZenzDraftVerifier, ZenzForwardModel, ZenzPromptTokenizer,
@@ -610,5 +611,124 @@ fn measured_completed_corpus_c_abi_one_completion_matches_embedded() {
     assert_eq!(
         abi_word_boundary, rust_word_boundary,
         "C ABI word-boundary accuracy is not equivalent to Rust one-completion"
+    );
+}
+
+fn search_with_optional_path_hint(
+    input: &str,
+    completion: &str,
+    use_path_hint: bool,
+    dictionary: &AzooKeyDictionary,
+) -> String {
+    let lattice = build_lattice(
+        dictionary,
+        &ConversionRequest {
+            input: input.to_string(),
+            beam_width: 64,
+            n_best: 1,
+            ..ConversionRequest::default()
+        },
+    );
+    let unconstrained = lattice.search(&ConstrainedSearchRequest {
+        candidate_path: None,
+        constraints: Vec::new(),
+        beam_width: 64,
+        n_best: 1,
+    });
+    let Some(mut current) = unconstrained.into_iter().next() else {
+        return input.to_string();
+    };
+    if current.text == completion {
+        return current.text;
+    }
+    for _ in 0..MAX_ITERATIONS {
+        let Some(prefix) = next_output_prefix(&current.text, completion) else {
+            return current.text;
+        };
+        let next = lattice.search(&ConstrainedSearchRequest {
+            candidate_path: use_path_hint.then(|| current.clone()),
+            constraints: vec![Utf8BytePrefixConstraint::output_prefix(prefix)],
+            beam_width: 64,
+            n_best: 1,
+        });
+        let Some(next) = next.into_iter().next() else {
+            return current.text;
+        };
+        if next.text == current.text {
+            return current.text;
+        }
+        current = next;
+        if current.text == completion {
+            return current.text;
+        }
+    }
+    current.text
+}
+
+#[test]
+#[ignore = "requires ZENZ_V32_SMALL_GGUF; isolates candidate_path hint on measured-012"]
+fn measured_012_path_hint_explains_c_abi_divergence() {
+    let model_path = std::env::var("ZENZ_V32_SMALL_GGUF")
+        .expect("ZENZ_V32_SMALL_GGUF must point to zenz-v3.2-small GGUF");
+    let model_path = Path::new(&model_path);
+    let manifest_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let tokenizer_directory = manifest_directory
+        .join("../../submodules/AzooKeyKanaKanjiConverter/Sources/EfficientNGram/tokenizer");
+    let dictionary_root =
+        manifest_directory.join("../../submodules/azooKey_dictionary_storage/Dictionary");
+    let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(dictionary_root),
+        ..DictionaryPaths::default()
+    })
+    .expect("official AzooKey dictionary should load");
+    let case = measured_cases()
+        .into_iter()
+        .find(|case| case.case_id == "measured-012")
+        .expect("measured-012 should exist");
+    let mut single_completion = SingleCompletionVerifier::load(model_path, &tokenizer_directory);
+    let completion = single_completion.completion_for(
+        case.input,
+        case.artificial_left_context,
+        dictionary.revision(),
+    );
+    let with_hint = search_with_optional_path_hint(case.input, &completion, true, &dictionary);
+    let without_hint = search_with_optional_path_hint(case.input, &completion, false, &dictionary);
+    let previous = caption_bridge_azookey_wasm::replace_active_dictionary(Some(dictionary.clone()));
+    let abi = convert_with_c_abi_one_completion(case.input, &completion);
+    let _ = caption_bridge_azookey_wasm::replace_active_dictionary(previous);
+    let dictionary_baseline =
+        convert_with_dictionary(case.input, &dictionary, ConversionOptions::default())
+            .into_iter()
+            .next()
+            .map(|candidate| candidate.text)
+            .unwrap_or_default();
+    let lattice = build_lattice(
+        &dictionary,
+        &ConversionRequest {
+            input: case.input.to_string(),
+            beam_width: 64,
+            n_best: 1,
+            ..ConversionRequest::default()
+        },
+    );
+    let lattice_baseline = lattice
+        .search(&ConstrainedSearchRequest {
+            candidate_path: None,
+            constraints: Vec::new(),
+            beam_width: 64,
+            n_best: 1,
+        })
+        .into_iter()
+        .next()
+        .map(|path| path.text)
+        .unwrap_or_default();
+    eprintln!(
+        "measured-012 completion={completion:?} dictionary_baseline={dictionary_baseline:?} lattice_baseline={lattice_baseline:?} with_hint={with_hint:?} without_hint={without_hint:?} abi={abi:?}"
+    );
+    assert_eq!(without_hint, abi, "hint-free lattice search should match the C ABI surface");
+    assert_eq!(with_hint, without_hint, "candidate_path hint does not change measured-012");
+    assert_ne!(
+        dictionary_baseline, lattice_baseline,
+        "the 売り上げ/売上 split should come from dictionary convert vs lattice baseline"
     );
 }

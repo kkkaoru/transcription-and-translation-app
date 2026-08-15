@@ -224,6 +224,8 @@ C ABI one-completion was checked against the Rust spike with the installed
 `zenz-v3.2-small` GGUF. Strict accuracy matched (21/23, word-boundary 7/7).
 Exact outputs matched 22/23. `measured-012` diverged
 (`売り上げました` vs `売上ました`); both miss the expected `123万円を売り上げました`.
-The C ABI search returns candidate text only and does not carry the previous
-`CandidatePath` hint. Do not claim 23/23 C ABI equivalence until that case is
-resolved. Production `MODEL_ROUTES` remains empty, so this path is unused.
+A follow-up experiment ruled out the missing `candidate_path` hint: hint-on and
+hint-off lattice search both produced `売上ました`. The split is the unconstrained
+baseline. `convert_with_dictionary` ranks `売り上げました`; `build_lattice` +
+search ranks `売上ました`. The C ABI starts from the latter. Do not claim 23/23
+C ABI equivalence. Production `MODEL_ROUTES` remains empty, so this path is unused.
