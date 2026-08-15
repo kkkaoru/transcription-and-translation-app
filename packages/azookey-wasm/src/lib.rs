@@ -6,14 +6,18 @@
 //! keeping the ABI independent of `wasm-bindgen` and WASI.
 
 #[cfg(test)]
+use caption_bridge_azookey_rust::search as rust_search_lattice;
+#[cfg(test)]
 use caption_bridge_azookey_rust::DictionaryPaths;
 use caption_bridge_azookey_rust::{
-    convert_kana_to_kanji, convert_with_dictionary, AzooKeyDictionary, ConversionCandidate,
-    ConversionOptions, PrecedingContext,
+    build_lattice, convert_kana_to_kanji, convert_with_dictionary, AzooKeyDictionary,
+    ConstrainedSearchRequest, ConversionCandidate, ConversionLattice, ConversionOptions,
+    ConversionRequest, PrecedingContext, Utf8BytePrefixConstraint,
 };
 use std::alloc::{alloc, dealloc, Layout};
+use std::collections::HashMap;
 use std::slice;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 const DICTIONARY_INIT_OK: u32 = 0;
 const DICTIONARY_INIT_INVALID: u32 = 1;
@@ -25,8 +29,29 @@ const N_BEST_STATUS_INVALID_UTF8: u32 = 1 << 1;
 const N_BEST_STATUS_INVALID_ARGUMENT: u32 = 1 << 2;
 const N_BEST_HEADER_BYTES: usize = 8;
 const N_BEST_CANDIDATE_FIXED_BYTES: usize = 4 + 4 + 1 + 2 + 2;
+const LATTICE_HANDLE_INVALID: u32 = 0;
+const MAX_LATTICE_HANDLES: usize = 8;
+const MIN_LATTICE_BEAM: usize = 1;
+const MAX_LATTICE_BEAM: usize = 256;
+const DEFAULT_LATTICE_BEAM: usize = 64;
 
 static ACTIVE_DICTIONARY: Mutex<Option<AzooKeyDictionary>> = Mutex::new(None);
+
+struct LatticeTable {
+    next_handle: u32,
+    live: HashMap<u32, ConversionLattice>,
+    opened: u32,
+    closed: u32,
+}
+
+impl LatticeTable {
+    fn new() -> Self {
+        Self { next_handle: 1, live: HashMap::new(), opened: 0, closed: 0 }
+    }
+}
+
+static LATTICE_TABLE: LazyLock<Mutex<LatticeTable>> =
+    LazyLock::new(|| Mutex::new(LatticeTable::new()));
 
 /// Return the raw ABI revision. Version 2 adds the owned portable dictionary
 /// initialization entrypoint while preserving the version 1 conversion ABI.
@@ -54,7 +79,8 @@ pub extern "C" fn azookey_alloc(length: usize) -> *mut u8 {
 }
 
 /// Release a buffer previously returned by [`azookey_alloc`],
-/// [`azookey_convert`], or [`azookey_convert_n_best`].
+/// [`azookey_convert`], [`azookey_convert_n_best`], or
+/// [`azookey_lattice_search_output_prefix`].
 ///
 /// # Safety
 ///
@@ -229,6 +255,172 @@ pub unsafe extern "C" fn azookey_convert_n_best(
     allocate_n_best_output(status, &candidates).unwrap_or(0)
 }
 
+/// Build one inspectable lattice and return an opaque handle.
+///
+/// This is additive on ABI version 2. Existing [`azookey_convert`] and
+/// [`azookey_convert_n_best`] callers keep their current contract. The handle
+/// is valid only until [`azookey_lattice_close`]. Isolate reuse can leave a
+/// leaked handle if the Worker request ends without `close`; callers must
+/// therefore close in `finally` and may inspect [`azookey_lattice_live_count`].
+///
+/// `has_preceding` follows the same zero-or-one rule as n-best. `beam` and
+/// `n_best` of zero use the converter default (64 / 1). Values above 256 are
+/// clamped. A return of zero means the input pointer was invalid, no
+/// dictionary is loaded, the handle table is full, or the lock is poisoned.
+/// Those failures never panic.
+///
+/// # Safety
+///
+/// If `length` is non-zero, `pointer` must point to a readable UTF-8 buffer of
+/// at least `length` bytes for the duration of this call. The function does
+/// not retain the input buffer after returning.
+#[no_mangle]
+pub unsafe extern "C" fn azookey_lattice_open(
+    pointer: *const u8,
+    length: usize,
+    has_preceding: u32,
+    preceding_rcid: u32,
+    preceding_mid: u32,
+    beam: u32,
+    n_best: u32,
+) -> u32 {
+    if pointer.is_null() && length != 0 {
+        return LATTICE_HANDLE_INVALID;
+    }
+    let bytes = if length == 0 { &[] } else { slice::from_raw_parts(pointer, length) };
+    let input = std::str::from_utf8(bytes).unwrap_or("");
+    let (preceding, _) = parse_preceding_context(has_preceding, preceding_rcid, preceding_mid);
+    let request = ConversionRequest {
+        input: input.to_string(),
+        left_context: preceding,
+        beam_width: clamp_lattice_width(beam, DEFAULT_LATTICE_BEAM),
+        n_best: clamp_lattice_width(n_best, 1),
+        ..ConversionRequest::default()
+    };
+    let active = match ACTIVE_DICTIONARY.lock() {
+        Ok(active) => active,
+        // A prior panic must not permanently disable isolate reuse. Recover the
+        // last dictionary snapshot instead of failing every later open.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let Some(dictionary) = active.as_ref() else {
+        return LATTICE_HANDLE_INVALID;
+    };
+    let lattice = build_lattice(dictionary, &request);
+    drop(active);
+    insert_lattice(lattice)
+}
+
+/// Search a previously opened lattice under a global UTF-8 output prefix.
+///
+/// The packed record matches [`azookey_convert_n_best`]. Status bit 2 is set
+/// when `handle` is unknown or the table lock is poisoned; those cases return
+/// an empty candidate list rather than panicking. A zero return is reserved
+/// for an invalid prefix pointer or an allocation failure.
+///
+/// # Safety
+///
+/// `handle` must be a value previously returned by [`azookey_lattice_open`]
+/// that has not been closed. If `prefix_length` is non-zero, `prefix_pointer`
+/// must point to `prefix_length` readable bytes for the duration of this call.
+/// The prefix is treated as raw UTF-8 bytes and is not required to be a
+/// complete scalar sequence; invalid UTF-8 is still applied as a byte prefix.
+#[no_mangle]
+pub unsafe extern "C" fn azookey_lattice_search_output_prefix(
+    handle: u32,
+    prefix_pointer: *const u8,
+    prefix_length: usize,
+    beam: u32,
+    n_best: u32,
+) -> u64 {
+    if prefix_pointer.is_null() && prefix_length != 0 {
+        return 0;
+    }
+    let prefix =
+        if prefix_length == 0 { &[] } else { slice::from_raw_parts(prefix_pointer, prefix_length) };
+    let (status, candidates) = search_lattice_output_prefix(handle, prefix, beam, n_best);
+    allocate_n_best_output(status, &candidates).unwrap_or(0)
+}
+
+fn search_lattice_output_prefix(
+    handle: u32,
+    prefix: &[u8],
+    beam: u32,
+    n_best: u32,
+) -> (u32, Vec<ConversionCandidate>) {
+    let mut status = N_BEST_STATUS_OK;
+    let candidates = match lattice_table() {
+        Some(table) => match table.live.get(&handle) {
+            Some(lattice) => {
+                let request = ConstrainedSearchRequest {
+                    candidate_path: None,
+                    constraints: if prefix.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Utf8BytePrefixConstraint::output_prefix(prefix)]
+                    },
+                    beam_width: clamp_lattice_width(beam, DEFAULT_LATTICE_BEAM),
+                    n_best: clamp_lattice_width(n_best, 1),
+                };
+                lattice
+                    .search(&request)
+                    .into_iter()
+                    .filter_map(conversion_candidate_from_path)
+                    .collect::<Vec<_>>()
+            }
+            None => {
+                status |= N_BEST_STATUS_INVALID_ARGUMENT;
+                Vec::new()
+            }
+        },
+        None => {
+            status |= N_BEST_STATUS_INVALID_ARGUMENT;
+            Vec::new()
+        }
+    };
+    (status, candidates)
+}
+
+/// Release a lattice previously returned by [`azookey_lattice_open`].
+///
+/// Returns one when the handle was live and is now closed, or zero when the
+/// handle was already closed, never issued, or the table lock is poisoned.
+/// Closing twice is therefore a no-op rather than a panic.
+#[no_mangle]
+pub extern "C" fn azookey_lattice_close(handle: u32) -> u32 {
+    if handle == LATTICE_HANDLE_INVALID {
+        return 0;
+    }
+    let Some(mut table) = lattice_table() else {
+        return 0;
+    };
+    if table.live.remove(&handle).is_some() {
+        table.closed = table.closed.saturating_add(1);
+        1
+    } else {
+        0
+    }
+}
+
+/// Number of currently live lattice handles. Used by hosts to detect close
+/// leaks across Worker isolate reuse without inspecting handle identity.
+#[no_mangle]
+pub extern "C" fn azookey_lattice_live_count() -> u32 {
+    lattice_table().map(|table| table.live.len() as u32).unwrap_or(0)
+}
+
+/// Cumulative successful [`azookey_lattice_open`] calls in this isolate.
+#[no_mangle]
+pub extern "C" fn azookey_lattice_opened_count() -> u32 {
+    lattice_table().map(|table| table.opened).unwrap_or(0)
+}
+
+/// Cumulative successful [`azookey_lattice_close`] calls in this isolate.
+#[no_mangle]
+pub extern "C" fn azookey_lattice_closed_count() -> u32 {
+    lattice_table().map(|table| table.closed).unwrap_or(0)
+}
+
 /// Pack a conversion output into the raw ABI return value.
 ///
 /// The high 32 bits carry the output pointer (truncated to the Wasm32 address
@@ -236,6 +428,53 @@ pub unsafe extern "C" fn azookey_convert_n_best(
 /// helper so host tests can pin the boundary math without a Wasm runtime.
 fn pack_output(pointer: usize, length: usize) -> u64 {
     ((pointer as u32 as u64) << 32) | length as u64
+}
+
+fn lattice_table() -> Option<std::sync::MutexGuard<'static, LatticeTable>> {
+    Some(LATTICE_TABLE.lock().unwrap_or_else(|error| error.into_inner()))
+}
+
+fn clamp_lattice_width(value: u32, default: usize) -> usize {
+    if value == 0 {
+        return default;
+    }
+    (value as usize).clamp(MIN_LATTICE_BEAM, MAX_LATTICE_BEAM)
+}
+
+fn insert_lattice(lattice: ConversionLattice) -> u32 {
+    let Some(mut table) = lattice_table() else {
+        return LATTICE_HANDLE_INVALID;
+    };
+    if table.live.len() >= MAX_LATTICE_HANDLES {
+        return LATTICE_HANDLE_INVALID;
+    }
+    let mut handle = table.next_handle;
+    if handle == LATTICE_HANDLE_INVALID {
+        handle = 1;
+    }
+    while table.live.contains_key(&handle) {
+        handle = handle.wrapping_add(1);
+        if handle == LATTICE_HANDLE_INVALID {
+            handle = 1;
+        }
+        if handle == table.next_handle {
+            return LATTICE_HANDLE_INVALID;
+        }
+    }
+    table.live.insert(handle, lattice);
+    table.next_handle = handle.wrapping_add(1).max(1);
+    table.opened = table.opened.saturating_add(1);
+    handle
+}
+
+fn conversion_candidate_from_path(
+    path: caption_bridge_azookey_rust::CandidatePath,
+) -> Option<ConversionCandidate> {
+    (!path.text.is_empty()).then_some(ConversionCandidate {
+        text: path.text,
+        score: path.score,
+        trailing: path.trailing,
+    })
 }
 
 fn parse_preceding_context(
@@ -357,14 +596,28 @@ fn convert_with_active_dictionary(input: &str) -> String {
 mod tests {
     use super::{
         azookey_alloc, azookey_convert, azookey_dealloc, azookey_dictionary_init_owned,
+        azookey_lattice_close, azookey_lattice_closed_count, azookey_lattice_live_count,
+        azookey_lattice_open, azookey_lattice_opened_count, azookey_lattice_search_output_prefix,
         convert_n_best_with_dictionary_or_fallback, convert_with_active_dictionary, pack_output,
-        serialize_n_best, AzooKeyDictionary, ConversionCandidate, DictionaryPaths,
-        PrecedingContext, ACTIVE_DICTIONARY, N_BEST_STATUS_FALLBACK,
-        N_BEST_STATUS_INVALID_ARGUMENT,
+        rust_search_lattice, search_lattice_output_prefix, serialize_n_best, AzooKeyDictionary,
+        ConstrainedSearchRequest, ConversionCandidate, ConversionRequest, DictionaryPaths,
+        PrecedingContext, Utf8BytePrefixConstraint, ACTIVE_DICTIONARY, MAX_LATTICE_HANDLES,
+        N_BEST_STATUS_FALLBACK, N_BEST_STATUS_INVALID_ARGUMENT,
     };
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static LATTICE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_lattice_tests() -> std::sync::MutexGuard<'static, ()> {
+        LATTICE_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn lock_active_dictionary() -> std::sync::MutexGuard<'static, Option<AzooKeyDictionary>> {
+        ACTIVE_DICTIONARY.lock().unwrap_or_else(|error| error.into_inner())
+    }
 
     fn temporary_dictionary_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -464,6 +717,8 @@ mod tests {
     fn conversion_falls_back_to_the_builtin_converter_when_no_dictionary_is_active() {
         // A fresh ABI (no dictionary initialized) must still convert using the
         // crate's built-in lexicon instead of returning empty output.
+        let _lock = lock_lattice_tests();
+        *lock_active_dictionary() = None;
         let result = convert_with_active_dictionary("きょうははいしんです");
         assert!(!result.is_empty(), "fallback converter returned empty output");
         assert_eq!(result, "今日は配信です");
@@ -473,6 +728,7 @@ mod tests {
     fn conversion_falls_back_to_the_builtin_converter_when_the_dictionary_lock_is_poisoned() {
         // A panicked holder must not make every subsequent conversion fail:
         // the boundary stays usable through the built-in fallback path.
+        let _lock = lock_lattice_tests();
         std::thread::spawn(|| {
             let _guard = ACTIVE_DICTIONARY.lock().expect("test holds the dictionary lock");
             panic!("poison the active dictionary lock on purpose");
@@ -666,5 +922,182 @@ mod tests {
             }
         }
         assert!(changed.is_some(), "preceding context must affect conversion output");
+    }
+
+    fn install_tsv_dictionary(label: &str, body: &str) -> PathBuf {
+        let path = temporary_dictionary_path(label);
+        fs::write(&path, body).expect("lattice fixture should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(path.clone()),
+            ..DictionaryPaths::default()
+        })
+        .expect("lattice TSV dictionary should load");
+        *lock_active_dictionary() = Some(dictionary);
+        path
+    }
+
+    fn restore_active_dictionary(previous: Option<AzooKeyDictionary>, path: PathBuf) {
+        *lock_active_dictionary() = previous;
+        let _ = fs::remove_file(path);
+    }
+
+    fn take_active_dictionary() -> Option<AzooKeyDictionary> {
+        lock_active_dictionary().take()
+    }
+
+    #[test]
+    fn lattice_open_requires_an_active_dictionary() {
+        let _lock = lock_lattice_tests();
+        let previous = take_active_dictionary();
+        let input = "かんじ";
+        let handle = unsafe { azookey_lattice_open(input.as_ptr(), input.len(), 0, 0, 0, 1, 1) };
+        assert_eq!(handle, 0);
+        *lock_active_dictionary() = previous;
+    }
+
+    #[test]
+    fn lattice_abi_recovers_a_constrained_dictionary_path() {
+        let _lock = lock_lattice_tests();
+        let previous = take_active_dictionary();
+        let path =
+            install_tsv_dictionary("lattice-constraint", "かんじ\t漢字\t-1\nかんじ\t感じ\t-5\n");
+        let live_before = azookey_lattice_live_count();
+        let opened_before = azookey_lattice_opened_count();
+        let closed_before = azookey_lattice_closed_count();
+        let input = "かんじ";
+        let handle = unsafe { azookey_lattice_open(input.as_ptr(), input.len(), 0, 0, 0, 1, 1) };
+        assert_ne!(handle, 0, "a loaded dictionary must yield a live handle");
+        assert_eq!(azookey_lattice_live_count(), live_before + 1);
+        assert_eq!(azookey_lattice_opened_count(), opened_before + 1);
+
+        let (status, candidates) = search_lattice_output_prefix(handle, &[], 1, 1);
+        assert_eq!(status, 0);
+        assert_eq!(candidates.first().map(|candidate| candidate.text.as_str()), Some("漢字"));
+
+        let (status, candidates) = search_lattice_output_prefix(handle, "感じ".as_bytes(), 1, 1);
+        assert_eq!(status, 0);
+        assert_eq!(candidates.first().map(|candidate| candidate.text.as_str()), Some("感じ"));
+
+        assert_eq!(azookey_lattice_close(handle), 1);
+        assert_eq!(azookey_lattice_close(handle), 0, "closing twice must not panic");
+        assert_eq!(azookey_lattice_live_count(), live_before);
+        assert_eq!(azookey_lattice_closed_count(), closed_before + 1);
+        restore_active_dictionary(previous, path);
+    }
+
+    #[test]
+    fn lattice_search_reports_an_invalid_handle_without_panicking() {
+        let (status, candidates) = search_lattice_output_prefix(4_294_967_295, &[], 1, 1);
+        assert_ne!(status & N_BEST_STATUS_INVALID_ARGUMENT, 0);
+        assert!(candidates.is_empty());
+        assert_eq!(azookey_lattice_close(0), 0);
+    }
+
+    #[test]
+    fn lattice_handle_table_rejects_a_ninth_live_handle() {
+        let _lock = lock_lattice_tests();
+        let previous = take_active_dictionary();
+        let path = install_tsv_dictionary("lattice-cap", "かんじ\t漢字\t-1\n");
+        let input = "かんじ";
+        let mut handles = Vec::new();
+        for _ in 0..MAX_LATTICE_HANDLES {
+            let handle =
+                unsafe { azookey_lattice_open(input.as_ptr(), input.len(), 0, 0, 0, 1, 1) };
+            assert_ne!(handle, 0);
+            handles.push(handle);
+        }
+        let overflow = unsafe { azookey_lattice_open(input.as_ptr(), input.len(), 0, 0, 0, 1, 1) };
+        assert_eq!(overflow, 0, "the ninth live lattice must fail closed");
+        for handle in handles {
+            assert_eq!(azookey_lattice_close(handle), 1);
+        }
+        restore_active_dictionary(previous, path);
+    }
+
+    #[test]
+    fn lattice_open_rejects_a_null_pointer_with_nonzero_length() {
+        assert_eq!(unsafe { azookey_lattice_open(std::ptr::null(), 1, 0, 0, 0, 1, 1) }, 0);
+        assert_eq!(
+            unsafe { azookey_lattice_search_output_prefix(1, std::ptr::null(), 1, 1, 1) },
+            0
+        );
+    }
+
+    fn measured_completed_cases() -> Vec<(String, String)> {
+        let tsv = include_str!("../../azookey-rust/testdata/zenz_measured_completed.tsv");
+        tsv.lines()
+            .filter(|line| !line.starts_with('#') && !line.is_empty())
+            .skip(1)
+            .map(|line| {
+                let mut columns = line.split('\t');
+                let case_id = columns.next().expect("case_id").to_string();
+                let _category = columns.next();
+                let input = columns.next().expect("input").to_string();
+                (case_id, input)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lattice_abi_matches_rust_search_on_the_measured_corpus() {
+        let _lock = lock_lattice_tests();
+        let previous = take_active_dictionary();
+        let system_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../submodules/azooKey_dictionary_storage/Dictionary");
+        assert!(system_path.is_dir(), "checked-in system dictionary should be available");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(system_path),
+            ..DictionaryPaths::default()
+        })
+        .expect("official AzooKey dictionary should load");
+        *lock_active_dictionary() = Some(dictionary.clone());
+
+        let cases = measured_completed_cases();
+        assert_eq!(cases.len(), 23, "measured completed corpus drifted");
+        let prefixes = ["".as_bytes(), "高".as_bytes(), "感じ".as_bytes(), "60".as_bytes()];
+        let mut compared = 0usize;
+        for (case_id, input) in &cases {
+            let rust_lattice = caption_bridge_azookey_rust::build_lattice(
+                lock_active_dictionary().as_ref().expect("dictionary installed"),
+                &ConversionRequest {
+                    input: input.clone(),
+                    beam_width: 64,
+                    n_best: 1,
+                    ..ConversionRequest::default()
+                },
+            );
+            let handle =
+                unsafe { azookey_lattice_open(input.as_ptr(), input.len(), 0, 0, 0, 64, 1) };
+            assert_ne!(handle, 0, "{case_id} should open a lattice handle");
+            for prefix in prefixes {
+                let rust_text = rust_search_lattice(
+                    &rust_lattice,
+                    &ConstrainedSearchRequest {
+                        candidate_path: None,
+                        constraints: if prefix.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![Utf8BytePrefixConstraint::output_prefix(prefix)]
+                        },
+                        beam_width: 64,
+                        n_best: 1,
+                    },
+                )
+                .into_iter()
+                .next()
+                .map(|path| path.text);
+                let (status, candidates) = search_lattice_output_prefix(handle, prefix, 64, 1);
+                assert_eq!(status, 0, "{case_id} constrained search should succeed");
+                assert_eq!(
+                    candidates.first().map(|candidate| candidate.text.clone()),
+                    rust_text,
+                    "{case_id} C ABI search diverged from Rust lattice search"
+                );
+                compared += 1;
+            }
+            assert_eq!(azookey_lattice_close(handle), 1, "{case_id} should close");
+        }
+        assert_eq!(compared, 23 * prefixes.len());
+        *lock_active_dictionary() = previous;
     }
 }
