@@ -48,3 +48,6 @@ docs/evidence/
 
 .pi/
 .serena
+
+# Python bytecode cache written when the judge script runs.
+__pycache__/
