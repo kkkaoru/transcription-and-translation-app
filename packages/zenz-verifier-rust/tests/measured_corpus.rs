@@ -92,6 +92,25 @@ impl SingleCompletionVerifier {
         String::from_utf8(bytes)
             .map_err(|error| VerifierError::Backend(format!("invalid completion UTF-8: {error}")))
     }
+
+    fn completion_for(
+        &mut self,
+        input: &str,
+        left_context: &str,
+        dictionary_revision: u64,
+    ) -> String {
+        let mut context =
+            SessionContext::new(input.as_bytes(), dictionary_revision, "c-abi-one-completion-v1");
+        context.left_context = Some(left_context.as_bytes().to_vec());
+        let session = self.open_session(context).expect("one-completion session should open");
+        let completion = self
+            .completions
+            .get(&session.session_id)
+            .cloned()
+            .expect("one-completion should retain generated text");
+        self.close_session(session).expect("one-completion session should close");
+        completion
+    }
 }
 
 impl DraftVerifier for SingleCompletionVerifier {
@@ -435,4 +454,161 @@ fn measured_completed_corpus_compares_single_completion_scalar_prefix_loop() {
         "word-boundary accuracy is not equivalent"
     );
     assert_eq!(exact_output_matches, cases.len(), "case outputs are not equivalent");
+}
+
+fn next_output_prefix(candidate: &str, completion: &str) -> Option<Vec<u8>> {
+    let common_bytes = candidate
+        .chars()
+        .zip(completion.chars())
+        .take_while(|(left, right)| left == right)
+        .map(|(character, _)| character.len_utf8())
+        .sum::<usize>();
+    let next_scalar = completion[common_bytes..].chars().next()?;
+    Some(completion.as_bytes()[..common_bytes + next_scalar.len_utf8()].to_vec())
+}
+
+fn convert_with_c_abi_one_completion(input: &str, completion: &str) -> String {
+    let handle = unsafe {
+        caption_bridge_azookey_wasm::azookey_lattice_open(
+            input.as_ptr(),
+            input.len(),
+            0,
+            0,
+            0,
+            64,
+            1,
+        )
+    };
+    let result = (|| {
+        if handle == 0 {
+            return None;
+        }
+        let (status, unconstrained) =
+            caption_bridge_azookey_wasm::search_lattice_output_prefix(handle, &[], 64, 1);
+        if status != 0 {
+            return None;
+        }
+        let mut candidate = unconstrained.into_iter().next()?.text;
+        if candidate == completion {
+            return Some(candidate);
+        }
+        for _ in 0..MAX_ITERATIONS {
+            let Some(prefix) = next_output_prefix(&candidate, completion) else {
+                return Some(candidate);
+            };
+            let (status, constrained) =
+                caption_bridge_azookey_wasm::search_lattice_output_prefix(handle, &prefix, 64, 1);
+            if status != 0 {
+                return None;
+            }
+            let Some(next) = constrained.into_iter().next() else {
+                return Some(candidate);
+            };
+            if next.text == candidate {
+                return Some(candidate);
+            }
+            candidate = next.text;
+            if candidate == completion {
+                return Some(candidate);
+            }
+        }
+        Some(candidate)
+    })();
+    if handle != 0 {
+        let _ = caption_bridge_azookey_wasm::azookey_lattice_close(handle);
+    }
+    result.unwrap_or_else(|| input.to_string())
+}
+
+#[test]
+#[ignore = "requires ZENZ_V32_SMALL_GGUF; measures C ABI one-fetch scalar-prefix equivalence"]
+fn measured_completed_corpus_c_abi_one_completion_matches_embedded() {
+    let model_path = std::env::var("ZENZ_V32_SMALL_GGUF")
+        .expect("ZENZ_V32_SMALL_GGUF must point to zenz-v3.2-small GGUF");
+    let model_path = Path::new(&model_path);
+    let manifest_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let tokenizer_directory = manifest_directory
+        .join("../../submodules/AzooKeyKanaKanjiConverter/Sources/EfficientNGram/tokenizer");
+    let dictionary_root =
+        manifest_directory.join("../../submodules/azooKey_dictionary_storage/Dictionary");
+    let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(dictionary_root),
+        ..DictionaryPaths::default()
+    })
+    .expect("official AzooKey dictionary should load");
+    let previous = caption_bridge_azookey_wasm::replace_active_dictionary(Some(dictionary.clone()));
+    let cases = measured_cases();
+    let mut embedded = EmbeddedZenzDraftVerifier::load(
+        model_path,
+        &tokenizer_directory,
+        MODEL_REVISION,
+        &Device::Cpu,
+    )
+    .expect("embedded verifier should load");
+    let mut single_completion = SingleCompletionVerifier::load(model_path, &tokenizer_directory);
+    let mut rust_vs_abi = 0usize;
+    let mut embedded_vs_abi = 0usize;
+    let mut rust_passed = 0usize;
+    let mut abi_passed = 0usize;
+    let mut rust_word_boundary = 0usize;
+    let mut abi_word_boundary = 0usize;
+    eprintln!("case_id\tcategory\trust_one\tabi_one\tembedded\trust_eq_abi");
+    for case in &cases {
+        let completion = single_completion.completion_for(
+            case.input,
+            case.artificial_left_context,
+            dictionary.revision(),
+        );
+        let rust_one = convert_with_verifier_with_limit(
+            case.input,
+            &dictionary,
+            ConversionOptions::default(),
+            Some(&mut single_completion),
+            VerifierConversionOptions::new(MAX_ITERATIONS, "single-completion-scalar-v1")
+                .with_left_context(case.artificial_left_context),
+        );
+        let embedded_one = convert_with_verifier_with_limit(
+            case.input,
+            &dictionary,
+            ConversionOptions::default(),
+            Some(&mut embedded),
+            VerifierConversionOptions::new(MAX_ITERATIONS, "candle-greedy-v1")
+                .with_left_context(case.artificial_left_context),
+        );
+        let abi = convert_with_c_abi_one_completion(case.input, &completion);
+        rust_vs_abi += usize::from(rust_one.text() == abi);
+        embedded_vs_abi += usize::from(embedded_one.text() == abi);
+        rust_passed += usize::from(rust_one.text() == case.expected);
+        abi_passed += usize::from(abi == case.expected);
+        if case.category == WORD_BOUNDARY_CATEGORY {
+            rust_word_boundary += usize::from(rust_one.text() == case.expected);
+            abi_word_boundary += usize::from(abi == case.expected);
+        }
+        eprintln!(
+            "{}\t{}\t{:?}\t{:?}\t{:?}\t{}",
+            case.case_id,
+            case.category,
+            rust_one.text(),
+            abi,
+            embedded_one.text(),
+            rust_one.text() == abi,
+        );
+    }
+    let _ = caption_bridge_azookey_wasm::replace_active_dictionary(previous);
+    eprintln!(
+        "c-abi vs rust-one: {rust_vs_abi}/{} ; c-abi vs embedded: {embedded_vs_abi}/{} ; strict rust={rust_passed}/{} abi={abi_passed}/{} ; word_boundary rust={rust_word_boundary}/7 abi={abi_word_boundary}/7",
+        cases.len(),
+        cases.len(),
+        cases.len(),
+        cases.len(),
+    );
+    assert_eq!(rust_vs_abi, cases.len(), "C ABI one-completion diverged from Rust one-completion");
+    assert_eq!(
+        abi_passed, rust_passed,
+        "C ABI strict accuracy is not equivalent to Rust one-completion"
+    );
+    assert_eq!(
+        abi_word_boundary, rust_word_boundary,
+        "C ABI word-boundary accuracy is not equivalent to Rust one-completion"
+    );
 }

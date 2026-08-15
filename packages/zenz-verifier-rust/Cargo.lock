@@ -122,6 +122,13 @@ name = "caption-bridge-azookey-rust"
 version = "0.1.0"
 
 [[package]]
+name = "caption-bridge-azookey-wasm"
+version = "0.1.0"
+dependencies = [
+ "caption-bridge-azookey-rust",
+]
+
+[[package]]
 name = "caption-bridge-input-lm"
 version = "0.1.0"
 dependencies = [
@@ -135,6 +142,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "caption-bridge-azookey-rust",
+ "caption-bridge-azookey-wasm",
  "caption-bridge-input-lm",
  "unicode-segmentation",
 ]

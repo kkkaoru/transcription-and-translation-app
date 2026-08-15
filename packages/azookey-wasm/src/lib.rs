@@ -37,6 +37,17 @@ const DEFAULT_LATTICE_BEAM: usize = 64;
 
 static ACTIVE_DICTIONARY: Mutex<Option<AzooKeyDictionary>> = Mutex::new(None);
 
+/// Host-only test seam so the one-completion corpus can drive the C ABI
+/// without a Wasm32 runtime. This is not a Wasm export.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub fn replace_active_dictionary(
+    dictionary: Option<AzooKeyDictionary>,
+) -> Option<AzooKeyDictionary> {
+    let mut active = ACTIVE_DICTIONARY.lock().unwrap_or_else(|error| error.into_inner());
+    std::mem::replace(&mut *active, dictionary)
+}
+
 struct LatticeTable {
     next_handle: u32,
     live: HashMap<u32, ConversionLattice>,
@@ -342,7 +353,7 @@ pub unsafe extern "C" fn azookey_lattice_search_output_prefix(
     allocate_n_best_output(status, &candidates).unwrap_or(0)
 }
 
-fn search_lattice_output_prefix(
+pub fn search_lattice_output_prefix(
     handle: u32,
     prefix: &[u8],
     beam: u32,
