@@ -1353,6 +1353,12 @@ pub fn convert_with_dictionary(
                 }
             })
             .collect::<Vec<_>>();
+        // This model prior depends only on the dictionary and entry. Avoid
+        // repeating its exact-reading alternative scan for every beam state.
+        let model_metadata_penalties = entries
+            .iter()
+            .map(|entry| model_metadata_penalty(dictionary, entry))
+            .collect::<Vec<_>>();
         for state in current {
             // A caption can end one kana after a high-confidence lexical
             // prefix (`ありがとうご`). Treat that final non-particle kana as
@@ -1628,8 +1634,10 @@ pub fn convert_with_dictionary(
                     );
                 }
             }
-            for (entry, contextual_entry_bonus) in
-                entries.iter().zip(contextual_entry_bonuses.iter().copied())
+            for ((entry, contextual_entry_bonus), model_metadata_penalty) in entries
+                .iter()
+                .zip(contextual_entry_bonuses.iter().copied())
+                .zip(model_metadata_penalties.iter().copied())
             {
                 let entry_len = entry.reading.chars().count();
                 let end = start + entry_len;
@@ -1764,7 +1772,7 @@ pub fn convert_with_dictionary(
                                 entry,
                                 bounded_dictionary_word_chars(options.max_dictionary_word_chars),
                             )
-                            + model_metadata_penalty(dictionary, entry)
+                            + model_metadata_penalty
                             + grammatical_context_bonus(&state, entry)
                             + copular_continuation_penalty(&state, entry)
                             + particle_following_shorter_prefix_penalty(&state, entry, &entries)
