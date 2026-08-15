@@ -44,6 +44,30 @@ Both miss expected on `measured-012` (`1230000円を売り上げました` vs
 `記者が汽車で`). Those are shared misses, not Plan 3-only splits.
 Do not claim 23/23 identity.
 
+**Do not read 22/23 as deployed quality.** That number is a local
+`kotoba-zenz-server` measurement with `MODEL_ROUTES` pointed at loopback.
+The hosted Worker measurement is in section 3.
+
+The remaining live-path split is that one case: `measured-008`.
+This is not the leftover search-shape gap (`candidate_path` / accumulated
+constraints) and not the unconstrained-baseline origin gap that split
+`measured-012`. The portable dictionary already contains both surfaces on
+the same reading (`ウリバ` → `売場` / `売り場`). Plan 3's dictionary
+baseline was already `生家売り場は2階です`, so the okurigana was present
+before Zenz ran. The remote greedy completion (`temperature` 0) emitted
+`青果売場は2階です`. Constrained search then followed that prefix: at
+step 2 the prefix became `青果売場` and dropped `り`. Plan 3 binds the
+lattice to one completion, so it cannot recover the longer surface.
+
+Do not change this. It is one okurigana variant with the same meaning.
+Fixing it would mean changing the one-HTTP-completion premise (sampling
+or multiple completions), not widening the C ABI. The 2s wall budget
+stays the limiter.
+
+Not confirmed: which of `売場` and `売り場` is cheaper in the binary
+dictionary. `probe_dict` was not run during the freeze that produced
+this note.
+
 ## 2. When Plan 3 never reaches Zenz
 
 `convertAzookeyMessage` (`apps/cloudflare-worker-server/src/azookey.ts:1598-1696`).
@@ -69,26 +93,50 @@ hits `unconfigured-route`.
 
 ## 3. What production does now
 
-Checked-in production config is empty:
+Checked-in production config is empty, and the **deployed** Worker
+matches it. Wrangler showed live `MODEL_ROUTES` as `{}` on 2026-08-16.
 
 - `apps/cloudflare-worker-server/wrangler.jsonc:30` `"MODEL_ROUTES": "{}"`
 - `.dev.vars.example:15` documents the same empty default
 - `docs/cloudflare-worker-deployment.md:46` says empty routes keep
   optional chat routing disabled
+- hosted inference Worker version `5428abae` (`workers_dev=false`)
+- hosted compare Worker version `d859615c`
+  (`https://azookey-compare.kaoru.workers.dev`)
 
-With that config, a Zenz request never calls `/completion`. It takes
-the `unconfigured-route` branch and returns the portable-dictionary
-text. Local probe on 2026-08-16 with `MODEL_ROUTES={}` produced
-`modelFallback=unconfigured-route`, `usedCompletion=false`,
-`conversionStatus=0`.
+Hosted wasm is the same file as this checkout:
+`GET /azookey/azookey.wasm` sha256
+`09483add2662102e2d70842f58593591b8eeea13df5007c71af70809ca51293a`
+(396580 bytes) matches
+`apps/cloudflare-worker-server/wasm/azookey.wasm`.
 
-This empty default is intentional in the checked-in files. The Worker
-README says production stays dictionary-only until a GGUF upstream is
-configured, and not to claim Plan 3 is browser-complete.
+Hosted WS measurement on 2026-08-16
+(`wss://azookey-compare.kaoru.workers.dev/ws/azookey`, model
+`zenz-v3.2-small-gguf`, `leftContext` from the TSV column):
 
-Whether the **deployed** Worker still has `MODEL_ROUTES={}` is **not
-confirmed from this checkout**. Wrangler vars can be overridden at
-deploy time. This page does not inspect the live Worker.
+- 23/23 `modelFallback=unconfigured-route`
+- 23/23 `usedCompletion=false`
+- 23/23 `conversionStatus=0`
+- every result `model=azookey-rust-wasm`, `requestedModel=zenz-v3.2-small-gguf`
+- no `completionSkipReason` (skip is omitted when `modelFallback` is set)
+
+Text identity on that hosted path:
+
+| Comparison | Exact matches |
+| --- | --- |
+| Hosted Worker vs Plan 1 | **3/23** |
+| Local Plan 3 (loopback Zenz) vs Plan 1 | **22/23** |
+
+The three hosted matches are `measured-001`, `measured-012`, and
+`measured-014`. Those are the rows where the dictionary baseline already
+equals Plan 1. **3/23 is not a claim that the dictionary is 3/23 good.**
+It is the count of rows where dictionary-only and Zenz already agree.
+The other 20 rows are dictionary-only because production has no Zenz
+route, not because Plan 3 search failed.
+
+This empty default is intentional. The Worker README says production
+stays dictionary-only until a GGUF upstream is configured, and not to
+claim Plan 3 is browser-complete.
 
 Desktop Plan 1 does not read these Worker fields. It converts
 in-process.
@@ -109,8 +157,8 @@ Not done, and required before production Zenz quality exists:
 1. Set a non-empty production `MODEL_ROUTES` to an owned HTTPS
    `/completion` host for `zenz-v3.2-xsmall-gguf` and/or
    `zenz-v3.2-small-gguf`. The value is not in this repo.
-2. Confirm the live Worker vars actually contain that route. The
-   checked-in `{}` is not proof of the live value.
+2. Change the live Worker `MODEL_ROUTES` to that host. The 2026-08-16
+   deploy still has `{}`.
 3. Confirm desktop Plan 1 quality first. The Worker README still says
    production routes stay empty until that confirmation.
 4. Confirm a second-or-later compare utterance with a configured route
