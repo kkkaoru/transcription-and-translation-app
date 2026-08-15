@@ -495,6 +495,8 @@ pub async fn transcribe_audio_chunk(
             // time: the invoke result is the caller's completion signal, while
             // `caption:update` is the single event stream. Native replay has
             // already retained the source before the command returns.
+            // Legacy audio chunks are complete request units even though the
+            // compatibility payload predates persistent-turn final markers.
             if state.is_capture_generation_current(capture_generation) {
                 spawn_translation(
                     app.clone(),
@@ -701,7 +703,9 @@ pub async fn normalize_parapper_output(
     {
         Ok(Some(partial)) => {
             mark_backend_healthy(&app, &state, capture_generation);
-            if state.is_capture_generation_current(capture_generation) {
+            if should_spawn_translation(&partial)
+                && state.is_capture_generation_current(capture_generation)
+            {
                 spawn_translation(
                     app.clone(),
                     config.clone(),
@@ -906,6 +910,14 @@ fn source_caption_payload(caption: SourceCaptionInput) -> Result<CaptionPayload,
 #[tauri::command]
 pub fn caption_boundary_offsets(text: String) -> CaptionBoundaryOffsetsPayload {
     caption_boundary_offsets_payload(text.trim())
+}
+
+/// Translate only immutable persistent-turn results. Progressive interim
+/// revisions can arrive faster than the single-slot translator can run;
+/// submitting each one leaves retired llama.cpp requests occupying the slot
+/// ahead of the final.
+fn should_spawn_translation(caption: &CaptionPayload) -> bool {
+    caption.is_final
 }
 
 /// Run translation after the source caption has been returned to the UI.
@@ -1996,13 +2008,14 @@ pub async fn export_debug_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_is_active, ensure_native_publisher_window, log_caption_publish_success,
-        native_output_uses_render_publish, observe_http_empty_asr,
+        capture_is_active, empty_caption, ensure_native_publisher_window,
+        log_caption_publish_success, native_output_uses_render_publish, observe_http_empty_asr,
         parapper_output_generation_is_current, persistent_asr_loss_message,
         publish_parapper_caption, publish_source_caption_gated, redact_runtime_text,
         reset_caption_publish_success_log_for_tests, sanitize_debug_json, sanitize_export_body,
-        source_caption_payload, stop_generation_is_current, validate_overlay_frame_dimensions,
-        NativeOverlayFrame, SourceCaptionInput, NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL,
+        should_spawn_translation, source_caption_payload, stop_generation_is_current,
+        validate_overlay_frame_dimensions, NativeOverlayFrame, SourceCaptionInput,
+        NATIVE_RENDERER_LABEL, TRANSPARENT_CAPTURE_LABEL,
     };
     use crate::config::AppConfig;
     use crate::native_output::NativeOutputHandle;
@@ -2010,6 +2023,18 @@ mod tests {
     use crate::pipeline::{CaptionPayload, ParapperRecognitionInput};
     use crate::state::{AppState, ExpectedEmptyAsrResult, ASR_EMPTY_RESULT_WINDOW};
     use base64::Engine;
+
+    #[test]
+    fn translation_spawns_only_for_final_captions_without_cross_turn_blocking_state() {
+        let config = AppConfig::default();
+        let interim = empty_caption(&config, "turn-1".to_string());
+        assert!(!should_spawn_translation(&interim));
+
+        let first_final = CaptionPayload { is_final: true, ..interim };
+        let second_final = CaptionPayload { id: "turn-2".to_string(), ..first_final.clone() };
+        assert!(should_spawn_translation(&first_final));
+        assert!(should_spawn_translation(&second_final));
+    }
 
     #[test]
     fn update_relaunch_is_deferred_only_for_active_capture_states() {
