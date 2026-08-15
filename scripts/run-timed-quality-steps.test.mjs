@@ -21,6 +21,60 @@ describe("timed quality steps", () => {
     assert.ok(first < workerTypecheck && workerTypecheck < second);
   });
 
+  it("pins every stable quality-step id in execution order", () => {
+    assert.deepEqual(
+      describeQualitySteps(QUALITY_GATE_STEPS).map(({ id }) => id),
+      [
+        "lint",
+        "format:check",
+        "check:single-app",
+        "assets:verify:checkout-baseline",
+        "test:build-cleanup",
+        "typecheck",
+        "azookey-reading:typecheck",
+        "sentence-boundary:typecheck",
+        "azookey-compare:typecheck",
+        "test:coverage",
+        "core:test:coverage",
+        "azookey-reading:test:coverage",
+        "sentence-boundary:test:coverage",
+        "azookey-compare:test:coverage",
+        "gateway:build",
+        "gateway:test:coverage",
+        "worker:typecheck",
+        "assets:verify:post-worker-build",
+        "worker:test:coverage",
+        "parapper:lint",
+        "parapper:typecheck",
+        "parapper:test:ui",
+        "parapper:test:coverage",
+        "parapper:rust:fmt",
+        "parapper:rust:lint",
+        "parapper:rust:test",
+        "rust:azookey:fmt",
+        "rust:azookey:lint",
+        "rust:azookey:test",
+        "rust:input-lm:fmt",
+        "rust:input-lm:lint",
+        "rust:input-lm:test",
+        "rust:zenz-verifier:fmt",
+        "rust:zenz-verifier:lint",
+        "rust:zenz-verifier:test",
+        "rust:vibrato:fmt",
+        "rust:vibrato:lint",
+        "rust:vibrato:test",
+        "rust:vibrato:wasm:build",
+        "rust:wasm:fmt",
+        "rust:wasm:lint",
+        "rust:wasm:test",
+        "rust:wasm:build",
+        "rust:fmt",
+        "rust:lint",
+        "rust:desktop:test",
+      ],
+    );
+  });
+
   it("gives every planned step a stable identity and semantic asset labels", () => {
     const described = describeQualitySteps(QUALITY_GATE_STEPS);
     assert.equal(described.length, 46);
