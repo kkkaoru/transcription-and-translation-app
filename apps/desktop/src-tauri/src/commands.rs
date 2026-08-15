@@ -1184,7 +1184,7 @@ fn emit_pipeline_stage(
     if text_stage {
         log::info!(
             target: "pipeline_stage",
-            "stage={} model={} ok={} duration_ms={} utterance={} in={:?} out={:?} generation={}",
+            "stage={} model={} ok={} duration_ms={} utterance={} in={:?} out={:?} generation={} input_chars={} output_chars={}",
             stage.stage,
             stage.model_id,
             stage.ok,
@@ -1192,7 +1192,9 @@ fn emit_pipeline_stage(
             stage.utterance_id,
             stage.input_snippet,
             stage.output_text,
-            generation
+            generation,
+            stage.input_chars,
+            stage.output_chars
         );
     } else if event_rank <= threshold {
         if stage.ok {
@@ -1822,6 +1824,9 @@ pub async fn get_debug_info(
     // this command awaits sidecar status, but the bounded snapshot is
     // self-consistent and can be merged into the frontend store on refresh.
     let pipeline_stages = state.pipeline_stage_history();
+    // Snapshot independently of completed normalize stages so an in-progress
+    // synchronous model load remains visible while capture startup is waiting.
+    let zenz_verifier_load = state.pipeline.zenz_verifier_load_diagnostics();
     let latest_caption = state.latest_caption();
     let app_data = app.path().app_data_dir().unwrap_or_default();
     let config_dir = app.path().app_config_dir().unwrap_or_default();
@@ -1877,6 +1882,7 @@ pub async fn get_debug_info(
         "pipelineStages": safe_pipeline_stages.clone(),
         // Alias kept for callers that describe the same rows as a history.
         "stageHistory": safe_pipeline_stages,
+        "zenzVerifierLoad": zenz_verifier_load,
         // Latest normalized source/translation caption for late overlay/debug
         // consumers. Raw ASR is not stored in AppState and cannot appear here.
         "latestCaption": safe_latest_caption,

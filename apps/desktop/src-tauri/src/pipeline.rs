@@ -87,8 +87,13 @@ pub struct PipelineStageEvent {
     pub model_id: String,
     /// Short input sample (text, or audio size meta for ASR).
     pub input_snippet: String,
+    /// Unicode-scalar count of the complete input before the diagnostic sample
+    /// is truncated. This exposes long-caption load without retaining more text.
+    pub input_chars: usize,
     /// Short output sample when the stage produced text.
     pub output_text: String,
+    /// Unicode-scalar count of the complete output before truncation.
+    pub output_chars: usize,
     /// Optional original surface text retained by the Vibrato→Hiragana ASR
     /// sink.  This is metadata for the progressive source paint; the selected
     /// normalizer still receives the configured ASR text (`output_text`).
@@ -167,6 +172,37 @@ pub enum ZenzVerifierLoadFailureReason {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ZenzVerifierLoadStatus {
+    NotStarted,
+    Loading,
+    Loaded,
+    Failed,
+    Disabled,
+    Unavailable,
+}
+
+/// Privacy-safe lifecycle snapshot for the embedded verifier's model load.
+///
+/// Unlike normalize-stage counters, this object is available while capture
+/// startup is blocked in a load attempt. It retains only timings, counts, and
+/// stable identifiers; model paths and backend error text are excluded.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ZenzVerifierLoadDiagnostics {
+    pub enabled: bool,
+    pub build_available: bool,
+    pub model_id: &'static str,
+    pub status: ZenzVerifierLoadStatus,
+    pub attempt_count: u64,
+    pub cache_hit_count: u64,
+    pub started_at: Option<u64>,
+    pub elapsed_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub failure_reason: Option<ZenzVerifierLoadFailureReason>,
+}
+
 impl ZenzVerifierLoadFailureReason {
     #[cfg(feature = "candle")]
     fn as_str(self) -> &'static str {
@@ -220,7 +256,6 @@ const ZENZ_CONTEXT_MAX_TURNS: usize = 64;
 const ZENZ_VERIFIER_MAX_ITERATIONS: usize = 10;
 const ZENZ_VERIFIER_INFERENCE_CONFIG_REVISION: &str =
     "desktop-zenz-verifier-v1;temperature=0;top_p=0.6;max_tokens=512";
-#[cfg(feature = "candle")]
 const ZENZ_VERIFIER_MODEL_ID: &str = "zenz-v3.2-small-gguf";
 #[cfg(feature = "candle")]
 const ZENZ_VERIFIER_MODEL_REVISION: &str =
@@ -610,6 +645,97 @@ impl ZenzVerifierMetrics {
     }
 }
 
+#[derive(Debug)]
+struct ZenzVerifierLoadLifecycle {
+    status: ZenzVerifierLoadStatus,
+    attempt_count: u64,
+    cache_hit_count: u64,
+    started_at: Option<u64>,
+    started: Option<Instant>,
+    duration_ms: Option<u64>,
+    failure_reason: Option<ZenzVerifierLoadFailureReason>,
+}
+
+impl Default for ZenzVerifierLoadLifecycle {
+    fn default() -> Self {
+        Self {
+            status: ZenzVerifierLoadStatus::NotStarted,
+            attempt_count: 0,
+            cache_hit_count: 0,
+            started_at: None,
+            started: None,
+            duration_ms: None,
+            failure_reason: None,
+        }
+    }
+}
+
+impl ZenzVerifierLoadLifecycle {
+    #[cfg(feature = "candle")]
+    fn begin(&mut self) -> u64 {
+        self.attempt_count = self.attempt_count.saturating_add(1);
+        self.status = ZenzVerifierLoadStatus::Loading;
+        self.started_at = Some(now_millis());
+        self.started = Some(Instant::now());
+        self.duration_ms = None;
+        self.failure_reason = None;
+        self.attempt_count
+    }
+
+    #[cfg(feature = "candle")]
+    fn record_cache_hit(&mut self) {
+        self.cache_hit_count = self.cache_hit_count.saturating_add(1);
+        self.status = ZenzVerifierLoadStatus::Loaded;
+        self.failure_reason = None;
+    }
+
+    #[cfg(feature = "candle")]
+    fn finish(
+        &mut self,
+        attempt: u64,
+        status: ZenzVerifierLoadStatus,
+        failure_reason: Option<ZenzVerifierLoadFailureReason>,
+    ) {
+        if attempt != self.attempt_count || self.status != ZenzVerifierLoadStatus::Loading {
+            return;
+        }
+        self.duration_ms = self
+            .started
+            .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+        self.started = None;
+        self.status = status;
+        self.failure_reason = failure_reason;
+    }
+
+    fn snapshot(&self, enabled: bool, build_available: bool) -> ZenzVerifierLoadDiagnostics {
+        let status = if !enabled {
+            ZenzVerifierLoadStatus::Disabled
+        } else if !build_available {
+            ZenzVerifierLoadStatus::Unavailable
+        } else {
+            self.status
+        };
+        let elapsed_ms = match (status, self.started) {
+            (ZenzVerifierLoadStatus::Loading, Some(started)) => {
+                Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
+            }
+            _ => self.duration_ms,
+        };
+        ZenzVerifierLoadDiagnostics {
+            enabled,
+            build_available,
+            model_id: ZENZ_VERIFIER_MODEL_ID,
+            status,
+            attempt_count: self.attempt_count,
+            cache_hit_count: self.cache_hit_count,
+            started_at: self.started_at,
+            elapsed_ms,
+            duration_ms: self.duration_ms,
+            failure_reason: self.failure_reason,
+        }
+    }
+}
+
 /// Shared mutable verifier slot. The Candle implementation is intentionally
 /// hidden behind a mutex because the AzooKey contract is synchronous and a
 /// model session is mutable across verification rounds.
@@ -757,6 +883,7 @@ pub struct Pipeline {
     zenz_context_discarded_sessions: Arc<AtomicU64>,
     zenz_verifier: ZenzVerifierHandle,
     zenz_verifier_metrics: Arc<ZenzVerifierMetrics>,
+    zenz_verifier_load: Arc<Mutex<ZenzVerifierLoadLifecycle>>,
 }
 
 impl Default for Pipeline {
@@ -770,6 +897,7 @@ impl Default for Pipeline {
             zenz_context_discarded_sessions: Arc::new(AtomicU64::new(0)),
             zenz_verifier: ZenzVerifierHandle::default(),
             zenz_verifier_metrics: Arc::new(ZenzVerifierMetrics::default()),
+            zenz_verifier_load: Arc::new(Mutex::new(ZenzVerifierLoadLifecycle::default())),
         }
     }
 }
@@ -1007,10 +1135,38 @@ impl Pipeline {
     }
 
     #[cfg(feature = "candle")]
+    fn begin_zenz_verifier_load(&self) -> u64 {
+        self.zenz_verifier_load.lock().unwrap_or_else(std::sync::PoisonError::into_inner).begin()
+    }
+
+    #[cfg(feature = "candle")]
+    fn finish_zenz_verifier_load(
+        &self,
+        attempt: u64,
+        status: ZenzVerifierLoadStatus,
+        reason: Option<ZenzVerifierLoadFailureReason>,
+    ) {
+        self.zenz_verifier_load
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .finish(attempt, status, reason);
+    }
+
+    #[cfg(feature = "candle")]
+    fn record_zenz_verifier_cache_hit(&self) {
+        self.zenz_verifier_load
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_cache_hit();
+    }
+
+    #[cfg(feature = "candle")]
     fn load_zenz_verifier(&self, config: &AppConfig) {
         let Some(model_path) = zenz_verifier_model_path(config) else {
-            self.zenz_verifier_metrics
-                .record_load_failure(ZenzVerifierLoadFailureReason::ModelNotFound);
+            let attempt = self.begin_zenz_verifier_load();
+            let reason = ZenzVerifierLoadFailureReason::ModelNotFound;
+            self.zenz_verifier_metrics.record_load_failure(reason);
+            self.finish_zenz_verifier_load(attempt, ZenzVerifierLoadStatus::Failed, Some(reason));
             warn_zenz_verifier_load_once(
                 "embedded Zenz verifier load failed reason=model_not_found; using dictionary fallback",
             );
@@ -1018,15 +1174,22 @@ impl Pipeline {
         };
         let tokenizer_directory = crate::model_runtime::input_lm_tokenizer_cache_dir();
         if self.zenz_verifier.is_loaded_for(&model_path, &tokenizer_directory) {
+            self.record_zenz_verifier_cache_hit();
             return;
         }
+        let load_attempt = self.begin_zenz_verifier_load();
         // Do not retain a verifier loaded from a previous model path while a
         // new identity is being checked. A failed replacement must fall back
         // to the dictionary, never silently use the old model.
         self.zenz_verifier.clear();
         if !model_path.is_file() {
-            self.zenz_verifier_metrics
-                .record_load_failure(ZenzVerifierLoadFailureReason::ModelNotFound);
+            let reason = ZenzVerifierLoadFailureReason::ModelNotFound;
+            self.zenz_verifier_metrics.record_load_failure(reason);
+            self.finish_zenz_verifier_load(
+                load_attempt,
+                ZenzVerifierLoadStatus::Failed,
+                Some(reason),
+            );
             warn_zenz_verifier_load_once(
                 "embedded Zenz verifier load failed reason=model_not_found; using dictionary fallback",
             );
@@ -1042,6 +1205,11 @@ impl Pipeline {
             Err(error) => {
                 let reason = zenz_verifier_load_failure_reason(&error);
                 self.zenz_verifier_metrics.record_load_failure(reason);
+                self.finish_zenz_verifier_load(
+                    load_attempt,
+                    ZenzVerifierLoadStatus::Failed,
+                    Some(reason),
+                );
                 warn_zenz_verifier_load_once(&format!(
                     "embedded Zenz verifier load failed reason={}; using dictionary fallback",
                     reason.as_str()
@@ -1055,16 +1223,30 @@ impl Pipeline {
             model_path.clone(),
             tokenizer_directory.clone(),
         ) {
-            self.zenz_verifier_metrics.record_load_failure(ZenzVerifierLoadFailureReason::Other);
+            let reason = ZenzVerifierLoadFailureReason::Other;
+            self.zenz_verifier_metrics.record_load_failure(reason);
+            self.finish_zenz_verifier_load(
+                load_attempt,
+                ZenzVerifierLoadStatus::Failed,
+                Some(reason),
+            );
             warn_zenz_verifier_load_once(
                 "embedded Zenz verifier load failed reason=other; using dictionary fallback",
             );
             return;
         }
+        self.finish_zenz_verifier_load(load_attempt, ZenzVerifierLoadStatus::Loaded, None);
         log::info!(
             target: "pipeline_normalize",
             "embedded Zenz verifier loaded elapsed_ms={elapsed_ms}"
         );
+    }
+
+    pub fn zenz_verifier_load_diagnostics(&self) -> ZenzVerifierLoadDiagnostics {
+        self.zenz_verifier_load
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot(zenz_verifier_enabled(), zenz_verifier_build_available())
     }
 
     fn zenz_verifier_diagnostics(&self) -> ZenzVerifierDiagnostics {
@@ -2459,7 +2641,9 @@ fn stage_event_with_surface(
         utterance_id: utterance_id.to_string(),
         model_id: model_id.to_string(),
         input_snippet: snippet(input),
+        input_chars: input.trim().chars().count(),
         output_text: snippet(output),
+        output_chars: output.trim().chars().count(),
         // `surface_text` is consumed by the frontend's immediate provisional
         // caption paint, so retain the complete surface instead of applying
         // the bounded debug sample truncation used by input/output fields.
@@ -3217,6 +3401,39 @@ mod tests {
     }
 
     #[test]
+    fn verifier_load_lifecycle_exposes_in_progress_and_terminal_timings_without_paths() {
+        let mut lifecycle = super::ZenzVerifierLoadLifecycle::default();
+        let initial = lifecycle.snapshot(true, true);
+        assert_eq!(initial.status, super::ZenzVerifierLoadStatus::NotStarted);
+        assert_eq!(initial.attempt_count, 0);
+
+        let attempt = lifecycle.begin();
+        let loading = lifecycle.snapshot(true, true);
+        assert_eq!(loading.status, super::ZenzVerifierLoadStatus::Loading);
+        assert_eq!(loading.attempt_count, 1);
+        assert!(loading.started_at.is_some());
+        assert!(loading.elapsed_ms.is_some());
+        assert_eq!(loading.duration_ms, None);
+
+        lifecycle.finish(attempt, super::ZenzVerifierLoadStatus::Loaded, None);
+        lifecycle.record_cache_hit();
+        let loaded = lifecycle.snapshot(true, true);
+        assert_eq!(loaded.status, super::ZenzVerifierLoadStatus::Loaded);
+        assert_eq!(loaded.cache_hit_count, 1);
+        assert!(loaded.duration_ms.is_some());
+        let value = serde_json::to_value(loaded).expect("serialize load diagnostics");
+        assert_eq!(value["modelId"], super::ZENZ_VERIFIER_MODEL_ID);
+        assert!(value.get("modelPath").is_none());
+        assert!(value.get("error").is_none());
+
+        assert_eq!(lifecycle.snapshot(false, true).status, super::ZenzVerifierLoadStatus::Disabled);
+        assert_eq!(
+            lifecycle.snapshot(true, false).status,
+            super::ZenzVerifierLoadStatus::Unavailable
+        );
+    }
+
+    #[test]
     fn verifier_slot_is_empty_before_capture_and_diagnostics_expose_default_build() {
         let pipeline = Pipeline::default();
         assert!(!pipeline.zenz_verifier.is_loaded());
@@ -3250,6 +3467,11 @@ mod tests {
             diagnostics.load_failure_reason,
             Some(super::ZenzVerifierLoadFailureReason::ModelNotFound)
         );
+        let load = pipeline.zenz_verifier_load_diagnostics();
+        assert_eq!(load.status, super::ZenzVerifierLoadStatus::Failed);
+        assert_eq!(load.attempt_count, 1);
+        assert!(load.duration_ms.is_some());
+        assert_eq!(load.failure_reason, Some(super::ZenzVerifierLoadFailureReason::ModelNotFound));
 
         let outcome = pipeline
             .normalize_azookey_with_verifier(&config, "きょうははいしんです", Some("前の字幕"))
@@ -3664,7 +3886,9 @@ mod tests {
             utterance_id: "u1".into(),
             model_id: "parapper-ja".into(),
             input_snippet: "wavBytes=12".into(),
+            input_chars: 11,
             output_text: "こんにちは".into(),
+            output_chars: 5,
             surface_text: Some("今日は".into()),
             started_at: 57,
             at: 99,
@@ -3712,6 +3936,8 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["zenzContext"]["enabled"], true);
         assert_eq!(value["zenzContext"]["isFinal"], false);
+        assert_eq!(value["inputChars"], 11);
+        assert_eq!(value["outputChars"], 5);
         assert_eq!(value["zenzContext"]["characterCount"], 12);
         assert_eq!(value["zenzContext"]["turnCount"], 2);
         assert_eq!(value["zenzContext"]["discardedSessionCount"], 1);
@@ -3743,8 +3969,10 @@ mod tests {
         assert!(!event.ok);
         assert_eq!(event.error.as_deref(), Some("boom"));
         assert!(event.input_snippet.ends_with('…'));
+        assert_eq!(event.input_chars, STAGE_SNIPPET_CHARS + 20);
         assert_eq!(snippet(" short "), "short");
         assert_eq!(event.output_text, "out");
+        assert_eq!(event.output_chars, 3);
     }
 
     #[test]
