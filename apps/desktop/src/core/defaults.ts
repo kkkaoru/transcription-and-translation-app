@@ -437,22 +437,6 @@ export const DEFAULT_MODEL_CATALOG: ModelCatalog = {
     ),
     model(
       "translator",
-      "hy-mt2-1.8b-2bit-gguf",
-      "Hy-MT2 1.8B 2-bit GGUF",
-      "メモリ使用量と速度を優先するモデルです。",
-      "Hy-MT2-1.8B-2bit-GGUF",
-      ["ja", "en"],
-    ),
-    model(
-      "translator",
-      "hy-mt2-1.8b-1.25bit-gguf",
-      "Hy-MT2 1.8B 1.25-bit GGUF",
-      "オンデバイス実行のための最小モデルです。",
-      "Hy-MT2-1.8B-1.25bit-GGUF",
-      ["ja", "en"],
-    ),
-    model(
-      "translator",
       "hy-mt2-7b-gguf",
       "Hy-MT2 7B GGUF",
       "レイテンシーより翻訳品質を優先するモデルです。",

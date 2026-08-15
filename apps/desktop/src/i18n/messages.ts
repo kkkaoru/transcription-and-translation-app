@@ -339,13 +339,11 @@ const ja = {
   "model.zenzV2.label": "AzooKey Zenzai v2 Q5_K_M",
   "model.zenzV2.description": "低メモリ環境向けのZenzai v2互換GGUFモデルです。",
   "model.hy18.description": "日本語から英語へのライブ字幕に適した標準量子化モデルです。",
-  "model.hy2bit.description": "メモリ使用量と速度を優先するモデルです。",
-  "model.hy125bit.description": "オンデバイス実行のための最小モデルです。",
   "model.hy7b.description": "レイテンシーより翻訳品質を優先するモデルです。",
   "model.managementEyebrow": "MODEL INSTALL",
   "model.managementTitle": "モデル管理",
   "model.managementLead":
-    "個別ダウンロード、または最小構成（Zenzai XSmall + Hy-MT2 1.25bit）の一括ダウンロードができます。完了後、未インストールの翻訳モデル選択は最小構成へ自動切替されます。",
+    "個別ダウンロード、または最小構成（Zenzai XSmall + Hy-MT2 1.8B）の一括ダウンロードができます。完了後、未インストールの翻訳モデル選択は最小構成へ自動切替されます。",
   "model.quickStart": "最小モデルを一括DL",
   "model.quickStartRunning": "ダウンロード中…",
   "model.quickStartComplete":
@@ -896,13 +894,11 @@ const en: Record<MessageKey, string> = {
   "model.zenzV2.label": "AzooKey Zenzai v2 Q5_K_M",
   "model.zenzV2.description": "A Zenzai v2 Q5_K_M GGUF model for lower-memory machines.",
   "model.hy18.description": "The standard quantized model for live Japanese-to-English captions.",
-  "model.hy2bit.description": "Prioritizes lower memory usage and speed.",
-  "model.hy125bit.description": "The smallest option for on-device inference.",
   "model.hy7b.description": "Prioritizes translation quality over latency.",
   "model.managementEyebrow": "MODEL INSTALL",
   "model.managementTitle": "Model management",
   "model.managementLead":
-    "Download models individually, or install the minimal set (Zenzai XSmall + Hy-MT2 1.25-bit) in one step. If the selected translator is not installed, it switches to the minimal pack after download.",
+    "Download models individually, or install the minimal set (Zenzai XSmall + Hy-MT2 1.8B) in one step. If the selected translator is not installed, it switches to the minimal pack after download.",
   "model.quickStart": "Download minimal set",
   "model.quickStartRunning": "Downloading…",
   "model.quickStartComplete":

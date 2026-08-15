@@ -61,24 +61,6 @@ pub const MODEL_RUNTIME_SPECS: &[ModelRuntimeSpec] = &[
         port: 8083,
     },
     ModelRuntimeSpec {
-        id: "hy-mt2-1.8b-2bit-gguf",
-        server: ModelServer::Llama,
-        hf_repo: "tencent/Hy-MT2-1.8B-2Bit-GGUF",
-        hf_revision: "b630487d19ab7f336664a15b07c638d0d1071471",
-        hf_file: "Hy-MT2-1.8B-2Bit.gguf",
-        expected_bytes: 600_534_880,
-        port: 8084,
-    },
-    ModelRuntimeSpec {
-        id: "hy-mt2-1.8b-1.25bit-gguf",
-        server: ModelServer::Llama,
-        hf_repo: "tencent/Hy-MT2-1.8B-1.25Bit-GGUF",
-        hf_revision: "9df5c824a00a744fb0512a29c640466f4d97dfb0",
-        hf_file: "Hy-MT2-1.8B-1.25Bit.gguf",
-        expected_bytes: 461_860_800,
-        port: 8085,
-    },
-    ModelRuntimeSpec {
         id: "hy-mt2-7b-gguf",
         server: ModelServer::Llama,
         hf_repo: "tencent/Hy-MT2-7B-GGUF",
@@ -408,7 +390,7 @@ mod tests {
     #[test]
     fn every_catalogued_runtime_has_a_loopback_gateway_route() {
         let routes = gateway_routes();
-        assert_eq!(routes.as_object().expect("route map").len(), 7);
+        assert_eq!(routes.as_object().expect("route map").len(), 5);
         assert_eq!(routes["hy-mt2-7b-gguf"]["baseUrl"], "http://127.0.0.1:8086");
     }
 

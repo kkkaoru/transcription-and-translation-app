@@ -44,12 +44,6 @@ const modelCopy: Partial<
   "hy-mt2-1.8b-gguf": {
     description: "model.hy18.description",
   },
-  "hy-mt2-1.8b-2bit-gguf": {
-    description: "model.hy2bit.description",
-  },
-  "hy-mt2-1.8b-1.25bit-gguf": {
-    description: "model.hy125bit.description",
-  },
   "hy-mt2-7b-gguf": {
     description: "model.hy7b.description",
   },

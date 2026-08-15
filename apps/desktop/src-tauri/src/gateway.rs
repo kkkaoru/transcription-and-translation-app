@@ -1141,7 +1141,7 @@ mod tests {
     #[test]
     fn embedded_gateway_routes_every_bundled_model_server() {
         let config = default_gateway_config();
-        assert_eq!(config["models"].as_object().expect("model map").len(), 7);
+        assert_eq!(config["models"].as_object().expect("model map").len(), 5);
         assert_eq!(config["models"]["hy-mt2-7b-gguf"]["baseUrl"], "http://127.0.0.1:8086");
     }
 

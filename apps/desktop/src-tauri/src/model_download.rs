@@ -16,9 +16,10 @@ use tokio::io::AsyncWriteExt;
 use zip::ZipArchive;
 
 /// Minimal GGUF set for smoke / operation verification.
-/// Zenzai XSmall (~21 MiB) exercises the normalizer server; Hy-MT2 1.25bit (~461 MiB)
-/// is the smallest bundled translator.
-pub const QUICK_START_MODEL_IDS: &[&str] = &["zenz-v3.2-xsmall-gguf", "hy-mt2-1.8b-1.25bit-gguf"];
+/// Zenzai XSmall (~21 MiB) exercises the normalizer server. The translator must
+/// be a file this app's bundled `kotoba-llama-server` can actually load; the
+/// 2-bit / 1.25-bit Hy-MT2 GGUFs fail that check, so the working 1.8B Q4 is used.
+pub const QUICK_START_MODEL_IDS: &[&str] = &["zenz-v3.2-xsmall-gguf", "hy-mt2-1.8b-gguf"];
 
 fn active_downloads() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     static ACTIVE: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
@@ -1312,7 +1313,7 @@ mod tests {
     #[ignore = "downloads ~21 MiB from Hugging Face for the missing quick-start model; run explicitly"]
     async fn batch_quick_start_downloads_missing_xsmall_and_skips_ready_hy() {
         let runtime_xsmall = spec("zenz-v3.2-xsmall-gguf").expect("xsmall");
-        let runtime_hy = spec("hy-mt2-1.8b-1.25bit-gguf").expect("hy");
+        let runtime_hy = spec("hy-mt2-1.8b-gguf").expect("hy");
         let root = std::env::temp_dir().join(format!(
             "kotoba-model-batch-mixed-{}-{}",
             std::process::id(),
@@ -1346,7 +1347,7 @@ mod tests {
             "quick-start must target exactly 2 models (normalizer + translator)"
         );
         let xsmall = spec("zenz-v3.2-xsmall-gguf").expect("xsmall spec");
-        let hy_125bit = spec("hy-mt2-1.8b-1.25bit-gguf").expect("hy 1.25bit spec");
+        let hy_q4 = spec("hy-mt2-1.8b-gguf").expect("hy q4 spec");
         let all = crate::model_runtime::all_specs();
         let smallest_zenz = all
             .iter()
@@ -1363,14 +1364,10 @@ mod tests {
             "quick-start must use the smallest normalizer model"
         );
         assert_eq!(
-            hy_125bit.expected_bytes, smallest_llama.expected_bytes,
-            "quick-start must use the smallest translator model"
+            hy_q4.expected_bytes, smallest_llama.expected_bytes,
+            "quick-start must use the smallest loadable translator model"
         );
-        assert!(
-            hy_125bit.expected_bytes < 700_000_000,
-            "quick-start translator must stay well below 700 MiB"
-        );
-        assert_eq!(quick_start_translator_id(), Some("hy-mt2-1.8b-1.25bit-gguf"));
+        assert_eq!(quick_start_translator_id(), Some("hy-mt2-1.8b-gguf"));
     }
 
     #[test]
@@ -1384,23 +1381,23 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         assert_eq!(
-            preferred_translator_after_quick_start("hy-mt2-1.8b-gguf", &root),
-            Some("hy-mt2-1.8b-1.25bit-gguf"),
-            "default full translator is missing → align to minimal pack"
+            preferred_translator_after_quick_start("hy-mt2-7b-gguf", &root),
+            Some("hy-mt2-1.8b-gguf"),
+            "uninstalled translator aligns to the loadable pack"
         );
         assert_eq!(
-            preferred_translator_after_quick_start("hy-mt2-1.8b-1.25bit-gguf", &root),
+            preferred_translator_after_quick_start("hy-mt2-1.8b-gguf", &root),
             None,
             "already on quick-start translator → no change"
         );
 
-        // Seed the full-size translator as ready: keep the user's quality choice.
-        let full = spec("hy-mt2-1.8b-gguf").expect("full hy");
-        write_expected_size_file(&model_path(&root, full), full.expected_bytes);
+        // Seed the larger translator as ready: keep the user's quality choice.
+        let larger = spec("hy-mt2-7b-gguf").expect("7b hy");
+        write_expected_size_file(&model_path(&root, larger), larger.expected_bytes);
         assert_eq!(
-            preferred_translator_after_quick_start("hy-mt2-1.8b-gguf", &root),
+            preferred_translator_after_quick_start("hy-mt2-7b-gguf", &root),
             None,
-            "ready full translator must not be downgraded"
+            "ready larger translator must not be downgraded"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1420,7 +1417,7 @@ mod tests {
             let entry = classify_model_status(&root, spec);
             statuses.push(entry);
         }
-        assert_eq!(statuses.len(), 7);
+        assert_eq!(statuses.len(), 5);
         for entry in &statuses {
             assert_eq!(entry.status, "missing");
             assert!(entry.installed_bytes.is_none());
