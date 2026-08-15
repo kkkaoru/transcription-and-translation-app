@@ -154,6 +154,8 @@ describe("AzooKey Worker client connection lifecycle", () => {
         conversionStatus: 1,
         contextUsed: true,
         contextDiscarded: "dictionary-revision",
+        usedCompletion: false,
+        completionSkipReason: "empty-left-context",
       }),
     );
     await expect(pending).resolves.toMatchObject({
@@ -165,6 +167,8 @@ describe("AzooKey Worker client connection lifecycle", () => {
       conversionStatus: 1,
       contextUsed: true,
       contextDiscarded: "dictionary-revision",
+      usedCompletion: false,
+      completionSkipReason: "empty-left-context",
     });
     expect(states).toEqual(["connecting", "open"]);
   });

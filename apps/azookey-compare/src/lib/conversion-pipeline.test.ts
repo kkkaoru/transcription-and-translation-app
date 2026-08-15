@@ -131,6 +131,11 @@ describe("comparison conversion pipeline", () => {
         receivedAt: Date.now(),
         elapsedMs: 5,
         model: "azookey-rust-wasm",
+        conversionStatus: 1,
+        contextUsed: true,
+        contextDiscarded: "dictionary-revision",
+        usedCompletion: false,
+        completionSkipReason: "lattice-unavailable",
       }),
     );
     const result = await runComparisonConversion(
@@ -152,6 +157,14 @@ describe("comparison conversion pipeline", () => {
       expect.objectContaining({ vibratoInput: "おはようございます" }),
     );
     expect(result.trace.steps.some((step) => step.id === "rescore")).toBe(true);
+    expect(result.conversionStatus).toBe(1);
+    expect(result.contextUsed).toBe(true);
+    expect(result.contextDiscarded).toBe("dictionary-revision");
+    expect(result.usedCompletion).toBe(false);
+    expect(result.completionSkipReason).toBe("lattice-unavailable");
+    expect(result.trace.steps.find((step) => step.id === "converter-output")?.detail).toBe(
+      "モデル: azookey-rust-wasm · 変換異常: 辞書フォールバック経路 · 辞書の版が変わったため前の候補文脈を捨てました · 格子を開けなかったため Zenz の完了を捨てました",
+    );
   });
 
   it("rescored kana on the Zenzai dictionary path when enabled", async () => {

@@ -13,6 +13,8 @@ import {
   buildVibratoSkippedStep,
   buildWorkerWsStep,
   conversionTraceDisplayLines,
+  describeConversionStatus,
+  describeWorkerConversionDiagnostics,
   formatTraceStepSummary,
   formatTraceStepTiming,
   normalizeSourceText,
@@ -68,6 +70,59 @@ describe("conversion trace helpers", () => {
       "モデル: m1",
     );
     expect(buildConverterOutputStep("out", "browser-vibrato").detail).toContain("ブラウザ");
+    expect(
+      buildConverterOutputStep(
+        "out",
+        "worker-vibrato",
+        1,
+        "azookey-rust-wasm",
+        undefined,
+        undefined,
+        {
+          conversionStatus: 1,
+          contextUsed: true,
+          usedCompletion: true,
+        },
+      ).detail,
+    ).toBe(
+      "モデル: azookey-rust-wasm · 変換異常: 辞書フォールバック経路 · 前の候補文脈を使いました · Zenz の完了を検査しました",
+    );
+    expect(
+      buildConverterOutputStep(
+        "out",
+        "worker-vibrato",
+        1,
+        "azookey-rust-wasm",
+        undefined,
+        undefined,
+        {
+          conversionStatus: 0,
+          contextDiscarded: "dictionary-revision",
+          completionSkipReason: "empty-left-context",
+        },
+      ).detail,
+    ).toBe(
+      "モデル: azookey-rust-wasm · 辞書の版が変わったため前の候補文脈を捨てました · 直前の変換文が無いため Zenz を呼びませんでした",
+    );
+    expect(describeConversionStatus(0)).toBeUndefined();
+    expect(describeConversionStatus(7)).toBe(
+      "変換異常: 辞書フォールバック経路、入力が不正な UTF-8、格子または引数が無効",
+    );
+    expect(describeConversionStatus(8)).toBe("変換異常: 未定義ビット 0x8");
+    expect(
+      describeWorkerConversionDiagnostics({
+        requestedModel: "zenz-v3.2-xsmall-gguf",
+        modelFallback: "upstream-failed",
+        contextDiscarded: "unknown-reason",
+        completionSkipReason: "unknown-skip",
+      }),
+    ).toBe(
+      "zenz-v3.2-xsmall-gguf から AzooKey WASM へフォールバック · 候補文脈を捨てました（unknown-reason） · Zenz の完了に届きませんでした（unknown-skip）",
+    );
+    expect(describeWorkerConversionDiagnostics({})).toBe("");
+    expect(buildConverterOutputStep("out", "worker-vibrato").detail).toBe(
+      "Cloudflare Worker 変換結果",
+    );
   });
 
   it("assembles browser-complete traces with vibrato and azookey steps", () => {

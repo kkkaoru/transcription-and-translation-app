@@ -105,6 +105,11 @@ export interface ConversionPipelineResult {
   model?: string;
   requestedModel?: string;
   modelFallback?: string;
+  conversionStatus?: number;
+  contextUsed?: boolean;
+  contextDiscarded?: string;
+  usedCompletion?: boolean;
+  completionSkipReason?: string;
   /** Set when browser-complete runs Zenzai dictionary (LOUDS) without GGUF inference. */
   zenzaiExecution?: BrowserZenzaiDictExecution;
   /** Per-step inputs/outputs for utterance comparison cards. */
@@ -343,6 +348,11 @@ export const runComparisonConversion = async (
       model: result.model,
       requestedModel: result.requestedModel,
       modelFallback: result.modelFallback,
+      conversionStatus: result.conversionStatus,
+      contextUsed: result.contextUsed,
+      contextDiscarded: result.contextDiscarded,
+      usedCompletion: result.usedCompletion,
+      completionSkipReason: result.completionSkipReason,
       workerRequest,
     },
   });
@@ -358,6 +368,11 @@ export const runComparisonConversion = async (
     model: result.model,
     requestedModel: result.requestedModel,
     modelFallback: result.modelFallback,
+    ...(result.conversionStatus !== undefined ? { conversionStatus: result.conversionStatus } : {}),
+    ...(result.contextUsed !== undefined ? { contextUsed: result.contextUsed } : {}),
+    ...(result.contextDiscarded ? { contextDiscarded: result.contextDiscarded } : {}),
+    ...(result.usedCompletion !== undefined ? { usedCompletion: result.usedCompletion } : {}),
+    ...(result.completionSkipReason ? { completionSkipReason: result.completionSkipReason } : {}),
     trace,
     steps: trace.steps,
   };

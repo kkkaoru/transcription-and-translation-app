@@ -88,6 +88,11 @@ export interface TraceConverterOutcome {
   model?: string;
   requestedModel?: string;
   modelFallback?: string;
+  conversionStatus?: number;
+  contextUsed?: boolean;
+  contextDiscarded?: string;
+  usedCompletion?: boolean;
+  completionSkipReason?: string;
   workerRequest?: ConversionWorkerTracePayload;
   /** Browser-complete Zenzai dictionary (LOUDS) without GGUF inference. */
   zenzaiExecution?: ZenzaiTraceExecution;
@@ -234,6 +239,89 @@ export const buildWorkerWsStep = (payload: ConversionWorkerTracePayload): Conver
   location: "cloudflare-worker",
 });
 
+export const CONVERSION_STATUS_FALLBACK = 1 << 0;
+export const CONVERSION_STATUS_INVALID_UTF8 = 1 << 1;
+export const CONVERSION_STATUS_INVALID_ARGUMENT = 1 << 2;
+
+const CONTEXT_DISCARD_LABEL: Record<string, string> = {
+  "utterance-boundary": "発話境界で前の候補文脈を捨てました",
+  "dictionary-revision": "辞書の版が変わったため前の候補文脈を捨てました",
+  "model-change": "変換モデルが変わったため前の候補文脈を捨てました",
+};
+
+const COMPLETION_SKIP_LABEL: Record<string, string> = {
+  "empty-left-context": "直前の変換文が無いため Zenz を呼びませんでした",
+  "lattice-unavailable": "格子を開けなかったため Zenz の完了を捨てました",
+};
+
+export const describeConversionStatus = (status: number): string | undefined => {
+  if (status === 0) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  if ((status & CONVERSION_STATUS_FALLBACK) !== 0) {
+    parts.push("辞書フォールバック経路");
+  }
+  if ((status & CONVERSION_STATUS_INVALID_UTF8) !== 0) {
+    parts.push("入力が不正な UTF-8");
+  }
+  if ((status & CONVERSION_STATUS_INVALID_ARGUMENT) !== 0) {
+    parts.push("格子または引数が無効");
+  }
+  const unknown =
+    status &
+    ~(
+      CONVERSION_STATUS_FALLBACK |
+      CONVERSION_STATUS_INVALID_UTF8 |
+      CONVERSION_STATUS_INVALID_ARGUMENT
+    );
+  if (unknown !== 0) {
+    parts.push(`未定義ビット 0x${unknown.toString(16)}`);
+  }
+  return `変換異常: ${parts.join("、")}`;
+};
+
+export const describeWorkerConversionDiagnostics = (input: {
+  model?: string;
+  requestedModel?: string;
+  modelFallback?: string;
+  conversionStatus?: number;
+  contextUsed?: boolean;
+  contextDiscarded?: string;
+  usedCompletion?: boolean;
+  completionSkipReason?: string;
+}): string => {
+  const parts: string[] = [];
+  if (input.requestedModel && input.modelFallback) {
+    parts.push(`${input.requestedModel} から ${input.model ?? "AzooKey WASM"} へフォールバック`);
+  } else if (input.model) {
+    parts.push(`モデル: ${input.model}`);
+  }
+  if (input.conversionStatus !== undefined) {
+    const status = describeConversionStatus(input.conversionStatus);
+    if (status !== undefined) {
+      parts.push(status);
+    }
+  }
+  if (input.contextDiscarded) {
+    parts.push(
+      CONTEXT_DISCARD_LABEL[input.contextDiscarded] ??
+        `候補文脈を捨てました（${input.contextDiscarded}）`,
+    );
+  } else if (input.contextUsed === true) {
+    parts.push("前の候補文脈を使いました");
+  }
+  if (input.usedCompletion === true) {
+    parts.push("Zenz の完了を検査しました");
+  } else if (input.completionSkipReason) {
+    parts.push(
+      COMPLETION_SKIP_LABEL[input.completionSkipReason] ??
+        `Zenz の完了に届きませんでした（${input.completionSkipReason}）`,
+    );
+  }
+  return parts.join(" · ");
+};
+
 export const buildConverterOutputStep = (
   output: string,
   mode: ComparisonMode,
@@ -241,11 +329,26 @@ export const buildConverterOutputStep = (
   model?: string,
   requestedModel?: string,
   modelFallback?: string,
+  diagnostics?: {
+    conversionStatus?: number;
+    contextUsed?: boolean;
+    contextDiscarded?: string;
+    usedCompletion?: boolean;
+    completionSkipReason?: string;
+  },
 ): ConversionTraceStep => {
   let detail =
     mode === "browser-vibrato" ? "ブラウザ AzooKey WASM の出力" : "Cloudflare Worker 変換結果";
-  if (requestedModel && modelFallback) {
-    detail = `${requestedModel} から ${model ?? "AzooKey WASM"} へフォールバック`;
+  if (mode !== "browser-vibrato") {
+    const described = describeWorkerConversionDiagnostics({
+      model,
+      requestedModel,
+      modelFallback,
+      ...diagnostics,
+    });
+    if (described.length > 0) {
+      detail = described;
+    }
   } else if (model) {
     detail = `モデル: ${model}`;
   }
@@ -337,6 +440,13 @@ export const assembleConversionTrace = (parts: {
         parts.converter.model,
         parts.converter.requestedModel,
         parts.converter.modelFallback,
+        {
+          conversionStatus: parts.converter.conversionStatus,
+          contextUsed: parts.converter.contextUsed,
+          contextDiscarded: parts.converter.contextDiscarded,
+          usedCompletion: parts.converter.usedCompletion,
+          completionSkipReason: parts.converter.completionSkipReason,
+        },
       ),
     );
   }

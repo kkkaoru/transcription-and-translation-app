@@ -55,6 +55,8 @@ export interface AzooKeyConvertResult {
   conversionStatus?: number;
   contextUsed?: boolean;
   contextDiscarded?: string;
+  usedCompletion?: boolean;
+  completionSkipReason?: string;
 }
 
 interface PendingRequest {
@@ -251,6 +253,8 @@ interface ParsedWorkerMessage {
   conversionStatus?: number;
   contextUsed?: boolean;
   contextDiscarded?: string;
+  usedCompletion?: boolean;
+  completionSkipReason?: string;
 }
 
 const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
@@ -311,6 +315,12 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
   const contextDiscarded =
     readString(payload, "contextDiscarded", "context_discarded") ??
     (nested ? readString(nested, "contextDiscarded", "context_discarded") : undefined);
+  const usedCompletion =
+    readBoolean(payload, "usedCompletion", "used_completion") ??
+    (nested ? readBoolean(nested, "usedCompletion", "used_completion") : undefined);
+  const completionSkipReason =
+    readString(payload, "completionSkipReason", "completion_skip_reason") ??
+    (nested ? readString(nested, "completionSkipReason", "completion_skip_reason") : undefined);
   return {
     requestId,
     convertedText,
@@ -323,6 +333,8 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
     ...(conversionStatus !== undefined ? { conversionStatus } : {}),
     ...(contextUsed !== undefined ? { contextUsed } : {}),
     ...(contextDiscarded ? { contextDiscarded } : {}),
+    ...(usedCompletion !== undefined ? { usedCompletion } : {}),
+    ...(completionSkipReason ? { completionSkipReason } : {}),
   };
 };
 
@@ -724,6 +736,8 @@ export class AzooKeyWorkerClient {
         : {}),
       ...(parsed.contextUsed !== undefined ? { contextUsed: parsed.contextUsed } : {}),
       ...(parsed.contextDiscarded ? { contextDiscarded: parsed.contextDiscarded } : {}),
+      ...(parsed.usedCompletion !== undefined ? { usedCompletion: parsed.usedCompletion } : {}),
+      ...(parsed.completionSkipReason ? { completionSkipReason: parsed.completionSkipReason } : {}),
       receivedAt: Date.now(),
     });
   }
