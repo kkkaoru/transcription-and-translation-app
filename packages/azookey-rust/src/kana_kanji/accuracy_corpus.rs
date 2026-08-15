@@ -573,6 +573,62 @@ fn incomplete_streaming_case(
     }
 }
 
+const SYNTHETIC_STREAMING_CLAUSES: &[&str] = &[
+    "きょうのよていをかくにんしてつぎのさぎょうをはじめます",
+    "しりょうのないようをみなおしてひつようなこうもくをせいりします",
+    "じゅんばんをたしかめながらひとつずつけっかをきろくします",
+    "せっていをほぞんしてからもういちどどうさをかくにんします",
+    "さいごにぜんたいをみなおしてつぎのてじゅんをあんないします",
+];
+
+fn synthetic_streaming_prefix(seed: usize, target_chars: usize) -> String {
+    SYNTHETIC_STREAMING_CLAUSES
+        .iter()
+        .cycle()
+        .skip(seed % SYNTHETIC_STREAMING_CLAUSES.len())
+        .flat_map(|clause| clause.chars())
+        .take(target_chars)
+        .collect()
+}
+
+fn synthetic_length_matched_streaming_cases() -> Vec<CorpusCase> {
+    // Live-device normalize inputs were p50=14 / p95=195 / max=467. Keep the
+    // independently reviewed 12-24 character prefixes untouched and add a
+    // report-only synthetic tail that matches that length shape without using
+    // real speech. Expected surfaces stay the raw prefix: live captions must
+    // not invent a kanji completion for an unfinished turn.
+    const SHAPES: &[(&str, usize, usize)] = &[
+        ("stream-len-p50", 0, 14),
+        ("stream-len-p75", 1, 93),
+        ("stream-len-p95", 2, 195),
+        ("stream-len-long", 3, 315),
+        ("stream-len-max", 4, 467),
+    ];
+    SHAPES
+        .iter()
+        .map(|(case_id, seed, target_chars)| {
+            let input = synthetic_streaming_prefix(*seed, *target_chars);
+            let leaked = Box::leak(input.into_boxed_str());
+            CorpusCase {
+                case_id: (*case_id).to_string(),
+                category: "incomplete_streaming_length_matched",
+                input: leaked,
+                expected: leaked,
+                context_mode: ContextMode::LeftOnly,
+                expected_origin: ExpectedOrigin::Mixed,
+                requires_dictionary_origin: false,
+                source_kind: "synthetic_length_matched_prefix",
+                provenance: "privacy_safe_streaming_corpus_live_length_shape_2026-08-16",
+                pair_id: None,
+                accepted_variants: &[],
+                equivalence_group: None,
+                review_status: ReviewStatus::PendingIndependentReview,
+                reviewed_by: None,
+            }
+        })
+        .collect()
+}
+
 fn incomplete_streaming_cases() -> Vec<CorpusCase> {
     [
         ("stream-001", "かいぎのしりょうをかくに", "会議の資料をかくに"),
@@ -1114,7 +1170,22 @@ fn accuracy_corpus_schema_and_anchor_fingerprint_are_stable() {
         assert_eq!(case.review_status, ReviewStatus::IndependentlyReviewed);
         assert_eq!(case.reviewed_by, Some("specialist-advisor"));
         assert!(included_in_live_gate(case));
+        assert!((12..=24).contains(&case.input.chars().count()));
     }
+
+    let length_matched = synthetic_length_matched_streaming_cases();
+    assert_eq!(length_matched.len(), 5);
+    for case in &length_matched {
+        assert!(case_ids.insert(case.case_id.as_str()), "duplicate case ID: {}", case.case_id);
+        assert!(case.case_id.starts_with("stream-len-"));
+        assert_eq!(case.category, "incomplete_streaming_length_matched");
+        assert_eq!(case.input, case.expected);
+        assert_eq!(case.review_status, ReviewStatus::PendingIndependentReview);
+        assert!(!included_in_live_gate(case));
+    }
+    let lengths: Vec<usize> =
+        length_matched.iter().map(|case| case.input.chars().count()).collect();
+    assert_eq!(lengths, vec![14, 93, 195, 315, 467]);
 
     let measured_cases = measured_completed_failure_cases();
     assert_eq!(measured_cases.len(), MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL);
@@ -1241,6 +1312,7 @@ fn accuracy_corpus_report() {
     eprintln!();
 
     let expansion_cases = incomplete_streaming_cases();
+    let length_matched_cases = synthetic_length_matched_streaming_cases();
     let mut expansion_stats: BTreeMap<&str, AccuracyCount> = BTreeMap::new();
     let mut expansion_failures: Vec<(&CorpusCase, String)> = Vec::new();
     let mut expansion_totals = AccuracyCount::default();
@@ -1312,6 +1384,30 @@ fn accuracy_corpus_report() {
                 case.category, case.case_id, case.input, case.expected, actual
             );
         }
+    }
+    eprintln!();
+
+    let mut length_matched_passed = 0usize;
+    let mut length_matched_failures: Vec<(&str, usize)> = Vec::new();
+    for case in &length_matched_cases {
+        let actual = convert_with_dictionary(case.input, &dictionary, ConversionOptions::default())
+            .into_iter()
+            .next()
+            .map(|candidate| candidate.text)
+            .unwrap_or_default();
+        if actual == case.expected {
+            length_matched_passed += 1;
+        } else {
+            length_matched_failures.push((case.case_id.as_str(), case.input.chars().count()));
+        }
+    }
+    eprintln!(
+        "=== Synthetic Length-Matched Streaming (report-only) ===\n\
+         identity prefixes: {length_matched_passed}/{} ; lengths=14,93,195,315,467",
+        length_matched_cases.len(),
+    );
+    for (case_id, chars) in &length_matched_failures {
+        eprintln!("  {case_id} input_chars={chars} did not keep the unfinished prefix");
     }
     eprintln!();
 
