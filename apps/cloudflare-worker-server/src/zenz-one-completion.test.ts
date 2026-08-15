@@ -94,7 +94,7 @@ describe("one-completion Zenz orchestration", () => {
       completion: "感じ",
       search: { searchOutputPrefix: () => undefined },
     });
-    expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: false });
+    expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: true });
   });
 
   it("keeps the dictionary baseline when maxIterations is zero", () => {
@@ -133,7 +133,7 @@ describe("one-completion Zenz orchestration", () => {
         },
       },
     });
-    expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: false });
+    expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: true });
   });
 
   it("returns the last constrained candidate after the iteration cap", () => {
@@ -192,7 +192,7 @@ describe("one-completion Zenz orchestration", () => {
     expect(result).toStrictEqual({
       text: "漢字",
       iterations: ZENZ_ONE_COMPLETION_MAX_ITERATIONS,
-      usedCompletion: false,
+      usedCompletion: true,
     });
   });
 
@@ -204,6 +204,22 @@ describe("one-completion Zenz orchestration", () => {
       completion: "感じ",
       search: { searchOutputPrefix: () => "" },
     });
-    expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: false });
+    expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: true });
+  });
+
+  it("keeps usedCompletion after a later deadline because completion was already inspected", () => {
+    let remainingCalls = 0;
+    const result = orchestrateOneCompletion({
+      input: "かんじ",
+      leftContext: "子供がお菓子を食べています。",
+      baseline: "漢字",
+      completion: "感じました",
+      remainingMs: () => {
+        remainingCalls += 1;
+        return remainingCalls === 1 ? 1 : 0;
+      },
+      search: { searchOutputPrefix: () => "感" },
+    });
+    expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: true });
   });
 });

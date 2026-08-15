@@ -23,6 +23,7 @@ export interface ZenzOneCompletionRequest {
 export interface ZenzOneCompletionResult {
   text: string;
   iterations: number;
+  /** True when this call inspected `completion`, even if the text stayed the baseline. */
   usedCompletion: boolean;
 }
 
@@ -94,7 +95,7 @@ export const orchestrateOneCompletion = (
   let iterations = 0;
   for (let attempt = 0; attempt < maxIterations; attempt += 1) {
     if (remainingMs() <= 0) {
-      return { text: request.baseline, iterations, usedCompletion: false };
+      return { text: request.baseline, iterations, usedCompletion: iterations > 0 };
     }
     iterations += 1;
     const decision = nextOutputPrefix(candidate, request.completion);
@@ -102,16 +103,16 @@ export const orchestrateOneCompletion = (
       return { text: candidate, iterations, usedCompletion: true };
     }
     if (decision === "fallback") {
-      return { text: request.baseline, iterations, usedCompletion: false };
+      return { text: request.baseline, iterations, usedCompletion: true };
     }
     let next: string | undefined;
     try {
       next = request.search.searchOutputPrefix(decision);
     } catch {
-      return { text: request.baseline, iterations, usedCompletion: false };
+      return { text: request.baseline, iterations, usedCompletion: true };
     }
     if (next === undefined || next.length === 0) {
-      return { text: request.baseline, iterations, usedCompletion: false };
+      return { text: request.baseline, iterations, usedCompletion: true };
     }
     candidate = next;
   }
@@ -120,6 +121,6 @@ export const orchestrateOneCompletion = (
   return {
     text: candidate,
     iterations,
-    usedCompletion: candidate !== request.baseline,
+    usedCompletion: true,
   };
 };

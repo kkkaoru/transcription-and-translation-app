@@ -220,7 +220,11 @@ describe("AzooKey Worker text contract", () => {
       mode: "worker-vibrato",
     });
     expect(result.elapsedMs).toBeGreaterThanOrEqual(AZOOKEY_MIN_ELAPSED_MS);
-    expect(result).toMatchObject({ conversionStatus: 0, contextUsed: false });
+    expect(result).toMatchObject({
+      conversionStatus: 0,
+      contextUsed: false,
+      usedCompletion: false,
+    });
   });
 
   it("passes trailing context to the next chunk on the same connection", async () => {
@@ -633,6 +637,7 @@ describe("AzooKey Worker text contract", () => {
     expect(result).toMatchObject({
       convertedText: "感じ",
       model: AZOOKEY_ZENZ_SMALL_MODEL,
+      usedCompletion: true,
     });
   });
 
@@ -659,6 +664,7 @@ describe("AzooKey Worker text contract", () => {
     expect(result).toMatchObject({
       convertedText: `dict:${valid.vibratoInput}`,
       model: AZOOKEY_ZENZ_SMALL_MODEL,
+      usedCompletion: false,
     });
     expect(result.modelFallback).toBeUndefined();
   });
@@ -693,6 +699,7 @@ describe("AzooKey Worker text contract", () => {
     expect(result).toMatchObject({
       convertedText: `dict:${valid.vibratoInput}`,
       model: AZOOKEY_ZENZ_SMALL_MODEL,
+      usedCompletion: true,
     });
   });
 

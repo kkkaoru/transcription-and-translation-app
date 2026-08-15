@@ -392,6 +392,8 @@ export interface AzookeyResultMessage {
   /** Original Zenzai model id when the Worker used a dictionary fallback. */
   requestedModel?: AzookeyConvertModel;
   modelFallback?: AzookeyModelFallback;
+  /** True when a Zenz completion was inspected, even if the text stayed the dictionary baseline. */
+  usedCompletion: boolean;
   /** Raw n-best status bits; non-zero means a degraded/invalid ABI path. */
   conversionStatus: number;
   /** True when a prior candidate context was passed into this conversion. */
@@ -1610,6 +1612,7 @@ export const convertAzookeyMessage = async (
   let resultModel: AzookeyConvertModel = message.model;
   let requestedModel: AzookeyConvertModel | undefined;
   let modelFallback: AzookeyModelFallback | undefined;
+  let usedCompletion = false;
   try {
     if (message.model === AZOOKEY_MODEL) {
       dictionaryResult = await runDictionaryConversion(preceding);
@@ -1679,6 +1682,7 @@ export const convertAzookeyMessage = async (
                 search: lattice,
               });
               converted = orchestrated.text;
+              usedCompletion = orchestrated.usedCompletion;
             } finally {
               lattice.close();
             }
@@ -1755,6 +1759,7 @@ export const convertAzookeyMessage = async (
     model: resultModel,
     ...(requestedModel ? { requestedModel } : {}),
     ...(modelFallback ? { modelFallback } : {}),
+    usedCompletion,
     conversionStatus: dictionaryResult?.status ?? AZOOKEY_CONVERSION_STATUS_OK,
     contextUsed,
     ...(contextDiscarded === undefined ? {} : { contextDiscarded }),
