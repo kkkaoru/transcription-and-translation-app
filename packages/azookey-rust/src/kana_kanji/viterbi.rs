@@ -49,6 +49,34 @@ impl<'a> SpanLookup<'a> {
     }
 }
 
+fn reading_slice_matches(chars: &[char], start: usize, end: usize, reading: &str) -> bool {
+    if end > chars.len() {
+        return false;
+    }
+    let mut expected = reading.chars();
+    for actual in &chars[start..end] {
+        match expected.next() {
+            Some(character) if character == *actual => {}
+            _ => return false,
+        }
+    }
+    expected.next().is_none()
+}
+
+fn append_path_surface(prefix: &str, surface: &str) -> String {
+    let mut text = String::with_capacity(prefix.len() + surface.len());
+    text.push_str(prefix);
+    text.push_str(surface);
+    text
+}
+
+fn append_path_char(prefix: &str, character: char) -> String {
+    let mut text = String::with_capacity(prefix.len() + character.len_utf8());
+    text.push_str(prefix);
+    text.push(character);
+    text
+}
+
 const DEFAULT_BEAM_WIDTH: usize = 64;
 const DEFAULT_VERIFIER_MAX_ITERATIONS: usize = 10;
 static INVALID_LEFT_CONTEXT_WARNING: Once = Once::new();
@@ -819,10 +847,7 @@ pub fn build_lattice(
         for entry in entries {
             let entry_len = entry.reading.chars().count();
             let end = start + entry_len;
-            if entry_len == 0
-                || end > terminal
-                || chars[start..end].iter().collect::<String>() != entry.reading
-            {
+            if entry_len == 0 || !reading_slice_matches(&chars, start, end, &entry.reading) {
                 continue;
             }
             let source_span = &source_chars[start..end];
@@ -1336,9 +1361,7 @@ pub fn convert_with_dictionary(
             .map(|entry| {
                 let entry_len = entry.reading.chars().count();
                 let end = start + entry_len;
-                if end > chars.len()
-                    || chars[start..end].iter().collect::<String>() != entry.reading
-                {
+                if !reading_slice_matches(&chars, start, end, &entry.reading) {
                     NO_SCORE
                 } else {
                     contextual_entry_bonus(
@@ -1459,7 +1482,7 @@ pub fn convert_with_dictionary(
                     push_state(
                         &mut states[start + numeric.length],
                         PathState {
-                            text: format!("{}{}", state.text, numeric.surface),
+                            text: append_path_surface(&state.text, &numeric.surface),
                             score: state.score + numeric.numeric_score,
                             meaning_score: state.meaning_score,
                             last: None,
@@ -1478,9 +1501,9 @@ pub fn convert_with_dictionary(
                         push_state(
                             &mut states[start + numeric.length + counter_length],
                             PathState {
-                                text: format!(
-                                    "{}{}{}",
-                                    state.text, numeric.surface, counter_surface
+                                text: append_path_surface(
+                                    &append_path_surface(&state.text, &numeric.surface),
+                                    counter_surface,
                                 ),
                                 score: state.score
                                     + numeric.numeric_score
@@ -1570,7 +1593,7 @@ pub fn convert_with_dictionary(
                         push_state(
                             &mut states[end],
                             PathState {
-                                text: format!("{}{}", state.text, surface),
+                                text: append_path_surface(&state.text, &surface),
                                 // Match AzooKey's all-hiragana fallback without
                                 // allowing a long unknown span to outrank known
                                 // dictionary words.
@@ -1615,7 +1638,7 @@ pub fn convert_with_dictionary(
                     push_state(
                         &mut states[start + 1],
                         PathState {
-                            text: format!("{}{}", state.text, source_chars[start]),
+                            text: append_path_char(&state.text, source_chars[start]),
                             score: state.score,
                             meaning_score: state.meaning_score,
                             last: keep_clause_context.then(|| state.last.clone()).flatten(),
@@ -1640,9 +1663,7 @@ pub fn convert_with_dictionary(
             {
                 let entry_len = entry.reading.chars().count();
                 let end = start + entry_len;
-                if end > chars.len()
-                    || chars[start..end].iter().collect::<String>() != entry.reading
-                {
+                if !reading_slice_matches(&chars, start, end, &entry.reading) {
                     continue;
                 }
                 // Particle-position guards. Two different failure modes share
@@ -1749,7 +1770,7 @@ pub fn convert_with_dictionary(
                 push_state(
                     &mut states[end],
                     PathState {
-                        text: format!("{}{}", state.text, surface),
+                        text: append_path_surface(&state.text, &surface),
                         score: state.score
                             + entry.value
                             + connection
@@ -1871,7 +1892,7 @@ pub fn convert_with_dictionary(
                         push_state(
                             &mut states[end],
                             PathState {
-                                text: format!("{}{}", state.text, identity.surface),
+                                text: append_path_surface(&state.text, &identity.surface),
                                 score: state.score + identity.value + identity_connection,
                                 meaning_score: state.meaning_score + meaning_delta,
                                 last: Some(identity),
@@ -2303,8 +2324,7 @@ fn has_multi_kanji_segmentation(
                 let candidate_len = candidate.reading.chars().count();
                 let end = start + candidate_len;
                 if candidate_len == 0
-                    || end > reading.len()
-                    || reading[start..end].iter().collect::<String>() != candidate.reading
+                    || !reading_slice_matches(reading, start, end, &candidate.reading)
                 {
                     continue;
                 }
@@ -4185,11 +4205,14 @@ fn identity_fallback_entry(
     let inflectional_continuation = former.surface.ends_with('く')
         && candidate.surface.ends_with('い')
         && reading.len() <= MIN_IDENTITY_FALLBACK_CHARS;
-    let particle_continuation = is_particle_reading(&reading.iter().collect::<String>())
-        && (former.surface.ends_with('い')
-            || former.surface.ends_with('る')
-            || former.surface.ends_with('た')
-            || former.surface.ends_with("ない"));
+    let particle_continuation = {
+        let mut scratch = String::new();
+        scratch.extend(reading.iter().copied());
+        is_particle_reading(&scratch)
+    } && (former.surface.ends_with('い')
+        || former.surface.ends_with('る')
+        || former.surface.ends_with('た')
+        || former.surface.ends_with("ない"));
     if !(same_pos_continuation || inflectional_continuation || particle_continuation) {
         return None;
     }
