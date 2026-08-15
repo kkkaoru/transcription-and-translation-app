@@ -71,9 +71,8 @@ fn measured_completed_corpus_reports_dictionary_and_embedded_verifier_accuracy()
     let manifest_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let tokenizer_directory = manifest_directory
         .join("../../submodules/AzooKeyKanaKanjiConverter/Sources/EfficientNGram/tokenizer");
-    let dictionary_root = manifest_directory.join(
-        "../../submodules/AzooKeyKanaKanjiConverter/Sources/KanaKanjiConverterModule/Dictionary",
-    );
+    let dictionary_root =
+        manifest_directory.join("../../submodules/azooKey_dictionary_storage/Dictionary");
     let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
         system: Some(dictionary_root),
         ..DictionaryPaths::default()
