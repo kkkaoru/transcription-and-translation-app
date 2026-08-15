@@ -287,6 +287,7 @@ pub fn resolve_system_dictionary_root(path: &Path) -> PathBuf {
     if system_dictionary_present(&nested) {
         return nested;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     if !path.is_absolute() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let anchored = repo_root.join(path);
