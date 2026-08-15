@@ -630,6 +630,66 @@ describe("AzooKey Worker text contract", () => {
     });
   });
 
+  it("keeps the dictionary baseline when lattice open is unavailable", async () => {
+    const fetcher = vi.fn(() => new Response(JSON.stringify({ content: "感じ" }), { status: 200 }));
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter: (text) => `dict:${text}`,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher,
+      },
+    );
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      model: AZOOKEY_ZENZ_SMALL_MODEL,
+    });
+    expect(result.modelFallback).toBeUndefined();
+  });
+
+  it("closes the lattice after constrained search throws", async () => {
+    const close = vi.fn();
+    const converter = ((text: string) => `dict:${text}`) as AzookeyConverter;
+    converter.openLattice = () => ({
+      searchOutputPrefix: () => {
+        throw new Error("wasm trap");
+      },
+      close,
+    });
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher: () => new Response(JSON.stringify({ content: "感じ" }), { status: 200 }),
+      },
+    );
+    expect(close).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      convertedText: `dict:${valid.vibratoInput}`,
+      model: AZOOKEY_ZENZ_SMALL_MODEL,
+    });
+  });
+
   it("falls back when a configured Zenzai upstream times out", async () => {
     // Zenzai is capped (AZOOKEY_ZENZ_UPSTREAM_MAX_MS) so a hanging llama-server
     // (e.g. local xsmall :8081) still leaves room for portable WASM.
@@ -1761,6 +1821,8 @@ describe("xsmall request fallback quality regressions", () => {
     expect(typeof unconstrained).toBe("string");
     expect((unconstrained ?? "").length).toBeGreaterThan(0);
     lattice?.close();
+    lattice?.close();
+    expect(lattice?.searchOutputPrefix(new Uint8Array())).toBeUndefined();
   });
 
   const convertXsmall = (

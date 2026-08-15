@@ -16,6 +16,9 @@ describe("Worker coverage configuration", () => {
       "src/**/*.test.ts",
       "src/**/*.d.ts",
       "src/wasm.test-stub.ts",
+      // Vitest replaces this Worker-only Wasm import with wasm.test-stub.ts,
+      // so the real module is unreachable in unit tests.
+      "src/azookey-wasm.ts",
     ]);
   });
 

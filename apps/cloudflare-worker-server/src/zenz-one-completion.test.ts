@@ -100,4 +100,34 @@ describe("one-completion Zenz orchestration", () => {
     });
     expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: false });
   });
+
+  it("fails open to the baseline after the iteration cap", () => {
+    let searches = 0;
+    const result = orchestrateOneCompletion({
+      input: "かんじ",
+      leftContext: "子供がお菓子を食べています。",
+      baseline: "漢字",
+      completion: "感じました",
+      maxIterations: 2,
+      search: {
+        searchOutputPrefix: () => {
+          searches += 1;
+          return searches === 1 ? "感" : "感じ";
+        },
+      },
+    });
+    expect(searches).toBe(2);
+    expect(result).toStrictEqual({ text: "漢字", iterations: 2, usedCompletion: false });
+  });
+
+  it("fails open to the baseline when constrained search returns empty text", () => {
+    const result = orchestrateOneCompletion({
+      input: "かんじ",
+      leftContext: "子供がお菓子を食べています。",
+      baseline: "漢字",
+      completion: "感じ",
+      search: { searchOutputPrefix: () => "" },
+    });
+    expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: false });
+  });
 });
