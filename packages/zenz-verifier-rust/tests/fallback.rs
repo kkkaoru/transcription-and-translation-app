@@ -46,7 +46,7 @@ fn prefix_retry_exhaustion_and_backend_failure_preserve_non_empty_conversion() {
         Some(&mut prefix_verifier),
         VerifierConversionOptions::new(1, "mock-v1"),
     );
-    assert_eq!(exhausted.verification_state, VerificationState::Exhausted);
+    assert_eq!(exhausted.verification_state, VerificationState::ExhaustedWithConstrainedCandidate);
     assert!(!exhausted.text().is_empty());
 
     let mut failed_verifier =
