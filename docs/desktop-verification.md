@@ -55,6 +55,29 @@ snapshot is top-level diagnostics rather than a completed stage, so it can show
 Record the installed build/commit with every diagnostic report. This prevents
 events from one display policy being interpreted against another version.
 
+## Live-session numeric judge
+
+After a user-started capture, judge the local log with numeric gates only. The
+script never prints transcript text, model paths, or session UUIDs:
+
+```bash
+python3 scripts/judge-live-session.py --after 2026-08-16T00:47:00
+```
+
+Precommitted turn-length gates:
+
+| Verdict | Condition |
+| --- | --- |
+| `success` | max≤100, p95≤48, ≥129-character turns = 0 |
+| `strong_success` | success and max≤40 |
+| `fail_long` | max≥200 or ≥129-character turns ≥3 |
+| `fail_oversplit` | p50≤8 or share of ≤4-character turns ≥0.25 |
+| `fail_mixed` | both long-turn and oversplit conditions |
+
+A normalize p95 ≤3000 ms is a secondary timing check, not a turn-length gate.
+Translation is judged separately from `turn.final` / `translation decision` /
+`translation result` / `stage=translate` counts.
+
 ## Translation decision guide
 
 Inspect the retained pipeline stages and `captionTranslationDispositions` in the copied JSON. For kana-to-kanji corruption, first check the recorded `normalize` model: custom dictionary and AzooKey quality conclusions apply only when it is `azookey-rust`; a Zenz output must not be diagnosed as an AzooKey conversion.
