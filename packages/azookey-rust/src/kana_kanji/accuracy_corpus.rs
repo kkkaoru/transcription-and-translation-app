@@ -1340,3 +1340,44 @@ fn portable_archive_matches_filesystem_on_caption_fixtures() {
         diffs.join("\n  ")
     );
 }
+
+#[test]
+#[ignore = "manual filesystem dictionary I/O and timing benchmark"]
+fn benchmark_filesystem_dictionary_lookups() {
+    use crate::dictionary::{filesystem_source_read_count, reset_filesystem_source_read_count};
+    use std::time::Instant;
+
+    let root = crate::dictionary::test_system_dictionary_path();
+    let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+        system: Some(root),
+        ..DictionaryPaths::default()
+    })
+    .expect("official AzooKey dictionary should load");
+
+    let stream_input = "ぷろじぇくとのしんちょくをほうこ";
+    reset_filesystem_source_read_count();
+    for iteration in 1..=10 {
+        let reads_before = filesystem_source_read_count();
+        let started = Instant::now();
+        let _ = convert_with_dictionary(stream_input, &dictionary, ConversionOptions::default());
+        eprintln!(
+            "stream003 iteration={iteration} elapsed_us={} filesystem_reads={}",
+            started.elapsed().as_micros(),
+            filesystem_source_read_count() - reads_before,
+        );
+    }
+
+    let mut cases = anchor_cases();
+    cases.extend(measured_completed_failure_cases());
+    reset_filesystem_source_read_count();
+    let started = Instant::now();
+    for case in &cases {
+        let _ = convert_with_dictionary(case.input, &dictionary, ConversionOptions::default());
+    }
+    eprintln!(
+        "corpus cases={} elapsed_ms={} filesystem_reads={}",
+        cases.len(),
+        started.elapsed().as_millis(),
+        filesystem_source_read_count(),
+    );
+}

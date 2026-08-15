@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Upstream `DicdataStore.midCount` is 502. MID 501 is the highest current
 // index; `MIDData.totalCount` is an enum bookkeeping value, not matrix width.
@@ -556,6 +558,94 @@ fn path_exists_for_dictionary(path: &Path) -> bool {
 }
 
 #[derive(Debug, Clone)]
+struct SystemEntryCacheNode {
+    reading: String,
+    entries: Vec<DictionaryEntry>,
+    previous: Option<usize>,
+    next: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SystemEntryCache {
+    indices: HashMap<String, usize>,
+    nodes: Vec<SystemEntryCacheNode>,
+    least_recent: Option<usize>,
+    most_recent: Option<usize>,
+}
+
+impl SystemEntryCache {
+    fn get(&mut self, reading: &str) -> Option<Vec<DictionaryEntry>> {
+        let index = *self.indices.get(reading)?;
+        self.promote(index);
+        Some(self.nodes[index].entries.clone())
+    }
+
+    fn insert(&mut self, reading: String, entries: Vec<DictionaryEntry>) {
+        if let Some(index) = self.indices.get(&reading).copied() {
+            self.nodes[index].entries = entries;
+            self.promote(index);
+            return;
+        }
+
+        let index = if self.nodes.len() < SYSTEM_ENTRY_CACHE_MAX_ENTRIES {
+            let index = self.nodes.len();
+            self.nodes.push(SystemEntryCacheNode {
+                reading: reading.clone(),
+                entries,
+                previous: None,
+                next: None,
+            });
+            index
+        } else {
+            let index = self.least_recent.expect("a full cache has an LRU entry");
+            self.detach(index);
+            self.indices.remove(&self.nodes[index].reading);
+            self.nodes[index].reading = reading.clone();
+            self.nodes[index].entries = entries;
+            index
+        };
+        self.indices.insert(reading, index);
+        self.attach_most_recent(index);
+    }
+
+    fn promote(&mut self, index: usize) {
+        if self.most_recent == Some(index) {
+            return;
+        }
+        self.detach(index);
+        self.attach_most_recent(index);
+    }
+
+    fn detach(&mut self, index: usize) {
+        let previous = self.nodes[index].previous;
+        let next = self.nodes[index].next;
+        if let Some(previous) = previous {
+            self.nodes[previous].next = next;
+        } else {
+            self.least_recent = next;
+        }
+        if let Some(next) = next {
+            self.nodes[next].previous = previous;
+        } else {
+            self.most_recent = previous;
+        }
+        self.nodes[index].previous = None;
+        self.nodes[index].next = None;
+    }
+
+    fn attach_most_recent(&mut self, index: usize) {
+        self.nodes[index].previous = self.most_recent;
+        self.nodes[index].next = None;
+        if let Some(most_recent) = self.most_recent {
+            self.nodes[most_recent].next = Some(index);
+        } else {
+            self.least_recent = Some(index);
+        }
+        self.most_recent = Some(index);
+    }
+}
+
+#[derive(Debug, Clone)]
 struct SystemDictionary {
     source: SystemDictionarySource,
     content_revision: u64,
@@ -563,7 +653,7 @@ struct SystemDictionary {
     mm: Vec<f32>,
     cc_cache: RefCell<HashMap<u16, Vec<f32>>>,
     louds_cache: RefCell<HashMap<String, Louds>>,
-    entry_cache: RefCell<HashMap<String, Vec<DictionaryEntry>>>,
+    entry_cache: RefCell<SystemEntryCache>,
 }
 
 #[derive(Debug, Clone)]
@@ -619,25 +709,20 @@ impl SystemDictionary {
             mm,
             cc_cache: RefCell::new(HashMap::new()),
             louds_cache: RefCell::new(HashMap::new()),
-            entry_cache: RefCell::new(HashMap::new()),
+            entry_cache: RefCell::new(SystemEntryCache::default()),
         })
     }
 
     fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
-        if let Some(entries) = self.entry_cache.borrow().get(reading) {
-            return Ok(entries.clone());
+        if let Some(entries) = self.entry_cache.borrow_mut().get(reading) {
+            return Ok(entries);
         }
         let entries = self.lookup_exact_uncached(reading)?;
-        // Do not make a miss cache entry: arbitrary ASR text could otherwise
-        // grow this map without bound. Successful rows are sufficient for the
-        // repeated-prefix lookups performed by the Viterbi lattice.
-        if !entries.is_empty() {
-            let mut cache = self.entry_cache.borrow_mut();
-            if cache.len() >= SYSTEM_ENTRY_CACHE_MAX_ENTRIES {
-                cache.clear();
-            }
-            cache.insert(reading.to_string(), entries.clone());
-        }
+        // Misses are reusable lookup results too. Caching them avoids reopening
+        // the same LOUDS shards for the many repeated substrings considered by
+        // Viterbi, while the LRU bound prevents arbitrary ASR text from growing
+        // the process for the dictionary lifetime.
+        self.entry_cache.borrow_mut().insert(reading.to_string(), entries.clone());
         Ok(entries)
     }
 
@@ -730,6 +815,19 @@ impl SystemDictionary {
     }
 }
 
+#[cfg(test)]
+static FILESYSTEM_SOURCE_READS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_filesystem_source_read_count() {
+    FILESYSTEM_SOURCE_READS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn filesystem_source_read_count() -> usize {
+    FILESYSTEM_SOURCE_READS.load(Ordering::Relaxed)
+}
+
 impl SystemDictionarySource {
     fn content_revision(&self) -> Result<u64, String> {
         match self {
@@ -746,6 +844,8 @@ impl SystemDictionarySource {
         match self {
             Self::Filesystem(root) => {
                 let path = root.join(relative_path);
+                #[cfg(test)]
+                FILESYSTEM_SOURCE_READS.fetch_add(1, Ordering::Relaxed);
                 fs::read(&path)
                     .map(Cow::Owned)
                     .map_err(|error| format!("could not read {}: {error}", path.display()))
@@ -2451,27 +2551,23 @@ mod tests {
     }
 
     #[test]
-    fn system_lookup_caches_only_bounded_hits() {
-        let root = super::test_system_dictionary_path();
-        let system = super::SystemDictionary::load(&root).expect("public system dictionary loads");
-        for index in 0..super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES * 2 {
-            system
-                .lookup_exact(&format!("cache-miss-{index}"))
-                .expect("unknown readings should be non-fatal");
-        }
-        assert!(system.entry_cache.borrow().is_empty());
-
-        // Positive rows remain cached, but a full cache is cleared before the
-        // next insert rather than growing with an unbounded input vocabulary.
+    fn system_lookup_cache_keeps_bounded_misses_and_evicts_lru() {
+        let mut cache = super::SystemEntryCache::default();
         for index in 0..super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES {
-            system.entry_cache.borrow_mut().insert(
-                format!("cached-{index}"),
-                vec![DictionaryEntry::plain("cached", "cached", 0.0)],
-            );
+            cache.insert(format!("cached-{index}"), Vec::new());
         }
-        assert_eq!(system.entry_cache.borrow().len(), super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES);
-        assert!(!system.lookup_exact("かんじ").expect("known reading should load").is_empty());
-        assert_eq!(system.entry_cache.borrow().len(), 1);
+        assert_eq!(cache.indices.len(), super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES);
+        assert_eq!(cache.get("cached-0"), Some(Vec::new()));
+
+        cache.insert("newest".to_string(), Vec::new());
+
+        assert_eq!(cache.indices.len(), super::SYSTEM_ENTRY_CACHE_MAX_ENTRIES);
+        assert!(cache.indices.contains_key("cached-0"), "recently used miss must remain cached");
+        assert!(
+            !cache.indices.contains_key("cached-1"),
+            "least-recently used miss must be evicted"
+        );
+        assert!(cache.indices.contains_key("newest"));
     }
 
     fn portable_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
