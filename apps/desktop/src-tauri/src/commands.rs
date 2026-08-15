@@ -1957,9 +1957,7 @@ pub async fn get_debug_info(
         "zenzVerifierLoad": zenz_verifier_load,
         // Optional verifier wall-clock budget. Default is unset so the current
         // product path stays unbounded until a measured timeout is chosen.
-        // `applied` is false until the normalize path actually calls
-        // `VerifierConversionOptions::with_deadline`; that call lives in
-        // pipeline.rs and is not wired yet.
+        // `applied` is true only when pipeline.rs attached `with_deadline`.
         "zenzVerifierDeadline": zenz_verifier_deadline,
         // Latest normalized source/translation caption for late overlay/debug
         // consumers. Raw ASR is not stored in AppState and cannot appear here.
@@ -2100,10 +2098,10 @@ fn zenz_verifier_deadline_diagnostics() -> serde_json::Value {
         "configured": setting.configured,
         "timeoutMs": setting.timeout_ms,
         "source": setting.source.as_str(),
-        // The normalize path does not yet call `with_deadline`, so a configured
-        // value is visible but not applied. Keep this explicit so an unset
-        // budget cannot be mistaken for "wired, default off".
-        "applied": false,
+        // True only when pipeline.rs attached `with_deadline` from a configured
+        // env. Unset / 0 / invalid stay false so a missing budget cannot look
+        // like "wired, default off".
+        "applied": crate::pipeline::zenz_verifier_deadline_applied(),
         "env": ZENZ_VERIFIER_DEADLINE_ENV,
     })
 }

@@ -264,9 +264,11 @@ const ZENZ_VERIFIER_MODEL_REVISION: &str =
 const ZENZ_VERIFIER_MODEL_PATH_ENV: &str = "CAPTION_BRIDGE_ZENZ_MODEL_PATH";
 #[cfg(feature = "candle")]
 const ZENZ_VERIFIER_MODEL_RUNTIME_DIR_ENV: &str = "CAPTION_BRIDGE_MODEL_RUNTIME_DIR";
+const ZENZ_VERIFIER_DEADLINE_ENV: &str = "CAPTION_BRIDGE_ZENZ_VERIFIER_DEADLINE_MS";
 static ZENZ_LEFT_CONTEXT_ENABLED: OnceLock<bool> = OnceLock::new();
 static ZENZ_VERIFIER_ENABLED: OnceLock<bool> = OnceLock::new();
 static ZENZ_VERIFIER_LOAD_WARNING: Once = Once::new();
+static ZENZ_VERIFIER_DEADLINE_MS: OnceLock<Option<u64>> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
@@ -1953,6 +1955,9 @@ impl Pipeline {
             ZENZ_VERIFIER_INFERENCE_CONFIG_REVISION,
         )
         .with_policy(VerifierPolicy::require_left_context());
+        if let Some(timeout_ms) = zenz_verifier_deadline_ms() {
+            verifier_options = verifier_options.with_deadline(Duration::from_millis(timeout_ms));
+        }
         if let Some(left_context) = left_context {
             // Do not decide in the desktop layer whether context is usable.
             // The shared AzooKey policy owns that decision and reports
@@ -2150,6 +2155,35 @@ fn zenz_verifier_enabled_for(
 ) -> bool {
     parse_zenz_left_context_setting(runtime_setting)
         .unwrap_or_else(|| parse_zenz_left_context_setting(build_enable_flag).unwrap_or(true))
+}
+
+fn parse_zenz_verifier_deadline_ms(raw: Option<&str>) -> Option<u64> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    match raw.parse::<u64>() {
+        Ok(0) => None,
+        Ok(timeout_ms) => Some(timeout_ms),
+        Err(_) => {
+            log::warn!(
+                target: "pipeline_normalize",
+                "ignoring invalid {ZENZ_VERIFIER_DEADLINE_ENV} value; expected a millisecond count or 0"
+            );
+            None
+        }
+    }
+}
+
+fn zenz_verifier_deadline_ms() -> Option<u64> {
+    *ZENZ_VERIFIER_DEADLINE_MS.get_or_init(|| {
+        parse_zenz_verifier_deadline_ms(std::env::var(ZENZ_VERIFIER_DEADLINE_ENV).ok().as_deref())
+    })
+}
+
+/// True only after this process applied `with_deadline` from a configured env.
+pub fn zenz_verifier_deadline_applied() -> bool {
+    zenz_verifier_deadline_ms().is_some()
 }
 
 fn zenz_verifier_enabled() -> bool {
@@ -4319,5 +4353,14 @@ mod tests {
             run_rescore_with_timeout(5_000, "original".to_string(), || "rescored".to_string())
                 .await;
         assert_eq!(result, Ok("rescored".to_string()));
+    }
+
+    #[test]
+    fn verifier_deadline_stays_unset_for_empty_zero_and_invalid_values() {
+        assert_eq!(super::parse_zenz_verifier_deadline_ms(None), None);
+        assert_eq!(super::parse_zenz_verifier_deadline_ms(Some("")), None);
+        assert_eq!(super::parse_zenz_verifier_deadline_ms(Some("0")), None);
+        assert_eq!(super::parse_zenz_verifier_deadline_ms(Some("soon")), None);
+        assert_eq!(super::parse_zenz_verifier_deadline_ms(Some("480")), Some(480));
     }
 }
