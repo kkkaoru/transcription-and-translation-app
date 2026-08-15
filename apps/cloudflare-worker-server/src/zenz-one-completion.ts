@@ -115,5 +115,11 @@ export const orchestrateOneCompletion = (
     }
     candidate = next;
   }
-  return { text: request.baseline, iterations, usedCompletion: false };
+  // The loop only assigns a non-empty search hit, so a completed cap still
+  // holds either the last constrained candidate or the original baseline.
+  return {
+    text: candidate,
+    iterations,
+    usedCompletion: candidate !== request.baseline,
+  };
 };

@@ -6,6 +6,7 @@ import {
   ZENZ_CONTEXT_MAX_GRAPHEMES,
   ZENZ_INPUT_TAG,
   ZENZ_LEFT_CONTEXT_TAG,
+  ZENZ_ONE_COMPLETION_MAX_ITERATIONS,
   ZENZ_OUTPUT_TAG,
   zenzCandidatePrompt,
 } from "./zenz-one-completion.js";
@@ -135,7 +136,7 @@ describe("one-completion Zenz orchestration", () => {
     expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: false });
   });
 
-  it("fails open to the baseline after the iteration cap", () => {
+  it("returns the last constrained candidate after the iteration cap", () => {
     let searches = 0;
     const result = orchestrateOneCompletion({
       input: "かんじ",
@@ -151,7 +152,48 @@ describe("one-completion Zenz orchestration", () => {
       },
     });
     expect(searches).toBe(2);
-    expect(result).toStrictEqual({ text: "漢字", iterations: 2, usedCompletion: false });
+    expect(result).toStrictEqual({ text: "感じ", iterations: 2, usedCompletion: true });
+    expect(result.text).not.toBe("漢字");
+  });
+
+  it("returns the last constrained candidate after the default 10-iteration cap", () => {
+    const completion = "あいうえおかきくけこさしすせそ";
+    const prefixes: string[] = [];
+    const result = orchestrateOneCompletion({
+      input: "かんじ",
+      leftContext: "子供がお菓子を食べています。",
+      baseline: "漢字",
+      completion,
+      search: {
+        searchOutputPrefix: (prefix) => {
+          const text = new TextDecoder().decode(prefix);
+          prefixes.push(text);
+          return text;
+        },
+      },
+    });
+    expect(prefixes).toHaveLength(ZENZ_ONE_COMPLETION_MAX_ITERATIONS);
+    expect(result).toStrictEqual({
+      text: completion.slice(0, ZENZ_ONE_COMPLETION_MAX_ITERATIONS),
+      iterations: ZENZ_ONE_COMPLETION_MAX_ITERATIONS,
+      usedCompletion: true,
+    });
+    expect(result.text).not.toBe("漢字");
+  });
+
+  it("keeps the dictionary baseline after the cap when search never leaves it", () => {
+    const result = orchestrateOneCompletion({
+      input: "かんじ",
+      leftContext: "子供がお菓子を食べています。",
+      baseline: "漢字",
+      completion: "感じましたあいうえおかきくけこ",
+      search: { searchOutputPrefix: () => "漢字" },
+    });
+    expect(result).toStrictEqual({
+      text: "漢字",
+      iterations: ZENZ_ONE_COMPLETION_MAX_ITERATIONS,
+      usedCompletion: false,
+    });
   });
 
   it("fails open to the baseline when constrained search returns empty text", () => {
