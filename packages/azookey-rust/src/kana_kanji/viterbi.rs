@@ -1296,6 +1296,31 @@ pub fn convert_with_dictionary(
             max_dictionary_word_chars,
         );
         let numeric_prefix = numeric_prefix_context(&chars, start, &entries);
+        // This prior depends only on the lattice start, entry, and source
+        // characters. Precompute it once per entry before iterating over the
+        // (up to beam-width) path states; recalculating it for every state
+        // performs identical dictionary lookups without changing the score.
+        let contextual_entry_bonuses = entries
+            .iter()
+            .map(|entry| {
+                let entry_len = entry.reading.chars().count();
+                let end = start + entry_len;
+                if end > chars.len()
+                    || chars[start..end].iter().collect::<String>() != entry.reading
+                {
+                    NO_SCORE
+                } else {
+                    contextual_entry_bonus(
+                        dictionary,
+                        &chars,
+                        start,
+                        end,
+                        entry,
+                        max_dictionary_word_chars,
+                    )
+                }
+            })
+            .collect::<Vec<_>>();
         for state in current {
             // A caption can end one kana after a high-confidence lexical
             // prefix (`ありがとうご`). Treat that final non-particle kana as
@@ -1571,7 +1596,9 @@ pub fn convert_with_dictionary(
                     );
                 }
             }
-            for entry in &entries {
+            for (entry, contextual_entry_bonus) in
+                entries.iter().zip(contextual_entry_bonuses.iter().copied())
+            {
                 let entry_len = entry.reading.chars().count();
                 let end = start + entry_len;
                 if end > chars.len()
@@ -1816,14 +1843,7 @@ pub fn convert_with_dictionary(
                             )
                             + comma_list_kanji_overlap_bonus(&state, entry)
                             + following_yen_amount_bonus(&chars, end, entry)
-                            + contextual_entry_bonus(
-                                dictionary,
-                                &chars,
-                                start,
-                                end,
-                                entry,
-                                bounded_dictionary_word_chars(options.max_dictionary_word_chars),
-                            )
+                            + contextual_entry_bonus
                             + thickness_context_bonus(
                                 dictionary,
                                 &chars,
