@@ -105,4 +105,55 @@ describe("compare UI outbound convert-frame contract", () => {
     }
     await conversion;
   });
+
+  it("omits the leftContext key on dictionary worker frames", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new AzooKeyWorkerClient({
+      endpoint: "wss://worker.example/ws",
+      requestTimeoutMs: 20,
+    });
+    const connecting = client.connect();
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    await connecting;
+
+    const conversion = runComparisonConversion(
+      {
+        sourceText: "かんじ",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+        language: "ja",
+        auth: { scheme: "none" },
+        ...zenzWorkerLeftContextField("azookey-rust-wasm", ["子供がお菓子を食べています。"]),
+      },
+      {
+        runBrowserVibrato: vi.fn(() => Promise.resolve({ text: "かんじ", elapsedMs: 1 })),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(async () => {
+          await client.connect();
+        }),
+        convertWithWorker: (request) => client.convert(request),
+      },
+    );
+    const started = Date.now();
+    while (socket.sent.length === 0 && Date.now() - started < 200) {
+      await Promise.resolve();
+    }
+    const frame = parseSentFrame(socket.sent[0]);
+    expect(Object.hasOwn(frame, "leftContext")).toBe(false);
+    const requestId = frame["requestId"];
+    if (typeof requestId === "string" && socket.onmessage) {
+      socket.onmessage({
+        data: JSON.stringify({
+          requestId,
+          sourceText: "かんじ",
+          convertedText: "漢字",
+        }),
+      });
+    }
+    await conversion;
+  });
 });
