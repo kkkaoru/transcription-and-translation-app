@@ -22,10 +22,27 @@ successful Zenz path.
 | VerificationState | 10 states (`verifier.rs:87-107`) | Not on the Worker result. Clients see `modelFallback`, `usedCompletion`, `completionSkipReason`. | Text is unchanged except the closed max-iter case. |
 | Remote completion | Repeated verifier evaluate | One greedy `/completion` | By design. |
 
-Whether those remaining search differences still change a live caption
-after the max-iter fix is **not confirmed**. The 22/23 C ABI check was
-taken before that fix, and it compared C ABI search to an in-Rust
-spike, not desktop Plan 1 end-to-end.
+Live caption text after the max-iter fix **was measured** on 2026-08-16.
+Plan 3 `convertAzookeyMessage` used local `kotoba-zenz-server` on
+`zenz-v3.2-small` (`MODEL_ROUTES` pointed at `http://127.0.0.1:18082`).
+Plan 1 used `convert_with_verifier_with_limit` with the embedded Candle
+verifier. Both used `testdata/zenz_measured_completed.tsv` column
+`artificial_left_context` as `leftContext` (not an empty string).
+All 23 Plan 3 rows had `usedCompletion=true` and no `modelFallback`.
+
+Exact Plan 1 vs Plan 3 text: **22/23**. The only split is
+`measured-008`:
+
+- input `せいかうりばはにかいです`
+- leftContext `野菜と果物の売り場をご案内します。`
+- expected `青果売り場は2階です`
+- Plan 1 `青果売り場は2階です` (`Verified`)
+- Plan 3 `青果売場は2階です`
+
+Both miss expected on `measured-012` (`1230000円を売り上げました` vs
+`123万円を売り上げました`) and `measured-020` (`記者が記者で` vs
+`記者が汽車で`). Those are shared misses, not Plan 3-only splits.
+Do not claim 23/23 identity.
 
 ## 2. When Plan 3 never reaches Zenz
 
