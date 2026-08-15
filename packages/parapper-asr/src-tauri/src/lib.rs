@@ -19,11 +19,10 @@ const DEFAULT_HEADLESS_PORT: u16 = 18_082;
 /// are intentionally scoped to the sidecar entry point; the interactive
 /// Parapper configuration remains user-controlled.
 const DEFAULT_HEADLESS_INTERIM_RESULT_SILENCE_MS: u32 = 96;
-// 960ms keeps a normal Japanese clause together across an ordinary breath
-// while still finalizing promptly after a deliberate pause.  A larger value
-// would reduce false turn splits further, but would make short utterances feel
-// slower before the final event is emitted.
-const DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS: u32 = 960;
+// Synthetic Japanese speech replay across 320/480/640/960ms found 480ms to be
+// the shortest threshold that kept an incomplete clause together. Longer
+// thresholds merged independent sentences and produced much larger turns.
+const DEFAULT_HEADLESS_TURN_CHECK_SILENCE_MS: u32 = 480;
 /// Match the built-in rich Japanese preset. The headless runtime has its own
 /// config directory, so it must opt into the quality-oriented defaults instead
 /// of inheriting a stale interactive profile from a previous run.
