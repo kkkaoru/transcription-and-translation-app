@@ -32,7 +32,7 @@ const PARAPPER_INTERIM_RESULT_SILENCE_MS: u32 = 96;
 // with no measured over-segmentation. 320ms split clauses prematurely. Keep
 // this synchronized with Parapper's headless default; changing only one lets
 // sidecar tests pass while leaving the real desktop behavior unchanged.
-const PARAPPER_TURN_CHECK_SILENCE_MS: u32 = 480;
+const PARAPPER_TURN_CHECK_SILENCE_MS: u32 = crate::config::TURN_CHECK_SILENCE_MS;
 /// Quality settings from Parapper's built-in rich Japanese preset. These are
 /// passed explicitly so a stale sidecar config cannot fall back to Simple turns
 /// or skip the final full-turn re-recognition.

@@ -44,6 +44,11 @@ OVERFLOW_RE = re.compile(
     r"overflowed=(true|false) line_count=(\d+)"
 )
 STALE_DISPLAY_MS = 8000
+RUNTIME_CONFIG_RE = re.compile(
+    r"runtime config turn_check_silence_ms=(\d+) normalizer=(\S+) "
+    r"translator=(\S+) hold_clear_ms=(\d+) source_max_chars=(\d+) "
+    r"translation_max_chars=(\d+) streaming_interim_asr=(true|false)"
+)
 
 SUCCESS_MAX = 100
 SUCCESS_P95 = 48
@@ -313,7 +318,11 @@ def main() -> int:
     translate_stages: list[tuple[str, ...]] = []
     display_events: list[tuple[str, int, str]] = []
     overflow_events: list[tuple[int, int, bool, int]] = []
+    runtime_configs: list[tuple[str, str, str, str, str, str, str]] = []
     for line in path.read_text(errors="replace").splitlines():
+        if match := RUNTIME_CONFIG_RE.search(line):
+            runtime_configs.append(match.group(1, 2, 3, 4, 5, 6, 7))
+            continue
         if match := NORMALIZE_RE.search(line):
             stamp = parse_stamp(match.group(1), match.group(2))
             if in_window(stamp, args.after, args.before):
@@ -380,6 +389,21 @@ def main() -> int:
     )
     print("gates stale_caption: age_ms>=8000")
     print("gates overflow: overflowed=true; single_line and wrapped judged apart")
+    if runtime_configs:
+        latest = runtime_configs[-1]
+        print(
+            "runtime_config "
+            f"turn_check_silence_ms={latest[0]} "
+            f"normalizer={latest[1]} "
+            f"translator={latest[2]} "
+            f"hold_clear_ms={latest[3]} "
+            f"source_max_chars={latest[4]} "
+            f"translation_max_chars={latest[5]} "
+            f"streaming_interim_asr={latest[6]} "
+            f"rows={len(runtime_configs)}"
+        )
+    else:
+        print("runtime_config verdict=unknown")
     print(
         "turn "
         + " ".join(f"{key}={value}" for key, value in turn_report.items() if key != "verdict")

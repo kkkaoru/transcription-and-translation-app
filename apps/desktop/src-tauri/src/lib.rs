@@ -64,6 +64,7 @@ pub fn run() {
             }
             macos::configure_foreground_activation(app.handle())?;
             let mut config = load_config(app.handle()).unwrap_or_default();
+            log::info!("{}", config.runtime_config_log_line());
             if let Err(error) = custom_dictionary::initialize(app.handle(), &mut config) {
                 log::warn!("custom dictionary initialization failed: {error}");
             }

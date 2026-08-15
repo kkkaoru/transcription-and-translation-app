@@ -211,6 +211,12 @@ pub const DEFAULT_SOURCE_CAPTION_MAX_CHARS: u32 = 28;
 pub const DEFAULT_TRANSLATION_CAPTION_MAX_CHARS: u32 = 48;
 pub const CAPTION_MAX_CHARS_MIN: u32 = 4;
 pub const CAPTION_MAX_CHARS_MAX: u32 = 200;
+/// Hold delay before a finished caption is cleared. Keep in sync with
+/// `apps/desktop/src/core/caption-hold-clear.ts` (`CAPTION_HOLD_CLEAR_MS`).
+pub const CAPTION_HOLD_CLEAR_MS: u32 = 5_000;
+/// Desktop always passes this turn-silence to Parapper. Keep in sync with
+/// `gateway.rs` (`PARAPPER_TURN_CHECK_SILENCE_MS`).
+pub const TURN_CHECK_SILENCE_MS: u32 = 480;
 
 /// The bundled Syphon.framework is a universal build whose Metal server
 /// classes back the native macOS lane; the loopback Browser Source stays
@@ -498,6 +504,21 @@ impl AppConfig {
         (self, false)
     }
 
+    /// One judge-readable line of the settings that change later verdicts.
+    /// Numbers and booleans only. No paths, prompts, or speech text.
+    pub fn runtime_config_log_line(&self) -> String {
+        format!(
+            "runtime config turn_check_silence_ms={} normalizer={} translator={} hold_clear_ms={} source_max_chars={} translation_max_chars={} streaming_interim_asr={}",
+            TURN_CHECK_SILENCE_MS,
+            self.models.normalizer,
+            self.models.translator,
+            CAPTION_HOLD_CLEAR_MS,
+            self.overlay.caption_max_chars.source,
+            self.overlay.caption_max_chars.translation,
+            self.audio.streaming_interim_asr_enabled,
+        )
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != 2 {
             return Err("unsupported config schema version".to_string());
@@ -682,9 +703,24 @@ fn is_hex_color(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, AudioConfig, DEFAULT_RECOGNITION_MODE, DEFAULT_VAD_INTERVAL_MS,
-        DEFAULT_VAD_THRESHOLD, SILENCE_GATE_MAX_DB, SILENCE_GATE_MIN_DB,
+        AppConfig, AudioConfig, CAPTION_HOLD_CLEAR_MS, DEFAULT_RECOGNITION_MODE,
+        DEFAULT_VAD_INTERVAL_MS, DEFAULT_VAD_THRESHOLD, SILENCE_GATE_MAX_DB, SILENCE_GATE_MIN_DB,
+        TURN_CHECK_SILENCE_MS,
     };
+
+    #[test]
+    fn runtime_config_log_line_is_one_judge_readable_row() {
+        let line = AppConfig::default().runtime_config_log_line();
+        assert!(!line.contains('\n'), "{line}");
+        assert!(line.starts_with("runtime config "), "{line}");
+        assert!(line.contains(&format!("turn_check_silence_ms={TURN_CHECK_SILENCE_MS}")), "{line}");
+        assert!(line.contains("normalizer=azookey-rust"), "{line}");
+        assert!(line.contains("translator=hy-mt2-1.8b-gguf"), "{line}");
+        assert!(line.contains(&format!("hold_clear_ms={CAPTION_HOLD_CLEAR_MS}")), "{line}");
+        assert!(line.contains("source_max_chars=28"), "{line}");
+        assert!(line.contains("translation_max_chars=48"), "{line}");
+        assert!(line.contains("streaming_interim_asr=false"), "{line}");
+    }
 
     #[test]
     fn default_config_is_valid() {

@@ -31,6 +31,7 @@ test("prints the precommitted numeric gates", () => {
   assert.match(stdout, /gates stale_caption: age_ms>=8000/);
   assert.match(stdout, /gates overflow: overflowed=true; single_line and wrapped judged apart/);
   assert.match(stdout, /verdict=insufficient/);
+  assert.match(stdout, /runtime_config verdict=unknown/);
   assert.match(stdout, /normalize n=0 p50=None p95=None max=None verdict=no_normalize_events/);
   assert.match(
     stdout,
@@ -140,6 +141,19 @@ test("judges single-line and wrapped overflow as separate verdicts", () => {
     /overflow_wrapped events=1 overflowed=1 max_content_width=900 max_container_width=600 verdict=overflowed/,
   );
   assert.doesNotMatch(stdout, /^overflow /m);
+});
+
+test("reads every runtime setting from one log line", () => {
+  const { status, stdout } = runJudge(
+    "[2026-08-16][00:59:00][INFO][caption_bridge_lib] runtime config turn_check_silence_ms=320 normalizer=zenz-v3.2-small-gguf translator=hy-mt2-1.8b-gguf hold_clear_ms=5000 source_max_chars=28 translation_max_chars=48 streaming_interim_asr=false\n" +
+      "[2026-08-16][01:00:00][INFO][caption_bridge_lib] runtime config turn_check_silence_ms=480 normalizer=azookey-rust translator=hy-mt2-7b-gguf hold_clear_ms=5000 source_max_chars=32 translation_max_chars=40 streaming_interim_asr=true\n",
+  );
+  assert.equal(status, 0);
+  assert.match(
+    stdout,
+    /runtime_config turn_check_silence_ms=480 normalizer=azookey-rust translator=hy-mt2-7b-gguf hold_clear_ms=5000 source_max_chars=32 translation_max_chars=40 streaming_interim_asr=true rows=2/,
+  );
+  assert.doesNotMatch(stdout, /runtime_config verdict=unknown/);
 });
 
 test("reports fits when no overflow occurs across events", () => {
