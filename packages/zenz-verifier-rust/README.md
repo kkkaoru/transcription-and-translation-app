@@ -92,6 +92,31 @@ ZENZ_V32_SMALL_GGUF=/path/to/ggml-model-Q5_K_M.gguf \
   --features candle --test measured_corpus -- --ignored --nocapture
 ```
 
+## Remote one-completion orchestration spike
+
+A remote verifier must not perform one HTTP request per lattice retry. The
+measured corpus needs a median of three adaptive retries, so sequential remote
+teacher-forced evaluation would repeatedly pay both inference and network
+latency and would commonly exceed the product's 500 ms deadline. The existing
+completion gateway also does not expose teacher-forced candidate logits.
+
+The ignored `measured_corpus` test therefore measures a one-request strategy:
+it generates one greedy Zenz completion, retains it for the conversion session,
+and repeatedly constrains the local lattice with the common UTF-8 scalar prefix
+plus the next generated scalar. With the pinned small model this produced the
+same output as the embedded token-level verifier for all 23 cases. Strict
+accuracy remained 21/23, word-boundary accuracy remained 7/7, and every case
+used the same number of lattice iterations. This validates the accuracy spike;
+it does not include real HTTP latency or authorize a new WebAssembly ABI by
+itself.
+
+Remote orchestration changes the privacy boundary. The input and left context
+must be sent to the remote model service (and candidate text may be included in
+future protocols), so this mode **must not** be described or labeled as
+browser-complete. Browser-complete mode remains local dictionary conversion;
+any one-completion verifier mode must be visibly labeled as Worker/remote-model
+dependent and use the corresponding privacy disclosure.
+
 ## Embedded integration API
 
 The implementation is available only with feature `candle`:
