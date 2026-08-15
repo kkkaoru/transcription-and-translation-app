@@ -1588,20 +1588,32 @@ impl Pipeline {
             verifier_options = verifier_options.with_left_context(left_context.as_bytes());
         }
 
-        let mut verifier_guard = self
-            .zenz_verifier
-            .inner
-            .lock()
-            .map_err(|_| PipelineError::Model("Zenz verifier lock poisoned".to_string()))?;
-        let verifier =
-            verifier_guard.as_mut().map(|verifier| verifier.as_mut() as &mut dyn DraftVerifier);
-        let conversion = convert_with_verifier_with_limit(
-            text,
-            dictionary,
-            ConversionOptions::default(),
-            verifier,
-            verifier_options,
-        );
+        let conversion = match self.zenz_verifier.inner.lock() {
+            Ok(mut verifier_guard) => {
+                let verifier = verifier_guard
+                    .as_mut()
+                    .map(|verifier| verifier.as_mut() as &mut dyn DraftVerifier);
+                convert_with_verifier_with_limit(
+                    text,
+                    dictionary,
+                    ConversionOptions::default(),
+                    verifier,
+                    verifier_options,
+                )
+            }
+            Err(_) => {
+                warn_zenz_verifier_load_once(
+                    "verifier lock was poisoned; using dictionary fallback",
+                );
+                convert_with_verifier_with_limit(
+                    text,
+                    dictionary,
+                    ConversionOptions::default(),
+                    None,
+                    verifier_options,
+                )
+            }
+        };
 
         self.zenz_verifier_metrics
             .record_result(&conversion.verification_state, conversion.verification_iterations);
