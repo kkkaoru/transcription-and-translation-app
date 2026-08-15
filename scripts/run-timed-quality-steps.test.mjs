@@ -8,6 +8,7 @@ import {
   describeQualitySteps,
   runTimedQualitySteps,
   runTimedQualityStepsMain,
+  serializeTimingSummary,
   TIMING_ARTIFACT_EXIT_CODE,
   writeTimingSummary,
 } from "./run-timed-quality-steps.mjs";
@@ -201,11 +202,149 @@ describe("timed quality steps", () => {
 
   const timingResult = {
     exitCode: 0,
+    plannedStepCount: 0,
     totalMs: 30,
     stepsTotalMs: 10,
     overheadMs: 20,
     records: [],
   };
+
+  it("serializes a versioned complete 46-step success with a fixed clock", () => {
+    const records = describeQualitySteps(QUALITY_GATE_STEPS).map((step) => ({
+      ...step,
+      durationMs: 10,
+      status: 0,
+      signal: null,
+    }));
+    const payload = serializeTimingSummary(
+      {
+        exitCode: 0,
+        plannedStepCount: 46,
+        totalMs: 500,
+        stepsTotalMs: 460,
+        overheadMs: 40,
+        records,
+      },
+      { getRecordedAt: () => "2026-08-15T18:52:00.000Z" },
+    );
+    const parsed = JSON.parse(payload);
+    assert.equal(payload.endsWith("\n"), true);
+    assert.deepEqual(
+      {
+        schemaVersion: parsed.schemaVersion,
+        recordedAt: parsed.recordedAt,
+        outcome: parsed.outcome,
+        exitCode: parsed.exitCode,
+        plannedStepCount: parsed.plannedStepCount,
+        recordedStepCount: parsed.recordedStepCount,
+        totalMs: parsed.totalMs,
+        stepsTotalMs: parsed.stepsTotalMs,
+        overheadMs: parsed.overheadMs,
+      },
+      {
+        schemaVersion: 1,
+        recordedAt: "2026-08-15T18:52:00.000Z",
+        outcome: "passed",
+        exitCode: 0,
+        plannedStepCount: 46,
+        recordedStepCount: 46,
+        totalMs: 500,
+        stepsTotalMs: 460,
+        overheadMs: 40,
+      },
+    );
+    assert.equal(parsed.steps.length, 46);
+    assert.deepEqual(Object.keys(parsed.steps[0]), [
+      "id",
+      "script",
+      "label",
+      "index",
+      "occurrence",
+      "durationMs",
+      "status",
+      "signal",
+    ]);
+  });
+
+  it("serializes the same required schema for a partial failure", () => {
+    const payload = serializeTimingSummary(
+      {
+        exitCode: 2,
+        plannedStepCount: 46,
+        totalMs: 25,
+        stepsTotalMs: 20,
+        overheadMs: 5,
+        records: [
+          {
+            id: "lint",
+            script: "lint",
+            label: "lint",
+            index: 1,
+            occurrence: 1,
+            durationMs: 20,
+            status: 2,
+            signal: null,
+          },
+        ],
+      },
+      { getRecordedAt: () => "2026-08-15T18:52:01.000Z" },
+    );
+    assert.deepEqual(JSON.parse(payload), {
+      schemaVersion: 1,
+      recordedAt: "2026-08-15T18:52:01.000Z",
+      outcome: "failed",
+      exitCode: 2,
+      plannedStepCount: 46,
+      recordedStepCount: 1,
+      totalMs: 25,
+      stepsTotalMs: 20,
+      overheadMs: 5,
+      steps: [
+        {
+          id: "lint",
+          script: "lint",
+          label: "lint",
+          index: 1,
+          occurrence: 1,
+          durationMs: 20,
+          status: 2,
+          signal: null,
+        },
+      ],
+    });
+  });
+
+  for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    it(`rejects non-finite timing values instead of serializing ${String(value)}`, () => {
+      assert.throws(
+        () => serializeTimingSummary({ ...timingResult, totalMs: value }),
+        /timing totalMs must be a finite non-negative number/u,
+      );
+    });
+  }
+
+  it("rejects a non-finite step duration instead of silently writing null", () => {
+    assert.throws(
+      () =>
+        serializeTimingSummary({
+          ...timingResult,
+          plannedStepCount: 1,
+          records: [
+            {
+              id: "lint",
+              script: "lint",
+              label: "lint",
+              index: 1,
+              occurrence: 1,
+              durationMs: Number.NaN,
+              status: 0,
+              signal: null,
+            },
+          ],
+        }),
+      /timing lint\.durationMs must be a finite non-negative number/u,
+    );
+  });
 
   it("atomically replaces the timing artifact with a complete temporary file", () => {
     const directory = mkdtempSync(join(tmpdir(), "quality-timing-"));
@@ -222,7 +361,12 @@ describe("timed quality steps", () => {
         destination,
       );
       assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), {
+        schemaVersion: 1,
         recordedAt: "2026-08-15T18:37:00.000Z",
+        outcome: "passed",
+        exitCode: 0,
+        plannedStepCount: 0,
+        recordedStepCount: 0,
         totalMs: 30,
         stepsTotalMs: 10,
         overheadMs: 20,

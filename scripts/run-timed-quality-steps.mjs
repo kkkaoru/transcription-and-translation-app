@@ -108,7 +108,48 @@ export const runTimedQualitySteps = ({
       ? `[quality-gate] total ${formatDuration(totalMs)}`
       : `[quality-gate] total ${formatDuration(totalMs)} outcome=failed exit=${exitCode}`,
   );
-  return { exitCode, records, totalMs, stepsTotalMs, overheadMs };
+  return {
+    exitCode,
+    plannedStepCount: plannedSteps.length,
+    records,
+    totalMs,
+    stepsTotalMs,
+    overheadMs,
+  };
+};
+
+const requireFiniteTiming = (name, value) => {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`timing ${name} must be a finite non-negative number`);
+  }
+};
+
+export const serializeTimingSummary = (
+  result,
+  { getRecordedAt = () => new Date().toISOString() } = {},
+) => {
+  requireFiniteTiming("totalMs", result.totalMs);
+  requireFiniteTiming("stepsTotalMs", result.stepsTotalMs);
+  requireFiniteTiming("overheadMs", result.overheadMs);
+  for (const record of result.records) {
+    requireFiniteTiming(`${record.id}.durationMs`, record.durationMs);
+  }
+  return `${JSON.stringify(
+    {
+      schemaVersion: 1,
+      recordedAt: getRecordedAt(),
+      outcome: result.exitCode === 0 ? "passed" : "failed",
+      exitCode: result.exitCode,
+      plannedStepCount: result.plannedStepCount,
+      recordedStepCount: result.records.length,
+      totalMs: result.totalMs,
+      stepsTotalMs: result.stepsTotalMs,
+      overheadMs: result.overheadMs,
+      steps: result.records,
+    },
+    null,
+    2,
+  )}\n`;
 };
 
 export const writeTimingSummary = (
@@ -125,17 +166,7 @@ export const writeTimingSummary = (
 ) => {
   makeDirectory(dirname(destination), { recursive: true });
   const temporaryPath = createTemporaryPath(destination);
-  const payload = `${JSON.stringify(
-    {
-      recordedAt: getRecordedAt(),
-      totalMs: result.totalMs,
-      stepsTotalMs: result.stepsTotalMs,
-      overheadMs: result.overheadMs,
-      steps: result.records,
-    },
-    null,
-    2,
-  )}\n`;
+  const payload = serializeTimingSummary(result, { getRecordedAt });
   try {
     writeFile(temporaryPath, payload);
     renameFile(temporaryPath, destination);
