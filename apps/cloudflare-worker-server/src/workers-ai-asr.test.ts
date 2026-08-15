@@ -345,5 +345,18 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     await expect(failedWithoutErrorResponse.json()).resolves.toMatchObject({
       error: { code: "asr_workers_ai_failed" },
     });
+
+    const exploding = wavFile();
+    exploding.arrayBuffer = () => Promise.reject(new TypeError("arrayBuffer failed"));
+    const explodingRequest = {
+      method: "POST",
+      formData: async () =>
+        ({
+          get: (name: string) => (name === "file" ? exploding : null),
+        }) as FormData,
+    } as unknown as Request;
+    await expect(handleWorkersAiAsrTranscription(explodingRequest, {})).rejects.toBeInstanceOf(
+      TypeError,
+    );
   });
 });

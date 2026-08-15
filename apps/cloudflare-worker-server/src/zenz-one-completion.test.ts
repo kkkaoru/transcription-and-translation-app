@@ -31,7 +31,6 @@ describe("one-completion Zenz orchestration", () => {
 
   it("falls back to code-point iteration when Intl itself is absent", () => {
     const intl = globalThis.Intl;
-    // biome-ignore lint/performance/noDelete: this test must hit the missing-Intl branch
     delete (globalThis as { Intl?: typeof Intl }).Intl;
     try {
       expect(trimZenzLeftContext("短いあ".repeat(21))).toBe("短いあ".repeat(21).slice(-40));
@@ -95,6 +94,18 @@ describe("one-completion Zenz orchestration", () => {
       search: { searchOutputPrefix: () => undefined },
     });
     expect(result).toStrictEqual({ text: "漢字", iterations: 1, usedCompletion: false });
+  });
+
+  it("keeps the dictionary baseline when maxIterations is zero", () => {
+    const result = orchestrateOneCompletion({
+      input: "かんじ",
+      leftContext: "子供がお菓子を食べています。",
+      baseline: "漢字",
+      completion: "感じ",
+      maxIterations: 0,
+      search: { searchOutputPrefix: () => "感じ" },
+    });
+    expect(result).toStrictEqual({ text: "漢字", iterations: 0, usedCompletion: false });
   });
 
   it("fails open to the baseline when the deadline expires", () => {
