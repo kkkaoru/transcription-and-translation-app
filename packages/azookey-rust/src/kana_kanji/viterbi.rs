@@ -11,7 +11,7 @@ use super::verifier::{Draft, DraftVerifier, SessionContext, VerificationState};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +27,7 @@ struct SpanLookup<'a> {
     dictionary: &'a AzooKeyDictionary,
     chars: &'a [char],
     max_chars: usize,
-    cache: RefCell<HashMap<usize, Vec<DictionaryEntry>>>,
+    cache: RefCell<HashMap<usize, Arc<[DictionaryEntry]>>>,
 }
 
 impl<'a> SpanLookup<'a> {
@@ -35,15 +35,16 @@ impl<'a> SpanLookup<'a> {
         Self { dictionary, chars, max_chars, cache: RefCell::new(HashMap::new()) }
     }
 
-    fn entries_starting_at(&self, start: usize) -> Vec<DictionaryEntry> {
+    fn entries_starting_at(&self, start: usize) -> Arc<[DictionaryEntry]> {
         if let Some(entries) = self.cache.borrow().get(&start) {
-            return entries.clone();
+            return Arc::clone(entries);
         }
-        let entries = self
-            .dictionary
-            .entries_starting_at(self.chars, start, self.max_chars)
-            .unwrap_or_default();
-        self.cache.borrow_mut().insert(start, entries.clone());
+        let entries = Arc::<[DictionaryEntry]>::from(
+            self.dictionary
+                .entries_starting_at(self.chars, start, self.max_chars)
+                .unwrap_or_default(),
+        );
+        self.cache.borrow_mut().insert(start, Arc::clone(&entries));
         entries
     }
 }
@@ -1319,13 +1320,11 @@ pub fn convert_with_dictionary(
         // convert-scoped lookup avoids repeating the same prefix scan for each
         // beam state while preserving the exact dictionary row set.
         let same_start_entries = lookup.entries_starting_at(start);
-        let entries = prune_short_kanji_prefix_entries(
-            dictionary,
-            &chars,
+        let entries = prune_short_kanji_prefix_entries_with_lookup(
+            &lookup,
             start,
-            same_start_entries.clone(),
+            same_start_entries.to_vec(),
             chars.len() - start,
-            max_dictionary_word_chars,
         );
         let numeric_prefix = numeric_prefix_context(&chars, start, &entries);
         // This prior depends only on the lattice start, entry, and source
@@ -4288,13 +4287,24 @@ fn one_kana_suffix_shadowed_by_longer_entry(
 /// reading still exists, remaining one-kana Kanji rows are value-capped so a
 /// mid-clause `き` (500+ surfaces) cannot explode captions such as
 /// `あしたのてんきははれ`.
+#[cfg(test)]
 fn prune_short_kanji_prefix_entries(
     dictionary: &AzooKeyDictionary,
     chars: &[char],
     start: usize,
-    mut entries: Vec<DictionaryEntry>,
+    entries: Vec<DictionaryEntry>,
     remaining_chars: usize,
     max_dictionary_word_chars: usize,
+) -> Vec<DictionaryEntry> {
+    let lookup = SpanLookup::new(dictionary, chars, max_dictionary_word_chars);
+    prune_short_kanji_prefix_entries_with_lookup(&lookup, start, entries, remaining_chars)
+}
+
+fn prune_short_kanji_prefix_entries_with_lookup(
+    lookup: &SpanLookup<'_>,
+    start: usize,
+    mut entries: Vec<DictionaryEntry>,
+    remaining_chars: usize,
 ) -> Vec<DictionaryEntry> {
     if entries.is_empty() {
         return entries;
@@ -4304,34 +4314,18 @@ fn prune_short_kanji_prefix_entries(
         let snapshot = entries.clone();
         entries.retain(|entry| {
             !short_kanji_prefix_shadowed_by_longer_entry(
-                dictionary,
-                chars,
+                lookup,
                 start,
                 entry,
                 &snapshot,
                 remaining_chars,
-                max_dictionary_word_chars,
             )
         });
         entries.retain(|entry| {
-            !longer_lexical_row_eats_into_following_particle(
-                dictionary,
-                chars,
-                start,
-                entry,
-                &snapshot,
-                max_dictionary_word_chars,
-            )
+            !longer_lexical_row_eats_into_following_particle(lookup, start, entry, &snapshot)
         });
         entries.retain(|entry| {
-            !longer_lexical_row_glues_leading_particle_to_one_mora(
-                dictionary,
-                chars,
-                start,
-                entry,
-                &snapshot,
-                max_dictionary_word_chars,
-            )
+            !longer_lexical_row_glues_leading_particle_to_one_mora(lookup, start, entry, &snapshot)
         });
     }
     cap_one_kana_kanji_entries_when_longer_readings_exist(&mut entries);
@@ -4365,13 +4359,11 @@ fn has_exact_punctuation_dictionary_entry(
 }
 
 fn short_kanji_prefix_shadowed_by_longer_entry(
-    dictionary: &AzooKeyDictionary,
-    chars: &[char],
+    lookup: &SpanLookup<'_>,
     start: usize,
     entry: &DictionaryEntry,
     entries: &[DictionaryEntry],
     remaining_chars: usize,
-    max_dictionary_word_chars: usize,
 ) -> bool {
     let len = entry.reading.chars().count();
     if len == 0 || len > 2 {
@@ -4387,22 +4379,13 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
     if !short_piece {
         return false;
     }
-    let grammatical_continuations = grammatical_lattice_continuations_starting_at(
-        dictionary,
-        chars,
-        start + len,
-        max_dictionary_word_chars,
-    );
+    let grammatical_continuations =
+        grammatical_lattice_continuations_from_lookup(lookup, start + len);
     let min_other_len =
         if len == 1 { MIN_SHADOWING_TRIGGER_CHARS } else { MIN_SHADOWING_LEXICAL_CHARS };
     // Object+verb paths (`柿`+`食う`) must survive when a longer stem only
     // eats the first mora of the following verb (`角く` under `かきくう…`).
-    let following_verb_lens = conjugational_verb_reading_lengths_starting_at(
-        dictionary,
-        chars,
-        start + len,
-        max_dictionary_word_chars,
-    );
+    let following_verb_lens = conjugational_verb_reading_lengths_from_lookup(lookup, start + len);
     entries.iter().any(|other| {
         let other_len = other.reading.chars().count();
         // A longer row that leaves a single dangling mora (`晴れ間` + `す`
@@ -4418,8 +4401,10 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
         // A longer row that ends immediately before a small kana (`空気` under
         // `くうきゃく`, leaving `ゃ…`) cannot start a legal next lattice token.
         // Keep the shorter verb/noun so `食う`+`客` remains available.
-        let leftover_starts_with_small_kana =
-            chars.get(start + other_len).is_some_and(|character| is_small_hiragana(*character));
+        let leftover_starts_with_small_kana = lookup
+            .chars
+            .get(start + other_len)
+            .is_some_and(|character| is_small_hiragana(*character));
         other_len >= min_other_len
             && other_len > len
             && other_len <= remaining_chars
@@ -4435,6 +4420,25 @@ fn short_kanji_prefix_shadowed_by_longer_entry(
                 &grammatical_continuations,
             )
     })
+}
+
+fn conjugational_verb_reading_lengths_from_lookup(
+    lookup: &SpanLookup<'_>,
+    start: usize,
+) -> Vec<usize> {
+    if start >= lookup.chars.len() {
+        return Vec::new();
+    }
+    lookup
+        .entries_starting_at(start)
+        .iter()
+        .filter(|candidate| {
+            is_conjugational_content_cid(candidate.lcid)
+                && contains_kanji(&candidate.surface)
+                && candidate.reading.chars().count() >= MIN_LEXICAL_ENTRY_CHARS
+        })
+        .map(|candidate| candidate.reading.chars().count())
+        .collect()
 }
 
 fn conjugational_verb_reading_lengths_starting_at(
@@ -4535,19 +4539,31 @@ fn particle_continuations_starting_at(
     )
 }
 
-fn grammatical_lattice_continuations_starting_at(
-    dictionary: &AzooKeyDictionary,
-    chars: &[char],
+fn grammatical_lattice_continuations_from_lookup(
+    lookup: &SpanLookup<'_>,
     start: usize,
-    max_dictionary_word_chars: usize,
 ) -> Vec<String> {
-    grammatical_continuations_starting_at(
-        dictionary,
-        chars,
-        start,
-        max_dictionary_word_chars,
-        is_grammatical_continuation_entry,
-    )
+    if start >= lookup.chars.len() {
+        return Vec::new();
+    }
+    lookup
+        .entries_starting_at(start)
+        .iter()
+        .filter(|continuation| is_grammatical_continuation_entry(continuation))
+        .map(|continuation| continuation.reading.clone())
+        .collect()
+}
+
+fn particle_continuations_from_lookup(lookup: &SpanLookup<'_>, start: usize) -> Vec<String> {
+    if start >= lookup.chars.len() {
+        return Vec::new();
+    }
+    lookup
+        .entries_starting_at(start)
+        .iter()
+        .filter(|continuation| is_particle_reading(&continuation.reading))
+        .map(|continuation| continuation.reading.clone())
+        .collect()
 }
 
 fn grammatical_continuations_starting_at(
@@ -4615,12 +4631,10 @@ fn longer_reading_glues_one_mora_kanji_to_particle(
 /// that particle (`じから` / `時から`). A complete short+particle compound
 /// such as `はしの` / `橋野` is left for Viterbi to score.
 fn longer_lexical_row_eats_into_following_particle(
-    dictionary: &AzooKeyDictionary,
-    chars: &[char],
+    lookup: &SpanLookup<'_>,
     start: usize,
     entry: &DictionaryEntry,
     snapshot: &[DictionaryEntry],
-    max_dictionary_word_chars: usize,
 ) -> bool {
     if !is_shadowing_lexical_entry(entry) {
         return false;
@@ -4639,12 +4653,7 @@ fn longer_lexical_row_eats_into_following_particle(
             return false;
         }
         let leftover = entry.reading.chars().skip(short_len).collect::<String>();
-        let particles = particle_continuations_starting_at(
-            dictionary,
-            chars,
-            start + short_len,
-            max_dictionary_word_chars,
-        );
+        let particles = particle_continuations_from_lookup(lookup, start + short_len);
         longer_reading_eats_into_particle(&leftover, &particles)
             || longer_reading_glues_one_mora_kanji_to_particle(
                 short_len,
@@ -4660,12 +4669,10 @@ fn longer_lexical_row_eats_into_following_particle(
 /// single Kanji mora (`のは` / `の端`). Two-mora leftovers such as `のはら`
 /// / `野原` stay in the lattice.
 fn longer_lexical_row_glues_leading_particle_to_one_mora(
-    dictionary: &AzooKeyDictionary,
-    chars: &[char],
+    lookup: &SpanLookup<'_>,
     start: usize,
     entry: &DictionaryEntry,
     snapshot: &[DictionaryEntry],
-    max_dictionary_word_chars: usize,
 ) -> bool {
     if entry.surface == entry.reading || !contains_kanji(&entry.surface) {
         return false;
@@ -4690,20 +4697,14 @@ fn longer_lexical_row_glues_leading_particle_to_one_mora(
             return false;
         }
         let after_particle = start + particle_len;
-        let has_one_mora_kanji = dictionary
-            .entries_starting_at(chars, after_particle, max_dictionary_word_chars)
-            .unwrap_or_default()
+        let has_one_mora_kanji = lookup
+            .entries_starting_at(after_particle)
             .iter()
             .any(|content| content.reading == leftover && contains_kanji(&content.surface));
         has_one_mora_kanji
-            && particle_continuations_starting_at(
-                dictionary,
-                chars,
-                start,
-                max_dictionary_word_chars,
-            )
-            .iter()
-            .any(|continuation| continuation == &particle.reading)
+            && particle_continuations_from_lookup(lookup, start)
+                .iter()
+                .any(|continuation| continuation == &particle.reading)
     })
 }
 
@@ -4785,28 +4786,29 @@ fn preserve_unknown_surface(source: char, normalized: char) -> char {
 }
 
 fn push_state(states: &mut Vec<PathState>, candidate: PathState, width: usize) {
-    states.push(candidate);
-    // AzooKey's values are log-probabilities and are ordered descending in
-    // the upstream candidate lattice. Keeping the best (highest) score first
-    // prevents low-confidence -30 rows from beating a likely -5 row.
-    states.sort_by(|left, right| right.score.total_cmp(&left.score));
     // The rendered text is not a sufficient lattice identity: two entries
     // can render the same surface while carrying different POS/CID/MID
     // metadata, and that metadata changes the score of the next edge. Keep
-    // those alternate contexts in the beam instead of collapsing one by
-    // `text` alone. `Vec::dedup_by` only removes adjacent duplicates; scores
-    // can interleave equal contexts, so scan the small beam explicitly.
-    let mut unique = Vec::with_capacity(states.len());
-    for state in states.drain(..) {
-        if unique
-            .iter()
-            .any(|kept: &PathState| kept.text == state.text && same_path_context(kept, &state))
-        {
-            continue;
+    // those alternate contexts in the beam, but replace an exact context only
+    // when the candidate has the better score.
+    if let Some(index) = states
+        .iter()
+        .position(|kept| kept.text == candidate.text && same_path_context(kept, &candidate))
+    {
+        if states[index].score >= candidate.score {
+            return;
         }
-        unique.push(state);
+        states.remove(index);
     }
-    states.extend(unique);
+
+    // `states` is maintained in descending score order. Insert directly at
+    // the stable position instead of sorting and allocating a deduplication
+    // vector after every lattice edge.
+    let index = states.partition_point(|kept| kept.score >= candidate.score);
+    if index >= width {
+        return;
+    }
+    states.insert(index, candidate);
     states.truncate(width);
 }
 
