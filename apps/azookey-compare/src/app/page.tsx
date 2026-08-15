@@ -44,7 +44,11 @@ import {
   AZOOKEY_CONVERSION_FIXTURES,
   type AzookeyConversionFixture,
 } from "../lib/conversion-fixtures";
-import { runComparisonConversion, usesBrowserZenzaiDictPath } from "../lib/conversion-pipeline";
+import {
+  previousConvertedLeftContext,
+  runComparisonConversion,
+  usesBrowserZenzaiDictPath,
+} from "../lib/conversion-pipeline";
 import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
 import {
   type ConversionTrace,
@@ -553,6 +557,15 @@ export default function ComparePage() {
             dictionaryUrl,
             wasmGlobalName,
             inputN5LmRescoreEnabled: config.inputN5LmRescoreEnabled,
+            ...(isZenzConverterModel(model)
+              ? {
+                  leftContext: previousConvertedLeftContext(
+                    rowsRef.current
+                      .filter((row) => row.id !== id && row.state === "done")
+                      .map((row) => row.convertedText),
+                  ),
+                }
+              : {}),
           },
           {
             onStage: (nextStage) => {

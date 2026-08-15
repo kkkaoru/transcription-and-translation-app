@@ -5,6 +5,7 @@ import {
   type BrowserZenzaiDictResult,
 } from "./browser-zenzai";
 import {
+  previousConvertedLeftContext,
   runComparisonConversion,
   usesBrowserZenzaiDictPath,
   usesWorkerConversion,
@@ -639,5 +640,43 @@ describe("comparison conversion pipeline", () => {
         },
       ),
     ).rejects.toThrow(/Cloudflare Worker WebSocket/);
+  });
+
+  it("sends the previous converted caption as Zenz leftContext on the worker path", async () => {
+    const convertWithWorker = vi.fn(() =>
+      Promise.resolve({
+        requestId: "r-left",
+        sourceText: "かんじ",
+        convertedText: "感じ",
+        receivedAt: Date.now(),
+        model: "zenz-v3.2-small-gguf",
+      }),
+    );
+    await runComparisonConversion(
+      {
+        ...baseInput,
+        sourceText: "かんじ",
+        mode: "worker-vibrato",
+        converterModel: "zenz-v3.2-small-gguf",
+        leftContext: "子供がお菓子を食べています。",
+      },
+      {
+        runBrowserVibrato: vi.fn(() => Promise.resolve({ text: "かんじ", elapsedMs: 1 })),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker,
+      },
+    );
+    expect(convertWithWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "zenz-v3.2-small-gguf",
+        leftContext: "子供がお菓子を食べています。",
+      }),
+    );
+    expect(previousConvertedLeftContext([undefined, "", "子供がお菓子を食べています。"])).toBe(
+      "子供がお菓子を食べています。",
+    );
+    expect(previousConvertedLeftContext(["あ".repeat(41)])).toBe("あ".repeat(40));
+    expect(previousConvertedLeftContext([])).toBeUndefined();
   });
 });

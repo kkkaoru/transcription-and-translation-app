@@ -29,6 +29,41 @@ import type { AzooKeyConvertResult, VibratoExecution } from "./worker-client";
 
 export const usesWorkerConversion = (mode: ComparisonMode): boolean => mode === "worker-vibrato";
 
+export const ZENZ_CONTEXT_MAX_GRAPHEMES = 40;
+
+const graphemesOf = (input: string): string[] => {
+  if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
+    return [...new Intl.Segmenter("ja", { granularity: "grapheme" }).segment(input)].map(
+      (segment) => segment.segment,
+    );
+  }
+  return [...input];
+};
+
+export const trimZenzLeftContext = (
+  leftContext: string,
+  maxGraphemes = ZENZ_CONTEXT_MAX_GRAPHEMES,
+): string => {
+  const graphemes = graphemesOf(leftContext.trim());
+  if (graphemes.length <= maxGraphemes) {
+    return graphemes.join("");
+  }
+  return graphemes.slice(graphemes.length - maxGraphemes).join("");
+};
+
+export const previousConvertedLeftContext = (
+  convertedTexts: readonly (string | undefined)[],
+): string | undefined => {
+  const latest = [...convertedTexts]
+    .reverse()
+    .find((text) => typeof text === "string" && text.trim().length > 0);
+  if (latest === undefined) {
+    return undefined;
+  }
+  const trimmed = trimZenzLeftContext(latest);
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
 export interface ConversionPipelineInput {
   sourceText: string;
   mode: ComparisonMode;
@@ -41,6 +76,8 @@ export interface ConversionPipelineInput {
   wasmGlobalName?: string;
   /** Opt-in input_n5_lm_v1 rescore. Defaults to off when omitted. */
   inputN5LmRescoreEnabled?: boolean;
+  /** Previous converted caption used as Zenz left context. */
+  leftContext?: string;
 }
 
 export interface ConversionPipelineResult {
@@ -74,6 +111,7 @@ export interface ConversionWorkerRequest {
   model?: string;
   vibratoExecution: VibratoExecution;
   auth?: ComparisonAuth;
+  leftContext?: string;
 }
 
 export interface ConversionPipelineDependencies {
@@ -271,6 +309,7 @@ export const runComparisonConversion = async (
     model: input.converterModel,
     vibratoExecution,
     auth: input.auth,
+    ...(input.leftContext ? { leftContext: input.leftContext } : {}),
   });
   const trace = assembleConversionTrace({
     rawSource,
