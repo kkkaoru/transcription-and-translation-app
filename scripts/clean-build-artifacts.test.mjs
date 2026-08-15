@@ -235,6 +235,7 @@ describe("cleanBuildArtifacts", () => {
       assert.match(workspace.scripts[scriptName], new RegExp(cleanup));
     }
     assert.match(workspace.scripts["clean:build"], /--prune-rust/);
+    assert.match(workspace.scripts["clean:build:rust"], /--prune-rust/);
     assert.doesNotMatch(workspace.scripts["sidecar:build"], /--prune-rust/);
     for (const scriptName of ["build", "tauri:build", "tauri:build:release"]) {
       assert.match(desktop.scripts[scriptName], new RegExp(cleanup));
@@ -244,11 +245,159 @@ describe("cleanBuildArtifacts", () => {
     assert.doesNotMatch(comparison.scripts.build, new RegExp(cleanup));
     for (const scriptName of ["build", "build:msi"]) {
       assert.match(parapper.scripts[scriptName], new RegExp(cleanup));
+      assert.doesNotMatch(parapper.scripts[scriptName], /--prune-rust/);
     }
     for (const scriptName of ["tauri:build", "tauri:build:release"]) {
       assert.doesNotMatch(desktop.scripts[scriptName], /--prune-rust/);
     }
     assert.match(workspace.scripts["test:build-cleanup"], /node --test/);
+  });
+
+  it("keeps --prune-rust off every path reachable from tauri:build", async () => {
+    const readJson = async (relativePath) =>
+      JSON.parse(await readFile(join(repositoryRoot, relativePath), "utf8"));
+    const workspace = await readJson("package.json");
+    const desktop = await readJson("apps/desktop/package.json");
+    const parapper = await readJson("packages/parapper-asr/package.json");
+    const desktopTauri = await readJson("apps/desktop/src-tauri/tauri.conf.json");
+    const parapperTauri = await readJson("packages/parapper-asr/src-tauri/tauri.conf.json");
+    const scriptsByPackage = {
+      workspace: workspace.scripts,
+      desktop: desktop.scripts,
+      parapper: parapper.scripts,
+    };
+    const pruneRust = /--prune-rust/;
+    const visitedScripts = new Set();
+    const visitedFiles = new Set();
+    const queue = [];
+
+    const enqueueScript = (scope, name) => {
+      const command = scriptsByPackage[scope]?.[name];
+      assert.equal(typeof command, "string", `${scope}:${name} must be a script command`);
+      const key = `${scope}:${name}`;
+      if (visitedScripts.has(key)) return;
+      visitedScripts.add(key);
+      queue.push({ kind: "script", scope, name, command });
+    };
+
+    const enqueueFile = (relativePath, reason) => {
+      const normalized = relativePath.replace(/^(?:\.\.\/)+/, "");
+      assert.match(normalized, /^scripts\//, `unexpected script path: ${relativePath}`);
+      if (visitedFiles.has(normalized)) return;
+      visitedFiles.add(normalized);
+      queue.push({ kind: "file", relativePath: normalized, reason });
+    };
+
+    const followCommand = (command) => {
+      for (const match of command.matchAll(
+        /(?:^|[\s;&|])(?:bun|npm|pnpm|yarn)(?:\s+--[^\s]+)*\s+run\s+([^\s&|;]+)/g,
+      )) {
+        const target = match[1];
+        if (target.startsWith("scripts/")) {
+          enqueueFile(target, command);
+          continue;
+        }
+        if (scriptsByPackage.workspace[target]) {
+          enqueueScript("workspace", target);
+        }
+      }
+
+      for (const match of command.matchAll(
+        /--filter=@caption-bridge\/desktop\s+run\s+([^\s&|;]+)/g,
+      )) {
+        enqueueScript("desktop", match[1]);
+      }
+
+      for (const match of command.matchAll(
+        /(?:^|[\s;&|])node\s+((?:\.\.\/)*scripts\/[^\s]+\.(?:mjs|js|ts))/g,
+      )) {
+        enqueueFile(match[1], command);
+      }
+    };
+
+    for (const name of ["tauri:build", "tauri:build:release", "build:app"]) {
+      enqueueScript("workspace", name);
+    }
+    for (const name of ["tauri:build", "tauri:build:release"]) {
+      enqueueScript("desktop", name);
+    }
+
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (item.kind === "script") {
+        assert.doesNotMatch(
+          item.command,
+          pruneRust,
+          `${item.scope}:${item.name} must not prune Rust caches on the tauri:build path`,
+        );
+        followCommand(item.command);
+
+        if (
+          item.scope === "desktop" &&
+          (item.name === "tauri:build" || item.name === "tauri:build:release")
+        ) {
+          // beforeBuildCommand runs in apps/desktop, so resolve `bun run build` there.
+          assert.match(desktopTauri.build.beforeBuildCommand, /\bbun run build\b/);
+          assert.doesNotMatch(desktopTauri.build.beforeBuildCommand, pruneRust);
+          enqueueScript("desktop", "build");
+        }
+        continue;
+      }
+
+      const source = await readFile(join(repositoryRoot, item.relativePath), "utf8");
+      // The cleanup implementation defines --prune-rust; app-build callers must not pass it.
+      if (item.relativePath !== "scripts/clean-build-artifacts.mjs") {
+        assert.doesNotMatch(
+          source,
+          pruneRust,
+          `${item.relativePath} (via ${item.reason}) must not pass --prune-rust`,
+        );
+      }
+
+      if (
+        item.relativePath === "scripts/build-sidecar.ts" &&
+        /\[process\.execPath,\s*"run",\s*"build"\]/.test(source) &&
+        /parapperDir|packages[\\/"'`]parapper-asr/.test(source)
+      ) {
+        enqueueScript("parapper", "build");
+      }
+      if (/--filter=@caption-bridge\/desktop[\s\S]{0,80}tauri:build:release/.test(source)) {
+        enqueueScript("desktop", "tauri:build:release");
+      } else if (/--filter=@caption-bridge\/desktop[\s\S]{0,80}tauri:build/.test(source)) {
+        enqueueScript("desktop", "tauri:build");
+      }
+    }
+
+    assert.match(desktopTauri.build.beforeBuildCommand, /\bbun run build\b/);
+    assert.match(parapperTauri.build.beforeBuildCommand, /\bbun run build\b/);
+    assert.doesNotMatch(desktopTauri.build.beforeBuildCommand, pruneRust);
+    assert.doesNotMatch(parapperTauri.build.beforeBuildCommand, pruneRust);
+
+    assert.ok(
+      visitedScripts.has("workspace:sidecar:build"),
+      "tauri:build must reach sidecar:build",
+    );
+    assert.ok(
+      visitedFiles.has("scripts/build-sidecar.ts"),
+      "sidecar:build must reach build-sidecar.ts",
+    );
+    assert.ok(
+      visitedScripts.has("desktop:tauri:build"),
+      "tauri:build must reach desktop tauri:build",
+    );
+    assert.ok(visitedScripts.has("desktop:build"), "desktop tauri:build must reach desktop build");
+    assert.ok(
+      visitedScripts.has("parapper:build"),
+      "tauri:build must reach parapper build via sidecar",
+    );
+    assert.ok(
+      !visitedScripts.has("workspace:clean:build"),
+      "explicit clean:build must stay off the app path",
+    );
+    assert.ok(
+      !visitedScripts.has("workspace:clean:build:rust"),
+      "explicit clean:build:rust must stay off the app path",
+    );
   });
 
   it("serializes concurrent cleanup calls for one worktree", async () => {

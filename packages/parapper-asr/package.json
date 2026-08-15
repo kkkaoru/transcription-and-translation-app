@@ -7,8 +7,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
-    "build": "node ../../scripts/clean-build-artifacts.mjs --root ../.. --prune-rust && bun run generate-license && tsc -b && vite build",
-    "build:msi": "node ../../scripts/clean-build-artifacts.mjs --root ../.. --prune-rust && bun run tauri build --target x86_64-pc-windows-msvc --bundles msi",
+    "build": "node ../../scripts/clean-build-artifacts.mjs --root ../.. && bun run generate-license && tsc -b && vite build",
+    "build:msi": "node ../../scripts/clean-build-artifacts.mjs --root ../.. && bun run tauri build --target x86_64-pc-windows-msvc --bundles msi",
     "generate-license": "cargo run -p scripts --bin generate_license",
     "preview": "vite preview",
     "test": "cargo test -p parapper",
