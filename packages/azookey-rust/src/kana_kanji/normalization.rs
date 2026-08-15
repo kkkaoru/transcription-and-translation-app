@@ -269,6 +269,7 @@ const JAPANESE_NUMERAL_COUNTERS: &[(&str, &str)] = &[
     ("びき", "匹"),
     ("ぴき", "匹"),
     ("さつ", "冊"),
+    ("さい", "歳"),
     ("そく", "足"),
     ("ぼん", "本"),
     ("ぽん", "本"),
@@ -480,6 +481,8 @@ mod tests {
         assert_eq!(numeric_counter_surface(&currency_suffix), Some((2, "円".to_string())));
         let people_suffix = "にんいる".chars().collect::<Vec<_>>();
         assert_eq!(numeric_counter_surface(&people_suffix), Some((2, "人".to_string())));
+        let age_suffix = "さいです".chars().collect::<Vec<_>>();
+        assert_eq!(numeric_counter_surface(&age_suffix), Some((2, "歳".to_string())));
         let half_time_suffix = "じはんです".chars().collect::<Vec<_>>();
         assert_eq!(numeric_counter_surface(&half_time_suffix), Some((3, "時半".to_string())));
         let percent = "ぱーせんと".chars().collect::<Vec<_>>();

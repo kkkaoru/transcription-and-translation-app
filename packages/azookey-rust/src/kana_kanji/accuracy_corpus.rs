@@ -84,7 +84,7 @@ const INCOMPLETE_STREAMING_MINIMUM_STRICT_PASSED: usize = 9;
 const INCOMPLETE_STREAMING_MINIMUM_VARIANT_PASSED: usize = 10;
 const INCOMPLETE_STREAMING_FINGERPRINT: u64 = 0x2269f712efa11d40;
 const MEASURED_COMPLETED_FAILURE_EXPECTED_TOTAL: usize = 14;
-const MEASURED_COMPLETED_FAILURE_MINIMUM_VARIANT_PASSED: usize = 4;
+const MEASURED_COMPLETED_FAILURE_MINIMUM_VARIANT_PASSED: usize = 5;
 const MEASURED_COMPLETED_FAILURE_FINGERPRINT: u64 = 0xeb42bf98d7fa729d;
 
 // Raise either expansion minimum after the same inputs produce the same higher
@@ -852,6 +852,9 @@ const EXACT_CONVERSIONS: &[(&str, &str)] = &[
     ("ろくじゅっこ", "60個"),
     ("ひゃくぱーせんと", "100%"),
     ("ひゃっぱーせんと", "100%"),
+    // Age notation follows the same ASCII-numeral policy for both readings.
+    ("ごじゅうさい", "50歳"),
+    ("ごじゅっさい", "50歳"),
     // Phrase-neutral official system dictionary + ConversionOptions::default().
     ("はしのはじからものがおちてます", "橋の端から物が落ちてます"),
     ("あついひなのであついすーぷをのみたくない", "暑い日なので熱いスープを飲みたくない"),
