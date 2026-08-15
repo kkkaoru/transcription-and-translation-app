@@ -177,3 +177,51 @@ describe("ModelCard AzooKey dictionary source select", () => {
     expect(container.textContent).toMatch(/Zenzai|ニューラル|neural|quality|精度/i);
   });
 });
+
+describe("ModelCard Hy-MT2 7B cost is visible before selection", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    container.remove();
+  });
+
+  it("puts RSS and download size on the unselected 7B option", async () => {
+    const config = createDefaultConfig();
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ModelCard
+            family="translator"
+            title="translator"
+            config={config}
+            models={DEFAULT_MODEL_CATALOG}
+            onChange={() => undefined}
+            onPathChange={() => undefined}
+          />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+    const select = container.querySelector<HTMLSelectElement>(
+      "[data-testid='translator-model-select']",
+    );
+    expect(select?.value).toBe("hy-mt2-1.8b-gguf");
+    const sevenB = Array.from(select?.options ?? []).find(
+      (option) => option.value === "hy-mt2-7b-gguf",
+    );
+    expect(sevenB?.textContent).toContain("4.93GiB");
+    expect(sevenB?.textContent).toContain("4.6GB");
+    expect(select?.value).not.toBe("hy-mt2-7b-gguf");
+  });
+});

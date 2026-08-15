@@ -293,6 +293,11 @@ export const ModelManagementCard = ({ onModelDownloaded }: { onModelDownloaded?:
                     </>
                   ) : null}
                 </div>
+                {model.modelId === "hy-mt2-7b-gguf" ? (
+                  <p className="download-row-source" data-testid="hy-mt2-7b-cost">
+                    {t("model.hy7b.description")}
+                  </p>
+                ) : null}
                 {model.sourceUrl ? (
                   <p className="download-row-source">
                     {t("model.sourceUrl")}: <code>{model.sourceUrl}</code>

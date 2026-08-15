@@ -102,7 +102,7 @@ pub fn catalog() -> ModelCatalog {
                 "translator",
                 "hy-mt2-7b-gguf",
                 "Hy-MT2 7B GGUF",
-                "レイテンシーより翻訳品質を優先するモデルです。",
+                "Loads on the bundled server. RSS 4.93GiB, one translate 424ms / 53 tok/s. Download 4.6GB, 374s.",
                 "Hy-MT2-7B-GGUF",
                 &["ja", "en"],
                 false,

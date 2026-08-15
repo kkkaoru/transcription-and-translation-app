@@ -45,6 +45,7 @@ const modelCopy: Partial<
     description: "model.hy18.description",
   },
   "hy-mt2-7b-gguf": {
+    label: "model.hy7b.option",
     description: "model.hy7b.description",
   },
 };

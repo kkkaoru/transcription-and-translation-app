@@ -339,7 +339,9 @@ const ja = {
   "model.zenzV2.label": "AzooKey Zenzai v2 Q5_K_M",
   "model.zenzV2.description": "低メモリ環境向けのZenzai v2互換GGUFモデルです。",
   "model.hy18.description": "日本語から英語へのライブ字幕に適した標準量子化モデルです。",
-  "model.hy7b.description": "レイテンシーより翻訳品質を優先するモデルです。",
+  "model.hy7b.option": "Hy-MT2 7B · RSS 4.93GiB · DL 4.6GB",
+  "model.hy7b.description":
+    "同梱サーバでロード可。RSS 4.93GiB、翻訳 424ms / 53 tok/s（1.8B Q4 は 1.39GiB / 80–110ms / 166 tok/s）。ダウンロード 4.6GB、374秒。8〜16GiB の VM と同時だとメモリが逼迫しうる。",
   "model.managementEyebrow": "MODEL INSTALL",
   "model.managementTitle": "モデル管理",
   "model.managementLead":
@@ -894,7 +896,9 @@ const en: Record<MessageKey, string> = {
   "model.zenzV2.label": "AzooKey Zenzai v2 Q5_K_M",
   "model.zenzV2.description": "A Zenzai v2 Q5_K_M GGUF model for lower-memory machines.",
   "model.hy18.description": "The standard quantized model for live Japanese-to-English captions.",
-  "model.hy7b.description": "Prioritizes translation quality over latency.",
+  "model.hy7b.option": "Hy-MT2 7B · RSS 4.93GiB · DL 4.6GB",
+  "model.hy7b.description":
+    "Loads on the bundled server. RSS 4.93GiB, one translate 424ms / 53 tok/s (1.8B Q4: 1.39GiB / 80–110ms / 166 tok/s). Download 4.6GB, 374s. Machines already running an 8–16GiB VM will feel it.",
   "model.managementEyebrow": "MODEL INSTALL",
   "model.managementTitle": "Model management",
   "model.managementLead":
