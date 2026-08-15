@@ -285,18 +285,17 @@ impl VerifierPolicy {
     }
 
     fn decision(&self, left_context: Option<&[u8]>) -> VerifierPolicyDecision {
-        if !self.require_left_context {
-            return VerifierPolicyDecision::Verify;
-        }
         match left_context {
-            None => VerifierPolicyDecision::MissingContext,
             Some(bytes) => match std::str::from_utf8(bytes) {
                 Err(_) => VerifierPolicyDecision::InvalidContext,
+                Ok(_) if !self.require_left_context => VerifierPolicyDecision::Verify,
                 Ok(text) if text.chars().any(|character| !character.is_whitespace()) => {
                     VerifierPolicyDecision::Verify
                 }
                 Ok(_) => VerifierPolicyDecision::MissingContext,
             },
+            None if self.require_left_context => VerifierPolicyDecision::MissingContext,
+            None => VerifierPolicyDecision::Verify,
         }
     }
 }
