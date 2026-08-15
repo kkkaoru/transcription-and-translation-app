@@ -27,6 +27,7 @@ export const logCaptionDisplayLifecycle = (
     chunkId: caption.id || null,
     message: `caption display lifecycle=${lifecycle} age_ms=${ageMs} generation=${generation ?? "none"} has_translation=${caption.translationText.trim().length > 0}`,
     durationMs: ageMs,
+    epochMs: nowMs,
     fields: {
       lifecycle,
       ageMs,

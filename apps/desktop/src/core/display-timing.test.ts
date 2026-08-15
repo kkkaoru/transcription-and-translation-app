@@ -52,7 +52,9 @@ describe("caption display timing", () => {
       utteranceId: "utterance-1",
     });
     expect(
-      getStructuredLogs({ maxLevel: "trace" }).find((row) => row.stage === "display"),
+      getStructuredLogs({ maxLevel: "trace" }).find(
+        (row) => row.message === "normalized source painted",
+      ),
     ).toMatchObject({
       source: "frontend",
       stage: "display",
@@ -115,7 +117,18 @@ describe("caption display timing", () => {
 
     markCaptionDisplay(caption());
 
-    expect(info.mock.calls.some((call) => String(call[0]).includes("[display]"))).toBe(false);
+    const consoleLines = info.mock.calls.map((call) => String(call[0]));
+    expect(consoleLines.some((line) => line.includes("[display] first-paint"))).toBe(false);
+    expect(consoleLines.some((line) => line.includes("[display] translation-paint"))).toBe(false);
+    const logs = getStructuredLogs({ maxLevel: "trace" });
+    expect(logs.some((row) => row.message === "normalized source painted")).toBe(false);
+    expect(
+      logs.find((row) => row.message.startsWith("caption display lifecycle=visible")),
+    ).toMatchObject({
+      message: "caption display lifecycle=visible age_ms=100 generation=none has_translation=false",
+      durationMs: 100,
+      epochMs: 2_000,
+    });
     // But stats are still recorded.
     expect(getCaptionDisplayTimingStats()).toMatchObject({
       sourceSincePipelineStartMs: 600,
@@ -178,7 +191,8 @@ describe("caption display timing", () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     markCaptionDisplay(caption());
-    expect(info.mock.calls.some((call) => String(call[0]).includes("[display]"))).toBe(false);
+    const afterSource = info.mock.calls.map((call) => String(call[0]));
+    expect(afterSource.some((line) => line.includes("[display] first-paint"))).toBe(false);
 
     markCaptionDisplay(
       caption({
@@ -191,7 +205,14 @@ describe("caption display timing", () => {
     );
 
     // Second call should not log the display-timing console line either.
-    expect(info.mock.calls.some((call) => String(call[0]).includes("[display]"))).toBe(false);
+    const afterTranslation = info.mock.calls.map((call) => String(call[0]));
+    expect(afterTranslation.some((line) => line.includes("[display] first-paint"))).toBe(false);
+    expect(afterTranslation.some((line) => line.includes("[display] translation-paint"))).toBe(
+      false,
+    );
+    expect(
+      getStructuredLogs({ maxLevel: "trace" }).some((row) => row.message === "translation painted"),
+    ).toBe(false);
     // But stats should be updated. (2350 - 1400 startedAt = 950ms)
     expect(getCaptionDisplayTimingStats()).toMatchObject({
       translationSincePipelineStartMs: 950,
