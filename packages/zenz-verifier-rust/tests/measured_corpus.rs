@@ -168,14 +168,14 @@ impl DraftVerifier for SingleCompletionVerifier {
             .map(|(character, _)| character.len_utf8())
             .sum::<usize>();
         let next_scalar = completion[common_bytes..].chars().next().ok_or_else(|| {
-            VerifierError::Backend("completion is a strict candidate prefix".into())
+            VerifierError::Backend(String::from("completion is a strict candidate prefix"))
         })?;
         let prefix_end = common_bytes + next_scalar.len_utf8();
         Ok(VerificationResult {
             state: VerificationState::PrefixConstraintReturned,
             candidate_path: draft.candidate_path.clone(),
             prefix_constraint: Some(Utf8BytePrefixConstraint::output_prefix(
-                completion.as_bytes()[..prefix_end].to_vec(),
+                &completion.as_bytes()[..prefix_end],
             )),
             cache_key,
         })
