@@ -1,5 +1,5 @@
 use crate::prompt::CandidatePrompt;
-use caption_bridge_input_lm::tokenizer::ZenzTokenizer;
+use caption_bridge_input_lm::tokenizer::{unicode_to_byte, ZenzTokenizer};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -50,6 +50,19 @@ impl ZenzPromptTokenizer {
 
     pub fn eos_token_id(&self) -> usize {
         self.tokenizer.end_token_id()
+    }
+
+    /// Raw UTF-8 piece bytes for a token, including partial marker bytes.
+    ///
+    /// Returning bytes rather than `String` is required for prefix constraints:
+    /// byte-level BPE tokens such as the first token of an EE marker are not
+    /// individually valid UTF-8.
+    pub fn token_bytes(&self, token_id: usize) -> Option<Vec<u8>> {
+        self.tokenizer
+            .tables()
+            .id_to_token
+            .get(token_id)
+            .map(|token| token.chars().filter_map(unicode_to_byte).collect())
     }
 }
 

@@ -11,6 +11,8 @@ mod prompt;
 mod tokenizer;
 
 #[cfg(feature = "candle")]
+mod embedded;
+#[cfg(feature = "candle")]
 mod forward;
 #[cfg(feature = "candle")]
 pub mod gguf;
@@ -21,5 +23,7 @@ pub use prompt::{
 };
 pub use tokenizer::{PromptTokenizerError, ZenzPromptTokenizer};
 
+#[cfg(feature = "candle")]
+pub use embedded::{EmbeddedVerifierLoadError, EmbeddedZenzDraftVerifier};
 #[cfg(feature = "candle")]
 pub use forward::ZenzForwardModel;
