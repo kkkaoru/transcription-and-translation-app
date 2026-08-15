@@ -107,8 +107,12 @@ fn promote(recency: &mut VecDeque<VerificationCacheKey>, key: &VerificationCache
 #[cfg(test)]
 mod tests {
     use super::{VerificationCache, VerificationCacheStats};
-    use crate::verifier::{VerificationCacheKey, VerificationResult, VerificationState};
+    use crate::verifier::{
+        Draft, SessionContext, VerificationCacheKey, VerificationResult, VerificationState,
+        VerifierSession,
+    };
     use crate::viterbi::CandidatePath;
+    use crate::{convert_with_dictionary, AzooKeyDictionary, ConversionOptions, DictionaryPaths};
     use std::sync::Arc;
     use std::thread;
 
@@ -233,6 +237,73 @@ mod tests {
             cache.stats(),
             VerificationCacheStats { hits: 0, misses: 1, evictions: 0, entries: 0, capacity: 0 }
         );
+    }
+
+    #[test]
+    fn dictionary_edit_changes_conversion_and_misses_verification_cache() {
+        let suffix = format!(
+            "caption-bridge-verification-reload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(format!("{suffix}.tsv"));
+        let paths = DictionaryPaths { user: Some(path.clone()), ..DictionaryPaths::default() };
+        std::fs::write(&path, "かすたむてすと\t変更前\n")
+            .expect("first custom dictionary should write");
+        let first = AzooKeyDictionary::from_paths(&paths).expect("first dictionary should load");
+        let first_text =
+            convert_with_dictionary("かすたむてすと", &first, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("first conversion should return a candidate")
+                .text;
+        assert_eq!(first_text, "変更前");
+
+        let candidate = CandidatePath {
+            edge_handles: vec![1],
+            text: first_text.clone(),
+            score: -1.0,
+            trailing: None,
+        };
+        let draft = Draft::new("prompt", candidate);
+        let first_session = VerifierSession {
+            session_id: 1,
+            context: SessionContext::new("かすたむてすと", first.revision(), "config-v1"),
+            model_revision: "model-v1".to_string(),
+            tokenizer_revision: "tokenizer-v1".to_string(),
+            kv_reusable: true,
+        };
+        let first_key = VerificationCacheKey::for_draft(&first_session, &draft);
+        let cache = VerificationCache::new(2);
+        cache.insert(result(first_key.clone(), &first_text));
+        assert!(cache.get(&first_key).is_some());
+
+        std::fs::write(&path, "かすたむてすと\t変更後\n")
+            .expect("same-size custom dictionary replacement should write");
+        let reloaded =
+            AzooKeyDictionary::from_paths(&paths).expect("updated dictionary should reload");
+        let reloaded_text =
+            convert_with_dictionary("かすたむてすと", &reloaded, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("updated conversion should return a candidate")
+                .text;
+        assert_eq!(reloaded_text, "変更後");
+        assert_ne!(first.revision(), reloaded.revision());
+
+        let reloaded_session = VerifierSession {
+            context: SessionContext::new("かすたむてすと", reloaded.revision(), "config-v1"),
+            ..first_session
+        };
+        let reloaded_key = VerificationCacheKey::for_draft(&reloaded_session, &draft);
+        assert_ne!(first_key.dictionary_revision, reloaded_key.dictionary_revision);
+        assert!(cache.get(&reloaded_key).is_none());
+        assert_eq!(cache.stats().misses, 1);
+
+        std::fs::remove_file(path).expect("custom dictionary fixture should be removed");
     }
 
     #[test]

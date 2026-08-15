@@ -2163,6 +2163,71 @@ mod tests {
     }
 
     #[test]
+    fn reloading_after_custom_edit_starts_with_a_fresh_entry_cache() {
+        let suffix = format!(
+            "caption-bridge-entry-cache-reload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after unix epoch")
+                .as_nanos()
+        );
+        let user = std::env::temp_dir().join(format!("{suffix}.tsv"));
+        std::fs::write(&user, "かすたむてすと\t変更前\n")
+            .expect("first custom dictionary should write");
+        let paths = DictionaryPaths {
+            system: Some(super::test_system_dictionary_path()),
+            user: Some(user.clone()),
+            ..DictionaryPaths::default()
+        };
+        let first = AzooKeyDictionary::from_paths(&paths).expect("first dictionary should load");
+        assert!(!first.lookup_exact("かんじ").expect("system lookup should work").is_empty());
+        assert!(
+            !first
+                .system
+                .as_ref()
+                .expect("system dictionary should exist")
+                .entry_cache
+                .borrow()
+                .indices
+                .is_empty(),
+            "first dictionary should have a warmed entry cache"
+        );
+        assert!(first
+            .lookup_exact("かすたむてすと")
+            .expect("first custom lookup should work")
+            .iter()
+            .any(|entry| entry.surface == "変更前"));
+
+        std::fs::write(&user, "かすたむてすと\t変更後\n")
+            .expect("same-size custom dictionary replacement should write");
+        // Desktop invalidation drops the complete AzooKeyDictionary. Rebuilding
+        // it creates both a new content revision and a new empty system cache;
+        // cache entries never cross the reload boundary.
+        let reloaded =
+            AzooKeyDictionary::from_paths(&paths).expect("updated dictionary should reload");
+        assert_ne!(first.revision(), reloaded.revision());
+        assert!(
+            reloaded
+                .system
+                .as_ref()
+                .expect("system dictionary should exist")
+                .entry_cache
+                .borrow()
+                .indices
+                .is_empty(),
+            "reloaded dictionary must not retain the previous entry cache"
+        );
+        assert!(reloaded
+            .lookup_exact("かすたむてすと")
+            .expect("updated custom lookup should work")
+            .iter()
+            .any(|entry| entry.surface == "変更後"));
+
+        std::fs::remove_file(user).expect("custom dictionary fixture should be removed");
+    }
+
+    #[test]
     fn preserves_the_upstream_shard_escaping() {
         assert_eq!(escaped_identifier("あ"), "[3042]");
         assert_eq!(escaped_identifier("🇯🇵"), "[D83C_DDEF_D83C_DDF5]");
