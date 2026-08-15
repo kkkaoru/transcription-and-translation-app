@@ -93,13 +93,21 @@ export const runTimedQualitySteps = ({
   const totalMs = Math.max(0, lastDoneAt - startedAt);
   const stepsTotalMs = records.reduce((sum, record) => sum + record.durationMs, 0);
   const overheadMs = Math.max(0, totalMs - stepsTotalMs);
-  if (exitCode === 0) {
-    stdout("[quality-gate] timing summary");
-    for (const record of records) {
-      stdout(`  ${record.label} ${formatDuration(record.durationMs)}`);
-    }
-    stdout(`[quality-gate] total ${formatDuration(totalMs)}`);
+  stdout(
+    exitCode === 0
+      ? "[quality-gate] timing summary"
+      : `[quality-gate] timing summary (failed, ${records.length}/${plannedSteps.length} steps)`,
+  );
+  for (const record of records) {
+    stdout(
+      `  ${String(record.index).padStart(2, "0")}/${plannedSteps.length} ${record.label} ${formatDuration(record.durationMs)} exit=${record.status ?? "null"}`,
+    );
   }
+  stdout(
+    exitCode === 0
+      ? `[quality-gate] total ${formatDuration(totalMs)}`
+      : `[quality-gate] total ${formatDuration(totalMs)} outcome=failed exit=${exitCode}`,
+  );
   return { exitCode, records, totalMs, stepsTotalMs, overheadMs };
 };
 

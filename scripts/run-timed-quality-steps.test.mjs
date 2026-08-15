@@ -267,6 +267,43 @@ describe("timed quality steps", () => {
     });
   }
 
+  it("prints a partial timing summary before a failed artifact write", () => {
+    let clock = 0;
+    const output = [];
+    const errors = [];
+    assert.equal(
+      runTimedQualityStepsMain({
+        runSteps: () =>
+          runTimedQualitySteps({
+            steps: ["lint", "format:check", "assets:verify"],
+            now: () => {
+              clock += 100;
+              return clock;
+            },
+            runSync: (_command, args) => ({
+              status: args[1] === "format:check" ? 2 : 0,
+              signal: null,
+            }),
+            stdout: (message) => output.push(message),
+            stderr: (message) => errors.push(message),
+          }),
+        writeSummary: () => {
+          throw new Error("disk full");
+        },
+        stdout: (message) => output.push(message),
+        stderr: (message) => errors.push(message),
+      }),
+      2,
+    );
+    assert.deepEqual(output.slice(-4), [
+      "[quality-gate] timing summary (failed, 2/3 steps)",
+      "  01/3 lint 0.1s exit=0",
+      "  02/3 format:check 0.1s exit=2",
+      "[quality-gate] total 0.6s outcome=failed exit=2",
+    ]);
+    assert.deepEqual(errors, ["[quality-gate] unable to write timing summary: disk full"]);
+  });
+
   it("fails closed with exit 74 when green steps cannot write the artifact", () => {
     const errors = [];
     assert.equal(
