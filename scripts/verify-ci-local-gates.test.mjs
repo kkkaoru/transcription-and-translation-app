@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import {
   assertBuildCleanupTestManifest,
   assertCoverageGateParity,
+  assertTypecheckGateParity,
   buildCleanupTestExclusions,
   ciCoverageExclusions,
   ciGateExclusions,
+  ciTypecheckExclusions,
   extractCiGateCommands,
   extractLocalGateScripts,
   verifyCiLocalGateParity,
@@ -139,6 +141,44 @@ describe("CI and local quality-gate parity", () => {
 
   it("requires every coverage exclusion to explain itself", () => {
     for (const [script, reason] of ciCoverageExclusions) {
+      assert.match(reason, /\S/u, `${script} needs a reason`);
+    }
+  });
+
+  it("runs every typecheck gate in CI as well as locally", () => {
+    assertTypecheckGateParity({ packageJson, workflow });
+  });
+
+  it("names a typecheck gate that CI does not run", () => {
+    assert.throws(
+      () =>
+        assertTypecheckGateParity({
+          packageJson: { scripts: { "lonely:typecheck": "tsc -b" } },
+          workflow: "      - run: bun run lint\n",
+        }),
+      (error) => {
+        assert.match(error.message, /typecheck gates missing from CI: lonely:typecheck/u);
+        return true;
+      },
+    );
+  });
+
+  it("names a CI typecheck gate with no local script", () => {
+    assert.throws(
+      () =>
+        assertTypecheckGateParity({
+          packageJson: { scripts: {} },
+          workflow: "      - run: bun run ghost:typecheck\n",
+        }),
+      (error) => {
+        assert.match(error.message, /CI typecheck gates with no local script: ghost:typecheck/u);
+        return true;
+      },
+    );
+  });
+
+  it("requires every typecheck exclusion to explain itself", () => {
+    for (const [script, reason] of ciTypecheckExclusions) {
       assert.match(reason, /\S/u, `${script} needs a reason`);
     }
   });

@@ -32,6 +32,15 @@ The audit found that CI built `packages/vibrato/wasm` for `wasm32-unknown-unknow
 
 Implemented in commit `40084bd`.
 
+Coverage and typecheck also pin `package.json ⊆ CI ⊆ check:all` for those
+suffixes. The source of truth is the `package.json` script name, not the
+local step list, so a script that never joined either gate is still visible.
+Each suffix is its own checker. Lint, fmt, and test can drift the same way;
+they are not in this checker because those families still mix real gates with
+local-only crates (`rust:zenz-verifier:*`) and non-gate scripts (`test`,
+`gateway:test`). Adding them would make the exclusion list the product.
+Decide per family, with a written reason, before extending the checker.
+
 ### Duplicate work removed, then restored as a post-build check
 
 An earlier cleanup removed a second identical `assets:verify` from the local

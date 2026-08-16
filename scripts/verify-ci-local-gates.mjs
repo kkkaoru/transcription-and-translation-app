@@ -45,13 +45,38 @@ export const buildCleanupTestExclusions = new Map();
  */
 export const ciCoverageExclusions = new Map();
 
-const coverageScriptsFromPackage = (packageJson) =>
-  Object.keys(packageJson.scripts).filter((name) => name.endsWith("test:coverage"));
+/**
+ * Typecheck gates deliberately absent from CI. Empty for the same reason as
+ * coverage: every `*:typecheck` script is a gate, and none is local-only.
+ */
+export const ciTypecheckExclusions = new Map();
 
-const coverageCommandsFromWorkflow = (workflow) =>
+const matchesGateSuffix = (name, suffix) => name === suffix || name.endsWith(`:${suffix}`);
+
+const scriptsEndingWith = (packageJson, suffix) =>
+  Object.keys(packageJson.scripts).filter((name) => matchesGateSuffix(name, suffix));
+
+const ciScriptsEndingWith = (workflow, suffix) =>
   extractCiGateCommands(workflow)
     .map((command) => command.replace(/^bun run\s+/u, ""))
-    .filter((script) => script.endsWith("test:coverage"));
+    .filter((script) => matchesGateSuffix(script, suffix));
+
+const assertNamedGateParity = ({ packageJson, workflow, suffix, label, exclusions }) => {
+  const local = scriptsEndingWith(packageJson, suffix);
+  const ci = new Set(ciScriptsEndingWith(workflow, suffix));
+  const missingFromCi = local.filter((script) => !ci.has(script) && !exclusions.has(script));
+  const missingLocally = [...ci].filter((script) => !local.includes(script));
+  if (missingFromCi.length > 0 || missingLocally.length > 0) {
+    const parts = [];
+    if (missingFromCi.length > 0) {
+      parts.push(`${label} gates missing from CI: ${missingFromCi.join(", ")}`);
+    }
+    if (missingLocally.length > 0) {
+      parts.push(`CI ${label} gates with no local script: ${missingLocally.join(", ")}`);
+    }
+    throw new Error(parts.join("; "));
+  }
+};
 
 /**
  * Compares the coverage scripts declared in package.json against the ones CI
@@ -61,24 +86,28 @@ const coverageCommandsFromWorkflow = (workflow) =>
  * existing CI-subset check this pins
  * `package.json coverage ⊆ CI ⊆ check:all`.
  */
-export const assertCoverageGateParity = ({ packageJson, workflow }) => {
-  const local = coverageScriptsFromPackage(packageJson);
-  const ci = new Set(coverageCommandsFromWorkflow(workflow));
-  const missingFromCi = local.filter(
-    (script) => !ci.has(script) && !ciCoverageExclusions.has(script),
-  );
-  const missingLocally = [...ci].filter((script) => !local.includes(script));
-  if (missingFromCi.length > 0 || missingLocally.length > 0) {
-    const parts = [];
-    if (missingFromCi.length > 0) {
-      parts.push(`coverage gates missing from CI: ${missingFromCi.join(", ")}`);
-    }
-    if (missingLocally.length > 0) {
-      parts.push(`CI coverage gates with no local script: ${missingLocally.join(", ")}`);
-    }
-    throw new Error(parts.join("; "));
-  }
-};
+export const assertCoverageGateParity = ({ packageJson, workflow }) =>
+  assertNamedGateParity({
+    packageJson,
+    workflow,
+    suffix: "test:coverage",
+    label: "coverage",
+    exclusions: ciCoverageExclusions,
+  });
+
+/**
+ * Same chain as coverage, for the typecheck suffix only. Not a generic
+ * script-family checker: lint, fmt, and test still have local-only or
+ * non-gate scripts, so they stay out until each family is decided separately.
+ */
+export const assertTypecheckGateParity = ({ packageJson, workflow }) =>
+  assertNamedGateParity({
+    packageJson,
+    workflow,
+    suffix: "typecheck",
+    label: "typecheck",
+    exclusions: ciTypecheckExclusions,
+  });
 
 export const ciGateExclusions = new Map([
   [
