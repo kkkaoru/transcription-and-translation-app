@@ -1,4 +1,4 @@
-import { readingForAzookeyAsync } from "@caption-bridge/azookey-reading";
+import { normalizeAsrSourceText, readingForAzookeyAsync } from "@caption-bridge/azookey-reading";
 import {
   AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS,
   AZOOKEY_MAX_COMPRESSED_DICTIONARY_BYTES,
@@ -1497,7 +1497,9 @@ export const convertAzookeyMessage = async (
   }
   const preceding = state?.preceding;
   contextUsed = preceding !== undefined;
-  let conversionInput = message.vibratoInput;
+  const normalizedSource = normalizeAsrSourceText(message.sourceText);
+  const normalizedVibratoInput = normalizeAsrSourceText(message.vibratoInput);
+  let conversionInput = normalizedVibratoInput;
   if (message.vibratoExecution === WORKER_VIBRATO_EXECUTION) {
     if (!runtime.vibrato) {
       throw new AzookeyProtocolError(
@@ -1515,7 +1517,7 @@ export const convertAzookeyMessage = async (
         );
       }
       const vibratoOutput = await withTimeout(
-        (signal) => runtime.vibrato?.(message.sourceText, message.language, signal),
+        (signal) => runtime.vibrato?.(normalizedSource, message.language, signal),
         remainingMs(),
       );
       if (deadlineExpired()) {

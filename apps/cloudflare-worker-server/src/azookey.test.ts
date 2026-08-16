@@ -242,6 +242,34 @@ describe("AzooKey Worker text contract", () => {
     });
   });
 
+  it("strips Japanese ASR token-gap spaces before the shipped converter input", async () => {
+    const seen: string[] = [];
+    const runtime: AzookeyRuntime = {
+      timeoutMs: 250,
+      converter: (text) => {
+        seen.push(text);
+        return `converted:${text}`;
+      },
+    };
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          type: "azookey.convert",
+          requestId: "req-spaces",
+          source: "web-speech",
+          language: "ja",
+          sourceText: "きょう は いい てんき",
+          vibratoInput: "きょう は いい てんき",
+          mode: "worker-vibrato",
+        }),
+      ),
+      runtime,
+    );
+    expect(seen).toStrictEqual(["きょうはいいてんき"]);
+    expect(result.convertedText).toBe("converted:きょうはいいてんき");
+    expect(result.vibratoInput).toBe("きょうはいいてんき");
+  });
+
   it("passes trailing context to the next chunk on the same connection", async () => {
     const precedingCalls: Array<AzookeyConnectionState["preceding"]> = [];
     const converter = ((

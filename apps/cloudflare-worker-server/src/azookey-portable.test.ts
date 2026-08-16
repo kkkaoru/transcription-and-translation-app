@@ -129,6 +129,60 @@ describe("portable official AzooKey dictionary", () => {
     await expect(convert("あついひなのに")).resolves.toBe("暑い日なのに");
   }, 20_000);
 
+  it("converts official-dictionary fixtures through the shipped Worker converter", async () => {
+    const module = new WebAssembly.Module(wasmBytes);
+    const fetcher = vi.fn(
+      async () =>
+        new Response(responseBody(dictionaryGzip), {
+          status: 200,
+          headers: { "content-length": String(dictionaryGzip.byteLength) },
+        }),
+    );
+    const convert = createWasmConverter(module, "/azookey/system.azkdict.gz", fetcher);
+    await convert.warmup?.();
+    await expect(convert("きょうはいいてんき")).resolves.toBe("今日はいい天気");
+    await expect(convert("おつかれさまでした")).resolves.toBe("お疲れ様でした");
+    await expect(convert("とても")).resolves.toBe("とても");
+    await expect(convert("すーぷは")).resolves.toBe("スープは");
+    await expect(convert("きょうのてんきはあつい")).resolves.toBe("今日の天気は暑い");
+    await expect(convert("すーぷがあつい")).resolves.toBe("スープが熱い");
+    await expect(convert("きょうははいしんです")).resolves.toBe("今日は配信です");
+    await expect(convert("あしたのてんきははれ")).resolves.toBe("明日の天気は晴れ");
+    await expect(convert("あさってのてんきはあめです")).resolves.toBe("明後日の天気は雨です");
+    await expect(convert("しへい、こうか、じゅうえん")).resolves.toBe("紙幣、硬貨、10円");
+    await expect(convert("いっとうしょう、けんしょう、おうぼ")).resolves.toBe("一等賞、懸賞、応募");
+    await expect(convert("こうぎょう、きかく、とういつ")).resolves.toBe("工業、規格、統一");
+  }, 20_000);
+
+  it("normalizes spaced ASR kana then converts きょうはいいてんき on the WS path", async () => {
+    const module = new WebAssembly.Module(wasmBytes);
+    const fetcher = vi.fn(
+      async () =>
+        new Response(responseBody(dictionaryGzip), {
+          status: 200,
+          headers: { "content-length": String(dictionaryGzip.byteLength) },
+        }),
+    );
+    const converter = createWasmConverter(module, "/azookey/system.azkdict.gz", fetcher);
+    await converter.warmup?.();
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          type: "azookey.convert",
+          requestId: "spaced-kyou",
+          source: "web-speech",
+          language: "ja",
+          sourceText: "きょう は いい てんき",
+          vibratoInput: "きょう は いい てんき",
+          mode: "worker-vibrato",
+        }),
+      ),
+      { timeoutMs: 15_000, converter },
+    );
+    expect(result.convertedText).toBe("今日はいい天気");
+    expect(result.vibratoInput).toBe("きょうはいいてんき");
+  }, 20_000);
+
   it("retries failed loads and rejects invalid or oversized dictionary responses", async () => {
     const module = new WebAssembly.Module(wasmBytes);
     const retryFetcher = vi
