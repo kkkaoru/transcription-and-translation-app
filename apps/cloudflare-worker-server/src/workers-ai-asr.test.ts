@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { pcm16ToWav } from "@caption-bridge/inference-server-core";
 import { describe, expect, it, vi } from "vitest";
 import {
   createWorkersAiAsrTranscriber,
@@ -15,7 +17,16 @@ import {
   workersAiAsrTimeoutMs,
 } from "./workers-ai-asr.js";
 
-const pcm = (): Uint8Array => Uint8Array.from([0, 1, 2, 3]);
+const greetingWav = readFileSync(
+  new URL("../../desktop/src/overlay/fixtures/greeting-kikoemasu.wav", import.meta.url),
+);
+
+const pcm = (): Uint8Array => {
+  const samples = Int16Array.from({ length: 2048 }, (_, index) =>
+    index % 2 === 0 ? 20_000 : -20_000,
+  );
+  return new Uint8Array(samples.buffer);
+};
 
 const novaResult = (transcript = "明日の天気は晴れ") => ({
   results: {
@@ -23,23 +34,7 @@ const novaResult = (transcript = "明日の天気は晴れ") => ({
   },
 });
 
-const wavFile = (): File => {
-  const bytes = new Uint8Array(46);
-  const view = new DataView(bytes.buffer);
-  bytes.set(new TextEncoder().encode("RIFF"), 0);
-  view.setUint32(4, 38, true);
-  bytes.set(new TextEncoder().encode("WAVEfmt "), 8);
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, 16_000, true);
-  view.setUint32(28, 32_000, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  bytes.set(new TextEncoder().encode("data"), 36);
-  view.setUint32(40, 2, true);
-  return new File([bytes], "caption.wav", { type: "audio/wav" });
-};
+const wavFile = (): File => new File([pcm16ToWav(pcm())], "caption.wav", { type: "audio/wav" });
 
 describe("Workers AI Nova-3 ASR adapter", () => {
   it("strips Japanese token-gap spaces and passes kana through the reading gate", () => {
@@ -275,6 +270,39 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       transport: "http",
     });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("segments the greeting speech fixture through the shipped Nova-3 handler", async () => {
+    const run = vi.fn<WorkersAiAsrRun>(() =>
+      Promise.resolve(novaResult("こんにちは 聞こえますか")),
+    );
+    const form = new FormData();
+    form.set("file", new File([greetingWav], "greeting-kikoemasu.wav", { type: "audio/wav" }));
+    const response = await handleWorkersAiAsrTranscription(
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {},
+      run,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toStrictEqual({
+      text: "こんにちは聞こえますか",
+      reading: "こんにちは聞こえますか",
+      language: "ja",
+      model: "@cf/deepgram/nova-3",
+      transport: "http",
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]?.[0]).toBe("@cf/deepgram/nova-3");
+  });
+
+  it("returns empty text without invoking Nova-3 when VAD finds no speech", async () => {
+    const run = vi.fn<WorkersAiAsrRun>(() => Promise.resolve(novaResult("should-not-run")));
+    const silence = new Uint8Array(4096);
+    await expect(createWorkersAiAsrTranscriber({}, run)(silence)).resolves.toBe("");
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("applies Japanese ASR post-processing on the shipped Nova-3 HTTP handler", async () => {

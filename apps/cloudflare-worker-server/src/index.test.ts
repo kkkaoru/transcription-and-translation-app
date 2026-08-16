@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { pcm16ToWav } from "@caption-bridge/inference-server-core";
 import { describe, expect, it, vi } from "vitest";
 import {
   AZOOKEY_MAX_TEXT_BYTES,
@@ -47,11 +48,20 @@ const wav = (): File => {
   return new File([bytes], "caption.wav", { type: "audio/wav" });
 };
 
-const transcriptionRequest = (headers?: HeadersInit): Request => {
+const speechWav = (): File => {
+  const samples = Int16Array.from({ length: 2048 }, (_, index) =>
+    index % 2 === 0 ? 20_000 : -20_000,
+  );
+  return new File([pcm16ToWav(new Uint8Array(samples.buffer))], "caption.wav", {
+    type: "audio/wav",
+  });
+};
+
+const transcriptionRequest = (headers?: HeadersInit, file: File = wav()): Request => {
   const form = new FormData();
   form.set("model", "parapper-ja");
   form.set("language", "ja");
-  form.set("file", wav());
+  form.set("file", file);
   return new Request("https://worker.example/v1/audio/transcriptions", {
     method: "POST",
     ...(headers ? { headers } : {}),
@@ -539,11 +549,14 @@ describe("Cloudflare Worker inference adapter", () => {
     const upstream = vi.fn(() => {
       throw new Error("the opt-in path must not call the upstream");
     });
-    const response = await createWorker(upstream, { workersAiRun }).fetch(transcriptionRequest(), {
-      ...env,
-      ASR_PROVIDER: " Workers-AI ",
-      ASR_UPSTREAM_URL: "https://asr.example/transcribe",
-    });
+    const response = await createWorker(upstream, { workersAiRun }).fetch(
+      transcriptionRequest(undefined, speechWav()),
+      {
+        ...env,
+        ASR_PROVIDER: " Workers-AI ",
+        ASR_UPSTREAM_URL: "https://asr.example/transcribe",
+      },
+    );
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe(env.CORS_ORIGIN);
     await expect(response.json()).resolves.toEqual({
@@ -576,7 +589,7 @@ describe("Cloudflare Worker inference adapter", () => {
       });
     });
     const ai = { run: bindingRun } as unknown as NonNullable<Env["AI"]>;
-    const response = await createWorker().fetch(transcriptionRequest(), {
+    const response = await createWorker().fetch(transcriptionRequest(undefined, speechWav()), {
       ...env,
       AI: ai,
       ASR_PROVIDER: "workers-ai",
@@ -603,7 +616,7 @@ describe("Cloudflare Worker inference adapter", () => {
       }),
     );
     const form = new FormData();
-    form.set("file", wav());
+    form.set("file", speechWav());
     form.set("language", "ja");
     const response = await createWorker(vi.fn(), { workersAiRun }).fetch(
       new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
@@ -728,7 +741,7 @@ describe("Cloudflare Worker inference adapter", () => {
       Promise.resolve({ results: { channels: [{ alternatives: [{ transcript: "bound" }] }] } }),
     );
     const form = new FormData();
-    form.set("file", wav());
+    form.set("file", speechWav());
     const response = await createWorker().fetch(
       asWorkerRequest(
         new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {

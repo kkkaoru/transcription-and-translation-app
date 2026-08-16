@@ -11,6 +11,7 @@ import {
   pcm16FromWav,
   pcm16ToWav,
 } from "@caption-bridge/inference-server-core";
+import { segmentPcm16Utterances } from "./asr-vad.js";
 import { byteLimitTransform, collectStream } from "./azookey.js";
 
 const passthroughReading = (input: string): string => input;
@@ -217,6 +218,42 @@ const withTimeout = async <T>(
   }
 };
 
+const transcribeUtterance = async (
+  runner: WorkersAiAsrRun,
+  pcm: Uint8Array,
+  timeoutMs: number,
+): Promise<string> => {
+  try {
+    const result = await withTimeout(
+      (signal) =>
+        runner(
+          WORKERS_AI_ASR_MODEL,
+          {
+            audio: {
+              body: wavBodyStream(pcm16ToWav(pcm)),
+              contentType: "audio/wav",
+            },
+            language: WORKERS_AI_ASR_LANGUAGE,
+          },
+          { signal },
+        ),
+      timeoutMs,
+    );
+    return transcriptFromResult(
+      result instanceof Response ? await resultFromRawResponse(result) : result,
+    );
+  } catch (error) {
+    if (error instanceof GatewayError) {
+      throw error;
+    }
+    throw new GatewayError(
+      HTTP_BAD_GATEWAY,
+      "asr_workers_ai_failed",
+      errorDetail(error, "Workers AI ASR failed"),
+    );
+  }
+};
+
 const validatePcm = (pcm: Uint8Array): void => {
   if (pcm.length === 0 || pcm.length % 2 !== 0) {
     throw new GatewayError(
@@ -254,37 +291,15 @@ export const createWorkersAiAsrTranscriber = (
         "Workers AI ASR binding is not configured",
       );
     }
-    let result: unknown;
-    try {
-      result = await withTimeout(
-        (signal) =>
-          runner(
-            WORKERS_AI_ASR_MODEL,
-            {
-              audio: {
-                body: wavBodyStream(pcm16ToWav(pcm)),
-                contentType: "audio/wav",
-              },
-              language: WORKERS_AI_ASR_LANGUAGE,
-            },
-            { signal },
-          ),
-        timeoutMs,
-      );
-    } catch (error) {
-      if (error instanceof GatewayError) {
-        throw error;
-      }
-      throw new GatewayError(
-        HTTP_BAD_GATEWAY,
-        "asr_workers_ai_failed",
-        errorDetail(error, "Workers AI ASR failed"),
-      );
+    const utterances = segmentPcm16Utterances(pcm);
+    if (utterances.length === 0) {
+      return postprocessWorkersAiAsrTranscript("").text;
     }
-    if (result instanceof Response) {
-      result = await resultFromRawResponse(result);
-    }
-    return postprocessWorkersAiAsrTranscript(transcriptFromResult(result)).text;
+    const transcripts = await utterances.reduce<Promise<string[]>>(async (previous, utterance) => {
+      const collected = await previous;
+      return [...collected, await transcribeUtterance(runner, utterance.pcm, timeoutMs)];
+    }, Promise.resolve([]));
+    return postprocessWorkersAiAsrTranscript(transcripts.join("")).text;
   };
 };
 
