@@ -58,8 +58,8 @@ describe("converter model catalog", () => {
     ).toEqual(["azookey-rust-wasm", "zenz-v3.2-small-gguf"]);
   });
 
-  it("separates waiting for ready from a failed handshake", () => {
-    expect(workerConverterCatalogState(null, "idle")).toBe("unknown");
+  it("separates idle from handshake-in-flight and from a failed handshake", () => {
+    expect(workerConverterCatalogState(null, "idle")).toBe("idle");
     expect(workerConverterCatalogState(null, "connecting")).toBe("unknown");
     expect(workerConverterCatalogState(null, "open")).toBe("unknown");
     expect(workerConverterCatalogState(null, "error")).toBe("unreachable");

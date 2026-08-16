@@ -876,14 +876,16 @@ export default function ComparePage() {
   const workerCatalogNotice =
     config.mode !== "worker-vibrato"
       ? ""
-      : workerCatalogState === "unknown"
-        ? "Cloudflare Worker の advertised 一覧を待っています。接続前は辞書だけ選べます。"
-        : workerCatalogState === "unreachable"
-          ? "Cloudflare Worker に接続できていません。変換モデルは辞書のみです。"
-          : advertisedWorkerModels !== null &&
-              !advertisedWorkerModels.some((model) => model.includes("zenz"))
-            ? "この Worker は Zenz を advertised していません。MODEL_ROUTES が空です。"
-            : "";
+      : workerCatalogState === "idle"
+        ? "まだ Cloudflare Worker に接続していません。辞書だけ選べます。"
+        : workerCatalogState === "unknown"
+          ? "Cloudflare Worker の advertised 一覧を待っています。接続前は辞書だけ選べます。"
+          : workerCatalogState === "unreachable"
+            ? "Cloudflare Worker に接続できていません。変換モデルは辞書のみです。"
+            : advertisedWorkerModels !== null &&
+                !advertisedWorkerModels.some((model) => model.includes("zenz"))
+              ? "この Worker は Zenz を advertised していません。MODEL_ROUTES が空です。"
+              : "";
 
   const browserWasmStatus = useMemo(
     () =>

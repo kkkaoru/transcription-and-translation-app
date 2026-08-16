@@ -50,7 +50,7 @@ export const isConverterModel = (value: unknown): value is ConverterModel =>
 export const isZenzConverterModel = (model: ConverterModel): boolean =>
   model === "zenz-v3.2-xsmall-gguf" || model === "zenz-v3.2-small-gguf";
 
-export type WorkerCatalogState = "unknown" | "ready" | "unreachable";
+export type WorkerCatalogState = "idle" | "unknown" | "ready" | "unreachable";
 
 /** Worker-path choices. Until ready, only WASM is selectable. */
 export const advertisedConverterModelOptions = (
@@ -74,6 +74,9 @@ export const workerConverterCatalogState = (
   }
   if (connectionState === "error" || connectionState === "closed") {
     return "unreachable";
+  }
+  if (connectionState === "idle") {
+    return "idle";
   }
   return "unknown";
 };
