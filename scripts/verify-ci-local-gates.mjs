@@ -53,6 +53,14 @@ const coverageCommandsFromWorkflow = (workflow) =>
     .map((command) => command.replace(/^bun run\s+/u, ""))
     .filter((script) => script.endsWith("test:coverage"));
 
+/**
+ * Compares the coverage scripts declared in package.json against the ones CI
+ * runs. package.json is the source rather than QUALITY_GATE_STEPS on purpose:
+ * a script missing from both gates is invisible to the local list, which is
+ * how dictionaries:test:coverage went unrun by either. Together with the
+ * existing CI-subset check this pins
+ * `package.json coverage ⊆ CI ⊆ check:all`.
+ */
 export const assertCoverageGateParity = ({ packageJson, workflow }) => {
   const local = coverageScriptsFromPackage(packageJson);
   const ci = new Set(coverageCommandsFromWorkflow(workflow));
