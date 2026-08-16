@@ -11,6 +11,7 @@ export interface WorkerClientOptions {
   /** Delay between `busy` retries. Defaults to a short 50ms backoff. */
   busyRetryDelayMs?: number;
   onStateChange?: (state: WorkerConnectionState) => void;
+  onAdvertisedModels?: (models: readonly string[]) => void;
 }
 
 /**
@@ -345,6 +346,8 @@ export class AzooKeyWorkerClient {
   private readonly maxBusyRetries: number;
   private readonly busyRetryDelayMs: number;
   private readonly onStateChange?: (state: WorkerConnectionState) => void;
+  private readonly onAdvertisedModels?: (models: readonly string[]) => void;
+  private advertisedModels: readonly string[] = [];
   private readonly pending = new Map<string, PendingRequest>();
   /** The Worker accepts one conversion per socket; retain every utterance FIFO. */
   private readonly conversionQueue: QueuedConversion[] = [];
@@ -373,6 +376,11 @@ export class AzooKeyWorkerClient {
       clampNonNegativeInteger(options.busyRetryDelayMs, DEFAULT_BUSY_RETRY_DELAY_MS),
     );
     this.onStateChange = options.onStateChange;
+    this.onAdvertisedModels = options.onAdvertisedModels;
+  }
+
+  get advertisedConverterModels(): readonly string[] {
+    return this.advertisedModels;
   }
 
   get connectionState(): WorkerConnectionState {
@@ -691,7 +699,16 @@ export class AzooKeyWorkerClient {
     } catch {
       return;
     }
-    const parsed = parseWorkerMessage(parseJsonMessage(text));
+    const payload = parseJsonMessage(text);
+    if (isRecord(payload) && readString(payload, "type") === "azookey.ready") {
+      const models = Array.isArray(payload["models"])
+        ? payload["models"].filter((model): model is string => typeof model === "string")
+        : [];
+      this.advertisedModels = models;
+      this.onAdvertisedModels?.(models);
+      return;
+    }
+    const parsed = parseWorkerMessage(payload);
     if (!parsed) {
       return;
     }

@@ -57,6 +57,7 @@ import {
   traceStepLocationLabel,
 } from "../lib/conversion-trace";
 import {
+  advertisedConverterModelOptions,
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
   isConverterModel,
@@ -244,6 +245,9 @@ export default function ComparePage() {
     "idle",
   );
   const [workerState, setWorkerState] = useState<WorkerConnectionState>("idle");
+  const [advertisedWorkerModels, setAdvertisedWorkerModels] = useState<readonly string[] | null>(
+    null,
+  );
   const [browserWasmState, setBrowserWasmState] = useState<BrowserWasmState>("idle");
   const [speechFinalText, setSpeechFinalText] = useState("");
   const [speechInterimText, setSpeechInterimText] = useState("");
@@ -312,9 +316,15 @@ export default function ComparePage() {
           setWorkerState(state);
         }
       },
+      onAdvertisedModels: (models) => {
+        if (workerGenerationRef.current === generation) {
+          setAdvertisedWorkerModels(models);
+        }
+      },
     });
     workerRef.current = client;
     setWorkerState(client.connectionState);
+    setAdvertisedWorkerModels(null);
     return () => {
       client.close();
       if (workerRef.current === client) {
@@ -851,6 +861,13 @@ export default function ComparePage() {
     () => comparisonModeOptions.find((option) => option.value === config.mode),
     [config.mode],
   );
+  const selectableConverterOptions = useMemo(
+    () =>
+      config.mode === "worker-vibrato"
+        ? advertisedConverterModelOptions(advertisedWorkerModels)
+        : converterModelOptions,
+    [advertisedWorkerModels, config.mode],
+  );
 
   const browserWasmStatus = useMemo(
     () =>
@@ -1097,6 +1114,15 @@ export default function ComparePage() {
     setNotice("履歴をクリアしました");
   };
 
+  useEffect(() => {
+    if (
+      config.mode === "worker-vibrato" &&
+      !selectableConverterOptions.some((option) => option.value === config.converterModel)
+    ) {
+      setConfig((current) => ({ ...current, converterModel: DEFAULT_CONVERTER_MODEL }));
+    }
+  }, [config.converterModel, config.mode, selectableConverterOptions]);
+
   const configPanelHeading = (
     <div className="panel-heading">
       <div>
@@ -1261,7 +1287,7 @@ export default function ComparePage() {
                     }}
                     aria-describedby="converter-model-description"
                   >
-                    {converterModelOptions.map((option) => (
+                    {selectableConverterOptions.map((option) => (
                       <option key={option.value} value={option.value} title={option.description}>
                         {option.label}
                       </option>

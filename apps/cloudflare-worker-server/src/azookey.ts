@@ -1870,12 +1870,10 @@ export const readyAzookeyMessage = (
         ? "configured"
         : "unconfigured"
       : workerInputStage;
-  const zenzDictionaryFallbackAvailable = dictionaryTransport === "portable-wasm";
   const availableModels = [
     AZOOKEY_MODEL,
     ...AZOOKEY_CONVERT_MODELS.filter(
-      (model) =>
-        model !== AZOOKEY_MODEL && (Boolean(modelRoutes[model]) || zenzDictionaryFallbackAvailable),
+      (model) => model !== AZOOKEY_MODEL && Boolean(modelRoutes[model]),
     ),
   ];
   return jsonMessage({

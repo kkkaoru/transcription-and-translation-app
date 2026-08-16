@@ -852,4 +852,16 @@ describe("AzooKey Worker client connection lifecycle", () => {
       expect(workerErrorStage(rejection)).toBe("worker-request");
     }
   });
+
+  it("records advertised models from azookey.ready and ignores empty Zenz ads", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const advertised: string[][] = [];
+    const { socket, client } = openClient({
+      onAdvertisedModels: (models) => advertised.push([...models]),
+    });
+    socket.message(JSON.stringify({ type: "azookey.ready", models: ["azookey-rust-wasm"] }));
+    await Promise.resolve();
+    expect(advertised).toEqual([["azookey-rust-wasm"]]);
+    expect(client.advertisedConverterModels).toEqual(["azookey-rust-wasm"]);
+  });
 });

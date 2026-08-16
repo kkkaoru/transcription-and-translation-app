@@ -49,3 +49,16 @@ export const isConverterModel = (value: unknown): value is ConverterModel =>
 
 export const isZenzConverterModel = (model: ConverterModel): boolean =>
   model === "zenz-v3.2-xsmall-gguf" || model === "zenz-v3.2-small-gguf";
+
+/** Worker-path choices. Unadvertised Zenz ids are not selectable. */
+export const advertisedConverterModelOptions = (
+  advertised: readonly string[] | null,
+): readonly ConverterModelOption[] => {
+  if (advertised === null) {
+    return converterModelOptions;
+  }
+  const allowed = new Set(advertised);
+  return converterModelOptions.filter(
+    (option) => option.value === DEFAULT_CONVERTER_MODEL || allowed.has(option.value),
+  );
+};

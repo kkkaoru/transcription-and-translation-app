@@ -86,10 +86,11 @@ this note.
 `maxIterations=0` exists only as an orchestration argument. Production
 always uses `ZENZ_ONE_COMPLETION_MAX_ITERATIONS` (10).
 
-Ready still advertises Zenz ids when the portable wasm dictionary is
-loaded, even if `MODEL_ROUTES` is empty
-(`azookey.ts:1873-1879`). A client that picks an advertised id then
-hits `unconfigured-route`.
+Ready advertises a Zenz id only when that id is in `MODEL_ROUTES`.
+An empty route map yields `models: [azookey-rust-wasm]` even if the
+portable dictionary is loaded. A client that still sends an unadvertised
+Zenz id gets dictionary text and `modelFallback=unconfigured-route`.
+Compare hides unadvertised Zenz options on the worker path.
 
 ## 3. What production does now
 

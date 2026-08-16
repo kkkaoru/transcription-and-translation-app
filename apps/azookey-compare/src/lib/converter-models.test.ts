@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  advertisedConverterModelOptions,
   CONVERTER_MODELS,
   converterModelOptions,
   DEFAULT_CONVERTER_MODEL,
@@ -40,5 +41,19 @@ describe("converter model catalog", () => {
     expect(converterModelOptions[1]?.description).toContain("入力と左文脈を remote へ送ります");
     expect(converterModelOptions[1]?.description).toContain("browser-complete ではありません");
     expect(converterModelOptions[2]?.description).toContain("browser-complete ではありません");
+  });
+
+  it("hides unadvertised Zenz ids on the worker path", () => {
+    expect(advertisedConverterModelOptions(null).map((option) => option.value)).toEqual([
+      ...CONVERTER_MODELS,
+    ]);
+    expect(advertisedConverterModelOptions([]).map((option) => option.value)).toEqual([
+      "azookey-rust-wasm",
+    ]);
+    expect(
+      advertisedConverterModelOptions(["azookey-rust-wasm", "zenz-v3.2-small-gguf"]).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["azookey-rust-wasm", "zenz-v3.2-small-gguf"]);
   });
 });

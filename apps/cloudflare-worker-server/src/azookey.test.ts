@@ -101,11 +101,26 @@ describe("AzooKey Worker text contract", () => {
     });
     expect(JSON.parse(readyAzookeyMessage(125, "passthrough", {}, "portable-wasm"))).toMatchObject({
       dictionary: { transport: "portable-wasm", configured: true },
-      models: [AZOOKEY_MODEL, AZOOKEY_ZENZ_XSMALL_MODEL, AZOOKEY_ZENZ_SMALL_MODEL],
+      models: [AZOOKEY_MODEL],
+    });
+    expect(
+      JSON.parse(
+        readyAzookeyMessage(
+          125,
+          "passthrough",
+          { [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" } },
+          "portable-wasm",
+        ),
+      ),
+    ).toMatchObject({
+      models: [AZOOKEY_MODEL, AZOOKEY_ZENZ_SMALL_MODEL],
     });
     expect(JSON.parse(readyAzookeyMessage(125, "passthrough", {}, "builtin"))).toMatchObject({
       models: [AZOOKEY_MODEL],
     });
+    expect(
+      JSON.parse(readyAzookeyMessage(125, "passthrough", {}, "portable-wasm")).models,
+    ).not.toContain(AZOOKEY_ZENZ_XSMALL_MODEL);
   });
 
   it("rejects every malformed request field and authentication shape", () => {
