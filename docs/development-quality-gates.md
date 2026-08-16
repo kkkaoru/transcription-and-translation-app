@@ -35,11 +35,32 @@ Implemented in commit `40084bd`.
 Coverage and typecheck also pin `package.json ⊆ CI ⊆ check:all` for those
 suffixes. The source of truth is the `package.json` script name, not the
 local step list, so a script that never joined either gate is still visible.
-Each suffix is its own checker. Lint, fmt, and test can drift the same way;
-they are not in this checker because those families still mix real gates with
-local-only crates (`rust:zenz-verifier:*`) and non-gate scripts (`test`,
-`gateway:test`). Adding them would make the exclusion list the product.
-Decide per family, with a written reason, before extending the checker.
+Each suffix is its own checker. Lint was classified on 2026-08-16 and is
+**not** in this checker. Root `package.json` has nine `lint` / `*:lint`
+scripts:
+
+| Script | Class | Why |
+| --- | --- | --- |
+| `lint` | Gate | `biome check .`. In CI and `check:all`. |
+| `parapper:lint` | Gate | Parapper ESLint. In both. |
+| `parapper:rust:lint` | Gate | Parapper clippy. In both. CI clears `RUSTUP_TOOLCHAIN`. |
+| `rust:azookey:lint` | Gate | In both. |
+| `rust:input-lm:lint` | Gate | In both. |
+| `rust:vibrato:lint` | Gate | In both. |
+| `rust:wasm:lint` | Gate | In both. |
+| `rust:lint` | Gate | Desktop clippy via `scripts/rust-lint.mjs`. Not an umbrella over the other Rust lints. In both. |
+| `rust:zenz-verifier:lint` | Not class 2 | In `check:all`, not in CI. Already `--no-default-features`. The written local-only reason (`docs/development-quality-gates.md`, `packages/zenz-verifier-rust/README.md`) is for `rust:zenz-verifier:candle`, added in `9cb6089`. That commit put the Candle-free crate into `check:all` and never mentioned CI. There is no sentence that lint should stay off CI. |
+
+Not in this family: package-local `lint` scripts (invoked by the root names),
+`parapper:check` (umbrella), `rust:zenz-verifier:candle` (contains clippy,
+name is not `:lint`), `format:check`.
+
+Lint parity cannot start with an empty exclusion map. The only extra script
+is `rust:zenz-verifier:lint`, and the honest text for it is "never added to
+CI", which is drift, not an exclusion. Writing that into the map would make
+the exclusion the product. Adding the script to CI is a separate decision.
+Until one of those is chosen, do not add a lint checker. Fmt and test were
+not re-classified here.
 
 ### Duplicate work removed, then restored as a post-build check
 
