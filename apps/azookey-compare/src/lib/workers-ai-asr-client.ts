@@ -3,6 +3,7 @@ import { COMPARE_WORKERS_AI_ASR_PATH } from "./inference-proxy";
 
 export interface WorkersAiAsrTranscriptionResult {
   text: string;
+  reading?: string;
   language?: string;
   model?: string;
   transport?: string;
@@ -153,6 +154,7 @@ export const transcribeWorkersAiAsr = async (
   const body = payload as WorkersAiAsrTranscriptionResult;
   return {
     text: body.text,
+    ...(body.reading ? { reading: body.reading } : {}),
     ...(body.language ? { language: body.language } : {}),
     ...(body.model ? { model: body.model } : {}),
     ...(body.transport ? { transport: body.transport } : {}),

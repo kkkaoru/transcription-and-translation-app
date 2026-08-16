@@ -1,4 +1,6 @@
 /**
+ * This file runs with bun.
+ *
  * Phonetic regression fixtures for the standalone AzooKey Worker WASM path
  * (`azookey-rust` converter + official LOUDS dictionary).
  *
@@ -20,6 +22,13 @@ export interface AzookeyConversionFixture {
 
 export const AZOOKEY_CONVERSION_FIXTURES: readonly AzookeyConversionFixture[] = [
   {
+    id: "weather-kyou-ii-tenki",
+    label: "今日はいい天気",
+    reading: "きょうはいいてんき",
+    expected: "今日はいい天気",
+    note: "Tauri-aligned spot check: いい must not become 良い",
+  },
+  {
     id: "greeting-okure",
     label: "お疲れ様でした",
     reading: "おつかれさまでした",
@@ -39,6 +48,27 @@ export const AZOOKEY_CONVERSION_FIXTURES: readonly AzookeyConversionFixture[] = 
     reading: "すーぷは",
     expected: "スープは",
     note: "Must not become スープ歯",
+  },
+  {
+    id: "weather-kyou-atsui",
+    label: "今日の天気は暑い",
+    reading: "きょうのてんきはあつい",
+    expected: "今日の天気は暑い",
+    note: "Tauri-aligned spot check: あつい is 暑い after 天気",
+  },
+  {
+    id: "soup-atsui",
+    label: "スープが熱い",
+    reading: "すーぷがあつい",
+    expected: "スープが熱い",
+    note: "Tauri-aligned spot check: あつい is 熱い after スープ",
+  },
+  {
+    id: "haishin",
+    label: "今日は配信です",
+    reading: "きょうははいしんです",
+    expected: "今日は配信です",
+    note: "Tauri-aligned spot check: はいしん is 配信",
   },
   {
     id: "weather-ashita",

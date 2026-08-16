@@ -31,6 +31,29 @@ describe("workers-ai-asr-client", () => {
     expect(init.body).toBeInstanceOf(FormData);
   });
 
+  it("forwards the Worker reading field when Nova-3 post-processing supplies it", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({
+        text: "きょうはいいてんき",
+        reading: "きょうはいいてんき",
+        language: "ja",
+        model: "@cf/deepgram/nova-3",
+        transport: "http",
+      }),
+    );
+    const result = await transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
+      endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
+      fetchImpl,
+    });
+    expect(result).toStrictEqual({
+      text: "きょうはいいてんき",
+      reading: "きょうはいいてんき",
+      language: "ja",
+      model: "@cf/deepgram/nova-3",
+      transport: "http",
+    });
+  });
+
   it("surfaces server errors without printing secrets", async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json(
