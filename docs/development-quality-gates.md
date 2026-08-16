@@ -62,6 +62,34 @@ leftover is now on CI as `rust:zenz-verifier:test`, but the family still
 mixes non-gates and a mapped Windows-only command. Do not add a test-family
 checker; that would make the exclusion list the product.
 
+Build was classified on 2026-08-16. A `:build` checker is the wrong unit.
+Build is generation. Three scripts use a successful compile as a gate;
+the rest produce artifacts or clean them. That line is per script, not
+per suffix, so a family checker would make the exclusion list the product.
+Do not add one. This is "do not add", not "not yet decidable": there is
+no leftover script whose CI status is an unwritten drift.
+
+| Script | Class | Why |
+| --- | --- | --- |
+| `gateway:build` | Gate | `tsc` for the gateway. In CI and `check:all`. Cached local 1.2 s. |
+| `rust:wasm:build` | Gate | `cargo build --locked` wasm32 release. In `check:all`. CI runs the same Cargo, mapped in `ciGateMappings`. Cached local 0.5 s. |
+| `rust:vibrato:wasm:build` | Gate | Same mapping for Vibrato wasm. Cached local 0.09 s. |
+| `tauri:build` | CI-only, written | Desktop release on macOS arm64/x64 and Windows. `ciGateExclusions` for `${{ matrix.command }}`. Not in `check:all`. |
+| `build` | Not a gate | Desktop frontend production bundle. |
+| `sidecar:build` | Not a gate | Builds sidecars for a real app. |
+| `build:app` | Not a gate | Alias of `tauri:build`. |
+| `build:app:dmg` / `build:app:release` / `tauri:build:release` | Not a gate | Release artifacts. |
+| `azookey-compare:build` | Not a gate | Compare production bundle for deploy. |
+| `vibrato:wasm:build` | Not a gate | Bindgen generation. Different command from `rust:vibrato:wasm:build`. |
+| `clean:build` / `clean:build:rust` / `clean:build:temporary` | Not a gate | Deletes artifacts. |
+| `verify:tauri:build` / `verify:tauri:build:ui` | Not a gate | Smoke that happens to build. |
+| `test:build-cleanup` | Gate, other family | Scripts-test runner. Own disk-vs-list checker. Name is not a compile. |
+
+Do not add the missing generators to the quality job to make a suffix
+fit. `tauri:build` already has a job. Cold wasm release builds already
+run in CI as Cargo. Cached local times above are not a reason to add
+more builds.
+
 ### Duplicate work removed, then restored as a post-build check
 
 An earlier cleanup removed a second identical `assets:verify` from the local
