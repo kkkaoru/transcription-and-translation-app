@@ -107,6 +107,21 @@ must be invoked explicitly when GGUF or forward code changes.
 `check:all:unlocked` runs `scripts/run-timed-quality-steps.mjs`, which prints a
 monotonic start/end line for every step and writes `tmp/check-all-timing.json`.
 
+Warm local `check:all` on this machine, 2026-08-16, from `/tmp/checkall_*.log`
+that printed `[quality-gate] total`:
+
+| Steps | Healthy n | Min | Median | Max |
+| ---: | ---: | ---: | ---: | ---: |
+| 46 | 22 (90–140 s; dropped aborts and the 251 s / 314 s prune-cold runs) | 96.7 s | 100.1 s | 126.0 s |
+| 48 | 9 | 97.8 s | 101.1 s | 112.8 s |
+
+The two added local steps are `dictionaries:typecheck` (0.3–0.5 s) and
+`dictionaries:test:coverage` (0.5–0.7 s). Together they are about one
+second. The median moved 1.0 s. `rust:azookey:test` is still ~53–57 s
+and dominates. Keep **150 s** as the line that means the Rust debug
+cache was pruned, not as a 48-step adjustment. 48-step warm runs have
+not crossed 113 s.
+
 ## Memory incident and static findings
 
 The measurements that triggered this work were taken under severe system pressure and are **not a performance baseline**:
