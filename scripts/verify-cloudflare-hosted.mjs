@@ -136,6 +136,9 @@ export const summarizeWebsocketConversion = (conversion) => {
   };
 };
 
+export const GREETING_SPEECH_WAV_RELATIVE_PATH =
+  "apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav";
+
 export const buildWorkersAiAsrSmokeWav = () => {
   const sampleRate = 16_000;
   const sampleCount = Math.floor(sampleRate * 0.25);
@@ -165,9 +168,18 @@ export const buildWorkersAiAsrSmokeWav = () => {
   return wav;
 };
 
-export const smokeWorkersAiAsr = async ({ origin, headers }) => {
+export const loadGreetingSpeechWav = (root = repositoryRoot) => {
+  const wavPath = resolve(root, GREETING_SPEECH_WAV_RELATIVE_PATH);
+  if (!existsSync(wavPath)) {
+    throw new Error(`greeting speech WAV missing: ${wavPath}`);
+  }
+  return readFileSync(wavPath);
+};
+
+export const smokeWorkersAiAsr = async ({ origin, headers, wavBytes, fileName }) => {
   const form = new FormData();
-  form.set("file", new File([buildWorkersAiAsrSmokeWav()], "asr-smoke.wav", { type: "audio/wav" }));
+  const bytes = wavBytes ?? loadGreetingSpeechWav();
+  form.set("file", new File([bytes], fileName ?? "greeting-kikoemasu.wav", { type: "audio/wav" }));
   form.set("language", "ja");
   const response = await fetch(`${origin}${COMPARE_ASR_PATH}`, {
     method: "POST",
@@ -204,6 +216,14 @@ export const smokeWorkersAiAsr = async ({ origin, headers }) => {
   }
   if (typeof payload?.text !== "string") {
     return { ok: false, stage: "invalid_payload", status: response.status };
+  }
+  if (wavBytes === undefined && payload.text.trim().length === 0) {
+    return {
+      ok: false,
+      stage: "empty_speech_transcript",
+      status: response.status,
+      model: payload.model,
+    };
   }
   return {
     ok: true,

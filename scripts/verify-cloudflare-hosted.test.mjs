@@ -5,16 +5,28 @@ import {
   COMPARE_HEALTH_PATH,
   COMPARE_ORIGIN,
   evaluateHostedChecks,
+  GREETING_SPEECH_WAV_RELATIVE_PATH,
   INFERENCE_ORIGIN,
   isAcceptableElapsedMs,
   isRecordedElapsedMs,
   isUnauthenticatedAccessStatus,
+  loadGreetingSpeechWav,
   recordedElapsedMs,
   resolveAccessServiceToken,
   summarizeWebsocketConversion,
 } from "./verify-cloudflare-hosted.mjs";
 
 describe("verify-cloudflare-hosted", () => {
+  it("loads the desktop greeting speech fixture for hosted ASR probes", () => {
+    assert.equal(
+      GREETING_SPEECH_WAV_RELATIVE_PATH,
+      "apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav",
+    );
+    const wav = loadGreetingSpeechWav();
+    assert.equal(wav.byteLength > 10_000, true);
+    assert.equal(Buffer.from(wav.subarray(0, 4)).toString("ascii"), "RIFF");
+  });
+
   it("treats Access 401 and 302 as unauthenticated success", () => {
     assert.equal(isUnauthenticatedAccessStatus(401), true);
     assert.equal(isUnauthenticatedAccessStatus(302), true);
