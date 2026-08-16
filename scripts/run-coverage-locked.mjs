@@ -13,7 +13,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -165,6 +165,26 @@ const workspaceRoots = ["apps", "packages"];
  * rather than assumed. Returns null when nothing matches, which keeps a
  * mismatch visible instead of silently cleaning a path that does not exist.
  */
+const packageNameFromManifest = (packageDir) => {
+  const manifestPath = join(packageDir, "package.json");
+  if (!existsSync(manifestPath)) return null;
+  try {
+    const name = JSON.parse(readFileSync(manifestPath, "utf8")).name;
+    return typeof name === "string" && name.length > 0 ? name : null;
+  } catch {
+    return null;
+  }
+};
+
+const workspacePackageDirs = () =>
+  workspaceRoots.flatMap((workspaceRoot) => {
+    const root = join(repositoryRoot, workspaceRoot);
+    if (!existsSync(root)) return [];
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(root, entry.name));
+  });
+
 export const getPackageDir = (packageFilter) => {
   const parts = packageFilter.split("/").filter(Boolean);
 
@@ -176,6 +196,11 @@ export const getPackageDir = (packageFilter) => {
   for (const workspaceRoot of workspaceRoots) {
     const candidate = join(repositoryRoot, workspaceRoot, bareName);
     if (existsSync(join(candidate, "package.json"))) return candidate;
+  }
+
+  for (const candidate of workspacePackageDirs()) {
+    const name = packageNameFromManifest(candidate);
+    if (name === packageFilter || name === bareName) return candidate;
   }
 
   return null;

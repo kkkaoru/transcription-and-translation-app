@@ -181,10 +181,12 @@ describe("coverage package resolution", () => {
       getPackageDir("@caption-bridge/inference-server-core"),
       getPackageDir("packages/inference-server-core"),
     );
+    assert.equal(getPackageDir("parapper"), getPackageDir("packages/parapper-asr"));
   });
 
   it("returns null for an unknown package instead of a fabricated path", () => {
     assert.equal(getPackageDir("@caption-bridge/does-not-exist"), null);
+    assert.equal(getPackageDir("does-not-exist"), null);
   });
 
   it("prints exhausted and low slack louder than a comfortable margin", () => {
