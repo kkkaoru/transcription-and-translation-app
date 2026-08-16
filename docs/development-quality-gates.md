@@ -59,8 +59,51 @@ Lint parity cannot start with an empty exclusion map. The only extra script
 is `rust:zenz-verifier:lint`, and the honest text for it is "never added to
 CI", which is drift, not an exclusion. Writing that into the map would make
 the exclusion the product. Adding the script to CI is a separate decision.
-Until one of those is chosen, do not add a lint checker. Fmt and test were
-not re-classified here.
+Until one of those is chosen, do not add a lint checker.
+
+Fmt was classified the same day. Root `format` / `format:check` / `*:fmt`:
+
+| Script | Class | Why |
+| --- | --- | --- |
+| `format:check` | Gate | `biome format .`. In both. Name is not `:fmt`. A `:fmt` checker would not see it. |
+| `format` | Not a gate | `biome format --write .`. Mutating writer. |
+| `parapper:rust:fmt` | Gate | In both. |
+| `rust:azookey:fmt` | Gate | In both. |
+| `rust:input-lm:fmt` | Gate | In both. |
+| `rust:vibrato:fmt` | Gate | In both. |
+| `rust:wasm:fmt` | Gate | In both. |
+| `rust:fmt` | Gate | Desktop `cargo fmt --check`. Not an umbrella. In both. |
+| `rust:zenz-verifier:fmt` | Same as lint | In `check:all`, not in CI. `-- --check` only. No written reason to stay off CI. Same `9cb6089` drift. |
+
+Fmt parity cannot start empty either. Same leftover, same missing decision.
+Do not add a fmt checker until `rust:zenz-verifier:fmt` is on CI or has a
+real exclusion. Do not invent a checker over `format:check`; that is a
+different suffix.
+
+Test was classified the same day. A `:test` checker is the wrong unit.
+Coverage already has its own chain. What remains:
+
+| Script | Class | Why |
+| --- | --- | --- |
+| `test` | Not a gate | Desktop vitest without coverage. Gate is `test:coverage`. |
+| `test:watch` | Not a gate | Watcher. |
+| `gateway:test` | Not a gate | Same suite as `gateway:test:coverage` minus the report. |
+| `worker:test` | Not a gate | Same suite as `worker:test:coverage` minus the report. |
+| `test:coverage` and the other `*:test:coverage` | Already chained | Own checker. |
+| `test:build-cleanup` | Gate | Different suffix. Own disk-vs-list checker. |
+| `parapper:test:ui` | Gate | In both. Name is `:test:ui`, not `:test`. |
+| `parapper:rust:test` | Local-only, written | In `check:all`. CI runs the same Cargo as `cargo test … -p parapper` on Windows only. Linux cannot. `ci.yml` comments and `ciGateMappings`. |
+| `rust:azookey:test` | Gate | In both. |
+| `rust:input-lm:test` | Gate | In both. |
+| `rust:vibrato:test` | Gate | In both. |
+| `rust:wasm:test` | Gate | In both. |
+| `rust:desktop:test` | Gate | In both. |
+| `rust:zenz-verifier:test` | Same as lint | `--no-default-features`. In `check:all`, not in CI. Reason in docs is for candle, not for omitting this test from CI. |
+
+Do not add a test-family checker. The suffix mixes non-gates, an already
+chained coverage family, a mapped Windows-only Cargo command, and the same
+zenz leftover. That would make the exclusion list the product. The leftover
+is again "not yet decidable", not "do not add".
 
 ### Duplicate work removed, then restored as a post-build check
 
