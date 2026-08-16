@@ -60,6 +60,9 @@ jobs:
       - run: bun run assets:verify
       - run: bun run test:build-cleanup
       - run: bun run typecheck
+      - run: bun run azookey-reading:typecheck
+      - run: bun run dictionaries:typecheck
+      - run: bun run sentence-boundary:typecheck
       - run: bun run azookey-compare:typecheck
       - run: bun run check:single-app
       - run: bun run test:coverage

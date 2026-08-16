@@ -6,6 +6,7 @@ export const QUALITY_GATE_STEPS = [
   "test:build-cleanup",
   "typecheck",
   "azookey-reading:typecheck",
+  "dictionaries:typecheck",
   "sentence-boundary:typecheck",
   "azookey-compare:typecheck",
   "test:coverage",
