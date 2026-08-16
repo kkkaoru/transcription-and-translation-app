@@ -193,6 +193,54 @@ export const lockPathForPackage = (packageFilter) => {
   return join(tmpdir(), `coverage-lock-${lockKey.replace(/[^a-z0-9.-]/gi, "-")}.lock`);
 };
 
+export const COVERAGE_THRESHOLD_PERCENT = 95;
+
+const ceilCoveredForThreshold = (total, percent = COVERAGE_THRESHOLD_PERCENT) =>
+  Math.ceil((percent / 100) * total);
+
+/** Numbers-only slack against the existing 95% floor. Does not change pass/fail. */
+export const formatCoverageSlackLine = (metric, summary, percent = COVERAGE_THRESHOLD_PERCENT) => {
+  const row = summary?.[metric];
+  if (!row || typeof row.total !== "number" || typeof row.covered !== "number") {
+    return `${metric} slack unknown (no ${metric} row in coverage-summary.json)`;
+  }
+  const need = ceilCoveredForThreshold(row.total, percent);
+  const slack = row.covered - need;
+  const pct = typeof row.pct === "number" ? row.pct.toFixed(2) : String(row.pct);
+  const counts = `${row.covered}/${row.total} = ${pct}% need>=${need} slack=${slack}`;
+  if (slack <= 0) {
+    return `${metric} SLACK EXHAUSTED ${counts} — next uncovered ${metric} fails ${percent}%`;
+  }
+  if (slack === 1) {
+    return `${metric} SLACK LOW ${counts}`;
+  }
+  return `${metric} slack ${counts}`;
+};
+
+export const reportCoverageSlack = (packageFilter) => {
+  const packageDir = getPackageDir(packageFilter);
+  if (packageDir === null) {
+    console.log("coverage slack unknown (package directory not resolved)");
+    return;
+  }
+  const summaryPath = join(packageDir, "coverage", "coverage-summary.json");
+  if (!existsSync(summaryPath)) {
+    console.log(`coverage slack unknown (missing ${relative(repositoryRoot, summaryPath)})`);
+    return;
+  }
+  let summary;
+  try {
+    summary = JSON.parse(readFileSync(summaryPath, "utf8")).total;
+  } catch (error) {
+    console.log(`coverage slack unknown (could not read summary: ${error.message})`);
+    return;
+  }
+  console.log(`coverage slack ${packageFilter}`);
+  for (const metric of ["branches", "lines", "statements", "functions"]) {
+    console.log(`  ${formatCoverageSlackLine(metric, summary)}`);
+  }
+};
+
 const cleanCoverageDir = async (packageFilter) => {
   const packageDir = getPackageDir(packageFilter);
   if (packageDir === null) {
@@ -293,6 +341,9 @@ export async function main(argv = process.argv.slice(2)) {
     const exitCode = await runVitest(packageFilter, extraArgs, (runningChild) => {
       child = runningChild;
     });
+    if (!commandOverride) {
+      reportCoverageSlack(packageFilter);
+    }
     return interruptedBy ? signalExitCode(interruptedBy) : exitCode;
   } catch (error) {
     if (!interruptedBy) {

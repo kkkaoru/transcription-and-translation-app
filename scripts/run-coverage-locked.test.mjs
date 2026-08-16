@@ -9,6 +9,7 @@ import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   acquireLock,
+  formatCoverageSlackLine,
   getPackageDir,
   isProcessAlive,
   lockPathForPackage,
@@ -184,6 +185,23 @@ describe("coverage package resolution", () => {
 
   it("returns null for an unknown package instead of a fabricated path", () => {
     assert.equal(getPackageDir("@caption-bridge/does-not-exist"), null);
+  });
+
+  it("prints exhausted and low slack louder than a comfortable margin", () => {
+    const branches = { total: 898, covered: 854, pct: 95.1 };
+    assert.match(
+      formatCoverageSlackLine("branches", { branches }),
+      /branches SLACK EXHAUSTED 854\/898 = 95.10% need>=854 slack=0/,
+    );
+    assert.match(
+      formatCoverageSlackLine("branches", { branches: { total: 1825, covered: 1735, pct: 95.07 } }),
+      /branches SLACK LOW 1735\/1825 = 95.07% need>=1734 slack=1/,
+    );
+    assert.match(
+      formatCoverageSlackLine("branches", { branches: { total: 1825, covered: 1736, pct: 95.12 } }),
+      /^branches slack 1736\/1825 = 95.12% need>=1734 slack=2$/,
+    );
+    assert.match(formatCoverageSlackLine("branches", {}), /branches slack unknown/);
   });
 
   it("shares one lock across every spelling of a package filter", () => {
