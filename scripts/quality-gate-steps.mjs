@@ -11,6 +11,7 @@ export const QUALITY_GATE_STEPS = [
   "test:coverage",
   "core:test:coverage",
   "azookey-reading:test:coverage",
+  "dictionaries:test:coverage",
   "sentence-boundary:test:coverage",
   "azookey-compare:test:coverage",
   "gateway:build",

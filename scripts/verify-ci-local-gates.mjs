@@ -38,6 +38,40 @@ export const ciGateMappings = new Map([
  */
 export const buildCleanupTestExclusions = new Map();
 
+/**
+ * Coverage gates deliberately absent from CI. Every entry needs a reason; the
+ * map starts empty because the four packages that were missing had simply
+ * never been added when their scripts appeared.
+ */
+export const ciCoverageExclusions = new Map();
+
+const coverageScriptsFromPackage = (packageJson) =>
+  Object.keys(packageJson.scripts).filter((name) => name.endsWith("test:coverage"));
+
+const coverageCommandsFromWorkflow = (workflow) =>
+  extractCiGateCommands(workflow)
+    .map((command) => command.replace(/^bun run\s+/u, ""))
+    .filter((script) => script.endsWith("test:coverage"));
+
+export const assertCoverageGateParity = ({ packageJson, workflow }) => {
+  const local = coverageScriptsFromPackage(packageJson);
+  const ci = new Set(coverageCommandsFromWorkflow(workflow));
+  const missingFromCi = local.filter(
+    (script) => !ci.has(script) && !ciCoverageExclusions.has(script),
+  );
+  const missingLocally = [...ci].filter((script) => !local.includes(script));
+  if (missingFromCi.length > 0 || missingLocally.length > 0) {
+    const parts = [];
+    if (missingFromCi.length > 0) {
+      parts.push(`coverage gates missing from CI: ${missingFromCi.join(", ")}`);
+    }
+    if (missingLocally.length > 0) {
+      parts.push(`CI coverage gates with no local script: ${missingLocally.join(", ")}`);
+    }
+    throw new Error(parts.join("; "));
+  }
+};
+
 export const ciGateExclusions = new Map([
   [
     matrixCommand,

@@ -5,7 +5,9 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   assertBuildCleanupTestManifest,
+  assertCoverageGateParity,
   buildCleanupTestExclusions,
+  ciCoverageExclusions,
   ciGateExclusions,
   extractCiGateCommands,
   extractLocalGateScripts,
@@ -101,6 +103,44 @@ describe("CI and local quality-gate parity", () => {
     assert.notEqual(second, -1);
     assert.ok(first < workerTypecheck);
     assert.ok(workerTypecheck < second);
+  });
+
+  it("runs every coverage gate in CI as well as locally", () => {
+    assertCoverageGateParity({ packageJson, workflow });
+  });
+
+  it("names a coverage gate that CI does not run", () => {
+    assert.throws(
+      () =>
+        assertCoverageGateParity({
+          packageJson: { scripts: { "lonely:test:coverage": "vitest run --coverage" } },
+          workflow: "      - run: bun run typecheck\n",
+        }),
+      (error) => {
+        assert.match(error.message, /coverage gates missing from CI: lonely:test:coverage/u);
+        return true;
+      },
+    );
+  });
+
+  it("names a CI coverage gate with no local script", () => {
+    assert.throws(
+      () =>
+        assertCoverageGateParity({
+          packageJson: { scripts: {} },
+          workflow: "      - run: bun run ghost:test:coverage\n",
+        }),
+      (error) => {
+        assert.match(error.message, /CI coverage gates with no local script: ghost:test:coverage/u);
+        return true;
+      },
+    );
+  });
+
+  it("requires every coverage exclusion to explain itself", () => {
+    for (const [script, reason] of ciCoverageExclusions) {
+      assert.match(reason, /\S/u, `${script} needs a reason`);
+    }
   });
 
   it("requires every platform-specific exclusion to exist and explain itself", () => {
