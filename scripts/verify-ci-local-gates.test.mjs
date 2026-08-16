@@ -6,10 +6,14 @@ import { fileURLToPath } from "node:url";
 import {
   assertBuildCleanupTestManifest,
   assertCoverageGateParity,
+  assertFmtGateParity,
+  assertLintGateParity,
   assertTypecheckGateParity,
   buildCleanupTestExclusions,
   ciCoverageExclusions,
+  ciFmtExclusions,
   ciGateExclusions,
+  ciLintExclusions,
   ciTypecheckExclusions,
   extractCiGateCommands,
   extractLocalGateScripts,
@@ -179,6 +183,82 @@ describe("CI and local quality-gate parity", () => {
 
   it("requires every typecheck exclusion to explain itself", () => {
     for (const [script, reason] of ciTypecheckExclusions) {
+      assert.match(reason, /\S/u, `${script} needs a reason`);
+    }
+  });
+
+  it("runs every lint gate in CI as well as locally", () => {
+    assertLintGateParity({ packageJson, workflow });
+  });
+
+  it("names a lint gate that CI does not run", () => {
+    assert.throws(
+      () =>
+        assertLintGateParity({
+          packageJson: { scripts: { "lonely:lint": "biome check ." } },
+          workflow: "      - run: bun run typecheck\n",
+        }),
+      (error) => {
+        assert.match(error.message, /lint gates missing from CI: lonely:lint/u);
+        return true;
+      },
+    );
+  });
+
+  it("names a CI lint gate with no local script", () => {
+    assert.throws(
+      () =>
+        assertLintGateParity({
+          packageJson: { scripts: {} },
+          workflow: "      - run: bun run ghost:lint\n",
+        }),
+      (error) => {
+        assert.match(error.message, /CI lint gates with no local script: ghost:lint/u);
+        return true;
+      },
+    );
+  });
+
+  it("requires every lint exclusion to explain itself", () => {
+    for (const [script, reason] of ciLintExclusions) {
+      assert.match(reason, /\S/u, `${script} needs a reason`);
+    }
+  });
+
+  it("runs every fmt gate in CI as well as locally", () => {
+    assertFmtGateParity({ packageJson, workflow });
+  });
+
+  it("names a fmt gate that CI does not run", () => {
+    assert.throws(
+      () =>
+        assertFmtGateParity({
+          packageJson: { scripts: { "lonely:fmt": "cargo fmt -- --check" } },
+          workflow: "      - run: bun run lint\n",
+        }),
+      (error) => {
+        assert.match(error.message, /fmt gates missing from CI: lonely:fmt/u);
+        return true;
+      },
+    );
+  });
+
+  it("names a CI fmt gate with no local script", () => {
+    assert.throws(
+      () =>
+        assertFmtGateParity({
+          packageJson: { scripts: {} },
+          workflow: "      - run: bun run ghost:fmt\n",
+        }),
+      (error) => {
+        assert.match(error.message, /CI fmt gates with no local script: ghost:fmt/u);
+        return true;
+      },
+    );
+  });
+
+  it("requires every fmt exclusion to explain itself", () => {
+    for (const [script, reason] of ciFmtExclusions) {
       assert.match(reason, /\S/u, `${script} needs a reason`);
     }
   });

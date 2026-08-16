@@ -106,6 +106,9 @@ jobs:
       - run: bun run rust:input-lm:fmt
       - run: bun run rust:input-lm:lint
       - run: bun run rust:input-lm:test
+      - run: bun run rust:zenz-verifier:fmt
+      - run: bun run rust:zenz-verifier:lint
+      - run: bun run rust:zenz-verifier:test
       - run: bun run rust:vibrato:fmt
       - run: bun run rust:vibrato:lint
       - run: bun run rust:vibrato:test

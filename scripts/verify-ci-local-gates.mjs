@@ -51,6 +51,18 @@ export const ciCoverageExclusions = new Map();
  */
 export const ciTypecheckExclusions = new Map();
 
+/**
+ * Lint gates deliberately absent from CI. Empty after rust:zenz-verifier:lint
+ * joined CI; that leftover was drift, not a local-only crate.
+ */
+export const ciLintExclusions = new Map();
+
+/**
+ * Fmt gates deliberately absent from CI. Empty after rust:zenz-verifier:fmt
+ * joined CI. `format` and `format:check` are a different suffix on purpose.
+ */
+export const ciFmtExclusions = new Map();
+
 const matchesGateSuffix = (name, suffix) => name === suffix || name.endsWith(`:${suffix}`);
 
 const scriptsEndingWith = (packageJson, suffix) =>
@@ -96,9 +108,7 @@ export const assertCoverageGateParity = ({ packageJson, workflow }) =>
   });
 
 /**
- * Same chain as coverage, for the typecheck suffix only. Not a generic
- * script-family checker: lint, fmt, and test still have local-only or
- * non-gate scripts, so they stay out until each family is decided separately.
+ * Same chain as coverage, for the typecheck suffix only.
  */
 export const assertTypecheckGateParity = ({ packageJson, workflow }) =>
   assertNamedGateParity({
@@ -107,6 +117,26 @@ export const assertTypecheckGateParity = ({ packageJson, workflow }) =>
     suffix: "typecheck",
     label: "typecheck",
     exclusions: ciTypecheckExclusions,
+  });
+
+/** Same chain for `lint` / `*:lint`. Test stays out: that suffix is mixed. */
+export const assertLintGateParity = ({ packageJson, workflow }) =>
+  assertNamedGateParity({
+    packageJson,
+    workflow,
+    suffix: "lint",
+    label: "lint",
+    exclusions: ciLintExclusions,
+  });
+
+/** Same chain for `*:fmt`. Does not include `format:check`. */
+export const assertFmtGateParity = ({ packageJson, workflow }) =>
+  assertNamedGateParity({
+    packageJson,
+    workflow,
+    suffix: "fmt",
+    label: "fmt",
+    exclusions: ciFmtExclusions,
   });
 
 export const ciGateExclusions = new Map([

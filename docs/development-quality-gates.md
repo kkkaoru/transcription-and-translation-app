@@ -32,78 +32,35 @@ The audit found that CI built `packages/vibrato/wasm` for `wasm32-unknown-unknow
 
 Implemented in commit `40084bd`.
 
-Coverage and typecheck also pin `package.json ⊆ CI ⊆ check:all` for those
-suffixes. The source of truth is the `package.json` script name, not the
-local step list, so a script that never joined either gate is still visible.
-Each suffix is its own checker. Lint was classified on 2026-08-16 and is
-**not** in this checker. Root `package.json` has nine `lint` / `*:lint`
-scripts:
+Coverage, typecheck, lint, and fmt pin `package.json ⊆ CI ⊆ check:all` for
+those suffixes. The source of truth is the `package.json` script name, not
+the local step list, so a script that never joined either gate is still
+visible. Each suffix is its own checker. Test stays out.
 
-| Script | Class | Why |
-| --- | --- | --- |
-| `lint` | Gate | `biome check .`. In CI and `check:all`. |
-| `parapper:lint` | Gate | Parapper ESLint. In both. |
-| `parapper:rust:lint` | Gate | Parapper clippy. In both. CI clears `RUSTUP_TOOLCHAIN`. |
-| `rust:azookey:lint` | Gate | In both. |
-| `rust:input-lm:lint` | Gate | In both. |
-| `rust:vibrato:lint` | Gate | In both. |
-| `rust:wasm:lint` | Gate | In both. |
-| `rust:lint` | Gate | Desktop clippy via `scripts/rust-lint.mjs`. Not an umbrella over the other Rust lints. In both. |
-| `rust:zenz-verifier:lint` | Not class 2 | In `check:all`, not in CI. Already `--no-default-features`. The written local-only reason (`docs/development-quality-gates.md`, `packages/zenz-verifier-rust/README.md`) is for `rust:zenz-verifier:candle`, added in `9cb6089`. That commit put the Candle-free crate into `check:all` and never mentioned CI. There is no sentence that lint should stay off CI. |
+Lint classification (2026-08-16). All nine `lint` / `*:lint` scripts are
+gates. `rust:lint` is desktop clippy, not an umbrella. The leftover was
+`rust:zenz-verifier:lint`: in `check:all`, not in CI, already
+`--no-default-features`. Docs for staying local applied to
+`rust:zenz-verifier:candle` (`9cb6089`), not to omitting this lint from CI.
+CI now runs the three Candle-free verifier steps. Lint parity is on, with
+an empty exclusion map.
 
-Not in this family: package-local `lint` scripts (invoked by the root names),
-`parapper:check` (umbrella), `rust:zenz-verifier:candle` (contains clippy,
-name is not `:lint`), `format:check`.
+Not in this family: package-local `lint` scripts, `parapper:check`,
+`rust:zenz-verifier:candle`, `format:check`.
 
-Lint parity cannot start with an empty exclusion map. The only extra script
-is `rust:zenz-verifier:lint`, and the honest text for it is "never added to
-CI", which is drift, not an exclusion. Writing that into the map would make
-the exclusion the product. Adding the script to CI is a separate decision.
-Until one of those is chosen, do not add a lint checker.
+Fmt classification, same day. `*:fmt` scripts are gates except `format`
+(mutating writer, different suffix) and `format:check` (already a gate,
+different suffix). The leftover was `rust:zenz-verifier:fmt`, the same
+`9cb6089` drift. Fmt parity is on, empty exclusion map. It does not watch
+`format:check`.
 
-Fmt was classified the same day. Root `format` / `format:check` / `*:fmt`:
-
-| Script | Class | Why |
-| --- | --- | --- |
-| `format:check` | Gate | `biome format .`. In both. Name is not `:fmt`. A `:fmt` checker would not see it. |
-| `format` | Not a gate | `biome format --write .`. Mutating writer. |
-| `parapper:rust:fmt` | Gate | In both. |
-| `rust:azookey:fmt` | Gate | In both. |
-| `rust:input-lm:fmt` | Gate | In both. |
-| `rust:vibrato:fmt` | Gate | In both. |
-| `rust:wasm:fmt` | Gate | In both. |
-| `rust:fmt` | Gate | Desktop `cargo fmt --check`. Not an umbrella. In both. |
-| `rust:zenz-verifier:fmt` | Same as lint | In `check:all`, not in CI. `-- --check` only. No written reason to stay off CI. Same `9cb6089` drift. |
-
-Fmt parity cannot start empty either. Same leftover, same missing decision.
-Do not add a fmt checker until `rust:zenz-verifier:fmt` is on CI or has a
-real exclusion. Do not invent a checker over `format:check`; that is a
-different suffix.
-
-Test was classified the same day. A `:test` checker is the wrong unit.
-Coverage already has its own chain. What remains:
-
-| Script | Class | Why |
-| --- | --- | --- |
-| `test` | Not a gate | Desktop vitest without coverage. Gate is `test:coverage`. |
-| `test:watch` | Not a gate | Watcher. |
-| `gateway:test` | Not a gate | Same suite as `gateway:test:coverage` minus the report. |
-| `worker:test` | Not a gate | Same suite as `worker:test:coverage` minus the report. |
-| `test:coverage` and the other `*:test:coverage` | Already chained | Own checker. |
-| `test:build-cleanup` | Gate | Different suffix. Own disk-vs-list checker. |
-| `parapper:test:ui` | Gate | In both. Name is `:test:ui`, not `:test`. |
-| `parapper:rust:test` | Local-only, written | In `check:all`. CI runs the same Cargo as `cargo test … -p parapper` on Windows only. Linux cannot. `ci.yml` comments and `ciGateMappings`. |
-| `rust:azookey:test` | Gate | In both. |
-| `rust:input-lm:test` | Gate | In both. |
-| `rust:vibrato:test` | Gate | In both. |
-| `rust:wasm:test` | Gate | In both. |
-| `rust:desktop:test` | Gate | In both. |
-| `rust:zenz-verifier:test` | Same as lint | `--no-default-features`. In `check:all`, not in CI. Reason in docs is for candle, not for omitting this test from CI. |
-
-Do not add a test-family checker. The suffix mixes non-gates, an already
-chained coverage family, a mapped Windows-only Cargo command, and the same
-zenz leftover. That would make the exclusion list the product. The leftover
-is again "not yet decidable", not "do not add".
+Test classification, same day. A `:test` checker is the wrong unit.
+Coverage already has its own chain. `test` / `test:watch` / `gateway:test` /
+`worker:test` are not gates. `parapper:rust:test` is local-only with a
+written reason (Windows `cargo test -p parapper`; Linux cannot). The zenz
+leftover is now on CI as `rust:zenz-verifier:test`, but the family still
+mixes non-gates and a mapped Windows-only command. Do not add a test-family
+checker; that would make the exclusion list the product.
 
 ### Duplicate work removed, then restored as a post-build check
 
