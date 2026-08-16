@@ -64,9 +64,13 @@ Fixing it would mean changing the one-HTTP-completion premise (sampling
 or multiple completions), not widening the C ABI. The 2s wall budget
 stays the limiter.
 
-Not confirmed: which of `売場` and `売り場` is cheaper in the binary
-dictionary. `probe_dict` was not run during the freeze that produced
-this note.
+Confirmed 2026-08-16 with `probe_dict` on the official dictionary.
+Higher `value` is better. Same reading `うりば` / `ウリバ`:
+`売り場` **-11.359** (mid 442) beats `売場` **-12.069** (mid 35).
+Viterbi 1-best for `うりば` is `売り場` (score -12.760 vs -13.470).
+`せいかうりば` 1-best is still `生家売り場`; `青果売り場` appears at
+rank 5, always with the cheaper `売り場` row. Plan 3's greedy
+completion chose the *more expensive* surface. Do not change 008.
 
 ## 2. When Plan 3 never reaches Zenz
 
