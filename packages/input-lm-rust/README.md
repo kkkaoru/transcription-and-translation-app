@@ -19,7 +19,7 @@ true (default `false`, `apps/desktop/src-tauri/src/config.rs`). The Settings
 UI exposes the toggle at `#rescore-enabled` (`data-testid="rescore-enabled"` in
 `apps/desktop/src/settings/SettingsView.tsx`), and `ModelManagementCard`
 downloads/extracts the archive as `input-n5-lm-v1` via
-`bridge.downloadInputLmModel()`. Miss, timeout (`timeout_ms` default 200 ms via
+`bridge.downloadInputLmModel()`. Miss, timeout (`timeout_ms` default 500 ms via
 `spawn_blocking` in `run_rescore_with_timeout`), and panic all fail-open to the
 original reading; `azookey_input_text` always keeps the unrescored reading for
 the caption-merge key. Model cache:
