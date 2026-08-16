@@ -19,10 +19,9 @@ import {
   AZOOKEY_MODEL,
   AZOOKEY_PROTOCOL,
   AZOOKEY_WS_PATH,
-  AZOOKEY_ZENZ_SMALL_MODEL,
-  AZOOKEY_ZENZ_XSMALL_MODEL,
   type AzookeyFetcher,
   type AzookeyRequestDependencies,
+  advertisedConvertModels,
   azookeyDictionaryTimeoutMs,
   azookeyTimeoutMs,
   BROWSER_VIBRATO_MODE,
@@ -31,6 +30,7 @@ import {
   HTTP_METHOD_NOT_ALLOWED,
   HTTP_SWITCHING_PROTOCOLS,
   openAzookeySocket,
+  parseModelRoutes,
 } from "./azookey.js";
 import azookeyWasm from "./azookey-wasm.js";
 import {
@@ -274,19 +274,7 @@ export const createWorker = (
       const hasVibratoUpstream = Boolean(env.VIBRATO_UPSTREAM_URL?.trim());
       const hasVibratoDictionary = Boolean(env.VIBRATO_DICTIONARY_URL?.trim());
       const hasAzookeyDictionary = Boolean(env.AZOOKEY_DICTIONARY_URL?.trim());
-      const modelRoutes = (() => {
-        try {
-          return JSON.parse(env.MODEL_ROUTES ?? "{}") as Record<string, unknown>;
-        } catch {
-          return {};
-        }
-      })();
-      const availableModels = [
-        AZOOKEY_MODEL,
-        ...[AZOOKEY_ZENZ_XSMALL_MODEL, AZOOKEY_ZENZ_SMALL_MODEL].filter((id) =>
-          Boolean(modelRoutes[id]),
-        ),
-      ];
+      const availableModels = advertisedConvertModels(parseModelRoutes(env.MODEL_ROUTES));
       return cors(
         json(HTTP_OK, {
           ok: true,

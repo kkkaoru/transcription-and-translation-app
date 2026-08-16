@@ -13,6 +13,7 @@ import {
   type AzookeyConnectionState,
   type AzookeyConverter,
   type AzookeyRuntime,
+  advertisedConvertModels,
   attachAzookeySocket,
   azookeyDictionaryTimeoutMs,
   azookeyTimeoutMs,
@@ -27,6 +28,7 @@ import {
   isZenzConvertModel,
   openAzookeySocket,
   parseAzookeyMessage,
+  parseModelRoutes,
   readyAzookeyMessage,
   resolveAzookeyHandshakeAuthorization,
   VIBRATO_MAX_RESPONSE_BYTES,
@@ -121,6 +123,21 @@ describe("AzooKey Worker text contract", () => {
     expect(
       JSON.parse(readyAzookeyMessage(125, "passthrough", {}, "portable-wasm")).models,
     ).not.toContain(AZOOKEY_ZENZ_XSMALL_MODEL);
+  });
+
+  it("advertises Zenz ids only when MODEL_ROUTES has a non-empty baseUrl", () => {
+    expect(advertisedConvertModels({})).toStrictEqual(["azookey-rust-wasm"]);
+    expect(
+      advertisedConvertModels({
+        "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.example" },
+      }),
+    ).toStrictEqual(["azookey-rust-wasm", "zenz-v3.2-small-gguf"]);
+    expect(parseModelRoutes('{"zenz-v3.2-small-gguf":{"baseUrl":"   "}}')).toStrictEqual({});
+    expect(
+      parseModelRoutes('{"zenz-v3.2-small-gguf":{"baseUrl":"https://zenz.example/"}}'),
+    ).toStrictEqual({
+      "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.example" },
+    });
   });
 
   it("rejects every malformed request field and authentication shape", () => {
@@ -1769,6 +1786,64 @@ describe("AzooKey Worker text contract", () => {
       type: "azookey.result",
       requestId: "req-1",
       convertedText: "converted:きょうははいしんです",
+    });
+  });
+
+  it("advertises Zenzai from ready only when MODEL_ROUTES has a GGUF baseUrl", async () => {
+    const configuredServer = new FakeSocket();
+    const configuredResponse = await openAzookeySocket(
+      new Request("https://worker.example/ws/azookey", {
+        headers: { upgrade: "websocket" },
+      }),
+      {
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.example" },
+        }),
+      },
+      {
+        converter: (text) => `converted:${text}`,
+        socketPair: () =>
+          ({
+            client: {},
+            server: configuredServer,
+          }) as unknown as {
+            client: WebSocket;
+            server: WebSocket;
+          },
+      },
+    );
+    expect(configuredResponse.status).toBe(101);
+    expect(JSON.parse(configuredServer.sent[0] ?? "{}")).toMatchObject({
+      type: "azookey.ready",
+      models: ["azookey-rust-wasm", "zenz-v3.2-small-gguf"],
+    });
+
+    const emptyServer = new FakeSocket();
+    const emptyResponse = await openAzookeySocket(
+      new Request("https://worker.example/ws/azookey", {
+        headers: { upgrade: "websocket" },
+      }),
+      {
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-small-gguf": { baseUrl: "   " },
+        }),
+      },
+      {
+        converter: (text) => `converted:${text}`,
+        socketPair: () =>
+          ({
+            client: {},
+            server: emptyServer,
+          }) as unknown as {
+            client: WebSocket;
+            server: WebSocket;
+          },
+      },
+    );
+    expect(emptyResponse.status).toBe(101);
+    expect(JSON.parse(emptyServer.sent[0] ?? "{}")).toMatchObject({
+      type: "azookey.ready",
+      models: ["azookey-rust-wasm"],
     });
   });
 

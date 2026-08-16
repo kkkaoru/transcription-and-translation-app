@@ -27,7 +27,7 @@
   // different, owned HTTPS origin. Never add API tokens to this file.
   "vars": {
     "CORS_ORIGIN": "https://azookey-compare.kaoru.workers.dev",
-    "MODEL_ROUTES": "{}",
+    "MODEL_ROUTES": "{\"zenz-v3.2-small-gguf\":{\"baseUrl\":\"https://zenz-gguf.kkk4oru.com\"}}",
     "AZOOKEY_TIMEOUT_MS": "2000",
     "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz"
   },

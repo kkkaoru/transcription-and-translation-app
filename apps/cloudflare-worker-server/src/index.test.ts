@@ -109,6 +109,32 @@ describe("Cloudflare Worker inference adapter", () => {
       models: ["azookey-rust-wasm"],
     });
 
+    const liveZenzCatalog = await createWorker().fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      {
+        ...env,
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.example" },
+        }),
+      },
+    );
+    await expect(liveZenzCatalog.json()).resolves.toMatchObject({
+      models: ["azookey-rust-wasm", "zenz-v3.2-small-gguf"],
+    });
+
+    const emptyBaseUrlCatalog = await createWorker().fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      {
+        ...env,
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-small-gguf": { baseUrl: "   " },
+        }),
+      },
+    );
+    await expect(emptyBaseUrlCatalog.json()).resolves.toMatchObject({
+      models: ["azookey-rust-wasm"],
+    });
+
     const wasmDictionary = await createWorker().fetch(
       asWorkerRequest(new Request("https://worker.example/v1/azookey")),
       {

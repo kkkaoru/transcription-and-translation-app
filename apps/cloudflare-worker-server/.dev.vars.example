@@ -9,8 +9,8 @@
 # The comparison app's local Next.js server runs on port 3000 by default.
 CORS_ORIGIN=http://127.0.0.1:3000
 
-# Keep this `{}` unless HTTP chat / Zenzai routing is intentionally enabled.
-# Local compare defaults (desktop model_runtime ports):
+# Local compare defaults (desktop model_runtime ports). Hosted inference
+# advertises zenz-v3.2-small-gguf when wrangler.jsonc MODEL_ROUTES has a baseUrl.
 # MODEL_ROUTES={"zenz-v3.2-xsmall-gguf":{"baseUrl":"http://127.0.0.1:8081"},"zenz-v3.2-small-gguf":{"baseUrl":"http://127.0.0.1:8082"}}
 MODEL_ROUTES={}
 

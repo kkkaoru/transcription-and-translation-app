@@ -98,6 +98,8 @@ export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
 export const AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS = 1_500;
 /** Hard cap on one Zenzai `/completion` attempt so hung sockets cannot starve WASM. */
 export const AZOOKEY_ZENZ_UPSTREAM_MAX_MS = 400;
+/** Bot Fight on the GGUF hostname rejects empty / library user-agents. */
+export const AZOOKEY_ZENZ_UPSTREAM_USER_AGENT = "kotoba-beacon-inference/azookey-zenz";
 export { ZENZ_CONTEXT_MAX_GRAPHEMES, ZENZ_ONE_COMPLETION_MAX_ITERATIONS, zenzCandidatePrompt };
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
@@ -282,6 +284,11 @@ export type AzookeyFetcher = (
   init?: Parameters<typeof fetch>[1],
 ) => Response | Promise<Response>;
 
+export interface ZenzModelRoute {
+  baseUrl: string;
+  servedModel?: string;
+}
+
 // Keep one tokenizer per loaded WASM module, dictionary URL, and fetcher. A
 // Worker isolate can handle several WebSocket upgrades, so rebuilding the 7.7
 // MiB dictionary for every socket would add avoidable cold latency and memory
@@ -307,7 +314,7 @@ export interface AzookeyRuntime {
   expectedToken?: string;
   handshakeAuthorized?: boolean;
   /** Optional Zenzai GGUF upstreams keyed by model id. */
-  modelRoutes?: Record<string, { baseUrl: string; servedModel?: string }>;
+  modelRoutes?: Record<string, ZenzModelRoute>;
   /** Fetcher used for Zenzai chat completions. */
   fetcher?: AzookeyFetcher;
 }
@@ -1319,39 +1326,47 @@ const withTimeout = async <T>(
 export const zenzPrompt = (input: string, leftContext = ""): string =>
   zenzCandidatePrompt(input, leftContext);
 
-export const parseModelRoutes = (
-  raw: string | undefined,
-): Record<string, { baseUrl: string; servedModel?: string }> => {
+export const parseModelRoutes = (raw: string | undefined): Record<string, ZenzModelRoute> => {
   if (!raw?.trim()) {
     return {};
   }
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!isRecord(parsed)) {
       return {};
     }
-    const routes: Record<string, { baseUrl: string; servedModel?: string }> = {};
-    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!value || typeof value !== "object" || Array.isArray(value)) {
-        continue;
-      }
-      const baseUrl = (value as { baseUrl?: unknown }).baseUrl;
-      if (typeof baseUrl !== "string" || !baseUrl.trim()) {
-        continue;
-      }
-      const servedModel = (value as { servedModel?: unknown }).servedModel;
-      routes[id] = {
-        baseUrl: baseUrl.trim().replace(/\/$/, ""),
-        ...(typeof servedModel === "string" && servedModel.trim()
-          ? { servedModel: servedModel.trim() }
-          : {}),
-      };
-    }
-    return routes;
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([id, value]) => {
+        if (!isRecord(value)) {
+          return [];
+        }
+        const baseUrl = value["baseUrl"];
+        if (typeof baseUrl !== "string" || !baseUrl.trim()) {
+          return [];
+        }
+        const servedModel = value["servedModel"];
+        const route: ZenzModelRoute = {
+          baseUrl: baseUrl.trim().replace(/\/$/, ""),
+          ...(typeof servedModel === "string" && servedModel.trim()
+            ? { servedModel: servedModel.trim() }
+            : {}),
+        };
+        return [[id, route]];
+      }),
+    );
   } catch {
     return {};
   }
 };
+
+export const advertisedConvertModels = (
+  modelRoutes: Record<string, ZenzModelRoute>,
+): AzookeyConvertModel[] => [
+  AZOOKEY_MODEL,
+  ...AZOOKEY_CONVERT_MODELS.filter(
+    (model) => model !== AZOOKEY_MODEL && Boolean(modelRoutes[model]?.baseUrl),
+  ),
+];
 
 export const isZenzConvertModel = (model: AzookeyConvertModel): boolean =>
   model === AZOOKEY_ZENZ_XSMALL_MODEL || model === AZOOKEY_ZENZ_SMALL_MODEL;
@@ -1374,7 +1389,10 @@ const convertWithZenzModel = async (
   // Zenz llama.cpp servers speak `/completion`, not OpenAI chat completions.
   const response = await fetcher(`${route.baseUrl}/completion`, {
     method: "POST",
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "user-agent": AZOOKEY_ZENZ_UPSTREAM_USER_AGENT,
+    },
     body: JSON.stringify({
       prompt: zenzPrompt(text, leftContext),
       n_predict: 256,
@@ -1863,7 +1881,7 @@ export type AzookeyDictionaryTransport = "portable-wasm" | "builtin";
 export const readyAzookeyMessage = (
   timeoutMs: number,
   workerInputStage: WorkerInputStage | boolean = "unconfigured",
-  modelRoutes: Record<string, { baseUrl: string; servedModel?: string }> = {},
+  modelRoutes: Record<string, ZenzModelRoute> = {},
   dictionaryTransport: AzookeyDictionaryTransport = "builtin",
 ): string => {
   const normalizedStage =
@@ -1872,12 +1890,7 @@ export const readyAzookeyMessage = (
         ? "configured"
         : "unconfigured"
       : workerInputStage;
-  const availableModels = [
-    AZOOKEY_MODEL,
-    ...AZOOKEY_CONVERT_MODELS.filter(
-      (model) => model !== AZOOKEY_MODEL && Boolean(modelRoutes[model]),
-    ),
-  ];
+  const availableModels = advertisedConvertModels(modelRoutes);
   return jsonMessage({
     type: "azookey.ready",
     protocol: AZOOKEY_PROTOCOL,
@@ -2131,6 +2144,7 @@ export const openAzookeySocket = async (
     : vibratoConverter
       ? "configured"
       : "unconfigured";
+  const configuredRoutes = parseModelRoutes(env.MODEL_ROUTES);
   try {
     pair.server.accept();
     attachAzookeySocket(pair.server, {
@@ -2139,7 +2153,7 @@ export const openAzookeySocket = async (
       vibratoStage: workerInputStage,
       timeoutMs,
       handshakeAuthorized,
-      modelRoutes: parseModelRoutes(env.MODEL_ROUTES),
+      modelRoutes: configuredRoutes,
       fetcher: dependencies.fetcher ?? fetch,
       ...(expectedToken ? { expectedToken } : {}),
     });
@@ -2147,7 +2161,7 @@ export const openAzookeySocket = async (
       readyAzookeyMessage(
         timeoutMs,
         workerInputStage,
-        parseModelRoutes(env.MODEL_ROUTES),
+        configuredRoutes,
         portableDictionaryConfigured ? "portable-wasm" : "builtin",
       ),
     );
