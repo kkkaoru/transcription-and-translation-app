@@ -62,6 +62,7 @@ import {
   DEFAULT_CONVERTER_MODEL,
   isConverterModel,
   isZenzConverterModel,
+  workerConverterCatalogState,
 } from "../lib/converter-models";
 import { buildWorkersAiAsrUrl } from "../lib/inference-proxy";
 import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
@@ -868,6 +869,21 @@ export default function ComparePage() {
         : converterModelOptions,
     [advertisedWorkerModels, config.mode],
   );
+  const workerCatalogState = useMemo(
+    () => workerConverterCatalogState(advertisedWorkerModels, workerState),
+    [advertisedWorkerModels, workerState],
+  );
+  const workerCatalogNotice =
+    config.mode !== "worker-vibrato"
+      ? ""
+      : workerCatalogState === "unknown"
+        ? "Cloudflare Worker の advertised 一覧を待っています。接続前は辞書だけ選べます。"
+        : workerCatalogState === "unreachable"
+          ? "Cloudflare Worker に接続できていません。変換モデルは辞書のみです。"
+          : advertisedWorkerModels !== null &&
+              !advertisedWorkerModels.some((model) => model.includes("zenz"))
+            ? "この Worker は Zenz を advertised していません。MODEL_ROUTES が空です。"
+            : "";
 
   const browserWasmStatus = useMemo(
     () =>
@@ -1301,6 +1317,12 @@ export default function ComparePage() {
                 >
                   {converterModelOptions.find((option) => option.value === config.converterModel)
                     ?.description ?? ""}
+                  {workerCatalogNotice ? (
+                    <>
+                      {" "}
+                      <span data-testid="worker-catalog-notice">{workerCatalogNotice}</span>
+                    </>
+                  ) : null}
                   {browserZenzaiDictNotice ? (
                     <>
                       {" "}

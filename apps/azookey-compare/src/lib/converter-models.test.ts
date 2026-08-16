@@ -6,6 +6,7 @@ import {
   DEFAULT_CONVERTER_MODEL,
   isConverterModel,
   isZenzConverterModel,
+  workerConverterCatalogState,
 } from "./converter-models";
 
 describe("converter model catalog", () => {
@@ -45,7 +46,7 @@ describe("converter model catalog", () => {
 
   it("hides unadvertised Zenz ids on the worker path", () => {
     expect(advertisedConverterModelOptions(null).map((option) => option.value)).toEqual([
-      ...CONVERTER_MODELS,
+      "azookey-rust-wasm",
     ]);
     expect(advertisedConverterModelOptions([]).map((option) => option.value)).toEqual([
       "azookey-rust-wasm",
@@ -55,5 +56,14 @@ describe("converter model catalog", () => {
         (option) => option.value,
       ),
     ).toEqual(["azookey-rust-wasm", "zenz-v3.2-small-gguf"]);
+  });
+
+  it("separates waiting for ready from a failed handshake", () => {
+    expect(workerConverterCatalogState(null, "idle")).toBe("unknown");
+    expect(workerConverterCatalogState(null, "connecting")).toBe("unknown");
+    expect(workerConverterCatalogState(null, "open")).toBe("unknown");
+    expect(workerConverterCatalogState(null, "error")).toBe("unreachable");
+    expect(workerConverterCatalogState(null, "closed")).toBe("unreachable");
+    expect(workerConverterCatalogState(["azookey-rust-wasm"], "error")).toBe("ready");
   });
 });

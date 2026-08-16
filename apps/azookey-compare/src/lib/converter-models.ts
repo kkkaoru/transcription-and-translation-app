@@ -50,15 +50,30 @@ export const isConverterModel = (value: unknown): value is ConverterModel =>
 export const isZenzConverterModel = (model: ConverterModel): boolean =>
   model === "zenz-v3.2-xsmall-gguf" || model === "zenz-v3.2-small-gguf";
 
-/** Worker-path choices. Unadvertised Zenz ids are not selectable. */
+export type WorkerCatalogState = "unknown" | "ready" | "unreachable";
+
+/** Worker-path choices. Until ready, only WASM is selectable. */
 export const advertisedConverterModelOptions = (
   advertised: readonly string[] | null,
 ): readonly ConverterModelOption[] => {
   if (advertised === null) {
-    return converterModelOptions;
+    return converterModelOptions.filter((option) => option.value === DEFAULT_CONVERTER_MODEL);
   }
   const allowed = new Set(advertised);
   return converterModelOptions.filter(
     (option) => option.value === DEFAULT_CONVERTER_MODEL || allowed.has(option.value),
   );
+};
+
+export const workerConverterCatalogState = (
+  advertised: readonly string[] | null,
+  connectionState: "idle" | "connecting" | "open" | "closed" | "error",
+): WorkerCatalogState => {
+  if (advertised !== null) {
+    return "ready";
+  }
+  if (connectionState === "error" || connectionState === "closed") {
+    return "unreachable";
+  }
+  return "unknown";
 };
