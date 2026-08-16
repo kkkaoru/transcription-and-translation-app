@@ -101,9 +101,10 @@ matches it. Wrangler showed live `MODEL_ROUTES` as `{}` on 2026-08-16.
 - `.dev.vars.example:15` documents the same empty default
 - `docs/cloudflare-worker-deployment.md:46` says empty routes keep
   optional chat routing disabled
-- hosted inference Worker version `5428abae` (`workers_dev=false`)
-- hosted compare Worker version `d859615c`
-  (`https://azookey-compare.kaoru.workers.dev`)
+- hosted inference Worker version `fb4a685c` (`workers_dev=false`)
+- hosted compare Worker version `c1e711c0`
+  (`https://azookey-compare.kaoru.workers.dev`, page chunk
+  `page-c1894212ba983beb.js`)
 
 Hosted wasm is the same file as this checkout:
 `GET /azookey/azookey.wasm` sha256

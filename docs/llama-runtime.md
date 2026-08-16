@@ -2,9 +2,11 @@
 
 Kotoba Beacon ships two local `llama-server` sidecars. This split is required:
 the AzooKey fork understands zenz's `gpt2-small-japanese-char` tokenizer,
-whereas current upstream llama.cpp supplies the STQ kernel needed by Hy-MT2.
-Both listen only on `127.0.0.1`; the inference gateway is their only app-facing
-HTTP route.
+whereas current upstream llama.cpp is the Hy-MT2 host. Catalog Hy rows are
+Q4_K_M and load without STQ. Upstream still has the STQ kernel; the 2-bit /
+1.25-bit GGUFs that needed it are not in the catalog because they fail to
+load. Both servers listen only on `127.0.0.1`; the inference gateway is their
+only app-facing HTTP route.
 
 The application does not put GGUF weights in the installer. When a user chooses
 a local model, Tauri downloads the exact reviewed Hugging Face revision to

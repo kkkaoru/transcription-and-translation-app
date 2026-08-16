@@ -62,15 +62,13 @@ This explains the observed Git failures and inflated gate duration. It also mean
 
 By 2026-08-14 22:07 UTC, before the controlled benchmark, the machine had recovered to a potential healthy baseline: `memory_pressure -Q` reported 76% system-wide memory free, swap usage was 0 MB, and the VM RSS was 8.71 GiB. A separate sentence-boundary test was still using about 875 MiB RSS and one CPU at that instant, so the AzooKey benchmark was correctly delayed until it exited. Record a fresh snapshot immediately before the benchmark; use the recovered values—not the earlier swap-exhausted values—as the comparison baseline.
 
-Static inspection of `packages/azookey-rust` found:
+Static inspection of `packages/azookey-rust` (2026-08-14, counts not
+kept current) found that many tests each load the official dictionary,
+the adversarial report is one serial test, and `SystemDictionary` owns
+`RefCell` caches and is not `Sync`. Do not copy those counts forward;
+`rust:azookey:test` and the corpus modules are the source of truth.
 
-- 109 Rust tests in total;
-- 47 explicit `test_system_dictionary_path()` call sites (36 in Viterbi tests, 5 dictionary, 4 accuracy corpus, 1 inventory, and 1 adversarial corpus);
-- the accuracy tests cover 119 corpus cases, 47 exact conversions, and 30 filesystem/portable conversions;
-- the adversarial corpus performs 303 conversions serially inside one test; and
-- `SystemDictionary` owns `RefCell` caches and is not `Sync`.
-
-Consequently, libtest's machine-default concurrency can keep multiple dictionaries and caches live at once, while it cannot shorten the longest 303-case serial test. This makes crate-specific test concurrency a plausible peak-memory control, but its effect must be measured in a healthy memory state.
+Consequently, libtest's machine-default concurrency can keep multiple dictionaries and caches live at once, while it cannot shorten the longest serial corpus test. This makes crate-specific test concurrency a plausible peak-memory control, but its effect must be measured in a healthy memory state.
 
 ## Benchmark isolation and healthy baseline
 

@@ -92,11 +92,13 @@ an arbitrary GGUF path from its UI or HTTP callers.
 
 - zenz uses `kotoba-zenz-server`, built from the AzooKey llama.cpp fork because
   it recognizes zenz's Japanese character tokenizer.
-- Hy-MT2 uses `kotoba-llama-server`, built from upstream llama.cpp with STQ
-  support.
+- Hy-MT2 Q4_K_M uses `kotoba-llama-server` from upstream llama.cpp. That
+  binary also contains the STQ kernel, but the catalog no longer ships the
+  2-bit / 1.25-bit GGUFs that needed it. Those files fail to load here.
 
-The seven fixed model IDs are mapped to ports `8081` through `8087`, but only
-selected local models are downloaded and started. Model revisions, byte sizes,
+Five catalog IDs have fixed loopback ports: zenz xsmall `8081`, zenz small
+`8082`, Hy 1.8B Q4 `8083`, Hy 7B Q4 `8086`, zenz v2 `8087`. Only the models
+the user selected are downloaded and started. Model revisions, byte sizes,
 licenses, source revisions, and the app-data layout are documented in
 [llama-runtime.md](llama-runtime.md). `scripts/build-sidecar.ts` rebuilds both
 server binaries after fetching their pinned source commits.
