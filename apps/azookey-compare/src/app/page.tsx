@@ -884,7 +884,7 @@ export default function ComparePage() {
             ? "Cloudflare Worker に接続できていません。変換モデルは辞書のみです。"
             : advertisedWorkerModels !== null &&
                 !advertisedWorkerModels.some((model) => model.includes("zenz"))
-              ? "この Worker は Zenz を advertised していません。MODEL_ROUTES が空です。"
+              ? "この Worker は Zenz を advertised していません。MODEL_ROUTES に baseUrl がありません。"
               : "";
 
   const browserWasmStatus = useMemo(

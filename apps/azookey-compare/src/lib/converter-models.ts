@@ -3,8 +3,8 @@
  *
  * - `azookey-rust-wasm` — portable LOUDS dictionary (browser-complete or Cloudflare Worker)
  * - `zenz-v3.2-xsmall-gguf` / `zenz-v3.2-small-gguf` — Zenzai on inference
- *   Cloudflare Worker: LOUDS dictionary (system.azkdict.gz) when MODEL_ROUTES is
- *   empty; GGUF upstream when MODEL_ROUTES exposes the model id
+ *   Cloudflare Worker: advertised only when MODEL_ROUTES has a baseUrl; GGUF
+ *   `/completion` then lattice prefix. Browser-complete stays LOUDS-only.
  */
 
 export const CONVERTER_MODELS = [
@@ -34,13 +34,13 @@ export const converterModelOptions: readonly ConverterModelOption[] = [
     value: "zenz-v3.2-xsmall-gguf",
     label: "AzooKey Zenzai v3.2 xsmall",
     description:
-      "低レイテンシー向け Zenzai。入力と左文脈を remote へ送ります。browser-complete ではありません。本番 MODEL_ROUTES が空なら品質は辞書のままです。GGUF を載せた Worker 依存でのみ 1 回の completion と lattice 再探索を試します。",
+      "低レイテンシー向け Zenzai。入力と左文脈を remote へ送ります。browser-complete ではありません。azookey.ready がこの id を出した Worker 依存でのみ 1 回の completion と lattice 再探索を試します。",
   },
   {
     value: "zenz-v3.2-small-gguf",
     label: "AzooKey Zenzai v3.2 small",
     description:
-      "精度寄り Zenzai。入力と左文脈を remote へ送ります。browser-complete ではありません。本番 MODEL_ROUTES が空なら品質は辞書のままです。GGUF を載せた Worker 依存でのみ 1 回の completion と lattice 再探索を試します。",
+      "精度寄り Zenzai。入力と左文脈を remote へ送ります。browser-complete ではありません。azookey.ready がこの id を出した Worker 依存でのみ 1 回の completion と lattice 再探索を試します。",
   },
 ] as const;
 
