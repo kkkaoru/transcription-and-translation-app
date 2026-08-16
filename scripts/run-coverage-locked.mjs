@@ -208,6 +208,10 @@ export const formatCoverageSlackLine = (metric, summary, percent = COVERAGE_THRE
   const slack = row.covered - need;
   const pct = typeof row.pct === "number" ? row.pct.toFixed(2) : String(row.pct);
   const counts = `${row.covered}/${row.total} = ${pct}% need>=${need} slack=${slack}`;
+  const fullyCovered = row.total > 0 && row.covered === row.total;
+  if (fullyCovered) {
+    return `${metric} slack ${counts}`;
+  }
   if (slack <= 0) {
     return `${metric} SLACK EXHAUSTED ${counts} — next uncovered ${metric} fails ${percent}%`;
   }

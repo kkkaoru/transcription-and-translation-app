@@ -202,6 +202,14 @@ describe("coverage package resolution", () => {
       /^branches slack 1736\/1825 = 95.12% need>=1734 slack=2$/,
     );
     assert.match(formatCoverageSlackLine("branches", {}), /branches slack unknown/);
+    assert.match(
+      formatCoverageSlackLine("branches", { branches: { total: 18, covered: 18, pct: 100 } }),
+      /^branches slack 18\/18 = 100.00% need>=18 slack=0$/,
+    );
+    assert.doesNotMatch(
+      formatCoverageSlackLine("branches", { branches: { total: 18, covered: 18, pct: 100 } }),
+      /EXHAUSTED/,
+    );
   });
 
   it("shares one lock across every spelling of a package filter", () => {
