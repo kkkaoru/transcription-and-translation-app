@@ -115,6 +115,14 @@ The three ignored tests are intentional manual benches
 `benchmark_linear_lru_at_final_caption_frequency`). They are not forgotten CI
 gaps.
 
+Desktop `cargo test --lib` also reports 4 ignored. Those are intentional
+Hugging Face downloads in `model_download` and `model_runtime`
+(`downloads_xsmall_with_progress_callback`,
+`batch_quick_start_downloads_missing_xsmall_and_skips_ready_hy`,
+`cancel_aborts_in_flight_xsmall_download`,
+`downloads_the_pinned_xsmall_model_into_app_data_layout`). Each pulls ~21 MiB
+and is marked `run explicitly`. They are not forgotten CI gaps.
+
 ## Possible follow-ups
 
 1. Add a configurable memory-pressure warning that prints the largest RSS consumers. Start with warning-only; a refusal threshold needs clean measurements and an override.
