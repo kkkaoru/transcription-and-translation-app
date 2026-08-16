@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createWorkersAiAsrTranscriber,
   handleWorkersAiAsrTranscription,
+  postprocessWorkersAiAsrTranscript,
   WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS,
   WORKERS_AI_ASR_HTTP_PATH,
   WORKERS_AI_ASR_LANGUAGE,
@@ -41,6 +42,19 @@ const wavFile = (): File => {
 };
 
 describe("Workers AI Nova-3 ASR adapter", () => {
+  it("strips Japanese token-gap spaces and passes kana through the reading gate", () => {
+    expect(postprocessWorkersAiAsrTranscript("きょう は いい てんき")).toStrictEqual({
+      text: "きょうはいいてんき",
+      reading: "きょうはいいてんき",
+    });
+    expect(postprocessWorkersAiAsrTranscript("今日 は いい 天気")).toStrictEqual({
+      text: "今日はいい天気",
+      reading: "今日はいい天気",
+    });
+    expect(WORKERS_AI_ASR_MODEL).toBe("@cf/deepgram/nova-3");
+    expect(WORKERS_AI_ASR_LANGUAGE).toBe("ja");
+  });
+
   it("parses a bounded timeout configuration", () => {
     expect(workersAiAsrTimeoutMs({})).toBe(WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS);
     expect(workersAiAsrTimeoutMs({ WORKERS_AI_ASR_TIMEOUT_MS: "  " })).toBe(
@@ -261,6 +275,28 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       transport: "http",
     });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies Japanese ASR post-processing on the shipped Nova-3 HTTP handler", async () => {
+    const run = vi.fn<WorkersAiAsrRun>(() => Promise.resolve(novaResult("きょう は いい てんき")));
+    const form = new FormData();
+    form.set("file", wavFile());
+    const response = await handleWorkersAiAsrTranscription(
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {},
+      run,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toStrictEqual({
+      text: "きょうはいいてんき",
+      reading: "きょうはいいてんき",
+      language: "ja",
+      model: "@cf/deepgram/nova-3",
+      transport: "http",
+    });
   });
 
   it("rejects non-record worker results and missing audio stream bodies", async () => {

@@ -1,3 +1,10 @@
+/**
+ * This file runs with bun.
+ *
+ * Explicit Workers AI Nova-3 ASR adapter. Post-processing matches Tauri after
+ * Parapper: Japanese token-gap space stripping and the Vibrato reading gate.
+ */
+import { normalizeAsrSourceText, readingForAzookey } from "@caption-bridge/azookey-reading";
 import {
   GatewayError,
   MAX_AUDIO_BYTES,
@@ -5,6 +12,20 @@ import {
   pcm16ToWav,
 } from "@caption-bridge/inference-server-core";
 import { byteLimitTransform, collectStream } from "./azookey.js";
+
+const passthroughReading = (input: string): string => input;
+
+/**
+ * Same post-ASR text stage as Tauri after Parapper: strip Japanese token-gap
+ * spaces, then apply the Vibrato reading gate. Without an IPADIC tokenizer
+ * the gate is identity for kanji and passthrough for kana.
+ */
+export const postprocessWorkersAiAsrTranscript = (
+  transcript: string,
+): { text: string; reading: string } => {
+  const text = normalizeAsrSourceText(transcript);
+  return { text, reading: readingForAzookey(text, passthroughReading) };
+};
 
 /** The Workers AI partner model used only by the explicit `workers-ai` route. */
 export const WORKERS_AI_ASR_MODEL = "@cf/deepgram/nova-3" as const;
@@ -263,7 +284,7 @@ export const createWorkersAiAsrTranscriber = (
     if (result instanceof Response) {
       result = await resultFromRawResponse(result);
     }
-    return transcriptFromResult(result);
+    return postprocessWorkersAiAsrTranscript(transcriptFromResult(result)).text;
   };
 };
 
@@ -331,9 +352,10 @@ export const handleWorkersAiAsrTranscription = async (
   }
   const transcribe = createWorkersAiAsrTranscriber(env, run);
   try {
-    const text = await transcribe(pcm);
+    const processed = postprocessWorkersAiAsrTranscript(await transcribe(pcm));
     return jsonResponse(200, {
-      text,
+      text: processed.text,
+      reading: processed.reading,
       language: language ?? WORKERS_AI_ASR_LANGUAGE,
       model: WORKERS_AI_ASR_MODEL,
       transport: "http",
