@@ -6048,6 +6048,48 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_user_tsv_can_emit_a_short_uppercase_acronym() {
+        let system_path = test_system_dictionary_path();
+        let mut dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(system_path),
+            user: None,
+            memory: None,
+        })
+        .expect("system dictionary should load");
+        assert_eq!(
+            convert_with_dictionary(
+                "ぶいあーるちゃっと",
+                &dictionary,
+                ConversionOptions::default(),
+            )[0]
+            .text,
+            "VRChat"
+        );
+        dictionary
+            .replace_user_from_tsv_str("ぶいあーるちゃっと\tVRC\n")
+            .expect("in-memory user TSV should load");
+        assert_eq!(
+            convert_with_dictionary(
+                "ぶいあーるちゃっと",
+                &dictionary,
+                ConversionOptions::default(),
+            )[0]
+            .text,
+            "VRC"
+        );
+        dictionary.clear_user();
+        assert_eq!(
+            convert_with_dictionary(
+                "ぶいあーるちゃっと",
+                &dictionary,
+                ConversionOptions::default(),
+            )[0]
+            .text,
+            "VRChat"
+        );
+    }
+
+    #[test]
     fn keeps_duplicate_surface_candidates_with_distinct_context_metadata() {
         let root = std::env::temp_dir().join(format!(
             "caption-bridge-context-{}-{}",

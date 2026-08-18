@@ -29,6 +29,7 @@ const DEFAULT_TSV_ENTRY_VALUE: f32 = -10.0;
 /// Explicit two-column user rows are intentional and should beat ordinary
 /// official alternatives while still participating in lattice context.
 const DEFAULT_USER_TSV_ENTRY_VALUE: f32 = -1.0;
+const MAX_USER_TSV_ENTRIES: usize = 10_000;
 const BUILTIN_HIGH_FREQUENCY_VALUE: f32 = -5.0;
 const BUILTIN_DEFAULT_VALUE: f32 = -10.0;
 const CID_DEFAULT_RECORD: i32 = -1;
@@ -369,6 +370,50 @@ impl AzooKeyDictionary {
             user: None,
             memory: None,
         })
+    }
+
+    /// Replace the user layer from an in-memory TSV (`reading\tword` rows).
+    ///
+    /// An empty or whitespace-only body clears the user dictionary. A parse
+    /// failure leaves the previous user layer unchanged.
+    pub fn replace_user_from_tsv_str(&mut self, tsv: &str) -> Result<(), String> {
+        if tsv.trim().is_empty() {
+            self.user = None;
+            return Ok(());
+        }
+        let entries = parse_tsv_str(tsv, true)?;
+        if entries.len() > MAX_USER_TSV_ENTRIES {
+            return Err(format!(
+                "custom dictionary supports at most {MAX_USER_TSV_ENTRIES} entries"
+            ));
+        }
+        self.user = Some(ExternalTrieDictionary::from_tsv_entries("user", entries));
+        Ok(())
+    }
+
+    /// Drop the user layer while keeping the official system dictionary.
+    pub fn clear_user(&mut self) {
+        self.user = None;
+    }
+
+    /// Run `f` with a temporary user TSV overlay, then restore the previous
+    /// user layer. `None` or whitespace leaves no user entries for the call.
+    pub fn with_user_tsv<T, F>(&mut self, tsv: Option<&str>, f: F) -> Result<T, String>
+    where
+        F: FnOnce(&Self) -> T,
+    {
+        let previous = self.user.take();
+        if let Some(body) = tsv {
+            if !body.trim().is_empty() {
+                if let Err(error) = self.replace_user_from_tsv_str(body) {
+                    self.user = previous;
+                    return Err(error);
+                }
+            }
+        }
+        let result = f(self);
+        self.user = previous;
+        Ok(result)
     }
 
     pub fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
@@ -1491,6 +1536,21 @@ struct ExternalTrieDictionary {
 }
 
 impl ExternalTrieDictionary {
+    fn from_tsv_entries(name: &str, entries: Vec<DictionaryEntry>) -> Self {
+        let mut content_revision = 0xcbf29ce484222325u64;
+        revision_mix(&mut content_revision, name.as_bytes());
+        for entry in &entries {
+            revision_mix_entry(&mut content_revision, entry);
+        }
+        Self {
+            root: PathBuf::from("<memory>"),
+            name: name.to_string(),
+            content_revision,
+            char_ids: HashMap::new(),
+            tsv_entries: Some(entries),
+        }
+    }
+
     fn load(
         path: &Path,
         name: &str,
@@ -1678,9 +1738,7 @@ impl Louds {
     }
 }
 
-fn parse_tsv(path: &Path, user_supplied: bool) -> Result<Vec<DictionaryEntry>, String> {
-    let body = fs::read_to_string(path)
-        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+fn parse_tsv_str(body: &str, user_supplied: bool) -> Result<Vec<DictionaryEntry>, String> {
     let entries = body
         .lines()
         .filter_map(|line| {
@@ -1710,9 +1768,16 @@ fn parse_tsv(path: &Path, user_supplied: bool) -> Result<Vec<DictionaryEntry>, S
         })
         .collect::<Vec<_>>();
     if entries.is_empty() {
-        return Err(format!("{} did not contain any usable dictionary entries", path.display()));
+        return Err("dictionary TSV did not contain any usable dictionary entries".to_string());
     }
     Ok(entries)
+}
+
+fn parse_tsv(path: &Path, user_supplied: bool) -> Result<Vec<DictionaryEntry>, String> {
+    let body = fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    parse_tsv_str(&body, user_supplied)
+        .map_err(|_| format!("{} did not contain any usable dictionary entries", path.display()))
 }
 
 fn read_loudstxt3_entry(path: &Path, index: usize) -> Result<Vec<DictionaryEntry>, String> {
@@ -2859,5 +2924,35 @@ mod tests {
 
         let _ = std::fs::remove_file(user);
         let _ = std::fs::remove_file(memory);
+    }
+
+    #[test]
+    fn in_memory_user_tsv_replaces_and_clears_the_user_layer() {
+        let mut dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(super::test_system_dictionary_path()),
+            user: None,
+            memory: None,
+        })
+        .expect("official system dictionary should load");
+        let before = dictionary.lookup_exact("ぶいあーるちゃっと").expect("lookup should complete");
+        assert!(before.iter().all(|entry| entry.surface != "VRC"));
+
+        dictionary
+            .replace_user_from_tsv_str("ぶいあーるちゃっと\tVRC\n")
+            .expect("in-memory user TSV should load");
+        let with_user =
+            dictionary.lookup_exact("ぶいあーるちゃっと").expect("user lookup should complete");
+        let user = with_user
+            .iter()
+            .find(|entry| entry.surface == "VRC")
+            .expect("in-memory user acronym should be present");
+        assert!(user.user_supplied);
+        assert_eq!(user.value, -1.0);
+
+        dictionary
+            .replace_user_from_tsv_str("   ")
+            .expect("whitespace TSV should clear the user layer");
+        let cleared = dictionary.lookup_exact("ぶいあーるちゃっと").expect("cleared lookup");
+        assert!(cleared.iter().all(|entry| entry.surface != "VRC"));
     }
 }
