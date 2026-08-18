@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArchitectureAssetTable } from "../components/ArchitectureAssetTable";
 import { ComparisonPathDiagram } from "../components/ComparisonPathDiagram";
+import { CustomDictionaryPanel } from "../components/CustomDictionaryPanel";
 import { RecognitionModeSelector } from "../components/RecognitionModeSelector";
 import { VibratoModeSelector } from "../components/VibratoModeSelector";
 import { isArchitectureDialogForced } from "../lib/architecture-dialog";
@@ -281,6 +282,10 @@ export default function ComparePage() {
   );
   /** Serialize browser pre-pass + Worker work so rapid finals retain order. */
   const dispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const customDictionaryTsvRef = useRef("");
+  const onCustomDictionaryTsvChange = useCallback((tsv: string) => {
+    customDictionaryTsvRef.current = tsv;
+  }, []);
 
   useEffect(() => {
     setArchitectureOpen(isArchitectureDialogForced(window.location.search));
@@ -574,6 +579,9 @@ export default function ComparePage() {
                 .filter((row) => row.id !== id && row.state === "done")
                 .map((row) => row.convertedText),
             ),
+            ...(customDictionaryTsvRef.current
+              ? { userDictionaryTsv: customDictionaryTsvRef.current }
+              : {}),
           },
           {
             onStage: (nextStage) => {
@@ -608,8 +616,13 @@ export default function ComparePage() {
                 throw caught;
               }
             },
-            runBrowserAzookey: (text) => runBrowserAzookey(text),
-            runBrowserZenzaiDict: (text, model) => runBrowserZenzaiDict(text, { model }),
+            runBrowserAzookey: (text) =>
+              runBrowserAzookey(text, { userDictionaryTsv: customDictionaryTsvRef.current }),
+            runBrowserZenzaiDict: (text, model) =>
+              runBrowserZenzaiDict(text, {
+                model,
+                userDictionaryTsv: customDictionaryTsvRef.current,
+              }),
             connectWorker: async () => {
               const client = workerRef.current;
               if (!client) {
@@ -1441,6 +1454,8 @@ export default function ComparePage() {
                     </div>
                   </div>
                 ) : null}
+
+                <CustomDictionaryPanel onTsvChange={onCustomDictionaryTsvChange} />
 
                 <div className="subsection auth-settings">
                   <p className="subsection-title">認証（Cloudflare Worker の契約に合わせる）</p>

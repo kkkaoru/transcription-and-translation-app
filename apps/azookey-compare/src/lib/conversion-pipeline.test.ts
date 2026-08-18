@@ -692,4 +692,38 @@ describe("comparison conversion pipeline", () => {
     expect(previousConvertedLeftContext(["あ".repeat(41)])).toBe("あ".repeat(40));
     expect(previousConvertedLeftContext([])).toBeUndefined();
   });
+
+  it("forwards a custom dictionary TSV on the worker convert path", async () => {
+    const convertWithWorker = vi.fn(() =>
+      Promise.resolve({
+        requestId: "r-user-dict",
+        sourceText: "ぶいあーるちゃっと",
+        convertedText: "VRC",
+        receivedAt: Date.now(),
+        model: "azookey-rust-wasm",
+      }),
+    );
+    await runComparisonConversion(
+      {
+        ...baseInput,
+        sourceText: "ぶいあーるちゃっと",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+        userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n",
+      },
+      {
+        runBrowserVibrato: vi.fn(() =>
+          Promise.resolve({ text: "ぶいあーるちゃっと", elapsedMs: 1 }),
+        ),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: vi.fn(() => Promise.resolve()),
+        convertWithWorker,
+      },
+    );
+    expect(convertWithWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n",
+      }),
+    );
+  });
 });

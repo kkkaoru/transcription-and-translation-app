@@ -37,6 +37,13 @@ describe("browser AzooKey WASM loader", () => {
     expect(weather.text).toBe("今日はいい天気");
     expect(weather.elapsedMs).toBeGreaterThanOrEqual(0);
 
+    const acronym = await runBrowserAzookey("ぶいあーるちゃっと", {
+      wasmModule: module,
+      dictionaryBytes,
+      userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n",
+    });
+    expect(acronym.text).toBe("VRC");
+
     const fixture = await runBrowserAzookey("あしたのてんきははれ", {
       wasmModule: module,
       dictionaryBytes,

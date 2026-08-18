@@ -361,6 +361,28 @@ select:focus-visible {
   letter-spacing: 0.05em;
 }
 
+.custom-dictionary-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.custom-dictionary-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.custom-dictionary-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--soft-line);
+  font-size: 13px;
+}
+
 .field-help,
 .support-line {
   margin: 9px 0 0;

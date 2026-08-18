@@ -40,6 +40,8 @@ export interface AzooKeyConvertRequest {
   resetContext?: boolean;
   /** Converted caption text for Zenz left context. Distinct from preceding.rcid/mid. */
   leftContext?: string;
+  /** Two-column custom dictionary TSV (`reading\\tword`). */
+  userDictionaryTsv?: string;
   auth?: ComparisonAuth;
 }
 
