@@ -141,6 +141,51 @@ pub unsafe extern "C" fn azookey_dictionary_init_owned(pointer: *mut u8, length:
     DICTIONARY_INIT_OK
 }
 
+/// Replace the user dictionary layer with an owned UTF-8 TSV buffer.
+///
+/// Returns zero on success, one when the TSV is invalid UTF-8 or has no
+/// usable rows, or two when no system dictionary is loaded or the lock is
+/// unavailable. A failed call keeps the previous system and user layers.
+///
+/// # Safety
+///
+/// Same ownership contract as [`azookey_dictionary_init_owned`].
+#[no_mangle]
+pub unsafe extern "C" fn azookey_user_dictionary_init_owned(
+    pointer: *mut u8,
+    length: usize,
+) -> u32 {
+    if pointer.is_null() && length != 0 {
+        return DICTIONARY_INIT_INVALID;
+    }
+    let bytes = if length == 0 { Vec::new() } else { Vec::from_raw_parts(pointer, length, length) };
+    let Ok(tsv) = String::from_utf8(bytes) else {
+        return DICTIONARY_INIT_INVALID;
+    };
+    let Ok(mut active) = ACTIVE_DICTIONARY.lock() else {
+        return DICTIONARY_INIT_UNAVAILABLE;
+    };
+    let Some(dictionary) = active.as_mut() else {
+        return DICTIONARY_INIT_UNAVAILABLE;
+    };
+    match dictionary.replace_user_from_tsv_str(&tsv) {
+        Ok(()) => DICTIONARY_INIT_OK,
+        Err(_) => DICTIONARY_INIT_INVALID,
+    }
+}
+
+/// Clear the user dictionary layer. Zero means the system dictionary remains.
+#[no_mangle]
+pub extern "C" fn azookey_user_dictionary_clear() -> u32 {
+    let Ok(mut active) = ACTIVE_DICTIONARY.lock() else {
+        return DICTIONARY_INIT_UNAVAILABLE;
+    };
+    if let Some(dictionary) = active.as_mut() {
+        dictionary.clear_user();
+    }
+    DICTIONARY_INIT_OK
+}
+
 /// Convert UTF-8 input into UTF-8 output.
 ///
 /// The return value packs the output pointer in the high 32 bits and the
@@ -266,6 +311,62 @@ pub unsafe extern "C" fn azookey_convert_n_best(
     allocate_n_best_output(status, &candidates).unwrap_or(0)
 }
 
+/// Same as [`azookey_convert_n_best`], with a temporary user TSV overlay.
+///
+/// # Safety
+///
+/// The input buffer contract matches [`azookey_convert_n_best`]. When
+/// `user_length` is non-zero, `user_pointer` must point to that many readable
+/// UTF-8 bytes for the duration of this call. The user buffer is not retained.
+#[no_mangle]
+pub unsafe extern "C" fn azookey_convert_n_best_with_user(
+    pointer: *const u8,
+    length: usize,
+    n_best: u32,
+    has_preceding: u32,
+    preceding_rcid: u32,
+    preceding_mid: u32,
+    user_pointer: *const u8,
+    user_length: usize,
+) -> u64 {
+    if pointer.is_null() && length != 0 {
+        return 0;
+    }
+    if user_pointer.is_null() && user_length != 0 {
+        return 0;
+    }
+    let bytes = if length == 0 { &[] } else { slice::from_raw_parts(pointer, length) };
+    let mut status = N_BEST_STATUS_OK;
+    let input = match std::str::from_utf8(bytes) {
+        Ok(input) => input,
+        Err(_) => {
+            status |= N_BEST_STATUS_INVALID_UTF8;
+            ""
+        }
+    };
+    let user_tsv = if user_length == 0 {
+        None
+    } else {
+        match std::str::from_utf8(slice::from_raw_parts(user_pointer, user_length)) {
+            Ok(tsv) => Some(tsv),
+            Err(_) => {
+                status |= N_BEST_STATUS_INVALID_ARGUMENT;
+                None
+            }
+        }
+    };
+    let (preceding, preceding_status) =
+        parse_preceding_context(has_preceding, preceding_rcid, preceding_mid);
+    status |= preceding_status;
+    let (candidates, conversion_status) = if n_best == 0 {
+        (Vec::new(), N_BEST_STATUS_OK)
+    } else {
+        convert_n_best_with_user_overlay(input, n_best as usize, preceding, user_tsv)
+    };
+    status |= conversion_status;
+    allocate_n_best_output(status, &candidates).unwrap_or(0)
+}
+
 /// Build one inspectable lattice and return an opaque handle.
 ///
 /// This is additive on ABI version 2. Existing [`azookey_convert`] and
@@ -318,6 +419,62 @@ pub unsafe extern "C" fn azookey_lattice_open(
         return LATTICE_HANDLE_INVALID;
     };
     let lattice = build_lattice(dictionary, &request);
+    drop(active);
+    insert_lattice(lattice)
+}
+
+/// Same as [`azookey_lattice_open`] with a temporary user TSV overlay.
+///
+/// # Safety
+///
+/// Matches [`azookey_lattice_open`] for the input buffer. The user buffer
+/// contract matches [`azookey_convert_n_best_with_user`].
+#[no_mangle]
+pub unsafe extern "C" fn azookey_lattice_open_with_user(
+    pointer: *const u8,
+    length: usize,
+    has_preceding: u32,
+    preceding_rcid: u32,
+    preceding_mid: u32,
+    beam: u32,
+    n_best: u32,
+    user_pointer: *const u8,
+    user_length: usize,
+) -> u32 {
+    if pointer.is_null() && length != 0 {
+        return LATTICE_HANDLE_INVALID;
+    }
+    if user_pointer.is_null() && user_length != 0 {
+        return LATTICE_HANDLE_INVALID;
+    }
+    let bytes = if length == 0 { &[] } else { slice::from_raw_parts(pointer, length) };
+    let input = std::str::from_utf8(bytes).unwrap_or("");
+    let user_tsv = if user_length == 0 {
+        None
+    } else {
+        std::str::from_utf8(slice::from_raw_parts(user_pointer, user_length)).ok()
+    };
+    let (preceding, _) = parse_preceding_context(has_preceding, preceding_rcid, preceding_mid);
+    let request = ConversionRequest {
+        input: input.to_string(),
+        left_context: preceding,
+        beam_width: clamp_lattice_width(beam, DEFAULT_LATTICE_BEAM),
+        n_best: clamp_lattice_width(n_best, 1),
+        ..ConversionRequest::default()
+    };
+    let mut active = match ACTIVE_DICTIONARY.lock() {
+        Ok(active) => active,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let Some(dictionary) = active.as_mut() else {
+        return LATTICE_HANDLE_INVALID;
+    };
+    let lattice = match dictionary
+        .with_user_tsv(user_tsv, |dictionary| build_lattice(dictionary, &request))
+    {
+        Ok(lattice) => lattice,
+        Err(_) => return LATTICE_HANDLE_INVALID,
+    };
     drop(active);
     insert_lattice(lattice)
 }
@@ -541,6 +698,27 @@ fn convert_with_active_dictionary_n_best(
     }
 }
 
+fn convert_n_best_with_user_overlay(
+    input: &str,
+    n_best: usize,
+    preceding: Option<PrecedingContext>,
+    user_tsv: Option<&str>,
+) -> (Vec<ConversionCandidate>, u32) {
+    let mut active = match ACTIVE_DICTIONARY.lock() {
+        Ok(active) => active,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let Some(dictionary) = active.as_mut() else {
+        return convert_n_best_with_dictionary_or_fallback(input, n_best, preceding, None);
+    };
+    match dictionary.with_user_tsv(user_tsv, |dictionary| {
+        convert_n_best_with_dictionary_or_fallback(input, n_best, preceding, Some(dictionary))
+    }) {
+        Ok(result) => result,
+        Err(_) => convert_n_best_with_dictionary_or_fallback(input, n_best, preceding, None),
+    }
+}
+
 fn serialize_n_best(status: u32, candidates: &[ConversionCandidate]) -> Option<Vec<u8>> {
     let count = u32::try_from(candidates.len()).ok()?;
     let mut output_length = N_BEST_HEADER_BYTES;
@@ -609,11 +787,13 @@ mod tests {
         azookey_alloc, azookey_convert, azookey_dealloc, azookey_dictionary_init_owned,
         azookey_lattice_close, azookey_lattice_closed_count, azookey_lattice_live_count,
         azookey_lattice_open, azookey_lattice_opened_count, azookey_lattice_search_output_prefix,
+        azookey_user_dictionary_clear, azookey_user_dictionary_init_owned,
         convert_n_best_with_dictionary_or_fallback, convert_with_active_dictionary, pack_output,
-        rust_search_lattice, search_lattice_output_prefix, serialize_n_best, AzooKeyDictionary,
-        ConstrainedSearchRequest, ConversionCandidate, ConversionRequest, DictionaryPaths,
-        PrecedingContext, Utf8BytePrefixConstraint, ACTIVE_DICTIONARY, MAX_LATTICE_HANDLES,
-        N_BEST_STATUS_FALLBACK, N_BEST_STATUS_INVALID_ARGUMENT,
+        replace_active_dictionary, rust_search_lattice, search_lattice_output_prefix,
+        serialize_n_best, AzooKeyDictionary, ConstrainedSearchRequest, ConversionCandidate,
+        ConversionRequest, DictionaryPaths, PrecedingContext, Utf8BytePrefixConstraint,
+        ACTIVE_DICTIONARY, MAX_LATTICE_HANDLES, N_BEST_STATUS_FALLBACK,
+        N_BEST_STATUS_INVALID_ARGUMENT,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1110,5 +1290,31 @@ mod tests {
         }
         assert_eq!(compared, 23 * prefixes.len());
         *lock_active_dictionary() = previous;
+    }
+
+    #[test]
+    fn user_dictionary_init_owned_applies_tsv_without_dropping_system() {
+        let _guard = lock_lattice_tests();
+        let path = temporary_dictionary_path("user-overlay-system");
+        fs::write(&path, "はいしん\t配信\n").expect("system TSV should write");
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(path.clone()),
+            user: None,
+            memory: None,
+        })
+        .expect("system TSV should load");
+        let previous = replace_active_dictionary(Some(dictionary));
+        let tsv = "はいしん\t配信中\n";
+        let bytes = tsv.as_bytes();
+        let pointer = azookey_alloc(bytes.len());
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len());
+            assert_eq!(azookey_user_dictionary_init_owned(pointer, bytes.len()), 0);
+        }
+        assert_eq!(convert_with_active_dictionary("はいしん"), "配信中");
+        assert_eq!(azookey_user_dictionary_clear(), 0);
+        assert_eq!(convert_with_active_dictionary("はいしん"), "配信");
+        replace_active_dictionary(previous);
+        let _ = fs::remove_file(path);
     }
 }
