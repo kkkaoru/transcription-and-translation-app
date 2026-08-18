@@ -205,6 +205,16 @@ describe("AzooKey Worker text contract", () => {
     expect(
       parseAzookeyMessage(JSON.stringify({ ...valid, leftContext: " " })).leftContext,
     ).toBeUndefined();
+    expect(
+      parseAzookeyMessage(
+        JSON.stringify({ ...valid, userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n" }),
+      ),
+    ).toMatchObject({
+      userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n",
+    });
+    expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, userDictionaryTsv: 1 }))).toThrow(
+      "userDictionaryTsv must be a string",
+    );
     expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, leftContext: 1 }))).toThrow(
       "leftContext must be a string",
     );

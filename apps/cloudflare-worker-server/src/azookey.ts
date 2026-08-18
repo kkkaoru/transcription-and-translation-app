@@ -209,6 +209,29 @@ export interface AzookeyWasmExports {
   ) => bigint | number;
   azookey_abi_version: () => number;
   azookey_dictionary_init_owned: (pointer: number, length: number) => number;
+  azookey_user_dictionary_init_owned?: (pointer: number, length: number) => number;
+  azookey_user_dictionary_clear?: () => number;
+  azookey_convert_n_best_with_user?: (
+    pointer: number,
+    length: number,
+    nBest: number,
+    hasPreceding: number,
+    precedingRcid: number,
+    precedingMid: number,
+    userPointer: number,
+    userLength: number,
+  ) => bigint | number;
+  azookey_lattice_open_with_user?: (
+    pointer: number,
+    length: number,
+    hasPreceding: number,
+    precedingRcid: number,
+    precedingMid: number,
+    beam: number,
+    nBest: number,
+    userPointer: number,
+    userLength: number,
+  ) => number;
   azookey_lattice_open?: (
     pointer: number,
     length: number,
@@ -257,11 +280,13 @@ export type AzookeyConverter = ((
     text: string,
     signal?: AbortSignal,
     preceding?: AzookeyPrecedingContext,
+    userDictionaryTsv?: string,
   ) => string | AzookeyConversionResult | Promise<string | AzookeyConversionResult>;
   /** Optional constrained lattice used by one-completion Zenz orchestration. */
   openLattice?: (
     text: string,
     preceding?: AzookeyPrecedingContext,
+    userDictionaryTsv?: string,
   ) => AzookeyLatticeSession | undefined;
 };
 
@@ -378,6 +403,8 @@ export interface AzookeyMessage {
   resetContext?: boolean;
   /** Converted caption text used as Zenz left context. Distinct from preceding.rcid/mid. */
   leftContext?: string;
+  /** Two-column `reading\\tword` TSV overlay for this convert only. */
+  userDictionaryTsv?: string;
   auth?: AzookeyAuth;
 }
 
@@ -584,6 +611,7 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
   let utteranceId: string | undefined;
   let resetContext: boolean | undefined;
   let leftContext: string | undefined;
+  let userDictionaryTsv: string | undefined;
   try {
     language = requiredString(parsed["language"], "language", AZOOKEY_MAX_LANGUAGE_BYTES);
     sourceText = requiredText(parsed["sourceText"], "sourceText");
@@ -638,6 +666,19 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
       }
       leftContext = trimZenzLeftContext(rawLeftContext);
     }
+    const rawUserDictionaryTsv = parsed["userDictionaryTsv"];
+    if (rawUserDictionaryTsv !== undefined) {
+      if (typeof rawUserDictionaryTsv !== "string") {
+        throw new AzookeyProtocolError("invalid_contract", "userDictionaryTsv must be a string");
+      }
+      if (encoder.encode(rawUserDictionaryTsv).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+        throw new AzookeyProtocolError(
+          "text_too_large",
+          "userDictionaryTsv exceeds its byte limit",
+        );
+      }
+      userDictionaryTsv = rawUserDictionaryTsv;
+    }
   } catch (error) {
     if (error instanceof AzookeyProtocolError && error.requestId === undefined) {
       throw new AzookeyProtocolError(error.code, error.message, requestId);
@@ -672,6 +713,9 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
     ...(utteranceId === undefined ? {} : { utteranceId }),
     ...(resetContext === undefined ? {} : { resetContext }),
     ...(leftContext === undefined || leftContext.length === 0 ? {} : { leftContext }),
+    ...(userDictionaryTsv === undefined || userDictionaryTsv.length === 0
+      ? {}
+      : { userDictionaryTsv }),
     ...(auth === undefined ? {} : { auth }),
   };
 };
@@ -789,29 +833,61 @@ const instantiateWasmConverter = (
     text: string,
     _signal?: AbortSignal,
     preceding?: AzookeyPrecedingContext,
+    userDictionaryTsv?: string,
   ): AzookeyConversionResult => {
     const bytes = encoder.encode(text);
     const pointer = checkedExports.azookey_alloc(bytes.byteLength);
     if (pointer === 0 && bytes.byteLength !== 0) {
       throw new Error("AzooKey Wasm input allocation failed");
     }
+    const userBytes =
+      userDictionaryTsv && userDictionaryTsv.trim().length > 0
+        ? encoder.encode(userDictionaryTsv)
+        : undefined;
+    const userPointer =
+      userBytes === undefined ? 0 : checkedExports.azookey_alloc(userBytes.byteLength);
+    if (userBytes && userPointer === 0 && userBytes.byteLength !== 0) {
+      checkedExports.azookey_dealloc(pointer, bytes.byteLength);
+      throw new Error("AzooKey Wasm custom dictionary allocation failed");
+    }
     try {
       new Uint8Array(checkedExports.memory.buffer, pointer, bytes.byteLength).set(bytes);
+      if (userBytes) {
+        new Uint8Array(checkedExports.memory.buffer, userPointer, userBytes.byteLength).set(
+          userBytes,
+        );
+      }
       const hasPreceding = preceding === undefined ? 0 : 1;
-      const packed = checkedExports.azookey_convert_n_best(
-        pointer,
-        bytes.byteLength,
-        AZOOKEY_N_BEST_WIDTH,
-        hasPreceding,
-        preceding?.rcid ?? 0,
-        preceding?.mid ?? 0,
-      );
+      const convertWithUser = checkedExports.azookey_convert_n_best_with_user;
+      const packed =
+        userBytes && typeof convertWithUser === "function"
+          ? convertWithUser(
+              pointer,
+              bytes.byteLength,
+              AZOOKEY_N_BEST_WIDTH,
+              hasPreceding,
+              preceding?.rcid ?? 0,
+              preceding?.mid ?? 0,
+              userPointer,
+              userBytes.byteLength,
+            )
+          : checkedExports.azookey_convert_n_best(
+              pointer,
+              bytes.byteLength,
+              AZOOKEY_N_BEST_WIDTH,
+              hasPreceding,
+              preceding?.rcid ?? 0,
+              preceding?.mid ?? 0,
+            );
       if (packed === 0 || packed === 0n) {
         throw new Error("AzooKey Wasm n-best conversion allocation failed");
       }
       return unpackNBestResult(checkedExports, packed, dictionaryRevision);
     } finally {
       checkedExports.azookey_dealloc(pointer, bytes.byteLength);
+      if (userBytes) {
+        checkedExports.azookey_dealloc(userPointer, userBytes.byteLength);
+      }
     }
   };
   const converter = ((text: string, signal?: AbortSignal): string =>
@@ -826,26 +902,58 @@ const instantiateWasmConverter = (
     const latticeOpen = checkedExports.azookey_lattice_open;
     const latticeSearch = checkedExports.azookey_lattice_search_output_prefix;
     const latticeClose = checkedExports.azookey_lattice_close;
-    converter.openLattice = (text, preceding) => {
+    converter.openLattice = (text, preceding, userDictionaryTsv) => {
       const bytes = encoder.encode(text);
       const pointer = checkedExports.azookey_alloc(bytes.byteLength);
       if (pointer === 0 && bytes.byteLength !== 0) {
         throw new Error("AzooKey Wasm lattice input allocation failed");
       }
+      const userBytes =
+        userDictionaryTsv && userDictionaryTsv.trim().length > 0
+          ? encoder.encode(userDictionaryTsv)
+          : undefined;
+      const userPointer =
+        userBytes === undefined ? 0 : checkedExports.azookey_alloc(userBytes.byteLength);
+      if (userBytes && userPointer === 0 && userBytes.byteLength !== 0) {
+        checkedExports.azookey_dealloc(pointer, bytes.byteLength);
+        throw new Error("AzooKey Wasm lattice custom dictionary allocation failed");
+      }
       let handle = 0;
       try {
         new Uint8Array(checkedExports.memory.buffer, pointer, bytes.byteLength).set(bytes);
-        handle = latticeOpen(
-          pointer,
-          bytes.byteLength,
-          preceding === undefined ? 0 : 1,
-          preceding?.rcid ?? 0,
-          preceding?.mid ?? 0,
-          AZOOKEY_N_BEST_WIDTH,
-          1,
-        );
+        if (userBytes) {
+          new Uint8Array(checkedExports.memory.buffer, userPointer, userBytes.byteLength).set(
+            userBytes,
+          );
+        }
+        const openWithUser = checkedExports.azookey_lattice_open_with_user;
+        handle =
+          userBytes && typeof openWithUser === "function"
+            ? openWithUser(
+                pointer,
+                bytes.byteLength,
+                preceding === undefined ? 0 : 1,
+                preceding?.rcid ?? 0,
+                preceding?.mid ?? 0,
+                AZOOKEY_N_BEST_WIDTH,
+                1,
+                userPointer,
+                userBytes.byteLength,
+              )
+            : latticeOpen(
+                pointer,
+                bytes.byteLength,
+                preceding === undefined ? 0 : 1,
+                preceding?.rcid ?? 0,
+                preceding?.mid ?? 0,
+                AZOOKEY_N_BEST_WIDTH,
+                1,
+              );
       } finally {
         checkedExports.azookey_dealloc(pointer, bytes.byteLength);
+        if (userBytes) {
+          checkedExports.azookey_dealloc(userPointer, userBytes.byteLength);
+        }
       }
       if (handle === 0) {
         return undefined;
@@ -1119,10 +1227,11 @@ export const createWasmConverter = (
     text: string,
     signal?: AbortSignal,
     preceding?: AzookeyPrecedingContext,
+    userDictionaryTsv?: string,
   ): Promise<string | AzookeyConversionResult> => {
     const loaded = await loadConverter();
     return loaded.convertWithContext
-      ? loaded.convertWithContext(text, signal, preceding)
+      ? loaded.convertWithContext(text, signal, preceding, userDictionaryTsv)
       : loaded(text, signal);
   };
   Object.defineProperty(converter, "dictionaryRevision", {
@@ -1133,7 +1242,8 @@ export const createWasmConverter = (
   converter.warmup = async (): Promise<void> => {
     await loadConverter();
   };
-  converter.openLattice = (text, preceding) => loadedConverter?.openLattice?.(text, preceding);
+  converter.openLattice = (text, preceding, userDictionaryTsv) =>
+    loadedConverter?.openLattice?.(text, preceding, userDictionaryTsv);
   return converter;
 };
 
@@ -1586,7 +1696,12 @@ export const convertAzookeyMessage = async (
     const candidate = await withTimeout(
       (signal) =>
         runtime.converter.convertWithContext
-          ? runtime.converter.convertWithContext(conversionInput, signal, precedingContext)
+          ? runtime.converter.convertWithContext(
+              conversionInput,
+              signal,
+              precedingContext,
+              message.userDictionaryTsv,
+            )
           : runtime.converter(conversionInput, signal, precedingContext),
       remainingMs(),
     );
@@ -1670,7 +1785,11 @@ export const convertAzookeyMessage = async (
               message.requestId,
             );
           }
-          const lattice = runtime.converter.openLattice?.(conversionInput, preceding);
+          const lattice = runtime.converter.openLattice?.(
+            conversionInput,
+            preceding,
+            message.userDictionaryTsv,
+          );
           if (!lattice) {
             converted = dictionaryResult.text;
             completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE;
