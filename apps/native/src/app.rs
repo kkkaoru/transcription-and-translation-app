@@ -96,13 +96,12 @@ impl MainView {
     fn publish_live_caption(&mut self) {
         let snapshot = self.capture.snapshot();
         let caption = (snapshot.source_text.clone(), snapshot.translation_text.clone());
-        if caption == self.last_published_caption.clone().unwrap_or_default() {
-            return;
-        }
-        if caption.0.is_empty() && caption.1.is_empty() {
-            return;
-        }
-        match self.surfaces.borrow_mut().publish_caption(&self.style, &caption.0, &caption.1) {
+        match self.surfaces.borrow_mut().publish_caption(
+            &self.style,
+            &caption.0,
+            &caption.1,
+            self.last_published_caption.as_ref(),
+        ) {
             Ok(Some(_)) => {
                 self.last_published_caption = Some(caption);
             }
@@ -125,6 +124,7 @@ impl MainView {
     }
 
     fn persist_style(&mut self) {
+        self.last_published_caption = None;
         match save_style_settings(&self.config_dir, &self.style) {
             Ok(()) => self.persist_error = None,
             Err(error) => self.persist_error = Some(error),
@@ -151,6 +151,9 @@ impl MainView {
         match result {
             Ok(()) => {
                 self.app_settings.overlay_open = open;
+                if open {
+                    self.last_published_caption = None;
+                }
                 self.persist_settings();
             }
             Err(error) => self.persist_error = Some(error),
@@ -170,6 +173,9 @@ impl MainView {
         match result {
             Ok(enabled) => {
                 self.app_settings.syphon_enabled = enabled;
+                if enabled {
+                    self.last_published_caption = None;
+                }
                 self.persist_settings();
             }
             Err(error) => self.persist_error = Some(error),

@@ -39,11 +39,18 @@ impl DebugSurfaces {
         style: &NativeStyleSettings,
         source: &str,
         translation: &str,
+        last_published_caption: Option<&(String, String)>,
     ) -> Result<Option<CaptionPublication>, String> {
-        if self.overlay.is_none() && self.syphon.is_none() && self.spout.is_none() {
+        let Some(publication) = prepare_caption_publication_with(
+            self.overlay.is_some() || self.syphon.is_some() || self.spout.is_some(),
+            last_published_caption,
+            style,
+            source,
+            translation,
+            caption_publication,
+        ) else {
             return Ok(None);
-        }
-        let publication = caption_publication(style, source, translation);
+        };
         if let Some(window) = self.overlay.as_mut() {
             window
                 .set_pixels(publication.width, publication.height, &publication.pixels)
@@ -61,6 +68,26 @@ impl DebugSurfaces {
         }
         Ok(Some(publication))
     }
+}
+
+pub(crate) fn prepare_caption_publication_with<R>(
+    has_active_surface: bool,
+    last_published_caption: Option<&(String, String)>,
+    style: &NativeStyleSettings,
+    source: &str,
+    translation: &str,
+    rasterize: R,
+) -> Option<CaptionPublication>
+where
+    R: FnOnce(&NativeStyleSettings, &str, &str) -> CaptionPublication,
+{
+    if !has_active_surface || (source.is_empty() && translation.is_empty()) {
+        return None;
+    }
+    if last_published_caption.is_some_and(|last| last.0 == source && last.1 == translation) {
+        return None;
+    }
+    Some(rasterize(style, source, translation))
 }
 
 pub fn caption_publication(

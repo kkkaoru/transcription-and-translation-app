@@ -9,7 +9,9 @@ use caption_bridge_spout::NATIVE_SPOUT_SHARE_NAME;
 use caption_bridge_syphon::{NATIVE_SYPHON_SERVER_NAME, WINDOWS_SYPHON_UNSUPPORTED};
 
 use crate::capture::caption_from_server_json;
-use crate::debug_surfaces::{caption_publication, start_debug_surfaces};
+use crate::debug_surfaces::{
+    caption_publication, prepare_caption_publication_with, start_debug_surfaces, CaptionPublication,
+};
 use crate::domain::{
     add_dictionary_entry, adjust_font_size, adjust_max_chars, adjust_opacity, adjust_position,
     cycle_source_color, cycle_translation_color, delete_dictionary_entry, geometry_from_style,
@@ -49,6 +51,91 @@ fn live_caption_reaches_debug_surface_publication_boundary() {
     assert_eq!(publication.height, 720);
     assert_eq!(publication.pixels.len(), 3_686_400);
     assert!(publication.pixels.iter().any(|channel| *channel != 0));
+}
+
+#[test]
+fn inactive_surfaces_skip_caption_rasterization() {
+    let mut rasterized = false;
+    let publication = prepare_caption_publication_with(
+        false,
+        None,
+        &NativeStyleSettings::default(),
+        "字幕",
+        "Caption",
+        |_, _, _| {
+            rasterized = true;
+            CaptionPublication {
+                source: String::new(),
+                translation: String::new(),
+                width: 0,
+                height: 0,
+                pixels: Vec::new(),
+            }
+        },
+    );
+
+    assert!(publication.is_none());
+    assert!(!rasterized, "inactive surfaces must not rasterize a 1280x720 frame");
+}
+
+#[test]
+fn unchanged_caption_text_skips_caption_rasterization() {
+    let previous = ("字幕".to_string(), "Caption".to_string());
+    let mut rasterized = false;
+    let publication = prepare_caption_publication_with(
+        true,
+        Some(&previous),
+        &NativeStyleSettings::default(),
+        "字幕",
+        "Caption",
+        |_, _, _| {
+            rasterized = true;
+            CaptionPublication {
+                source: String::new(),
+                translation: String::new(),
+                width: 0,
+                height: 0,
+                pixels: Vec::new(),
+            }
+        },
+    );
+
+    assert!(publication.is_none());
+    assert!(!rasterized, "deduplication must use caption text before rasterizing");
+}
+
+#[test]
+fn changed_caption_text_rasterizes_even_without_a_generation_key() {
+    let previous = ("前の字幕".to_string(), "Previous".to_string());
+    let publication = prepare_caption_publication_with(
+        true,
+        Some(&previous),
+        &NativeStyleSettings::default(),
+        "次の字幕",
+        "Next",
+        |_, source, translation| CaptionPublication {
+            source: source.to_string(),
+            translation: translation.to_string(),
+            width: 1,
+            height: 1,
+            pixels: vec![255, 255, 255, 255],
+        },
+    )
+    .expect("changed caption text must rasterize");
+
+    assert_eq!(publication.source, "次の字幕");
+    assert_eq!(publication.translation, "Next");
+}
+
+#[test]
+fn gpui_poll_loop_invokes_live_caption_publication() {
+    let app_source = include_str!("app.rs");
+    let required_tick = "view.capture.poll();\n                    view.publish_live_caption();\n                    cx.notify();";
+
+    assert!(
+        app_source.contains(required_tick),
+        "the GPUI poll loop must publish caption state after polling capture"
+    );
 }
 
 #[test]
