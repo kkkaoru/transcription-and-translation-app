@@ -85,6 +85,22 @@ enum WorkerEvent {
 }
 
 /// Owns device list + optional capture worker.
+struct ParapperSupervisor {
+    inner: ChildSupervisor,
+}
+
+impl ParapperSupervisor {
+    fn stop(&mut self) -> Result<(), SupervisorError> {
+        self.inner.stop()
+    }
+}
+
+impl Drop for ParapperSupervisor {
+    fn drop(&mut self) {
+        let _ = self.inner.stop();
+    }
+}
+
 pub struct CaptureController {
     snapshot: CaptureSnapshot,
     command_tx: Option<Sender<WorkerCommand>>,
@@ -294,35 +310,51 @@ fn format_audio_read_error(error: AudioError) -> String {
     }
 }
 
-fn spawn_parapper(binary: PathBuf) -> Result<ChildSupervisor, String> {
+fn spawn_parapper(binary: PathBuf) -> Result<ParapperSupervisor, String> {
+    let runtime_dir = parapper_runtime_dir()?;
+    spawn_parapper_at(binary, runtime_dir, NATIVE_PARAPPER_PORT, READY_ATTEMPTS)
+}
+
+fn spawn_parapper_at(
+    binary: PathBuf,
+    runtime_dir: PathBuf,
+    port: u16,
+    ready_attempts: u32,
+) -> Result<ParapperSupervisor, String> {
     if !binary.is_file() {
         return Err(missing_sidecar_message());
     }
-    let runtime_dir = parapper_runtime_dir()?;
-    let argv = parapper_args(
-        NATIVE_PARAPPER_PORT,
-        PARAPPER_VAD_INTERVAL_MS,
-        PARAPPER_VAD_THRESHOLD,
-        false,
-    );
-    let spec = parapper_sidecar_spec(binary, runtime_dir, argv);
-    let mut supervisor = ChildSupervisor::new(spec);
-    #[cfg(unix)]
-    {
-        supervisor = supervisor.with_port_clear(true);
-    }
-    supervisor.start().map_err(format_supervisor_error)?;
-    supervisor.wait_until_ready(READY_ATTEMPTS).map_err(format_supervisor_error)?;
+    ensure_loopback_port_available(port)?;
+    let argv = parapper_args(port, PARAPPER_VAD_INTERVAL_MS, PARAPPER_VAD_THRESHOLD, false);
+    let spec = parapper_sidecar_spec(binary, runtime_dir, argv, port);
+    let mut supervisor = ParapperSupervisor { inner: ChildSupervisor::new(spec) };
+    supervisor.inner.start().map_err(format_supervisor_error)?;
+    supervisor.inner.wait_until_ready(ready_attempts).map_err(format_supervisor_error)?;
     Ok(supervisor)
 }
 
-fn parapper_sidecar_spec(binary: PathBuf, runtime_dir: PathBuf, argv: Vec<String>) -> SidecarSpec {
+fn ensure_loopback_port_available(port: u16) -> Result<(), String> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|error| {
+        format!(
+            "Parapper port {port} is already occupied; stop the stale listener before starting capture: {error}"
+        )
+    })?;
+    drop(listener);
+    Ok(())
+}
+
+fn parapper_sidecar_spec(
+    binary: PathBuf,
+    runtime_dir: PathBuf,
+    argv: Vec<String>,
+    port: u16,
+) -> SidecarSpec {
     SidecarSpec::new(
         PARAPPER_BINARY_NAME,
         binary.to_string_lossy().into_owned(),
         argv,
-        NATIVE_PARAPPER_PORT,
-        Some(ReadyCheck::Tcp { host: "127.0.0.1".to_string(), port: NATIVE_PARAPPER_PORT }),
+        port,
+        Some(ReadyCheck::Tcp { host: "127.0.0.1".to_string(), port }),
     )
     .with_env([("PARAPPER_RUNTIME_DIR", runtime_dir.to_string_lossy().as_ref())])
 }
@@ -509,15 +541,18 @@ fn unique_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use caption_bridge_sidecar::{ChildSupervisor, SidecarSpec};
     use tungstenite::{accept, Message};
 
     use super::{
         caption_from_server_json, drain_audio_frames, drain_parapper, i16_to_le_bytes,
-        parapper_sidecar_spec, CaptionSessionLike, CaptureSnapshot, NonblockingParapper,
+        parapper_sidecar_spec, spawn_parapper_at, CaptionSessionLike, CaptureSnapshot,
+        NonblockingParapper, ParapperSupervisor,
     };
 
     #[test]
@@ -544,6 +579,7 @@ mod tests {
             "/tmp/kotoba-parapper".into(),
             "/tmp/native-parapper-runtime".into(),
             vec!["--headless".to_string()],
+            18_182,
         );
 
         assert_eq!(
@@ -568,6 +604,58 @@ mod tests {
         .expect("recoverable queue error must not abort capture");
 
         assert_eq!(sent, vec![vec![232, 3, 24, 252]]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_parapper_supervisor_terminates_child() {
+        let spec = SidecarSpec::new(
+            "test-child",
+            "/bin/sh",
+            vec!["-c".to_string(), "sleep 30".to_string()],
+            0,
+            None,
+        );
+        let mut inner = ChildSupervisor::new(spec);
+        inner.start().expect("spawn test child");
+        let pid = inner.child_pid().expect("test child pid");
+        let supervisor = ParapperSupervisor { inner };
+
+        drop(supervisor);
+
+        let alive = std::process::Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .expect("probe test child")
+            .success();
+        if alive {
+            let _ = std::process::Command::new("/bin/kill").args(["-9", &pid.to_string()]).status();
+        }
+        assert!(!alive, "dropping the owner must terminate and reap the sidecar child");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn occupied_port_fails_before_starting_a_fresh_sidecar() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind stale listener");
+        let port = listener.local_addr().expect("stale listener address").port();
+        let runtime_dir = std::env::temp_dir().join(format!("native-stale-port-{port}"));
+        std::fs::create_dir_all(&runtime_dir).expect("runtime directory");
+
+        let result =
+            spawn_parapper_at(PathBuf::from("/usr/bin/true"), runtime_dir.clone(), port, 1);
+
+        let error = match result {
+            Ok(mut supervisor) => {
+                let _ = supervisor.stop();
+                panic!("occupied port must fail loudly");
+            }
+            Err(error) => error,
+        };
+        assert!(error.contains("already occupied"));
+        assert!(error.contains(&port.to_string()));
+        drop(listener);
+        std::fs::remove_dir_all(runtime_dir).expect("remove runtime directory");
     }
 
     #[test]

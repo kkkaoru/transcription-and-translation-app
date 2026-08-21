@@ -3,6 +3,10 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
+use std::sync::Arc;
 use std::time::Duration;
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
@@ -11,7 +15,7 @@ use caption_bridge_syphon::NATIVE_SYPHON_SERVER_NAME;
 use gpui::prelude::*;
 use gpui::{
     div, point, px, size, App, Bounds, Context, FocusHandle, IntoElement, KeyDownEvent, Render,
-    SharedString, Size, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    SharedString, Size, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
 use crate::capture::CaptureController;
@@ -51,6 +55,7 @@ pub struct MainView {
     preview_translation: String,
     device_select_open: bool,
     last_published_caption: Option<(String, String)>,
+    _quit_subscription: Subscription,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +77,10 @@ impl MainView {
             .map(|caption| caption.source_text.clone())
             .filter(|text| !text.is_empty())
             .unwrap_or_else(|| DEFAULT_PREVIEW_SOURCE.to_string());
+        let quit_subscription = cx.on_app_quit(|view, _cx| {
+            view.capture.stop();
+            Task::ready(())
+        });
         Self {
             tab: AppTab::Live,
             config_dir,
@@ -90,6 +99,7 @@ impl MainView {
             preview_translation: DEFAULT_PREVIEW_TRANSLATION.to_string(),
             device_select_open: false,
             last_published_caption: None,
+            _quit_subscription: quit_subscription,
         }
     }
 
@@ -385,7 +395,23 @@ pub fn main_window_options() -> WindowOptions {
     }
 }
 
+#[cfg(unix)]
+fn register_termination_flag() -> Result<Arc<AtomicBool>, String> {
+    let termination_requested = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&termination_requested))
+        .map_err(|error| format!("could not register SIGTERM handler: {error}"))?;
+    Ok(termination_requested)
+}
+
 pub fn run() {
+    #[cfg(unix)]
+    let termination_requested = match register_termination_flag() {
+        Ok(flag) => flag,
+        Err(error) => {
+            eprintln!("{error}");
+            return;
+        }
+    };
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == FLAG_HELP) {
         crate::domain::print_usage();
@@ -421,6 +447,12 @@ pub fn run() {
         };
         cx.activate(true);
         cx.spawn(async move |cx| loop {
+            #[cfg(unix)]
+            if termination_requested.load(Ordering::Relaxed) {
+                let _ = window_handle.update(cx, |view, _window, _cx| view.capture.stop());
+                cx.update(|cx| cx.quit());
+                break;
+            }
             let _ = caption_bridge_overlay::pump_native_events();
             let _ = poll_surfaces.borrow_mut().overlay.as_mut();
             if window_handle

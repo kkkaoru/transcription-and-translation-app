@@ -139,6 +139,25 @@ fn gpui_poll_loop_invokes_live_caption_publication() {
 }
 
 #[test]
+fn gpui_normal_quit_stops_capture() {
+    let app_source = include_str!("app.rs");
+    let required_shutdown = "let quit_subscription = cx.on_app_quit(|view, _cx| {\n            view.capture.stop();\n            Task::ready(())\n        });";
+
+    assert!(app_source.contains(required_shutdown), "normal GPUI quit must stop and join capture");
+}
+
+#[test]
+fn gpui_sigterm_path_stops_capture_before_quitting() {
+    let app_source = include_str!("app.rs");
+    let required_shutdown = "if termination_requested.load(Ordering::Relaxed) {\n                let _ = window_handle.update(cx, |view, _window, _cx| view.capture.stop());\n                cx.update(|cx| cx.quit());";
+
+    assert!(
+        app_source.contains(required_shutdown),
+        "SIGTERM must stop and join capture before asking GPUI to quit"
+    );
+}
+
+#[test]
 fn fixture_caption_contains_konnichiwa() {
     let caption = ingest_fixture_caption().expect("fixture must ingest");
     assert_eq!(caption.source_text, "こんにちは。");
