@@ -26,6 +26,7 @@ describe("timed quality steps", () => {
     assert.deepEqual(
       describeQualitySteps(QUALITY_GATE_STEPS).map(({ id }) => id),
       [
+        "rust:native:build",
         "lint",
         "format:check",
         "check:single-app",
@@ -78,22 +79,26 @@ describe("timed quality steps", () => {
     );
   });
 
+  it("invokes the default-feature native GPUI build", () => {
+    assert.ok(QUALITY_GATE_STEPS.includes("rust:native:build"));
+  });
+
   it("gives every planned step a stable identity and semantic asset labels", () => {
     const described = describeQualitySteps(QUALITY_GATE_STEPS);
-    assert.equal(described.length, 48);
+    assert.equal(described.length, 49);
     assert.equal(new Set(described.map(({ id }) => id)).size, described.length);
-    assert.deepEqual(described[3], {
+    assert.deepEqual(described[4], {
       id: "assets:verify:checkout-baseline",
       script: "assets:verify",
       label: "assets:verify (checkout baseline)",
-      index: 4,
+      index: 5,
       occurrence: 1,
     });
-    assert.deepEqual(described[19], {
+    assert.deepEqual(described[20], {
       id: "assets:verify:post-worker-build",
       script: "assets:verify",
       label: "assets:verify (post worker:typecheck)",
-      index: 20,
+      index: 21,
       occurrence: 2,
     });
   });
@@ -211,7 +216,7 @@ describe("timed quality steps", () => {
     records: [],
   };
 
-  it("serializes a versioned complete 48-step success with a fixed clock", () => {
+  it("serializes a versioned complete 49-step success with a fixed clock", () => {
     const records = describeQualitySteps(QUALITY_GATE_STEPS).map((step) => ({
       ...step,
       durationMs: 10,
@@ -221,9 +226,9 @@ describe("timed quality steps", () => {
     const payload = serializeTimingSummary(
       {
         exitCode: 0,
-        plannedStepCount: 48,
+        plannedStepCount: 49,
         totalMs: 500,
-        stepsTotalMs: 480,
+        stepsTotalMs: 490,
         overheadMs: 20,
         records,
       },
@@ -248,14 +253,14 @@ describe("timed quality steps", () => {
         recordedAt: "2026-08-15T18:52:00.000Z",
         outcome: "passed",
         exitCode: 0,
-        plannedStepCount: 48,
-        recordedStepCount: 48,
+        plannedStepCount: 49,
+        recordedStepCount: 49,
         totalMs: 500,
-        stepsTotalMs: 480,
+        stepsTotalMs: 490,
         overheadMs: 20,
       },
     );
-    assert.equal(parsed.steps.length, 48);
+    assert.equal(parsed.steps.length, 49);
     assert.deepEqual(Object.keys(parsed.steps[0]), [
       "id",
       "script",
@@ -272,7 +277,7 @@ describe("timed quality steps", () => {
     const payload = serializeTimingSummary(
       {
         exitCode: 2,
-        plannedStepCount: 48,
+        plannedStepCount: 49,
         totalMs: 25,
         stepsTotalMs: 20,
         overheadMs: 5,
@@ -296,7 +301,7 @@ describe("timed quality steps", () => {
       recordedAt: "2026-08-15T18:52:01.000Z",
       outcome: "failed",
       exitCode: 2,
-      plannedStepCount: 48,
+      plannedStepCount: 49,
       recordedStepCount: 1,
       totalMs: 25,
       stepsTotalMs: 20,

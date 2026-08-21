@@ -1,4 +1,5 @@
 export const QUALITY_GATE_STEPS = [
+  "rust:native:build",
   "lint",
   "format:check",
   "check:single-app",
