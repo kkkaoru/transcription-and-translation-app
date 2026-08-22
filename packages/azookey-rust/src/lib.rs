@@ -16,7 +16,9 @@ mod verifier;
 #[path = "kana_kanji/viterbi.rs"]
 mod viterbi;
 
-pub use dictionary::{AzooKeyDictionary, DictionaryEntry, DictionaryPaths};
+pub use dictionary::{
+    AzooKeyDictionary, DictionaryEntry, DictionaryPaths, UserLexicon, MAX_USER_TSV_ENTRIES,
+};
 pub use verification_cache::{VerificationCache, VerificationCacheStats};
 pub use verifier::{
     Draft, DraftVerifier, SessionContext, VerificationCacheKey, VerificationResult,

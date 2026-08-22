@@ -1,9 +1,11 @@
 use super::normalization::{is_boundary, to_hiragana, to_hiragana_cow, to_katakana};
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, Range};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
@@ -29,7 +31,18 @@ const DEFAULT_TSV_ENTRY_VALUE: f32 = -10.0;
 /// Explicit two-column user rows are intentional and should beat ordinary
 /// official alternatives while still participating in lattice context.
 const DEFAULT_USER_TSV_ENTRY_VALUE: f32 = -1.0;
-const MAX_USER_TSV_ENTRIES: usize = 10_000;
+pub const MAX_USER_TSV_ENTRIES: usize = 100_000;
+/// User-dictionary readings shorter than this are rejected. System TSV still
+/// keeps one-mora rows used by the official lexicon.
+const USER_LEXICON_MIN_READING_CHARS: usize = 2;
+/// Two-mora user rows compete with ordinary system scores instead of nuking them.
+const USER_LEXICON_TWO_MORA_VALUE: f32 = -7.0;
+const USER_LEXICON_COMPETE_MAX_READING_CHARS: usize = 2;
+const USER_LEXICON_LENGTH_BIT_CAP: usize = 31;
+const USER_LEXICON_COMPACT_MAGIC: [u8; 8] = *b"AZULXC01";
+const USER_LEXICON_COMPACT_VERSION: u32 = 1;
+const USER_LEXICON_COMPACT_HEADER_BYTES: usize = 32;
+const USER_LEXICON_COMPACT_ROW_BYTES: usize = 16;
 const BUILTIN_HIGH_FREQUENCY_VALUE: f32 = -5.0;
 const BUILTIN_DEFAULT_VALUE: f32 = -10.0;
 const CID_DEFAULT_RECORD: i32 = -1;
@@ -387,8 +400,28 @@ impl AzooKeyDictionary {
                 "custom dictionary supports at most {MAX_USER_TSV_ENTRIES} entries"
             ));
         }
-        self.user = Some(ExternalTrieDictionary::from_tsv_entries("user", entries));
+        self.user =
+            Some(ExternalTrieDictionary::from_user_lexicon(&UserLexicon::from_entries(entries)?));
         Ok(())
+    }
+
+    /// Replace the user layer with a pre-indexed lexicon (no TSV reparse).
+    pub fn replace_user_lexicon(&mut self, lexicon: Option<&UserLexicon>) {
+        self.user = lexicon.map(ExternalTrieDictionary::from_user_lexicon);
+    }
+
+    /// Run `f` with a pre-indexed user lexicon, then restore the previous layer.
+    pub fn with_user_lexicon<T, F>(&mut self, lexicon: Option<&UserLexicon>, f: F) -> T
+    where
+        F: FnOnce(&Self) -> T,
+    {
+        let previous = self.user.take();
+        if let Some(lexicon) = lexicon {
+            self.user = Some(ExternalTrieDictionary::from_user_lexicon(lexicon));
+        }
+        let result = f(self);
+        self.user = previous;
+        result
     }
 
     /// Drop the user layer while keeping the official system dictionary.
@@ -436,9 +469,7 @@ impl AzooKeyDictionary {
             }
         }
         if let Some(user) = &self.user {
-            if let Ok(user_entries) = user.lookup_exact(normalized) {
-                entries.extend(user_entries);
-            }
+            let _ = user.extend_exact(normalized, &mut entries);
         }
         if let Some(memory) = &self.memory {
             if let Ok(memory_entries) = memory.lookup_exact(normalized) {
@@ -1526,6 +1557,252 @@ fn is_katakana_char(character: char) -> bool {
     (0x30a0..=0x30ff).contains(&code) || character == 'ー'
 }
 
+/// Packed user-dictionary row. Strings live in [`UserLexicon::arena`].
+#[derive(Debug, Clone, Copy)]
+struct UserLexiconRow {
+    reading_off: u32,
+    reading_len: u16,
+    surface_off: u32,
+    surface_len: u16,
+    value: f32,
+    user_supplied: bool,
+}
+
+/// In-memory user dictionary indexed by reading for O(1) exact lookup.
+///
+/// Built once from TSV/JSON rows. Viterbi asks `lookup_exact` per lattice
+/// span; a linear scan of 10k–100k rows would dominate real-time convert.
+/// Strings live in one arena. Lattice rows are synthesized only on a hit.
+#[derive(Debug, Clone)]
+pub struct UserLexicon {
+    arena: Arc<[u8]>,
+    rows: Arc<[UserLexiconRow]>,
+    by_hash: Arc<HashMap<u64, Arc<[u32]>>>,
+    length_bits: u32,
+    len: u32,
+    content_revision: u64,
+}
+
+impl UserLexicon {
+    pub fn from_entries(entries: Vec<DictionaryEntry>) -> Result<Self, String> {
+        if entries.len() > MAX_USER_TSV_ENTRIES {
+            return Err(format!(
+                "custom dictionary supports at most {MAX_USER_TSV_ENTRIES} entries"
+            ));
+        }
+        reject_short_user_readings(&entries)?;
+        let mut content_revision = 0xcbf29ce484222325u64;
+        revision_mix(&mut content_revision, b"user-lexicon-v2");
+        let mut arena = Vec::new();
+        let mut rows = Vec::with_capacity(entries.len());
+        let mut buckets: HashMap<u64, Vec<u32>> = HashMap::new();
+        let mut length_bits = 0u32;
+        for entry in &entries {
+            revision_mix_entry(&mut content_revision, entry);
+            let reading = entry.reading.as_str();
+            let surface = entry.surface.as_str();
+            let reading_off = u32::try_from(arena.len())
+                .map_err(|_| "user lexicon arena exceeded 4 GiB".to_string())?;
+            let reading_len = u16::try_from(reading.len())
+                .map_err(|_| "user lexicon reading exceeds 65535 bytes".to_string())?;
+            arena.extend_from_slice(reading.as_bytes());
+            let surface_off = u32::try_from(arena.len())
+                .map_err(|_| "user lexicon arena exceeded 4 GiB".to_string())?;
+            let surface_len = u16::try_from(surface.len())
+                .map_err(|_| "user lexicon word exceeds 65535 bytes".to_string())?;
+            arena.extend_from_slice(surface.as_bytes());
+            length_bits |= user_lexicon_length_mask(reading.chars().count());
+            let row_index = u32::try_from(rows.len())
+                .map_err(|_| "user lexicon row index overflow".to_string())?;
+            rows.push(UserLexiconRow {
+                reading_off,
+                reading_len,
+                surface_off,
+                surface_len,
+                value: assigned_user_value(entry),
+                user_supplied: entry.user_supplied,
+            });
+            buckets.entry(hash_user_reading(reading)).or_default().push(row_index);
+        }
+        let by_hash =
+            buckets.into_iter().map(|(key, indices)| (key, Arc::<[u32]>::from(indices))).collect();
+        Ok(Self {
+            arena: Arc::from(arena),
+            rows: Arc::from(rows),
+            by_hash: Arc::new(by_hash),
+            length_bits,
+            len: u32::try_from(entries.len())
+                .map_err(|_| "user lexicon length overflow".to_string())?,
+            content_revision,
+        })
+    }
+
+    pub fn from_tsv_str(tsv: &str) -> Result<Self, String> {
+        if tsv.trim().is_empty() {
+            return Self::from_entries(Vec::new());
+        }
+        Self::from_entries(parse_tsv_str(tsv, true)?)
+    }
+
+    pub fn from_compact_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < USER_LEXICON_COMPACT_HEADER_BYTES {
+            return Err("user lexicon compact payload is truncated".to_string());
+        }
+        if bytes[0..8] != USER_LEXICON_COMPACT_MAGIC {
+            return Err("user lexicon compact magic is invalid".to_string());
+        }
+        let version = read_u32_le(bytes, 8)?;
+        if version != USER_LEXICON_COMPACT_VERSION {
+            return Err(format!("unsupported user lexicon compact version: {version}"));
+        }
+        let row_count = read_u32_le(bytes, 12)? as usize;
+        let arena_len = read_u32_le(bytes, 16)? as usize;
+        let length_bits = read_u32_le(bytes, 20)?;
+        let content_revision = read_u64_le(bytes, 24)?;
+        if row_count > MAX_USER_TSV_ENTRIES {
+            return Err(format!(
+                "custom dictionary supports at most {MAX_USER_TSV_ENTRIES} entries"
+            ));
+        }
+        let rows_end = USER_LEXICON_COMPACT_HEADER_BYTES
+            .checked_add(
+                row_count
+                    .checked_mul(USER_LEXICON_COMPACT_ROW_BYTES)
+                    .ok_or_else(|| "user lexicon compact row table is too large".to_string())?,
+            )
+            .ok_or_else(|| "user lexicon compact row table is too large".to_string())?;
+        let total = rows_end
+            .checked_add(arena_len)
+            .ok_or_else(|| "user lexicon compact arena is too large".to_string())?;
+        if bytes.len() != total {
+            return Err("user lexicon compact payload length does not match the header".to_string());
+        }
+        let mut rows = Vec::with_capacity(row_count);
+        let mut cursor = USER_LEXICON_COMPACT_HEADER_BYTES;
+        let mut expected_bits = 0u32;
+        for _ in 0..row_count {
+            let reading_off = read_u32_le(bytes, cursor)?;
+            let reading_len = read_u16_le(bytes, cursor + 4)?;
+            let surface_off = read_u32_le(bytes, cursor + 6)?;
+            let surface_len = read_u16_le(bytes, cursor + 10)?;
+            let value = read_f32_le(bytes, cursor + 12)?;
+            cursor += USER_LEXICON_COMPACT_ROW_BYTES;
+            let reading = compact_arena_str(bytes, rows_end, arena_len, reading_off, reading_len)?;
+            let _surface = compact_arena_str(bytes, rows_end, arena_len, surface_off, surface_len)?;
+            if reading.chars().count() < USER_LEXICON_MIN_READING_CHARS {
+                return Err(format!(
+                    "custom dictionary reading must be at least {USER_LEXICON_MIN_READING_CHARS} characters"
+                ));
+            }
+            expected_bits |= user_lexicon_length_mask(reading.chars().count());
+            rows.push(UserLexiconRow {
+                reading_off,
+                reading_len,
+                surface_off,
+                surface_len,
+                value,
+                user_supplied: true,
+            });
+        }
+        if expected_bits != length_bits {
+            return Err("user lexicon compact length bitmap does not match rows".to_string());
+        }
+        let arena = bytes[rows_end..total].to_vec();
+        let mut buckets: HashMap<u64, Vec<u32>> = HashMap::new();
+        for (index, row) in rows.iter().enumerate() {
+            let reading =
+                compact_arena_str(&arena, 0, arena.len(), row.reading_off, row.reading_len)?;
+            let row_index =
+                u32::try_from(index).map_err(|_| "user lexicon row index overflow".to_string())?;
+            buckets.entry(hash_user_reading(reading)).or_default().push(row_index);
+        }
+        let by_hash =
+            buckets.into_iter().map(|(key, indices)| (key, Arc::<[u32]>::from(indices))).collect();
+        Ok(Self {
+            arena: Arc::from(arena),
+            rows: Arc::from(rows),
+            by_hash: Arc::new(by_hash),
+            length_bits,
+            len: u32::try_from(row_count)
+                .map_err(|_| "user lexicon length overflow".to_string())?,
+            content_revision,
+        })
+    }
+
+    pub fn to_compact_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(
+            USER_LEXICON_COMPACT_HEADER_BYTES
+                + self.rows.len() * USER_LEXICON_COMPACT_ROW_BYTES
+                + self.arena.len(),
+        );
+        bytes.extend_from_slice(&USER_LEXICON_COMPACT_MAGIC);
+        bytes.extend_from_slice(&USER_LEXICON_COMPACT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(self.rows.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(self.arena.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&self.length_bits.to_le_bytes());
+        bytes.extend_from_slice(&self.content_revision.to_le_bytes());
+        for row in self.rows.iter() {
+            bytes.extend_from_slice(&row.reading_off.to_le_bytes());
+            bytes.extend_from_slice(&row.reading_len.to_le_bytes());
+            bytes.extend_from_slice(&row.surface_off.to_le_bytes());
+            bytes.extend_from_slice(&row.surface_len.to_le_bytes());
+            bytes.extend_from_slice(&row.value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&self.arena);
+        bytes
+    }
+
+    pub fn packed_payload_bytes(&self) -> usize {
+        self.to_compact_bytes().len()
+    }
+
+    pub fn covers_reading_length(&self, char_count: usize) -> bool {
+        self.length_bits & user_lexicon_length_mask(char_count) != 0
+    }
+
+    pub fn extend_exact(&self, reading: &str, entries: &mut Vec<DictionaryEntry>) {
+        if !self.covers_reading_length(reading.chars().count()) {
+            return;
+        }
+        let Some(indices) = self.by_hash.get(&hash_user_reading(reading)) else {
+            return;
+        };
+        for index in indices.iter() {
+            let Some(row) = self.rows.get(*index as usize) else {
+                continue;
+            };
+            let Some(stored) = self.arena_str(row.reading_off, row.reading_len) else {
+                continue;
+            };
+            if stored != reading {
+                continue;
+            }
+            let Some(surface) = self.arena_str(row.surface_off, row.surface_len) else {
+                continue;
+            };
+            entries.push(synthesize_user_entry(stored, surface, row.value, row.user_supplied));
+        }
+    }
+
+    pub fn lookup_exact(&self, reading: &str) -> Vec<DictionaryEntry> {
+        let mut entries = Vec::new();
+        self.extend_exact(reading, &mut entries);
+        entries
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    fn arena_str(&self, offset: u32, length: u16) -> Option<&str> {
+        compact_arena_str(&self.arena, 0, self.arena.len(), offset, length).ok()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ExternalTrieDictionary {
     root: PathBuf,
@@ -1533,22 +1810,28 @@ struct ExternalTrieDictionary {
     content_revision: u64,
     char_ids: HashMap<char, u8>,
     tsv_entries: Option<Vec<DictionaryEntry>>,
+    tsv_by_reading: Option<HashMap<InternedText, Vec<DictionaryEntry>>>,
+    user_lexicon: Option<UserLexicon>,
 }
 
 impl ExternalTrieDictionary {
-    fn from_tsv_entries(name: &str, entries: Vec<DictionaryEntry>) -> Self {
-        let mut content_revision = 0xcbf29ce484222325u64;
-        revision_mix(&mut content_revision, name.as_bytes());
-        for entry in &entries {
-            revision_mix_entry(&mut content_revision, entry);
-        }
+    fn from_user_lexicon(lexicon: &UserLexicon) -> Self {
         Self {
             root: PathBuf::from("<memory>"),
-            name: name.to_string(),
-            content_revision,
+            name: "user".to_string(),
+            content_revision: lexicon.content_revision,
             char_ids: HashMap::new(),
-            tsv_entries: Some(entries),
+            tsv_entries: None,
+            tsv_by_reading: None,
+            user_lexicon: Some(lexicon.clone()),
         }
+    }
+
+    fn from_tsv_entries(name: &str, entries: Vec<DictionaryEntry>) -> Result<Self, String> {
+        let lexicon = UserLexicon::from_entries(entries)?;
+        let mut dictionary = Self::from_user_lexicon(&lexicon);
+        dictionary.name = name.to_string();
+        Ok(dictionary)
     }
 
     fn load(
@@ -1558,13 +1841,7 @@ impl ExternalTrieDictionary {
     ) -> Result<Self, String> {
         let content_revision = filesystem_dictionary_content_revision(path)?;
         if path.is_file() {
-            return Ok(Self {
-                root: path.to_path_buf(),
-                name: name.to_string(),
-                content_revision,
-                char_ids: HashMap::new(),
-                tsv_entries: Some(parse_tsv(path, name == "user")?),
-            });
+            return Self::from_tsv_entries(name, parse_tsv(path, name == "user")?);
         }
         let char_ids = if inherited_char_ids.is_empty() {
             let char_path = path.join("charID.chid");
@@ -1592,10 +1869,33 @@ impl ExternalTrieDictionary {
             content_revision,
             char_ids,
             tsv_entries: None,
+            tsv_by_reading: None,
+            user_lexicon: None,
         })
     }
 
+    fn extend_exact(
+        &self,
+        reading: &str,
+        entries: &mut Vec<DictionaryEntry>,
+    ) -> Result<(), String> {
+        if let Some(lexicon) = &self.user_lexicon {
+            lexicon.extend_exact(reading, entries);
+            return Ok(());
+        }
+        entries.extend(self.lookup_exact(reading)?);
+        Ok(())
+    }
+
     fn lookup_exact(&self, reading: &str) -> Result<Vec<DictionaryEntry>, String> {
+        if let Some(lexicon) = &self.user_lexicon {
+            let mut entries = Vec::new();
+            lexicon.extend_exact(reading, &mut entries);
+            return Ok(entries);
+        }
+        if let Some(by_reading) = &self.tsv_by_reading {
+            return Ok(by_reading.get(reading).cloned().unwrap_or_default());
+        }
         if let Some(entries) = &self.tsv_entries {
             return Ok(entries.iter().filter(|entry| entry.reading == reading).cloned().collect());
         }
@@ -1738,6 +2038,116 @@ impl Louds {
     }
 }
 
+fn hash_user_reading(reading: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    reading.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn user_lexicon_length_mask(char_count: usize) -> u32 {
+    if char_count == 0 {
+        return 0;
+    }
+    if char_count >= USER_LEXICON_LENGTH_BIT_CAP {
+        return 1 << USER_LEXICON_LENGTH_BIT_CAP;
+    }
+    1 << char_count
+}
+
+fn assigned_user_value(entry: &DictionaryEntry) -> f32 {
+    if entry.user_supplied
+        && entry.reading.chars().count() <= USER_LEXICON_COMPETE_MAX_READING_CHARS
+    {
+        USER_LEXICON_TWO_MORA_VALUE
+    } else {
+        entry.value
+    }
+}
+
+fn synthesize_user_entry(
+    reading: &str,
+    surface: &str,
+    value: f32,
+    user_supplied: bool,
+) -> DictionaryEntry {
+    DictionaryEntry {
+        reading: InternedText::new(reading),
+        surface: InternedText::new(surface),
+        lcid: DEFAULT_CID,
+        rcid: DEFAULT_CID,
+        mid: DEFAULT_MID,
+        raw_ruby_identity: false,
+        user_supplied,
+        value,
+    }
+}
+
+fn read_u16_le(bytes: &[u8], offset: usize) -> Result<u16, String> {
+    let slice = bytes
+        .get(offset..offset + 2)
+        .ok_or_else(|| "user lexicon compact integer is truncated".to_string())?;
+    Ok(u16::from_le_bytes([slice[0], slice[1]]))
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32, String> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| "user lexicon compact integer is truncated".to_string())?;
+    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_f32_le(bytes: &[u8], offset: usize) -> Result<f32, String> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| "user lexicon compact float is truncated".to_string())?;
+    Ok(f32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_u64_le(bytes: &[u8], offset: usize) -> Result<u64, String> {
+    let slice = bytes
+        .get(offset..offset + 8)
+        .ok_or_else(|| "user lexicon compact integer is truncated".to_string())?;
+    Ok(u64::from_le_bytes([
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ]))
+}
+
+fn compact_arena_str(
+    storage: &[u8],
+    arena_base: usize,
+    arena_len: usize,
+    offset: u32,
+    length: u16,
+) -> Result<&str, String> {
+    let start = arena_base
+        .checked_add(offset as usize)
+        .ok_or_else(|| "user lexicon compact string offset overflow".to_string())?;
+    let end = start
+        .checked_add(length as usize)
+        .ok_or_else(|| "user lexicon compact string length overflow".to_string())?;
+    let arena_end = arena_base
+        .checked_add(arena_len)
+        .ok_or_else(|| "user lexicon compact arena overflow".to_string())?;
+    if end > arena_end {
+        return Err("user lexicon compact string is outside the arena".to_string());
+    }
+    let slice = storage
+        .get(start..end)
+        .ok_or_else(|| "user lexicon compact string is outside the arena".to_string())?;
+    std::str::from_utf8(slice).map_err(|_| "user lexicon compact string is not UTF-8".to_string())
+}
+
+fn reject_short_user_readings(entries: &[DictionaryEntry]) -> Result<(), String> {
+    if entries.iter().any(|entry| {
+        entry.user_supplied && entry.reading.chars().count() < USER_LEXICON_MIN_READING_CHARS
+    }) {
+        return Err(format!(
+            "custom dictionary reading must be at least {USER_LEXICON_MIN_READING_CHARS} characters"
+        ));
+    }
+    Ok(())
+}
+
 fn parse_tsv_str(body: &str, user_supplied: bool) -> Result<Vec<DictionaryEntry>, String> {
     let entries = body
         .lines()
@@ -1767,6 +2177,9 @@ fn parse_tsv_str(body: &str, user_supplied: bool) -> Result<Vec<DictionaryEntry>
             })
         })
         .collect::<Vec<_>>();
+    if user_supplied {
+        reject_short_user_readings(&entries)?;
+    }
     if entries.is_empty() {
         return Err("dictionary TSV did not contain any usable dictionary entries".to_string());
     }
@@ -2256,7 +2669,7 @@ fn builtin_entries() -> Vec<DictionaryEntry> {
 mod tests {
     use super::{
         escaped_identifier, filesystem_dictionary_content_revision, filter_system_entries,
-        is_postposition_cid, parse_loudstxt3_record, prediction_usable_rcid,
+        is_postposition_cid, parse_loudstxt3_record, parse_tsv_str, prediction_usable_rcid,
         system_entry_is_usable, word_type, AzooKeyDictionary, DictionaryEntry, DictionaryPaths,
         WordType, BOS_CID, COMPETITIVE_CONVERTED_VALUE_MARGIN, EOS_CID, MID_COUNT,
         PORTABLE_DICTIONARY_MAGIC,
@@ -2954,5 +3367,197 @@ mod tests {
             .expect("whitespace TSV should clear the user layer");
         let cleared = dictionary.lookup_exact("ぶいあーるちゃっと").expect("cleared lookup");
         assert!(cleared.iter().all(|entry| entry.surface != "VRC"));
+    }
+
+    #[test]
+    fn in_memory_user_lexicon_applies_vrc_without_reparsing_tsv() {
+        let mut dictionary = AzooKeyDictionary::default();
+        dictionary
+            .replace_user_from_tsv_str("あい\t愛テスト専用\n")
+            .expect("seed user layer should load");
+        let lexicon = super::UserLexicon::from_tsv_str("ぶいあーるちゃっと\tVRC\n")
+            .expect("VRC lexicon should parse once");
+        assert_eq!(lexicon.len(), 1);
+        assert!(!lexicon.is_empty());
+
+        let during = dictionary.with_user_lexicon(Some(&lexicon), |dictionary| {
+            (
+                dictionary.lookup_exact("ぶいあーるちゃっと").expect("user lookup should complete"),
+                dictionary.lookup_exact("あい").expect("replaced layer lookup should complete"),
+            )
+        });
+        let user = during
+            .0
+            .iter()
+            .find(|entry| entry.surface == "VRC")
+            .expect("pre-indexed VRC should apply");
+        assert!(user.user_supplied);
+        assert_eq!(user.value, -1.0);
+        assert!(during.1.iter().all(|entry| entry.surface != "愛テスト専用"));
+
+        let restored = dictionary.lookup_exact("あい").expect("restored lookup should complete");
+        assert!(restored.iter().any(|entry| entry.surface == "愛テスト専用"));
+        let after = dictionary
+            .lookup_exact("ぶいあーるちゃっと")
+            .expect("post-restore lookup should complete");
+        assert!(after.iter().all(|entry| entry.surface != "VRC"));
+    }
+
+    #[test]
+    fn user_lexicon_indexes_readings_for_exact_lookup() {
+        let rows = (0..2_000)
+            .map(|index| {
+                let reading = format!("よみ{index:04}");
+                DictionaryEntry {
+                    reading: super::InternedText::new(reading),
+                    surface: super::InternedText::new(format!("語{index:04}")),
+                    value: -1.0,
+                    lcid: super::DEFAULT_CID,
+                    rcid: super::DEFAULT_CID,
+                    mid: super::DEFAULT_MID,
+                    raw_ruby_identity: false,
+                    user_supplied: true,
+                }
+            })
+            .collect::<Vec<_>>();
+        let lexicon = super::UserLexicon::from_entries(rows).expect("2k lexicon should build");
+        assert_eq!(lexicon.len(), 2_000);
+        let hit = lexicon.lookup_exact("よみ1999");
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].surface, "語1999");
+        assert!(lexicon.lookup_exact("よみ欠").is_empty());
+    }
+
+    #[test]
+    fn user_lexicon_rejects_more_than_one_hundred_thousand_entries() {
+        let too_many = vec![
+            DictionaryEntry {
+                reading: super::InternedText::new("あい"),
+                surface: super::InternedText::new("愛"),
+                value: -1.0,
+                lcid: super::DEFAULT_CID,
+                rcid: super::DEFAULT_CID,
+                mid: super::DEFAULT_MID,
+                raw_ruby_identity: false,
+                user_supplied: true,
+            };
+            super::MAX_USER_TSV_ENTRIES + 1
+        ];
+        assert!(super::UserLexicon::from_entries(too_many).is_err());
+    }
+
+    #[test]
+    fn user_lexicon_rejects_one_character_readings_and_accepts_two() {
+        let too_short = DictionaryEntry {
+            reading: super::InternedText::new("あ"),
+            surface: super::InternedText::new("亜"),
+            value: -1.0,
+            lcid: super::DEFAULT_CID,
+            rcid: super::DEFAULT_CID,
+            mid: super::DEFAULT_MID,
+            raw_ruby_identity: false,
+            user_supplied: true,
+        };
+        assert_eq!(
+            super::UserLexicon::from_entries(vec![too_short])
+                .expect_err("one-character reading should fail"),
+            "custom dictionary reading must be at least 2 characters"
+        );
+
+        assert_eq!(
+            parse_tsv_str("あ\t亜\n", true).expect_err("one-character user TSV should fail"),
+            "custom dictionary reading must be at least 2 characters"
+        );
+        assert_eq!(
+            super::UserLexicon::from_tsv_str("あ\t亜\n")
+                .expect_err("one-character user TSV should fail"),
+            "custom dictionary reading must be at least 2 characters"
+        );
+
+        let lexicon = super::UserLexicon::from_tsv_str("あい\t愛\n")
+            .expect("two-character reading should parse");
+        assert_eq!(lexicon.len(), 1);
+        let hit = lexicon.lookup_exact("あい");
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].surface, "愛");
+        assert!(hit[0].user_supplied);
+        assert_eq!(hit[0].value, -7.0);
+
+        let system = parse_tsv_str("あ\t亜\n", false).expect("system TSV keeps one-mora rows");
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0].reading, "あ");
+        assert_eq!(system[0].surface, "亜");
+        assert!(!system[0].user_supplied);
+    }
+
+    #[test]
+    fn user_lexicon_miss_does_not_grow_the_output_vector() {
+        let lexicon = super::UserLexicon::from_tsv_str("ぶいあーるちゃっと\tVRC\n")
+            .expect("VRC lexicon should parse");
+        assert!(!lexicon.covers_reading_length(2));
+        assert!(lexicon.covers_reading_length(9));
+        let mut missed = Vec::new();
+        let capacity = missed.capacity();
+        lexicon.extend_exact("あい", &mut missed);
+        lexicon.extend_exact("こども", &mut missed);
+        lexicon.extend_exact("よみ欠", &mut missed);
+        assert!(missed.is_empty());
+        assert_eq!(missed.capacity(), capacity);
+    }
+
+    #[test]
+    fn user_lexicon_two_mora_competes_and_long_reading_prefers() {
+        let lexicon =
+            super::UserLexicon::from_tsv_str("あい\tユーザー愛\nぶいあーるちゃっと\tVRC\n")
+                .expect("mixed-length lexicon should parse");
+        let two = lexicon.lookup_exact("あい");
+        assert_eq!(two.len(), 1);
+        assert_eq!(two[0].surface, "ユーザー愛");
+        assert_eq!(two[0].value, -7.0);
+        let long = lexicon.lookup_exact("ぶいあーるちゃっと");
+        assert_eq!(long.len(), 1);
+        assert_eq!(long[0].surface, "VRC");
+        assert_eq!(long[0].value, -1.0);
+    }
+
+    #[test]
+    fn user_lexicon_compact_bytes_round_trip_without_duplicate_store() {
+        let lexicon = super::UserLexicon::from_tsv_str("あい\t愛\nぶいあーるちゃっと\tVRC\n")
+            .expect("lexicon should parse");
+        let packed = lexicon.to_compact_bytes();
+        assert_eq!(&packed[0..8], b"AZULXC01");
+        let restored =
+            super::UserLexicon::from_compact_bytes(&packed).expect("compact bytes should restore");
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored.packed_payload_bytes(), packed.len());
+        let two = restored.lookup_exact("あい");
+        assert_eq!(two[0].surface, "愛");
+        assert_eq!(two[0].value, -7.0);
+        let long = restored.lookup_exact("ぶいあーるちゃっと");
+        assert_eq!(long[0].surface, "VRC");
+        assert_eq!(long[0].value, -1.0);
+        assert!(restored.lookup_exact("こども").is_empty());
+    }
+
+    #[test]
+    fn user_and_system_lookup_keep_system_rows_when_two_mora_user_competes() {
+        let mut dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(super::test_system_dictionary_path()),
+            user: None,
+            memory: None,
+        })
+        .expect("official system dictionary should load");
+        let before = dictionary.lookup_exact("あい").expect("system あい should lookup");
+        assert!(!before.is_empty());
+        dictionary
+            .replace_user_from_tsv_str("あい\tユーザー愛\n")
+            .expect("two-mora user row should load");
+        let after = dictionary.lookup_exact("あい").expect("merged あい should lookup");
+        assert!(after.iter().any(|entry| !entry.user_supplied));
+        let user = after
+            .iter()
+            .find(|entry| entry.surface == "ユーザー愛")
+            .expect("user two-mora row should be present");
+        assert_eq!(user.value, -7.0);
     }
 }

@@ -164,7 +164,7 @@ pub(crate) fn is_skippable_numeric_unit_glyph(character: char) -> bool {
 /// Only these surfaces authorize skipping intervening unit-mark noise. Generic
 /// counters such as `かい` / `ど` / `えん` must keep a preceding degree mark.
 pub(crate) fn japanese_percent_counter_starts_at(reading: &[char]) -> bool {
-    ["ぱーせんと", "わらび"].iter().any(|counter| {
+    ["ぱーせんと", "わらび", "蕨"].iter().any(|counter| {
         let counter_chars = counter.chars().collect::<Vec<_>>();
         reading.len() >= counter_chars.len()
             && reading[..counter_chars.len()] == counter_chars
@@ -293,9 +293,15 @@ const JAPANESE_NUMERAL_COUNTERS: &[(&str, &str)] = &[
     ("ど", "度"),
     ("かげつ", "か月"),
     ("しゅう", "週"),
-    // Percent: spoken パーセント, and ASR often mishears it as わらび → 蕨.
+    // Percent: spoken パーセント, and ASR / a leftover 1-best often emits
+    // わらび or the lexical surface 蕨. Official AzooKey injects numbers via
+    // getJapaneseNumberDicdata and never treats 蕨 as a counter, because its
+    // convertTarget is kana. Caption convert can receive already-kanji 蕨
+    // after Vibrato fail-open or a prior n-best; attach `%` only after a
+    // parsed number, same as わらび. Isolated 蕨 stays 蕨.
     ("ぱーせんと", "%"),
     ("わらび", "%"),
+    ("蕨", "%"),
 ];
 
 pub(crate) fn japanese_counter_starts_at(reading: &[char]) -> bool {
@@ -517,6 +523,29 @@ mod tests {
             numeric_counter_surface(&warabi_asr),
             Some((3, "%".to_string())),
             "ASR percent→わらび must map to % after a number"
+        );
+        let fern_surface = "蕨".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_counter_surface(&fern_surface),
+            Some((1, "%".to_string())),
+            "already-kanji 蕨 after a number is the same percent counter as わらび"
+        );
+        let sixty_fern = "60蕨".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_surface_prefix(&sixty_fern),
+            Some((2, "60".to_string())),
+            "digit plus lexical 蕨 must still expose an ASCII numeric prefix"
+        );
+        let degree_fern = "60°蕨".chars().collect::<Vec<_>>();
+        assert_eq!(
+            numeric_surface_prefix(&degree_fern),
+            Some((2, "60".to_string())),
+            "intervening degree plus 蕨 must not block a digit+percent prefix"
+        );
+        assert_eq!(
+            super::skip_intervening_numeric_unit_noise(&"°蕨".chars().collect::<Vec<_>>()),
+            1,
+            "degree before lexical 蕨 is skippable percent-class noise"
         );
         let sixty_warabi = "60わらび".chars().collect::<Vec<_>>();
         assert_eq!(

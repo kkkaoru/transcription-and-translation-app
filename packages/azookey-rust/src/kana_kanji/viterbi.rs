@@ -5871,6 +5871,102 @@ mod tests {
     }
 
     #[test]
+    fn digit_percent_counter_consumes_already_kanji_fern() {
+        // Official AzooKey convertTarget is kana, so 蕨 only appears as a
+        // dictionary *output*. Caption ASR / Vibrato fail-open / a leftover
+        // n-best can feed that surface back in. The shipped converter must
+        // treat post-digit 蕨 like わらび and emit `%`, not keep 蕨.
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("configured public dictionary should load")
+        .without_builtin_entries_for_test();
+        let sixty_kana = convert_with_dictionary(
+            "こうすいかくりつは60わらび",
+            &dictionary,
+            ConversionOptions::default(),
+        )
+        .into_iter()
+        .next()
+        .expect("public conversion should produce a candidate");
+        assert_eq!(sixty_kana.text, "降水確率は60%");
+        assert!(
+            !sixty_kana.text.contains('蕨')
+                && !sixty_kana.text.contains('〇')
+                && !sixty_kana.text.contains('°')
+                && !sixty_kana.text.contains('℃')
+        );
+        let sixty_fern = convert_with_dictionary(
+            "こうすいかくりつは60蕨",
+            &dictionary,
+            ConversionOptions::default(),
+        )
+        .into_iter()
+        .next()
+        .expect("public conversion should produce a candidate");
+        assert_eq!(sixty_fern.text, "降水確率は60%");
+        assert!(
+            !sixty_fern.text.contains('蕨')
+                && !sixty_fern.text.contains('〇')
+                && !sixty_fern.text.contains('°')
+                && !sixty_fern.text.contains('℃')
+        );
+        let mixed_caption =
+            convert_with_dictionary("降水確率は60蕨", &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("public conversion should produce a candidate");
+        assert_eq!(mixed_caption.text, "降水確率は60%");
+        assert!(
+            !mixed_caption.text.contains('蕨')
+                && !mixed_caption.text.contains('〇')
+                && !mixed_caption.text.contains('°')
+                && !mixed_caption.text.contains('℃')
+        );
+        let bare_fern_digits =
+            convert_with_dictionary("60蕨", &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("public conversion should produce a candidate");
+        assert_eq!(bare_fern_digits.text, "60%");
+        assert!(
+            !bare_fern_digits.text.contains('蕨')
+                && !bare_fern_digits.text.contains('〇')
+                && !bare_fern_digits.text.contains('°')
+                && !bare_fern_digits.text.contains('℃')
+        );
+        let degree_fern = convert_with_dictionary(
+            "こうすいかくりつは60°蕨",
+            &dictionary,
+            ConversionOptions::default(),
+        )
+        .into_iter()
+        .next()
+        .expect("public conversion should produce a candidate");
+        assert_eq!(degree_fern.text, "降水確率は60%");
+        assert!(
+            !degree_fern.text.contains('蕨')
+                && !degree_fern.text.contains('〇')
+                && !degree_fern.text.contains('°')
+                && !degree_fern.text.contains('℃')
+        );
+        let isolated_fern =
+            convert_with_dictionary("蕨", &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("public conversion should produce a candidate");
+        assert_eq!(isolated_fern.text, "蕨");
+        let isolated_warabi =
+            convert_with_dictionary("わらび", &dictionary, ConversionOptions::default())
+                .into_iter()
+                .next()
+                .expect("public conversion should produce a candidate");
+        assert_eq!(isolated_warabi.text, "蕨");
+    }
+
+    #[test]
     fn digit_percent_counter_survives_intervening_unit_glyphs() {
         // Invariant: an arabic (or mixed-width) digit span followed by a known
         // percent-unit reading must emit `N%` even when a pure unit glyph

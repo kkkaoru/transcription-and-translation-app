@@ -12,7 +12,7 @@ use caption_bridge_azookey_rust::DictionaryPaths;
 use caption_bridge_azookey_rust::{
     build_lattice, convert_kana_to_kanji, convert_with_dictionary, AzooKeyDictionary,
     ConstrainedSearchRequest, ConversionCandidate, ConversionLattice, ConversionOptions,
-    ConversionRequest, PrecedingContext, Utf8BytePrefixConstraint,
+    ConversionRequest, PrecedingContext, UserLexicon, Utf8BytePrefixConstraint,
 };
 use std::alloc::{alloc, dealloc, Layout};
 use std::collections::HashMap;
@@ -63,6 +63,20 @@ impl LatticeTable {
 
 static LATTICE_TABLE: LazyLock<Mutex<LatticeTable>> =
     LazyLock::new(|| Mutex::new(LatticeTable::new()));
+
+struct UserLexiconTable {
+    next_handle: u32,
+    live: HashMap<u32, UserLexicon>,
+}
+
+impl UserLexiconTable {
+    fn new() -> Self {
+        Self { next_handle: 1, live: HashMap::new() }
+    }
+}
+
+static USER_LEXICON_TABLE: LazyLock<Mutex<UserLexiconTable>> =
+    LazyLock::new(|| Mutex::new(UserLexiconTable::new()));
 
 /// Return the raw ABI revision. Version 2 adds the owned portable dictionary
 /// initialization entrypoint while preserving the version 1 conversion ABI.
@@ -162,8 +176,9 @@ pub unsafe extern "C" fn azookey_user_dictionary_init_owned(
     let Ok(tsv) = String::from_utf8(bytes) else {
         return DICTIONARY_INIT_INVALID;
     };
-    let Ok(mut active) = ACTIVE_DICTIONARY.lock() else {
-        return DICTIONARY_INIT_UNAVAILABLE;
+    let mut active = match ACTIVE_DICTIONARY.lock() {
+        Ok(active) => active,
+        Err(poisoned) => poisoned.into_inner(),
     };
     let Some(dictionary) = active.as_mut() else {
         return DICTIONARY_INIT_UNAVAILABLE;
@@ -177,13 +192,138 @@ pub unsafe extern "C" fn azookey_user_dictionary_init_owned(
 /// Clear the user dictionary layer. Zero means the system dictionary remains.
 #[no_mangle]
 pub extern "C" fn azookey_user_dictionary_clear() -> u32 {
-    let Ok(mut active) = ACTIVE_DICTIONARY.lock() else {
-        return DICTIONARY_INIT_UNAVAILABLE;
+    let mut active = match ACTIVE_DICTIONARY.lock() {
+        Ok(active) => active,
+        Err(poisoned) => poisoned.into_inner(),
     };
     if let Some(dictionary) = active.as_mut() {
         dictionary.clear_user();
     }
     DICTIONARY_INIT_OK
+}
+
+/// Parse a user TSV once and return a handle for later convert/lattice calls.
+///
+/// Zero means the TSV was empty/invalid or the table lock failed. A live
+/// handle stays valid until [`azookey_user_lexicon_close`].
+///
+/// # Safety
+///
+/// Same ownership contract as [`azookey_dictionary_init_owned`].
+#[no_mangle]
+pub unsafe extern "C" fn azookey_user_lexicon_open(pointer: *mut u8, length: usize) -> u32 {
+    if pointer.is_null() && length != 0 {
+        return LATTICE_HANDLE_INVALID;
+    }
+    let bytes = if length == 0 { Vec::new() } else { Vec::from_raw_parts(pointer, length, length) };
+    let Ok(tsv) = String::from_utf8(bytes) else {
+        return LATTICE_HANDLE_INVALID;
+    };
+    let Ok(lexicon) = UserLexicon::from_tsv_str(&tsv) else {
+        return LATTICE_HANDLE_INVALID;
+    };
+    if lexicon.is_empty() {
+        return LATTICE_HANDLE_INVALID;
+    }
+    insert_user_lexicon(lexicon)
+}
+
+/// Open a packed user lexicon produced by [`UserLexicon::to_compact_bytes`].
+///
+/// Production convert should use this instead of reparsing a TSV buffer.
+///
+/// # Safety
+///
+/// Same ownership contract as [`azookey_dictionary_init_owned`].
+#[no_mangle]
+pub unsafe extern "C" fn azookey_user_lexicon_open_compact(pointer: *mut u8, length: usize) -> u32 {
+    if pointer.is_null() && length != 0 {
+        return LATTICE_HANDLE_INVALID;
+    }
+    let bytes = if length == 0 { Vec::new() } else { Vec::from_raw_parts(pointer, length, length) };
+    let Ok(lexicon) = UserLexicon::from_compact_bytes(&bytes) else {
+        return LATTICE_HANDLE_INVALID;
+    };
+    if lexicon.is_empty() {
+        return LATTICE_HANDLE_INVALID;
+    }
+    insert_user_lexicon(lexicon)
+}
+
+/// Drop a lexicon created by [`azookey_user_lexicon_open`].
+#[no_mangle]
+pub extern "C" fn azookey_user_lexicon_close(handle: u32) -> u32 {
+    let Ok(mut table) = USER_LEXICON_TABLE.lock() else {
+        return 0;
+    };
+    u32::from(table.live.remove(&handle).is_some())
+}
+
+fn convert_n_best_with_user_lexicon_handle(
+    input: &str,
+    n_best: usize,
+    preceding: Option<PrecedingContext>,
+    handle: u32,
+) -> (Vec<ConversionCandidate>, u32) {
+    let lexicon = {
+        let table = match USER_LEXICON_TABLE.lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        table.live.get(&handle).cloned()
+    };
+    let mut active = match ACTIVE_DICTIONARY.lock() {
+        Ok(active) => active,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(dictionary) = active.as_mut() {
+        return dictionary.with_user_lexicon(lexicon.as_ref(), |dictionary| {
+            convert_n_best_with_dictionary_or_fallback(input, n_best, preceding, Some(dictionary))
+        });
+    }
+    let mut dictionary = AzooKeyDictionary::default();
+    dictionary.with_user_lexicon(lexicon.as_ref(), |dictionary| {
+        convert_n_best_with_dictionary_or_fallback(input, n_best, preceding, Some(dictionary))
+    })
+}
+
+/// Convert with a lexicon handle from [`azookey_user_lexicon_open`].
+///
+/// # Safety
+///
+/// Same input contract as [`azookey_convert_n_best`].
+#[no_mangle]
+pub unsafe extern "C" fn azookey_convert_n_best_with_user_lexicon(
+    pointer: *const u8,
+    length: usize,
+    n_best: u32,
+    has_preceding: u32,
+    preceding_rcid: u32,
+    preceding_mid: u32,
+    lexicon_handle: u32,
+) -> u64 {
+    if pointer.is_null() && length != 0 {
+        return 0;
+    }
+    let bytes = if length == 0 { &[] } else { slice::from_raw_parts(pointer, length) };
+    let mut status = N_BEST_STATUS_OK;
+    let input = match std::str::from_utf8(bytes) {
+        Ok(input) => input,
+        Err(_) => {
+            status |= N_BEST_STATUS_INVALID_UTF8;
+            ""
+        }
+    };
+    let (preceding, preceding_status) =
+        parse_preceding_context(has_preceding, preceding_rcid, preceding_mid);
+    status |= preceding_status;
+    let (candidates, conversion_status) = if n_best == 0 {
+        (Vec::new(), N_BEST_STATUS_OK)
+    } else {
+        convert_n_best_with_user_lexicon_handle(input, n_best as usize, preceding, lexicon_handle)
+    };
+    status |= conversion_status;
+    allocate_n_best_output(status, &candidates).unwrap_or(0)
 }
 
 /// Convert UTF-8 input into UTF-8 output.
@@ -479,6 +619,58 @@ pub unsafe extern "C" fn azookey_lattice_open_with_user(
     insert_lattice(lattice)
 }
 
+/// Same as [`azookey_lattice_open`] using a lexicon handle.
+///
+/// # Safety
+///
+/// Same input contract as [`azookey_lattice_open`].
+#[no_mangle]
+pub unsafe extern "C" fn azookey_lattice_open_with_user_lexicon(
+    pointer: *const u8,
+    length: usize,
+    has_preceding: u32,
+    preceding_rcid: u32,
+    preceding_mid: u32,
+    beam: u32,
+    n_best: u32,
+    lexicon_handle: u32,
+) -> u32 {
+    if pointer.is_null() && length != 0 {
+        return LATTICE_HANDLE_INVALID;
+    }
+    let bytes = if length == 0 { &[] } else { slice::from_raw_parts(pointer, length) };
+    let input = std::str::from_utf8(bytes).unwrap_or("");
+    let lexicon = {
+        let table = match USER_LEXICON_TABLE.lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        table.live.get(&lexicon_handle).cloned()
+    };
+    let (preceding, _) = parse_preceding_context(has_preceding, preceding_rcid, preceding_mid);
+    let request = ConversionRequest {
+        input: input.to_string(),
+        left_context: preceding,
+        beam_width: clamp_lattice_width(beam, DEFAULT_LATTICE_BEAM),
+        n_best: clamp_lattice_width(n_best, 1),
+        ..ConversionRequest::default()
+    };
+    let mut active = match ACTIVE_DICTIONARY.lock() {
+        Ok(active) => active,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(dictionary) = active.as_mut() {
+        let lattice = dictionary
+            .with_user_lexicon(lexicon.as_ref(), |dictionary| build_lattice(dictionary, &request));
+        drop(active);
+        return insert_lattice(lattice);
+    }
+    let mut dictionary = AzooKeyDictionary::default();
+    let lattice = dictionary
+        .with_user_lexicon(lexicon.as_ref(), |dictionary| build_lattice(dictionary, &request));
+    insert_lattice(lattice)
+}
+
 /// Search a previously opened lattice under a global UTF-8 output prefix.
 ///
 /// The packed record matches [`azookey_convert_n_best`]. Status bit 2 is set
@@ -607,6 +799,28 @@ fn clamp_lattice_width(value: u32, default: usize) -> usize {
         return default;
     }
     (value as usize).clamp(MIN_LATTICE_BEAM, MAX_LATTICE_BEAM)
+}
+
+fn insert_user_lexicon(lexicon: UserLexicon) -> u32 {
+    let Ok(mut table) = USER_LEXICON_TABLE.lock() else {
+        return LATTICE_HANDLE_INVALID;
+    };
+    let mut handle = table.next_handle;
+    if handle == LATTICE_HANDLE_INVALID {
+        handle = 1;
+    }
+    while table.live.contains_key(&handle) {
+        handle = handle.wrapping_add(1);
+        if handle == LATTICE_HANDLE_INVALID {
+            handle = 1;
+        }
+        if handle == table.next_handle {
+            return LATTICE_HANDLE_INVALID;
+        }
+    }
+    table.live.insert(handle, lexicon);
+    table.next_handle = handle.wrapping_add(1).max(1);
+    handle
 }
 
 fn insert_lattice(lattice: ConversionLattice) -> u32 {
@@ -768,8 +982,9 @@ fn allocate_n_best_output(status: u32, candidates: &[ConversionCandidate]) -> Op
 }
 
 fn convert_with_active_dictionary(input: &str) -> String {
-    let Ok(active) = ACTIVE_DICTIONARY.lock() else {
-        return convert_kana_to_kanji(input);
+    let active = match ACTIVE_DICTIONARY.lock() {
+        Ok(active) => active,
+        Err(poisoned) => poisoned.into_inner(),
     };
     let Some(dictionary) = active.as_ref() else {
         return convert_kana_to_kanji(input);
@@ -788,12 +1003,13 @@ mod tests {
         azookey_lattice_close, azookey_lattice_closed_count, azookey_lattice_live_count,
         azookey_lattice_open, azookey_lattice_opened_count, azookey_lattice_search_output_prefix,
         azookey_user_dictionary_clear, azookey_user_dictionary_init_owned,
-        convert_n_best_with_dictionary_or_fallback, convert_with_active_dictionary, pack_output,
-        replace_active_dictionary, rust_search_lattice, search_lattice_output_prefix,
-        serialize_n_best, AzooKeyDictionary, ConstrainedSearchRequest, ConversionCandidate,
-        ConversionRequest, DictionaryPaths, PrecedingContext, Utf8BytePrefixConstraint,
-        ACTIVE_DICTIONARY, MAX_LATTICE_HANDLES, N_BEST_STATUS_FALLBACK,
-        N_BEST_STATUS_INVALID_ARGUMENT,
+        azookey_user_lexicon_close, azookey_user_lexicon_open, azookey_user_lexicon_open_compact,
+        convert_n_best_with_dictionary_or_fallback, convert_n_best_with_user_lexicon_handle,
+        convert_with_active_dictionary, pack_output, replace_active_dictionary,
+        rust_search_lattice, search_lattice_output_prefix, serialize_n_best, AzooKeyDictionary,
+        ConstrainedSearchRequest, ConversionCandidate, ConversionRequest, DictionaryPaths,
+        PrecedingContext, UserLexicon, Utf8BytePrefixConstraint, ACTIVE_DICTIONARY,
+        MAX_LATTICE_HANDLES, N_BEST_STATUS_FALLBACK, N_BEST_STATUS_INVALID_ARGUMENT,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1316,5 +1532,143 @@ mod tests {
         assert_eq!(convert_with_active_dictionary("はいしん"), "配信");
         replace_active_dictionary(previous);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn user_lexicon_handle_opens_converts_and_closes_without_tsv_reparse() {
+        let _lock = lock_lattice_tests();
+        let previous = take_active_dictionary();
+        let path =
+            install_tsv_dictionary("user-lexicon-handle", "ぶいあーるちゃっと\tVRChat\t-5\n");
+        let tsv = "ぶいあーるちゃっと\tVRC\n";
+        let pointer = azookey_alloc(tsv.len());
+        unsafe {
+            std::ptr::copy_nonoverlapping(tsv.as_ptr(), pointer, tsv.len());
+        }
+        let handle = unsafe { azookey_user_lexicon_open(pointer, tsv.len()) };
+        assert_ne!(handle, 0, "a parsed user lexicon must yield a live handle");
+        assert_eq!(
+            unsafe {
+                super::azookey_convert_n_best_with_user_lexicon(
+                    std::ptr::null(),
+                    1,
+                    1,
+                    0,
+                    0,
+                    0,
+                    handle,
+                )
+            },
+            0
+        );
+
+        let (candidates, status) =
+            convert_n_best_with_user_lexicon_handle("ぶいあーるちゃっと", 1, None, handle);
+        assert_eq!(status, 0);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].text, "VRC");
+        assert!(candidates[0].score.is_finite());
+        assert_eq!(candidates[0].trailing, Some(PrecedingContext { rcid: 1285, mid: 501 }));
+
+        let lattice = unsafe {
+            super::azookey_lattice_open_with_user_lexicon(
+                "ぶいあーるちゃっと".as_ptr(),
+                "ぶいあーるちゃっと".len(),
+                0,
+                0,
+                0,
+                1,
+                1,
+                handle,
+            )
+        };
+        assert_ne!(lattice, 0, "a lexicon handle must open a lattice");
+        let (lattice_status, lattice_candidates) = search_lattice_output_prefix(lattice, &[], 1, 1);
+        assert_eq!(lattice_status, 0);
+        assert_eq!(
+            lattice_candidates.first().map(|candidate| candidate.text.as_str()),
+            Some("VRC")
+        );
+        assert_eq!(azookey_lattice_close(lattice), 1);
+
+        assert_eq!(azookey_user_lexicon_close(handle), 1);
+        assert_eq!(azookey_user_lexicon_close(handle), 0, "closing twice must not panic");
+
+        let (after, after_status) =
+            convert_n_best_with_user_lexicon_handle("ぶいあーるちゃっと", 1, None, handle);
+        assert_eq!(after_status, 0);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].text, "ブイアールチャット");
+        assert!(after[0].score.is_finite());
+        assert_eq!(after[0].trailing, None);
+        restore_active_dictionary(previous, path);
+    }
+
+    #[test]
+    fn user_lexicon_open_rejects_empty_and_unusable_tsv() {
+        assert_eq!(unsafe { azookey_user_lexicon_open(std::ptr::null_mut(), 0) }, 0);
+        assert_eq!(unsafe { azookey_user_lexicon_open(std::ptr::null_mut(), 1) }, 0);
+        assert_eq!(azookey_user_lexicon_close(0), 0);
+        assert_eq!(azookey_user_lexicon_close(4_294_967_295), 0);
+
+        let comment = "# comment only\n";
+        let comment_pointer = azookey_alloc(comment.len());
+        unsafe {
+            std::ptr::copy_nonoverlapping(comment.as_ptr(), comment_pointer, comment.len());
+            assert_eq!(azookey_user_lexicon_open(comment_pointer, comment.len()), 0);
+        }
+
+        let invalid = [0xff_u8];
+        let invalid_pointer = azookey_alloc(invalid.len());
+        unsafe {
+            std::ptr::copy_nonoverlapping(invalid.as_ptr(), invalid_pointer, invalid.len());
+            assert_eq!(azookey_user_lexicon_open(invalid_pointer, invalid.len()), 0);
+        }
+    }
+
+    #[test]
+    fn user_lexicon_open_compact_converts_without_tsv() {
+        let _lock = lock_lattice_tests();
+        let previous = take_active_dictionary();
+        let path =
+            install_tsv_dictionary("user-lexicon-compact", "ぶいあーるちゃっと\tVRChat\t-5\n");
+        let packed = UserLexicon::from_tsv_str("ぶいあーるちゃっと\tVRC\n")
+            .expect("VRC lexicon should parse")
+            .to_compact_bytes();
+        let pointer = azookey_alloc(packed.len());
+        unsafe {
+            std::ptr::copy_nonoverlapping(packed.as_ptr(), pointer, packed.len());
+        }
+        let handle = unsafe { azookey_user_lexicon_open_compact(pointer, packed.len()) };
+        assert_ne!(handle, 0, "a packed user lexicon must yield a live handle");
+        let (candidates, status) =
+            convert_n_best_with_user_lexicon_handle("ぶいあーるちゃっと", 1, None, handle);
+        assert_eq!(status, 0);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].text, "VRC");
+        assert_eq!(azookey_user_lexicon_close(handle), 1);
+        assert_eq!(unsafe { azookey_user_lexicon_open_compact(std::ptr::null_mut(), 0) }, 0);
+        restore_active_dictionary(previous, path);
+    }
+
+    #[test]
+    fn user_lexicon_handle_applies_without_a_system_dictionary() {
+        let _lock = lock_lattice_tests();
+        let previous = take_active_dictionary();
+        let packed = UserLexicon::from_tsv_str("ぶいあーるちゃっと\tVRC\n")
+            .expect("VRC lexicon should parse")
+            .to_compact_bytes();
+        let pointer = azookey_alloc(packed.len());
+        unsafe {
+            std::ptr::copy_nonoverlapping(packed.as_ptr(), pointer, packed.len());
+        }
+        let handle = unsafe { azookey_user_lexicon_open_compact(pointer, packed.len()) };
+        assert_ne!(handle, 0);
+        let (candidates, status) =
+            convert_n_best_with_user_lexicon_handle("ぶいあーるちゃっと", 1, None, handle);
+        assert_eq!(status, 0);
+        assert_eq!(candidates[0].text, "VRC");
+        assert_eq!(azookey_user_lexicon_close(handle), 1);
+        restore_active_dictionary(previous, PathBuf::new());
     }
 }
