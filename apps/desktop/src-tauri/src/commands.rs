@@ -220,6 +220,16 @@ pub fn get_custom_dictionary(app: AppHandle) -> Result<Vec<CustomDictionaryEntry
 }
 
 #[tauri::command]
+pub fn search_custom_dictionary(
+    app: AppHandle,
+    query: String,
+    limit: usize,
+) -> Result<Vec<CustomDictionaryEntry>, String> {
+    let entries = custom_dictionary::load(&app)?;
+    Ok(custom_dictionary::search_entries(&entries, &query, limit))
+}
+
+#[tauri::command]
 pub async fn save_custom_dictionary(
     app: AppHandle,
     state: State<'_, AppState>,

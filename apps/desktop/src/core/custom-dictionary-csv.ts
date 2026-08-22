@@ -1,3 +1,6 @@
+// Runs with bun.
+import { isReadingLongEnough } from "./dictionary-fuzzy-search";
+
 export type CustomDictionaryCsvRow = { reading: string; word: string };
 
 const escapeCsvCell = (value: string): string =>
@@ -81,6 +84,9 @@ export const importCustomDictionaryCsv = (csv: string): CustomDictionaryCsvRow[]
       const word = (record[1] as string).trim();
       if (!reading || !word || /[\t\r\n]/u.test(reading) || /[\t\r\n]/u.test(word)) {
         throw new Error(`CSV row ${index + 1} contains an invalid reading or word`);
+      }
+      if (!isReadingLongEnough(reading)) {
+        throw new Error(`CSV row ${index + 1} reading must be at least 2 characters`);
       }
       return { reading, word };
     });

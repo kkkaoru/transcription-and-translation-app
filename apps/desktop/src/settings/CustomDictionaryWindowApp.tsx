@@ -6,6 +6,7 @@ import {
 } from "../core/custom-dictionary-csv";
 import {
   filterCustomDictionaryEntries,
+  isReadingLongEnough,
   readingNeedsWarning,
 } from "../core/dictionary-fuzzy-search";
 import type { CustomDictionaryEntry } from "../core/types";
@@ -71,7 +72,7 @@ export const CustomDictionaryView = ({ normalizer }: { normalizer?: string }) =>
     event.preventDefault();
     const nextReading = reading.trim();
     const nextWord = word.trim();
-    if (!nextReading || !nextWord) {
+    if (!isReadingLongEnough(nextReading) || !nextWord) {
       return;
     }
     if (editingId) {
@@ -215,6 +216,15 @@ export const CustomDictionaryView = ({ normalizer }: { normalizer?: string }) =>
               placeholder={t("customDictionary.readingHint")}
               required
             />
+            {reading.trim() && !isReadingLongEnough(reading) ? (
+              <small
+                className="field-warning"
+                role="status"
+                data-testid="custom-dictionary-reading-too-short"
+              >
+                {t("customDictionary.readingTooShort")}
+              </small>
+            ) : null}
             {readingNeedsWarning(reading) ? (
               <small className="field-warning" role="status">
                 {t("customDictionary.readingInvalid")}
@@ -239,7 +249,7 @@ export const CustomDictionaryView = ({ normalizer }: { normalizer?: string }) =>
             <button
               className="primary-button"
               type="submit"
-              disabled={!reading.trim() || !word.trim()}
+              disabled={!isReadingLongEnough(reading) || !word.trim()}
             >
               {editingId ? t("customDictionary.update") : t("customDictionary.add")}
             </button>

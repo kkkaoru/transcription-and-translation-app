@@ -202,4 +202,42 @@ describe("CustomDictionaryWindowApp", () => {
     expect(saved.some((entry) => entry.id === "kyoto")).toBe(false);
     expect(container.textContent).toContain("カスタム辞書を保存しました");
   });
+
+  it("disables add and shows a message for a one-character reading", async () => {
+    await renderApp();
+    const readingInput = container.querySelector<HTMLInputElement>(
+      '[data-testid="custom-dictionary-reading"]',
+    );
+    const wordInput = container.querySelector<HTMLInputElement>(
+      '[data-testid="custom-dictionary-word"]',
+    );
+    const form = readingInput?.closest("form");
+    const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (!readingInput || !wordInput || !form || !submit) {
+      throw new Error("dictionary form missing");
+    }
+
+    act(() => {
+      setInput(readingInput, "あ");
+      setInput(wordInput, "亜");
+    });
+    expect(submit.disabled).toBe(true);
+    expect(
+      container.querySelector("[data-testid='custom-dictionary-reading-too-short']")?.textContent,
+    ).toBe("よみはひらがな2文字以上で入力してください");
+
+    await act(async () => {
+      form.requestSubmit();
+      await Promise.resolve();
+    });
+    expect(container.querySelectorAll("tbody tr").length).toBe(2);
+
+    act(() => {
+      setInput(readingInput, "あい");
+    });
+    expect(submit.disabled).toBe(false);
+    expect(
+      container.querySelector("[data-testid='custom-dictionary-reading-too-short']"),
+    ).toBeNull();
+  });
 });

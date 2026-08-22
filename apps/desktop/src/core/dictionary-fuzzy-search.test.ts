@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   filterCustomDictionaryEntries,
+  isReadingLongEnough,
   normalizeDictionaryReading,
   normalizeDictionaryWord,
   readingNeedsWarning,
@@ -19,9 +20,9 @@ describe("custom dictionary fuzzy search", () => {
     expect(normalizeDictionaryWord(" ＫＯＴＯＢＡ Beacon ")).toBe("kotoba beacon");
   });
 
-  it("searches readings by normalized partial match", () => {
+  it("searches readings by normalized prefix", () => {
     expect(
-      filterCustomDictionaryEntries(entries, { reading: "ﾋﾞｰｺﾝ", word: "" }).map(
+      filterCustomDictionaryEntries(entries, { reading: "ことば", word: "" }).map(
         (entry) => entry.id,
       ),
     ).toEqual(["1"]);
@@ -29,22 +30,24 @@ describe("custom dictionary fuzzy search", () => {
       filterCustomDictionaryEntries(entries, { reading: "キョウ", word: "" }).map(
         (entry) => entry.id,
       ),
-    ).toEqual(["2", "3"]);
+    ).toEqual(["3"]);
   });
 
-  it("searches words by normalized partial match", () => {
+  it("searches words by normalized prefix", () => {
     expect(
       filterCustomDictionaryEntries(entries, { reading: "", word: "ＫＯＴＯＢＡ" }).map(
         (entry) => entry.id,
       ),
     ).toEqual(["1"]);
     expect(
-      filterCustomDictionaryEntries(entries, { reading: "", word: "都" }).map((entry) => entry.id),
-    ).toEqual(["2", "3"]);
+      filterCustomDictionaryEntries(entries, { reading: "", word: "東京" }).map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(["2"]);
   });
 
   it("combines reading and word filters and returns all entries for empty queries", () => {
-    expect(filterCustomDictionaryEntries(entries, { reading: "きょう", word: "東京" })).toEqual([
+    expect(filterCustomDictionaryEntries(entries, { reading: "とう", word: "東京" })).toEqual([
       entries[1],
     ]);
     expect(filterCustomDictionaryEntries(entries, { reading: "", word: "" })).toEqual(entries);
@@ -56,5 +59,14 @@ describe("custom dictionary fuzzy search", () => {
     expect(readingNeedsWarning("caption")).toBe(true);
     expect(readingNeedsWarning("東京")).toBe(true);
     expect(readingNeedsWarning("")).toBe(false);
+  });
+
+  it("rejects one-character readings and accepts two Unicode characters", () => {
+    expect(isReadingLongEnough("あ")).toBe(false);
+    expect(isReadingLongEnough("は")).toBe(false);
+    expect(isReadingLongEnough(" あ ")).toBe(false);
+    expect(isReadingLongEnough("")).toBe(false);
+    expect(isReadingLongEnough("あい")).toBe(true);
+    expect(isReadingLongEnough(" あい ")).toBe(true);
   });
 });

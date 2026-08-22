@@ -1,3 +1,4 @@
+// Runs with bun.
 import { normalizeAzookeyReading } from "./caption-updates";
 import type { CustomDictionaryEntry } from "./types";
 
@@ -5,6 +6,8 @@ export interface CustomDictionaryQuery {
   reading: string;
   word: string;
 }
+
+export const MIN_READING_CHARS: number = 2;
 
 export const normalizeDictionaryReading = (value: string): string =>
   normalizeAzookeyReading(value).trim().toLocaleLowerCase();
@@ -21,6 +24,10 @@ export const readingNeedsWarning = (value: string): boolean => {
   return normalized.length > 0 && !/^[\u3040-\u309fー]+$/u.test(normalized);
 };
 
+/** User-dictionary readings must contain at least two Unicode characters. */
+export const isReadingLongEnough = (value: string): boolean =>
+  [...value.trim()].length >= MIN_READING_CHARS;
+
 /** Filter independently by reading and word; when both are set, both must match. */
 export const filterCustomDictionaryEntries = (
   entries: readonly CustomDictionaryEntry[],
@@ -30,8 +37,8 @@ export const filterCustomDictionaryEntries = (
   const wordQuery = normalizeDictionaryWord(query.word);
   return entries.filter((entry) => {
     const readingMatches =
-      !readingQuery || normalizeDictionaryReading(entry.reading).includes(readingQuery);
-    const wordMatches = !wordQuery || normalizeDictionaryWord(entry.word).includes(wordQuery);
+      !readingQuery || normalizeDictionaryReading(entry.reading).startsWith(readingQuery);
+    const wordMatches = !wordQuery || normalizeDictionaryWord(entry.word).startsWith(wordQuery);
     return readingMatches && wordMatches;
   });
 };

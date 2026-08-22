@@ -99,6 +99,7 @@ pub fn run() {
             commands::get_config,
             commands::save_config,
             commands::get_custom_dictionary,
+            commands::search_custom_dictionary,
             commands::save_custom_dictionary,
             commands::reload_custom_dictionary,
             commands::list_models,

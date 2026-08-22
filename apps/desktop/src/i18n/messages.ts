@@ -100,6 +100,7 @@ const ja = {
   "customDictionary.searchWord": "単語を検索",
   "customDictionary.readingHint": "ひらがなで入力してください",
   "customDictionary.readingInvalid": "よみにひらがな以外の文字が含まれています。保存はできます。",
+  "customDictionary.readingTooShort": "よみはひらがな2文字以上で入力してください",
   "customDictionary.add": "追加",
   "customDictionary.update": "更新",
   "customDictionary.edit": "編集",
@@ -658,6 +659,7 @@ const en: Record<MessageKey, string> = {
   "customDictionary.readingHint": "Enter a hiragana reading",
   "customDictionary.readingInvalid":
     "The reading contains non-hiragana characters. It can still be saved.",
+  "customDictionary.readingTooShort": "The reading must be at least 2 hiragana characters",
   "customDictionary.add": "Add",
   "customDictionary.update": "Update",
   "customDictionary.edit": "Edit",

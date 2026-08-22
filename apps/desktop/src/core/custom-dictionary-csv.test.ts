@@ -25,6 +25,9 @@ describe("custom dictionary CSV", () => {
     expect(importCustomDictionaryCsv("よみ,単語候補")).toEqual([
       { reading: "よみ", word: "単語候補" },
     ]);
+    expect(importCustomDictionaryCsv('reading,word\nquoted,"say ""hello"""\n')).toStrictEqual([
+      { reading: "quoted", word: 'say "hello"' },
+    ]);
   });
 
   it("rejects malformed, extra-column, empty, and multiline values", () => {
@@ -37,6 +40,18 @@ describe("custom dictionary CSV", () => {
     expect(() => importCustomDictionaryCsv('よみ,単語\n"multi\nline",word')).toThrow();
     expect(importCustomDictionaryCsv("よみ,単語\n\r\nread,word\n")).toEqual([
       { reading: "read", word: "word" },
+    ]);
+  });
+
+  it("rejects a one-character reading and accepts two Unicode characters", () => {
+    expect(() => importCustomDictionaryCsv("よみ,単語\nあ,亜\n")).toThrow(
+      "CSV row 1 reading must be at least 2 characters",
+    );
+    expect(() => importCustomDictionaryCsv("よみ,単語\nは,葉\n")).toThrow(
+      "CSV row 1 reading must be at least 2 characters",
+    );
+    expect(importCustomDictionaryCsv("よみ,単語\nあい,愛\n")).toStrictEqual([
+      { reading: "あい", word: "愛" },
     ]);
   });
 });

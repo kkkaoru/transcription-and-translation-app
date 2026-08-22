@@ -8,8 +8,12 @@ pub const CUSTOM_DICTIONARY_PATH_KEY: &str = "azookey-user-dictionary";
 const CUSTOM_DICTIONARY_JSON: &str = "custom_dictionary.json";
 const CUSTOM_DICTIONARY_TSV: &str = "custom_dictionary.tsv";
 const CUSTOM_DICTIONARY_VERSION: u32 = 1;
-const MAX_ENTRIES: usize = 10_000;
+const CUSTOM_DICTIONARY_CATALOG_VERSION: u32 = 2;
+const DEFAULT_DICTIONARY_ID: &str = "default";
+const DEFAULT_DICTIONARY_NAME: &str = "Custom";
+const MAX_ENTRIES: usize = 100_000;
 const MAX_ID_CHARS: usize = 128;
+const MIN_READING_CHARS: usize = 2;
 const MAX_READING_CHARS: usize = 256;
 const MAX_WORD_CHARS: usize = 512;
 const DEFAULT_SAMPLE_ID: &str = "sample-vrchat-vrc";
@@ -24,10 +28,31 @@ pub struct CustomDictionaryEntry {
     pub word: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomDictionaryBook {
+    pub id: String,
+    pub name: String,
+    pub entries: Vec<CustomDictionaryEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomDictionaryCatalog {
+    pub version: u32,
+    pub active_id: String,
+    pub dictionaries: Vec<CustomDictionaryBook>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CustomDictionaryFile {
     version: u32,
+    #[serde(default)]
+    active_id: Option<String>,
+    #[serde(default)]
+    dictionaries: Option<Vec<CustomDictionaryBook>>,
+    #[serde(default)]
     entries: Vec<CustomDictionaryEntry>,
 }
 
@@ -106,10 +131,79 @@ fn load_from_directory(directory: &Path) -> Result<Vec<CustomDictionaryEntry>, S
     };
     let document: CustomDictionaryFile = serde_json::from_str(&body)
         .map_err(|error| format!("custom dictionary JSON is invalid: {error}"))?;
+    active_entries_from_document(document)
+}
+
+fn active_entries_from_document(
+    document: CustomDictionaryFile,
+) -> Result<Vec<CustomDictionaryEntry>, String> {
+    if document.version == CUSTOM_DICTIONARY_CATALOG_VERSION {
+        let catalog = catalog_from_document(document)?;
+        let active = catalog
+            .dictionaries
+            .iter()
+            .find(|book| book.id == catalog.active_id)
+            .or_else(|| catalog.dictionaries.first());
+        return match active {
+            Some(book) => validate_entries(book.entries.clone()),
+            None => Ok(Vec::new()),
+        };
+    }
     if document.version != CUSTOM_DICTIONARY_VERSION {
         return Err(format!("unsupported custom dictionary version: {}", document.version));
     }
     validate_entries(document.entries)
+}
+
+fn catalog_from_document(
+    document: CustomDictionaryFile,
+) -> Result<CustomDictionaryCatalog, String> {
+    if let Some(dictionaries) = document.dictionaries {
+        let validated = dictionaries
+            .into_iter()
+            .map(|book| {
+                Ok(CustomDictionaryBook {
+                    id: book.id.trim().to_string(),
+                    name: book.name.trim().to_string(),
+                    entries: validate_entries(book.entries)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if validated.is_empty() {
+            return Err("custom dictionary catalog has no dictionaries".to_string());
+        }
+        let active_id = document.active_id.unwrap_or_else(|| validated[0].id.clone());
+        return Ok(CustomDictionaryCatalog {
+            version: CUSTOM_DICTIONARY_CATALOG_VERSION,
+            active_id,
+            dictionaries: validated,
+        });
+    }
+    Ok(CustomDictionaryCatalog {
+        version: CUSTOM_DICTIONARY_CATALOG_VERSION,
+        active_id: DEFAULT_DICTIONARY_ID.to_string(),
+        dictionaries: vec![CustomDictionaryBook {
+            id: DEFAULT_DICTIONARY_ID.to_string(),
+            name: DEFAULT_DICTIONARY_NAME.to_string(),
+            entries: validate_entries(document.entries)?,
+        }],
+    })
+}
+
+pub fn search_entries(
+    entries: &[CustomDictionaryEntry],
+    query: &str,
+    limit: usize,
+) -> Vec<CustomDictionaryEntry> {
+    let needle = query.trim();
+    entries
+        .iter()
+        .filter(|entry| {
+            needle.is_empty() || entry.reading.starts_with(needle) || entry.word.starts_with(needle)
+        })
+        .take(limit.clamp(1, 50))
+        .cloned()
+        .collect()
 }
 
 fn save_to_directory(
@@ -120,8 +214,12 @@ fn save_to_directory(
     std::fs::create_dir_all(directory)
         .map_err(|error| format!("could not create custom dictionary directory: {error}"))?;
 
-    let document =
-        CustomDictionaryFile { version: CUSTOM_DICTIONARY_VERSION, entries: entries.clone() };
+    let document = CustomDictionaryFile {
+        version: CUSTOM_DICTIONARY_VERSION,
+        active_id: None,
+        dictionaries: None,
+        entries: entries.clone(),
+    };
     let json = serde_json::to_vec_pretty(&document)
         .map_err(|error| format!("could not serialize custom dictionary: {error}"))?;
     std::fs::write(directory.join(CUSTOM_DICTIONARY_JSON), json)
@@ -185,6 +283,11 @@ fn validate_field(number: usize, name: &str, value: &str, max_chars: usize) -> R
     }
     if value.contains(['\t', '\n', '\r']) {
         return Err(format!("entry {number} {name} cannot contain tabs or newlines"));
+    }
+    if name == "reading" && value.chars().count() < MIN_READING_CHARS {
+        return Err(format!(
+            "entry {number} {name} must be at least {MIN_READING_CHARS} characters"
+        ));
     }
     if value.chars().count() > max_chars {
         return Err(format!("entry {number} {name} exceeds {max_chars} characters"));
@@ -332,6 +435,45 @@ mod tests {
             vec![entry("same", "よみ", "一"), entry("same", "よみ", "二")]
         )
         .is_err());
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn search_entries_filters_by_reading_or_word_prefix() {
+        let entries = vec![entry("one", "あい", "愛"), entry("two", "ぶいあーるちゃっと", "VRC")];
+        assert_eq!(
+            super::search_entries(&entries, "ぶい", 50),
+            vec![entry("two", "ぶいあーるちゃっと", "VRC")]
+        );
+        assert_eq!(
+            super::search_entries(&entries, "VRC", 50),
+            vec![entry("two", "ぶいあーるちゃっと", "VRC")]
+        );
+        assert_eq!(super::search_entries(&entries, "か", 50), Vec::new());
+    }
+
+    #[test]
+    fn validation_rejects_one_character_reading() {
+        let directory = temporary_directory("short-reading");
+        assert_eq!(
+            save_to_directory(&directory, vec![entry("short", "あ", "亜")])
+                .expect_err("one-character reading should fail"),
+            "entry 1 reading must be at least 2 characters"
+        );
+        let (saved, _) = save_to_directory(&directory, vec![entry("ok", "あい", "愛")])
+            .expect("two-character reading should save");
+        assert_eq!(saved, vec![entry("ok", "あい", "愛")]);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn validation_rejects_more_than_one_hundred_thousand_entries() {
+        let directory = temporary_directory("too-many");
+        let too_many = vec![entry("one", "よみ", "単語"); 100_001];
+        assert_eq!(
+            save_to_directory(&directory, too_many).expect_err("over-limit dictionary should fail"),
+            "custom dictionary supports at most 100000 entries"
+        );
         let _ = std::fs::remove_dir_all(directory);
     }
 
