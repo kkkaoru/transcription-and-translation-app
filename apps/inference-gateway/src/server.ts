@@ -1,8 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   createGatewayFetchHandler,
+  createMemoryUserLexicon,
+  createUserLexiconEntryId,
   GatewayError,
   MAX_AUDIO_BYTES,
+  type UserLexiconRpc,
 } from "@caption-bridge/inference-server-core";
 import type { GatewayConfig } from "./config.js";
 import { transcribeWithParapper } from "./parapper.js";
@@ -16,6 +19,7 @@ import {
 export interface GatewayDependencies {
   fetch?: typeof fetch;
   transcribe?: (pcm: Uint8Array, signal?: AbortSignal, request?: Request) => Promise<string>;
+  userLexicon?: UserLexiconRpc;
 }
 
 const MAX_PROXY_REQUEST_BYTES = MAX_AUDIO_BYTES + 64 * 1024;
@@ -157,6 +161,7 @@ export const createGatewayServer = (
     });
   const handler = createGatewayFetchHandler(config, {
     transcribe,
+    userLexicon: dependencies.userLexicon ?? createMemoryUserLexicon(createUserLexiconEntryId),
     ...(dependencies.fetch ? { fetch: dependencies.fetch } : {}),
   });
   return createServer((request, response) => {

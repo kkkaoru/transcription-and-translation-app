@@ -353,6 +353,37 @@ describe("inference gateway HTTP contract", () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe("http://models.test:8081/completion");
   });
 
+  it("forwards a v3 left-context Zenz prompt that starts with U+EE02", async () => {
+    const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) =>
+      Promise.resolve().then(() => {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          prompt: "\u{EE02}前の字幕\u{EE00}カタカナ\u{EE01}",
+          n_predict: 128,
+          temperature: 0,
+          stream: false,
+        });
+        return new Response(JSON.stringify({ content: "続き" }), { status: 200 });
+      }),
+    );
+    const connection = await open(
+      createGatewayServer(config, { fetch: fetcher, transcribe: async () => "unused" }),
+    );
+    closers.push(connection.close);
+    const response = await fetch(`${connection.origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "zenz-v3.2-small-gguf",
+        messages: [{ role: "user", content: "\u{EE02}前の字幕\u{EE00}カタカナ\u{EE01}" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      model: "zenz-v3.2-small-gguf",
+      choices: [{ message: { content: "続き" } }],
+    });
+  });
+
   it("uses a JSON content type fallback when an upstream server omits the header", async () => {
     const fetcher = vi.fn(
       async () =>
@@ -732,5 +763,39 @@ describe("inference gateway HTTP contract", () => {
     await expect(fetch(`${connection.origin}/health`, { method: "HEAD" })).resolves.toMatchObject({
       status: 404,
     });
+  });
+
+  it("registers a stored reading and converts ぶいあーるちゃっと without a client TSV", async () => {
+    const connection = await open(createGatewayServer(config));
+    closers.push(connection.close);
+    const created = await fetch(`${connection.origin}/azookey/user-lexicon/entries`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reading: "ぶいあーるちゃっと", word: "VRC" }),
+    });
+    expect(created.status).toBe(201);
+    const converted = await fetch(`${connection.origin}/v1/azookey/convert`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "ぶいあーるちゃっと" }),
+    });
+    expect(converted.status).toBe(503);
+    await expect(converted.json()).resolves.toStrictEqual({
+      error: {
+        code: "user_lexicon_converter_unavailable",
+        message: "Stored-lexicon convert requires the Worker decoder",
+      },
+    });
+    const rejected = await fetch(`${connection.origin}/v1/azookey/convert`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "ぶいあーるちゃっと",
+        userDictionaryTsv: "クライアント\t無視\n",
+      }),
+    });
+    expect(rejected.status).toBe(400);
+    const retired = await fetch(`${connection.origin}/v1/azookey/user-dictionary`);
+    expect(retired.status).toBe(404);
   });
 });
