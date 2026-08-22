@@ -1,0 +1,14 @@
+[package]
+name = "caption-bridge-syphon"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Standalone macOS Syphon publisher for Native/GPUI OBS verification without WKWebView."
+license = "MIT"
+
+[dependencies]
+thiserror = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+syphon-rs = "0.1.1"

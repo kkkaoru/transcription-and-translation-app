@@ -1,0 +1,16 @@
+[package]
+name = "caption-bridge-session"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Headless live-caption session that wires identity, sidecar ports, Parapper ingest, caption display, events, and rasterization without GPUI or Tauri."
+
+[dependencies]
+caption-bridge-captions = { path = "../caption-bridge-captions" }
+caption-bridge-events = { path = "../caption-bridge-events" }
+caption-bridge-identity = { path = "../caption-bridge-identity" }
+caption-bridge-parapper = { path = "../caption-bridge-parapper" }
+caption-bridge-render = { path = "../caption-bridge-render" }
+caption-bridge-sidecar = { path = "../caption-bridge-sidecar" }
+thiserror = "2"

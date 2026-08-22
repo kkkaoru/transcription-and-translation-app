@@ -1,0 +1,11 @@
+[package]
+name = "caption-bridge-audio"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+cpal = "0.18.2"
+rubato = { version = "5.0.0", default-features = false }
+thiserror = "2.0.20"

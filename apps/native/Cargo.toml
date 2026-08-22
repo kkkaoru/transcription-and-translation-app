@@ -13,19 +13,19 @@ gpui = ["dep:gpui", "dep:gpui_platform", "dep:signal-hook"]
 
 [dependencies]
 caption-bridge-audio = { path = "../../crates/caption-bridge-audio" }
+caption-bridge-browser-source = { path = "../../crates/caption-bridge-browser-source" }
 caption-bridge-captions = { path = "../../crates/caption-bridge-captions" }
 caption-bridge-dictionary = { path = "../../crates/caption-bridge-dictionary" }
 caption-bridge-identity = { path = "../../crates/caption-bridge-identity" }
 caption-bridge-overlay = { path = "../../crates/caption-bridge-overlay" }
-caption-bridge-parapper = { path = "../../crates/caption-bridge-parapper" }
 caption-bridge-render = { path = "../../crates/caption-bridge-render" }
-caption-bridge-session = { path = "../../crates/caption-bridge-session" }
-caption-bridge-sidecar = { path = "../../crates/caption-bridge-sidecar" }
 caption-bridge-spout = { path = "../../crates/caption-bridge-spout" }
 caption-bridge-syphon = { path = "../../crates/caption-bridge-syphon" }
+parapper-engine = { path = "../../crates/parapper-engine" }
+fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signal-hook = { version = "0.3", optional = true }
-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+thiserror = "2"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "00c0e96e769062e373203c62830f510fa121db76", package = "gpui", optional = true }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "00c0e96e769062e373203c62830f510fa121db76", package = "gpui_platform", optional = true, features = ["font-kit", "runtime_shaders"] }

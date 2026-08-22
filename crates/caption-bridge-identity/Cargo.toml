@@ -1,0 +1,10 @@
+[package]
+name = "caption-bridge-identity"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Product-identity split between the Tauri desktop app and the future GPUI native app so they never collide on disk, Dock, logs, or locks."
+license = "MIT"
+
+[dependencies]

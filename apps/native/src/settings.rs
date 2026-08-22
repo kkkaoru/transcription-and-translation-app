@@ -4,8 +4,8 @@ use gpui::prelude::*;
 use gpui::{div, Context, IntoElement, SharedString};
 
 use crate::domain::{
-    NativeAppSettings, BUNDLE_ID, NATIVE_BROWSER_SOURCE_HINT, NATIVE_PARAPPER_PORT, PRODUCT_NAME,
-    RECOGNITION_MODE_LABEL,
+    NativeAppSettings, BUNDLE_ID, NATIVE_BROWSER_SOURCE_HINT, NATIVE_VERTICAL_BROWSER_SOURCE_HINT,
+    PRODUCT_NAME, RECOGNITION_MODE_LABEL,
 };
 use crate::ui::{button, card, error_line, heading, muted};
 
@@ -56,8 +56,9 @@ pub fn render_settings<V: 'static>(
                 )),
         )
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
-        .child(muted(format!("Browser-source: {NATIVE_BROWSER_SOURCE_HINT}")))
-        .child(muted(format!("Parapper port: {NATIVE_PARAPPER_PORT}")))
+        .child(muted(format!("Browser Source: {NATIVE_BROWSER_SOURCE_HINT}")))
+        .child(muted(format!("縦配信: {NATIVE_VERTICAL_BROWSER_SOURCE_HINT}")))
+        .child(muted("認識エンジン: 同一プロセス"))
         .child(div().mt_2().child(SharedString::from(PRODUCT_NAME)))
         .child(SharedString::from(format!("bundle id: {BUNDLE_ID}")))
         .child(SharedString::from("binary: kotoba-beacon-native"))

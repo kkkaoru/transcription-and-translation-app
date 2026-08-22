@@ -1,0 +1,12 @@
+[package]
+name = "caption-bridge-events"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Framework-agnostic caption event bus. Tauri and GPUI adapters live outside this crate."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

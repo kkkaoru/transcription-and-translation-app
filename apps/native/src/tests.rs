@@ -8,18 +8,17 @@ use caption_bridge_dictionary::CustomDictionaryEntry;
 use caption_bridge_spout::NATIVE_SPOUT_SHARE_NAME;
 use caption_bridge_syphon::{NATIVE_SYPHON_SERVER_NAME, WINDOWS_SYPHON_UNSUPPORTED};
 
-use crate::capture::caption_from_server_json;
 use crate::debug_surfaces::{
     caption_publication, prepare_caption_publication_with, start_debug_surfaces, CaptionPublication,
 };
 use crate::domain::{
     add_dictionary_entry, adjust_font_size, adjust_max_chars, adjust_opacity, adjust_position,
     cycle_source_color, cycle_translation_color, delete_dictionary_entry, geometry_from_style,
-    ingest_fixture_caption, layout_from_style, load_style_settings, missing_sidecar_message,
-    native_style_path, parse_debug_launch, rasterize_style_preview, run_stub_lines,
-    save_style_settings, search_dictionary_entries, AppTab, CaptureStatus, DebugLaunch,
-    NativeStyleSettings, BINARY_NAME, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE,
-    DEFAULT_PREVIEW_TRANSLATION, FONT_SIZE_STEP, PRODUCT_NAME, TABS,
+    ingest_fixture_caption, layout_from_style, load_style_settings, native_style_path,
+    parse_debug_launch, rasterize_style_preview, run_stub_lines, save_style_settings,
+    search_dictionary_entries, AppTab, CaptureStatus, DebugLaunch, NativeStyleSettings,
+    BINARY_NAME, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FONT_SIZE_STEP,
+    PRODUCT_NAME, TABS,
 };
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -128,9 +127,21 @@ fn changed_caption_text_rasterizes_even_without_a_generation_key() {
 }
 
 #[test]
+fn native_recognition_has_no_sidecar_or_socket_ipc_dependency() {
+    let manifest = include_str!("../Cargo.toml");
+    let capture = include_str!("capture.rs");
+    assert!(manifest.contains("parapper-engine ="));
+    assert!(!manifest.contains("caption-bridge-sidecar"));
+    assert!(!manifest.contains("caption-bridge-parapper"));
+    assert!(!manifest.contains("tungstenite"));
+    assert!(!capture.contains("std::process::Command"));
+    assert!(!capture.contains("WebSocket"));
+}
+
+#[test]
 fn gpui_poll_loop_invokes_live_caption_publication() {
     let app_source = include_str!("app.rs");
-    let required_tick = "view.capture.poll();\n                    view.publish_live_caption();\n                    cx.notify();";
+    let required_tick = "view.capture.poll();\n                view.publish_live_caption();";
 
     assert!(
         app_source.contains(required_tick),
@@ -141,7 +152,7 @@ fn gpui_poll_loop_invokes_live_caption_publication() {
 #[test]
 fn gpui_normal_quit_stops_capture() {
     let app_source = include_str!("app.rs");
-    let required_shutdown = "let quit_subscription = cx.on_app_quit(|view, _cx| {\n            view.capture.stop();\n            Task::ready(())\n        });";
+    let required_shutdown = "let quit_subscription = cx.on_app_quit(|view, _cx| {\n            view.capture.stop();\n            view.browser_source.stop();\n            Task::ready(())\n        });";
 
     assert!(app_source.contains(required_shutdown), "normal GPUI quit must stop and join capture");
 }
@@ -237,13 +248,6 @@ fn capture_status_labels_are_japanese() {
     assert_eq!(CaptureStatus::Idle.label(), "待機");
     assert_eq!(CaptureStatus::Capturing.label(), "収録中");
     assert_eq!(CaptureStatus::Error.label(), "エラー");
-}
-
-#[test]
-fn missing_sidecar_names_binary_and_port() {
-    let message = missing_sidecar_message();
-    assert!(message.contains("kotoba-parapper"));
-    assert!(message.contains("18182"));
 }
 
 #[test]
@@ -344,35 +348,6 @@ fn dictionary_save_round_trip_uses_native_dir() {
     let raw = json.to_string_lossy();
     assert!(!raw.contains("com.kotobabeacon.desktop"));
     fs::remove_dir_all(&dir).expect("cleanup");
-}
-
-#[test]
-fn parapper_json_becomes_live_caption_pair() {
-    let json = r#"{"version":1,"type":"turn.final","session_id":"fixture-session","turn_session_id":7,"turn_id":3,"revision":2,"output_sequence":2,"segment_id":8,"previous_segment_id":7,"text":"こんにちは。","source_asr_model":"reazonspeech_k2_v2","source_language":"ja","detected_language":null,"audio_duration_ms":1280,"elapsed_ms":96}"#;
-    let mut caption_session = crate::capture::CaptionSessionLike::new();
-    let (source, translation) =
-        caption_from_server_json(json, &mut caption_session).expect("caption");
-    assert_eq!(source, "こんにちは。");
-    assert_eq!(translation, "");
-}
-
-#[test]
-fn start_without_sidecar_binary_is_readable() {
-    let previous_path = std::env::var_os("PATH");
-    std::env::set_var("PATH", "/var/empty-native-sidecar-path");
-    let mut controller = crate::capture::CaptureController::new();
-    let result = controller.start();
-    match previous_path {
-        Some(value) => std::env::set_var("PATH", value),
-        None => std::env::remove_var("PATH"),
-    }
-    match result {
-        Err(error) => {
-            assert!(error.contains("kotoba-parapper"));
-            assert!(error.contains("18182"));
-        }
-        Ok(()) => panic!("sidecar must be missing in this environment"),
-    }
 }
 
 #[cfg(feature = "gpui")]

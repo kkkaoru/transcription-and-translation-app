@@ -1,0 +1,26 @@
+[package]
+name = "caption-bridge-overlay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Chromeless, transparent, click-through OBS Window Capture overlay: AppKit on macOS, documented Win32 layered chrome on Windows, browser-source fallback on Linux."
+license = "MIT"
+
+[dependencies]
+thiserror = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+  "NSApplication",
+  "NSBitmapImageRep",
+  "NSColor",
+  "NSGraphics",
+  "NSImage",
+  "NSImageView",
+  "NSResponder",
+  "NSView",
+  "NSWindow",
+] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }

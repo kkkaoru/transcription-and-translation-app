@@ -9,13 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use caption_bridge_browser_source::{BrowserSourceConfig, BrowserSourceServer};
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use caption_bridge_overlay::DEBUG_OVERLAY_TITLE;
 use caption_bridge_syphon::NATIVE_SYPHON_SERVER_NAME;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, size, App, Bounds, Context, FocusHandle, IntoElement, KeyDownEvent, Render,
-    SharedString, Size, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, point, px, rgb, size, App, Bounds, Context, FocusHandle, IntoElement, KeyDownEvent,
+    Render, SharedString, Size, Subscription, Task, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::capture::CaptureController;
@@ -37,6 +39,15 @@ use crate::settings::{render_settings, SettingsCallbacks};
 use crate::style::render_style;
 use crate::ui::{heading, muted, sky_page, tab_bar};
 
+const OUTPUT_WINDOW_TITLE: &str = "Kotoba Beacon Caption Output";
+const OUTPUT_WINDOW_WIDTH_PX: f32 = 1280.0;
+const OUTPUT_WINDOW_HEIGHT_PX: f32 = 720.0;
+
+struct CaptionOutputView {
+    source: String,
+    translation: String,
+}
+
 pub struct MainView {
     tab: AppTab,
     config_dir: PathBuf,
@@ -55,7 +66,56 @@ pub struct MainView {
     preview_translation: String,
     device_select_open: bool,
     last_published_caption: Option<(String, String)>,
+    last_browser_caption: Option<(String, String)>,
+    browser_source: BrowserSourceServer,
     _quit_subscription: Subscription,
+}
+
+impl CaptionOutputView {
+    fn new() -> Self {
+        Self { source: String::new(), translation: String::new() }
+    }
+
+    fn replace_caption(&mut self, source: String, translation: String) -> bool {
+        if self.source == source && self.translation == translation {
+            return false;
+        }
+        self.source = source;
+        self.translation = translation;
+        true
+    }
+}
+
+impl Render for CaptionOutputView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_end()
+            .pb_8()
+            .gap_2()
+            .bg(rgb(0x00ff00))
+            .text_color(rgb(0xffffff))
+            .text_size(px(52.0))
+            .child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(0x101820))
+                    .child(SharedString::from(self.source.clone())),
+            )
+            .when(!self.translation.is_empty(), |view| {
+                view.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .bg(rgb(0x101820))
+                        .child(SharedString::from(self.translation.clone())),
+                )
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,8 +139,14 @@ impl MainView {
             .unwrap_or_else(|| DEFAULT_PREVIEW_SOURCE.to_string());
         let quit_subscription = cx.on_app_quit(|view, _cx| {
             view.capture.stop();
+            view.browser_source.stop();
             Task::ready(())
         });
+        let (browser_source, browser_error) =
+            match BrowserSourceServer::start(BrowserSourceConfig::native()) {
+                Ok(server) => (server, None),
+                Err(error) => (BrowserSourceServer::default(), Some(error.to_string())),
+            };
         Self {
             tab: AppTab::Live,
             config_dir,
@@ -91,7 +157,7 @@ impl MainView {
             query: String::new(),
             draft_reading: String::new(),
             draft_word: String::new(),
-            persist_error: None,
+            persist_error: browser_error,
             focused_field: FocusField::Reading,
             focus_handle: cx.focus_handle(),
             surfaces,
@@ -99,6 +165,8 @@ impl MainView {
             preview_translation: DEFAULT_PREVIEW_TRANSLATION.to_string(),
             device_select_open: false,
             last_published_caption: None,
+            last_browser_caption: None,
+            browser_source,
             _quit_subscription: quit_subscription,
         }
     }
@@ -106,6 +174,10 @@ impl MainView {
     fn publish_live_caption(&mut self) {
         let snapshot = self.capture.snapshot();
         let caption = (snapshot.source_text.clone(), snapshot.translation_text.clone());
+        if self.last_browser_caption.as_ref() != Some(&caption) {
+            self.browser_source.feed(&caption.0, &caption.1);
+            self.last_browser_caption = Some(caption.clone());
+        }
         match self.surfaces.borrow_mut().publish_caption(
             &self.style,
             &caption.0,
@@ -374,7 +446,24 @@ impl Render for MainView {
             .child(muted(format!(
                 "overlay title: {DEBUG_OVERLAY_TITLE} / Syphon: {NATIVE_SYPHON_SERVER_NAME}"
             )))
+            .child(muted("Browser Source: http://127.0.0.1:1521/（縦: ?layout=vertical）"))
             .child(SharedString::from(format!("active tab: {}", self.tab.label())))
+    }
+}
+
+fn output_window_options() -> WindowOptions {
+    WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some(OUTPUT_WINDOW_TITLE.into()),
+            ..Default::default()
+        }),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+            point(px(0.), px(0.)),
+            size(px(OUTPUT_WINDOW_WIDTH_PX), px(OUTPUT_WINDOW_HEIGHT_PX)),
+        ))),
+        is_resizable: true,
+        app_id: Some(BUNDLE_ID.to_string()),
+        ..Default::default()
     }
 }
 
@@ -404,6 +493,13 @@ fn register_termination_flag() -> Result<Arc<AtomicBool>, String> {
 }
 
 pub fn run() {
+    let instance_guard = match crate::instance::acquire_native_instance() {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("{error}");
+            return;
+        }
+    };
     #[cfg(unix)]
     let termination_requested = match register_termination_flag() {
         Ok(flag) => flag,
@@ -445,6 +541,19 @@ pub fn run() {
                 return;
             }
         };
+        let mut output_options = output_window_options();
+        output_options.window_bounds = Some(WindowBounds::centered(
+            size(px(OUTPUT_WINDOW_WIDTH_PX), px(OUTPUT_WINDOW_HEIGHT_PX)),
+            cx,
+        ));
+        let output_window =
+            match cx.open_window(output_options, |_, cx| cx.new(|_| CaptionOutputView::new())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    eprintln!("字幕出力ウィンドウを開けません: {error}");
+                    return;
+                }
+            };
         cx.activate(true);
         cx.spawn(async move |cx| loop {
             #[cfg(unix)]
@@ -455,11 +564,22 @@ pub fn run() {
             }
             let _ = caption_bridge_overlay::pump_native_events();
             let _ = poll_surfaces.borrow_mut().overlay.as_mut();
-            if window_handle
+            let caption = match window_handle.update(cx, |view, _window, cx| {
+                view.capture.poll();
+                view.publish_live_caption();
+                let snapshot = view.capture.snapshot();
+                let caption = (snapshot.source_text.clone(), snapshot.translation_text.clone());
+                cx.notify();
+                caption
+            }) {
+                Ok(caption) => caption,
+                Err(_) => break,
+            };
+            if output_window
                 .update(cx, |view, _window, cx| {
-                    view.capture.poll();
-                    view.publish_live_caption();
-                    cx.notify();
+                    if view.replace_caption(caption.0, caption.1) {
+                        cx.notify();
+                    }
                 })
                 .is_err()
             {
@@ -469,4 +589,5 @@ pub fn run() {
         })
         .detach();
     });
+    drop(instance_guard);
 }

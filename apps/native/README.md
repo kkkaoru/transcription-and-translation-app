@@ -1,202 +1,163 @@
 # Kotoba Beacon Native
 
-A minimal GPUI skeleton for the native Kotoba Beacon application.
+Cross-platform GPUI live-caption companion for OBS, TikTok LIVE Studio, and other streaming software.
+
+## Runtime architecture
+
+Kotoba Beacon Native performs capture and recognition in one OS process:
+
+```text
+Kotoba Beacon Native
+├─ GPUI control window
+├─ GPUI capture-output window
+├─ CPAL microphone callback
+├─ in-process Parapper engine
+│  ├─ direct Silero VAD
+│  ├─ segmentation
+│  ├─ sherpa-onnx ASR
+│  ├─ Namo turn detection
+│  └─ full-turn rerecognition
+├─ RGBA renderer / optional native outputs
+└─ loopback Browser Source server
+```
+
+There is no Tauri runtime, Parapper executable, child-process supervisor, recognition WebSocket, or JSON IPC in the Native runtime. Threads communicate through bounded in-memory queues.
 
 ## Identity
 
 | Field | Value |
-|-------|-------|
-| Product name | `Kotoba Beacon Native` |
-| Bundle id | `com.kotobabeacon.native` |
-| Binary name | `kotoba-beacon-native` |
-| Window title | `Kotoba Beacon Native` |
-
-Product name and bundle id come from `caption-bridge-identity::AppIdentity::native()`.
-
-This is intentionally split from the Tauri app:
-
-- `apps/desktop/` (`bun run tauri:dev`) is **Kotoba Beacon** with identifier `com.kotobabeacon.desktop`.
-- `apps/native/` is **Kotoba Beacon Native** with identifier `com.kotobabeacon.native`.
+|---|---|
+| Product | `Kotoba Beacon Native` |
+| Bundle ID | `com.kotobabeacon.native` |
+| Binary | `kotoba-beacon-native` |
+| Control window | `Kotoba Beacon Native` |
+| Capture window | `Kotoba Beacon Caption Output` |
 
 ## Requirements
 
-Rust 1.97.1 (pinned in `rust-toolchain.toml`).
+- Rust 1.97.1
+- Installed Parapper model directory under the Native data directory
+- A supported CPAL audio input
 
-This crate is **not** part of a Cargo workspace; it is a standalone package under `apps/native/`.
+On macOS, the default model root is:
 
-## Running
-
-Default build attempts GPUI with the pinned Zed git revision:
-
-```bash
-cargo build --manifest-path apps/native/Cargo.toml
+```text
+~/Library/Application Support/com.kotobabeacon.native/parapper/models
 ```
 
-Run the binary:
+Required Japanese model directories are currently:
+
+```text
+silero_vad_v6/
+sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01/
+namo-turn-detector-v1-japanese/
+unidic-cwj-3_1_1/
+```
+
+`ul-unas/` is supported by the engine but noise cancellation is disabled by default until it wins the fixture quality benchmark.
+
+## Run
 
 ```bash
 cargo run --manifest-path apps/native/Cargo.toml
 ```
 
-If the GPUI fetch or compile is too heavy or fails, the `gpui` feature is default-on but can be disabled to get a CLI stub that prints identity and the fixture caption:
+The application opens:
 
-```bash
-cargo run --manifest-path apps/native/Cargo.toml --no-default-features
+1. the control/settings window;
+2. the always-available `Kotoba Beacon Caption Output` capture window;
+3. the loopback Browser Source listener.
+
+The capture window uses a green background for Window Capture plus chroma key. Browser Source is the preferred true-transparent path.
+
+## OBS and TikTok LIVE Studio
+
+Horizontal/default overlay:
+
+```text
+http://127.0.0.1:1521/
 ```
 
-Expected stub output includes `fixture caption: こんにちは。` and `raster: 1280x720`.
+Vertical overlay for TikTok, YouTube, or any vertical stream:
 
-The window and the stub both ingest one bundled Parapper `turn.final` through `caption-bridge-session` (no microphone, no sidecar).
+```text
+http://127.0.0.1:1521/?layout=vertical
+```
 
-## Debug overlay, Syphon, and Spout
+Use:
 
-Flags work with or without the GPUI feature. They are OS-specific:
+- OBS: **Sources → Browser**
+- TikTok LIVE Studio: **Add source → Link**
 
-| Flag | macOS | Windows | Linux |
-|------|-------|---------|-------|
-| `--overlay` | Live AppKit window: **Kotoba Beacon Native Transparent Capture**, click-through, not always-on-top | Layered Win32 chrome (`WS_EX_LAYERED` + `WS_EX_TRANSPARENT`, never `HWND_TOPMOST`). Live `CreateWindowExW` is completed on a Windows host; this Mac tests the contract. | Error: use Native browser-source `http://127.0.0.1:1521` |
-| `--syphon` | Live Syphon server **Kotoba Beacon Native** | Helpful error: Syphon is macOS-only; use `--spout` | Error: use browser-source `http://127.0.0.1:1521` |
-| `--spout` | Helpful error: Spout2 does not run on macOS; use `--syphon` | Spout2 share **Kotoba Beacon Native** via `spout2-rs` (same crate as desktop). Validation + BGRA swap compile on this Mac. | Error: use browser-source `http://127.0.0.1:1521` |
+TikTok does not officially guarantee `127.0.0.1` support in every LIVE Studio version. If Link rejects it, use **Window capture → Kotoba Beacon Caption Output** and remove the green background with chroma key.
+
+The server binds only `127.0.0.1`. With no request it blocks in the kernel and does not rasterize or serialize Browser Source frames. The page updates only the caption DOM and uses no external CDN.
+
+Health check:
 
 ```bash
-# macOS (this development host)
+curl http://127.0.0.1:1521/health
+# ok
+```
+
+## Optional native outputs
+
+The existing debug/output flags remain available:
+
+```bash
 cargo run --manifest-path apps/native/Cargo.toml -- --overlay
-cargo run --manifest-path apps/native/Cargo.toml -- --syphon
-cargo run --manifest-path apps/native/Cargo.toml -- --overlay --syphon
-
-# Windows
-cargo run --manifest-path apps/native/Cargo.toml -- --overlay
-cargo run --manifest-path apps/native/Cargo.toml -- --spout
-# --syphon prints: Syphon is macOS-only; use --spout …
-
-# Linux
-# --overlay / --syphon / --spout all fail with a pointer at:
-# http://127.0.0.1:1521  (PortMap::native().browser_source)
+cargo run --manifest-path apps/native/Cargo.toml -- --syphon  # macOS
+cargo run --manifest-path apps/native/Cargo.toml -- --spout   # Windows
 ```
 
-- macOS `--overlay` opens **Kotoba Beacon Native Transparent Capture** (1280×720, click-through, not always-on-top, `NSWindowSharingReadOnly`). You should see a teal plate and magenta corner marks; clicks pass through. In OBS on this Mac (macOS 13+): **Sources → + → macOS Screen Capture → Window**, then pick `[Kotoba Beacon Native] Kotoba Beacon Native Transparent Capture`. Leave **Show windows with empty names** off (the title is non-empty) and **Show hidden windows** off (the window is on-screen). Do not expect per-pixel alpha from this source: current OBS Screen Capture uses FourCC `l10r` (no alpha). For a guaranteed alpha plate use `--syphon` and **Syphon Client → Kotoba Beacon Native**. The Window Capture title must not collide with Tauri's `Kotoba Beacon Transparent Capture`.
-- On macOS 12.6 and earlier the same window appears under legacy **Window Capture** (CGWindowList, on-screen only, empty titles hidden). That path emits BGRA but still does not document preserving a clear `NSWindow` alpha.
-- macOS `--syphon` publishes **Kotoba Beacon Native** to the Syphon directory. In OBS, add a Syphon Client and pick that server. It must not collide with Tauri's `Kotoba Beacon`.
-- Windows `--spout` publishes **Kotoba Beacon Native** as a Spout2 sender. In OBS, add a Spout source and pick that name. Desktop Tauri still uses `Kotoba Beacon`.
-- Linux has neither Syphon nor Spout. The current capture fallback is the Native browser-source on port **1521**. PipeWire is not in v1.
+Syphon, Spout, and OS-specific transparent overlays are optional accelerators. Browser Source and the GPUI capture window are the portable baseline.
 
-Without those flags the app only shows the main window / CLI fixture.
-
-## Per-OS verify
-
-### macOS (this Mac)
+## Automated verification
 
 ```bash
-cargo test --manifest-path crates/caption-bridge-overlay/Cargo.toml
-cargo test --manifest-path crates/caption-bridge-syphon/Cargo.toml
-cargo test --manifest-path crates/caption-bridge-spout/Cargo.toml
-cargo test --manifest-path crates/caption-bridge-sidecar/Cargo.toml
-cargo test --manifest-path apps/native/Cargo.toml --no-default-features
-cargo check --manifest-path apps/native/Cargo.toml --no-default-features
+cargo test --manifest-path crates/parapper-engine/Cargo.toml --lib
+cargo test --manifest-path crates/caption-bridge-browser-source/Cargo.toml
+cargo test --manifest-path apps/native/Cargo.toml --lib
+cargo clippy --manifest-path crates/parapper-engine/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path apps/native/Cargo.toml --all-targets -- -D warnings
+bun scripts/verify-native-asr.mjs
 ```
 
-Live surfaces (needs a display):
+The ASR verifier loads the real Silero, sherpa-onnx, Namo, and dictionary resources in one process and replays the checked-in PCM16/16kHz fixture. Expected output resembles:
+
+```json
+{"result":"PASS","caption":"こんにちは聞こえますか。","processArchitecture":"in-process","childProcessRequired":false}
+```
+
+A physical microphone permission check remains an OS/hardware boundary.
+
+## macOS installation
 
 ```bash
-cargo run --manifest-path apps/native/Cargo.toml --no-default-features -- --overlay
-cargo run --manifest-path apps/native/Cargo.toml --no-default-features -- --syphon
+bun scripts/install-macos-native-app.mjs
 ```
 
-OBS picker on this Mac (macOS 13+): keep the overlay running, then **Sources → + → macOS Screen Capture → Window** and choose **Kotoba Beacon Native Transparent Capture** (OBS labels it `[app] title`). Confirm a 1280×720 teal plate with magenta corners. Do not enable invented flags. If the plate is there but the field around it is opaque black, that matches Screen Capture `l10r` (no alpha) — use `--syphon` for a true-alpha composite.
+Installed layout:
 
-### Windows
-
-Install the MSVC toolchain (`x86_64-pc-windows-msvc`). Then:
-
-```bash
-cargo test --manifest-path crates/caption-bridge-spout/Cargo.toml
-cargo run --manifest-path apps/native/Cargo.toml --no-default-features -- --spout
+```text
+~/Applications/Kotoba Beacon Native.app/
+└─ Contents/
+   ├─ MacOS/kotoba-beacon-native
+   └─ Frameworks/
+      ├─ Syphon.framework
+      ├─ libsherpa-onnx-c-api.dylib
+      ├─ libonnxruntime.dylib
+      └─ libonnxruntime.1.24.4.dylib
 ```
 
-`--overlay` should open a layered click-through window once the live Win32 path is completed on a Windows builder. Until then the chrome contract (`WS_EX_LAYERED | WS_EX_TRANSPARENT`, `HWND_NOTOPMOST`) is locked by unit tests.
-
-### Linux
-
-No `x86_64-unknown-linux-gnu` target is installed on this Mac and we do not install large cross toolchains here. Linux is covered by `#[cfg(target_os = "linux")]` stubs and unit-tested error strings. On a Linux host:
-
-```bash
-cargo test --manifest-path crates/caption-bridge-overlay/Cargo.toml
-cargo run --manifest-path apps/native/Cargo.toml --no-default-features -- --overlay
-# expect: overlay windows are not available on Linux; use … http://127.0.0.1:1521
-```
-
-Point OBS Browser Source at `http://127.0.0.1:1521`.
+No sidecar executable is packaged. The dylibs are loaded into the Native executable process.
 
 ## Audio backends
 
-`caption-bridge-audio` uses cpal on every OS:
+`caption-bridge-audio` uses CPAL:
 
-| OS | Host | Permission |
-|----|------|------------|
-| macOS | Core Audio | TCC microphone prompt under `com.kotobabeacon.native` |
-| Windows | WASAPI | Standard microphone privacy settings |
-| Linux | ALSA / Pulse / PipeWire via cpal | Pulse/PipeWire user session |
-
-## Sidecar port-kill
-
-Unix supervisors still use `lsof -ti :PORT | kill -9`. Windows never calls `lsof`; `KillPlan::windows_kill_plan` constructs `netstat -ano -p TCP :PORT` then `taskkill /F /PID` and is tested as argv only.
-
-## Testing
-
-```bash
-cargo test --manifest-path apps/native/Cargo.toml
-```
-
-With `--no-default-features` the tests cover identity, style persistence, dictionary, and sidecar-missing errors. With default features they also cover the GPUI window options builder.
-
-## Window
-
-The main window is 1180×820 px, titled `Kotoba Beacon Native`, with working tabs:
-
-- **Live**: list/refresh mics, start/stop capture, caption preview, idle/capturing/error pill. Missing `kotoba-parapper` names the binary and port `18182` instead of no-op.
-- **Style**: source/translation size, color, opacity, max chars, X/Y %. Preview updates with the same numbers. Saved to Native `config_dir/caption-style.json`.
-- **Dictionary**: search/add/delete via `caption-bridge-dictionary`. Saved under Native `config_dir/dictionary`. Empty first load seeds the VRC sample.
-- **Settings**: recognition mode `parapper-azookey`, open/hide overlay (`Kotoba Beacon Native Transparent Capture`), toggle Syphon (`Kotoba Beacon Native`), browser-source `http://127.0.0.1:1521`, identity strings.
-
-Style and dictionary never write Tauri `com.kotobabeacon.desktop`. After changing the GUI, reinstall with `node scripts/install-macos-native-app.mjs` so `~/Applications/Kotoba Beacon Native.app` matches this tree.
-
-## Build notes
-
-- `gpui_platform` is enabled with `font-kit` and `runtime_shaders` so it builds on macOS without the Xcode `metal` command-line compiler.
-- This crate pins Rust `1.97.1` in `rust-toolchain.toml` and is not added to any workspace.
-
-## Install
-
-On macOS, install a local `.app` into `~/Applications` (never `/Applications/Kotoba Beacon.app`, which is the Tauri app):
-
-```bash
-cargo build --manifest-path apps/native/Cargo.toml --release
-node scripts/install-macos-native-app.mjs
-```
-
-The helper writes `$HOME/Applications/Kotoba Beacon Native.app` with this locked layout:
-
-```
-Contents/MacOS/kotoba-beacon-native
-Contents/Frameworks/Syphon.framework
-Contents/Resources/sidecars/kotoba-parapper
-Contents/Resources/sidecars/kotoba-inference-gateway
-Contents/Resources/sidecars/kotoba-zenz-server
-Contents/Resources/sidecars/kotoba-llama-server
-Contents/Resources/macos-runtime/
-Contents/Resources/zenz-runtime/
-Contents/Resources/llama-runtime/
-Contents/Resources/parapper-runtime/   (copied when present)
-Contents/Resources/vibrato/system.dic.zst
-Contents/Resources/vibrato/COPYING
-Contents/Resources/vibrato/NOTICE
-Contents/Resources/input-lm-tokenizer/
-```
-
-Sidecars come from `apps/desktop/src-tauri/binaries/` (`bun run sidecar:build`). The installer fails if any required sidecar or runtime is missing; it never writes a hollow app. Relative `sidecars/<runtime>` links keep the existing `@executable_path/<runtime>` dylib rpaths working.
-
-Override the destination with `KOTOBA_BEACON_NATIVE_INSTALL_APP`. Do not point that variable at `/Applications/Kotoba Beacon.app`.
-
-## Future scripts
-
-A future `native:dev` script can be added to `package.json` once the GPUI build is stable, but no root `package.json` scripts were changed for this skeleton.
+| OS | Backend | Permission |
+|---|---|---|
+| macOS | Core Audio | TCC microphone permission |
+| Windows | WASAPI | Windows microphone privacy settings |
+| Linux | ALSA/Pulse/PipeWire through CPAL | User audio session |

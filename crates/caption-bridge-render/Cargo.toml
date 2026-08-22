@@ -1,0 +1,9 @@
+[package]
+name = "caption-bridge-render"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+cosmic-text = "0.19.0"

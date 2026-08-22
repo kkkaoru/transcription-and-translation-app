@@ -1,0 +1,16 @@
+[package]
+name = "caption-bridge-captions"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Shared caption display logic (hold-clear, freshness, sticky paging, layout)"
+
+[lib]
+name = "caption_bridge_captions"
+path = "src/lib.rs"
+
+[dependencies]
+unicode-general-category = "1.0"
+unicode-script = "0.5"
+unicode-segmentation = "1.12"

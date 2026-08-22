@@ -1,0 +1,26 @@
+[package]
+name = "parapper-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+description = "Portable in-process Parapper VAD, ASR, and turn engine"
+license = "MIT"
+
+[features]
+default = []
+real-asr-tests = []
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+ndarray = "0.17.2"
+num-complex = "0.4.6"
+ort = { version = "=2.0.0-rc.12", features = ["load-dynamic"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+realfft = "3.5.0"
+sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["shared"] }
+sherpa-onnx-sys = { version = "=1.13.3", default-features = false, features = ["shared"] }
+tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"] }
+vibrato-rkyv = { version = "0.7.8", default-features = false, features = ["legacy"] }

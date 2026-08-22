@@ -7,6 +7,8 @@ mod domain;
 mod app;
 #[cfg(feature = "gpui")]
 mod dictionary;
+#[cfg(any(feature = "gpui", test))]
+mod instance;
 #[cfg(feature = "gpui")]
 mod live;
 #[cfg(feature = "gpui")]

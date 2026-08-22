@@ -1,0 +1,24 @@
+[package]
+name = "caption-bridge-dictionary"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Shared custom-dictionary load/save/search/TSV export without Tauri or GPUI."
+
+[lib]
+name = "caption_bridge_dictionary"
+path = "src/lib.rs"
+
+[features]
+default = []
+identity = ["dep:caption-bridge-identity"]
+
+[dependencies]
+caption-bridge-identity = { path = "../caption-bridge-identity", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0.20"
+
+[dev-dependencies]
+tempfile = "3"

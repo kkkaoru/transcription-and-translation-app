@@ -17,7 +17,6 @@ use caption_bridge_identity::AppIdentity;
 use caption_bridge_render::{
     rasterize, CaptionFrame, CaptionOrder as RenderOrder, CaptionStyle, OverlayGeometry, RgbaImage,
 };
-use caption_bridge_session::CaptionSession;
 use serde::{Deserialize, Serialize};
 
 pub const PRODUCT_NAME: &str = AppIdentity::native().product_name;
@@ -40,11 +39,8 @@ pub const TAB_DICTIONARY: &str = "Dictionary";
 pub const TAB_SETTINGS: &str = "Settings";
 pub const TABS: &[&str] = &[TAB_LIVE, TAB_STYLE, TAB_DICTIONARY, TAB_SETTINGS];
 
-pub const NATIVE_BROWSER_SOURCE_HINT: &str = "http://127.0.0.1:1521";
-#[cfg(any(feature = "gpui", test))]
-pub const NATIVE_PARAPPER_PORT: u16 = 18_182;
-#[cfg(any(feature = "gpui", test))]
-pub const PARAPPER_BINARY_NAME: &str = "kotoba-parapper";
+pub const NATIVE_BROWSER_SOURCE_HINT: &str = "http://127.0.0.1:1521/";
+pub const NATIVE_VERTICAL_BROWSER_SOURCE_HINT: &str = "http://127.0.0.1:1521/?layout=vertical";
 #[cfg(feature = "gpui")]
 pub const RECOGNITION_MODE_LABEL: &str = "parapper-azookey";
 #[cfg(any(feature = "gpui", test))]
@@ -85,7 +81,6 @@ pub const STYLE_VERSION: u32 = 1;
 #[cfg(feature = "gpui")]
 pub const SETTINGS_VERSION: u32 = 1;
 
-const FIXTURE_NOW_MS: u64 = 1_700_000_000_000;
 const FIXTURE_JSON: &str = r#"{"version":1,"type":"turn.final","session_id":"fixture-session","turn_session_id":7,"turn_id":3,"revision":2,"output_sequence":2,"segment_id":8,"previous_segment_id":7,"text":"こんにちは。","source_asr_model":"reazonspeech_k2_v2","source_language":"ja","detected_language":null,"audio_duration_ms":1280,"elapsed_ms":96}"#;
 const FLAG_OVERLAY: &str = "--overlay";
 const FLAG_SYPHON: &str = "--syphon";
@@ -234,18 +229,22 @@ impl Default for NativeAppSettings {
     }
 }
 
-/// Parse the bundled final turn without spawning sidecars or opening a window.
-pub fn ingest_fixture_caption() -> Result<FixtureCaption, caption_bridge_session::SessionError> {
-    let mut session = CaptionSession::native();
-    let frame = session.ingest_parapper_json(FIXTURE_JSON, FIXTURE_NOW_MS)?;
-    let (frame_width, frame_height) = match frame {
-        Some(image) => (image.width, image.height),
-        None => (0, 0),
-    };
+/// Parse and rasterize the bundled final turn without a protocol or sidecar.
+pub fn ingest_fixture_caption() -> Result<FixtureCaption, serde_json::Error> {
+    let fixture: serde_json::Value = serde_json::from_str(FIXTURE_JSON)?;
+    let source_text = fixture.get("text").and_then(serde_json::Value::as_str).unwrap_or_default();
+    let frame = rasterize(
+        &OverlayGeometry::default_1280x720(),
+        &CaptionFrame {
+            source: source_text.to_string(),
+            translation: String::new(),
+            partial: String::new(),
+        },
+    );
     Ok(FixtureCaption {
-        source_text: session.live_caption().source_text.clone(),
-        frame_width,
-        frame_height,
+        source_text: source_text.to_string(),
+        frame_width: frame.width,
+        frame_height: frame.height,
     })
 }
 
@@ -512,43 +511,6 @@ pub fn cycle_translation_color(current: &str) -> &'static str {
         "#ffb4d9" => "#d4ff9a",
         _ => "#bfe8ff",
     }
-}
-
-#[cfg(any(feature = "gpui", test))]
-pub fn missing_sidecar_message() -> String {
-    format!(
-        "Parapper sidecar `{PARAPPER_BINARY_NAME}` が見つかりません。port {NATIVE_PARAPPER_PORT} で認識できません。タブ・スタイル・辞書・オーバーレイは使えます。"
-    )
-}
-
-#[cfg(any(feature = "gpui", test))]
-pub fn sidecar_binary_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(PARAPPER_BINARY_NAME));
-            candidates.push(dir.join("sidecars").join(PARAPPER_BINARY_NAME));
-            if let Some(contents) = dir.parent() {
-                candidates
-                    .push(contents.join("Resources").join("sidecars").join(PARAPPER_BINARY_NAME));
-                candidates.push(contents.join("MacOS").join(PARAPPER_BINARY_NAME));
-            }
-        }
-    }
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path) {
-            candidates.push(dir.join(PARAPPER_BINARY_NAME));
-        }
-    }
-    candidates
-}
-
-#[cfg(any(feature = "gpui", test))]
-pub fn resolve_parapper_binary() -> Result<PathBuf, String> {
-    sidecar_binary_candidates()
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or_else(missing_sidecar_message)
 }
 
 pub fn print_usage() {
