@@ -48,6 +48,11 @@ uses `CLOUDFLARE_API_TOKEN` from the gitignored `.env`.
 - `secrets.required` names `AZOOKEY_API_TOKEN` without embedding its value.
   Wrangler may warn during local development when the loopback-only secret is
   absent; production still requires the interactive secret setup below.
+- The Worker-owned user lexicon is persisted in SQLite Durable Object
+  `UserLexiconDO` via binding `USER_LEXICON` and `idFromName("hosted-compare")`.
+  HTTP lives under `/azookey/user-lexicon*`. Convert (`POST /v1/azookey/convert`
+  and `/ws/azookey`) applies that stored lexicon through an isolate-global WASM
+  handle. A client `userDictionaryTsv` is rejected with `invalid_contract`.
 - `AZOOKEY_DICTIONARY_URL` defaults to `/azookey/system.azkdict.gz`, a static
   official LOUDS/MM/CID archive generated from the pinned AzooKey submodule and
   served through the `ASSETS` binding. It is not a phrase table. The deploy

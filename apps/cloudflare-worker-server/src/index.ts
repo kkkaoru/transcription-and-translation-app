@@ -1,15 +1,19 @@
+// This file runs with bun.
 import {
   AZOOKEY_DICTIONARY_CONFIG_KEYS,
   AZOOKEY_DICTIONARY_KIND,
   DICTIONARY_WARM_MOMENT,
   VIBRATO_IPADIC_KIND,
 } from "@caption-bridge/dictionaries";
-import type { GatewayConfig } from "@caption-bridge/inference-server-core";
+import type { GatewayConfig, UserLexiconRpc } from "@caption-bridge/inference-server-core";
 import {
   correlationHeadersFromRequest,
   createGatewayFetchHandler,
+  createMemoryUserLexicon,
+  createUserLexiconEntryId,
   GatewayError,
   pcm16ToWav,
+  USER_LEXICON_DO_NAME,
   validateGatewayConfig,
 } from "@caption-bridge/inference-server-core";
 import vibratoWasm from "../wasm/vibrato_wasm_bg.wasm";
@@ -27,12 +31,20 @@ import {
   BROWSER_VIBRATO_MODE,
   byteLimitTransform,
   collectStream,
+  convertTextWithStoredUserLexicon,
+  createWasmConverter,
   HTTP_METHOD_NOT_ALLOWED,
   HTTP_SWITCHING_PROTOCOLS,
   openAzookeySocket,
   parseModelRoutes,
+  warmZenzUpstreams,
+  wrapUserLexiconWrites,
 } from "./azookey.js";
 import azookeyWasm from "./azookey-wasm.js";
+import { UserLexiconDO } from "./user-lexicon-do.js";
+
+export { UserLexiconDO };
+
 import {
   createWorkersAiAsrTranscriber,
   handleWorkersAiAsrTranscription,
@@ -49,6 +61,18 @@ export interface Env {
   AZOOKEY_DICTIONARY_URL?: string;
   AZOOKEY_DICTIONARY_TIMEOUT_MS?: string;
   AZOOKEY_TIMEOUT_MS?: string;
+  USER_LEXICON?: {
+    idFromName: (name: string) => { toString: () => string };
+    get: (id: { toString: () => string }) => UserLexiconRpc;
+  };
+  USER_LEXICON_IMPORTS?: {
+    put: (key: string, value: string) => Promise<unknown>;
+    get: (key: string) => Promise<{ text: () => Promise<string> } | null>;
+    delete: (key: string) => Promise<unknown>;
+  };
+  USER_LEXICON_IMPORT_QUEUE?: {
+    send: (message: { importId: string }) => Promise<void>;
+  };
   WORKERS_AI_ASR_TIMEOUT_MS?: string;
   VIBRATO_UPSTREAM_URL?: string;
   VIBRATO_API_TOKEN?: string;
@@ -62,8 +86,21 @@ export interface WorkerAssets {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
+export interface WorkerQueueMessage {
+  body: { importId: string };
+}
+
+export interface WorkerQueueBatch {
+  messages: readonly WorkerQueueMessage[];
+}
+
+export interface WorkerExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 export interface WorkerHandler {
-  fetch(request: Request, env: Env): Promise<Response>;
+  fetch(request: Request, env: Env, ctx?: WorkerExecutionContext): Promise<Response>;
+  queue: (batch: WorkerQueueBatch, env: Env) => Promise<void>;
 }
 
 const HTTP_OK = 200;
@@ -153,7 +190,7 @@ const workerConfig = (env: Env): GatewayConfig => {
 
 const cors = (response: Response, origin: string | undefined): Response => {
   const headers = new Headers(response.headers);
-  headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
+  headers.set("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
   headers.set(
     "access-control-allow-headers",
     "content-type, authorization, x-request-id, x-session-id, x-agent-id, x-parent-agent-id",
@@ -250,202 +287,300 @@ const upstreamTranscriber = (
 const usesWorkersAiAsr = (provider: string | undefined): boolean =>
   provider?.trim().toLowerCase() === "workers-ai";
 
+const userLexiconFor = (
+  env: Env,
+  dependencies: WorkerDependencies,
+  memoryLexicon: UserLexiconRpc,
+): UserLexiconRpc => {
+  if (dependencies.userLexicon) {
+    return wrapUserLexiconWrites(dependencies.userLexicon);
+  }
+  if (env.USER_LEXICON) {
+    return wrapUserLexiconWrites(
+      env.USER_LEXICON.get(env.USER_LEXICON.idFromName(USER_LEXICON_DO_NAME)),
+    );
+  }
+  return wrapUserLexiconWrites(memoryLexicon);
+};
+
+const dictionaryFetchersFor = (
+  requestUrl: string,
+  env: Env,
+  dependencies: WorkerDependencies,
+  fallbackFetcher: AzookeyFetcher,
+): {
+  fetcher: AzookeyFetcher;
+  vibratoDictionaryFetcher: AzookeyFetcher;
+  azookeyDictionaryFetcher: AzookeyFetcher;
+} => {
+  const platformFetcher = dependencies.fetcher ?? fallbackFetcher;
+  const assets = env.ASSETS;
+  const assetFetcher = assets ? cachedAssetFetcher(assets, requestUrl) : undefined;
+  return {
+    fetcher: platformFetcher,
+    vibratoDictionaryFetcher:
+      dependencies.vibratoDictionaryFetcher ??
+      (assetFetcher && env.VIBRATO_DICTIONARY_URL?.trim().startsWith("/")
+        ? assetFetcher
+        : platformFetcher),
+    azookeyDictionaryFetcher:
+      dependencies.azookeyDictionaryFetcher ??
+      (assetFetcher && env.AZOOKEY_DICTIONARY_URL?.trim().startsWith("/")
+        ? assetFetcher
+        : platformFetcher),
+  };
+};
+
+const warmAzookeyIsolate = async (
+  requestUrl: string,
+  env: Env,
+  dependencies: WorkerDependencies,
+  fallbackFetcher: AzookeyFetcher,
+): Promise<void> => {
+  const wasmModule = dependencies.wasmModule ?? azookeyWasm;
+  if (!(wasmModule instanceof WebAssembly.Module)) {
+    return;
+  }
+  const fetchers = dictionaryFetchersFor(requestUrl, env, dependencies, fallbackFetcher);
+  const converter =
+    dependencies.converter ??
+    createWasmConverter(
+      wasmModule,
+      env.AZOOKEY_DICTIONARY_URL,
+      fetchers.azookeyDictionaryFetcher,
+      azookeyDictionaryTimeoutMs(env),
+    );
+  await converter.warmup?.("http");
+  await warmZenzUpstreams(parseModelRoutes(env.MODEL_ROUTES), fetchers.fetcher);
+};
+
 export const createWorker = (
   fetcher: WorkerFetcher = fetch,
   dependencies: WorkerDependencies = {},
-): WorkerHandler => ({
-  async fetch(request, env): Promise<Response> {
-    if (request.method === "OPTIONS") {
-      return cors(new Response(null, { status: HTTP_NO_CONTENT }), env.CORS_ORIGIN);
-    }
-    const url = new URL(request.url);
-    if (env.ASSETS && PUBLIC_ASSET_PATHS.has(url.pathname)) {
-      return env.ASSETS.fetch(request);
-    }
-    if (url.pathname === "/v1/azookey") {
-      if (request.method !== "GET") {
-        return cors(
-          json(HTTP_METHOD_NOT_ALLOWED, {
-            error: { code: "method_not_allowed", message: "GET is required" },
+): WorkerHandler => {
+  const memoryLexicon = createMemoryUserLexicon(createUserLexiconEntryId);
+  return {
+    async queue(batch, env): Promise<void> {
+      const lexicon = userLexiconFor(env, dependencies, memoryLexicon);
+      await Promise.all(
+        batch.messages.map((message) => lexicon.processQueuedImport(message.body.importId)),
+      );
+    },
+    async fetch(request, env, ctx): Promise<Response> {
+      const userLexicon = userLexiconFor(env, dependencies, memoryLexicon);
+      if (request.method === "OPTIONS") {
+        return cors(new Response(null, { status: HTTP_NO_CONTENT }), env.CORS_ORIGIN);
+      }
+      const url = new URL(request.url);
+      if (env.ASSETS && PUBLIC_ASSET_PATHS.has(url.pathname)) {
+        return env.ASSETS.fetch(request);
+      }
+      if (url.pathname === "/v1/azookey") {
+        if (request.method !== "GET") {
+          return cors(
+            json(HTTP_METHOD_NOT_ALLOWED, {
+              error: { code: "method_not_allowed", message: "GET is required" },
+            }),
+            env.CORS_ORIGIN,
+          );
+        }
+        const hasVibratoUpstream = Boolean(env.VIBRATO_UPSTREAM_URL?.trim());
+        const hasVibratoDictionary = Boolean(env.VIBRATO_DICTIONARY_URL?.trim());
+        const hasAzookeyDictionary = Boolean(env.AZOOKEY_DICTIONARY_URL?.trim());
+        const availableModels = advertisedConvertModels(parseModelRoutes(env.MODEL_ROUTES));
+        const response = cors(
+          json(HTTP_OK, {
+            ok: true,
+            service: "azookey",
+            protocol: AZOOKEY_PROTOCOL,
+            model: AZOOKEY_MODEL,
+            models: availableModels,
+            websocketPath: AZOOKEY_WS_PATH,
+            maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
+            timeoutMs: azookeyTimeoutMs(env),
+            auth: {
+              scheme: "bearer",
+              configured: Boolean(env.AZOOKEY_API_TOKEN?.trim()),
+              transport: "authorization-header-or-first-frame",
+            },
+            dictionary: {
+              configured: hasAzookeyDictionary,
+              transport: hasAzookeyDictionary ? "portable-wasm" : "builtin",
+              fetchTimeoutMs: azookeyDictionaryTimeoutMs(env),
+              contract: "official AzooKey LOUDS/MM/CID caption dictionary",
+              kind: AZOOKEY_DICTIONARY_KIND.system,
+              configKey: AZOOKEY_DICTIONARY_CONFIG_KEYS.system,
+              warmMoment: DICTIONARY_WARM_MOMENT.workerWebSocketUpgrade,
+            },
+            vibrato: {
+              workerStage:
+                hasVibratoUpstream || hasVibratoDictionary
+                  ? "configured"
+                  : hasAzookeyDictionary
+                    ? "passthrough"
+                    : "unconfigured",
+              transport: hasVibratoUpstream
+                ? "http"
+                : hasVibratoDictionary
+                  ? "wasm"
+                  : hasAzookeyDictionary
+                    ? "azookey-mixed-input"
+                    : "none",
+              contract:
+                hasVibratoUpstream || hasVibratoDictionary
+                  ? "Vibrato reading pre-pass"
+                  : "mixed Japanese text is converted directly by full AzooKey",
+              kind: VIBRATO_IPADIC_KIND,
+              warmMoment: DICTIONARY_WARM_MOMENT.workerWebSocketUpgrade,
+            },
+            modes: {
+              worker: AZOOKEY_MODE,
+              browser: BROWSER_VIBRATO_MODE,
+            },
           }),
           env.CORS_ORIGIN,
         );
+        if (ctx) {
+          ctx.waitUntil(
+            warmAzookeyIsolate(request.url, env, dependencies, fetcher).catch(() => undefined),
+          );
+        }
+        return response;
       }
-      const hasVibratoUpstream = Boolean(env.VIBRATO_UPSTREAM_URL?.trim());
-      const hasVibratoDictionary = Boolean(env.VIBRATO_DICTIONARY_URL?.trim());
-      const hasAzookeyDictionary = Boolean(env.AZOOKEY_DICTIONARY_URL?.trim());
-      const availableModels = advertisedConvertModels(parseModelRoutes(env.MODEL_ROUTES));
-      return cors(
-        json(HTTP_OK, {
-          ok: true,
-          service: "azookey",
-          protocol: AZOOKEY_PROTOCOL,
-          model: AZOOKEY_MODEL,
-          models: availableModels,
-          websocketPath: AZOOKEY_WS_PATH,
-          maxTextBytes: AZOOKEY_MAX_TEXT_BYTES,
-          timeoutMs: azookeyTimeoutMs(env),
-          auth: {
-            scheme: "bearer",
-            configured: Boolean(env.AZOOKEY_API_TOKEN?.trim()),
-            transport: "authorization-header-or-first-frame",
-          },
-          dictionary: {
-            configured: hasAzookeyDictionary,
-            transport: hasAzookeyDictionary ? "portable-wasm" : "builtin",
-            fetchTimeoutMs: azookeyDictionaryTimeoutMs(env),
-            contract: "official AzooKey LOUDS/MM/CID caption dictionary",
-            kind: AZOOKEY_DICTIONARY_KIND.system,
-            configKey: AZOOKEY_DICTIONARY_CONFIG_KEYS.system,
-            warmMoment: DICTIONARY_WARM_MOMENT.workerWebSocketUpgrade,
-          },
-          vibrato: {
-            workerStage:
-              hasVibratoUpstream || hasVibratoDictionary
-                ? "configured"
-                : hasAzookeyDictionary
-                  ? "passthrough"
-                  : "unconfigured",
-            transport: hasVibratoUpstream
-              ? "http"
-              : hasVibratoDictionary
-                ? "wasm"
-                : hasAzookeyDictionary
-                  ? "azookey-mixed-input"
-                  : "none",
-            contract:
-              hasVibratoUpstream || hasVibratoDictionary
-                ? "Vibrato reading pre-pass"
-                : "mixed Japanese text is converted directly by full AzooKey",
-            kind: VIBRATO_IPADIC_KIND,
-            warmMoment: DICTIONARY_WARM_MOMENT.workerWebSocketUpgrade,
-          },
-          modes: {
-            worker: AZOOKEY_MODE,
-            browser: BROWSER_VIBRATO_MODE,
-          },
-        }),
-        env.CORS_ORIGIN,
-      );
-    }
-    if (url.pathname === AZOOKEY_WS_PATH) {
-      const fetcher = dependencies.fetcher ?? fetch;
-      const assets = env.ASSETS;
-      const assetFetcher = assets ? cachedAssetFetcher(assets, request.url) : undefined;
-      const vibratoDictionaryFetcher =
-        dependencies.vibratoDictionaryFetcher ??
-        (assetFetcher && env.VIBRATO_DICTIONARY_URL?.trim().startsWith("/")
-          ? assetFetcher
-          : fetcher);
-      const azookeyDictionaryFetcher =
-        dependencies.azookeyDictionaryFetcher ??
-        (assetFetcher && env.AZOOKEY_DICTIONARY_URL?.trim().startsWith("/")
-          ? assetFetcher
-          : fetcher);
-      let response: Response;
+      if (url.pathname === AZOOKEY_WS_PATH) {
+        const fetchers = dictionaryFetchersFor(request.url, env, dependencies, fetcher);
+        let response: Response;
+        try {
+          response = await openAzookeySocket(request, env, {
+            ...dependencies,
+            fetcher: fetchers.fetcher,
+            vibratoDictionaryFetcher: fetchers.vibratoDictionaryFetcher,
+            azookeyDictionaryFetcher: fetchers.azookeyDictionaryFetcher,
+            wasmModule: dependencies.wasmModule ?? azookeyWasm,
+            vibratoWasmModule: dependencies.vibratoWasmModule ?? vibratoWasm,
+            userLexicon,
+          });
+        } catch {
+          return cors(
+            json(HTTP_INTERNAL_SERVER_ERROR, {
+              error: { code: "azookey_runtime_failed", message: "AzooKey runtime is unavailable" },
+            }),
+            env.CORS_ORIGIN,
+          );
+        }
+        // Reconstructing a Response drops the non-standard `webSocket` slot
+        // required by the Workers runtime for a 101 upgrade. CORS is relevant
+        // to the pre-upgrade HTTP errors, not to the upgraded socket itself.
+        return response.status === HTTP_SWITCHING_PROTOCOLS
+          ? response
+          : cors(response, env.CORS_ORIGIN);
+      }
+      if (url.pathname === WORKERS_AI_ASR_HTTP_PATH) {
+        const aiBinding = env.AI;
+        return cors(
+          await handleWorkersAiAsrTranscription(
+            request,
+            {
+              ...(env.WORKERS_AI_ASR_TIMEOUT_MS
+                ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
+                : {}),
+              ...(aiBinding
+                ? {
+                    AI: {
+                      run: (model, input, options) =>
+                        aiBinding.run(
+                          model,
+                          {
+                            ...input,
+                            audio: { ...input.audio, body: input.audio.body as unknown as object },
+                          },
+                          options,
+                        ),
+                    },
+                  }
+                : {}),
+            },
+            dependencies.workersAiRun,
+          ),
+          env.CORS_ORIGIN,
+        );
+      }
+      let config: GatewayConfig;
       try {
-        response = await openAzookeySocket(request, env, {
-          ...dependencies,
-          fetcher,
-          vibratoDictionaryFetcher,
-          azookeyDictionaryFetcher,
-          wasmModule: dependencies.wasmModule ?? azookeyWasm,
-          vibratoWasmModule: dependencies.vibratoWasmModule ?? vibratoWasm,
-        });
-      } catch {
+        config = workerConfig(env);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "invalid Worker configuration";
         return cors(
           json(HTTP_INTERNAL_SERVER_ERROR, {
-            error: { code: "azookey_runtime_failed", message: "AzooKey runtime is unavailable" },
+            error: { code: "invalid_configuration", message: detail },
           }),
           env.CORS_ORIGIN,
         );
       }
-      // Reconstructing a Response drops the non-standard `webSocket` slot
-      // required by the Workers runtime for a 101 upgrade. CORS is relevant
-      // to the pre-upgrade HTTP errors, not to the upgraded socket itself.
-      return response.status === HTTP_SWITCHING_PROTOCOLS
-        ? response
-        : cors(response, env.CORS_ORIGIN);
-    }
-    if (url.pathname === WORKERS_AI_ASR_HTTP_PATH) {
       const aiBinding = env.AI;
-      return cors(
-        await handleWorkersAiAsrTranscription(
-          request,
-          {
-            ...(env.WORKERS_AI_ASR_TIMEOUT_MS
-              ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
-              : {}),
-            ...(aiBinding
-              ? {
-                  AI: {
-                    run: (model, input, options) =>
-                      aiBinding.run(
-                        model,
-                        {
-                          ...input,
-                          audio: { ...input.audio, body: input.audio.body as unknown as object },
-                        },
-                        options,
-                      ),
-                  },
-                }
-              : {}),
-          },
-          dependencies.workersAiRun,
-        ),
-        env.CORS_ORIGIN,
-      );
-    }
-    let config: GatewayConfig;
-    try {
-      config = workerConfig(env);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "invalid Worker configuration";
-      return cors(
-        json(HTTP_INTERNAL_SERVER_ERROR, {
-          error: { code: "invalid_configuration", message: detail },
-        }),
-        env.CORS_ORIGIN,
-      );
-    }
-    const aiBinding = env.AI;
-    const transcribe = usesWorkersAiAsr(env.ASR_PROVIDER)
-      ? createWorkersAiAsrTranscriber(
-          {
-            ...(env.WORKERS_AI_ASR_TIMEOUT_MS
-              ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
-              : {}),
-            ...(aiBinding
-              ? {
-                  AI: {
-                    run: (model, input, options) =>
-                      aiBinding.run(
-                        model,
-                        {
-                          ...input,
-                          // Generated Workers types declare Nova-3's binary
-                          // body as object; pass the WAV bytes through unchanged.
-                          audio: { ...input.audio, body: input.audio.body as unknown as object },
-                        },
-                        options,
-                      ),
-                  },
-                }
-              : {}),
-          },
-          dependencies.workersAiRun,
-        )
-      : upstreamTranscriber(env, fetcher);
-    const handler = createGatewayFetchHandler(config, {
-      // The shared gateway core deliberately models the platform fetch as
-      // async.  Awaiting here also makes synchronous test doubles conform to
-      // that contract without changing production behavior.
-      fetch: (input, init) => Promise.resolve(fetcher(input, init)),
-      ...(transcribe ? { transcribe } : {}),
-    });
-    return cors(await handler(request), env.CORS_ORIGIN);
-  },
-});
+      const transcribe = usesWorkersAiAsr(env.ASR_PROVIDER)
+        ? createWorkersAiAsrTranscriber(
+            {
+              ...(env.WORKERS_AI_ASR_TIMEOUT_MS
+                ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
+                : {}),
+              ...(aiBinding
+                ? {
+                    AI: {
+                      run: (model, input, options) =>
+                        aiBinding.run(
+                          model,
+                          {
+                            ...input,
+                            // Generated Workers types declare Nova-3's binary
+                            // body as object; pass the WAV bytes through unchanged.
+                            audio: { ...input.audio, body: input.audio.body as unknown as object },
+                          },
+                          options,
+                        ),
+                    },
+                  }
+                : {}),
+            },
+            dependencies.workersAiRun,
+          )
+        : upstreamTranscriber(env, fetcher);
+      const fetchers = dictionaryFetchersFor(request.url, env, dependencies, fetcher);
+      const azookeyDictionaryFetcher = fetchers.azookeyDictionaryFetcher;
+      const wasmModule = dependencies.wasmModule ?? azookeyWasm;
+      const wasmConverter =
+        wasmModule instanceof WebAssembly.Module
+          ? createWasmConverter(
+              wasmModule,
+              env.AZOOKEY_DICTIONARY_URL,
+              azookeyDictionaryFetcher,
+              azookeyDictionaryTimeoutMs(env),
+            )
+          : undefined;
+      const decoder = dependencies.converter ?? wasmConverter;
+      const handler = createGatewayFetchHandler(config, {
+        // The shared gateway core deliberately models the platform fetch as
+        // async.  Awaiting here also makes synchronous test doubles conform to
+        // that contract without changing production behavior.
+        fetch: (input, init) => Promise.resolve(fetcher(input, init)),
+        ...(transcribe ? { transcribe } : {}),
+        userLexicon,
+        ...(decoder
+          ? {
+              convertWithUserLexicon: {
+                convert: ({ text }) =>
+                  convertTextWithStoredUserLexicon({
+                    converter: decoder,
+                    lexicon: userLexicon,
+                    text,
+                  }),
+              },
+            }
+          : {}),
+      });
+      return cors(await handler(request), env.CORS_ORIGIN);
+    },
+  };
+};
 
 export default createWorker() as ExportedHandler<Env>;

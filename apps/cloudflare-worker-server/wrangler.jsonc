@@ -36,6 +36,43 @@
   "secrets": {
     "required": ["AZOOKEY_API_TOKEN"]
   },
+  // SQLite Durable Object for the hosted compare user lexicon.
+  // Binding: USER_LEXICON. Isolated with idFromName("hosted-compare").
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "USER_LEXICON",
+        "class_name": "UserLexiconDO"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "USER_LEXICON_IMPORTS",
+      "bucket_name": "azookey-user-lexicon-imports"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "USER_LEXICON_IMPORT_QUEUE",
+        "queue": "azookey-user-lexicon-imports"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "azookey-user-lexicon-imports",
+        "max_batch_size": 1,
+        "max_retries": 5
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-user-lexicon",
+      "new_sqlite_classes": ["UserLexiconDO"]
+    }
+  ],
   "rules": [
     {
       "type": "CompiledWasm",

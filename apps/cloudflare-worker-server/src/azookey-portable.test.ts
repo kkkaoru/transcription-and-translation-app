@@ -1,3 +1,4 @@
+// This file runs with bun.
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ import {
   createWasmConverter,
   openAzookeySocket,
   parseAzookeyMessage,
+  parseAzookeyTimingLog,
 } from "./azookey.js";
 
 const wasmBytes = readFileSync(new URL("../wasm/azookey.wasm", import.meta.url));
@@ -81,6 +83,46 @@ describe("portable official AzooKey dictionary", () => {
       await expect(second(input)).resolves.toBe(expected);
     }
     expect(fetcher).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
+  it("reuses one isolate converter across different fetchers for the same module and URL", async () => {
+    const module = new WebAssembly.Module(wasmBytes);
+    const firstFetcher = vi.fn(
+      async () =>
+        new Response(responseBody(dictionaryGzip), {
+          status: 200,
+          headers: { "content-length": String(dictionaryGzip.byteLength) },
+        }),
+    );
+    const secondFetcher = vi.fn(
+      async () =>
+        new Response(responseBody(dictionaryGzip), {
+          status: 200,
+          headers: { "content-length": String(dictionaryGzip.byteLength) },
+        }),
+    );
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((value: unknown) => {
+      if (typeof value === "string") {
+        lines.push(value);
+      }
+    });
+    const first = createWasmConverter(module, "/azookey/system.azkdict.gz", firstFetcher);
+    const second = createWasmConverter(module, "/azookey/system.azkdict.gz", secondFetcher);
+    await first.warmup?.("ws");
+    await second.warmup?.("ws");
+    spy.mockRestore();
+    await expect(second("きょうはいいてんき")).resolves.toBe("今日はいい天気");
+    expect(firstFetcher).toHaveBeenCalledTimes(1);
+    expect(secondFetcher).toHaveBeenCalledTimes(0);
+    const initMiss = parseAzookeyTimingLog(lines[0] ?? "");
+    const initHit = parseAzookeyTimingLog(lines[1] ?? "");
+    expect(initMiss?.phase).toBe("wasm_init");
+    expect(initMiss?.cacheHit).toBe(false);
+    expect(initMiss?.wsOrHttp).toBe("ws");
+    expect(initHit?.phase).toBe("wasm_init");
+    expect(initHit?.cacheHit).toBe(true);
+    expect(initHit?.wsOrHttp).toBe("ws");
   }, 20_000);
 
   it("regresses the established はし lattice on the Worker portable WASM default path", async () => {

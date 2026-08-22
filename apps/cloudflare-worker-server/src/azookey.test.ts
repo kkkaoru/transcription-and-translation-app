@@ -1,6 +1,9 @@
+// This file runs with bun.
 import { readFileSync } from "node:fs";
+import { createMemoryUserLexicon } from "@caption-bridge/inference-server-core";
 import { describe, expect, it, vi } from "vitest";
 import {
+  AZOOKEY_MAX_ID_BYTES,
   AZOOKEY_MAX_MESSAGE_BYTES,
   AZOOKEY_MAX_TEXT_BYTES,
   AZOOKEY_MIN_ELAPSED_MS,
@@ -8,7 +11,9 @@ import {
   AZOOKEY_MODEL,
   AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE,
   AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+  AZOOKEY_ZENZ_HEALTH_PATH,
   AZOOKEY_ZENZ_SMALL_MODEL,
+  AZOOKEY_ZENZ_UPSTREAM_USER_AGENT,
   AZOOKEY_ZENZ_XSMALL_MODEL,
   type AzookeyConnectionState,
   type AzookeyConverter,
@@ -16,22 +21,30 @@ import {
   advertisedConvertModels,
   attachAzookeySocket,
   azookeyDictionaryTimeoutMs,
+  azookeyPongMessage,
   azookeyTimeoutMs,
   bearerTokenMatches,
   convertAzookeyMessage,
+  convertTextWithStoredUserLexicon,
   createVibratoHttpConverter,
   createWasmConverter,
   elapsedMsFromDuration,
   INFERENCE_PUBLIC_HOST,
+  invalidateIsolateUserLexiconCache,
+  isAzookeyTimingLog,
   isPublicInferenceRequest,
   isWebSocketUpgrade,
   isZenzConvertModel,
   openAzookeySocket,
   parseAzookeyMessage,
+  parseAzookeyPingMessage,
+  parseAzookeyTimingLog,
   parseModelRoutes,
   readyAzookeyMessage,
   resolveAzookeyHandshakeAuthorization,
   VIBRATO_MAX_RESPONSE_BYTES,
+  warmZenzUpstreams,
+  wrapUserLexiconWrites,
 } from "./azookey.js";
 
 class FakeSocket extends EventTarget {
@@ -205,19 +218,22 @@ describe("AzooKey Worker text contract", () => {
     expect(
       parseAzookeyMessage(JSON.stringify({ ...valid, leftContext: " " })).leftContext,
     ).toBeUndefined();
-    expect(
+    expect(() =>
       parseAzookeyMessage(
         JSON.stringify({ ...valid, userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n" }),
       ),
-    ).toMatchObject({
-      userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n",
-    });
+    ).toThrow("userDictionaryTsv is not allowed");
     expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, userDictionaryTsv: 1 }))).toThrow(
-      "userDictionaryTsv must be a string",
+      "userDictionaryTsv is not allowed",
     );
     expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, leftContext: 1 }))).toThrow(
       "leftContext must be a string",
     );
+    expect(() =>
+      parseAzookeyMessage(
+        JSON.stringify({ ...valid, leftContext: "あ".repeat(AZOOKEY_MAX_TEXT_BYTES) }),
+      ),
+    ).toThrow("leftContext exceeds its byte limit");
     expect(() => parseAzookeyMessage(JSON.stringify({ ...valid, model: "unknown-model" }))).toThrow(
       "model must be azookey-rust-wasm",
     );
@@ -248,6 +264,42 @@ describe("AzooKey Worker text contract", () => {
     expect(() => parseAzookeyMessage("not-json")).toThrow("valid JSON");
   });
 
+  it("parses azookey.ping without convert fields and builds azookey.pong", () => {
+    expect(parseAzookeyPingMessage('{"type":"azookey.ping"}')).toStrictEqual({
+      type: "azookey.ping",
+    });
+    expect(parseAzookeyPingMessage('{"type":"azookey.ping","requestId":"pin-1"}')).toStrictEqual({
+      type: "azookey.ping",
+      requestId: "pin-1",
+    });
+    expect(
+      parseAzookeyPingMessage('{"type":"azookey.ping","requestId":"","extra":true}'),
+    ).toStrictEqual({
+      type: "azookey.ping",
+      requestId: "",
+    });
+    expect(parseAzookeyPingMessage('{"type":"azookey.ping","requestId":1}')).toStrictEqual({
+      type: "azookey.ping",
+    });
+    expect(
+      parseAzookeyPingMessage(
+        `{"type":"azookey.ping","requestId":"${"a".repeat(AZOOKEY_MAX_ID_BYTES + 1)}"}`,
+      ),
+    ).toStrictEqual({
+      type: "azookey.ping",
+    });
+    expect(parseAzookeyPingMessage('{"type":"azookey.convert"}')).toBeUndefined();
+    expect(parseAzookeyPingMessage("not-json")).toBeUndefined();
+    expect(parseAzookeyPingMessage("[]")).toBeUndefined();
+    expect(parseAzookeyPingMessage("null")).toBeUndefined();
+    expect(azookeyPongMessage()).toStrictEqual({ type: "azookey.pong" });
+    expect(azookeyPongMessage("pin-1")).toStrictEqual({
+      type: "azookey.pong",
+      requestId: "pin-1",
+    });
+    expect(() => parseAzookeyMessage('{"type":"azookey.ping"}')).toThrow("azookey.convert");
+  });
+
   it("returns the stable next-app response shape and preserves source text", async () => {
     const runtime: AzookeyRuntime = {
       timeoutMs: 250,
@@ -267,6 +319,475 @@ describe("AzooKey Worker text contract", () => {
       contextUsed: false,
       usedCompletion: false,
     });
+  });
+
+  it("applies the stored Worker lexicon without a client TSV frame", async () => {
+    const lexicon = createMemoryUserLexicon(() => "one");
+    await lexicon.upsert({ reading: "ぶいあーるちゃっと", word: "VRC" });
+    const seen: number[] = [];
+    const runtime: AzookeyRuntime = {
+      timeoutMs: 250,
+      userLexicon: lexicon,
+      converter: Object.assign((text: string) => `plain:${text}`, {
+        syncUserLexicon: async () => {
+          const snapshot = await lexicon.snapshotCompact();
+          return snapshot.compact.byteLength === 0 ? 0 : 7;
+        },
+        convertWithContext: (
+          text: string,
+          _signal?: AbortSignal,
+          _preceding?: unknown,
+          lexiconHandle?: number,
+        ) => {
+          seen.push(lexiconHandle ?? 0);
+          return lexiconHandle === 7 && text === "ぶいあーるちゃっと" ? "VRC" : `ignored:${text}`;
+        },
+      }),
+    };
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          vibratoInput: "ぶいあーるちゃっと",
+          sourceText: "ぶいあーるちゃっと",
+        }),
+      ),
+      runtime,
+    );
+    expect(result.convertedText).toBe("VRC");
+    expect(seen).toStrictEqual([7]);
+  });
+
+  it("HTTP convert applies VRC through the compact WASM handle", async () => {
+    const lexicon = createMemoryUserLexicon(() => "one");
+    await lexicon.upsert({ reading: "ぶいあーるちゃっと", word: "VRC" });
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/azookey.wasm", import.meta.url)),
+    );
+    const converter = createWasmConverter(wasmModule);
+    const converted = await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    expect(converted).toBe("VRC");
+    expect((await lexicon.snapshotCompact()).compact.byteLength).toBeGreaterThan(32);
+  }, 20_000);
+
+  it("keeps the default conversion when the compact lexicon snapshot is empty", async () => {
+    const lexicon = createMemoryUserLexicon(() => "one");
+    vi.spyOn(lexicon, "snapshotCompact").mockResolvedValue({
+      revision: "empty",
+      compact: new Uint8Array(),
+    });
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/azookey.wasm", import.meta.url)),
+    );
+    const converter = createWasmConverter(wasmModule);
+    const converted = await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "かんじ",
+    });
+    expect(converted.length).toBeGreaterThan(0);
+  }, 20_000);
+
+  it("does not snapshot or open_compact when the isolate lexicon revision is unchanged", async () => {
+    const lexicon = createMemoryUserLexicon(() => "one");
+    await lexicon.upsert({ reading: "ぶいあーるちゃっと", word: "VRC" });
+    const snapshot = vi.spyOn(lexicon, "snapshotCompact");
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/azookey.wasm", import.meta.url)),
+    );
+    const converter = createWasmConverter(wasmModule);
+    const first = await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    const second = await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    expect(first).toBe("VRC");
+    expect(second).toBe("VRC");
+    expect(snapshot).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
+  it("skips lexicon meta() inside the one-second TTL and rechecks after expiry", async () => {
+    const lexicon = createMemoryUserLexicon(() => "one");
+    await lexicon.upsert({ reading: "ぶいあーるちゃっと", word: "VRC" });
+    const meta = vi.spyOn(lexicon, "meta");
+    const snapshot = vi.spyOn(lexicon, "snapshotCompact");
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/azookey.wasm", import.meta.url)),
+    );
+    const converter = createWasmConverter(wasmModule);
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(1_700_000_000_000);
+    await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    expect(meta).toHaveBeenCalledTimes(1);
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    now.mockReturnValue(1_700_000_001_001);
+    await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    expect(meta).toHaveBeenCalledTimes(2);
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    now.mockRestore();
+  }, 20_000);
+
+  it("rechecks lexicon meta() immediately after a write invalidates the TTL", async () => {
+    const lexicon = wrapUserLexiconWrites(createMemoryUserLexicon(() => "one"));
+    await lexicon.upsert({ reading: "ぶいあーるちゃっと", word: "VRC" });
+    const meta = vi.spyOn(lexicon, "meta");
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/azookey.wasm", import.meta.url)),
+    );
+    const converter = createWasmConverter(wasmModule);
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(1_700_000_100_000);
+    await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    expect(meta).toHaveBeenCalledTimes(1);
+    await lexicon.upsert({ reading: "ぶいあーるちゃっと", word: "VRC" });
+    await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    expect(meta).toHaveBeenCalledTimes(2);
+    invalidateIsolateUserLexiconCache();
+    await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    expect(meta).toHaveBeenCalledTimes(3);
+    now.mockRestore();
+  }, 20_000);
+
+  it("forwards every wrapped user lexicon RPC and invalidates write caches", async () => {
+    const lexicon = wrapUserLexiconWrites(createMemoryUserLexicon(() => "wrapped"));
+    await lexicon.upsert({ id: "entry", reading: "あい", word: "愛" });
+    expect((await lexicon.snapshotTsv()).tsv).toBe("あい\t愛\n");
+    expect((await lexicon.snapshotCompact()).compact.byteLength).toBeGreaterThan(0);
+    expect((await lexicon.exportAll()).entries).toStrictEqual([
+      { id: "entry", reading: "あい", word: "愛" },
+    ]);
+    expect((await lexicon.search({ q: "あ", cursor: "", limit: 1 })).entries).toStrictEqual([
+      { id: "entry", reading: "あい", word: "愛" },
+    ]);
+    await lexicon.update("entry", { reading: "よみ", word: "単語" });
+    await lexicon.remove("entry");
+    await lexicon.restore({
+      revision: "10",
+      entries: [{ id: "restored", reading: "ふくげん", word: "復元" }],
+    });
+    await lexicon.replaceAll([{ id: "replaced", reading: "おきかえ", word: "置換" }]);
+    await lexicon.clear();
+    expect((await lexicon.listDictionaries()).activeId).toBe("default");
+    const dictionary = await lexicon.createDictionary("Names");
+    await lexicon.renameDictionary(dictionary.dictionary.id, "Renamed");
+    await lexicon.activateDictionary(dictionary.dictionary.id);
+    const imported = await lexicon.startImport({
+      dictionaryId: dictionary.dictionary.id,
+      body: "あい\t愛\n",
+      filename: "words.tsv",
+    });
+    expect((await lexicon.importStatus(imported.id)).status).toBe("completed");
+    expect((await lexicon.processQueuedImport(imported.id)).status).toBe("failed");
+    await lexicon.deleteDictionary(dictionary.dictionary.id);
+  });
+
+  it("clamps non-finite timing elapsed values to zero", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(Number.NaN);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+      timeoutMs: 250,
+      converter: (text) => text,
+      wsOrHttp: "ws",
+    });
+    expect(parseAzookeyTimingLog(String(log.mock.calls[0]?.[0]))?.elapsedMs).toBe(0);
+    log.mockRestore();
+    now.mockRestore();
+  });
+
+  it("emits azookey_timing convert and total logs for a WebSocket convert", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((value: unknown) => {
+      if (typeof value === "string") {
+        lines.push(value);
+      }
+    });
+    await convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+      timeoutMs: 250,
+      converter: (text) => `今日は配信です:${text}`,
+      wsOrHttp: "ws",
+    });
+    spy.mockRestore();
+    const convertLog = parseAzookeyTimingLog(lines[0] ?? "");
+    const totalLog = parseAzookeyTimingLog(lines[1] ?? "");
+    expect(isAzookeyTimingLog(lines[0])).toBe(true);
+    expect(isAzookeyTimingLog({ event: "azookey_timing" })).toBe(false);
+    expect(convertLog?.event).toBe("azookey_timing");
+    expect(convertLog?.phase).toBe("dictionary_convert");
+    expect(convertLog?.nBest).toBe(64);
+    expect(convertLog?.cacheHit).toBe(false);
+    expect(convertLog?.wsOrHttp).toBe("ws");
+    expect(convertLog?.inputChars).toBe(10);
+    expect(typeof convertLog?.elapsedMs).toBe("number");
+    expect(totalLog?.phase).toBe("total");
+    expect(totalLog?.wsOrHttp).toBe("ws");
+    expect(parseAzookeyTimingLog("{")).toBeUndefined();
+    expect(parseAzookeyTimingLog("[]")).toBeUndefined();
+    expect(parseAzookeyTimingLog(JSON.stringify({ event: "other" }))).toBeUndefined();
+    expect(parseAzookeyTimingLog(JSON.stringify({ event: "azookey_timing" }))).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(JSON.stringify({ event: "azookey_timing", phase: "convert" })),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(JSON.stringify({ event: "azookey_timing", phase: "total" })),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({ event: "azookey_timing", phase: "total", elapsedMs: "0" }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({ event: "azookey_timing", phase: "total", elapsedMs: 0 }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "total",
+          elapsedMs: 0,
+          inputChars: "0",
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "total",
+          elapsedMs: 0,
+          inputChars: 0,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "total",
+          elapsedMs: 0,
+          inputChars: 0,
+          nBest: 1,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "total",
+          elapsedMs: 0,
+          inputChars: 0,
+          nBest: 64,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "total",
+          elapsedMs: 0,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: "false",
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "total",
+          elapsedMs: 0,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: false,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "total",
+          elapsedMs: 0,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: false,
+          wsOrHttp: "invalid",
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "total",
+          elapsedMs: 0,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: false,
+          wsOrHttp: "http",
+          zenzHttpReason: "invalid",
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({ event: "azookey_timing", phase: "convert", elapsedMs: 1 }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "convert",
+          elapsedMs: 1,
+          inputChars: 0,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "convert",
+          elapsedMs: 1,
+          inputChars: 0,
+          nBest: 64,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "convert",
+          elapsedMs: 1,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: false,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "unknown",
+          elapsedMs: 1,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: false,
+          wsOrHttp: "ws",
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "convert",
+          elapsedMs: 1,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: false,
+          wsOrHttp: "tcp",
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "convert",
+          elapsedMs: 1,
+          inputChars: 0,
+          nBest: 8,
+          cacheHit: false,
+          wsOrHttp: "ws",
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("emits lexicon_meta lexicon_open dictionary_convert and total logs on the HTTP convert path", async () => {
+    const lexicon = createMemoryUserLexicon(() => "one");
+    await lexicon.upsert({ reading: "ぶいあーるちゃっと", word: "VRC" });
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/azookey.wasm", import.meta.url)),
+    );
+    const converter = createWasmConverter(wasmModule);
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((value: unknown) => {
+      if (typeof value === "string") {
+        lines.push(value);
+      }
+    });
+    const converted = await convertTextWithStoredUserLexicon({
+      converter,
+      lexicon,
+      text: "ぶいあーるちゃっと",
+    });
+    spy.mockRestore();
+    expect(converted).toBe("VRC");
+    const lexiconLog = parseAzookeyTimingLog(lines[0] ?? "");
+    const openLog = parseAzookeyTimingLog(lines[1] ?? "");
+    const convertLog = parseAzookeyTimingLog(lines[2] ?? "");
+    const totalLog = parseAzookeyTimingLog(lines[3] ?? "");
+    expect(lexiconLog?.phase).toBe("lexicon_meta");
+    expect(lexiconLog?.cacheHit).toBe(false);
+    expect(lexiconLog?.wsOrHttp).toBe("http");
+    expect(openLog?.phase).toBe("lexicon_open");
+    expect(openLog?.cacheHit).toBe(false);
+    expect(convertLog?.phase).toBe("dictionary_convert");
+    expect(convertLog?.wsOrHttp).toBe("http");
+    expect(totalLog?.phase).toBe("total");
+    expect(totalLog?.wsOrHttp).toBe("http");
+  }, 20_000);
+
+  it("reuses one builtin WASM instance for the same module", () => {
+    const bytes = readFileSync(new URL("../wasm/azookey.wasm", import.meta.url));
+    const module = new WebAssembly.Module(bytes);
+    const first = createWasmConverter(module);
+    const second = createWasmConverter(module);
+    expect(first).toBe(second);
+    expect(first("きょうのてんき")).toBe("今日の天気");
   });
 
   it("strips Japanese ASR token-gap spaces before the shipped converter input", async () => {
@@ -534,6 +1055,24 @@ describe("AzooKey Worker text contract", () => {
     ).rejects.toMatchObject({ code: "conversion_failed" });
   });
 
+  it("does not run Zenz on the azookey-rust-wasm caption path even when MODEL_ROUTES is live", async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ content: "無視" }), { status: 200 }),
+    );
+    const result = await convertAzookeyMessage(parseAzookeyMessage(JSON.stringify(valid)), {
+      timeoutMs: 250,
+      converter: (text) => `dict:${text}`,
+      modelRoutes: {
+        [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+      },
+      fetcher,
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.usedCompletion).toBe(false);
+    expect(result.model).toBe("azookey-rust-wasm");
+    expect(result.convertedText).toBe(`dict:${valid.vibratoInput}`);
+  });
+
   it("falls back to portable WASM when Zenzai models are absent from MODEL_ROUTES", async () => {
     const runtime: AzookeyRuntime = {
       timeoutMs: 250,
@@ -555,6 +1094,7 @@ describe("AzooKey Worker text contract", () => {
 
   it("falls back to portable WASM when a configured Zenzai upstream fails", async () => {
     const fetcher = vi.fn(async () => new Response("upstream offline", { status: 503 }));
+    const converter = vi.fn((text: string) => `dict:${text}`);
     const message = parseAzookeyMessage(
       JSON.stringify({
         ...valid,
@@ -564,16 +1104,18 @@ describe("AzooKey Worker text contract", () => {
     );
     const result = await convertAzookeyMessage(message, {
       timeoutMs: 250,
-      converter: (text) => `dict:${text}`,
+      converter,
       modelRoutes: {
         [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "https://zenz.example" },
       },
       fetcher,
     });
+    expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher).toHaveBeenCalledWith(
       "https://zenz.example/completion",
       expect.objectContaining({ method: "POST" }),
     );
+    expect(converter).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       convertedText: `dict:${valid.vibratoInput}`,
       model: AZOOKEY_MODEL,
@@ -629,6 +1171,7 @@ describe("AzooKey Worker text contract", () => {
       },
       fetcher,
     });
+    expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher).toHaveBeenCalledWith(
       "http://127.0.0.1:8081/completion",
       expect.objectContaining({ method: "POST" }),
@@ -701,10 +1244,11 @@ describe("AzooKey Worker text contract", () => {
       },
     );
     expect(captured).toHaveLength(1);
-    const body = JSON.parse(captured[0] ?? "{}") as { prompt?: string };
+    const body = JSON.parse(captured[0] ?? "{}") as { prompt?: string; n_predict?: number };
     expect(body.prompt).toBe(
       "\u{EE02}子供がお菓子を食べています。\u{EE00}キョウハハイシンデス\u{EE01}",
     );
+    expect(body.n_predict).toBe(64);
     expect(prefixes).toStrictEqual(["感"]);
     expect(result).toMatchObject({
       convertedText: "感じ",
@@ -795,14 +1339,16 @@ describe("AzooKey Worker text contract", () => {
         leftContext: "子供がお菓子を食べています。",
       }),
     );
+    const converter = vi.fn((text: string) => `dict:${text}`);
     const result = await convertAzookeyMessage(message, {
       timeoutMs: 2_000,
-      converter: (text) => `dict:${text}`,
+      converter,
       modelRoutes: {
         [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
       },
       fetcher,
     });
+    expect(converter).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       convertedText: `dict:${valid.vibratoInput}`,
       model: AZOOKEY_MODEL,
@@ -834,6 +1380,222 @@ describe("AzooKey Worker text contract", () => {
       convertedText: `dict:${valid.vibratoInput}`,
       modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
     });
+  });
+
+  it("posts Zenz /completion once on TypeError and does not retry", async () => {
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ content: "感じ" }), { status: 200 }));
+    const converter = vi.fn((text: string) => `dict:${text}`);
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 1_000,
+        converter,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher,
+      },
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(converter).toHaveBeenCalledTimes(1);
+    expect(result.convertedText).toBe("dict:きょうははいしんです");
+    expect(result.model).toBe("azookey-rust-wasm");
+    expect(result.modelFallback).toBe("upstream-failed");
+    expect(result.usedCompletion).toBe(false);
+  });
+
+  it("does not retry a protocol HTTP 4xx from Zenz", async () => {
+    const fetcher = vi.fn(async () => new Response("bad request", { status: 400 }));
+    const converter = vi.fn((text: string) => `dict:${text}`);
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher,
+      },
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(converter).toHaveBeenCalledTimes(1);
+    expect(result.modelFallback).toBe("upstream-failed");
+    expect(result.convertedText).toBe("dict:きょうははいしんです");
+  });
+
+  it("records zenz_http ok timeout fetch and empty reasons without text", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((value: unknown) => {
+      if (typeof value === "string") {
+        lines.push(value);
+      }
+    });
+    const latticeConverter = ((text: string) => `dict:${text}`) as AzookeyConverter;
+    latticeConverter.openLattice = () => ({
+      searchOutputPrefix: () => "感じ",
+      close: vi.fn(),
+    });
+    await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter: latticeConverter,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher: () => new Response(JSON.stringify({ content: "感じ" }), { status: 200 }),
+      },
+    );
+    await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          requestId: "req-timeout",
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 80,
+        converter: (text) => `dict:${text}`,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher: (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          }),
+      },
+    );
+    await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          requestId: "req-fetch",
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter: (text) => `dict:${text}`,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher: () => {
+          throw new TypeError("fetch failed");
+        },
+      },
+    );
+    await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          requestId: "req-empty",
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "子供がお菓子を食べています。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter: (text) => `dict:${text}`,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher: () => new Response(JSON.stringify({ content: "   " }), { status: 200 }),
+      },
+    );
+    spy.mockRestore();
+    const zenzLogs = lines
+      .map((line) => parseAzookeyTimingLog(line))
+      .filter((entry) => entry?.phase === "zenz_http");
+    expect(zenzLogs[0]?.zenzHttpReason).toBe("ok");
+    expect(zenzLogs[1]?.zenzHttpReason).toBe("timeout");
+    expect(zenzLogs[2]?.zenzHttpReason).toBe("fetch");
+    expect(zenzLogs[3]?.zenzHttpReason).toBe("empty");
+    expect(zenzLogs[0] && "prompt" in zenzLogs[0]).toBe(false);
+    expect(zenzLogs[0] && "content" in zenzLogs[0]).toBe(false);
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "zenz_http",
+          elapsedMs: 1,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: false,
+          wsOrHttp: "ws",
+          zenzHttpReason: "ok",
+        }),
+      )?.zenzHttpReason,
+    ).toBe("ok");
+    expect(
+      parseAzookeyTimingLog(
+        JSON.stringify({
+          event: "azookey_timing",
+          phase: "zenz_http",
+          elapsedMs: 1,
+          inputChars: 0,
+          nBest: 64,
+          cacheHit: false,
+          wsOrHttp: "ws",
+          zenzHttpReason: "nope",
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("warms configured Zenz origins with a cheap GET /health and swallows failures", async () => {
+    const fetcher = vi.fn((input: Parameters<typeof fetch>[0]) => {
+      expect(String(input)).toBe("https://zenz.example/health");
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok" }), { status: 200 }));
+    });
+    await warmZenzUpstreams(
+      {
+        "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.example" },
+        "zenz-v3.2-xsmall-gguf": { baseUrl: "https://zenz.example" },
+      },
+      fetcher,
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://zenz.example/health",
+      expect.objectContaining({
+        method: "GET",
+        headers: { "user-agent": AZOOKEY_ZENZ_UPSTREAM_USER_AGENT },
+      }),
+    );
+    const failing = vi.fn(() => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(
+      warmZenzUpstreams({ "zenz-v3.2-small-gguf": { baseUrl: "https://down.example" } }, failing),
+    ).resolves.toBeUndefined();
+    expect(AZOOKEY_ZENZ_HEALTH_PATH).toBe("/health");
   });
 
   it("falls back when a configured Zenzai upstream returns oversized output", async () => {
@@ -1626,6 +2388,54 @@ describe("AzooKey Worker text contract", () => {
     });
   });
 
+  it("answers azookey.ping with azookey.pong without converting or holding the lock", async () => {
+    let resolveConversion: ((value: string) => void) | undefined;
+    let convertCalls = 0;
+    const socket = new FakeSocket();
+    attachAzookeySocket(socket as unknown as WebSocket, {
+      timeoutMs: 250,
+      converter: () => {
+        convertCalls += 1;
+        return new Promise((resolve) => {
+          resolveConversion = resolve;
+        });
+      },
+    });
+    socket.emit('{"type":"azookey.ping"}');
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toStrictEqual({ type: "azookey.pong" });
+    expect(convertCalls).toBe(0);
+
+    socket.emit(JSON.stringify({ ...valid, requestId: "req-lock" }));
+    await Promise.resolve();
+    expect(convertCalls).toBe(1);
+
+    socket.emit(JSON.stringify({ type: "azookey.ping", requestId: "pin-1" }));
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toStrictEqual({
+      type: "azookey.pong",
+      requestId: "pin-1",
+    });
+    expect(convertCalls).toBe(1);
+
+    socket.emit(JSON.stringify({ type: "azookey.ping", requestId: 7 }));
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toStrictEqual({ type: "azookey.pong" });
+
+    socket.emit(JSON.stringify({ ...valid, requestId: "req-busy" }));
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toMatchObject({
+      requestId: "req-busy",
+      error: { code: "busy" },
+    });
+
+    if (resolveConversion === undefined) {
+      throw new Error("converter was not invoked");
+    }
+    resolveConversion("変換結果");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toMatchObject({
+      requestId: "req-lock",
+      convertedText: "変換結果",
+    });
+  });
+
   it("maps a slow converter to a bounded timeout error", async () => {
     const runtime: AzookeyRuntime = {
       timeoutMs: 25,
@@ -1812,6 +2622,7 @@ describe("AzooKey Worker text contract", () => {
       },
       {
         converter: (text) => `converted:${text}`,
+        fetcher: async () => new Response(JSON.stringify({ status: "ok" }), { status: 200 }),
         socketPair: () =>
           ({
             client: {},
@@ -1855,6 +2666,45 @@ describe("AzooKey Worker text contract", () => {
       type: "azookey.ready",
       models: ["azookey-rust-wasm"],
     });
+  });
+
+  it("starts a Zenz /health warmup on WebSocket upgrade without blocking ready", async () => {
+    const server = new FakeSocket();
+    const healthUrls: string[] = [];
+    const fetcher = (input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      healthUrls.push(String(input));
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok" }), { status: 200 }));
+    };
+    const response = await openAzookeySocket(
+      new Request("https://worker.example/ws/azookey", {
+        headers: { upgrade: "websocket" },
+      }),
+      {
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.example" },
+        }),
+      },
+      {
+        converter: (text) => `converted:${text}`,
+        fetcher,
+        socketPair: () =>
+          ({
+            client: {},
+            server,
+          }) as unknown as {
+            client: WebSocket;
+            server: WebSocket;
+          },
+      },
+    );
+    expect(response.status).toBe(101);
+    expect(JSON.parse(server.sent[0] ?? "{}")).toMatchObject({
+      type: "azookey.ready",
+    });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(healthUrls).toStrictEqual(["https://zenz.example/health"]);
   });
 
   it("validates WebSocket upgrades, native bearer headers, and converter availability", async () => {

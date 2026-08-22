@@ -24,6 +24,42 @@
     "AZOOKEY_TIMEOUT_MS": "2000",
     "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz"
   },
+  // Local SQLite Durable Object for the hosted compare user lexicon.
+  "r2_buckets": [
+    {
+      "binding": "USER_LEXICON_IMPORTS",
+      "bucket_name": "azookey-user-lexicon-imports"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "USER_LEXICON_IMPORT_QUEUE",
+        "queue": "azookey-user-lexicon-imports"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "azookey-user-lexicon-imports",
+        "max_batch_size": 1,
+        "max_retries": 5
+      }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "USER_LEXICON",
+        "class_name": "UserLexiconDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-user-lexicon",
+      "new_sqlite_classes": ["UserLexiconDO"]
+    }
+  ],
   "rules": [
     {
       "type": "CompiledWasm",

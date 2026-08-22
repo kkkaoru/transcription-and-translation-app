@@ -1,5 +1,6 @@
+// This file runs with bun.
 import { readFileSync } from "node:fs";
-import { pcm16ToWav } from "@caption-bridge/inference-server-core";
+import { createMemoryUserLexicon, pcm16ToWav } from "@caption-bridge/inference-server-core";
 import { describe, expect, it, vi } from "vitest";
 import {
   AZOOKEY_MAX_TEXT_BYTES,
@@ -239,6 +240,77 @@ describe("Cloudflare Worker inference adapter", () => {
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe("IPADIC notice");
     expect(assets.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("skips isolate warmup when an injected wasm value is not a module", async () => {
+    const dependencies = Object.defineProperty({}, "wasmModule", { value: 1 });
+    const response = await createWorker(undefined, dependencies).fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      env,
+      { waitUntil: vi.fn() },
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("schedules isolate wasm warmup on GET /v1/azookey without blocking the response", async () => {
+    const scheduled: Promise<unknown>[] = [];
+    const warmupChannels: unknown[] = [];
+    const warmup = (wsOrHttp?: unknown): Promise<void> => {
+      warmupChannels.push(wsOrHttp);
+      return Promise.resolve();
+    };
+    const converter = Object.assign((text: string) => text, { warmup });
+    const wasmModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    const response = await createWorker(undefined, { converter, wasmModule }).fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      env,
+      {
+        waitUntil: (promise) => {
+          scheduled.push(promise);
+        },
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(scheduled).toHaveLength(1);
+    const queued = scheduled[0];
+    if (!queued) {
+      throw new Error("waitUntil was not scheduled");
+    }
+    await queued;
+    expect(warmupChannels).toStrictEqual(["http"]);
+  });
+
+  it("warms configured Zenz /health during GET /v1/azookey isolate warmup", async () => {
+    const scheduled: Promise<unknown>[] = [];
+    const healthUrls: string[] = [];
+    const warmup = (): Promise<void> => Promise.resolve();
+    const converter = Object.assign((text: string) => text, { warmup });
+    const wasmModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    const fetcher = (input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      healthUrls.push(String(input));
+      return Promise.resolve(new Response(JSON.stringify({ status: "ok" }), { status: 200 }));
+    };
+    const response = await createWorker(fetcher, { converter, wasmModule }).fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey")),
+      {
+        ...env,
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.example" },
+        }),
+      },
+      {
+        waitUntil: (promise) => {
+          scheduled.push(promise);
+        },
+      },
+    );
+    expect(response.status).toBe(200);
+    const queued = scheduled[0];
+    if (!queued) {
+      throw new Error("waitUntil was not scheduled");
+    }
+    await queued;
+    expect(healthUrls).toStrictEqual(["https://zenz.example/health"]);
   });
 
   it("routes Worker Vibrato warmup through the assets binding", async () => {
@@ -804,4 +876,68 @@ describe("Cloudflare Worker inference adapter", () => {
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe(env.CORS_ORIGIN);
   });
+
+  it("persists a Worker-owned lexicon and converts ぶいあーるちゃっと without a client TSV", async () => {
+    const lexicon = createMemoryUserLexicon(() => "created-id");
+    const wasmModule = new WebAssembly.Module(
+      readFileSync(new URL("../wasm/azookey.wasm", import.meta.url)),
+    );
+    const worker = createWorker(fetch, { userLexicon: lexicon, wasmModule });
+    const created = await worker.fetch(
+      asWorkerRequest(
+        new Request("https://worker.example/azookey/user-lexicon/entries", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reading: "ぶいあーるちゃっと", word: "VRC" }),
+        }),
+      ),
+      env,
+    );
+    expect(created.status).toBe(201);
+    const converted = await worker.fetch(
+      asWorkerRequest(
+        new Request("https://worker.example/v1/azookey/convert", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "ぶいあーるちゃっと" }),
+        }),
+      ),
+      env,
+    );
+    expect(converted.status).toBe(200);
+    await expect(converted.json()).resolves.toStrictEqual({
+      convertedText: "VRC",
+      lexiconEntryCount: 1,
+      revision: "1",
+    });
+    const rejected = await worker.fetch(
+      asWorkerRequest(
+        new Request("https://worker.example/v1/azookey/convert", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            text: "ぶいあーるちゃっと",
+            userDictionaryTsv: "クライアント\t無視\n",
+          }),
+        }),
+      ),
+      env,
+    );
+    expect(rejected.status).toBe(400);
+    const retired = await worker.fetch(
+      asWorkerRequest(new Request("https://worker.example/v1/azookey/user-dictionary")),
+      env,
+    );
+    expect(retired.status).toBe(404);
+    const listed = await worker.fetch(
+      asWorkerRequest(new Request("https://worker.example/azookey/user-lexicon/entries?limit=50")),
+      env,
+    );
+    await expect(listed.json()).resolves.toStrictEqual({
+      revision: "1",
+      entryCount: 1,
+      entries: [{ id: "created-id", reading: "ぶいあーるちゃっと", word: "VRC" }],
+      nextCursor: null,
+    });
+  }, 20_000);
 });

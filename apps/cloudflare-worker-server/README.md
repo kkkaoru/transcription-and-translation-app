@@ -19,8 +19,19 @@ This Worker keeps the existing inference HTTP adapter and adds a dedicated
 AzooKey text conversion endpoint:
 
 - `GET /v1/azookey` — capability/health metadata (does not reveal the secret).
+- `GET /azookey/user-lexicon` — `{ revision, entryCount, tsvBytes }` metadata only.
+- `GET /azookey/user-lexicon/entries` — paged `{id,reading,word}` (default/max 50).
+- `POST /azookey/user-lexicon/entries` — create `{ reading, word }`.
+- `PUT /azookey/user-lexicon/entries/:id` / `DELETE /azookey/user-lexicon/entries/:id`
+- `DELETE /azookey/user-lexicon` — clear all.
+- `POST /azookey/user-lexicon/import` — replace all from TSV or JSON (max 100000 / 16MiB).
+- `POST /v1/azookey/convert` — convert using the stored Worker lexicon. Client TSV is rejected.
 - `GET /ws/azookey` — JSON-text WebSocket conversion session (Bearer-authenticated
-  in production).
+  in production). Convert applies the stored Worker lexicon. `userDictionaryTsv` is rejected.
+
+The custom dictionary is persisted in the SQLite Durable Object `UserLexiconDO`
+(`USER_LEXICON` binding, `idFromName("hosted-compare")`). Word data does not live
+in the browser. `snapshotTsv()` is Worker-only RPC and is not an HTTP route.
 
 The standard AzooKey WebSocket path never invokes speech recognition. ASR stays
 on `POST /v1/audio/transcriptions`; it keeps the existing `parapper-ja` upstream

@@ -13,6 +13,7 @@ const workerRoot = resolve(root, "apps/cloudflare-worker-server");
 // other, which would quietly assert nothing once the export is renamed.
 const REQUIRED_CONVERTER_METHODS = ["openLattice"];
 const BACKING_WASM_EXPORT = "azookey_lattice_open";
+const PROBE_RESULT_PREFIX = "__worker_one_completion_probe__";
 
 const BUN_PROBE = `
 import { readFileSync } from "node:fs";
@@ -32,7 +33,7 @@ const converter = createWasmConverter(module, "/azookey/system.azkdict.gz", fetc
 await converter.warmup?.();
 const names = ${JSON.stringify(REQUIRED_CONVERTER_METHODS)};
 const payload = Object.fromEntries(names.map((name) => [name, typeof converter[name]]));
-console.log(JSON.stringify(payload));
+console.log(${JSON.stringify(PROBE_RESULT_PREFIX)} + JSON.stringify(payload));
 `;
 
 describe("worker one-completion probe", () => {
@@ -46,9 +47,11 @@ describe("worker one-completion probe", () => {
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    const payload = JSON.parse(result.stdout);
-    for (const name of REQUIRED_CONVERTER_METHODS) {
-      assert.equal(payload[name], "function", `lazy converter is missing ${name}`);
-    }
+    const resultLine = result.stdout
+      .split("\n")
+      .find((line) => line.startsWith(PROBE_RESULT_PREFIX));
+    assert.ok(resultLine, `probe result missing from stdout: ${result.stdout}`);
+    const payload = JSON.parse(resultLine.slice(PROBE_RESULT_PREFIX.length));
+    assert.deepEqual(payload, { openLattice: "function" });
   });
 });

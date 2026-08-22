@@ -1,3 +1,4 @@
+// This file runs with bun.
 import { normalizeAsrSourceText, readingForAzookeyAsync } from "@caption-bridge/azookey-reading";
 import {
   AZOOKEY_DEFAULT_DICTIONARY_TIMEOUT_MS,
@@ -10,6 +11,7 @@ import {
   VIBRATO_IPADIC_FEATURE_INDEX,
   VIBRATO_MAX_DICTIONARY_BYTES,
 } from "@caption-bridge/dictionaries";
+import type { UserLexiconRpc } from "@caption-bridge/inference-server-core";
 import { initSync as initVibratoSync, VibratoTokenizer } from "./vibrato_wasm.js";
 import {
   orchestrateOneCompletion,
@@ -33,6 +35,8 @@ export const AZOOKEY_WS_PATH = "/ws/azookey";
 /** Public inference hostname. Disabled in production (`workers_dev: false`). */
 export const INFERENCE_PUBLIC_HOST = "kotoba-beacon-inference.kaoru.workers.dev";
 export const AZOOKEY_PROTOCOL = "azookey.text.v1";
+export const AZOOKEY_PING_TYPE = "azookey.ping" satisfies "azookey.ping";
+export const AZOOKEY_PONG_TYPE = "azookey.pong" satisfies "azookey.pong";
 export const AZOOKEY_MODEL = "azookey-rust-wasm";
 export const AZOOKEY_ZENZ_XSMALL_MODEL = "zenz-v3.2-xsmall-gguf";
 export const AZOOKEY_ZENZ_SMALL_MODEL = "zenz-v3.2-small-gguf";
@@ -90,16 +94,19 @@ export const AZOOKEY_MAX_AUTH_TOKEN_BYTES =
 export const AZOOKEY_DEFAULT_TIMEOUT_MS = 2_000;
 export const AZOOKEY_MIN_TIMEOUT_MS = 25;
 export const AZOOKEY_MAX_TIMEOUT_MS = 2_000;
-/**
- * Wall-time reserved for portable WASM when a configured Zenzai upstream hangs.
- * Official dictionary conversion often needs 300–1100 ms; leave enough headroom
- * so a dead MODEL_ROUTES host (e.g. local xsmall on :8081) can still finish.
- */
-export const AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS = 1_500;
-/** Hard cap on one Zenzai `/completion` attempt so hung sockets cannot starve WASM. */
+/** Hard cap on one Zenz `/completion` so a hung socket cannot starve the 2s budget. */
 export const AZOOKEY_ZENZ_UPSTREAM_MAX_MS = 400;
+/** Cheap GET used to wake a cold llama.cpp origin before the first caption. */
+export const AZOOKEY_ZENZ_HEALTH_PATH = "/health";
+/** Bound for the isolate/WS warmup ping so a hung origin cannot stall ready. */
+export const AZOOKEY_ZENZ_WARMUP_MAX_MS = 400;
 /** Bot Fight on the GGUF hostname rejects empty / library user-agents. */
 export const AZOOKEY_ZENZ_UPSTREAM_USER_AGENT = "kotoba-beacon-inference/azookey-zenz";
+export type AzookeyZenzHttpReason = "timeout" | "fetch" | "empty" | "ok";
+export const AZOOKEY_ZENZ_HTTP_REASON_OK = "ok" satisfies AzookeyZenzHttpReason;
+export const AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT = "timeout" satisfies AzookeyZenzHttpReason;
+export const AZOOKEY_ZENZ_HTTP_REASON_FETCH = "fetch" satisfies AzookeyZenzHttpReason;
+export const AZOOKEY_ZENZ_HTTP_REASON_EMPTY = "empty" satisfies AzookeyZenzHttpReason;
 export { ZENZ_CONTEXT_MAX_GRAPHEMES, ZENZ_ONE_COMPLETION_MAX_ITERATIONS, zenzCandidatePrompt };
 export const AZOOKEY_WASM_POINTER_BITS = 32;
 export const AZOOKEY_WASM_U32_MASK = 0xffff_ffffn;
@@ -111,6 +118,10 @@ export const AZOOKEY_CONVERSION_STATUS_INVALID_UTF8 = 1 << 1;
 export const AZOOKEY_CONVERSION_STATUS_INVALID_ARGUMENT = 1 << 2;
 /** Match the legacy converter's default beam while returning its first candidate. */
 export const AZOOKEY_N_BEST_WIDTH = 64;
+/** Tokens requested from a Zenz `/completion` opt-in. Caption hot path never uses this. */
+export const AZOOKEY_ZENZ_N_PREDICT = 64;
+/** Skip Durable Object `meta()` while a live handle is younger than this. */
+export const AZOOKEY_LEXICON_META_TTL_MS = 1_000;
 /**
  * Protocol timing for `azookey.result.elapsedMs`.
  * Field name stays `elapsedMs`. Value is a finite integer millisecond count:
@@ -118,6 +129,158 @@ export const AZOOKEY_N_BEST_WIDTH = 64;
  * conversion never reports 0.
  */
 export const AZOOKEY_MIN_ELAPSED_MS = 1;
+export const AZOOKEY_TIMING_EVENT = "azookey_timing";
+export type AzookeyTimingPhase =
+  | "wasm_init"
+  | "lexicon_meta"
+  | "lexicon_open"
+  | "dictionary_convert"
+  | "zenz_http"
+  | "lattice"
+  | "fallback"
+  | "total";
+export type AzookeyTimingChannel = "ws" | "http";
+
+export interface AzookeyTimingLog {
+  event: "azookey_timing";
+  phase: AzookeyTimingPhase;
+  elapsedMs: number;
+  inputChars: number;
+  nBest: number;
+  cacheHit: boolean;
+  wsOrHttp: AzookeyTimingChannel;
+  /** Present on `zenz_http` only. Never includes prompt or completion text. */
+  zenzHttpReason?: AzookeyZenzHttpReason;
+}
+
+export interface AzookeyTimingFields {
+  phase: AzookeyTimingPhase;
+  elapsedMs: number;
+  inputChars: number;
+  cacheHit: boolean;
+  wsOrHttp: AzookeyTimingChannel;
+  zenzHttpReason?: AzookeyZenzHttpReason;
+}
+
+interface ZenzHttpSuccess {
+  reason: typeof AZOOKEY_ZENZ_HTTP_REASON_OK;
+  content: string;
+}
+
+interface ZenzHttpFailure {
+  reason:
+    | typeof AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT
+    | typeof AZOOKEY_ZENZ_HTTP_REASON_FETCH
+    | typeof AZOOKEY_ZENZ_HTTP_REASON_EMPTY;
+}
+
+type ZenzHttpResult = ZenzHttpSuccess | ZenzHttpFailure;
+
+const timingNowMs = (): number => Date.now();
+
+const timingElapsedMs = (startedAt: number): number => {
+  const elapsed = timingNowMs() - startedAt;
+  return Number.isFinite(elapsed) ? Math.round(Math.max(0, elapsed)) : 0;
+};
+
+const zenzHttpReasonFromUnknown = (value: unknown): AzookeyZenzHttpReason | undefined => {
+  if (value === AZOOKEY_ZENZ_HTTP_REASON_OK) {
+    return AZOOKEY_ZENZ_HTTP_REASON_OK;
+  }
+  if (value === AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT) {
+    return AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT;
+  }
+  if (value === AZOOKEY_ZENZ_HTTP_REASON_FETCH) {
+    return AZOOKEY_ZENZ_HTTP_REASON_FETCH;
+  }
+  if (value === AZOOKEY_ZENZ_HTTP_REASON_EMPTY) {
+    return AZOOKEY_ZENZ_HTTP_REASON_EMPTY;
+  }
+  return undefined;
+};
+
+export const logAzookeyTiming = (fields: AzookeyTimingFields): void => {
+  const entry: AzookeyTimingLog = {
+    event: AZOOKEY_TIMING_EVENT,
+    phase: fields.phase,
+    elapsedMs: fields.elapsedMs,
+    inputChars: fields.inputChars,
+    nBest: AZOOKEY_N_BEST_WIDTH,
+    cacheHit: fields.cacheHit,
+    wsOrHttp: fields.wsOrHttp,
+    ...(fields.zenzHttpReason === undefined ? {} : { zenzHttpReason: fields.zenzHttpReason }),
+  };
+  // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured JSON logs
+  console.log(JSON.stringify(entry));
+};
+
+export const parseAzookeyTimingLog = (value: string): AzookeyTimingLog | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    if (!("event" in parsed) || parsed.event !== AZOOKEY_TIMING_EVENT) {
+      return undefined;
+    }
+    if (!("phase" in parsed)) {
+      return undefined;
+    }
+    const phase = parsed.phase;
+    if (
+      phase !== "wasm_init" &&
+      phase !== "lexicon_meta" &&
+      phase !== "lexicon_open" &&
+      phase !== "dictionary_convert" &&
+      phase !== "zenz_http" &&
+      phase !== "lattice" &&
+      phase !== "fallback" &&
+      phase !== "total"
+    ) {
+      return undefined;
+    }
+    if (!("elapsedMs" in parsed) || typeof parsed.elapsedMs !== "number") {
+      return undefined;
+    }
+    if (!("inputChars" in parsed) || typeof parsed.inputChars !== "number") {
+      return undefined;
+    }
+    if (!("nBest" in parsed) || parsed.nBest !== AZOOKEY_N_BEST_WIDTH) {
+      return undefined;
+    }
+    if (!("cacheHit" in parsed) || typeof parsed.cacheHit !== "boolean") {
+      return undefined;
+    }
+    if (!("wsOrHttp" in parsed)) {
+      return undefined;
+    }
+    const wsOrHttp = parsed.wsOrHttp;
+    if (wsOrHttp !== "ws" && wsOrHttp !== "http") {
+      return undefined;
+    }
+    const zenzHttpReason = zenzHttpReasonFromUnknown(
+      "zenzHttpReason" in parsed ? parsed.zenzHttpReason : undefined,
+    );
+    if ("zenzHttpReason" in parsed && zenzHttpReason === undefined) {
+      return undefined;
+    }
+    return {
+      event: AZOOKEY_TIMING_EVENT,
+      phase,
+      elapsedMs: parsed.elapsedMs,
+      inputChars: parsed.inputChars,
+      nBest: AZOOKEY_N_BEST_WIDTH,
+      cacheHit: parsed.cacheHit,
+      wsOrHttp,
+      ...(zenzHttpReason === undefined ? {} : { zenzHttpReason }),
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+export const isAzookeyTimingLog = (value: unknown): value is AzookeyTimingLog =>
+  typeof value === "string" && parseAzookeyTimingLog(value) !== undefined;
 
 export const elapsedMsFromDuration = (elapsed: number): number => {
   const rounded = Number.isFinite(elapsed) ? Math.round(Math.max(0, elapsed)) : 0;
@@ -221,7 +384,19 @@ export interface AzookeyWasmExports {
     userPointer: number,
     userLength: number,
   ) => bigint | number;
-  azookey_lattice_open_with_user?: (
+  azookey_user_lexicon_open?: (pointer: number, length: number) => number;
+  azookey_user_lexicon_open_compact?: (pointer: number, length: number) => number;
+  azookey_user_lexicon_close?: (handle: number) => number;
+  azookey_convert_n_best_with_user_lexicon?: (
+    pointer: number,
+    length: number,
+    nBest: number,
+    hasPreceding: number,
+    precedingRcid: number,
+    precedingMid: number,
+    lexiconHandle: number,
+  ) => bigint | number;
+  azookey_lattice_open_with_user_lexicon?: (
     pointer: number,
     length: number,
     hasPreceding: number,
@@ -229,8 +404,7 @@ export interface AzookeyWasmExports {
     precedingMid: number,
     beam: number,
     nBest: number,
-    userPointer: number,
-    userLength: number,
+    lexiconHandle: number,
   ) => number;
   azookey_lattice_open?: (
     pointer: number,
@@ -271,8 +445,8 @@ export type AzookeyConverter = ((
   signal?: AbortSignal,
   preceding?: AzookeyPrecedingContext,
 ) => string | Promise<string>) & {
-  /** Optional cold-start hook used by the WebSocket upgrade path. */
-  warmup?: () => Promise<void>;
+  /** Optional cold-start hook used by the WebSocket upgrade path and GET waitUntil. */
+  warmup?: (wsOrHttp?: AzookeyTimingChannel) => Promise<void>;
   /** Revision of the loaded dictionary used by this converter. */
   dictionaryRevision?: string;
   /** Context-aware additive path; the callable surface remains text-only. */
@@ -280,14 +454,19 @@ export type AzookeyConverter = ((
     text: string,
     signal?: AbortSignal,
     preceding?: AzookeyPrecedingContext,
-    userDictionaryTsv?: string,
+    lexiconHandle?: number,
   ) => string | AzookeyConversionResult | Promise<string | AzookeyConversionResult>;
   /** Optional constrained lattice used by one-completion Zenz orchestration. */
   openLattice?: (
     text: string,
     preceding?: AzookeyPrecedingContext,
-    userDictionaryTsv?: string,
+    lexiconHandle?: number,
   ) => AzookeyLatticeSession | undefined;
+  /** Rebuild the isolate-global lexicon handle from Worker storage. */
+  syncUserLexicon?: (
+    lexicon: UserLexiconRpc,
+    timing?: { inputChars: number; wsOrHttp: AzookeyTimingChannel },
+  ) => Promise<number>;
 };
 
 export interface AzookeyLatticeSession {
@@ -324,10 +503,31 @@ const vibratoTokenizerCache = new WeakMap<
   WebAssembly.Module,
   WeakMap<AzookeyFetcher, Map<string, Promise<VibratoTokenizer>>>
 >();
-const azookeyConverterCache = new WeakMap<
+// Isolate-global converter cache. Key by Module + dictionary URL only — never
+// by fetcher identity. Cloudflare may wrap `env.ASSETS` per request; a
+// fetcher-keyed WeakMap then misses and re-instantiates WASM + system.azkdict.gz.
+const isolateConverterCache = new WeakMap<
   WebAssembly.Module,
-  WeakMap<AzookeyFetcher, Map<string, Promise<AzookeyConverter>>>
+  Map<string, Promise<AzookeyConverter>>
 >();
+const isolateSyncConverterCache = new WeakMap<WebAssembly.Module, AzookeyConverter>();
+const isolateDictionaryBytesCache = new WeakMap<
+  WebAssembly.Module,
+  Map<string, Promise<Uint8Array>>
+>();
+interface ActiveUserLexicon {
+  revision: string;
+  handle: number;
+  checkedAtMs: number;
+  epoch: number;
+}
+const activeUserLexiconByExports = new WeakMap<AzookeyWasmExports, ActiveUserLexicon>();
+const isolateLexiconCacheEpoch = { value: 0 };
+
+/** Force the next convert to re-check `meta().revision` after a lexicon write. */
+export const invalidateIsolateUserLexiconCache = (): void => {
+  isolateLexiconCacheEpoch.value += 1;
+};
 
 export interface AzookeyRuntime {
   converter: AzookeyConverter;
@@ -342,6 +542,10 @@ export interface AzookeyRuntime {
   modelRoutes?: Record<string, ZenzModelRoute>;
   /** Fetcher used for Zenzai chat completions. */
   fetcher?: AzookeyFetcher;
+  /** Worker-owned lexicon applied on convert/WS. */
+  userLexicon?: UserLexiconRpc;
+  /** Transport used for structured isolate timing logs. */
+  wsOrHttp?: AzookeyTimingChannel;
 }
 
 export interface AzookeySocketPair {
@@ -370,6 +574,8 @@ export interface AzookeyRequestDependencies {
   azookeyDictionaryFetcher?: AzookeyFetcher;
   /** Test seam for the bounded lazy dictionary fetch. */
   dictionaryTimeoutMs?: number;
+  /** Worker-owned lexicon applied on convert/WS. */
+  userLexicon?: UserLexiconRpc;
 }
 
 export type AzookeyContextDiscardReason =
@@ -383,6 +589,16 @@ export interface AzookeyConnectionState {
   dictionaryRevision?: string;
   model?: AzookeyConvertModel;
   utteranceId?: string;
+}
+
+export interface AzookeyPingMessage {
+  type: typeof AZOOKEY_PING_TYPE;
+  requestId?: string;
+}
+
+export interface AzookeyPongMessage {
+  type: typeof AZOOKEY_PONG_TYPE;
+  requestId?: string;
 }
 
 export interface AzookeyMessage {
@@ -403,8 +619,6 @@ export interface AzookeyMessage {
   resetContext?: boolean;
   /** Converted caption text used as Zenz left context. Distinct from preceding.rcid/mid. */
   leftContext?: string;
-  /** Two-column `reading\\tword` TSV overlay for this convert only. */
-  userDictionaryTsv?: string;
   auth?: AzookeyAuth;
 }
 
@@ -582,6 +796,38 @@ const optionalAuth = (value: unknown): AzookeyAuth | undefined => {
   return { scheme };
 };
 
+const pingRequestId = (value: unknown): string | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  if (encoder.encode(value).byteLength > AZOOKEY_MAX_ID_BYTES) {
+    return undefined;
+  }
+  return value;
+};
+
+const azookeyPingFromUnknown = (parsed: unknown): AzookeyPingMessage | undefined => {
+  if (!isRecord(parsed) || parsed["type"] !== AZOOKEY_PING_TYPE) {
+    return undefined;
+  }
+  const requestId = pingRequestId(parsed["requestId"]);
+  return requestId === undefined
+    ? { type: AZOOKEY_PING_TYPE }
+    : { type: AZOOKEY_PING_TYPE, requestId };
+};
+
+/** Idle-pin frame. Missing or unusable requestId is omitted; a valid one is echoed. */
+export const parseAzookeyPingMessage = (raw: string): AzookeyPingMessage | undefined => {
+  try {
+    return azookeyPingFromUnknown(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+};
+
+export const azookeyPongMessage = (requestId?: string): AzookeyPongMessage =>
+  requestId === undefined ? { type: AZOOKEY_PONG_TYPE } : { type: AZOOKEY_PONG_TYPE, requestId };
+
 export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
   let parsed: unknown;
   try {
@@ -611,7 +857,6 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
   let utteranceId: string | undefined;
   let resetContext: boolean | undefined;
   let leftContext: string | undefined;
-  let userDictionaryTsv: string | undefined;
   try {
     language = requiredString(parsed["language"], "language", AZOOKEY_MAX_LANGUAGE_BYTES);
     sourceText = requiredText(parsed["sourceText"], "sourceText");
@@ -666,18 +911,8 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
       }
       leftContext = trimZenzLeftContext(rawLeftContext);
     }
-    const rawUserDictionaryTsv = parsed["userDictionaryTsv"];
-    if (rawUserDictionaryTsv !== undefined) {
-      if (typeof rawUserDictionaryTsv !== "string") {
-        throw new AzookeyProtocolError("invalid_contract", "userDictionaryTsv must be a string");
-      }
-      if (encoder.encode(rawUserDictionaryTsv).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
-        throw new AzookeyProtocolError(
-          "text_too_large",
-          "userDictionaryTsv exceeds its byte limit",
-        );
-      }
-      userDictionaryTsv = rawUserDictionaryTsv;
+    if ("userDictionaryTsv" in parsed) {
+      throw new AzookeyProtocolError("invalid_contract", "userDictionaryTsv is not allowed");
     }
   } catch (error) {
     if (error instanceof AzookeyProtocolError && error.requestId === undefined) {
@@ -713,12 +948,191 @@ export const parseAzookeyMessage = (raw: string): AzookeyMessage => {
     ...(utteranceId === undefined ? {} : { utteranceId }),
     ...(resetContext === undefined ? {} : { resetContext }),
     ...(leftContext === undefined || leftContext.length === 0 ? {} : { leftContext }),
-    ...(userDictionaryTsv === undefined || userDictionaryTsv.length === 0
-      ? {}
-      : { userDictionaryTsv }),
     ...(auth === undefined ? {} : { auth }),
   };
 };
+
+const openUserLexiconCompactHandle = (exports: AzookeyWasmExports, compact: Uint8Array): number => {
+  const open = exports.azookey_user_lexicon_open_compact;
+  if (typeof open !== "function" || compact.byteLength === 0) {
+    return 0;
+  }
+  const pointer = exports.azookey_alloc(compact.byteLength);
+  if (pointer === 0 && compact.byteLength !== 0) {
+    throw new Error("AzooKey Wasm user lexicon allocation failed");
+  }
+  new Uint8Array(exports.memory.buffer, pointer, compact.byteLength).set(compact);
+  return open(pointer, compact.byteLength);
+};
+
+const packedNBestWithLexiconHandle = (input: {
+  convertNBest: AzookeyWasmExports["azookey_convert_n_best"];
+  convertWithHandle: AzookeyWasmExports["azookey_convert_n_best_with_user_lexicon"];
+  pointer: number;
+  length: number;
+  hasPreceding: number;
+  preceding?: AzookeyPrecedingContext;
+  lexiconHandle: number;
+}): bigint | number => {
+  if (typeof input.convertWithHandle === "function") {
+    return input.convertWithHandle(
+      input.pointer,
+      input.length,
+      AZOOKEY_N_BEST_WIDTH,
+      input.hasPreceding,
+      input.preceding?.rcid ?? 0,
+      input.preceding?.mid ?? 0,
+      input.lexiconHandle,
+    );
+  }
+  if (input.lexiconHandle !== 0) {
+    throw new Error("AzooKey Wasm module is missing azookey_convert_n_best_with_user_lexicon");
+  }
+  return input.convertNBest(
+    input.pointer,
+    input.length,
+    AZOOKEY_N_BEST_WIDTH,
+    input.hasPreceding,
+    input.preceding?.rcid ?? 0,
+    input.preceding?.mid ?? 0,
+  );
+};
+
+const syncIsolateUserLexicon = async (
+  exports: AzookeyWasmExports,
+  lexicon: UserLexiconRpc,
+  timing?: { inputChars: number; wsOrHttp: AzookeyTimingChannel },
+): Promise<number> => {
+  const now = timingNowMs();
+  const cached = activeUserLexiconByExports.get(exports);
+  const ttlFresh =
+    cached !== undefined &&
+    cached.epoch === isolateLexiconCacheEpoch.value &&
+    now - cached.checkedAtMs < AZOOKEY_LEXICON_META_TTL_MS;
+  if (ttlFresh) {
+    if (timing) {
+      logAzookeyTiming({
+        phase: "lexicon_meta",
+        elapsedMs: timingElapsedMs(now),
+        inputChars: timing.inputChars,
+        cacheHit: true,
+        wsOrHttp: timing.wsOrHttp,
+      });
+    }
+    return cached.handle;
+  }
+  const metaStartedAt = timingNowMs();
+  const meta = await lexicon.meta();
+  if (timing) {
+    logAzookeyTiming({
+      phase: "lexicon_meta",
+      elapsedMs: timingElapsedMs(metaStartedAt),
+      inputChars: timing.inputChars,
+      cacheHit: cached !== undefined && cached.revision === meta.revision,
+      wsOrHttp: timing.wsOrHttp,
+    });
+  }
+  if (cached && cached.revision === meta.revision) {
+    activeUserLexiconByExports.set(exports, {
+      revision: cached.revision,
+      handle: cached.handle,
+      checkedAtMs: timingNowMs(),
+      epoch: isolateLexiconCacheEpoch.value,
+    });
+    return cached.handle;
+  }
+  if (cached && typeof exports.azookey_user_lexicon_close === "function") {
+    exports.azookey_user_lexicon_close(cached.handle);
+  }
+  const openStartedAt = timingNowMs();
+  const snapshot = await lexicon.snapshotCompact();
+  const handle = openUserLexiconCompactHandle(exports, snapshot.compact);
+  activeUserLexiconByExports.set(exports, {
+    revision: snapshot.revision,
+    handle,
+    checkedAtMs: timingNowMs(),
+    epoch: isolateLexiconCacheEpoch.value,
+  });
+  if (timing) {
+    logAzookeyTiming({
+      phase: "lexicon_open",
+      elapsedMs: timingElapsedMs(openStartedAt),
+      inputChars: timing.inputChars,
+      cacheHit: false,
+      wsOrHttp: timing.wsOrHttp,
+    });
+  }
+  return handle;
+};
+
+export const wrapUserLexiconWrites = (lexicon: UserLexiconRpc): UserLexiconRpc => ({
+  meta: () => lexicon.meta(),
+  snapshotTsv: () => lexicon.snapshotTsv(),
+  snapshotCompact: () => lexicon.snapshotCompact(),
+  exportAll: () => lexicon.exportAll(),
+  restore: async (snapshot) => {
+    await lexicon.restore(snapshot);
+    invalidateIsolateUserLexiconCache();
+  },
+  search: (query) => lexicon.search(query),
+  upsert: async (entry) => {
+    const result = await lexicon.upsert(entry);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  update: async (id, fields) => {
+    const result = await lexicon.update(id, fields);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  remove: async (id) => {
+    const result = await lexicon.remove(id);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  replaceAll: async (entries) => {
+    const result = await lexicon.replaceAll(entries);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  clear: async () => {
+    const result = await lexicon.clear();
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  listDictionaries: () => lexicon.listDictionaries(),
+  createDictionary: async (name) => {
+    const result = await lexicon.createDictionary(name);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  renameDictionary: async (id, name) => {
+    const result = await lexicon.renameDictionary(id, name);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  deleteDictionary: async (id) => {
+    const result = await lexicon.deleteDictionary(id);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  activateDictionary: async (id) => {
+    const result = await lexicon.activateDictionary(id);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  startImport: async (input) => {
+    const result = await lexicon.startImport(input);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+  importStatus: (importId) => lexicon.importStatus(importId),
+  processQueuedImport: async (importId) => {
+    const result = await lexicon.processQueuedImport(importId);
+    invalidateIsolateUserLexiconCache();
+    return result;
+  },
+});
 
 const unpackNBestResult = (
   exports: AzookeyWasmExports,
@@ -833,67 +1247,38 @@ const instantiateWasmConverter = (
     text: string,
     _signal?: AbortSignal,
     preceding?: AzookeyPrecedingContext,
-    userDictionaryTsv?: string,
+    lexiconHandle?: number,
   ): AzookeyConversionResult => {
     const bytes = encoder.encode(text);
     const pointer = checkedExports.azookey_alloc(bytes.byteLength);
     if (pointer === 0 && bytes.byteLength !== 0) {
       throw new Error("AzooKey Wasm input allocation failed");
     }
-    const userBytes =
-      userDictionaryTsv && userDictionaryTsv.trim().length > 0
-        ? encoder.encode(userDictionaryTsv)
-        : undefined;
-    const userPointer =
-      userBytes === undefined ? 0 : checkedExports.azookey_alloc(userBytes.byteLength);
-    if (userBytes && userPointer === 0 && userBytes.byteLength !== 0) {
-      checkedExports.azookey_dealloc(pointer, bytes.byteLength);
-      throw new Error("AzooKey Wasm custom dictionary allocation failed");
-    }
     try {
       new Uint8Array(checkedExports.memory.buffer, pointer, bytes.byteLength).set(bytes);
-      if (userBytes) {
-        new Uint8Array(checkedExports.memory.buffer, userPointer, userBytes.byteLength).set(
-          userBytes,
-        );
-      }
-      const hasPreceding = preceding === undefined ? 0 : 1;
-      const convertWithUser = checkedExports.azookey_convert_n_best_with_user;
-      const packed =
-        userBytes && typeof convertWithUser === "function"
-          ? convertWithUser(
-              pointer,
-              bytes.byteLength,
-              AZOOKEY_N_BEST_WIDTH,
-              hasPreceding,
-              preceding?.rcid ?? 0,
-              preceding?.mid ?? 0,
-              userPointer,
-              userBytes.byteLength,
-            )
-          : checkedExports.azookey_convert_n_best(
-              pointer,
-              bytes.byteLength,
-              AZOOKEY_N_BEST_WIDTH,
-              hasPreceding,
-              preceding?.rcid ?? 0,
-              preceding?.mid ?? 0,
-            );
+      const packed = packedNBestWithLexiconHandle({
+        convertNBest: checkedExports.azookey_convert_n_best,
+        convertWithHandle: checkedExports.azookey_convert_n_best_with_user_lexicon,
+        pointer,
+        length: bytes.byteLength,
+        hasPreceding: preceding === undefined ? 0 : 1,
+        ...(preceding === undefined ? {} : { preceding }),
+        lexiconHandle: lexiconHandle ?? 0,
+      });
       if (packed === 0 || packed === 0n) {
         throw new Error("AzooKey Wasm n-best conversion allocation failed");
       }
       return unpackNBestResult(checkedExports, packed, dictionaryRevision);
     } finally {
       checkedExports.azookey_dealloc(pointer, bytes.byteLength);
-      if (userBytes) {
-        checkedExports.azookey_dealloc(userPointer, userBytes.byteLength);
-      }
     }
   };
   const converter = ((text: string, signal?: AbortSignal): string =>
     convertWithContext(text, signal).text) as AzookeyConverter;
   converter.dictionaryRevision = dictionaryRevision;
   converter.convertWithContext = convertWithContext;
+  converter.syncUserLexicon = (lexicon, timing) =>
+    syncIsolateUserLexicon(checkedExports, lexicon, timing);
   if (
     typeof checkedExports.azookey_lattice_open === "function" &&
     typeof checkedExports.azookey_lattice_search_output_prefix === "function" &&
@@ -902,34 +1287,19 @@ const instantiateWasmConverter = (
     const latticeOpen = checkedExports.azookey_lattice_open;
     const latticeSearch = checkedExports.azookey_lattice_search_output_prefix;
     const latticeClose = checkedExports.azookey_lattice_close;
-    converter.openLattice = (text, preceding, userDictionaryTsv) => {
+    converter.openLattice = (text, preceding, lexiconHandle) => {
       const bytes = encoder.encode(text);
       const pointer = checkedExports.azookey_alloc(bytes.byteLength);
       if (pointer === 0 && bytes.byteLength !== 0) {
         throw new Error("AzooKey Wasm lattice input allocation failed");
       }
-      const userBytes =
-        userDictionaryTsv && userDictionaryTsv.trim().length > 0
-          ? encoder.encode(userDictionaryTsv)
-          : undefined;
-      const userPointer =
-        userBytes === undefined ? 0 : checkedExports.azookey_alloc(userBytes.byteLength);
-      if (userBytes && userPointer === 0 && userBytes.byteLength !== 0) {
-        checkedExports.azookey_dealloc(pointer, bytes.byteLength);
-        throw new Error("AzooKey Wasm lattice custom dictionary allocation failed");
-      }
       let handle = 0;
       try {
         new Uint8Array(checkedExports.memory.buffer, pointer, bytes.byteLength).set(bytes);
-        if (userBytes) {
-          new Uint8Array(checkedExports.memory.buffer, userPointer, userBytes.byteLength).set(
-            userBytes,
-          );
-        }
-        const openWithUser = checkedExports.azookey_lattice_open_with_user;
+        const openWithLexicon = checkedExports.azookey_lattice_open_with_user_lexicon;
         handle =
-          userBytes && typeof openWithUser === "function"
-            ? openWithUser(
+          typeof openWithLexicon === "function"
+            ? openWithLexicon(
                 pointer,
                 bytes.byteLength,
                 preceding === undefined ? 0 : 1,
@@ -937,8 +1307,7 @@ const instantiateWasmConverter = (
                 preceding?.mid ?? 0,
                 AZOOKEY_N_BEST_WIDTH,
                 1,
-                userPointer,
-                userBytes.byteLength,
+                lexiconHandle ?? 0,
               )
             : latticeOpen(
                 pointer,
@@ -951,9 +1320,6 @@ const instantiateWasmConverter = (
               );
       } finally {
         checkedExports.azookey_dealloc(pointer, bytes.byteLength);
-        if (userBytes) {
-          checkedExports.azookey_dealloc(userPointer, userBytes.byteLength);
-        }
       }
       if (handle === 0) {
         return undefined;
@@ -1156,19 +1522,63 @@ const withDictionaryFetchTimeout = async <T>(
 
 const moduleConverterCache = (
   module: WebAssembly.Module,
-  fetcher: AzookeyFetcher,
 ): Map<string, Promise<AzookeyConverter>> => {
-  let fetcherCache = azookeyConverterCache.get(module);
-  if (!fetcherCache) {
-    fetcherCache = new WeakMap<AzookeyFetcher, Map<string, Promise<AzookeyConverter>>>();
-    azookeyConverterCache.set(module, fetcherCache);
+  const existing = isolateConverterCache.get(module);
+  if (existing) {
+    return existing;
   }
-  let converterCache = fetcherCache.get(fetcher);
-  if (!converterCache) {
-    converterCache = new Map<string, Promise<AzookeyConverter>>();
-    fetcherCache.set(fetcher, converterCache);
+  const created = new Map<string, Promise<AzookeyConverter>>();
+  isolateConverterCache.set(module, created);
+  return created;
+};
+
+const moduleDictionaryBytesCache = (
+  module: WebAssembly.Module,
+): Map<string, Promise<Uint8Array>> => {
+  const existing = isolateDictionaryBytesCache.get(module);
+  if (existing) {
+    return existing;
   }
-  return converterCache;
+  const created = new Map<string, Promise<Uint8Array>>();
+  isolateDictionaryBytesCache.set(module, created);
+  return created;
+};
+
+const loadPortableDictionary = (
+  module: WebAssembly.Module,
+  url: string,
+  fetcher: AzookeyFetcher,
+  timeoutMs: number,
+): Promise<Uint8Array> => {
+  const cache = moduleDictionaryBytesCache(module);
+  const cached = cache.get(url);
+  if (cached) {
+    return cached;
+  }
+  const pendingState: { promise?: Promise<Uint8Array> } = {};
+  const pending = fetchPortableDictionary(url, fetcher, timeoutMs).catch((error: unknown) => {
+    if (cache.get(url) === pendingState.promise) {
+      cache.delete(url);
+    }
+    throw error instanceof Error ? error : new Error("AzooKey dictionary initialization failed");
+  });
+  pendingState.promise = pending;
+  cache.set(url, pending);
+  return pending;
+};
+
+const logWasmInit = (
+  startedAt: number,
+  cacheHit: boolean,
+  wsOrHttp: AzookeyTimingChannel,
+): void => {
+  logAzookeyTiming({
+    phase: "wasm_init",
+    elapsedMs: timingElapsedMs(startedAt),
+    inputChars: 0,
+    cacheHit,
+    wsOrHttp,
+  });
 };
 
 export const createWasmConverter = (
@@ -1179,25 +1589,38 @@ export const createWasmConverter = (
 ): AzookeyConverter => {
   const normalizedUrl = dictionaryUrl?.trim();
   if (!normalizedUrl) {
-    return instantiateWasmConverter(module);
+    const cached = isolateSyncConverterCache.get(module);
+    if (cached) {
+      return cached;
+    }
+    const created = instantiateWasmConverter(module);
+    created.warmup = (wsOrHttp?: AzookeyTimingChannel): Promise<void> => {
+      logWasmInit(timingNowMs(), true, wsOrHttp ?? "http");
+      return Promise.resolve();
+    };
+    isolateSyncConverterCache.set(module, created);
+    return created;
   }
   if (!isDictionaryUrl(normalizedUrl)) {
     throw new Error(
       "AZOOKEY_DICTIONARY_URL must be an http:// or https:// URL or an absolute Worker asset path",
     );
   }
-  const cache = moduleConverterCache(module, fetcher);
+  const cache = moduleConverterCache(module);
   let loadedConverter: AzookeyConverter | undefined;
-  const loadConverter = (): Promise<AzookeyConverter> => {
+  const loadConverter = async (logChannel?: AzookeyTimingChannel): Promise<AzookeyConverter> => {
+    const startedAt = timingNowMs();
     const cached = cache.get(normalizedUrl);
     if (cached) {
-      return cached.then((loaded) => {
-        loadedConverter = loaded;
-        return loaded;
-      });
+      const loaded = await cached;
+      loadedConverter = loaded;
+      if (logChannel !== undefined) {
+        logWasmInit(startedAt, true, logChannel);
+      }
+      return loaded;
     }
-    let pending!: Promise<AzookeyConverter>;
-    pending = fetchPortableDictionary(normalizedUrl, fetcher, dictionaryTimeoutMs)
+    const pendingState: { promise?: Promise<AzookeyConverter> } = {};
+    const pending = loadPortableDictionary(module, normalizedUrl, fetcher, dictionaryTimeoutMs)
       .then((dictionary) => instantiateWasmConverter(module, dictionary))
       .then((loaded) => {
         loadedConverter = loaded;
@@ -1205,15 +1628,20 @@ export const createWasmConverter = (
       })
       .catch((error: unknown) => {
         // A late rejection must not evict a newer retry for the same URL.
-        if (cache.get(normalizedUrl) === pending) {
+        if (cache.get(normalizedUrl) === pendingState.promise) {
           cache.delete(normalizedUrl);
         }
         throw error instanceof Error
           ? error
           : new Error("AzooKey dictionary initialization failed");
       });
+    pendingState.promise = pending;
     cache.set(normalizedUrl, pending);
-    return pending;
+    const loaded = await pending;
+    if (logChannel !== undefined) {
+      logWasmInit(startedAt, false, logChannel);
+    }
+    return loaded;
   };
   const converter = (async (text: string, signal?: AbortSignal): Promise<string> => {
     const loaded = await loadConverter();
@@ -1227,24 +1655,66 @@ export const createWasmConverter = (
     text: string,
     signal?: AbortSignal,
     preceding?: AzookeyPrecedingContext,
-    userDictionaryTsv?: string,
+    lexiconHandle?: number,
   ): Promise<string | AzookeyConversionResult> => {
     const loaded = await loadConverter();
     return loaded.convertWithContext
-      ? loaded.convertWithContext(text, signal, preceding, userDictionaryTsv)
+      ? loaded.convertWithContext(text, signal, preceding, lexiconHandle)
       : loaded(text, signal);
+  };
+  converter.syncUserLexicon = async (lexicon, timing) => {
+    const loaded = await loadConverter();
+    if (!loaded.syncUserLexicon) {
+      return 0;
+    }
+    return loaded.syncUserLexicon(lexicon, timing);
   };
   Object.defineProperty(converter, "dictionaryRevision", {
     configurable: true,
     enumerable: true,
     get: () => loadedConverter?.dictionaryRevision,
   });
-  converter.warmup = async (): Promise<void> => {
-    await loadConverter();
+  converter.warmup = async (wsOrHttp?: AzookeyTimingChannel): Promise<void> => {
+    await loadConverter(wsOrHttp ?? "http");
   };
-  converter.openLattice = (text, preceding, userDictionaryTsv) =>
-    loadedConverter?.openLattice?.(text, preceding, userDictionaryTsv);
+  converter.openLattice = (text, preceding, lexiconHandle) =>
+    loadedConverter?.openLattice?.(text, preceding, lexiconHandle);
   return converter;
+};
+
+/** HTTP convert uses the same isolate handle as `/ws/azookey`. Never apply TSV. */
+export const convertTextWithStoredUserLexicon = async (input: {
+  converter: AzookeyConverter;
+  lexicon: UserLexiconRpc;
+  text: string;
+}): Promise<string> => {
+  if (!input.converter.syncUserLexicon || !input.converter.convertWithContext) {
+    throw new Error("AzooKey converter cannot apply a stored user lexicon");
+  }
+  const totalStartedAt = timingNowMs();
+  const wasmReady = input.converter.dictionaryRevision !== undefined;
+  const handle = await input.converter.syncUserLexicon(input.lexicon, {
+    inputChars: input.text.length,
+    wsOrHttp: "http",
+  });
+  const convertStartedAt = timingNowMs();
+  const result = await input.converter.convertWithContext(input.text, undefined, undefined, handle);
+  logAzookeyTiming({
+    phase: "dictionary_convert",
+    elapsedMs: timingElapsedMs(convertStartedAt),
+    inputChars: input.text.length,
+    cacheHit: wasmReady,
+    wsOrHttp: "http",
+  });
+  const text = typeof result === "string" ? result : result.text;
+  logAzookeyTiming({
+    phase: "total",
+    elapsedMs: timingElapsedMs(totalStartedAt),
+    inputChars: input.text.length,
+    cacheHit: wasmReady,
+    wsOrHttp: "http",
+  });
+  return text;
 };
 
 const isHttpUrl = (value: string): boolean => {
@@ -1481,13 +1951,46 @@ export const advertisedConvertModels = (
 export const isZenzConvertModel = (model: AzookeyConvertModel): boolean =>
   model === AZOOKEY_ZENZ_XSMALL_MODEL || model === AZOOKEY_ZENZ_SMALL_MODEL;
 
-const convertWithZenzModel = async (
+const zenzHealthUrls = (modelRoutes: Record<string, ZenzModelRoute>): string[] => [
+  ...new Set(
+    AZOOKEY_CONVERT_MODELS.filter(isZenzConvertModel).flatMap((model) => {
+      const baseUrl = modelRoutes[model]?.baseUrl;
+      return typeof baseUrl === "string" && baseUrl.length > 0
+        ? [`${baseUrl}${AZOOKEY_ZENZ_HEALTH_PATH}`]
+        : [];
+    }),
+  ),
+];
+
+const isAbortLikeError = (error: unknown): boolean => {
+  if (error instanceof AzookeyProtocolError && error.code === "conversion_timeout") {
+    return true;
+  }
+  if (
+    typeof DOMException !== "undefined" &&
+    error instanceof DOMException &&
+    error.name === "AbortError"
+  ) {
+    return true;
+  }
+  return error instanceof Error && error.name === "AbortError";
+};
+
+const zenzContentFromPayload = (payload: unknown): string | undefined => {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  const content = payload["content"];
+  return typeof content === "string" ? content : undefined;
+};
+
+const requestZenzCompletion = async (
   model: AzookeyConvertModel,
   text: string,
   runtime: AzookeyRuntime,
   signal?: AbortSignal,
   leftContext = "",
-): Promise<string> => {
+): Promise<ZenzHttpResult> => {
   const route = runtime.modelRoutes?.[model];
   if (!route) {
     throw new AzookeyProtocolError(
@@ -1496,34 +1999,86 @@ const convertWithZenzModel = async (
     );
   }
   const fetcher = runtime.fetcher ?? fetch;
-  // Zenz llama.cpp servers speak `/completion`, not OpenAI chat completions.
-  const response = await fetcher(`${route.baseUrl}/completion`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "user-agent": AZOOKEY_ZENZ_UPSTREAM_USER_AGENT,
-    },
-    body: JSON.stringify({
-      prompt: zenzPrompt(text, leftContext),
-      n_predict: 256,
-      temperature: 0,
-      stream: false,
-    }),
-    ...(signal ? { signal } : {}),
-  });
-  if (!response.ok) {
-    throw new AzookeyProtocolError(
-      "conversion_failed",
-      `Zenzai upstream returned HTTP ${response.status}`,
+  try {
+    const response = await fetcher(`${route.baseUrl}/completion`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "user-agent": AZOOKEY_ZENZ_UPSTREAM_USER_AGENT,
+      },
+      body: JSON.stringify({
+        prompt: zenzPrompt(text, leftContext),
+        n_predict: AZOOKEY_ZENZ_N_PREDICT,
+        temperature: 0,
+        stream: false,
+      }),
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
+    }
+    const payload: unknown = await response.json();
+    const content = zenzContentFromPayload(payload);
+    if (content === undefined || content.trim().length === 0) {
+      return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
+    }
+    return { reason: AZOOKEY_ZENZ_HTTP_REASON_OK, content: content.trim() };
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      return { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT };
+    }
+    if (error instanceof TypeError) {
+      return { reason: AZOOKEY_ZENZ_HTTP_REASON_FETCH };
+    }
+    return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
+  }
+};
+
+const requestZenzWithTimeout = async (
+  model: AzookeyConvertModel,
+  text: string,
+  runtime: AzookeyRuntime,
+  leftContext: string,
+  budgetMs: number,
+): Promise<ZenzHttpResult> => {
+  try {
+    return await withTimeout(
+      (signal) => requestZenzCompletion(model, text, runtime, signal, leftContext),
+      budgetMs,
     );
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      return { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT };
+    }
+    if (error instanceof TypeError) {
+      return { reason: AZOOKEY_ZENZ_HTTP_REASON_FETCH };
+    }
+    return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
   }
-  const payload: unknown = await response.json();
-  const content =
-    payload && typeof payload === "object" ? (payload as { content?: unknown }).content : undefined;
-  if (typeof content !== "string" || !content.trim()) {
-    throw new AzookeyProtocolError("conversion_failed", "Zenzai upstream returned no text");
-  }
-  return content.trim();
+};
+
+/** Best-effort GET /health for each configured Zenz origin. Failures are swallowed. */
+export const warmZenzUpstreams = async (
+  modelRoutes: Record<string, ZenzModelRoute>,
+  fetcher: AzookeyFetcher,
+): Promise<void> => {
+  await Promise.all(
+    zenzHealthUrls(modelRoutes).map(async (url) => {
+      try {
+        await withTimeout(
+          (signal) =>
+            fetcher(url, {
+              method: "GET",
+              headers: { "user-agent": AZOOKEY_ZENZ_UPSTREAM_USER_AGENT },
+              signal,
+            }),
+          AZOOKEY_ZENZ_WARMUP_MAX_MS,
+        );
+      } catch {
+        return undefined;
+      }
+    }),
+  );
 };
 
 const normalizeAzookeyConversion = (
@@ -1625,6 +2180,8 @@ export const convertAzookeyMessage = async (
   }
   const preceding = state?.preceding;
   contextUsed = preceding !== undefined;
+  const wsOrHttp = runtime.wsOrHttp ?? "ws";
+  const wasmReadyBefore = runtime.converter.dictionaryRevision !== undefined;
   const normalizedSource = normalizeAsrSourceText(message.sourceText);
   const normalizedVibratoInput = normalizeAsrSourceText(message.vibratoInput);
   let conversionInput = normalizedVibratoInput;
@@ -1683,6 +2240,13 @@ export const convertAzookeyMessage = async (
     throw new AzookeyProtocolError("conversion_timeout", "conversion timed out", message.requestId);
   }
   let dictionaryResult: AzookeyConversionResult | undefined;
+  const lexiconHandle =
+    runtime.userLexicon && runtime.converter.syncUserLexicon
+      ? await runtime.converter.syncUserLexicon(runtime.userLexicon, {
+          inputChars: conversionInput.length,
+          wsOrHttp,
+        })
+      : 0;
   const runDictionaryConversion = async (
     precedingContext: AzookeyPrecedingContext | undefined,
   ): Promise<AzookeyConversionResult> => {
@@ -1700,7 +2264,7 @@ export const convertAzookeyMessage = async (
               conversionInput,
               signal,
               precedingContext,
-              message.userDictionaryTsv,
+              lexiconHandle,
             )
           : runtime.converter(conversionInput, signal, precedingContext),
       remainingMs(),
@@ -1731,13 +2295,29 @@ export const convertAzookeyMessage = async (
   let completionSkipReason: AzookeyCompletionSkipReason | undefined;
   try {
     if (message.model === AZOOKEY_MODEL) {
+      const convertStartedAt = timingNowMs();
       dictionaryResult = await runDictionaryConversion(preceding);
+      logAzookeyTiming({
+        phase: "dictionary_convert",
+        elapsedMs: timingElapsedMs(convertStartedAt),
+        inputChars: conversionInput.length,
+        cacheHit: wasmReadyBefore,
+        wsOrHttp,
+      });
       converted = dictionaryResult.text;
     } else if (!runtime.modelRoutes?.[message.model]) {
       requestedModel = message.model;
       modelFallback = AZOOKEY_MODEL_FALLBACK_UNCONFIGURED_ROUTE;
       resultModel = AZOOKEY_MODEL;
+      const convertStartedAt = timingNowMs();
       dictionaryResult = await runDictionaryConversion(preceding);
+      logAzookeyTiming({
+        phase: "dictionary_convert",
+        elapsedMs: timingElapsedMs(convertStartedAt),
+        inputChars: conversionInput.length,
+        cacheHit: wasmReadyBefore,
+        wsOrHttp,
+      });
       converted = dictionaryResult.text;
     } else {
       try {
@@ -1748,23 +2328,49 @@ export const convertAzookeyMessage = async (
             message.requestId,
           );
         }
-        const available = remainingMs();
-        const reservedBudget =
-          available > AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS
-            ? available - AZOOKEY_ZENZ_DICTIONARY_FALLBACK_RESERVE_MS
-            : Math.max(AZOOKEY_MIN_TIMEOUT_MS, Math.floor(available / 2));
+        const convertStartedAt = timingNowMs();
         dictionaryResult = await runDictionaryConversion(preceding);
+        logAzookeyTiming({
+          phase: "dictionary_convert",
+          elapsedMs: timingElapsedMs(convertStartedAt),
+          inputChars: conversionInput.length,
+          cacheHit: wasmReadyBefore,
+          wsOrHttp,
+        });
         const leftContext = message.leftContext ?? "";
         if (trimZenzLeftContext(leftContext).length === 0) {
           converted = dictionaryResult.text;
           completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT;
         } else {
-          const zenzBudget = Math.min(reservedBudget, AZOOKEY_ZENZ_UPSTREAM_MAX_MS);
-          const completion = await withTimeout(
-            (signal) =>
-              convertWithZenzModel(message.model, conversionInput, runtime, signal, leftContext),
-            zenzBudget,
-          );
+          const zenzBudget = Math.min(remainingMs(), AZOOKEY_ZENZ_UPSTREAM_MAX_MS);
+          const zenzStartedAt = timingNowMs();
+          const zenzHttp: ZenzHttpResult =
+            zenzBudget <= 0
+              ? { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT }
+              : await requestZenzWithTimeout(
+                  message.model,
+                  conversionInput,
+                  runtime,
+                  leftContext,
+                  zenzBudget,
+                );
+          logAzookeyTiming({
+            phase: "zenz_http",
+            elapsedMs: timingElapsedMs(zenzStartedAt),
+            inputChars: conversionInput.length,
+            cacheHit: false,
+            wsOrHttp,
+            zenzHttpReason: zenzHttp.reason,
+          });
+          if (zenzHttp.reason !== AZOOKEY_ZENZ_HTTP_REASON_OK) {
+            throw new AzookeyProtocolError(
+              zenzHttp.reason === AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT
+                ? "conversion_timeout"
+                : "conversion_failed",
+              "Zenzai upstream failed",
+              message.requestId,
+            );
+          }
           if (deadlineExpired()) {
             throw new AzookeyProtocolError(
               "conversion_timeout",
@@ -1772,25 +2378,27 @@ export const convertAzookeyMessage = async (
               message.requestId,
             );
           }
-          if (typeof completion !== "string") {
-            throw new AzookeyProtocolError(
-              "conversion_failed",
-              "AzooKey conversion returned no text",
-            );
-          }
-          if (encoder.encode(completion).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+          if (encoder.encode(zenzHttp.content).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
             throw new AzookeyProtocolError(
               "conversion_failed",
               "AzooKey conversion output exceeds the text byte limit",
               message.requestId,
             );
           }
+          const latticeStartedAt = timingNowMs();
           const lattice = runtime.converter.openLattice?.(
             conversionInput,
             preceding,
-            message.userDictionaryTsv,
+            lexiconHandle,
           );
           if (!lattice) {
+            logAzookeyTiming({
+              phase: "lattice",
+              elapsedMs: timingElapsedMs(latticeStartedAt),
+              inputChars: conversionInput.length,
+              cacheHit: false,
+              wsOrHttp,
+            });
             converted = dictionaryResult.text;
             completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE;
           } else {
@@ -1799,7 +2407,7 @@ export const convertAzookeyMessage = async (
                 input: conversionInput,
                 leftContext,
                 baseline: dictionaryResult.text,
-                completion,
+                completion: zenzHttp.content,
                 remainingMs,
                 search: lattice,
               });
@@ -1808,6 +2416,13 @@ export const convertAzookeyMessage = async (
             } finally {
               lattice.close();
             }
+            logAzookeyTiming({
+              phase: "lattice",
+              elapsedMs: timingElapsedMs(latticeStartedAt),
+              inputChars: conversionInput.length,
+              cacheHit: false,
+              wsOrHttp,
+            });
           }
         }
       } catch (error) {
@@ -1815,7 +2430,7 @@ export const convertAzookeyMessage = async (
         // (conversion_failed). Timeouts are conversion_timeout. Raw fetch
         // connection errors (TypeError "fetch failed" when MODEL_ROUTES points
         // at a down llama-server, e.g. local xsmall on :8081) are not protocol
-        // errors — still fall back to portable WASM while budget remains.
+        // errors. Reuse the first dictionary result — never convert twice.
         if (
           error instanceof AzookeyProtocolError &&
           error.code !== "conversion_failed" &&
@@ -1826,11 +2441,30 @@ export const convertAzookeyMessage = async (
           }
           throw error;
         }
+        if (!dictionaryResult) {
+          if (error instanceof AzookeyProtocolError) {
+            if (error.requestId === undefined) {
+              throw new AzookeyProtocolError(error.code, error.message, message.requestId);
+            }
+            throw error;
+          }
+          throw new AzookeyProtocolError(
+            "conversion_failed",
+            "AzooKey conversion failed",
+            message.requestId,
+          );
+        }
         requestedModel = message.model;
         modelFallback = AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED;
         resultModel = AZOOKEY_MODEL;
-        dictionaryResult = await runDictionaryConversion(preceding);
         converted = dictionaryResult.text;
+        logAzookeyTiming({
+          phase: "fallback",
+          elapsedMs: 0,
+          inputChars: conversionInput.length,
+          cacheHit: true,
+          wsOrHttp,
+        });
       }
     }
   } catch (error) {
@@ -1867,6 +2501,13 @@ export const convertAzookeyMessage = async (
     }
   }
   const elapsed = nowMs() - startedAt;
+  logAzookeyTiming({
+    phase: "total",
+    elapsedMs: Number.isFinite(elapsed) ? Math.round(Math.max(0, elapsed)) : 0,
+    inputChars: conversionInput.length,
+    cacheHit: wasmReadyBefore,
+    wsOrHttp,
+  });
   return {
     type: "azookey.result",
     requestId: message.requestId,
@@ -1939,6 +2580,11 @@ export const attachAzookeySocket = (socket: WebSocket, runtime: AzookeyRuntime):
           ),
         ),
       );
+      return;
+    }
+    const ping = parseAzookeyPingMessage(raw);
+    if (ping !== undefined) {
+      socket.send(jsonMessage(azookeyPongMessage(ping.requestId)));
       return;
     }
     let message: AzookeyMessage;
@@ -2177,7 +2823,7 @@ export const openAzookeySocket = async (
         dependencies.azookeyDictionaryFetcher ?? dependencies.fetcher ?? fetch,
         dictionaryTimeoutMs,
       );
-    await converter.warmup?.();
+    await converter.warmup?.("ws");
   } catch {
     closePair();
     return new Response(
@@ -2264,6 +2910,8 @@ export const openAzookeySocket = async (
       ? "configured"
       : "unconfigured";
   const configuredRoutes = parseModelRoutes(env.MODEL_ROUTES);
+  // Fire-and-forget: do not delay ready or fail the upgrade if the origin is down.
+  void warmZenzUpstreams(configuredRoutes, dependencies.fetcher ?? fetch);
   try {
     pair.server.accept();
     attachAzookeySocket(pair.server, {
@@ -2274,7 +2922,9 @@ export const openAzookeySocket = async (
       handshakeAuthorized,
       modelRoutes: configuredRoutes,
       fetcher: dependencies.fetcher ?? fetch,
+      wsOrHttp: "ws",
       ...(expectedToken ? { expectedToken } : {}),
+      ...(dependencies.userLexicon ? { userLexicon: dependencies.userLexicon } : {}),
     });
     pair.server.send(
       readyAzookeyMessage(

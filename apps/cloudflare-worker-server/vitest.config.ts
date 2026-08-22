@@ -9,16 +9,29 @@ export default defineConfig({
       name: "mock-azookey-wasm",
       enforce: "pre",
       resolveId(source, importer) {
-        if (importer?.endsWith("/src/index.ts") && source === "./azookey-wasm.js") {
+        if (
+          (importer?.endsWith("/src/index.ts") || importer?.endsWith("/src/index.js")) &&
+          source === "./azookey-wasm.js"
+        ) {
           return wasmTestStub;
         }
-        if (importer?.endsWith("/src/index.ts") && source === "../wasm/vibrato_wasm_bg.wasm") {
+        if (
+          (importer?.endsWith("/src/index.ts") || importer?.endsWith("/src/index.js")) &&
+          source === "../wasm/vibrato_wasm_bg.wasm"
+        ) {
           return wasmTestStub;
         }
         return undefined;
       },
     },
   ],
+  resolve: {
+    alias: {
+      "cloudflare:workers": fileURLToPath(
+        new URL("./src/cloudflare-workers-stub.ts", import.meta.url),
+      ),
+    },
+  },
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
@@ -29,6 +42,8 @@ export default defineConfig({
         "src/**/*.test.ts",
         "src/**/*.d.ts",
         "src/wasm.test-stub.ts",
+        "src/cloudflare-workers-stub.ts",
+        "src/user-lexicon-do.ts",
         "src/azookey-wasm.ts",
       ],
       thresholds: {
