@@ -25,6 +25,8 @@ export const useCaptionHoldClear = (
   const captionRef = useRef(caption);
   captionRef.current = caption;
 
+  // Delay is computed from this plate alone. A finalized open clause uses the
+  // 7000 ms envelope; each new revision changes the epoch and restarts it.
   const holdClearDelay = captionHoldClearDelayMs(caption);
   const holdClearEpoch = captionHoldClearEpoch(caption);
 

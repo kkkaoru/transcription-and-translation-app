@@ -264,6 +264,15 @@ const shouldIgnoreSentenceEndBeforeContinuation = (
   if (/[はも]$/u.test(trimmedPrefix) && !isJapaneseSentenceEnd(trimmedPrefix)) {
     return true;
   }
+  // An open particle/copula-less clause must stay glued to the related tail
+  // until punctuation or a dominating next sentence is ready.
+  if (
+    SOFT_PARTICLE_SUFFIX.test(trimmedPrefix) &&
+    !prefixEndsWithPunct(trimmedPrefix) &&
+    !isJapaneseSentenceEnd(trimmedPrefix)
+  ) {
+    return true;
+  }
   return false;
 };
 
@@ -322,17 +331,46 @@ const resolvePreviousSentenceEnds = (text: string, hints: CaptionSentenceHints):
   if (!previous || !normalized.startsWith(previous)) {
     return [];
   }
+  const chars = codePoints(normalized);
   const previousLength = codePoints(previous).length;
-  const currentLength = codePoints(normalized).length;
+  const currentLength = chars.length;
+  const english = hints.key === "translation";
   return dedupeOffsets(
-    (hints.previousEnds ?? []).filter(
-      (offset) =>
-        Number.isInteger(offset) &&
-        offset > 0 &&
-        offset <= previousLength &&
-        offset <= currentLength,
-    ),
+    (hints.previousEnds ?? []).filter((offset) => {
+      if (!Number.isInteger(offset) || offset <= 0 || offset > previousLength) {
+        return false;
+      }
+      if (offset > currentLength) {
+        return false;
+      }
+      const prefix = chars.slice(0, offset).join("");
+      const remainder = chars.slice(offset).join("");
+      return !shouldIgnoreSentenceEndBeforeContinuation(prefix, remainder, english);
+    }),
   );
+};
+
+/**
+ * Left-context surface for converting a same-utterance continuation.
+ * Returns the prior related text when `continuation` grows or continues that
+ * clause; empty when the next string is a different turn.
+ */
+export const relatedCaptionConversionLeftContext = (
+  previousText: string,
+  continuationText: string,
+): string => {
+  const previous = normalizeCaptionText(previousText);
+  const continuation = normalizeCaptionText(continuationText);
+  if (!previous) {
+    return "";
+  }
+  if (!continuation) {
+    return previous;
+  }
+  if (continuation.startsWith(previous) || previous.startsWith(continuation)) {
+    return previous;
+  }
+  return "";
 };
 
 export const detectCaptionSentenceEnds = (

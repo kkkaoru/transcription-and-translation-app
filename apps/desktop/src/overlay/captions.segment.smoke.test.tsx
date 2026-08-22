@@ -490,6 +490,35 @@ describe("captionTextLines and captionItems", () => {
     ]);
   });
 
+  it("paints a completed translation that raced a newer same-turn source revision", () => {
+    const newerSource: CaptionPayload = {
+      ...createPreviewCaption(),
+      id: "race-turn",
+      sourceText: "今日は晴れです",
+      translationText: "",
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+      receivedAt: 1_400,
+    };
+    const lateTranslation: CaptionPayload = {
+      ...createPreviewCaption(),
+      id: "race-turn",
+      sourceText: "今日は晴れ",
+      translationText: "It is sunny today",
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+      receivedAt: 1_300,
+    };
+    const merged = mergeCaptionPayload(newerSource, lateTranslation);
+    expect(merged?.translationText).toBe("It is sunny today");
+    const translation = captionItems(createDefaultConfig(), merged ?? newerSource).find(
+      (item) => item.key === "translation",
+    );
+    expect(translation?.text).toBe("It is sunny today");
+  });
+
   it("keeps system caption behavior unchanged when no OPEN prediction exists", () => {
     const config = createDefaultConfig();
     const completed = { ...createPreviewCaption(), id: "held-turn", isFinal: true };

@@ -3,7 +3,11 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CAPTION_HOLD_CLEAR_MS, captionHoldClearEpoch } from "../core/caption-hold-clear";
+import {
+  CAPTION_HOLD_CLEAR_MAX_MS,
+  CAPTION_HOLD_CLEAR_MS,
+  captionHoldClearEpoch,
+} from "../core/caption-hold-clear";
 import { __resetStructuredLogForTests, getStructuredLogs } from "../core/structuredLog";
 import type { CaptionPayload } from "../core/types";
 import { useCaptionHoldClear } from "./useCaptionHoldClear";
@@ -109,6 +113,55 @@ describe("useCaptionHoldClear", () => {
       setTimeoutSpy.mock.calls.filter((call) => call[1] === CAPTION_HOLD_CLEAR_MS),
     ).toHaveLength(0);
     expect(cleared).toStrictEqual([]);
+  });
+
+  it("does not blank a finalized open clause until the idle envelope elapses", async () => {
+    const open = baseCaption({ sourceText: "今日は", isFinal: true });
+    renderHold(open);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_HOLD_CLEAR_MAX_MS - 1);
+    });
+    expect(cleared).toStrictEqual([]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(cleared).toStrictEqual([captionHoldClearEpoch(open)]);
+  });
+
+  it("restarts the idle envelope when an open clause grows instead of lingering", async () => {
+    const open = baseCaption({ sourceText: "今日は", isFinal: true, receivedAt: 1_000 });
+    renderHold(open);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(cleared).toStrictEqual([]);
+    const grown = baseCaption({
+      sourceText: "今日は晴れですので",
+      isFinal: true,
+      receivedAt: 4_000,
+    });
+    renderHold(grown);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CAPTION_HOLD_CLEAR_MAX_MS - 1);
+    });
+    expect(cleared).toStrictEqual([]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(cleared).toStrictEqual([captionHoldClearEpoch(grown)]);
+  });
+
+  it("still hold-clears a greeting that ends in は", async () => {
+    const greeting = baseCaption({ sourceText: "こんにちは", isFinal: true });
+    renderHold(greeting);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_999);
+    });
+    expect(cleared).toStrictEqual([]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(cleared).toStrictEqual([captionHoldClearEpoch(greeting)]);
   });
 
   it("logs the caption that is current when the hold starts, not a stale render", () => {

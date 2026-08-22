@@ -150,6 +150,28 @@ describe("caption quality contracts (automated, no human eyeball)", () => {
       expect(captionHoldClearDelayMs(caption({ isFinal: true }))).toBe(CAPTION_HOLD_CLEAR_MS);
     });
 
+    it("does not auto-clear an open topic clause from the current plate alone", () => {
+      expect(captionHoldClearDelayMs(caption({ isFinal: true, sourceText: "今日は" }))).toBe(7_000);
+      expect(captionHoldClearDelayMs(caption({ isFinal: true, sourceText: "こんにちは" }))).toBe(
+        4_000,
+      );
+    });
+
+    it("holds a two-line plate longer than a short greeting and under 8000 ms", () => {
+      const shortHold = captionHoldClearDelayMs(
+        caption({ isFinal: true, sourceText: "こんにちは" }),
+      );
+      const longHold = captionHoldClearDelayMs(
+        caption({
+          isFinal: true,
+          sourceText:
+            "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよわん",
+        }),
+      );
+      expect(shortHold).toBe(4_000);
+      expect(longHold).toBe(6_000);
+    });
+
     it("does not auto-clear non-final captions during long speech gaps", () => {
       expect(captionHoldClearDelayMs(caption({ isFinal: false }))).toBeNull();
       expect(captionHoldClearDelayMs(caption({ isFinal: false, provisional: true }))).toBeNull();

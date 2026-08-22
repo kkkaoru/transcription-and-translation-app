@@ -522,6 +522,17 @@ const hasEquivalentTranslationSource = (current: CaptionPayload, next: CaptionPa
   return Boolean(currentSource && nextSource && currentSource === nextSource);
 };
 
+/** Same utterance grew or shrank as a prefix; keep the completed translation. */
+const isSameTurnSourceContinuation = (current: CaptionPayload, next: CaptionPayload): boolean => {
+  const currentSource = punctuationInsensitiveSource(current);
+  const nextSource = punctuationInsensitiveSource(next);
+  return Boolean(
+    currentSource &&
+      nextSource &&
+      (currentSource.startsWith(nextSource) || nextSource.startsWith(currentSource)),
+  );
+};
+
 /**
  * Parapper finals are backdated to the full audio-window start. For equivalent
  * translated surfaces, receipt order identifies the newer final revision.
@@ -1328,6 +1339,18 @@ export const mergeCaptionPayload = (
     sourceChanged &&
     !hasEquivalentTranslationSource(current, incoming)
   ) {
+    if (isSameTurnSourceContinuation(current, incoming)) {
+      if (hasText(current.translationText)) {
+        return finish(current, "source-changed-translation");
+      }
+      return finish(
+        {
+          ...current,
+          translationText: incoming.translationText,
+        },
+        "same-turn-translation-kept",
+      );
+    }
     return finish(current, "source-changed-translation");
   }
 

@@ -3,6 +3,7 @@ import {
   detectCaptionSentenceEnds,
   detectCaptionSoftBreaks,
   rebaseCaptionSoftBreakOffsets,
+  relatedCaptionConversionLeftContext,
   selectVisibleCaptionSentence,
 } from "./index.js";
 
@@ -17,6 +18,20 @@ describe("Japanese sentence-end detection", () => {
     expect(detectCaptionSentenceEnds("準備を進めています")).toEqual([]);
     expect(detectCaptionSentenceEnds("確認できます")).toEqual([]);
     expect(detectCaptionSentenceEnds("しています")).toEqual([]);
+  });
+
+  it("keeps an open particle lead joined to the related tail and exposes that lead as conversion context", () => {
+    const lead = "会議の議題は";
+    const joined = "会議の議題は明日の予定について確認します";
+    expect(selectVisibleCaptionSentence(joined)).toBe(joined);
+    expect(selectVisibleCaptionSentence(joined, { sentenceEndOffsets: [6] })).toBe(joined);
+    expect(selectVisibleCaptionSentence(joined, { previousText: lead, previousEnds: [6] })).toBe(
+      joined,
+    );
+    expect(relatedCaptionConversionLeftContext(lead, joined)).toBe("会議の議題は");
+    expect(relatedCaptionConversionLeftContext(lead, "")).toBe("会議の議題は");
+    expect(relatedCaptionConversionLeftContext(lead, "猫が好きです")).toBe("");
+    expect(relatedCaptionConversionLeftContext("", joined)).toBe("");
   });
 
   it("does not split mid-clause ですが / ですので continuations", () => {
@@ -278,6 +293,7 @@ describe("caption soft-break offset rebasing", () => {
 
   it("fails closed when the display text is not a suffix", () => {
     expect(rebaseCaptionSoftBreakOffsets("前半と後半", "別の表示", [3])).toStrictEqual([]);
+    expect(rebaseCaptionSoftBreakOffsets("前半と後半", "後半", [])).toStrictEqual([]);
   });
 });
 

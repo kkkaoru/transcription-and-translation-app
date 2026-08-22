@@ -50,6 +50,33 @@ describe("mergeCaptionPayload", () => {
     });
   });
 
+  it("keeps a completed same-turn translation when a newer source revision raced it", () => {
+    const newerSource = caption({
+      id: "parapper:session:turn:9",
+      sourceText: "今日は晴れです",
+      translationText: "",
+      startedAt: 1_000,
+      receivedAt: 1_400,
+      stage: "source",
+      sequence: 0,
+      isFinal: false,
+    });
+    const lateTranslation = caption({
+      id: "parapper:session:turn:9",
+      sourceText: "今日は晴れ",
+      translationText: "It is sunny today",
+      startedAt: 1_000,
+      receivedAt: 1_300,
+      stage: "translation",
+      sequence: 1,
+      isFinal: true,
+    });
+
+    const merged = mergeCaptionPayload(newerSource, lateTranslation);
+    expect(merged?.sourceText).toBe("今日は晴れです");
+    expect(merged?.translationText).toBe("It is sunny today");
+  });
+
   it("keeps incoming translation when a new sequence-0 chunk already carries both texts", () => {
     const current = caption({
       id: "parapper:session:turn:1",
@@ -1363,7 +1390,7 @@ describe("mergeCaptionPayload", () => {
     expect(mergeCaptionPayload(visible, olderTranslation)).toBe(visible);
   });
 
-  it("does not attach an older translation when the phonetic revision changed", () => {
+  it("keeps a completed prefix translation on a longer same-turn source revision", () => {
     const revisedSource = caption({
       id: "u-1",
       sourceText: "こんにちは聞こえますか",
@@ -1374,7 +1401,7 @@ describe("mergeCaptionPayload", () => {
       sequence: 0,
       isFinal: false,
     });
-    const staleTranslation = caption({
+    const prefixTranslation = caption({
       id: "u-1",
       sourceText: "こんにちは",
       azookeyInputText: "こんにちは",
@@ -1385,7 +1412,11 @@ describe("mergeCaptionPayload", () => {
       isFinal: true,
     });
 
-    expect(mergeCaptionPayload(revisedSource, staleTranslation)).toBe(revisedSource);
+    const merged = mergeCaptionPayload(revisedSource, prefixTranslation);
+    expect(merged?.sourceText).toBe("こんにちは聞こえますか");
+    expect(merged?.translationText).toBe("Hello");
+    expect(merged?.stage).toBe("source");
+    expect(merged?.sequence).toBe(0);
   });
 
   it("upgrades progressive ASR text to normalized source on the same utterance id", () => {

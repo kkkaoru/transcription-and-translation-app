@@ -4,9 +4,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createEmptyCaption, createHoldClearedCaption } from "../overlay/captions";
 import {
+  CAPTION_HOLD_CLEAR_MAX_MS,
+  CAPTION_HOLD_CLEAR_MIN_MS,
   CAPTION_HOLD_CLEAR_MS,
   captionHoldClearDelayMs,
   captionHoldClearEpoch,
+  isOpenCaptionClause,
+  isRelatedCaptionContinuation,
   logCaptionDisplayLifecycle,
   shouldApplyCaptionHoldClear,
   shouldBlankCaptionForHoldClear,
@@ -55,6 +59,16 @@ describe("logCaptionDisplayLifecycle", () => {
     });
     expect(JSON.stringify(row)).not.toContain("秘密の字幕");
     expect(JSON.stringify(row)).not.toContain("secret");
+
+    clearStructuredLogs();
+    logCaptionDisplayLifecycle(
+      "clear",
+      caption({ sourceText: "", captureGeneration: Number.NaN }),
+      9_500,
+    );
+    expect(getStructuredLogs({ limit: 1 })[0]?.message).toBe(
+      "caption display lifecycle=clear age_ms=9499 generation=none has_translation=false",
+    );
   });
 });
 
@@ -66,11 +80,91 @@ describe("captionHoldClearDelayMs", () => {
   });
 
   it("gives finalized and translated captions a stream-readable hold", () => {
-    expect(CAPTION_HOLD_CLEAR_MS).toBeGreaterThanOrEqual(4_000);
-    expect(captionHoldClearDelayMs(caption({ isFinal: true }))).toBe(CAPTION_HOLD_CLEAR_MS);
+    expect(CAPTION_HOLD_CLEAR_MS).toBe(4_000);
+    expect(CAPTION_HOLD_CLEAR_MIN_MS).toBe(4_000);
+    expect(CAPTION_HOLD_CLEAR_MAX_MS).toBe(7_000);
+    expect(captionHoldClearDelayMs(caption({ isFinal: true, sourceText: "こんにちは" }))).toBe(
+      4_000,
+    );
     expect(
       captionHoldClearDelayMs(caption({ isFinal: false, translationText: "It is sunny today" })),
-    ).toBe(CAPTION_HOLD_CLEAR_MS);
+    ).toBe(4_000);
+  });
+
+  it("holds a two-line Japanese plate longer than a short greeting and under 8000 ms", () => {
+    const shortFinal = caption({ isFinal: true, sourceText: "こんにちは" });
+    const longFinal = caption({
+      isFinal: true,
+      sourceText:
+        "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよわん",
+    });
+    const shortHold = captionHoldClearDelayMs(shortFinal);
+    const longHold = captionHoldClearDelayMs(longFinal);
+    expect(shortHold).toBe(4_000);
+    expect(longHold).toBe(6_000);
+    expect(longHold === null || shortHold === null).toBe(false);
+    expect((longHold ?? 0) > (shortHold ?? 0)).toBe(true);
+    expect((longHold ?? 0) <= 7_999).toBe(true);
+  });
+
+  it("does not auto-clear a related continuation before the next clause is ready", () => {
+    const openClause = caption({
+      isFinal: true,
+      sourceText: "今日は",
+    });
+    const notReady = caption({
+      id: "u-2",
+      sourceText: "",
+      isFinal: false,
+    });
+    const relatedTail = caption({
+      id: "u-1",
+      sourceText: "今日は晴れですので午後もこの話を続けます",
+      isFinal: false,
+    });
+    expect(isOpenCaptionClause("今日は")).toBe(true);
+    expect(isOpenCaptionClause("確認して")).toBe(true);
+    expect(isOpenCaptionClause("だから")).toBe(true);
+    expect(captionHoldClearDelayMs(openClause)).toBe(7_000);
+    expect(captionHoldClearDelayMs(caption({ isFinal: true, sourceText: "確認して" }))).toBe(7_000);
+    expect(captionHoldClearDelayMs(caption({ isFinal: true, sourceText: "だから" }))).toBe(7_000);
+    expect(isRelatedCaptionContinuation(openClause, notReady)).toBe(true);
+    expect(isRelatedCaptionContinuation(openClause, relatedTail)).toBe(true);
+    expect(captionHoldClearDelayMs(openClause, notReady)).toBe(7_000);
+    expect(captionHoldClearDelayMs(openClause, relatedTail)).toBe(7_000);
+  });
+
+  it("treats a greeting ending in は as a finished turn, not an open clause", () => {
+    const greeting = caption({
+      isFinal: true,
+      sourceText: "こんにちは",
+    });
+    const unrelated = caption({
+      id: "u-2",
+      sourceText: "明日は雨です。",
+      isFinal: true,
+    });
+    expect(isOpenCaptionClause("")).toBe(false);
+    expect(isOpenCaptionClause("こんにちは")).toBe(false);
+    expect(isOpenCaptionClause("こんばんは")).toBe(false);
+    expect(isRelatedCaptionContinuation(greeting, unrelated)).toBe(false);
+    expect(captionHoldClearDelayMs(greeting)).toBe(4_000);
+    expect(captionHoldClearDelayMs(greeting, unrelated)).toBe(4_000);
+  });
+
+  it("clears a finished punctuated turn inside the reading envelope", () => {
+    const finished = caption({
+      isFinal: true,
+      sourceText: "今日は晴れです。",
+    });
+    const nextTurn = caption({
+      id: "u-2",
+      sourceText: "明日は雨です。",
+      isFinal: true,
+    });
+    expect(isRelatedCaptionContinuation(finished, nextTurn)).toBe(false);
+    expect(captionHoldClearDelayMs(finished)).toBe(4_000);
+    expect(captionHoldClearDelayMs(finished, nextTurn)).toBe(4_000);
   });
 
   it("does not auto-clear non-final captions during long speech gaps", () => {
