@@ -89,8 +89,6 @@ export interface ConversionPipelineInput {
   inputN5LmRescoreEnabled?: boolean;
   /** Previous converted caption used as Zenz left context. */
   leftContext?: string;
-  /** Two-column custom dictionary TSV (`reading\\tword`). */
-  userDictionaryTsv?: string;
 }
 
 export interface ConversionPipelineResult {
@@ -328,9 +326,6 @@ export const runComparisonConversion = async (
     vibratoExecution,
     auth: input.auth,
     ...(input.leftContext === undefined ? {} : { leftContext: input.leftContext }),
-    ...(input.userDictionaryTsv === undefined || input.userDictionaryTsv.length === 0
-      ? {}
-      : { userDictionaryTsv: input.userDictionaryTsv }),
   });
   const trace = assembleConversionTrace({
     rawSource,

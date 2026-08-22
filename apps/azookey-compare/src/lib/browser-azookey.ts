@@ -30,8 +30,6 @@ export interface BrowserAzookeyOptions {
   wasmModule?: WebAssembly.Module;
   dictionaryBytes?: Uint8Array;
   timeoutMs?: number;
-  /** Two-column `reading\\tword` TSV applied after the official system archive. */
-  userDictionaryTsv?: string;
 }
 
 export interface BrowserAzookeyResult {
@@ -46,13 +44,9 @@ interface AzookeyWasmExports {
   azookey_convert: (pointer: number, length: number) => bigint | number;
   azookey_abi_version: () => number;
   azookey_dictionary_init_owned: (pointer: number, length: number) => number;
-  azookey_user_dictionary_init_owned?: (pointer: number, length: number) => number;
-  azookey_user_dictionary_clear?: () => number;
 }
 
-type AzookeyConverter = ((text: string) => string) & {
-  applyUserDictionary: (tsv: string) => void;
-};
+type AzookeyConverter = (text: string) => string;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -269,28 +263,6 @@ export const instantiateBrowserAzookeyConverter = (
   }
   initializeWasmDictionary(checkedExports, dictionary);
 
-  const applyUserDictionary = (tsv: string): void => {
-    if (tsv.trim().length === 0) {
-      if (typeof checkedExports.azookey_user_dictionary_clear === "function") {
-        checkedExports.azookey_user_dictionary_clear();
-      }
-      return;
-    }
-    if (typeof checkedExports.azookey_user_dictionary_init_owned !== "function") {
-      throw new Error("AzooKey Wasm module does not support custom dictionaries");
-    }
-    const bytes = encoder.encode(tsv);
-    const pointer = checkedExports.azookey_alloc(bytes.byteLength);
-    if (pointer === 0) {
-      throw new Error("AzooKey Wasm custom dictionary allocation failed");
-    }
-    new Uint8Array(checkedExports.memory.buffer, pointer, bytes.byteLength).set(bytes);
-    const status = checkedExports.azookey_user_dictionary_init_owned(pointer, bytes.byteLength);
-    if (status !== 0) {
-      throw new Error(`AzooKey Wasm custom dictionary initialization failed (${status})`);
-    }
-  };
-
   const convert = (text: string): string => {
     const bytes = encoder.encode(text);
     const pointer = checkedExports.azookey_alloc(bytes.byteLength);
@@ -308,7 +280,6 @@ export const instantiateBrowserAzookeyConverter = (
       checkedExports.azookey_dealloc(pointer, bytes.byteLength);
     }
   };
-  convert.applyUserDictionary = applyUserDictionary;
   return convert;
 };
 
@@ -360,7 +331,6 @@ export const runBrowserAzookey = async (
   options: BrowserAzookeyOptions = {},
 ): Promise<BrowserAzookeyResult> => {
   const converter = await loadConverter(options);
-  converter.applyUserDictionary(options.userDictionaryTsv ?? "");
   const started = performance.now();
   const converted = converter(text);
   return {

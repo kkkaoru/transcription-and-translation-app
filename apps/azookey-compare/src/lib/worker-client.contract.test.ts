@@ -1,3 +1,4 @@
+// This file runs with bun.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runComparisonConversion, zenzWorkerLeftContextField } from "./conversion-pipeline";
 import { AzooKeyWorkerClient } from "./worker-client";
@@ -155,5 +156,94 @@ describe("compare UI outbound convert-frame contract", () => {
       });
     }
     await conversion;
+  });
+
+  it("reuses one session WebSocket across two worker-vibrato conversions", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new AzooKeyWorkerClient({
+      endpoint: "wss://worker.example/ws",
+      requestTimeoutMs: 20,
+    });
+    const warming = client.warmup({
+      fetchImpl: vi.fn(() => Promise.resolve(new Response(null, { status: 200 }))),
+    });
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    await warming;
+
+    const first = runComparisonConversion(
+      {
+        sourceText: "かんじ",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+        language: "ja",
+        auth: { scheme: "none" },
+      },
+      {
+        runBrowserVibrato: vi.fn(() => Promise.resolve({ text: "かんじ", elapsedMs: 1 })),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: () => client.connect(),
+        convertWithWorker: (request) => client.convert(request),
+      },
+    );
+    const firstStarted = Date.now();
+    while (socket.sent.length === 0 && Date.now() - firstStarted < 200) {
+      await Promise.resolve();
+    }
+    const firstFrame = parseSentFrame(socket.sent[0]);
+    const firstRequestId = firstFrame["requestId"];
+    if (typeof firstRequestId !== "string") {
+      throw new Error("first convert requestId is missing");
+    }
+    if (socket.onmessage) {
+      socket.onmessage({
+        data: JSON.stringify({
+          requestId: firstRequestId,
+          sourceText: "かんじ",
+          convertedText: "漢字",
+        }),
+      });
+    }
+    await first;
+
+    const second = runComparisonConversion(
+      {
+        sourceText: "てんき",
+        mode: "worker-vibrato",
+        converterModel: "azookey-rust-wasm",
+        language: "ja",
+        auth: { scheme: "none" },
+      },
+      {
+        runBrowserVibrato: vi.fn(() => Promise.resolve({ text: "てんき", elapsedMs: 1 })),
+        runBrowserAzookey: vi.fn(),
+        connectWorker: () => client.connect(),
+        convertWithWorker: (request) => client.convert(request),
+      },
+    );
+    const secondStarted = Date.now();
+    while (socket.sent.length < 2 && Date.now() - secondStarted < 200) {
+      await Promise.resolve();
+    }
+    const secondFrame = parseSentFrame(socket.sent[1]);
+    const secondRequestId = secondFrame["requestId"];
+    if (typeof secondRequestId !== "string") {
+      throw new Error("second convert requestId is missing");
+    }
+    if (socket.onmessage) {
+      socket.onmessage({
+        data: JSON.stringify({
+          requestId: secondRequestId,
+          sourceText: "てんき",
+          convertedText: "天気",
+        }),
+      });
+    }
+    await second;
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(socket.sent).toHaveLength(2);
   });
 });

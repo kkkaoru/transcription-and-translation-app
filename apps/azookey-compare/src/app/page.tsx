@@ -1,5 +1,6 @@
 "use client";
 
+// This file runs with bun.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArchitectureAssetTable } from "../components/ArchitectureAssetTable";
 import { ComparisonPathDiagram } from "../components/ComparisonPathDiagram";
@@ -48,6 +49,7 @@ import {
 import {
   runComparisonConversion,
   usesBrowserZenzaiDictPath,
+  usesWorkerConversion,
   zenzWorkerLeftContextField,
 } from "../lib/conversion-pipeline";
 import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
@@ -79,7 +81,9 @@ import {
   WebSpeechController,
 } from "../lib/web-speech";
 import {
+  AZOOKEY_ISOLATE_HTTP_WARMUP_INIT,
   AzooKeyWorkerClient,
+  azookeyHealthUrlFromWebSocket,
   type WorkerConnectionState,
   workerErrorStage,
 } from "../lib/worker-client";
@@ -99,6 +103,8 @@ import {
 } from "../lib/workers-ai-asr-support";
 
 const DESKTOP_CONFIG_MEDIA_QUERY = "(min-width: 641px)";
+
+const UTTERANCE_COST_TOTAL_FORMULA_HEAD: string = "USD_total = USD_worker + USD_asr";
 
 type ComparisonRowState = "queued" | "wasm" | "sending" | "done" | "error";
 type ComparisonRowOrigin = "web-speech" | "workers-ai-asr" | "manual" | "fixture";
@@ -127,10 +133,18 @@ interface ComparisonRow {
   resolvedModel?: string;
   modelFallback?: string;
   failedBeforeInference?: boolean;
+  /** Compare-worker connect wall ms measured for this utterance only. */
+  compareElapsedMs?: number;
   /** Workers AI ASR estimate when an ASR path ran (filled by ASR lane). */
   asrCostUsd?: number;
   asrCostSummaryJa?: string;
+  asrCostFormula?: string;
   createdAt: number;
+}
+
+interface UtteranceSocketUsage {
+  openedNewWebSocket: boolean;
+  compareElapsedMs?: number;
 }
 
 const MAX_ROWS = 24;
@@ -175,14 +189,14 @@ const conversionCostBreakdownLabelJa = (label: string): string => {
       return "Cloudflare Worker WebSocket Upgrade";
     case "inference 変換（service binding）":
       return "Cloudflare Worker 推論変換";
-    case "compare Upgrade CPU（ログ cpuTime 中央値）":
-      return "Cloudflare Worker Upgrade CPU（ログ cpuTime 中央値）";
-    case "compare CPU（ログ校正）":
-      return "Cloudflare Worker CPU（ログ校正）";
-    case "inference CPU（ログ cpuTime）":
-      return "Cloudflare Worker 推論 CPU（ログ cpuTime）";
-    case "inference CPU（ログ校正）":
-      return "Cloudflare Worker 推論 CPU（ログ校正）";
+    case "compare CPU（このリクエスト wall）":
+      return "Cloudflare Worker Upgrade CPU（このリクエスト wall）";
+    case "compare CPU（このレスポンス cpuTime）":
+      return "Cloudflare Worker Upgrade CPU（このレスポンス cpuTime）";
+    case "inference CPU（このレスポンス cpuTime）":
+      return "Cloudflare Worker 推論 CPU（このレスポンス cpuTime）";
+    case "inference CPU（このリクエスト wall）":
+      return "Cloudflare Worker 推論 CPU（このリクエスト wall）";
     default:
       return label;
   }
@@ -194,6 +208,24 @@ const utteranceCostTotalUsd = (
 ): number => {
   const asr = asrCostUsd !== undefined && Number.isFinite(asrCostUsd) ? asrCostUsd : 0;
   return conversion.usd + asr;
+};
+
+const utteranceCostTotalFormula = (workerUsd: number, asrUsd: number): string => {
+  const totalUsd = workerUsd + asrUsd;
+  return (
+    `${UTTERANCE_COST_TOTAL_FORMULA_HEAD}\n` +
+    `USD_total = ${formatCloudflareCostUsd(workerUsd)} + ${formatCloudflareCostUsd(asrUsd)} = ${formatCloudflareCostUsd(totalUsd)}`
+  );
+};
+
+const asrProviderForCost = (row: ComparisonRow): RecognitionProvider | undefined => {
+  if (row.recognitionProvider !== undefined) {
+    return row.recognitionProvider;
+  }
+  if (row.origin === "workers-ai-asr") {
+    return "workers-ai-asr";
+  }
+  return undefined;
 };
 
 const formatQuantityForCost = (value: number): string =>
@@ -282,10 +314,6 @@ export default function ComparePage() {
   );
   /** Serialize browser pre-pass + Worker work so rapid finals retain order. */
   const dispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const customDictionaryTsvRef = useRef("");
-  const onCustomDictionaryTsvChange = useCallback((tsv: string) => {
-    customDictionaryTsvRef.current = tsv;
-  }, []);
 
   useEffect(() => {
     setArchitectureOpen(isArchitectureDialogForced(window.location.search));
@@ -554,7 +582,7 @@ export default function ComparePage() {
       const forcedPhonetic = options.phoneticInput?.trim();
       let vibratoInput = forcedPhonetic || normalizedSource;
       let wasmElapsedMs: number | undefined;
-      let openedNewWebSocket = false;
+      const socketUsage: UtteranceSocketUsage = { openedNewWebSocket: false };
       let cloudflareConnectAttempted = false;
       // Tracks the stage in flight so a failure is attributed to the stage that
       // actually failed, rather than to whichever stage happened to run last.
@@ -579,9 +607,6 @@ export default function ComparePage() {
                 .filter((row) => row.id !== id && row.state === "done")
                 .map((row) => row.convertedText),
             ),
-            ...(customDictionaryTsvRef.current
-              ? { userDictionaryTsv: customDictionaryTsvRef.current }
-              : {}),
           },
           {
             onStage: (nextStage) => {
@@ -616,13 +641,8 @@ export default function ComparePage() {
                 throw caught;
               }
             },
-            runBrowserAzookey: (text) =>
-              runBrowserAzookey(text, { userDictionaryTsv: customDictionaryTsvRef.current }),
-            runBrowserZenzaiDict: (text, model) =>
-              runBrowserZenzaiDict(text, {
-                model,
-                userDictionaryTsv: customDictionaryTsvRef.current,
-              }),
+            runBrowserAzookey: (text) => runBrowserAzookey(text),
+            runBrowserZenzaiDict: (text, model) => runBrowserZenzaiDict(text, { model }),
             connectWorker: async () => {
               const client = workerRef.current;
               if (!client) {
@@ -637,9 +657,14 @@ export default function ComparePage() {
                 throw new Error("Cloudflare Worker 設定が変更されました。発話を再送してください");
               }
               const wsAlreadyOpen = client.connectionState === "open";
+              const connectStartedAt = performance.now();
               await client.connect();
               if (!wsAlreadyOpen) {
-                openedNewWebSocket = true;
+                socketUsage.openedNewWebSocket = true;
+                socketUsage.compareElapsedMs = Math.max(
+                  0,
+                  Math.round(performance.now() - connectStartedAt),
+                );
               }
               if (
                 workerRef.current !== client ||
@@ -667,7 +692,10 @@ export default function ComparePage() {
           vibratoInput: result.vibratoInput,
           trace: result.trace,
           usedWebSocket: result.usedWebSocket,
-          openedNewWebSocket,
+          openedNewWebSocket: socketUsage.openedNewWebSocket,
+          ...(socketUsage.compareElapsedMs !== undefined
+            ? { compareElapsedMs: socketUsage.compareElapsedMs }
+            : {}),
           ...(result.requestedModel !== undefined ? { requestedModel: result.requestedModel } : {}),
           ...(result.model !== undefined ? { resolvedModel: result.model } : {}),
           ...(result.modelFallback !== undefined ? { modelFallback: result.modelFallback } : {}),
@@ -702,7 +730,10 @@ export default function ComparePage() {
           ...(mode === "worker-vibrato" && cloudflareConnectAttempted
             ? {
                 usedWebSocket: true,
-                openedNewWebSocket,
+                openedNewWebSocket: socketUsage.openedNewWebSocket,
+                ...(socketUsage.compareElapsedMs !== undefined
+                  ? { compareElapsedMs: socketUsage.compareElapsedMs }
+                  : {}),
                 failedBeforeInference: stageRef.current !== "worker",
               }
             : mode === "browser-vibrato"
@@ -941,10 +972,35 @@ export default function ComparePage() {
     [config],
   );
 
+  const warmWorkerIsolateIfNeeded = useCallback(async (): Promise<void> => {
+    if (!usesWorkerConversion(config.mode)) {
+      return;
+    }
+    const client = workerRef.current;
+    if (!client) {
+      return;
+    }
+    await client.warmup();
+    client.startIdlePin();
+  }, [config.mode]);
+
+  const endLiveWorkerSession = (): void => {
+    if (!usesWorkerConversion(config.mode)) {
+      return;
+    }
+    const client = workerRef.current;
+    if (!client) {
+      return;
+    }
+    client.stopIdlePin();
+    client.close();
+  };
+
   const toggleListening = (): void => {
     const usingWorkersAi = config.recognitionProvider === "workers-ai-asr";
     if (usingWorkersAi) {
       if (speechState === "listening" || speechState === "starting") {
+        endLiveWorkerSession();
         void ensureAsrController().stop();
         return;
       }
@@ -1002,6 +1058,7 @@ export default function ComparePage() {
           }
         },
         warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
+        warmWorkerIsolate: warmWorkerIsolateIfNeeded,
         onWarmupNotice: setNotice,
         onWarmupError: setError,
         requireVibratoWarmup: config.mode === "browser-vibrato",
@@ -1015,6 +1072,7 @@ export default function ComparePage() {
       return;
     }
     if (speechState === "listening" || speechState === "starting") {
+      endLiveWorkerSession();
       controller.stop();
       return;
     }
@@ -1025,6 +1083,7 @@ export default function ComparePage() {
       provider: config.recognitionProvider,
       start: () => controller.start(),
       warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
+      warmWorkerIsolate: warmWorkerIsolateIfNeeded,
       onWarmupNotice: setNotice,
       onWarmupError: setError,
       requireVibratoWarmup: config.mode === "browser-vibrato",
@@ -1042,22 +1101,19 @@ export default function ComparePage() {
         throw new Error("Bearer token を入力してください");
       }
       buildVibratoWebSocketUrl(config);
-      await client.connect();
+      await client.warmup();
       let notice = "Cloudflare Worker WebSocket に接続しました";
       let workerVibratoConfigured: boolean | undefined;
       try {
-        const healthUrl = new URL(config.websocketUrl.trim());
-        healthUrl.protocol = healthUrl.protocol === "wss:" ? "https:" : "http:";
-        healthUrl.pathname = "/v1/azookey";
-        healthUrl.search = "";
-        healthUrl.hash = "";
-        const health = await fetch(healthUrl).then(async (response) =>
-          response.ok
-            ? ((await response.json()) as {
-                dictionary?: { transport?: string };
-                vibrato?: { workerStage?: string };
-              })
-            : null,
+        const healthUrl = azookeyHealthUrlFromWebSocket(config.websocketUrl);
+        const health = await fetch(healthUrl, AZOOKEY_ISOLATE_HTTP_WARMUP_INIT).then(
+          async (response) =>
+            response.ok
+              ? ((await response.json()) as {
+                  dictionary?: { transport?: string };
+                  vibrato?: { workerStage?: string };
+                })
+              : null,
         );
         workerVibratoConfigured = health?.vibrato?.workerStage === "configured";
         workerVibratoConfiguredRef.current = workerVibratoConfigured;
@@ -1455,7 +1511,7 @@ export default function ComparePage() {
                   </div>
                 ) : null}
 
-                <CustomDictionaryPanel onTsvChange={onCustomDictionaryTsvChange} />
+                <CustomDictionaryPanel websocketUrl={config.websocketUrl} auth={config.auth} />
 
                 <div className="subsection auth-settings">
                   <p className="subsection-title">認証（Cloudflare Worker の契約に合わせる）</p>
@@ -1767,6 +1823,9 @@ export default function ComparePage() {
                                 : (row.usedWebSocket ?? row.mode === "worker-vibrato"),
                             openedNewWebSocket: row.openedNewWebSocket ?? false,
                             workerElapsedMs: row.workerElapsedMs,
+                            ...(row.compareElapsedMs !== undefined
+                              ? { compareElapsedMs: row.compareElapsedMs }
+                              : {}),
                             failedBeforeInference: row.failedBeforeInference,
                             usesExternalGgufUpstream: usesExternalGgufUpstream({
                               requestedModel: row.requestedModel ?? row.trace?.workerRequest?.model,
@@ -1774,13 +1833,20 @@ export default function ComparePage() {
                               modelFallback: row.modelFallback,
                             }),
                           });
-                          const asrCostUsd = row.asrCostUsd;
+                          const asrCostDisplay = utteranceAsrCostFields(
+                            asrProviderForCost(row),
+                            row.audioSeconds,
+                          );
+                          const asrCostUsd = row.asrCostUsd ?? asrCostDisplay.asrCostUsd;
+                          const asrCostFormula =
+                            row.asrCostFormula ?? asrCostDisplay.asrCostFormula;
                           const hasAsrCost = shouldShowWorkersAiAsrCostAmount({
                             origin: row.origin,
                             recognitionProvider: row.recognitionProvider,
                             asrCostUsd,
                           });
                           const totalUsd = utteranceCostTotalUsd(cost, asrCostUsd);
+                          const showTotalFormula = !cost.browserComplete || hasAsrCost;
                           return (
                             <div className="utterance-cost-card" data-testid="utterance-cost-card">
                               <h4 className="utterance-cost-heading">料金（推定）</h4>
@@ -1790,6 +1856,14 @@ export default function ComparePage() {
                               >
                                 {formatCloudflareCostUsd(totalUsd)}
                               </p>
+                              {showTotalFormula ? (
+                                <p
+                                  className="utterance-cost-formula"
+                                  data-testid="utterance-total-cost-formula"
+                                >
+                                  {utteranceCostTotalFormula(cost.usd, asrCostUsd)}
+                                </p>
+                              ) : null}
                               <dl className="utterance-cost-breakdown">
                                 <div
                                   className="utterance-cost-row"
@@ -1804,10 +1878,15 @@ export default function ComparePage() {
                                     </span>
                                     {!cost.browserComplete ? (
                                       <span className="utterance-cost-row-detail">
-                                        リクエスト {cost.requests} · billed CPU {cost.billedCpuMs}{" "}
-                                        ms
+                                        リクエスト {cost.requests} · cpuMs {cost.billedCpuMs} ms
                                       </span>
                                     ) : null}
+                                    <span
+                                      className="utterance-cost-formula"
+                                      data-testid="utterance-conversion-cost-formula"
+                                    >
+                                      {cost.formula}
+                                    </span>
                                     {cost.breakdown.length > 0 ? (
                                       <ul className="utterance-cost-line-items">
                                         {cost.breakdown.map((line) => (
@@ -1828,7 +1907,7 @@ export default function ComparePage() {
                                   <dt>Cloudflare Workers AI（ASR）</dt>
                                   <dd>
                                     <span className="utterance-cost-row-amount">
-                                      {formatCloudflareCostUsd(asrCostUsd ?? 0)}
+                                      {formatCloudflareCostUsd(asrCostUsd)}
                                     </span>
                                     {row.asrCostSummaryJa ? (
                                       <span className="utterance-cost-row-detail">
@@ -1839,6 +1918,12 @@ export default function ComparePage() {
                                         {hasAsrCost ? "未計測" : webSpeechAsrCostSummaryJa()}
                                       </span>
                                     )}
+                                    <span
+                                      className="utterance-cost-formula"
+                                      data-testid="utterance-asr-cost-formula"
+                                    >
+                                      {asrCostFormula}
+                                    </span>
                                   </dd>
                                 </div>
                               </dl>

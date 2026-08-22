@@ -1,5 +1,7 @@
 export const COMPARE_INFERENCE_WEBSOCKET_PATH = "/ws/azookey";
 export const COMPARE_INFERENCE_HEALTH_PATH = "/v1/azookey";
+/** Worker-stored user lexicon editor. Nested `/entries` and `/import` stay on this prefix. */
+export const COMPARE_USER_LEXICON_HTTP_PATH = "/azookey/user-lexicon";
 /** Explicit compare → inference Workers AI ASR route (Nova-3 via env.AI.run). */
 export const COMPARE_WORKERS_AI_ASR_PATH = "/v1/asr/workers-ai/transcriptions";
 
@@ -57,6 +59,18 @@ export const compareInferenceDevRewrites = (
     destination: `${inferenceOrigin}${COMPARE_INFERENCE_HEALTH_PATH}`,
   },
   {
+    source: `${COMPARE_INFERENCE_HEALTH_PATH}/:path*`,
+    destination: `${inferenceOrigin}${COMPARE_INFERENCE_HEALTH_PATH}/:path*`,
+  },
+  {
+    source: COMPARE_USER_LEXICON_HTTP_PATH,
+    destination: `${inferenceOrigin}${COMPARE_USER_LEXICON_HTTP_PATH}`,
+  },
+  {
+    source: `${COMPARE_USER_LEXICON_HTTP_PATH}/:path*`,
+    destination: `${inferenceOrigin}${COMPARE_USER_LEXICON_HTTP_PATH}/:path*`,
+  },
+  {
     source: COMPARE_WORKERS_AI_ASR_PATH,
     destination: `${asrOrigin}${COMPARE_WORKERS_AI_ASR_PATH}`,
   },
@@ -70,7 +84,12 @@ export type InferenceProxyEnv = {
 };
 
 export const shouldProxyToInference = (pathname: string): boolean =>
-  (COMPARE_INFERENCE_PROXY_PATHS as readonly string[]).includes(pathname);
+  pathname === COMPARE_INFERENCE_WEBSOCKET_PATH ||
+  pathname === COMPARE_INFERENCE_HEALTH_PATH ||
+  pathname.startsWith(`${COMPARE_INFERENCE_HEALTH_PATH}/`) ||
+  pathname === COMPARE_USER_LEXICON_HTTP_PATH ||
+  pathname.startsWith(`${COMPARE_USER_LEXICON_HTTP_PATH}/`) ||
+  pathname === COMPARE_WORKERS_AI_ASR_PATH;
 
 /**
  * Forward to the inference Worker without trusting the browser Authorization.

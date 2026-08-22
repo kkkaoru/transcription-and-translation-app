@@ -1,41 +1,15 @@
+// This file runs with bun.
 import { describe, expect, it } from "vitest";
 import {
   CF_CONVERSION_COST_BILLED_CPU_NOTE,
-  CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL,
   CF_WORKERS_CPU_USD_PER_MS,
-  CF_WORKERS_PRICING_SOURCE_URL,
   CF_WORKERS_REQUEST_USD_PER_REQUEST,
-  compareWsUpgradeBilledCpuMs,
-  estimateBilledCpuMsFromWall,
   estimateCloudflareConversionCost,
   formatCloudflareCostUsd,
   usesExternalGgufUpstream,
 } from "./cloudflare-conversion-cost";
-import {
-  COMPARE_WS_UPGRADE_CALIBRATION,
-  INFERENCE_WS_CONVERT_CALIBRATION,
-} from "./workers-billed-cpu-calibration";
 
 describe("cloudflare-conversion-cost", () => {
-  describe("estimateBilledCpuMsFromWall", () => {
-    it("returns 0 for missing or non-positive wall ms", () => {
-      expect(estimateBilledCpuMsFromWall(undefined, INFERENCE_WS_CONVERT_CALIBRATION)).toBe(0);
-      expect(estimateBilledCpuMsFromWall(0, INFERENCE_WS_CONVERT_CALIBRATION)).toBe(0);
-      expect(estimateBilledCpuMsFromWall(-3, INFERENCE_WS_CONVERT_CALIBRATION)).toBe(0);
-    });
-
-    it("maps wall ms via log-calibrated cpu/wall ratio", () => {
-      expect(estimateBilledCpuMsFromWall(918, INFERENCE_WS_CONVERT_CALIBRATION)).toBe(664);
-      expect(estimateBilledCpuMsFromWall(12, INFERENCE_WS_CONVERT_CALIBRATION)).toBe(9);
-    });
-  });
-
-  describe("compareWsUpgradeBilledCpuMs", () => {
-    it("uses median compare WS cpuTime from tail logs", () => {
-      expect(compareWsUpgradeBilledCpuMs()).toBe(4);
-    });
-  });
-
   describe("formatCloudflareCostUsd", () => {
     it("returns $0 for zero and negative", () => {
       expect(formatCloudflareCostUsd(0)).toBe("$0");
@@ -43,8 +17,8 @@ describe("cloudflare-conversion-cost", () => {
     });
 
     it("preserves small nonzero values as decimals, never scientific notation", () => {
-      const usd = 9 * CF_WORKERS_CPU_USD_PER_MS + CF_WORKERS_REQUEST_USD_PER_REQUEST;
-      expect(formatCloudflareCostUsd(usd)).toBe("$0.00000048");
+      const usd = 12 * CF_WORKERS_CPU_USD_PER_MS + CF_WORKERS_REQUEST_USD_PER_REQUEST;
+      expect(formatCloudflareCostUsd(usd)).toBe("$0.00000054");
       expect(formatCloudflareCostUsd(usd)).not.toMatch(/[eE]/);
     });
 
@@ -54,23 +28,26 @@ describe("cloudflare-conversion-cost", () => {
   });
 
   describe("estimateCloudflareConversionCost", () => {
-    it("returns browser-complete zero cost", () => {
+    it("returns browser-complete zero cost with a plugged-in formula", () => {
       const estimate = estimateCloudflareConversionCost({
         usedWebSocket: false,
         openedNewWebSocket: false,
       });
-      expect(estimate).toMatchObject({
-        usd: 0,
-        requests: 0,
-        billedCpuMs: 0,
-        wallMs: 0,
-        browserComplete: true,
-        summaryJa: CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL,
-      });
-      expect(estimate.breakdown).toHaveLength(0);
+      expect(estimate.usd).toBe(0);
+      expect(estimate.requests).toBe(0);
+      expect(estimate.billedCpuMs).toBe(0);
+      expect(estimate.wallMs).toBe(0);
+      expect(estimate.browserComplete).toBe(true);
+      expect(estimate.summaryJa).toBe(
+        "Cloudflare 課金なし · 0 × (0.30 / 1,000,000) + 0 × (0.02 / 1,000,000) = $0",
+      );
+      expect(estimate.breakdown).toStrictEqual([]);
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 0 × (0.30 / 1,000,000) + 0 × (0.02 / 1,000,000) = $0\ncpuMs = 0\nrequests = 0 (browser complete)",
+      );
     });
 
-    it("estimates WS-reused inference with log-calibrated billed CPU", () => {
+    it("estimates a reused-WS convert from this request wall, not log calibration", () => {
       const estimate = estimateCloudflareConversionCost({
         usedWebSocket: true,
         openedNewWebSocket: false,
@@ -79,21 +56,38 @@ describe("cloudflare-conversion-cost", () => {
 
       expect(estimate.requests).toBe(1);
       expect(estimate.wallMs).toBe(12);
-      expect(estimate.billedCpuMs).toBe(9);
-      expect(estimate.usd).toBe(
-        Math.round((CF_WORKERS_REQUEST_USD_PER_REQUEST + 9 * CF_WORKERS_CPU_USD_PER_MS) * 1e9) /
-          1e9,
-      );
-      expect(formatCloudflareCostUsd(estimate.usd)).toBe("$0.00000048");
+      expect(estimate.billedCpuMs).toBe(12);
+      expect(estimate.usd).toBe(0.00000054);
+      expect(formatCloudflareCostUsd(estimate.usd)).toBe("$0.00000054");
       expect(formatCloudflareCostUsd(estimate.usd)).not.toMatch(/[eE]/);
-      expect(estimate.summaryJa).toContain("wall 12 ms");
-      expect(estimate.summaryJa).toContain("billed CPU 9 ms");
+      expect(estimate.summaryJa).toBe(
+        "推定 Cloudflare 利用料（Workers Paid 超過単価） $0.00000054 · リクエスト 1 · wall 12 ms · cpuMs 12 ms · 1 × (0.30 / 1,000,000) + 12 × (0.02 / 1,000,000) = $0.00000054",
+      );
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 1 × (0.30 / 1,000,000) + 12 × (0.02 / 1,000,000) = $0.00000054\ncpuMs = workerElapsedMs 12 (this request wall; billed cpuTime not on the wire)\nrequests = 1 (this convert)",
+      );
       expect(estimate.note).toContain(CF_CONVERSION_COST_BILLED_CPU_NOTE);
-      expect(estimate.sourceUrl).toBe(CF_WORKERS_PRICING_SOURCE_URL);
+      expect(estimate.sourceUrl).toBe(
+        "https://developers.cloudflare.com/workers/platform/pricing/",
+      );
       expect(estimate.browserComplete).toBe(false);
+      expect(estimate.breakdown).toStrictEqual([
+        {
+          label: "inference 変換（service binding）",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "inference CPU（このリクエスト wall）",
+          quantity: 12,
+          unitLabel: "ms",
+          usd: 0.00000024,
+        },
+      ]);
     });
 
-    it("uses factual workerBilledCpuMs when provided on the wire", () => {
+    it("uses factual workerBilledCpuMs when provided on this response", () => {
       const estimate = estimateCloudflareConversionCost({
         usedWebSocket: true,
         openedNewWebSocket: false,
@@ -101,10 +95,27 @@ describe("cloudflare-conversion-cost", () => {
         workerBilledCpuMs: 450,
       });
       expect(estimate.billedCpuMs).toBe(450);
-      expect(estimate.breakdown.some((line) => line.label.includes("ログ cpuTime"))).toBe(true);
+      expect(estimate.usd).toBe(0.0000093);
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 1 × (0.30 / 1,000,000) + 450 × (0.02 / 1,000,000) = $0.0000093\ncpuMs = workerBilledCpuMs 450 (cpuTime from this response)\nrequests = 1 (this convert)",
+      );
+      expect(estimate.breakdown).toStrictEqual([
+        {
+          label: "inference 変換（service binding）",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "inference CPU（このレスポンス cpuTime）",
+          quantity: 450,
+          unitLabel: "ms",
+          usd: 0.000009,
+        },
+      ]);
     });
 
-    it("adds compare WebSocket Upgrade request and median upgrade CPU", () => {
+    it("adds a new-WS convert request without the Aug-10 upgrade median CPU", () => {
       const estimate = estimateCloudflareConversionCost({
         usedWebSocket: true,
         openedNewWebSocket: true,
@@ -112,36 +123,146 @@ describe("cloudflare-conversion-cost", () => {
       });
 
       expect(estimate.requests).toBe(2);
-      expect(estimate.billedCpuMs).toBe(13);
-      expect(estimate.usd).toBe(
-        Math.round(
-          (2 * CF_WORKERS_REQUEST_USD_PER_REQUEST + 13 * CF_WORKERS_CPU_USD_PER_MS) * 1e9,
-        ) / 1e9,
+      expect(estimate.billedCpuMs).toBe(12);
+      expect(estimate.usd).toBe(0.00000084);
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 2 × (0.30 / 1,000,000) + 12 × (0.02 / 1,000,000) = $0.00000084\ncpuMs = workerElapsedMs 12 (this request wall; billed cpuTime not on the wire)\nrequests = 2 (this convert + this WebSocket Upgrade)",
       );
-      expect(estimate.breakdown.some((line) => line.label.includes("Upgrade"))).toBe(true);
-      expect(estimate.breakdown.some((line) => line.label.includes("inference"))).toBe(true);
+      expect(estimate.breakdown).toStrictEqual([
+        {
+          label: "compare WebSocket Upgrade",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "inference 変換（service binding）",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "inference CPU（このリクエスト wall）",
+          quantity: 12,
+          unitLabel: "ms",
+          usd: 0.00000024,
+        },
+      ]);
     });
 
-    it("includes compare wall-calibrated CPU when compareElapsedMs provided", () => {
+    it("adds this-request compare wall when compareElapsedMs is provided", () => {
       const estimate = estimateCloudflareConversionCost({
         usedWebSocket: true,
         openedNewWebSocket: false,
         compareElapsedMs: 100,
         workerElapsedMs: 12,
       });
-      const compareProxy = estimateBilledCpuMsFromWall(100, COMPARE_WS_UPGRADE_CALIBRATION);
-      expect(estimate.billedCpuMs).toBe(compareProxy + 9);
+      expect(estimate.billedCpuMs).toBe(112);
+      expect(estimate.wallMs).toBe(112);
+      expect(estimate.usd).toBe(0.00000254);
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 1 × (0.30 / 1,000,000) + 112 × (0.02 / 1,000,000) = $0.00000254\ncpuMs = workerElapsedMs 12 (this request wall; billed cpuTime not on the wire) + compareElapsedMs 100 (this request wall; billed cpuTime not on the wire)\nrequests = 1 (this convert)",
+      );
+      expect(estimate.breakdown).toStrictEqual([
+        {
+          label: "inference 変換（service binding）",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "compare CPU（このリクエスト wall）",
+          quantity: 100,
+          unitLabel: "ms",
+          usd: 0.000002,
+        },
+        {
+          label: "inference CPU（このリクエスト wall）",
+          quantity: 12,
+          unitLabel: "ms",
+          usd: 0.00000024,
+        },
+      ]);
     });
 
-    it("counts upgrade-only when inference failed before WASM", () => {
+    it("uses compareBilledCpuMs instead of compare wall when this response has it", () => {
+      const estimate = estimateCloudflareConversionCost({
+        usedWebSocket: true,
+        openedNewWebSocket: true,
+        compareElapsedMs: 100,
+        compareBilledCpuMs: 8,
+        workerElapsedMs: 12,
+      });
+      expect(estimate.requests).toBe(2);
+      expect(estimate.billedCpuMs).toBe(20);
+      expect(estimate.usd).toBe(0.000001);
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 2 × (0.30 / 1,000,000) + 20 × (0.02 / 1,000,000) = $0.000001\ncpuMs = workerElapsedMs 12 (this request wall; billed cpuTime not on the wire) + compareBilledCpuMs 8 (cpuTime from this response)\nrequests = 2 (this convert + this WebSocket Upgrade)",
+      );
+      expect(estimate.breakdown).toStrictEqual([
+        {
+          label: "compare WebSocket Upgrade",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "inference 変換（service binding）",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "compare CPU（このレスポンス cpuTime）",
+          quantity: 8,
+          unitLabel: "ms",
+          usd: 0.00000016,
+        },
+        {
+          label: "inference CPU（このリクエスト wall）",
+          quantity: 12,
+          unitLabel: "ms",
+          usd: 0.00000024,
+        },
+      ]);
+    });
+
+    it("counts upgrade-only when inference failed before WASM and adds no default 4ms", () => {
       const estimate = estimateCloudflareConversionCost({
         usedWebSocket: true,
         openedNewWebSocket: true,
         failedBeforeInference: true,
       });
       expect(estimate.requests).toBe(1);
-      expect(estimate.billedCpuMs).toBe(4);
+      expect(estimate.billedCpuMs).toBe(0);
+      expect(estimate.usd).toBe(0.0000003);
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 1 × (0.30 / 1,000,000) + 0 × (0.02 / 1,000,000) = $0.0000003\ncpuMs = 0\nrequests = 1 (this WebSocket Upgrade)",
+      );
       expect(estimate.note).toContain("推論前に失敗");
+      expect(estimate.breakdown).toStrictEqual([
+        {
+          label: "compare WebSocket Upgrade",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+      ]);
+    });
+
+    it("adds this-request compare wall on a failed-before-inference upgrade", () => {
+      const estimate = estimateCloudflareConversionCost({
+        usedWebSocket: true,
+        openedNewWebSocket: true,
+        failedBeforeInference: true,
+        compareElapsedMs: 40,
+      });
+      expect(estimate.requests).toBe(1);
+      expect(estimate.billedCpuMs).toBe(40);
+      expect(estimate.usd).toBe(0.0000011);
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 1 × (0.30 / 1,000,000) + 40 × (0.02 / 1,000,000) = $0.0000011\ncpuMs = compareElapsedMs 40 (this request wall; billed cpuTime not on the wire)\nrequests = 1 (this WebSocket Upgrade)",
+      );
     });
 
     it("notes external GGUF upstream without inventing upstream cost", () => {
@@ -152,7 +273,10 @@ describe("cloudflare-conversion-cost", () => {
         usesExternalGgufUpstream: true,
       });
       expect(estimate.note).toContain("外部 GGUF");
-      expect(estimate.usd).toBeGreaterThan(0);
+      expect(estimate.usd).toBe(0.0000007);
+      expect(estimate.formula).toBe(
+        "USD = requests × (0.30 / 1,000,000) + cpuMs × (0.02 / 1,000,000)\nUSD = 1 × (0.30 / 1,000,000) + 20 × (0.02 / 1,000,000) = $0.0000007\ncpuMs = workerElapsedMs 20 (this request wall; billed cpuTime not on the wire)\nrequests = 1 (this convert)",
+      );
     });
 
     it("never rounds nonzero totals to zero", () => {
@@ -161,12 +285,13 @@ describe("cloudflare-conversion-cost", () => {
         openedNewWebSocket: false,
         workerElapsedMs: 1,
       });
-      expect(estimate.usd).toBeGreaterThan(0);
+      expect(estimate.usd).toBe(0.00000032);
+      expect(formatCloudflareCostUsd(estimate.usd)).toBe("$0.00000032");
       expect(formatCloudflareCostUsd(estimate.usd)).not.toBe("$0");
       expect(formatCloudflareCostUsd(estimate.usd)).not.toBe("$0.00");
     });
 
-    it("matches a real inference tail sample when wall equals logged wallTime", () => {
+    it("matches a real inference tail sample when this response includes cpuTime", () => {
       const estimate = estimateCloudflareConversionCost({
         usedWebSocket: true,
         openedNewWebSocket: false,
@@ -174,15 +299,12 @@ describe("cloudflare-conversion-cost", () => {
         workerBilledCpuMs: 450,
       });
       expect(estimate.billedCpuMs).toBe(450);
-      expect(estimate.usd).toBe(
-        Math.round((CF_WORKERS_REQUEST_USD_PER_REQUEST + 450 * CF_WORKERS_CPU_USD_PER_MS) * 1e9) /
-          1e9,
-      );
+      expect(estimate.usd).toBe(0.0000093);
       expect(formatCloudflareCostUsd(estimate.usd)).toBe("$0.0000093");
       expect(formatCloudflareCostUsd(estimate.usd)).not.toMatch(/[eE]/);
     });
 
-    it("keeps a few hundred billed CPU-ms plus 1–2 requests far below a cent", () => {
+    it("keeps a few hundred this-request CPU-ms plus 1–2 requests far below a cent", () => {
       expect(CF_WORKERS_CPU_USD_PER_MS).toBe(0.02 / 1_000_000);
       expect(150 * CF_WORKERS_CPU_USD_PER_MS).toBeCloseTo(0.000003, 12);
       const estimate = estimateCloudflareConversionCost({
@@ -191,16 +313,34 @@ describe("cloudflare-conversion-cost", () => {
         workerBilledCpuMs: 150,
       });
       expect(estimate.requests).toBe(2);
-      expect(estimate.billedCpuMs).toBe(154);
+      expect(estimate.billedCpuMs).toBe(150);
+      expect(estimate.usd).toBe(0.0000036);
       expect(estimate.usd).toBeGreaterThan(0);
       expect(estimate.usd).toBeLessThan(0.01);
       expect(estimate.usd).toBeLessThan(0.0001);
       expect(estimate.usd).not.toBeCloseTo(3, 0);
+      expect(formatCloudflareCostUsd(estimate.usd)).toBe("$0.0000036");
       expect(formatCloudflareCostUsd(estimate.usd)).not.toMatch(/[eE]/);
-      for (const line of estimate.breakdown) {
-        expect(line.usd).toBeLessThan(0.01);
-        expect(formatCloudflareCostUsd(line.usd)).not.toMatch(/[eE]/);
-      }
+      expect(estimate.breakdown).toStrictEqual([
+        {
+          label: "compare WebSocket Upgrade",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "inference 変換（service binding）",
+          quantity: 1,
+          unitLabel: "リクエスト",
+          usd: 0.0000003,
+        },
+        {
+          label: "inference CPU（このレスポンス cpuTime）",
+          quantity: 150,
+          unitLabel: "ms",
+          usd: 0.000003,
+        },
+      ]);
     });
   });
 

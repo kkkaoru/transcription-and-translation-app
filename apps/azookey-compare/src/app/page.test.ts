@@ -1,3 +1,4 @@
+// This file runs with bun.
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { syncSpeechLanguage } from "../lib/speech-language";
@@ -189,6 +190,46 @@ describe("compare page speech settings", () => {
     expect(source).not.toContain("const [speechSupported, setSpeechSupported]");
   });
 
+  it("warms the Worker isolate when recognition starts, not when the first final arrives", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    const toggle = source.slice(
+      source.indexOf("const toggleListening"),
+      source.indexOf("const connectWorker"),
+    );
+    const workersAiBranch = toggle.slice(
+      toggle.indexOf("if (usingWorkersAi)"),
+      toggle.indexOf("const controller = speechRef.current"),
+    );
+    const webSpeechBranch = toggle.slice(toggle.indexOf("const controller = speechRef.current"));
+    const dispatch = source.slice(
+      source.indexOf("const dispatchFinalText"),
+      source.indexOf("const warmBrowserVibratoIfNeeded"),
+    );
+    expect(source.indexOf("const warmWorkerIsolateIfNeeded")).toBeGreaterThan(-1);
+    expect(source.indexOf("usesWorkerConversion(config.mode)")).toBeGreaterThan(-1);
+    expect(source.indexOf("await client.warmup()")).toBeGreaterThan(-1);
+    expect(source.indexOf("client.startIdlePin()")).toBeGreaterThan(-1);
+    expect(source.indexOf("client.stopIdlePin()")).toBeGreaterThan(-1);
+    expect(source.indexOf("client.startIdlePin()")).toBeLessThan(
+      source.indexOf("client.stopIdlePin()"),
+    );
+    expect(workersAiBranch.indexOf("warmWorkerIsolate: warmWorkerIsolateIfNeeded")).toBeGreaterThan(
+      -1,
+    );
+    expect(webSpeechBranch.indexOf("warmWorkerIsolate: warmWorkerIsolateIfNeeded")).toBeGreaterThan(
+      -1,
+    );
+    expect(workersAiBranch.indexOf("endLiveWorkerSession()")).toBeGreaterThan(-1);
+    expect(webSpeechBranch.indexOf("endLiveWorkerSession()")).toBeGreaterThan(-1);
+    expect(dispatch.indexOf("client.warmup(")).toBe(-1);
+    expect(dispatch.indexOf("startIdlePin")).toBe(-1);
+    expect(dispatch.indexOf("warmWorkerIsolate")).toBe(-1);
+    expect(source.indexOf("azookeyHealthUrlFromWebSocket(config.websocketUrl)")).toBeGreaterThan(
+      -1,
+    );
+    expect(source.indexOf("AZOOKEY_ISOLATE_HTTP_WARMUP_INIT")).toBeGreaterThan(-1);
+  });
+
   it("uses Silero VAD only for Workers AI ASR and skips it on Web Speech", () => {
     const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
     expect(source).toContain("WorkersAiAsrController");
@@ -225,6 +266,9 @@ describe("compare page speech settings", () => {
     expect(source).toContain('data-testid="utterance-cost-card"');
     expect(source).toContain('data-testid="utterance-conversion-cost"');
     expect(source).toContain('data-testid="utterance-asr-cost"');
+    expect(source).toContain('data-testid="utterance-conversion-cost-formula"');
+    expect(source).toContain('data-testid="utterance-asr-cost-formula"');
+    expect(source).toContain('data-testid="utterance-total-cost-formula"');
     expect(source).toContain("estimateCloudflareConversionCost");
     expect(source).toContain("formatCloudflareCostUsd");
     expect(source).toContain("料金（推定）");
@@ -232,10 +276,30 @@ describe("compare page speech settings", () => {
     expect(source).toContain("Cloudflare Workers AI（ASR）");
     expect(source).toContain("shouldShowWorkersAiAsrCostAmount");
     expect(source).toContain("utteranceAsrCostFields");
+    expect(source).toContain("USD_total = USD_worker + USD_asr");
+    expect(source).toContain("compareElapsedMs");
+    expect(source).toContain("performance.now()");
+    expect(source).toContain("socketUsage.compareElapsedMs");
+    expect(source).not.toContain("INFERENCE_WS_CONVERT_CALIBRATION");
+    expect(source).not.toContain("compareWsUpgradeBilledCpuMs");
+    expect(source).not.toContain("estimateBilledCpuMsFromWall");
     expect(source).toContain(
       "recognitionProvider: options.recognitionProvider ?? config.recognitionProvider",
     );
     expect(source).not.toContain("toExponential");
     expect(source).not.toContain("asrCostUsd > 0");
+  });
+
+  it("does not apply a browser custom-dictionary lexicon during convert", () => {
+    const source = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+    expect(source.indexOf("userDictionaryTsv")).toBe(-1);
+    expect(source.indexOf("customDictionaryTsvRef")).toBe(-1);
+    expect(source.indexOf("onTsvChange")).toBe(-1);
+    expect(source.indexOf("localStorage")).toBe(-1);
+    expect(
+      source.indexOf(
+        "<CustomDictionaryPanel websocketUrl={config.websocketUrl} auth={config.auth} />",
+      ),
+    ).not.toBe(-1);
   });
 });

@@ -1,3 +1,4 @@
+// This file runs with bun.
 import { describe, expect, it, vi } from "vitest";
 import {
   BROWSER_ZENZAI_DICT_EXECUTION,
@@ -693,23 +694,24 @@ describe("comparison conversion pipeline", () => {
     expect(previousConvertedLeftContext([])).toBeUndefined();
   });
 
-  it("forwards a custom dictionary TSV on the worker convert path", async () => {
-    const convertWithWorker = vi.fn(() =>
-      Promise.resolve({
+  it("does not send a browser lexicon on the worker convert path", async () => {
+    const sent: unknown[] = [];
+    const convertWithWorker = vi.fn((request: unknown) => {
+      sent.push(request);
+      return Promise.resolve({
         requestId: "r-user-dict",
         sourceText: "ぶいあーるちゃっと",
         convertedText: "VRC",
         receivedAt: Date.now(),
         model: "azookey-rust-wasm",
-      }),
-    );
+      });
+    });
     await runComparisonConversion(
       {
         ...baseInput,
         sourceText: "ぶいあーるちゃっと",
         mode: "worker-vibrato",
         converterModel: "azookey-rust-wasm",
-        userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n",
       },
       {
         runBrowserVibrato: vi.fn(() =>
@@ -720,10 +722,17 @@ describe("comparison conversion pipeline", () => {
         convertWithWorker,
       },
     );
-    expect(convertWithWorker).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userDictionaryTsv: "ぶいあーるちゃっと\tVRC\n",
-      }),
-    );
+    expect(sent).toStrictEqual([
+      {
+        source: "web-speech",
+        language: "ja",
+        sourceText: "ぶいあーるちゃっと",
+        vibratoInput: "ぶいあーるちゃっと",
+        mode: "worker-vibrato",
+        model: "azookey-rust-wasm",
+        vibratoExecution: "worker",
+        auth: { scheme: "none" },
+      },
+    ]);
   });
 });

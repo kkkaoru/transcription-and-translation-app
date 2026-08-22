@@ -1,4 +1,6 @@
+// This file runs with bun.
 import type { ComparisonAuth, ComparisonMode } from "./contract";
+import { COMPARE_INFERENCE_HEALTH_PATH } from "./inference-proxy";
 
 export type WorkerConnectionState = "idle" | "connecting" | "open" | "closed" | "error";
 export type VibratoExecution = "worker" | "browser-wasm";
@@ -12,6 +14,26 @@ export interface WorkerClientOptions {
   busyRetryDelayMs?: number;
   onStateChange?: (state: WorkerConnectionState) => void;
   onAdvertisedModels?: (models: readonly string[]) => void;
+}
+
+export interface AzookeyIsolateHttpWarmupInit {
+  method: "GET";
+  credentials: "same-origin";
+  cache: "no-store";
+}
+
+export interface AzookeyIsolateHttpWarmupInput {
+  websocketUrl: string;
+  fetchImpl: typeof fetch;
+}
+
+export interface WorkerWarmupOptions {
+  fetchImpl?: typeof fetch;
+}
+
+export interface WorkerIdlePinOptions {
+  intervalMs?: number;
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -40,8 +62,6 @@ export interface AzooKeyConvertRequest {
   resetContext?: boolean;
   /** Converted caption text for Zenz left context. Distinct from preceding.rcid/mid. */
   leftContext?: string;
-  /** Two-column custom dictionary TSV (`reading\\tword`). */
-  userDictionaryTsv?: string;
   auth?: ComparisonAuth;
 }
 
@@ -102,6 +122,23 @@ const MIN_BUSY_RETRIES = 0;
 const NORMAL_WEBSOCKET_CLOSE_CODE = 1_000;
 const RANDOM_ID_SUFFIX_START = 2;
 const RANDOM_ID_SUFFIX_END = 10;
+const WS_PROTOCOL = "ws:";
+const WSS_PROTOCOL = "wss:";
+const HTTP_PROTOCOL = "http:";
+const HTTPS_PROTOCOL = "https:";
+/** Cloudflare can drop an idle inbound WS; pin while the mic is open. */
+export const AZOOKEY_IDLE_PIN_INTERVAL_MS = 20_000;
+const IDLE_PIN_MIN_INTERVAL_MS = 1_000;
+export const AZOOKEY_IDLE_PIN_TYPE = "azookey.ping" satisfies "azookey.ping";
+export const AZOOKEY_IDLE_PIN_PONG_TYPE = "azookey.pong" satisfies "azookey.pong";
+export const AZOOKEY_IDLE_PIN_PAYLOAD = `{"type":"${AZOOKEY_IDLE_PIN_TYPE}"}`;
+
+/** Same-origin cookies (Cloudflare Access) are included; no token is added. */
+export const AZOOKEY_ISOLATE_HTTP_WARMUP_INIT: AzookeyIsolateHttpWarmupInit = {
+  method: "GET",
+  credentials: "same-origin",
+  cache: "no-store",
+};
 
 const clampNonNegativeInteger = (value: number | undefined, fallback: number): number => {
   if (value === undefined || !Number.isFinite(value)) {
@@ -341,6 +378,38 @@ const parseWorkerMessage = (payload: unknown): ParsedWorkerMessage | null => {
   };
 };
 
+/** Derive GET /v1/azookey from the comparison WebSocket URL. */
+export const azookeyHealthUrlFromWebSocket = (websocketUrl: string): string => {
+  const trimmed = websocketUrl.trim();
+  if (trimmed.length === 0) {
+    throw new Error("Cloudflare Worker WebSocket URL is required");
+  }
+  const healthUrl = new URL(trimmed);
+  if (healthUrl.protocol === WSS_PROTOCOL) {
+    healthUrl.protocol = HTTPS_PROTOCOL;
+  } else if (healthUrl.protocol === WS_PROTOCOL) {
+    healthUrl.protocol = HTTP_PROTOCOL;
+  } else if (healthUrl.protocol !== HTTPS_PROTOCOL && healthUrl.protocol !== HTTP_PROTOCOL) {
+    throw new Error("Cloudflare Worker isolate warmup requires a ws:// or wss:// URL");
+  }
+  healthUrl.pathname = COMPARE_INFERENCE_HEALTH_PATH;
+  healthUrl.search = "";
+  healthUrl.hash = "";
+  return healthUrl.toString();
+};
+
+/**
+ * Fire GET /v1/azookey so the Worker can waitUntil(warmAzookeyIsolate)
+ * even before the WebSocket upgrade finishes.
+ */
+export const warmupAzookeyIsolateHttp = (input: AzookeyIsolateHttpWarmupInput): Promise<void> => {
+  const healthUrl = azookeyHealthUrlFromWebSocket(input.websocketUrl);
+  return input.fetchImpl(healthUrl, AZOOKEY_ISOLATE_HTTP_WARMUP_INIT).then(
+    () => undefined,
+    () => undefined,
+  );
+};
+
 /** A reconnect-on-demand JSON WebSocket client for the comparison page. */
 export class AzooKeyWorkerClient {
   private readonly endpoint: string;
@@ -360,6 +429,10 @@ export class AzooKeyWorkerClient {
   private connectionAttempt: ConnectionAttempt | null = null;
   private activeConversion: QueuedConversion | null = null;
   private busyRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private idlePinTimer: ReturnType<typeof setInterval> | null = null;
+  private idlePinEnabled = false;
+  private idlePinIntervalMs = AZOOKEY_IDLE_PIN_INTERVAL_MS;
+  private idlePinFetchImpl?: typeof fetch;
   private closed = false;
   private state: WorkerConnectionState = "idle";
 
@@ -478,6 +551,7 @@ export class AzooKeyWorkerClient {
       } catch {
         // The socket is already closing or closed.
       }
+      this.reconnectIdlePinAfterDrop();
     };
     socket.onclose = (event) => {
       if (this.socket !== socket || this.socketGeneration !== generation) {
@@ -495,14 +569,96 @@ export class AzooKeyWorkerClient {
       attempt.reject(error);
       this.rejectPending(error);
       this.pumpConversions();
+      this.reconnectIdlePinAfterDrop();
     };
 
     return promise;
   }
 
+  /**
+   * Open (or reuse) the session WebSocket and fire GET /v1/azookey so isolate
+   * WASM + dictionary load can start at speech start, not first convert().
+   */
+  warmup(options?: WorkerWarmupOptions): Promise<void> {
+    const fetcher = options?.fetchImpl ?? (typeof fetch === "function" ? fetch : undefined);
+    if (fetcher) {
+      try {
+        void warmupAzookeyIsolateHttp({
+          websocketUrl: this.endpoint,
+          fetchImpl: fetcher,
+        });
+      } catch {
+        // Health GET is best-effort; WebSocket upgrade still warms the isolate.
+      }
+    }
+    return this.connect();
+  }
+
+  /**
+   * Keep the warmed isolate socket alive while the mic is open. Sends a tiny
+   * `azookey.ping` frame the Worker answers with `azookey.pong` (no convert,
+   * socket stays open). Cloudflare otherwise drops an idle inbound WS.
+   */
+  startIdlePin(options?: WorkerIdlePinOptions): void {
+    if (this.closed) {
+      return;
+    }
+    this.idlePinEnabled = true;
+    this.idlePinFetchImpl = options?.fetchImpl;
+    const requestedInterval = options?.intervalMs;
+    this.idlePinIntervalMs =
+      requestedInterval !== undefined && Number.isFinite(requestedInterval)
+        ? Math.max(IDLE_PIN_MIN_INTERVAL_MS, Math.floor(requestedInterval))
+        : AZOOKEY_IDLE_PIN_INTERVAL_MS;
+    if (this.idlePinTimer !== null) {
+      return;
+    }
+    this.idlePinTimer = setInterval(() => {
+      this.sendIdlePin();
+    }, this.idlePinIntervalMs);
+  }
+
+  stopIdlePin(): void {
+    this.idlePinEnabled = false;
+    this.idlePinFetchImpl = undefined;
+    if (this.idlePinTimer === null) {
+      return;
+    }
+    clearInterval(this.idlePinTimer);
+    this.idlePinTimer = null;
+  }
+
+  private sendIdlePin(): void {
+    if (!this.idlePinEnabled || this.closed) {
+      return;
+    }
+    const socket = this.socket;
+    if (typeof WebSocket !== "undefined" && socket?.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(AZOOKEY_IDLE_PIN_PAYLOAD);
+        return;
+      } catch {
+        this.reconnectIdlePinAfterDrop();
+        return;
+      }
+    }
+    this.reconnectIdlePinAfterDrop();
+  }
+
+  private reconnectIdlePinAfterDrop(): void {
+    if (!this.idlePinEnabled || this.closed) {
+      return;
+    }
+    const fetchImpl = this.idlePinFetchImpl;
+    void this.warmup(fetchImpl ? { fetchImpl } : undefined).catch(() => undefined);
+  }
+
   convert(
     request: Omit<AzooKeyConvertRequest, "type" | "requestId">,
   ): Promise<AzooKeyConvertResult> {
+    // One session socket: reuse the open WebSocket instead of opening a new
+    // upgrade per convert. Realtime captions cannot pay isolate WASM init
+    // on every utterance.
     const openSocket = this.socket;
     if (typeof WebSocket !== "undefined" && openSocket?.readyState === WebSocket.OPEN) {
       return this.enqueueConversion(request);
@@ -656,6 +812,7 @@ export class AzooKeyWorkerClient {
   }
 
   close(): void {
+    this.stopIdlePin();
     const error = new Error("Cloudflare Worker WebSocket を閉じました");
     this.closed = true;
     const socket = this.socket;
@@ -702,7 +859,11 @@ export class AzooKeyWorkerClient {
       return;
     }
     const payload = parseJsonMessage(text);
-    if (isRecord(payload) && readString(payload, "type") === "azookey.ready") {
+    const inboundType = isRecord(payload) ? readString(payload, "type") : undefined;
+    if (inboundType === AZOOKEY_IDLE_PIN_TYPE || inboundType === AZOOKEY_IDLE_PIN_PONG_TYPE) {
+      return;
+    }
+    if (isRecord(payload) && inboundType === "azookey.ready") {
       const models = Array.isArray(payload["models"])
         ? payload["models"].filter((model): model is string => typeof model === "string")
         : [];

@@ -1,4 +1,6 @@
 /**
+ * This file runs with bun.
+ *
  * Workers AI Nova-3 ASR list pricing (HTTP `env.AI.run` transport).
  *
  * @see https://developers.cloudflare.com/workers-ai/models/nova-3/
@@ -43,9 +45,20 @@ export interface WorkersAiAsrCostEstimate {
   neurons: number;
   note: string;
   sourceUrl: string;
+  formula: string;
 }
 
 export const WORKERS_AI_ASR_WEB_SPEECH_NOTE = "Cloudflare Workers AI 課金なし";
+
+export const WORKERS_AI_ASR_FORMULA_TEMPLATE: string = "USD = (audioSeconds / 60) × 0.0052";
+
+export const WEB_SPEECH_ASR_FORMULA: string = "USD = 0";
+
+export interface UtteranceAsrCostFields {
+  asrCostUsd: number;
+  asrCostSummaryJa: string;
+  asrCostFormula: string;
+}
 
 const roundUsd = (value: number): number => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
@@ -86,6 +99,11 @@ export const normalizeWorkersAiAsrAudioSeconds = (audioSeconds: number): number 
 /** Format USD without collapsing small nonzero values to $0.00. Decimal only. */
 export const formatWorkersAiAsrCostUsd = (usd: number): string => formatDecimalUsd(usd);
 
+const formatAsrAudioSecondsForFormula = (seconds: number): string => String(seconds);
+
+export const workersAiAsrCostFormula = (options: { audioSeconds: number; usd: number }): string =>
+  `${WORKERS_AI_ASR_FORMULA_TEMPLATE}\nUSD = (${formatAsrAudioSecondsForFormula(options.audioSeconds)} / 60) × 0.0052 = ${formatWorkersAiAsrCostUsd(options.usd)}`;
+
 /** Primary model-unit price from audio duration (HTTP per-minute rate). */
 export const estimateWorkersAiAsrCost = (audioSeconds: number): WorkersAiAsrCostEstimate => {
   const seconds = normalizeWorkersAiAsrAudioSeconds(
@@ -96,6 +114,7 @@ export const estimateWorkersAiAsrCost = (audioSeconds: number): WorkersAiAsrCost
   const neurons = roundNeurons(minutes * WORKERS_AI_ASR_HTTP_NEURONS_PER_AUDIO_MINUTE);
   const note =
     "Nova-3 HTTP（env.AI.run）: $0.0052/分 · 472.73 neurons/分。Neurons 超過は $0.011/1,000 neurons（Cloudflare Workers Paid・日 10k 無料枠超過分）。Cloudflare Workers 月額 $5 は按分しません。";
+  const formula = workersAiAsrCostFormula({ audioSeconds: seconds, usd });
   return {
     usd,
     audioSeconds: seconds,
@@ -103,6 +122,7 @@ export const estimateWorkersAiAsrCost = (audioSeconds: number): WorkersAiAsrCost
     neurons,
     note,
     sourceUrl: WORKERS_AI_ASR_MODEL_DOC_URL,
+    formula,
   };
 };
 
@@ -110,12 +130,12 @@ export const workersAiAsrCostSummaryJa = (estimate: WorkersAiAsrCostEstimate): s
   const secondsLabel = estimate.audioSeconds.toFixed(2);
   return (
     `Cloudflare Workers AI ASR 推定 ${formatWorkersAiAsrCostUsd(estimate.usd)} · ` +
-    `${secondsLabel}s · HTTP $0.0052/分 · ~${estimate.neurons} neurons`
+    `${secondsLabel}s · HTTP $0.0052/分 · ~${estimate.neurons} neurons\n${estimate.formula}`
   );
 };
 
 export const webSpeechAsrCostSummaryJa = (): string =>
-  `Web Speech ASR ${formatWorkersAiAsrCostUsd(0)} · ${WORKERS_AI_ASR_WEB_SPEECH_NOTE}`;
+  `Web Speech ASR ${formatWorkersAiAsrCostUsd(0)} · ${WORKERS_AI_ASR_WEB_SPEECH_NOTE}\n${WEB_SPEECH_ASR_FORMULA}`;
 
 export const isWorkersAiAsrRecognition = (
   provider?: RecognitionProvider | string,
@@ -137,16 +157,18 @@ export const shouldShowWorkersAiAsrCostAmount = (row: {
 export const utteranceAsrCostFields = (
   provider: RecognitionProvider | undefined,
   audioSeconds?: number,
-): { asrCostUsd: number; asrCostSummaryJa: string } => {
+): UtteranceAsrCostFields => {
   if (provider === "workers-ai-asr") {
     const estimate = estimateWorkersAiAsrCost(audioSeconds ?? 0);
     return {
       asrCostUsd: estimate.usd,
       asrCostSummaryJa: workersAiAsrCostSummaryJa(estimate),
+      asrCostFormula: estimate.formula,
     };
   }
   return {
     asrCostUsd: 0,
     asrCostSummaryJa: webSpeechAsrCostSummaryJa(),
+    asrCostFormula: WEB_SPEECH_ASR_FORMULA,
   };
 };

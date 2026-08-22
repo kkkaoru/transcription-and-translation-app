@@ -1,10 +1,18 @@
+// This file runs with bun.
 import { describe, expect, it, vi } from "vitest";
 import {
   BROWSER_VIBRATO_WARMUP_FAILURE_NOTICE_PREFIX,
   beginRecognitionListening,
+  recognitionErrorMessage,
+  WORKER_ISOLATE_WARMUP_FAILURE_NOTICE_PREFIX,
 } from "./recognition-listen";
 
 describe("beginRecognitionListening", () => {
+  it("normalizes empty and non-Error failures", () => {
+    expect(recognitionErrorMessage(new Error("   "))).toBe("予期しないエラーが発生しました");
+    expect(recognitionErrorMessage("failure")).toBe("予期しないエラーが発生しました");
+  });
+
   it("starts Workers AI ASR immediately even when Vibrato warmup fails", async () => {
     const start = vi.fn();
     const onWarmupNotice = vi.fn();
@@ -106,8 +114,77 @@ describe("beginRecognitionListening", () => {
     expect(scheduled, "must not queueMicrotask throw for Next overlay").toHaveLength(0);
     expect(micro).not.toHaveBeenCalled();
 
+    beginRecognitionListening({
+      provider: "workers-ai-asr",
+      start: () => Promise.reject("microphone unavailable"),
+      warmBrowserVibrato: async () => undefined,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(logged.mock.calls[1]?.[0]).toMatchObject({
+      message: "予期しないエラーが発生しました",
+    });
+
     logged.mockRestore();
     micro.mockRestore();
+  });
+
+  it("fires Worker isolate warmup immediately and never waits for it before start", async () => {
+    const start = vi.fn();
+    const warmWorkerIsolate = vi.fn(() => new Promise<void>(() => undefined));
+
+    beginRecognitionListening({
+      provider: "workers-ai-asr",
+      start,
+      warmBrowserVibrato: () => new Promise<void>(() => undefined),
+      warmWorkerIsolate,
+    });
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(warmWorkerIsolate).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires isolate warmup immediately for Web Speech before Vibrato warmup finishes", () => {
+    const start = vi.fn();
+    const warmWorkerIsolate = vi.fn(() => Promise.resolve());
+    const warmBrowserVibrato = vi.fn(() => new Promise<void>(() => undefined));
+
+    beginRecognitionListening({
+      provider: "web-speech",
+      start,
+      warmBrowserVibrato,
+      warmWorkerIsolate,
+      requireVibratoWarmup: true,
+    });
+
+    expect(warmWorkerIsolate).toHaveBeenCalledTimes(1);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("starts Web Speech even when isolate warmup fails", async () => {
+    const start = vi.fn();
+    const onWarmupNotice = vi.fn();
+    const onWarmupError = vi.fn();
+
+    beginRecognitionListening({
+      provider: "web-speech",
+      start,
+      warmBrowserVibrato: () => Promise.resolve(),
+      warmWorkerIsolate: () => Promise.reject(new Error("isolate cold")),
+      onWarmupNotice,
+      onWarmupError,
+      requireVibratoWarmup: true,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(onWarmupError).not.toHaveBeenCalled();
+    expect(onWarmupNotice).toHaveBeenCalledWith(
+      `${WORKER_ISOLATE_WARMUP_FAILURE_NOTICE_PREFIX}isolate cold`,
+    );
   });
 
   it("starts Web Speech after warmup notice when Vibrato is optional", async () => {

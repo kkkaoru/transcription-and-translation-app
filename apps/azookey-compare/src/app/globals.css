@@ -383,6 +383,12 @@ select:focus-visible {
   font-size: 13px;
 }
 
+.custom-dictionary-pager {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .field-help,
 .support-line {
   margin: 9px 0 0;
@@ -872,6 +878,17 @@ select:focus-visible {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.45;
+}
+
+.utterance-cost-formula {
+  display: block;
+  margin-top: 6px;
+  color: #2f6760;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .utterance-cost-row-empty {

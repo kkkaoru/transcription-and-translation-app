@@ -22,6 +22,18 @@ const nextConfig = {
             { source: "/ws/azookey", destination: `${inferenceOrigin}/ws/azookey` },
             { source: "/v1/azookey", destination: `${inferenceOrigin}/v1/azookey` },
             {
+              source: "/v1/azookey/:path*",
+              destination: `${inferenceOrigin}/v1/azookey/:path*`,
+            },
+            {
+              source: "/azookey/user-lexicon",
+              destination: `${inferenceOrigin}/azookey/user-lexicon`,
+            },
+            {
+              source: "/azookey/user-lexicon/:path*",
+              destination: `${inferenceOrigin}/azookey/user-lexicon/:path*`,
+            },
+            {
               source: "/v1/asr/workers-ai/transcriptions",
               destination: `${asrOrigin}/v1/asr/workers-ai/transcriptions`,
             },

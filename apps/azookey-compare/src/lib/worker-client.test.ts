@@ -1,9 +1,17 @@
+// This file runs with bun.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AZOOKEY_IDLE_PIN_INTERVAL_MS,
+  AZOOKEY_IDLE_PIN_PAYLOAD,
+  AZOOKEY_IDLE_PIN_PONG_TYPE,
+  AZOOKEY_IDLE_PIN_TYPE,
+  AZOOKEY_ISOLATE_HTTP_WARMUP_INIT,
   type AzooKeyConvertRequest,
   AzooKeyWorkerClient,
   AzooKeyWorkerError,
+  azookeyHealthUrlFromWebSocket,
   type WorkerConnectionState,
+  warmupAzookeyIsolateHttp,
   workerErrorReachedConverter,
   workerErrorStage,
 } from "./worker-client";
@@ -171,6 +179,252 @@ describe("AzooKey Worker client connection lifecycle", () => {
       completionSkipReason: "empty-left-context",
     });
     expect(states).toEqual(["connecting", "open"]);
+  });
+
+  it("reuses one WebSocket for sequential converts in the same session", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = openClient();
+    const first = client.convert(request());
+    await Promise.resolve();
+    const firstFrame: unknown = JSON.parse(socket.sent[0] ?? "{}");
+    if (!firstFrame || typeof firstFrame !== "object" || !("requestId" in firstFrame)) {
+      throw new Error("first convert frame is missing requestId");
+    }
+    if (typeof firstFrame.requestId !== "string") {
+      throw new Error("first convert requestId is not a string");
+    }
+    socket.message(JSON.stringify({ requestId: firstFrame.requestId, convertedText: "今日" }));
+    await expect(first).resolves.toMatchObject({ convertedText: "今日" });
+
+    const second = client.convert(request());
+    await Promise.resolve();
+    const secondFrame: unknown = JSON.parse(socket.sent[1] ?? "{}");
+    if (!secondFrame || typeof secondFrame !== "object" || !("requestId" in secondFrame)) {
+      throw new Error("second convert frame is missing requestId");
+    }
+    if (typeof secondFrame.requestId !== "string") {
+      throw new Error("second convert requestId is not a string");
+    }
+    socket.message(JSON.stringify({ requestId: secondFrame.requestId, convertedText: "天気" }));
+    await expect(second).resolves.toMatchObject({ convertedText: "天気" });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(socket.sent).toHaveLength(2);
+  });
+
+  it("derives GET /v1/azookey from ws and wss endpoints", () => {
+    expect(
+      azookeyHealthUrlFromWebSocket("wss://azookey-compare.kaoru.workers.dev/ws/azookey"),
+    ).toBe("https://azookey-compare.kaoru.workers.dev/v1/azookey");
+    expect(azookeyHealthUrlFromWebSocket("ws://127.0.0.1:8787/ws/azookey?token=nope#frag")).toBe(
+      "http://127.0.0.1:8787/v1/azookey",
+    );
+    expect(() => azookeyHealthUrlFromWebSocket(" ")).toThrow("WebSocket URL");
+    expect(() => azookeyHealthUrlFromWebSocket("ftp://example.invalid/ws/azookey")).toThrow(
+      "ws:// or wss://",
+    );
+  });
+
+  it("fires same-origin GET /v1/azookey before the WebSocket opens", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const fetchImpl = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws/azookey" });
+    const warming = client.warmup({ fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith("https://worker.example/v1/azookey", {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    expect(AZOOKEY_ISOLATE_HTTP_WARMUP_INIT).toStrictEqual({
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0]?.readyState).toBe(0);
+    FakeWebSocket.instances[0]?.open();
+    await warming;
+    expect(client.connectionState).toBe("open");
+  });
+
+  it("reuses one warmed WebSocket for sequential converts after warmup()", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const fetchImpl = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const warming = client.warmup({ fetchImpl });
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    await warming;
+    await client.warmup({ fetchImpl });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    const first = client.convert(request());
+    await Promise.resolve();
+    const firstFrame: unknown = JSON.parse(socket.sent[0] ?? "{}");
+    if (!firstFrame || typeof firstFrame !== "object" || !("requestId" in firstFrame)) {
+      throw new Error("first convert frame is missing requestId");
+    }
+    if (typeof firstFrame.requestId !== "string") {
+      throw new Error("first convert requestId is not a string");
+    }
+    socket.message(JSON.stringify({ requestId: firstFrame.requestId, convertedText: "今日" }));
+    await expect(first).resolves.toMatchObject({ convertedText: "今日" });
+
+    const second = client.convert(request());
+    await Promise.resolve();
+    const secondFrame: unknown = JSON.parse(socket.sent[1] ?? "{}");
+    if (!secondFrame || typeof secondFrame !== "object" || !("requestId" in secondFrame)) {
+      throw new Error("second convert frame is missing requestId");
+    }
+    if (typeof secondFrame.requestId !== "string") {
+      throw new Error("second convert requestId is not a string");
+    }
+    socket.message(JSON.stringify({ requestId: secondFrame.requestId, convertedText: "天気" }));
+    await expect(second).resolves.toMatchObject({ convertedText: "天気" });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(socket.sent).toHaveLength(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps warmup() successful when the isolate GET fails", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const fetchImpl = vi.fn(() => Promise.reject(new Error("health failed")));
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const warming = client.warmup({ fetchImpl });
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    await expect(warming).resolves.toBeUndefined();
+    expect(client.connectionState).toBe("open");
+    await warmupAzookeyIsolateHttp({
+      websocketUrl: "wss://worker.example/ws/azookey",
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips isolate GET when fetch is unavailable and still connects", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("fetch", undefined);
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const warming = client.warmup();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    await warming;
+    expect(client.connectionState).toBe("open");
+  });
+
+  it("sends an idle pin on the open socket and stops after stopIdlePin()", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const warming = client.warmup({ fetchImpl });
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    await warming;
+    expect(AZOOKEY_IDLE_PIN_INTERVAL_MS).toBe(20_000);
+    expect(AZOOKEY_IDLE_PIN_TYPE).toBe("azookey.ping");
+    expect(AZOOKEY_IDLE_PIN_PONG_TYPE).toBe("azookey.pong");
+    expect(AZOOKEY_IDLE_PIN_PAYLOAD).toBe('{"type":"azookey.ping"}');
+    client.startIdlePin({ intervalMs: 20_000, fetchImpl });
+    expect(socket.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(socket.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(socket.sent).toStrictEqual(['{"type":"azookey.ping"}']);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(socket.sent).toStrictEqual(['{"type":"azookey.ping"}', '{"type":"azookey.ping"}']);
+    socket.message(JSON.stringify({ type: "azookey.pong" }));
+    client.stopIdlePin();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(socket.sent).toStrictEqual(['{"type":"azookey.ping"}', '{"type":"azookey.ping"}']);
+    expect(client.connectionState).toBe("open");
+  });
+
+  it("treats azookey.pong as a no-op while a convert is pending", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { client, socket } = openClient();
+    const pending = client.convert(request());
+    await Promise.resolve();
+    const sent: unknown = JSON.parse(socket.sent[0] ?? "{}");
+    if (!sent || typeof sent !== "object" || !("requestId" in sent)) {
+      throw new Error("convert frame is missing requestId");
+    }
+    if (typeof sent.requestId !== "string") {
+      throw new Error("convert requestId is not a string");
+    }
+    socket.message(JSON.stringify({ type: "azookey.pong" }));
+    socket.message(JSON.stringify({ type: "azookey.pong", requestId: sent.requestId }));
+    socket.message(JSON.stringify({ type: "azookey.ping" }));
+    socket.message(
+      JSON.stringify({
+        requestId: sent.requestId,
+        convertedText: "今日の天気",
+      }),
+    );
+    await expect(pending).resolves.toMatchObject({
+      convertedText: "今日の天気",
+    });
+    expect(client.connectionState).toBe("open");
+  });
+
+  it("close() stops the idle pin and does not reconnect", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const warming = client.warmup({ fetchImpl });
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    await warming;
+    client.startIdlePin({ intervalMs: 20_000, fetchImpl });
+    client.close();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(socket.sent).toHaveLength(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.connectionState).toBe("closed");
+  });
+
+  it("reconnects and re-runs warmup without waiting for GET when the pin socket drops", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => undefined));
+    const client = new AzooKeyWorkerClient({ endpoint: "wss://worker.example/ws" });
+    const warming = client.warmup({ fetchImpl });
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) {
+      throw new Error("fake socket was not constructed");
+    }
+    socket.open();
+    await warming;
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    client.startIdlePin({ intervalMs: 20_000, fetchImpl });
+    socket.closeFromPeer(1006);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const replacement = FakeWebSocket.instances[1];
+    if (!replacement) {
+      throw new Error("idle pin did not reconnect");
+    }
+    expect(replacement).not.toBe(socket);
+    replacement.open();
+    expect(client.connectionState).toBe("open");
   });
 
   it("surfaces Zenzai fallback metadata from the Worker result", async () => {

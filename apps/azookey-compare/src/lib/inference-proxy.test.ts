@@ -25,6 +25,11 @@ describe("compare Worker inference proxy", () => {
     expect(shouldProxyToInference("/models/silero_vad_v6/silero_vad.onnx")).toBe(false);
     expect(shouldProxyToInference("/ort/ort-wasm-simd-threaded.wasm")).toBe(false);
     expect(shouldProxyToInference("/ws/azookey/extra")).toBe(false);
+    expect(shouldProxyToInference("/azookey/user-lexicon")).toBe(true);
+    expect(shouldProxyToInference("/azookey/user-lexicon/entries")).toBe(true);
+    expect(shouldProxyToInference("/azookey/user-lexicon/entries/id-1")).toBe(true);
+    expect(shouldProxyToInference("/azookey/user-lexicon/import")).toBe(true);
+    expect(shouldProxyToInference("/azookey/other")).toBe(false);
   });
 
   it("pins the hosted compare origin and same-origin WebSocket URL", () => {
@@ -91,6 +96,18 @@ describe("compare Worker inference proxy", () => {
       { source: "/ws/azookey", destination: "http://127.0.0.1:8787/ws/azookey" },
       { source: "/v1/azookey", destination: "http://127.0.0.1:8787/v1/azookey" },
       {
+        source: "/v1/azookey/:path*",
+        destination: "http://127.0.0.1:8787/v1/azookey/:path*",
+      },
+      {
+        source: "/azookey/user-lexicon",
+        destination: "http://127.0.0.1:8787/azookey/user-lexicon",
+      },
+      {
+        source: "/azookey/user-lexicon/:path*",
+        destination: "http://127.0.0.1:8787/azookey/user-lexicon/:path*",
+      },
+      {
         source: "/v1/asr/workers-ai/transcriptions",
         destination: "http://127.0.0.1:8790/v1/asr/workers-ai/transcriptions",
       },
@@ -107,6 +124,18 @@ describe("compare Worker inference proxy", () => {
     ).toEqual([
       { source: "/ws/azookey", destination: "http://127.0.0.1:9999/ws/azookey" },
       { source: "/v1/azookey", destination: "http://127.0.0.1:9999/v1/azookey" },
+      {
+        source: "/v1/azookey/:path*",
+        destination: "http://127.0.0.1:9999/v1/azookey/:path*",
+      },
+      {
+        source: "/azookey/user-lexicon",
+        destination: "http://127.0.0.1:9999/azookey/user-lexicon",
+      },
+      {
+        source: "/azookey/user-lexicon/:path*",
+        destination: "http://127.0.0.1:9999/azookey/user-lexicon/:path*",
+      },
       {
         source: "/v1/asr/workers-ai/transcriptions",
         destination: "http://127.0.0.1:8791/v1/asr/workers-ai/transcriptions",
@@ -125,6 +154,9 @@ describe("compare Worker inference proxy", () => {
     for (const pathname of COMPARE_INFERENCE_PROXY_PATHS) {
       expect(nextConfig).toContain(pathname);
     }
+    expect(nextConfig.indexOf("/v1/azookey/:path*")).not.toBe(-1);
+    expect(nextConfig.indexOf("/azookey/user-lexicon")).not.toBe(-1);
+    expect(nextConfig.indexOf("/azookey/user-lexicon/:path*")).not.toBe(-1);
   });
 
   it("requires local worker:dev wrangler.dev.jsonc to expose a Workers AI remote binding", () => {
