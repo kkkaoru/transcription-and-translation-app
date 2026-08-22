@@ -3,6 +3,7 @@ import {
   isLoopbackWorkersAiAsrEndpoint,
   probeWorkersAiAsrRoute,
   transcribeWorkersAiAsr,
+  WORKERS_AI_ASR_CLIENT_SEGMENTATION,
   WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA,
 } from "./workers-ai-asr-client";
 import { workersAiAsrSmokeWavFile } from "./workers-ai-asr-fixture";
@@ -29,6 +30,10 @@ describe("workers-ai-asr-client", () => {
     expect(url).toBe("https://compare.example/v1/asr/workers-ai/transcriptions");
     expect(init.method).toBe("POST");
     expect(init.body).toBeInstanceOf(FormData);
+    if (!(init.body instanceof FormData)) {
+      throw new Error("expected multipart form data");
+    }
+    expect(init.body.get("segmentation")).toBe(WORKERS_AI_ASR_CLIENT_SEGMENTATION);
   });
 
   it("forwards the Worker reading field when Nova-3 post-processing supplies it", async () => {
@@ -39,6 +44,7 @@ describe("workers-ai-asr-client", () => {
         language: "ja",
         model: "@cf/deepgram/nova-3",
         transport: "http",
+        segmentation: WORKERS_AI_ASR_CLIENT_SEGMENTATION,
       }),
     );
     const result = await transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
@@ -51,6 +57,7 @@ describe("workers-ai-asr-client", () => {
       language: "ja",
       model: "@cf/deepgram/nova-3",
       transport: "http",
+      segmentation: WORKERS_AI_ASR_CLIENT_SEGMENTATION,
     });
   });
 

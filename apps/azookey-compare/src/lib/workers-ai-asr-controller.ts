@@ -67,6 +67,13 @@ export interface WorkersAiAsrControllerOptions {
 const RECORDING_TIMESLICE_MS = 250;
 const RECORDING_INTERIM = "録音中…";
 const TRANSCRIBING_INTERIM = "認識中…";
+/** One active request plus at most two completed utterances waiting behind it. */
+const MAX_PENDING_RECOGNITIONS = 2;
+
+type PendingRecognition = {
+  wav: File;
+  audioSeconds: number;
+};
 
 export class WorkersAiAsrController {
   private readonly options: WorkersAiAsrControllerOptions;
@@ -91,6 +98,8 @@ export class WorkersAiAsrController {
   private captureActive = false;
   private flushing = false;
   private hadCommittedSpeech = false;
+  private recognitionQueue: PendingRecognition[] = [];
+  private recognitionDrain: Promise<void> | null = null;
   private disposed = false;
   private tapFrames = 0;
   private tapPeakRmsDb = Number.NEGATIVE_INFINITY;
@@ -198,6 +207,7 @@ export class WorkersAiAsrController {
     this.captureActive = false;
     this.teardownPcmTap();
     this.discardRecorder();
+    this.recognitionQueue = [];
     this.stopTracks();
     void this.closeAudioContext();
     this.releaseEngine();
@@ -209,24 +219,18 @@ export class WorkersAiAsrController {
    * Production uses 16 kHz PCM → Silero (or energy fallback).
    */
   public async ingestVadFrame(rmsDb: number, durationMs: number): Promise<void> {
-    if (this.disposed || this.requestedStop || this.flushing || this.state !== "listening") {
+    if (this.disposed || this.requestedStop || this.state !== "listening") {
       return;
     }
     await this.applyVadEvents(this.vad.pushFrame({ rmsDb, durationMs }));
   }
 
   public async ingestSamples(samples: Float32Array): Promise<void> {
-    if (this.disposed || this.requestedStop || this.flushing || this.state !== "listening") {
+    if (this.disposed || this.requestedStop || this.state !== "listening") {
       return;
     }
     const result = await this.processWithFallback(samples);
-    if (
-      !result ||
-      this.disposed ||
-      this.requestedStop ||
-      this.flushing ||
-      this.state !== "listening"
-    ) {
+    if (!result || this.disposed || this.requestedStop || this.state !== "listening") {
       return;
     }
     await this.applyVadEvents(this.vad.pushVadResult(result, samples));
@@ -468,7 +472,7 @@ export class WorkersAiAsrController {
   }
 
   private async onPcmTap(channel: Float32Array, sampleRate: number): Promise<void> {
-    if (this.disposed || this.requestedStop || this.flushing) {
+    if (this.disposed || this.requestedStop) {
       return;
     }
     this.notePcmTapFrame(channel);
@@ -496,13 +500,7 @@ export class WorkersAiAsrController {
           this.pcmFrames.push(Float32Array.from(chunk));
         }
         const result = await this.processWithFallback(chunk);
-        if (
-          !result ||
-          this.disposed ||
-          this.requestedStop ||
-          this.flushing ||
-          this.state !== "listening"
-        ) {
+        if (!result || this.disposed || this.requestedStop || this.state !== "listening") {
           return;
         }
         await this.applyVadEvents(this.vad.pushVadResult(result, chunk));
@@ -733,13 +731,20 @@ export class WorkersAiAsrController {
 
     if (options.requireSpeech && !hasSpeech) {
       this.discardRecorder();
-      this.options.onTranscript?.({ interimText: "" });
-      this.completeSessionOrRestart(options.restart);
+      this.flushing = false;
+      if (options.restart && !this.requestedStop) {
+        this.options.onTranscript?.({ interimText: "" });
+        this.setState("listening");
+        return;
+      }
+      await this.recognitionDrain;
+      if (this.state !== "error") {
+        this.completeStoppedSession();
+      }
       return;
     }
 
     try {
-      this.options.onTranscript?.({ interimText: TRANSCRIBING_INTERIM });
       let wav: File;
       let audioSeconds: number;
       if (usablePcm) {
@@ -758,27 +763,22 @@ export class WorkersAiAsrController {
         this.flushing = false;
         return;
       }
-      const result = await transcribeWorkersAiAsr(wav, {
-        endpointUrl: this.options.endpointUrl,
-        language: this.options.language,
-        auth: this.options.auth,
-      });
-      if (this.disposed) {
-        this.flushing = false;
+
+      // Resume VAD immediately. Network latency must not create a microphone
+      // blind spot between consecutive utterances.
+      this.flushing = false;
+      this.options.onTranscript?.({ interimText: TRANSCRIBING_INTERIM });
+      const drained = this.enqueueRecognition({ wav, audioSeconds });
+      if (options.restart && !this.requestedStop) {
+        this.setState("listening");
         return;
       }
-      const text = result.text.trim();
-      this.options.onTranscript?.({ interimText: "" });
-      if (text) {
-        this.options.onFinalText?.(text);
+      await drained;
+      if (this.state !== "error") {
+        this.completeStoppedSession();
       }
-      this.options.onUtteranceFinal?.({ text, audioSeconds });
-      this.completeSessionOrRestart(options.restart);
     } catch (error) {
       this.flushing = false;
-      if (this.state === "error") {
-        throw error;
-      }
       this.fail(
         error instanceof Error && error.message.trim() ? error.message : "認識に失敗しました",
         error,
@@ -786,20 +786,79 @@ export class WorkersAiAsrController {
     }
   }
 
-  private completeSessionOrRestart(restart: boolean): void {
+  private enqueueRecognition(job: PendingRecognition): Promise<void> {
+    if (this.recognitionQueue.length >= MAX_PENDING_RECOGNITIONS) {
+      // Keep the oldest pending turn and the newest live turn. Replacing the
+      // previous newest item bounds memory while prioritizing current speech.
+      this.recognitionQueue.splice(-1, 1, job);
+      this.options.onVadNotice?.(
+        "認識待ちが混雑したため、古い待機中の発話を最新の発話へ置き換えました",
+      );
+    } else {
+      this.recognitionQueue.push(job);
+    }
+    if (!this.recognitionDrain) {
+      this.recognitionDrain = this.drainRecognitionQueue().finally(() => {
+        this.recognitionDrain = null;
+      });
+    }
+    return this.recognitionDrain;
+  }
+
+  private async drainRecognitionQueue(): Promise<void> {
+    while (!this.disposed) {
+      const job = this.recognitionQueue.shift();
+      if (!job) {
+        return;
+      }
+      await this.transcribeRecognition(job);
+      if (this.state === "error") {
+        this.recognitionQueue = [];
+        return;
+      }
+    }
+  }
+
+  private async transcribeRecognition(job: PendingRecognition): Promise<void> {
+    try {
+      const result = await transcribeWorkersAiAsr(job.wav, {
+        endpointUrl: this.options.endpointUrl,
+        language: this.options.language,
+        auth: this.options.auth,
+      });
+      if (this.disposed) {
+        return;
+      }
+      const text = result.text.trim();
+      if (text) {
+        this.options.onFinalText?.(text);
+      }
+      this.options.onUtteranceFinal?.({ text, audioSeconds: job.audioSeconds });
+      if (this.vad.currentPhase === "idle") {
+        this.options.onTranscript?.({
+          interimText: this.recognitionQueue.length > 0 ? TRANSCRIBING_INTERIM : "",
+        });
+      }
+    } catch (error) {
+      if (!this.disposed) {
+        this.fail(
+          error instanceof Error && error.message.trim() ? error.message : "認識に失敗しました",
+          error,
+        );
+      }
+    }
+  }
+
+  private completeStoppedSession(): void {
     this.flushing = false;
     if (this.disposed) {
       return;
     }
-    if (!restart || this.requestedStop) {
-      this.teardownPcmTap();
-      this.stopTracks();
-      void this.closeAudioContext();
-      this.options.onTranscript?.({ interimText: "" });
-      this.setState("idle");
-      return;
-    }
-    this.setState("listening");
+    this.teardownPcmTap();
+    this.stopTracks();
+    void this.closeAudioContext();
+    this.options.onTranscript?.({ interimText: "" });
+    this.setState("idle");
   }
 
   private stopTracks(): void {

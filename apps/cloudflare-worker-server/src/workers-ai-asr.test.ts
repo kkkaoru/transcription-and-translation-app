@@ -5,6 +5,7 @@ import {
   createWorkersAiAsrTranscriber,
   handleWorkersAiAsrTranscription,
   postprocessWorkersAiAsrTranscript,
+  WORKERS_AI_ASR_CLIENT_SEGMENTATION,
   WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS,
   WORKERS_AI_ASR_HTTP_PATH,
   WORKERS_AI_ASR_LANGUAGE,
@@ -85,6 +86,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
 
     const formWithoutLanguage = new FormData();
     formWithoutLanguage.set("file", wavFile());
+    formWithoutLanguage.set("segmentation", WORKERS_AI_ASR_CLIENT_SEGMENTATION);
     const defaultLanguageResponse = await handleWorkersAiAsrTranscription(
       new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
         method: "POST",
@@ -95,6 +97,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     );
     await expect(defaultLanguageResponse.json()).resolves.toMatchObject({
       language: "ja",
+      segmentation: WORKERS_AI_ASR_CLIENT_SEGMENTATION,
     });
 
     const formWithBlankLanguage = new FormData();
@@ -112,6 +115,20 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       language: "ja",
     });
     expect(run).toHaveBeenCalledTimes(3);
+  });
+
+  it("trusts browser Silero segmentation instead of applying the Worker RMS VAD twice", async () => {
+    const run = vi.fn<WorkersAiAsrRun>(() => Promise.resolve(novaResult("小さい声")));
+    const transcribe = createWorkersAiAsrTranscriber({}, run);
+    const quiet = new Uint8Array(2_048 * 2);
+
+    await expect(transcribe(quiet)).resolves.toBe("");
+    expect(run).not.toHaveBeenCalled();
+
+    await expect(transcribe(quiet, undefined, undefined, { presegmented: true })).resolves.toBe(
+      "小さい声",
+    );
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("accepts the Workers AI raw response form", async () => {
@@ -293,6 +310,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       language: "ja",
       model: "@cf/deepgram/nova-3",
       transport: "http",
+      segmentation: "worker-energy-v1",
     });
     expect(run).toHaveBeenCalledTimes(1);
     expect(run.mock.calls[0]?.[0]).toBe("@cf/deepgram/nova-3");
@@ -324,6 +342,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       language: "ja",
       model: "@cf/deepgram/nova-3",
       transport: "http",
+      segmentation: "worker-energy-v1",
     });
   });
 
@@ -375,6 +394,17 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     missingFile.set("language", "ja");
     await expect(handleWorkersAiAsrTranscription(request(missingFile), {})).resolves.toMatchObject({
       status: 400,
+    });
+
+    const invalidSegmentation = new FormData();
+    invalidSegmentation.set("file", wavFile());
+    invalidSegmentation.set("segmentation", "untrusted-client");
+    const invalidSegmentationResponse = await handleWorkersAiAsrTranscription(
+      request(invalidSegmentation),
+      {},
+    );
+    await expect(invalidSegmentationResponse.json()).resolves.toMatchObject({
+      error: { code: "invalid_segmentation" },
     });
 
     const invalidWav = new FormData();

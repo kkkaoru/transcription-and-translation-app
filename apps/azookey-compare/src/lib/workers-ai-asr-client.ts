@@ -1,12 +1,15 @@
 import type { ComparisonAuth } from "./contract";
 import { COMPARE_WORKERS_AI_ASR_PATH } from "./inference-proxy";
 
+export const WORKERS_AI_ASR_CLIENT_SEGMENTATION = "client-silero-v1" as const;
+
 export interface WorkersAiAsrTranscriptionResult {
   text: string;
   reading?: string;
   language?: string;
   model?: string;
   transport?: string;
+  segmentation?: string;
 }
 
 export interface WorkersAiAsrClientOptions {
@@ -109,6 +112,9 @@ export const transcribeWorkersAiAsr = async (
   if (options.language?.trim()) {
     form.set("language", options.language.trim());
   }
+  // The controller sends one complete utterance already cut by browser Silero.
+  // Tell the Worker not to run its lower-fidelity RMS fallback over it again.
+  form.set("segmentation", WORKERS_AI_ASR_CLIENT_SEGMENTATION);
   let response: Response;
   try {
     response = await fetchImpl(endpoint, {
@@ -158,5 +164,6 @@ export const transcribeWorkersAiAsr = async (
     ...(body.language ? { language: body.language } : {}),
     ...(body.model ? { model: body.model } : {}),
     ...(body.transport ? { transport: body.transport } : {}),
+    ...(body.segmentation ? { segmentation: body.segmentation } : {}),
   };
 };

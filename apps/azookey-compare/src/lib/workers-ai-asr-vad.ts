@@ -3,12 +3,11 @@
  * 750ms energy hangover).
  *
  * Sources of truth:
- * - Silero engine contract: `packages/parapper-asr/src-tauri/src/recognition/segmentation/vad/engine.rs`
- * - Segment builder: `packages/parapper-asr/src-tauri/src/recognition/segmentation/segment/builder/`
- *   (`config.rs`, `facade.rs`)
- * - Defaults: `packages/parapper-asr/src-tauri/src/config/settings.rs`
+ * - Silero engine: `crates/parapper-engine/src/recognition/segmentation/vad/engine.rs`
+ * - Segment builder: `crates/parapper-engine/src/recognition/segmentation/segment/builder/`
+ * - Defaults: `crates/parapper-engine/src/config/settings.rs`
  *   (`DEFAULT_VAD_INTERVAL_MS=32`, `DEFAULT_VAD_THRESHOLD=0.5`,
- *   `segment_start_speech_ms=96`, `turn.check_silence_ms=320`,
+ *   `segment_start_speech_ms=96`, `turn.check_silence_ms=480`,
  *   `MAX_PHRASE_MILLIS=25_000`)
  * - Energy fallback gate: desktop `DEFAULT_SILENCE_GATE_DB = -50`
  *   (`apps/desktop/src/core/defaults.ts` + `apps/desktop/src/core/audio.ts`)
@@ -22,7 +21,7 @@ export const WORKERS_AI_ASR_VAD_DEFAULTS = {
   vadIntervalMs: 32,
   vadThreshold: 0.5,
   segmentStartSpeechMs: 96,
-  checkSilenceMs: 320,
+  checkSilenceMs: 480,
   maxPhraseMs: 25_000,
   silenceGateDb: -50,
   sileroChunkSamples: 512,

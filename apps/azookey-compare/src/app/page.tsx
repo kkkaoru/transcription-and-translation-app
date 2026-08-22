@@ -1302,7 +1302,7 @@ export default function ComparePage() {
         </button>
         <p className="field-help">
           {config.recognitionProvider === "workers-ai-asr"
-            ? "マイク権限を許可すると、ブラウザの Silero VAD v6（ONNX + ORT WASM）で発話を切り、Cloudflare Workers AI Nova-3 に送ります。無音 320ms で区切り、同じ録音のまま次の発話を待ちます。WASM を読めないときだけ -50 dBFS エネルギーゲートに倒します。"
+            ? "マイク権限を許可すると、ブラウザの Silero VAD v6（ONNX + ORT WASM）で発話を切り、Cloudflare Workers AI Nova-3 に送ります。無音 480ms で区切り、同じ録音のまま次の発話を待ちます。WASM を読めないときだけ -50 dBFS エネルギーゲートに倒します。"
             : "マイク権限を許可すると、確定した発話ごとに変換します。認識終了（final / onend）でも行を残します。Web Speech では Silero ONNX / ORT WASM は読み込みません。"}
         </p>
       </section>

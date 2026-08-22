@@ -1,8 +1,8 @@
 /**
  * Browser Silero VAD v6 via onnxruntime-web WASM.
  *
- * Tensor packing / state+context update matches Parapper:
- * `packages/parapper-asr/src-tauri/src/recognition/segmentation/vad/engine.rs`
+ * Tensor packing / state+context update matches the Native engine:
+ * `crates/parapper-engine/src/recognition/segmentation/vad/engine.rs`
  *
  * Only Workers AI ASR should construct this engine. Web Speech must never
  * download `/models/silero_vad_v6/` or `/ort/` WASM.

@@ -2,9 +2,8 @@
  * This file runs with bun.
  *
  * Parapper-aligned energy VAD / utterance segmentation for Worker ASR.
- * Same defaults as compare `workers-ai-asr-vad.ts` and Parapper
- * `DEFAULT_VAD_INTERVAL_MS=32`, `DEFAULT_VAD_THRESHOLD=0.5`,
- * `segment_start_speech_ms=96`, `turn.check_silence_ms=320`.
+ * Same defaults as compare `workers-ai-asr-vad.ts` and the Native engine:
+ * 32 ms frames, 0.5 speech threshold, 96 ms speech start, and 480 ms turn silence.
  * Hosted `/v1/asr/workers-ai/transcriptions` uses this before Nova-3.
  */
 
@@ -44,7 +43,7 @@ export const WORKER_ASR_VAD_DEFAULTS: WorkerAsrVadConfig = {
   vadIntervalMs: 32,
   vadThreshold: 0.5,
   segmentStartSpeechMs: 96,
-  checkSilenceMs: 320,
+  checkSilenceMs: 480,
   maxPhraseMs: 25_000,
   silenceGateDb: -50,
   chunkSamples: 512,
@@ -168,8 +167,8 @@ export class WorkerEnergyVadEngine {
 
 /**
  * Parapper SegmentBuilder without Namo. Consecutive speech ≥ 96 ms starts an
- * utterance; silence ≥ 320 ms or max-phrase / flush ends it. Mid-phrase gaps
- * shorter than 320 ms stay inside the same utterance.
+ * utterance; silence ≥ 480 ms or max-phrase / flush ends it. Mid-phrase gaps
+ * shorter than 480 ms stay inside the same utterance.
  */
 export class WorkerAsrVad {
   private readonly segmentStartChunks: number;

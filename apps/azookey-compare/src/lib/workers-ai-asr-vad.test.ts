@@ -101,13 +101,13 @@ describe("resolveWorkersAiAsrVadConfig", () => {
       vadIntervalMs: 32,
       vadThreshold: 0.5,
       segmentStartSpeechMs: 96,
-      checkSilenceMs: 320,
+      checkSilenceMs: 480,
       maxPhraseMs: 25_000,
       silenceGateDb: -50,
       sileroChunkSamples: 512,
     });
     expect(chunksForMillis(96, 32)).toBe(3);
-    expect(chunksForMillis(320, 32)).toBe(10);
+    expect(chunksForMillis(480, 32)).toBe(15);
     expect(chunksForMillis(25_000, 32)).toBe(782);
     expect(chunkCountForDurationMs(80, 32)).toBe(2);
     expect(chunkCountForDurationMs(96, 32)).toBe(3);
@@ -167,13 +167,13 @@ describe("WorkersAiAsrVad Parapper segment machine", () => {
     expect(pushSilenceMs(vad, 2_000)).toEqual([]);
   });
 
-  it("ends with silence after speech ≥ 96ms then 320ms quiet", () => {
+  it("ends with silence after speech ≥ 96ms then 480ms quiet", () => {
     const vad = new WorkersAiAsrVad();
     expect(eventTypes(pushSpeechMs(vad, WORKERS_AI_ASR_VAD_DEFAULTS.segmentStartSpeechMs))).toEqual(
       ["pending-start", "utterance-start"],
     );
     expect(vad.currentPhase).toBe("speech");
-    expect(utteranceEndReason(pushSilenceMs(vad, 319))).toBeUndefined();
+    expect(utteranceEndReason(pushSilenceMs(vad, 479))).toBeUndefined();
     expect(vad.currentPhase).toBe("speech");
     expect(utteranceEndReason(pushSilenceMs(vad, INTERVAL))).toBe("silence");
     expect(vad.currentPhase).toBe("idle");
@@ -201,13 +201,13 @@ describe("WorkersAiAsrVad Parapper segment machine", () => {
 
   it("keeps pre-speech padding out of the utterance chunk count", () => {
     const vad = new WorkersAiAsrVad();
-    expect(pushSilenceMs(vad, 320)).toEqual([]);
-    expect(vad.snapshot.preSpeechChunks).toBe(10);
+    expect(pushSilenceMs(vad, 480)).toEqual([]);
+    expect(vad.snapshot.preSpeechChunks).toBe(15);
     const events = pushSpeechMs(vad, 96);
     const start = events.find((event) => event.type === "utterance-start");
     expect(start?.type).toBe("utterance-start");
     if (start?.type === "utterance-start") {
-      expect(start.preSpeechChunks).toBe(10);
+      expect(start.preSpeechChunks).toBe(15);
       expect(start.utteranceChunks).toBe(3);
       expect(start.audioSoFar.length).toBeGreaterThan(0);
     }
@@ -218,19 +218,19 @@ describe("WorkersAiAsrVad Parapper segment machine", () => {
   it("can start a second utterance after silence end without a new instance", () => {
     const vad = new WorkersAiAsrVad();
     pushSpeechMs(vad, 96);
-    expect(utteranceEndReason(pushSilenceMs(vad, 320))).toBe("silence");
+    expect(utteranceEndReason(pushSilenceMs(vad, 480))).toBe("silence");
     expect(eventTypes(pushSpeechMs(vad, 96))).toEqual(["pending-start", "utterance-start"]);
-    expect(utteranceEndReason(pushSilenceMs(vad, 320))).toBe("silence");
+    expect(utteranceEndReason(pushSilenceMs(vad, 480))).toBe("silence");
   });
 
-  it("keeps speech alive across brief pauses shorter than 320ms", () => {
+  it("keeps speech alive across brief pauses shorter than 480ms", () => {
     const vad = new WorkersAiAsrVad();
     pushSpeechMs(vad, 96);
     expect(pushSilenceMs(vad, 160)).toEqual([]);
     expect(vad.currentPhase).toBe("speech");
     expect(pushSpeechMs(vad, 32)).toEqual([]);
     expect(vad.snapshot.silenceChunks).toBe(0);
-    expect(utteranceEndReason(pushSilenceMs(vad, 320))).toBe("silence");
+    expect(utteranceEndReason(pushSilenceMs(vad, 480))).toBe("silence");
   });
 
   it("resets mid-utterance and ignores invalid frame durations", () => {
@@ -270,7 +270,7 @@ describe("WorkersAiAsrVad Parapper segment machine", () => {
       vad.pushVadResult(speechVad, speech);
     }
     let end: WorkersAiAsrVadEvent | undefined;
-    for (let index = 0; index < 10; index += 1) {
+    for (let index = 0; index < 15; index += 1) {
       const events = vad.pushVadResult(silenceVad, quiet);
       end = events.find((event) => event.type === "utterance-end");
       if (end) {
@@ -281,10 +281,10 @@ describe("WorkersAiAsrVad Parapper segment machine", () => {
     if (end?.type !== "utterance-end") {
       return;
     }
-    // 3 speech chunks + at most 1 trailing pad (not all 10 silence chunks).
+    // 3 speech chunks + at most 1 trailing pad (not all 15 silence chunks).
     const maxSamples = SILERO_CHUNK_SAMPLES * 4;
     expect(end.fullAudio.length).toBeLessThanOrEqual(maxSamples);
     expect(end.fullAudio.length).toBeGreaterThanOrEqual(SILERO_CHUNK_SAMPLES * 3);
-    expect(vad.snapshot.preSpeechChunks).toBe(10);
+    expect(vad.snapshot.preSpeechChunks).toBe(15);
   });
 });

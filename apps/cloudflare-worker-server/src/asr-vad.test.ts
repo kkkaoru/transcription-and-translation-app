@@ -34,7 +34,7 @@ describe("Worker Parapper-aligned energy VAD", () => {
       vadIntervalMs: 32,
       vadThreshold: 0.5,
       segmentStartSpeechMs: 96,
-      checkSilenceMs: 320,
+      checkSilenceMs: 480,
       maxPhraseMs: 25_000,
       silenceGateDb: -50,
       chunkSamples: 512,
@@ -82,9 +82,9 @@ describe("Worker Parapper-aligned energy VAD", () => {
     expect(utterances[0]?.reason).toBe("flush");
   });
 
-  it("splits when silence reaches the 320 ms turn check", () => {
+  it("splits when silence reaches the 480 ms turn check", () => {
     const speech = loudPcm(512 * 4);
-    const gap = silentPcm(512 * 10);
+    const gap = silentPcm(512 * 15);
     const pcm = new Uint8Array(speech.length + gap.length + speech.length);
     pcm.set(speech, 0);
     pcm.set(gap, speech.length);

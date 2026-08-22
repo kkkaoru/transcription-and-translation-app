@@ -31,6 +31,8 @@ export const postprocessWorkersAiAsrTranscript = (
 /** The Workers AI partner model used only by the explicit `workers-ai` route. */
 export const WORKERS_AI_ASR_MODEL = "@cf/deepgram/nova-3" as const;
 export const WORKERS_AI_ASR_LANGUAGE = "ja" as const;
+/** Browser Silero has already produced one complete utterance. */
+export const WORKERS_AI_ASR_CLIENT_SEGMENTATION = "client-silero-v1" as const;
 
 /**
  * The gateway limits uploaded WAV files to MAX_AUDIO_BYTES.  The ASR adapter
@@ -69,6 +71,10 @@ export interface WorkersAiAsrBinding {
 export interface WorkersAiAsrEnvironment {
   AI?: WorkersAiAsrBinding;
   WORKERS_AI_ASR_TIMEOUT_MS?: string;
+}
+
+export interface WorkersAiAsrTranscribeOptions {
+  presegmented?: boolean;
 }
 
 export interface WorkersAiAsrResponse {
@@ -279,10 +285,20 @@ const validatePcm = (pcm: Uint8Array): void => {
 export const createWorkersAiAsrTranscriber = (
   env: WorkersAiAsrEnvironment,
   run?: WorkersAiAsrRun,
-): ((pcm: Uint8Array) => Promise<string>) => {
+): ((
+  pcm: Uint8Array,
+  signal?: AbortSignal,
+  request?: Request,
+  options?: WorkersAiAsrTranscribeOptions,
+) => Promise<string>) => {
   const runner = run ?? env.AI?.run.bind(env.AI);
   const timeoutMs = workersAiAsrTimeoutMs(env);
-  return async (pcm: Uint8Array): Promise<string> => {
+  return async (
+    pcm: Uint8Array,
+    _signal?: AbortSignal,
+    _request?: Request,
+    options: WorkersAiAsrTranscribeOptions = {},
+  ): Promise<string> => {
     validatePcm(pcm);
     if (!runner) {
       throw new GatewayError(
@@ -291,7 +307,9 @@ export const createWorkersAiAsrTranscriber = (
         "Workers AI ASR binding is not configured",
       );
     }
-    const utterances = segmentPcm16Utterances(pcm);
+    const utterances = options.presegmented
+      ? [{ pcm, reason: "flush" as const }]
+      : segmentPcm16Utterances(pcm);
     if (utterances.length === 0) {
       return postprocessWorkersAiAsrTranscript("").text;
     }
@@ -314,7 +332,7 @@ const jsonResponse = (status: number, body: Record<string, unknown>): Response =
 
 const readWavFromMultipart = async (
   request: Request,
-): Promise<{ wav: Uint8Array; language?: string }> => {
+): Promise<{ wav: Uint8Array; language?: string; presegmented: boolean }> => {
   let form: FormData;
   try {
     form = await request.formData();
@@ -328,9 +346,18 @@ const readWavFromMultipart = async (
   const languageValue = form.get("language");
   const language =
     typeof languageValue === "string" && languageValue.trim() ? languageValue.trim() : undefined;
+  const segmentationValue = form.get("segmentation");
+  if (segmentationValue !== null && segmentationValue !== WORKERS_AI_ASR_CLIENT_SEGMENTATION) {
+    throw new GatewayError(
+      HTTP_BAD_REQUEST,
+      "invalid_segmentation",
+      "segmentation must be client-silero-v1 when provided",
+    );
+  }
   return {
     wav: new Uint8Array(await fileValue.arrayBuffer()),
     ...(language ? { language } : {}),
+    presegmented: segmentationValue === WORKERS_AI_ASR_CLIENT_SEGMENTATION,
   };
 };
 
@@ -350,8 +377,9 @@ export const handleWorkersAiAsrTranscription = async (
   }
   let wav: Uint8Array;
   let language: string | undefined;
+  let presegmented = false;
   try {
-    ({ wav, language } = await readWavFromMultipart(request));
+    ({ wav, language, presegmented } = await readWavFromMultipart(request));
   } catch (error) {
     if (error instanceof GatewayError) {
       return jsonResponse(error.status, { error: { code: error.code, message: error.message } });
@@ -367,13 +395,16 @@ export const handleWorkersAiAsrTranscription = async (
   }
   const transcribe = createWorkersAiAsrTranscriber(env, run);
   try {
-    const processed = postprocessWorkersAiAsrTranscript(await transcribe(pcm));
+    const processed = postprocessWorkersAiAsrTranscript(
+      await transcribe(pcm, undefined, undefined, { presegmented }),
+    );
     return jsonResponse(200, {
       text: processed.text,
       reading: processed.reading,
       language: language ?? WORKERS_AI_ASR_LANGUAGE,
       model: WORKERS_AI_ASR_MODEL,
       transport: "http",
+      segmentation: presegmented ? WORKERS_AI_ASR_CLIENT_SEGMENTATION : "worker-energy-v1",
     });
   } catch (error) {
     if (error instanceof GatewayError) {

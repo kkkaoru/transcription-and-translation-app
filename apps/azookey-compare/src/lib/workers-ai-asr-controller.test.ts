@@ -322,6 +322,42 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
+  it("keeps segmenting a second utterance while the first Cloudflare request is pending", async () => {
+    installBrowser();
+    let resolveFirst: ((value: { text: string }) => void) | undefined;
+    vi.mocked(transcribeWorkersAiAsr)
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ text: string }>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ text: "二つ目" });
+    const { controller, events } = await startController();
+
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
+    await controller.ingestVadFrame(SILENT_DB, END_MS);
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+    expect(controller.currentState).toBe("listening");
+
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
+    await controller.ingestVadFrame(SILENT_DB, END_MS);
+    expect(FakeMediaRecorder.instances).toHaveLength(2);
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+
+    const stopped = controller.stop();
+    if (!resolveFirst) {
+      throw new Error("first recognition request did not start");
+    }
+    resolveFirst({ text: "一つ目" });
+    await stopped;
+
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(2);
+    expect(events.onFinalText.mock.calls.map(([text]) => text)).toEqual(["一つ目", "二つ目"]);
+    expect(controller.currentState).toBe("idle");
+    controller.dispose();
+  });
+
   it("reports audioSeconds from PCM length / 16 kHz, not sample count", async () => {
     installBrowser();
     vi.mocked(blobToPcm16Mono).mockResolvedValueOnce(new Int16Array(48_000));
@@ -819,7 +855,7 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(controller.supported).toBe(true);
     expect(controller.currentState).toBe("listening");
     const chunk = Float32Array.from({ length: 512 }, () => 0.4);
-    for (let index = 0; index < 13; index += 1) {
+    for (let index = 0; index < 18; index += 1) {
       await controller.ingestSamples(chunk);
     }
     expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);

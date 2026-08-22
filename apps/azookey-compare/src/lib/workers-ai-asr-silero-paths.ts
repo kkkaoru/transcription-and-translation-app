@@ -2,8 +2,7 @@
  * Public URLs for compare-hosted Silero VAD v6 + onnxruntime-web WASM.
  * Web Speech must never fetch these; only Workers AI ASR loads them.
  *
- * Parapper catalog:
- * `packages/parapper-asr/src-tauri/src/model/catalog.rs`
+ * Native model catalog: `crates/parapper-engine/src/model_catalog.rs`.
  * Path convention: `silero_vad_v6/silero_vad.onnx`
  */
 
