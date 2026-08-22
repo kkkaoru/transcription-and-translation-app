@@ -3,9 +3,6 @@
 /**
  * Install Kotoba Beacon Native as `$HOME/Applications/Kotoba Beacon Native.app`.
  *
- * This is intentionally separate from `install-macos-app.mjs`, which installs the
- * Tauri app to `/Applications/Kotoba Beacon.app`. Never write that destination.
- *
  * The bundle contains the Native executable, Syphon.framework, sherpa-onnx,
  * and ONNX Runtime. Recognition runs in-process; no sidecars are packaged.
  */
@@ -22,7 +19,7 @@ export const PRODUCT_NAME = "Kotoba Beacon Native";
 export const BUNDLE_ID = "com.kotobabeacon.native";
 export const BINARY_NAME = "kotoba-beacon-native";
 export const DEFAULT_INSTALL_APP = join(homedir(), "Applications", `${PRODUCT_NAME}.app`);
-export const TAURI_INSTALL_APP = "/Applications/Kotoba Beacon.app";
+export const RETIRED_APP_PATH = "/Applications/Kotoba Beacon.app";
 export const NATIVE_RUNTIME_LIBRARY_NAMES = [
   "libsherpa-onnx-c-api.dylib",
   "libonnxruntime.dylib",
@@ -30,8 +27,13 @@ export const NATIVE_RUNTIME_LIBRARY_NAMES = [
 ];
 
 const NATIVE_MANIFEST = join(repoRoot, "apps", "native", "Cargo.toml");
-const TAURI_DIR = join(repoRoot, "apps", "desktop", "src-tauri");
-const SYPHON_SOURCE = join(TAURI_DIR, "frameworks", "Syphon.framework");
+const SYPHON_SOURCE = join(
+  repoRoot,
+  "crates",
+  "caption-bridge-syphon",
+  "frameworks",
+  "Syphon.framework",
+);
 const BUNDLE_RPATH = "@executable_path/../Frameworks";
 const MIC_USAGE =
   "Kotoba Beacon Native needs microphone access to generate Japanese and English live captions.";
@@ -102,9 +104,9 @@ export const nativeInfoPlist = () => `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 
-export const assertNotTauriDestination = (installApp) => {
-  if (resolve(installApp) === resolve(TAURI_INSTALL_APP)) {
-    throw new Error(`refusing to overwrite the Tauri app at ${TAURI_INSTALL_APP}`);
+export const assertNotRetiredDestination = (installApp) => {
+  if (resolve(installApp) === resolve(RETIRED_APP_PATH)) {
+    throw new Error(`refusing to overwrite the retired app at ${RETIRED_APP_PATH}`);
   }
 };
 
@@ -161,7 +163,7 @@ export const assembleNativeApp = ({
   if (!existsSync(syphonFramework)) {
     throw new Error(`Syphon.framework was not found: ${syphonFramework}`);
   }
-  assertNotTauriDestination(installApp);
+  assertNotRetiredDestination(installApp);
 
   const parent = dirname(installApp);
   mkdirSync(parent, { recursive: true });
@@ -206,7 +208,7 @@ export const installBuiltNativeApp = ({
   findBinary = defaultNativeBinary,
   assemble = assembleNativeApp,
 } = {}) => {
-  assertNotTauriDestination(installApp);
+  assertNotRetiredDestination(installApp);
   build();
   const found = findBinary();
   if (!found.binary || found.profile !== "release") {

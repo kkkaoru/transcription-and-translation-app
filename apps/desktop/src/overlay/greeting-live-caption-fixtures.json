@@ -3,7 +3,7 @@
     "env": "KOTOBA_BEACON_GREETING_WAV",
     "voice": "Kyoko",
     "sampleRate": 16000,
-    "command": "KOTOBA_BEACON_GREETING_WAV=apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav bun run verify:tauri:ui",
+    "command": "node scripts/verify-native-asr.mjs",
     "note": "Checked-in 16 kHz mono PCM of the greeting. CI validates RIFF/WAVE plus overlay fixtures; live ASR playback is optional.",
     "clips": [
       {

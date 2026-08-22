@@ -39,6 +39,6 @@ browser and Worker assets. The BCCWJ project is identified at
 ## Other bundled components
 
 Additional bundled runtimes retain their upstream notices in place, including
-`apps/desktop/src-tauri/third-party/llama.cpp-MIT.txt`, the Syphon framework
-headers, and generated Parapper dependency-license metadata. Do not remove or
-replace these files when producing a release bundle.
+`crates/caption-bridge-syphon/frameworks/THIRD_PARTY_NOTICES.md` and generated
+Parapper dependency-license metadata. Do not remove or replace these files when
+producing a release bundle.

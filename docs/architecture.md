@@ -1,56 +1,59 @@
-# Architecture and OBS output boundary
+# Architecture and output boundaries
+
+## Native
 
 ```text
-Main window (settings + preview)        Overlay window (caption only)
-┌──────────────────────────────┐       ┌──────────────────────────────┐
-│ microphone / models / layout │       │ Japanese transcription       │
-│ inference endpoint selection │       │ English translation          │
-│ never publishes native frame │       │ transparent RGBA canvas      │
-└──────────────┬───────────────┘       └───────────────┬──────────────┘
-               │                                       │
-               └── Rust application state ─────────────┤
-                                                       ├─ OBS Window Capture
-                                                       ├─ Spout2 (Windows)
-                                                       └─ Syphon (macOS)
+CPAL microphone
+  → bounded PCM channel
+  → parapper-engine
+      Silero VAD
+      segmentation / turn detection
+      sherpa-onnx ASR
+      correction
+  → bounded translation channel
+  → caption state
+      ├─ GPUI Caption Output
+      ├─ Browser Source :1521
+      ├─ Syphon (macOS)
+      └─ Spout (Windows)
 ```
 
-The Tauri overlay is opened at `?overlay=1`; that route does not mount the
-main workspace or settings components. `NativeFramePublisher` also exists only
-on that route. Before Rust accepts a native frame it verifies both of the
-following:
+Native recognition and translation execute inside one OS process. There is no sidecar,
+internal WebSocket IPC, or Tauri runtime. Threads communicate through bounded channels;
+stale translation and caption revisions are rejected before publication.
 
-1. the invoking webview label is exactly `overlay`;
-2. the frame width and height exactly match the configured shared-output
-   resolution.
+`caption-bridge-render` owns the shared RGBA raster used by GPUI, Syphon, and Spout.
+`caption-bridge-browser-source` applies the persisted style contract to HTML/CSS.
 
-Consequently Spout2/Syphon can only receive the caption canvas. Settings,
-buttons, previews, and window chrome cannot enter their shared frames. The
-overlay has a transparent background, no decorations, and is non-resizable;
-saving the numeric width/height re-creates the native sender and updates the
-overlay dimensions atomically.
+## Browser and Cloudflare
+
+```text
+Browser microphone
+  → Web Audio / 16 kHz mono PCM
+  → browser utterance segmentation
+  → Cloudflare Worker ASR route
+  → transcript revision fence
+  → browser caption state
+```
+
+The Worker owns provider calls, request validation, size/time bounds, and normalized
+inference responses. Presentation and caption styling remain browser responsibilities.
+Native-only libraries such as sherpa-onnx and OS font enumeration are not bundled into
+the Worker.
 
 ## Layer ownership
 
-- `apps/desktop/src/live`, `apps/desktop/src/settings`, `apps/desktop/src/components`:
-  operator UI only
-- `apps/desktop/src/overlay`: transparent rendering and RGBA frame generation only
-- `apps/desktop/src/core`: browser audio capture, configuration, and Tauri bridge
-- `apps/desktop/src-tauri`: persistence, validation, pipeline, native window, and native
-  sender enforcement
-- `apps/inference-gateway`: HTTP/WS model boundary, usable locally or remotely
-- `packages/azookey-rust`: dependency-free AzooKey binary dictionary reader and
-  Viterbi converter, separately testable without GTK
+- `apps/native`: audio capture, in-process recognition/translation, GPUI windows
+- `apps/desktop/src`: browser capture, settings, captions, and browser rendering
+- `apps/cloudflare-worker-server`: Workers AI ASR and AzooKey HTTP/WS endpoints
+- `apps/inference-gateway`: portable inference HTTP boundary
+- `crates/parapper-engine`: reusable Native VAD/ASR/turn/translation engine
+- `crates/caption-bridge-render`: platform-neutral RGBA caption rendering
+- `crates/caption-bridge-browser-source`: localhost OBS Browser Source
+- `packages/azookey-rust`: AzooKey dictionary reader and Viterbi converter
 
-## AzooKey input scope
+## Output isolation
 
-The converter reads the public dictionary's `charID.chid`, LOUDS trie,
-`loudstxt3` shards, MID matrix (`mm.binary`), and CID connection costs
-(`cb/*.binary`). It also accepts upstream `user`/`memory` LOUDS directories or
-portable TSV dictionaries. That covers the conversion path relevant to an ASR
-caption string, including user dictionary and learning-memory candidates.
-
-Keyboard-specific upstream features such as Custard key layouts, live
-`ComposingText` editing, keyboard prediction UI, and iOS persistence are not
-part of an ASR caption input and are intentionally not brought into the Tauri
-process. Neural Zenzai-style conversion is offered through the selectable zenz
-GGUF gateway models instead of duplicating a model runtime in Rust.
+Settings and previews never enter shared caption frames. GPUI output uses a dedicated
+caption window, while Syphon and Spout receive only the renderer RGBA buffer. Browser
+Source serves only caption markup and its JSON/style state.

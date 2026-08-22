@@ -10,7 +10,7 @@
  * is not required.
  *
  * Optional local playback of the checked-in wav:
- *   KOTOBA_BEACON_GREETING_WAV=apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav bun run verify:tauri:ui
+ *   node scripts/verify-native-asr.mjs
  * Play 「こんにちは、きこえますか」 and confirm the overlay matches
  * `concat-hearing-*` / `append-kikoemasu`.
  */
@@ -254,11 +254,8 @@ export const assertGreetingFixtureInventory = (root = repositoryRoot) => {
     }
   }
   const primary = clips.find((row) => row.id === "kikoemasu");
-  if (!/verify:tauri:ui/.test(fixtures.playback?.command ?? "")) {
-    throw new Error("playback command must document verify:tauri:ui");
-  }
-  if (!fixtures.playback?.command?.includes(primary.wav)) {
-    throw new Error("playback command must point at the checked-in wav");
+  if (!/verify-native-asr\.mjs/.test(fixtures.playback?.command ?? "")) {
+    throw new Error("playback command must document Native ASR verification");
   }
   return {
     sanitizeCount: fixtures.sanitize.length,
@@ -326,10 +323,6 @@ export const assertGreetingHarnessWired = (root = repositoryRoot) => {
   const qualityGate = readFileSync(path.join(root, "scripts/verify-caption-quality.mjs"), "utf8");
   if (!qualityGate.includes("greeting-live-caption.harness.test.ts")) {
     throw new Error("verify-caption-quality.mjs must run the greeting harness");
-  }
-  const singleApp = readFileSync(path.join(root, "scripts/check-single-app.mjs"), "utf8");
-  if (!singleApp.includes("verify:greeting-caption")) {
-    throw new Error("check-single-app.mjs must require verify:greeting-caption");
   }
   return { harnessPath, script: pkg.scripts["verify:greeting-caption"] };
 };

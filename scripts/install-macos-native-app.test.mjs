@@ -3,15 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
-  assertNotTauriDestination,
+  assertNotRetiredDestination,
   BUNDLE_ID,
   DEFAULT_INSTALL_APP,
   installBuiltNativeApp,
   NATIVE_RUNTIME_LIBRARY_NAMES,
   nativeInfoPlist,
   PRODUCT_NAME,
+  RETIRED_APP_PATH,
   resolveNativeInstallApp,
-  TAURI_INSTALL_APP,
 } from "./install-macos-native-app.mjs";
 
 describe("macOS Native app install", () => {
@@ -27,11 +27,11 @@ describe("macOS Native app install", () => {
     );
   });
 
-  it("never overwrites the Tauri application", () => {
-    assert.equal(TAURI_INSTALL_APP, "/Applications/Kotoba Beacon.app");
+  it("never overwrites the retired application path", () => {
+    assert.equal(RETIRED_APP_PATH, "/Applications/Kotoba Beacon.app");
     assert.throws(
-      () => assertNotTauriDestination(TAURI_INSTALL_APP),
-      /refusing to overwrite the Tauri app/u,
+      () => assertNotRetiredDestination(RETIRED_APP_PATH),
+      /refusing to overwrite the retired app/u,
     );
   });
 

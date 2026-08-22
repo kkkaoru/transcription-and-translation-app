@@ -2,7 +2,6 @@ export const QUALITY_GATE_STEPS = [
   "rust:native:build",
   "lint",
   "format:check",
-  "check:single-app",
   "assets:verify",
   "test:build-cleanup",
   "typecheck",
@@ -45,7 +44,4 @@ export const QUALITY_GATE_STEPS = [
   "rust:wasm:lint",
   "rust:wasm:test",
   "rust:wasm:build",
-  "rust:fmt",
-  "rust:lint",
-  "rust:desktop:test",
 ];

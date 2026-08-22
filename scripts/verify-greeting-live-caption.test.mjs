@@ -20,7 +20,7 @@ describe("greeting live-caption regression harness", () => {
     const fixtures = loadGreetingLiveCaptionFixtures();
     assert.equal(inventory.playbackEnv, "KOTOBA_BEACON_GREETING_WAV");
     assert.equal(inventory.playbackWav, GREETING_WAV_RELATIVE_PATH);
-    assert.match(inventory.playbackCommand, /greeting-kikoemasu\.wav/);
+    assert.match(inventory.playbackCommand, /verify-native-asr\.mjs/);
     const wav = assertGreetingWavFixture();
     assert.equal(wav.wavPath.endsWith("greeting-kikoemasu.wav"), true);
     assert.ok(wav.bytes > 1024);

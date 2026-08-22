@@ -24,7 +24,6 @@
       "!.tools",
       "!.claude",
       "!.codex",
-      "!apps/desktop/src-tauri/gen",
       "!apps/azookey-compare/public/ort",
       "!models",
       "!packages/parapper-asr",

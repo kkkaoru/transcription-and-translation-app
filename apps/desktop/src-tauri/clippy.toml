@@ -1,8 +1,0 @@
-msrv = "1.97"
-
-# Keep the native command and sidecar orchestration code reviewable. These
-# values are intentionally checked in so local builds and CI use the same
-# complexity/size budget.
-cognitive-complexity-threshold = 17
-excessive-nesting-threshold = 3
-too-many-lines-threshold = 80

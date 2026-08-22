@@ -139,20 +139,7 @@ export const assertFmtGateParity = ({ packageJson, workflow }) =>
     exclusions: ciFmtExclusions,
   });
 
-export const ciGateExclusions = new Map([
-  [
-    matrixCommand,
-    "The desktop release build runs separately on macOS arm64/x64 and Windows runners.",
-  ],
-  [
-    "bun run check:macos-signing",
-    "This reports macOS signing credentials only on macOS release runners.",
-  ],
-  [
-    "bun run check:macos-autoswitch",
-    "This launches the built macOS app and is unavailable on other local platforms.",
-  ],
-]);
+export const ciGateExclusions = new Map();
 
 const buildCleanupTestsFromCommand = (command) =>
   new Set(command.split(/\s+/u).filter((value) => /^scripts\/[^/]+\.test\.mjs$/u.test(value)));

@@ -5,15 +5,15 @@
  *
  * The default lane is deterministic and safe to run in CI: desktop, Worker,
  * and inference-gateway tests/typechecks run concurrently.  Optional lanes
- * exercise the real Parapper WebSocket, browser screenshots, a packaged
- * Tauri app, a deployed Worker, and the future AzooKey comparison app.
+ * exercise the real Parapper WebSocket, browser screenshots, a deployed
+ * Worker, and the AzooKey comparison app.
  * Every command writes its complete output below the report directory and the
  * final JSON report records pass/fail/skipped/blocked without hiding failures.
  *
  * Usage:
  *   node scripts/recognition-integration.mjs
  *   node scripts/recognition-integration.mjs --ws --coverage
- *   node scripts/recognition-integration.mjs --ui --tauri
+ *   node scripts/recognition-integration.mjs --ui
  *   node scripts/recognition-integration.mjs --worker-url https://...
  *
  * Output defaults to /tmp/kotoba-recognition-integration-<timestamp>.
@@ -52,7 +52,6 @@ const report = {
     requireWebsocket: hasFlag("--require-ws"),
     coverage: hasFlag("--coverage"),
     ui: hasFlag("--ui"),
-    tauri: hasFlag("--tauri"),
     remoteWorker: Boolean(valueFor("--worker-url", process.env.RECOGNITION_WORKER_URL)),
   },
   results,
@@ -416,23 +415,6 @@ const runOptionalUi = async () => {
     note("UI screenshot lane requires an already-running Vite server and Playwright Chromium");
 };
 
-const runOptionalTauri = async () => {
-  if (!hasFlag("--tauri")) return;
-  await runRequiredCommand({
-    name: "Tauri packaged app smoke",
-    command: "node",
-    args: [
-      "scripts/tauri-smoke.mjs",
-      "--build",
-      "--ui",
-      "--exercise-capture",
-      "--out-dir",
-      path.join(outputDirectory, "tauri"),
-    ],
-    timeoutMs: 900_000,
-  });
-};
-
 const main = async () => {
   // Baseline checks are independent and intentionally start together.
   await Promise.all([...baselineCommands, ...comparisonAppCommands()].map(runRequiredCommand));
@@ -494,7 +476,6 @@ const main = async () => {
   if (hasFlag("--ws") || hasFlag("--require-ws")) await probeParapperWebSocket();
   await probeRemoteWorker();
   await runOptionalUi();
-  await runOptionalTauri();
 
   report.finishedAt = new Date().toISOString();
   report.failed = results.filter((entry) => entry.status === "fail").map((entry) => entry.name);
