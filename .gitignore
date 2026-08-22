@@ -13,6 +13,7 @@ coverage
 apps/desktop/src-tauri/target
 packages/**/target
 packages/**/src-tauri/target
+crates/**/target
 apps/desktop/src-tauri/gen
 apps/desktop/src-tauri/generated
 .tools
