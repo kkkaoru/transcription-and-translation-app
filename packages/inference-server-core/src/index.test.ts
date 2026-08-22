@@ -10,6 +10,15 @@ describe("core public exports", () => {
     expect(core.GatewayError).toBeTypeOf("function");
     expect(core.SerialGate).toBeTypeOf("function");
     expect(core.createGatewayFetchHandler).toBeTypeOf("function");
+    expect(core.isValidZenzDelimitedPrompt).toBeTypeOf("function");
     expect(core.validateGatewayConfig).toBeTypeOf("function");
+    expect(core.handleUserLexiconHttp).toBeTypeOf("function");
+    expect(core.createMemoryUserLexicon).toBeTypeOf("function");
+    expect(core.USER_LEXICON_BINDING).toBe("USER_LEXICON");
+    expect(core.USER_LEXICON_DO_NAME).toBe("hosted-compare");
+    expect(core.USER_LEXICON_MAX_ENTRIES).toBe(100_000);
+    expect(core.USER_LEXICON_MIN_READING_CHARS).toBe(2);
+    expect(core.USER_LEXICON_HTTP_PATH).toBe("/azookey/user-lexicon");
+    expect(core.USER_LEXICON_CONVERT_PATH).toBe("/v1/azookey/convert");
   });
 });

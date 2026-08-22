@@ -4,6 +4,7 @@ import {
   correlationHeadersFromRequest,
   createGatewayFetchHandler,
   GatewayError,
+  isValidZenzDelimitedPrompt,
   MAX_AUDIO_BYTES,
   MAX_JSON_BYTES,
   SerialGate,
@@ -339,17 +340,55 @@ describe("portable inference gateway HTTP contract", () => {
       model: "zenz-v3.2-small-gguf",
       choices: [{ message: { content: "精度が高い" } }],
     });
-    for (const payload of [
-      { model: "zenz-v3.2-small-gguf" },
-      { model: "zenz-v3.2-small-gguf", messages: [] },
-      { model: "zenz-v3.2-small-gguf", messages: ["bad"] },
-      { model: "zenz-v3.2-small-gguf", messages: [{ content: "bad" }] },
-      { model: "zenz-v3.2-small-gguf", messages: [{ content: "\u{EE00}\u{EE01}" }] },
-    ]) {
-      await expect(jsonBody(await handler(chat(payload)))).resolves.toMatchObject({
-        error: { code: "zenz_prompt_required" },
+    expect(isValidZenzDelimitedPrompt("\u{EE00}セイドガタカイ\u{EE01}")).toBe(true);
+    expect(isValidZenzDelimitedPrompt("\u{EE02}前の字幕\u{EE00}カタカナ\u{EE01}")).toBe(true);
+    expect(isValidZenzDelimitedPrompt("\u{EE00}キョウ\u{EE01}")).toBe(true);
+    expect(isValidZenzDelimitedPrompt("\u{EE00}\u{EE01}")).toBe(false);
+    expect(isValidZenzDelimitedPrompt("undelimited katakana")).toBe(false);
+    const missingMessages = await jsonBody(await handler(chat({ model: "zenz-v3.2-small-gguf" })));
+    expect(missingMessages).toMatchObject({ error: { code: "zenz_prompt_required" } });
+    const emptyMessages = await jsonBody(
+      await handler(chat({ model: "zenz-v3.2-small-gguf", messages: [] })),
+    );
+    expect(emptyMessages).toMatchObject({ error: { code: "zenz_prompt_required" } });
+    const badMessage = await jsonBody(
+      await handler(chat({ model: "zenz-v3.2-small-gguf", messages: ["bad"] })),
+    );
+    expect(badMessage).toMatchObject({ error: { code: "zenz_prompt_required" } });
+    const undelimited = await jsonBody(
+      await handler(chat({ model: "zenz-v3.2-small-gguf", messages: [{ content: "bad" }] })),
+    );
+    expect(undelimited).toMatchObject({ error: { code: "zenz_prompt_required" } });
+    const emptyDelimited = await jsonBody(
+      await handler(
+        chat({ model: "zenz-v3.2-small-gguf", messages: [{ content: "\u{EE00}\u{EE01}" }] }),
+      ),
+    );
+    expect(emptyDelimited).toMatchObject({ error: { code: "zenz_prompt_required" } });
+  });
+
+  it("accepts a v3 left-context Zenz prompt that starts with U+EE02", async () => {
+    const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        prompt: "\u{EE02}前の字幕\u{EE00}カタカナ\u{EE01}",
+        n_predict: 128,
+        temperature: 0,
+        stream: false,
       });
-    }
+      return Promise.resolve(new Response(JSON.stringify({ content: "続き" }), { status: 200 }));
+    });
+    const handler = createGatewayFetchHandler(config, { fetch: fetcher });
+    const response = await handler(
+      chat({
+        model: "zenz-v3.2-small-gguf",
+        messages: [{ role: "user", content: "\u{EE02}前の字幕\u{EE00}カタカナ\u{EE01}" }],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      model: "zenz-v3.2-small-gguf",
+      choices: [{ message: { content: "続き" } }],
+    });
   });
 
   it("maps Zenz upstream status and malformed responses", async () => {

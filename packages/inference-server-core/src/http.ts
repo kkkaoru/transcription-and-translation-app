@@ -1,5 +1,7 @@
 import { pcm16FromWav } from "./audio.js";
 import type { GatewayConfig, TextModelRoute } from "./config.js";
+import type { UserLexiconConverter, UserLexiconRpc } from "./user-lexicon.js";
+import { handleUserLexiconHttp } from "./user-lexicon-http.js";
 
 export const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
 export const MAX_JSON_BYTES = 256 * 1024;
@@ -14,7 +16,9 @@ const HTTP_INTERNAL_SERVER_ERROR = 500;
 const HTTP_BAD_GATEWAY = 502;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const DEFAULT_MAX_TOKENS = 128;
-const ZENZ_PROMPT_DELIMITER_LENGTH = 2;
+const ZENZ_INPUT_TAG: string = "\u{EE00}";
+const ZENZ_OUTPUT_TAG: string = "\u{EE01}";
+const ZENZ_LEFT_CONTEXT_TAG: string = "\u{EE02}";
 const HY_DEFAULT_TOP_K = 20;
 const HY_DEFAULT_REPETITION_PENALTY = 1.05;
 const ZERO_TEMPERATURE = 0;
@@ -57,6 +61,10 @@ export interface GatewayDependencies {
    * can propagate correlation headers without changing existing callers.
    */
   transcribe?: (pcm: Uint8Array, signal?: AbortSignal, request?: Request) => Promise<string>;
+  /** Worker-owned user lexicon. Convert never accepts a client TSV. */
+  userLexicon?: UserLexiconRpc;
+  convertWithUserLexicon?: UserLexiconConverter;
+  userLexiconCreateId?: () => string;
 }
 
 const CORRELATION_HEADER_NAMES = [
@@ -230,6 +238,36 @@ const completionEndpoint = (baseUrl: string): string => `${baseUrl.replace(/\/$/
 
 const isZenzModel = (model: string): boolean => model.startsWith("zenz-");
 
+const zenzKatakanaInput = (content: string): string => {
+  const inputTagAt = content.indexOf(ZENZ_INPUT_TAG);
+  if (inputTagAt < 0) {
+    return "";
+  }
+  const inputStart = inputTagAt + ZENZ_INPUT_TAG.length;
+  const v2ContextAt = content.indexOf(ZENZ_LEFT_CONTEXT_TAG, inputStart);
+  const inputEnd = v2ContextAt >= 0 ? v2ContextAt : content.length - ZENZ_OUTPUT_TAG.length;
+  return inputEnd > inputStart ? content.slice(inputStart, inputEnd) : "";
+};
+
+/**
+ * True for a Zenz conversion prompt that uses the model delimiters.
+ *
+ * No-context: U+EE00 + katakana + U+EE01
+ * v3 left-context: U+EE02 + context + U+EE00 + katakana + U+EE01
+ * v2 left-context: U+EE00 + katakana + U+EE02 + context + U+EE01
+ *
+ * Empty U+EE00 U+EE01 and undelimited chat text are rejected.
+ */
+export const isValidZenzDelimitedPrompt = (content: string): boolean => {
+  if (!content.endsWith(ZENZ_OUTPUT_TAG)) {
+    return false;
+  }
+  if (!content.startsWith(ZENZ_INPUT_TAG) && !content.startsWith(ZENZ_LEFT_CONTEXT_TAG)) {
+    return false;
+  }
+  return zenzKatakanaInput(content).length > 0;
+};
+
 const zenzPrompt = (payload: Json): string => {
   const messages = payload["messages"];
   if (!Array.isArray(messages)) {
@@ -244,12 +282,7 @@ const zenzPrompt = (payload: Json): string => {
     last && typeof last === "object" && !Array.isArray(last)
       ? (last as Record<string, unknown>)["content"]
       : undefined;
-  if (
-    typeof content !== "string" ||
-    !content.startsWith("\u{EE00}") ||
-    !content.endsWith("\u{EE01}") ||
-    content.length <= ZENZ_PROMPT_DELIMITER_LENGTH
-  ) {
+  if (typeof content !== "string" || !isValidZenzDelimitedPrompt(content)) {
     return fail(
       HTTP_BAD_REQUEST,
       "zenz_prompt_required",
@@ -366,6 +399,16 @@ export const createGatewayFetchHandler = (
       const path = new URL(request.url).pathname;
       if (request.method === "OPTIONS") {
         return new Response(null, { status: HTTP_NO_CONTENT });
+      }
+      const lexiconResponse = await handleUserLexiconHttp(request, {
+        ...(dependencies.userLexicon ? { lexicon: dependencies.userLexicon } : {}),
+        ...(dependencies.convertWithUserLexicon
+          ? { converter: dependencies.convertWithUserLexicon }
+          : {}),
+        ...(dependencies.userLexiconCreateId ? { createId: dependencies.userLexiconCreateId } : {}),
+      });
+      if (lexiconResponse) {
+        return lexiconResponse;
       }
       if (request.method === "GET" && path === "/health") {
         return json(HTTP_OK, { status: "ok", asr: "parapper", models: Object.keys(config.models) });
