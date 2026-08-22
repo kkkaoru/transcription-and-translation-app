@@ -6,23 +6,8 @@
  * This is intentionally separate from `install-macos-app.mjs`, which installs the
  * Tauri app to `/Applications/Kotoba Beacon.app`. Never write that destination.
  *
- * Locked bundle layout:
- *   Contents/MacOS/kotoba-beacon-native
- *   Contents/Frameworks/Syphon.framework
- *   Contents/Resources/sidecars/kotoba-parapper
- *   Contents/Resources/sidecars/kotoba-inference-gateway
- *   Contents/Resources/sidecars/kotoba-zenz-server
- *   Contents/Resources/sidecars/kotoba-llama-server
- *   Contents/Resources/macos-runtime
- *   Contents/Resources/zenz-runtime
- *   Contents/Resources/llama-runtime
- *   Contents/Resources/parapper-runtime   (copied when present)
- *   Contents/Resources/vibrato/...
- *   Contents/Resources/input-lm-tokenizer/...
- *
- * Sidecar dylib rpaths use `@executable_path/<runtime>`. The installer also
- * places relative symlinks under Contents/Resources/sidecars/ so those rpaths
- * resolve without rewriting the binaries.
+ * The bundle contains the Native executable, Syphon.framework, sherpa-onnx,
+ * and ONNX Runtime. Recognition runs in-process; no sidecars are packaged.
  */
 
 import { spawnSync } from "node:child_process";
@@ -38,24 +23,14 @@ export const BUNDLE_ID = "com.kotobabeacon.native";
 export const BINARY_NAME = "kotoba-beacon-native";
 export const DEFAULT_INSTALL_APP = join(homedir(), "Applications", `${PRODUCT_NAME}.app`);
 export const TAURI_INSTALL_APP = "/Applications/Kotoba Beacon.app";
-export const SIDECAR_BUILD_COMMAND = "bun run sidecar:build";
-export const NATIVE_SIDECAR_RELATIVE_DIR = join("Contents", "Resources", "sidecars");
-export const NATIVE_SIDECAR_NAMES = [
-  "kotoba-parapper",
-  "kotoba-inference-gateway",
-  "kotoba-zenz-server",
-  "kotoba-llama-server",
+export const NATIVE_RUNTIME_LIBRARY_NAMES = [
+  "libsherpa-onnx-c-api.dylib",
+  "libonnxruntime.dylib",
+  "libonnxruntime.1.24.4.dylib",
 ];
-export const REQUIRED_RUNTIME_DIR_NAMES = ["macos-runtime", "zenz-runtime", "llama-runtime"];
-export const OPTIONAL_RUNTIME_DIR_NAMES = ["parapper-runtime"];
-export const VIBRATO_FILE_NAMES = ["system.dic.zst", "COPYING", "NOTICE"];
 
 const NATIVE_MANIFEST = join(repoRoot, "apps", "native", "Cargo.toml");
 const TAURI_DIR = join(repoRoot, "apps", "desktop", "src-tauri");
-const TAURI_BINARIES_DIR = join(TAURI_DIR, "binaries");
-const TAURI_RESOURCES_DIR = join(TAURI_DIR, "resources");
-const VIBRATO_SOURCE_DIR = join(repoRoot, "assets", "vibrato", "ipadic-mecab-2_7_0");
-const TOKENIZER_SOURCE_DIR = join(TAURI_RESOURCES_DIR, "input-lm-tokenizer");
 const SYPHON_SOURCE = join(TAURI_DIR, "frameworks", "Syphon.framework");
 const BUNDLE_RPATH = "@executable_path/../Frameworks";
 const MIC_USAGE =
@@ -133,141 +108,6 @@ export const assertNotTauriDestination = (installApp) => {
   }
 };
 
-export const hostSidecarSuffix = (platform = process.platform, arch = process.arch) => {
-  const architecture = arch === "arm64" ? "arm64" : "x64";
-  if (platform !== "darwin") {
-    throw new Error(`Native macOS installer does not support ${platform}/${arch}`);
-  }
-  return architecture === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
-};
-
-export const sidecarDestination = (installApp, name) =>
-  join(installApp, NATIVE_SIDECAR_RELATIVE_DIR, name);
-
-export const missingSidecarMessage = (sourcePath) =>
-  `missing sidecar ${sourcePath}; build it with \`${SIDECAR_BUILD_COMMAND}\``;
-
-export const missingRuntimeMessage = (sourcePath) =>
-  `missing sidecar runtime ${sourcePath}; build it with \`${SIDECAR_BUILD_COMMAND}\``;
-
-export const resolveSidecarSource = (
-  binariesDir,
-  name,
-  { platform = process.platform, arch = process.arch } = {},
-) => {
-  const suffixed = join(binariesDir, `${name}-${hostSidecarSuffix(platform, arch)}`);
-  if (existsSync(suffixed)) {
-    return suffixed;
-  }
-  const unsuffixed = join(binariesDir, name);
-  if (existsSync(unsuffixed)) {
-    return unsuffixed;
-  }
-  return suffixed;
-};
-
-export const requireSidecarSources = (
-  binariesDir = TAURI_BINARIES_DIR,
-  { platform = process.platform, arch = process.arch } = {},
-) =>
-  NATIVE_SIDECAR_NAMES.map((name) => {
-    const source = resolveSidecarSource(binariesDir, name, { platform, arch });
-    if (!existsSync(source)) {
-      throw new Error(missingSidecarMessage(source));
-    }
-    return { name, source };
-  });
-
-const requireRuntimeDir = (resourcesDir, name) => {
-  const source = join(resourcesDir, name);
-  if (!existsSync(source)) {
-    throw new Error(missingRuntimeMessage(source));
-  }
-  return source;
-};
-
-const requireVibratoFiles = (vibratoDir) =>
-  VIBRATO_FILE_NAMES.map((name) => {
-    const source = join(vibratoDir, name);
-    if (!existsSync(source)) {
-      throw new Error(`missing vibrato resource ${source}`);
-    }
-    return { name, source };
-  });
-
-const requireTokenizerDir = (tokenizerDir) => {
-  if (!existsSync(tokenizerDir)) {
-    throw new Error(`missing tokenizer resource ${tokenizerDir}`);
-  }
-  return tokenizerDir;
-};
-
-export const copySidecarsIntoBundle = ({
-  installApp,
-  binariesDir = TAURI_BINARIES_DIR,
-  platform = process.platform,
-  arch = process.arch,
-} = {}) => {
-  const sidecarsDir = join(installApp, NATIVE_SIDECAR_RELATIVE_DIR);
-  mkdirSync(sidecarsDir, { recursive: true });
-  return requireSidecarSources(binariesDir, { platform, arch }).map(({ name, source }) => {
-    const destination = join(sidecarsDir, name);
-    runChecked("/bin/cp", [source, destination]);
-    runChecked("/bin/chmod", ["755", destination]);
-    return destination;
-  });
-};
-
-const copyRuntimeDirectory = (source, destination) => {
-  mkdirSync(dirname(destination), { recursive: true });
-  runChecked("/usr/bin/ditto", [source, destination]);
-};
-
-const linkSidecarRuntime = (sidecarsDir, name) => {
-  runChecked("/bin/ln", ["-s", join("..", name), join(sidecarsDir, name)]);
-};
-
-export const copyNativeBundleResources = ({
-  installApp,
-  binariesDir = TAURI_BINARIES_DIR,
-  resourcesDir = TAURI_RESOURCES_DIR,
-  vibratoDir = VIBRATO_SOURCE_DIR,
-  tokenizerDir = TOKENIZER_SOURCE_DIR,
-  platform = process.platform,
-  arch = process.arch,
-} = {}) => {
-  const resources = join(installApp, "Contents", "Resources");
-  const sidecarsDir = join(resources, "sidecars");
-  mkdirSync(resources, { recursive: true });
-
-  const sidecarPaths = copySidecarsIntoBundle({ installApp, binariesDir, platform, arch });
-
-  REQUIRED_RUNTIME_DIR_NAMES.map((name) => {
-    copyRuntimeDirectory(requireRuntimeDir(resourcesDir, name), join(resources, name));
-    linkSidecarRuntime(sidecarsDir, name);
-    return name;
-  });
-
-  OPTIONAL_RUNTIME_DIR_NAMES.map((name) => {
-    const source = join(resourcesDir, name);
-    if (!existsSync(source)) {
-      return name;
-    }
-    copyRuntimeDirectory(source, join(resources, name));
-    return name;
-  });
-
-  const vibratoDest = join(resources, "vibrato");
-  mkdirSync(vibratoDest, { recursive: true });
-  requireVibratoFiles(vibratoDir).map(({ name, source }) => {
-    runChecked("/bin/cp", [source, join(vibratoDest, name)]);
-    return name;
-  });
-
-  copyRuntimeDirectory(requireTokenizerDir(tokenizerDir), join(resources, "input-lm-tokenizer"));
-  return { sidecarPaths, resourcesDir: resources };
-};
-
 const existingRpaths = (binary) => {
   const output = runChecked("/usr/bin/otool", ["-l", binary]);
   return output
@@ -314,10 +154,6 @@ export const assembleNativeApp = ({
   sourceBinary,
   installApp = resolveNativeInstallApp(),
   syphonFramework = SYPHON_SOURCE,
-  binariesDir = TAURI_BINARIES_DIR,
-  resourcesDir = TAURI_RESOURCES_DIR,
-  vibratoDir = VIBRATO_SOURCE_DIR,
-  tokenizerDir = TOKENIZER_SOURCE_DIR,
 } = {}) => {
   if (!sourceBinary || !existsSync(sourceBinary)) {
     throw new Error(`native binary was not found: ${sourceBinary || "(none)"}`);
@@ -326,7 +162,6 @@ export const assembleNativeApp = ({
     throw new Error(`Syphon.framework was not found: ${syphonFramework}`);
   }
   assertNotTauriDestination(installApp);
-  requireSidecarSources(binariesDir);
 
   const parent = dirname(installApp);
   mkdirSync(parent, { recursive: true });
@@ -345,13 +180,13 @@ export const assembleNativeApp = ({
   runChecked("/bin/cp", [sourceBinary, join(macos, BINARY_NAME)]);
   runChecked("/bin/chmod", ["755", join(macos, BINARY_NAME)]);
   runChecked("/usr/bin/ditto", [syphonFramework, join(frameworks, "Syphon.framework")]);
-  copyNativeBundleResources({
-    installApp: staging,
-    binariesDir,
-    resourcesDir,
-    vibratoDir,
-    tokenizerDir,
-  });
+  for (const library of NATIVE_RUNTIME_LIBRARY_NAMES) {
+    const source = join(dirname(sourceBinary), library);
+    if (!existsSync(source)) {
+      throw new Error(`missing in-process recognition runtime library ${source}`);
+    }
+    runChecked("/bin/cp", ["-L", source, join(frameworks, library)]);
+  }
   rewriteBundleRpath(join(macos, BINARY_NAME));
 
   rmSync(installApp, { recursive: true, force: true });
