@@ -14,6 +14,7 @@ import {
   WORKERS_AI_ASR_MAX_TIMEOUT_MS,
   WORKERS_AI_ASR_MIN_TIMEOUT_MS,
   WORKERS_AI_ASR_MODEL,
+  WORKERS_AI_ASR_WHISPER_MODEL,
   type WorkersAiAsrRun,
   workersAiAsrTimeoutMs,
 } from "./workers-ai-asr.js";
@@ -117,6 +118,36 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     expect(run).toHaveBeenCalledTimes(3);
   });
 
+  it("selects Whisper Large V3 Turbo and forwards the requested language", async () => {
+    const run = vi.fn<WorkersAiAsrRun>((model, input) => {
+      expect(model).toBe(WORKERS_AI_ASR_WHISPER_MODEL);
+      expect(input.language).toBe("en");
+      expect(input.vad_filter).toBe(false);
+      expect(input.beam_size).toBe(1);
+      return Promise.resolve({ text: "hello from whisper" });
+    });
+    const form = new FormData();
+    form.set("file", wavFile());
+    form.set("language", "en");
+    form.set("model", WORKERS_AI_ASR_WHISPER_MODEL);
+    form.set("segmentation", "client-silero-v1");
+    const response = await handleWorkersAiAsrTranscription(
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {},
+      run,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      text: "hello from whisper",
+      language: "en",
+      model: "@cf/openai/whisper-large-v3-turbo",
+    });
+  });
+
   it("trusts browser Silero segmentation instead of applying the Worker RMS VAD twice", async () => {
     const run = vi.fn<WorkersAiAsrRun>(() => Promise.resolve(novaResult("小さい声")));
     const transcribe = createWorkersAiAsrTranscriber({}, run);
@@ -166,6 +197,14 @@ describe("Workers AI Nova-3 ASR adapter", () => {
 
     await expect(
       createWorkersAiAsrTranscriber({}, () => Promise.resolve({}))(pcm()),
+    ).rejects.toMatchObject({
+      status: 502,
+      code: "asr_workers_ai_invalid_response",
+    });
+    await expect(
+      createWorkersAiAsrTranscriber({}, () => Promise.resolve({}))(pcm(), undefined, undefined, {
+        model: WORKERS_AI_ASR_WHISPER_MODEL,
+      }),
     ).rejects.toMatchObject({
       status: 502,
       code: "asr_workers_ai_invalid_response",
@@ -394,6 +433,14 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     missingFile.set("language", "ja");
     await expect(handleWorkersAiAsrTranscription(request(missingFile), {})).resolves.toMatchObject({
       status: 400,
+    });
+
+    const invalidModel = new FormData();
+    invalidModel.set("file", wavFile());
+    invalidModel.set("model", "unsupported");
+    const invalidModelResponse = await handleWorkersAiAsrTranscription(request(invalidModel), {});
+    await expect(invalidModelResponse.json()).resolves.toMatchObject({
+      error: { code: "invalid_asr_model" },
     });
 
     const invalidSegmentation = new FormData();

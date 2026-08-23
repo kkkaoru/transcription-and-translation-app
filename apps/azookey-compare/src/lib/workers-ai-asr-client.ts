@@ -5,7 +5,9 @@ export interface ComparisonAuth {
   token?: string;
 }
 
-export const WORKERS_AI_ASR_CLIENT_SEGMENTATION = "client-silero-v1" as const;
+export const WORKERS_AI_ASR_CLIENT_SEGMENTATION = "client-silero-v1";
+export type BrowserAsrModel = "@cf/deepgram/nova-3" | "@cf/openai/whisper-large-v3-turbo";
+export type BrowserConversionModel = "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf";
 
 export interface WorkersAiPipelineLog {
   stage: "asr" | "vibrato" | "azookey";
@@ -26,11 +28,17 @@ export interface WorkersAiAsrTranscriptionResult {
   pipeline?: string;
   vibratoText?: string;
   logs?: WorkersAiPipelineLog[];
+  conversionModel?: BrowserConversionModel;
+  usedCompletion?: boolean;
+  modelFallback?: string;
 }
 
 export interface WorkersAiAsrClientOptions {
   endpointUrl?: string;
   language?: string;
+  model?: BrowserAsrModel;
+  conversionModel?: BrowserConversionModel;
+  leftContext?: string;
   auth?: ComparisonAuth;
   fetchImpl?: typeof fetch;
 }
@@ -81,6 +89,25 @@ const readAsrErrorMessage = (payload: unknown, status: number): string => {
   return `Cloudflare Workers AI ASR に失敗しました（${status}）`;
 };
 
+export const warmWorkersAiConversion = async (
+  options: WorkersAiAsrClientOptions = {},
+): Promise<void> => {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const endpoint = options.endpointUrl?.trim() || defaultEndpoint();
+  const url = new URL(
+    endpoint,
+    typeof window === "undefined" ? "http://127.0.0.1" : window.location.origin,
+  );
+  url.searchParams.set("conversionModel", options.conversionModel ?? "zenz-v3.2-xsmall-gguf");
+  const response = await fetchImpl(url.toString(), {
+    method: "GET",
+    headers: authHeaders(options.auth),
+  });
+  if (!response.ok) {
+    throw new Error(`Zenz Container warm-up failed (${String(response.status)})`);
+  }
+};
+
 export const probeWorkersAiAsrRoute = async (
   endpointUrl: string,
   options: { fetchImpl?: typeof fetch } = {},
@@ -127,6 +154,11 @@ export const transcribeWorkersAiAsr = async (
   );
   if (options.language?.trim()) {
     form.set("language", options.language.trim());
+  }
+  form.set("model", options.model ?? "@cf/deepgram/nova-3");
+  form.set("conversionModel", options.conversionModel ?? "zenz-v3.2-xsmall-gguf");
+  if (options.leftContext?.trim()) {
+    form.set("leftContext", options.leftContext.trim());
   }
   // The controller sends one complete utterance already cut by browser Silero.
   // Tell the Worker not to run its lower-fidelity RMS fallback over it again.
@@ -185,5 +217,8 @@ export const transcribeWorkersAiAsr = async (
     ...(body.pipeline ? { pipeline: body.pipeline } : {}),
     ...(body.vibratoText ? { vibratoText: body.vibratoText } : {}),
     ...(Array.isArray(body.logs) ? { logs: body.logs } : {}),
+    ...(body.conversionModel ? { conversionModel: body.conversionModel } : {}),
+    ...(typeof body.usedCompletion === "boolean" ? { usedCompletion: body.usedCompletion } : {}),
+    ...(body.modelFallback ? { modelFallback: body.modelFallback } : {}),
   };
 };

@@ -34,7 +34,7 @@ export const isCompareHtmlPath = (pathname: string): boolean => {
   if (lower.endsWith(".html") || lower.endsWith(".htm")) {
     return true;
   }
-  const lastSegment = pathname.split("/").pop() ?? "";
+  const lastSegment = pathname.slice(pathname.lastIndexOf("/") + 1);
   return lastSegment.length > 0 && !lastSegment.includes(".");
 };
 

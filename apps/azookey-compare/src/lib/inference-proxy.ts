@@ -3,13 +3,16 @@
 export const COMPARE_WORKERS_AI_ASR_PATH = "/v1/speech/workers-ai/azookey";
 export const COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH = COMPARE_WORKERS_AI_ASR_PATH;
 export const COMPARE_WORKER_ORIGIN = "https://azookey-compare.kaoru.workers.dev";
+export const COMPARE_USER_LEXICON_PATH = "/azookey/user-lexicon";
 
 export interface InferenceProxyEnv {
   AZOOKEY_API_TOKEN?: string;
 }
 
 export const shouldProxyToInference = (pathname: string): boolean =>
-  pathname === COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH;
+  pathname === COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH ||
+  pathname === COMPARE_USER_LEXICON_PATH ||
+  pathname.startsWith(`${COMPARE_USER_LEXICON_PATH}/`);
 
 export const inferenceProxyRequest = (request: Request, env: InferenceProxyEnv = {}): Request => {
   const headers = new Headers(request.headers);

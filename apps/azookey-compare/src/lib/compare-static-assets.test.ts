@@ -54,7 +54,10 @@ describe("compare static asset MIME helpers", () => {
 describe("compare ASSETS Cache-Control", () => {
   it("classifies HTML routes and hashed Next static paths", () => {
     expect(isCompareHtmlPath("/")).toBe(true);
+    expect(isCompareHtmlPath("")).toBe(true);
     expect(isCompareHtmlPath("/index.html")).toBe(true);
+    expect(isCompareHtmlPath("/INDEX.HTM")).toBe(true);
+    expect(isCompareHtmlPath("/nested/")).toBe(false);
     expect(isCompareHtmlPath("/overview")).toBe(true);
     expect(isCompareHtmlPath("/_next/static/chunks/app/page-abc.js")).toBe(false);
     expect(isHashedNextStaticPath("/_next/static/chunks/app/page-abc.js")).toBe(true);
@@ -70,6 +73,7 @@ describe("compare ASSETS Cache-Control", () => {
       compareAssetCacheControl("/_next/static/chunks/app/page-abc.js", "application/javascript"),
     ).toBe(COMPARE_HASHED_STATIC_CACHE_CONTROL);
     expect(compareAssetCacheControl("/ort/model.wasm", "application/wasm")).toBeUndefined();
+    expect(compareAssetCacheControl("/asset.bin", null)).toBeUndefined();
   });
 
   it("sets no-store on HTML even when ASSETS returned a revalidate cache header", () => {

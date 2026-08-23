@@ -13,6 +13,7 @@ import { type VadEngine, type VadResult, WORKERS_AI_ASR_VAD_DEFAULTS } from "./w
 
 vi.mock("./workers-ai-asr-client", () => ({
   transcribeWorkersAiAsr: vi.fn(async () => ({ text: "こんにちは" })),
+  warmWorkersAiConversion: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("./pcm-wav", async (importOriginal) => {

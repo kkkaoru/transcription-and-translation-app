@@ -31,6 +31,7 @@ import {
   BROWSER_VIBRATO_MODE,
   byteLimitTransform,
   collectStream,
+  convertAzookeyMessage,
   convertTextWithStoredUserLexicon,
   createVibratoWasmConverter,
   createWasmConverter,
@@ -86,6 +87,7 @@ export interface Env {
   CORS_ORIGIN?: string;
   MODEL_ROUTES: string;
   ASSETS?: WorkerAssets;
+  ZENZ_GGUF?: WorkerAssets;
 }
 
 export interface WorkerAssets {
@@ -110,6 +112,8 @@ export interface WorkerHandler {
 }
 
 const HTTP_OK = 200;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_SERVICE_UNAVAILABLE = 503;
 const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_GATEWAY = 502;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
@@ -118,6 +122,8 @@ const LOCAL_GATEWAY_PORT = 8765;
 const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
 /** Upper bound for the parapper ASR upstream JSON body before it is parsed. */
 const ASR_MAX_RESPONSE_BYTES = 65_536;
+const PIPELINE_AZOOKEY_TIMEOUT_MS = 30_000;
+const PIPELINE_ZENZ_COLD_START_TIMEOUT_MS = 25_000;
 // Keep entrypoint exports limited to the Worker handler/function shapes that
 // workerd accepts. Tests use the protocol path literal instead of exporting a
 // string binding from the module entrypoint.
@@ -344,10 +350,16 @@ const dictionaryFetchersFor = (
   azookeyDictionaryFetcher: AzookeyFetcher;
 } => {
   const platformFetcher = dependencies.fetcher ?? fallbackFetcher;
+  const zenzFetcher: AzookeyFetcher = (input, init) => {
+    const request = input instanceof Request ? new Request(input, init) : new Request(input, init);
+    return new URL(request.url).hostname === "zenz.internal" && env.ZENZ_GGUF
+      ? env.ZENZ_GGUF.fetch(request)
+      : platformFetcher(input, init);
+  };
   const assets = env.ASSETS;
   const assetFetcher = assets ? cachedAssetFetcher(assets, requestUrl) : undefined;
   return {
-    fetcher: platformFetcher,
+    fetcher: zenzFetcher,
     vibratoDictionaryFetcher:
       dependencies.vibratoDictionaryFetcher ??
       (assetFetcher && env.VIBRATO_DICTIONARY_URL?.trim().startsWith("/")
@@ -548,16 +560,71 @@ export const createWorker = (
           );
         }
         if (request.method === "GET") {
-          if (ctx) {
-            ctx.waitUntil(
-              Promise.all([
-                Promise.resolve(converter.warmup?.("http")),
-                Promise.resolve(vibrato.warmup?.()),
-              ]).then(() => undefined),
+          const conversionModel = url.searchParams.get("conversionModel");
+          if (
+            conversionModel !== null &&
+            conversionModel !== "zenz-v3.2-xsmall-gguf" &&
+            conversionModel !== "zenz-v3.2-small-gguf"
+          ) {
+            return cors(
+              json(HTTP_BAD_REQUEST, {
+                error: {
+                  code: "invalid_conversion_model",
+                  message: "Unsupported conversion model",
+                },
+              }),
+              env.CORS_ORIGIN,
+            );
+          }
+          const warmups: Promise<unknown>[] = [
+            Promise.resolve(converter.warmup?.("http")),
+            Promise.resolve(vibrato.warmup?.()),
+          ];
+          if (conversionModel) {
+            const route = parseModelRoutes(env.MODEL_ROUTES)[conversionModel];
+            if (!route) {
+              return cors(
+                json(HTTP_SERVICE_UNAVAILABLE, {
+                  error: {
+                    code: "conversion_model_unavailable",
+                    message: "Model route unavailable",
+                  },
+                }),
+                env.CORS_ORIGIN,
+              );
+            }
+            warmups.push(
+              Promise.resolve(fetchers.fetcher(`${route.baseUrl}/health`)).then(
+                async (response) => {
+                  await response.body?.cancel();
+                  if (!response.ok) {
+                    throw new Error(`Container health returned ${String(response.status)}`);
+                  }
+                },
+              ),
+            );
+          }
+          try {
+            await Promise.all(warmups);
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : "Unknown warm-up failure";
+            return cors(
+              json(HTTP_SERVICE_UNAVAILABLE, {
+                error: {
+                  code: "container_warmup_failed",
+                  message: "Zenz Container is unavailable",
+                  detail,
+                },
+              }),
+              env.CORS_ORIGIN,
             );
           }
           return cors(
-            json(HTTP_OK, { ok: true, pipeline: "workers-ai-vibrato-azookey-v2" }),
+            json(HTTP_OK, {
+              ok: true,
+              pipeline: "workers-ai-language-gated-azookey-v3",
+              ...(conversionModel ? { conversionModel } : {}),
+            }),
             env.CORS_ORIGIN,
           );
         }
@@ -566,10 +633,41 @@ export const createWorker = (
             asrEnvironment: workersAiEnvironment(env),
             ...(dependencies.workersAiRun ? { run: dependencies.workersAiRun } : {}),
             vibrato: (text, language) => Promise.resolve(vibrato(text, language)),
-            convert: (text) =>
-              converter.syncUserLexicon && converter.convertWithContext
-                ? convertTextWithStoredUserLexicon({ converter, lexicon: userLexicon, text })
-                : Promise.resolve(converter(text)),
+            convert: async ({ text, model, leftContext }) => {
+              const converted = await convertAzookeyMessage(
+                {
+                  type: "azookey.convert",
+                  requestId: crypto.randomUUID(),
+                  source: "web-speech",
+                  language: "ja",
+                  sourceText: text,
+                  vibratoInput: text,
+                  mode: AZOOKEY_MODE,
+                  model,
+                  leftContext: leftContext || "前文なし",
+                },
+                {
+                  converter,
+                  timeoutMs: PIPELINE_AZOOKEY_TIMEOUT_MS,
+                  zenzUpstreamMaxMs: PIPELINE_ZENZ_COLD_START_TIMEOUT_MS,
+                  modelRoutes: parseModelRoutes(env.MODEL_ROUTES),
+                  fetcher: fetchers.fetcher,
+                  userLexicon,
+                  wsOrHttp: "http",
+                },
+              );
+              if (converted.model !== model || converted.modelFallback) {
+                throw new Error(
+                  `${model} GGUF completion is unavailable; dictionary fallback is forbidden`,
+                );
+              }
+              return {
+                text: converted.convertedText,
+                model: converted.model,
+                usedCompletion: converted.usedCompletion,
+                ...(converted.modelFallback ? { modelFallback: converted.modelFallback } : {}),
+              };
+            },
           }),
           env.CORS_ORIGIN,
         );

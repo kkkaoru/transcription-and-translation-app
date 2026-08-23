@@ -85,6 +85,18 @@
         "vitest": "^3.2.4",
       },
     },
+    "apps/zenz-container": {
+      "name": "@caption-bridge/zenz-container",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cloudflare/containers": "^0.0.24",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20260702.1",
+        "typescript": "~5.8.3",
+        "wrangler": "^4.125.0",
+      },
+    },
     "packages/azookey-reading": {
       "name": "@caption-bridge/azookey-reading",
       "version": "0.1.0",
@@ -246,6 +258,10 @@
     "@caption-bridge/inference-server-core": ["@caption-bridge/inference-server-core@workspace:packages/inference-server-core"],
 
     "@caption-bridge/sentence-boundary": ["@caption-bridge/sentence-boundary@workspace:packages/sentence-boundary"],
+
+    "@caption-bridge/zenz-container": ["@caption-bridge/zenz-container@workspace:apps/zenz-container"],
+
+    "@cloudflare/containers": ["@cloudflare/containers@0.0.24", "", {}, "sha512-M9XMcaHSd2i2ijdFdc/1lq32loKe0fu3N3lSgH+BdzyWfLQDOoDVhYo42Agkagg6G4CJS8w9kzYhDjh3NPTrhw=="],
 
     "@cloudflare/kv-asset-handler": ["@cloudflare/kv-asset-handler@0.5.0", "", {}, "sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg=="],
 

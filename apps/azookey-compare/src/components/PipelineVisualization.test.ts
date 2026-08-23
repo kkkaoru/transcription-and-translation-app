@@ -11,7 +11,8 @@ describe("PipelineVisualization", () => {
     );
 
     expect(html).toMatch(/role="img"/);
-    expect(html).toMatch(/processed by Nova-3, Vibrato, and AzooKey/);
-    expect(html).toMatch(/viewBox="0 0 960 190"/);
+    expect(html).toMatch(/Cloudflare compare Worker service binding/);
+    expect(html).toMatch(/Cloudflare inference Worker boundaries/);
+    expect(html).toMatch(/viewBox="0 0 1160 250"/);
   });
 });

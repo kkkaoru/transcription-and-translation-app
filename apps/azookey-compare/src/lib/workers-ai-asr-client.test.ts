@@ -1,14 +1,53 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isLoopbackWorkersAiAsrEndpoint,
   probeWorkersAiAsrRoute,
   transcribeWorkersAiAsr,
   WORKERS_AI_ASR_CLIENT_SEGMENTATION,
   WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA,
+  warmWorkersAiConversion,
 } from "./workers-ai-asr-client";
 import { workersAiAsrSmokeWavFile } from "./workers-ai-asr-fixture";
 
 describe("workers-ai-asr-client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("wakes the selected Zenz Container before an utterance", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ ok: true }));
+    await warmWorkersAiConversion({
+      endpointUrl: "https://compare.example/v1/speech/workers-ai/azookey",
+      conversionModel: "zenz-v3.2-small-gguf",
+      fetchImpl,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://compare.example/v1/speech/workers-ai/azookey?conversionModel=zenz-v3.2-small-gguf",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("uses browser defaults for Container warm-up and reports failures", async () => {
+    vi.stubGlobal("window", { location: { origin: "https://compare.example" } });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(Response.json({ error: "down" }, { status: 503 }));
+
+    await warmWorkersAiConversion({
+      auth: { scheme: "bearer", token: "test-token" },
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      "https://compare.example/v1/speech/workers-ai/azookey?conversionModel=zenz-v3.2-xsmall-gguf",
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toStrictEqual({
+      authorization: "Bearer test-token",
+    });
+    await expect(warmWorkersAiConversion({ fetchImpl })).rejects.toThrow(
+      "Zenz Container warm-up failed (503)",
+    );
+  });
+
   it("posts multipart WAV to the explicit compare ASR route", async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json({
@@ -34,6 +73,8 @@ describe("workers-ai-asr-client", () => {
       throw new Error("expected multipart form data");
     }
     expect(init.body.get("segmentation")).toBe(WORKERS_AI_ASR_CLIENT_SEGMENTATION);
+    expect(init.body.get("model")).toBe("@cf/deepgram/nova-3");
+    expect(init.body.get("conversionModel")).toBe("zenz-v3.2-xsmall-gguf");
   });
 
   it("forwards the Worker reading field when Nova-3 post-processing supplies it", async () => {

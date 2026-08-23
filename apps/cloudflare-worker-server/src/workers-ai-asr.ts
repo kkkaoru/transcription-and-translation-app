@@ -28,9 +28,11 @@ export const postprocessWorkersAiAsrTranscript = (
   return { text, reading: readingForAzookey(text, passthroughReading) };
 };
 
-/** The Workers AI partner model used only by the explicit `workers-ai` route. */
-export const WORKERS_AI_ASR_MODEL = "@cf/deepgram/nova-3" as const;
-export const WORKERS_AI_ASR_LANGUAGE = "ja" as const;
+/** Supported batch ASR models. Nova-3 stays on its lower-cost HTTP path. */
+export const WORKERS_AI_ASR_MODEL = "@cf/deepgram/nova-3";
+export const WORKERS_AI_ASR_WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo";
+export type WorkersAiAsrModel = typeof WORKERS_AI_ASR_MODEL | typeof WORKERS_AI_ASR_WHISPER_MODEL;
+export const WORKERS_AI_ASR_LANGUAGE = "ja";
 /** Browser Silero has already produced one complete utterance. */
 export const WORKERS_AI_ASR_CLIENT_SEGMENTATION = "client-silero-v1" as const;
 
@@ -48,17 +50,21 @@ export const WORKERS_AI_ASR_MAX_TIMEOUT_MS = 30_000;
 /** Upper bound for the Workers AI raw Response body before it is parsed. */
 export const WORKERS_AI_ASR_MAX_RESPONSE_BYTES = 65_536;
 
-type WorkersAiAsrInput = {
-  audio: {
-    /** Nova-3 binding expects a readable stream of audio bytes (see Cloudflare docs). */
-    body: ReadableStream<Uint8Array>;
-    contentType: "audio/wav";
-  };
-  language: typeof WORKERS_AI_ASR_LANGUAGE;
-};
+interface WorkersAiAsrAudioInput {
+  body: ReadableStream<Uint8Array>;
+  contentType: "audio/wav";
+}
+
+interface WorkersAiAsrInput {
+  audio: WorkersAiAsrAudioInput;
+  language: string;
+  task?: "transcribe";
+  vad_filter?: boolean;
+  beam_size?: number;
+}
 
 export type WorkersAiAsrRun = (
-  model: typeof WORKERS_AI_ASR_MODEL,
+  model: WorkersAiAsrModel,
   input: WorkersAiAsrInput,
   options: { signal: AbortSignal },
 ) => Promise<unknown>;
@@ -75,6 +81,8 @@ export interface WorkersAiAsrEnvironment {
 
 export interface WorkersAiAsrTranscribeOptions {
   presegmented?: boolean;
+  language?: string;
+  model?: WorkersAiAsrModel;
 }
 
 export interface WorkersAiAsrResponse {
@@ -133,9 +141,15 @@ const malformedResponse = (): GatewayError =>
     "Workers AI ASR response has no transcript field",
   );
 
-const transcriptFromResult = (value: unknown): string => {
+const transcriptFromResult = (value: unknown, model: WorkersAiAsrModel): string => {
   if (!isRecord(value)) {
     throw malformedResponse();
+  }
+  if (model === WORKERS_AI_ASR_WHISPER_MODEL) {
+    if (typeof value["text"] !== "string") {
+      throw malformedResponse();
+    }
+    return value["text"];
   }
   const results = value["results"];
   if (!isRecord(results) || !Array.isArray(results["channels"])) {
@@ -228,18 +242,23 @@ const transcribeUtterance = async (
   runner: WorkersAiAsrRun,
   pcm: Uint8Array,
   timeoutMs: number,
+  model: WorkersAiAsrModel,
+  language: string,
 ): Promise<string> => {
   try {
     const result = await withTimeout(
       (signal) =>
         runner(
-          WORKERS_AI_ASR_MODEL,
+          model,
           {
             audio: {
               body: wavBodyStream(pcm16ToWav(pcm)),
               contentType: "audio/wav",
             },
-            language: WORKERS_AI_ASR_LANGUAGE,
+            language,
+            ...(model === WORKERS_AI_ASR_WHISPER_MODEL
+              ? { task: "transcribe", vad_filter: false, beam_size: 1 }
+              : {}),
           },
           { signal },
         ),
@@ -247,6 +266,7 @@ const transcribeUtterance = async (
     );
     return transcriptFromResult(
       result instanceof Response ? await resultFromRawResponse(result) : result,
+      model,
     );
   } catch (error) {
     if (error instanceof GatewayError) {
@@ -307,6 +327,8 @@ export const createWorkersAiAsrTranscriber = (
         "Workers AI ASR binding is not configured",
       );
     }
+    const model = options.model ?? WORKERS_AI_ASR_MODEL;
+    const language = options.language?.trim() || WORKERS_AI_ASR_LANGUAGE;
     const utterances = options.presegmented
       ? [{ pcm, reason: "flush" as const }]
       : segmentPcm16Utterances(pcm);
@@ -315,7 +337,10 @@ export const createWorkersAiAsrTranscriber = (
     }
     const transcripts = await utterances.reduce<Promise<string[]>>(async (previous, utterance) => {
       const collected = await previous;
-      return [...collected, await transcribeUtterance(runner, utterance.pcm, timeoutMs)];
+      return [
+        ...collected,
+        await transcribeUtterance(runner, utterance.pcm, timeoutMs, model, language),
+      ];
     }, Promise.resolve([]));
     return postprocessWorkersAiAsrTranscript(transcripts.join("")).text;
   };
@@ -330,9 +355,14 @@ const jsonResponse = (status: number, body: Record<string, unknown>): Response =
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 
-const readWavFromMultipart = async (
-  request: Request,
-): Promise<{ wav: Uint8Array; language?: string; presegmented: boolean }> => {
+interface WorkersAiAsrMultipart {
+  wav: Uint8Array;
+  language?: string;
+  model: WorkersAiAsrModel;
+  presegmented: boolean;
+}
+
+const readWavFromMultipart = async (request: Request): Promise<WorkersAiAsrMultipart> => {
   let form: FormData;
   try {
     form = await request.formData();
@@ -346,6 +376,20 @@ const readWavFromMultipart = async (
   const languageValue = form.get("language");
   const language =
     typeof languageValue === "string" && languageValue.trim() ? languageValue.trim() : undefined;
+  const modelValue = form.get("model");
+  const model =
+    modelValue === null || modelValue === WORKERS_AI_ASR_MODEL
+      ? WORKERS_AI_ASR_MODEL
+      : modelValue === WORKERS_AI_ASR_WHISPER_MODEL
+        ? WORKERS_AI_ASR_WHISPER_MODEL
+        : undefined;
+  if (!model) {
+    throw new GatewayError(
+      HTTP_BAD_REQUEST,
+      "invalid_asr_model",
+      "model must be @cf/deepgram/nova-3 or @cf/openai/whisper-large-v3-turbo",
+    );
+  }
   const segmentationValue = form.get("segmentation");
   if (segmentationValue !== null && segmentationValue !== WORKERS_AI_ASR_CLIENT_SEGMENTATION) {
     throw new GatewayError(
@@ -357,6 +401,7 @@ const readWavFromMultipart = async (
   return {
     wav: new Uint8Array(await fileValue.arrayBuffer()),
     ...(language ? { language } : {}),
+    model,
     presegmented: segmentationValue === WORKERS_AI_ASR_CLIENT_SEGMENTATION,
   };
 };
@@ -377,9 +422,10 @@ export const handleWorkersAiAsrTranscription = async (
   }
   let wav: Uint8Array;
   let language: string | undefined;
+  let model: WorkersAiAsrModel = WORKERS_AI_ASR_MODEL;
   let presegmented = false;
   try {
-    ({ wav, language, presegmented } = await readWavFromMultipart(request));
+    ({ wav, language, model, presegmented } = await readWavFromMultipart(request));
   } catch (error) {
     if (error instanceof GatewayError) {
       return jsonResponse(error.status, { error: { code: error.code, message: error.message } });
@@ -396,13 +442,17 @@ export const handleWorkersAiAsrTranscription = async (
   const transcribe = createWorkersAiAsrTranscriber(env, run);
   try {
     const processed = postprocessWorkersAiAsrTranscript(
-      await transcribe(pcm, undefined, undefined, { presegmented }),
+      await transcribe(pcm, undefined, undefined, {
+        presegmented,
+        ...(language ? { language } : {}),
+        model,
+      }),
     );
     return jsonResponse(200, {
       text: processed.text,
       reading: processed.reading,
       language: language ?? WORKERS_AI_ASR_LANGUAGE,
-      model: WORKERS_AI_ASR_MODEL,
+      model,
       transport: "http",
       segmentation: presegmented ? WORKERS_AI_ASR_CLIENT_SEGMENTATION : "worker-energy-v1",
     });

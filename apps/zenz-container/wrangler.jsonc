@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kotoba-beacon-zenz-gguf",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "containers": [
+    {
+      "name": "zenz-small",
+      "class_name": "ZenzSmallContainer",
+      "image": "./Dockerfile",
+      "image_vars": { "MODEL": "small" },
+      "instance_type": "standard-3",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-xsmall",
+      "class_name": "ZenzXsmallContainer",
+      "image": "./Dockerfile",
+      "image_vars": { "MODEL": "xsmall" },
+      "instance_type": "standard-3",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "ZENZ_SMALL", "class_name": "ZenzSmallContainer" },
+      { "name": "ZENZ_XSMALL", "class_name": "ZenzXsmallContainer" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-zenz-containers",
+      "new_sqlite_classes": ["ZenzSmallContainer", "ZenzXsmallContainer"]
+    }
+  ]
+}

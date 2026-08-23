@@ -29,8 +29,13 @@ export const DIAGRAM_MARKERS = [
   "/v1/speech/workers-ai/azookey",
   "D3.js visualization",
   "Nova-3",
+  "Whisper Large V3 Turbo",
   "Vibrato",
   "AzooKey",
+  "Zenz v3.2 XSmall GGUF",
+  "Zenz v3.2 Small GGUF",
+  "カスタム辞書",
+  "CLOUDFLARE ZENZ CONTAINER",
 ];
 export const DECIMAL_USD_FRACTION_PATTERN = /minimumFractionDigits:\s*8/;
 export const TO_EXPONENTIAL_CALL_PATTERN = /\.toExponential\s*\(/;

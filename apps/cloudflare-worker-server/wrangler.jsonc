@@ -27,7 +27,7 @@
   // different, owned HTTPS origin. Never add API tokens to this file.
   "vars": {
     "CORS_ORIGIN": "https://azookey-compare.kaoru.workers.dev",
-    "MODEL_ROUTES": "{\"zenz-v3.2-small-gguf\":{\"baseUrl\":\"https://zenz-gguf.kkk4oru.com\"}}",
+    "MODEL_ROUTES": "{\"zenz-v3.2-xsmall-gguf\":{\"baseUrl\":\"https://zenz.internal/xsmall\"},\"zenz-v3.2-small-gguf\":{\"baseUrl\":\"https://zenz.internal/small\"}}",
     "AZOOKEY_TIMEOUT_MS": "2000",
     "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz",
     "VIBRATO_DICTIONARY_URL": "/vibrato/system.dic.zst"
@@ -37,6 +37,12 @@
   "secrets": {
     "required": ["AZOOKEY_API_TOKEN"]
   },
+  "services": [
+    {
+      "binding": "ZENZ_GGUF",
+      "service": "kotoba-beacon-zenz-gguf"
+    }
+  ],
   // SQLite Durable Object for the hosted compare user lexicon.
   // Binding: USER_LEXICON. Isolated with idFromName("hosted-compare").
   "durable_objects": {

@@ -536,6 +536,8 @@ export interface AzookeyRuntime {
   /** The effective Worker-side stage; `passthrough` is an intentional identity adapter. */
   vibratoStage?: WorkerInputStage;
   timeoutMs: number;
+  /** Optional cold-container budget for the HTTP pipeline; WebSocket keeps the 400ms cap. */
+  zenzUpstreamMaxMs?: number;
   expectedToken?: string;
   handshakeAuthorized?: boolean;
   /** Optional Zenzai GGUF upstreams keyed by model id. */
@@ -2342,7 +2344,10 @@ export const convertAzookeyMessage = async (
           converted = dictionaryResult.text;
           completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT;
         } else {
-          const zenzBudget = Math.min(remainingMs(), AZOOKEY_ZENZ_UPSTREAM_MAX_MS);
+          const zenzBudget = Math.min(
+            remainingMs(),
+            runtime.zenzUpstreamMaxMs ?? AZOOKEY_ZENZ_UPSTREAM_MAX_MS,
+          );
           const zenzStartedAt = timingNowMs();
           const zenzHttp: ZenzHttpResult =
             zenzBudget <= 0

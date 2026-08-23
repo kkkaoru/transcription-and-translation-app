@@ -1,8 +1,11 @@
 import { blobToPcm16Mono, pcm16ToWavBytes } from "./pcm-wav";
 import {
+  type BrowserAsrModel,
+  type BrowserConversionModel,
   type ComparisonAuth,
   transcribeWorkersAiAsr,
   type WorkersAiPipelineLog,
+  warmWorkersAiConversion,
 } from "./workers-ai-asr-client";
 import { audioSecondsFromPcmLength } from "./workers-ai-asr-cost";
 import { SileroWasmVadEngine } from "./workers-ai-asr-silero";
@@ -51,12 +54,21 @@ export interface WorkersAiAsrUtteranceFinal {
   vibratoText?: string;
   pipeline?: string;
   logs?: WorkersAiPipelineLog[];
+  model?: string;
+  conversionModel?: BrowserConversionModel;
+  usedCompletion?: boolean;
+  modelFallback?: string;
 }
 
 export interface WorkersAiAsrControllerOptions {
   language: string;
+  model?: BrowserAsrModel;
+  conversionModel?: BrowserConversionModel;
+  deviceId?: string;
   endpointUrl?: string;
   auth?: ComparisonAuth;
+  /** Test seam: route warm-up and transcription through an injected fetcher. */
+  fetchImpl?: typeof fetch;
   /** Test seam: skip Silero ONNX/ORT download. Production leaves this unset. */
   disableSilero?: boolean;
   /** Test seam: inject a VAD engine (Silero mock or energy). */
@@ -112,6 +124,7 @@ export class WorkersAiAsrController {
   private tapPeakRmsDb = Number.NEGATIVE_INFINITY;
   private sileroError: string | undefined;
   private tapWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private leftContext = "";
 
   public constructor(language: string, options: WorkersAiAsrControllerOptions) {
     this.options = { ...options, language };
@@ -160,8 +173,18 @@ export class WorkersAiAsrController {
     this.hadCommittedSpeech = false;
     this.vad.reset();
     this.setState("starting");
+    if ((this.options.language ?? "").toLowerCase().startsWith("ja")) {
+      void warmWorkersAiConversion({
+        endpointUrl: this.options.endpointUrl,
+        conversionModel: this.options.conversionModel,
+        auth: this.options.auth,
+        fetchImpl: this.options.fetchImpl,
+      }).catch(() => undefined);
+    }
     try {
-      this.stream = await openWorkersAiAsrMicrophone({ audio: true });
+      this.stream = await openWorkersAiAsrMicrophone({
+        audio: this.options.deviceId ? { deviceId: { exact: this.options.deviceId } } : true,
+      });
       if (this.shouldAbortStart()) {
         this.stopTracks();
         return;
@@ -831,7 +854,11 @@ export class WorkersAiAsrController {
       const result = await transcribeWorkersAiAsr(job.wav, {
         endpointUrl: this.options.endpointUrl,
         language: this.options.language,
+        model: this.options.model,
+        conversionModel: this.options.conversionModel,
+        leftContext: this.leftContext,
         auth: this.options.auth,
+        fetchImpl: this.options.fetchImpl,
       });
       if (this.disposed) {
         return;
@@ -840,6 +867,7 @@ export class WorkersAiAsrController {
       if (text) {
         this.options.onFinalText?.(text);
       }
+      this.leftContext = result.convertedText?.trim() || text || this.leftContext;
       this.options.onUtteranceFinal?.({
         text,
         audioSeconds: job.audioSeconds,
@@ -847,6 +875,12 @@ export class WorkersAiAsrController {
         ...(result.vibratoText ? { vibratoText: result.vibratoText } : {}),
         ...(result.pipeline ? { pipeline: result.pipeline } : {}),
         ...(result.logs ? { logs: result.logs } : {}),
+        ...(result.model ? { model: result.model } : {}),
+        ...(result.conversionModel ? { conversionModel: result.conversionModel } : {}),
+        ...(typeof result.usedCompletion === "boolean"
+          ? { usedCompletion: result.usedCompletion }
+          : {}),
+        ...(result.modelFallback ? { modelFallback: result.modelFallback } : {}),
       });
       if (this.vad.currentPhase === "idle") {
         this.options.onTranscript?.({

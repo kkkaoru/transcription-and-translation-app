@@ -24,11 +24,12 @@ const wavFile = (): File => {
   return new File([bytes], "utterance.wav", { type: "audio/wav" });
 };
 
-const request = (): Request => {
+const request = (language = "ja"): Request => {
   const form = new FormData();
   form.set("file", wavFile());
-  form.set("language", "ja");
+  form.set("language", language);
   form.set("segmentation", "client-silero-v1");
+  form.set("conversionModel", "zenz-v3.2-xsmall-gguf");
   return new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
     method: "POST",
     body: form,
@@ -56,7 +57,13 @@ describe("Workers AI speech pipeline", () => {
 
   it("returns visible ASR, Vibrato, and AzooKey stages from one request", async () => {
     const vibrato = vi.fn(() => Promise.resolve("きょうはいいてんき"));
-    const convert = vi.fn(() => Promise.resolve("今日はいい天気"));
+    const convert = vi.fn(() =>
+      Promise.resolve({
+        text: "今日はいい天気",
+        model: "zenz-v3.2-xsmall-gguf",
+        usedCompletion: true,
+      }),
+    );
     const response = await handleWorkersAiSpeechPipeline(request(), {
       asrEnvironment: {},
       run: vi.fn(asrRun),
@@ -69,7 +76,7 @@ describe("Workers AI speech pipeline", () => {
       text: "きょうはいいてんき",
       vibratoText: "きょうはいいてんき",
       convertedText: "今日はいい天気",
-      pipeline: "workers-ai-vibrato-azookey-v2",
+      pipeline: "workers-ai-language-gated-azookey-v3",
       logs: [
         { stage: "asr", output: "きょうはいいてんき" },
         { stage: "vibrato", output: "きょうはいいてんき" },
@@ -77,11 +84,78 @@ describe("Workers AI speech pipeline", () => {
       ],
     });
     expect(vibrato).toHaveBeenCalledWith("きょうはいいてんき", "ja");
-    expect(convert).toHaveBeenCalledWith("きょうはいいてんき");
+    expect(convert).toHaveBeenCalledWith({
+      text: "きょうはいいてんき",
+      model: "zenz-v3.2-xsmall-gguf",
+      leftContext: "",
+    });
+  });
+
+  it("selects Small with left context and rejects an unknown conversion model", async () => {
+    const form = await request().formData();
+    form.set("conversionModel", "zenz-v3.2-small-gguf");
+    form.set("leftContext", "前の字幕");
+    const convert = vi.fn(() =>
+      Promise.resolve({
+        text: "今日はいい天気",
+        model: "zenz-v3.2-small-gguf",
+        usedCompletion: true,
+      }),
+    );
+    const selected = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      { asrEnvironment: {}, run: vi.fn(asrRun), vibrato: identityVibrato, convert },
+    );
+    expect(selected.status).toBe(200);
+    expect(convert).toHaveBeenCalledWith({
+      text: "きょうはいいてんき",
+      model: "zenz-v3.2-small-gguf",
+      leftContext: "前の字幕",
+    });
+
+    form.set("conversionModel", "unknown");
+    const invalid = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      { asrEnvironment: {}, run: vi.fn(asrRun), vibrato: identityVibrato, convert },
+    );
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toMatchObject({
+      error: { code: "invalid_conversion_model" },
+    });
+  });
+
+  it("skips Vibrato and AzooKey unless the requested language is ja", async () => {
+    const vibrato = vi.fn(identityVibrato);
+    const convert = vi.fn(() =>
+      Promise.resolve({ text: "unused", model: "zenz-v3.2-xsmall-gguf", usedCompletion: false }),
+    );
+    const response = await handleWorkersAiSpeechPipeline(request("en"), {
+      asrEnvironment: {},
+      run: vi.fn(asrRun),
+      vibrato,
+      convert,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      language: "en",
+      convertedText: "きょうはいいてんき",
+      logs: [{ stage: "asr" }],
+    });
+    expect(vibrato).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
   });
 
   it("does not invoke processing when ASR rejects the upload", async () => {
-    const convert = vi.fn(() => Promise.resolve("unused"));
+    const convert = vi.fn(() =>
+      Promise.resolve({ text: "unused", model: "zenz-v3.2-xsmall-gguf", usedCompletion: false }),
+    );
     const response = await handleWorkersAiSpeechPipeline(
       new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, { method: "GET" }),
       { asrEnvironment: {}, vibrato: identityVibrato, convert },
@@ -93,7 +167,9 @@ describe("Workers AI speech pipeline", () => {
 
   it("returns an empty result without invoking morphology for silence", async () => {
     const vibrato = vi.fn(identityVibrato);
-    const convert = vi.fn(() => Promise.resolve("unused"));
+    const convert = vi.fn(() =>
+      Promise.resolve({ text: "unused", model: "zenz-v3.2-xsmall-gguf", usedCompletion: false }),
+    );
     const response = await handleWorkersAiSpeechPipeline(request(), {
       asrEnvironment: {},
       run: vi.fn(() =>
@@ -108,7 +184,7 @@ describe("Workers AI speech pipeline", () => {
       text: "",
       vibratoText: "",
       convertedText: "",
-      pipeline: "workers-ai-vibrato-azookey-v2",
+      pipeline: "workers-ai-language-gated-azookey-v3",
       logs: [],
     });
     expect(vibrato).not.toHaveBeenCalled();

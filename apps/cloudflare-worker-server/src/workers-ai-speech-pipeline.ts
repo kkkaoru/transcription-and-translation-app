@@ -18,10 +18,23 @@ const HTTP_OK = 200;
 const HTTP_BAD_GATEWAY = 502;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 
+export interface SpeechPipelineConversionInput {
+  text: string;
+  model: "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf";
+  leftContext: string;
+}
+
+export interface SpeechPipelineConversionResult {
+  text: string;
+  model: string;
+  usedCompletion: boolean;
+  modelFallback?: string;
+}
+
 export interface WorkersAiSpeechPipelineDependencies {
   asrEnvironment: WorkersAiAsrEnvironment;
   vibrato: (text: string, language: string) => Promise<string>;
-  convert: (text: string) => Promise<string>;
+  convert: (input: SpeechPipelineConversionInput) => Promise<SpeechPipelineConversionResult>;
   run?: WorkersAiAsrRun;
 }
 
@@ -31,6 +44,7 @@ export interface SpeechPipelineStageLog {
   input: string;
   output: string;
   elapsedMs: number;
+  estimatedUsd?: number;
 }
 
 export interface WorkersAiSpeechAsrPayload {
@@ -73,6 +87,7 @@ export const handleWorkersAiSpeechPipeline = async (
   request: Request,
   dependencies: WorkersAiSpeechPipelineDependencies,
 ): Promise<Response> => {
+  const metadataRequest = request.clone();
   const asrStartedAt = performance.now();
   const asrResponse = await handleWorkersAiAsrTranscription(
     request,
@@ -86,14 +101,53 @@ export const handleWorkersAiSpeechPipeline = async (
   const asr: WorkersAiSpeechAsrPayload = workersAiSpeechAsrPayload(await asrResponse.json());
   const asrElapsedMs = Math.max(0, performance.now() - asrStartedAt);
 
+  const form = await metadataRequest.formData();
+  const conversionModelValue = form.get("conversionModel");
+  const conversionModel =
+    conversionModelValue === "zenz-v3.2-small-gguf"
+      ? "zenz-v3.2-small-gguf"
+      : conversionModelValue === "zenz-v3.2-xsmall-gguf"
+        ? "zenz-v3.2-xsmall-gguf"
+        : undefined;
+  if (!conversionModel) {
+    return json(400, {
+      error: {
+        code: "invalid_conversion_model",
+        message: "conversionModel must be zenz-v3.2-xsmall-gguf or zenz-v3.2-small-gguf",
+      },
+    });
+  }
+  const leftContextValue = form.get("leftContext");
+  const leftContext = typeof leftContextValue === "string" ? leftContextValue : "";
   const sourceText = asr.text.trim();
   if (!sourceText) {
     return json(HTTP_OK, {
       ...asr,
       convertedText: "",
       vibratoText: "",
-      pipeline: "workers-ai-vibrato-azookey-v2",
+      conversionModel,
+      usedCompletion: false,
+      pipeline: "workers-ai-language-gated-azookey-v3",
       logs: [],
+    });
+  }
+
+  const asrLog: SpeechPipelineStageLog = {
+    stage: "asr",
+    engine: asr.model,
+    input: "audio/wav",
+    output: sourceText,
+    elapsedMs: asrElapsedMs,
+  };
+  if (asr.language.toLowerCase() !== "ja") {
+    return json(HTTP_OK, {
+      ...asr,
+      vibratoText: sourceText,
+      convertedText: sourceText,
+      conversionModel,
+      usedCompletion: false,
+      pipeline: "workers-ai-language-gated-azookey-v3",
+      logs: [asrLog],
     });
   }
 
@@ -102,16 +156,15 @@ export const handleWorkersAiSpeechPipeline = async (
     const vibratoText = await dependencies.vibrato(sourceText, asr.language);
     const vibratoElapsedMs = Math.max(0, performance.now() - vibratoStartedAt);
     const azookeyStartedAt = performance.now();
-    const convertedText = await dependencies.convert(vibratoText);
+    const conversion = await dependencies.convert({
+      text: vibratoText,
+      model: conversionModel,
+      leftContext,
+    });
+    const convertedText = conversion.text;
     const azookeyElapsedMs = Math.max(0, performance.now() - azookeyStartedAt);
     const logs: SpeechPipelineStageLog[] = [
-      {
-        stage: "asr",
-        engine: asr.model,
-        input: "audio/wav",
-        output: sourceText,
-        elapsedMs: asrElapsedMs,
-      },
+      asrLog,
       {
         stage: "vibrato",
         engine: "vibrato-ipadic-wasm",
@@ -121,7 +174,7 @@ export const handleWorkersAiSpeechPipeline = async (
       },
       {
         stage: "azookey",
-        engine: "azookey-rust-wasm",
+        engine: conversion.model,
         input: vibratoText,
         output: convertedText,
         elapsedMs: azookeyElapsedMs,
@@ -133,7 +186,10 @@ export const handleWorkersAiSpeechPipeline = async (
       ...asr,
       vibratoText,
       convertedText,
-      pipeline: "workers-ai-vibrato-azookey-v2",
+      conversionModel,
+      usedCompletion: conversion.usedCompletion,
+      ...(conversion.modelFallback ? { modelFallback: conversion.modelFallback } : {}),
+      pipeline: "workers-ai-language-gated-azookey-v3",
       logs,
     });
   } catch (error) {

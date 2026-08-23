@@ -7,11 +7,13 @@ import {
 } from "./inference-proxy";
 
 describe("fixed inference proxy", () => {
-  it("proxies only the combined speech pipeline", () => {
+  it("proxies the combined speech pipeline and Worker-owned lexicon only", () => {
     expect(shouldProxyToInference(COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH)).toBe(true);
     expect(shouldProxyToInference("/v1/asr/workers-ai/transcriptions")).toBe(false);
     expect(shouldProxyToInference("/ws/azookey")).toBe(false);
-    expect(shouldProxyToInference("/azookey/user-lexicon")).toBe(false);
+    expect(shouldProxyToInference("/azookey/user-lexicon")).toBe(true);
+    expect(shouldProxyToInference("/azookey/user-lexicon/entries/id")).toBe(true);
+    expect(shouldProxyToInference("/azookey/other")).toBe(false);
   });
 
   it("removes browser authorization and injects only the Worker secret", () => {
