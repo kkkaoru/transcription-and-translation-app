@@ -8,7 +8,7 @@ mod color;
 mod render;
 mod types;
 
-pub use render::rasterize;
+pub use render::{font_families, rasterize};
 pub use types::{CaptionFrame, CaptionOrder, CaptionStyle, OverlayGeometry, RgbaImage};
 
 #[cfg(test)]
@@ -71,6 +71,101 @@ mod tests {
         let image = rasterize(&geometry, &frame);
         assert_eq!(image.width, 1280);
         assert_eq!(image.height, 720);
+    }
+
+    #[test]
+    fn font_weight_changes_native_pixels() {
+        let mut thin = OverlayGeometry::default_1280x720();
+        thin.source.font_weight = 100;
+        thin.source.shadow_enabled = false;
+        thin.source.culling_enabled = false;
+        let mut bold = thin.clone();
+        bold.source.font_weight = 900;
+        let frame = CaptionFrame {
+            source: "文字の太さ Weight".to_string(),
+            translation: String::new(),
+            partial: String::new(),
+        };
+        let thin_image = rasterize(&thin, &frame);
+        let bold_image = rasterize(&bold, &frame);
+        assert_ne!(thin_image.pixels, bold_image.pixels);
+    }
+
+    #[test]
+    fn shadow_blur_changes_native_pixels() {
+        let mut sharp = OverlayGeometry::default_1280x720();
+        sharp.source.shadow_blur_px = 0.0;
+        let mut blurred = sharp.clone();
+        blurred.source.shadow_blur_px = 16.0;
+        let frame = CaptionFrame {
+            source: "Shadow".to_string(),
+            translation: String::new(),
+            partial: String::new(),
+        };
+
+        let sharp_image = rasterize(&sharp, &frame);
+        let blurred_image = rasterize(&blurred, &frame);
+
+        assert_ne!(sharp_image.pixels, blurred_image.pixels);
+    }
+
+    #[test]
+    fn multiline_background_plate_has_no_row_gaps() {
+        let mut geometry = OverlayGeometry::default_1280x720();
+        geometry.source.max_width_percent = 28.0;
+        geometry.source.background_enabled = true;
+        geometry.source.shadow_enabled = false;
+        geometry.source.culling_enabled = false;
+        let frame = CaptionFrame {
+            source: "A long caption that wraps across several lines without splitting its background plate"
+                .to_string(),
+            translation: String::new(),
+            partial: String::new(),
+        };
+        let image = rasterize(&geometry, &frame);
+        let center_x = 640_usize;
+        let nonzero_rows = (0..image.height as usize)
+            .filter(|y| image.pixels[(y * image.width as usize + center_x) * 4 + 3] > 0)
+            .collect::<Vec<_>>();
+        let first = nonzero_rows.first().copied().expect("background starts");
+        let last = nonzero_rows.last().copied().expect("background ends");
+        assert!(
+            (first..=last).all(|y| image.pixels[(y * image.width as usize + center_x) * 4 + 3] > 0)
+        );
+    }
+
+    #[test]
+    fn continuous_outline_width_changes_native_pixels() {
+        let mut narrow = OverlayGeometry::default_1280x720();
+        narrow.source.culling_width_px = 1.0;
+        narrow.source.shadow_enabled = false;
+        let mut wide = narrow.clone();
+        wide.source.culling_width_px = 8.0;
+        let frame = CaptionFrame {
+            source: "Stroke fill".to_string(),
+            translation: String::new(),
+            partial: String::new(),
+        };
+        let narrow_image = rasterize(&narrow, &frame);
+        let wide_image = rasterize(&wide, &frame);
+        assert_ne!(narrow_image.pixels, wide_image.pixels);
+    }
+
+    #[test]
+    fn shadow_antialias_quality_changes_blurred_pixels() {
+        let mut low = OverlayGeometry::default_1280x720();
+        low.source.shadow_blur_px = 12.0;
+        low.source.shadow_antialias = 1;
+        let mut high = low.clone();
+        high.source.shadow_antialias = 4;
+        let frame = CaptionFrame {
+            source: "Smooth shadow".to_string(),
+            translation: String::new(),
+            partial: String::new(),
+        };
+        let low_image = rasterize(&low, &frame);
+        let high_image = rasterize(&high, &frame);
+        assert_ne!(low_image.pixels, high_image.pixels);
     }
 
     #[test]

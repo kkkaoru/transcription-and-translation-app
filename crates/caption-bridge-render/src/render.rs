@@ -432,28 +432,51 @@ fn draw_block(
 
     let origin = IPoint { x: placement.left as i32, y: placement.top as i32 };
 
-    // 2) Shadow.
+    // 2) Shadow. Render one antialiased glyph mask and blur its alpha with
+    // separable box passes. This avoids the jagged, disconnected silhouettes
+    // produced by stamping glyphs at a handful of integer offsets.
     if style.shadow_enabled {
         if let Some((r, g, b)) = parse_hex(&style.shadow_color) {
             let color = Color::rgb(r, g, b);
             let offset =
                 IPoint { x: style.shadow_offset_x as i32, y: style.shadow_offset_y as i32 };
-            let global_alpha = style.opacity.clamp(0.0, 1.0);
-            draw_pass(&mut buffer, swash_cache, output, origin, color, global_alpha, offset);
+            let mut shadow_layer = PixelBuffer::new(output.width, output.height);
+            draw_pass(
+                &mut buffer,
+                swash_cache,
+                &mut shadow_layer,
+                origin,
+                color,
+                style.opacity.clamp(0.0, 1.0),
+                offset,
+            );
+            let passes = usize::from(style.shadow_antialias.clamp(1, 4));
+            let radius =
+                (style.shadow_blur_px.max(0.0) / (2.0 * (passes as f32).sqrt())).ceil() as usize;
+            let alpha = blur_alpha(&shadow_layer, radius, passes);
+            composite_shadow(output, &alpha, color);
         }
     }
 
-    // 3) Culling / outline. Render the same glyphs in the 8 surrounding
-    // compass directions to approximate a text stroke.
-    if style.culling_enabled {
+    // 3) Culling / outline. Browser engines paint a continuous glyph stroke,
+    // then paint the fill over its inner half for `paint-order: stroke fill`.
+    // Dilating the antialiased glyph coverage with a circular kernel provides
+    // the same centered-stroke geometry without disconnected offset stamps.
+    if style.culling_enabled && style.culling_width_px > 0.0 {
         if let Some((r, g, b)) = parse_hex(&style.culling_color) {
             let color = Color::rgb(r, g, b);
-            let width = style.culling_width_px.max(1.0) as i32;
-            let global_alpha = style.culling_opacity.clamp(0.0, 1.0);
-            for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
-                let offset = IPoint { x: dx * width, y: dy * width };
-                draw_pass(&mut buffer, swash_cache, output, origin, color, global_alpha, offset);
-            }
+            let mut glyph_mask = PixelBuffer::new(output.width, output.height);
+            draw_pass(
+                &mut buffer,
+                swash_cache,
+                &mut glyph_mask,
+                origin,
+                Color::rgb(255, 255, 255),
+                1.0,
+                IPoint { x: 0, y: 0 },
+            );
+            let alpha = stroke_alpha(&glyph_mask, style.culling_width_px);
+            composite_colored_alpha(output, &alpha, color, style.culling_opacity.clamp(0.0, 1.0));
         }
     }
 
@@ -470,6 +493,134 @@ fn draw_block(
             global_alpha,
             IPoint { x: 0, y: 0 },
         );
+    }
+}
+
+fn stroke_alpha(layer: &PixelBuffer, width: f32) -> Vec<u8> {
+    let radius = width.max(0.0);
+    let extent = (radius + 1.0).ceil() as isize;
+    let kernel = (-extent..=extent)
+        .flat_map(|y| {
+            (-extent..=extent).filter_map(move |x| {
+                let distance = (x as f32).hypot(y as f32);
+                let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+                (coverage > 0.0).then_some((x, y, (coverage * 255.0).round() as u8))
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut output = vec![0; (layer.width * layer.height) as usize];
+    for (index, alpha) in layer
+        .pixels
+        .chunks_exact(4)
+        .map(|pixel| pixel[3])
+        .enumerate()
+        .filter(|(_, alpha)| *alpha > 0)
+    {
+        stamp_stroke_pixel(&mut output, layer.width, layer.height, index, alpha, &kernel);
+    }
+    output
+}
+
+fn stamp_stroke_pixel(
+    output: &mut [u8],
+    width: u32,
+    height: u32,
+    index: usize,
+    alpha: u8,
+    kernel: &[(isize, isize, u8)],
+) {
+    let origin_x = (index % width as usize) as isize;
+    let origin_y = (index / width as usize) as isize;
+    for (offset_x, offset_y, coverage) in kernel.iter().copied() {
+        let x = origin_x + offset_x;
+        let y = origin_y + offset_y;
+        if x < 0 || y < 0 || x >= width as isize || y >= height as isize {
+            continue;
+        }
+        let target = y as usize * width as usize + x as usize;
+        let candidate = (u16::from(alpha) * u16::from(coverage) / 255) as u8;
+        output[target] = output[target].max(candidate);
+    }
+}
+
+fn blur_alpha(layer: &PixelBuffer, radius: usize, passes: usize) -> Vec<u8> {
+    let width = layer.width as usize;
+    let height = layer.height as usize;
+    let mut alpha = layer.pixels.chunks_exact(4).map(|pixel| pixel[3]).collect::<Vec<_>>();
+    if radius == 0 {
+        return alpha;
+    }
+    for _ in 0..passes {
+        alpha = box_blur_horizontal(&alpha, width, height, radius);
+        alpha = box_blur_vertical(&alpha, width, height, radius);
+    }
+    alpha
+}
+
+fn box_blur_horizontal(input: &[u8], width: usize, height: usize, radius: usize) -> Vec<u8> {
+    let mut output = vec![0; input.len()];
+    for y in 0..height {
+        blur_horizontal_row(input, &mut output, width, y, radius);
+    }
+    output
+}
+
+fn blur_horizontal_row(input: &[u8], output: &mut [u8], width: usize, y: usize, radius: usize) {
+    let divisor = (radius * 2 + 1) as u32;
+    let row = y * width;
+    let mut sum =
+        (0..=radius.min(width.saturating_sub(1))).map(|x| u32::from(input[row + x])).sum::<u32>();
+    for x in 0..width {
+        output[row + x] = (sum / divisor) as u8;
+        if x >= radius {
+            sum -= u32::from(input[row + x - radius]);
+        }
+        if x + radius + 1 < width {
+            sum += u32::from(input[row + x + radius + 1]);
+        }
+    }
+}
+
+fn box_blur_vertical(input: &[u8], width: usize, height: usize, radius: usize) -> Vec<u8> {
+    let mut output = vec![0; input.len()];
+    for x in 0..width {
+        blur_vertical_column(input, &mut output, width, height, x, radius);
+    }
+    output
+}
+
+fn blur_vertical_column(
+    input: &[u8],
+    output: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    radius: usize,
+) {
+    let divisor = (radius * 2 + 1) as u32;
+    let mut sum = (0..=radius.min(height.saturating_sub(1)))
+        .map(|y| u32::from(input[y * width + x]))
+        .sum::<u32>();
+    for y in 0..height {
+        output[y * width + x] = (sum / divisor) as u8;
+        if y >= radius {
+            sum -= u32::from(input[(y - radius) * width + x]);
+        }
+        if y + radius + 1 < height {
+            sum += u32::from(input[(y + radius + 1) * width + x]);
+        }
+    }
+}
+
+fn composite_shadow(output: &mut PixelBuffer, alpha: &[u8], color: Color) {
+    composite_colored_alpha(output, alpha, color, 1.0);
+}
+
+fn composite_colored_alpha(output: &mut PixelBuffer, alpha: &[u8], color: Color, opacity: f32) {
+    for (index, value) in alpha.iter().copied().enumerate().filter(|(_, value)| *value > 0) {
+        let x = (index % output.width as usize) as i32;
+        let y = (index / output.width as usize) as i32;
+        output.blend(x, y, color, f32::from(value) / 255.0 * opacity);
     }
 }
 
