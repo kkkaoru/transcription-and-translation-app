@@ -1,8 +1,7 @@
-const inferenceOrigin = (process.env.COMPARE_INFERENCE_ORIGIN ?? "http://127.0.0.1:8787").replace(
+const workerOrigin = (process.env.COMPARE_ASR_ORIGIN ?? "http://127.0.0.1:8787").replace(
   /\/+$/,
   "",
 );
-const asrOrigin = (process.env.COMPARE_ASR_ORIGIN ?? "http://127.0.0.1:8790").replace(/\/+$/, "");
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -10,8 +9,7 @@ const nextConfig = {
   output: "export",
   images: { unoptimized: true },
   webpack: (config) => {
-    // Load `/ort/*.wasm` at runtime. The default onnxruntime-web bundle
-    // emits jsep.wasm (~26 MiB), which exceeds Cloudflare Workers' 25 MiB cap.
+    // Silero VAD loads /ort/*.wasm at runtime; keep the large JSEP binary external.
     config.resolve.conditionNames = ["onnxruntime-web-use-extern-wasm", "..."];
     return config;
   },
@@ -19,23 +17,9 @@ const nextConfig = {
     ? {
         rewrites() {
           return [
-            { source: "/ws/azookey", destination: `${inferenceOrigin}/ws/azookey` },
-            { source: "/v1/azookey", destination: `${inferenceOrigin}/v1/azookey` },
             {
-              source: "/v1/azookey/:path*",
-              destination: `${inferenceOrigin}/v1/azookey/:path*`,
-            },
-            {
-              source: "/azookey/user-lexicon",
-              destination: `${inferenceOrigin}/azookey/user-lexicon`,
-            },
-            {
-              source: "/azookey/user-lexicon/:path*",
-              destination: `${inferenceOrigin}/azookey/user-lexicon/:path*`,
-            },
-            {
-              source: "/v1/asr/workers-ai/transcriptions",
-              destination: `${asrOrigin}/v1/asr/workers-ai/transcriptions`,
+              source: "/v1/speech/workers-ai/azookey",
+              destination: `${workerOrigin}/v1/speech/workers-ai/azookey`,
             },
           ];
         },

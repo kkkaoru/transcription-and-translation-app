@@ -15,6 +15,7 @@ import {
   WORKERS_AI_ASR_MODEL,
   type WorkersAiAsrRun,
 } from "./workers-ai-asr.js";
+import { WORKERS_AI_SPEECH_PIPELINE_PATH } from "./workers-ai-speech-pipeline.js";
 
 const VIBRATO_DICTIONARY_PATH = "/vibrato/system.dic.zst";
 const VIBRATO_NOTICE_PATH = "/vibrato/NOTICE";
@@ -663,6 +664,124 @@ describe("Cloudflare Worker inference adapter", () => {
     });
     expect(workersAiRun).toHaveBeenCalledTimes(1);
     expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("runs Nova-3 STT and AzooKey conversion through one Worker request", async () => {
+    const workersAiRun: WorkersAiAsrRun = vi.fn(() =>
+      Promise.resolve({
+        results: { channels: [{ alternatives: [{ transcript: "きょうはいいてんき" }] }] },
+      }),
+    );
+    const converter = vi.fn(() => Promise.resolve("今日はいい天気"));
+    const form = new FormData();
+    form.set("file", speechWav());
+    form.set("language", "ja");
+    form.set("segmentation", "client-silero-v1");
+
+    const response = await createWorker(vi.fn(), {
+      workersAiRun,
+      converter,
+      vibratoConverter: (text) => text,
+    }).fetch(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      text: "きょうはいいてんき",
+      convertedText: "今日はいい天気",
+      pipeline: "workers-ai-vibrato-azookey-v2",
+      segmentation: "client-silero-v1",
+    });
+    expect(converter).toHaveBeenCalledWith("きょうはいいてんき");
+  });
+
+  it("applies the stored lexicon converter contract in the single-Worker pipeline", async () => {
+    const workersAiRun: WorkersAiAsrRun = vi.fn(() =>
+      Promise.resolve({
+        results: { channels: [{ alternatives: [{ transcript: "ぶいあーるちゃっと" }] }] },
+      }),
+    );
+    const convertWithContext = vi.fn(() => Promise.resolve("VRChat"));
+    const converter = Object.assign(
+      vi.fn(() => Promise.resolve("unused")),
+      {
+        dictionaryRevision: "revision-1",
+        syncUserLexicon: () => Promise.resolve(1),
+        convertWithContext,
+      },
+    );
+    const form = new FormData();
+    form.set("file", speechWav());
+    form.set("segmentation", "client-silero-v1");
+
+    const response = await createWorker(vi.fn(), {
+      workersAiRun,
+      converter,
+      vibratoConverter: (text) => text,
+    }).fetch(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ convertedText: "VRChat" });
+    expect(convertWithContext).toHaveBeenCalledWith("ぶいあーるちゃっと", undefined, undefined, 1);
+  });
+
+  it("warms the single-Worker AzooKey runtime through its GET capability route", async () => {
+    const warmup = vi.fn(() => Promise.resolve());
+    const converter = Object.assign(
+      vi.fn(() => Promise.resolve("変換")),
+      { warmup },
+    );
+    const waitUntil = vi.fn();
+
+    const response = await createWorker(vi.fn(), {
+      converter,
+      vibratoConverter: (text) => text,
+    }).fetch(new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`), env, {
+      waitUntil,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toStrictEqual({
+      ok: true,
+      pipeline: "workers-ai-vibrato-azookey-v2",
+    });
+    expect(warmup).toHaveBeenCalledWith("http");
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports unavailable single-Worker conversion and supports warmup without a context", async () => {
+    const unavailableDependencies = Object.defineProperty({}, "wasmModule", { value: 1 });
+    const unavailable = await createWorker(undefined, unavailableDependencies).fetch(
+      asWorkerRequest(new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`)),
+      env,
+    );
+    expect(unavailable.status).toBe(500);
+    await expect(unavailable.json()).resolves.toMatchObject({
+      error: { code: "azookey_runtime_failed" },
+    });
+
+    const warmup = vi.fn(() => Promise.resolve());
+    const converter = Object.assign(
+      vi.fn(() => Promise.resolve("変換")),
+      { warmup },
+    );
+    const available = await createWorker(undefined, {
+      converter,
+      vibratoConverter: (text) => text,
+    }).fetch(new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`), env);
+    expect(available.status).toBe(200);
+    expect(warmup).not.toHaveBeenCalled();
   });
 
   it("keeps the Workers AI provider unavailable without an AI binding or test seam", async () => {

@@ -17,7 +17,7 @@ apps/
   native/                    GPUI Nativeアプリ
   desktop/                   ReactブラウザUI
   cloudflare-worker-server/  Cloudflare Worker推論API
-  azookey-compare/           Web Speech / Worker比較UI
+  azookey-compare/           Browser音声 → Cloudflare統合パイプライン検証UI
   inference-gateway/         推論ゲートウェイ
 crates/
   parapper-engine/           インプロセスVAD・ASR・ターン・翻訳

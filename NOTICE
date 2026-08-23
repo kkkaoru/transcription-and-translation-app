@@ -33,7 +33,7 @@ The bundled IPADIC-derived dictionary data contains notices for:
 
 The complete redistribution terms are retained in
 `assets/vibrato/ipadic-mecab-2_7_0/COPYING` and `NOTICE`, and copied beside the
-browser and Worker assets. The BCCWJ project is identified at
+Worker assets. The BCCWJ project is identified at
 <https://clrd.ninjal.ac.jp/bccwj/>.
 
 ## Other bundled components

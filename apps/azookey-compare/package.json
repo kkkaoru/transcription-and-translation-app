@@ -2,13 +2,11 @@
   "name": "@caption-bridge/azookey-compare",
   "version": "0.1.0",
   "private": true,
-  "description": "WebSpeech and Worker AzooKey conversion comparison UI",
+  "description": "Browser audio to Cloudflare Nova-3, Vibrato, and AzooKey verification UI",
   "scripts": {
     "dev": "node ../../scripts/azookey-compare-dev.mjs",
-    "copy:azookey-assets": "node ../../scripts/copy-azookey-browser-assets.mjs",
     "copy:silero-vad-assets": "node ../../scripts/copy-silero-vad-browser-assets.mjs",
-    "copy:browser-assets": "bun run copy:azookey-assets && bun run copy:silero-vad-assets",
-    "build": "bun run copy:browser-assets && next build",
+    "build": "bun run copy:silero-vad-assets && next build",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit --pretty false",
     "lint": "biome check src",
@@ -16,15 +14,13 @@
     "test": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
     "test:e2e": "node e2e/compare-ui.mjs",
-    "build:worker": "bun run copy:browser-assets && NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL=wss://azookey-compare.kaoru.workers.dev/ws/azookey next build && node ../../scripts/strip-compare-ort-bundle-wasm.mjs",
+    "build:worker": "bun run copy:silero-vad-assets && next build && node ../../scripts/strip-compare-ort-bundle-wasm.mjs",
     "preview": "bun run build:worker && wrangler dev",
     "deploy": "bun run build:worker && wrangler deploy",
     "verify:deploy": "node ../../scripts/verify-azookey-compare-deploy.mjs"
   },
   "dependencies": {
-    "@caption-bridge/azookey-reading": "workspace:*",
-    "@caption-bridge/dictionaries": "workspace:*",
-    "@caption-bridge/sentence-boundary": "workspace:*",
+    "d3": "7.9.0",
     "jose": "6.2.8",
     "next": "^15.4.7",
     "onnxruntime-web": "1.27.0",
@@ -32,6 +28,7 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@types/d3": "7.4.3",
     "@types/node": "^22.15.21",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.7",
@@ -39,6 +36,6 @@
     "jsdom": "^26.1.0",
     "typescript": "~5.8.3",
     "vitest": "^3.2.4",
-    "wrangler": "^4.28.1"
+    "wrangler": "^4.125.0"
   }
 }

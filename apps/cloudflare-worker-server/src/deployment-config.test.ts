@@ -43,13 +43,10 @@ describe("Cloudflare deployment configuration", () => {
     };
     expect(devConfig.ai).toEqual({ binding: "AI", remote: true });
     expect(devConfig.vars?.["AZOOKEY_DICTIONARY_URL"]).toBe("/azookey/system.azkdict.gz");
-    expect(config.vars).not.toHaveProperty("VIBRATO_DICTIONARY_URL");
+    expect(config.vars?.["VIBRATO_DICTIONARY_URL"]).toBe("/vibrato/system.dic.zst");
     expect(existsSync(new URL("../public/azookey/system.azkdict.gz", import.meta.url))).toBe(true);
-    // The IPADIC dictionary stays in the browser comparison bundle. Keeping it
-    // out of Worker public assets avoids loading it alongside AzooKey's
-    // portable archive in the 128 MiB Worker isolate; configure an external
-    // VIBRATO_UPSTREAM_URL when a server-side pre-pass is required.
-    expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(false);
+    // The single Worker owns both morphology and kana-kanji conversion assets.
+    expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(true);
     expect(readFileSync(new URL("../public/vibrato/COPYING", import.meta.url))).toEqual(
       readFileSync(new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/COPYING", import.meta.url)),
     );

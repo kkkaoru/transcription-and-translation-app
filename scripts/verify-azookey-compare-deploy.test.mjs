@@ -27,7 +27,7 @@ describe("verify-azookey-compare-deploy", () => {
   it("detects diagram markers and decimal USD formatter", () => {
     const source = [
       ...DIAGRAM_MARKERS,
-      'e=>{if(!Number.isFinite(e)||e<=0)return"$0";let t=e>=1?2:16,r=e.toFixed(t)}',
+      'new Intl.NumberFormat("en-US",{minimumFractionDigits:8,maximumFractionDigits:8})',
     ].join("\n");
     assert.deepEqual(missingDiagramMarkers(source), []);
     assert.equal(hasDecimalUsdFormatter(source), true);
@@ -89,8 +89,14 @@ describe("verify-azookey-compare-deploy", () => {
       htmlCacheControl: "no-store",
       htmlCfCacheStatus: "BYPASS",
       hashedCacheControl: "public, max-age=31536000, immutable",
-      liveSource: [...DIAGRAM_MARKERS, 'let t=e>=1?2:16,r=e.toFixed(t);return"$0"'].join("\n"),
-      localSource: [...DIAGRAM_MARKERS, 'let t=e>=1?2:16,r=e.toFixed(t);return"$0"'].join("\n"),
+      liveSource: [
+        ...DIAGRAM_MARKERS,
+        'new Intl.NumberFormat("en-US",{minimumFractionDigits:8})',
+      ].join("\n"),
+      localSource: [
+        ...DIAGRAM_MARKERS,
+        'new Intl.NumberFormat("en-US",{minimumFractionDigits:8})',
+      ].join("\n"),
       liveChunkRefs: ["/_next/static/chunks/app/page-abc.js"],
       localChunkRefs: ["/_next/static/chunks/app/page-abc.js"],
       requireLive: true,

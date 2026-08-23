@@ -5,7 +5,9 @@ node_modules
 tsconfig.tsbuildinfo
 .wrangler
 public/azookey/
-public/models/
+public/models/*
+!public/models/ma-imitator-unidic-lite/
+!public/models/ma-imitator-unidic-lite/**
 public/ort/
 .cache/
 

@@ -1,7 +1,19 @@
-import type { ComparisonAuth } from "./contract";
 import { COMPARE_WORKERS_AI_ASR_PATH } from "./inference-proxy";
 
+export interface ComparisonAuth {
+  scheme: "none" | "bearer";
+  token?: string;
+}
+
 export const WORKERS_AI_ASR_CLIENT_SEGMENTATION = "client-silero-v1" as const;
+
+export interface WorkersAiPipelineLog {
+  stage: "asr" | "vibrato" | "azookey";
+  engine: string;
+  input: string;
+  output: string;
+  elapsedMs: number;
+}
 
 export interface WorkersAiAsrTranscriptionResult {
   text: string;
@@ -10,6 +22,10 @@ export interface WorkersAiAsrTranscriptionResult {
   model?: string;
   transport?: string;
   segmentation?: string;
+  convertedText?: string;
+  pipeline?: string;
+  vibratoText?: string;
+  logs?: WorkersAiPipelineLog[];
 }
 
 export interface WorkersAiAsrClientOptions {
@@ -165,5 +181,9 @@ export const transcribeWorkersAiAsr = async (
     ...(body.model ? { model: body.model } : {}),
     ...(body.transport ? { transport: body.transport } : {}),
     ...(body.segmentation ? { segmentation: body.segmentation } : {}),
+    ...(body.convertedText ? { convertedText: body.convertedText } : {}),
+    ...(body.pipeline ? { pipeline: body.pipeline } : {}),
+    ...(body.vibratoText ? { vibratoText: body.vibratoText } : {}),
+    ...(Array.isArray(body.logs) ? { logs: body.logs } : {}),
   };
 };

@@ -26,11 +26,13 @@ import {
 export const COMPARE_ORIGIN = `https://${COMPARE_PUBLIC_HOST}`;
 export const COMPARE_WORKER_NAME = "azookey-compare";
 export const DIAGRAM_MARKERS = [
-  "/v1/asr/workers-ai/transcriptions",
-  "Silero VAD v6",
-  "@cf/deepgram/nova-3",
+  "/v1/speech/workers-ai/azookey",
+  "D3.js visualization",
+  "Nova-3",
+  "Vibrato",
+  "AzooKey",
 ];
-export const DECIMAL_USD_FRACTION_PATTERN = />=\s*1\s*\?\s*2\s*:\s*16/;
+export const DECIMAL_USD_FRACTION_PATTERN = /minimumFractionDigits:\s*8/;
 export const TO_EXPONENTIAL_CALL_PATTERN = /\.toExponential\s*\(/;
 export const HTML_NO_STORE_PATTERN = /\bno-store\b/i;
 export const HASHED_STATIC_IMMUTABLE_PATTERN = /\bimmutable\b/i;
@@ -53,7 +55,7 @@ export const extractNextStaticRefs = (html) => {
 };
 
 export const hasDecimalUsdFormatter = (source) =>
-  source.includes("toFixed") &&
+  source.includes("Intl.NumberFormat") &&
   DECIMAL_USD_FRACTION_PATTERN.test(source) &&
   !TO_EXPONENTIAL_CALL_PATTERN.test(source);
 
@@ -134,7 +136,7 @@ export const evaluateCompareDeployProof = ({
       failures.push(`diagram markers missing: ${missing.join(", ")}`);
     }
     if (!hasDecimalUsdFormatter(source)) {
-      failures.push("decimal USD formatter (toFixed + 16 digits, no toExponential) missing");
+      failures.push("fixed 8-decimal USD formatter (Intl.NumberFormat, no toExponential) missing");
     }
   }
 

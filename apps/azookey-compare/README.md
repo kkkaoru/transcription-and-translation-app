@@ -1,123 +1,56 @@
-# AzooKey Compare
+# Cloudflare speech pipeline verification UI
 
-Standalone Next.js comparison UI for Web Speech recognition vs an asynchronous
-AzooKey Cloudflare Worker WebSocket response. It does not talk to the Kotoba
-Beacon desktop app and does not read or write desktop settings.
+This Next.js application intentionally exposes one processing path only:
 
-## Run (Worker + UI only)
-
-Terminal 1 — local Worker (`/ws/azookey` on port 8787):
-
-```sh
-bun run worker:dev
+```text
+Browser microphone
+  -- audio/WAV --> azookey-compare Worker
+  -- service binding --> kotoba-beacon-inference Worker
+  -- @cf/deepgram/nova-3 --> Vibrato IPADIC WASM --> AzooKey WASM
+  -- one JSON response --> Browser
 ```
 
-Terminal 2 — comparison UI:
+The browser uses Silero VAD only to cut microphone audio into bounded utterances. It performs no ASR, morphology, reading conversion, or kana-kanji conversion.
 
-```sh
+## UI
+
+- One microphone start/stop control.
+- One D3.js pipeline visualization.
+- One result card containing ASR, Vibrato, and AzooKey stage logs.
+- A continuously updating Cloudflare cost estimate while capture is active.
+
+The displayed cost is an estimate based on published list prices: Nova-3 HTTP audio minutes, Worker requests, and measured Worker-side Vibrato/AzooKey elapsed time. Cloudflare included usage and actual billed CPU can differ.
+
+## Local verification
+
+```bash
+bun run worker:dev
 bun run azookey-compare:dev
 ```
 
-Open `http://127.0.0.1:3000` (not `localhost`) so the Worker `CORS_ORIGIN`
-(`http://127.0.0.1:3000` via `.dev.vars`) matches the page origin.
+Then open `http://127.0.0.1:3000`. The combined route is:
 
-Workers AI ASR posts same-origin `/v1/asr/workers-ai/transcriptions`. Local
-`azookey-compare:dev` starts an Access service-token proxy on
-`http://127.0.0.1:8790` (`COMPARE_ASR_ORIGIN`) and `next dev` rewrites ASR
-there, then to hosted compare — the same compare Worker → INFERENCE path as
-production. `/ws/azookey` and `/v1/azookey` still rewrite to
-`COMPARE_INFERENCE_ORIGIN` (default `http://127.0.0.1:8787`). Without the
-proxy or Access token in `.env`, 認識を開始 fails before the mic opens.
-Local `wrangler.dev.jsonc` still enables Workers AI with `remote: true` for
-direct `:8787` ASR; next.dev does not send ASR there because inference
-`workers.dev` is Access-gated.
-
-Local Wrangler uses `apps/cloudflare-worker-server/.dev.vars` (copy from
-`.dev.vars.example` if missing). Auth may stay unset for local demos.
-
-### Phonetic / fixture checks
-
-The right-hand panel has a **読み入力** lane: phonetic text is sent straight to
-the Worker AzooKey WASM (no browser Vibrato rewrite). Built-in fixtures cover
-common conversion regressions. **全ケース実行** runs them in order.
-
-### WebSocket endpoint
-
-Default (no env override):
-
-`ws://127.0.0.1:8787/ws/azookey`
-
-Set `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` for a deployed Worker.
-`bun run azookey-compare:deploy` bakes the production compare URL:
-
-`wss://azookey-compare.kaoru.workers.dev/ws/azookey`
-
-Do not point the hosted UI at the inference `workers.dev` WebSocket; that
-origin is Access-denied (or closed) and conversion is proxied in-process.
-
-Hosted compare is behind Cloudflare Access (OTP + Managed OAuth, teadea + avita).
-Unauthenticated browsers `302` to Access login; API clients `401`. Production
-Worker secrets `POLICY_AUD` and `TEAM_DOMAIN` enable `Cf-Access-Jwt-Assertion`
-validation. Leave both unset for local `wrangler dev`.
-
-Production shape:
-
-```
-Browser → Access (OTP + Managed OAuth)
-  → https://azookey-compare.kaoru.workers.dev
-       ├ static Next export + compare Worker（JWT）
-       ├ ブラウザ完結: Vibrato WASM + AzooKey WASM in-page（/ws/azookey なし）
-       └ worker-vibrato: /ws/azookey → service binding INFERENCE → kotoba-beacon-inference
-         （workers_dev false、公開 URL なし）
+```text
+POST /v1/speech/workers-ai/azookey
 ```
 
-Zenzai is Worker-dependent only. Inference has no public `workers.dev` URL.
+## Quality checks
 
-### Conversion models
-
-The configuration panel includes a **変換モデル** select:
-
-| Option | When it appears |
-| --- | --- |
-| AzooKey WASM（Worker 内蔵） | Always. Default. No extra model server. |
-| AzooKey Zenzai v3.2 xsmall / small | Worker path: only after `azookey.ready` advertises that id (`MODEL_ROUTES` has a host). Empty production routes keep the select on WASM and say so. Browser-complete still lists them, but they run the LOUDS dictionary, not GGUF. **Not browser-complete Zenz.** |
-
-### Conversion modes (UI labels vs wire values)
-
-| UI label | What actually runs | Wire `mode` sent to Worker |
-| --- | --- | --- |
-| Worker 依存（Vibrato もかな漢字も Worker） | `/ws/azookey` → compare Worker JWT → service binding `INFERENCE` → `kotoba-beacon-inference`（`workers_dev` false、公開 URL なし）。漢字があるときだけ Vibrato（IPADIC F[7]）。Worker Vibrato 未設定時はブラウザ Vibrato で漢字読みを補い、その後 AzooKey WASM | `worker-vibrato` plus `vibratoExecution: "worker"` or `"browser-wasm"` when the client supplied the reading |
-| ブラウザ完結（Vibrato もかな漢字もブラウザ） | Generated `VibratoTokenizer` + IPADIC dictionary (F[7]) と AzooKey WASM を in-page で実行。`/ws/azookey` は呼ばない | wire id は互換のため `browser-vibrato` |
-
-Checked-in browser defaults: `/vibrato/vibrato_wasm.js` and
-`/vibrato/system.dic.zst`. Override with
-`NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL` and
-`NEXT_PUBLIC_AZOO_KEY_VIBRATO_DICTIONARY_URL` when needed.
-
-If the module, dictionary, or injected global is unavailable, browser mode
-fails explicitly — it does not silently fall back to Worker-only conversion.
-
-IPADIC attribution: `public/vibrato/COPYING` and `public/vibrato/NOTICE`
-(copied by `node scripts/build-vibrato-wasm.mjs`; verified by
-`bun run assets:verify`).
-
-## Worker frame contract
-
-```json
-{
-  "type": "azookey.convert",
-  "requestId": "uuid",
-  "source": "web-speech",
-  "language": "ja-JP",
-  "sourceText": "きょうのてんき",
-  "vibratoInput": "きょうのてんき",
-  "mode": "worker-vibrato",
-  "vibratoExecution": "worker",
-  "auth": { "scheme": "none" }
-}
+```bash
+cd apps/azookey-compare
+bun run typecheck
+bun run lint
+bun run test
+bun run build:worker
 ```
 
-Responses share `requestId` and either `convertedText` (or `text`) or `error`.
-Browser pre-pass mode still sends wire `mode: "worker-vibrato"` with
-`comparisonMode: "browser-vibrato"` and `vibratoExecution: "browser-wasm"`.
-Bearer tokens go in the JSON `auth` field, never in the WebSocket URL.
+## Deployment
+
+Deploy inference first, then the UI Worker so the service binding always targets a compatible implementation:
+
+```bash
+cd apps/cloudflare-worker-server && bun run deploy
+cd ../azookey-compare && bun run deploy
+```
+
+Production: <https://azookey-compare.kaoru.workers.dev/>

@@ -2,1986 +2,294 @@
 
 // This file runs with bun.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArchitectureAssetTable } from "../components/ArchitectureAssetTable";
-import { ComparisonPathDiagram } from "../components/ComparisonPathDiagram";
-import { CustomDictionaryPanel } from "../components/CustomDictionaryPanel";
-import { RecognitionModeSelector } from "../components/RecognitionModeSelector";
-import { VibratoModeSelector } from "../components/VibratoModeSelector";
-import { isArchitectureDialogForced } from "../lib/architecture-dialog";
+import PipelineVisualization from "../components/PipelineVisualization";
+import { COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH } from "../lib/inference-proxy";
+import type { WorkersAiPipelineLog } from "../lib/workers-ai-asr-client";
 import {
-  shouldWarmBrowserDictionaryAfterConfigChange,
-  shouldWarmBrowserVibratoDictionary,
-} from "../lib/azookey-reading";
-import { runBrowserAzookey, warmupBrowserAzookey } from "../lib/browser-azookey";
-import {
-  browserVibratoConfigFromComparison,
-  runBrowserVibrato,
-  warmupBrowserVibrato,
-} from "../lib/browser-vibrato";
-import { type BrowserWasmState, browserWasmStateAfterStage } from "../lib/browser-wasm-status";
-import {
-  BROWSER_ZENZAI_DICT_NOTICE,
-  runBrowserZenzaiDict,
-  warmupBrowserZenzaiDict,
-} from "../lib/browser-zenzai";
-import {
-  CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL,
-  type CloudflareConversionCostEstimate,
-  estimateCloudflareConversionCost,
-  formatCloudflareCostUsd,
-  usesExternalGgufUpstream,
-} from "../lib/cloudflare-conversion-cost";
-import {
-  browserWasmConfigurationStatus,
-  buildVibratoWebSocketUrl,
-  type ComparisonAuth,
-  type ComparisonConfig,
-  type ComparisonMode,
-  comparisonModeOptions,
-  DEFAULT_COMPARISON_CONFIG,
-  hasBrowserWasmConfiguration,
-  type RecognitionProvider,
-} from "../lib/contract";
-import {
-  AZOOKEY_CONVERSION_FIXTURES,
-  type AzookeyConversionFixture,
-} from "../lib/conversion-fixtures";
-import {
-  runComparisonConversion,
-  usesBrowserZenzaiDictPath,
-  usesWorkerConversion,
-  zenzWorkerLeftContextField,
-} from "../lib/conversion-pipeline";
-import { formatMilliseconds, formatRowTiming } from "../lib/conversion-timing";
-import {
-  type ConversionTrace,
-  conversionTraceDisplayLines,
-  normalizeSourceText,
-  traceStepLocationLabel,
-} from "../lib/conversion-trace";
-import {
-  advertisedConverterModelOptions,
-  converterModelOptions,
-  DEFAULT_CONVERTER_MODEL,
-  isConverterModel,
-  isZenzConverterModel,
-  workerConverterCatalogState,
-} from "../lib/converter-models";
-import { buildWorkersAiAsrUrl } from "../lib/inference-proxy";
-import { type ConversionStage, comparisonPathSummary, rowPathLabel } from "../lib/path-labels";
-import { beginRecognitionListening } from "../lib/recognition-listen";
-import { visibleWebSpeechCaption } from "../lib/speech-caption-display";
-import { syncSpeechLanguage } from "../lib/speech-language";
-import { pendingSpeechUtterance, rememberDispatchedSpeech } from "../lib/speech-utterance";
-import {
-  type SpeechRecognitionEnded,
-  type SpeechRecognitionState,
-  type SpeechTranscriptUpdate,
-  type SpeechUtteranceFinal,
-  WebSpeechController,
-} from "../lib/web-speech";
-import {
-  AZOOKEY_ISOLATE_HTTP_WARMUP_INIT,
-  AzooKeyWorkerClient,
-  azookeyHealthUrlFromWebSocket,
-  type WorkerConnectionState,
-  workerErrorStage,
-} from "../lib/worker-client";
-import type { WorkersAiAsrController, WorkersAiAsrState } from "../lib/workers-ai-asr-controller";
-import {
-  shouldShowWorkersAiAsrCostAmount,
-  utteranceAsrCostFields,
-  webSpeechAsrCostSummaryJa,
-} from "../lib/workers-ai-asr-cost";
-import {
-  ensureWorkersAiAsrController,
-  startCloudflareWorkersAiAsrAfterSelect,
-} from "../lib/workers-ai-asr-session";
-import {
-  WEB_SPEECH_UNSUPPORTED_JA,
-  WORKERS_AI_ASR_UNSUPPORTED_JA,
-} from "../lib/workers-ai-asr-support";
+  WorkersAiAsrController,
+  type WorkersAiAsrState,
+  type WorkersAiAsrUtteranceFinal,
+} from "../lib/workers-ai-asr-controller";
+import { isWorkersAiAsrCaptureSupported } from "../lib/workers-ai-asr-support";
 
-const DESKTOP_CONFIG_MEDIA_QUERY = "(min-width: 641px)";
-
-const UTTERANCE_COST_TOTAL_FORMULA_HEAD: string = "USD_total = USD_worker + USD_asr";
-
-type ComparisonRowState = "queued" | "wasm" | "sending" | "done" | "error";
-type ComparisonRowOrigin = "web-speech" | "workers-ai-asr" | "manual" | "fixture";
-
-interface ComparisonRow {
-  id: string;
-  sourceText: string;
-  vibratoInput?: string;
-  convertedText?: string;
-  expectedText?: string;
-  state: ComparisonRowState;
-  mode: ComparisonMode;
-  origin: ComparisonRowOrigin;
-  recognitionProvider?: RecognitionProvider;
-  audioSeconds?: number;
-  fixtureId?: string;
-  wasmElapsedMs?: number;
-  workerElapsedMs?: number;
-  totalElapsedMs?: number;
-  error?: string;
-  failedStage?: ConversionStage;
-  trace?: ConversionTrace;
-  usedWebSocket?: boolean;
-  openedNewWebSocket?: boolean;
-  requestedModel?: string;
-  resolvedModel?: string;
-  modelFallback?: string;
-  failedBeforeInference?: boolean;
-  /** Compare-worker connect wall ms measured for this utterance only. */
-  compareElapsedMs?: number;
-  /** Workers AI ASR estimate when an ASR path ran (filled by ASR lane). */
-  asrCostUsd?: number;
-  asrCostSummaryJa?: string;
-  asrCostFormula?: string;
-  createdAt: number;
+interface PipelineResult {
+  asrText: string;
+  vibratoText: string;
+  azookeyText: string;
+  audioSeconds: number;
+  pipeline: string;
+  logs: WorkersAiPipelineLog[];
+  completedAt: number;
 }
 
-interface UtteranceSocketUsage {
-  openedNewWebSocket: boolean;
-  compareElapsedMs?: number;
+interface UsageTotals {
+  audioSeconds: number;
+  workerRequests: number;
+  workerCpuMs: number;
 }
 
-const MAX_ROWS = 24;
+interface CostEstimate {
+  audioSeconds: number;
+  asrUsd: number;
+  requestUsd: number;
+  cpuUsd: number;
+  totalUsd: number;
+}
 
-const createId = (): string => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `utterance-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const NOVA_3_BATCH_USD_PER_AUDIO_MINUTE = 0.0052;
+const WORKER_USD_PER_MILLION_REQUESTS = 0.3;
+const WORKER_USD_PER_MILLION_CPU_MS = 0.02;
+const ONE_MILLION = 1_000_000;
+const LIVE_COST_REFRESH_MS = 250;
+const EMPTY_USAGE: UsageTotals = { audioSeconds: 0, workerRequests: 0, workerCpuMs: 0 };
+
+const formatUsd = (value: number): string =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 8,
+    maximumFractionDigits: 8,
+  }).format(value);
+
+const elapsedWorkerCpuMs = (logs: WorkersAiPipelineLog[]): number =>
+  logs
+    .filter((entry) => entry.stage !== "asr")
+    .reduce((total, entry) => total + entry.elapsedMs, 0);
+
+const estimateCost = (usage: UsageTotals, liveAudioSeconds: number): CostEstimate => {
+  const audioSeconds = usage.audioSeconds + liveAudioSeconds;
+  const asrUsd = (audioSeconds / 60) * NOVA_3_BATCH_USD_PER_AUDIO_MINUTE;
+  const requestUsd = (usage.workerRequests / ONE_MILLION) * WORKER_USD_PER_MILLION_REQUESTS;
+  const cpuUsd = (usage.workerCpuMs / ONE_MILLION) * WORKER_USD_PER_MILLION_CPU_MS;
+  return { audioSeconds, asrUsd, requestUsd, cpuUsd, totalUsd: asrUsd + requestUsd + cpuUsd };
 };
 
-const speechStateLabel = (state: SpeechRecognitionState | WorkersAiAsrState): string => {
-  switch (state) {
-    case "starting":
-    case "listening":
-      return "認識中";
-    case "error":
-      return "エラー";
-    default:
-      return "待機中";
-  }
-};
+const stageLabel = (stage: WorkersAiPipelineLog["stage"]): string =>
+  ({ asr: "ASR", vibrato: "Vibrato", azookey: "AzooKey" })[stage];
 
-const workerStateLabel = (state: WorkerConnectionState): string => {
-  switch (state) {
-    case "connecting":
-      return "接続中";
-    case "open":
-      return "接続済み";
-    case "error":
-      return "接続エラー";
-    case "closed":
-      return "切断";
-    default:
-      return "未接続";
-  }
-};
+const stateLabel = (state: WorkersAiAsrState): string =>
+  ({
+    idle: "停止中",
+    starting: "マイク準備中",
+    listening: "音声取得中",
+    stopping: "残りの音声を処理中",
+    error: "エラー",
+  })[state];
 
-const conversionCostBreakdownLabelJa = (label: string): string => {
-  switch (label) {
-    case "compare WebSocket Upgrade":
-      return "Cloudflare Worker WebSocket Upgrade";
-    case "inference 変換（service binding）":
-      return "Cloudflare Worker 推論変換";
-    case "compare CPU（このリクエスト wall）":
-      return "Cloudflare Worker Upgrade CPU（このリクエスト wall）";
-    case "compare CPU（このレスポンス cpuTime）":
-      return "Cloudflare Worker Upgrade CPU（このレスポンス cpuTime）";
-    case "inference CPU（このレスポンス cpuTime）":
-      return "Cloudflare Worker 推論 CPU（このレスポンス cpuTime）";
-    case "inference CPU（このリクエスト wall）":
-      return "Cloudflare Worker 推論 CPU（このリクエスト wall）";
-    default:
-      return label;
-  }
-};
+export default function ComparePage(): React.JSX.Element {
+  const [state, setState] = useState<WorkersAiAsrState>("idle");
+  const [interim, setInterim] = useState<string>("");
+  const [result, setResult] = useState<PipelineResult>();
+  const [usage, setUsage] = useState<UsageTotals>(EMPTY_USAGE);
+  const [error, setError] = useState<string>("");
+  const [clock, setClock] = useState<number>(Date.now());
+  const controllerRef = useRef<WorkersAiAsrController | undefined>(undefined);
+  const listeningStartedAtRef = useRef<number | undefined>(undefined);
+  const supported = typeof window === "undefined" || isWorkersAiAsrCaptureSupported();
 
-const utteranceCostTotalUsd = (
-  conversion: CloudflareConversionCostEstimate,
-  asrCostUsd?: number,
-): number => {
-  const asr = asrCostUsd !== undefined && Number.isFinite(asrCostUsd) ? asrCostUsd : 0;
-  return conversion.usd + asr;
-};
-
-const utteranceCostTotalFormula = (workerUsd: number, asrUsd: number): string => {
-  const totalUsd = workerUsd + asrUsd;
-  return (
-    `${UTTERANCE_COST_TOTAL_FORMULA_HEAD}\n` +
-    `USD_total = ${formatCloudflareCostUsd(workerUsd)} + ${formatCloudflareCostUsd(asrUsd)} = ${formatCloudflareCostUsd(totalUsd)}`
-  );
-};
-
-const asrProviderForCost = (row: ComparisonRow): RecognitionProvider | undefined => {
-  if (row.recognitionProvider !== undefined) {
-    return row.recognitionProvider;
-  }
-  if (row.origin === "workers-ai-asr") {
-    return "workers-ai-asr";
-  }
-  return undefined;
-};
-
-const formatQuantityForCost = (value: number): string =>
-  Number.isInteger(value) ? String(value) : value.toFixed(2);
-
-const rowStateLabel = (state: ComparisonRowState): string => {
-  switch (state) {
-    case "queued":
-      return "送信待ち";
-    case "wasm":
-      return "ブラウザ Vibrato WASM 中";
-    // This state spans connecting, sending, and awaiting the response, so it
-    // must not claim the AzooKey WASM conversion is already running, nor that
-    // the request is still being sent.
-    case "sending":
-      return "Cloudflare Worker 通信中";
-    case "done":
-      return "完了";
-    default:
-      return "失敗";
-  }
-};
-
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : "予期しないエラーが発生しました";
-
-const authForRequest = (auth: ComparisonAuth): ComparisonAuth =>
-  auth.scheme === "bearer"
-    ? { scheme: "bearer", token: auth.token?.trim() ?? "" }
-    : { scheme: "none" };
-
-export default function ComparePage() {
-  const [config, setConfig] = useState<ComparisonConfig>(() => ({
-    ...DEFAULT_COMPARISON_CONFIG,
-    ...(process.env.NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL
-      ? { websocketUrl: process.env.NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL }
-      : {}),
-    ...(process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL
-      ? { browserWasmModuleUrl: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_URL }
-      : {}),
-    ...(process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_DICTIONARY_URL
-      ? { browserWasmDictionaryUrl: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_DICTIONARY_URL }
-      : {}),
-    ...(process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL
-      ? { browserWasmGlobalName: process.env.NEXT_PUBLIC_AZOO_KEY_VIBRATO_WASM_GLOBAL }
-      : {}),
-  }));
-  const [webSpeechSupported, setWebSpeechSupported] = useState(false);
-  const [asrCaptureSupported, setAsrCaptureSupported] = useState(true);
-  const [speechState, setSpeechState] = useState<SpeechRecognitionState | WorkersAiAsrState>(
-    "idle",
-  );
-  const [workerState, setWorkerState] = useState<WorkerConnectionState>("idle");
-  const [advertisedWorkerModels, setAdvertisedWorkerModels] = useState<readonly string[] | null>(
-    null,
-  );
-  const [browserWasmState, setBrowserWasmState] = useState<BrowserWasmState>("idle");
-  const [speechFinalText, setSpeechFinalText] = useState("");
-  const [speechInterimText, setSpeechInterimText] = useState("");
-  const [latestSpeechSegment, setLatestSpeechSegment] = useState("");
-  const [rows, setRows] = useState<ComparisonRow[]>([]);
-  const [droppedRows, setDroppedRows] = useState(0);
-  const [latestWorker, setLatestWorker] = useState<ComparisonRow | null>(null);
-  const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
-  const [manualReading, setManualReading] = useState("おつかれさまでした");
-  const [selectedFixtureId, setSelectedFixtureId] = useState(
-    AZOOKEY_CONVERSION_FIXTURES[0]?.id ?? "",
-  );
-  const [fixtureBusy, setFixtureBusy] = useState(false);
-  const [architectureOpen, setArchitectureOpen] = useState(false);
-  const [configPanelOpen, setConfigPanelOpen] = useState(true);
-  const [phoneticPanelOpen, setPhoneticPanelOpen] = useState(false);
-
-  const speechRef = useRef<WebSpeechController | null>(null);
-  const asrRef = useRef<WorkersAiAsrController | null>(null);
-  const initialSpeechLanguageRef = useRef(config.language);
-  const speechTranscriptRef = useRef({ finalText: "", interimText: "" });
-  const dispatchedSpeechRef = useRef<string[]>([]);
-  const workerRef = useRef<AzooKeyWorkerClient | null>(null);
-  const workerVibratoConfiguredRef = useRef<boolean | undefined>(undefined);
-  const workerGenerationRef = useRef(0);
-  const rowsRef = useRef<ComparisonRow[]>([]);
-  const finalTextHandlerRef = useRef<(text: string, audioSeconds?: number) => void>(
-    () => undefined,
-  );
-  /** Serialize browser pre-pass + Worker work so rapid finals retain order. */
-  const dispatchQueueRef = useRef<Promise<void>>(Promise.resolve());
-
-  useEffect(() => {
-    setArchitectureOpen(isArchitectureDialogForced(window.location.search));
+  const handleResult = useCallback((payload: WorkersAiAsrUtteranceFinal): void => {
+    const logs = payload.logs ?? [];
+    setResult({
+      asrText: payload.text,
+      vibratoText: payload.vibratoText ?? "",
+      azookeyText: payload.convertedText ?? "",
+      audioSeconds: payload.audioSeconds,
+      pipeline: payload.pipeline ?? "workers-ai-vibrato-azookey-v2",
+      logs,
+      completedAt: Date.now(),
+    });
+    setUsage((current) => ({
+      audioSeconds: current.audioSeconds + payload.audioSeconds,
+      workerRequests: current.workerRequests + 1,
+      workerCpuMs: current.workerCpuMs + elapsedWorkerCpuMs(logs),
+    }));
   }, []);
 
-  useEffect(() => {
-    const media = window.matchMedia(DESKTOP_CONFIG_MEDIA_QUERY);
-    const forceOpenOnDesktop = () => {
-      if (media.matches) {
-        setConfigPanelOpen(true);
-        setPhoneticPanelOpen(true);
-      }
-    };
-    forceOpenOnDesktop();
-    media.addEventListener("change", forceOpenOnDesktop);
-    return () => media.removeEventListener("change", forceOpenOnDesktop);
-  }, []);
-
-  useEffect(() => {
-    const generation = workerGenerationRef.current + 1;
-    workerGenerationRef.current = generation;
-    let endpoint = config.websocketUrl;
-    try {
-      endpoint = buildVibratoWebSocketUrl({ websocketUrl: config.websocketUrl });
-    } catch {
-      // The input remains editable; connect/submit surfaces the validation error.
+  const createController = useCallback((): WorkersAiAsrController => {
+    const existing = controllerRef.current;
+    if (existing && !existing.isDisposed) {
+      return existing;
     }
-    const client = new AzooKeyWorkerClient({
-      endpoint,
-      onStateChange: (state) => {
-        // A close/error callback from a retired client must not overwrite the
-        // state of the replacement client created for the edited URL.
-        if (workerGenerationRef.current === generation) {
-          setWorkerState(state);
+    const controller = new WorkersAiAsrController("ja", {
+      language: "ja",
+      endpointUrl: COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH,
+      onStateChange: (nextState) => {
+        setState(nextState);
+        if (nextState === "listening") {
+          listeningStartedAtRef.current = Date.now();
+        }
+        if (nextState === "idle" || nextState === "error") {
+          listeningStartedAtRef.current = undefined;
         }
       },
-      onAdvertisedModels: (models) => {
-        if (workerGenerationRef.current === generation) {
-          setAdvertisedWorkerModels(models);
-        }
-      },
+      onTranscript: ({ interimText }) => setInterim(interimText),
+      onUtteranceFinal: handleResult,
+      onVadNotice: (message) => setInterim(message),
+      onError: (message) => setError(message),
     });
-    workerRef.current = client;
-    setWorkerState(client.connectionState);
-    setAdvertisedWorkerModels(null);
-    return () => {
-      client.close();
-      if (workerRef.current === client) {
-        workerRef.current = null;
-      }
-    };
-  }, [config.websocketUrl]);
-
-  const dispatchSpeechText = useCallback((text: string, audioSeconds?: number): void => {
-    const nextDispatched = rememberDispatchedSpeech(dispatchedSpeechRef.current, text);
-    if (nextDispatched.length === dispatchedSpeechRef.current.length) {
-      return;
-    }
-    dispatchedSpeechRef.current = nextDispatched;
-    setLatestSpeechSegment(text.trim());
-    finalTextHandlerRef.current(text, audioSeconds);
-  }, []);
-
-  const ensureAsrController = useCallback((): WorkersAiAsrController => {
-    const controller = ensureWorkersAiAsrController({
-      language: config.language,
-      endpointUrl:
-        typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined,
-      auth: { scheme: config.auth.scheme, token: config.auth.token },
-      existing: asrRef.current,
-      callbacks: {
-        onStateChange: (state) => {
-          setSpeechState(state);
-          if (state === "listening") {
-            setError("");
-          }
-        },
-        onTranscript: ({ interimText }) => {
-          setSpeechInterimText(interimText);
-        },
-        onFinalText: (text) => {
-          setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
-        },
-        onUtteranceFinal: ({ text, audioSeconds }) => {
-          dispatchSpeechText(text, audioSeconds);
-        },
-        onVadNotice: (message) => {
-          setNotice(message);
-        },
-        onError: (message) => {
-          setError(message);
-        },
-      },
-    });
-    asrRef.current = controller;
-    setAsrCaptureSupported(controller.supported);
+    controllerRef.current = controller;
     return controller;
-  }, [config.auth.scheme, config.auth.token, config.language, dispatchSpeechText]);
+  }, [handleResult]);
 
   useEffect(() => {
-    if (config.recognitionProvider === "workers-ai-asr") {
-      speechRef.current?.dispose();
-      speechRef.current = null;
-      const controller = ensureWorkersAiAsrController({
-        language: initialSpeechLanguageRef.current,
-        endpointUrl:
-          typeof window !== "undefined" ? buildWorkersAiAsrUrl(window.location.origin) : undefined,
-        auth: { scheme: config.auth.scheme, token: config.auth.token },
-        existing: asrRef.current,
-        callbacks: {
-          onStateChange: (state) => {
-            setSpeechState(state);
-            if (state === "listening") {
-              setError("");
-            }
-          },
-          onTranscript: ({ interimText }) => {
-            setSpeechInterimText(interimText);
-          },
-          onFinalText: (text) => {
-            setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
-          },
-          onUtteranceFinal: ({ text, audioSeconds }) => {
-            dispatchSpeechText(text, audioSeconds);
-          },
-          onVadNotice: (message) => {
-            setNotice(message);
-          },
-          onError: (message) => {
-            setError(message);
-          },
-        },
-      });
-      asrRef.current = controller;
-      setAsrCaptureSupported(controller.supported);
-      return () => {
-        controller.dispose();
-        if (asrRef.current === controller) {
-          asrRef.current = null;
-        }
-      };
-    }
-
-    asrRef.current?.dispose();
-    asrRef.current = null;
-    const controller = new WebSpeechController(initialSpeechLanguageRef.current, {
-      onStateChange: (state) => {
-        setSpeechState(state);
-        if (state === "listening") {
-          setError("");
-        }
-      },
-      onTranscript: ({ finalText, interimText }: SpeechTranscriptUpdate) => {
-        speechTranscriptRef.current = { finalText, interimText };
-        setSpeechFinalText(finalText);
-        setSpeechInterimText(interimText);
-      },
-      onFinalText: (text) => {
-        dispatchSpeechText(text);
-      },
-      onUtteranceFinal: ({ text }: SpeechUtteranceFinal) => {
-        dispatchSpeechText(text);
-      },
-      onRecognitionEnded: ({ finalText, interimText }: SpeechRecognitionEnded) => {
-        speechTranscriptRef.current = { finalText, interimText };
-        setSpeechFinalText(finalText);
-        setSpeechInterimText(interimText);
-        const pending = pendingSpeechUtterance(finalText, interimText, dispatchedSpeechRef.current);
-        if (pending) {
-          dispatchSpeechText(pending);
-        }
-      },
-      onError: (message) => {
-        setError(message);
-      },
-    });
-    speechRef.current = controller;
-    setWebSpeechSupported(controller.supported);
-    return () => {
-      controller.dispose();
-      if (speechRef.current === controller) {
-        speechRef.current = null;
-      }
-    };
-  }, [config.recognitionProvider, config.auth.scheme, config.auth.token, dispatchSpeechText]);
-
-  // Keep one browser recognition session alive while settings are edited. A
-  // dependency on `config.language` here would dispose the active controller,
-  // leave the button showing "stop", and route future finals to an idle
-  // replacement. The Web Speech implementation picks up the new language on
-  // the next browser restart without losing the current state machine.
-  useEffect(() => {
-    syncSpeechLanguage(speechRef.current, config.language);
-    asrRef.current?.setLanguage(config.language);
-  }, [config.language]);
-
-  const appendRow = useCallback((row: ComparisonRow): void => {
-    const current = rowsRef.current;
-    const overflow = Math.max(0, current.length + 1 - MAX_ROWS);
-    const next = [row, ...current].slice(0, MAX_ROWS);
-    rowsRef.current = next;
-    setRows(next);
-    if (overflow > 0) {
-      setDroppedRows((count) => count + overflow);
-      setNotice(`履歴は最大 ${MAX_ROWS} 件です。古い ${overflow} 件を省略しました`);
-    }
+    const timer = window.setInterval(() => setClock(Date.now()), LIVE_COST_REFRESH_MS);
+    return () => window.clearInterval(timer);
   }, []);
 
-  const dispatchFinalText = useCallback(
-    async (
-      sourceText: string,
-      mode: ComparisonMode,
-      wasmModuleUrl: string,
-      dictionaryUrl: string,
-      wasmGlobalName: string,
-      language: string,
-      auth: ComparisonAuth,
-      converterModel: string,
-      options: {
-        origin?: ComparisonRowOrigin;
-        expectedText?: string;
-        fixtureId?: string;
-        recognitionProvider?: RecognitionProvider;
-        audioSeconds?: number;
-        /**
-         * When set, skip browser Vibrato and feed this string as `vibratoInput`.
-         * Manual / fixture checks already supply a phonetic reading.
-         */
-        phoneticInput?: string;
-      } = {},
-    ): Promise<void> => {
-      const normalizedSource = normalizeSourceText(sourceText);
-      if (!normalizedSource) {
-        return;
-      }
-      const origin = options.origin ?? "web-speech";
-      const id = createId();
-      const asrCost = utteranceAsrCostFields(
-        options.recognitionProvider ?? config.recognitionProvider,
-        options.audioSeconds,
-      );
-      const initialRow: ComparisonRow = {
-        id,
-        sourceText: normalizedSource,
-        state: "queued",
-        mode,
-        origin,
-        recognitionProvider: options.recognitionProvider ?? config.recognitionProvider,
-        ...asrCost,
-        ...(options.expectedText !== undefined ? { expectedText: options.expectedText } : {}),
-        ...(options.fixtureId !== undefined ? { fixtureId: options.fixtureId } : {}),
-        ...(options.audioSeconds !== undefined ? { audioSeconds: options.audioSeconds } : {}),
-        createdAt: Date.now(),
-      };
-      appendRow(initialRow);
-      setLatestWorker(initialRow);
-      setError("");
-
-      const patchRow = (patch: Partial<ComparisonRow>): void => {
-        const nextRows = rowsRef.current.map((row) => (row.id === id ? { ...row, ...patch } : row));
-        rowsRef.current = nextRows;
-        setRows(nextRows);
-        setLatestWorker((current) => (current?.id === id ? { ...current, ...patch } : current));
-      };
-
-      const forcedPhonetic = options.phoneticInput?.trim();
-      let vibratoInput = forcedPhonetic || normalizedSource;
-      let wasmElapsedMs: number | undefined;
-      const socketUsage: UtteranceSocketUsage = { openedNewWebSocket: false };
-      let cloudflareConnectAttempted = false;
-      // Tracks the stage in flight so a failure is attributed to the stage that
-      // actually failed, rather than to whichever stage happened to run last.
-      const stageRef: { current: ConversionStage } = { current: "setup" };
-      try {
-        const model = isConverterModel(converterModel) ? converterModel : DEFAULT_CONVERTER_MODEL;
-        const result = await runComparisonConversion(
-          {
-            sourceText: normalizedSource,
-            mode,
-            converterModel: model,
-            language,
-            auth,
-            phoneticInput: forcedPhonetic,
-            wasmModuleUrl,
-            dictionaryUrl,
-            wasmGlobalName,
-            inputN5LmRescoreEnabled: config.inputN5LmRescoreEnabled,
-            ...zenzWorkerLeftContextField(
-              model,
-              rowsRef.current
-                .filter((row) => row.id !== id && row.state === "done")
-                .map((row) => row.convertedText),
-            ),
-          },
-          {
-            onStage: (nextStage) => {
-              stageRef.current = nextStage;
-              if (nextStage === "browser-wasm") {
-                setBrowserWasmState("loading");
-                patchRow({ state: "wasm" });
-              }
-              if (nextStage === "browser-azookey" || nextStage === "worker-connect") {
-                patchRow({
-                  state: "sending",
-                  vibratoInput,
-                  ...(wasmElapsedMs !== undefined ? { wasmElapsedMs } : {}),
-                });
-              }
-            },
-            runBrowserVibrato: async (text, options) => {
-              try {
-                const wasmResult = await runBrowserVibrato(text, options);
-                vibratoInput = wasmResult.text;
-                wasmElapsedMs = wasmResult.elapsedMs;
-                setBrowserWasmState((current) =>
-                  browserWasmStateAfterStage(current, "browser-wasm", true),
-                );
-                return wasmResult;
-              } catch (caught) {
-                if (mode === "browser-vibrato") {
-                  setBrowserWasmState((current) =>
-                    browserWasmStateAfterStage(current, "browser-wasm", false),
-                  );
-                }
-                throw caught;
-              }
-            },
-            runBrowserAzookey: (text) => runBrowserAzookey(text),
-            runBrowserZenzaiDict: (text, model) => runBrowserZenzaiDict(text, { model }),
-            connectWorker: async () => {
-              const client = workerRef.current;
-              if (!client) {
-                throw new Error("Cloudflare Worker WebSocket クライアントを初期化できません");
-              }
-              cloudflareConnectAttempted = true;
-              const workerGeneration = workerGenerationRef.current;
-              if (
-                workerRef.current !== client ||
-                workerGenerationRef.current !== workerGeneration
-              ) {
-                throw new Error("Cloudflare Worker 設定が変更されました。発話を再送してください");
-              }
-              const wsAlreadyOpen = client.connectionState === "open";
-              const connectStartedAt = performance.now();
-              await client.connect();
-              if (!wsAlreadyOpen) {
-                socketUsage.openedNewWebSocket = true;
-                socketUsage.compareElapsedMs = Math.max(
-                  0,
-                  Math.round(performance.now() - connectStartedAt),
-                );
-              }
-              if (
-                workerRef.current !== client ||
-                workerGenerationRef.current !== workerGeneration
-              ) {
-                throw new Error("Cloudflare Worker 設定が変更されました。発話を再送してください");
-              }
-            },
-            convertWithWorker: (request) => {
-              const client = workerRef.current;
-              if (!client) {
-                throw new Error("Cloudflare Worker WebSocket クライアントを初期化できません");
-              }
-              return client.convert({
-                ...request,
-                auth: authForRequest(auth),
-              });
-            },
-          },
-        );
-        vibratoInput = result.vibratoInput;
-        patchRow({
-          state: "done",
-          convertedText: result.convertedText,
-          vibratoInput: result.vibratoInput,
-          trace: result.trace,
-          usedWebSocket: result.usedWebSocket,
-          openedNewWebSocket: socketUsage.openedNewWebSocket,
-          ...(socketUsage.compareElapsedMs !== undefined
-            ? { compareElapsedMs: socketUsage.compareElapsedMs }
-            : {}),
-          ...(result.requestedModel !== undefined ? { requestedModel: result.requestedModel } : {}),
-          ...(result.model !== undefined ? { resolvedModel: result.model } : {}),
-          ...(result.modelFallback !== undefined ? { modelFallback: result.modelFallback } : {}),
-          ...(result.wasmElapsedMs !== undefined ? { wasmElapsedMs: result.wasmElapsedMs } : {}),
-          ...(result.workerElapsedMs !== undefined || result.azookeyElapsedMs !== undefined
-            ? { workerElapsedMs: result.workerElapsedMs ?? result.azookeyElapsedMs }
-            : {}),
-          totalElapsedMs: result.totalElapsedMs,
-        });
-        if (result.zenzaiExecution) {
-          setNotice(BROWSER_ZENZAI_DICT_NOTICE);
-        } else if (result.modelFallback && result.requestedModel) {
-          setNotice(
-            result.modelFallback === "upstream-failed"
-              ? `${result.requestedModel} の上流に接続できなかったため AzooKey WASM で変換しました`
-              : `${result.requestedModel} は Cloudflare Worker（推論）に未設定のため AzooKey WASM で変換しました`,
-          );
-        }
-      } catch (caught) {
-        // The browser WASM status is owned by the browser stage above; a Worker
-        // or setup failure must not report a pre-pass that succeeded as failed.
-        const message = errorMessage(caught);
-        // A protocol refusal, transport failure, and converter failure are
-        // different outcomes; only the Worker can prove which one occurred.
-        const failedStage =
-          stageRef.current === "worker" ? workerErrorStage(caught) : stageRef.current;
-        patchRow({
-          state: "error",
-          error: message,
-          vibratoInput,
-          failedStage,
-          ...(mode === "worker-vibrato" && cloudflareConnectAttempted
-            ? {
-                usedWebSocket: true,
-                openedNewWebSocket: socketUsage.openedNewWebSocket,
-                ...(socketUsage.compareElapsedMs !== undefined
-                  ? { compareElapsedMs: socketUsage.compareElapsedMs }
-                  : {}),
-                failedBeforeInference: stageRef.current !== "worker",
-              }
-            : mode === "browser-vibrato"
-              ? { usedWebSocket: false }
-              : {}),
-        });
-        setError(message);
-      }
+  useEffect(
+    () => () => {
+      controllerRef.current?.dispose();
+      controllerRef.current = undefined;
     },
-    [appendRow, config.recognitionProvider, config.inputN5LmRescoreEnabled],
+    [],
   );
 
-  // Keep the controller callback stable while routing each final utterance to
-  // the latest selected mode and WASM settings.
-  finalTextHandlerRef.current = (text, audioSeconds) => {
-    const dispatch = dispatchQueueRef.current.then(() =>
-      dispatchFinalText(
-        text,
-        config.mode,
-        config.browserWasmModuleUrl ?? "",
-        config.browserWasmDictionaryUrl ?? "",
-        config.browserWasmGlobalName ?? "",
-        config.language,
-        config.auth,
-        config.converterModel,
-        {
-          origin: config.recognitionProvider === "workers-ai-asr" ? "workers-ai-asr" : "web-speech",
-          recognitionProvider: config.recognitionProvider,
-          ...(audioSeconds !== undefined ? { audioSeconds } : {}),
-        },
-      ),
-    );
-    // Keep the chain alive after an unexpected observer/React failure. The
-    // conversion function normally catches stage errors itself, but this
-    // guard prevents one rapid utterance from blocking all later finals.
-    dispatchQueueRef.current = dispatch.catch(() => undefined);
-    void dispatch;
-  };
-
-  const enqueueConversion = useCallback(
-    (sourceText: string, options: Parameters<typeof dispatchFinalText>[8] = {}): void => {
-      const dispatch = dispatchQueueRef.current.then(() =>
-        dispatchFinalText(
-          sourceText,
-          config.mode,
-          config.browserWasmModuleUrl ?? "",
-          config.browserWasmDictionaryUrl ?? "",
-          config.browserWasmGlobalName ?? "",
-          config.language,
-          config.auth,
-          config.converterModel,
-          {
-            ...options,
-            recognitionProvider: options.recognitionProvider ?? config.recognitionProvider,
-          },
-        ),
-      );
-      dispatchQueueRef.current = dispatch.catch(() => undefined);
-      void dispatch;
-    },
-    [
-      config.auth,
-      config.browserWasmDictionaryUrl,
-      config.browserWasmGlobalName,
-      config.browserWasmModuleUrl,
-      config.converterModel,
-      config.language,
-      config.mode,
-      config.recognitionProvider,
-      dispatchFinalText,
-    ],
-  );
-
-  const submitManualReading = (): void => {
-    const reading = manualReading.trim();
-    if (!reading) {
-      setError("かな読みを入力してください");
-      return;
-    }
-    setNotice(
-      config.mode === "browser-vibrato"
-        ? "かな読みをブラウザ AzooKey で変換しています"
-        : "かな読みを Cloudflare Worker（推論）AzooKey へ送信しています",
-    );
-    enqueueConversion(reading, {
-      origin: "manual",
-      phoneticInput: reading,
-    });
-  };
-
-  const runConversionFixture = (fixture: AzookeyConversionFixture): void => {
-    setNotice(
-      config.mode === "browser-vibrato"
-        ? `フィクスチャ「${fixture.label}」をブラウザ AzooKey で変換しています`
-        : `フィクスチャ「${fixture.label}」を Cloudflare Worker へ送信しています`,
-    );
-    enqueueConversion(fixture.reading, {
-      origin: "fixture",
-      phoneticInput: fixture.reading,
-      expectedText: fixture.expected,
-      fixtureId: fixture.id,
-    });
-  };
-
-  const runSelectedFixture = (): void => {
-    const fixture = AZOOKEY_CONVERSION_FIXTURES.find((entry) => entry.id === selectedFixtureId);
-    if (!fixture) {
-      setError("フィクスチャを選択してください");
-      return;
-    }
-    runConversionFixture(fixture);
-  };
-
-  const runAllConversionFixtures = async (): Promise<void> => {
-    if (fixtureBusy) {
-      return;
-    }
-    setFixtureBusy(true);
-    setNotice("変換フィクスチャを順に実行しています");
-    try {
-      for (const fixture of AZOOKEY_CONVERSION_FIXTURES) {
-        await new Promise<void>((resolve) => {
-          const dispatch = dispatchQueueRef.current.then(() =>
-            dispatchFinalText(
-              fixture.reading,
-              config.mode,
-              config.browserWasmModuleUrl ?? "",
-              config.browserWasmDictionaryUrl ?? "",
-              config.browserWasmGlobalName ?? "",
-              config.language,
-              config.auth,
-              config.converterModel,
-              {
-                origin: "fixture",
-                phoneticInput: fixture.reading,
-                expectedText: fixture.expected,
-                fixtureId: fixture.id,
-              },
-            ),
-          );
-          dispatchQueueRef.current = dispatch
-            .catch(() => undefined)
-            .then(() => {
-              resolve();
-            });
-        });
-      }
-      setNotice("変換フィクスチャの実行が完了しました");
-    } finally {
-      setFixtureBusy(false);
-    }
-  };
-
-  const browserWasmConfigured = hasBrowserWasmConfiguration(config);
-
-  const pathSummary = useMemo(
-    () => comparisonPathSummary(config.mode, browserWasmConfigured),
-    [config.mode, browserWasmConfigured],
-  );
-
-  const browserZenzaiDictNotice = useMemo(
-    () =>
-      usesBrowserZenzaiDictPath(config.mode, config.converterModel)
-        ? BROWSER_ZENZAI_DICT_NOTICE
-        : "",
-    [config.converterModel, config.mode],
-  );
-
-  const selectedModeOption = useMemo(
-    () => comparisonModeOptions.find((option) => option.value === config.mode),
-    [config.mode],
-  );
-  const selectableConverterOptions = useMemo(
-    () =>
-      config.mode === "worker-vibrato"
-        ? advertisedConverterModelOptions(advertisedWorkerModels)
-        : converterModelOptions,
-    [advertisedWorkerModels, config.mode],
-  );
-  const workerCatalogState = useMemo(
-    () => workerConverterCatalogState(advertisedWorkerModels, workerState),
-    [advertisedWorkerModels, workerState],
-  );
-  const workerCatalogNotice =
-    config.mode !== "worker-vibrato"
-      ? ""
-      : workerCatalogState === "idle"
-        ? "まだ Cloudflare Worker に接続していません。辞書だけ選べます。"
-        : workerCatalogState === "unknown"
-          ? "Cloudflare Worker の advertised 一覧を待っています。接続前は辞書だけ選べます。"
-          : workerCatalogState === "unreachable"
-            ? "Cloudflare Worker に接続できていません。変換モデルは辞書のみです。"
-            : advertisedWorkerModels !== null &&
-                !advertisedWorkerModels.some((model) => model.includes("zenz"))
-              ? "この Worker は Zenz を advertised していません。MODEL_ROUTES に baseUrl がありません。"
-              : "";
-
-  const browserWasmStatus = useMemo(
-    () =>
-      config.mode === "browser-vibrato"
-        ? browserWasmConfigurationStatus({
-            browserWasmModuleUrl: config.browserWasmModuleUrl,
-            browserWasmDictionaryUrl: config.browserWasmDictionaryUrl,
-            browserWasmGlobalName: config.browserWasmGlobalName,
-          })
-        : "",
-    [
-      config.mode,
-      config.browserWasmModuleUrl,
-      config.browserWasmDictionaryUrl,
-      config.browserWasmGlobalName,
-    ],
-  );
-
-  const warmBrowserVibratoIfNeeded = useCallback(
-    async (workerVibratoConfigured?: boolean): Promise<void> => {
-      if (!shouldWarmBrowserVibratoDictionary(config.mode, workerVibratoConfigured)) {
-        return;
-      }
-      setBrowserWasmState("loading");
-      try {
-        await warmupBrowserVibrato(browserVibratoConfigFromComparison(config));
-        if (config.mode === "browser-vibrato") {
-          if (isZenzConverterModel(config.converterModel)) {
-            await warmupBrowserZenzaiDict({ model: config.converterModel });
-          } else {
-            await warmupBrowserAzookey();
-          }
-        }
-        setBrowserWasmState("ready");
-      } catch (caught) {
-        setBrowserWasmState("error");
-        throw caught;
-      }
-    },
-    [config],
-  );
-
-  const warmWorkerIsolateIfNeeded = useCallback(async (): Promise<void> => {
-    if (!usesWorkerConversion(config.mode)) {
-      return;
-    }
-    const client = workerRef.current;
-    if (!client) {
-      return;
-    }
-    await client.warmup();
-    client.startIdlePin();
-  }, [config.mode]);
-
-  const endLiveWorkerSession = (): void => {
-    if (!usesWorkerConversion(config.mode)) {
-      return;
-    }
-    const client = workerRef.current;
-    if (!client) {
-      return;
-    }
-    client.stopIdlePin();
-    client.close();
-  };
-
-  const toggleListening = (): void => {
-    const usingWorkersAi = config.recognitionProvider === "workers-ai-asr";
-    if (usingWorkersAi) {
-      if (speechState === "listening" || speechState === "starting") {
-        endLiveWorkerSession();
-        void ensureAsrController().stop();
-        return;
-      }
-      dispatchedSpeechRef.current = [];
-      setLatestSpeechSegment("");
-      setError("");
-      beginRecognitionListening({
-        provider: "workers-ai-asr",
-        start: async () => {
-          try {
-            const result = await startCloudflareWorkersAiAsrAfterSelect({
-              language: config.language,
-              endpointUrl:
-                typeof window !== "undefined"
-                  ? buildWorkersAiAsrUrl(window.location.origin)
-                  : undefined,
-              auth: { scheme: config.auth.scheme, token: config.auth.token },
-              existing: asrRef.current,
-              callbacks: {
-                onStateChange: (state) => {
-                  setSpeechState(state);
-                  if (state === "listening") {
-                    setError("");
-                  }
-                },
-                onTranscript: ({ interimText }) => {
-                  setSpeechInterimText(interimText);
-                },
-                onFinalText: (text) => {
-                  setSpeechFinalText((current) => (current ? `${current} ${text}` : text));
-                },
-                onUtteranceFinal: ({ text, audioSeconds }) => {
-                  dispatchSpeechText(text, audioSeconds);
-                },
-                onVadNotice: (message) => {
-                  setNotice(message);
-                },
-                onError: (message) => {
-                  setError(message);
-                },
-              },
-              onError: (message) => {
-                setError(message);
-              },
-            });
-            if (result.controller) {
-              asrRef.current = result.controller;
-              setAsrCaptureSupported(result.controller.supported);
-            }
-          } catch (caught) {
-            if (caught instanceof Error && caught.message === WORKERS_AI_ASR_UNSUPPORTED_JA) {
-              setAsrCaptureSupported(false);
-            }
-            throw caught;
-          }
-        },
-        warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
-        warmWorkerIsolate: warmWorkerIsolateIfNeeded,
-        onWarmupNotice: setNotice,
-        onWarmupError: setError,
-        requireVibratoWarmup: config.mode === "browser-vibrato",
-      });
-      return;
-    }
-
-    const controller = speechRef.current;
-    if (!controller || !webSpeechSupported) {
-      setError(WEB_SPEECH_UNSUPPORTED_JA);
-      return;
-    }
-    if (speechState === "listening" || speechState === "starting") {
-      endLiveWorkerSession();
-      controller.stop();
-      return;
-    }
-    dispatchedSpeechRef.current = [];
-    setLatestSpeechSegment("");
+  const toggleListening = useCallback(async (): Promise<void> => {
     setError("");
-    beginRecognitionListening({
-      provider: config.recognitionProvider,
-      start: () => controller.start(),
-      warmBrowserVibrato: () => warmBrowserVibratoIfNeeded(workerVibratoConfiguredRef.current),
-      warmWorkerIsolate: warmWorkerIsolateIfNeeded,
-      onWarmupNotice: setNotice,
-      onWarmupError: setError,
-      requireVibratoWarmup: config.mode === "browser-vibrato",
-    });
-  };
-
-  const connectWorker = async (): Promise<void> => {
-    const client = workerRef.current;
-    if (!client) {
-      setError("Cloudflare Worker WebSocket クライアントを初期化できません");
+    const controller = createController();
+    if (state === "listening" || state === "starting") {
+      await controller.stop();
       return;
     }
-    try {
-      if (config.auth.scheme === "bearer" && !config.auth.token?.trim()) {
-        throw new Error("Bearer token を入力してください");
-      }
-      buildVibratoWebSocketUrl(config);
-      await client.warmup();
-      let notice = "Cloudflare Worker WebSocket に接続しました";
-      let workerVibratoConfigured: boolean | undefined;
-      try {
-        const healthUrl = azookeyHealthUrlFromWebSocket(config.websocketUrl);
-        const health = await fetch(healthUrl, AZOOKEY_ISOLATE_HTTP_WARMUP_INIT).then(
-          async (response) =>
-            response.ok
-              ? ((await response.json()) as {
-                  dictionary?: { transport?: string };
-                  vibrato?: { workerStage?: string };
-                })
-              : null,
-        );
-        workerVibratoConfigured = health?.vibrato?.workerStage === "configured";
-        workerVibratoConfiguredRef.current = workerVibratoConfigured;
-        if (health?.dictionary?.transport === "builtin") {
-          notice =
-            "Cloudflare Worker（推論）は内蔵語彙のみです。AZOOKEY_DICTIONARY_URL を設定しないと Tauri より精度が落ちます";
-        } else if (health?.dictionary?.transport === "portable-wasm") {
-          notice = "Cloudflare Worker WebSocket に接続しました（公式 AzooKey 辞書）";
-        }
-      } catch {
-        // Health is observability only; conversion can still proceed.
-      }
-      try {
-        await warmBrowserVibratoIfNeeded(workerVibratoConfigured);
-        if (shouldWarmBrowserVibratoDictionary(config.mode, workerVibratoConfigured)) {
-          notice = `${notice} / ブラウザ IPADIC を先行読み込み済み`;
-        }
-      } catch (caught) {
-        if (config.mode === "browser-vibrato") {
-          throw caught;
-        }
-        notice = `${notice}（ブラウザ辞書の先行読み込みは後続発話時に再試行します）`;
-      }
-      setNotice(notice);
-      setError("");
-    } catch (caught) {
-      setError(errorMessage(caught));
-    }
-  };
+    await controller.start();
+  }, [createController, state]);
 
-  const updateConfig = <K extends keyof ComparisonConfig>(key: K, value: ComparisonConfig[K]) => {
-    const next = { ...config, [key]: value };
-    setConfig(next);
-    // The browser WASM status describes the previous settings. A changed mode
-    // or pre-pass configuration must not keep claiming ready/error until the
-    // new configuration has actually been exercised.
-    if (!shouldWarmBrowserDictionaryAfterConfigChange(String(key), speechState, workerState)) {
-      if (
-        key === "mode" ||
-        key === "converterModel" ||
-        key === "browserWasmModuleUrl" ||
-        key === "browserWasmDictionaryUrl" ||
-        key === "browserWasmGlobalName"
-      ) {
-        setBrowserWasmState("idle");
-      }
-      return;
-    }
-    if (!shouldWarmBrowserVibratoDictionary(next.mode, workerVibratoConfiguredRef.current)) {
-      setBrowserWasmState("idle");
-      return;
-    }
-    setBrowserWasmState("loading");
-    void warmupBrowserVibrato(browserVibratoConfigFromComparison(next))
-      .then(async () => {
-        if (next.mode === "browser-vibrato") {
-          if (isZenzConverterModel(next.converterModel)) {
-            await warmupBrowserZenzaiDict({ model: next.converterModel });
-          } else {
-            await warmupBrowserAzookey();
-          }
-        }
-        setBrowserWasmState("ready");
-      })
-      .catch((caught: unknown) => {
-        setBrowserWasmState("error");
-        if (next.mode === "browser-vibrato") {
-          setError(errorMessage(caught));
-          return;
-        }
-        setNotice(`ブラウザ辞書の先行読み込みに失敗しました: ${errorMessage(caught)}`);
-      });
-  };
+  const reset = useCallback((): void => {
+    setResult(undefined);
+    setUsage(EMPTY_USAGE);
+    setError("");
+  }, []);
 
-  const clearComparison = (): void => {
-    rowsRef.current = [];
-    setRows([]);
-    setDroppedRows(0);
-    setLatestWorker(null);
-    setSpeechFinalText("");
-    setSpeechInterimText("");
-    setLatestSpeechSegment("");
-    speechTranscriptRef.current = { finalText: "", interimText: "" };
-    dispatchedSpeechRef.current = [];
-    setNotice("履歴をクリアしました");
-  };
-
-  useEffect(() => {
-    if (
-      config.mode === "worker-vibrato" &&
-      !selectableConverterOptions.some((option) => option.value === config.converterModel)
-    ) {
-      setConfig((current) => ({ ...current, converterModel: DEFAULT_CONVERTER_MODEL }));
-    }
-  }, [config.converterModel, config.mode, selectableConverterOptions]);
-
-  const configPanelHeading = (
-    <div className="panel-heading">
-      <div>
-        <p className="eyebrow">CONFIGURATION</p>
-        <h3>接続と方式</h3>
-      </div>
-      <span className={`state-pill state-${workerState}`}>{workerStateLabel(workerState)}</span>
-    </div>
-  );
-
-  const phoneticPanelHeading = (
-    <div className="panel-heading">
-      <div>
-        <p className="eyebrow">PHONETIC INPUT</p>
-        <h3>読み入力</h3>
-      </div>
-    </div>
-  );
+  const liveAudioSeconds = useMemo((): number => {
+    const startedAt = listeningStartedAtRef.current;
+    return state === "listening" && startedAt ? Math.max(0, (clock - startedAt) / 1_000) : 0;
+  }, [clock, state]);
+  const cost = useMemo(() => estimateCost(usage, liveAudioSeconds), [usage, liveAudioSeconds]);
+  const activeStage = state === "listening" ? "capture" : interim === "認識中…" ? "asr" : undefined;
 
   return (
-    <main className="compare-shell">
-      <header className="topbar">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">
-            A
-          </span>
-          <div>
-            <p className="brand-kicker">AZOOKEY LAB</p>
-            <h1>認識結果の比較</h1>
-          </div>
-        </div>
-        <span className="surface-badge">Next.js / WebSpeech</span>
+    <main className="verification-shell">
+      <header className="hero">
+        <p className="eyebrow">KOTOBA BEACON / TECHNICAL VERIFICATION</p>
+        <h1>Cloudflare 音声処理パイプライン</h1>
+        <p>
+          経路は1つだけです。Browser は音声だけを送り、単一の Cloudflare Worker が Nova-3、
+          Vibrato、AzooKey を順番に実行して文字列を返します。
+        </p>
       </header>
 
-      <section className="intro-block" aria-labelledby="intro-title">
-        <div>
-          <p className="eyebrow">ASYNC COMPARISON SURFACE</p>
-          <h2 id="intro-title">ブラウザ認識と Cloudflare Worker 変換を同じ発話で見比べる</h2>
-          <p className="intro-copy">
-            Web Speech API の結果はすぐに表示し、AzooKey の Cloudflare Worker
-            応答は到着順に独立して更新します。
-          </p>
-        </div>
-        {/* Derived from the selected mode and the settings form, so it states the
-            chosen route rather than one a request has travelled. */}
-        <div className="path-chip" role="status" aria-label="選択中の処理経路">
-          <span
-            className={`status-dot ${
-              config.mode === "browser-vibrato" && !browserWasmConfigured ? "" : "status-dot-live"
-            }`}
-            aria-hidden="true"
-          />
-          {pathSummary}
-        </div>
-      </section>
-
-      <section className="panel speech-panel speech-panel-hero" data-testid="speech-lane">
-        <div className="panel-heading">
+      <section className="visualization-panel" aria-labelledby="pipeline-heading">
+        <div className="section-heading">
           <div>
-            <p className="eyebrow">
-              {config.recognitionProvider === "workers-ai-asr"
-                ? "CLOUDFLARE WORKERS AI ASR"
-                : "WEB SPEECH API"}
-            </p>
-            <h3>認識レーン</h3>
+            <p className="section-kicker">D3.js visualization</p>
+            <h2 id="pipeline-heading">固定された処理経路</h2>
           </div>
-          <span className={`state-pill state-${speechState}`}>{speechStateLabel(speechState)}</span>
+          <span className={`state-badge state-${state}`}>{stateLabel(state)}</span>
         </div>
-        <p className="support-line">
-          {(
-            config.recognitionProvider === "workers-ai-asr"
-              ? asrCaptureSupported
-              : webSpeechSupported
-          )
-            ? "このブラウザで利用できます"
-            : "このブラウザでは利用できません"}
-        </p>
-        <button
-          className={`button button-primary ${speechState === "listening" ? "is-listening" : ""}`}
-          type="button"
-          onClick={toggleListening}
-          disabled={
-            config.recognitionProvider === "workers-ai-asr"
-              ? !asrCaptureSupported
-              : !webSpeechSupported
-          }
-        >
-          <span className="record-dot" aria-hidden="true" />
-          {speechState === "listening" || speechState === "starting" ? "認識を停止" : "認識を開始"}
-        </button>
-        <p className="field-help">
-          {config.recognitionProvider === "workers-ai-asr"
-            ? "マイク権限を許可すると、ブラウザの Silero VAD v6（ONNX + ORT WASM）で発話を切り、Cloudflare Workers AI Nova-3 に送ります。無音 480ms で区切り、同じ録音のまま次の発話を待ちます。WASM を読めないときだけ -50 dBFS エネルギーゲートに倒します。"
-            : "マイク権限を許可すると、確定した発話ごとに変換します。認識終了（final / onend）でも行を残します。Web Speech では Silero ONNX / ORT WASM は読み込みません。"}
-        </p>
+        <PipelineVisualization activeStage={activeStage} />
       </section>
 
-      <details
-        className="architecture-disclosure"
-        open={architectureOpen || undefined}
-        data-testid="architecture-disclosure"
-      >
-        <summary>本番構成図（compare / inference Cloudflare Worker）</summary>
-        <ComparisonPathDiagram kind="overview" recognitionProvider={config.recognitionProvider} />
-        <ComparisonPathDiagram
-          kind="mode"
-          mode={config.mode}
-          browserWasmConfigured={browserWasmConfigured}
-          converterModel={config.converterModel}
-          recognitionProvider={config.recognitionProvider}
-        />
-        <ArchitectureAssetTable />
-      </details>
+      <section className="control-grid">
+        <article className="control-panel">
+          <h2>音声入力</h2>
+          <p>
+            ブラウザ内の Silero VAD は送信単位の切り出しだけに使用します。文字処理は行いません。
+          </p>
+          <button
+            type="button"
+            className={state === "listening" ? "stop-button" : "start-button"}
+            disabled={!supported || state === "stopping"}
+            onClick={() => void toggleListening()}
+          >
+            {state === "listening" || state === "starting" ? "録音を停止" : "マイクを開始"}
+          </button>
+          {!supported ? (
+            <p className="error-message">このブラウザでは音声取得を利用できません。</p>
+          ) : null}
+          {interim ? <p className="interim-message">{interim}</p> : null}
+          {error ? <p className="error-message">{error}</p> : null}
+        </article>
 
-      <div className="workspace-grid">
-        <aside className="control-stack" aria-label="比較設定">
-          <section className="panel config-panel" data-testid="config-panel">
-            <div className="config-panel-heading-desktop">{configPanelHeading}</div>
-            <details
-              className="config-panel-disclosure"
-              data-testid="config-panel-disclosure"
-              open={configPanelOpen}
-              onToggle={(event) => {
-                const next = window.matchMedia(DESKTOP_CONFIG_MEDIA_QUERY).matches
-                  ? true
-                  : event.currentTarget.open;
-                setConfigPanelOpen((current) => (current === next ? current : next));
-              }}
-            >
-              <summary className="config-panel-toggle" data-testid="config-panel-toggle">
-                {configPanelHeading}
-              </summary>
-              <div className="config-panel-body">
-                <RecognitionModeSelector
-                  provider={config.recognitionProvider}
-                  onProviderChange={(recognitionProvider) => {
-                    updateConfig("recognitionProvider", recognitionProvider);
-                  }}
-                  label="音声認識"
-                />
-
-                <VibratoModeSelector
-                  mode={config.mode}
-                  onModeChange={(mode) => {
-                    updateConfig("mode", mode);
-                  }}
-                  label="変換（前処理の実行場所）"
-                  description={selectedModeOption?.description}
-                />
-
-                <label className="field-label" htmlFor="converter-model">
-                  変換モデル
-                  <select
-                    id="converter-model"
-                    data-testid="converter-model-select"
-                    value={config.converterModel}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      if (isConverterModel(next)) {
-                        updateConfig("converterModel", next);
-                      }
-                    }}
-                    aria-describedby="converter-model-description"
-                  >
-                    {selectableConverterOptions.map((option) => (
-                      <option key={option.value} value={option.value} title={option.description}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p
-                  className="field-help"
-                  id="converter-model-description"
-                  data-testid="converter-model-description"
-                >
-                  {converterModelOptions.find((option) => option.value === config.converterModel)
-                    ?.description ?? ""}
-                  {workerCatalogNotice ? (
-                    <>
-                      {" "}
-                      <span data-testid="worker-catalog-notice">{workerCatalogNotice}</span>
-                    </>
-                  ) : null}
-                  {browserZenzaiDictNotice ? (
-                    <>
-                      {" "}
-                      <span data-testid="browser-zenzai-dict-notice">
-                        {browserZenzaiDictNotice}
-                      </span>
-                    </>
-                  ) : null}
-                </p>
-
-                <label className="field-label" htmlFor="input-n5-lm-rescore-enabled">
-                  かな読み補正（input_n5_lm_v1）
-                  <span className="field-inline-control">
-                    <input
-                      id="input-n5-lm-rescore-enabled"
-                      data-testid="input-n5-lm-rescore-enabled"
-                      type="checkbox"
-                      checked={config.inputN5LmRescoreEnabled}
-                      onChange={(event) =>
-                        updateConfig("inputN5LmRescoreEnabled", event.target.checked)
-                      }
-                    />
-                    <span>{config.inputN5LmRescoreEnabled ? "オン" : "オフ（既定）"}</span>
-                  </span>
-                </label>
-                <p className="field-help" id="input-n5-lm-rescore-description">
-                  Vibrato 後・AzooKey 前に Miwa-Keita/input_n5_lm_v1 の ASR
-                  かな読み補正をかけます。既定はオフ（既存挙動のまま）。
-                </p>
-
-                <label className="field-label" htmlFor="worker-url">
-                  Cloudflare Worker WebSocket URL
-                  <input
-                    id="worker-url"
-                    type="url"
-                    inputMode="url"
-                    value={config.websocketUrl}
-                    onChange={(event) => updateConfig("websocketUrl", event.target.value)}
-                    placeholder="ws://127.0.0.1:8787/ws/azookey"
-                    spellCheck={false}
-                  />
-                </label>
-                <p className="field-help">
-                  既定はローカル wrangler（`ws://127.0.0.1:8787/ws/azookey`）。接続エラーなら `bun
-                  run worker:dev` を先に起動してください。デプロイ先は
-                  `NEXT_PUBLIC_AZOO_KEY_WORKER_WS_URL` で上書きできます。
-                </p>
-
-                {config.mode === "browser-vibrato" ? (
-                  <div className="subsection browser-wasm-settings">
-                    <p className="subsection-title">
-                      Browser Vibrato WASM 設定（このモードでは必須）
-                    </p>
-                    <p className="field-help" data-testid="browser-wasm-config-status">
-                      {browserWasmStatus}
-                    </p>
-                    <label className="field-label" htmlFor="wasm-module-url">
-                      JS glue module URL（global 未指定時は必須）
-                      <input
-                        id="wasm-module-url"
-                        type="url"
-                        inputMode="url"
-                        value={config.browserWasmModuleUrl ?? ""}
-                        onChange={(event) =>
-                          updateConfig("browserWasmModuleUrl", event.target.value)
-                        }
-                        placeholder="https://localhost:3000/azookey-browser.js"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <label className="field-label" htmlFor="wasm-global-name">
-                      global runtime 名（module URL 未指定時は必須）
-                      <input
-                        id="wasm-global-name"
-                        type="text"
-                        value={config.browserWasmGlobalName ?? ""}
-                        onChange={(event) =>
-                          updateConfig("browserWasmGlobalName", event.target.value)
-                        }
-                        placeholder="__AZOOKEY_BROWSER_PREPASS__"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <label className="field-label" htmlFor="wasm-dictionary-url">
-                      Vibrato 辞書 URL（IPADIC F[7]、生成 module では必須）
-                      <input
-                        id="wasm-dictionary-url"
-                        type="url"
-                        inputMode="url"
-                        value={config.browserWasmDictionaryUrl ?? ""}
-                        onChange={(event) =>
-                          updateConfig("browserWasmDictionaryUrl", event.target.value)
-                        }
-                        placeholder="/vibrato/system.dic.zst"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <p className="field-help">
-                      既定の wasm-bindgen module（`/vibrato/vibrato_wasm.js`）は `VibratoTokenizer`
-                      と `initSync` を export し、この辞書の IPADIC F[7] を
-                      ひらがなへ変換します。独自 module を使う場合は、`convert(text)`、
-                      `transform(text)`、`tokenize(text)` のいずれかを export する wrapper の
-                      URL、または注入済み global を指定します。モジュール URL も global
-                      名も空のときはブラウザ Vibrato WASM
-                      が未設定のためプリパスを実行できず失敗します（Cloudflare Worker 側 Vibrato
-                      へはサイレントフォールバックしません）。空の global 名で実行した場合のみ、
-                      実行時フォールバックとして既定名 `__AZOOKEY_VIBRATO_WASM__` を試します。
-                      ブラウザ完結のかな→漢字は 同じページの AzooKey WASM で実行し、`/ws/azookey`
-                      は呼びません。
-                    </p>
-                    <div className={`mini-status wasm-${browserWasmState}`}>
-                      <span className="status-dot" aria-hidden="true" />
-                      ブラウザ WASM: {browserWasmState === "idle" ? "未実行" : browserWasmState}
-                    </div>
-                  </div>
-                ) : null}
-
-                <CustomDictionaryPanel websocketUrl={config.websocketUrl} auth={config.auth} />
-
-                <div className="subsection auth-settings">
-                  <p className="subsection-title">認証（Cloudflare Worker の契約に合わせる）</p>
-                  <label className="field-label" htmlFor="auth-scheme">
-                    方式
-                    <select
-                      id="auth-scheme"
-                      value={config.auth.scheme}
-                      onChange={(event) => {
-                        const scheme = event.target.value === "bearer" ? "bearer" : "none";
-                        updateConfig(
-                          "auth",
-                          scheme === "bearer"
-                            ? { scheme, token: config.auth.token ?? "" }
-                            : { scheme },
-                        );
-                      }}
-                    >
-                      <option value="none">なし</option>
-                      <option value="bearer">Bearer token</option>
-                    </select>
-                  </label>
-                  {config.auth.scheme === "bearer" ? (
-                    <label className="field-label" htmlFor="auth-token">
-                      Token
-                      <input
-                        id="auth-token"
-                        type="password"
-                        value={config.auth.token ?? ""}
-                        onChange={(event) =>
-                          updateConfig("auth", { scheme: "bearer", token: event.target.value })
-                        }
-                        autoComplete="off"
-                      />
-                    </label>
-                  ) : null}
-                  <p className="field-help">
-                    Token は URL に追加せず、変換リクエストの認証フィールドにだけ送信します。
-                  </p>
-                </div>
-
-                <label className="field-label" htmlFor="speech-language">
-                  Web Speech language
-                  <input
-                    id="speech-language"
-                    type="text"
-                    value={config.language}
-                    onChange={(event) => updateConfig("language", event.target.value)}
-                    placeholder="ja-JP"
-                    spellCheck={false}
-                  />
-                </label>
-
-                <button
-                  className="button button-secondary"
-                  type="button"
-                  onClick={() => void connectWorker()}
-                >
-                  Cloudflare Worker に接続
-                </button>
-              </div>
-            </details>
-          </section>
-
-          <section className="panel reading-panel" data-testid="phonetic-input-panel">
-            <div className="phonetic-input-heading-desktop">{phoneticPanelHeading}</div>
-            <details
-              className="phonetic-input-disclosure"
-              data-testid="phonetic-input-disclosure"
-              open={phoneticPanelOpen}
-              onToggle={(event) => {
-                const desktop = window.matchMedia(DESKTOP_CONFIG_MEDIA_QUERY).matches;
-                if (desktop) {
-                  event.currentTarget.open = true;
-                }
-                const next = desktop ? true : event.currentTarget.open;
-                setPhoneticPanelOpen((current) => (current === next ? current : next));
-              }}
-            >
-              <summary className="phonetic-input-toggle" data-testid="phonetic-input-toggle">
-                {phoneticPanelHeading}
-              </summary>
-              <div className="phonetic-input-body">
-                <p className="field-help">
-                  かな読みを AzooKey へ直接送り、変換結果を確認します。ブラウザ完結では
-                  in-page、Cloudflare Worker 依存では推論 Cloudflare Worker で変換します。
-                </p>
-                <label className="field-label" htmlFor="manual-reading">
-                  かな読み
-                  <textarea
-                    id="manual-reading"
-                    rows={3}
-                    value={manualReading}
-                    onChange={(event) => setManualReading(event.target.value)}
-                    placeholder="おつかれさまでした"
-                    spellCheck={false}
-                  />
-                </label>
-                <button
-                  className="button button-primary"
-                  type="button"
-                  onClick={submitManualReading}
-                >
-                  読みを変換
-                </button>
-
-                <div className="subsection fixture-settings">
-                  <p className="subsection-title">変換フィクスチャ</p>
-                  <label className="field-label" htmlFor="conversion-fixture">
-                    ケース
-                    <select
-                      id="conversion-fixture"
-                      value={selectedFixtureId}
-                      onChange={(event) => setSelectedFixtureId(event.target.value)}
-                    >
-                      {AZOOKEY_CONVERSION_FIXTURES.map((fixture) => (
-                        <option key={fixture.id} value={fixture.id}>
-                          {fixture.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <p className="field-help">
-                    {AZOOKEY_CONVERSION_FIXTURES.find((fixture) => fixture.id === selectedFixtureId)
-                      ?.note ?? ""}
-                  </p>
-                  <div className="button-row">
-                    <button
-                      className="button button-secondary"
-                      type="button"
-                      onClick={runSelectedFixture}
-                      disabled={fixtureBusy}
-                    >
-                      選択ケースを実行
-                    </button>
-                    <button
-                      className="button button-secondary"
-                      type="button"
-                      onClick={() => void runAllConversionFixtures()}
-                      disabled={fixtureBusy}
-                    >
-                      全ケース実行
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </details>
-          </section>
-        </aside>
-
-        <section className="results-stack" aria-label="比較結果">
-          <div className="live-grid">
-            <section className="panel live-card speech-live-card">
-              <div className="live-card-heading">
-                <div>
-                  <p className="eyebrow">IMMEDIATE</p>
-                  <h3>
-                    {config.recognitionProvider === "workers-ai-asr"
-                      ? "Cloudflare Workers AI ASR 認識結果"
-                      : "Web Speech 認識結果"}
-                  </h3>
-                </div>
-                <span className="lane-index">01</span>
-              </div>
-              <p className="live-text">
-                {visibleWebSpeechCaption(speechFinalText, latestSpeechSegment) ||
-                  speechInterimText ||
-                  "発話するとここに表示されます"}
-              </p>
-              <p className="interim-text" aria-live="polite">
-                {speechInterimText ? `認識中: ${speechInterimText}` : ""}
-              </p>
-              <div className="live-card-footer">
-                <span>確定テキスト</span>
-                <strong>{speechFinalText.length} 文字</strong>
-              </div>
-            </section>
-
-            <section className="panel live-card worker-live-card">
-              <div className="live-card-heading">
-                <div>
-                  <p className="eyebrow">CLOUDFLARE WORKER</p>
-                  <h3>Cloudflare Worker AzooKey 変換結果</h3>
-                </div>
-                <span className="lane-index">02</span>
-              </div>
-              <p
-                className={`live-text ${latestWorker?.state === "error" ? "live-text-error" : ""}`}
-              >
-                {latestWorker?.convertedText ??
-                  (latestWorker
-                    ? rowStateLabel(latestWorker.state)
-                    : "Cloudflare Worker の応答を待っています")}
-              </p>
-              <p className="interim-text">
-                {latestWorker?.error ??
-                  (latestWorker
-                    ? rowPathLabel(latestWorker.mode, latestWorker.state, latestWorker.failedStage)
-                    : "")}
-              </p>
-              <div className="live-card-footer">
-                <span>処理時間</span>
-                <strong>
-                  合計処理時間 {formatMilliseconds(latestWorker?.totalElapsedMs)} / Cloudflare
-                  Worker {formatMilliseconds(latestWorker?.workerElapsedMs)}
-                </strong>
-              </div>
-            </section>
-          </div>
-
-          <section className="panel history-panel">
-            <div className="panel-heading history-heading">
-              <div>
-                <p className="eyebrow">TIMELINE</p>
-                <h3>発話ごとの比較</h3>
-              </div>
-              <button className="button button-quiet" type="button" onClick={clearComparison}>
-                履歴をクリア
-              </button>
+        <article className="cost-panel" aria-live="polite">
+          <div className="cost-heading">
+            <div>
+              <p className="section-kicker">Live estimate</p>
+              <h2>Cloudflare 推定費用</h2>
             </div>
-            {rows.length === 0 ? (
-              <div className="empty-state">
-                <span className="empty-glyph" aria-hidden="true">
-                  ◌
-                </span>
-                <p>確定発話がまだありません</p>
-                <span>
-                  Web Speech、手動読み、または変換フィクスチャから Cloudflare Worker
-                  変換を実行できます。
-                </span>
-              </div>
-            ) : (
-              <ol className="comparison-list">
-                {rows.map((row, index) => {
-                  const expectationMet =
-                    row.state === "done" &&
-                    row.expectedText !== undefined &&
-                    row.convertedText === row.expectedText;
-                  const expectationMissed =
-                    row.state === "done" &&
-                    row.expectedText !== undefined &&
-                    row.convertedText !== row.expectedText;
-                  return (
-                    <li className="comparison-row" key={row.id}>
-                      <span className="row-number">
-                        {String(rows.length - index).padStart(2, "0")}
-                      </span>
-                      <div className="row-source">
-                        <span className="row-label">
-                          {row.origin === "fixture"
-                            ? "Fixture"
-                            : row.origin === "manual"
-                              ? "Manual reading"
-                              : row.origin === "workers-ai-asr"
-                                ? "Cloudflare Workers AI ASR"
-                                : "Web Speech"}
-                        </span>
-                        {row.trace ? (
-                          <dl className="row-trace" data-testid="utterance-trace">
-                            {conversionTraceDisplayLines(row.trace).map((line) => (
-                              <div className="row-trace-step" key={`${row.id}-${line.key}`}>
-                                <dt>{line.label}</dt>
-                                <dd>
-                                  <span className="row-trace-value">{line.value}</span>
-                                  {line.detail ? (
-                                    <span className="row-meta row-trace-detail">{line.detail}</span>
-                                  ) : null}
-                                  {line.timing ? (
-                                    <span className="row-meta row-trace-timing">{line.timing}</span>
-                                  ) : null}
-                                </dd>
-                              </div>
-                            ))}
-                          </dl>
-                        ) : (
-                          <>
-                            <p>{row.sourceText}</p>
-                            {row.vibratoInput && row.vibratoInput !== row.sourceText ? (
-                              <span className="row-meta">vibratoInput: {row.vibratoInput}</span>
-                            ) : null}
-                          </>
-                        )}
-                        {row.expectedText ? (
-                          <span
-                            className={`row-meta ${expectationMissed ? "row-meta-miss" : expectationMet ? "row-meta-hit" : ""}`}
-                          >
-                            expected: {row.expectedText}
-                            {expectationMet ? " ✓" : expectationMissed ? " ✗" : ""}
-                          </span>
-                        ) : null}
-                      </div>
-                      <span className="row-arrow" aria-hidden="true">
-                        →
-                      </span>
-                      <div className="row-worker">
-                        <span className={`row-state row-state-${row.state}`}>
-                          {rowStateLabel(row.state)}
-                        </span>
-                        <p>{row.convertedText ?? row.error ?? "—"}</p>
-                        <span className="row-meta">
-                          {rowPathLabel(row.mode, row.state, row.failedStage)} ·{" "}
-                          {formatRowTiming(row)}
-                        </span>
-                        {(() => {
-                          const cost = estimateCloudflareConversionCost({
-                            usedWebSocket:
-                              row.mode === "browser-vibrato"
-                                ? false
-                                : (row.usedWebSocket ?? row.mode === "worker-vibrato"),
-                            openedNewWebSocket: row.openedNewWebSocket ?? false,
-                            workerElapsedMs: row.workerElapsedMs,
-                            ...(row.compareElapsedMs !== undefined
-                              ? { compareElapsedMs: row.compareElapsedMs }
-                              : {}),
-                            failedBeforeInference: row.failedBeforeInference,
-                            usesExternalGgufUpstream: usesExternalGgufUpstream({
-                              requestedModel: row.requestedModel ?? row.trace?.workerRequest?.model,
-                              resolvedModel: row.resolvedModel,
-                              modelFallback: row.modelFallback,
-                            }),
-                          });
-                          const asrCostDisplay = utteranceAsrCostFields(
-                            asrProviderForCost(row),
-                            row.audioSeconds,
-                          );
-                          const asrCostUsd = row.asrCostUsd ?? asrCostDisplay.asrCostUsd;
-                          const asrCostFormula =
-                            row.asrCostFormula ?? asrCostDisplay.asrCostFormula;
-                          const hasAsrCost = shouldShowWorkersAiAsrCostAmount({
-                            origin: row.origin,
-                            recognitionProvider: row.recognitionProvider,
-                            asrCostUsd,
-                          });
-                          const totalUsd = utteranceCostTotalUsd(cost, asrCostUsd);
-                          const showTotalFormula = !cost.browserComplete || hasAsrCost;
-                          return (
-                            <div className="utterance-cost-card" data-testid="utterance-cost-card">
-                              <h4 className="utterance-cost-heading">料金（推定）</h4>
-                              <p
-                                className="utterance-cost-total"
-                                data-testid="utterance-cost-total"
-                              >
-                                {formatCloudflareCostUsd(totalUsd)}
-                              </p>
-                              {showTotalFormula ? (
-                                <p
-                                  className="utterance-cost-formula"
-                                  data-testid="utterance-total-cost-formula"
-                                >
-                                  {utteranceCostTotalFormula(cost.usd, asrCostUsd)}
-                                </p>
-                              ) : null}
-                              <dl className="utterance-cost-breakdown">
-                                <div
-                                  className="utterance-cost-row"
-                                  data-testid="utterance-conversion-cost"
-                                >
-                                  <dt>Cloudflare Worker（変換）</dt>
-                                  <dd>
-                                    <span className="utterance-cost-row-amount">
-                                      {cost.browserComplete
-                                        ? CF_CONVERSION_COST_BROWSER_COMPLETE_LABEL
-                                        : formatCloudflareCostUsd(cost.usd)}
-                                    </span>
-                                    {!cost.browserComplete ? (
-                                      <span className="utterance-cost-row-detail">
-                                        リクエスト {cost.requests} · cpuMs {cost.billedCpuMs} ms
-                                      </span>
-                                    ) : null}
-                                    <span
-                                      className="utterance-cost-formula"
-                                      data-testid="utterance-conversion-cost-formula"
-                                    >
-                                      {cost.formula}
-                                    </span>
-                                    {cost.breakdown.length > 0 ? (
-                                      <ul className="utterance-cost-line-items">
-                                        {cost.breakdown.map((line) => (
-                                          <li key={`${row.id}-${line.label}`}>
-                                            {conversionCostBreakdownLabelJa(line.label)} ·{" "}
-                                            {formatQuantityForCost(line.quantity)} {line.unitLabel}{" "}
-                                            · {formatCloudflareCostUsd(line.usd)}
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    ) : null}
-                                  </dd>
-                                </div>
-                                <div
-                                  className="utterance-cost-row"
-                                  data-testid="utterance-asr-cost"
-                                >
-                                  <dt>Cloudflare Workers AI（ASR）</dt>
-                                  <dd>
-                                    <span className="utterance-cost-row-amount">
-                                      {formatCloudflareCostUsd(asrCostUsd)}
-                                    </span>
-                                    {row.asrCostSummaryJa ? (
-                                      <span className="utterance-cost-row-detail">
-                                        {row.asrCostSummaryJa}
-                                      </span>
-                                    ) : (
-                                      <span className="utterance-cost-row-detail utterance-cost-row-empty">
-                                        {hasAsrCost ? "未計測" : webSpeechAsrCostSummaryJa()}
-                                      </span>
-                                    )}
-                                    <span
-                                      className="utterance-cost-formula"
-                                      data-testid="utterance-asr-cost-formula"
-                                    >
-                                      {asrCostFormula}
-                                    </span>
-                                  </dd>
-                                </div>
-                              </dl>
-                            </div>
-                          );
-                        })()}
-                        {row.trace?.workerRequest ? (
-                          <span className="row-meta row-trace-worker-payload">
-                            Cloudflare Worker 送信: sourceText={row.trace.workerRequest.sourceText}{" "}
-                            · vibratoInput={row.trace.workerRequest.vibratoInput} ·
-                            vibratoExecution={row.trace.workerRequest.vibratoExecution}
-                            {row.trace.workerRequest.model
-                              ? ` · model=${row.trace.workerRequest.model}`
-                              : ""}
-                          </span>
-                        ) : row.trace && row.mode === "browser-vibrato" ? (
-                          <span className="row-meta row-trace-worker-payload">
-                            ブラウザ完結（usedWebSocket: false） · AzooKey 入力=
-                            {row.trace.azookeyInput}
-                          </span>
-                        ) : null}
-                        {row.trace ? (
-                          <span className="row-meta">
-                            {row.trace.steps
-                              .filter((step) => step.location !== "none")
-                              .map((step) => traceStepLocationLabel(step.location))
-                              .filter((label, idx, labels) => labels.indexOf(label) === idx)
-                              .join(" → ")}
-                          </span>
-                        ) : null}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            )}
-            {droppedRows > 0 ? (
-              <p className="field-help" role="status">
-                表示上限に達したため、古い発話 {droppedRows} 件を省略しています。履歴をクリアすると
-                件数をリセットできます。
-              </p>
-            ) : null}
-          </section>
-        </section>
-      </div>
+            <strong>{formatUsd(cost.totalUsd)}</strong>
+          </div>
+          <dl className="cost-breakdown">
+            <div>
+              <dt>Nova-3 ({cost.audioSeconds.toFixed(1)} 秒)</dt>
+              <dd>{formatUsd(cost.asrUsd)}</dd>
+            </div>
+            <div>
+              <dt>Worker requests ({usage.workerRequests})</dt>
+              <dd>{formatUsd(cost.requestUsd)}</dd>
+            </div>
+            <div>
+              <dt>Worker CPU estimate ({usage.workerCpuMs.toFixed(1)} ms)</dt>
+              <dd>{formatUsd(cost.cpuUsd)}</dd>
+            </div>
+          </dl>
+          <p className="fine-print">
+            Nova-3 HTTP $0.0052/音声分、Workers $0.30/百万request、$0.02/百万CPU-msで動的推定。
+            無料枠・月額枠と実請求CPUは含みません。
+          </p>
+        </article>
+      </section>
 
-      <footer className="status-footer" aria-live="polite">
-        <span
-          className={`status-dot ${error ? "status-dot-error" : "status-dot-live"}`}
-          aria-hidden="true"
-        />
-        <span>{error || notice || "結果はブラウザ内だけに表示されます"}</span>
-        <span className="footer-spacer" />
-        <span>
-          {rows.length} / {MAX_ROWS} events
-          {droppedRows > 0 ? ` · ${droppedRows} omitted` : ""}
-        </span>
-      </footer>
+      <section className="result-card" aria-labelledby="result-heading">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">Single result card</p>
+            <h2 id="result-heading">Worker 処理結果とログ</h2>
+          </div>
+          <button type="button" className="secondary-button" onClick={reset}>
+            結果をクリア
+          </button>
+        </div>
+        {result ? (
+          <div className="result-content">
+            <div className="final-output">
+              <span>最終 AzooKey 変換</span>
+              <strong>{result.azookeyText || "（空の結果）"}</strong>
+              <small>
+                {result.pipeline} · 音声 {result.audioSeconds.toFixed(2)} 秒
+              </small>
+            </div>
+            <div className="stage-logs">
+              {result.logs.map((log) => (
+                <details key={log.stage} open>
+                  <summary>
+                    <span>
+                      {stageLabel(log.stage)} / {log.engine}
+                    </span>
+                    <time>{log.elapsedMs.toFixed(1)} ms</time>
+                  </summary>
+                  <dl>
+                    <div>
+                      <dt>input</dt>
+                      <dd>{log.input}</dd>
+                    </div>
+                    <div>
+                      <dt>output</dt>
+                      <dd>{log.output || "（空）"}</dd>
+                    </div>
+                  </dl>
+                </details>
+              ))}
+            </div>
+            <p className="result-timestamp">
+              完了: {new Date(result.completedAt).toLocaleString("ja-JP")}
+            </p>
+          </div>
+        ) : (
+          <p className="empty-result">
+            マイクを開始して発話すると、3段階のログがここに表示されます。
+          </p>
+        )}
+      </section>
     </main>
   );
 }

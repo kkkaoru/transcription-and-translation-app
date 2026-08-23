@@ -22,7 +22,8 @@
     "CORS_ORIGIN": "https://kotoba-beacon-inference.kaoru.workers.dev",
     "MODEL_ROUTES": "{}",
     "AZOOKEY_TIMEOUT_MS": "2000",
-    "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz"
+    "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz",
+    "VIBRATO_DICTIONARY_URL": "/vibrato/system.dic.zst"
   },
   // Local SQLite Durable Object for the hosted compare user lexicon.
   "r2_buckets": [

@@ -5,11 +5,8 @@ import {
   hasMediaRecorderSupport,
   isWorkersAiAsrCaptureSupported,
   openWorkersAiAsrMicrophone,
-  WEB_SPEECH_UNSUPPORTED_JA,
   WORKERS_AI_ASR_MIC_DENIED_JA,
   WORKERS_AI_ASR_MIC_GENERIC_JA,
-  WORKERS_AI_ASR_PREPARING_JA,
-  WORKERS_AI_ASR_UNSUPPORTED_JA,
   wavFileFromPcmFloat32,
 } from "./workers-ai-asr-support";
 
@@ -101,9 +98,6 @@ describe("workers-ai-asr-support", () => {
       "マイク音声の解析を開始できません",
     );
     expect(getUserMediaErrorMessageJa("not an error")).toBe(WORKERS_AI_ASR_MIC_GENERIC_JA);
-    expect(WORKERS_AI_ASR_UNSUPPORTED_JA).toContain("Cloudflare Workers AI ASR");
-    expect(WORKERS_AI_ASR_PREPARING_JA).toContain("準備");
-    expect(WEB_SPEECH_UNSUPPORTED_JA).toContain("Web Speech");
   });
 
   it("opens the microphone via MediaDevices.getUserMedia this-binding", async () => {

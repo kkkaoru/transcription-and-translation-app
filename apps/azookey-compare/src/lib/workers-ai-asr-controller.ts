@@ -1,6 +1,9 @@
-import type { ComparisonAuth } from "./contract";
 import { blobToPcm16Mono, pcm16ToWavBytes } from "./pcm-wav";
-import { transcribeWorkersAiAsr } from "./workers-ai-asr-client";
+import {
+  type ComparisonAuth,
+  transcribeWorkersAiAsr,
+  type WorkersAiPipelineLog,
+} from "./workers-ai-asr-client";
 import { audioSecondsFromPcmLength } from "./workers-ai-asr-cost";
 import { SileroWasmVadEngine } from "./workers-ai-asr-silero";
 import { SILERO_FALLBACK_NOTICE_JA } from "./workers-ai-asr-silero-paths";
@@ -44,6 +47,10 @@ export interface WorkersAiAsrTranscriptUpdate {
 export interface WorkersAiAsrUtteranceFinal {
   text: string;
   audioSeconds: number;
+  convertedText?: string;
+  vibratoText?: string;
+  pipeline?: string;
+  logs?: WorkersAiPipelineLog[];
 }
 
 export interface WorkersAiAsrControllerOptions {
@@ -833,7 +840,14 @@ export class WorkersAiAsrController {
       if (text) {
         this.options.onFinalText?.(text);
       }
-      this.options.onUtteranceFinal?.({ text, audioSeconds: job.audioSeconds });
+      this.options.onUtteranceFinal?.({
+        text,
+        audioSeconds: job.audioSeconds,
+        ...(result.convertedText ? { convertedText: result.convertedText } : {}),
+        ...(result.vibratoText ? { vibratoText: result.vibratoText } : {}),
+        ...(result.pipeline ? { pipeline: result.pipeline } : {}),
+        ...(result.logs ? { logs: result.logs } : {}),
+      });
       if (this.vad.currentPhase === "idle") {
         this.options.onTranscript?.({
           interimText: this.recognitionQueue.length > 0 ? TRANSCRIBING_INTERIM : "",

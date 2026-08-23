@@ -209,6 +209,53 @@ describe("workers-ai-asr-client", () => {
     );
   });
 
+  it("parses the combined Worker morphology and conversion logs", async () => {
+    const logs = [
+      {
+        stage: "asr",
+        engine: "@cf/deepgram/nova-3",
+        input: "audio/wav",
+        output: "今日",
+        elapsedMs: 4,
+      },
+      {
+        stage: "vibrato",
+        engine: "vibrato-ipadic-wasm",
+        input: "今日",
+        output: "きょう",
+        elapsedMs: 3,
+      },
+      {
+        stage: "azookey",
+        engine: "azookey-rust-wasm",
+        input: "きょう",
+        output: "今日",
+        elapsedMs: 2,
+      },
+    ];
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        Response.json({
+          text: "今日",
+          vibratoText: "きょう",
+          convertedText: "今日",
+          pipeline: "workers-ai-vibrato-azookey-v2",
+          logs,
+        }),
+      ),
+    );
+
+    await expect(
+      transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), { fetchImpl }),
+    ).resolves.toMatchObject({
+      text: "今日",
+      vibratoText: "きょう",
+      convertedText: "今日",
+      pipeline: "workers-ai-vibrato-azookey-v2",
+      logs,
+    });
+  });
+
   it("accepts Blob input and bearer auth headers", async () => {
     const fetchImpl = vi.fn((_url, init) => {
       expect(init?.headers).toMatchObject({ authorization: "Bearer worker-token" });

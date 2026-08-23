@@ -4,8 +4,8 @@
  * Tensor packing / state+context update matches the Native engine:
  * `crates/parapper-engine/src/recognition/segmentation/vad/engine.rs`
  *
- * Only Workers AI ASR should construct this engine. Web Speech must never
- * download `/models/silero_vad_v6/` or `/ort/` WASM.
+ * The browser uses this engine only to bound audio uploads. All text
+ * processing remains in the combined Cloudflare Worker pipeline.
  */
 
 import {

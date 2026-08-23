@@ -1,10 +1,5 @@
 import { float32ToPcm16, pcm16ToWavBytes } from "./pcm-wav";
 
-export const WORKERS_AI_ASR_UNSUPPORTED_JA =
-  "このブラウザは Cloudflare Workers AI ASR 録音に対応していません（マイクまたは AudioContext が利用できません）";
-export const WORKERS_AI_ASR_PREPARING_JA =
-  "Cloudflare Workers AI ASR を準備しています。少し待ってからもう一度お試しください";
-export const WEB_SPEECH_UNSUPPORTED_JA = "このブラウザは Web Speech API に対応していません";
 export const WORKERS_AI_ASR_GRAPH_UNAVAILABLE_JA = "マイク音声の解析を開始できません";
 export const WORKERS_AI_ASR_MIC_GENERIC_JA = "マイクを開始できません";
 export const WORKERS_AI_ASR_MIC_DENIED_JA =

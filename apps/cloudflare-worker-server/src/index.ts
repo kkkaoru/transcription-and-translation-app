@@ -32,6 +32,7 @@ import {
   byteLimitTransform,
   collectStream,
   convertTextWithStoredUserLexicon,
+  createVibratoWasmConverter,
   createWasmConverter,
   HTTP_METHOD_NOT_ALLOWED,
   HTTP_SWITCHING_PROTOCOLS,
@@ -49,8 +50,13 @@ import {
   createWorkersAiAsrTranscriber,
   handleWorkersAiAsrTranscription,
   WORKERS_AI_ASR_HTTP_PATH,
+  type WorkersAiAsrEnvironment,
   type WorkersAiAsrRun,
 } from "./workers-ai-asr.js";
+import {
+  handleWorkersAiSpeechPipeline,
+  WORKERS_AI_SPEECH_PIPELINE_PATH,
+} from "./workers-ai-speech-pipeline.js";
 
 export interface Env {
   AI?: Ai;
@@ -287,6 +293,30 @@ const upstreamTranscriber = (
 const usesWorkersAiAsr = (provider: string | undefined): boolean =>
   provider?.trim().toLowerCase() === "workers-ai";
 
+const workersAiEnvironment = (env: Env): WorkersAiAsrEnvironment => {
+  const aiBinding = env.AI;
+  return {
+    ...(env.WORKERS_AI_ASR_TIMEOUT_MS
+      ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
+      : {}),
+    ...(aiBinding
+      ? {
+          AI: {
+            run: (model, input, options) =>
+              aiBinding.run(
+                model,
+                {
+                  ...input,
+                  audio: { ...input.audio, body: input.audio.body as unknown as object },
+                },
+                options,
+              ),
+          },
+        }
+      : {}),
+  };
+};
+
 const userLexiconFor = (
   env: Env,
   dependencies: WorkerDependencies,
@@ -476,32 +506,71 @@ export const createWorker = (
           : cors(response, env.CORS_ORIGIN);
       }
       if (url.pathname === WORKERS_AI_ASR_HTTP_PATH) {
-        const aiBinding = env.AI;
         return cors(
           await handleWorkersAiAsrTranscription(
             request,
-            {
-              ...(env.WORKERS_AI_ASR_TIMEOUT_MS
-                ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
-                : {}),
-              ...(aiBinding
-                ? {
-                    AI: {
-                      run: (model, input, options) =>
-                        aiBinding.run(
-                          model,
-                          {
-                            ...input,
-                            audio: { ...input.audio, body: input.audio.body as unknown as object },
-                          },
-                          options,
-                        ),
-                    },
-                  }
-                : {}),
-            },
+            workersAiEnvironment(env),
             dependencies.workersAiRun,
           ),
+          env.CORS_ORIGIN,
+        );
+      }
+      if (url.pathname === WORKERS_AI_SPEECH_PIPELINE_PATH) {
+        const fetchers = dictionaryFetchersFor(request.url, env, dependencies, fetcher);
+        const wasmModule = dependencies.wasmModule ?? azookeyWasm;
+        const converter =
+          dependencies.converter ??
+          (wasmModule instanceof WebAssembly.Module
+            ? createWasmConverter(
+                wasmModule,
+                env.AZOOKEY_DICTIONARY_URL,
+                fetchers.azookeyDictionaryFetcher,
+                azookeyDictionaryTimeoutMs(env),
+              )
+            : undefined);
+        const vibrato =
+          dependencies.vibratoConverter ??
+          createVibratoWasmConverter(
+            dependencies.vibratoWasmModule ?? vibratoWasm,
+            env.VIBRATO_DICTIONARY_URL,
+            fetchers.vibratoDictionaryFetcher,
+            azookeyDictionaryTimeoutMs(env),
+          );
+        if (!converter || !vibrato) {
+          return cors(
+            json(HTTP_INTERNAL_SERVER_ERROR, {
+              error: {
+                code: "azookey_runtime_failed",
+                message: "AzooKey runtime is unavailable",
+              },
+            }),
+            env.CORS_ORIGIN,
+          );
+        }
+        if (request.method === "GET") {
+          if (ctx) {
+            ctx.waitUntil(
+              Promise.all([
+                Promise.resolve(converter.warmup?.("http")),
+                Promise.resolve(vibrato.warmup?.()),
+              ]).then(() => undefined),
+            );
+          }
+          return cors(
+            json(HTTP_OK, { ok: true, pipeline: "workers-ai-vibrato-azookey-v2" }),
+            env.CORS_ORIGIN,
+          );
+        }
+        return cors(
+          await handleWorkersAiSpeechPipeline(request, {
+            asrEnvironment: workersAiEnvironment(env),
+            ...(dependencies.workersAiRun ? { run: dependencies.workersAiRun } : {}),
+            vibrato: (text, language) => Promise.resolve(vibrato(text, language)),
+            convert: (text) =>
+              converter.syncUserLexicon && converter.convertWithContext
+                ? convertTextWithStoredUserLexicon({ converter, lexicon: userLexicon, text })
+                : Promise.resolve(converter(text)),
+          }),
           env.CORS_ORIGIN,
         );
       }
@@ -517,33 +586,8 @@ export const createWorker = (
           env.CORS_ORIGIN,
         );
       }
-      const aiBinding = env.AI;
       const transcribe = usesWorkersAiAsr(env.ASR_PROVIDER)
-        ? createWorkersAiAsrTranscriber(
-            {
-              ...(env.WORKERS_AI_ASR_TIMEOUT_MS
-                ? { WORKERS_AI_ASR_TIMEOUT_MS: env.WORKERS_AI_ASR_TIMEOUT_MS }
-                : {}),
-              ...(aiBinding
-                ? {
-                    AI: {
-                      run: (model, input, options) =>
-                        aiBinding.run(
-                          model,
-                          {
-                            ...input,
-                            // Generated Workers types declare Nova-3's binary
-                            // body as object; pass the WAV bytes through unchanged.
-                            audio: { ...input.audio, body: input.audio.body as unknown as object },
-                          },
-                          options,
-                        ),
-                    },
-                  }
-                : {}),
-            },
-            dependencies.workersAiRun,
-          )
+        ? createWorkersAiAsrTranscriber(workersAiEnvironment(env), dependencies.workersAiRun)
         : upstreamTranscriber(env, fetcher);
       const fetchers = dictionaryFetchersFor(request.url, env, dependencies, fetcher);
       const azookeyDictionaryFetcher = fetchers.azookeyDictionaryFetcher;

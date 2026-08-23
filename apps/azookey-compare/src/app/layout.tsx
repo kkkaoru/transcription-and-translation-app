@@ -1,10 +1,10 @@
+// This file runs with bun.
 import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AzooKey Compare",
-  description:
-    "Compare Web Speech recognition with an asynchronous AzooKey Cloudflare Worker result.",
+  title: "Kotoba Beacon Cloudflare Pipeline",
+  description: "Verify Nova-3, Vibrato, and AzooKey in one Cloudflare Worker audio pipeline.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
