@@ -41,6 +41,11 @@ models
 *.gguf
 *.onnx
 *.bin
+!apps/azookey-compare/public/models/
+!apps/azookey-compare/public/models/ma-imitator-unidic-lite/
+!apps/azookey-compare/public/models/ma-imitator-unidic-lite/config.json
+!apps/azookey-compare/public/models/ma-imitator-unidic-lite/LICENSE
+!apps/azookey-compare/public/models/ma-imitator-unidic-lite/model.onnx
 
 # Generated UI/integration evidence is local-only and can become very large.
 docs/evidence/
