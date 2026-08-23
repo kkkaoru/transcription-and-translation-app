@@ -1590,6 +1590,7 @@ button:disabled {
   margin: 0;
   padding: 6px;
   overflow: auto;
+  overscroll-behavior: contain;
   list-style: none;
   border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
   border-radius: 10px;
