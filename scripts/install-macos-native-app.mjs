@@ -22,7 +22,6 @@ export const DEFAULT_INSTALL_APP = join(homedir(), "Applications", `${PRODUCT_NA
 export const RETIRED_APP_PATH = "/Applications/Kotoba Beacon.app";
 export const NATIVE_RUNTIME_LIBRARY_NAMES = [
   "libsherpa-onnx-c-api.dylib",
-  "libonnxruntime.dylib",
   "libonnxruntime.1.24.4.dylib",
 ];
 

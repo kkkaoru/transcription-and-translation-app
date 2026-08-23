@@ -45,7 +45,6 @@ describe("macOS Native app install", () => {
   it("packages only in-process recognition runtime libraries", () => {
     assert.deepEqual(NATIVE_RUNTIME_LIBRARY_NAMES, [
       "libsherpa-onnx-c-api.dylib",
-      "libonnxruntime.dylib",
       "libonnxruntime.1.24.4.dylib",
     ]);
     assert.equal(
