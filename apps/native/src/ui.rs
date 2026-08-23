@@ -1,11 +1,17 @@
-//! Shared pale-sky GPUI chrome used by every tab.
+//! Shared GPUI controls.
 
 use gpui::prelude::*;
-use gpui::{
-    div, px, rgb, App, ClickEvent, Context, InteractiveElement, IntoElement, SharedString, Window,
-};
+use std::sync::Arc;
 
-use crate::domain::AppTab;
+use gpui::{
+    div, img, rgb, App, ClickEvent, Context, ImageSource, IntoElement, RenderImage, SharedString,
+    Window,
+};
+use image::{Frame, ImageBuffer, Rgba};
+use smallvec::SmallVec;
+
+use crate::domain::{AppTab, UiLanguage};
+use crate::i18n::{text, TextKey};
 
 pub const COLOR_BG: u32 = 0xf0f8ff;
 pub const COLOR_TEXT: u32 = 0x173f5f;
@@ -16,6 +22,17 @@ pub const COLOR_ERROR: u32 = 0xb42318;
 pub const COLOR_OK: u32 = 0x0f7b4c;
 pub const COLOR_BUTTON_HOVER: u32 = 0x159191;
 pub const COLOR_GHOST_HOVER: u32 = 0xc5e4f2;
+
+pub fn render_image(image: caption_bridge_render::RgbaImage) -> Arc<RenderImage> {
+    let buffer =
+        ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(image.width, image.height, image.pixels)
+            .unwrap_or_else(|| ImageBuffer::new(image.width, image.height));
+    Arc::new(RenderImage::new(SmallVec::from_const([Frame::new(buffer)])))
+}
+
+pub fn image_view(image: Arc<RenderImage>) -> impl IntoElement {
+    img(ImageSource::Render(image)).size_full()
+}
 
 pub fn sky_page() -> gpui::Div {
     div()
@@ -41,20 +58,35 @@ pub fn card() -> gpui::Div {
         .border_color(rgb(0xd5e6f2))
 }
 
-pub fn heading(text: impl Into<SharedString>) -> impl IntoElement {
-    div().text_lg().child(text.into())
+pub fn heading(value: impl Into<SharedString>) -> impl IntoElement {
+    div().text_lg().child(value.into())
 }
 
-pub fn muted(text: impl Into<SharedString>) -> impl IntoElement {
-    div().text_color(rgb(COLOR_MUTED)).child(text.into())
+pub fn muted(value: impl Into<SharedString>) -> impl IntoElement {
+    div().text_color(rgb(COLOR_MUTED)).child(value.into())
 }
 
-pub fn error_line(text: impl Into<SharedString>) -> impl IntoElement {
-    div().text_color(rgb(COLOR_ERROR)).child(text.into())
+pub fn editable_text(value: &str, caret: Option<usize>) -> gpui::Div {
+    let caret = caret.filter(|index| *index <= value.len() && value.is_char_boundary(*index));
+    let (before, after) = caret.map_or((value, ""), |index| value.split_at(index));
+    div()
+        .flex()
+        .items_center()
+        .child(SharedString::from(before.to_string()))
+        .when(caret.is_some(), |this| {
+            this.child(
+                div().w(gpui::px(1.5)).h(gpui::px(18.0)).flex_shrink_0().bg(rgb(COLOR_ACCENT)),
+            )
+        })
+        .child(SharedString::from(after.to_string()))
+}
+
+pub fn error_line(value: impl Into<SharedString>) -> impl IntoElement {
+    div().text_color(rgb(COLOR_ERROR)).child(value.into())
 }
 
 pub fn button(
-    id: &'static str,
+    id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -75,99 +107,69 @@ pub fn button(
         .child(label.into())
 }
 
-pub fn ghost_button(
+pub fn state_button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     active: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let background = if active { rgb(COLOR_ACCENT) } else { rgb(0xdceef8) };
-    let color = if active { rgb(0xffffff) } else { rgb(COLOR_TEXT) };
-    let hover_color = if active { COLOR_BUTTON_HOVER } else { COLOR_GHOST_HOVER };
-    let hover_fill: gpui::Fill = rgb(hover_color).into();
+    let background = if active { rgb(COLOR_OK) } else { rgb(COLOR_MUTED) };
     div()
         .id(id)
         .px_3()
         .py_1()
         .rounded_md()
         .bg(background)
-        .text_color(color)
+        .text_color(rgb(0xffffff))
         .cursor_pointer()
-        .hover(move |mut style| {
-            style.background = Some(hover_fill);
-            style
-        })
         .on_click(on_click)
         .child(label.into())
 }
 
-pub fn tab_bar<V: 'static>(
+fn tab_button<V: 'static>(
+    tab: AppTab,
+    label: &'static str,
     selected: AppTab,
     cx: &mut Context<V>,
     on_select: fn(&mut V, AppTab),
 ) -> impl IntoElement {
-    let live = AppTab::Live;
-    let style = AppTab::Style;
-    let dictionary = AppTab::Dictionary;
-    let settings = AppTab::Settings;
+    let active = selected == tab;
     div()
-        .flex()
-        .gap_2()
-        .child(ghost_button(
-            "tab-live",
-            format!("{} Live", live.japanese_label()),
-            selected == live,
-            cx.listener(move |view, _event, _window, _cx| on_select(view, live)),
-        ))
-        .child(ghost_button(
-            "tab-style",
-            format!("{} Style", style.japanese_label()),
-            selected == style,
-            cx.listener(move |view, _event, _window, _cx| on_select(view, style)),
-        ))
-        .child(ghost_button(
-            "tab-dictionary",
-            format!("{} Dictionary", dictionary.japanese_label()),
-            selected == dictionary,
-            cx.listener(move |view, _event, _window, _cx| on_select(view, dictionary)),
-        ))
-        .child(ghost_button(
-            "tab-settings",
-            format!("{} Settings", settings.japanese_label()),
-            selected == settings,
-            cx.listener(move |view, _event, _window, _cx| on_select(view, settings)),
-        ))
+        .id(gpui::ElementId::Name(format!("tab-{}", tab.label()).into()))
+        .px_3()
+        .py_1()
+        .rounded_md()
+        .bg(rgb(if active { COLOR_ACCENT } else { 0xdceef8 }))
+        .text_color(rgb(if active { 0xffffff } else { COLOR_TEXT }))
+        .cursor_pointer()
+        .on_click(cx.listener(move |view, _event, _window, _cx| on_select(view, tab)))
+        .child(SharedString::from(label))
 }
 
-pub fn field_row(
-    label: impl Into<SharedString>,
-    value: impl Into<SharedString>,
-    minus_id: &'static str,
-    plus_id: &'static str,
-    on_minus: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    on_plus: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+pub fn tab_bar<V: 'static>(
+    selected: AppTab,
+    language: UiLanguage,
+    cx: &mut Context<V>,
+    on_select: fn(&mut V, AppTab),
 ) -> impl IntoElement {
     div()
         .flex()
-        .items_center()
         .gap_2()
-        .child(div().w(px(220.)).child(label.into()))
-        .child(div().w(px(140.)).child(value.into()))
-        .child(button(minus_id, "−", on_minus))
-        .child(button(plus_id, "+", on_plus))
-}
-
-pub fn status_pill(
-    label: impl Into<SharedString>,
-    capturing: bool,
-    error: bool,
-) -> impl IntoElement {
-    let color = if error {
-        rgb(COLOR_ERROR)
-    } else if capturing {
-        rgb(COLOR_OK)
-    } else {
-        rgb(COLOR_MUTED)
-    };
-    div().px_2().py_1().rounded_md().bg(color).text_color(rgb(0xffffff)).child(label.into())
+        .child(tab_button(AppTab::Live, text(language, TextKey::Live), selected, cx, on_select))
+        .child(tab_button(AppTab::Style, text(language, TextKey::Style), selected, cx, on_select))
+        .child(tab_button(
+            AppTab::Dictionary,
+            text(language, TextKey::Dictionary),
+            selected,
+            cx,
+            on_select,
+        ))
+        .child(tab_button(AppTab::Output, text(language, TextKey::Output), selected, cx, on_select))
+        .child(tab_button(
+            AppTab::Settings,
+            text(language, TextKey::Settings),
+            selected,
+            cx,
+            on_select,
+        ))
 }

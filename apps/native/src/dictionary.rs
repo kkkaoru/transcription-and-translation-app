@@ -1,97 +1,109 @@
-//! Dictionary tab: list / search / add / delete.
+//! Searchable custom dictionary editor with always-active keyboard fields.
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
-use gpui::{div, Context, IntoElement, SharedString};
+use gpui::{div, Context, ElementId, IntoElement, SharedString};
 
-use crate::ui::{button, card, error_line, heading, muted};
+use crate::domain::UiLanguage;
+use crate::i18n::{text, TextKey};
+use crate::ui::{button, card, editable_text, error_line, heading, muted};
+
+pub struct DictionaryViewState<'a> {
+    pub entries: &'a [CustomDictionaryEntry],
+    pub query: &'a str,
+    pub draft_reading: &'a str,
+    pub draft_word: &'a str,
+    pub query_caret: Option<usize>,
+    pub reading_caret: Option<usize>,
+    pub word_caret: Option<usize>,
+    pub language: UiLanguage,
+    pub persist_error: Option<&'a str>,
+}
 
 pub struct DictionaryCallbacks<V> {
-    pub on_query_backspace: fn(&mut V),
-    pub on_query_type: fn(&mut V),
-    pub on_reading_backspace: fn(&mut V),
-    pub on_reading_type: fn(&mut V),
-    pub on_word_backspace: fn(&mut V),
-    pub on_word_type: fn(&mut V),
-    pub on_add: fn(&mut V),
-    pub on_delete_first: fn(&mut V),
+    pub on_focus_query: fn(&mut V, &mut gpui::Window, &mut Context<V>),
+    pub on_focus_reading: fn(&mut V, &mut gpui::Window, &mut Context<V>),
+    pub on_focus_word: fn(&mut V, &mut gpui::Window, &mut Context<V>),
+    pub on_save: fn(&mut V),
+    pub on_delete: fn(&mut V, &str),
 }
 
 pub fn render_dictionary<V: 'static>(
-    entries: &[CustomDictionaryEntry],
-    query: &str,
-    draft_reading: &str,
-    draft_word: &str,
-    persist_error: Option<&str>,
+    state: DictionaryViewState<'_>,
     cx: &mut Context<V>,
     callbacks: DictionaryCallbacks<V>,
 ) -> impl IntoElement {
+    let DictionaryViewState {
+        entries,
+        query,
+        draft_reading,
+        draft_word,
+        query_caret,
+        reading_caret,
+        word_caret,
+        language,
+        persist_error,
+    } = state;
     let mut list = div().flex().flex_col().gap_1();
     if entries.is_empty() {
-        list = list.child(muted("該当するエントリはありません"));
+        list = list.child(muted(text(language, TextKey::NoEntries)));
     } else {
-        list = list.child(muted(format!("{} 件", entries.len())));
-        if let Some(first) = entries.first() {
-            list = list.child(SharedString::from(format!("{} → {}", first.reading, first.word)));
-        }
-        if let Some(second) = entries.get(1) {
-            list = list.child(SharedString::from(format!("{} → {}", second.reading, second.word)));
-        }
-        if let Some(third) = entries.get(2) {
-            list = list.child(SharedString::from(format!("{} → {}", third.reading, third.word)));
-        }
-        if entries.len() > 3 {
-            list = list.child(muted(format!("ほか {} 件", entries.len() - 3)));
+        list =
+            list.child(muted(format!("{} {}", entries.len(), text(language, TextKey::EntryCount))));
+        for (index, entry) in entries.iter().enumerate() {
+            let id = entry.id.clone();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(gpui::rgb(0xf0f8ff))
+                    .child(SharedString::from(format!("{} → {}", entry.reading, entry.word)))
+                    .child(button(
+                        ElementId::named_usize("dict-delete", index),
+                        text(language, TextKey::Delete),
+                        cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_delete)(view, &id)
+                        }),
+                    )),
+            );
         }
     }
 
     card()
-        .child(heading("カスタム辞書"))
-        .child(muted("保存先は Native の config_dir/dictionary（初回空なら VRC サンプルをシード）"))
+        .child(heading(text(language, TextKey::Dictionary)))
         .child(field_editor(
-            "検索",
+            text(language, TextKey::Search),
             query,
-            "dict-query-bs",
-            "dict-query-type",
+            "dict-query",
+            query_caret,
             cx,
-            callbacks.on_query_backspace,
-            callbacks.on_query_type,
+            callbacks.on_focus_query,
         ))
         .child(field_editor(
-            "読み",
+            text(language, TextKey::Reading),
             draft_reading,
-            "dict-reading-bs",
-            "dict-reading-type",
+            "dict-reading",
+            reading_caret,
             cx,
-            callbacks.on_reading_backspace,
-            callbacks.on_reading_type,
+            callbacks.on_focus_reading,
         ))
         .child(field_editor(
-            "単語",
+            text(language, TextKey::Word),
             draft_word,
-            "dict-word-bs",
-            "dict-word-type",
+            "dict-word",
+            word_caret,
             cx,
-            callbacks.on_word_backspace,
-            callbacks.on_word_type,
+            callbacks.on_focus_word,
         ))
-        .child(
-            div()
-                .flex()
-                .gap_2()
-                .child(button(
-                    "dict-add",
-                    "追加して保存",
-                    cx.listener(move |view, _event, _window, _cx| (callbacks.on_add)(view)),
-                ))
-                .child(button(
-                    "dict-delete",
-                    "先頭を削除",
-                    cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_delete_first)(view)
-                    }),
-                )),
-        )
+        .child(button(
+            "dict-save",
+            text(language, TextKey::Save),
+            cx.listener(move |view, _event, _window, _cx| (callbacks.on_save)(view)),
+        ))
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
         .child(list)
 }
@@ -99,30 +111,29 @@ pub fn render_dictionary<V: 'static>(
 fn field_editor<V: 'static>(
     label: &'static str,
     value: &str,
-    backspace_id: &'static str,
-    type_id: &'static str,
+    id: &'static str,
+    caret: Option<usize>,
     cx: &mut Context<V>,
-    on_backspace: fn(&mut V),
-    on_type: fn(&mut V),
+    on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
 ) -> impl IntoElement {
     div()
         .flex()
         .items_center()
         .gap_2()
-        .child(div().w(gpui::px(80.)).child(SharedString::from(label)))
+        .child(div().w(gpui::px(100.)).child(SharedString::from(label)))
         .child(
-            div().flex_1().px_2().py_1().rounded_md().bg(gpui::rgb(0xe8f4fc)).child(
-                SharedString::from(if value.is_empty() { "（空）" } else { value }.to_string()),
-            ),
+            div()
+                .id(id)
+                .flex_1()
+                .min_h(gpui::px(32.0))
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(gpui::rgb(if caret.is_some() { 0x1aa6a6 } else { 0xd5e6f2 }))
+                .bg(gpui::rgb(0xffffff))
+                .cursor_text()
+                .on_click(cx.listener(move |view, _event, window, cx| on_focus(view, window, cx)))
+                .child(editable_text(value, caret)),
         )
-        .child(button(
-            backspace_id,
-            "⌫",
-            cx.listener(move |view, _event, _window, _cx| on_backspace(view)),
-        ))
-        .child(button(
-            type_id,
-            "入力+",
-            cx.listener(move |view, _event, _window, _cx| on_type(view)),
-        ))
 }

@@ -1,4 +1,4 @@
-//! Operable GPUI shell: clickable tabs and working Live / Style / Dictionary / Settings.
+//! GPUI shell for capture, style, dictionary, output, and runtime settings.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -9,43 +9,47 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use caption_bridge_browser_source::{BrowserSourceConfig, BrowserSourceServer};
+use caption_bridge_browser_source::{BrowserSourceConfig, BrowserSourceServer, BrowserSourceStyle};
 use caption_bridge_dictionary::CustomDictionaryEntry;
-use caption_bridge_overlay::DEBUG_OVERLAY_TITLE;
-use caption_bridge_syphon::NATIVE_SYPHON_SERVER_NAME;
 use gpui::prelude::*;
 use gpui::{
     div, point, px, rgb, size, App, Bounds, Context, FocusHandle, IntoElement, KeyDownEvent,
-    Render, SharedString, Size, Subscription, Task, TitlebarOptions, Window, WindowBounds,
+    Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window, WindowBounds,
     WindowOptions,
 };
 
 use crate::capture::CaptureController;
 use crate::debug_surfaces::{
-    hide_overlay, open_overlay, print_debug_status, start_debug_surfaces, start_syphon,
-    stop_syphon, DebugSurfaces,
+    print_debug_status, start_debug_surfaces, start_syphon, stop_syphon, DebugSurfaces,
 };
-use crate::dictionary::{render_dictionary, DictionaryCallbacks};
+use crate::dictionary::{render_dictionary, DictionaryCallbacks, DictionaryViewState};
 use crate::domain::{
     add_dictionary_entry, delete_dictionary_entry, ingest_fixture_caption, load_app_settings,
-    load_dictionary_entries, load_style_settings, native_config_dir, parse_debug_launch,
-    save_app_settings, save_dictionary_entries, save_style_settings, search_dictionary_entries,
-    AppTab, NativeAppSettings, NativeStyleSettings, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE,
-    DEFAULT_PREVIEW_TRANSLATION, FLAG_HELP, MIN_WINDOW_HEIGHT_PX, MIN_WINDOW_WIDTH_PX,
-    PRODUCT_NAME, WINDOW_HEIGHT_PX, WINDOW_TITLE, WINDOW_WIDTH_PX,
+    load_dictionary_entries, load_style_settings, local_translation_model_installed,
+    native_config_dir, parse_debug_launch, rasterize_live_caption_at_scale,
+    rasterize_style_preview, save_app_settings, save_dictionary_entries, save_style_settings,
+    search_dictionary_entries, AppTab, CaptureStatus, NativeAppSettings, NativeStyleSettings,
+    BUNDLE_ID, DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FLAG_HELP,
+    MIN_WINDOW_HEIGHT_PX, MIN_WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX, WINDOW_TITLE, WINDOW_WIDTH_PX,
 };
+use crate::i18n::{text, TextKey};
 use crate::live::{render_live, LiveCallbacks};
+use crate::output::{render_output, OutputCallbacks};
 use crate::settings::{render_settings, SettingsCallbacks};
-use crate::style::render_style;
-use crate::ui::{heading, muted, sky_page, tab_bar};
+use crate::style::{render_style, FontPickerState, StyleCallbacks, StyleViewState};
+use crate::ui::{image_view, render_image, sky_page, tab_bar};
 
 const OUTPUT_WINDOW_TITLE: &str = "Kotoba Beacon Caption Output";
 const OUTPUT_WINDOW_WIDTH_PX: f32 = 1280.0;
 const OUTPUT_WINDOW_HEIGHT_PX: f32 = 720.0;
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(32);
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 struct CaptionOutputView {
-    source: String,
-    translation: String,
+    image: Arc<RenderImage>,
+    caption: (String, String),
+    style: NativeStyleSettings,
+    scale_factor: f32,
 }
 
 pub struct MainView {
@@ -56,14 +60,26 @@ pub struct MainView {
     capture: CaptureController,
     entries: Vec<CustomDictionaryEntry>,
     query: String,
+    query_caret: usize,
     draft_reading: String,
+    reading_caret: usize,
     draft_word: String,
+    word_caret: usize,
+    font_query: String,
+    font_caret: usize,
+    fonts: Vec<String>,
+    font_select_open: bool,
+    active_color_picker: Option<String>,
     persist_error: Option<String>,
     focused_field: FocusField,
     focus_handle: FocusHandle,
     surfaces: Rc<RefCell<DebugSurfaces>>,
     preview_source: String,
     preview_translation: String,
+    style_preview_image: Arc<RenderImage>,
+    stale_render_images: Vec<Arc<RenderImage>>,
+    preview_source_caret: usize,
+    preview_translation_caret: usize,
     device_select_open: bool,
     last_published_caption: Option<(String, String)>,
     last_browser_caption: Option<(String, String)>,
@@ -71,71 +87,69 @@ pub struct MainView {
     _quit_subscription: Subscription,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusField {
+    Query,
+    Reading,
+    Word,
+    Font,
+    PreviewSource,
+    PreviewTranslation,
+}
+
 impl CaptionOutputView {
-    fn new() -> Self {
-        Self { source: String::new(), translation: String::new() }
+    fn new(style: NativeStyleSettings, scale_factor: f32) -> Self {
+        let image = render_image(rasterize_live_caption_at_scale(&style, "", "", scale_factor));
+        Self { image, caption: (String::new(), String::new()), style, scale_factor }
     }
 
-    fn replace_caption(&mut self, source: String, translation: String) -> bool {
-        if self.source == source && self.translation == translation {
+    fn replace_caption(
+        &mut self,
+        source: String,
+        translation: String,
+        style: NativeStyleSettings,
+        scale_factor: f32,
+        window: &mut Window,
+    ) -> bool {
+        let caption = (source, translation);
+        if self.caption == caption && self.style == style && self.scale_factor == scale_factor {
             return false;
         }
-        self.source = source;
-        self.translation = translation;
+        let next_image = render_image(rasterize_live_caption_at_scale(
+            &style,
+            &caption.0,
+            &caption.1,
+            scale_factor,
+        ));
+        let previous_image = std::mem::replace(&mut self.image, next_image);
+        let _ = window.drop_image(previous_image);
+        self.caption = caption;
+        self.style = style;
+        self.scale_factor = scale_factor;
         true
     }
 }
 
 impl Render for CaptionOutputView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_end()
-            .pb_8()
-            .gap_2()
-            .bg(rgb(0x00ff00))
-            .text_color(rgb(0xffffff))
-            .text_size(px(52.0))
-            .child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .bg(rgb(0x101820))
-                    .child(SharedString::from(self.source.clone())),
-            )
-            .when(!self.translation.is_empty(), |view| {
-                view.child(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .bg(rgb(0x101820))
-                        .child(SharedString::from(self.translation.clone())),
-                )
-            })
+        div().size_full().bg(rgb(0x00ff00)).child(image_view(Arc::clone(&self.image)))
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FocusField {
-    Query,
-    Reading,
-    Word,
-}
-
 impl MainView {
-    pub fn new(cx: &mut Context<Self>, surfaces: Rc<RefCell<DebugSurfaces>>) -> Self {
-        let config_dir = native_config_dir();
-        let style = load_style_settings(&config_dir).unwrap_or_default();
-        let app_settings = load_app_settings(&config_dir).unwrap_or_default();
+    pub fn new(
+        cx: &mut Context<Self>,
+        surfaces: Rc<RefCell<DebugSurfaces>>,
+        config_dir: PathBuf,
+        style: NativeStyleSettings,
+        app_settings: NativeAppSettings,
+    ) -> Self {
         let entries = load_dictionary_entries(&config_dir).unwrap_or_default();
         let fixture = ingest_fixture_caption().ok();
         let preview_source = fixture
             .as_ref()
             .map(|caption| caption.source_text.clone())
-            .filter(|text| !text.is_empty())
+            .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_PREVIEW_SOURCE.to_string());
         let quit_subscription = cx.on_app_quit(|view, _cx| {
             view.capture.stop();
@@ -143,10 +157,14 @@ impl MainView {
             Task::ready(())
         });
         let (browser_source, browser_error) =
-            match BrowserSourceServer::start(BrowserSourceConfig::native()) {
-                Ok(server) => (server, None),
-                Err(error) => (BrowserSourceServer::default(), Some(error.to_string())),
-            };
+            start_browser_source(app_settings.browser_source_enabled);
+        browser_source.set_style(browser_style(&style));
+        let fonts = caption_bridge_render::font_families();
+        let preview_translation = DEFAULT_PREVIEW_TRANSLATION.to_string();
+        let style_preview_image =
+            render_image(rasterize_style_preview(&style, &preview_source, &preview_translation));
+        let preview_source_caret = preview_source.len();
+        let preview_translation_caret = preview_translation.len();
         Self {
             tab: AppTab::Live,
             config_dir,
@@ -155,14 +173,26 @@ impl MainView {
             capture: CaptureController::new(),
             entries,
             query: String::new(),
+            query_caret: 0,
             draft_reading: String::new(),
+            reading_caret: 0,
             draft_word: String::new(),
+            word_caret: 0,
+            font_query: String::new(),
+            font_caret: 0,
+            fonts,
+            font_select_open: false,
+            active_color_picker: None,
             persist_error: browser_error,
             focused_field: FocusField::Reading,
             focus_handle: cx.focus_handle(),
             surfaces,
             preview_source,
-            preview_translation: DEFAULT_PREVIEW_TRANSLATION.to_string(),
+            preview_translation,
+            style_preview_image,
+            stale_render_images: Vec::new(),
+            preview_source_caret,
+            preview_translation_caret,
             device_select_open: false,
             last_published_caption: None,
             last_browser_caption: None,
@@ -184,9 +214,7 @@ impl MainView {
             &caption.1,
             self.last_published_caption.as_ref(),
         ) {
-            Ok(Some(_)) => {
-                self.last_published_caption = Some(caption);
-            }
+            Ok(Some(_)) => self.last_published_caption = Some(caption),
             Ok(None) => {}
             Err(error) => self.persist_error = Some(error),
         }
@@ -196,49 +224,29 @@ impl MainView {
         self.tab = tab;
     }
 
-    fn toggle_device_select(&mut self) {
-        self.device_select_open = !self.device_select_open;
-    }
-
     fn select_device(&mut self, id: &str) {
         self.capture.select_device(id);
         self.device_select_open = false;
     }
 
-    fn persist_style(&mut self) {
+    fn set_style(&mut self, next: NativeStyleSettings) {
+        self.style = next;
+        self.refresh_style_preview();
         self.last_published_caption = None;
-        match save_style_settings(&self.config_dir, &self.style) {
-            Ok(()) => self.persist_error = None,
-            Err(error) => self.persist_error = Some(error),
+        self.last_browser_caption = None;
+        self.browser_source.set_style(browser_style(&self.style));
+        if let Err(error) = save_style_settings(&self.config_dir, &self.style) {
+            self.persist_error = Some(error);
+        } else {
+            self.persist_error = None;
         }
     }
 
     fn persist_settings(&mut self) {
-        match save_app_settings(&self.config_dir, &self.app_settings) {
-            Ok(()) => self.persist_error = None,
-            Err(error) => self.persist_error = Some(error),
-        }
-    }
-
-    fn toggle_overlay(&mut self, open: bool) {
-        let result = {
-            let mut surfaces = self.surfaces.borrow_mut();
-            if open {
-                open_overlay(&mut surfaces)
-            } else {
-                hide_overlay(&mut surfaces);
-                Ok(())
-            }
-        };
-        match result {
-            Ok(()) => {
-                self.app_settings.overlay_open = open;
-                if open {
-                    self.last_published_caption = None;
-                }
-                self.persist_settings();
-            }
-            Err(error) => self.persist_error = Some(error),
+        if let Err(error) = save_app_settings(&self.config_dir, &self.app_settings) {
+            self.persist_error = Some(error);
+        } else {
+            self.persist_error = None;
         }
     }
 
@@ -255,12 +263,28 @@ impl MainView {
         match result {
             Ok(enabled) => {
                 self.app_settings.syphon_enabled = enabled;
-                if enabled {
-                    self.last_published_caption = None;
-                }
+                self.last_published_caption = None;
                 self.persist_settings();
             }
             Err(error) => self.persist_error = Some(error),
+        }
+    }
+
+    fn toggle_browser_source(&mut self) {
+        if self.browser_source.is_running() {
+            self.browser_source.stop();
+            self.app_settings.browser_source_enabled = false;
+            self.persist_settings();
+            return;
+        }
+        match BrowserSourceServer::start(BrowserSourceConfig::native()) {
+            Ok(server) => {
+                server.set_style(browser_style(&self.style));
+                self.browser_source = server;
+                self.app_settings.browser_source_enabled = true;
+                self.persist_settings();
+            }
+            Err(error) => self.persist_error = Some(error.to_string()),
         }
     }
 
@@ -275,12 +299,18 @@ impl MainView {
     }
 
     fn apply_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        if self.tab != AppTab::Dictionary {
-            return;
-        }
-        if event.keystroke.key == "backspace" {
-            self.pop_focused();
-            cx.notify();
+        let accepts_input = match self.tab {
+            AppTab::Dictionary => matches!(
+                self.focused_field,
+                FocusField::Query | FocusField::Reading | FocusField::Word
+            ),
+            AppTab::Style => matches!(
+                self.focused_field,
+                FocusField::Font | FocusField::PreviewSource | FocusField::PreviewTranslation
+            ),
+            _ => false,
+        };
+        if !accepts_input {
             return;
         }
         if event.keystroke.key == "tab" {
@@ -288,41 +318,61 @@ impl MainView {
                 FocusField::Query => FocusField::Reading,
                 FocusField::Reading => FocusField::Word,
                 FocusField::Word => FocusField::Query,
+                FocusField::Font => FocusField::PreviewSource,
+                FocusField::PreviewSource => FocusField::PreviewTranslation,
+                FocusField::PreviewTranslation => FocusField::Font,
             };
             cx.notify();
             return;
         }
-        if let Some(ch) = event.keystroke.key_char.as_deref() {
-            if !ch.is_empty() && ch != "\u{8}" && ch != "\r" && ch != "\n" && ch != "\t" {
-                self.push_focused(ch);
-                cx.notify();
+        self.apply_focused_text_key(event);
+        cx.notify();
+    }
+
+    fn apply_focused_text_key(&mut self, event: &KeyDownEvent) {
+        let preview_text_field = matches!(
+            self.focused_field,
+            FocusField::PreviewSource | FocusField::PreviewTranslation
+        );
+        let (buffer, caret) = match self.focused_field {
+            FocusField::Query => (&mut self.query, &mut self.query_caret),
+            FocusField::Reading => (&mut self.draft_reading, &mut self.reading_caret),
+            FocusField::Word => (&mut self.draft_word, &mut self.word_caret),
+            FocusField::Font => (&mut self.font_query, &mut self.font_caret),
+            FocusField::PreviewSource => (&mut self.preview_source, &mut self.preview_source_caret),
+            FocusField::PreviewTranslation => {
+                (&mut self.preview_translation, &mut self.preview_translation_caret)
+            }
+        };
+        let previous_text = preview_text_field.then(|| buffer.clone());
+        match event.keystroke.key.as_str() {
+            "backspace" => erase_editable_text(buffer, caret),
+            "delete" => delete_editable_text(buffer, caret),
+            "left" => *caret = previous_caret(buffer, *caret),
+            "right" => *caret = next_caret(buffer, *caret),
+            "home" => *caret = 0,
+            "end" => *caret = buffer.len(),
+            _ => {
+                if let Some(value) = event.keystroke.key_char.as_deref() {
+                    if !value.is_empty() && !matches!(value, "\u{8}" | "\r" | "\n" | "\t") {
+                        insert_editable_text(buffer, caret, value);
+                    }
+                }
             }
         }
-    }
-
-    fn focused_buffer_mut(&mut self) -> &mut String {
-        match self.focused_field {
-            FocusField::Query => &mut self.query,
-            FocusField::Reading => &mut self.draft_reading,
-            FocusField::Word => &mut self.draft_word,
+        if previous_text.as_ref().is_some_and(|text| text != buffer) {
+            self.refresh_style_preview();
         }
     }
 
-    fn push_focused(&mut self, text: &str) {
-        self.focused_buffer_mut().push_str(text);
-    }
-
-    fn pop_focused(&mut self) {
-        self.focused_buffer_mut().pop();
-    }
-
-    fn append_sample_to_focused(&mut self) {
-        let next = match self.focused_field {
-            FocusField::Query => "ぶい",
-            FocusField::Reading => "あ",
-            FocusField::Word => "A",
-        };
-        self.push_focused(next);
+    fn refresh_style_preview(&mut self) {
+        let next_image = render_image(rasterize_style_preview(
+            &self.style,
+            &self.preview_source,
+            &self.preview_translation,
+        ));
+        let previous_image = std::mem::replace(&mut self.style_preview_image, next_image);
+        self.stale_render_images.push(previous_image);
     }
 
     fn visible_entries(&self) -> Vec<CustomDictionaryEntry> {
@@ -330,27 +380,56 @@ impl MainView {
     }
 }
 
+pub(crate) fn erase_editable_text(buffer: &mut String, caret: &mut usize) {
+    let previous = previous_caret(buffer, *caret);
+    if previous < *caret {
+        buffer.replace_range(previous..*caret, "");
+        *caret = previous;
+    }
+}
+
+pub(crate) fn delete_editable_text(buffer: &mut String, caret: &mut usize) {
+    let next = next_caret(buffer, *caret);
+    if *caret < next {
+        buffer.replace_range(*caret..next, "");
+    }
+}
+
+pub(crate) fn insert_editable_text(buffer: &mut String, caret: &mut usize, value: &str) {
+    buffer.insert_str(*caret, value);
+    *caret += value.len();
+}
+
+pub(crate) fn previous_caret(buffer: &str, caret: usize) -> usize {
+    buffer[..caret].char_indices().next_back().map_or(0, |(index, _)| index)
+}
+
+pub(crate) fn next_caret(buffer: &str, caret: usize) -> usize {
+    buffer[caret..].chars().next().map_or(buffer.len(), |character| caret + character.len_utf8())
+}
+
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.capture.poll();
+        for image in self.stale_render_images.drain(..) {
+            let _ = window.drop_image(image);
+        }
         window.focus(&self.focus_handle, cx);
-        let overlay_open = self.surfaces.borrow().overlay.is_some();
-        let syphon_on = self.surfaces.borrow().syphon.is_some();
+        let language = self.app_settings.ui_language;
         let persist = self.persist_error.clone();
         let body = match self.tab {
             AppTab::Live => render_live(
                 &self.capture,
                 self.device_select_open,
+                language,
                 cx,
                 &LiveCallbacks {
-                    on_refresh: |view| view.capture.refresh_devices(),
-                    on_toggle_select: |view| view.toggle_device_select(),
+                    on_toggle_select: |view| view.device_select_open = !view.device_select_open,
                     on_select_device: |view, id| view.select_device(id),
                     on_start: |view| {
-                        if let Err(error) = view.capture.start() {
+                        if let Err(error) =
+                            view.capture.start(view.app_settings.translation_enabled)
+                        {
                             view.persist_error = Some(error);
-                        } else {
-                            view.persist_error = None;
                         }
                     },
                     on_stop: |view| view.capture.stop(),
@@ -359,76 +438,161 @@ impl Render for MainView {
             .into_any_element(),
             AppTab::Style => render_style(
                 &self.style,
-                &self.preview_source,
-                &self.preview_translation,
-                persist.as_deref(),
+                StyleViewState {
+                    preview_source: &self.preview_source,
+                    preview_translation: &self.preview_translation,
+                    preview_image: Arc::clone(&self.style_preview_image),
+                    fonts: FontPickerState {
+                        query: &self.font_query,
+                        families: &self.fonts,
+                        open: self.font_select_open,
+                        caret: (self.focused_field == FocusField::Font).then_some(self.font_caret),
+                    },
+                    language,
+                    active_color_picker: self.active_color_picker.as_deref(),
+                    preview_source_caret: (self.focused_field == FocusField::PreviewSource)
+                        .then_some(self.preview_source_caret),
+                    preview_translation_caret: (self.focused_field
+                        == FocusField::PreviewTranslation)
+                        .then_some(self.preview_translation_caret),
+                    persist_error: persist.as_deref(),
+                },
                 cx,
-                |view, next| view.style = next,
-                |view| view.persist_style(),
+                StyleCallbacks {
+                    on_change: |view, next| view.set_style(next),
+                    on_font_focus: |view, window, cx| {
+                        view.focused_field = FocusField::Font;
+                        view.font_caret = view.font_query.len();
+                        view.font_select_open = true;
+                        window.focus(&view.focus_handle, cx);
+                        cx.notify();
+                    },
+                    on_font_select: |view, family| {
+                        let mut next = view.style.clone();
+                        next.font_family = family.to_string();
+                        view.font_query.clear();
+                        view.font_caret = 0;
+                        view.font_select_open = false;
+                        view.set_style(next);
+                    },
+                    on_preview_source_focus: |view, window, cx| {
+                        view.focused_field = FocusField::PreviewSource;
+                        view.preview_source_caret = view.preview_source.len();
+                        window.focus(&view.focus_handle, cx);
+                        cx.notify();
+                    },
+                    on_preview_translation_focus: |view, window, cx| {
+                        view.focused_field = FocusField::PreviewTranslation;
+                        view.preview_translation_caret = view.preview_translation.len();
+                        window.focus(&view.focus_handle, cx);
+                        cx.notify();
+                    },
+                    on_color_toggle: |view, id| {
+                        if view.active_color_picker.as_deref() == Some(id) {
+                            view.active_color_picker = None;
+                        } else {
+                            view.active_color_picker = Some(id.to_string());
+                        }
+                    },
+                },
             )
             .into_any_element(),
             AppTab::Dictionary => render_dictionary(
-                &self.visible_entries(),
-                &self.query,
-                &self.draft_reading,
-                &self.draft_word,
-                persist.as_deref(),
+                DictionaryViewState {
+                    entries: &self.visible_entries(),
+                    query: &self.query,
+                    draft_reading: &self.draft_reading,
+                    draft_word: &self.draft_word,
+                    query_caret: (self.focused_field == FocusField::Query)
+                        .then_some(self.query_caret),
+                    reading_caret: (self.focused_field == FocusField::Reading)
+                        .then_some(self.reading_caret),
+                    word_caret: (self.focused_field == FocusField::Word).then_some(self.word_caret),
+                    language,
+                    persist_error: persist.as_deref(),
+                },
                 cx,
                 DictionaryCallbacks {
-                    on_query_backspace: |view| {
+                    on_focus_query: |view, window, cx| {
                         view.focused_field = FocusField::Query;
-                        view.pop_focused();
+                        view.query_caret = view.query.len();
+                        window.focus(&view.focus_handle, cx);
+                        cx.notify();
                     },
-                    on_query_type: |view| {
-                        view.focused_field = FocusField::Query;
-                        view.append_sample_to_focused();
-                    },
-                    on_reading_backspace: |view| {
+                    on_focus_reading: |view, window, cx| {
                         view.focused_field = FocusField::Reading;
-                        view.pop_focused();
+                        view.reading_caret = view.draft_reading.len();
+                        window.focus(&view.focus_handle, cx);
+                        cx.notify();
                     },
-                    on_reading_type: |view| {
-                        view.focused_field = FocusField::Reading;
-                        view.append_sample_to_focused();
-                    },
-                    on_word_backspace: |view| {
+                    on_focus_word: |view, window, cx| {
                         view.focused_field = FocusField::Word;
-                        view.pop_focused();
+                        view.word_caret = view.draft_word.len();
+                        window.focus(&view.focus_handle, cx);
+                        cx.notify();
                     },
-                    on_word_type: |view| {
-                        view.focused_field = FocusField::Word;
-                        view.append_sample_to_focused();
-                    },
-                    on_add: |view| match add_dictionary_entry(
+                    on_save: |view| match add_dictionary_entry(
                         &view.entries,
                         &view.draft_reading,
                         &view.draft_word,
                     ) {
                         Ok(next) => {
                             view.draft_reading.clear();
+                            view.reading_caret = 0;
                             view.draft_word.clear();
+                            view.word_caret = 0;
                             view.persist_dictionary(next);
                         }
-                        Err(error) => view.persist_error = Some(error),
-                    },
-                    on_delete_first: |view| {
-                        if let Some(first) = view.visible_entries().first().cloned() {
-                            let next = delete_dictionary_entry(&view.entries, &first.id);
-                            view.persist_dictionary(next);
+                        Err(_) => {
+                            view.persist_error = Some(
+                                text(view.app_settings.ui_language, TextKey::DictionaryRequired)
+                                    .to_string(),
+                            );
                         }
                     },
+                    on_delete: |view, id| {
+                        let next = delete_dictionary_entry(&view.entries, id);
+                        view.persist_dictionary(next);
+                    },
+                },
+            )
+            .into_any_element(),
+            AppTab::Output => render_output(
+                &self.app_settings,
+                self.browser_source.is_running(),
+                persist.as_deref(),
+                cx,
+                OutputCallbacks {
+                    on_toggle_window_startup: |view| {
+                        view.app_settings.caption_output_open_on_start =
+                            !view.app_settings.caption_output_open_on_start;
+                        view.persist_settings();
+                    },
+                    on_toggle_browser: |view| view.toggle_browser_source(),
                 },
             )
             .into_any_element(),
             AppTab::Settings => render_settings(
                 &self.app_settings,
-                overlay_open,
-                syphon_on,
+                local_translation_model_installed(),
+                self.surfaces.borrow().syphon.is_some(),
                 persist.as_deref(),
                 cx,
                 SettingsCallbacks {
-                    on_open_overlay: |view| view.toggle_overlay(true),
-                    on_hide_overlay: |view| view.toggle_overlay(false),
+                    on_language: |view, language| {
+                        view.app_settings.ui_language = language;
+                        view.persist_settings();
+                    },
+                    on_toggle_translation: |view| {
+                        view.capture.stop();
+                        view.app_settings.translation_enabled =
+                            !view.app_settings.translation_enabled;
+                        view.persist_settings();
+                    },
+                    on_timeout: |view, timeout| {
+                        view.app_settings.caption_timeout_ms = timeout;
+                        view.persist_settings();
+                    },
                     on_toggle_syphon: |view| view.toggle_syphon(),
                 },
             )
@@ -439,15 +603,46 @@ impl Render for MainView {
             .id("main-root")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|view, event, _window, cx| view.apply_key(event, cx)))
-            .child(heading(PRODUCT_NAME))
-            .child(muted(format!("bundle id: {BUNDLE_ID}")))
-            .child(tab_bar(self.tab, cx, |view, tab| view.select_tab(tab)))
-            .child(div().flex_1().child(body))
-            .child(muted(format!(
-                "overlay title: {DEBUG_OVERLAY_TITLE} / Syphon: {NATIVE_SYPHON_SERVER_NAME}"
-            )))
-            .child(muted("Browser Source: http://127.0.0.1:1521/（縦: ?layout=vertical）"))
-            .child(SharedString::from(format!("active tab: {}", self.tab.label())))
+            .child(tab_bar(self.tab, language, cx, |view, tab| view.select_tab(tab)))
+            .child(div().flex_1().min_h_0().child(body))
+    }
+}
+
+fn start_browser_source(enabled: bool) -> (BrowserSourceServer, Option<String>) {
+    match BrowserSourceServer::start(BrowserSourceConfig {
+        port: BrowserSourceConfig::native().port,
+        enabled,
+    }) {
+        Ok(server) => (server, None),
+        Err(error) => (BrowserSourceServer::default(), Some(error.to_string())),
+    }
+}
+
+fn browser_style(style: &NativeStyleSettings) -> BrowserSourceStyle {
+    BrowserSourceStyle {
+        font_family: style.font_family.clone(),
+        font_weight: style.font_weight,
+        letter_spacing_px: style.letter_spacing_px,
+        line_height: style.line_height,
+        source_size_px: style.source_font_size_px,
+        source_color: style.source_color.clone(),
+        source_opacity: style.source_opacity,
+        translation_size_px: style.translation_font_size_px,
+        translation_color: style.translation_color.clone(),
+        translation_opacity: style.translation_opacity,
+        x_percent: style.caption_x_percent,
+        y_percent: style.caption_y_percent,
+        background_enabled: style.background_enabled,
+        background_color: style.background_color.clone(),
+        background_opacity: style.background_opacity,
+        shadow_enabled: style.shadow_enabled,
+        shadow_color: style.shadow_color.clone(),
+        shadow_blur_px: style.shadow_blur_px,
+        shadow_offset_x: style.shadow_offset_x,
+        shadow_offset_y: style.shadow_offset_y,
+        outline_enabled: style.outline_enabled,
+        outline_color: style.outline_color.clone(),
+        outline_width_px: style.outline_width_px,
     }
 }
 
@@ -461,6 +656,7 @@ fn output_window_options() -> WindowOptions {
             point(px(0.), px(0.)),
             size(px(OUTPUT_WINDOW_WIDTH_PX), px(OUTPUT_WINDOW_HEIGHT_PX)),
         ))),
+        focus: false,
         is_resizable: true,
         app_id: Some(BUNDLE_ID.to_string()),
         ..Default::default()
@@ -474,6 +670,7 @@ pub fn main_window_options() -> WindowOptions {
             point(px(0.), px(0.)),
             size(px(WINDOW_WIDTH_PX), px(WINDOW_HEIGHT_PX)),
         ))),
+        focus: false,
         is_resizable: true,
         window_min_size: Some(Size {
             width: px(MIN_WINDOW_WIDTH_PX),
@@ -515,11 +712,6 @@ pub fn run() {
     }
     let launch = parse_debug_launch(&args);
     gpui_platform::application().run(move |cx: &mut App| {
-        // Debug surfaces (overlay / Syphon / Spout) must start after GPUI has
-        // finished configuring NSApplication. Starting them before
-        // `application().run` creates a plain NSApplication and makes the
-        // gpui_macos platform panic with "Ivar platform not found on class
-        // NSApplication".
         let surfaces_result = start_debug_surfaces(launch);
         print_debug_status(launch, &surfaces_result);
         if let Err(error) = &surfaces_result {
@@ -527,34 +719,50 @@ pub fn run() {
         }
         let surfaces =
             Rc::new(RefCell::new(surfaces_result.unwrap_or_else(|_| DebugSurfaces::empty())));
-        let poll_surfaces = Rc::clone(&surfaces);
+        let config_dir = native_config_dir();
+        let style = load_style_settings(&config_dir).unwrap_or_default();
+        let app_settings = load_app_settings(&config_dir).unwrap_or_default();
+
+        // Create Caption Output first so the subsequently created control window is above it
+        // without activating the application or stealing focus from the developer's current app.
+        let mut output_window = if app_settings.caption_output_open_on_start {
+            let mut options = output_window_options();
+            options.window_bounds = Some(WindowBounds::centered(
+                size(px(OUTPUT_WINDOW_WIDTH_PX), px(OUTPUT_WINDOW_HEIGHT_PX)),
+                cx,
+            ));
+            match cx.open_window(options, |window, cx| {
+                let style = style.clone();
+                let scale_factor = window.scale_factor();
+                cx.new(move |_| CaptionOutputView::new(style, scale_factor))
+            }) {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    eprintln!("Could not open caption output: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let mut options = main_window_options();
         options.window_bounds =
             Some(WindowBounds::centered(size(px(WINDOW_WIDTH_PX), px(WINDOW_HEIGHT_PX)), cx));
-        let window_handle = match cx
-            .open_window(options, |_, cx| cx.new(|cx| MainView::new(cx, Rc::clone(&surfaces))))
-        {
+        let window_handle = match cx.open_window(options, |_, cx| {
+            let surfaces = Rc::clone(&surfaces);
+            let config_dir = config_dir.clone();
+            let style = style.clone();
+            let app_settings = app_settings.clone();
+            cx.new(move |cx| MainView::new(cx, surfaces, config_dir, style, app_settings))
+        }) {
             Ok(handle) => handle,
             Err(error) => {
-                eprintln!("メインウィンドウを開けません: {error}");
+                eprintln!("Could not open main window: {error}");
+                cx.quit();
                 return;
             }
         };
-        let mut output_options = output_window_options();
-        output_options.window_bounds = Some(WindowBounds::centered(
-            size(px(OUTPUT_WINDOW_WIDTH_PX), px(OUTPUT_WINDOW_HEIGHT_PX)),
-            cx,
-        ));
-        let output_window =
-            match cx.open_window(output_options, |_, cx| cx.new(|_| CaptionOutputView::new())) {
-                Ok(handle) => handle,
-                Err(error) => {
-                    eprintln!("字幕出力ウィンドウを開けません: {error}");
-                    return;
-                }
-            };
-        cx.activate(true);
         cx.spawn(async move |cx| loop {
             #[cfg(unix)]
             if termination_requested.load(Ordering::Relaxed) {
@@ -562,30 +770,44 @@ pub fn run() {
                 cx.update(|cx| cx.quit());
                 break;
             }
-            let _ = caption_bridge_overlay::pump_native_events();
-            let _ = poll_surfaces.borrow_mut().overlay.as_mut();
-            let caption = match window_handle.update(cx, |view, _window, cx| {
-                view.capture.poll();
+            let update = window_handle.update(cx, |view, _window, cx| {
+                let capture_changed = view.capture.poll(view.app_settings.caption_timeout_ms);
                 view.publish_live_caption();
                 let snapshot = view.capture.snapshot();
                 let caption = (snapshot.source_text.clone(), snapshot.translation_text.clone());
-                cx.notify();
-                caption
-            }) {
-                Ok(caption) => caption,
-                Err(_) => break,
-            };
-            if output_window
-                .update(cx, |view, _window, cx| {
-                    if view.replace_caption(caption.0, caption.1) {
-                        cx.notify();
-                    }
-                })
-                .is_err()
-            {
+                let style = view.style.clone();
+                if capture_changed && view.tab == AppTab::Live {
+                    cx.notify();
+                }
+                let poll_interval = if snapshot.status == CaptureStatus::Capturing {
+                    ACTIVE_POLL_INTERVAL
+                } else {
+                    IDLE_POLL_INTERVAL
+                };
+                (caption, style, poll_interval)
+            });
+            let Ok((caption, style, poll_interval)) = update else {
                 break;
+            };
+            let output_closed = output_window.as_ref().is_some_and(|handle| {
+                handle
+                    .update(cx, |view, window, cx| {
+                        if view.replace_caption(
+                            caption.0,
+                            caption.1,
+                            style,
+                            window.scale_factor(),
+                            window,
+                        ) {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+            });
+            if output_closed {
+                output_window = None;
             }
-            cx.background_executor().timer(Duration::from_millis(32)).await;
+            cx.background_executor().timer(poll_interval).await;
         })
         .detach();
     });

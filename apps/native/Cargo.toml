@@ -17,12 +17,13 @@ caption-bridge-browser-source = { path = "../../crates/caption-bridge-browser-so
 caption-bridge-captions = { path = "../../crates/caption-bridge-captions" }
 caption-bridge-dictionary = { path = "../../crates/caption-bridge-dictionary" }
 caption-bridge-identity = { path = "../../crates/caption-bridge-identity" }
-caption-bridge-overlay = { path = "../../crates/caption-bridge-overlay" }
 caption-bridge-render = { path = "../../crates/caption-bridge-render" }
 caption-bridge-spout = { path = "../../crates/caption-bridge-spout" }
 caption-bridge-syphon = { path = "../../crates/caption-bridge-syphon" }
 parapper-engine = { path = "../../crates/parapper-engine" }
 fs2 = "0.4"
+image = { version = "0.25", default-features = false }
+smallvec = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signal-hook = { version = "0.3", optional = true }

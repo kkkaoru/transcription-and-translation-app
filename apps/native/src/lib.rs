@@ -7,10 +7,14 @@ mod domain;
 mod app;
 #[cfg(feature = "gpui")]
 mod dictionary;
+#[cfg(feature = "gpui")]
+mod i18n;
 #[cfg(any(feature = "gpui", test))]
 mod instance;
 #[cfg(feature = "gpui")]
 mod live;
+#[cfg(feature = "gpui")]
+mod output;
 #[cfg(feature = "gpui")]
 mod settings;
 #[cfg(feature = "gpui")]
@@ -43,9 +47,6 @@ pub fn run_stub() {
     }
     let surfaces = start_debug_surfaces(launch);
     debug_surfaces::print_debug_status(launch, &surfaces);
-    if debug_surfaces::wants_event_pump(launch) && surfaces.is_ok() {
-        debug_surfaces::pump_debug_loop();
-    }
 }
 
 #[cfg(test)]

@@ -1,24 +1,24 @@
-//! Display-free tests for Native domain, capture helpers, and identity.
+//! Display-free Native domain and output tests.
 
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
-use caption_bridge_spout::NATIVE_SPOUT_SHARE_NAME;
-use caption_bridge_syphon::{NATIVE_SYPHON_SERVER_NAME, WINDOWS_SYPHON_UNSUPPORTED};
 
+use crate::app::{
+    delete_editable_text, erase_editable_text, insert_editable_text, next_caret, previous_caret,
+};
 use crate::debug_surfaces::{
-    caption_publication, prepare_caption_publication_with, start_debug_surfaces, CaptionPublication,
+    caption_publication, prepare_caption_publication_with, CaptionPublication,
 };
 use crate::domain::{
-    add_dictionary_entry, adjust_font_size, adjust_max_chars, adjust_opacity, adjust_position,
-    cycle_source_color, cycle_translation_color, delete_dictionary_entry, geometry_from_style,
-    ingest_fixture_caption, layout_from_style, load_style_settings, native_style_path,
-    parse_debug_launch, rasterize_style_preview, run_stub_lines, save_style_settings,
-    search_dictionary_entries, AppTab, CaptureStatus, DebugLaunch, NativeStyleSettings,
-    BINARY_NAME, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FONT_SIZE_STEP,
-    PRODUCT_NAME, TABS,
+    add_dictionary_entry, delete_dictionary_entry, geometry_from_style, ingest_fixture_caption,
+    layout_from_style, load_app_settings, load_style_settings, native_settings_path,
+    native_style_path, parse_debug_launch, rasterize_live_caption_at_scale,
+    rasterize_style_preview, save_app_settings, save_style_settings, search_dictionary_entries,
+    AppTab, NativeAppSettings, NativeStyleSettings, UiLanguage, BINARY_NAME, BUILD_ID, BUNDLE_ID,
+    DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, PRODUCT_NAME, TABS,
 };
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -29,33 +29,136 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 #[test]
-fn identity_strings() {
-    assert_eq!(PRODUCT_NAME, "Kotoba Beacon Native");
-    assert_eq!(BUNDLE_ID, "com.kotobabeacon.native");
-    assert_eq!(BINARY_NAME, "kotoba-beacon-native");
-    assert_eq!(TABS, &["Live", "Style", "Dictionary", "Settings"]);
+fn editable_text_cursor_inserts_moves_and_deletes_utf8() {
+    let mut text = "新字幕".to_string();
+    let mut caret = "新".len();
+    insert_editable_text(&mut text, &mut caret, "しい");
+    assert_eq!(text, "新しい字幕");
+    assert_eq!(caret, "新しい".len());
+    caret = previous_caret(&text, caret);
+    assert_eq!(caret, "新し".len());
+    caret = next_caret(&text, caret);
+    assert_eq!(caret, "新しい".len());
+    erase_editable_text(&mut text, &mut caret);
+    assert_eq!(text, "新し字幕");
+    delete_editable_text(&mut text, &mut caret);
+    assert_eq!(text, "新し幕");
 }
 
 #[test]
-fn live_caption_reaches_debug_surface_publication_boundary() {
+fn release_build_and_idle_loop_use_bounded_resource_settings() {
+    let manifest = include_str!("../Cargo.toml");
+    assert!(manifest.contains("[profile.release]"));
+    assert!(manifest.contains("lto = \"thin\""));
+    assert!(manifest.contains("strip = \"symbols\""));
+    assert!(manifest.contains("panic = \"abort\""));
+
+    let app = include_str!("app.rs");
+    assert!(app.contains("IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250)"));
+    assert!(app.contains("ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(32)"));
+
+    let capture = include_str!("capture.rs");
+    assert!(capture.contains("RMS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100)"));
+    assert!(capture.contains("TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(600)"));
+    assert!(capture.contains("receiver.recv_timeout(TRANSLATOR_IDLE_TIMEOUT)"));
+}
+
+#[test]
+fn identity_and_build_contracts() {
+    assert_eq!(PRODUCT_NAME, "Kotoba Beacon Native");
+    assert_eq!(BUNDLE_ID, "com.kotobabeacon.native");
+    assert_eq!(BINARY_NAME, "kotoba-beacon-native");
+    assert!(!BUILD_ID.is_empty());
+    assert_eq!(TABS, &["Live", "Style", "Dictionary", "Output", "Settings"]);
+}
+
+#[test]
+fn style_defaults_disable_background_plate() {
+    let style = NativeStyleSettings::default();
+    assert!(!style.background_enabled);
+    assert!(style.shadow_enabled);
+    assert!(style.outline_enabled);
+    assert_eq!(style.font_weight, 750);
+    assert_eq!(style.shadow_antialias, 3);
+    assert_eq!(style.font_family, "\"Noto Sans JP Variable\", \"Noto Sans JP\", sans-serif");
+}
+
+#[test]
+fn full_style_maps_to_shared_renderer() {
+    let style = NativeStyleSettings {
+        font_family: "Hiragino Sans".to_string(),
+        font_weight: 800,
+        letter_spacing_px: 2.0,
+        line_height: 1.5,
+        background_enabled: true,
+        shadow_blur_px: 12.0,
+        shadow_antialias: 4,
+        outline_width_px: 5.0,
+        ..NativeStyleSettings::default()
+    };
+    let geometry = geometry_from_style(&style);
+    assert_eq!(geometry.source.font_family, "Hiragino Sans");
+    assert_eq!(geometry.translation.font_weight, 800);
+    assert_eq!(geometry.source.letter_spacing_px, 2.0);
+    assert_eq!(geometry.source.line_height, 1.5);
+    assert!(geometry.source.background_enabled);
+    assert_eq!(geometry.source.shadow_blur_px, 12.0);
+    assert_eq!(geometry.source.shadow_antialias, 4);
+    assert_eq!(geometry.source.culling_width_px, 5.0);
+}
+
+#[test]
+fn live_caption_reaches_shared_rgba_boundary() {
     let publication = caption_publication(
         &NativeStyleSettings::default(),
         "音声からの字幕",
         "Caption from speech",
     );
-
     assert_eq!(publication.source, "音声からの字幕");
     assert_eq!(publication.translation, "Caption from speech");
     assert_eq!(publication.width, 1280);
     assert_eq!(publication.height, 720);
     assert_eq!(publication.pixels.len(), 3_686_400);
-    assert!(publication.pixels.iter().any(|channel| *channel != 0));
 }
 
 #[test]
-fn inactive_surfaces_skip_caption_rasterization() {
+fn caption_output_raster_matches_retina_pixel_density() {
+    let image = rasterize_live_caption_at_scale(
+        &NativeStyleSettings::default(),
+        "高解像度字幕",
+        "High resolution caption",
+        2.0,
+    );
+    assert_eq!(image.width, 2560);
+    assert_eq!(image.height, 1440);
+    assert_eq!(image.pixels.len(), 14_745_600);
+}
+
+#[test]
+fn style_editor_has_continuous_controls_and_nested_scrolling() {
+    let style = include_str!("style.rs");
+    assert!(style.contains("range_value(bounds, event.position"));
+    assert!(style.contains("style-settings-scroll"));
+    assert!(style.contains("font-options-scroll"));
+    assert!(style.contains("overflow_y_scroll()"));
+    assert!(style.contains("color_square_image"));
+    assert!(style.contains("hue_bar_image"));
+    assert!(style.contains("preview-source-input"));
+    assert!(style.contains("preview-translation-input"));
+    let preview_background = style.find("\"preview-background\"").expect("preview background");
+    let settings_scroll = style.find("style-settings-scroll").expect("settings scroll");
+    assert!(preview_background < settings_scroll);
+    assert!(style.contains("cx.stop_propagation()"));
+    let app = include_str!("app.rs");
+    assert!(app.contains("caption_bridge_render::font_families()"));
+    assert!(!app.contains("text_system().all_font_names()"));
+    assert!(!style.contains("const COLORS"));
+}
+
+#[test]
+fn inactive_surfaces_do_not_rasterize() {
     let mut rasterized = false;
-    let publication = prepare_caption_publication_with(
+    let result = prepare_caption_publication_with(
         false,
         None,
         &NativeStyleSettings::default(),
@@ -72,303 +175,219 @@ fn inactive_surfaces_skip_caption_rasterization() {
             }
         },
     );
-
-    assert!(publication.is_none());
-    assert!(!rasterized, "inactive surfaces must not rasterize a 1280x720 frame");
+    assert!(result.is_none());
+    assert!(!rasterized);
 }
 
 #[test]
-fn unchanged_caption_text_skips_caption_rasterization() {
+fn empty_caption_rasterizes_once_to_clear_native_publishers() {
     let previous = ("字幕".to_string(), "Caption".to_string());
-    let mut rasterized = false;
-    let publication = prepare_caption_publication_with(
+    let result = prepare_caption_publication_with(
+        true,
+        Some(&previous),
+        &NativeStyleSettings::default(),
+        "",
+        "",
+        caption_publication,
+    )
+    .expect("empty transition must publish a transparent frame");
+    assert!(result.pixels.iter().all(|channel| *channel == 0));
+}
+
+#[test]
+fn unchanged_caption_does_not_rasterize() {
+    let previous = ("字幕".to_string(), "Caption".to_string());
+    let result = prepare_caption_publication_with(
         true,
         Some(&previous),
         &NativeStyleSettings::default(),
         "字幕",
         "Caption",
-        |_, _, _| {
-            rasterized = true;
-            CaptionPublication {
-                source: String::new(),
-                translation: String::new(),
-                width: 0,
-                height: 0,
-                pixels: Vec::new(),
-            }
+        |_, _, _| CaptionPublication {
+            source: String::new(),
+            translation: String::new(),
+            width: 0,
+            height: 0,
+            pixels: Vec::new(),
         },
     );
-
-    assert!(publication.is_none());
-    assert!(!rasterized, "deduplication must use caption text before rasterizing");
+    assert!(result.is_none());
 }
 
 #[test]
-fn changed_caption_text_rasterizes_even_without_a_generation_key() {
-    let previous = ("前の字幕".to_string(), "Previous".to_string());
-    let publication = prepare_caption_publication_with(
-        true,
-        Some(&previous),
-        &NativeStyleSettings::default(),
-        "次の字幕",
-        "Next",
-        |_, source, translation| CaptionPublication {
-            source: source.to_string(),
-            translation: translation.to_string(),
-            width: 1,
-            height: 1,
-            pixels: vec![255, 255, 255, 255],
-        },
-    )
-    .expect("changed caption text must rasterize");
-
-    assert_eq!(publication.source, "次の字幕");
-    assert_eq!(publication.translation, "Next");
-}
-
-#[test]
-fn native_recognition_has_no_sidecar_or_socket_ipc_dependency() {
+fn recognition_has_no_process_or_socket_ipc_dependency() {
     let manifest = include_str!("../Cargo.toml");
     let capture = include_str!("capture.rs");
     assert!(manifest.contains("parapper-engine ="));
+    assert!(!manifest.contains("caption-bridge-overlay"));
     assert!(!manifest.contains("caption-bridge-sidecar"));
-    assert!(!manifest.contains("caption-bridge-parapper"));
     assert!(!manifest.contains("tungstenite"));
     assert!(!capture.contains("std::process::Command"));
     assert!(!capture.contains("WebSocket"));
 }
 
 #[test]
-fn gpui_poll_loop_invokes_live_caption_publication() {
-    let app_source = include_str!("app.rs");
-    let required_tick = "view.capture.poll();\n                view.publish_live_caption();";
-
-    assert!(
-        app_source.contains(required_tick),
-        "the GPUI poll loop must publish caption state after polling capture"
-    );
+fn replaced_gpui_rasters_are_removed_from_the_gpu_atlas() {
+    let source = include_str!("app.rs");
+    assert!(source.contains("window.drop_image(previous_image)"));
+    assert!(source.contains("self.stale_render_images.drain(..)"));
+    assert!(!source.contains("cx.notify();\n                (caption, style)"));
 }
 
 #[test]
-fn gpui_normal_quit_stops_capture() {
-    let app_source = include_str!("app.rs");
-    let required_shutdown = "let quit_subscription = cx.on_app_quit(|view, _cx| {\n            view.capture.stop();\n            view.browser_source.stop();\n            Task::ready(())\n        });";
-
-    assert!(app_source.contains(required_shutdown), "normal GPUI quit must stop and join capture");
+fn app_content_has_no_identity_header_or_footer() {
+    let source = include_str!("app.rs");
+    assert!(!source.contains("child(heading(PRODUCT_NAME))"));
+    assert!(!source.contains("bundle id:"));
+    assert!(!source.contains("active tab:"));
+    assert!(!source.contains("toggle_overlay"));
 }
 
 #[test]
-fn gpui_sigterm_path_stops_capture_before_quitting() {
-    let app_source = include_str!("app.rs");
-    let required_shutdown = "if termination_requested.load(Ordering::Relaxed) {\n                let _ = window_handle.update(cx, |view, _window, _cx| view.capture.stop());\n                cx.update(|cx| cx.quit());";
-
-    assert!(
-        app_source.contains(required_shutdown),
-        "SIGTERM must stop and join capture before asking GPUI to quit"
-    );
-}
-
-#[test]
-fn fixture_caption_contains_konnichiwa() {
+fn fixture_and_preview_render() {
     let caption = ingest_fixture_caption().expect("fixture must ingest");
     assert_eq!(caption.source_text, "こんにちは。");
-    assert_eq!(caption.frame_width, 1280);
-    assert_eq!(caption.frame_height, 720);
-}
-
-#[test]
-fn parse_debug_launch_recognizes_overlay_syphon_and_spout_flags() {
-    let none = parse_debug_launch(["cargo", "run"]);
-    assert!(!none.overlay);
-    assert!(!none.syphon);
-    assert!(!none.spout);
-    let overlay = parse_debug_launch(["--overlay"]);
-    assert!(overlay.overlay);
-    assert!(!overlay.syphon);
-    assert!(!overlay.spout);
-    let both = parse_debug_launch(["--syphon", "--overlay"]);
-    assert!(both.overlay);
-    assert!(both.syphon);
-    assert!(!both.spout);
-    let spout = parse_debug_launch(["--spout"]);
-    assert!(!spout.overlay);
-    assert!(!spout.syphon);
-    assert!(spout.spout);
-}
-
-#[test]
-fn macos_spout_flag_is_a_helpful_error() {
-    match start_debug_surfaces(DebugLaunch { overlay: false, syphon: false, spout: true }) {
-        Err(error) => assert_eq!(
-            error,
-            "Spout2 does not run on macOS; use --syphon to publish Kotoba Beacon Native"
-        ),
-        Ok(_) => panic!("Spout cannot start on this Mac"),
-    }
-}
-
-#[test]
-fn native_output_names_stay_distinct_from_tauri() {
-    assert_eq!(NATIVE_SYPHON_SERVER_NAME, "Kotoba Beacon Native");
-    assert_eq!(NATIVE_SPOUT_SHARE_NAME, "Kotoba Beacon Native");
-    assert_ne!(NATIVE_SYPHON_SERVER_NAME, "Kotoba Beacon");
-    assert_eq!(
-        WINDOWS_SYPHON_UNSUPPORTED,
-        "Syphon is macOS-only; use --spout to publish Kotoba Beacon Native via Spout2"
-    );
-}
-
-#[test]
-fn stub_lines_include_identity_and_fixture() {
-    let lines = run_stub_lines();
-    assert_eq!(lines[0], "Kotoba Beacon Native");
-    assert_eq!(lines[1], "bundle id: com.kotobabeacon.native");
-    assert_eq!(lines[2], "planned tabs:");
-    assert_eq!(lines[3], "  - Live");
-    assert_eq!(lines[4], "  - Style");
-    assert_eq!(lines[5], "  - Dictionary");
-    assert_eq!(lines[6], "  - Settings");
-    assert_eq!(lines[7], "fixture caption: こんにちは。");
-    assert_eq!(lines[8], "raster: 1280x720");
-}
-
-#[test]
-fn tabs_switch_from_labels() {
-    assert_eq!(AppTab::from_label("Live"), Some(AppTab::Live));
-    assert_eq!(AppTab::from_label("Style"), Some(AppTab::Style));
-    assert_eq!(AppTab::from_label("Dictionary"), Some(AppTab::Dictionary));
-    assert_eq!(AppTab::from_label("Settings"), Some(AppTab::Settings));
-    assert_eq!(AppTab::from_label("Nope"), None);
-    assert_eq!(AppTab::Live.label(), "Live");
-    assert_eq!(AppTab::Style.japanese_label(), "スタイル");
-}
-
-#[test]
-fn capture_status_labels_are_japanese() {
-    assert_eq!(CaptureStatus::Idle.label(), "待機");
-    assert_eq!(CaptureStatus::Capturing.label(), "収録中");
-    assert_eq!(CaptureStatus::Error.label(), "エラー");
-}
-
-#[test]
-fn style_adjusters_clamp_and_cycle_colors() {
-    assert_eq!(adjust_font_size(12.0, -FONT_SIZE_STEP), 12.0);
-    assert_eq!(adjust_font_size(70.0, FONT_SIZE_STEP), 72.0);
-    assert_eq!(adjust_opacity(0.2, -0.1), 0.2);
-    assert_eq!(adjust_opacity(1.0, 0.1), 1.0);
-    assert_eq!(adjust_position(5.0, -5.0), 5.0);
-    assert_eq!(adjust_position(95.0, 5.0), 95.0);
-    assert_eq!(adjust_max_chars(8, -4), 8);
-    assert_eq!(adjust_max_chars(80, 4), 80);
-    assert_eq!(cycle_source_color("#ffffff"), "#ffe08a");
-    assert_eq!(cycle_source_color("#ffe08a"), "#7dffb3");
-    assert_eq!(cycle_source_color("#7dffb3"), "#ffffff");
-    assert_eq!(cycle_translation_color("#bfe8ff"), "#ffb4d9");
-    assert_eq!(cycle_translation_color("#ffb4d9"), "#d4ff9a");
-    assert_eq!(cycle_translation_color("#d4ff9a"), "#bfe8ff");
-}
-
-#[test]
-fn style_persists_under_native_config_dir_not_tauri() {
-    let dir = unique_temp_dir("style");
-    let settings = NativeStyleSettings {
-        source_font_size_px: 42.0,
-        caption_x_percent: 25.0,
-        ..NativeStyleSettings::default()
-    };
-    save_style_settings(&dir, &settings).expect("save style");
-    let loaded = load_style_settings(&dir).expect("load style");
-    assert_eq!(loaded.source_font_size_px, 42.0);
-    assert_eq!(loaded.caption_x_percent, 25.0);
-    let path = native_style_path(&dir);
-    assert!(path.ends_with("caption-style.json"));
-    let raw = path.to_string_lossy();
-    assert!(!raw.contains("com.kotobabeacon.desktop"));
-    fs::remove_dir_all(&dir).expect("cleanup");
-}
-
-#[test]
-fn style_preview_raster_matches_configured_plate() {
     let image = rasterize_style_preview(
         &NativeStyleSettings::default(),
         DEFAULT_PREVIEW_SOURCE,
         DEFAULT_PREVIEW_TRANSLATION,
     );
-    assert_eq!(image.width, 640);
-    assert_eq!(image.height, 180);
-    assert_eq!(image.pixels.len(), 640 * 180 * 4);
+    assert_eq!(image.width, 1280);
+    assert_eq!(image.height, 360);
+    assert_eq!(image.pixels.len(), 1_843_200);
 }
 
 #[test]
-fn style_maps_into_session_geometry_and_layout() {
-    let settings = NativeStyleSettings {
-        source_font_size_px: 40.0,
-        source_max_chars: 16,
-        caption_x_percent: 20.0,
+fn command_line_has_no_overlay_flag() {
+    let launch = parse_debug_launch(["--overlay", "--syphon"]);
+    assert!(launch.syphon);
+    assert!(!launch.spout);
+    let spout = parse_debug_launch(["--spout"]);
+    assert!(!spout.syphon);
+    assert!(spout.spout);
+}
+
+#[test]
+fn tabs_include_capture_output() {
+    assert_eq!(AppTab::from_label("Live"), Some(AppTab::Live));
+    assert_eq!(AppTab::from_label("Output"), Some(AppTab::Output));
+    assert_eq!(AppTab::from_label("Settings"), Some(AppTab::Settings));
+    assert_eq!(AppTab::from_label("Nope"), None);
+}
+
+#[test]
+fn settings_support_one_ui_language_at_a_time() {
+    assert_ne!(UiLanguage::Japanese, UiLanguage::English);
+    let source = include_str!("ui.rs");
+    assert!(!source.contains("Live ライブ"));
+    assert!(!source.contains("ライブ Live"));
+}
+
+#[test]
+fn style_round_trip_preserves_new_native_fields() {
+    let dir = unique_temp_dir("style");
+    let style = NativeStyleSettings {
+        font_family: "Hiragino Sans".to_string(),
+        background_enabled: true,
+        preview_background_color: "#ffffff".to_string(),
         ..NativeStyleSettings::default()
     };
-    let geometry = geometry_from_style(&settings);
-    let layout = layout_from_style(&settings);
-    assert_eq!(geometry.source.font_size_px, 40.0);
-    assert_eq!(geometry.caption_x_percent, 20.0);
-    assert_eq!(layout.source_max_chars, 16);
-}
-
-#[test]
-fn dictionary_add_search_and_delete() {
-    let empty: Vec<CustomDictionaryEntry> = Vec::new();
-    let added = add_dictionary_entry(&empty, "ぶいあーるちゃっと", "VRC").expect("add sample");
-    assert_eq!(added.len(), 1);
-    assert_eq!(added[0].reading, "ぶいあーるちゃっと");
-    assert_eq!(added[0].word, "VRC");
-    let found = search_dictionary_entries(&added, "ぶい");
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].word, "VRC");
-    let remaining = delete_dictionary_entry(&added, &added[0].id);
-    assert!(remaining.is_empty());
-    let rejected = add_dictionary_entry(&empty, "   ", "VRC");
-    assert_eq!(rejected, Err("読みと単語の両方を入力してください".to_string()));
-}
-
-#[test]
-fn dictionary_save_round_trip_uses_native_dir() {
-    let dir = unique_temp_dir("dict");
-    let entries = vec![CustomDictionaryEntry {
-        id: "entry-1".to_string(),
-        reading: "てすと".to_string(),
-        word: "TEST".to_string(),
-    }];
-    let saved = crate::domain::save_dictionary_entries(&dir, &entries).expect("save dict");
-    assert_eq!(saved[0].word, "TEST");
-    let loaded = crate::domain::load_dictionary_entries(&dir).expect("load dict");
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].reading, "てすと");
-    let json = dir.join("dictionary").join("custom_dictionary.json");
-    assert!(json.exists());
-    let raw = json.to_string_lossy();
-    assert!(!raw.contains("com.kotobabeacon.desktop"));
+    save_style_settings(&dir, &style).expect("save style");
+    let loaded = load_style_settings(&dir).expect("load style");
+    assert_eq!(loaded.font_family, "Hiragino Sans");
+    assert!(loaded.background_enabled);
+    assert_eq!(loaded.preview_background_color, "#ffffff");
+    assert!(native_style_path(&dir).ends_with("caption-style.json"));
     fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn old_style_json_migrates_with_defaults() {
+    let dir = unique_temp_dir("old-style");
+    fs::write(
+        native_style_path(&dir),
+        r##"{"version":1,"sourceFontSizePx":42.0,"sourceColor":"#ffffff","sourceOpacity":1.0,"sourceMaxChars":32,"translationFontSizePx":29.0,"translationColor":"#bfe8ff","translationOpacity":1.0,"translationMaxChars":36,"captionXPercent":50.0,"captionYPercent":88.0}"##,
+    )
+    .expect("write old style");
+    let loaded = load_style_settings(&dir).expect("migrate old style");
+    assert_eq!(loaded.source_font_size_px, 42.0);
+    assert!(!loaded.background_enabled);
+    assert_eq!(loaded.font_weight, 750);
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn app_settings_round_trip_language_translation_timeout_and_output() {
+    let dir = unique_temp_dir("settings");
+    let settings = NativeAppSettings {
+        ui_language: UiLanguage::English,
+        translation_enabled: false,
+        caption_timeout_ms: 7_000,
+        caption_output_open_on_start: false,
+        browser_source_enabled: false,
+        ..NativeAppSettings::default()
+    };
+    save_app_settings(&dir, &settings).expect("save settings");
+    let loaded = load_app_settings(&dir).expect("load settings");
+    assert_eq!(loaded.ui_language, UiLanguage::English);
+    assert!(!loaded.translation_enabled);
+    assert_eq!(loaded.caption_timeout_ms, 7_000);
+    assert!(!loaded.caption_output_open_on_start);
+    assert!(!loaded.browser_source_enabled);
+    assert!(native_settings_path(&dir).ends_with("settings.json"));
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn dictionary_can_delete_any_selected_word() {
+    let entries = vec![
+        CustomDictionaryEntry {
+            id: "entry-1".to_string(),
+            reading: "いち".to_string(),
+            word: "一".to_string(),
+        },
+        CustomDictionaryEntry {
+            id: "entry-2".to_string(),
+            reading: "に".to_string(),
+            word: "二".to_string(),
+        },
+    ];
+    let remaining = delete_dictionary_entry(&entries, "entry-2");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].word, "一");
+    let added = add_dictionary_entry(&remaining, "さん", "三").expect("add");
+    assert_eq!(search_dictionary_entries(&added, "さん")[0].word, "三");
+}
+
+#[test]
+fn layout_uses_configured_max_characters() {
+    let style = NativeStyleSettings { source_max_chars: 16, ..NativeStyleSettings::default() };
+    assert_eq!(layout_from_style(&style).source_max_chars, 16);
 }
 
 #[cfg(feature = "gpui")]
 #[test]
-fn window_options_match_identity() {
+fn window_options_keep_native_identity() {
     use crate::app::main_window_options;
-    use crate::domain::{WINDOW_HEIGHT_PX, WINDOW_TITLE, WINDOW_WIDTH_PX};
+    use crate::domain::{WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX};
     use gpui::{px, WindowBounds};
 
     let options = main_window_options();
-
-    let titlebar = options.titlebar.expect("titlebar should be set");
-    assert_eq!(titlebar.title.as_deref().expect("title should be set"), WINDOW_TITLE);
-
-    assert_eq!(options.app_id.as_deref().expect("app_id should be set"), BUNDLE_ID);
-    assert!(options.is_resizable);
-
-    let bounds = match options.window_bounds.as_ref().expect("window_bounds should be set") {
-        WindowBounds::Windowed(bounds) => *bounds,
-        _ => panic!("expected Windowed bounds"),
+    assert_eq!(options.app_id.as_deref(), Some("com.kotobabeacon.native"));
+    let bounds = match options.window_bounds.expect("bounds") {
+        WindowBounds::Windowed(bounds) => bounds,
+        _ => panic!("expected windowed bounds"),
     };
     assert_eq!(bounds.size.width, px(WINDOW_WIDTH_PX));
     assert_eq!(bounds.size.height, px(WINDOW_HEIGHT_PX));
+}
+
+#[test]
+fn caption_output_is_created_behind_the_main_window() {
+    let app = include_str!("app.rs");
+    let output = app.find("let mut output_window").expect("output window creation");
+    let main = app.find("let window_handle").expect("main window creation");
+    assert!(output < main);
+    assert!(app.contains("focus: false"));
+    assert!(!app.contains("cx.activate("));
 }

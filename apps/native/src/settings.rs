@@ -1,65 +1,111 @@
-//! Settings tab: recognition mode, overlay, Syphon, identity.
+//! Runtime settings and build information.
 
 use gpui::prelude::*;
-use gpui::{div, Context, IntoElement, SharedString};
+use gpui::{div, Context, ElementId, IntoElement, SharedString};
 
-use crate::domain::{
-    NativeAppSettings, BUNDLE_ID, NATIVE_BROWSER_SOURCE_HINT, NATIVE_VERTICAL_BROWSER_SOURCE_HINT,
-    PRODUCT_NAME, RECOGNITION_MODE_LABEL,
-};
-use crate::ui::{button, card, error_line, heading, muted};
+use crate::domain::{NativeAppSettings, UiLanguage, BUILD_ID, RECOGNITION_MODE_LABEL};
+use crate::i18n::{text, TextKey};
+use crate::ui::{button, card, error_line, heading, muted, state_button};
 
 pub struct SettingsCallbacks<V> {
-    pub on_open_overlay: fn(&mut V),
-    pub on_hide_overlay: fn(&mut V),
+    pub on_language: fn(&mut V, UiLanguage),
+    pub on_toggle_translation: fn(&mut V),
+    pub on_timeout: fn(&mut V, u64),
     pub on_toggle_syphon: fn(&mut V),
 }
 
 pub fn render_settings<V: 'static>(
     settings: &NativeAppSettings,
-    overlay_open: bool,
+    translation_model_installed: bool,
     syphon_on: bool,
     persist_error: Option<&str>,
     cx: &mut Context<V>,
     callbacks: SettingsCallbacks<V>,
 ) -> impl IntoElement {
+    let language = settings.ui_language;
+    let timeout_segments = (1..=10)
+        .map(|seconds| {
+            let timeout = seconds * 1_000;
+            div()
+                .id(ElementId::named_usize("caption-timeout", seconds as usize))
+                .h(gpui::px(12.0))
+                .flex_1()
+                .rounded_md()
+                .bg(gpui::rgb(if settings.caption_timeout_ms >= timeout {
+                    0x1aa6a6
+                } else {
+                    0xd5e6f2
+                }))
+                .cursor_pointer()
+                .on_click(cx.listener(move |view, _event, _window, _cx| {
+                    (callbacks.on_timeout)(view, timeout)
+                }))
+        })
+        .collect::<Vec<_>>();
+
     card()
-        .child(heading("設定"))
-        .child(muted(format!("認識モード: {RECOGNITION_MODE_LABEL}（既定）")))
-        .child(muted(format!("保存済みモード: {}", settings.recognition_mode)))
-        .child(muted(format!("オーバーレイ: {}", if overlay_open { "表示中" } else { "非表示" })))
-        .child(muted(format!("Syphon: {}", if syphon_on { "配信中" } else { "停止" })))
+        .child(heading(text(language, TextKey::Settings)))
+        .child(muted(text(language, TextKey::UiLanguage)))
         .child(
             div()
                 .flex()
                 .gap_2()
                 .child(button(
-                    "settings-overlay-open",
-                    "オーバーレイを開く",
+                    "language-japanese",
+                    text(language, TextKey::Japanese),
                     cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_open_overlay)(view)
+                        (callbacks.on_language)(view, UiLanguage::Japanese)
                     }),
                 ))
                 .child(button(
-                    "settings-overlay-hide",
-                    "オーバーレイを隠す",
+                    "language-english",
+                    text(language, TextKey::English),
                     cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_hide_overlay)(view)
-                    }),
-                ))
-                .child(button(
-                    "settings-syphon",
-                    if syphon_on { "Syphon を停止" } else { "Syphon を開始" },
-                    cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_toggle_syphon)(view)
+                        (callbacks.on_language)(view, UiLanguage::English)
                     }),
                 )),
         )
+        .child(muted(format!(
+            "{}: {}",
+            text(language, TextKey::TranslationModel),
+            text(
+                language,
+                if translation_model_installed { TextKey::Installed } else { TextKey::Missing }
+            )
+        )))
+        .child(state_button(
+            "translation-enabled",
+            format!(
+                "{}: {}",
+                text(language, TextKey::Translation),
+                text(
+                    language,
+                    if settings.translation_enabled { TextKey::Enabled } else { TextKey::Disabled }
+                )
+            ),
+            settings.translation_enabled,
+            cx.listener(move |view, _event, _window, _cx| (callbacks.on_toggle_translation)(view)),
+        ))
+        .child(SharedString::from(format!(
+            "{}: {} ms",
+            text(language, TextKey::CaptionTimeout),
+            settings.caption_timeout_ms
+        )))
+        .child(div().flex().gap_1().children(timeout_segments))
+        .child(muted(format!(
+            "{}: {RECOGNITION_MODE_LABEL}",
+            text(language, TextKey::RecognitionEngine)
+        )))
+        .child(state_button(
+            "settings-syphon",
+            format!(
+                "{}: {}",
+                text(language, TextKey::Syphon),
+                text(language, if syphon_on { TextKey::On } else { TextKey::Off })
+            ),
+            syphon_on,
+            cx.listener(move |view, _event, _window, _cx| (callbacks.on_toggle_syphon)(view)),
+        ))
+        .child(muted(format!("{}: {BUILD_ID}", text(language, TextKey::BuildId))))
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
-        .child(muted(format!("Browser Source: {NATIVE_BROWSER_SOURCE_HINT}")))
-        .child(muted(format!("縦配信: {NATIVE_VERTICAL_BROWSER_SOURCE_HINT}")))
-        .child(muted("認識エンジン: 同一プロセス"))
-        .child(div().mt_2().child(SharedString::from(PRODUCT_NAME)))
-        .child(SharedString::from(format!("bundle id: {BUNDLE_ID}")))
-        .child(SharedString::from("binary: kotoba-beacon-native"))
 }
