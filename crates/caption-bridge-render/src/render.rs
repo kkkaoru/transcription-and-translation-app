@@ -41,6 +41,20 @@ fn init_render_state() -> Mutex<RenderState> {
 
 static RENDER_STATE: LazyLock<Mutex<RenderState>> = LazyLock::new(init_render_state);
 
+/// Return the family names resolved by the same font database used for caption rasterization.
+pub fn font_families() -> Vec<String> {
+    let guard = RENDER_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut families = guard
+        .font_system
+        .db()
+        .faces()
+        .flat_map(|face| face.families.iter().map(|(name, _language)| name.clone()))
+        .collect::<Vec<_>>();
+    families.sort_unstable();
+    families.dedup();
+    families
+}
+
 /// Candidate names for Japanese/Chinese-compatible fonts that cosmic-text
 /// does not discover through `load_system_fonts()` on every platform.
 const JP_FONT_CANDIDATES: &[&str] = &[
@@ -306,7 +320,7 @@ fn parse_text_align(s: &str) -> Align {
     }
 }
 
-fn build_attrs(style: &CaptionStyle) -> Attrs<'_> {
+fn build_attrs<'a>(style: &'a CaptionStyle, font_system: &FontSystem) -> Attrs<'a> {
     let mut result = Attrs::new();
 
     for part in style.font_family.split(',') {
@@ -325,8 +339,14 @@ fn build_attrs(style: &CaptionStyle) -> Attrs<'_> {
             result = result.family(Family::Cursive);
         } else if name.eq_ignore_ascii_case("fantasy") {
             result = result.family(Family::Fantasy);
-        } else {
+        } else if font_system
+            .db()
+            .faces()
+            .any(|face| face.families.iter().any(|(family, _language)| family == name))
+        {
             result = result.family(Family::Name(name));
+        } else {
+            continue;
         }
         break;
     }
@@ -342,12 +362,12 @@ fn measure_block(
     text: &str,
     content_width: f32,
 ) -> f32 {
+    let attrs = build_attrs(style, font_system);
     let metrics = Metrics::new(style.font_size_px, style.font_size_px * style.line_height);
     let mut buffer = Buffer::new(font_system, metrics);
     let mut buffer = buffer.borrow_with(font_system);
     buffer.set_size(Some(content_width), None);
 
-    let attrs = build_attrs(style);
     let attrs_owned = AttrsOwned::new(&attrs);
     buffer.set_text(
         text,
@@ -377,12 +397,12 @@ fn draw_block(
         return;
     }
 
+    let attrs = build_attrs(style, font_system);
     let metrics = Metrics::new(style.font_size_px, style.font_size_px * style.line_height);
     let mut buffer = Buffer::new(font_system, metrics);
     let mut buffer = buffer.borrow_with(font_system);
     buffer.set_size(Some(placement.content_width), None);
 
-    let attrs = build_attrs(style);
     let attrs_owned = AttrsOwned::new(&attrs);
     buffer.set_text(
         text,
