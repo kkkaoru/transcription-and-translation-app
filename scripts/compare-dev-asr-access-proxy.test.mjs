@@ -6,7 +6,11 @@ import {
   handleCompareDevAsrAccessProxyRequest,
   LOCAL_WORKERS_AI_ASR_UNAVAILABLE_JA,
 } from "./compare-dev-asr-access-proxy.mjs";
-import { COMPARE_ASR_PATH, COMPARE_ORIGIN } from "./verify-cloudflare-hosted.mjs";
+import {
+  COMPARE_ASR_PATH,
+  COMPARE_ORIGIN,
+  COMPARE_SPEECH_PIPELINE_PATH,
+} from "./verify-cloudflare-hosted.mjs";
 
 describe("compare-dev ASR Access proxy", () => {
   it("pins the loopback proxy origin without inventing Access credentials", () => {
@@ -66,6 +70,17 @@ describe("compare-dev ASR Access proxy", () => {
     assert.equal(calls[1]?.method, "POST");
     assert.equal(calls[0]?.headers["CF-Access-Client-Id"], "id.access");
     assert.equal(calls[1]?.headers["CF-Access-Client-Secret"], "secret");
+
+    const pipeline = await handleCompareDevAsrAccessProxyRequest(
+      new Request(`http://127.0.0.1:8790${COMPARE_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=test" },
+        body: "wav-bytes",
+      }),
+      { env, dotenv: {}, fetchImpl, compareOrigin: COMPARE_ORIGIN },
+    );
+    assert.equal(pipeline.status, 200);
+    assert.equal(calls[2]?.url, `${COMPARE_ORIGIN}${COMPARE_SPEECH_PIPELINE_PATH}`);
   });
 
   it("strips upstream content-encoding so next.dev can parse Nova-3 JSON", async () => {

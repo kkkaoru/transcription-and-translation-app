@@ -23,6 +23,7 @@ export const INFERENCE_ORIGIN = `https://${INFERENCE_PUBLIC_HOST}`;
 export const COMPARE_HEALTH_PATH = "/v1/azookey";
 export const COMPARE_WS_PATH = "/ws/azookey";
 export const COMPARE_ASR_PATH = "/v1/asr/workers-ai/transcriptions";
+export const COMPARE_SPEECH_PIPELINE_PATH = "/v1/speech/workers-ai/azookey";
 export const COMPARE_WS_SMOKE_INPUT = "きょうはいいてんき";
 export const BROWSER_LIKE_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";

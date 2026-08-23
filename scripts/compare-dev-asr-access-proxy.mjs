@@ -13,6 +13,7 @@ import {
   COMPARE_ASR_PATH,
   COMPARE_HEALTH_PATH,
   COMPARE_ORIGIN,
+  COMPARE_SPEECH_PIPELINE_PATH,
   resolveAccessServiceToken,
 } from "./verify-cloudflare-hosted.mjs";
 
@@ -42,7 +43,7 @@ export const handleCompareDevAsrAccessProxyRequest = async (
   { env = process.env, dotenv = {}, fetchImpl = fetch, compareOrigin = COMPARE_ORIGIN } = {},
 ) => {
   const pathname = new URL(request.url).pathname;
-  if (pathname !== COMPARE_ASR_PATH) {
+  if (pathname !== COMPARE_ASR_PATH && pathname !== COMPARE_SPEECH_PIPELINE_PATH) {
     return jsonResponse(404, {
       error: { code: "not_found", message: LOCAL_WORKERS_AI_ASR_UNAVAILABLE_JA },
     });
@@ -72,7 +73,7 @@ export const handleCompareDevAsrAccessProxyRequest = async (
     });
   }
   const contentType = request.headers.get("content-type");
-  const upstream = await fetchImpl(`${compareOrigin}${COMPARE_ASR_PATH}`, {
+  const upstream = await fetchImpl(`${compareOrigin}${pathname}`, {
     method: "POST",
     headers: {
       ...headers,
