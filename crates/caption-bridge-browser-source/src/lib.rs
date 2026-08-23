@@ -77,6 +77,66 @@ pub struct CaptionFeed {
 pub struct BrowserSourceFeed {
     /// `None` until the first [`BrowserSourceServer::feed`] call.
     pub caption: Option<CaptionFeed>,
+    /// Shared visual contract used by HTML and Native output surfaces.
+    pub style: BrowserSourceStyle,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserSourceStyle {
+    pub font_family: String,
+    pub font_weight: u16,
+    pub letter_spacing_px: f32,
+    pub line_height: f32,
+    pub source_size_px: f32,
+    pub source_color: String,
+    pub source_opacity: f32,
+    pub translation_size_px: f32,
+    pub translation_color: String,
+    pub translation_opacity: f32,
+    pub x_percent: f32,
+    pub y_percent: f32,
+    pub background_enabled: bool,
+    pub background_color: String,
+    pub background_opacity: f32,
+    pub shadow_enabled: bool,
+    pub shadow_color: String,
+    pub shadow_blur_px: f32,
+    pub shadow_offset_x: f32,
+    pub shadow_offset_y: f32,
+    pub outline_enabled: bool,
+    pub outline_color: String,
+    pub outline_width_px: f32,
+}
+
+impl Default for BrowserSourceStyle {
+    fn default() -> Self {
+        Self {
+            font_family: "Noto Sans JP".to_string(),
+            font_weight: 750,
+            letter_spacing_px: 0.2,
+            line_height: 1.3,
+            source_size_px: 36.0,
+            source_color: "#ffffff".to_string(),
+            source_opacity: 1.0,
+            translation_size_px: 29.0,
+            translation_color: "#bfe8ff".to_string(),
+            translation_opacity: 1.0,
+            x_percent: 50.0,
+            y_percent: 88.0,
+            background_enabled: false,
+            background_color: "#061018".to_string(),
+            background_opacity: 0.72,
+            shadow_enabled: true,
+            shadow_color: "#000000".to_string(),
+            shadow_blur_px: 8.0,
+            shadow_offset_x: 0.0,
+            shadow_offset_y: 3.0,
+            outline_enabled: true,
+            outline_color: "#061018".to_string(),
+            outline_width_px: 3.0,
+        }
+    }
 }
 
 /// Bind configuration for the loopback caption server.
@@ -166,6 +226,14 @@ impl BrowserSourceServer {
         feed.caption =
             Some(CaptionFeed { source: source.to_string(), translation: translation.to_string() });
     }
+
+    pub fn set_style(&self, style: BrowserSourceStyle) {
+        let mut feed = match self.shared.feed.lock() {
+            Ok(feed) => feed,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        feed.style = style;
+    }
 }
 
 impl Drop for BrowserSourceServer {
@@ -175,7 +243,7 @@ impl Drop for BrowserSourceServer {
 }
 
 fn empty_feed() -> BrowserSourceFeed {
-    BrowserSourceFeed { caption: None }
+    BrowserSourceFeed { caption: None, style: BrowserSourceStyle::default() }
 }
 
 fn bind_error(port: u16, source: impl Into<IoError>) -> BrowserSourceError {
@@ -343,7 +411,7 @@ fn html_page(feed: &BrowserSourceFeed) -> String {
 
 /// Caption-only page for the OBS Browser Source. The page owns no state: it
 /// polls `captions.json` and re-renders from the returned feed.
-const HTML_TEMPLATE: &str = r#"<!doctype html>
+const HTML_TEMPLATE: &str = r##"<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
@@ -351,18 +419,15 @@ const HTML_TEMPLATE: &str = r#"<!doctype html>
 <style>
   html, body { margin: 0; padding: 0; width: 100%; height: 100%;
     background: transparent; overflow: hidden; }
-  #lines { position: absolute; left: 50%; bottom: 8%; width: 90%;
-    transform: translateX(-50%); box-sizing: border-box; overflow: visible;
-    display: flex; flex-direction: column; align-items: center; gap: 0.3em;
-    justify-content: flex-end; pointer-events: none; text-align: center;
-    color: #fff; font-family: sans-serif; font-size: clamp(28px, 4.8vw, 72px);
-    font-weight: 700; line-height: 1.25; }
-  body[data-layout="vertical"] #lines { bottom: 12%; width: 88%;
-    font-size: clamp(32px, 7vw, 76px); }
+  #lines { position: absolute; width: 90%; transform: translate(-50%, -100%);
+    box-sizing: border-box; overflow: visible; display: flex; flex-direction: column;
+    align-items: center; gap: 14px; justify-content: flex-end; pointer-events: none;
+    text-align: center; }
+  body[data-layout="vertical"] #lines { width: 88%; }
   #lines .line { white-space: pre-wrap; overflow-wrap: anywhere;
-    padding: 0.08em 0.24em; background: rgba(0, 0, 0, 0.62);
-    border-radius: 0.16em; text-shadow: 0 0.04em 0.08em #000;
-    box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+    display: block; width: fit-content; max-width: 100%;
+    padding: 7px 14px; border-radius: 9px;
+    box-decoration-break: slice; -webkit-box-decoration-break: slice; }
 </style>
 </head>
 <body>
@@ -373,15 +438,42 @@ const layout = new URLSearchParams(location.search).get("layout");
 document.body.dataset.layout = layout === "vertical" ? "vertical" : "horizontal";
 let feed = INIT;
 const lines = document.getElementById("lines");
+function rgba(hex, opacity) {
+  const value = hex.replace("#", "");
+  const r = parseInt(value.slice(0, 2), 16) || 0;
+  const g = parseInt(value.slice(2, 4), 16) || 0;
+  const b = parseInt(value.slice(4, 6), 16) || 0;
+  return `rgba(${r},${g},${b},${opacity})`;
+}
+function applyLineStyle(line, style, translated) {
+  line.style.fontFamily = style.fontFamily;
+  line.style.fontWeight = String(style.fontWeight);
+  line.style.letterSpacing = `${style.letterSpacingPx}px`;
+  line.style.lineHeight = String(style.lineHeight);
+  line.style.fontSize = `${translated ? style.translationSizePx : style.sourceSizePx}px`;
+  line.style.color = translated ? style.translationColor : style.sourceColor;
+  line.style.opacity = String(translated ? style.translationOpacity : style.sourceOpacity);
+  line.style.background = style.backgroundEnabled
+    ? rgba(style.backgroundColor, style.backgroundOpacity) : "transparent";
+  line.style.textShadow = style.shadowEnabled
+    ? `${style.shadowOffsetX}px ${style.shadowOffsetY}px ${style.shadowBlurPx}px ${style.shadowColor}`
+    : "none";
+  line.style.webkitTextStroke = style.outlineEnabled
+    ? `${style.outlineWidthPx}px ${style.outlineColor}` : "0 transparent";
+  line.style.paintOrder = "stroke fill";
+}
 function render(f) {
   lines.textContent = "";
+  lines.style.left = `${f.style.xPercent}%`;
+  lines.style.top = `${f.style.yPercent}%`;
   const source = f.caption ? f.caption.source : "";
   const translation = f.caption ? f.caption.translation : "";
-  const rows = [source, translation].filter((text) => text.trim().length);
-  for (const text of rows) {
+  for (const [text, translated] of [[source, false], [translation, true]]) {
+    if (!text.trim().length) { continue; }
     const line = document.createElement("div");
     line.className = "line";
     line.textContent = text;
+    applyLineStyle(line, f.style, translated);
     lines.appendChild(line);
   }
 }
@@ -404,7 +496,7 @@ refresh();
 </script>
 </body>
 </html>
-"#;
+"##;
 
 #[cfg(test)]
 mod tests {
@@ -469,6 +561,7 @@ mod tests {
                 source: "こんにちは、世界".to_string(),
                 translation: "Hello, world".to_string(),
             }),
+            style: super::BrowserSourceStyle::default(),
         };
         let page = html_page(&feed);
         assert!(page.contains("Kotoba Beacon Captions"));
@@ -479,6 +572,11 @@ mod tests {
         assert!(page.contains("#lines .line { white-space: pre-wrap; overflow-wrap: anywhere;"));
         assert!(page.contains("layout === \"vertical\""));
         assert!(page.contains("body[data-layout=\"vertical\"] #lines"));
+        assert!(page.contains("line.style.webkitTextStroke"));
+        assert!(page.contains("line.style.paintOrder = \"stroke fill\""));
+        assert!(page.contains("style.backgroundEnabled"));
+        assert!(page.contains("box-decoration-break: slice"));
+        assert!(!page.contains("box-decoration-break: clone"));
         assert!(page.contains("こんにちは、世界"));
         assert!(!page.contains("<script>alert"));
     }
@@ -490,6 +588,7 @@ mod tests {
                 source: "</script><script>alert(1)</script>".to_string(),
                 translation: "x".to_string(),
             }),
+            style: super::BrowserSourceStyle::default(),
         };
         let page = html_page(&feed);
         assert!(page.contains(r"\u003c/script"));
@@ -503,17 +602,23 @@ mod tests {
                 source: "こんにちは、世界".to_string(),
                 translation: "Hello, world".to_string(),
             }),
+            style: super::BrowserSourceStyle::default(),
         };
         let body = feed_json(&feed);
         let json: serde_json::Value = serde_json::from_str(&body).expect("feed is valid JSON");
         assert_eq!(json["caption"]["source"], "こんにちは、世界");
         assert_eq!(json["caption"]["translation"], "Hello, world");
+        assert_eq!(json["style"]["fontWeight"], 750);
+        assert_eq!(json["style"]["backgroundEnabled"], false);
         assert!(json.get("overlay").is_none());
     }
 
     #[test]
     fn feed_omits_the_caption_when_none_has_been_fed() {
-        let body = feed_json(&BrowserSourceFeed { caption: None });
+        let body = feed_json(&BrowserSourceFeed {
+            caption: None,
+            style: super::BrowserSourceStyle::default(),
+        });
         let json: serde_json::Value = serde_json::from_str(&body).expect("feed is valid JSON");
         assert!(json["caption"].is_null());
     }
