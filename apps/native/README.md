@@ -21,7 +21,7 @@ Kotoba Beacon Native
 └─ loopback Browser Source server
 ```
 
-There is no Tauri runtime, Parapper executable, child-process supervisor, recognition WebSocket, or JSON IPC in the Native runtime. Threads communicate through bounded in-memory queues.
+There is no recognition sidecar, child-process supervisor, recognition WebSocket, or JSON IPC. Threads communicate through bounded in-memory queues.
 
 ## Identity
 
@@ -54,6 +54,16 @@ namo-turn-detector-v1-japanese/
 unidic-cwj-3_1_1/
 ```
 
+Japanese-to-English translation additionally uses:
+
+```text
+lfm2-350m-enjp-mt-onnx-q4/
+├─ tokenizer.json
+└─ onnx/
+   ├─ model_q4.onnx
+   └─ model_q4.onnx_data
+```
+
 `ul-unas/` is supported by the engine but noise cancellation is disabled by default until it wins the fixture quality benchmark.
 
 ## Run
@@ -65,20 +75,20 @@ cargo run --manifest-path apps/native/Cargo.toml
 The application opens:
 
 1. the control/settings window;
-2. the always-available `Kotoba Beacon Caption Output` capture window;
-3. the loopback Browser Source listener.
+2. `Kotoba Beacon Caption Output`, when enabled for startup;
+3. the loopback Browser Source listener, when enabled.
 
 The capture window uses a green background for Window Capture plus chroma key. Browser Source is the preferred true-transparent path.
 
 ## OBS and TikTok LIVE Studio
 
-Horizontal/default overlay:
+Horizontal output:
 
 ```text
 http://127.0.0.1:1521/
 ```
 
-Vertical overlay for TikTok, YouTube, or any vertical stream:
+Vertical output for TikTok, YouTube, or any vertical stream:
 
 ```text
 http://127.0.0.1:1521/?layout=vertical
@@ -105,12 +115,11 @@ curl http://127.0.0.1:1521/health
 The existing debug/output flags remain available:
 
 ```bash
-cargo run --manifest-path apps/native/Cargo.toml -- --overlay
 cargo run --manifest-path apps/native/Cargo.toml -- --syphon  # macOS
 cargo run --manifest-path apps/native/Cargo.toml -- --spout   # Windows
 ```
 
-Syphon, Spout, and OS-specific transparent overlays are optional accelerators. Browser Source and the GPUI capture window are the portable baseline.
+Syphon and Spout publish the same shared RGBA caption raster used by the GPUI capture window. Browser Source receives the same persisted font, color, plate, shadow, and outline values. The Style tab keeps its HiDPI preview and editable recognition/translation sample text fixed above a scrollable, grouped editor. It uses continuous range controls, expandable saturation/brightness color squares with hue bars, an isolated scrollable font list sourced from the caption renderer, and configurable antialiased shadow quality. Native outlines use an antialiased continuous glyph stroke painted before the fill, matching `-webkit-text-stroke` with `paint-order: stroke fill`. The GPUI Caption Output raster follows the display scale factor so Retina/HiDPI windows receive device-resolution text.
 
 ## Automated verification
 
@@ -146,7 +155,6 @@ Installed layout:
    └─ Frameworks/
       ├─ Syphon.framework
       ├─ libsherpa-onnx-c-api.dylib
-      ├─ libonnxruntime.dylib
       └─ libonnxruntime.1.24.4.dylib
 ```
 
