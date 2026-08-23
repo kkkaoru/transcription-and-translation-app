@@ -765,7 +765,7 @@ impl RecognitionSession {
             let output_sequence =
                 take_next_output_sequence(&mut self.counters.next_output_sequence);
             self.finalize_turn_audio_range(turn_id);
-            self.turn_store.finalized_turns.insert(turn_id);
+            self.turn_store.mark_finalized(turn_id);
             self.turn_store.streaming_interim_ranges.remove(&turn_id);
             let Some(turn) = self.turn_store.turns.remove(&turn_id) else {
                 return;
@@ -805,7 +805,7 @@ impl RecognitionSession {
     }
 
     fn cleanup_final_turn_state(&mut self, turn_id: u64) {
-        self.turn_store.finalized_turns.insert(turn_id);
+        self.turn_store.mark_finalized(turn_id);
         self.turn_store.streaming_interim_ranges.remove(&turn_id);
         self.finalize_turn_audio_range(turn_id);
         self.turn_store.turns.remove(&turn_id);

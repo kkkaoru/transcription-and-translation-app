@@ -728,6 +728,8 @@ pub(in crate::recognition) trait LanguageIdRuntime:
     fn build_language_id(&self, config: &ParapperConfig) -> Option<Box<dyn LanguageDetector>>;
 }
 
+const RETAINED_FINALIZED_TURNS: u64 = 64;
+
 pub(in crate::recognition) struct TurnStore {
     pub(in crate::recognition) turns: HashMap<u64, Turn>,
     pub(in crate::recognition) audio_ranges: HashMap<u64, Vec<AudioRange>>,
@@ -740,6 +742,16 @@ pub(in crate::recognition) struct TurnStore {
     pub(in crate::recognition) open_turn_accepts_root_segment: bool,
     pub(in crate::recognition) open_turn_is_closing: bool,
     pub(in crate::recognition) caption_latency: HashMap<u64, TurnCaptionLatency>,
+}
+
+impl TurnStore {
+    pub(in crate::recognition) fn mark_finalized(&mut self, turn_id: u64) {
+        self.finalized_turns.insert(turn_id);
+        let newest_finalized = self.finalized_turns.iter().copied().max().unwrap_or(turn_id);
+        let oldest_retained = newest_finalized.saturating_sub(RETAINED_FINALIZED_TURNS - 1);
+        self.finalized_turns.retain(|id| *id >= oldest_retained);
+        self.revisions.retain(|id, _| *id >= oldest_retained);
+    }
 }
 
 impl Default for TurnStore {
@@ -817,6 +829,21 @@ mod tests {
 
     fn speech_vad() -> VadResult {
         VadResult { probability: 0.99, is_speech: true }
+    }
+
+    #[test]
+    fn finalized_turn_history_is_bounded() {
+        let mut store = TurnStore::default();
+        store.finalized_turns.extend(1..=99);
+        store.revisions.extend((1..=99).map(|id| (id, 1)));
+
+        store.mark_finalized(100);
+
+        assert_eq!(store.finalized_turns.len(), 64);
+        assert_eq!(store.revisions.len(), 63);
+        assert!(!store.finalized_turns.contains(&36));
+        assert!(store.finalized_turns.contains(&37));
+        assert!(store.finalized_turns.contains(&100));
     }
 
     #[test]
