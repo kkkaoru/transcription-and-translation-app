@@ -1,3 +1,4 @@
+// This file runs with bun.
 export const locales = ["ja", "en"] as const;
 
 export type Locale = (typeof locales)[number];
@@ -259,6 +260,9 @@ const ja = {
   "settings.previewOneLine": "1行表示",
   "settings.previewTwoLines": "2行表示",
   "settings.stylePreviewHint": "設定の変更は保存前でもプレビューにすぐ反映されます。",
+  "settings.previewSourceText": "プレビューの認識結果",
+  "settings.previewTranslationText": "プレビューの翻訳結果",
+  "settings.previewBackgroundColor": "プレビューの背景色",
   "settings.transparentTitle": "字幕表示ウィンドウ",
   "settings.transparentDetail":
     "設定で Syphon / Spout2 を有効にするとメインウィンドウから字幕フレームを配信します。無効時や非対応環境では「字幕表示」ウィンドウを開き、OBS の Window Capture で取り込んでください。",
@@ -819,6 +823,9 @@ const en: Record<MessageKey, string> = {
   "settings.previewOneLine": "1 line",
   "settings.previewTwoLines": "2 lines",
   "settings.stylePreviewHint": "Changes appear here immediately, before you save.",
+  "settings.previewSourceText": "Preview recognition text",
+  "settings.previewTranslationText": "Preview translation text",
+  "settings.previewBackgroundColor": "Preview background color",
   "settings.transparentTitle": "Caption display window",
   "settings.transparentDetail":
     "Enable Syphon/Spout2 in settings to publish caption frames from the main window. When disabled or unsupported, open the caption display window and capture it with OBS Window Capture.",

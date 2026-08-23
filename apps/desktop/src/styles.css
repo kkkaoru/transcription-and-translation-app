@@ -809,6 +809,24 @@ button:disabled {
   background-color: var(--stage);
 }
 
+.preview-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-raised);
+}
+
+.preview-fields input[type="text"] {
+  width: 100%;
+}
+
+.preview-fields input[type="color"] {
+  min-width: 54px;
+  height: 36px;
+}
+
 .preview-stage--fill {
   flex: 1 1 auto;
   width: 100%;

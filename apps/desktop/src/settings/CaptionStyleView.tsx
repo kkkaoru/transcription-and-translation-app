@@ -1,3 +1,4 @@
+// This file runs with bun.
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Field } from "../components/Field";
@@ -23,14 +24,34 @@ import { OverlayView } from "../overlay/CaptionOverlay";
 import { createPreviewCaption, resolveCaptionMaxChars } from "../overlay/captions";
 import { TextStyleEditor } from "./TextStyleEditor";
 
+const DEFAULT_PREVIEW_CAPTION = createPreviewCaption();
+const DEFAULT_PREVIEW_SOURCE_TEXT: string = DEFAULT_PREVIEW_CAPTION.sourceText;
+const DEFAULT_PREVIEW_TRANSLATION_TEXT: string = DEFAULT_PREVIEW_CAPTION.translationText;
+const DEFAULT_PREVIEW_BACKGROUND_COLOR: string = "#1a2830";
+
 const CaptionStylePreview = ({ config }: { config: AppConfig }) => {
   const { t } = useI18n();
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [previewLines, setPreviewLines] = useState<CaptionStylePreviewLines>(2);
+  const [previewSourceText, setPreviewSourceText] = useState<string>(DEFAULT_PREVIEW_SOURCE_TEXT);
+  const [previewTranslationText, setPreviewTranslationText] = useState<string>(
+    DEFAULT_PREVIEW_TRANSLATION_TEXT,
+  );
+  const [previewBackgroundColor, setPreviewBackgroundColor] = useState<string>(
+    DEFAULT_PREVIEW_BACKGROUND_COLOR,
+  );
   const caption = useMemo(
-    () => captionForStylePreviewLines(createPreviewCaption(), previewLines),
-    [previewLines],
+    () =>
+      captionForStylePreviewLines(
+        {
+          ...DEFAULT_PREVIEW_CAPTION,
+          sourceText: previewSourceText,
+          translationText: previewTranslationText,
+        },
+        previewLines,
+      ),
+    [previewLines, previewSourceText, previewTranslationText],
   );
   const overlayWidth = Number.isFinite(config.overlay.width)
     ? Math.max(1, config.overlay.width)
@@ -116,7 +137,10 @@ const CaptionStylePreview = ({ config }: { config: AppConfig }) => {
       <div
         className="preview-stage"
         ref={stageRef}
-        style={{ aspectRatio: `${overlayWidth} / ${overlayHeight}` }}
+        style={{
+          aspectRatio: `${overlayWidth} / ${overlayHeight}`,
+          backgroundColor: previewBackgroundColor,
+        }}
         data-testid="caption-style-preview-stage"
         data-preview-measured={measured ? "true" : "false"}
         data-preview-scale={previewScale.toFixed(4)}
@@ -128,6 +152,32 @@ const CaptionStylePreview = ({ config }: { config: AppConfig }) => {
         >
           <OverlayView config={config} caption={caption} preview placeholder={false} />
         </div>
+      </div>
+      <div className="preview-fields">
+        <Field label={t("settings.previewSourceText")}>
+          <input
+            data-testid="caption-style-preview-source"
+            type="text"
+            value={previewSourceText}
+            onChange={(event) => setPreviewSourceText(event.currentTarget.value)}
+          />
+        </Field>
+        <Field label={t("settings.previewTranslationText")}>
+          <input
+            data-testid="caption-style-preview-translation"
+            type="text"
+            value={previewTranslationText}
+            onChange={(event) => setPreviewTranslationText(event.currentTarget.value)}
+          />
+        </Field>
+        <Field label={t("settings.previewBackgroundColor")}>
+          <input
+            data-testid="caption-style-preview-background"
+            type="color"
+            value={previewBackgroundColor}
+            onChange={(event) => setPreviewBackgroundColor(event.currentTarget.value)}
+          />
+        </Field>
       </div>
       <div className="preview-footer">
         <span>{t("settings.stylePreviewHint")}</span>
