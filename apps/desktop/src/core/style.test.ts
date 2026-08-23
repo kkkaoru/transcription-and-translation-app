@@ -1,3 +1,4 @@
+// This file runs with bun.
 import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "./defaults";
 import { clearStructuredLogs, getStructuredLogs } from "./structuredLog";
@@ -24,10 +25,13 @@ describe("caption styles", () => {
   it("generates dynamic CSS for outline, shadow and background", () => {
     const style = { ...createDefaultConfig().overlay.source, backgroundEnabled: true };
     const css = toCaptionCss(style);
-    expect(css.fontFamily).toContain("Noto Sans JP");
+    expect(css.fontFamily).toBe('"Noto Sans JP Variable", "Noto Sans JP", sans-serif');
     expect(css.WebkitTextStroke).toBe("3px color-mix(in srgb, #061018 92%, transparent)");
-    expect(css.textShadow).toContain("#000000");
-    expect(css.backgroundColor).toContain("color-mix");
+    expect(css.paintOrder).toBe("stroke fill");
+    expect(css.textShadow).toBe("0px 3px 8px #000000");
+    expect(css.backgroundColor).toBe("color-mix(in srgb, #061018 72%, transparent)");
+    expect(css.boxDecorationBreak).toBe("slice");
+    expect(css.WebkitBoxDecorationBreak).toBe("slice");
     expect(css.boxSizing).toBe("border-box");
   });
 

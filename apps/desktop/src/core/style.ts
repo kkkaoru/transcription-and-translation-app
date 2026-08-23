@@ -1,3 +1,4 @@
+// This file runs with bun.
 import type { CSSProperties } from "react";
 import { appendStructuredLog } from "./structuredLog";
 import type { CaptionTextStyle, OverlayConfig } from "./types";
@@ -114,7 +115,6 @@ export const clampNumber = (value: number, minimum: number, maximum: number): nu
 
 export const toCaptionCss = (style: CaptionTextStyle): CSSProperties => {
   const cullingColor = `color-mix(in srgb, ${style.cullingColor} ${clampNumber(style.cullingOpacity, 0, 1) * 100}%, transparent)`;
-  const outline = style.cullingEnabled ? `0 0 ${style.cullingWidthPx}px ${cullingColor}` : "none";
   const shadow = style.shadowEnabled
     ? `${style.shadowOffsetX}px ${style.shadowOffsetY}px ${style.shadowBlurPx}px ${style.shadowColor}`
     : "none";
@@ -135,14 +135,14 @@ export const toCaptionCss = (style: CaptionTextStyle): CSSProperties => {
       ? `${style.cullingWidthPx}px ${cullingColor}`
       : "0 transparent",
     paintOrder: "stroke fill",
-    textShadow: [outline, shadow].filter((part) => part !== "none").join(", ") || "none",
+    textShadow: shadow,
     backgroundColor: style.backgroundEnabled
       ? `color-mix(in srgb, ${style.backgroundColor} ${clampNumber(style.backgroundOpacity, 0, 1) * 100}%, transparent)`
       : "transparent",
     padding: `${Math.max(0, style.paddingY)}px ${Math.max(0, style.paddingX)}px`,
     borderRadius: `${Math.max(0, style.borderRadius)}px`,
-    boxDecorationBreak: "clone",
-    WebkitBoxDecorationBreak: "clone",
+    boxDecorationBreak: "slice",
+    WebkitBoxDecorationBreak: "slice",
   };
 };
 

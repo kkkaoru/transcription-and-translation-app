@@ -1696,6 +1696,8 @@ button:disabled {
   overflow: hidden;
   text-overflow: clip;
   isolation: isolate;
+  box-decoration-break: slice;
+  -webkit-box-decoration-break: slice;
 }
 
 .caption-line-source {
