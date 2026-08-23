@@ -14,6 +14,7 @@ mod delivery;
 mod model;
 mod noise_cancellation;
 mod recognition;
+mod translation_engine;
 
 use std::{
     path::{Path, PathBuf},
@@ -73,6 +74,30 @@ pub enum EngineEvent {
 pub enum ShutdownResult {
     Completed,
     TimedOut,
+}
+
+pub struct LocalTranslator {
+    engine: translation_engine::LocalTranslationEngine,
+}
+
+impl LocalTranslator {
+    pub fn load(models_root: &Path) -> Result<Self> {
+        let model_dir = models_root.join("lfm2-350m-enjp-mt-onnx-q4");
+        let engine = translation_engine::LocalTranslationEngine::load(
+            &model_dir,
+            config::LocalTranslationModel::Lfm2Q4,
+        )
+        .with_context(|| format!("could not load local translator from {}", model_dir.display()))?;
+        Ok(Self { engine })
+    }
+
+    pub fn translate_ja_to_en(&mut self, text: &str) -> Result<String> {
+        self.engine.translate(
+            config::TranslationLanguage::Ja,
+            config::TranslationLanguage::En,
+            text,
+        )
+    }
 }
 
 pub struct ParapperEngine {
