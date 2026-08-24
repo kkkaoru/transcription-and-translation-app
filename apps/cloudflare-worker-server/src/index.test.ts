@@ -891,7 +891,35 @@ describe("Cloudflare Worker inference adapter", () => {
     const input = containerFetch.mock.calls[0]?.[0];
     expect(input).toBeInstanceOf(Request);
     expect(input instanceof Request ? input.url : String(input)).toBe(
-      "https://zenz.internal/standard/xsmall/n5-on/n5/health",
+      "https://zenz.internal/standard/xsmall/n5-on/warmup",
+    );
+  });
+
+  it("warms only N5 when GGUF conversion is disabled", async () => {
+    const containerFetch = vi.fn(async (_input: RequestInfo | URL) =>
+      Response.json({ status: "ok" }),
+    );
+    const response = await createWorker(undefined, {
+      converter: vi.fn(() => Promise.resolve("変換")),
+      vibratoConverter: (text) => text,
+    }).fetch(
+      new Request(
+        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=none&computeTier=basic&containerModel=xsmall&n5Lm=on`,
+      ),
+      {
+        ...env,
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-xsmall-gguf": { baseUrl: "https://zenz.internal" },
+        }),
+        ZENZ_GGUF: { fetch: containerFetch },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(containerFetch).toHaveBeenCalledTimes(1);
+    const input = containerFetch.mock.calls[0]?.[0];
+    expect(input instanceof Request ? input.url : String(input)).toBe(
+      "https://zenz.internal/basic/xsmall/n5-on/n5-warmup",
     );
   });
 
@@ -980,7 +1008,7 @@ describe("Cloudflare Worker inference adapter", () => {
     );
     expect(unhealthy.status).toBe(503);
     await expect(unhealthy.json()).resolves.toMatchObject({
-      error: { code: "container_warmup_failed", detail: "Container health returned 503" },
+      error: { code: "container_warmup_failed", detail: "Container warm-up returned 503" },
     });
 
     const unknownFailure = await worker.fetch(

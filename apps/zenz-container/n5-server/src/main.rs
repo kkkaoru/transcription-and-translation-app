@@ -1,7 +1,7 @@
 use std::env;
 use std::error::Error;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command};
 use std::time::Instant;
 
@@ -15,7 +15,6 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 const N5_BIND_ADDRESS: &str = "0.0.0.0:8081";
 const N5_MODEL_BASE: &str = "/models/input_n5_lm_v1/lm";
 const N5_TOKENIZER_DIRECTORY: &str = "/models/input_n5_lm_v1/tokenizer";
-const N5_ENABLED_MARKER: &str = "/models/input_n5_lm_v1/.enabled";
 const MAX_REQUEST_BYTES: u64 = 65_536;
 const HEALTH_PATH: &str = "/health";
 const RESCORE_PATH: &str = "/rescore";
@@ -173,15 +172,9 @@ fn run_n5_server() -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut llama = start_llama()?;
-    if PathBuf::from(N5_ENABLED_MARKER).exists() {
-        run_n5_server()?;
-    } else {
-        let status = llama.child.wait()?;
-        if !status.success() {
-            return Err(format!("llama-server exited with status {status}").into());
-        }
-    }
+    let llama = start_llama()?;
+    run_n5_server()?;
+    drop(llama);
     Ok(())
 }
 

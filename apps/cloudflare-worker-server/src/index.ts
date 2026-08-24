@@ -672,13 +672,13 @@ export const createWorker = (
             );
           }
           if (baseUrl) {
-            const healthPath = profile.n5Mode === "on" ? "/n5/health" : "/health";
+            const warmupPath = conversionModel === "none" ? "/n5-warmup" : "/warmup";
             warmups.push(
-              Promise.resolve(fetchers.fetcher(`${baseUrl}${healthPath}`)).then(
+              Promise.resolve(fetchers.fetcher(`${baseUrl}${warmupPath}`)).then(
                 async (response) => {
                   await response.body?.cancel();
                   if (!response.ok) {
-                    throw new Error(`Container health returned ${String(response.status)}`);
+                    throw new Error(`Container warm-up returned ${String(response.status)}`);
                   }
                 },
               ),

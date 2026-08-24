@@ -61,7 +61,7 @@ describe("workers-ai-asr-client", () => {
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://compare.example/v1/speech/workers-ai/azookey?conversionModel=zenz-v3.2-small-gguf&computeTier=basic&containerModel=small&n5Lm=on",
-      { method: "DELETE", headers: {} },
+      { method: "DELETE", headers: {}, keepalive: true },
     );
   });
 

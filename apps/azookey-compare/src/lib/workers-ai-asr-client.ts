@@ -122,6 +122,7 @@ const changeWorkersAiContainerState = async (
   const response = await (options.fetchImpl ?? fetch)(profileUrl(options).toString(), {
     method,
     headers: authHeaders(options.auth),
+    keepalive: method === "DELETE",
   });
   if (!response.ok) {
     const action = method === "GET" ? "warm-up" : "release";
