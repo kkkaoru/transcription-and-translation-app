@@ -11,8 +11,8 @@ describe("PipelineVisualization", () => {
     );
 
     expect(html).toMatch(/role="img"/);
-    expect(html).toMatch(/Cloudflare compare Worker service binding/);
-    expect(html).toMatch(/Cloudflare inference Worker boundaries/);
-    expect(html).toMatch(/viewBox="0 0 1160 250"/);
+    expect(html).toMatch(/profile Containers, N5 LM, GGUF/);
+    expect(html).toMatch(/Worker-owned custom dictionary flow/);
+    expect(html).toMatch(/viewBox="0 0 1480 390"/);
   });
 });

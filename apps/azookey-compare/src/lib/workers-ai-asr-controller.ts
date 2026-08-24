@@ -1,9 +1,14 @@
 import { blobToPcm16Mono, pcm16ToWavBytes } from "./pcm-wav";
 import {
   type BrowserAsrModel,
+  type BrowserComputeTier,
+  type BrowserContainerProfile,
   type BrowserConversionModel,
+  type BrowserN5Mode,
   type ComparisonAuth,
+  releaseWorkersAiConversion,
   transcribeWorkersAiAsr,
+  type WorkersAiAsrClientOptions,
   type WorkersAiPipelineLog,
   warmWorkersAiConversion,
 } from "./workers-ai-asr-client";
@@ -51,12 +56,19 @@ export interface WorkersAiAsrUtteranceFinal {
   text: string;
   audioSeconds: number;
   convertedText?: string;
+  n5Text?: string;
   vibratoText?: string;
   pipeline?: string;
   logs?: WorkersAiPipelineLog[];
   model?: string;
   conversionModel?: BrowserConversionModel;
+  containerProfile?: BrowserContainerProfile;
   usedCompletion?: boolean;
+  speechStartedAtMs: number;
+  speechEndedAtMs: number;
+  resultReturnedAtMs: number;
+  speechToResultMs: number;
+  endToResultMs: number;
   modelFallback?: string;
 }
 
@@ -64,6 +76,9 @@ export interface WorkersAiAsrControllerOptions {
   language: string;
   model?: BrowserAsrModel;
   conversionModel?: BrowserConversionModel;
+  computeTier?: BrowserComputeTier;
+  containerModel?: "xsmall" | "small";
+  n5Lm?: BrowserN5Mode;
   deviceId?: string;
   endpointUrl?: string;
   auth?: ComparisonAuth;
@@ -89,10 +104,12 @@ const TRANSCRIBING_INTERIM = "認識中…";
 /** One active request plus at most two completed utterances waiting behind it. */
 const MAX_PENDING_RECOGNITIONS = 2;
 
-type PendingRecognition = {
+interface PendingRecognition {
   wav: File;
   audioSeconds: number;
-};
+  speechStartedAtMs: number;
+  speechEndedAtMs: number;
+}
 
 export class WorkersAiAsrController {
   private readonly options: WorkersAiAsrControllerOptions;
@@ -125,6 +142,8 @@ export class WorkersAiAsrController {
   private sileroError: string | undefined;
   private tapWatchdog: ReturnType<typeof setTimeout> | null = null;
   private leftContext = "";
+  private currentSpeechStartedAtMs: number | undefined;
+  private containerReleased = true;
 
   public constructor(language: string, options: WorkersAiAsrControllerOptions) {
     this.options = { ...options, language };
@@ -156,7 +175,29 @@ export class WorkersAiAsrController {
   }
 
   public setLanguage(language: string): void {
-    this.options.language = language.trim() || this.options.language;
+    this.options.language = language.trim();
+  }
+
+  private containerOptions(): WorkersAiAsrClientOptions {
+    return {
+      endpointUrl: this.options.endpointUrl,
+      conversionModel: this.options.conversionModel,
+      computeTier: this.options.computeTier,
+      containerModel: this.options.containerModel,
+      n5Lm: this.options.n5Lm,
+      auth: this.options.auth,
+      fetchImpl: this.options.fetchImpl,
+    };
+  }
+
+  private async releaseContainer(): Promise<void> {
+    if (this.containerReleased) return;
+    this.containerReleased = true;
+    const japanese = (this.options.language ?? "").toLowerCase().startsWith("ja");
+    const needsContainer = this.options.conversionModel !== "none" || this.options.n5Lm === "on";
+    if (japanese && needsContainer) {
+      await releaseWorkersAiConversion(this.containerOptions());
+    }
   }
 
   public async start(): Promise<void> {
@@ -171,15 +212,14 @@ export class WorkersAiAsrController {
     this.requestedStop = false;
     this.captureActive = true;
     this.hadCommittedSpeech = false;
+    this.currentSpeechStartedAtMs = undefined;
+    this.containerReleased = false;
     this.vad.reset();
     this.setState("starting");
-    if ((this.options.language ?? "").toLowerCase().startsWith("ja")) {
-      void warmWorkersAiConversion({
-        endpointUrl: this.options.endpointUrl,
-        conversionModel: this.options.conversionModel,
-        auth: this.options.auth,
-        fetchImpl: this.options.fetchImpl,
-      }).catch(() => undefined);
+    const japanese = (this.options.language ?? "").toLowerCase().startsWith("ja");
+    const needsContainer = this.options.conversionModel !== "none" || this.options.n5Lm === "on";
+    if (japanese && needsContainer) {
+      void warmWorkersAiConversion(this.containerOptions()).catch(() => undefined);
     }
     try {
       this.stream = await openWorkersAiAsrMicrophone({
@@ -228,7 +268,11 @@ export class WorkersAiAsrController {
     this.captureActive = false;
     this.teardownPcmTap();
     this.setState("stopping");
-    await this.flushRecording({ restart: false, requireSpeech: true });
+    try {
+      await this.flushRecording({ restart: false, requireSpeech: true });
+    } finally {
+      await this.releaseContainer();
+    }
   }
 
   public dispose(): void {
@@ -238,6 +282,7 @@ export class WorkersAiAsrController {
     this.teardownPcmTap();
     this.discardRecorder();
     this.recognitionQueue = [];
+    void this.releaseContainer().catch(() => undefined);
     this.stopTracks();
     void this.closeAudioContext();
     this.releaseEngine();
@@ -618,6 +663,8 @@ export class WorkersAiAsrController {
         this.ensureRecorder();
       } else if (event.type === "utterance-start") {
         this.hadCommittedSpeech = true;
+        this.currentSpeechStartedAtMs =
+          Date.now() - WORKERS_AI_ASR_VAD_DEFAULTS.segmentStartSpeechMs;
         this.ensureRecorder();
         this.options.onTranscript?.({ interimText: RECORDING_INTERIM });
       } else if (event.type === "pending-cancel") {
@@ -626,10 +673,19 @@ export class WorkersAiAsrController {
       } else if (event.type === "utterance-end") {
         this.hadCommittedSpeech = true;
         this.options.onTranscript?.({ interimText: TRANSCRIBING_INTERIM });
+        const estimatedSpeechEndMs =
+          Date.now() -
+          (event.reason === "silence" ? WORKERS_AI_ASR_VAD_DEFAULTS.checkSilenceMs : 0);
+        const speechEndedAtMs = Math.max(
+          this.currentSpeechStartedAtMs ?? estimatedSpeechEndMs,
+          estimatedSpeechEndMs,
+        );
         await this.flushRecording({
           restart: !this.requestedStop,
           requireSpeech: false,
           pcm: event.fullAudio,
+          speechStartedAtMs: this.currentSpeechStartedAtMs,
+          speechEndedAtMs,
         });
       }
     }
@@ -733,6 +789,8 @@ export class WorkersAiAsrController {
     restart: boolean;
     requireSpeech: boolean;
     pcm?: Float32Array;
+    speechStartedAtMs?: number;
+    speechEndedAtMs?: number;
   }): Promise<void> {
     if (this.disposed || this.flushing) {
       return;
@@ -798,7 +856,18 @@ export class WorkersAiAsrController {
       // blind spot between consecutive utterances.
       this.flushing = false;
       this.options.onTranscript?.({ interimText: TRANSCRIBING_INTERIM });
-      const drained = this.enqueueRecognition({ wav, audioSeconds });
+      const speechEndedAtMs = options.speechEndedAtMs ?? Date.now();
+      const speechStartedAtMs =
+        options.speechStartedAtMs ??
+        this.currentSpeechStartedAtMs ??
+        speechEndedAtMs - audioSeconds * 1_000;
+      this.currentSpeechStartedAtMs = undefined;
+      const drained = this.enqueueRecognition({
+        wav,
+        audioSeconds,
+        speechStartedAtMs,
+        speechEndedAtMs,
+      });
       if (options.restart && !this.requestedStop) {
         this.setState("listening");
         return;
@@ -856,6 +925,9 @@ export class WorkersAiAsrController {
         language: this.options.language,
         model: this.options.model,
         conversionModel: this.options.conversionModel,
+        computeTier: this.options.computeTier,
+        containerModel: this.options.containerModel,
+        n5Lm: this.options.n5Lm,
         leftContext: this.leftContext,
         auth: this.options.auth,
         fetchImpl: this.options.fetchImpl,
@@ -868,15 +940,23 @@ export class WorkersAiAsrController {
         this.options.onFinalText?.(text);
       }
       this.leftContext = result.convertedText?.trim() || text || this.leftContext;
+      const resultReturnedAtMs = Date.now();
       this.options.onUtteranceFinal?.({
         text,
         audioSeconds: job.audioSeconds,
+        speechStartedAtMs: job.speechStartedAtMs,
+        speechEndedAtMs: job.speechEndedAtMs,
+        resultReturnedAtMs,
+        speechToResultMs: Math.max(0, resultReturnedAtMs - job.speechStartedAtMs),
+        endToResultMs: Math.max(0, resultReturnedAtMs - job.speechEndedAtMs),
         ...(result.convertedText ? { convertedText: result.convertedText } : {}),
+        ...(result.n5Text ? { n5Text: result.n5Text } : {}),
         ...(result.vibratoText ? { vibratoText: result.vibratoText } : {}),
         ...(result.pipeline ? { pipeline: result.pipeline } : {}),
         ...(result.logs ? { logs: result.logs } : {}),
         ...(result.model ? { model: result.model } : {}),
         ...(result.conversionModel ? { conversionModel: result.conversionModel } : {}),
+        ...(result.containerProfile ? { containerProfile: result.containerProfile } : {}),
         ...(typeof result.usedCompletion === "boolean"
           ? { usedCompletion: result.usedCompletion }
           : {}),

@@ -1,0 +1,12 @@
+[package]
+name = "zenz-container-entrypoint"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+caption-bridge-input-lm = { path = "../../../packages/input-lm-rust", features = ["rsmarisa"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"

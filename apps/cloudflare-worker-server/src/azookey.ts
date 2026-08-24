@@ -481,6 +481,8 @@ export type AzookeyVibratoConverter = ((
 ) => string | Promise<string>) & {
   /** Optional cold-start hook used by the WebSocket upgrade path. */
   warmup?: () => Promise<void>;
+  /** Drop the cached tokenizer after a memory-sensitive basic Container pre-pass. */
+  release?: () => void;
 };
 
 export type AzookeyFetcher = (
@@ -538,6 +540,10 @@ export interface AzookeyRuntime {
   timeoutMs: number;
   /** Optional cold-container budget for the HTTP pipeline; WebSocket keeps the 400ms cap. */
   zenzUpstreamMaxMs?: number;
+  /** Delay dictionary materialization while a low-CPU Container performs a long completion. */
+  deferDictionaryUntilZenz?: boolean;
+  /** Optional completion token cap for deliberately constrained Container profiles. */
+  zenzNPredict?: number;
   expectedToken?: string;
   handshakeAuthorized?: boolean;
   /** Optional Zenzai GGUF upstreams keyed by model id. */
@@ -1879,6 +1885,9 @@ export const createVibratoWasmConverter = (
   converter.warmup = async (): Promise<void> => {
     await loadTokenizer();
   };
+  converter.release = (): void => {
+    moduleCache.delete(normalizedUrl);
+  };
   return converter;
 };
 
@@ -2010,7 +2019,7 @@ const requestZenzCompletion = async (
       },
       body: JSON.stringify({
         prompt: zenzPrompt(text, leftContext),
-        n_predict: AZOOKEY_ZENZ_N_PREDICT,
+        n_predict: runtime.zenzNPredict ?? AZOOKEY_ZENZ_N_PREDICT,
         temperature: 0,
         stream: false,
       }),
@@ -2242,13 +2251,18 @@ export const convertAzookeyMessage = async (
     throw new AzookeyProtocolError("conversion_timeout", "conversion timed out", message.requestId);
   }
   let dictionaryResult: AzookeyConversionResult | undefined;
-  const lexiconHandle =
-    runtime.userLexicon && runtime.converter.syncUserLexicon
-      ? await runtime.converter.syncUserLexicon(runtime.userLexicon, {
-          inputChars: conversionInput.length,
-          wsOrHttp,
-        })
-      : 0;
+  let lexiconHandle: number | undefined;
+  const resolveLexiconHandle = async (): Promise<number> => {
+    if (lexiconHandle !== undefined) return lexiconHandle;
+    lexiconHandle =
+      runtime.userLexicon && runtime.converter.syncUserLexicon
+        ? await runtime.converter.syncUserLexicon(runtime.userLexicon, {
+            inputChars: conversionInput.length,
+            wsOrHttp,
+          })
+        : 0;
+    return lexiconHandle;
+  };
   const runDictionaryConversion = async (
     precedingContext: AzookeyPrecedingContext | undefined,
   ): Promise<AzookeyConversionResult> => {
@@ -2259,6 +2273,8 @@ export const convertAzookeyMessage = async (
         message.requestId,
       );
     }
+    const activeLexiconHandle =
+      runtime.userLexicon && runtime.converter.syncUserLexicon ? await resolveLexiconHandle() : 0;
     const candidate = await withTimeout(
       (signal) =>
         runtime.converter.convertWithContext
@@ -2266,7 +2282,7 @@ export const convertAzookeyMessage = async (
               conversionInput,
               signal,
               precedingContext,
-              lexiconHandle,
+              activeLexiconHandle,
             )
           : runtime.converter(conversionInput, signal, precedingContext),
       remainingMs(),
@@ -2330,26 +2346,27 @@ export const convertAzookeyMessage = async (
             message.requestId,
           );
         }
-        const convertStartedAt = timingNowMs();
-        dictionaryResult = await runDictionaryConversion(preceding);
-        logAzookeyTiming({
-          phase: "dictionary_convert",
-          elapsedMs: timingElapsedMs(convertStartedAt),
-          inputChars: conversionInput.length,
-          cacheHit: wasmReadyBefore,
-          wsOrHttp,
-        });
+        if (!runtime.deferDictionaryUntilZenz) {
+          const convertStartedAt = timingNowMs();
+          dictionaryResult = await runDictionaryConversion(preceding);
+          logAzookeyTiming({
+            phase: "dictionary_convert",
+            elapsedMs: timingElapsedMs(convertStartedAt),
+            inputChars: conversionInput.length,
+            cacheHit: wasmReadyBefore,
+            wsOrHttp,
+          });
+        }
         const leftContext = message.leftContext ?? "";
-        if (trimZenzLeftContext(leftContext).length === 0) {
-          converted = dictionaryResult.text;
-          completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT;
-        } else {
+        const hasLeftContext = trimZenzLeftContext(leftContext).length > 0;
+        let zenzHttp: ZenzHttpResult | undefined;
+        if (hasLeftContext) {
           const zenzBudget = Math.min(
             remainingMs(),
             runtime.zenzUpstreamMaxMs ?? AZOOKEY_ZENZ_UPSTREAM_MAX_MS,
           );
           const zenzStartedAt = timingNowMs();
-          const zenzHttp: ZenzHttpResult =
+          zenzHttp =
             zenzBudget <= 0
               ? { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT }
               : await requestZenzWithTimeout(
@@ -2390,11 +2407,31 @@ export const convertAzookeyMessage = async (
               message.requestId,
             );
           }
+        }
+        if (!dictionaryResult) {
+          const convertStartedAt = timingNowMs();
+          dictionaryResult = await runDictionaryConversion(preceding);
+          logAzookeyTiming({
+            phase: "dictionary_convert",
+            elapsedMs: timingElapsedMs(convertStartedAt),
+            inputChars: conversionInput.length,
+            cacheHit: wasmReadyBefore,
+            wsOrHttp,
+          });
+        }
+        if (!zenzHttp || zenzHttp.reason !== AZOOKEY_ZENZ_HTTP_REASON_OK) {
+          converted = dictionaryResult.text;
+          completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT;
+        } else {
           const latticeStartedAt = timingNowMs();
+          const activeLexiconHandle =
+            runtime.userLexicon && runtime.converter.syncUserLexicon
+              ? await resolveLexiconHandle()
+              : 0;
           const lattice = runtime.converter.openLattice?.(
             conversionInput,
             preceding,
-            lexiconHandle,
+            activeLexiconHandle,
           );
           if (!lattice) {
             logAzookeyTiming({

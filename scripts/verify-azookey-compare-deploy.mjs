@@ -35,7 +35,10 @@ export const DIAGRAM_MARKERS = [
   "Zenz v3.2 XSmall GGUF",
   "Zenz v3.2 Small GGUF",
   "カスタム辞書",
-  "CLOUDFLARE ZENZ CONTAINER",
+  "PROFILE CONTAINER",
+  "Input N5 LM",
+  "指定なし（自動検出・日本語後処理なし）",
+  "なし（jaでもAzooKeyを実行しない）",
 ];
 export const DECIMAL_USD_FRACTION_PATTERN = /minimumFractionDigits:\s*8/;
 export const TO_EXPONENTIAL_CALL_PATTERN = /\.toExponential\s*\(/;

@@ -1258,6 +1258,52 @@ describe("AzooKey Worker text contract", () => {
     expect(result.completionSkipReason).toBeUndefined();
   });
 
+  it("defers dictionary materialization and caps low-CPU completion tokens", async () => {
+    const phases: string[] = [];
+    const requests: string[] = [];
+    const converter: AzookeyConverter = Object.assign(
+      (text: string) => {
+        phases.push("dictionary");
+        return `dict:${text}`;
+      },
+      {
+        openLattice: () => {
+          phases.push("lattice");
+          return {
+            searchOutputPrefix: () => "感じ",
+            close: vi.fn(),
+          };
+        },
+      },
+    );
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "前文です。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter,
+        deferDictionaryUntilZenz: true,
+        zenzNPredict: 32,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher: (_input, init) => {
+          phases.push("zenz");
+          requests.push(String(init?.body));
+          return new Response(JSON.stringify({ content: "感じ" }), { status: 200 });
+        },
+      },
+    );
+    expect(phases).toStrictEqual(["zenz", "dictionary", "lattice"]);
+    expect(JSON.parse(requests[0] ?? "{}")).toMatchObject({ n_predict: 32 });
+    expect(result.usedCompletion).toBe(true);
+  });
+
   it("keeps the dictionary baseline when lattice open is unavailable", async () => {
     const fetcher = vi.fn(() => new Response(JSON.stringify({ content: "感じ" }), { status: 200 }));
     const result = await convertAzookeyMessage(

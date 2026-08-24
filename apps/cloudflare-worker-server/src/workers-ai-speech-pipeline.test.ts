@@ -2,6 +2,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   handleWorkersAiSpeechPipeline,
+  type SpeechPipelineN5Result,
+  WORKERS_AI_SPEECH_PIPELINE_ID,
   WORKERS_AI_SPEECH_PIPELINE_PATH,
   workersAiSpeechAsrPayload,
 } from "./workers-ai-speech-pipeline.js";
@@ -24,12 +26,15 @@ const wavFile = (): File => {
   return new File([bytes], "utterance.wav", { type: "audio/wav" });
 };
 
-const request = (language = "ja"): Request => {
+const request = (language: string | null = "ja"): Request => {
   const form = new FormData();
   form.set("file", wavFile());
-  form.set("language", language);
+  if (language) form.set("language", language);
   form.set("segmentation", "client-silero-v1");
   form.set("conversionModel", "zenz-v3.2-xsmall-gguf");
+  form.set("computeTier", "standard");
+  form.set("containerModel", "xsmall");
+  form.set("n5Lm", "off");
   return new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
     method: "POST",
     body: form,
@@ -42,12 +47,22 @@ const asrRun = () =>
   });
 
 const identityVibrato = (text: string): Promise<string> => Promise.resolve(text);
+const identityN5 = (text: string): Promise<SpeechPipelineN5Result> =>
+  Promise.resolve({ text, model: "input_n5_lm_v1", elapsedMs: 1.5 });
+
+const xsmallConvert = () =>
+  Promise.resolve({
+    text: "今日はいい天気",
+    model: "zenz-v3.2-xsmall-gguf",
+    usedCompletion: true,
+  });
 
 describe("Workers AI speech pipeline", () => {
   it("validates internal ASR payloads", () => {
     expect(workersAiSpeechAsrPayload({ text: "最小" })).toStrictEqual({
       text: "最小",
-      language: "ja",
+      reading: "最小",
+      language: "und",
       model: "@cf/deepgram/nova-3",
     });
     expect(() => workersAiSpeechAsrPayload(null)).toThrow(
@@ -55,163 +70,265 @@ describe("Workers AI speech pipeline", () => {
     );
   });
 
-  it("returns visible ASR, Vibrato, and AzooKey stages from one request", async () => {
+  it("returns ASR, N5, Vibrato, and AzooKey timings for the selected profile", async () => {
+    const form = await request().formData();
+    form.set("n5Lm", "on");
     const vibrato = vi.fn(() => Promise.resolve("きょうはいいてんき"));
-    const convert = vi.fn(() =>
-      Promise.resolve({
-        text: "今日はいい天気",
-        model: "zenz-v3.2-xsmall-gguf",
-        usedCompletion: true,
-      }),
+    const rescoreN5 = vi.fn(
+      (): Promise<SpeechPipelineN5Result> =>
+        Promise.resolve({
+          text: "きょうはいいてんき",
+          model: "input_n5_lm_v1",
+          elapsedMs: 4.25,
+        }),
     );
-    const response = await handleWorkersAiSpeechPipeline(request(), {
-      asrEnvironment: {},
-      run: vi.fn(asrRun),
-      vibrato,
-      convert,
-    });
+    const convert = vi.fn(xsmallConvert);
+    const response = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      { asrEnvironment: {}, run: vi.fn(asrRun), vibrato, rescoreN5, convert },
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      text: "きょうはいいてんき",
-      vibratoText: "きょうはいいてんき",
       convertedText: "今日はいい天気",
-      pipeline: "workers-ai-language-gated-azookey-v3",
+      pipeline: WORKERS_AI_SPEECH_PIPELINE_ID,
+      containerProfile: { computeTier: "standard", modelSize: "xsmall", n5Mode: "on" },
       logs: [
         { stage: "asr", output: "きょうはいいてんき" },
+        { stage: "n5_lm", elapsedMs: 4.25 },
         { stage: "vibrato", output: "きょうはいいてんき" },
         { stage: "azookey", output: "今日はいい天気" },
       ],
     });
-    expect(vibrato).toHaveBeenCalledWith("きょうはいいてんき", "ja");
+    expect(rescoreN5).toHaveBeenCalledWith("きょうはいいてんき", {
+      computeTier: "standard",
+      modelSize: "xsmall",
+      n5Mode: "on",
+    });
     expect(convert).toHaveBeenCalledWith({
       text: "きょうはいいてんき",
       model: "zenz-v3.2-xsmall-gguf",
       leftContext: "",
+      profile: { computeTier: "standard", modelSize: "xsmall", n5Mode: "on" },
     });
   });
 
-  it("selects Small with left context and rejects an unknown conversion model", async () => {
+  it("supports no GGUF while keeping optional N5 rescoring", async () => {
     const form = await request().formData();
-    form.set("conversionModel", "zenz-v3.2-small-gguf");
-    form.set("leftContext", "前の字幕");
-    const convert = vi.fn(() =>
-      Promise.resolve({
-        text: "今日はいい天気",
-        model: "zenz-v3.2-small-gguf",
-        usedCompletion: true,
-      }),
-    );
-    const selected = await handleWorkersAiSpeechPipeline(
+    form.set("conversionModel", "none");
+    form.set("containerModel", "small");
+    form.set("computeTier", "basic");
+    form.set("n5Lm", "on");
+    const convert = vi.fn(xsmallConvert);
+    const response = await handleWorkersAiSpeechPipeline(
       new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
         method: "POST",
         body: form,
       }),
-      { asrEnvironment: {}, run: vi.fn(asrRun), vibrato: identityVibrato, convert },
+      {
+        asrEnvironment: {},
+        run: vi.fn(asrRun),
+        vibrato: identityVibrato,
+        rescoreN5: () =>
+          Promise.resolve({ text: "今日はいい天気", model: "input_n5_lm_v1", elapsedMs: 3 }),
+        convert,
+      },
     );
-    expect(selected.status).toBe(200);
-    expect(convert).toHaveBeenCalledWith({
-      text: "きょうはいいてんき",
-      model: "zenz-v3.2-small-gguf",
-      leftContext: "前の字幕",
+    expect(await response.json()).toMatchObject({
+      convertedText: "今日はいい天気",
+      conversionModel: "none",
+      usedCompletion: false,
+      logs: [{ stage: "asr" }, { stage: "n5_lm", elapsedMs: 3 }],
     });
-
-    form.set("conversionModel", "unknown");
-    const invalid = await handleWorkersAiSpeechPipeline(
-      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
-        method: "POST",
-        body: form,
-      }),
-      { asrEnvironment: {}, run: vi.fn(asrRun), vibrato: identityVibrato, convert },
-    );
-    expect(invalid.status).toBe(400);
-    await expect(invalid.json()).resolves.toMatchObject({
-      error: { code: "invalid_conversion_model" },
-    });
+    expect(convert).not.toHaveBeenCalled();
   });
 
-  it("skips Vibrato and AzooKey unless the requested language is ja", async () => {
+  it("omits language hints and all Japanese processing when language is unspecified", async () => {
+    const run = vi.fn((model, input) => {
+      expect(model).toBe("@cf/deepgram/nova-3");
+      expect(input).not.toHaveProperty("language");
+      return asrRun();
+    });
     const vibrato = vi.fn(identityVibrato);
-    const convert = vi.fn(() =>
-      Promise.resolve({ text: "unused", model: "zenz-v3.2-xsmall-gguf", usedCompletion: false }),
+    const rescoreN5 = vi.fn(identityN5);
+    const convert = vi.fn(xsmallConvert);
+    const response = await handleWorkersAiSpeechPipeline(request(null), {
+      asrEnvironment: {},
+      run,
+      vibrato,
+      rescoreN5,
+      convert,
+    });
+    expect(await response.json()).toMatchObject({
+      language: "und",
+      convertedText: "きょうはいいてんき",
+      usedCompletion: false,
+      logs: [{ stage: "asr" }],
+    });
+    expect(vibrato).not.toHaveBeenCalled();
+    expect(rescoreN5).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
+  });
+
+  it("runs ASR only for Japanese when both N5 and GGUF are off", async () => {
+    const form = await request().formData();
+    form.set("conversionModel", "none");
+    form.set("n5Lm", "off");
+    const vibrato = vi.fn(identityVibrato);
+    const rescoreN5 = vi.fn(identityN5);
+    const convert = vi.fn(xsmallConvert);
+    const response = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      { asrEnvironment: {}, run: vi.fn(asrRun), vibrato, rescoreN5, convert },
     );
+    expect(await response.json()).toMatchObject({
+      conversionModel: "none",
+      convertedText: "きょうはいいてんき",
+      usedCompletion: false,
+      logs: [{ stage: "asr" }],
+    });
+    expect(vibrato).not.toHaveBeenCalled();
+    expect(rescoreN5).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
+  });
+
+  it("validates profile fields before invoking paid ASR", async () => {
+    const form = await request().formData();
+    form.set("computeTier", "other");
+    const run = vi.fn(asrRun);
+    const response = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {
+        asrEnvironment: {},
+        run,
+        vibrato: identityVibrato,
+        rescoreN5: identityN5,
+        convert: xsmallConvert,
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("bypasses Japanese stages for an explicit non-Japanese language", async () => {
+    const vibrato = vi.fn(identityVibrato);
     const response = await handleWorkersAiSpeechPipeline(request("en"), {
       asrEnvironment: {},
       run: vi.fn(asrRun),
       vibrato,
-      convert,
+      rescoreN5: vi.fn(identityN5),
+      convert: vi.fn(xsmallConvert),
     });
-
-    expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       language: "en",
-      convertedText: "きょうはいいてんき",
+      usedCompletion: false,
       logs: [{ stage: "asr" }],
     });
     expect(vibrato).not.toHaveBeenCalled();
-    expect(convert).not.toHaveBeenCalled();
   });
 
-  it("does not invoke processing when ASR rejects the upload", async () => {
-    const convert = vi.fn(() =>
-      Promise.resolve({ text: "unused", model: "zenz-v3.2-xsmall-gguf", usedCompletion: false }),
+  it("rejects an invalid conversion before ASR and forwards ASR upload errors", async () => {
+    const invalidForm = await request().formData();
+    invalidForm.set("conversionModel", "other");
+    const run = vi.fn(asrRun);
+    const invalid = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: invalidForm,
+      }),
+      {
+        asrEnvironment: {},
+        run,
+        vibrato: identityVibrato,
+        rescoreN5: identityN5,
+        convert: xsmallConvert,
+      },
     );
-    const response = await handleWorkersAiSpeechPipeline(
-      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, { method: "GET" }),
-      { asrEnvironment: {}, vibrato: identityVibrato, convert },
-    );
+    expect(invalid.status).toBe(400);
+    expect(run).not.toHaveBeenCalled();
 
-    expect(response.status).toBe(405);
-    expect(convert).not.toHaveBeenCalled();
+    const missingFile = new FormData();
+    missingFile.set("conversionModel", "none");
+    missingFile.set("computeTier", "basic");
+    missingFile.set("n5Lm", "off");
+    const asrError = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: missingFile,
+      }),
+      {
+        asrEnvironment: {},
+        run,
+        vibrato: identityVibrato,
+        rescoreN5: identityN5,
+        convert: xsmallConvert,
+      },
+    );
+    expect(asrError.status).toBe(400);
   });
 
-  it("returns an empty result without invoking morphology for silence", async () => {
-    const vibrato = vi.fn(identityVibrato);
-    const convert = vi.fn(() =>
-      Promise.resolve({ text: "unused", model: "zenz-v3.2-xsmall-gguf", usedCompletion: false }),
-    );
+  it("returns optional fallback metadata when supplied by a converter", async () => {
     const response = await handleWorkersAiSpeechPipeline(request(), {
+      asrEnvironment: {},
+      run: vi.fn(asrRun),
+      vibrato: identityVibrato,
+      rescoreN5: identityN5,
+      convert: () =>
+        Promise.resolve({
+          text: "辞書結果",
+          model: "azookey-rust-wasm",
+          usedCompletion: false,
+          modelFallback: "upstream-failed",
+        }),
+    });
+    expect(await response.json()).toMatchObject({
+      modelFallback: "upstream-failed",
+      usedCompletion: false,
+    });
+  });
+
+  it("returns silence and processing failures without hidden fallback", async () => {
+    const silence = await handleWorkersAiSpeechPipeline(request(), {
       asrEnvironment: {},
       run: vi.fn(() =>
         Promise.resolve({ results: { channels: [{ alternatives: [{ transcript: "" }] }] } }),
       ),
-      vibrato,
-      convert,
+      vibrato: identityVibrato,
+      rescoreN5: identityN5,
+      convert: xsmallConvert,
     });
+    expect(await silence.json()).toMatchObject({ convertedText: "", logs: [] });
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      text: "",
-      vibratoText: "",
-      convertedText: "",
-      pipeline: "workers-ai-language-gated-azookey-v3",
-      logs: [],
-    });
-    expect(vibrato).not.toHaveBeenCalled();
-    expect(convert).not.toHaveBeenCalled();
-  });
-
-  it("returns a bounded pipeline error response", async () => {
-    const response = await handleWorkersAiSpeechPipeline(request(), {
+    const failure = await handleWorkersAiSpeechPipeline(request(), {
       asrEnvironment: {},
       run: vi.fn(asrRun),
       vibrato: identityVibrato,
+      rescoreN5: identityN5,
       convert: () => Promise.reject(new Error("dictionary unavailable")),
     });
-
-    expect(response.status).toBe(503);
-    expect(await response.json()).toStrictEqual({
-      error: { code: "azookey_conversion_failed", message: "dictionary unavailable" },
+    expect(failure.status).toBe(503);
+    expect(await failure.json()).toStrictEqual({
+      error: { code: "japanese_postprocessing_failed", message: "dictionary unavailable" },
     });
 
-    const nonErrorResponse = await handleWorkersAiSpeechPipeline(request(), {
+    const untypedFailure = await handleWorkersAiSpeechPipeline(request(), {
       asrEnvironment: {},
       run: vi.fn(asrRun),
       vibrato: identityVibrato,
+      rescoreN5: identityN5,
       convert: () => Promise.reject("offline"),
     });
-    expect(await nonErrorResponse.json()).toStrictEqual({
-      error: { code: "azookey_conversion_failed", message: "AzooKey conversion failed" },
+    expect(await untypedFailure.json()).toStrictEqual({
+      error: { code: "japanese_postprocessing_failed", message: "Japanese post-processing failed" },
     });
   });
 });

@@ -57,7 +57,7 @@ interface WorkersAiAsrAudioInput {
 
 interface WorkersAiAsrInput {
   audio: WorkersAiAsrAudioInput;
-  language: string;
+  language?: string;
   task?: "transcribe";
   vad_filter?: boolean;
   beam_size?: number;
@@ -82,6 +82,7 @@ export interface WorkersAiAsrEnvironment {
 export interface WorkersAiAsrTranscribeOptions {
   presegmented?: boolean;
   language?: string;
+  autoDetectLanguage?: boolean;
   model?: WorkersAiAsrModel;
 }
 
@@ -243,7 +244,7 @@ const transcribeUtterance = async (
   pcm: Uint8Array,
   timeoutMs: number,
   model: WorkersAiAsrModel,
-  language: string,
+  language: string | undefined,
 ): Promise<string> => {
   try {
     const result = await withTimeout(
@@ -255,7 +256,7 @@ const transcribeUtterance = async (
               body: wavBodyStream(pcm16ToWav(pcm)),
               contentType: "audio/wav",
             },
-            language,
+            ...(language ? { language } : {}),
             ...(model === WORKERS_AI_ASR_WHISPER_MODEL
               ? { task: "transcribe", vad_filter: false, beam_size: 1 }
               : {}),
@@ -328,7 +329,9 @@ export const createWorkersAiAsrTranscriber = (
       );
     }
     const model = options.model ?? WORKERS_AI_ASR_MODEL;
-    const language = options.language?.trim() || WORKERS_AI_ASR_LANGUAGE;
+    const language = options.autoDetectLanguage
+      ? undefined
+      : options.language?.trim() || WORKERS_AI_ASR_LANGUAGE;
     const utterances = options.presegmented
       ? [{ pcm, reason: "flush" as const }]
       : segmentPcm16Utterances(pcm);
@@ -444,6 +447,7 @@ export const handleWorkersAiAsrTranscription = async (
     const processed = postprocessWorkersAiAsrTranscript(
       await transcribe(pcm, undefined, undefined, {
         presegmented,
+        autoDetectLanguage: !language,
         ...(language ? { language } : {}),
         model,
       }),
@@ -451,7 +455,7 @@ export const handleWorkersAiAsrTranscription = async (
     return jsonResponse(200, {
       text: processed.text,
       reading: processed.reading,
-      language: language ?? WORKERS_AI_ASR_LANGUAGE,
+      language: language ?? "und",
       model,
       transport: "http",
       segmentation: presegmented ? WORKERS_AI_ASR_CLIENT_SEGMENTATION : "worker-energy-v1",

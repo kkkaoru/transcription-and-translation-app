@@ -56,8 +56,16 @@ import {
 } from "./workers-ai-asr.js";
 import {
   handleWorkersAiSpeechPipeline,
+  WORKERS_AI_SPEECH_PIPELINE_ID,
   WORKERS_AI_SPEECH_PIPELINE_PATH,
 } from "./workers-ai-speech-pipeline.js";
+import {
+  parseConversionModel,
+  parseZenzContainerProfile,
+  type ZenzContainerProfile,
+  type ZenzConversionModel,
+  zenzContainerBaseUrl,
+} from "./zenz-container-profile.js";
 
 export interface Env {
   AI?: Ai;
@@ -122,8 +130,10 @@ const LOCAL_GATEWAY_PORT = 8765;
 const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
 /** Upper bound for the parapper ASR upstream JSON body before it is parsed. */
 const ASR_MAX_RESPONSE_BYTES = 65_536;
-const PIPELINE_AZOOKEY_TIMEOUT_MS = 30_000;
-const PIPELINE_ZENZ_COLD_START_TIMEOUT_MS = 25_000;
+const PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS = 30_000;
+const PIPELINE_STANDARD_ZENZ_TIMEOUT_MS = 25_000;
+const PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS = 90_000;
+const PIPELINE_BASIC_ZENZ_TIMEOUT_MS = 85_000;
 // Keep entrypoint exports limited to the Worker handler/function shapes that
 // workerd accepts. Tests use the protocol path literal instead of exporting a
 // string binding from the module entrypoint.
@@ -179,6 +189,55 @@ const json = (status: number, body: Record<string, unknown>): Response =>
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
+
+const profileFormFromSearch = (url: URL): FormData => {
+  const form = new FormData();
+  for (const key of ["conversionModel", "computeTier", "containerModel", "n5Lm"]) {
+    const value = url.searchParams.get(key);
+    if (value !== null) form.set(key, value);
+  }
+  return form;
+};
+
+const containerServiceOrigin = (
+  env: Env,
+  conversionModel: ZenzConversionModel,
+): string | undefined => {
+  const routes = parseModelRoutes(env.MODEL_ROUTES);
+  const route =
+    conversionModel === "zenz-v3.2-small-gguf"
+      ? routes["zenz-v3.2-small-gguf"]
+      : routes["zenz-v3.2-xsmall-gguf"];
+  return route?.baseUrl;
+};
+
+const profileBaseUrl = (
+  env: Env,
+  conversionModel: ZenzConversionModel,
+  profile: ZenzContainerProfile,
+): string | undefined => {
+  const origin = containerServiceOrigin(env, conversionModel);
+  return origin ? zenzContainerBaseUrl(origin, profile) : undefined;
+};
+
+const parseN5Response = async (
+  response: Response,
+): Promise<{ text: string; elapsedMs: number }> => {
+  const value: unknown = await response.json();
+  if (
+    !response.ok ||
+    typeof value !== "object" ||
+    value === null ||
+    !("text" in value) ||
+    typeof value.text !== "string" ||
+    !("elapsedMs" in value) ||
+    typeof value.elapsedMs !== "number" ||
+    !Number.isFinite(value.elapsedMs)
+  ) {
+    throw new Error(`Input N5 LM returned ${String(response.status)}`);
+  }
+  return { text: value.text, elapsedMs: Math.max(0, value.elapsedMs) };
+};
 
 const workerConfig = (env: Env): GatewayConfig => {
   let models: unknown;
@@ -559,42 +618,63 @@ export const createWorker = (
             env.CORS_ORIGIN,
           );
         }
-        if (request.method === "GET") {
-          const conversionModel = url.searchParams.get("conversionModel");
-          if (
-            conversionModel !== null &&
-            conversionModel !== "zenz-v3.2-xsmall-gguf" &&
-            conversionModel !== "zenz-v3.2-small-gguf"
-          ) {
+        if (request.method === "GET" || request.method === "DELETE") {
+          const profileForm = profileFormFromSearch(url);
+          const conversionModel = parseConversionModel(profileForm.get("conversionModel"));
+          const profile = conversionModel
+            ? parseZenzContainerProfile(profileForm, conversionModel)
+            : null;
+          if (!conversionModel || !profile) {
             return cors(
               json(HTTP_BAD_REQUEST, {
+                error: { code: "invalid_container_profile", message: "Unsupported profile" },
+              }),
+              env.CORS_ORIGIN,
+            );
+          }
+          const needsContainer = conversionModel !== "none" || profile.n5Mode === "on";
+          const baseUrl = needsContainer
+            ? profileBaseUrl(env, conversionModel, profile)
+            : undefined;
+          if (needsContainer && !baseUrl) {
+            return cors(
+              json(HTTP_SERVICE_UNAVAILABLE, {
                 error: {
-                  code: "invalid_conversion_model",
-                  message: "Unsupported conversion model",
+                  code: "conversion_model_unavailable",
+                  message: "Container profile route unavailable",
                 },
               }),
               env.CORS_ORIGIN,
             );
           }
-          const warmups: Promise<unknown>[] = [
-            Promise.resolve(converter.warmup?.("http")),
-            Promise.resolve(vibrato.warmup?.()),
-          ];
-          if (conversionModel) {
-            const route = parseModelRoutes(env.MODEL_ROUTES)[conversionModel];
-            if (!route) {
-              return cors(
-                json(HTTP_SERVICE_UNAVAILABLE, {
-                  error: {
-                    code: "conversion_model_unavailable",
-                    message: "Model route unavailable",
-                  },
-                }),
-                env.CORS_ORIGIN,
-              );
+          if (request.method === "DELETE") {
+            if (baseUrl) {
+              const releaseResponse = await fetchers.fetcher(`${baseUrl}/release`, {
+                method: "DELETE",
+              });
+              await releaseResponse.body?.cancel();
+              if (!releaseResponse.ok) {
+                return cors(
+                  json(HTTP_SERVICE_UNAVAILABLE, {
+                    error: { code: "container_release_failed", message: "Release failed" },
+                  }),
+                  env.CORS_ORIGIN,
+                );
+              }
             }
+            return cors(json(HTTP_OK, { ok: true, state: "released" }), env.CORS_ORIGIN);
+          }
+          const warmups: Promise<unknown>[] = [];
+          if (conversionModel !== "none" && profile.computeTier === "standard") {
             warmups.push(
-              Promise.resolve(fetchers.fetcher(`${route.baseUrl}/health`)).then(
+              Promise.resolve(converter.warmup?.("http")),
+              Promise.resolve(vibrato.warmup?.()),
+            );
+          }
+          if (baseUrl) {
+            const healthPath = profile.n5Mode === "on" ? "/n5/health" : "/health";
+            warmups.push(
+              Promise.resolve(fetchers.fetcher(`${baseUrl}${healthPath}`)).then(
                 async (response) => {
                   await response.body?.cancel();
                   if (!response.ok) {
@@ -612,7 +692,7 @@ export const createWorker = (
               json(HTTP_SERVICE_UNAVAILABLE, {
                 error: {
                   code: "container_warmup_failed",
-                  message: "Zenz Container is unavailable",
+                  message: "Selected Container is unavailable",
                   detail,
                 },
               }),
@@ -622,8 +702,9 @@ export const createWorker = (
           return cors(
             json(HTTP_OK, {
               ok: true,
-              pipeline: "workers-ai-language-gated-azookey-v3",
-              ...(conversionModel ? { conversionModel } : {}),
+              pipeline: WORKERS_AI_SPEECH_PIPELINE_ID,
+              conversionModel,
+              containerProfile: profile,
             }),
             env.CORS_ORIGIN,
           );
@@ -633,7 +714,24 @@ export const createWorker = (
             asrEnvironment: workersAiEnvironment(env),
             ...(dependencies.workersAiRun ? { run: dependencies.workersAiRun } : {}),
             vibrato: (text, language) => Promise.resolve(vibrato(text, language)),
-            convert: async ({ text, model, leftContext }) => {
+            ...(vibrato.release ? { releaseVibrato: vibrato.release } : {}),
+            rescoreN5: async (text, profile) => {
+              const baseUrl = profileBaseUrl(env, "none", profile);
+              if (!baseUrl) throw new Error("Input N5 LM profile is unavailable");
+              const response = await fetchers.fetcher(`${baseUrl}/n5/rescore`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ text }),
+              });
+              const result = await parseN5Response(response);
+              return { ...result, model: "input_n5_lm_v1" };
+            },
+            convert: async ({ text, model, leftContext, profile }) => {
+              const baseUrl = profileBaseUrl(env, model, profile);
+              if (!baseUrl) throw new Error("Selected GGUF profile is unavailable");
+              const configuredRoutes = parseModelRoutes(env.MODEL_ROUTES);
+              const selectedRoute = configuredRoutes[model];
+              if (!selectedRoute) throw new Error("Selected GGUF route is unavailable");
               const converted = await convertAzookeyMessage(
                 {
                   type: "azookey.convert",
@@ -648,9 +746,24 @@ export const createWorker = (
                 },
                 {
                   converter,
-                  timeoutMs: PIPELINE_AZOOKEY_TIMEOUT_MS,
-                  zenzUpstreamMaxMs: PIPELINE_ZENZ_COLD_START_TIMEOUT_MS,
-                  modelRoutes: parseModelRoutes(env.MODEL_ROUTES),
+                  timeoutMs:
+                    profile.computeTier === "basic"
+                      ? PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS
+                      : PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS,
+                  zenzUpstreamMaxMs:
+                    profile.computeTier === "basic"
+                      ? PIPELINE_BASIC_ZENZ_TIMEOUT_MS
+                      : PIPELINE_STANDARD_ZENZ_TIMEOUT_MS,
+                  deferDictionaryUntilZenz: profile.computeTier === "basic",
+                  ...(profile.computeTier === "basic"
+                    ? {
+                        zenzNPredict: Math.min(
+                          16,
+                          Math.max(8, Math.ceil(Array.from(text).length * 0.75)),
+                        ),
+                      }
+                    : {}),
+                  modelRoutes: { ...configuredRoutes, [model]: { ...selectedRoute, baseUrl } },
                   fetcher: fetchers.fetcher,
                   userLexicon,
                   wsOrHttp: "http",

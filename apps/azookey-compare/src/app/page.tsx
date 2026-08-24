@@ -7,7 +7,10 @@ import PipelineVisualization from "../components/PipelineVisualization";
 import { COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH } from "../lib/inference-proxy";
 import type {
   BrowserAsrModel,
+  BrowserComputeTier,
+  BrowserContainerProfile,
   BrowserConversionModel,
+  BrowserN5Mode,
   WorkersAiPipelineLog,
 } from "../lib/workers-ai-asr-client";
 import {
@@ -19,15 +22,21 @@ import { isWorkersAiAsrCaptureSupported } from "../lib/workers-ai-asr-support";
 
 interface PipelineResult {
   asrText: string;
+  n5Text: string;
   vibratoText: string;
   azookeyText: string;
   audioSeconds: number;
   pipeline: string;
   asrModel: string;
   conversionModel: string;
+  containerProfile?: BrowserContainerProfile;
   usedCompletion: boolean;
   logs: WorkersAiPipelineLog[];
   completedAt: number;
+  speechStartedAtMs: number;
+  speechEndedAtMs: number;
+  speechToResultMs: number;
+  endToResultMs: number;
 }
 
 interface UsageTotals {
@@ -35,6 +44,7 @@ interface UsageTotals {
   workerRequests: number;
   workerCpuMs: number;
   containerActiveMs: number;
+  containerUsd: number;
 }
 
 interface CostEstimate {
@@ -58,20 +68,35 @@ const ASR_PRICES: Record<BrowserAsrModel, number> = {
 const WORKER_USD_PER_MILLION_REQUESTS = 0.3;
 const WORKER_USD_PER_MILLION_CPU_MS = 0.02;
 const ONE_MILLION = 1_000_000;
-const LIVE_COST_REFRESH_MS = 250;
 const EMPTY_USAGE: UsageTotals = {
   audioSeconds: 0,
   workerRequests: 0,
   workerCpuMs: 0,
   containerActiveMs: 0,
+  containerUsd: 0,
 };
-const CONTAINER_VCPU = 2;
-const CONTAINER_MEMORY_GIB = 8;
-const CONTAINER_DISK_GB = 16;
+const CONTAINER_RESOURCES: Record<
+  BrowserComputeTier,
+  { vcpu: number; memoryGib: number; diskGb: number }
+> = {
+  basic: { vcpu: 0.25, memoryGib: 1, diskGb: 4 },
+  standard: { vcpu: 2, memoryGib: 8, diskGb: 16 },
+};
 const CONTAINER_VCPU_USD_PER_SECOND = 0.00002;
 const CONTAINER_GIB_USD_PER_SECOND = 0.0000025;
 const CONTAINER_GB_DISK_USD_PER_SECOND = 0.00000007;
-const LANGUAGE_OPTIONS = ["ja", "en", "zh", "ko", "es", "fr", "de", "it", "pt"];
+const LANGUAGE_OPTIONS = ["", "ja", "en", "zh", "ko", "es", "fr", "de", "it", "pt"];
+
+const containerCostUsd = (tier: BrowserComputeTier, elapsedMs: number): number => {
+  const resources = CONTAINER_RESOURCES[tier];
+  const seconds = elapsedMs / 1_000;
+  return (
+    seconds *
+    (resources.vcpu * CONTAINER_VCPU_USD_PER_SECOND +
+      resources.memoryGib * CONTAINER_GIB_USD_PER_SECOND +
+      resources.diskGb * CONTAINER_GB_DISK_USD_PER_SECOND)
+  );
+};
 
 const formatUsd = (value: number): string =>
   new Intl.NumberFormat("en-US", {
@@ -84,21 +109,12 @@ const formatUsd = (value: number): string =>
 const elapsedWorkerCpuMs = (logs: WorkersAiPipelineLog[]): number =>
   logs.filter((entry) => entry.stage !== "asr").reduce((sum, entry) => sum + entry.elapsedMs, 0);
 
-const estimateCost = (
-  usage: UsageTotals,
-  liveAudioSeconds: number,
-  asrModel: BrowserAsrModel,
-): CostEstimate => {
-  const audioSeconds = usage.audioSeconds + liveAudioSeconds;
+const estimateCost = (usage: UsageTotals, asrModel: BrowserAsrModel): CostEstimate => {
+  const audioSeconds = usage.audioSeconds;
   const asrUsd = (audioSeconds / 60) * ASR_PRICES[asrModel];
   const requestUsd = (usage.workerRequests / ONE_MILLION) * WORKER_USD_PER_MILLION_REQUESTS;
   const cpuUsd = (usage.workerCpuMs / ONE_MILLION) * WORKER_USD_PER_MILLION_CPU_MS;
-  const containerSeconds = usage.containerActiveMs / 1_000;
-  const containerUsd =
-    containerSeconds *
-    (CONTAINER_VCPU * CONTAINER_VCPU_USD_PER_SECOND +
-      CONTAINER_MEMORY_GIB * CONTAINER_GIB_USD_PER_SECOND +
-      CONTAINER_DISK_GB * CONTAINER_GB_DISK_USD_PER_SECOND);
+  const containerUsd = usage.containerUsd;
   return {
     audioSeconds,
     asrUsd,
@@ -110,7 +126,7 @@ const estimateCost = (
 };
 
 const stageLabel = (stage: WorkersAiPipelineLog["stage"]): string =>
-  ({ asr: "ASR", vibrato: "Vibrato", azookey: "AzooKey + Zenz" })[stage];
+  ({ asr: "ASR", n5_lm: "Input N5 LM", vibrato: "Vibrato", azookey: "AzooKey + Zenz" })[stage];
 
 const stateLabel = (state: WorkersAiAsrState): string =>
   ({
@@ -127,15 +143,16 @@ export default function ComparePage(): React.JSX.Element {
   const [result, setResult] = useState<PipelineResult>();
   const [usage, setUsage] = useState<UsageTotals>(EMPTY_USAGE);
   const [error, setError] = useState("");
-  const [clock, setClock] = useState(Date.now());
   const [asrModel, setAsrModel] = useState<BrowserAsrModel>("@cf/deepgram/nova-3");
   const [conversionModel, setConversionModel] =
     useState<BrowserConversionModel>("zenz-v3.2-xsmall-gguf");
+  const [computeTier, setComputeTier] = useState<BrowserComputeTier>("standard");
+  const [containerModel, setContainerModel] = useState<"xsmall" | "small">("xsmall");
+  const [n5Lm, setN5Lm] = useState<BrowserN5Mode>("off");
   const [language, setLanguage] = useState("ja");
   const [microphones, setMicrophones] = useState<MicrophoneOption[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const controllerRef = useRef<WorkersAiAsrController | undefined>(undefined);
-  const listeningStartedAtRef = useRef<number | undefined>(undefined);
   const supported = typeof window === "undefined" || isWorkersAiAsrCaptureSupported();
 
   const refreshMicrophones = useCallback(async (): Promise<void> => {
@@ -157,29 +174,41 @@ export default function ComparePage(): React.JSX.Element {
     return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refreshMicrophones);
   }, [refreshMicrophones]);
 
-  const handleResult = useCallback((payload: WorkersAiAsrUtteranceFinal): void => {
-    const logs = payload.logs ?? [];
-    setResult({
-      asrText: payload.text,
-      vibratoText: payload.vibratoText ?? payload.text,
-      azookeyText: payload.convertedText ?? payload.text,
-      audioSeconds: payload.audioSeconds,
-      pipeline: payload.pipeline ?? "workers-ai-language-gated-azookey-v3",
-      asrModel: payload.model ?? "unknown",
-      conversionModel: payload.conversionModel ?? "not-run",
-      usedCompletion: payload.usedCompletion ?? false,
-      logs,
-      completedAt: Date.now(),
-    });
-    setUsage((current) => ({
-      audioSeconds: current.audioSeconds + payload.audioSeconds,
-      workerRequests: current.workerRequests + 1,
-      workerCpuMs: current.workerCpuMs + elapsedWorkerCpuMs(logs),
-      containerActiveMs:
-        current.containerActiveMs +
-        (logs.find((entry) => entry.stage === "azookey")?.elapsedMs ?? 0),
-    }));
-  }, []);
+  const handleResult = useCallback(
+    (payload: WorkersAiAsrUtteranceFinal): void => {
+      const logs = payload.logs ?? [];
+      const containerActiveMs = logs
+        .filter((entry) => entry.stage === "n5_lm" || entry.stage === "azookey")
+        .reduce((total, entry) => total + entry.elapsedMs, 0);
+      const billedTier = payload.containerProfile?.computeTier ?? computeTier;
+      setResult({
+        asrText: payload.text,
+        n5Text: payload.n5Text ?? payload.text,
+        vibratoText: payload.vibratoText ?? payload.text,
+        azookeyText: payload.convertedText ?? payload.text,
+        audioSeconds: payload.audioSeconds,
+        pipeline: payload.pipeline ?? "workers-ai-profiled-azookey-v4",
+        asrModel: payload.model ?? "unknown",
+        conversionModel: payload.conversionModel ?? "not-run",
+        ...(payload.containerProfile ? { containerProfile: payload.containerProfile } : {}),
+        usedCompletion: payload.usedCompletion ?? false,
+        logs,
+        completedAt: payload.resultReturnedAtMs,
+        speechStartedAtMs: payload.speechStartedAtMs,
+        speechEndedAtMs: payload.speechEndedAtMs,
+        speechToResultMs: payload.speechToResultMs,
+        endToResultMs: payload.endToResultMs,
+      });
+      setUsage((current) => ({
+        audioSeconds: current.audioSeconds + payload.audioSeconds,
+        workerRequests: current.workerRequests + 1,
+        workerCpuMs: current.workerCpuMs + elapsedWorkerCpuMs(logs),
+        containerActiveMs: current.containerActiveMs + containerActiveMs,
+        containerUsd: current.containerUsd + containerCostUsd(billedTier, containerActiveMs),
+      }));
+    },
+    [computeTier],
+  );
 
   const createController = useCallback((): WorkersAiAsrController => {
     controllerRef.current?.dispose();
@@ -187,11 +216,13 @@ export default function ComparePage(): React.JSX.Element {
       language,
       model: asrModel,
       conversionModel,
+      computeTier,
+      containerModel,
+      n5Lm,
       ...(deviceId ? { deviceId } : {}),
       endpointUrl: COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH,
       onStateChange: (nextState) => {
         setState(nextState);
-        listeningStartedAtRef.current = nextState === "listening" ? Date.now() : undefined;
         if (nextState === "listening") void refreshMicrophones();
       },
       onTranscript: ({ interimText }) => setInterim(interimText),
@@ -201,12 +232,17 @@ export default function ComparePage(): React.JSX.Element {
     });
     controllerRef.current = controller;
     return controller;
-  }, [asrModel, conversionModel, deviceId, handleResult, language, refreshMicrophones]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), LIVE_COST_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, []);
+  }, [
+    asrModel,
+    computeTier,
+    containerModel,
+    conversionModel,
+    deviceId,
+    handleResult,
+    language,
+    n5Lm,
+    refreshMicrophones,
+  ]);
   useEffect(() => () => controllerRef.current?.dispose(), []);
 
   const toggleListening = useCallback(async (): Promise<void> => {
@@ -218,14 +254,7 @@ export default function ComparePage(): React.JSX.Element {
     await createController().start();
   }, [createController, state]);
 
-  const liveAudioSeconds = useMemo(() => {
-    const startedAt = listeningStartedAtRef.current;
-    return state === "listening" && startedAt ? Math.max(0, (clock - startedAt) / 1_000) : 0;
-  }, [clock, state]);
-  const cost = useMemo(
-    () => estimateCost(usage, liveAudioSeconds, asrModel),
-    [asrModel, liveAudioSeconds, usage],
-  );
+  const cost = useMemo(() => estimateCost(usage, asrModel), [asrModel, usage]);
   const activeStage = state === "listening" ? "capture" : interim === "認識中…" ? "asr" : undefined;
   const settingsDisabled = state !== "idle" && state !== "error";
 
@@ -253,11 +282,21 @@ export default function ComparePage(): React.JSX.Element {
         {result ? (
           <div className="result-content">
             <div className="final-output">
-              <span>{language === "ja" ? "AzooKey 最終結果" : "ASR 結果（日本語後処理なし）"}</span>
+              <span>
+                {language === "ja" && conversionModel !== "none"
+                  ? "AzooKey 最終結果"
+                  : "ASR / N5 結果（AzooKey なし）"}
+              </span>
               <strong>{result.azookeyText || "（空の結果）"}</strong>
               <small>
-                {result.asrModel} · {result.conversionModel} · 音声 {result.audioSeconds.toFixed(2)}{" "}
-                秒
+                {result.asrModel} · {result.conversionModel} · 課金対象音声{" "}
+                {result.audioSeconds.toFixed(2)} 秒
+              </small>
+              <small>
+                発話開始 {new Date(result.speechStartedAtMs).toLocaleTimeString("ja-JP")} · 発話終了{" "}
+                {new Date(result.speechEndedAtMs).toLocaleTimeString("ja-JP")} · 終了→結果{" "}
+                {result.endToResultMs.toFixed(1)} ms · 開始→結果{" "}
+                {result.speechToResultMs.toFixed(1)} ms
               </small>
             </div>
             <div className="stage-logs">
@@ -342,25 +381,55 @@ export default function ComparePage(): React.JSX.Element {
                 onChange={(event) => setLanguage(event.target.value)}
               >
                 {LANGUAGE_OPTIONS.map((code) => (
-                  <option key={code} value={code}>
-                    {code}
+                  <option key={code || "auto"} value={code}>
+                    {code || "指定なし（自動検出・日本語後処理なし）"}
                   </option>
                 ))}
+              </select>
+            </label>
+            <label>
+              Container compute
+              <select
+                value={computeTier}
+                disabled={settingsDisabled}
+                onChange={(event) =>
+                  setComputeTier(event.target.value === "basic" ? "basic" : "standard")
+                }
+              >
+                <option value="basic">basic（比較用・低速）</option>
+                <option value="standard">standard（standard-3）</option>
+              </select>
+            </label>
+            <label>
+              Input N5 LM
+              <select
+                value={n5Lm}
+                disabled={settingsDisabled}
+                onChange={(event) => setN5Lm(event.target.value === "on" ? "on" : "off")}
+              >
+                <option value="off">off</option>
+                <option value="on">on（処理時間を個別表示）</option>
               </select>
             </label>
             <label>
               AzooKey GGUF
               <select
                 value={conversionModel}
-                disabled={settingsDisabled || language !== "ja"}
-                onChange={(event) =>
-                  setConversionModel(
-                    event.target.value === "zenz-v3.2-small-gguf"
-                      ? "zenz-v3.2-small-gguf"
-                      : "zenz-v3.2-xsmall-gguf",
-                  )
-                }
+                disabled={settingsDisabled}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (value === "none") {
+                    setConversionModel("none");
+                  } else if (value === "zenz-v3.2-small-gguf") {
+                    setConversionModel("zenz-v3.2-small-gguf");
+                    setContainerModel("small");
+                  } else {
+                    setConversionModel("zenz-v3.2-xsmall-gguf");
+                    setContainerModel("xsmall");
+                  }
+                }}
               >
+                <option value="none">なし（jaでもAzooKeyを実行しない）</option>
                 <option value="zenz-v3.2-xsmall-gguf">Zenz v3.2 XSmall GGUF</option>
                 <option value="zenz-v3.2-small-gguf">Zenz v3.2 Small GGUF</option>
               </select>
@@ -413,10 +482,10 @@ export default function ComparePage(): React.JSX.Element {
             ))}
           </dl>
           <p className="fine-print">
-            Nova-3 は realtime より安い HTTP batch ($0.0052/音声分) を維持し、Silero
-            で無音を送らず、再分割や再認識も行いません。Whisper は $0.00051/音声分。Container は
-            standard-3 の active 時間から上限寄りに推定しています。1分の idle 保持、無料枠、実請求
-            CPU は含みません。
+            Nova-3 と Whisper は browser Silero が確定した発話だけを送信します。マイク開始中の無音は
+            課金対象音声へ加算しません。Whisper は $0.00051/音声分、Nova-3 は $0.0052/音声分。
+            Container は選択tierの処理時間から推定し、停止時に明示release、異常終了時も1分でdestroy
+            します。cold start、無料枠、Cloudflareの実請求CPU差分は含みません。
           </p>
         </article>
       </section>
@@ -436,6 +505,9 @@ export default function ComparePage(): React.JSX.Element {
           activeStage={activeStage}
           asrModel={asrModel}
           conversionModel={conversionModel}
+          computeTier={computeTier}
+          n5Lm={n5Lm}
+          language={language}
         />
       </details>
 

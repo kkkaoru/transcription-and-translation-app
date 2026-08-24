@@ -7,10 +7,18 @@ export interface ComparisonAuth {
 
 export const WORKERS_AI_ASR_CLIENT_SEGMENTATION = "client-silero-v1";
 export type BrowserAsrModel = "@cf/deepgram/nova-3" | "@cf/openai/whisper-large-v3-turbo";
-export type BrowserConversionModel = "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf";
+export type BrowserConversionModel = "none" | "zenz-v3.2-xsmall-gguf" | "zenz-v3.2-small-gguf";
+export type BrowserComputeTier = "basic" | "standard";
+export type BrowserN5Mode = "off" | "on";
+
+export interface BrowserContainerProfile {
+  computeTier: BrowserComputeTier;
+  modelSize: "xsmall" | "small";
+  n5Mode: BrowserN5Mode;
+}
 
 export interface WorkersAiPipelineLog {
-  stage: "asr" | "vibrato" | "azookey";
+  stage: "asr" | "n5_lm" | "vibrato" | "azookey";
   engine: string;
   input: string;
   output: string;
@@ -26,9 +34,11 @@ export interface WorkersAiAsrTranscriptionResult {
   segmentation?: string;
   convertedText?: string;
   pipeline?: string;
+  n5Text?: string;
   vibratoText?: string;
   logs?: WorkersAiPipelineLog[];
   conversionModel?: BrowserConversionModel;
+  containerProfile?: BrowserContainerProfile;
   usedCompletion?: boolean;
   modelFallback?: string;
 }
@@ -38,6 +48,9 @@ export interface WorkersAiAsrClientOptions {
   language?: string;
   model?: BrowserAsrModel;
   conversionModel?: BrowserConversionModel;
+  computeTier?: BrowserComputeTier;
+  containerModel?: "xsmall" | "small";
+  n5Lm?: BrowserN5Mode;
   leftContext?: string;
   auth?: ComparisonAuth;
   fetchImpl?: typeof fetch;
@@ -89,24 +102,40 @@ const readAsrErrorMessage = (payload: unknown, status: number): string => {
   return `Cloudflare Workers AI ASR に失敗しました（${status}）`;
 };
 
-export const warmWorkersAiConversion = async (
-  options: WorkersAiAsrClientOptions = {},
-): Promise<void> => {
-  const fetchImpl = options.fetchImpl ?? fetch;
+const profileUrl = (options: WorkersAiAsrClientOptions): URL => {
   const endpoint = options.endpointUrl?.trim() || defaultEndpoint();
   const url = new URL(
     endpoint,
     typeof window === "undefined" ? "http://127.0.0.1" : window.location.origin,
   );
-  url.searchParams.set("conversionModel", options.conversionModel ?? "zenz-v3.2-xsmall-gguf");
-  const response = await fetchImpl(url.toString(), {
-    method: "GET",
+  url.searchParams.set("conversionModel", options.conversionModel ?? "none");
+  url.searchParams.set("computeTier", options.computeTier ?? "standard");
+  url.searchParams.set("containerModel", options.containerModel ?? "xsmall");
+  url.searchParams.set("n5Lm", options.n5Lm ?? "off");
+  return url;
+};
+
+const changeWorkersAiContainerState = async (
+  method: "GET" | "DELETE",
+  options: WorkersAiAsrClientOptions,
+): Promise<void> => {
+  const response = await (options.fetchImpl ?? fetch)(profileUrl(options).toString(), {
+    method,
     headers: authHeaders(options.auth),
   });
   if (!response.ok) {
-    throw new Error(`Zenz Container warm-up failed (${String(response.status)})`);
+    const action = method === "GET" ? "warm-up" : "release";
+    throw new Error(`Zenz Container ${action} failed (${String(response.status)})`);
   }
 };
+
+export const warmWorkersAiConversion = async (
+  options: WorkersAiAsrClientOptions = {},
+): Promise<void> => changeWorkersAiContainerState("GET", options);
+
+export const releaseWorkersAiConversion = async (
+  options: WorkersAiAsrClientOptions = {},
+): Promise<void> => changeWorkersAiContainerState("DELETE", options);
 
 export const probeWorkersAiAsrRoute = async (
   endpointUrl: string,
@@ -156,7 +185,10 @@ export const transcribeWorkersAiAsr = async (
     form.set("language", options.language.trim());
   }
   form.set("model", options.model ?? "@cf/deepgram/nova-3");
-  form.set("conversionModel", options.conversionModel ?? "zenz-v3.2-xsmall-gguf");
+  form.set("conversionModel", options.conversionModel ?? "none");
+  form.set("computeTier", options.computeTier ?? "standard");
+  form.set("containerModel", options.containerModel ?? "xsmall");
+  form.set("n5Lm", options.n5Lm ?? "off");
   if (options.leftContext?.trim()) {
     form.set("leftContext", options.leftContext.trim());
   }
@@ -215,9 +247,11 @@ export const transcribeWorkersAiAsr = async (
     ...(body.segmentation ? { segmentation: body.segmentation } : {}),
     ...(body.convertedText ? { convertedText: body.convertedText } : {}),
     ...(body.pipeline ? { pipeline: body.pipeline } : {}),
+    ...(body.n5Text ? { n5Text: body.n5Text } : {}),
     ...(body.vibratoText ? { vibratoText: body.vibratoText } : {}),
     ...(Array.isArray(body.logs) ? { logs: body.logs } : {}),
     ...(body.conversionModel ? { conversionModel: body.conversionModel } : {}),
+    ...(body.containerProfile ? { containerProfile: body.containerProfile } : {}),
     ...(typeof body.usedCompletion === "boolean" ? { usedCompletion: body.usedCompletion } : {}),
     ...(body.modelFallback ? { modelFallback: body.modelFallback } : {}),
   };

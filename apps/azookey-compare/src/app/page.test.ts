@@ -14,6 +14,10 @@ describe("Cloudflare speech verification page", () => {
     expect(html).toMatch(/Whisper Large V3 Turbo/);
     expect(html).toMatch(/Zenz v3.2 XSmall GGUF/);
     expect(html).toMatch(/Zenz v3.2 Small GGUF/);
+    expect(html).toMatch(/なし（jaでもAzooKeyを実行しない）/);
+    expect(html).toMatch(/指定なし（自動検出・日本語後処理なし）/);
+    expect(html).toMatch(/basic（比較用・低速）/);
+    expect(html).toMatch(/Input N5 LM/);
     expect(html).toMatch(/AzooKey カスタム辞書/);
     expect(html).toMatch(/処理経路を展開/);
   });
@@ -25,6 +29,8 @@ describe("Cloudflare speech verification page", () => {
     expect(html).toMatch(/@cf\/deepgram\/nova-3 \(0.0 秒\)/);
     expect(html).toMatch(/Worker requests \(0\)/);
     expect(html).toMatch(/Vibrato \+ AzooKey Worker CPU \(0.0 ms\)/);
+    expect(html).toMatch(/マイク開始中の無音は/);
+    expect(html).toMatch(/明示release/);
     expect(html).toMatch(/\$0.00000000/);
   });
 });

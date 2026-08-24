@@ -2,25 +2,79 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "kotoba-beacon-zenz-gguf",
   "main": "src/index.ts",
-  "compatibility_date": "2026-08-22",
+  "compatibility_date": "2026-08-24",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "observability": { "enabled": true },
   "containers": [
     {
-      "name": "zenz-small",
-      "class_name": "ZenzSmallContainer",
+      "name": "zenz-basic-small-n5-off",
+      "class_name": "ZenzBasicSmallN5OffContainer",
       "image": "./Dockerfile",
-      "image_vars": { "MODEL": "small" },
+      "image_vars": { "MODEL": "small", "N5_LM": "off" },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-basic-small-n5-on",
+      "class_name": "ZenzBasicSmallN5OnContainer",
+      "image": "./Dockerfile",
+      "image_vars": { "MODEL": "small", "N5_LM": "on" },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-basic-xsmall-n5-off",
+      "class_name": "ZenzBasicXsmallN5OffContainer",
+      "image": "./Dockerfile",
+      "image_vars": { "MODEL": "xsmall", "N5_LM": "off" },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-basic-xsmall-n5-on",
+      "class_name": "ZenzBasicXsmallN5OnContainer",
+      "image": "./Dockerfile",
+      "image_vars": { "MODEL": "xsmall", "N5_LM": "on" },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-standard-small-n5-off",
+      "class_name": "ZenzStandardSmallN5OffContainer",
+      "image": "./Dockerfile",
+      "image_vars": { "MODEL": "small", "N5_LM": "off" },
       "instance_type": "standard-3",
       "max_instances": 1,
       "constraints": { "regions": ["APAC"] }
     },
     {
-      "name": "zenz-xsmall",
-      "class_name": "ZenzXsmallContainer",
+      "name": "zenz-standard-small-n5-on",
+      "class_name": "ZenzStandardSmallN5OnContainer",
       "image": "./Dockerfile",
-      "image_vars": { "MODEL": "xsmall" },
+      "image_vars": { "MODEL": "small", "N5_LM": "on" },
+      "instance_type": "standard-3",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-standard-xsmall-n5-off",
+      "class_name": "ZenzStandardXsmallN5OffContainer",
+      "image": "./Dockerfile",
+      "image_vars": { "MODEL": "xsmall", "N5_LM": "off" },
+      "instance_type": "standard-3",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-standard-xsmall-n5-on",
+      "class_name": "ZenzStandardXsmallN5OnContainer",
+      "image": "./Dockerfile",
+      "image_vars": { "MODEL": "xsmall", "N5_LM": "on" },
       "instance_type": "standard-3",
       "max_instances": 1,
       "constraints": { "regions": ["APAC"] }
@@ -28,14 +82,34 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "ZENZ_SMALL", "class_name": "ZenzSmallContainer" },
-      { "name": "ZENZ_XSMALL", "class_name": "ZenzXsmallContainer" }
+      { "name": "ZENZ_BASIC_SMALL_N5_OFF", "class_name": "ZenzBasicSmallN5OffContainer" },
+      { "name": "ZENZ_BASIC_SMALL_N5_ON", "class_name": "ZenzBasicSmallN5OnContainer" },
+      { "name": "ZENZ_BASIC_XSMALL_N5_OFF", "class_name": "ZenzBasicXsmallN5OffContainer" },
+      { "name": "ZENZ_BASIC_XSMALL_N5_ON", "class_name": "ZenzBasicXsmallN5OnContainer" },
+      { "name": "ZENZ_STANDARD_SMALL_N5_OFF", "class_name": "ZenzStandardSmallN5OffContainer" },
+      { "name": "ZENZ_STANDARD_SMALL_N5_ON", "class_name": "ZenzStandardSmallN5OnContainer" },
+      { "name": "ZENZ_STANDARD_XSMALL_N5_OFF", "class_name": "ZenzStandardXsmallN5OffContainer" },
+      { "name": "ZENZ_STANDARD_XSMALL_N5_ON", "class_name": "ZenzStandardXsmallN5OnContainer" }
     ]
   },
   "migrations": [
     {
       "tag": "v1-zenz-containers",
       "new_sqlite_classes": ["ZenzSmallContainer", "ZenzXsmallContainer"]
+    },
+    {
+      "tag": "v2-profile-containers",
+      "new_sqlite_classes": [
+        "ZenzBasicSmallN5OffContainer",
+        "ZenzBasicSmallN5OnContainer",
+        "ZenzBasicXsmallN5OffContainer",
+        "ZenzBasicXsmallN5OnContainer",
+        "ZenzStandardSmallN5OffContainer",
+        "ZenzStandardSmallN5OnContainer",
+        "ZenzStandardXsmallN5OffContainer",
+        "ZenzStandardXsmallN5OnContainer"
+      ],
+      "deleted_classes": ["ZenzSmallContainer", "ZenzXsmallContainer"]
     }
   ]
 }

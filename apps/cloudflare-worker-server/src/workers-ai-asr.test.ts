@@ -72,10 +72,9 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     expect(workersAiAsrTimeoutMs({ WORKERS_AI_ASR_TIMEOUT_MS: "250" })).toBe(250);
   });
 
-  it("sends Japanese WAV input to the explicitly selected Nova-3 model", async () => {
+  it("omits the language hint only for the explicit auto-detect HTTP route", async () => {
     const run = vi.fn<WorkersAiAsrRun>((model, input, options) => {
       expect(model).toBe(WORKERS_AI_ASR_MODEL);
-      expect(input.language).toBe(WORKERS_AI_ASR_LANGUAGE);
       expect(input.audio.contentType).toBe("audio/wav");
       expect(input.audio.body).toBeInstanceOf(ReadableStream);
       expect(options.signal).toBeInstanceOf(AbortSignal);
@@ -84,6 +83,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     const transcribe = createWorkersAiAsrTranscriber({}, run);
     await expect(transcribe(pcm())).resolves.toBe("明日の天気は晴れ");
     expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]?.[1].language).toBe("ja");
 
     const formWithoutLanguage = new FormData();
     formWithoutLanguage.set("file", wavFile());
@@ -97,7 +97,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       run,
     );
     await expect(defaultLanguageResponse.json()).resolves.toMatchObject({
-      language: "ja",
+      language: "und",
       segmentation: WORKERS_AI_ASR_CLIENT_SEGMENTATION,
     });
 
@@ -113,9 +113,11 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       run,
     );
     await expect(blankLanguageResponse.json()).resolves.toMatchObject({
-      language: "ja",
+      language: "und",
     });
     expect(run).toHaveBeenCalledTimes(3);
+    expect(run.mock.calls[1]?.[1]).not.toHaveProperty("language");
+    expect(run.mock.calls[2]?.[1]).not.toHaveProperty("language");
   });
 
   it("selects Whisper Large V3 Turbo and forwards the requested language", async () => {
@@ -346,7 +348,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     await expect(response.json()).resolves.toStrictEqual({
       text: "こんにちは聞こえますか",
       reading: "こんにちは聞こえますか",
-      language: "ja",
+      language: "und",
       model: "@cf/deepgram/nova-3",
       transport: "http",
       segmentation: "worker-energy-v1",
@@ -378,7 +380,7 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     await expect(response.json()).resolves.toStrictEqual({
       text: "きょうはいいてんき",
       reading: "きょうはいいてんき",
-      language: "ja",
+      language: "und",
       model: "@cf/deepgram/nova-3",
       transport: "http",
       segmentation: "worker-energy-v1",

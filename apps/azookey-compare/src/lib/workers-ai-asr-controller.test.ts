@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { blobToPcm16Mono } from "./pcm-wav";
-import { transcribeWorkersAiAsr } from "./workers-ai-asr-client";
+import { releaseWorkersAiConversion, transcribeWorkersAiAsr } from "./workers-ai-asr-client";
 import { WorkersAiAsrController } from "./workers-ai-asr-controller";
 import { SILERO_FALLBACK_NOTICE_JA } from "./workers-ai-asr-silero-paths";
 import {
@@ -14,6 +14,7 @@ import { type VadEngine, type VadResult, WORKERS_AI_ASR_VAD_DEFAULTS } from "./w
 vi.mock("./workers-ai-asr-client", () => ({
   transcribeWorkersAiAsr: vi.fn(async () => ({ text: "こんにちは" })),
   warmWorkersAiConversion: vi.fn(() => Promise.resolve()),
+  releaseWorkersAiConversion: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("./pcm-wav", async (importOriginal) => {
@@ -303,7 +304,9 @@ describe("WorkersAiAsrController VAD session", () => {
       endpointUrl: "https://compare.example/v1/asr/workers-ai/transcriptions",
       language: "ja-JP",
     });
-    expect(events.onUtteranceFinal).toHaveBeenCalledWith({ text: "こんにちは", audioSeconds: 1 });
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "こんにちは", audioSeconds: 1 }),
+    );
     expect(events.onUtteranceFinal.mock.calls[0]?.[0].audioSeconds).not.toBe(16_000);
     expect(events.onFinalText).toHaveBeenCalledWith("こんにちは");
     expect(events.onTranscript).toHaveBeenCalledWith({ interimText: "認識中…" });
@@ -315,10 +318,9 @@ describe("WorkersAiAsrController VAD session", () => {
     expect(FakeMediaRecorder.instances).toHaveLength(2);
     await controller.ingestVadFrame(SILENT_DB, END_MS);
     expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(2);
-    expect(events.onUtteranceFinal).toHaveBeenLastCalledWith({
-      text: "きょうははれ",
-      audioSeconds: 1,
-    });
+    expect(events.onUtteranceFinal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ text: "きょうははれ", audioSeconds: 1 }),
+    );
     expect(controller.currentState).toBe("listening");
     controller.dispose();
   });
@@ -365,7 +367,9 @@ describe("WorkersAiAsrController VAD session", () => {
     const { controller, events } = await startController();
     await controller.ingestVadFrame(LOUD_DB, START_MS);
     await controller.ingestVadFrame(SILENT_DB, END_MS);
-    expect(events.onUtteranceFinal).toHaveBeenCalledWith({ text: "こんにちは", audioSeconds: 3 });
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "こんにちは", audioSeconds: 3 }),
+    );
     expect(events.onUtteranceFinal.mock.calls[0]?.[0].audioSeconds).not.toBe(48_000);
     controller.dispose();
   });
@@ -407,6 +411,27 @@ describe("WorkersAiAsrController VAD session", () => {
     await controller.ingestVadFrame(SILENT_DB, END_MS);
     expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
     controller.dispose();
+  });
+
+  it("releases the exact Japanese Container profile when capture stops", async () => {
+    installBrowser();
+    const controller = new WorkersAiAsrController("ja", {
+      language: "ja",
+      conversionModel: "zenz-v3.2-small-gguf",
+      computeTier: "basic",
+      containerModel: "small",
+      n5Lm: "on",
+    });
+    await controller.start();
+    await controller.stop();
+    expect(releaseWorkersAiConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversionModel: "zenz-v3.2-small-gguf",
+        computeTier: "basic",
+        containerModel: "small",
+        n5Lm: "on",
+      }),
+    );
   });
 
   it("does not transcribe a silence-only session on user stop", async () => {

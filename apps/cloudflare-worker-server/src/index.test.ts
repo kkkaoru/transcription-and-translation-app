@@ -678,6 +678,9 @@ describe("Cloudflare Worker inference adapter", () => {
     form.set("language", "ja");
     form.set("segmentation", "client-silero-v1");
     form.set("conversionModel", "zenz-v3.2-small-gguf");
+    form.set("computeTier", "standard");
+    form.set("containerModel", "small");
+    form.set("n5Lm", "off");
 
     const response = await createWorker(
       vi.fn(() => Response.json({ content: "今日はいい天気" })),
@@ -703,13 +706,72 @@ describe("Cloudflare Worker inference adapter", () => {
     expect(await response.json()).toMatchObject({
       text: "きょうはいいてんき",
       convertedText: "今日はいい天気",
-      pipeline: "workers-ai-language-gated-azookey-v3",
+      pipeline: "workers-ai-profiled-azookey-v4",
       segmentation: "client-silero-v1",
     });
     expect(converter).toHaveBeenCalledWith(
       "きょうはいいてんき",
       expect.any(AbortSignal),
       undefined,
+    );
+  });
+
+  it("runs the basic N5 profile with deferred dictionary materialization", async () => {
+    const workersAiRun: WorkersAiAsrRun = vi.fn(() =>
+      Promise.resolve({
+        results: { channels: [{ alternatives: [{ transcript: "おはよございます" }] }] },
+      }),
+    );
+    const converter = vi.fn(() => Promise.resolve("おはようございます"));
+    const release = vi.fn();
+    const vibratoConverter = Object.assign((text: string) => text, { release });
+    const upstream = vi.fn((input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      return url.endsWith("/n5/rescore")
+        ? Response.json({ text: "おはようございます", elapsedMs: 12.5 })
+        : Response.json({ content: "おはようございます" });
+    });
+    const form = new FormData();
+    form.set("file", speechWav());
+    form.set("language", "ja");
+    form.set("segmentation", "client-silero-v1");
+    form.set("conversionModel", "zenz-v3.2-xsmall-gguf");
+    form.set("computeTier", "basic");
+    form.set("containerModel", "xsmall");
+    form.set("n5Lm", "on");
+    form.set("leftContext", "前文");
+
+    const response = await createWorker(upstream, {
+      workersAiRun,
+      converter,
+      vibratoConverter,
+    }).fetch(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {
+        ...env,
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-xsmall-gguf": { baseUrl: "https://zenz.internal" },
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      containerProfile: { computeTier: "basic", modelSize: "xsmall", n5Mode: "on" },
+      logs: [
+        { stage: "asr" },
+        { stage: "n5_lm", elapsedMs: 12.5 },
+        { stage: "vibrato" },
+        { stage: "azookey" },
+      ],
+    });
+    expect(release).toHaveBeenCalledOnce();
+    expect(upstream).toHaveBeenCalledWith(
+      "https://zenz.internal/basic/xsmall/n5-on/n5/rescore",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 
@@ -730,8 +792,12 @@ describe("Cloudflare Worker inference adapter", () => {
     );
     const form = new FormData();
     form.set("file", speechWav());
+    form.set("language", "ja");
     form.set("segmentation", "client-silero-v1");
     form.set("conversionModel", "zenz-v3.2-small-gguf");
+    form.set("computeTier", "standard");
+    form.set("containerModel", "small");
+    form.set("n5Lm", "off");
 
     const response = await createWorker(
       vi.fn(() => Response.json({ content: "VRChat" })),
@@ -763,7 +829,7 @@ describe("Cloudflare Worker inference adapter", () => {
     );
   });
 
-  it("warms the single-Worker AzooKey runtime through its GET capability route", async () => {
+  it("skips AzooKey warm-up when the capability route selects no GGUF", async () => {
     const warmup = vi.fn(() => Promise.resolve());
     const converter = Object.assign(
       vi.fn(() => Promise.resolve("変換")),
@@ -774,16 +840,22 @@ describe("Cloudflare Worker inference adapter", () => {
     const response = await createWorker(vi.fn(), {
       converter,
       vibratoConverter: (text) => text,
-    }).fetch(new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`), env, {
-      waitUntil,
-    });
+    }).fetch(
+      new Request(
+        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=none&computeTier=standard&containerModel=xsmall&n5Lm=off`,
+      ),
+      env,
+      { waitUntil },
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toStrictEqual({
       ok: true,
-      pipeline: "workers-ai-language-gated-azookey-v3",
+      pipeline: "workers-ai-profiled-azookey-v4",
+      conversionModel: "none",
+      containerProfile: { computeTier: "standard", modelSize: "xsmall", n5Mode: "off" },
     });
-    expect(warmup).toHaveBeenCalledWith("http");
+    expect(warmup).not.toHaveBeenCalled();
     expect(waitUntil).not.toHaveBeenCalled();
   });
 
@@ -803,12 +875,12 @@ describe("Cloudflare Worker inference adapter", () => {
       }),
     }).fetch(
       new Request(
-        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-xsmall-gguf`,
+        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-xsmall-gguf&computeTier=standard&containerModel=xsmall&n5Lm=on`,
       ),
       {
         ...env,
         MODEL_ROUTES: JSON.stringify({
-          "zenz-v3.2-xsmall-gguf": { baseUrl: "https://zenz.internal/xsmall" },
+          "zenz-v3.2-xsmall-gguf": { baseUrl: "https://zenz.internal" },
         }),
         ZENZ_GGUF: { fetch: containerFetch },
       },
@@ -819,7 +891,53 @@ describe("Cloudflare Worker inference adapter", () => {
     const input = containerFetch.mock.calls[0]?.[0];
     expect(input).toBeInstanceOf(Request);
     expect(input instanceof Request ? input.url : String(input)).toBe(
-      "https://zenz.internal/xsmall/health",
+      "https://zenz.internal/standard/xsmall/n5-on/n5/health",
+    );
+  });
+
+  it("releases selected profiles and avoids a Container call when processing is off", async () => {
+    const containerFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ error: "busy" }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+    const worker = createWorker(undefined, {
+      converter: vi.fn(() => Promise.resolve("変換")),
+      vibratoConverter: (text) => text,
+    });
+    const noContainer = await worker.fetch(
+      new Request(
+        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=none&computeTier=basic&containerModel=xsmall&n5Lm=off`,
+        { method: "DELETE" },
+      ),
+      env,
+    );
+    expect(noContainer.status).toBe(200);
+    expect(containerFetch).not.toHaveBeenCalled();
+
+    const releaseUrl = `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-small-gguf&computeTier=basic&containerModel=small&n5Lm=on`;
+    const failed = await worker.fetch(new Request(releaseUrl, { method: "DELETE" }), {
+      ...env,
+      MODEL_ROUTES: JSON.stringify({
+        "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.internal" },
+      }),
+      ZENZ_GGUF: { fetch: containerFetch },
+    });
+    expect(failed.status).toBe(503);
+    await expect(failed.json()).resolves.toMatchObject({
+      error: { code: "container_release_failed" },
+    });
+
+    const released = await worker.fetch(new Request(releaseUrl, { method: "DELETE" }), {
+      ...env,
+      MODEL_ROUTES: JSON.stringify({
+        "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.internal" },
+      }),
+      ZENZ_GGUF: { fetch: containerFetch },
+    });
+    expect(released.status).toBe(200);
+    const releaseInput = containerFetch.mock.calls[1]?.[0];
+    expect(releaseInput instanceof Request ? releaseInput.url : String(releaseInput)).toBe(
+      "https://zenz.internal/basic/small/n5-on/release",
     );
   });
 
@@ -842,7 +960,7 @@ describe("Cloudflare Worker inference adapter", () => {
 
     const unavailable = await worker.fetch(
       new Request(
-        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-small-gguf`,
+        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-small-gguf&computeTier=standard&containerModel=small&n5Lm=off`,
       ),
       env,
     );
@@ -850,12 +968,12 @@ describe("Cloudflare Worker inference adapter", () => {
 
     const unhealthy = await worker.fetch(
       new Request(
-        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-small-gguf`,
+        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-small-gguf&computeTier=standard&containerModel=small&n5Lm=off`,
       ),
       {
         ...env,
         MODEL_ROUTES: JSON.stringify({
-          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.internal/small" },
+          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.internal" },
         }),
         ZENZ_GGUF: { fetch: () => Promise.resolve(new Response(null, { status: 503 })) },
       },
@@ -867,12 +985,12 @@ describe("Cloudflare Worker inference adapter", () => {
 
     const unknownFailure = await worker.fetch(
       new Request(
-        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-small-gguf`,
+        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=zenz-v3.2-small-gguf&computeTier=standard&containerModel=small&n5Lm=off`,
       ),
       {
         ...env,
         MODEL_ROUTES: JSON.stringify({
-          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.internal/small" },
+          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.internal" },
         }),
         ZENZ_GGUF: { fetch: () => Promise.reject("untyped failure") },
       },
@@ -883,7 +1001,7 @@ describe("Cloudflare Worker inference adapter", () => {
     });
   });
 
-  it("reports unavailable single-Worker conversion and supports warmup without a context", async () => {
+  it("reports unavailable conversion and supports no-GGUF probing without a context", async () => {
     const unavailableDependencies = Object.defineProperty({}, "wasmModule", { value: 1 });
     const unavailable = await createWorker(undefined, unavailableDependencies).fetch(
       asWorkerRequest(new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`)),
@@ -902,9 +1020,14 @@ describe("Cloudflare Worker inference adapter", () => {
     const available = await createWorker(undefined, {
       converter,
       vibratoConverter: (text) => text,
-    }).fetch(new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`), env);
+    }).fetch(
+      new Request(
+        `https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}?conversionModel=none&computeTier=standard&containerModel=xsmall&n5Lm=off`,
+      ),
+      env,
+    );
     expect(available.status).toBe(200);
-    expect(warmup).toHaveBeenCalledWith("http");
+    expect(warmup).not.toHaveBeenCalled();
   });
 
   it("keeps the Workers AI provider unavailable without an AI binding or test seam", async () => {

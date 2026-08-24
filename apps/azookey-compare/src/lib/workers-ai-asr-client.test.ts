@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isLoopbackWorkersAiAsrEndpoint,
   probeWorkersAiAsrRoute,
+  releaseWorkersAiConversion,
   transcribeWorkersAiAsr,
   WORKERS_AI_ASR_CLIENT_SEGMENTATION,
   WORKERS_AI_ASR_LOCAL_UNAVAILABLE_JA,
@@ -21,7 +22,7 @@ describe("workers-ai-asr-client", () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://compare.example/v1/speech/workers-ai/azookey?conversionModel=zenz-v3.2-small-gguf",
+      "https://compare.example/v1/speech/workers-ai/azookey?conversionModel=zenz-v3.2-small-gguf&computeTier=standard&containerModel=xsmall&n5Lm=off",
       expect.objectContaining({ method: "GET" }),
     );
   });
@@ -38,7 +39,7 @@ describe("workers-ai-asr-client", () => {
       fetchImpl,
     });
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(
-      "https://compare.example/v1/speech/workers-ai/azookey?conversionModel=zenz-v3.2-xsmall-gguf",
+      "https://compare.example/v1/speech/workers-ai/azookey?conversionModel=none&computeTier=standard&containerModel=xsmall&n5Lm=off",
     );
     expect(fetchImpl.mock.calls[0]?.[1]?.headers).toStrictEqual({
       authorization: "Bearer test-token",
@@ -46,6 +47,31 @@ describe("workers-ai-asr-client", () => {
     await expect(warmWorkersAiConversion({ fetchImpl })).rejects.toThrow(
       "Zenz Container warm-up failed (503)",
     );
+  });
+
+  it("explicitly releases the exact selected Container profile", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ ok: true }));
+    await releaseWorkersAiConversion({
+      endpointUrl: "https://compare.example/v1/speech/workers-ai/azookey",
+      conversionModel: "zenz-v3.2-small-gguf",
+      computeTier: "basic",
+      containerModel: "small",
+      n5Lm: "on",
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://compare.example/v1/speech/workers-ai/azookey?conversionModel=zenz-v3.2-small-gguf&computeTier=basic&containerModel=small&n5Lm=on",
+      { method: "DELETE", headers: {} },
+    );
+  });
+
+  it("surfaces explicit Container release failures", async () => {
+    await expect(
+      releaseWorkersAiConversion({
+        endpointUrl: "https://compare.example/v1/speech/workers-ai/azookey",
+        fetchImpl: vi.fn(async () => new Response(null, { status: 503 })),
+      }),
+    ).rejects.toThrow("Zenz Container release failed (503)");
   });
 
   it("posts multipart WAV to the explicit compare ASR route", async () => {
@@ -74,7 +100,10 @@ describe("workers-ai-asr-client", () => {
     }
     expect(init.body.get("segmentation")).toBe(WORKERS_AI_ASR_CLIENT_SEGMENTATION);
     expect(init.body.get("model")).toBe("@cf/deepgram/nova-3");
-    expect(init.body.get("conversionModel")).toBe("zenz-v3.2-xsmall-gguf");
+    expect(init.body.get("conversionModel")).toBe("none");
+    expect(init.body.get("computeTier")).toBe("standard");
+    expect(init.body.get("containerModel")).toBe("xsmall");
+    expect(init.body.get("n5Lm")).toBe("off");
   });
 
   it("forwards the Worker reading field when Nova-3 post-processing supplies it", async () => {
@@ -278,9 +307,12 @@ describe("workers-ai-asr-client", () => {
       Promise.resolve(
         Response.json({
           text: "今日",
+          n5Text: "きょう",
           vibratoText: "きょう",
           convertedText: "今日",
-          pipeline: "workers-ai-vibrato-azookey-v2",
+          pipeline: "workers-ai-profiled-azookey-v4",
+          conversionModel: "zenz-v3.2-small-gguf",
+          containerProfile: { computeTier: "basic", modelSize: "small", n5Mode: "on" },
           logs,
         }),
       ),
@@ -290,9 +322,12 @@ describe("workers-ai-asr-client", () => {
       transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), { fetchImpl }),
     ).resolves.toMatchObject({
       text: "今日",
+      n5Text: "きょう",
       vibratoText: "きょう",
       convertedText: "今日",
-      pipeline: "workers-ai-vibrato-azookey-v2",
+      pipeline: "workers-ai-profiled-azookey-v4",
+      conversionModel: "zenz-v3.2-small-gguf",
+      containerProfile: { computeTier: "basic", modelSize: "small", n5Mode: "on" },
       logs,
     });
   });

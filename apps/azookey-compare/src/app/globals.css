@@ -281,7 +281,7 @@ button:disabled {
 .pipeline-visualization {
   display: block;
   width: 100%;
-  min-width: 900px;
+  min-width: 1400px;
 }
 .pipeline-node-title {
   fill: white;
