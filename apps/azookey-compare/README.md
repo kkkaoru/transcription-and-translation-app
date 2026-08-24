@@ -34,6 +34,26 @@ Then open `http://127.0.0.1:3000`. The combined route is:
 POST /v1/speech/workers-ai/azookey
 ```
 
+## Browser audio metrics
+
+The Silero hot path retains its 512-sample chunk, 576-sample model input,
+64-sample context, recurrent state, and sample-rate typed arrays across model
+runs. This mirrors the Native fixed-frame buffer policy without changing VAD
+samples, state, threshold, or ONNX execution.
+
+Run the deterministic baseline/optimized fixture from the repository root:
+
+```bash
+bun run web:metrics
+```
+
+A representative macOS ARM64 five-run median over 1,000,000 Silero chunks
+reduced packing/state-update time from 559 ms to 201 ms (64%) and CPU time from
+597 ms to 201 ms (66%). Hot-path typed array creation fell from 5,000,000 allocations / 5.64 GB of cumulative
+allocation traffic to five allocations / 5.64 KB. These are cumulative bytes,
+not retained RSS. Matching checksums and the real Silero ONNX test verify that
+the samples and recurrent state remain unchanged.
+
 ## Quality checks
 
 ```bash

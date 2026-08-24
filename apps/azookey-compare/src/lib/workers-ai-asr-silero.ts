@@ -67,29 +67,67 @@ export type SileroModelWindow = {
   copyLen: number;
 };
 
+const SILERO_INPUT_SHAPE: readonly number[] = [1, SILERO_INPUT_SAMPLES];
+const SILERO_SAMPLE_RATE_SHAPE: readonly number[] = [];
+
+export interface SileroReusableBuffers {
+  input: Float32Array;
+  chunk: Float32Array;
+  context: Float32Array;
+  state: Float32Array;
+  sampleRate: BigInt64Array<ArrayBuffer>;
+}
+
 const finiteThreshold = (value: unknown, fallback: number): number =>
   typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
 
+export const createSileroReusableBuffers = (): SileroReusableBuffers => ({
+  input: new Float32Array(SILERO_INPUT_SAMPLES),
+  chunk: new Float32Array(SILERO_CHUNK_SAMPLES),
+  context: new Float32Array(SILERO_CONTEXT_SAMPLES),
+  state: new Float32Array(SILERO_STATE_LEN),
+  sampleRate: BigInt64Array.from([BigInt(SILERO_SAMPLE_RATE)]),
+});
+
+export const writeSileroModelWindow = (
+  buffers: Pick<SileroReusableBuffers, "input" | "chunk" | "context">,
+  samples: Float32Array,
+): number => {
+  const copyLen = Math.min(samples.length, SILERO_CHUNK_SAMPLES);
+  buffers.chunk.fill(0);
+  buffers.chunk.set(samples.subarray(0, copyLen), 0);
+  buffers.input.set(buffers.context, 0);
+  buffers.input.set(buffers.chunk, SILERO_CONTEXT_SAMPLES);
+  return copyLen;
+};
+
 export const buildSileroModelWindow = (
   context: Float32Array,
-  samples: ArrayLike<number>,
+  samples: Float32Array,
 ): SileroModelWindow => {
   const chunk = new Float32Array(SILERO_CHUNK_SAMPLES);
   const copyLen = Math.min(samples.length, SILERO_CHUNK_SAMPLES);
-  for (let index = 0; index < copyLen; index += 1) {
-    chunk[index] = samples[index] ?? 0;
-  }
+  chunk.set(samples.subarray(0, copyLen));
   const input = new Float32Array(SILERO_INPUT_SAMPLES);
-  input.set(context.subarray(0, SILERO_CONTEXT_SAMPLES), 0);
+  input.set(context.subarray(0, SILERO_CONTEXT_SAMPLES));
   input.set(chunk, SILERO_CONTEXT_SAMPLES);
   return { input, chunk, copyLen };
 };
 
-export const nextSileroContext = (chunk: Float32Array, copyLen: number): Float32Array => {
-  const context = new Float32Array(SILERO_CONTEXT_SAMPLES);
+export const writeNextSileroContext = (
+  context: Float32Array,
+  chunk: Float32Array,
+  copyLen: number,
+): void => {
   const contextStart = Math.max(0, copyLen - SILERO_CONTEXT_SAMPLES);
   const contextLen = copyLen - contextStart;
+  context.fill(0);
   context.set(chunk.subarray(contextStart, copyLen), SILERO_CONTEXT_SAMPLES - contextLen);
+};
+
+export const nextSileroContext = (chunk: Float32Array, copyLen: number): Float32Array => {
+  const context = new Float32Array(SILERO_CONTEXT_SAMPLES);
+  writeNextSileroContext(context, chunk, copyLen);
   return context;
 };
 
@@ -100,10 +138,11 @@ export const createSileroFeeds = (
   input: Float32Array,
   state: Float32Array,
   sampleRate = SILERO_SAMPLE_RATE,
+  sampleRateData = BigInt64Array.from([BigInt(sampleRate)]),
 ): Record<string, unknown> => ({
-  input: new Tensor("float32", input, [1, SILERO_INPUT_SAMPLES]),
-  sr: new Tensor("int64", BigInt64Array.from([BigInt(sampleRate)]), []),
-  state: new Tensor("float32", state, [...SILERO_STATE_SHAPE]),
+  input: new Tensor("float32", input, SILERO_INPUT_SHAPE),
+  sr: new Tensor("int64", sampleRateData, SILERO_SAMPLE_RATE_SHAPE),
+  state: new Tensor("float32", state, SILERO_STATE_SHAPE),
 });
 
 const firstNumber = (value: ArrayLike<number> | ArrayLike<bigint> | undefined): number => {
@@ -119,16 +158,21 @@ const firstNumber = (value: ArrayLike<number> | ArrayLike<bigint> | undefined): 
 
 export const probabilityFromOrtOutput = (
   outputs: Record<string, SileroTensorLike> | SileroTensorLike[],
+  reusableState?: Float32Array,
 ): { probability: number; nextState?: Float32Array } => {
   const values = Array.isArray(outputs) ? outputs : Object.values(outputs);
   const probability = firstNumber(values[0]?.data);
   const stateData = values[1]?.data;
   let nextState: Float32Array | undefined;
   if (stateData && stateData.length === SILERO_STATE_LEN) {
-    nextState = new Float32Array(SILERO_STATE_LEN);
-    for (let index = 0; index < SILERO_STATE_LEN; index += 1) {
-      const item = stateData[index];
-      nextState[index] = typeof item === "bigint" ? Number(item) : Number(item ?? 0);
+    const target = reusableState ?? new Float32Array(SILERO_STATE_LEN);
+    nextState = target;
+    if (stateData instanceof Float32Array) {
+      target.set(stateData);
+    } else {
+      target.forEach((_, index) => {
+        target[index] = Number(stateData[index] ?? 0);
+      });
     }
   }
   return { probability, nextState };
@@ -148,8 +192,8 @@ export class SileroWasmVadEngine implements VadEngine {
   private session: SileroOrtSession | null = null;
   private ort: SileroOrtRuntime | null = null;
   private initPromise: Promise<void> | null = null;
-  private state: Float32Array = new Float32Array(SILERO_STATE_LEN);
-  private context: Float32Array = new Float32Array(SILERO_CONTEXT_SAMPLES);
+  private processTail: Promise<void> = Promise.resolve();
+  private readonly buffers = createSileroReusableBuffers();
 
   public constructor(options?: SileroWasmVadEngineOptions) {
     this.modelUrl = options?.modelUrl?.trim() || SILERO_VAD_PUBLIC_MODEL_PATH;
@@ -173,7 +217,16 @@ export class SileroWasmVadEngine implements VadEngine {
     await this.initPromise;
   }
 
-  public async process(samples: Float32Array): Promise<VadResult> {
+  public process(samples: Float32Array): Promise<VadResult> {
+    const pending = this.processTail.then(() => this.processSerial(samples));
+    this.processTail = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
+  }
+
+  private async processSerial(samples: Float32Array): Promise<VadResult> {
     if (samples.length === 0) {
       return { probability: 0, isSpeech: false };
     }
@@ -202,8 +255,10 @@ export class SileroWasmVadEngine implements VadEngine {
     this.session = null;
     this.ort = null;
     this.initPromise = null;
-    this.state = new Float32Array(SILERO_STATE_LEN);
-    this.context = new Float32Array(SILERO_CONTEXT_SAMPLES);
+    this.buffers.state.fill(0);
+    this.buffers.context.fill(0);
+    this.buffers.chunk.fill(0);
+    this.buffers.input.fill(0);
     try {
       void session?.release?.();
     } catch {
@@ -227,14 +282,17 @@ export class SileroWasmVadEngine implements VadEngine {
     ort: SileroOrtRuntime,
     samples: Float32Array,
   ): Promise<number> {
-    const window = buildSileroModelWindow(this.context, samples);
-    const feeds = createSileroFeeds(ort.Tensor, window.input, this.state);
+    const copyLen = writeSileroModelWindow(this.buffers, samples);
+    const feeds = createSileroFeeds(
+      ort.Tensor,
+      this.buffers.input,
+      this.buffers.state,
+      SILERO_SAMPLE_RATE,
+      this.buffers.sampleRate,
+    );
     const outputs = await session.run(feeds);
-    const { probability, nextState } = probabilityFromOrtOutput(outputs);
-    if (nextState) {
-      this.state = nextState;
-    }
-    this.context = nextSileroContext(window.chunk, window.copyLen);
+    const { probability } = probabilityFromOrtOutput(outputs, this.buffers.state);
+    writeNextSileroContext(this.buffers.context, this.buffers.chunk, copyLen);
     return probability;
   }
 }

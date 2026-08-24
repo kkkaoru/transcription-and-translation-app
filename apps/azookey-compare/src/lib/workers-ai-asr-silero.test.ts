@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSileroModelWindow,
   createSileroFeeds,
+  createSileroReusableBuffers,
   nextSileroContext,
   probabilityFromOrtOutput,
   type SileroOrtRuntime,
@@ -12,6 +13,8 @@ import {
   type SileroTensorLike,
   SileroWasmVadEngine,
   sileroStateTensorShape,
+  writeNextSileroContext,
+  writeSileroModelWindow,
 } from "./workers-ai-asr-silero";
 import { SILERO_VAD_PUBLIC_MODEL_PATH } from "./workers-ai-asr-silero-paths";
 import {
@@ -87,6 +90,34 @@ describe("Silero tensor packing matches Parapper engine.rs", () => {
     expect(Array.from(sr.data as BigInt64Array)).toEqual([BigInt(SILERO_SAMPLE_RATE)]);
     expect(state.dims).toEqual([2, 1, 128]);
     expect(state.data.length).toBe(SILERO_STATE_LEN);
+  });
+
+  it("reuses model, context, state, and sample-rate buffers across chunks", () => {
+    const buffers = createSileroReusableBuffers();
+    const input = buffers.input;
+    const chunk = buffers.chunk;
+    const context = buffers.context;
+    const state = buffers.state;
+    const sampleRate = buffers.sampleRate;
+    const samples = Float32Array.from({ length: SILERO_CHUNK_SAMPLES }, (_, index) => index / 10);
+
+    expect(writeSileroModelWindow(buffers, samples)).toBe(SILERO_CHUNK_SAMPLES);
+    writeNextSileroContext(buffers.context, buffers.chunk, SILERO_CHUNK_SAMPLES);
+    const parsed = probabilityFromOrtOutput(
+      {
+        output: { data: new Float32Array([0.75]) },
+        stateN: { data: new Float32Array(SILERO_STATE_LEN).fill(0.25) },
+      },
+      buffers.state,
+    );
+    expect(buffers.input).toBe(input);
+    expect(buffers.chunk).toBe(chunk);
+    expect(buffers.context).toBe(context);
+    expect(buffers.state).toBe(state);
+    expect(buffers.sampleRate).toBe(sampleRate);
+    expect(parsed.nextState).toBe(state);
+    expect(buffers.context[0]).toBeCloseTo(samples[SILERO_CHUNK_SAMPLES - 64] ?? 0);
+    expect(buffers.state[0]).toBeCloseTo(0.25);
   });
 
   it("reads probability scalar and next state from ORT outputs", () => {
