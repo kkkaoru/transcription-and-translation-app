@@ -30,6 +30,41 @@ strings/style only when output actually changes; unchanged polls do not create
 Browser Source, native-output, or output-window handoff copies. These changes
 mirror the browser pipeline's single-parse and changed-value-only resource
 policy without importing its HTTP, Durable Object, or GGUF-specific layers.
+Unchanged caption-output window checks are limited to four per second while
+caption changes still publish immediately.
+
+## Runtime metrics
+
+Run the deterministic production-helper A/B fixture:
+
+```bash
+bun run native:metrics
+```
+
+It builds `native_runtime_metrics` in release mode, runs baseline and optimized
+workloads five million times, and reports wall time, PCM buffer allocations,
+caption clones, and output-window checks as privacy-safe JSON. macOS/Linux also
+report process CPU time and maximum RSS through `/usr/bin/time`; those two
+fields are `null` for the Windows fixture. The fixture calls the same normalization, caption-change, and output-check helpers
+used by the app. A representative macOS ARM64 five-run median reduced the
+CPU-bound workload from 435 ms to 142 ms (67%), process CPU time from 0.43 s to
+0.14 s (67%), PCM allocations from 5,000,000 to one, caption clone operations
+from 25,322,582 to 1,129,037, and output-window checks from 5,000,000 to 645,162.
+Peak RSS was essentially flat at about 11 MiB because the allocator reused
+released blocks; the improvement is reduced allocation churn rather than a
+large retained-memory change.
+
+Sample an actual running Native process while idle or capturing:
+
+```bash
+bun scripts/benchmark-native-runtime.mjs sample --pid PID --seconds 10
+```
+
+The sampler supports macOS/Linux `ps` and Windows PowerShell, and reports
+average/p50/p95/max CPU and resident memory without recording captions or
+audio. A representative idle macOS run used about 81.9 MiB RSS, averaged below
+0.01% CPU, and peaked at 0.1% CPU. Active-capture numbers remain dependent on
+the selected microphone, models, and OS audio permissions.
 
 ## Identity
 

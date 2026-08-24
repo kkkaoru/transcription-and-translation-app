@@ -56,11 +56,19 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     let app = include_str!("app.rs");
     assert!(app.contains("IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250)"));
     assert!(app.contains("ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(32)"));
+    assert!(app.contains("should_check_output_window"));
+
+    let hot_path = include_str!("hot_path.rs");
+    assert!(
+        hot_path.contains("OUTPUT_WINDOW_HEALTH_INTERVAL: Duration = Duration::from_millis(250)")
+    );
+    assert!(hot_path.contains("NATIVE_PCM_FRAME_SAMPLES: usize = 512"));
 
     let capture = include_str!("capture.rs");
     assert!(capture.contains("RMS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100)"));
     assert!(capture.contains("TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(600)"));
     assert!(capture.contains("receiver.recv_timeout(TRANSLATOR_IDLE_TIMEOUT)"));
+    assert!(capture.contains("Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES)"));
 }
 
 #[test]

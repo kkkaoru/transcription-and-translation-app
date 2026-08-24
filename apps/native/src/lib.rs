@@ -2,6 +2,7 @@
 mod capture;
 mod debug_surfaces;
 mod domain;
+pub mod hot_path;
 
 #[cfg(feature = "gpui")]
 mod app;

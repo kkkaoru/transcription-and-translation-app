@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(unix)]
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use caption_bridge_browser_source::{BrowserSourceConfig, BrowserSourceServer, BrowserSourceStyle};
 use caption_bridge_dictionary::CustomDictionaryEntry;
@@ -32,6 +32,7 @@ use crate::domain::{
     BUNDLE_ID, DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FLAG_HELP,
     MIN_WINDOW_HEIGHT_PX, MIN_WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX, WINDOW_TITLE, WINDOW_WIDTH_PX,
 };
+use crate::hot_path::{caption_changed, should_check_output_window, OUTPUT_WINDOW_HEALTH_INTERVAL};
 use crate::i18n::{text, TextKey};
 use crate::live::{render_live, LiveCallbacks};
 use crate::output::{render_output, OutputCallbacks};
@@ -83,6 +84,7 @@ pub struct MainView {
     device_select_open: bool,
     last_published_caption: Option<(String, String)>,
     last_browser_caption: Option<(String, String)>,
+    last_output_window_check: Instant,
     browser_source: BrowserSourceServer,
     _quit_subscription: Subscription,
 }
@@ -95,10 +97,6 @@ enum FocusField {
     Font,
     PreviewSource,
     PreviewTranslation,
-}
-
-fn caption_changed(previous: Option<&(String, String)>, source: &str, translation: &str) -> bool {
-    previous.is_none_or(|caption| caption.0 != source || caption.1 != translation)
 }
 
 impl CaptionOutputView {
@@ -200,6 +198,7 @@ impl MainView {
             device_select_open: false,
             last_published_caption: None,
             last_browser_caption: None,
+            last_output_window_check: Instant::now() - OUTPUT_WINDOW_HEALTH_INTERVAL,
             browser_source,
             _quit_subscription: quit_subscription,
         }
@@ -787,6 +786,13 @@ pub fn run() {
             let update = window_handle.update(cx, |view, _window, cx| {
                 let capture_changed = view.capture.poll(view.app_settings.caption_timeout_ms);
                 let output_changed = view.publish_live_caption();
+                let check_output_window = should_check_output_window(
+                    output_changed,
+                    view.last_output_window_check.elapsed(),
+                );
+                if check_output_window {
+                    view.last_output_window_check = Instant::now();
+                }
                 let snapshot = view.capture.snapshot();
                 let output = output_changed.then(|| {
                     (
@@ -803,29 +809,30 @@ pub fn run() {
                 } else {
                     IDLE_POLL_INTERVAL
                 };
-                (output, poll_interval)
+                (output, check_output_window, poll_interval)
             });
-            let Ok((output, poll_interval)) = update else {
+            let Ok((output, check_output_window, poll_interval)) = update else {
                 break;
             };
-            let output_closed = output_window.as_ref().is_some_and(|handle| {
-                handle
-                    .update(cx, move |view, window, cx| {
-                        let Some((source, translation, style)) = output else {
-                            return;
-                        };
-                        if view.replace_caption(
-                            source,
-                            translation,
-                            style,
-                            window.scale_factor(),
-                            window,
-                        ) {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-            });
+            let output_closed = check_output_window
+                && output_window.as_ref().is_some_and(|handle| {
+                    handle
+                        .update(cx, move |view, window, cx| {
+                            let Some((source, translation, style)) = output else {
+                                return;
+                            };
+                            if view.replace_caption(
+                                source,
+                                translation,
+                                style,
+                                window.scale_factor(),
+                                window,
+                            ) {
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                });
             if output_closed {
                 output_window = None;
             }
@@ -834,19 +841,4 @@ pub fn run() {
         .detach();
     });
     drop(instance_guard);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::caption_changed;
-
-    #[test]
-    fn caption_change_detection_avoids_unchanged_string_clones() {
-        let previous = ("こんにちは".to_string(), "Hello".to_string());
-
-        assert!(!caption_changed(Some(&previous), "こんにちは", "Hello"));
-        assert!(caption_changed(Some(&previous), "こんばんは", "Hello"));
-        assert!(caption_changed(Some(&previous), "こんにちは", "Hi"));
-        assert!(caption_changed(None, "", ""));
-    }
 }
