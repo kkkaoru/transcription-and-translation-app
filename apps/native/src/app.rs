@@ -97,6 +97,10 @@ enum FocusField {
     PreviewTranslation,
 }
 
+fn caption_changed(previous: Option<&(String, String)>, source: &str, translation: &str) -> bool {
+    previous.is_none_or(|caption| caption.0 != source || caption.1 != translation)
+}
+
 impl CaptionOutputView {
     fn new(style: NativeStyleSettings, scale_factor: f32) -> Self {
         let image = render_image(rasterize_live_caption_at_scale(&style, "", "", scale_factor));
@@ -201,23 +205,33 @@ impl MainView {
         }
     }
 
-    fn publish_live_caption(&mut self) {
+    fn publish_live_caption(&mut self) -> bool {
         let snapshot = self.capture.snapshot();
-        let caption = (snapshot.source_text.clone(), snapshot.translation_text.clone());
-        if self.last_browser_caption.as_ref() != Some(&caption) {
-            self.browser_source.feed(&caption.0, &caption.1);
-            self.last_browser_caption = Some(caption.clone());
+        let source = snapshot.source_text.as_str();
+        let translation = snapshot.translation_text.as_str();
+        let browser_changed =
+            caption_changed(self.last_browser_caption.as_ref(), source, translation);
+        if browser_changed {
+            self.browser_source.feed(source, translation);
+            self.last_browser_caption = Some((source.to_string(), translation.to_string()));
         }
-        match self.surfaces.borrow_mut().publish_caption(
+        let surface_changed = match self.surfaces.borrow_mut().publish_caption(
             &self.style,
-            &caption.0,
-            &caption.1,
+            source,
+            translation,
             self.last_published_caption.as_ref(),
         ) {
-            Ok(Some(_)) => self.last_published_caption = Some(caption),
-            Ok(None) => {}
-            Err(error) => self.persist_error = Some(error),
-        }
+            Ok(Some(_)) => {
+                self.last_published_caption = Some((source.to_string(), translation.to_string()));
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                self.persist_error = Some(error);
+                false
+            }
+        };
+        browser_changed || surface_changed
     }
 
     fn select_tab(&mut self, tab: AppTab) {
@@ -772,10 +786,15 @@ pub fn run() {
             }
             let update = window_handle.update(cx, |view, _window, cx| {
                 let capture_changed = view.capture.poll(view.app_settings.caption_timeout_ms);
-                view.publish_live_caption();
+                let output_changed = view.publish_live_caption();
                 let snapshot = view.capture.snapshot();
-                let caption = (snapshot.source_text.clone(), snapshot.translation_text.clone());
-                let style = view.style.clone();
+                let output = output_changed.then(|| {
+                    (
+                        snapshot.source_text.clone(),
+                        snapshot.translation_text.clone(),
+                        view.style.clone(),
+                    )
+                });
                 if capture_changed && view.tab == AppTab::Live {
                     cx.notify();
                 }
@@ -784,17 +803,20 @@ pub fn run() {
                 } else {
                     IDLE_POLL_INTERVAL
                 };
-                (caption, style, poll_interval)
+                (output, poll_interval)
             });
-            let Ok((caption, style, poll_interval)) = update else {
+            let Ok((output, poll_interval)) = update else {
                 break;
             };
             let output_closed = output_window.as_ref().is_some_and(|handle| {
                 handle
-                    .update(cx, |view, window, cx| {
+                    .update(cx, move |view, window, cx| {
+                        let Some((source, translation, style)) = output else {
+                            return;
+                        };
                         if view.replace_caption(
-                            caption.0,
-                            caption.1,
+                            source,
+                            translation,
                             style,
                             window.scale_factor(),
                             window,
@@ -812,4 +834,19 @@ pub fn run() {
         .detach();
     });
     drop(instance_guard);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caption_changed;
+
+    #[test]
+    fn caption_change_detection_avoids_unchanged_string_clones() {
+        let previous = ("こんにちは".to_string(), "Hello".to_string());
+
+        assert!(!caption_changed(Some(&previous), "こんにちは", "Hello"));
+        assert!(caption_changed(Some(&previous), "こんばんは", "Hello"));
+        assert!(caption_changed(Some(&previous), "こんにちは", "Hi"));
+        assert!(caption_changed(None, "", ""));
+    }
 }

@@ -283,6 +283,7 @@ fn run_capture_inner(
     capture.start(device_id.as_deref()).map_err(format_audio_start_error)?;
     let _ = event_tx.send(WorkerEvent::Status(CaptureStatus::Capturing));
     let mut recognition_text = String::new();
+    let mut normalized_samples = Vec::new();
     let mut last_rms_publish = Instant::now() - RMS_PUBLISH_INTERVAL;
 
     loop {
@@ -294,9 +295,9 @@ fn run_capture_inner(
         loop {
             match capture.try_next_frame() {
                 Ok(Some(frame)) => {
-                    let samples = pcm16_to_f32(&frame);
+                    convert_pcm16_into(&frame, &mut normalized_samples);
                     let events = engine
-                        .push_audio(&samples)
+                        .push_audio(&normalized_samples)
                         .map_err(|error| format!("Speech recognition failed: {error:#}"))?;
                     publish_engine_events(
                         events,
@@ -398,8 +399,9 @@ fn native_audio_config() -> AudioCaptureConfig {
     AudioCaptureConfig { chunk_ms: PARAPPER_VAD_INTERVAL_MS, ..AudioCaptureConfig::default() }
 }
 
-fn pcm16_to_f32(samples: &[i16]) -> Vec<f32> {
-    samples.iter().map(|sample| f32::from(*sample) / 32_768.0).collect()
+fn convert_pcm16_into(samples: &[i16], output: &mut Vec<f32>) {
+    output.clear();
+    output.extend(samples.iter().map(|sample| f32::from(*sample) / 32_768.0));
 }
 
 fn publish_engine_events(
@@ -458,13 +460,23 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        apply_caption_update, pcm16_to_f32, CaptionUpdateMode, CaptureController, CaptureSnapshot,
-        WorkerEvent, MAX_CAPTION_CHARACTERS,
+        apply_caption_update, convert_pcm16_into, CaptionUpdateMode, CaptureController,
+        CaptureSnapshot, WorkerEvent, MAX_CAPTION_CHARACTERS,
     };
 
     #[test]
-    fn pcm16_conversion_preserves_full_scale_contract() {
-        assert_eq!(pcm16_to_f32(&[-32_768, 0, 16_384, 32_767]), vec![-1.0, 0.0, 0.5, 0.9999695]);
+    fn pcm16_conversion_preserves_full_scale_contract_and_reuses_capacity() {
+        let mut output = Vec::new();
+        convert_pcm16_into(&[-32_768, 0, 16_384, 32_767], &mut output);
+        assert_eq!(output, vec![-1.0, 0.0, 0.5, 0.9999695]);
+        let capacity = output.capacity();
+        let allocation = output.as_ptr();
+
+        convert_pcm16_into(&[8_192, -8_192], &mut output);
+
+        assert_eq!(output, vec![0.25, -0.25]);
+        assert_eq!(output.capacity(), capacity);
+        assert_eq!(output.as_ptr(), allocation);
     }
 
     #[test]

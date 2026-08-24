@@ -23,6 +23,14 @@ Kotoba Beacon Native
 
 There is no recognition sidecar, child-process supervisor, recognition WebSocket, or JSON IPC. Threads communicate through bounded in-memory queues.
 
+The hot capture loop reuses one PCM16-to-f32 normalization buffer across every
+32 ms microphone frame instead of allocating roughly 31 vectors per second.
+The 32 ms active UI poll also borrows the current caption and clones caption
+strings/style only when output actually changes; unchanged polls do not create
+Browser Source, native-output, or output-window handoff copies. These changes
+mirror the browser pipeline's single-parse and changed-value-only resource
+policy without importing its HTTP, Durable Object, or GGUF-specific layers.
+
 ## Identity
 
 | Field | Value |
