@@ -1263,7 +1263,44 @@ describe("AzooKey Worker text contract", () => {
     expect(result.completionSkipReason).toBeUndefined();
   });
 
-  it("defers dictionary materialization and caps low-CPU completion tokens", async () => {
+  it("skips GGUF when every lattice candidate has the same output", async () => {
+    const fetcher = vi.fn();
+    const close = vi.fn();
+    const converter: AzookeyConverter = Object.assign(() => "漢字", {
+      openLattice: () => ({
+        searchOutputPrefix: () => "漢字",
+        isOutputPrefixUnique: () => true,
+        close,
+      }),
+    });
+    const result = await convertAzookeyMessage(
+      parseAzookeyMessage(
+        JSON.stringify({
+          ...valid,
+          model: AZOOKEY_ZENZ_SMALL_MODEL,
+          leftContext: "前文です。",
+        }),
+      ),
+      {
+        timeoutMs: 250,
+        converter,
+        modelRoutes: {
+          [AZOOKEY_ZENZ_SMALL_MODEL]: { baseUrl: "https://zenz.example" },
+        },
+        fetcher,
+      },
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      convertedText: "漢字",
+      model: AZOOKEY_ZENZ_SMALL_MODEL,
+      usedCompletion: false,
+      completionSkipReason: "unambiguous-lattice",
+    });
+  });
+
+  it("prepares the dictionary lattice before a bounded low-CPU completion", async () => {
     const phases: string[] = [];
     const requests: string[] = [];
     const converter: AzookeyConverter = Object.assign(
@@ -1304,7 +1341,7 @@ describe("AzooKey Worker text contract", () => {
         },
       },
     );
-    expect(phases).toStrictEqual(["zenz", "dictionary", "lattice"]);
+    expect(phases).toStrictEqual(["dictionary", "lattice", "zenz"]);
     expect(JSON.parse(requests[0] ?? "{}")).toMatchObject({ n_predict: 32 });
     expect(result.usedCompletion).toBe(true);
   });

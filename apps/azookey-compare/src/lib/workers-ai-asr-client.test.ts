@@ -104,6 +104,20 @@ describe("workers-ai-asr-client", () => {
     expect(init.body.get("computeTier")).toBe("standard");
     expect(init.body.get("containerModel")).toBe("xsmall");
     expect(init.body.get("n5Lm")).toBe("off");
+    expect(init.body.get("userLexicon")).toBe("on");
+  });
+
+  it("disables user-lexicon RPC when the loaded dictionary is empty", async () => {
+    const fetchImpl = vi.fn((_url, init) => {
+      if (!(init?.body instanceof FormData)) throw new Error("expected multipart form data");
+      expect(init.body.get("userLexicon")).toBe("off");
+      return Promise.resolve(Response.json({ text: "辞書なし" }));
+    });
+    await transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), {
+      useUserLexicon: false,
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("forwards the Worker reading field when Nova-3 post-processing supplies it", async () => {

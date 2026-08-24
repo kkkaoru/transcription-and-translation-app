@@ -31,6 +31,7 @@ export interface SpeechPipelineConversionInput {
   model: Exclude<ZenzConversionModel, "none">;
   leftContext: string;
   profile: ZenzContainerProfile;
+  useUserLexicon: boolean;
 }
 
 export interface SpeechPipelineConversionResult {
@@ -43,6 +44,24 @@ export interface SpeechPipelineConversionResult {
 export interface SpeechPipelineN5Result {
   text: string;
   model: "input_n5_lm_v1";
+  elapsedMs: number;
+}
+
+interface SettledSpeechPipelineConversion {
+  result?: SpeechPipelineConversionResult;
+  error?: unknown;
+}
+
+interface FinalizeConversionOptions {
+  dependencies: WorkersAiSpeechPipelineDependencies;
+  input: SpeechPipelineConversionInput;
+  speculativeInput: string;
+  speculativeStartedAt: number;
+  speculative: Promise<SettledSpeechPipelineConversion>;
+}
+
+interface TimedSpeechPipelineConversion {
+  result: SpeechPipelineConversionResult;
   elapsedMs: number;
 }
 
@@ -104,7 +123,7 @@ const invalidProfileResponse = (): Response =>
   json(HTTP_BAD_REQUEST, {
     error: {
       code: "invalid_container_profile",
-      message: "computeTier, n5Lm, conversionModel, and containerModel are invalid",
+      message: "computeTier, n5Lm, conversionModel, containerModel, and userLexicon are invalid",
     },
   });
 
@@ -113,6 +132,38 @@ const pipelineResponse = (
   fields: Record<string, unknown>,
 ): Response => json(HTTP_OK, { ...asr, pipeline: WORKERS_AI_SPEECH_PIPELINE_ID, ...fields });
 
+const settleConversion = async (
+  conversion: Promise<SpeechPipelineConversionResult>,
+): Promise<SettledSpeechPipelineConversion> => {
+  try {
+    return { result: await conversion };
+  } catch (error) {
+    return { error };
+  }
+};
+
+const settledResult = (
+  settled: SettledSpeechPipelineConversion,
+): SpeechPipelineConversionResult => {
+  if (settled.result) return settled.result;
+  throw settled.error;
+};
+
+const finalizeConversion = async (
+  options: FinalizeConversionOptions,
+): Promise<TimedSpeechPipelineConversion> => {
+  if (options.input.text === options.speculativeInput) {
+    return {
+      result: settledResult(await options.speculative),
+      elapsedMs: Math.max(0, performance.now() - options.speculativeStartedAt),
+    };
+  }
+  const finalStartedAt = performance.now();
+  const finalConversion = options.dependencies.convert(options.input);
+  const [, result] = await Promise.all([options.speculative, finalConversion]);
+  return { result, elapsedMs: Math.max(0, performance.now() - finalStartedAt) };
+};
+
 export const handleWorkersAiSpeechPipeline = async (
   request: Request,
   dependencies: WorkersAiSpeechPipelineDependencies,
@@ -120,7 +171,14 @@ export const handleWorkersAiSpeechPipeline = async (
   const metadataRequest = request.clone();
   const form = await metadataRequest.formData();
   const conversionModel = parseConversionModel(form.get("conversionModel"));
-  if (!conversionModel) return invalidProfileResponse();
+  const userLexiconValue = form.get("userLexicon");
+  if (
+    !conversionModel ||
+    (userLexiconValue !== null && userLexiconValue !== "on" && userLexiconValue !== "off")
+  ) {
+    return invalidProfileResponse();
+  }
+  const useUserLexicon = userLexiconValue !== "off";
   const profile = parseZenzContainerProfile(form, conversionModel);
   if (!profile) return invalidProfileResponse();
   const requestedLanguageValue = form.get("language");
@@ -189,6 +247,19 @@ export const handleWorkersAiSpeechPipeline = async (
       output: vibratoText,
       elapsedMs: Math.max(0, performance.now() - vibratoStartedAt),
     });
+    const speculativeStartedAt = performance.now();
+    const speculative =
+      conversionModel === "none"
+        ? undefined
+        : settleConversion(
+            dependencies.convert({
+              text: vibratoText,
+              model: conversionModel,
+              leftContext,
+              profile,
+              useUserLexicon,
+            }),
+          );
     const n5Result: SpeechPipelineN5Result =
       profile.n5Mode === "on"
         ? await dependencies.rescoreN5(vibratoText, profile)
@@ -213,19 +284,26 @@ export const handleWorkersAiSpeechPipeline = async (
       });
     }
 
-    const azookeyStartedAt = performance.now();
-    const conversion = await dependencies.convert({
-      text: n5Result.text,
-      model: conversionModel,
-      leftContext,
-      profile,
+    if (!speculative) throw new Error("AzooKey speculative conversion is unavailable");
+    const conversion = await finalizeConversion({
+      dependencies,
+      input: {
+        text: n5Result.text,
+        model: conversionModel,
+        leftContext,
+        profile,
+        useUserLexicon,
+      },
+      speculativeInput: vibratoText,
+      speculativeStartedAt,
+      speculative,
     });
     logs.push({
       stage: "azookey",
-      engine: conversion.model,
+      engine: conversion.result.model,
       input: n5Result.text,
-      output: conversion.text,
-      elapsedMs: Math.max(0, performance.now() - azookeyStartedAt),
+      output: conversion.result.text,
+      elapsedMs: conversion.elapsedMs,
     });
     // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured pipeline logs
     console.log(JSON.stringify({ event: "speech_pipeline", profile, logs }));
@@ -233,9 +311,11 @@ export const handleWorkersAiSpeechPipeline = async (
       ...commonFields,
       n5Text: n5Result.text,
       vibratoText,
-      convertedText: conversion.text,
-      usedCompletion: conversion.usedCompletion,
-      ...(conversion.modelFallback ? { modelFallback: conversion.modelFallback } : {}),
+      convertedText: conversion.result.text,
+      usedCompletion: conversion.result.usedCompletion,
+      ...(conversion.result.modelFallback
+        ? { modelFallback: conversion.result.modelFallback }
+        : {}),
       logs,
     });
   } catch (error) {

@@ -17,6 +17,15 @@ The response contains `text`, `vibratoText`, `n5Text`, `convertedText`, `pipelin
 
 The browser does not execute ASR, Vibrato, morphology, or AzooKey. It only captures audio, uses Silero to create bounded utterances, sends WAV, and renders the returned JSON.
 
+N5 and GGUF start speculatively in parallel. The speculative conversion is
+accepted only when N5 leaves the reading unchanged; a corrected reading is
+converted again. After the dictionary panel confirms that the Worker-owned
+user lexicon is empty, the browser sends `userLexicon=off`, allowing inference
+to skip the cold Durable Object metadata/snapshot RPC while retaining the
+system dictionary. A non-empty lexicon automatically uses the revisioned RPC
+path. Lattices with only one distinct output skip GGUF because the model cannot
+select another valid candidate.
+
 ## Assets
 
 - `wasm/vibrato_wasm_bg.wasm`

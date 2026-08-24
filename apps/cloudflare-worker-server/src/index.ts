@@ -134,10 +134,10 @@ const LOCAL_GATEWAY_PORT = 8765;
 const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
 /** Upper bound for the parapper ASR upstream JSON body before it is parsed. */
 const ASR_MAX_RESPONSE_BYTES = 65_536;
-const PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS = 3_500;
-const PIPELINE_STANDARD_ZENZ_TIMEOUT_MS = 2_500;
-const PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS = 3_500;
-const PIPELINE_BASIC_ZENZ_TIMEOUT_MS = 2_500;
+const PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS = 4_500;
+const PIPELINE_STANDARD_ZENZ_TIMEOUT_MS = 3_500;
+const PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS = 4_500;
+const PIPELINE_BASIC_ZENZ_TIMEOUT_MS = 3_500;
 const PIPELINE_DICTIONARY_FALLBACK_TIMEOUT_MS = 3_000;
 // Keep entrypoint exports limited to the Worker handler/function shapes that
 // workerd accepts. Tests use the protocol path literal instead of exporting a
@@ -739,7 +739,7 @@ export const createWorker = (
               const result = await parseN5Response(response);
               return { ...result, model: "input_n5_lm_v1" };
             },
-            convert: async ({ text, model, leftContext, profile }) => {
+            convert: async ({ text, model, leftContext, profile, useUserLexicon }) => {
               const baseUrl = profileBaseUrl(env, model, profile);
               if (!baseUrl) throw new Error("Selected GGUF profile is unavailable");
               const configuredRoutes = parseModelRoutes(env.MODEL_ROUTES);
@@ -770,7 +770,7 @@ export const createWorker = (
                 zenzNPredict: zenzCompletionTokenBudget(text, profile.computeTier),
                 modelRoutes: { ...configuredRoutes, [model]: { ...selectedRoute, baseUrl } },
                 fetcher: fetchers.fetcher,
-                userLexicon,
+                ...(useUserLexicon ? { userLexicon } : {}),
                 wsOrHttp: "http",
               }).catch(async (error: unknown) => {
                 if (
@@ -785,7 +785,7 @@ export const createWorker = (
                     converter,
                     timeoutMs: PIPELINE_DICTIONARY_FALLBACK_TIMEOUT_MS,
                     fetcher: fetchers.fetcher,
-                    userLexicon,
+                    ...(useUserLexicon ? { userLexicon } : {}),
                     wsOrHttp: "http",
                   },
                 );

@@ -113,6 +113,79 @@ describe("Workers AI speech pipeline", () => {
       model: "zenz-v3.2-xsmall-gguf",
       leftContext: "",
       profile: { computeTier: "standard", modelSize: "xsmall", n5Mode: "on" },
+      useUserLexicon: true,
+    });
+  });
+
+  it("bypasses the user lexicon only when the browser confirms it is empty", async () => {
+    const form = await request().formData();
+    form.set("userLexicon", "off");
+    const convert = vi.fn(xsmallConvert);
+    const response = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {
+        asrEnvironment: {},
+        run: vi.fn(asrRun),
+        vibrato: identityVibrato,
+        rescoreN5: identityN5,
+        convert,
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(convert).toHaveBeenCalledWith({
+      text: "きょうはいいてんき",
+      model: "zenz-v3.2-xsmall-gguf",
+      leftContext: "",
+      profile: { computeTier: "standard", modelSize: "xsmall", n5Mode: "off" },
+      useUserLexicon: false,
+    });
+  });
+
+  it("restarts conversion with corrected N5 text after a speculative mismatch", async () => {
+    const form = await request().formData();
+    form.set("n5Lm", "on");
+    const convert = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: "今日はいい天気",
+        model: "zenz-v3.2-xsmall-gguf",
+        usedCompletion: true,
+      })
+      .mockResolvedValueOnce({
+        text: "おはようございます",
+        model: "zenz-v3.2-xsmall-gguf",
+        usedCompletion: true,
+      });
+    const response = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {
+        asrEnvironment: {},
+        run: vi.fn(asrRun),
+        vibrato: identityVibrato,
+        rescoreN5: () =>
+          Promise.resolve({
+            text: "おはようございます",
+            model: "input_n5_lm_v1",
+            elapsedMs: 2,
+          }),
+        convert,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(convert).toHaveBeenCalledTimes(2);
+    expect(convert.mock.calls[0]?.[0].text).toBe("きょうはいいてんき");
+    expect(convert.mock.calls[1]?.[0].text).toBe("おはようございます");
+    expect(await response.json()).toMatchObject({
+      n5Text: "おはようございます",
+      convertedText: "おはようございます",
+      logs: [{ stage: "asr" }, { stage: "vibrato" }, { stage: "n5_lm" }, { stage: "azookey" }],
     });
   });
 
@@ -241,6 +314,27 @@ describe("Workers AI speech pipeline", () => {
   it("validates profile fields before invoking paid ASR", async () => {
     const form = await request().formData();
     form.set("computeTier", "other");
+    const run = vi.fn(asrRun);
+    const response = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {
+        asrEnvironment: {},
+        run,
+        vibrato: identityVibrato,
+        rescoreN5: identityN5,
+        convert: xsmallConvert,
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid user-lexicon selector before paid ASR", async () => {
+    const form = await request().formData();
+    form.set("userLexicon", "invalid");
     const run = vi.fn(asrRun);
     const response = await handleWorkersAiSpeechPipeline(
       new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {

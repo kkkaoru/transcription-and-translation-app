@@ -28,6 +28,7 @@ export const REQUIRED_WASM_EXPORTS = [
   "azookey_dictionary_init_owned",
   "azookey_lattice_open",
   "azookey_lattice_search_output_prefix",
+  "azookey_lattice_output_is_unique",
   "azookey_lattice_close",
   "azookey_lattice_live_count",
   "azookey_lattice_opened_count",

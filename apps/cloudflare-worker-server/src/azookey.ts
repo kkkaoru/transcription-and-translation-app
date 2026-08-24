@@ -56,9 +56,11 @@ export type AzookeyModelFallback =
 /** Zenz was requested but the completion was never inspected. */
 export const AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT = "empty-left-context";
 export const AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE = "lattice-unavailable";
+export const AZOOKEY_COMPLETION_SKIPPED_UNAMBIGUOUS_LATTICE = "unambiguous-lattice";
 export type AzookeyCompletionSkipReason =
   | typeof AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT
-  | typeof AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE;
+  | typeof AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE
+  | typeof AZOOKEY_COMPLETION_SKIPPED_UNAMBIGUOUS_LATTICE;
 export const AZOOKEY_MODE = "worker-vibrato" as const;
 export const BROWSER_VIBRATO_MODE = "browser-vibrato" as const;
 /** Where the Vibrato pre-pass is executed for a comparison request. */
@@ -165,6 +167,33 @@ export interface AzookeyTimingFields {
 interface ZenzHttpSuccess {
   reason: typeof AZOOKEY_ZENZ_HTTP_REASON_OK;
   content: string;
+}
+
+interface ZenzCompletionRequestOptions {
+  model: AzookeyConvertModel;
+  text: string;
+  runtime: AzookeyRuntime;
+  nPredict: number;
+  leftContext: string;
+  signal?: AbortSignal;
+}
+
+interface ZenzLatticeRequestOptions {
+  model: AzookeyConvertModel;
+  text: string;
+  leftContext: string;
+  baseline: string;
+  requestId: string;
+  runtime: AzookeyRuntime;
+  lattice: AzookeyLatticeSession | undefined;
+  remainingMs: () => number;
+  wsOrHttp: AzookeyTimingChannel;
+}
+
+interface ZenzLatticeResult {
+  text: string;
+  usedCompletion: boolean;
+  completionSkipReason?: AzookeyCompletionSkipReason;
 }
 
 interface ZenzHttpFailure {
@@ -422,6 +451,11 @@ export interface AzookeyWasmExports {
     beam: number,
     nBest: number,
   ) => bigint | number;
+  azookey_lattice_output_is_unique?: (
+    handle: number,
+    prefixPointer: number,
+    prefixLength: number,
+  ) => number;
   azookey_lattice_close?: (handle: number) => number;
   azookey_lattice_live_count?: () => number;
 }
@@ -471,6 +505,7 @@ export type AzookeyConverter = ((
 
 export interface AzookeyLatticeSession {
   searchOutputPrefix: (prefix: Uint8Array) => string | undefined;
+  isOutputPrefixUnique?: (prefix: Uint8Array) => boolean;
   close: () => void;
 }
 
@@ -1294,6 +1329,7 @@ const instantiateWasmConverter = (
   ) {
     const latticeOpen = checkedExports.azookey_lattice_open;
     const latticeSearch = checkedExports.azookey_lattice_search_output_prefix;
+    const latticeUnique = checkedExports.azookey_lattice_output_is_unique;
     const latticeClose = checkedExports.azookey_lattice_close;
     converter.openLattice = (text, preceding, lexiconHandle) => {
       const bytes = encoder.encode(text);
@@ -1361,10 +1397,29 @@ const instantiateWasmConverter = (
             checkedExports.azookey_dealloc(prefixPointer, prefix.byteLength);
           }
         },
+        ...(typeof latticeUnique === "function"
+          ? {
+              isOutputPrefixUnique: (prefix: Uint8Array): boolean => {
+                if (closed) return false;
+                const prefixPointer = checkedExports.azookey_alloc(prefix.byteLength);
+                if (prefixPointer === 0 && prefix.byteLength !== 0) {
+                  throw new Error("AzooKey Wasm lattice prefix allocation failed");
+                }
+                try {
+                  new Uint8Array(
+                    checkedExports.memory.buffer,
+                    prefixPointer,
+                    prefix.byteLength,
+                  ).set(prefix);
+                  return latticeUnique(handle, prefixPointer, prefix.byteLength) === 1;
+                } finally {
+                  checkedExports.azookey_dealloc(prefixPointer, prefix.byteLength);
+                }
+              },
+            }
+          : {}),
         close: () => {
-          if (closed) {
-            return;
-          }
+          if (closed) return;
           closed = true;
           latticeClose(handle);
         },
@@ -1996,20 +2051,17 @@ const zenzContentFromPayload = (payload: unknown): string | undefined => {
 };
 
 const requestZenzCompletion = async (
-  model: AzookeyConvertModel,
-  text: string,
-  runtime: AzookeyRuntime,
-  signal?: AbortSignal,
-  leftContext = "",
+  options: ZenzCompletionRequestOptions,
 ): Promise<ZenzHttpResult> => {
-  const route = runtime.modelRoutes?.[model];
+  const route = options.runtime.modelRoutes?.[options.model];
   if (!route) {
     throw new AzookeyProtocolError(
       "unsupported_model",
-      `${model} is not configured in MODEL_ROUTES`,
+      `${options.model} is not configured in MODEL_ROUTES`,
     );
   }
-  const fetcher = runtime.fetcher ?? fetch;
+  const fetcher = options.runtime.fetcher ?? fetch;
+  const prompt = zenzPrompt(options.text, options.leftContext);
   try {
     const response = await fetcher(`${route.baseUrl}/completion`, {
       method: "POST",
@@ -2018,23 +2070,39 @@ const requestZenzCompletion = async (
         "user-agent": AZOOKEY_ZENZ_UPSTREAM_USER_AGENT,
       },
       body: JSON.stringify({
-        prompt: zenzPrompt(text, leftContext),
-        n_predict: runtime.zenzNPredict ?? AZOOKEY_ZENZ_N_PREDICT,
+        prompt,
+        n_predict: options.nPredict,
         temperature: 0,
         stream: false,
         cache_prompt: true,
       }),
-      ...(signal ? { signal } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
-    if (!response.ok) {
-      return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
-    }
+    if (!response.ok) return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
     const payload: unknown = await response.json();
     const content = zenzContentFromPayload(payload);
     if (content === undefined || content.trim().length === 0) {
       return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
     }
-    return { reason: AZOOKEY_ZENZ_HTTP_REASON_OK, content: content.trim() };
+    return {
+      reason: AZOOKEY_ZENZ_HTTP_REASON_OK,
+      content: content.trim(),
+    };
+  } catch (error) {
+    if (isAbortLikeError(error)) return { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT };
+    if (error instanceof TypeError) return { reason: AZOOKEY_ZENZ_HTTP_REASON_FETCH };
+    return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
+  }
+};
+
+const requestZenzWithTimeout = async (
+  options: Omit<ZenzCompletionRequestOptions, "signal"> & { budgetMs: number },
+): Promise<ZenzHttpResult> => {
+  try {
+    return await withTimeout(
+      (signal) => requestZenzCompletion({ ...options, signal }),
+      options.budgetMs,
+    );
   } catch (error) {
     if (isAbortLikeError(error)) {
       return { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT };
@@ -2046,26 +2114,79 @@ const requestZenzCompletion = async (
   }
 };
 
-const requestZenzWithTimeout = async (
-  model: AzookeyConvertModel,
-  text: string,
-  runtime: AzookeyRuntime,
-  leftContext: string,
-  budgetMs: number,
-): Promise<ZenzHttpResult> => {
+const requireZenzSuccess = (result: ZenzHttpResult, requestId: string): ZenzHttpSuccess => {
+  if (result.reason === AZOOKEY_ZENZ_HTTP_REASON_OK) {
+    if (encoder.encode(result.content).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
+      throw new AzookeyProtocolError(
+        "conversion_failed",
+        "AzooKey conversion output exceeds the text byte limit",
+        requestId,
+      );
+    }
+    return result;
+  }
+  throw new AzookeyProtocolError(
+    result.reason === AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT ? "conversion_timeout" : "conversion_failed",
+    "Zenzai upstream failed",
+    requestId,
+  );
+};
+
+const runZenzLattice = async (options: ZenzLatticeRequestOptions): Promise<ZenzLatticeResult> => {
   try {
-    return await withTimeout(
-      (signal) => requestZenzCompletion(model, text, runtime, signal, leftContext),
-      budgetMs,
+    if (options.lattice?.isOutputPrefixUnique?.(encoder.encode(""))) {
+      return {
+        text: options.baseline,
+        usedCompletion: false,
+        completionSkipReason: AZOOKEY_COMPLETION_SKIPPED_UNAMBIGUOUS_LATTICE,
+      };
+    }
+    const budgetMs = Math.min(
+      options.remainingMs(),
+      options.runtime.zenzUpstreamMaxMs ?? AZOOKEY_ZENZ_UPSTREAM_MAX_MS,
     );
-  } catch (error) {
-    if (isAbortLikeError(error)) {
-      return { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT };
+    if (budgetMs <= 0) {
+      throw new AzookeyProtocolError(
+        "conversion_timeout",
+        "conversion timed out",
+        options.requestId,
+      );
     }
-    if (error instanceof TypeError) {
-      return { reason: AZOOKEY_ZENZ_HTTP_REASON_FETCH };
+    const startedAt = timingNowMs();
+    const completionHttp = await requestZenzWithTimeout({
+      model: options.model,
+      text: options.text,
+      runtime: options.runtime,
+      leftContext: options.leftContext,
+      nPredict: options.runtime.zenzNPredict ?? AZOOKEY_ZENZ_N_PREDICT,
+      budgetMs,
+    });
+    logAzookeyTiming({
+      phase: "zenz_http",
+      elapsedMs: timingElapsedMs(startedAt),
+      inputChars: options.text.length,
+      cacheHit: false,
+      wsOrHttp: options.wsOrHttp,
+      zenzHttpReason: completionHttp.reason,
+    });
+    const completion = requireZenzSuccess(completionHttp, options.requestId);
+    if (!options.lattice) {
+      return {
+        text: options.baseline,
+        usedCompletion: false,
+        completionSkipReason: AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE,
+      };
     }
-    return { reason: AZOOKEY_ZENZ_HTTP_REASON_EMPTY };
+    return orchestrateOneCompletion({
+      input: options.text,
+      leftContext: options.leftContext,
+      baseline: options.baseline,
+      completion: completion.content,
+      remainingMs: options.remainingMs,
+      search: options.lattice,
+    });
+  } finally {
+    options.lattice?.close();
   }
 };
 
@@ -2359,56 +2480,6 @@ export const convertAzookeyMessage = async (
           });
         }
         const leftContext = message.leftContext ?? "";
-        const hasLeftContext = trimZenzLeftContext(leftContext).length > 0;
-        let zenzHttp: ZenzHttpResult | undefined;
-        if (hasLeftContext) {
-          const zenzBudget = Math.min(
-            remainingMs(),
-            runtime.zenzUpstreamMaxMs ?? AZOOKEY_ZENZ_UPSTREAM_MAX_MS,
-          );
-          const zenzStartedAt = timingNowMs();
-          zenzHttp =
-            zenzBudget <= 0
-              ? { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT }
-              : await requestZenzWithTimeout(
-                  message.model,
-                  conversionInput,
-                  runtime,
-                  leftContext,
-                  zenzBudget,
-                );
-          logAzookeyTiming({
-            phase: "zenz_http",
-            elapsedMs: timingElapsedMs(zenzStartedAt),
-            inputChars: conversionInput.length,
-            cacheHit: false,
-            wsOrHttp,
-            zenzHttpReason: zenzHttp.reason,
-          });
-          if (zenzHttp.reason !== AZOOKEY_ZENZ_HTTP_REASON_OK) {
-            throw new AzookeyProtocolError(
-              zenzHttp.reason === AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT
-                ? "conversion_timeout"
-                : "conversion_failed",
-              "Zenzai upstream failed",
-              message.requestId,
-            );
-          }
-          if (deadlineExpired()) {
-            throw new AzookeyProtocolError(
-              "conversion_timeout",
-              "conversion timed out",
-              message.requestId,
-            );
-          }
-          if (encoder.encode(zenzHttp.content).byteLength > AZOOKEY_MAX_TEXT_BYTES) {
-            throw new AzookeyProtocolError(
-              "conversion_failed",
-              "AzooKey conversion output exceeds the text byte limit",
-              message.requestId,
-            );
-          }
-        }
         if (!dictionaryResult) {
           const convertStartedAt = timingNowMs();
           dictionaryResult = await runDictionaryConversion(preceding);
@@ -2420,7 +2491,7 @@ export const convertAzookeyMessage = async (
             wsOrHttp,
           });
         }
-        if (!zenzHttp || zenzHttp.reason !== AZOOKEY_ZENZ_HTTP_REASON_OK) {
+        if (trimZenzLeftContext(leftContext).length === 0) {
           converted = dictionaryResult.text;
           completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT;
         } else {
@@ -2429,44 +2500,31 @@ export const convertAzookeyMessage = async (
             runtime.userLexicon && runtime.converter.syncUserLexicon
               ? await resolveLexiconHandle()
               : 0;
-          const lattice = runtime.converter.openLattice?.(
-            conversionInput,
-            preceding,
-            activeLexiconHandle,
-          );
-          if (!lattice) {
-            logAzookeyTiming({
-              phase: "lattice",
-              elapsedMs: timingElapsedMs(latticeStartedAt),
-              inputChars: conversionInput.length,
-              cacheHit: false,
-              wsOrHttp,
-            });
-            converted = dictionaryResult.text;
-            completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE;
-          } else {
-            try {
-              const orchestrated = orchestrateOneCompletion({
-                input: conversionInput,
-                leftContext,
-                baseline: dictionaryResult.text,
-                completion: zenzHttp.content,
-                remainingMs,
-                search: lattice,
-              });
-              converted = orchestrated.text;
-              usedCompletion = orchestrated.usedCompletion;
-            } finally {
-              lattice.close();
-            }
-            logAzookeyTiming({
-              phase: "lattice",
-              elapsedMs: timingElapsedMs(latticeStartedAt),
-              inputChars: conversionInput.length,
-              cacheHit: false,
-              wsOrHttp,
-            });
-          }
+          const zenzResult = await runZenzLattice({
+            model: message.model,
+            text: conversionInput,
+            leftContext,
+            baseline: dictionaryResult.text,
+            requestId: message.requestId,
+            runtime,
+            lattice: runtime.converter.openLattice?.(
+              conversionInput,
+              preceding,
+              activeLexiconHandle,
+            ),
+            remainingMs,
+            wsOrHttp,
+          });
+          converted = zenzResult.text;
+          usedCompletion = zenzResult.usedCompletion;
+          completionSkipReason = zenzResult.completionSkipReason;
+          logAzookeyTiming({
+            phase: "lattice",
+            elapsedMs: timingElapsedMs(latticeStartedAt),
+            inputChars: conversionInput.length,
+            cacheHit: false,
+            wsOrHttp,
+          });
         }
       } catch (error) {
         // HTTP status / empty-body failures become AzookeyProtocolError

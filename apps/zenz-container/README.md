@@ -60,8 +60,8 @@ generation from the corrected reading length instead of always decoding 64
 tokens. Both tiers request only an 8–16 token GGUF prefix; the full-length
 AzooKey lattice remains authoritative and either completes the constrained
 candidate or safely retains its dictionary baseline. The live path gives GGUF
-2.5 seconds; if it misses that bound,
-the already-computed official AzooKey lattice result is returned with explicit
+3.5 seconds; if it misses that bound, the already-computed official AzooKey
+lattice result is returned with explicit
 `modelFallback` metadata rather than allowing Container latency to block captions.
 
 The optimized N5 build was exercised under Linux/amd64 QEMU. It corrected
@@ -76,12 +76,17 @@ morphological rewriting, while kanji-bearing ASR text is converted to a kana
 reading before N5. This prevents particles in pure kana from being changed and
 prevents the kana-oriented N5 model from receiving kanji.
 
-Final production validation returned HTTP 200 for all eight profiles. N5-on
-profiles completed GGUF within the live bound in that matrix; direct cold
-N5-off requests used the explicit official-dictionary fallback when the model
-was not ready. Browser capture starts the warm-up before the first utterance,
-so the cold Container load is normally hidden. Production N5 rescoring remained
-roughly 90–140 ms.
+Final production validation returned HTTP 200 for all eight profiles. Browser
+capture starts the warm-up before the first utterance, so the cold Container
+load is normally hidden. Production N5 rescoring remained roughly 90–140 ms.
+
+An AVX2/FMA runtime-dispatch build and 1–4-token staged generation were also
+production-tested. AVX2 did not produce a consistent latency reduction across
+Container placements and increased every image. Staged generation reached a
+fast first prefix, but ambiguous lattices then required a second full decode
+and were slower or hit the live timeout. Both experiments were reverted; the
+portable binary and single bounded completion remain the accuracy-preserving
+production configuration.
 
 ## Lifecycle and sizing
 

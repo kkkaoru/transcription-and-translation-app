@@ -79,6 +79,7 @@ export interface WorkersAiAsrControllerOptions {
   computeTier?: BrowserComputeTier;
   containerModel?: "xsmall" | "small";
   n5Lm?: BrowserN5Mode;
+  userLexiconEnabled?: () => boolean;
   deviceId?: string;
   endpointUrl?: string;
   auth?: ComparisonAuth;
@@ -928,6 +929,7 @@ export class WorkersAiAsrController {
         computeTier: this.options.computeTier,
         containerModel: this.options.containerModel,
         n5Lm: this.options.n5Lm,
+        useUserLexicon: this.options.userLexiconEnabled?.() ?? true,
         leftContext: this.leftContext,
         auth: this.options.auth,
         fetchImpl: this.options.fetchImpl,

@@ -51,6 +51,7 @@ export interface WorkersAiAsrClientOptions {
   computeTier?: BrowserComputeTier;
   containerModel?: "xsmall" | "small";
   n5Lm?: BrowserN5Mode;
+  useUserLexicon?: boolean;
   leftContext?: string;
   auth?: ComparisonAuth;
   fetchImpl?: typeof fetch;
@@ -190,6 +191,7 @@ export const transcribeWorkersAiAsr = async (
   form.set("computeTier", options.computeTier ?? "standard");
   form.set("containerModel", options.containerModel ?? "xsmall");
   form.set("n5Lm", options.n5Lm ?? "off");
+  form.set("userLexicon", options.useUserLexicon === false ? "off" : "on");
   if (options.leftContext?.trim()) {
     form.set("leftContext", options.leftContext.trim());
   }

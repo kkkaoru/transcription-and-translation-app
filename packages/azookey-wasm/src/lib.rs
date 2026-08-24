@@ -702,6 +702,39 @@ pub unsafe extern "C" fn azookey_lattice_search_output_prefix(
     allocate_n_best_output(status, &candidates).unwrap_or(0)
 }
 
+/// Return one when every live candidate under `prefix` has the same output.
+///
+/// This lets hosts skip or stop neural verification only when GGUF cannot
+/// select a different lattice output. Invalid handles, invalid pointers, and
+/// empty searches return zero and therefore preserve the full verifier path.
+///
+/// # Safety
+///
+/// The prefix pointer follows [`azookey_lattice_search_output_prefix`].
+#[no_mangle]
+pub unsafe extern "C" fn azookey_lattice_output_is_unique(
+    handle: u32,
+    prefix_pointer: *const u8,
+    prefix_length: usize,
+) -> u32 {
+    if prefix_pointer.is_null() && prefix_length != 0 {
+        return 0;
+    }
+    let prefix =
+        if prefix_length == 0 { &[] } else { slice::from_raw_parts(prefix_pointer, prefix_length) };
+    let (status, candidates) = search_lattice_output_prefix(
+        handle,
+        prefix,
+        DEFAULT_LATTICE_BEAM as u32,
+        DEFAULT_LATTICE_BEAM as u32,
+    );
+    if status != N_BEST_STATUS_OK || candidates.is_empty() {
+        return 0;
+    }
+    let first = &candidates[0].text;
+    u32::from(candidates.iter().all(|candidate| candidate.text == *first))
+}
+
 pub fn search_lattice_output_prefix(
     handle: u32,
     prefix: &[u8],
@@ -1001,15 +1034,16 @@ mod tests {
     use super::{
         azookey_alloc, azookey_convert, azookey_dealloc, azookey_dictionary_init_owned,
         azookey_lattice_close, azookey_lattice_closed_count, azookey_lattice_live_count,
-        azookey_lattice_open, azookey_lattice_opened_count, azookey_lattice_search_output_prefix,
-        azookey_user_dictionary_clear, azookey_user_dictionary_init_owned,
-        azookey_user_lexicon_close, azookey_user_lexicon_open, azookey_user_lexicon_open_compact,
-        convert_n_best_with_dictionary_or_fallback, convert_n_best_with_user_lexicon_handle,
-        convert_with_active_dictionary, pack_output, replace_active_dictionary,
-        rust_search_lattice, search_lattice_output_prefix, serialize_n_best, AzooKeyDictionary,
-        ConstrainedSearchRequest, ConversionCandidate, ConversionRequest, DictionaryPaths,
-        PrecedingContext, UserLexicon, Utf8BytePrefixConstraint, ACTIVE_DICTIONARY,
-        MAX_LATTICE_HANDLES, N_BEST_STATUS_FALLBACK, N_BEST_STATUS_INVALID_ARGUMENT,
+        azookey_lattice_open, azookey_lattice_opened_count, azookey_lattice_output_is_unique,
+        azookey_lattice_search_output_prefix, azookey_user_dictionary_clear,
+        azookey_user_dictionary_init_owned, azookey_user_lexicon_close, azookey_user_lexicon_open,
+        azookey_user_lexicon_open_compact, convert_n_best_with_dictionary_or_fallback,
+        convert_n_best_with_user_lexicon_handle, convert_with_active_dictionary, pack_output,
+        replace_active_dictionary, rust_search_lattice, search_lattice_output_prefix,
+        serialize_n_best, AzooKeyDictionary, ConstrainedSearchRequest, ConversionCandidate,
+        ConversionRequest, DictionaryPaths, PrecedingContext, UserLexicon,
+        Utf8BytePrefixConstraint, ACTIVE_DICTIONARY, MAX_LATTICE_HANDLES, N_BEST_STATUS_FALLBACK,
+        N_BEST_STATUS_INVALID_ARGUMENT,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1384,6 +1418,11 @@ mod tests {
         let (status, candidates) = search_lattice_output_prefix(handle, "感じ".as_bytes(), 1, 1);
         assert_eq!(status, 0);
         assert_eq!(candidates.first().map(|candidate| candidate.text.as_str()), Some("感じ"));
+        assert_eq!(unsafe { azookey_lattice_output_is_unique(handle, std::ptr::null(), 0) }, 0);
+        assert_eq!(
+            unsafe { azookey_lattice_output_is_unique(handle, "感じ".as_ptr(), "感じ".len()) },
+            1
+        );
 
         assert_eq!(azookey_lattice_close(handle), 1);
         assert_eq!(azookey_lattice_close(handle), 0, "closing twice must not panic");
@@ -1394,9 +1433,15 @@ mod tests {
 
     #[test]
     fn lattice_search_reports_an_invalid_handle_without_panicking() {
-        let (status, candidates) = search_lattice_output_prefix(4_294_967_295, &[], 1, 1);
+        let invalid_handle = 4_294_967_295;
+        let (status, candidates) = search_lattice_output_prefix(invalid_handle, &[], 1, 1);
         assert_ne!(status & N_BEST_STATUS_INVALID_ARGUMENT, 0);
         assert!(candidates.is_empty());
+        assert_eq!(
+            unsafe { azookey_lattice_output_is_unique(invalid_handle, std::ptr::null(), 0) },
+            0
+        );
+        assert_eq!(unsafe { azookey_lattice_output_is_unique(1, std::ptr::null(), 1) }, 0);
         assert_eq!(azookey_lattice_close(0), 0);
     }
 

@@ -11,10 +11,18 @@ import {
   listCustomDictionaryEntries,
 } from "../lib/custom-dictionary";
 
+interface CustomDictionaryPanelProps {
+  onEntryCountChange?: (entryCount: number) => void;
+}
+
+export const hasUserLexiconEntries = (entryCount: number): boolean => entryCount > 0;
+
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : "Dictionary operation failed";
 
-export default function CustomDictionaryPanel(): React.JSX.Element {
+export default function CustomDictionaryPanel({
+  onEntryCountChange,
+}: CustomDictionaryPanelProps): React.JSX.Element {
   const [entries, setEntries] = useState<CustomDictionaryEntry[]>([]);
   const [entryCount, setEntryCount] = useState(0);
   const [reading, setReading] = useState("");
@@ -27,7 +35,8 @@ export default function CustomDictionaryPanel(): React.JSX.Element {
     const page = await listCustomDictionaryEntries();
     setEntries(page.entries);
     setEntryCount(page.entryCount);
-  }, []);
+    onEntryCountChange?.(page.entryCount);
+  }, [onEntryCountChange]);
 
   useEffect(() => {
     void refresh().catch((error: unknown) => setNotice(errorMessage(error)));

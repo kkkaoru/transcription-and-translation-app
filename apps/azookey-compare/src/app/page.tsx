@@ -2,7 +2,7 @@
 
 // This file runs with bun.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import CustomDictionaryPanel from "../components/CustomDictionaryPanel";
+import CustomDictionaryPanel, { hasUserLexiconEntries } from "../components/CustomDictionaryPanel";
 import PipelineVisualization from "../components/PipelineVisualization";
 import { COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH } from "../lib/inference-proxy";
 import type {
@@ -153,7 +153,11 @@ export default function ComparePage(): React.JSX.Element {
   const [microphones, setMicrophones] = useState<MicrophoneOption[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const controllerRef = useRef<WorkersAiAsrController | undefined>(undefined);
+  const hasUserLexiconRef = useRef(true);
   const supported = typeof window === "undefined" || isWorkersAiAsrCaptureSupported();
+  const handleUserLexiconEntryCount = useCallback((entryCount: number): void => {
+    hasUserLexiconRef.current = hasUserLexiconEntries(entryCount);
+  }, []);
 
   const refreshMicrophones = useCallback(async (): Promise<void> => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -219,6 +223,7 @@ export default function ComparePage(): React.JSX.Element {
       computeTier,
       containerModel,
       n5Lm,
+      userLexiconEnabled: () => hasUserLexiconRef.current,
       ...(deviceId ? { deviceId } : {}),
       endpointUrl: COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH,
       onStateChange: (nextState) => {
@@ -511,7 +516,7 @@ export default function ComparePage(): React.JSX.Element {
         />
       </details>
 
-      <CustomDictionaryPanel />
+      <CustomDictionaryPanel onEntryCountChange={handleUserLexiconEntryCount} />
     </main>
   );
 }
