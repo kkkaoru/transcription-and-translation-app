@@ -11,6 +11,7 @@ import {
   BROWSER_VIBRATO_MODE,
 } from "./azookey.js";
 import { createWorker, type Env, type WorkerHandler } from "./index.js";
+import type { ProfileConversionResult } from "./profile-converter-do.js";
 import {
   WORKERS_AI_ASR_HTTP_PATH,
   WORKERS_AI_ASR_MODEL,
@@ -715,6 +716,74 @@ describe("Cloudflare Worker inference adapter", () => {
       expect.any(AbortSignal),
       undefined,
     );
+  });
+
+  it("routes selected conversion through a warm profile Durable Object", async () => {
+    const workersAiRun: WorkersAiAsrRun = vi.fn(() =>
+      Promise.resolve({
+        results: { channels: [{ alternatives: [{ transcript: "きょうはいいてんき" }] }] },
+      }),
+    );
+    const convertProfile = vi.fn(
+      (): Promise<ProfileConversionResult> =>
+        Promise.resolve({
+          text: "今日はいい天気",
+          model: "zenz-v3.2-small-gguf",
+          usedCompletion: true,
+        }),
+    );
+    const idFromName = vi.fn(() => ({ toString: () => "profile-standard-small" }));
+    const get = vi.fn(() => ({
+      warmProfile: vi.fn(() => Promise.resolve()),
+      rescoreProfile: vi.fn(() => Promise.resolve({ text: "", elapsedMs: 0 })),
+      convertProfile,
+    }));
+    const form = new FormData();
+    form.set("file", speechWav());
+    form.set("language", "ja");
+    form.set("segmentation", "client-silero-v1");
+    form.set("conversionModel", "zenz-v3.2-small-gguf");
+    form.set("computeTier", "standard");
+    form.set("containerModel", "small");
+    form.set("n5Lm", "off");
+    form.set("leftContext", "前文");
+
+    const response = await createWorker(vi.fn(), {
+      workersAiRun,
+      converter: vi.fn(() => "unused"),
+      vibratoConverter: (text) => text,
+    }).fetch(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {
+        ...env,
+        AZOOKEY_PROFILE_DO: "on",
+        PROFILE_CONVERTER: { idFromName, get },
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-small-gguf": { baseUrl: "https://zenz.internal" },
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      convertedText: "今日はいい天気",
+      usedCompletion: true,
+    });
+    expect(idFromName).toHaveBeenCalledWith("standard:small:off");
+    expect(convertProfile).toHaveBeenCalledWith({
+      text: "きょうはいいてんき",
+      model: "zenz-v3.2-small-gguf",
+      leftContext: "前文",
+      baseUrl: "https://zenz.internal/standard/small/n5-off",
+      timeoutMs: 4500,
+      zenzUpstreamMaxMs: 3500,
+      zenzNPredict: 8,
+      fallbackTimeoutMs: 3000,
+      useUserLexicon: true,
+    });
   });
 
   it("runs the basic N5 profile with deferred dictionary materialization", async () => {

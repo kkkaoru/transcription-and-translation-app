@@ -53,6 +53,12 @@ uses `CLOUDFLARE_API_TOKEN` from the gitignored `.env`.
   HTTP lives under `/azookey/user-lexicon*`. Convert (`POST /v1/azookey/convert`
   and `/ws/azookey`) applies that stored lexicon through an isolate-global WASM
   handle. A client `userDictionaryTsv` is rejected with `invalid_contract`.
+- Browser speech conversion uses the SQLite-backed `ProfileConverterDO`
+  namespace binding `PROFILE_CONVERTER`. Deterministic names shard it by compute
+  tier, GGUF model size, and N5 mode. `AZOOKEY_PROFILE_DO=on` keeps the decompressed system
+  dictionary and WASM converter warm at that stable execution locus while the
+  separately billed Container can still be explicitly released. The warm-up
+  GET primes both layers before the first committed utterance.
 - `AZOOKEY_DICTIONARY_URL` defaults to `/azookey/system.azkdict.gz`, a static
   official LOUDS/MM/CID archive generated from the pinned AzooKey submodule and
   served through the `ASSETS` binding. It is not a phrase table. The deploy

@@ -10,7 +10,10 @@ export default defineConfig({
       enforce: "pre",
       resolveId(source, importer) {
         if (
-          (importer?.endsWith("/src/index.ts") || importer?.endsWith("/src/index.js")) &&
+          (importer?.endsWith("/src/index.ts") ||
+            importer?.endsWith("/src/index.js") ||
+            importer?.endsWith("/src/profile-converter-do.ts") ||
+            importer?.endsWith("/src/profile-converter-do.js")) &&
           source === "./azookey-wasm.js"
         ) {
           return wasmTestStub;
@@ -44,6 +47,7 @@ export default defineConfig({
         "src/wasm.test-stub.ts",
         "src/cloudflare-workers-stub.ts",
         "src/user-lexicon-do.ts",
+        "src/profile-converter-do.ts",
         "src/azookey-wasm.ts",
       ],
       thresholds: {

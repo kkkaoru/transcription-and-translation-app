@@ -56,9 +56,23 @@ bun run worker:metrics:analyze /tmp/azookey-metrics.jsonl
 ```
 
 The older per-phase `azookey_timing` logs remain available for live debugging;
-`azookey_metrics` is the authoritative per-request analysis record. A separate
+`azookey_metrics` is the authoritative per-request analysis record. Production
+routes each compute/model/N5 profile through its own `PROFILE_CONVERTER`
+Durable Object. That object retains the decompressed 24 MB system dictionary,
+WASM instance, lattice state factory, and user-lexicon handle between requests,
+then calls the selected Container from the same stable execution locus. Browser
+warm-up primes both this object and the Container; Container release remains
+independent and still scales every profile to zero. A separate
 `zenz_container_metrics` record is emitted by the Container Worker for each
-proxied request. The Container header duration intentionally ends when upstream
+proxied request. In the final production eight-profile warm matrix, every profile completed the
+authoritative GGUF path and the AzooKey stage averaged 1,002 ms. Six repeated
+Standard XSmall/N5-on samples averaged 792 ms. The prior stateless-isolate sample averaged 3,225 ms for
+successful GGUF calls and still fell back on two of six requests. A direct
+cross-script binding from the stateless inference Worker to the Container DO
+was also tested; all six requests hit the GGUF timeout, so that topology was
+reverted. Anchoring the dictionary, N5 call, and GGUF call in the profile DO was
+the successful placement strategy.
+The Container header duration intentionally ends when upstream
 headers arrive; `zenzBodyTransferMs` measures the remaining service-binding and
 body-transfer time seen by inference.
 

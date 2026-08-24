@@ -46,9 +46,14 @@ import {
   wrapUserLexiconWrites,
 } from "./azookey.js";
 import azookeyWasm from "./azookey-wasm.js";
+import {
+  type ProfileConversionInput,
+  ProfileConverterDO,
+  type ProfileConverterRpc,
+} from "./profile-converter-do.js";
 import { UserLexiconDO } from "./user-lexicon-do.js";
 
-export { UserLexiconDO };
+export { ProfileConverterDO, UserLexiconDO };
 
 import {
   createWorkersAiAsrTranscriber,
@@ -84,6 +89,11 @@ export interface Env {
     idFromName: (name: string) => { toString: () => string };
     get: (id: { toString: () => string }) => UserLexiconRpc;
   };
+  PROFILE_CONVERTER?: {
+    idFromName: (name: string) => { toString: () => string };
+    get: (id: { toString: () => string }) => ProfileConverterRpc;
+  };
+  AZOOKEY_PROFILE_DO?: string;
   USER_LEXICON_IMPORTS?: {
     put: (key: string, value: string) => Promise<unknown>;
     get: (key: string) => Promise<{ text: () => Promise<string> } | null>;
@@ -139,6 +149,7 @@ const PIPELINE_STANDARD_ZENZ_TIMEOUT_MS = 3_500;
 const PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS = 4_500;
 const PIPELINE_BASIC_ZENZ_TIMEOUT_MS = 3_500;
 const PIPELINE_DICTIONARY_FALLBACK_TIMEOUT_MS = 3_000;
+const PROFILE_CONVERTER_ENABLED = "on";
 // Keep entrypoint exports limited to the Worker handler/function shapes that
 // workerd accepts. Tests use the protocol path literal instead of exporting a
 // string binding from the module entrypoint.
@@ -401,6 +412,17 @@ const userLexiconFor = (
     );
   }
   return wrapUserLexiconWrites(memoryLexicon);
+};
+
+const profileConverterFor = (
+  env: Env,
+  profile: ZenzContainerProfile,
+): ProfileConverterRpc | undefined => {
+  if (env.AZOOKEY_PROFILE_DO !== PROFILE_CONVERTER_ENABLED || !env.PROFILE_CONVERTER) {
+    return undefined;
+  }
+  const name = `${profile.computeTier}:${profile.modelSize}:${profile.n5Mode}`;
+  return env.PROFILE_CONVERTER.get(env.PROFILE_CONVERTER.idFromName(name));
 };
 
 const dictionaryFetchersFor = (
@@ -670,21 +692,25 @@ export const createWorker = (
             return cors(json(HTTP_OK, { ok: true, state: "released" }), env.CORS_ORIGIN);
           }
           const warmups: Promise<unknown>[] = [];
+          const profileConverter =
+            conversionModel === "none" ? undefined : profileConverterFor(env, profile);
           if (conversionModel !== "none") {
             if (profile.computeTier === "basic") {
               warmups.push(
                 Promise.resolve(vibrato.warmup?.())
                   .then(() => vibrato.release?.())
-                  .then(() => converter.warmup?.("http")),
+                  .then(() => profileConverter?.warmProfile(baseUrl) ?? converter.warmup?.("http")),
               );
             } else {
               warmups.push(
-                Promise.resolve(converter.warmup?.("http")),
+                Promise.resolve(
+                  profileConverter?.warmProfile(baseUrl) ?? converter.warmup?.("http"),
+                ),
                 Promise.resolve(vibrato.warmup?.()),
               );
             }
           }
-          if (baseUrl) {
+          if (baseUrl && !profileConverter) {
             const warmupPath = conversionModel === "none" ? "/n5-warmup" : "/warmup";
             warmups.push(
               Promise.resolve(fetchers.fetcher(`${baseUrl}${warmupPath}`)).then(
@@ -731,6 +757,11 @@ export const createWorker = (
             rescoreN5: async (text, profile) => {
               const baseUrl = profileBaseUrl(env, "none", profile);
               if (!baseUrl) throw new Error("Input N5 LM profile is unavailable");
+              const profileConverter = profileConverterFor(env, profile);
+              if (profileConverter) {
+                const result = await profileConverter.rescoreProfile(text, baseUrl);
+                return { ...result, model: "input_n5_lm_v1" };
+              }
               const response = await fetchers.fetcher(`${baseUrl}/n5/rescore`, {
                 method: "POST",
                 headers: { "content-type": "application/json" },
@@ -745,6 +776,29 @@ export const createWorker = (
               const configuredRoutes = parseModelRoutes(env.MODEL_ROUTES);
               const selectedRoute = configuredRoutes[model];
               if (!selectedRoute) throw new Error("Selected GGUF route is unavailable");
+              const timeoutMs =
+                profile.computeTier === "basic"
+                  ? PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS
+                  : PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS;
+              const zenzUpstreamMaxMs =
+                profile.computeTier === "basic"
+                  ? PIPELINE_BASIC_ZENZ_TIMEOUT_MS
+                  : PIPELINE_STANDARD_ZENZ_TIMEOUT_MS;
+              const profileConverter = profileConverterFor(env, profile);
+              if (profileConverter) {
+                const profileInput: ProfileConversionInput = {
+                  text,
+                  model,
+                  leftContext,
+                  baseUrl,
+                  timeoutMs,
+                  zenzUpstreamMaxMs,
+                  zenzNPredict: zenzCompletionTokenBudget(text, profile.computeTier),
+                  fallbackTimeoutMs: PIPELINE_DICTIONARY_FALLBACK_TIMEOUT_MS,
+                  useUserLexicon,
+                };
+                return profileConverter.convertProfile(profileInput);
+              }
               const conversionMessage: AzookeyMessage = {
                 type: "azookey.convert",
                 requestId: crypto.randomUUID(),
@@ -758,14 +812,8 @@ export const createWorker = (
               };
               const converted = await convertAzookeyMessage(conversionMessage, {
                 converter,
-                timeoutMs:
-                  profile.computeTier === "basic"
-                    ? PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS
-                    : PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS,
-                zenzUpstreamMaxMs:
-                  profile.computeTier === "basic"
-                    ? PIPELINE_BASIC_ZENZ_TIMEOUT_MS
-                    : PIPELINE_STANDARD_ZENZ_TIMEOUT_MS,
+                timeoutMs,
+                zenzUpstreamMaxMs,
                 deferDictionaryUntilZenz: false,
                 zenzNPredict: zenzCompletionTokenBudget(text, profile.computeTier),
                 modelRoutes: { ...configuredRoutes, [model]: { ...selectedRoute, baseUrl } },
