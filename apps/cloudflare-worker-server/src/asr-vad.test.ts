@@ -43,6 +43,7 @@ describe("Worker Parapper-aligned energy VAD", () => {
 
   it("maps digital silence and loud frames at the -50 dBFS gate", () => {
     expect(rmsFromFloat32([])).toBe(0);
+    expect(rmsFromFloat32([1, -1])).toBe(1);
     expect(rmsDbFromFloat32([])).toBe(Number.NEGATIVE_INFINITY);
     expect(rmsDbFromFloat32(new Float32Array(32))).toBe(Number.NEGATIVE_INFINITY);
     expect(isSpeechRmsDb(Number.NEGATIVE_INFINITY)).toBe(false);
@@ -108,6 +109,12 @@ describe("Worker Parapper-aligned energy VAD", () => {
       probability: 0,
       isSpeech: false,
     });
+  });
+
+  it("selects speech from a multi-frame energy buffer without temporary chunk arrays", () => {
+    const mixed = new Float32Array(1_024);
+    mixed.fill(0.5, 512);
+    expect(new WorkerEnergyVadEngine().process(mixed).isSpeech).toBe(true);
   });
 
   it("ends an utterance at the 25 s max phrase bound", () => {

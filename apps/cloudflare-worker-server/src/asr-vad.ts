@@ -59,7 +59,10 @@ export const rmsFromFloat32 = (samples: ArrayLike<number>): number => {
   if (samples.length === 0) {
     return 0;
   }
-  const total = Array.from(samples).reduce((sum, sample) => sum + sample * sample, 0);
+  const total =
+    samples instanceof Float32Array
+      ? samples.reduce((sum, sample) => sum + sample * sample, 0)
+      : Array.from(samples).reduce((sum, sample) => sum + sample * sample, 0);
   return Math.sqrt(total / samples.length);
 };
 
@@ -144,24 +147,32 @@ export class WorkerEnergyVadEngine {
   }
 
   public process(samples: Float32Array): WorkerAsrVadResult {
-    if (samples.length === 0) {
-      return { probability: 0, isSpeech: false };
+    if (samples.length <= this.chunkSamples) {
+      return vadResultFromRmsDb(rmsDbFromFloat32(samples), {
+        silenceGateDb: this.silenceGateDb,
+        vadThreshold: this.vadThreshold,
+      });
     }
-    return Array.from({ length: Math.ceil(samples.length / this.chunkSamples) }, (_, index) =>
-      samples.subarray(index * this.chunkSamples, (index + 1) * this.chunkSamples),
-    ).reduce<WorkerAsrVadResult>(
-      (best, chunk) => {
-        const next = vadResultFromRmsDb(rmsDbFromFloat32(chunk), {
-          silenceGateDb: this.silenceGateDb,
-          vadThreshold: this.vadThreshold,
-        });
-        return {
-          probability: Math.max(best.probability, next.probability),
-          isSpeech: best.isSpeech || next.isSpeech,
-        };
-      },
-      { probability: 0, isSpeech: false },
-    );
+    return this.processChunk(samples, 0, { probability: 0, isSpeech: false });
+  }
+
+  private processChunk(
+    samples: Float32Array,
+    offset: number,
+    best: WorkerAsrVadResult,
+  ): WorkerAsrVadResult {
+    if (offset >= samples.length) {
+      return best;
+    }
+    const chunk = samples.subarray(offset, offset + this.chunkSamples);
+    const next = vadResultFromRmsDb(rmsDbFromFloat32(chunk), {
+      silenceGateDb: this.silenceGateDb,
+      vadThreshold: this.vadThreshold,
+    });
+    return this.processChunk(samples, offset + this.chunkSamples, {
+      probability: Math.max(best.probability, next.probability),
+      isSpeech: best.isSpeech || next.isSpeech,
+    });
   }
 }
 
@@ -223,7 +234,7 @@ export class WorkerAsrVad {
 
   private pushIdleOrPending(vad: WorkerAsrVadResult, samples: Float32Array): WorkerAsrUtterance[] {
     if (vad.isSpeech) {
-      this.pendingSpeech = [...this.pendingSpeech, { samples, vad }];
+      this.pendingSpeech.push({ samples, vad });
       this.phase = "pending";
       if (this.pendingSpeech.length < this.segmentStartChunks) {
         return [];
@@ -237,13 +248,16 @@ export class WorkerAsrVad {
       return [];
     }
     this.pendingSpeech = [];
-    this.preSpeech = [...this.preSpeech, { samples, vad }].slice(-this.preSpeechMaxChunks);
+    this.preSpeech.push({ samples, vad });
+    if (this.preSpeech.length > this.preSpeechMaxChunks) {
+      this.preSpeech.shift();
+    }
     this.phase = "idle";
     return [];
   }
 
   private pushActive(vad: WorkerAsrVadResult, samples: Float32Array): WorkerAsrUtterance[] {
-    this.active = [...this.active, { samples, vad }];
+    this.active.push({ samples, vad });
     this.audioChunks += 1;
     this.silenceChunks = vad.isSpeech ? 0 : this.silenceChunks + 1;
     if (this.audioChunks >= this.maxChunks) {
@@ -253,20 +267,11 @@ export class WorkerAsrVad {
   }
 
   private endUtterance(reason: WorkerAsrVadEndReason): WorkerAsrUtterance[] {
+    const trailingStart =
+      reason === "silence" ? this.findTrailingSilenceStart(this.active.length - 1) : 0;
     const trailing =
-      reason === "silence"
-        ? this.active
-            .slice()
-            .reverse()
-            .reduce<{ chunks: WorkerAsrVadChunk[]; done: boolean }>(
-              (state, chunk) => {
-                if (state.done || chunk.vad.isSpeech) {
-                  return { chunks: state.chunks, done: true };
-                }
-                return { chunks: [chunk, ...state.chunks], done: false };
-              },
-              { chunks: [], done: false },
-            ).chunks
+      reason === "silence" && trailingStart < this.active.length
+        ? this.active.slice(trailingStart)
         : [];
     const trailingPadChunks = reason === "silence" && trailing.length > 0 ? 1 : 0;
     const upload =
@@ -277,6 +282,13 @@ export class WorkerAsrVad {
     this.reset();
     this.preSpeech = trailing.slice(-this.preSpeechMaxChunks);
     return [{ pcm, reason }];
+  }
+
+  private findTrailingSilenceStart(index: number): number {
+    if (index < 0 || this.active[index]?.vad.isSpeech) {
+      return index + 1;
+    }
+    return this.findTrailingSilenceStart(index - 1);
   }
 }
 

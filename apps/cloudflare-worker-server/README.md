@@ -35,6 +35,28 @@ select another valid candidate.
 
 Both dictionaries are fetched through the Worker static-assets binding and cached per isolate. Production inference remains private (`workers_dev: false`) and is called by `azookey-compare` through a service binding.
 
+## Worker audio metrics
+
+`client-silero-v1` requests remain authoritative and bypass Worker VAD. For
+other trusted ASR clients, the `worker-energy-v1` fallback now computes RMS
+directly over each `Float32Array`, mutates bounded segment queues in place, and
+finds trailing silence without copying/reversing the active queue. VAD timing,
+thresholds, samples, and emitted PCM are unchanged.
+
+Run its deterministic baseline/optimized fixture from the repository root:
+
+```bash
+bun run worker:metrics
+```
+
+A representative macOS ARM64 five-run median over 1,000,000 512-sample chunks
+reduced fallback VAD wall time from 6,074 ms to 3,104 ms (49%) and CPU time from
+6,123 ms to 3,086 ms (50%). It removes 2,000,000 temporary regular arrays and
+512,000,000 copied sample values. Matching checksums and segmentation tests
+protect output equivalence. This optimization does not change the normal
+browser-segmented request path, but reduces CPU and allocation pressure for the
+Worker-owned fallback.
+
 ## AzooKey metrics
 
 Every completed AzooKey conversion emits privacy-safe `azookey_metrics` and

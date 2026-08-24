@@ -50,6 +50,7 @@
     "verify:recognition": "node scripts/recognition-integration.mjs",
     "native:metrics": "bun scripts/benchmark-native-runtime.mjs fixture",
     "web:metrics": "bun scripts/benchmark-web-audio-runtime.mjs",
+    "worker:metrics": "bun scripts/benchmark-worker-audio-runtime.mjs",
     "parapper:install": "bun --cwd=packages/parapper-asr install --frozen-lockfile",
     "parapper:dev": "bun --cwd=packages/parapper-asr run dev",
     "parapper:tauri": "bun --cwd=packages/parapper-asr run tauri",
