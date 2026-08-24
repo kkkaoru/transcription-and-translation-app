@@ -88,6 +88,12 @@ and were slower or hit the live timeout. Both experiments were reverted; the
 portable binary and single bounded completion remain the accuracy-preserving
 production configuration.
 
+The proxy emits `zenz_container_metrics` and returns an
+`x-kotoba-container-headers-ms` diagnostic header. It forwards the requested
+operation directly because `Container.fetch()` already starts the instance and
+waits for configured ports; the former unconditional `/health` request added a
+second Durable Object proxy operation to every hot completion.
+
 ## Lifecycle and sizing
 
 Every profile has `max_instances: 1` and no minimum. Browser stop sends an

@@ -18,6 +18,7 @@ import {
   trimZenzLeftContext,
   ZENZ_CONTEXT_MAX_GRAPHEMES,
   ZENZ_ONE_COMPLETION_MAX_ITERATIONS,
+  type ZenzOneCompletionSearch,
   zenzCandidatePrompt,
 } from "./zenz-one-completion.js";
 
@@ -104,6 +105,7 @@ export const AZOOKEY_ZENZ_HEALTH_PATH = "/health";
 export const AZOOKEY_ZENZ_WARMUP_MAX_MS = 400;
 /** Bot Fight on the GGUF hostname rejects empty / library user-agents. */
 export const AZOOKEY_ZENZ_UPSTREAM_USER_AGENT = "kotoba-beacon-inference/azookey-zenz";
+export const AZOOKEY_ZENZ_CONTAINER_TIMING_HEADER = "x-kotoba-container-headers-ms";
 export type AzookeyZenzHttpReason = "timeout" | "fetch" | "empty" | "ok";
 export const AZOOKEY_ZENZ_HTTP_REASON_OK = "ok" satisfies AzookeyZenzHttpReason;
 export const AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT = "timeout" satisfies AzookeyZenzHttpReason;
@@ -132,6 +134,8 @@ export const AZOOKEY_LEXICON_META_TTL_MS = 1_000;
  */
 export const AZOOKEY_MIN_ELAPSED_MS = 1;
 export const AZOOKEY_TIMING_EVENT = "azookey_timing";
+export const AZOOKEY_METRICS_EVENT = "azookey_metrics";
+export const AZOOKEY_METRICS_SCHEMA_VERSION = 1;
 export type AzookeyTimingPhase =
   | "wasm_init"
   | "lexicon_meta"
@@ -164,9 +168,84 @@ export interface AzookeyTimingFields {
   zenzHttpReason?: AzookeyZenzHttpReason;
 }
 
+export interface AzookeyMetricsLog {
+  event: "azookey_metrics";
+  schemaVersion: number;
+  wsOrHttp: AzookeyTimingChannel;
+  requestedModel: AzookeyConvertModel;
+  effectiveModel: AzookeyConvertModel;
+  outcome: "dictionary" | "gguf" | "gguf-skipped" | "fallback";
+  inputChars: number;
+  inputBytes: number;
+  contextChars: number;
+  nBest: number;
+  nPredict: number;
+  userLexiconEnabled: boolean;
+  wasmReadyBefore: boolean;
+  usedCompletion: boolean;
+  lexiconSyncMs: number;
+  dictionaryConvertMs: number;
+  latticeOpenMs: number;
+  latticeUniqueMs: number;
+  zenzHttpMs: number;
+  zenzPromptMs: number;
+  zenzPredictedMs: number;
+  zenzContainerHeadersMs: number;
+  zenzBodyTransferMs: number;
+  zenzRuntimeOverheadMs: number;
+  zenzOverheadMs: number;
+  zenzPromptTokens: number;
+  zenzPredictedTokens: number;
+  zenzCachedTokens: number;
+  latticeSearchMs: number;
+  latticeSearchCount: number;
+  orchestrationMs: number;
+  latticeCloseMs: number;
+  totalMs: number;
+  zenzHttpReason?: AzookeyZenzHttpReason;
+  modelFallback?: AzookeyModelFallback;
+  completionSkipReason?: AzookeyCompletionSkipReason;
+}
+
+interface AzookeyMetricsAccumulator {
+  lexiconSyncMs: number;
+  dictionaryConvertMs: number;
+  latticeOpenMs: number;
+  latticeUniqueMs: number;
+  zenzHttpMs: number;
+  zenzPromptMs: number;
+  zenzPredictedMs: number;
+  zenzContainerHeadersMs: number;
+  zenzPromptTokens: number;
+  zenzPredictedTokens: number;
+  zenzCachedTokens: number;
+  latticeSearchMs: number;
+  latticeSearchCount: number;
+  orchestrationMs: number;
+  latticeCloseMs: number;
+  zenzHttpReason?: AzookeyZenzHttpReason;
+}
+
+interface AzookeyMetricsOutcomeInput {
+  requestedModel: AzookeyConvertModel;
+  usedCompletion: boolean;
+  modelFallback?: AzookeyModelFallback;
+  completionSkipReason?: AzookeyCompletionSkipReason;
+}
+
+interface ZenzInferenceMetrics {
+  promptMs: number;
+  predictedMs: number;
+  promptTokens: number;
+  predictedTokens: number;
+  cachedTokens: number;
+}
+
 interface ZenzHttpSuccess {
   reason: typeof AZOOKEY_ZENZ_HTTP_REASON_OK;
   content: string;
+  containerHeadersMs: number;
+  inference: ZenzInferenceMetrics;
 }
 
 interface ZenzCompletionRequestOptions {
@@ -188,6 +267,7 @@ interface ZenzLatticeRequestOptions {
   lattice: AzookeyLatticeSession | undefined;
   remainingMs: () => number;
   wsOrHttp: AzookeyTimingChannel;
+  metrics: AzookeyMetricsAccumulator;
 }
 
 interface ZenzLatticeResult {
@@ -206,6 +286,11 @@ interface ZenzHttpFailure {
 type ZenzHttpResult = ZenzHttpSuccess | ZenzHttpFailure;
 
 const timingNowMs = (): number => Date.now();
+const metricNowMs = (): number => Date.now();
+const metricElapsedMs = (startedAt: number): number => {
+  const elapsed = Date.now() - startedAt;
+  return Number.isFinite(elapsed) ? Math.round(Math.max(0, elapsed) * 1_000) / 1_000 : 0;
+};
 
 const timingElapsedMs = (startedAt: number): number => {
   const elapsed = timingNowMs() - startedAt;
@@ -239,6 +324,36 @@ export const logAzookeyTiming = (fields: AzookeyTimingFields): void => {
     wsOrHttp: fields.wsOrHttp,
     ...(fields.zenzHttpReason === undefined ? {} : { zenzHttpReason: fields.zenzHttpReason }),
   };
+  // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured JSON logs
+  console.log(JSON.stringify(entry));
+};
+
+const azookeyMetricsOutcome = (input: AzookeyMetricsOutcomeInput): AzookeyMetricsLog["outcome"] => {
+  if (input.modelFallback !== undefined) return "fallback";
+  if (input.requestedModel === AZOOKEY_MODEL) return "dictionary";
+  if (input.usedCompletion) return "gguf";
+  return "gguf-skipped";
+};
+
+const createAzookeyMetricsAccumulator = (): AzookeyMetricsAccumulator => ({
+  lexiconSyncMs: 0,
+  dictionaryConvertMs: 0,
+  latticeOpenMs: 0,
+  latticeUniqueMs: 0,
+  zenzHttpMs: 0,
+  zenzPromptMs: 0,
+  zenzPredictedMs: 0,
+  zenzContainerHeadersMs: 0,
+  zenzPromptTokens: 0,
+  zenzPredictedTokens: 0,
+  zenzCachedTokens: 0,
+  latticeSearchMs: 0,
+  latticeSearchCount: 0,
+  orchestrationMs: 0,
+  latticeCloseMs: 0,
+});
+
+export const logAzookeyMetrics = (entry: AzookeyMetricsLog): void => {
   // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured JSON logs
   console.log(JSON.stringify(entry));
 };
@@ -2050,6 +2165,20 @@ const zenzContentFromPayload = (payload: unknown): string | undefined => {
   return typeof content === "string" ? content : undefined;
 };
 
+const nonNegativeMetric = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+
+const zenzInferenceMetricsFromPayload = (payload: unknown): ZenzInferenceMetrics => {
+  const timings = isRecord(payload) && isRecord(payload["timings"]) ? payload["timings"] : {};
+  return {
+    promptMs: nonNegativeMetric(timings["prompt_ms"]),
+    predictedMs: nonNegativeMetric(timings["predicted_ms"]),
+    promptTokens: nonNegativeMetric(timings["prompt_n"]),
+    predictedTokens: nonNegativeMetric(timings["predicted_n"]),
+    cachedTokens: isRecord(payload) ? nonNegativeMetric(payload["tokens_cached"]) : 0,
+  };
+};
+
 const requestZenzCompletion = async (
   options: ZenzCompletionRequestOptions,
 ): Promise<ZenzHttpResult> => {
@@ -2087,6 +2216,10 @@ const requestZenzCompletion = async (
     return {
       reason: AZOOKEY_ZENZ_HTTP_REASON_OK,
       content: content.trim(),
+      containerHeadersMs: nonNegativeMetric(
+        Number(response.headers.get(AZOOKEY_ZENZ_CONTAINER_TIMING_HEADER)),
+      ),
+      inference: zenzInferenceMetricsFromPayload(payload),
     };
   } catch (error) {
     if (isAbortLikeError(error)) return { reason: AZOOKEY_ZENZ_HTTP_REASON_TIMEOUT };
@@ -2134,7 +2267,10 @@ const requireZenzSuccess = (result: ZenzHttpResult, requestId: string): ZenzHttp
 
 const runZenzLattice = async (options: ZenzLatticeRequestOptions): Promise<ZenzLatticeResult> => {
   try {
-    if (options.lattice?.isOutputPrefixUnique?.(encoder.encode(""))) {
+    const uniqueStartedAt = metricNowMs();
+    const isUnique = options.lattice?.isOutputPrefixUnique?.(encoder.encode("")) ?? false;
+    options.metrics.latticeUniqueMs += metricElapsedMs(uniqueStartedAt);
+    if (isUnique) {
       return {
         text: options.baseline,
         usedCompletion: false,
@@ -2152,7 +2288,7 @@ const runZenzLattice = async (options: ZenzLatticeRequestOptions): Promise<ZenzL
         options.requestId,
       );
     }
-    const startedAt = timingNowMs();
+    const startedAt = metricNowMs();
     const completionHttp = await requestZenzWithTimeout({
       model: options.model,
       text: options.text,
@@ -2161,15 +2297,23 @@ const runZenzLattice = async (options: ZenzLatticeRequestOptions): Promise<ZenzL
       nPredict: options.runtime.zenzNPredict ?? AZOOKEY_ZENZ_N_PREDICT,
       budgetMs,
     });
+    options.metrics.zenzHttpMs += metricElapsedMs(startedAt);
+    options.metrics.zenzHttpReason = completionHttp.reason;
     logAzookeyTiming({
       phase: "zenz_http",
-      elapsedMs: timingElapsedMs(startedAt),
+      elapsedMs: Math.round(options.metrics.zenzHttpMs),
       inputChars: options.text.length,
       cacheHit: false,
       wsOrHttp: options.wsOrHttp,
       zenzHttpReason: completionHttp.reason,
     });
     const completion = requireZenzSuccess(completionHttp, options.requestId);
+    options.metrics.zenzPromptMs = completion.inference.promptMs;
+    options.metrics.zenzPredictedMs = completion.inference.predictedMs;
+    options.metrics.zenzContainerHeadersMs = completion.containerHeadersMs;
+    options.metrics.zenzPromptTokens = completion.inference.promptTokens;
+    options.metrics.zenzPredictedTokens = completion.inference.predictedTokens;
+    options.metrics.zenzCachedTokens = completion.inference.cachedTokens;
     if (!options.lattice) {
       return {
         text: options.baseline,
@@ -2177,16 +2321,32 @@ const runZenzLattice = async (options: ZenzLatticeRequestOptions): Promise<ZenzL
         completionSkipReason: AZOOKEY_COMPLETION_SKIPPED_LATTICE_UNAVAILABLE,
       };
     }
-    return orchestrateOneCompletion({
+    const search: ZenzOneCompletionSearch = {
+      searchOutputPrefix: (prefix): string | undefined => {
+        const searchStartedAt = metricNowMs();
+        try {
+          return options.lattice?.searchOutputPrefix(prefix);
+        } finally {
+          options.metrics.latticeSearchMs += metricElapsedMs(searchStartedAt);
+          options.metrics.latticeSearchCount += 1;
+        }
+      },
+    };
+    const orchestrationStartedAt = metricNowMs();
+    const result = orchestrateOneCompletion({
       input: options.text,
       leftContext: options.leftContext,
       baseline: options.baseline,
       completion: completion.content,
       remainingMs: options.remainingMs,
-      search: options.lattice,
+      search,
     });
+    options.metrics.orchestrationMs += metricElapsedMs(orchestrationStartedAt);
+    return result;
   } finally {
+    const closeStartedAt = metricNowMs();
     options.lattice?.close();
+    options.metrics.latticeCloseMs += metricElapsedMs(closeStartedAt);
   }
 };
 
@@ -2372,10 +2532,12 @@ export const convertAzookeyMessage = async (
   } else if (deadlineExpired()) {
     throw new AzookeyProtocolError("conversion_timeout", "conversion timed out", message.requestId);
   }
+  const metrics = createAzookeyMetricsAccumulator();
   let dictionaryResult: AzookeyConversionResult | undefined;
   let lexiconHandle: number | undefined;
   const resolveLexiconHandle = async (): Promise<number> => {
     if (lexiconHandle !== undefined) return lexiconHandle;
+    const lexiconStartedAt = metricNowMs();
     lexiconHandle =
       runtime.userLexicon && runtime.converter.syncUserLexicon
         ? await runtime.converter.syncUserLexicon(runtime.userLexicon, {
@@ -2383,6 +2545,7 @@ export const convertAzookeyMessage = async (
             wsOrHttp,
           })
         : 0;
+    metrics.lexiconSyncMs += metricElapsedMs(lexiconStartedAt);
     return lexiconHandle;
   };
   const runDictionaryConversion = async (
@@ -2397,6 +2560,7 @@ export const convertAzookeyMessage = async (
     }
     const activeLexiconHandle =
       runtime.userLexicon && runtime.converter.syncUserLexicon ? await resolveLexiconHandle() : 0;
+    const dictionaryStartedAt = metricNowMs();
     const candidate = await withTimeout(
       (signal) =>
         runtime.converter.convertWithContext
@@ -2409,6 +2573,7 @@ export const convertAzookeyMessage = async (
           : runtime.converter(conversionInput, signal, precedingContext),
       remainingMs(),
     );
+    metrics.dictionaryConvertMs += metricElapsedMs(dictionaryStartedAt);
     if (deadlineExpired()) {
       throw new AzookeyProtocolError(
         "conversion_timeout",
@@ -2495,11 +2660,24 @@ export const convertAzookeyMessage = async (
           converted = dictionaryResult.text;
           completionSkipReason = AZOOKEY_COMPLETION_SKIPPED_EMPTY_LEFT_CONTEXT;
         } else {
-          const latticeStartedAt = timingNowMs();
           const activeLexiconHandle =
             runtime.userLexicon && runtime.converter.syncUserLexicon
               ? await resolveLexiconHandle()
               : 0;
+          const latticeStartedAt = metricNowMs();
+          const lattice = runtime.converter.openLattice?.(
+            conversionInput,
+            preceding,
+            activeLexiconHandle,
+          );
+          metrics.latticeOpenMs += metricElapsedMs(latticeStartedAt);
+          logAzookeyTiming({
+            phase: "lattice",
+            elapsedMs: metrics.latticeOpenMs,
+            inputChars: conversionInput.length,
+            cacheHit: false,
+            wsOrHttp,
+          });
           const zenzResult = await runZenzLattice({
             model: message.model,
             text: conversionInput,
@@ -2507,24 +2685,14 @@ export const convertAzookeyMessage = async (
             baseline: dictionaryResult.text,
             requestId: message.requestId,
             runtime,
-            lattice: runtime.converter.openLattice?.(
-              conversionInput,
-              preceding,
-              activeLexiconHandle,
-            ),
+            lattice,
             remainingMs,
             wsOrHttp,
+            metrics,
           });
           converted = zenzResult.text;
           usedCompletion = zenzResult.usedCompletion;
           completionSkipReason = zenzResult.completionSkipReason;
-          logAzookeyTiming({
-            phase: "lattice",
-            elapsedMs: timingElapsedMs(latticeStartedAt),
-            inputChars: conversionInput.length,
-            cacheHit: false,
-            wsOrHttp,
-          });
         }
       } catch (error) {
         // HTTP status / empty-body failures become AzookeyProtocolError
@@ -2600,12 +2768,62 @@ export const convertAzookeyMessage = async (
     }
   }
   const elapsed = nowMs() - startedAt;
+  const totalMs = Number.isFinite(elapsed) ? Math.round(Math.max(0, elapsed)) : 0;
   logAzookeyTiming({
     phase: "total",
-    elapsedMs: Number.isFinite(elapsed) ? Math.round(Math.max(0, elapsed)) : 0,
+    elapsedMs: totalMs,
     inputChars: conversionInput.length,
     cacheHit: wasmReadyBefore,
     wsOrHttp,
+  });
+  logAzookeyMetrics({
+    event: AZOOKEY_METRICS_EVENT,
+    schemaVersion: AZOOKEY_METRICS_SCHEMA_VERSION,
+    wsOrHttp,
+    requestedModel: message.model,
+    effectiveModel: resultModel,
+    outcome: azookeyMetricsOutcome({
+      requestedModel: message.model,
+      usedCompletion,
+      ...(modelFallback === undefined ? {} : { modelFallback }),
+      ...(completionSkipReason === undefined ? {} : { completionSkipReason }),
+    }),
+    inputChars: conversionInput.length,
+    inputBytes: encoder.encode(conversionInput).byteLength,
+    contextChars: trimZenzLeftContext(message.leftContext ?? "").length,
+    nBest: AZOOKEY_N_BEST_WIDTH,
+    nPredict: runtime.zenzNPredict ?? AZOOKEY_ZENZ_N_PREDICT,
+    userLexiconEnabled: runtime.userLexicon !== undefined,
+    wasmReadyBefore,
+    usedCompletion,
+    lexiconSyncMs: metrics.lexiconSyncMs,
+    dictionaryConvertMs: metrics.dictionaryConvertMs,
+    latticeOpenMs: metrics.latticeOpenMs,
+    latticeUniqueMs: metrics.latticeUniqueMs,
+    zenzHttpMs: metrics.zenzHttpMs,
+    zenzPromptMs: metrics.zenzPromptMs,
+    zenzPredictedMs: metrics.zenzPredictedMs,
+    zenzContainerHeadersMs: metrics.zenzContainerHeadersMs,
+    zenzBodyTransferMs: Math.max(0, metrics.zenzHttpMs - metrics.zenzContainerHeadersMs),
+    zenzRuntimeOverheadMs: Math.max(
+      0,
+      metrics.zenzContainerHeadersMs - metrics.zenzPromptMs - metrics.zenzPredictedMs,
+    ),
+    zenzOverheadMs: Math.max(
+      0,
+      metrics.zenzHttpMs - metrics.zenzPromptMs - metrics.zenzPredictedMs,
+    ),
+    zenzPromptTokens: metrics.zenzPromptTokens,
+    zenzPredictedTokens: metrics.zenzPredictedTokens,
+    zenzCachedTokens: metrics.zenzCachedTokens,
+    latticeSearchMs: metrics.latticeSearchMs,
+    latticeSearchCount: metrics.latticeSearchCount,
+    orchestrationMs: metrics.orchestrationMs,
+    latticeCloseMs: metrics.latticeCloseMs,
+    totalMs,
+    ...(metrics.zenzHttpReason === undefined ? {} : { zenzHttpReason: metrics.zenzHttpReason }),
+    ...(modelFallback === undefined ? {} : { modelFallback }),
+    ...(completionSkipReason === undefined ? {} : { completionSkipReason }),
   });
   return {
     type: "azookey.result",

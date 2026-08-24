@@ -1213,9 +1213,20 @@ describe("AzooKey Worker text contract", () => {
 
   it("orchestrates one Zenz completion against the local lattice when left context is present", async () => {
     const captured: string[] = [];
+    const logged: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((value: unknown) => {
+      if (typeof value === "string") logged.push(value);
+    });
     const fetcher: AzookeyRuntime["fetcher"] = (_input, init) => {
       captured.push(String(init?.body ?? ""));
-      return new Response(JSON.stringify({ content: "感じ" }), { status: 200 });
+      return new Response(
+        JSON.stringify({
+          content: "感じ",
+          tokens_cached: 12,
+          timings: { prompt_ms: 25, predicted_ms: 75, prompt_n: 20, predicted_n: 2 },
+        }),
+        { status: 200, headers: { "x-kotoba-container-headers-ms": "90" } },
+      );
     };
     const prefixes: string[] = [];
     const converter = ((text: string) => `dict:${text}`) as AzookeyConverter;
@@ -1261,6 +1272,32 @@ describe("AzooKey Worker text contract", () => {
       usedCompletion: true,
     });
     expect(result.completionSkipReason).toBeUndefined();
+    log.mockRestore();
+    expect(JSON.parse(logged.at(-1) ?? "{}")).toMatchObject({
+      event: "azookey_metrics",
+      schemaVersion: 1,
+      requestedModel: "zenz-v3.2-small-gguf",
+      effectiveModel: "zenz-v3.2-small-gguf",
+      outcome: "gguf",
+      inputChars: 10,
+      inputBytes: 30,
+      contextChars: 14,
+      nBest: 64,
+      nPredict: 64,
+      userLexiconEnabled: false,
+      usedCompletion: true,
+      zenzPromptMs: 25,
+      zenzPredictedMs: 75,
+      zenzContainerHeadersMs: 90,
+      zenzBodyTransferMs: 0,
+      zenzRuntimeOverheadMs: 0,
+      zenzOverheadMs: 0,
+      zenzPromptTokens: 20,
+      zenzPredictedTokens: 2,
+      zenzCachedTokens: 12,
+      latticeSearchCount: 1,
+      zenzHttpReason: "ok",
+    });
   });
 
   it("skips GGUF when every lattice candidate has the same output", async () => {

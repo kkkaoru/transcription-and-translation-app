@@ -56,6 +56,7 @@
     "worker:typecheck": "bun --filter=@caption-bridge/cloudflare-worker-server run typecheck",
     "worker:test": "bun --filter=@caption-bridge/cloudflare-worker-server run test",
     "worker:test:coverage": "node scripts/run-coverage-locked.mjs @caption-bridge/cloudflare-worker-server",
+    "worker:metrics:analyze": "bun scripts/analyze-azookey-metrics.mjs",
     "worker:deploy": "bun --filter=@caption-bridge/cloudflare-worker-server run deploy",
     "mcp:cloudflare": "node scripts/setup-cursor-cloudflare-mcp.mjs",
     "parapper:lint": "bun --cwd=packages/parapper-asr run lint",

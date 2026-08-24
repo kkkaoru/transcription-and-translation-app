@@ -38,7 +38,7 @@ export interface WarmupTarget {
   body: string;
 }
 
-interface ReadyFetchOptions {
+interface ContainerFetchOptions {
   container: DurableObjectStub<ZenzContainer>;
   request: Request;
   port: number;
@@ -62,8 +62,7 @@ const COMPLETION_PATH = "/completion";
 const N5_PREFIX = "/n5";
 const N5_RESCORE_PATH = "/rescore";
 const N5_PORT = 8081;
-const HEALTH_RETRY_COUNT = 900;
-const HEALTH_RETRY_DELAY_MS = 100;
+const CONTAINER_TIMING_HEADER = "x-kotoba-container-headers-ms";
 const SLEEP_AFTER = "30s";
 const DEFAULT_PORT = 8080;
 const PATH_PATTERN = /^\/(basic|standard)\/(small|xsmall)\/(n5-off|n5-on)(\/.*)?$/;
@@ -208,31 +207,37 @@ const containerRoute = (pathname: string, env: Env): ContainerRoute | undefined 
     : undefined;
 };
 
-const waitUntilReady = async (
-  container: DurableObjectStub<ZenzContainer>,
-  request: Request,
-): Promise<Response | undefined> => {
-  for (let attempt = 0; attempt < HEALTH_RETRY_COUNT; attempt += 1) {
-    const response = await container.fetch(request);
-    if (response.ok) return response;
-    await response.body?.cancel();
-    await scheduler.wait(HEALTH_RETRY_DELAY_MS);
-  }
-  return undefined;
-};
+// Container.fetch already starts the instance and waits for its configured
+// ports. A separate /health fetch doubled the Durable Object proxy work on
+// every hot completion without adding readiness guarantees.
+const fetchContainer = (options: ContainerFetchOptions): Promise<Response> =>
+  options.container.fetch(switchPort(options.request, options.port));
 
-const readyFetch = async (options: ReadyFetchOptions): Promise<Response | undefined> => {
-  const healthUrl = new URL(options.request.url);
-  healthUrl.pathname = HEALTH_PATH;
-  const healthRequest = new Request(healthUrl, { method: "GET" });
-  const healthResponse = await waitUntilReady(
-    options.container,
-    switchPort(healthRequest, options.port),
+const fetchContainerWithMetrics = async (
+  options: ContainerFetchOptions & { profile: ParsedContainerRoute },
+): Promise<Response> => {
+  const startedAt = performance.now();
+  const response = await fetchContainer(options);
+  const elapsedMs = Math.max(0, performance.now() - startedAt);
+  // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured JSON logs
+  console.log(
+    JSON.stringify({
+      event: "zenz_container_metrics",
+      tier: options.profile.tier,
+      model: options.profile.model,
+      n5Mode: options.profile.n5Mode,
+      path: options.profile.upstreamPath,
+      elapsedMs,
+      status: response.status,
+    }),
   );
-  if (!healthResponse) return undefined;
-  if (new URL(options.request.url).pathname === HEALTH_PATH) return healthResponse;
-  await healthResponse.body?.cancel();
-  return options.container.fetch(switchPort(options.request, options.port));
+  const headers = new Headers(response.headers);
+  headers.set(CONTAINER_TIMING_HEADER, String(elapsedMs));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 };
 
 export const warmupTargets = (options: {
@@ -254,7 +259,7 @@ const warmContainer = async (options: WarmContainerOptions): Promise<Response> =
     }).map((target) => {
       const targetUrl = new URL(options.url);
       targetUrl.pathname = target.path;
-      return readyFetch({
+      return fetchContainer({
         container: options.route.container,
         request: new Request(targetUrl, {
           method: "POST",
@@ -310,14 +315,13 @@ export default {
       ? route.upstreamPath.slice(N5_PREFIX.length) || HEALTH_PATH
       : route.upstreamPath;
     const port = isN5Request ? N5_PORT : DEFAULT_PORT;
-    const response = await readyFetch({
+    const profile = parseContainerRoute(new URL(request.url).pathname);
+    if (!profile) throw new Error("Container profile disappeared after route validation");
+    return await fetchContainerWithMetrics({
       container: route.container,
       request: new Request(url, request),
       port,
+      profile,
     });
-    return (
-      response ??
-      Response.json({ error: "selected container did not become ready" }, { status: 503 })
-    );
   },
 } satisfies ExportedHandler<Env>;

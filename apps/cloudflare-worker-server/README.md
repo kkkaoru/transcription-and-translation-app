@@ -35,6 +35,33 @@ select another valid candidate.
 
 Both dictionaries are fetched through the Worker static-assets binding and cached per isolate. Production inference remains private (`workers_dev: false`) and is called by `azookey-compare` through a service binding.
 
+## AzooKey metrics
+
+Every completed AzooKey conversion emits one privacy-safe structured
+`azookey_metrics` record. It contains no recognized text or prompt. The record
+separates user-lexicon synchronization, system-dictionary conversion, lattice
+open/uniqueness/search/close, Worker-to-Container HTTP, Container response-header
+time, response-body transfer, llama.cpp prompt evaluation and token generation,
+orchestration, and residual runtime overhead.
+It also records the selected/effective model, fallback reason, token counts,
+cache count, input sizes, and whether WASM was already warm.
+
+Capture normalized production records and summarize averages/p50/p95/max:
+
+```bash
+bunx wrangler tail kotoba-beacon-inference --format json \
+  | jq -rc '.logs[]?.message[]? | fromjson? | select(.event == "azookey_metrics")' \
+  > /tmp/azookey-metrics.jsonl
+bun run worker:metrics:analyze /tmp/azookey-metrics.jsonl
+```
+
+The older per-phase `azookey_timing` logs remain available for live debugging;
+`azookey_metrics` is the authoritative per-request analysis record. A separate
+`zenz_container_metrics` record is emitted by the Container Worker for each
+proxied request. The Container header duration intentionally ends when upstream
+headers arrive; `zenzBodyTransferMs` measures the remaining service-binding and
+body-transfer time seen by inference.
+
 ## Validation
 
 ```bash
