@@ -117,6 +117,24 @@ describe("Workers AI speech pipeline", () => {
     });
   });
 
+  it("emits pipeline timings without recognized text", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const response = await handleWorkersAiSpeechPipeline(request(), {
+      asrEnvironment: {},
+      run: vi.fn(asrRun),
+      vibrato: identityVibrato,
+      rescoreN5: identityN5,
+      convert: vi.fn(xsmallConvert),
+    });
+
+    expect(response.status).toBe(200);
+    expect(consoleLog).toHaveBeenCalledOnce();
+    expect(consoleLog.mock.calls[0]?.[0]).toMatch("speech_pipeline_metrics");
+    expect(consoleLog.mock.calls[0]?.[0]).not.toMatch("きょうはいいてんき");
+    expect(consoleLog.mock.calls[0]?.[0]).not.toMatch("今日はいい天気");
+    consoleLog.mockRestore();
+  });
+
   it("bypasses the user lexicon only when the browser confirms it is empty", async () => {
     const form = await request().formData();
     form.set("userLexicon", "off");

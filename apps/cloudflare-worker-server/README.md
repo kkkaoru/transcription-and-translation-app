@@ -37,8 +37,9 @@ Both dictionaries are fetched through the Worker static-assets binding and cache
 
 ## AzooKey metrics
 
-Every completed AzooKey conversion emits one privacy-safe structured
-`azookey_metrics` record. It contains no recognized text or prompt. The record
+Every completed AzooKey conversion emits privacy-safe `azookey_metrics` and
+`speech_pipeline_metrics` records. Neither contains recognized text or prompts.
+The AzooKey record
 separates user-lexicon synchronization, system-dictionary conversion, lattice
 open/uniqueness/search/close, Worker-to-Container HTTP, Container response-header
 time, response-body transfer, llama.cpp prompt evaluation and token generation,
@@ -50,13 +51,17 @@ Capture normalized production records and summarize averages/p50/p95/max:
 
 ```bash
 bunx wrangler tail kotoba-beacon-inference --format json \
-  | jq -rc '.logs[]?.message[]? | fromjson? | select(.event == "azookey_metrics")' \
+  | jq -rc '.logs[]?.message[]? | fromjson? | select(.event == "azookey_metrics" or .event == "speech_pipeline_metrics")' \
   > /tmp/azookey-metrics.jsonl
 bun run worker:metrics:analyze /tmp/azookey-metrics.jsonl
 ```
 
 The older per-phase `azookey_timing` logs remain available for live debugging;
-`azookey_metrics` is the authoritative per-request analysis record. Production
+`azookey_metrics` is the authoritative conversion record and
+`speech_pipeline_metrics` is the authoritative outer-pipeline record. Replacing
+the previous text-bearing pipeline log reduced the representative structured-log
+payload from 765 bytes to 229 bytes on average (70%) while removing recognized
+text from observability. Production
 routes each compute/model/N5 profile through its own `PROFILE_CONVERTER`
 Durable Object. That object retains the decompressed 24 MB system dictionary,
 WASM instance, lattice state factory, and user-lexicon handle between requests,
@@ -64,14 +69,23 @@ then calls the selected Container from the same stable execution locus. Browser
 warm-up primes both this object and the Container; Container release remains
 independent and still scales every profile to zero. A separate
 `zenz_container_metrics` record is emitted by the Container Worker for each
-proxied request. In the final production eight-profile warm matrix, every profile completed the
-authoritative GGUF path and the AzooKey stage averaged 1,002 ms. Six repeated
-Standard XSmall/N5-on samples averaged 792 ms. The prior stateless-isolate sample averaged 3,225 ms for
-successful GGUF calls and still fell back on two of six requests. A direct
+proxied request. In the current 16-conversion production sample, all requests
+completed the authoritative GGUF path with no fallback. Internal GGUF conversion
+averaged 365 ms (p50 324 ms, p95 675 ms); outer pipeline averages were 389 ms
+for ASR, 27 ms for Vibrato, 137 ms for N5 service work, and 986 ms for the full
+speculative AzooKey stage. Six repeated warm Standard XSmall/N5-on requests
+averaged 746 ms for AzooKey and 1,893 ms end-to-end. The prior stateless-isolate
+sample averaged 3,225 ms for successful GGUF calls and still fell back on two
+of six requests. A direct
 cross-script binding from the stateless inference Worker to the Container DO
 was also tested; all six requests hit the GGUF timeout, so that topology was
-reverted. Anchoring the dictionary, N5 call, and GGUF call in the profile DO was
-the successful placement strategy.
+reverted. A combined N5-plus-GGUF profile RPC was also tested and reverted: its
+six-request AzooKey average rose from the 671 ms baseline to 831 ms and
+end-to-end latency rose from 1,896 ms to 1,998 ms. Smart Placement was tested
+through its analysis window and reverted as well: the eight-profile AzooKey
+average rose from 862 ms to 1,297 ms and end-to-end latency from 1,646 ms to
+2,313 ms. Anchoring the dictionary, N5 call, and GGUF call in the profile DO
+without Smart Placement remains the successful topology.
 The Container header duration intentionally ends when upstream
 headers arrive; `zenzBodyTransferMs` measures the remaining service-binding and
 body-transfer time seen by inference.

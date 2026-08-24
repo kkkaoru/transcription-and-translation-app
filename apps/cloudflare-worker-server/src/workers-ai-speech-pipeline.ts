@@ -168,6 +168,7 @@ export const handleWorkersAiSpeechPipeline = async (
   request: Request,
   dependencies: WorkersAiSpeechPipelineDependencies,
 ): Promise<Response> => {
+  const pipelineStartedAt = performance.now();
   const metadataRequest = request.clone();
   const form = await metadataRequest.formData();
   const conversionModel = parseConversionModel(form.get("conversionModel"));
@@ -239,13 +240,14 @@ export const handleWorkersAiSpeechPipeline = async (
     // kana so particles are not rewritten to their pronunciation.
     const vibratoStartedAt = performance.now();
     const vibratoText = await dependencies.vibrato(sourceText, requestedLanguage);
+    const vibratoElapsedMs = Math.max(0, performance.now() - vibratoStartedAt);
     if (profile.computeTier === "basic") dependencies.releaseVibrato?.();
     logs.push({
       stage: "vibrato",
       engine: "vibrato-ipadic-wasm",
       input: sourceText,
       output: vibratoText,
-      elapsedMs: Math.max(0, performance.now() - vibratoStartedAt),
+      elapsedMs: vibratoElapsedMs,
     });
     const speculativeStartedAt = performance.now();
     const speculative =
@@ -305,8 +307,20 @@ export const handleWorkersAiSpeechPipeline = async (
       output: conversion.result.text,
       elapsedMs: conversion.elapsedMs,
     });
-    // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured pipeline logs
-    console.log(JSON.stringify({ event: "speech_pipeline", profile, logs }));
+    // biome-ignore lint/suspicious/noConsole: Workers Observability ingests privacy-safe timings
+    console.log(
+      JSON.stringify({
+        event: "speech_pipeline_metrics",
+        profile,
+        asrMs: asrLog.elapsedMs,
+        vibratoMs: vibratoElapsedMs,
+        n5Ms: n5Result.elapsedMs,
+        azookeyMs: conversion.elapsedMs,
+        totalMs: Math.max(0, performance.now() - pipelineStartedAt),
+        usedCompletion: conversion.result.usedCompletion,
+        modelFallback: conversion.result.modelFallback ?? "none",
+      }),
+    );
     return pipelineResponse(asr, {
       ...commonFields,
       n5Text: n5Result.text,
