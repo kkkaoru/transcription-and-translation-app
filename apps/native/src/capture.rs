@@ -22,7 +22,7 @@ const COMMAND_QUEUE_CAPACITY: usize = 1;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const TRANSLATION_QUEUE_CAPACITY: usize = 1;
 const TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
-const DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const MICROPHONE_PERMISSION_MESSAGE: &str = "Microphone access is not permitted";
 const DEVICE_NOT_FOUND_MESSAGE: &str = "The selected microphone was not found";
 const MAX_CAPTION_CHARACTERS: usize = 2_048;
@@ -125,14 +125,25 @@ impl CaptureController {
         &self.snapshot
     }
 
-    pub fn refresh_devices(&mut self) {
-        match list_input_devices() {
-            Ok(devices) => self.apply_device_list(devices),
-            Err(error) => {
-                self.snapshot.last_error = Some(error.to_string());
-                self.snapshot.status = CaptureStatus::Error;
+    pub fn refresh_devices(&mut self) -> bool {
+        let previous_selection = self.snapshot.selected_device_id.clone();
+        let changed = match list_input_devices() {
+            Ok(devices) => {
+                let devices_changed = self.snapshot.devices != devices;
+                self.apply_device_list(devices);
+                devices_changed || self.snapshot.selected_device_id != previous_selection
             }
-        }
+            Err(error) => {
+                let message = error.to_string();
+                let error_changed = self.snapshot.last_error.as_deref() != Some(message.as_str())
+                    || self.snapshot.status != CaptureStatus::Error;
+                self.snapshot.last_error = Some(message);
+                self.snapshot.status = CaptureStatus::Error;
+                error_changed
+            }
+        };
+        self.last_device_refresh = Instant::now();
+        changed
     }
 
     pub fn select_device(&mut self, id: &str) {
@@ -144,12 +155,7 @@ impl CaptureController {
     pub fn poll(&mut self, caption_timeout_ms: u64) -> bool {
         let mut changed = false;
         if self.last_device_refresh.elapsed() >= DEVICE_REFRESH_INTERVAL {
-            let previous_devices = self.snapshot.devices.clone();
-            let previous_selection = self.snapshot.selected_device_id.clone();
-            self.refresh_devices();
-            changed = self.snapshot.devices != previous_devices
-                || self.snapshot.selected_device_id != previous_selection;
-            self.last_device_refresh = Instant::now();
+            changed = self.refresh_devices();
         }
         let Some(receiver) = self.event_rx.as_ref() else {
             return self.expire_caption() || changed;
@@ -177,6 +183,7 @@ impl CaptureController {
         if self.snapshot.status == CaptureStatus::Capturing {
             return Ok(());
         }
+        self.refresh_devices();
         let models_root = parapper_runtime_dir()?.join("models");
         let device_id = self.snapshot.selected_device_id.clone();
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);

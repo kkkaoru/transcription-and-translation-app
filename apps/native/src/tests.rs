@@ -66,6 +66,7 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
 
     let capture = include_str!("capture.rs");
     assert!(capture.contains("RMS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100)"));
+    assert!(capture.contains("DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(30)"));
     assert!(capture.contains("TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(600)"));
     assert!(capture.contains("receiver.recv_timeout(TRANSLATOR_IDLE_TIMEOUT)"));
     assert!(capture.contains("Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES)"));

@@ -237,6 +237,13 @@ impl MainView {
         self.tab = tab;
     }
 
+    fn toggle_device_select(&mut self) {
+        if !self.device_select_open {
+            self.capture.refresh_devices();
+        }
+        self.device_select_open = !self.device_select_open;
+    }
+
     fn select_device(&mut self, id: &str) {
         self.capture.select_device(id);
         self.device_select_open = false;
@@ -436,7 +443,7 @@ impl Render for MainView {
                 language,
                 cx,
                 &LiveCallbacks {
-                    on_toggle_select: |view| view.device_select_open = !view.device_select_open,
+                    on_toggle_select: MainView::toggle_device_select,
                     on_select_device: |view, id| view.select_device(id),
                     on_start: |view| {
                         if let Err(error) =

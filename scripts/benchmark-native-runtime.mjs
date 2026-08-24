@@ -169,6 +169,9 @@ const runFixture = (options) => {
           ),
           pcmAllocations:
             baselineSummary.workload.pcmAllocations - optimizedSummary.workload.pcmAllocations,
+          engineFrameAllocations:
+            baselineSummary.workload.engineFrameAllocations -
+            optimizedSummary.workload.engineFrameAllocations,
           captionCloneOperations:
             baselineSummary.workload.captionCloneOperations -
             optimizedSummary.workload.captionCloneOperations,

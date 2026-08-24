@@ -47,10 +47,11 @@ caption clones, and output-window checks as privacy-safe JSON. macOS/Linux also
 report process CPU time and maximum RSS through `/usr/bin/time`; those two
 fields are `null` for the Windows fixture. The fixture calls the same normalization, caption-change, and output-check helpers
 used by the app. A representative macOS ARM64 five-run median reduced the
-CPU-bound workload from 435 ms to 142 ms (67%), process CPU time from 0.43 s to
-0.14 s (67%), PCM allocations from 5,000,000 to one, caption clone operations
-from 25,322,582 to 1,129,037, and output-window checks from 5,000,000 to 645,162.
-Peak RSS was essentially flat at about 11 MiB because the allocator reused
+expanded CPU-bound workload from 596 ms to 227 ms (62%), process CPU time from
+0.59 s to 0.23 s (61%), PCM allocations from 5,000,000 to one, ASR VAD-frame
+allocations from 5,000,000 to one, caption clone operations from 25,322,582 to
+1,129,037, and output-window checks from 5,000,000 to 645,162. Peak RSS was
+essentially flat at about 11 MiB because the allocator reused
 released blocks; the improvement is reduced allocation churn rather than a
 large retained-memory change.
 
@@ -62,9 +63,37 @@ bun scripts/benchmark-native-runtime.mjs sample --pid PID --seconds 10
 
 The sampler supports macOS/Linux `ps` and Windows PowerShell, and reports
 average/p50/p95/max CPU and resident memory without recording captions or
-audio. A representative idle macOS run used about 81.9 MiB RSS, averaged below
-0.01% CPU, and peaked at 0.1% CPU. Active-capture numbers remain dependent on
-the selected microphone, models, and OS audio permissions.
+audio. A representative idle macOS run after the second optimization pass used
+about 78.6 MiB maximum RSS and reported 0% CPU across 48 samples. Active-capture
+numbers remain dependent on the selected microphone, models, and OS audio
+permissions.
+
+### Evaluated resource changes
+
+- The ASR VAD-frame queue now drains completed 512-sample frames while retaining
+  its allocation. A real-model fixture still recognizes the expected Japanese
+  caption, so this change is enabled.
+- Microphone discovery now refreshes before capture, when opening the selector,
+  and every 30 seconds as a fallback. This removes repeated device-list clones
+  and most idle OS enumeration without weakening capture or hot-plug recovery.
+- Syphon and Spout already share one 1280x720 raster and retain their GPU sender
+  resources. The GPUI output can require a different HiDPI raster, so forcing it
+  to share would reduce output quality and was not adopted.
+- Unchanged captions already skip rasterization, texture upload, and GPUI atlas
+  growth. GPUI does not expose a safe in-place `RenderImage` texture update in
+  the pinned revision, so a private GPU implementation was not adopted.
+- Event-driven GPUI replacement was not adopted: the measured idle loop rounded
+  to 0% CPU, while cross-thread wakeup changes would add shutdown and missed-wake
+  risk. Recognition events remain polled at 32 ms for predictable latency.
+- The 462 MiB-on-disk translation model reached about 781 MiB process RSS and
+  took 2.7 seconds to load in a cold standalone measurement. It is still loaded
+  lazily, released immediately when capture stops, and released after ten idle
+  minutes. Shortening that timeout would save RAM but add visible latency to the
+  next translation, so the quality-preserving policy remains unchanged.
+- Direct macOS GPU power sampling requires privileged `powermetrics`. GPU work
+  is therefore guarded by behavioral tests that prove unchanged captions do not
+  rasterize or upload; use a privileged Metal trace for hardware-specific power
+  figures.
 
 ## Identity
 

@@ -192,13 +192,13 @@ impl ParapperEngine {
         } else {
             self.pending_audio.extend_from_slice(samples);
         }
-        while self.pending_audio.len() >= VAD_FRAME_SAMPLES {
-            let remaining = self.pending_audio.split_off(VAD_FRAME_SAMPLES);
-            let frame = std::mem::replace(&mut self.pending_audio, remaining);
-            let vad_result = self.vad.process(&frame)?;
-            self.driver.push_vad_frame(&frame, vad_result);
-            self.driver.step();
-        }
+        let Self { pending_audio, vad, driver, .. } = self;
+        consume_complete_vad_frames(pending_audio, |frame| {
+            let vad_result = vad.process(frame)?;
+            driver.push_vad_frame(frame, vad_result);
+            driver.step();
+            Ok(())
+        })?;
         self.driver.step();
         Ok(self.drain_events())
     }
@@ -234,6 +234,22 @@ impl From<RecognitionShutdownResult> for ShutdownResult {
     }
 }
 
+fn consume_complete_vad_frames<F>(pending_audio: &mut Vec<f32>, mut consume: F) -> Result<()>
+where
+    F: FnMut(&[f32]) -> Result<()>,
+{
+    let complete_samples = pending_audio.len() / VAD_FRAME_SAMPLES * VAD_FRAME_SAMPLES;
+    let mut offset = 0;
+    while offset < complete_samples {
+        consume(&pending_audio[offset..offset + VAD_FRAME_SAMPLES])?;
+        offset += VAD_FRAME_SAMPLES;
+    }
+    if complete_samples > 0 {
+        pending_audio.drain(..complete_samples);
+    }
+    Ok(())
+}
+
 fn validate_models_root(root: &Path) -> Result<()> {
     if !root.is_absolute() {
         bail!("models root must be absolute: {}", root.display());
@@ -246,7 +262,9 @@ fn validate_models_root(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EngineConfig, validate_models_root};
+    use super::{
+        EngineConfig, VAD_FRAME_SAMPLES, consume_complete_vad_frames, validate_models_root,
+    };
 
     #[test]
     fn engine_config_uses_bounded_resource_defaults() {
@@ -254,6 +272,29 @@ mod tests {
         assert_eq!(config.asr_threads, 2);
         assert!(!config.noise_cancellation_enabled);
         assert!(!config.partial_window_asr_enabled);
+    }
+
+    #[test]
+    fn vad_frame_consumption_retains_capacity_and_partial_samples() {
+        let mut pending = Vec::with_capacity(VAD_FRAME_SAMPLES * 3);
+        pending.extend((0..VAD_FRAME_SAMPLES * 2 + 7).map(|sample| sample as f32));
+        let initial_capacity = pending.capacity();
+        let mut starts = Vec::new();
+
+        consume_complete_vad_frames(&mut pending, |frame| {
+            starts.push(frame[0] as usize);
+            Ok(())
+        })
+        .expect("complete frames should be consumed");
+
+        assert_eq!(starts, vec![0, VAD_FRAME_SAMPLES]);
+        assert_eq!(
+            pending,
+            (VAD_FRAME_SAMPLES * 2..VAD_FRAME_SAMPLES * 2 + 7)
+                .map(|sample| sample as f32)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(pending.capacity(), initial_capacity);
     }
 
     #[test]

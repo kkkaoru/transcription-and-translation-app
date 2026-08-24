@@ -30,6 +30,9 @@ struct RuntimeMetrics {
     pcm_allocations: u64,
     pcm_reallocations: u64,
     pcm_buffer_capacity: usize,
+    engine_frame_allocations: u64,
+    engine_frame_reallocations: u64,
+    engine_frame_buffer_capacity: usize,
     caption_polls: u64,
     caption_updates: u64,
     caption_clone_operations: u64,
@@ -74,11 +77,20 @@ fn baseline_metrics(iterations: u64) -> RuntimeMetrics {
     let input = [1_024_i16; NATIVE_PCM_FRAME_SAMPLES];
     let style = "s".repeat(STYLE_BYTES);
     let started_at = Instant::now();
+    let mut pending_audio = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
+    let mut engine_frame_reallocations = 0_u64;
     let mut caption_updates = 0_u64;
     let mut checksum = 0_u64;
     for iteration in 0..iterations {
         let normalized: Vec<f32> =
             input.iter().map(|sample| f32::from(*sample) / 32_768.0).collect();
+        let previous_capacity = pending_audio.capacity();
+        pending_audio.extend_from_slice(&normalized);
+        if pending_audio.capacity() != previous_capacity {
+            engine_frame_reallocations += 1;
+        }
+        let remaining = pending_audio.split_off(NATIVE_PCM_FRAME_SAMPLES);
+        let frame = std::mem::replace(&mut pending_audio, remaining);
         let (source, translation) = caption_for_iteration(iteration);
         let published_caption = (source.to_string(), translation.to_string());
         let output = (source.to_string(), translation.to_string(), style.clone());
@@ -92,7 +104,7 @@ fn baseline_metrics(iterations: u64) -> RuntimeMetrics {
                 + output.0.len() as u64
                 + output.1.len() as u64,
         );
-        black_box((normalized, published_caption, browser_caption, output));
+        black_box((normalized, frame, published_caption, browser_caption, output));
     }
     RuntimeMetrics {
         schema_version: 1,
@@ -103,6 +115,9 @@ fn baseline_metrics(iterations: u64) -> RuntimeMetrics {
         pcm_allocations: iterations,
         pcm_reallocations: iterations,
         pcm_buffer_capacity: NATIVE_PCM_FRAME_SAMPLES,
+        engine_frame_allocations: iterations,
+        engine_frame_reallocations,
+        engine_frame_buffer_capacity: pending_audio.capacity(),
         caption_polls: iterations,
         caption_updates,
         caption_clone_operations: iterations
@@ -119,6 +134,8 @@ fn optimized_metrics(iterations: u64) -> RuntimeMetrics {
     let started_at = Instant::now();
     let mut normalized = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
     let initial_capacity = normalized.capacity();
+    let mut pending_audio = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
+    let initial_engine_capacity = pending_audio.capacity();
     let mut previous_caption: Option<(String, String)> = None;
     let mut since_output_check = Duration::ZERO;
     let mut caption_updates = 0_u64;
@@ -132,6 +149,12 @@ fn optimized_metrics(iterations: u64) -> RuntimeMetrics {
         if normalized.capacity() != initial_capacity {
             pcm_reallocations += 1;
         }
+        pending_audio.extend_from_slice(&normalized);
+        let frame_checksum = pending_audio
+            .get(iteration as usize % NATIVE_PCM_FRAME_SAMPLES)
+            .copied()
+            .unwrap_or_default();
+        pending_audio.drain(..NATIVE_PCM_FRAME_SAMPLES);
         let (source, translation) = caption_for_iteration(iteration);
         let output_changed = caption_changed(previous_caption.as_ref(), source, translation);
         if output_changed {
@@ -148,7 +171,7 @@ fn optimized_metrics(iterations: u64) -> RuntimeMetrics {
             since_output_check = Duration::ZERO;
         }
         checksum = checksum.wrapping_add(
-            u64::from(normalized[iteration as usize % normalized.len()].to_bits())
+            u64::from(frame_checksum.to_bits())
                 + previous_caption
                     .as_ref()
                     .map_or(0, |caption| caption.0.len() as u64 + caption.1.len() as u64),
@@ -165,6 +188,9 @@ fn optimized_metrics(iterations: u64) -> RuntimeMetrics {
         pcm_allocations: 1,
         pcm_reallocations,
         pcm_buffer_capacity: normalized.capacity(),
+        engine_frame_allocations: 1,
+        engine_frame_reallocations: u64::from(pending_audio.capacity() != initial_engine_capacity),
+        engine_frame_buffer_capacity: pending_audio.capacity(),
         caption_polls: iterations,
         caption_updates,
         caption_clone_operations,
