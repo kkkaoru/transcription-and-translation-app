@@ -998,19 +998,9 @@ fn serialize_n_best(status: u32, candidates: &[ConversionCandidate]) -> Option<V
 }
 
 fn allocate_n_best_output(status: u32, candidates: &[ConversionCandidate]) -> Option<u64> {
-    let output = serialize_n_best(status, candidates)?;
+    let output = serialize_n_best(status, candidates)?.into_boxed_slice();
     let output_length = output.len();
-    let output_pointer = azookey_alloc(output_length);
-    if output_pointer.is_null() && output_length != 0 {
-        return None;
-    }
-    if output_length != 0 {
-        // SAFETY: `output_pointer` is a fresh allocation of `output_length`
-        // bytes and `output` remains alive for the copy.
-        unsafe {
-            std::ptr::copy_nonoverlapping(output.as_ptr(), output_pointer, output_length);
-        }
-    }
+    let output_pointer = Box::into_raw(output).cast::<u8>();
     Some(pack_output(output_pointer as usize, output_length))
 }
 

@@ -57,6 +57,19 @@ protect output equivalence. This optimization does not change the normal
 browser-segmented request path, but reduces CPU and allocation pressure for the
 Worker-owned fallback.
 
+## AzooKey WASM output ownership
+
+The raw AzooKey WASM ABI now transfers the serialized N-best/lattice result
+buffer directly to the Worker host. Previously it allocated a second equally
+sized WASM buffer and copied the completed result before returning. Each result
+now uses one output allocation instead of two and performs no final byte copy;
+the existing host `azookey_dealloc(pointer, length)` ownership contract is
+unchanged. The production artifact decreased from 468,817 to 468,781 bytes.
+A 20-run-per-case local workerd comparison kept the five-case p50 sum effectively
+flat (309.52 ms before, 309.98 ms after) while improving the p95 sum from 335.93
+to 331.27 ms. The optimization is retained for lower peak transient WASM memory,
+not as a claimed conversion-algorithm speedup.
+
 ## AzooKey metrics
 
 Every completed AzooKey conversion emits privacy-safe `azookey_metrics` and
