@@ -120,6 +120,30 @@ describe("Workers AI Nova-3 ASR adapter", () => {
     expect(run.mock.calls[2]?.[1]).not.toHaveProperty("language");
   });
 
+  it("reuses a prepared multipart form without parsing the request body twice", async () => {
+    const form = new FormData();
+    form.set("file", wavFile());
+    form.set("language", "ja");
+    form.set("segmentation", WORKERS_AI_ASR_CLIENT_SEGMENTATION);
+    const run = vi.fn<WorkersAiAsrRun>(() => Promise.resolve(novaResult()));
+    const response = await handleWorkersAiAsrTranscription(
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        body: "not multipart",
+      }),
+      {},
+      { run, preparedForm: form },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      text: "明日の天気は晴れ",
+      language: "ja",
+      segmentation: WORKERS_AI_ASR_CLIENT_SEGMENTATION,
+    });
+    expect(run).toHaveBeenCalledOnce();
+  });
+
   it("selects Whisper Large V3 Turbo and forwards the requested language", async () => {
     const run = vi.fn<WorkersAiAsrRun>((model, input) => {
       expect(model).toBe(WORKERS_AI_ASR_WHISPER_MODEL);

@@ -358,6 +358,13 @@ const jsonResponse = (status: number, body: Record<string, unknown>): Response =
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 
+export interface WorkersAiAsrRequestOptions {
+  run?: WorkersAiAsrRun;
+  preparedForm?: FormData;
+}
+
+export type WorkersAiAsrRequestArgument = WorkersAiAsrRun | WorkersAiAsrRequestOptions;
+
 interface WorkersAiAsrMultipart {
   wav: Uint8Array;
   language?: string;
@@ -365,13 +372,25 @@ interface WorkersAiAsrMultipart {
   presegmented: boolean;
 }
 
-const readWavFromMultipart = async (request: Request): Promise<WorkersAiAsrMultipart> => {
-  let form: FormData;
+const readMultipartForm = async (request: Request): Promise<FormData> => {
   try {
-    form = await request.formData();
+    return await request.formData();
   } catch {
     throw new GatewayError(HTTP_BAD_REQUEST, "invalid_multipart", "Expected multipart form data");
   }
+};
+
+const requestRun = (options?: WorkersAiAsrRequestArgument): WorkersAiAsrRun | undefined =>
+  typeof options === "function" ? options : options?.run;
+
+const requestPreparedForm = (options?: WorkersAiAsrRequestArgument): FormData | undefined =>
+  typeof options === "function" ? undefined : options?.preparedForm;
+
+const readWavFromMultipart = async (
+  request: Request,
+  preparedForm?: FormData,
+): Promise<WorkersAiAsrMultipart> => {
+  const form = preparedForm ?? (await readMultipartForm(request));
   const fileValue = form.get("file");
   if (!(fileValue instanceof File)) {
     throw new GatewayError(HTTP_BAD_REQUEST, "invalid_audio", "file field is required");
@@ -416,7 +435,7 @@ const readWavFromMultipart = async (request: Request): Promise<WorkersAiAsrMulti
 export const handleWorkersAiAsrTranscription = async (
   request: Request,
   env: WorkersAiAsrEnvironment & { AI?: WorkersAiAsrBinding },
-  run?: WorkersAiAsrRun,
+  options?: WorkersAiAsrRequestArgument,
 ): Promise<Response> => {
   if (request.method !== "POST") {
     return jsonResponse(405, {
@@ -428,7 +447,10 @@ export const handleWorkersAiAsrTranscription = async (
   let model: WorkersAiAsrModel = WORKERS_AI_ASR_MODEL;
   let presegmented = false;
   try {
-    ({ wav, language, model, presegmented } = await readWavFromMultipart(request));
+    ({ wav, language, model, presegmented } = await readWavFromMultipart(
+      request,
+      requestPreparedForm(options),
+    ));
   } catch (error) {
     if (error instanceof GatewayError) {
       return jsonResponse(error.status, { error: { code: error.code, message: error.message } });
@@ -442,7 +464,7 @@ export const handleWorkersAiAsrTranscription = async (
     const detail = error instanceof Error ? error.message : "WAV validation failed";
     return jsonResponse(HTTP_BAD_REQUEST, { error: { code: "invalid_audio", message: detail } });
   }
-  const transcribe = createWorkersAiAsrTranscriber(env, run);
+  const transcribe = createWorkersAiAsrTranscriber(env, requestRun(options));
   try {
     const processed = postprocessWorkersAiAsrTranscript(
       await transcribe(pcm, undefined, undefined, {

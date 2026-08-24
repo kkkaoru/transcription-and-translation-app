@@ -605,11 +605,9 @@ export const createWorker = (
       }
       if (url.pathname === WORKERS_AI_ASR_HTTP_PATH) {
         return cors(
-          await handleWorkersAiAsrTranscription(
-            request,
-            workersAiEnvironment(env),
-            dependencies.workersAiRun,
-          ),
+          await handleWorkersAiAsrTranscription(request, workersAiEnvironment(env), {
+            ...(dependencies.workersAiRun ? { run: dependencies.workersAiRun } : {}),
+          }),
           env.CORS_ORIGIN,
         );
       }

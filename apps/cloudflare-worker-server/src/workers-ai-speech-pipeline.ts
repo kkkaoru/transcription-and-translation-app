@@ -169,8 +169,7 @@ export const handleWorkersAiSpeechPipeline = async (
   dependencies: WorkersAiSpeechPipelineDependencies,
 ): Promise<Response> => {
   const pipelineStartedAt = performance.now();
-  const metadataRequest = request.clone();
-  const form = await metadataRequest.formData();
+  const form = await request.formData();
   const conversionModel = parseConversionModel(form.get("conversionModel"));
   const userLexiconValue = form.get("userLexicon");
   if (
@@ -191,11 +190,10 @@ export const handleWorkersAiSpeechPipeline = async (
   const leftContext = typeof leftContextValue === "string" ? leftContextValue : "";
 
   const asrStartedAt = performance.now();
-  const asrResponse = await handleWorkersAiAsrTranscription(
-    request,
-    dependencies.asrEnvironment,
-    dependencies.run,
-  );
+  const asrResponse = await handleWorkersAiAsrTranscription(request, dependencies.asrEnvironment, {
+    ...(dependencies.run ? { run: dependencies.run } : {}),
+    preparedForm: form,
+  });
   if (!asrResponse.ok) return asrResponse;
   const asr: WorkersAiSpeechAsrPayload = workersAiSpeechAsrPayload(await asrResponse.json());
   const sourceText = asr.text.trim();
@@ -312,6 +310,7 @@ export const handleWorkersAiSpeechPipeline = async (
       JSON.stringify({
         event: "speech_pipeline_metrics",
         profile,
+        asrModel: asr.model,
         asrMs: asrLog.elapsedMs,
         vibratoMs: vibratoElapsedMs,
         n5Ms: n5Result.elapsedMs,

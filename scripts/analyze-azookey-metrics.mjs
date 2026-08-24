@@ -112,6 +112,22 @@ console.log(
           ? { samples: 0 }
           : {
               samples: pipelineRecords.length,
+              asrModels: Object.fromEntries(
+                Object.entries(
+                  Object.groupBy(pipelineRecords, (record) => String(record.asrModel ?? "missing")),
+                ).map(([key, values]) => [
+                  key,
+                  {
+                    samples: values.length,
+                    latencyMs: Object.fromEntries(
+                      PIPELINE_LATENCY_FIELDS.map((field) => [
+                        field,
+                        summarizeValues(values.map((record) => Number(record[field]) || 0)),
+                      ]),
+                    ),
+                  },
+                ]),
+              ),
               profiles: Object.fromEntries(
                 Object.entries(
                   Object.groupBy(

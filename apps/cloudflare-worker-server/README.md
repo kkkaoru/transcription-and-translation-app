@@ -69,12 +69,15 @@ then calls the selected Container from the same stable execution locus. Browser
 warm-up primes both this object and the Container; Container release remains
 independent and still scales every profile to zero. A separate
 `zenz_container_metrics` record is emitted by the Container Worker for each
-proxied request. In the current 16-conversion production sample, all requests
+proxied request. In the current 30-conversion production sample, all requests
 completed the authoritative GGUF path with no fallback. Internal GGUF conversion
-averaged 365 ms (p50 324 ms, p95 675 ms); outer pipeline averages were 389 ms
-for ASR, 27 ms for Vibrato, 137 ms for N5 service work, and 986 ms for the full
-speculative AzooKey stage. Six repeated warm Standard XSmall/N5-on requests
-averaged 746 ms for AzooKey and 1,893 ms end-to-end. The prior stateless-isolate
+averaged 363 ms (p50 305 ms). Parsing multipart input once reduced Nova-3 ASR
+from the previous 389 ms average to 285 ms across 22 samples (p95 437 ms).
+Whisper remained selectable for accuracy-sensitive audio and averaged 1,285 ms
+across seven samples; it correctly retained the leading `お` in the greeting
+fixture that Nova-3 omitted. The mixed-profile speculative AzooKey stage
+averaged 774 ms. Eight repeated warm Standard XSmall/N5-on Nova-3 requests
+averaged 660 ms for AzooKey and 1,546 ms end-to-end. The prior stateless-isolate
 sample averaged 3,225 ms for successful GGUF calls and still fell back on two
 of six requests. A direct
 cross-script binding from the stateless inference Worker to the Container DO
@@ -84,8 +87,13 @@ six-request AzooKey average rose from the 671 ms baseline to 831 ms and
 end-to-end latency rose from 1,896 ms to 1,998 ms. Smart Placement was tested
 through its analysis window and reverted as well: the eight-profile AzooKey
 average rose from 862 ms to 1,297 ms and end-to-end latency from 1,646 ms to
-2,313 ms. Anchoring the dictionary, N5 call, and GGUF call in the profile DO
-without Smart Placement remains the successful topology.
+2,313 ms. A one-thread Standard N5 llama configuration was also reverted after
+its ten-request end-to-end average rose from 1,546 ms to 1,629 ms. A 64-token
+Standard N5 batch produced a modest 621 ms AzooKey and 1,517 ms end-to-end
+average, but was not retained because the subsequent all-profile deployment
+could not validate Standard Small/N5-off while Cloudflare reported no available
+Container instance. Anchoring the dictionary, N5 call, and GGUF call in the
+profile DO without Smart Placement remains the successful topology.
 The Container header duration intentionally ends when upstream
 headers arrive; `zenzBodyTransferMs` measures the remaining service-binding and
 body-transfer time seen by inference.

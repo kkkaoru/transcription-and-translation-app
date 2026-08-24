@@ -130,6 +130,7 @@ describe("Workers AI speech pipeline", () => {
     expect(response.status).toBe(200);
     expect(consoleLog).toHaveBeenCalledOnce();
     expect(consoleLog.mock.calls[0]?.[0]).toMatch("speech_pipeline_metrics");
+    expect(consoleLog.mock.calls[0]?.[0]).toMatch('"asrModel":"@cf/deepgram/nova-3"');
     expect(consoleLog.mock.calls[0]?.[0]).not.toMatch("きょうはいいてんき");
     expect(consoleLog.mock.calls[0]?.[0]).not.toMatch("今日はいい天気");
     consoleLog.mockRestore();
