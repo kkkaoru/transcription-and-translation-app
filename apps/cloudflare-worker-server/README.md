@@ -8,11 +8,12 @@ POST /v1/speech/workers-ai/azookey
 
 One browser-segmented WAV request is processed inside this Worker in order:
 
-1. `@cf/deepgram/nova-3` through the Workers AI binding.
-2. Vibrato IPADIC morphology/reading conversion through Worker-local WASM.
-3. AzooKey kana-kanji correction through Worker-local WASM and the portable dictionary.
+1. `@cf/deepgram/nova-3` or Whisper through the Workers AI binding.
+2. Conditional Vibrato IPADIC reading extraction for kanji-bearing Japanese; pure kana passes through unchanged.
+3. Optional `input_n5_lm_v1` ASR-confusion rescoring of that kana reading.
+4. AzooKey lattice conversion with a length-bounded, prompt-cached Zenz GGUF completion.
 
-The response contains `text`, `vibratoText`, `convertedText`, `pipeline`, and three structured `logs` entries. The same stage data is emitted as a `speech_pipeline` structured log for Workers Observability.
+The response contains `text`, `vibratoText`, `n5Text`, `convertedText`, `pipeline`, and structured `logs` entries. The same stage data is emitted as a `speech_pipeline` structured log for Workers Observability.
 
 The browser does not execute ASR, Vibrato, morphology, or AzooKey. It only captures audio, uses Silero to create bounded utterances, sends WAV, and renders the returned JSON.
 

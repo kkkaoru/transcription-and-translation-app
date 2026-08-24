@@ -95,18 +95,20 @@ const llamaEntrypoint = (options: LlamaRuntimeOptions): string[] => [
   "1",
   "--threads",
   String(options.threads),
+  "--threads-batch",
+  String(options.threads),
   "--no-webui",
 ];
 const STANDARD_ENTRYPOINT: string[] = llamaEntrypoint({
-  contextSize: 1024,
+  contextSize: 256,
   threads: 2,
-  batchSize: 512,
+  batchSize: 256,
   supervised: false,
 });
 const STANDARD_N5_ENTRYPOINT: string[] = llamaEntrypoint({
-  contextSize: 1024,
+  contextSize: 256,
   threads: 2,
-  batchSize: 512,
+  batchSize: 256,
   supervised: true,
 });
 const BASIC_ENTRYPOINT: string[] = llamaEntrypoint({

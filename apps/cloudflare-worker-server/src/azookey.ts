@@ -695,7 +695,7 @@ export type AzookeyErrorCode =
   | "converter_unavailable"
   | "unsupported_model";
 
-class AzookeyProtocolError extends Error {
+export class AzookeyProtocolError extends Error {
   readonly code: AzookeyErrorCode;
   readonly requestId?: string;
 
@@ -2022,6 +2022,7 @@ const requestZenzCompletion = async (
         n_predict: runtime.zenzNPredict ?? AZOOKEY_ZENZ_N_PREDICT,
         temperature: 0,
         stream: false,
+        cache_prompt: true,
       }),
       ...(signal ? { signal } : {}),
     });
@@ -2484,17 +2485,15 @@ export const convertAzookeyMessage = async (
           throw error;
         }
         if (!dictionaryResult) {
-          if (error instanceof AzookeyProtocolError) {
-            if (error.requestId === undefined) {
-              throw new AzookeyProtocolError(error.code, error.message, message.requestId);
-            }
-            throw error;
-          }
-          throw new AzookeyProtocolError(
-            "conversion_failed",
-            "AzooKey conversion failed",
-            message.requestId,
-          );
+          const convertStartedAt = timingNowMs();
+          dictionaryResult = await runDictionaryConversion(preceding);
+          logAzookeyTiming({
+            phase: "dictionary_convert",
+            elapsedMs: timingElapsedMs(convertStartedAt),
+            inputChars: conversionInput.length,
+            cacheHit: wasmReadyBefore,
+            wsOrHttp,
+          });
         }
         requestedModel = message.model;
         modelFallback = AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED;

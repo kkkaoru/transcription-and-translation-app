@@ -53,10 +53,16 @@ pages and primes tokenizer/model caches before the first committed utterance,
 rather than merely checking an HTTP health route.
 
 `llama-server` uses mmap for faster startup. Basic uses a 256-token context,
-256-token batch/ubatch, and one thread. Standard uses a 1024-token context,
-512-token batch/ubatch, and two threads. Both disable the Web UI and use one
-parallel slot. The smaller bounded batches reduce allocation and startup work
-without reducing the existing completion budget.
+256-token batch/ubatch, and one thread. Standard uses the same bounded 256-token
+context and batch with two threads on the two-vCPU `standard-3` profile. Both
+disable the Web UI and use one parallel slot. The Worker bounds GGUF
+generation from the corrected reading length instead of always decoding 64
+tokens. Both tiers request only an 8–16 token GGUF prefix; the full-length
+AzooKey lattice remains authoritative and either completes the constrained
+candidate or safely retains its dictionary baseline. The live path gives GGUF
+2.5 seconds; if it misses that bound,
+the already-computed official AzooKey lattice result is returned with explicit
+`modelFallback` metadata rather than allowing Container latency to block captions.
 
 The optimized N5 build was exercised under Linux/amd64 QEMU. It corrected
 `おはよございます` to `おはようございます`; four successive model timings were
@@ -64,12 +70,18 @@ The optimized N5 build was exercised under Linux/amd64 QEMU. It corrected
 amd64 measurements remain authoritative because local GGUF execution under
 macOS ARM64 emulation is not representative.
 
-A production cold/warm pair for each of the eight profiles averaged 7,193.5 ms
-cold and 5,053.0 ms warm end-to-end. The AzooKey stage averaged 4,818.5 ms cold
-and 3,685.5 ms warm. Individual requests vary with Workers AI and placement;
-the paired run showed the intended warm improvement in seven profiles, while
-one Basic XSmall request was slower due to runtime variance. Production N5
-rescoring remained bounded at roughly 89–145 ms cold and 89–130 ms warm.
+The Japanese accuracy path is `ASR surface → conditional Vibrato kana reading
+→ input_n5_lm_v1 ASR rescore → AzooKey lattice/GGUF`. Pure kana bypasses
+morphological rewriting, while kanji-bearing ASR text is converted to a kana
+reading before N5. This prevents particles in pure kana from being changed and
+prevents the kana-oriented N5 model from receiving kanji.
+
+Final production validation returned HTTP 200 for all eight profiles. N5-on
+profiles completed GGUF within the live bound in that matrix; direct cold
+N5-off requests used the explicit official-dictionary fallback when the model
+was not ready. Browser capture starts the warm-up before the first utterance,
+so the cold Container load is normally hidden. Production N5 rescoring remained
+roughly 90–140 ms.
 
 ## Lifecycle and sizing
 
@@ -85,7 +97,7 @@ and benchmark requests.
 
 `basic` uses 0.25 vCPU, 1 GiB memory, 4 GB disk, and an 8–16 token completion
 budget. `standard` maps to `standard-3` (2 vCPU, 8 GiB memory, 16 GB disk) and
-uses the full 64-token completion budget. Deferring Worker dictionary
+uses the same bounded 8–16 token GGUF prefix budget. Deferring Worker dictionary
 materialization until a basic completion returns prevents the 128 MB inference
 isolate limit from being exceeded.
 

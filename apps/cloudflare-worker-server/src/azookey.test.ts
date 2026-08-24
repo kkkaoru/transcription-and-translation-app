@@ -1244,11 +1244,16 @@ describe("AzooKey Worker text contract", () => {
       },
     );
     expect(captured).toHaveLength(1);
-    const body = JSON.parse(captured[0] ?? "{}") as { prompt?: string; n_predict?: number };
+    const body = JSON.parse(captured[0] ?? "{}") as {
+      prompt?: string;
+      n_predict?: number;
+      cache_prompt?: boolean;
+    };
     expect(body.prompt).toBe(
       "\u{EE02}子供がお菓子を食べています。\u{EE00}キョウハハイシンデス\u{EE01}",
     );
     expect(body.n_predict).toBe(64);
+    expect(body.cache_prompt).toBe(true);
     expect(prefixes).toStrictEqual(["感"]);
     expect(result).toMatchObject({
       convertedText: "感じ",
@@ -1389,6 +1394,7 @@ describe("AzooKey Worker text contract", () => {
     const result = await convertAzookeyMessage(message, {
       timeoutMs: 2_000,
       converter,
+      deferDictionaryUntilZenz: true,
       modelRoutes: {
         [AZOOKEY_ZENZ_XSMALL_MODEL]: { baseUrl: "http://127.0.0.1:8081" },
       },

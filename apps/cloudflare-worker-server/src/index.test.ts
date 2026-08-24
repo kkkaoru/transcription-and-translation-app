@@ -7,6 +7,7 @@ import {
   AZOOKEY_MODE,
   AZOOKEY_PROTOCOL,
   AZOOKEY_WS_PATH,
+  AzookeyProtocolError,
   BROWSER_VIBRATO_MODE,
 } from "./azookey.js";
 import { createWorker, type Env, type WorkerHandler } from "./index.js";
@@ -763,8 +764,8 @@ describe("Cloudflare Worker inference adapter", () => {
       containerProfile: { computeTier: "basic", modelSize: "xsmall", n5Mode: "on" },
       logs: [
         { stage: "asr" },
-        { stage: "n5_lm", elapsedMs: 12.5 },
         { stage: "vibrato" },
+        { stage: "n5_lm", elapsedMs: 12.5 },
         { stage: "azookey" },
       ],
     });
@@ -773,6 +774,50 @@ describe("Cloudflare Worker inference adapter", () => {
       "https://zenz.internal/basic/xsmall/n5-on/n5/rescore",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("returns the dictionary baseline when the bounded selected conversion times out", async () => {
+    const converter = vi
+      .fn()
+      .mockRejectedValueOnce(new AzookeyProtocolError("conversion_timeout", "conversion timed out"))
+      .mockResolvedValue("今日はいい天気");
+    const form = new FormData();
+    form.set("file", speechWav());
+    form.set("language", "ja");
+    form.set("segmentation", "client-silero-v1");
+    form.set("conversionModel", "zenz-v3.2-xsmall-gguf");
+    form.set("computeTier", "standard");
+    form.set("containerModel", "xsmall");
+    form.set("n5Lm", "off");
+    const responsePromise = createWorker(vi.fn(), {
+      workersAiRun: vi.fn(() =>
+        Promise.resolve({
+          results: { channels: [{ alternatives: [{ transcript: "きょうはいいてんき" }] }] },
+        }),
+      ),
+      converter,
+      vibratoConverter: (text) => text,
+    }).fetch(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {
+        ...env,
+        MODEL_ROUTES: JSON.stringify({
+          "zenz-v3.2-xsmall-gguf": { baseUrl: "https://zenz.internal" },
+        }),
+      },
+    );
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      convertedText: "今日はいい天気",
+      usedCompletion: false,
+      modelFallback: "upstream-failed",
+    });
+    expect(converter).toHaveBeenCalledTimes(2);
   });
 
   it("applies the stored lexicon converter contract in the single-Worker pipeline", async () => {

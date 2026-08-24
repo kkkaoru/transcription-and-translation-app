@@ -176,16 +176,28 @@ export const handleWorkersAiSpeechPipeline = async (
 
   try {
     const logs: SpeechPipelineStageLog[] = [asrLog];
-    const n5Input = asr.reading.trim();
+    // input_n5_lm_v1 models kana ASR confusions. Derive a kana reading from a
+    // kanji-bearing ASR surface first; the Vibrato converter preserves pure
+    // kana so particles are not rewritten to their pronunciation.
+    const vibratoStartedAt = performance.now();
+    const vibratoText = await dependencies.vibrato(sourceText, requestedLanguage);
+    if (profile.computeTier === "basic") dependencies.releaseVibrato?.();
+    logs.push({
+      stage: "vibrato",
+      engine: "vibrato-ipadic-wasm",
+      input: sourceText,
+      output: vibratoText,
+      elapsedMs: Math.max(0, performance.now() - vibratoStartedAt),
+    });
     const n5Result: SpeechPipelineN5Result =
       profile.n5Mode === "on"
-        ? await dependencies.rescoreN5(n5Input, profile)
-        : { text: n5Input, model: "input_n5_lm_v1", elapsedMs: 0 };
+        ? await dependencies.rescoreN5(vibratoText, profile)
+        : { text: vibratoText, model: "input_n5_lm_v1", elapsedMs: 0 };
     if (profile.n5Mode === "on") {
       logs.push({
         stage: "n5_lm",
         engine: n5Result.model,
-        input: n5Input,
+        input: vibratoText,
         output: n5Result.text,
         elapsedMs: n5Result.elapsedMs,
       });
@@ -194,26 +206,16 @@ export const handleWorkersAiSpeechPipeline = async (
       return pipelineResponse(asr, {
         ...commonFields,
         n5Text: n5Result.text,
-        vibratoText: n5Result.text,
+        vibratoText,
         convertedText: n5Result.text,
         usedCompletion: false,
         logs,
       });
     }
 
-    const vibratoStartedAt = performance.now();
-    const vibratoText = await dependencies.vibrato(n5Result.text, requestedLanguage);
-    if (profile.computeTier === "basic") dependencies.releaseVibrato?.();
-    logs.push({
-      stage: "vibrato",
-      engine: "vibrato-ipadic-wasm",
-      input: n5Result.text,
-      output: vibratoText,
-      elapsedMs: Math.max(0, performance.now() - vibratoStartedAt),
-    });
     const azookeyStartedAt = performance.now();
     const conversion = await dependencies.convert({
-      text: vibratoText,
+      text: n5Result.text,
       model: conversionModel,
       leftContext,
       profile,
@@ -221,7 +223,7 @@ export const handleWorkersAiSpeechPipeline = async (
     logs.push({
       stage: "azookey",
       engine: conversion.model,
-      input: vibratoText,
+      input: n5Result.text,
       output: conversion.text,
       elapsedMs: Math.max(0, performance.now() - azookeyStartedAt),
     });

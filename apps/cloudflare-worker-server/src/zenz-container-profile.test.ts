@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseConversionModel,
   parseZenzContainerProfile,
+  zenzCompletionTokenBudget,
   zenzContainerBaseUrl,
   zenzModelSize,
 } from "./zenz-container-profile";
@@ -35,6 +36,16 @@ describe("Zenz Container profiles", () => {
 
     const missing = new FormData();
     expect(parseZenzContainerProfile(missing, "zenz-v3.2-xsmall-gguf")).toBeNull();
+  });
+
+  it("bounds completion work to the expected caption length", () => {
+    expect(zenzCompletionTokenBudget("", "basic")).toBe(8);
+    expect(zenzCompletionTokenBudget("あいうえおかきくけこさし", "basic")).toBe(9);
+    expect(zenzCompletionTokenBudget("あ".repeat(100), "basic")).toBe(16);
+    expect(zenzCompletionTokenBudget("", "standard")).toBe(8);
+    expect(zenzCompletionTokenBudget("おはようございます", "standard")).toBe(8);
+    expect(zenzCompletionTokenBudget("あ".repeat(40), "standard")).toBe(16);
+    expect(zenzCompletionTokenBudget("あ".repeat(100), "standard")).toBe(16);
   });
 
   it("builds the private profile route", () => {

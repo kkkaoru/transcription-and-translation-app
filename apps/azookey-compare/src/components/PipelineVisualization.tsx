@@ -80,6 +80,7 @@ export default function PipelineVisualization({
     const japanese = language === "ja";
     const usesAzookey = japanese && conversionModel !== "none";
     const usesN5 = japanese && n5Lm === "on";
+    const usesReading = usesAzookey || usesN5;
     const nodes: PipelineNode[] = [
       {
         id: "capture",
@@ -112,24 +113,24 @@ export default function PipelineVisualization({
         disabled: false,
       },
       {
+        id: "vibrato",
+        label: "Vibrato",
+        detail: usesReading ? "kanji → kana reading" : "bypass",
+        zone: "INFERENCE WORKER",
+        x: nodeX(3),
+        y: NODE_Y,
+        color: "#0891b2",
+        disabled: !usesReading,
+      },
+      {
         id: "n5_lm",
         label: "Input N5 LM",
-        detail: usesN5 ? `${computeTier} / measured` : "off / bypass",
+        detail: usesN5 ? `${computeTier} / ASR rescore` : "off / bypass",
         zone: "PROFILE CONTAINER",
-        x: nodeX(3),
+        x: nodeX(4),
         y: NODE_Y,
         color: "#b45309",
         disabled: !usesN5,
-      },
-      {
-        id: "vibrato",
-        label: "Vibrato",
-        detail: usesAzookey ? "ja reading / IPADIC" : "bypass",
-        zone: "INFERENCE WORKER",
-        x: nodeX(4),
-        y: NODE_Y,
-        color: "#0891b2",
-        disabled: !usesAzookey,
       },
       {
         id: "azookey",
@@ -175,9 +176,9 @@ export default function PipelineVisualization({
     const edges: PipelineEdge[] = [
       { source: "capture", target: "gateway", label: "speech WAV" },
       { source: "gateway", target: "asr", label: "binding" },
-      { source: "asr", target: "n5_lm", label: usesN5 ? "reading" : "bypass" },
-      { source: "n5_lm", target: "vibrato", label: "text" },
-      { source: "vibrato", target: "azookey", label: "reading" },
+      { source: "asr", target: "vibrato", label: usesReading ? "surface" : "bypass" },
+      { source: "vibrato", target: "n5_lm", label: usesN5 ? "kana" : "bypass" },
+      { source: "n5_lm", target: "azookey", label: "corrected reading" },
       { source: "azookey", target: "zenz", label: usesAzookey ? "N-best" : "bypass" },
       { source: "zenz", target: "response", label: "JSON" },
       { source: "dictionary", target: "azookey", label: "revision cache", dashed: true },

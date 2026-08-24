@@ -98,8 +98,8 @@ describe("Workers AI speech pipeline", () => {
       containerProfile: { computeTier: "standard", modelSize: "xsmall", n5Mode: "on" },
       logs: [
         { stage: "asr", output: "きょうはいいてんき" },
-        { stage: "n5_lm", elapsedMs: 4.25 },
         { stage: "vibrato", output: "きょうはいいてんき" },
+        { stage: "n5_lm", elapsedMs: 4.25 },
         { stage: "azookey", output: "今日はいい天気" },
       ],
     });
@@ -113,6 +113,46 @@ describe("Workers AI speech pipeline", () => {
       model: "zenz-v3.2-xsmall-gguf",
       leftContext: "",
       profile: { computeTier: "standard", modelSize: "xsmall", n5Mode: "on" },
+    });
+  });
+
+  it("extracts a kana reading before applying N5 to a kanji ASR surface", async () => {
+    const form = await request().formData();
+    form.set("n5Lm", "on");
+    const vibrato = vi.fn(() => Promise.resolve("きょうはいいてんき"));
+    const rescoreN5 = vi.fn(identityN5);
+    const response = await handleWorkersAiSpeechPipeline(
+      new Request(`https://worker.example${WORKERS_AI_SPEECH_PIPELINE_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {
+        asrEnvironment: {},
+        run: vi.fn(() =>
+          Promise.resolve({
+            results: { channels: [{ alternatives: [{ transcript: "今日はいい天気" }] }] },
+          }),
+        ),
+        vibrato,
+        rescoreN5,
+        convert: vi.fn(xsmallConvert),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(vibrato).toHaveBeenCalledWith("今日はいい天気", "ja");
+    expect(rescoreN5).toHaveBeenCalledWith("きょうはいいてんき", {
+      computeTier: "standard",
+      modelSize: "xsmall",
+      n5Mode: "on",
+    });
+    expect(await response.json()).toMatchObject({
+      logs: [
+        { stage: "asr", output: "今日はいい天気" },
+        { stage: "vibrato", output: "きょうはいいてんき" },
+        { stage: "n5_lm", input: "きょうはいいてんき" },
+        { stage: "azookey", input: "きょうはいいてんき" },
+      ],
     });
   });
 
@@ -141,7 +181,7 @@ describe("Workers AI speech pipeline", () => {
       convertedText: "今日はいい天気",
       conversionModel: "none",
       usedCompletion: false,
-      logs: [{ stage: "asr" }, { stage: "n5_lm", elapsedMs: 3 }],
+      logs: [{ stage: "asr" }, { stage: "vibrato" }, { stage: "n5_lm", elapsedMs: 3 }],
     });
     expect(convert).not.toHaveBeenCalled();
   });

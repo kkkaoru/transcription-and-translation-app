@@ -21,9 +21,12 @@ import {
   AZOOKEY_MAX_TEXT_BYTES,
   AZOOKEY_MODE,
   AZOOKEY_MODEL,
+  AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
   AZOOKEY_PROTOCOL,
   AZOOKEY_WS_PATH,
   type AzookeyFetcher,
+  type AzookeyMessage,
+  AzookeyProtocolError,
   type AzookeyRequestDependencies,
   advertisedConvertModels,
   azookeyDictionaryTimeoutMs,
@@ -64,6 +67,7 @@ import {
   parseZenzContainerProfile,
   type ZenzContainerProfile,
   type ZenzConversionModel,
+  zenzCompletionTokenBudget,
   zenzContainerBaseUrl,
 } from "./zenz-container-profile.js";
 
@@ -130,10 +134,11 @@ const LOCAL_GATEWAY_PORT = 8765;
 const DEFAULT_PARAPPER_TIMEOUT_MS = 18_000;
 /** Upper bound for the parapper ASR upstream JSON body before it is parsed. */
 const ASR_MAX_RESPONSE_BYTES = 65_536;
-const PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS = 30_000;
-const PIPELINE_STANDARD_ZENZ_TIMEOUT_MS = 25_000;
-const PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS = 90_000;
-const PIPELINE_BASIC_ZENZ_TIMEOUT_MS = 85_000;
+const PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS = 3_500;
+const PIPELINE_STANDARD_ZENZ_TIMEOUT_MS = 2_500;
+const PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS = 3_500;
+const PIPELINE_BASIC_ZENZ_TIMEOUT_MS = 2_500;
+const PIPELINE_DICTIONARY_FALLBACK_TIMEOUT_MS = 3_000;
 // Keep entrypoint exports limited to the Worker handler/function shapes that
 // workerd accepts. Tests use the protocol path literal instead of exporting a
 // string binding from the module entrypoint.
@@ -665,11 +670,19 @@ export const createWorker = (
             return cors(json(HTTP_OK, { ok: true, state: "released" }), env.CORS_ORIGIN);
           }
           const warmups: Promise<unknown>[] = [];
-          if (conversionModel !== "none" && profile.computeTier === "standard") {
-            warmups.push(
-              Promise.resolve(converter.warmup?.("http")),
-              Promise.resolve(vibrato.warmup?.()),
-            );
+          if (conversionModel !== "none") {
+            if (profile.computeTier === "basic") {
+              warmups.push(
+                Promise.resolve(vibrato.warmup?.())
+                  .then(() => vibrato.release?.())
+                  .then(() => converter.warmup?.("http")),
+              );
+            } else {
+              warmups.push(
+                Promise.resolve(converter.warmup?.("http")),
+                Promise.resolve(vibrato.warmup?.()),
+              );
+            }
           }
           if (baseUrl) {
             const warmupPath = conversionModel === "none" ? "/n5-warmup" : "/warmup";
@@ -732,47 +745,58 @@ export const createWorker = (
               const configuredRoutes = parseModelRoutes(env.MODEL_ROUTES);
               const selectedRoute = configuredRoutes[model];
               if (!selectedRoute) throw new Error("Selected GGUF route is unavailable");
-              const converted = await convertAzookeyMessage(
-                {
-                  type: "azookey.convert",
-                  requestId: crypto.randomUUID(),
-                  source: "web-speech",
-                  language: "ja",
-                  sourceText: text,
-                  vibratoInput: text,
-                  mode: AZOOKEY_MODE,
-                  model,
-                  leftContext: leftContext || "前文なし",
-                },
-                {
-                  converter,
-                  timeoutMs:
-                    profile.computeTier === "basic"
-                      ? PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS
-                      : PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS,
-                  zenzUpstreamMaxMs:
-                    profile.computeTier === "basic"
-                      ? PIPELINE_BASIC_ZENZ_TIMEOUT_MS
-                      : PIPELINE_STANDARD_ZENZ_TIMEOUT_MS,
-                  deferDictionaryUntilZenz: profile.computeTier === "basic",
-                  ...(profile.computeTier === "basic"
-                    ? {
-                        zenzNPredict: Math.min(
-                          16,
-                          Math.max(8, Math.ceil(Array.from(text).length * 0.75)),
-                        ),
-                      }
-                    : {}),
-                  modelRoutes: { ...configuredRoutes, [model]: { ...selectedRoute, baseUrl } },
-                  fetcher: fetchers.fetcher,
-                  userLexicon,
-                  wsOrHttp: "http",
-                },
-              );
-              if (converted.model !== model || converted.modelFallback) {
-                throw new Error(
-                  `${model} GGUF completion is unavailable; dictionary fallback is forbidden`,
+              const conversionMessage: AzookeyMessage = {
+                type: "azookey.convert",
+                requestId: crypto.randomUUID(),
+                source: "web-speech",
+                language: "ja",
+                sourceText: text,
+                vibratoInput: text,
+                mode: AZOOKEY_MODE,
+                model,
+                leftContext: leftContext || "前文なし",
+              };
+              const converted = await convertAzookeyMessage(conversionMessage, {
+                converter,
+                timeoutMs:
+                  profile.computeTier === "basic"
+                    ? PIPELINE_BASIC_AZOOKEY_TIMEOUT_MS
+                    : PIPELINE_STANDARD_AZOOKEY_TIMEOUT_MS,
+                zenzUpstreamMaxMs:
+                  profile.computeTier === "basic"
+                    ? PIPELINE_BASIC_ZENZ_TIMEOUT_MS
+                    : PIPELINE_STANDARD_ZENZ_TIMEOUT_MS,
+                deferDictionaryUntilZenz: false,
+                zenzNPredict: zenzCompletionTokenBudget(text, profile.computeTier),
+                modelRoutes: { ...configuredRoutes, [model]: { ...selectedRoute, baseUrl } },
+                fetcher: fetchers.fetcher,
+                userLexicon,
+                wsOrHttp: "http",
+              }).catch(async (error: unknown) => {
+                if (
+                  !(error instanceof AzookeyProtocolError) ||
+                  error.code !== "conversion_timeout"
+                ) {
+                  throw error;
+                }
+                const fallback = await convertAzookeyMessage(
+                  { ...conversionMessage, model: AZOOKEY_MODEL },
+                  {
+                    converter,
+                    timeoutMs: PIPELINE_DICTIONARY_FALLBACK_TIMEOUT_MS,
+                    fetcher: fetchers.fetcher,
+                    userLexicon,
+                    wsOrHttp: "http",
+                  },
                 );
+                return {
+                  ...fallback,
+                  requestedModel: model,
+                  modelFallback: AZOOKEY_MODEL_FALLBACK_UPSTREAM_FAILED,
+                };
+              });
+              if (converted.model !== model && !converted.modelFallback) {
+                throw new Error(`${model} GGUF completion returned an invalid model`);
               }
               return {
                 text: converted.convertedText,
