@@ -1,3 +1,4 @@
+/** Bun runs this Vitest regression suite through the repository quality gates. */
 import { describe, expect, it } from "vitest";
 import {
   chunkCountForDurationMs,
@@ -213,6 +214,30 @@ describe("WorkersAiAsrVad Parapper segment machine", () => {
     }
     expect(vad.snapshot.audioChunks).toBe(3);
     expect(vad.snapshot.preSpeechChunks).toBe(0);
+  });
+
+  it("preserves quiet browser PCM before Silero confirms the speech start", () => {
+    const vad = new WorkersAiAsrVad();
+    const quietStart = Float32Array.from({ length: SILERO_CHUNK_SAMPLES }, () => 0.01);
+    const speech = Float32Array.from({ length: SILERO_CHUNK_SAMPLES }, () => 0.4);
+    const silenceVad = { probability: 0.02, isSpeech: false };
+    const speechVad = { probability: 0.92, isSpeech: true };
+
+    vad.pushVadResult(silenceVad, quietStart);
+    vad.pushVadResult(silenceVad, quietStart);
+    vad.pushVadResult(speechVad, speech);
+    vad.pushVadResult(speechVad, speech);
+    const events = vad.pushVadResult(speechVad, speech);
+    const start = events.find((event) => event.type === "utterance-start");
+
+    expect(start?.type).toBe("utterance-start");
+    if (start?.type === "utterance-start") {
+      expect(start.preSpeechChunks).toBe(2);
+      expect(start.audioSoFar.length).toBe(2_560);
+      expect(start.audioSoFar[0]).toBeCloseTo(0.01);
+      expect(start.audioSoFar[1_023]).toBeCloseTo(0.01);
+      expect(start.audioSoFar[1_024]).toBeCloseTo(0.4);
+    }
   });
 
   it("can start a second utterance after silence end without a new instance", () => {

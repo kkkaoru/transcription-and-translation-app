@@ -93,9 +93,10 @@ permissions.
   authority; this does not lower its threshold or replace direct VAD.
 - A partial recognition remains visible after its normal timeout while that turn
   is still in progress. A finalized recognition also remains visible while its
-  matching translation is pending, then the complete source/translation pair is
-  installed atomically and held for at least three seconds. This removes the
-  source → blank → paired-source flicker without showing a stale translation.
+  matching translation is pending, then the matching translation is attached
+  without a blank frame. A completed pair is held for at least three seconds
+  only while no newer recognition arrives: live source text immediately
+  preempts that hold, and a late translation can never replace newer text.
 - Syphon and Spout already share one 1280x720 raster and retain their GPU sender
   resources. The GPUI output can require a different HiDPI raster, so forcing it
   to share would reduce output quality and was not adopted.

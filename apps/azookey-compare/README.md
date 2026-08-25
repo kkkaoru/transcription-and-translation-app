@@ -10,7 +10,7 @@ Browser microphone
   -- one JSON response --> Browser
 ```
 
-The browser uses Silero VAD only to cut microphone audio into bounded utterances. It performs no ASR, morphology, reading conversion, or kana-kanji conversion.
+The browser uses Silero VAD only to cut microphone audio into bounded utterances. It performs no ASR, morphology, reading conversion, or kana-kanji conversion. Continuous 16 kHz PCM reaches Silero, and the segmenter keeps up to 480 ms of pre-speech PCM so quiet utterance-initial audio is included in the WAV uploaded for recognition.
 
 ## UI
 
@@ -39,7 +39,9 @@ POST /v1/speech/workers-ai/azookey
 The Silero hot path retains its 512-sample chunk, 576-sample model input,
 64-sample context, recurrent state, and sample-rate typed arrays across model
 runs. This mirrors the Native fixed-frame buffer policy without changing VAD
-samples, state, threshold, or ONNX execution.
+samples, state, threshold, or ONNX execution. A deterministic regression feeds
+quiet PCM before the three Silero-positive start frames and verifies those
+original samples remain at the beginning of the emitted utterance.
 
 Run the deterministic baseline/optimized fixture from the repository root:
 

@@ -119,7 +119,6 @@ pub struct CaptureController {
     translation_enabled: bool,
     awaiting_translation_source: Option<String>,
     pending_translation_sources: VecDeque<String>,
-    deferred_caption_events: VecDeque<WorkerEvent>,
     paired_hold_active: bool,
     recognition_in_progress: bool,
 }
@@ -137,7 +136,6 @@ impl CaptureController {
             translation_enabled: false,
             awaiting_translation_source: None,
             pending_translation_sources: VecDeque::with_capacity(TRANSLATION_QUEUE_CAPACITY),
-            deferred_caption_events: VecDeque::with_capacity(EVENT_QUEUE_CAPACITY),
             paired_hold_active: false,
             recognition_in_progress: false,
         };
@@ -178,7 +176,7 @@ impl CaptureController {
 
     pub fn poll(&mut self, caption_timeout_ms: u64) -> bool {
         let now = Instant::now();
-        let mut changed = self.release_held_pair_at(now, caption_timeout_ms);
+        let mut changed = false;
         if should_refresh_devices(self.snapshot.status, self.last_device_refresh.elapsed()) {
             changed = self.refresh_devices();
         }
@@ -244,7 +242,6 @@ impl CaptureController {
         self.translation_enabled = translation_enabled;
         self.awaiting_translation_source = None;
         self.pending_translation_sources.clear();
-        self.deferred_caption_events.clear();
         self.paired_hold_active = false;
         self.recognition_in_progress = false;
         self.snapshot.status = CaptureStatus::Capturing;
@@ -274,28 +271,18 @@ impl CaptureController {
         self.translation_enabled = false;
         self.awaiting_translation_source = None;
         self.pending_translation_sources.clear();
-        self.deferred_caption_events.clear();
         self.paired_hold_active = false;
         self.recognition_in_progress = false;
     }
 
     fn apply_worker_event_at(&mut self, event: WorkerEvent, now: Instant, caption_timeout_ms: u64) {
-        let is_deferred_caption_event =
-            matches!(&event, WorkerEvent::Caption { .. } | WorkerEvent::Translation { .. });
-        if self.paired_hold_active
-            && self.caption_expires_at.is_some_and(|deadline| now < deadline)
-            && is_deferred_caption_event
-        {
-            if self.deferred_caption_events.len() == EVENT_QUEUE_CAPACITY {
-                self.deferred_caption_events.pop_front();
-            }
-            self.deferred_caption_events.push_back(event);
-            return;
-        }
-
         let configured_hold = Duration::from_millis(caption_timeout_ms);
         match event {
             WorkerEvent::Caption { source, update_mode, is_final } => {
+                // Live recognition always takes priority over holding an older translated pair.
+                // Translation must never delay the first visible source-text update.
+                self.paired_hold_active = false;
+                self.awaiting_translation_source = None;
                 self.recognition_in_progress = !is_final;
                 self.snapshot.apply_worker_event(WorkerEvent::Caption {
                     source,
@@ -321,7 +308,8 @@ impl CaptureController {
                     self.pending_translation_sources.iter().position(|pending| pending == &source)
                 {
                     self.pending_translation_sources.remove(position);
-                    self.snapshot.source_text = source.clone();
+                }
+                if self.snapshot.source_text == source {
                     self.snapshot.translation_text = translation;
                     if self.awaiting_translation_source.as_deref() == Some(source.as_str()) {
                         self.awaiting_translation_source = None;
@@ -329,9 +317,6 @@ impl CaptureController {
                     self.paired_hold_active = true;
                     self.caption_expires_at =
                         Some(now + configured_hold.max(MINIMUM_PAIRED_CAPTION_HOLD));
-                } else {
-                    self.snapshot
-                        .apply_worker_event(WorkerEvent::Translation { source, translation });
                 }
             }
             WorkerEvent::TranslationError(error) => {
@@ -351,24 +336,6 @@ impl CaptureController {
                 self.snapshot.apply_worker_event(other);
             }
         }
-    }
-
-    fn release_held_pair_at(&mut self, now: Instant, caption_timeout_ms: u64) -> bool {
-        if !self.paired_hold_active
-            || !self.caption_expires_at.is_some_and(|deadline| now >= deadline)
-        {
-            return false;
-        }
-        self.snapshot.source_text.clear();
-        self.snapshot.translation_text.clear();
-        self.caption_expires_at = None;
-        self.paired_hold_active = false;
-
-        let deferred = std::mem::take(&mut self.deferred_caption_events);
-        for event in deferred {
-            self.apply_worker_event_at(event, now, caption_timeout_ms);
-        }
-        true
     }
 
     fn reap_finished_worker(&mut self) -> bool {
@@ -738,8 +705,7 @@ mod tests {
         apply_caption_update, native_audio_config, queue_translation, request_translation_warmup,
         should_refresh_devices, should_request_translation_warmup, CaptionUpdateMode,
         CaptureController, CaptureSnapshot, CaptureStatus, TranslationCommand, WorkerEvent,
-        EVENT_QUEUE_CAPACITY, MAX_CAPTION_CHARACTERS, MINIMUM_PAIRED_CAPTION_HOLD,
-        TRANSLATION_QUEUE_CAPACITY, TRANSLATOR_IDLE_TIMEOUT,
+        MAX_CAPTION_CHARACTERS, TRANSLATION_QUEUE_CAPACITY, TRANSLATOR_IDLE_TIMEOUT,
     };
 
     #[test]
@@ -830,7 +796,6 @@ mod tests {
             translation_enabled: false,
             awaiting_translation_source: None,
             pending_translation_sources: VecDeque::with_capacity(TRANSLATION_QUEUE_CAPACITY),
-            deferred_caption_events: VecDeque::with_capacity(EVENT_QUEUE_CAPACITY),
             paired_hold_active: false,
             recognition_in_progress: false,
         };
@@ -1018,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn finalized_caption_waits_for_translation_then_holds_the_pair() {
+    fn new_recognition_preempts_a_held_translation_pair_immediately() {
         let mut controller = CaptureController::new();
         controller.translation_enabled = true;
         let finalized_at = Instant::now();
@@ -1031,39 +996,66 @@ mod tests {
             finalized_at,
             1_000,
         );
-        assert_eq!(controller.awaiting_translation_source.as_deref(), Some("こんにちは。"));
-        assert_eq!(controller.caption_expires_at, None);
-
-        let translated_at = finalized_at + Duration::from_secs(2);
         controller.apply_worker_event_at(
             WorkerEvent::Translation {
                 source: "こんにちは。".to_string(),
                 translation: "Hello.".to_string(),
             },
-            translated_at,
+            finalized_at + Duration::from_secs(2),
             1_000,
         );
-
         assert_eq!(controller.snapshot.translation_text, "Hello.");
-        assert_eq!(controller.awaiting_translation_source, None);
-        let hold_until = translated_at + MINIMUM_PAIRED_CAPTION_HOLD;
-        assert_eq!(controller.caption_expires_at, Some(hold_until));
 
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
                 source: "次の字幕".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
-                is_final: true,
+                is_final: false,
             },
-            translated_at + Duration::from_secs(1),
+            finalized_at + Duration::from_secs(3),
             1_000,
         );
-        assert_eq!(controller.snapshot.source_text, "こんにちは。");
-        assert_eq!(controller.snapshot.translation_text, "Hello.");
-        assert_eq!(controller.deferred_caption_events.len(), 1);
 
-        assert!(controller.release_held_pair_at(hold_until, 1_000));
         assert_eq!(controller.snapshot.source_text, "次の字幕");
-        assert_eq!(controller.awaiting_translation_source.as_deref(), Some("次の字幕"));
+        assert!(controller.snapshot.translation_text.is_empty());
+        assert!(!controller.paired_hold_active);
+        assert!(controller.recognition_in_progress);
+    }
+
+    #[test]
+    fn stale_translation_never_replaces_newer_recognition() {
+        let mut controller = CaptureController::new();
+        controller.translation_enabled = true;
+        let now = Instant::now();
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                source: "古い字幕".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: true,
+            },
+            now,
+            1_000,
+        );
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                source: "新しい字幕".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: true,
+            },
+            now + Duration::from_millis(1),
+            1_000,
+        );
+        controller.apply_worker_event_at(
+            WorkerEvent::Translation {
+                source: "古い字幕".to_string(),
+                translation: "Old caption".to_string(),
+            },
+            now + Duration::from_millis(2),
+            1_000,
+        );
+
+        assert_eq!(controller.snapshot.source_text, "新しい字幕");
+        assert!(controller.snapshot.translation_text.is_empty());
+        assert_eq!(controller.awaiting_translation_source.as_deref(), Some("新しい字幕"));
     }
 }
