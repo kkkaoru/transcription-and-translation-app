@@ -47,6 +47,14 @@ describe("CI and local quality-gate parity", () => {
     assert.equal(localScripts.includes("parapper:rust:test"), true);
   });
 
+  it("installs Parapper Linux libraries before running its Rust lint gate", () => {
+    const install = workflow.indexOf("Install Parapper Linux system dependencies");
+    const glib = workflow.indexOf("libglib2.0-dev", install);
+    const webkit = workflow.indexOf("libwebkit2gtk-4.1-dev", install);
+    const lint = workflow.indexOf("bun run parapper:rust:lint");
+    assert.ok(install >= 0 && glib > install && webkit > install && lint > webkit);
+  });
+
   it("fails closed when CI adds a local script that is not in the full gate", () => {
     const result = verifyCiLocalGateParity({
       workflow: workflow.replace(
