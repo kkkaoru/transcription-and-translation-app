@@ -43,10 +43,10 @@ describe("Cloudflare deployment configuration", () => {
     };
     expect(devConfig.ai).toEqual({ binding: "AI", remote: true });
     expect(devConfig.vars?.["AZOOKEY_DICTIONARY_URL"]).toBe("/azookey/system.azkdict.gz");
-    expect(config.vars?.["VIBRATO_DICTIONARY_URL"]).toBe("/vibrato/system.dic.zst");
+    expect(config.vars).not.toHaveProperty("VIBRATO_DICTIONARY_URL");
     expect(existsSync(new URL("../public/azookey/system.azkdict.gz", import.meta.url))).toBe(true);
-    // The single Worker owns both morphology and kana-kanji conversion assets.
-    expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(true);
+    // Morphology is server-owned; the Worker must not bundle the prohibited dictionary copy.
+    expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(false);
     expect(readFileSync(new URL("../public/vibrato/COPYING", import.meta.url))).toEqual(
       readFileSync(new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/COPYING", import.meta.url)),
     );
