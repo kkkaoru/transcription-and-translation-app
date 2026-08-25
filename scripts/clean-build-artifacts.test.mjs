@@ -215,6 +215,9 @@ describe("cleanBuildArtifacts", () => {
     assert.match(workspace.scripts["clean:build"], /--prune-rust/);
     assert.match(workspace.scripts["clean:build:rust"], /--prune-rust/);
     assert.match(desktop.scripts.build, new RegExp(cleanup));
+    // bridge.ts imports this package directly. Declaring it here prevents a
+    // clean install from depending on another workspace package's hoisting.
+    assert.equal(desktop.dependencies["@tauri-apps/api"], "2.9.0");
     // azookey-compare is a standalone Next.js app; it must not run the
     // monorepo desktop/sidecar cleanup as part of its own build.
     assert.doesNotMatch(comparison.scripts.build, new RegExp(cleanup));
