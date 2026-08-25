@@ -81,6 +81,18 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(capture.contains("drop(worker.sender)"));
     assert!(capture.contains("worker.handle.join()"));
     assert!(capture.contains("Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES)"));
+    assert!(capture.contains("SetTranslationEnabled(bool)"));
+    assert!(capture.contains("apply_turn_caption_update"));
+    assert!(capture.contains("release_unused_translation_memory"));
+
+    let live = include_str!("live.rs");
+    assert!(live.contains("live-translation-enabled"));
+    assert!(live.contains("when(translation_enabled"));
+    assert!(app.contains("on_toggle_translation: |view| view.toggle_translation()"));
+
+    let memory = include_str!("memory.rs");
+    assert!(memory.contains("MallocLargeCache"));
+    assert!(memory.contains("malloc_zone_pressure_relief"));
 
     let translation =
         include_str!("../../../crates/parapper-engine/src/quickmt_translation_engine.rs");

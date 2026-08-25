@@ -41,6 +41,7 @@ describe("macOS Native app install", () => {
     assert.match(plist, new RegExp(`<string>${BUNDLE_ID}</string>`, "u"));
     assert.match(plist, new RegExp(`<string>${PRODUCT_NAME}</string>`, "u"));
     assert.match(plist, /NSMicrophoneUsageDescription/u);
+    assert.match(plist, /<key>MallocLargeCache<\/key>\s*<string>0<\/string>/u);
   });
 
   it("packages only in-process recognition runtime libraries", () => {

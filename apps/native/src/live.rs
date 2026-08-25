@@ -13,6 +13,7 @@ pub struct LiveCallbacks<V> {
     pub on_select_device: fn(&mut V, &str),
     pub on_start: fn(&mut V),
     pub on_stop: fn(&mut V),
+    pub on_toggle_translation: fn(&mut V),
 }
 
 impl<V> Clone for LiveCallbacks<V> {
@@ -50,6 +51,7 @@ pub fn render_live<V: 'static>(
     let level_color = rms_level_color(level);
     let capturing = snapshot.status == CaptureStatus::Capturing;
     let active = matches!(snapshot.status, CaptureStatus::Capturing | CaptureStatus::Stopping);
+    let translation_enabled = capture.translation_enabled();
 
     let trigger = div()
         .id("live-device-select")
@@ -144,13 +146,32 @@ pub fn render_live<V: 'static>(
                     text(language, TextKey::Stop),
                     !capturing,
                     cx.listener(move |view, _event, _window, _cx| (callbacks.on_stop)(view)),
+                ))
+                .child(state_button(
+                    "live-translation-enabled",
+                    format!(
+                        "{}: {}",
+                        text(language, TextKey::Translation),
+                        text(
+                            language,
+                            if translation_enabled { TextKey::Enabled } else { TextKey::Disabled }
+                        )
+                    ),
+                    translation_enabled,
+                    cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_toggle_translation)(view)
+                    }),
                 )),
         )
         .when_some(snapshot.last_error.clone(), |this, error| this.child(error_line(error)))
         .child(div().mt_2().child(SharedString::from(text(language, TextKey::RecognitionResult))))
         .child(div().text_lg().child(SharedString::from(source)))
-        .child(div().mt_2().child(SharedString::from(text(language, TextKey::TranslationResult))))
-        .child(div().text_lg().child(SharedString::from(translation)))
+        .when(translation_enabled, |this| {
+            this.child(
+                div().mt_2().child(SharedString::from(text(language, TextKey::TranslationResult))),
+            )
+            .child(div().text_lg().child(SharedString::from(translation)))
+        })
 }
 
 #[cfg(test)]

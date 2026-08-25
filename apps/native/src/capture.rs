@@ -17,12 +17,13 @@ use parapper_engine::{
 
 use crate::domain::{parapper_runtime_dir, CaptureStatus};
 use crate::hot_path::{normalize_pcm16_into, NATIVE_PCM_FRAME_SAMPLES};
+use crate::memory::release_unused_translation_memory;
 use crate::microphone_permission::ensure_microphone_access;
 
 const PARAPPER_VAD_INTERVAL_MS: u32 = 32;
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
 const RMS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
-const COMMAND_QUEUE_CAPACITY: usize = 1;
+const COMMAND_QUEUE_CAPACITY: usize = 4;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const TRANSLATION_QUEUE_CAPACITY: usize = 32;
 const TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -86,6 +87,7 @@ impl CaptureSnapshot {
 enum WorkerCommand {
     Stop,
     ResetCaption,
+    SetTranslationEnabled(bool),
 }
 
 enum TranslationCommand {
@@ -107,6 +109,7 @@ struct TranslationWorker {
     sender: SyncSender<TranslationCommand>,
     handle: JoinHandle<()>,
     warm_requested_at: Instant,
+    stop_requested: Arc<AtomicBool>,
 }
 
 pub struct CaptureController {
@@ -146,6 +149,10 @@ impl CaptureController {
 
     pub fn snapshot(&self) -> &CaptureSnapshot {
         &self.snapshot
+    }
+
+    pub fn translation_enabled(&self) -> bool {
+        self.translation_enabled
     }
 
     pub fn refresh_devices(&mut self) -> bool {
@@ -253,6 +260,28 @@ impl CaptureController {
         Ok(())
     }
 
+    pub fn set_translation_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        if self.translation_enabled == enabled {
+            return Ok(());
+        }
+        if let Some(sender) = self.command_tx.as_ref() {
+            sender.try_send(WorkerCommand::SetTranslationEnabled(enabled)).map_err(|error| {
+                format!("could not update translation while capturing: {error}")
+            })?;
+        }
+        self.translation_enabled = enabled;
+        if !enabled {
+            self.snapshot.translation_text.clear();
+            self.awaiting_translation_source = None;
+            self.pending_translation_sources.clear();
+            self.paired_hold_active = false;
+            if !self.snapshot.source_text.is_empty() {
+                self.caption_expires_at = Some(Instant::now() + MINIMUM_PAIRED_CAPTION_HOLD);
+            }
+        }
+        Ok(())
+    }
+
     pub fn stop(&mut self) {
         // Never join here. ONNX/Core ML and CoreAudio initialization may synchronously dispatch
         // work to the macOS main thread; joining from a GPUI callback would deadlock that work.
@@ -269,7 +298,6 @@ impl CaptureController {
             CaptureStatus::Idle
         };
         self.snapshot.engine_ready = false;
-        self.translation_enabled = false;
         self.awaiting_translation_source = None;
         self.pending_translation_sources.clear();
         self.paired_hold_active = false;
@@ -305,6 +333,9 @@ impl CaptureController {
                 }
             }
             WorkerEvent::Translation { source, translation } => {
+                if !self.translation_enabled {
+                    return;
+                }
                 if let Some(position) =
                     self.pending_translation_sources.iter().position(|pending| pending == &source)
                 {
@@ -321,6 +352,9 @@ impl CaptureController {
                 }
             }
             WorkerEvent::TranslationError(error) => {
+                if !self.translation_enabled {
+                    return;
+                }
                 self.snapshot.apply_worker_event(WorkerEvent::TranslationError(error));
                 if self.awaiting_translation_source.take().is_some() {
                     self.caption_expires_at = Some(now + configured_hold);
@@ -434,7 +468,7 @@ fn run_capture_inner(
     }
     let config = EngineConfig::new(models_root.clone());
     let mut translation_worker =
-        start_translation_worker(translation_enabled, models_root, event_tx.clone())?;
+        start_translation_worker(translation_enabled, models_root.clone(), event_tx.clone())?;
     let mut engine = ParapperEngine::load(&config)
         .map_err(|error| format!("Could not initialize speech recognition: {error:#}"))?;
     if stop_requested.load(Ordering::Acquire) {
@@ -451,6 +485,8 @@ fn run_capture_inner(
     }
     let _ = event_tx.send(WorkerEvent::Status(CaptureStatus::Capturing));
     let mut recognition_text = String::new();
+    let mut recognition_turn_id = None;
+    let mut last_queued_translation_source = None;
     let mut translation_warm_requested_at =
         translation_worker.as_ref().map(|worker| worker.warm_requested_at);
     let mut normalized_samples = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
@@ -464,7 +500,22 @@ fn run_capture_inner(
             Ok(WorkerCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(WorkerCommand::ResetCaption) => {
                 recognition_text.clear();
+                recognition_turn_id = None;
+                last_queued_translation_source = None;
                 translation_warm_requested_at = None;
+            }
+            Ok(WorkerCommand::SetTranslationEnabled(enabled)) => {
+                if enabled && translation_worker.is_none() {
+                    translation_worker =
+                        start_translation_worker(true, models_root.clone(), event_tx.clone())?;
+                    translation_warm_requested_at =
+                        translation_worker.as_ref().map(|worker| worker.warm_requested_at);
+                } else if !enabled {
+                    if let Some(worker) = translation_worker.take() {
+                        stop_translation_worker(worker, false);
+                    }
+                    translation_warm_requested_at = None;
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -491,6 +542,8 @@ fn run_capture_inner(
                         event_tx,
                         translation_worker.as_ref().map(|worker| &worker.sender),
                         &mut recognition_text,
+                        &mut recognition_turn_id,
+                        &mut last_queued_translation_source,
                         &mut translation_warm_requested_at,
                     );
                 }
@@ -504,6 +557,8 @@ fn run_capture_inner(
             event_tx,
             translation_worker.as_ref().map(|worker| &worker.sender),
             &mut recognition_text,
+            &mut recognition_turn_id,
+            &mut last_queued_translation_source,
             &mut translation_warm_requested_at,
         );
         if last_rms_publish.elapsed() >= RMS_PUBLISH_INTERVAL {
@@ -519,11 +574,12 @@ fn run_capture_inner(
         event_tx,
         translation_worker.as_ref().map(|worker| &worker.sender),
         &mut recognition_text,
+        &mut recognition_turn_id,
+        &mut last_queued_translation_source,
         &mut translation_warm_requested_at,
     );
     if let Some(worker) = translation_worker.take() {
-        drop(worker.sender);
-        let _ = worker.handle.join();
+        stop_translation_worker(worker, true);
     }
     Ok(())
 }
@@ -537,12 +593,24 @@ fn start_translation_worker(
         return Ok(None);
     }
     let (sender, receiver) = mpsc::sync_channel(TRANSLATION_QUEUE_CAPACITY);
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let worker_stop_requested = Arc::clone(&stop_requested);
     let handle = thread::Builder::new()
         .name("native-translation".to_string())
-        .spawn(move || run_translation_worker(models_root, receiver, event_tx))
+        .spawn(move || {
+            run_translation_worker(models_root, receiver, event_tx, &worker_stop_requested)
+        })
         .map_err(|error| format!("could not start translation thread: {error}"))?;
     let warm_requested_at = queue_initial_translation_warmup(&sender)?;
-    Ok(Some(TranslationWorker { sender, handle, warm_requested_at }))
+    Ok(Some(TranslationWorker { sender, handle, warm_requested_at, stop_requested }))
+}
+
+fn stop_translation_worker(worker: TranslationWorker, join: bool) {
+    worker.stop_requested.store(true, Ordering::Release);
+    drop(worker.sender);
+    if join {
+        let _ = worker.handle.join();
+    }
 }
 
 fn queue_initial_translation_warmup(
@@ -559,13 +627,18 @@ fn run_translation_worker(
     models_root: std::path::PathBuf,
     receiver: Receiver<TranslationCommand>,
     event_tx: SyncSender<WorkerEvent>,
+    stop_requested: &AtomicBool,
 ) {
     let mut translator = None;
     loop {
+        if stop_requested.load(Ordering::Acquire) {
+            break;
+        }
         let command = match receiver.recv_timeout(TRANSLATOR_IDLE_TIMEOUT) {
             Ok(command) => command,
             Err(RecvTimeoutError::Timeout) => {
                 translator = None;
+                release_unused_translation_memory();
                 continue;
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -581,6 +654,9 @@ fn run_translation_worker(
                 }
             }
         }
+        if stop_requested.load(Ordering::Acquire) {
+            break;
+        }
         let TranslationCommand::Translate(source) = command else {
             continue;
         };
@@ -589,7 +665,9 @@ fn run_translation_worker(
         };
         match translator.translate_ja_to_en(&source) {
             Ok(translation) => {
-                let _ = event_tx.send(WorkerEvent::Translation { source, translation });
+                if !stop_requested.load(Ordering::Acquire) {
+                    let _ = event_tx.send(WorkerEvent::Translation { source, translation });
+                }
             }
             Err(error) => {
                 let _ = event_tx
@@ -597,6 +675,8 @@ fn run_translation_worker(
             }
         }
     }
+    drop(translator);
+    release_unused_translation_memory();
 }
 
 fn should_refresh_devices(status: CaptureStatus, elapsed: Duration) -> bool {
@@ -617,16 +697,33 @@ fn publish_engine_events(
     event_tx: &SyncSender<WorkerEvent>,
     translation_tx: Option<&SyncSender<TranslationCommand>>,
     recognition_text: &mut String,
+    recognition_turn_id: &mut Option<String>,
+    last_queued_translation_source: &mut Option<String>,
     translation_warm_requested_at: &mut Option<Instant>,
 ) {
     for event in events {
-        if let EngineEvent::Caption { text, is_final, update_mode, .. } = event {
-            apply_caption_update(recognition_text, &text, update_mode);
-            let _ = event_tx.send(WorkerEvent::Caption { source: text, update_mode, is_final });
+        if let EngineEvent::Caption { turn_id, text, is_final, update_mode, .. } = event {
+            apply_turn_caption_update(
+                recognition_text,
+                recognition_turn_id,
+                &turn_id,
+                &text,
+                update_mode,
+            );
+            let _ = event_tx.send(WorkerEvent::Caption {
+                source: recognition_text.clone(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final,
+            });
             if let Some(sender) = translation_tx {
                 request_translation_warmup(sender, translation_warm_requested_at, Instant::now());
-                if is_final {
-                    queue_translation(sender, recognition_text.clone(), event_tx);
+                if is_final
+                    || last_queued_translation_source.as_deref() != Some(recognition_text.as_str())
+                {
+                    let source = recognition_text.clone();
+                    if queue_translation(sender, source.clone(), event_tx) {
+                        *last_queued_translation_source = Some(source);
+                    }
                 }
             }
         }
@@ -656,20 +753,36 @@ fn queue_translation(
     sender: &SyncSender<TranslationCommand>,
     source: String,
     event_tx: &SyncSender<WorkerEvent>,
-) {
+) -> bool {
     match sender.try_send(TranslationCommand::Translate(source)) {
-        Ok(()) => {}
+        Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             let _ = event_tx.try_send(WorkerEvent::TranslationError(
                 "Translation queue is full; the current caption was kept".to_string(),
             ));
+            false
         }
         Err(TrySendError::Disconnected(_)) => {
             let _ = event_tx.try_send(WorkerEvent::TranslationError(
                 "Translation worker stopped; the current caption was kept".to_string(),
             ));
+            false
         }
     }
+}
+
+fn apply_turn_caption_update(
+    target: &mut String,
+    current_turn_id: &mut Option<String>,
+    turn_id: &str,
+    text: &str,
+    update_mode: CaptionUpdateMode,
+) {
+    if current_turn_id.as_deref() != Some(turn_id) {
+        target.clear();
+        *current_turn_id = Some(turn_id.to_string());
+    }
+    apply_caption_update(target, text, update_mode);
 }
 
 fn apply_caption_update(target: &mut String, text: &str, update_mode: CaptionUpdateMode) {
@@ -715,10 +828,11 @@ mod tests {
     use caption_bridge_audio::{should_emit_pcm_frame, AdaptiveNoiseFloor};
 
     use super::{
-        apply_caption_update, native_audio_config, queue_initial_translation_warmup,
-        queue_translation, request_translation_warmup, should_refresh_devices,
-        should_request_translation_warmup, CaptionUpdateMode, CaptureController, CaptureSnapshot,
-        CaptureStatus, TranslationCommand, WorkerEvent, MAX_CAPTION_CHARACTERS,
+        apply_caption_update, apply_turn_caption_update, native_audio_config,
+        publish_engine_events, queue_initial_translation_warmup, queue_translation,
+        request_translation_warmup, should_refresh_devices, should_request_translation_warmup,
+        CaptionUpdateMode, CaptureController, CaptureSnapshot, CaptureStatus, EngineEvent,
+        TranslationCommand, WorkerCommand, WorkerEvent, MAX_CAPTION_CHARACTERS,
         TRANSLATION_QUEUE_CAPACITY, TRANSLATOR_IDLE_TIMEOUT,
     };
 
@@ -782,6 +896,76 @@ mod tests {
             requested_at,
             started_at + TRANSLATOR_IDLE_TIMEOUT
         ));
+    }
+
+    #[test]
+    fn partial_recognition_is_queued_for_translation_before_finalization() {
+        let (translation_tx, translation_rx) = mpsc::sync_channel(4);
+        let (event_tx, event_rx) = mpsc::sync_channel(4);
+        let mut recognition_text = String::new();
+        let mut recognition_turn_id = None;
+        let mut last_queued_translation_source = None;
+        let mut warm_requested_at = Some(Instant::now());
+
+        publish_engine_events(
+            vec![EngineEvent::Caption {
+                turn_id: "turn-1".to_string(),
+                text: "こんにちは".to_string(),
+                is_final: false,
+                update_mode: CaptionUpdateMode::Replace,
+                elapsed_millis: 10,
+            }],
+            &event_tx,
+            Some(&translation_tx),
+            &mut recognition_text,
+            &mut recognition_turn_id,
+            &mut last_queued_translation_source,
+            &mut warm_requested_at,
+        );
+
+        assert!(matches!(
+            translation_rx.try_recv(),
+            Ok(TranslationCommand::Translate(source)) if source == "こんにちは"
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::Caption { source, is_final: false, .. }) if source == "こんにちは"
+        ));
+    }
+
+    #[test]
+    fn runtime_translation_toggle_clears_output_and_notifies_capture_worker() {
+        let mut controller = CaptureController::new();
+        let (command_tx, command_rx) = mpsc::sync_channel(4);
+        controller.command_tx = Some(command_tx);
+        controller.translation_enabled = true;
+        controller.snapshot.source_text = "こんにちは".to_string();
+        controller.snapshot.translation_text = "Hello".to_string();
+
+        controller
+            .set_translation_enabled(false)
+            .expect("runtime translation toggle must fit the bounded command queue");
+
+        assert!(!controller.translation_enabled());
+        assert!(controller.snapshot.translation_text.is_empty());
+        assert!(matches!(command_rx.try_recv(), Ok(WorkerCommand::SetTranslationEnabled(false))));
+    }
+
+    #[test]
+    fn disabled_translation_ignores_a_late_worker_result() {
+        let mut controller = CaptureController::new();
+        controller.snapshot.source_text = "こんにちは".to_string();
+
+        controller.apply_worker_event_at(
+            WorkerEvent::Translation {
+                source: "こんにちは".to_string(),
+                translation: "Hello".to_string(),
+            },
+            Instant::now(),
+            1_000,
+        );
+
+        assert!(controller.snapshot.translation_text.is_empty());
     }
 
     #[test]
@@ -863,6 +1047,36 @@ mod tests {
         assert_eq!(caption.chars().count(), 2_048);
         assert!(caption.ends_with("新しい字幕"));
         assert_eq!(caption.chars().next(), Some('前'));
+    }
+
+    #[test]
+    fn repeated_greeting_stays_in_the_new_turn_instead_of_collapsing_to_its_tail() {
+        let mut caption = String::new();
+        let mut turn_id = None;
+        apply_turn_caption_update(
+            &mut caption,
+            &mut turn_id,
+            "turn-1",
+            "こんにちは。",
+            CaptionUpdateMode::Replace,
+        );
+        apply_turn_caption_update(
+            &mut caption,
+            &mut turn_id,
+            "turn-2",
+            "こんにちは",
+            CaptionUpdateMode::Replace,
+        );
+        apply_turn_caption_update(
+            &mut caption,
+            &mut turn_id,
+            "turn-2",
+            "聞こえますか？",
+            CaptionUpdateMode::Append,
+        );
+
+        assert_eq!(caption, "こんにちは聞こえますか？");
+        assert_eq!(turn_id.as_deref(), Some("turn-2"));
     }
 
     #[test]

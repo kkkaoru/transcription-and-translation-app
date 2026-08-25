@@ -9,6 +9,7 @@ import {
   percentSaved,
   positiveIterations,
 } from "./benchmark-native-translation.mjs";
+import { parseProcessSample } from "./measure-native-translation-toggle.mjs";
 
 test("parses macOS process CPU and RSS metrics", () => {
   assert.deepEqual(
@@ -30,6 +31,14 @@ Maximum resident set size (kbytes): 16384
 `),
     { wallSeconds: 1.2, cpuSeconds: 0.8, maxRssBytes: 16_777_216 },
   );
+});
+
+test("parses current Native translation RSS and CPU samples", () => {
+  assert.deepEqual(parseProcessSample("  123456   17.5\n"), {
+    rssBytes: 126_418_944,
+    cpuPercent: 17.5,
+  });
+  assert.throws(() => parseProcessSample("unavailable"), /could not parse process RSS/);
 });
 
 test("validates translation comparison iterations", () => {

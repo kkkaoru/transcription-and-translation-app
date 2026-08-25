@@ -3,6 +3,7 @@ mod capture;
 mod debug_surfaces;
 mod domain;
 pub mod hot_path;
+pub mod memory;
 
 #[cfg(feature = "gpui")]
 mod app;

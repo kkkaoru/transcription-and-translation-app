@@ -191,13 +191,17 @@ impl MainView {
             render_image(rasterize_style_preview(&style, &preview_source, &preview_translation));
         let preview_source_caret = preview_source.len();
         let preview_translation_caret = preview_translation.len();
+        let mut capture = CaptureController::new();
+        capture
+            .set_translation_enabled(app_settings.translation_enabled)
+            .expect("idle translation setting must not require a worker command");
         Self {
             tab: AppTab::Live,
             config_dir,
             style,
             style_catalog,
             app_settings,
-            capture: CaptureController::new(),
+            capture,
             entries,
             dictionary_catalog,
             query: String::new(),
@@ -316,6 +320,19 @@ impl MainView {
             self.persist_error = Some(error);
         } else {
             self.persist_error = None;
+        }
+    }
+
+    fn toggle_translation(&mut self) {
+        let enabled = !self.app_settings.translation_enabled;
+        match self.capture.set_translation_enabled(enabled) {
+            Ok(()) => {
+                self.app_settings.translation_enabled = enabled;
+                self.last_published_caption = None;
+                self.last_browser_caption = None;
+                self.persist_settings();
+            }
+            Err(error) => self.persist_error = Some(error),
         }
     }
 
@@ -531,6 +548,7 @@ impl Render for MainView {
                         }
                     },
                     on_stop: |view| view.capture.stop(),
+                    on_toggle_translation: |view| view.toggle_translation(),
                 },
             )
             .into_any_element(),
@@ -720,12 +738,7 @@ impl Render for MainView {
                         view.app_settings.ui_language = language;
                         view.persist_settings();
                     },
-                    on_toggle_translation: |view| {
-                        view.capture.stop();
-                        view.app_settings.translation_enabled =
-                            !view.app_settings.translation_enabled;
-                        view.persist_settings();
-                    },
+                    on_toggle_translation: |view| view.toggle_translation(),
                     on_timeout: |view, timeout| {
                         view.app_settings.caption_timeout_ms = timeout;
                         view.persist_settings();

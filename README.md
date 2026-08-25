@@ -73,7 +73,8 @@ Microphone
   → GPUI / Browser Source / Syphon / Spout
 ```
 
-Nativeアプリは子プロセスを必要としません。macOSでは`make build`がlocked
+Nativeアプリは子プロセスを必要としません。LiveまたはSettingsから翻訳をオン／オフでき、
+認識を止めずにQuickMTのロード・解放と翻訳表示を切り替えられます。macOSでは`make build`がlocked
 release executableと配布用bundleを生成し、既定のインストール先
 `~/Applications/Kotoba Beacon Native.app`を毎回置き換えます。古い実行中プロセスで
 確認してしまわないよう、アプリが起動中の場合は安全に終了してから置換します。

@@ -91,6 +91,10 @@ permissions.
   therefore retain its full pre-speech buffer instead of losing quiet consonants
   at the start of an utterance. Silero remains the only speech segmentation
   authority; this does not lower its threshold or replace direct VAD.
+- Native keeps each engine `turn_id` as an explicit display boundary and expands
+  append updates into a complete current-turn caption before publishing. A live
+  sequence such as `こんにちは` → `こんにちは聞こえますか？` therefore cannot
+  collapse to the tail `聞こえますか？`.
 - A partial recognition remains visible after its normal timeout while that turn
   is still in progress. A finalized recognition also remains visible while its
   matching translation is pending, then the matching translation is attached
@@ -113,9 +117,14 @@ permissions.
   English-to-Japanese model is never loaded. Starting translation immediately
   queues a bounded QuickMT warm-up before the ASR engine and microphone finish
   initializing, so the model normally finishes loading before the user reaches
-  a finalized caption. After an idle unload, the next recognition update
-  queues the warm-up again. Dropping the worker on capture stop fully unloads
-  the translator; one idle minute also drops it. This replaces the
+  a finalized caption. Distinct partial captions are translated immediately,
+  while a final caption is always translated once more; the first translation
+  no longer waits for turn finalization. After an idle unload, the next
+  recognition update queues the warm-up again. The Live and Settings tabs can
+  toggle translation without stopping recognition. Turning it off hides the
+  translation, stops its worker, and releases model pages. On macOS the app
+  disables libmalloc's large freed-block cache before model loading so an
+  on→off cycle does not retain the INT8 conversion peak. This replaces the
   previous 462 MiB LFM2 ONNX model, which reached about 781 MiB process RSS and
   took 2.7 seconds to load in a cold standalone measurement. Measure QuickMT RSS
   on each target because CTranslate2 activation and backend memory varies by CPU.
@@ -205,6 +214,24 @@ from 236.7 ms to 60.3 ms and p95 from 280.1 ms to 83.4 ms while increasing the
 fixed-corpus chrF2 score from 65.1 to 82.9. These figures validate the selected
 backend on that corpus; repeat the command on each deployment CPU and with a
 representative domain corpus before treating them as universal quality scores.
+
+Measure current RSS and CPU across an actual QuickMT off→on→off lifecycle:
+
+```bash
+cargo build --locked --release --manifest-path apps/native/Cargo.toml \
+  --example translation_toggle_runtime_metrics
+node scripts/measure-native-translation-toggle.mjs \
+  apps/native/target/release/examples/translation_toggle_runtime_metrics \
+  "$HOME/Library/Application Support/com.kotobabeacon.native/parapper/models"
+```
+
+The probe emits lifecycle, latency, RSS, and CPU values only. It never emits its
+fixed input or model output. The macOS launcher and the probe both set
+`MallocLargeCache=0` before process startup because metrics identified an empty
+540 MiB `MALLOC_LARGE` region—not live model weights—as the retained-RSS cause.
+On the measured macOS ARM64 host, current RSS changed from 715,718,656 to
+283,262,976 bytes while on (60.4% lower), and from 645,316,608 to 81,395,712
+bytes after off (87.4% lower). Warm translation took 50.6 ms with beam size two.
 
 `ul-unas/` is supported by the engine but noise cancellation is disabled by default until it wins the fixture quality benchmark.
 

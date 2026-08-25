@@ -92,6 +92,11 @@ export const nativeInfoPlist = () => `<?xml version="1.0" encoding="UTF-8"?>
   <string>0.1.0</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
+  <key>LSEnvironment</key>
+  <dict>
+    <key>MallocLargeCache</key>
+    <string>0</string>
+  </dict>
   <key>NSAudioCaptureUsageDescription</key>
   <string>${AUDIO_CAPTURE_USAGE}</string>
   <key>NSHighResolutionCapable</key>
