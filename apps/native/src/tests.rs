@@ -123,6 +123,8 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(makefile.contains("cargo build --locked --release --manifest-path $(NATIVE_MANIFEST)"));
     assert!(makefile.contains("assembleNativeApp"));
     assert!(makefile.contains("pgrep -x kotoba-beacon-native"));
+    assert!(makefile.contains("pkill -TERM -x kotoba-beacon-native"));
+    assert!(makefile.contains("refusing to leave a stale running build"));
 
     let ci = include_str!("../../../.github/workflows/ci.yml");
     let native_test_step = ci

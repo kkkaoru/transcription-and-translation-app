@@ -76,9 +76,9 @@ Microphone
 Nativeアプリは子プロセスを必要としません。macOSでは`make build`がlocked
 release executableと配布用bundleを生成し、既定のインストール先
 `~/Applications/Kotoba Beacon Native.app`を毎回置き換えます。古い実行中プロセスで
-確認してしまわないよう、アプリが起動中の場合は置換せず失敗します。先にアプリを終了して
-再実行してください。ビルド・置換処理がアプリを起動することはありません。置換後は
-SettingsのBuild IDで対象コミットを確認できます。実行ファイルだけを作る場合は
+確認してしまわないよう、アプリが起動中の場合は安全に終了してから置換します。
+ビルド・置換処理がアプリを再起動またはforegroundへ移動することはありません。置換後は
+手動で起動し、SettingsのBuild IDで対象コミットを確認できます。実行ファイルだけを作る場合は
 `make native-release`を使用します。
 
 OBS Browser Sourceは一つのURLを使用し、横・縦の表示はNativeのStyleプロファイルで

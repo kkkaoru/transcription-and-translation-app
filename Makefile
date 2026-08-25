@@ -24,8 +24,17 @@ native-release:
 
 native-replace: native-release
 	@if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
-		echo 'Kotoba Beacon Native is running; quit it before replacing the installed build.' >&2; \
-		exit 1; \
+		echo 'Stopping the running Kotoba Beacon Native before replacement'; \
+		pkill -TERM -x kotoba-beacon-native; \
+		attempts=0; \
+		while pgrep -x kotoba-beacon-native >/dev/null 2>&1 && [ $$attempts -lt 50 ]; do \
+			sleep 0.1; \
+			attempts=$$((attempts + 1)); \
+		done; \
+		if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
+			echo 'Kotoba Beacon Native did not stop; refusing to leave a stale running build.' >&2; \
+			exit 1; \
+		fi; \
 	fi
 	bun run package:native
 	node --input-type=module -e 'import { assembleNativeApp } from "./scripts/install-macos-native-app.mjs"; const result = assembleNativeApp({ sourceBinary: "$(NATIVE_BINARY)" }); console.log("Replaced " + result.installApp + " without launching it");'
