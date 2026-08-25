@@ -3,12 +3,5 @@
 version = 4
 
 [[package]]
-name = "caption-bridge-azookey-rust"
-version = "0.1.0"
-dependencies = [
- "caption-bridge-japanese-text",
-]
-
-[[package]]
 name = "caption-bridge-japanese-text"
 version = "0.1.0"

@@ -9,6 +9,14 @@ export class VibratoTokenizer {
      */
     constructor(dict_zstd: Uint8Array);
     /**
+     * Exclusive Unicode-scalar sentence-end offsets (Tauri IPADIC POS ∪ heuristic).
+     */
+    sentenceEndOffsets(text: string): Uint32Array;
+    /**
+     * Mid-sentence POS wrap points for caption line breaks before maxChars.
+     */
+    softBreakOffsets(text: string): Uint32Array;
+    /**
      * Convert token readings to hiragana using a dictionary feature index.
      * UniDic CWJ uses 20 (`kana`); IPADIC uses 7 (`reading`).
      */
@@ -25,6 +33,8 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_vibratotokenizer_free: (a: number, b: number) => void;
     readonly vibratotokenizer_new: (a: number, b: number) => [number, number, number];
+    readonly vibratotokenizer_sentenceEndOffsets: (a: number, b: number, c: number) => [number, number];
+    readonly vibratotokenizer_softBreakOffsets: (a: number, b: number, c: number) => [number, number];
     readonly vibratotokenizer_toHiragana: (a: number, b: number, c: number, d: number) => [number, number];
     readonly vibratotokenizer_tokenize: (a: number, b: number, c: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;

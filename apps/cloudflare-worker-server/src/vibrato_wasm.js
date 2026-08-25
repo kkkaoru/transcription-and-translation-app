@@ -27,6 +27,32 @@ export class VibratoTokenizer {
         return this;
     }
     /**
+     * Exclusive Unicode-scalar sentence-end offsets (Tauri IPADIC POS ∪ heuristic).
+     * @param {string} text
+     * @returns {Uint32Array}
+     */
+    sentenceEndOffsets(text) {
+        const ptr0 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.vibratotokenizer_sentenceEndOffsets(this.__wbg_ptr, ptr0, len0);
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Mid-sentence POS wrap points for caption line breaks before maxChars.
+     * @param {string} text
+     * @returns {Uint32Array}
+     */
+    softBreakOffsets(text) {
+        const ptr0 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.vibratotokenizer_softBreakOffsets(this.__wbg_ptr, ptr0, len0);
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
      * Convert token readings to hiragana using a dictionary feature index.
      * UniDic CWJ uses 20 (`kana`); IPADIC uses 7 (`reading`).
      * @param {string} text
@@ -119,6 +145,11 @@ const VibratoTokenizerFinalization = (typeof FinalizationRegistry === 'undefined
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_vibratotokenizer_free(ptr, 1));
 
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
 let cachedDataViewMemory0 = null;
 function getDataViewMemory0() {
     if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
@@ -129,6 +160,14 @@ function getDataViewMemory0() {
 
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
+}
+
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
 }
 
 let cachedUint8ArrayMemory0 = null;
@@ -224,6 +263,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

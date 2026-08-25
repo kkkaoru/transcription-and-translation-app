@@ -3,6 +3,8 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_vibratotokenizer_free: (a: number, b: number) => void;
 export const vibratotokenizer_new: (a: number, b: number) => [number, number, number];
+export const vibratotokenizer_sentenceEndOffsets: (a: number, b: number, c: number) => [number, number];
+export const vibratotokenizer_softBreakOffsets: (a: number, b: number, c: number) => [number, number];
 export const vibratotokenizer_toHiragana: (a: number, b: number, c: number, d: number) => [number, number];
 export const vibratotokenizer_tokenize: (a: number, b: number, c: number) => [number, number, number];
 export const __wbindgen_malloc: (a: number, b: number) => number;

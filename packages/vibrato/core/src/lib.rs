@@ -3,6 +3,7 @@
 //! Tauri desktop is the source of truth for this gate: pure kana passes
 //! through unchanged, and kanji surfaces are converted with IPADIC feature 7.
 
+use caption_bridge_japanese_text::katakana_to_hiragana_char;
 use std::io::Read;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,30 +25,10 @@ pub struct MorphToken {
     pub char_end: usize,
 }
 
-pub fn is_kanji(character: char) -> bool {
-    let code = character as u32;
-    (0x3400..=0x4dbf).contains(&code)
-        || (0x4e00..=0x9fff).contains(&code)
-        || (0xf900..=0xfaff).contains(&code)
-}
-
-/// True when `text` contains any CJK Unified Ideographs code point
-/// (Extension A, BMP block, or Compatibility Ideographs).
-pub fn contains_kanji(text: &str) -> bool {
-    text.chars().any(is_kanji)
-}
+pub use caption_bridge_japanese_text::{contains_kanji, is_kanji};
 
 pub fn katakana_to_hiragana(input: &str) -> String {
-    input
-        .chars()
-        .map(|character| {
-            if ('ァ'..='ヶ').contains(&character) {
-                char::from_u32(character as u32 - ('ァ' as u32 - 'ぁ' as u32)).unwrap_or(character)
-            } else {
-                character
-            }
-        })
-        .collect()
+    input.chars().map(katakana_to_hiragana_char).collect()
 }
 
 /// Decode a zstd-compressed Vibrato dictionary and build a tokenizer.

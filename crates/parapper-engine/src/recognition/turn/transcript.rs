@@ -1,3 +1,7 @@
+use caption_bridge_japanese_text::{
+    completion_appended_suffix_is_repeated, strip_turn_surface_noise,
+};
+
 use crate::{
     audio::ASR_SAMPLE_RATE,
     recognition::{
@@ -973,15 +977,6 @@ fn completion_text_duplicates_existing(existing: &str, incoming: &str) -> bool {
     completion_appended_suffix_is_repeated(existing, incoming)
 }
 
-fn completion_appended_suffix_is_repeated(existing: &str, incoming: &str) -> bool {
-    // Both former concatenation probes (`existing + incoming` and
-    // `existing + " " + incoming`) reduce to the same trimmed suffix check.
-    // Evaluate that relation directly so a final-caption completion does not
-    // allocate and scan two temporary candidate strings.
-    let suffix = incoming.trim();
-    existing.starts_with(suffix) || suffix.starts_with(existing)
-}
-
 fn visible_text_for_blank_replace(
     incoming: &str,
     latest_segment_text: Option<&str>,
@@ -1030,10 +1025,6 @@ fn streaming_chunk_text_keeping_visible_prefix(existing: &str, incoming: &str) -
 
 fn completion_incoming_is_blank(incoming: &str) -> bool {
     strip_turn_surface_noise(incoming).is_empty()
-}
-
-fn strip_turn_surface_noise(text: &str) -> &str {
-    text.trim().trim_end_matches(['.', '。', '…', '⋯']).trim_end_matches("...").trim()
 }
 
 fn covered_completion_source_samples(

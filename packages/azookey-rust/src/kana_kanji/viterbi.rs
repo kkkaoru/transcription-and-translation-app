@@ -8,6 +8,7 @@ use super::normalization::{
     to_hiragana, to_katakana,
 };
 use super::verifier::{Draft, DraftVerifier, SessionContext, VerificationState};
+use caption_bridge_japanese_text::{contains_kanji, is_kanji};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -4016,17 +4017,6 @@ fn contains_ascii_alphanumeric(text: &str) -> bool {
 fn is_katakana(character: &char) -> bool {
     let code = *character as u32;
     (0x30a1..=0x30f6).contains(&code)
-}
-
-fn is_kanji(character: char) -> bool {
-    let code = character as u32;
-    (0x3400..=0x4dbf).contains(&code)
-        || (0x4e00..=0x9fff).contains(&code)
-        || (0xf900..=0xfaff).contains(&code)
-}
-
-fn contains_kanji(text: &str) -> bool {
-    text.chars().any(is_kanji)
 }
 
 /// Use dictionary alternatives and the grammatical shape of the following

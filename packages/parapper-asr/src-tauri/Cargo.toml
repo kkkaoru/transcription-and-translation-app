@@ -38,6 +38,7 @@ required-features = ["real-asr-tests"]
 tauri-build = { workspace = true }
 
 [dependencies]
+caption-bridge-japanese-text = { path = "../../../crates/caption-bridge-japanese-text" }
 anyhow = { workspace = true }
 bzip2 = "0.4.4"
 chrono = { workspace = true }

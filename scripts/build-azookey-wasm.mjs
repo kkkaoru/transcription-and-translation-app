@@ -21,6 +21,7 @@ export const AZOOKEY_WASM_SOURCE_DIGEST_PATH =
   "apps/cloudflare-worker-server/wasm/azookey.source.sha256";
 const sourceDigestDestination = resolve(root, AZOOKEY_WASM_SOURCE_DIGEST_PATH);
 const SOURCE_INPUT_PATHS = [
+  "crates/caption-bridge-japanese-text",
   "packages/azookey-rust",
   "packages/azookey-wasm",
   "Cargo.lock",

@@ -12,6 +12,7 @@ default = []
 real-asr-tests = []
 
 [dependencies]
+caption-bridge-japanese-text = { path = "../caption-bridge-japanese-text" }
 anyhow = "1"
 log = "0.4"
 ndarray = "0.17.2"

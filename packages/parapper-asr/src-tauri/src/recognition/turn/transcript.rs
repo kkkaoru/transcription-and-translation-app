@@ -1,3 +1,7 @@
+use caption_bridge_japanese_text::{
+    completion_appended_suffix_is_repeated, strip_turn_surface_noise,
+};
+
 use crate::{
     audio::ASR_SAMPLE_RATE,
     recognition::{
@@ -970,8 +974,7 @@ fn completion_text_duplicates_existing(existing: &str, incoming: &str) -> bool {
     if prefer_streaming_interim_text_over_truncated_completion(existing, incoming) {
         return true;
     }
-    is_repeated_turn_append(existing, &format!("{existing}{incoming}"))
-        || is_repeated_turn_append(existing, &format!("{existing} {incoming}"))
+    completion_appended_suffix_is_repeated(existing, incoming)
 }
 
 fn visible_text_for_blank_replace(
@@ -1022,10 +1025,6 @@ fn streaming_chunk_text_keeping_visible_prefix(existing: &str, incoming: &str) -
 
 fn completion_incoming_is_blank(incoming: &str) -> bool {
     strip_turn_surface_noise(incoming).is_empty()
-}
-
-fn strip_turn_surface_noise(text: &str) -> &str {
-    text.trim().trim_end_matches(['.', '。', '…', '⋯']).trim_end_matches("...").trim()
 }
 
 fn covered_completion_source_samples(

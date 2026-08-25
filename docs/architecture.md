@@ -41,6 +41,15 @@ inference responses. Presentation and caption styling remain browser responsibil
 Native-only libraries such as sherpa-onnx and OS font enumeration are not bundled into
 the Worker.
 
+## Shared Japanese normalization
+
+`caption-bridge-japanese-text` is the allocation-free source of truth for Japanese
+script ranges, kana scalar conversion, IPADIC/UniDic POS-head parsing, and ASR turn
+surface normalization. Native `parapper-engine`, portable `azookey-rust`, and
+`vibrato-core`/`vibrato-wasm` depend on that crate rather than carrying equivalent
+local definitions. Target-specific orchestration remains separate: Native owns audio
+turn state, while WASM owns ABI memory and lattice handles.
+
 ## Layer ownership
 
 - `apps/native`: audio capture, in-process recognition/translation, GPUI windows
@@ -48,6 +57,7 @@ the Worker.
 - `apps/cloudflare-worker-server`: Workers AI ASR and AzooKey HTTP/WS endpoints
 - `apps/inference-gateway`: portable inference HTTP boundary
 - `crates/parapper-engine`: reusable Native VAD/ASR/turn/translation engine
+- `crates/caption-bridge-japanese-text`: shared no-allocation Japanese text primitives
 - `crates/caption-bridge-render`: platform-neutral RGBA caption rendering
 - `crates/caption-bridge-browser-source`: localhost OBS Browser Source
 - `packages/azookey-rust`: AzooKey dictionary reader and Viterbi converter

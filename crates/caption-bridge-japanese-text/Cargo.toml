@@ -1,0 +1,11 @@
+[package]
+name = "caption-bridge-japanese-text"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Shared allocation-conscious Japanese text normalization primitives"
+
+[lib]
+name = "caption_bridge_japanese_text"
+crate-type = ["rlib"]

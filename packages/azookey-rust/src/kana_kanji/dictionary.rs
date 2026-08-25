@@ -1,4 +1,5 @@
 use super::normalization::{is_boundary, to_hiragana, to_hiragana_cow, to_katakana};
+use caption_bridge_japanese_text::is_kanji;
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -1495,7 +1496,7 @@ fn has_preferred_metadata_identity_sibling(
             && candidate.rcid == entry.rcid
             && candidate.mid == entry.mid
             && candidate.surface != candidate.reading
-            && candidate.surface.chars().any(is_kanji_char)
+            && candidate.surface.chars().any(is_kanji)
             && entry.value >= candidate.value
     })
 }
@@ -1518,10 +1519,8 @@ fn is_competitive_converted_system_entry(
     // ruby (for example `すーぷ` → `スープ`). Those are real orthographic
     // conversions and must suppress multi-kana hiragana identity the same way
     // ordinary kanji/katakana rows do.
-    let has_converted_script = entry
-        .surface
-        .chars()
-        .any(|character| is_kanji_char(character) || is_katakana_char(character));
+    let has_converted_script =
+        entry.surface.chars().any(|character| is_kanji(character) || is_katakana_char(character));
     if !has_converted_script {
         return false;
     }
@@ -1544,13 +1543,6 @@ fn is_competitive_converted_system_entry(
 /// `ください`, regressing `スープはください`; a margin below 1.0 begins to lose
 /// should-convert words whose kanji surface is only slightly below the identity.
 const COMPETITIVE_CONVERTED_VALUE_MARGIN: f32 = 1.0;
-
-fn is_kanji_char(character: char) -> bool {
-    let code = character as u32;
-    (0x3400..=0x4dbf).contains(&code)
-        || (0x4e00..=0x9fff).contains(&code)
-        || (0xf900..=0xfaff).contains(&code)
-}
 
 fn is_katakana_char(character: char) -> bool {
     let code = character as u32;

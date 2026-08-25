@@ -590,6 +590,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "caption-bridge-japanese-text"
+version = "0.1.0"
+
+[[package]]
 name = "cargo-platform"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3506,6 +3510,7 @@ dependencies = [
  "anyhow",
  "block2 0.6.2",
  "bzip2",
+ "caption-bridge-japanese-text",
  "chrono",
  "cpal",
  "dasp_sample",

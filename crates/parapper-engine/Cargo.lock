@@ -223,6 +223,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "caption-bridge-japanese-text"
+version = "0.1.0"
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1301,6 +1305,7 @@ name = "parapper-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "caption-bridge-japanese-text",
  "log",
  "ndarray",
  "num-complex",

@@ -11,6 +11,7 @@ name = "caption_bridge_vibrato_core"
 crate-type = ["rlib"]
 
 [dependencies]
+caption-bridge-japanese-text = { path = "../../../crates/caption-bridge-japanese-text" }
 ruzstd = { version = "=0.7.3", features = ["std"] }
 vibrato = { version = "=0.5.2", default-features = false }
 

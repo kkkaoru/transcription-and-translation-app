@@ -3,6 +3,8 @@
 //! Tauri desktop is the source of truth. Overlay TypeScript keeps a heuristic
 //! fallback; WASM/Worker should call this module through vibrato-wasm.
 
+use caption_bridge_japanese_text::MorphFeature;
+
 const SENTENCE_PUNCT: &[char] = &['。', '．', '！', '？', '!', '?'];
 
 fn strip_sentence_punct(text: &str) -> &str {
@@ -267,10 +269,8 @@ struct IpadicPos<'a> {
 
 impl<'a> IpadicPos<'a> {
     fn parse(surface: &'a str, feature: &'a str) -> Self {
-        let mut fields = feature.split(',');
-        let pos1 = fields.next().unwrap_or("").trim();
-        let pos2 = fields.next().unwrap_or("").trim();
-        Self { surface, pos1, pos2, cform: feature.split(',').nth(5).unwrap_or("").trim() }
+        let parsed = MorphFeature::parse(feature);
+        Self { surface, pos1: parsed.pos1, pos2: parsed.pos2, cform: parsed.conjugation_form }
     }
 
     fn is_kuten(self) -> bool {

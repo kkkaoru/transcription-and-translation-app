@@ -1,6 +1,7 @@
 use std::{ops::Range, path::Path};
 
 use anyhow::{Context, Result};
+use caption_bridge_japanese_text::MorphFeatureHead;
 use vibrato_rkyv::{Dictionary, LoadMode, Tokenizer};
 
 use super::{audio_window::audio_window_for_boundary, sample_end_for_char_end_or_ratio};
@@ -225,26 +226,11 @@ pub(super) fn is_nominal_suffix(feature: &str) -> bool {
 }
 
 fn feature_pos1(feature: &str) -> Option<&str> {
-    let field = feature.split(',').next()?.trim();
-    field.split_once('-').map_or(Some(field), |(pos1, _)| {
-        let pos1 = pos1.trim();
-        (!pos1.is_empty()).then_some(pos1)
-    })
+    let pos1 = MorphFeatureHead::parse(feature).pos1;
+    (!pos1.is_empty()).then_some(pos1)
 }
 
 fn feature_pos2(feature: &str) -> Option<&str> {
-    let mut fields = feature.split(',').map(str::trim);
-    let first = fields.next()?;
-    if let Some((_, pos2)) = first.split_once('-') {
-        let pos2 = pos2.trim();
-        if !pos2.is_empty() {
-            return Some(pos2);
-        }
-    }
-    if let Some(second) = fields.next()
-        && !second.is_empty()
-    {
-        return Some(second);
-    }
-    None
+    let pos2 = MorphFeatureHead::parse(feature).pos2;
+    (!pos2.is_empty()).then_some(pos2)
 }

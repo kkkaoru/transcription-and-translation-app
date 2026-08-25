@@ -1,18 +1,16 @@
 use std::borrow::Cow;
 
-const KATAKANA_START: u32 = 0x30a1;
-const KATAKANA_END: u32 = 0x30f6;
-const HIRAGANA_START: u32 = 0x3041;
-const HIRAGANA_END: u32 = 0x3096;
+use caption_bridge_japanese_text::{
+    hiragana_to_katakana_char, is_basic_katakana, katakana_to_hiragana_char,
+};
 const FULLWIDTH_ASCII_START: u32 = 0xff01;
 const FULLWIDTH_ASCII_END: u32 = 0xff5e;
 const FULLWIDTH_ASCII_OFFSET: u32 = 0xfee0;
-const KANA_SCRIPT_OFFSET: u32 = 0x60;
 
 pub(crate) fn to_hiragana_cow(input: &str) -> Cow<'_, str> {
     let needs_conversion = input.chars().any(|character| {
         let code = character as u32;
-        (KATAKANA_START..=KATAKANA_END).contains(&code)
+        is_basic_katakana(character)
             || (FULLWIDTH_ASCII_START..=FULLWIDTH_ASCII_END).contains(&code)
     });
     if !needs_conversion {
@@ -23,8 +21,8 @@ pub(crate) fn to_hiragana_cow(input: &str) -> Cow<'_, str> {
             .chars()
             .map(|character| {
                 let code = character as u32;
-                if (KATAKANA_START..=KATAKANA_END).contains(&code) {
-                    char::from_u32(code - KANA_SCRIPT_OFFSET).unwrap_or(character)
+                if is_basic_katakana(character) {
+                    katakana_to_hiragana_char(character)
                 } else if (FULLWIDTH_ASCII_START..=FULLWIDTH_ASCII_END).contains(&code) {
                     char::from_u32(code - FULLWIDTH_ASCII_OFFSET).unwrap_or(character)
                 } else {
@@ -40,17 +38,7 @@ pub(crate) fn to_hiragana(input: &str) -> String {
 }
 
 pub(crate) fn to_katakana(input: &str) -> String {
-    input
-        .chars()
-        .map(|character| {
-            let code = character as u32;
-            if (HIRAGANA_START..=HIRAGANA_END).contains(&code) {
-                char::from_u32(code + KANA_SCRIPT_OFFSET).unwrap_or(character)
-            } else {
-                character
-            }
-        })
-        .collect()
+    input.chars().map(hiragana_to_katakana_char).collect()
 }
 
 pub(crate) fn is_boundary(character: char) -> bool {

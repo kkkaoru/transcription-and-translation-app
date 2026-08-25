@@ -14,6 +14,7 @@
 use caption_bridge_azookey_rust::{
     convert_with_dictionary, AzooKeyDictionary, ConversionOptions, DictionaryPaths,
 };
+use caption_bridge_japanese_text::contains_kanji;
 use std::path::PathBuf;
 
 fn main() {
@@ -73,12 +74,7 @@ fn main() {
                 "IDENTITY"
             } else if entry.raw_ruby_identity {
                 "RUBY-ID"
-            } else if entry.surface.chars().any(|c| {
-                let code = c as u32;
-                (0x3400..=0x4dbf).contains(&code)
-                    || (0x4e00..=0x9fff).contains(&code)
-                    || (0xf900..=0xfaff).contains(&code)
-            }) {
+            } else if contains_kanji(&entry.surface) {
                 "KANJI"
             } else if entry.surface.chars().any(|c| {
                 let code = c as u32;
