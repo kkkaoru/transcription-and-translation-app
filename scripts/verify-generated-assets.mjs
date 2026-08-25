@@ -20,7 +20,7 @@ const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const EXPECTED_VIBRATO_DICTIONARY_SHA256 =
   "82a6da70bb4a17be70f20ff44f650f9ad1d2b0b4fcb2f39c17fc797f92d0ab75";
 const EXPECTED_VIBRATO_WASM_SHA256 =
-  "334375e6442c3be496a9cf90c21c59fcdbd4ff96560805341333ba1b881c969b";
+  "5100c6dac6bf81543fb0a2067b566bf1d78a6403924a2743e7d058d663320a73";
 const EXPECTED_VIBRATO_COPYING_SHA256 =
   "81266cd4d1808e259b468c7488d658d733c089d4c346a48b9876fa2504a23b46";
 const EXPECTED_VIBRATO_NOTICE_SHA256 =
@@ -31,34 +31,26 @@ const EXPECTED_SUBMODULE_GITLINKS = {
   "submodules/azooKey-Desktop": "7702e190a498841d05de6384c9eea127ab13e370",
   "submodules/azooKey_dictionary_storage": AZOOKEY_DICTIONARY_REVISION,
 };
-const VIBRATO_DICTIONARY_PATHS = [
-  "assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst",
-  "apps/azookey-compare/public/vibrato/system.dic.zst",
-];
+const VIBRATO_DICTIONARY_PATHS = ["assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst"];
 const WORKER_VIBRATO_DICTIONARY_PATH =
   "apps/cloudflare-worker-server/public/vibrato/system.dic.zst";
 const VIBRATO_COPYING_PATHS = [
   "assets/vibrato/ipadic-mecab-2_7_0/COPYING",
-  "apps/azookey-compare/public/vibrato/COPYING",
   "apps/cloudflare-worker-server/public/vibrato/COPYING",
 ];
 const VIBRATO_NOTICE_PATHS = [
   "assets/vibrato/ipadic-mecab-2_7_0/NOTICE",
-  "apps/azookey-compare/public/vibrato/NOTICE",
   "apps/cloudflare-worker-server/public/vibrato/NOTICE",
 ];
 const VIBRATO_WASM_PATHS = [
-  "apps/azookey-compare/public/vibrato/vibrato_wasm_bg.wasm",
   "apps/cloudflare-worker-server/wasm/vibrato_wasm_bg.wasm",
   "packages/vibrato/wasm/pkg-web/vibrato_wasm_bg.wasm",
 ];
 const VIBRATO_GLUE_JS_PATHS = [
-  "apps/azookey-compare/public/vibrato/vibrato_wasm.js",
   "apps/cloudflare-worker-server/src/vibrato_wasm.js",
   "packages/vibrato/wasm/pkg-web/vibrato_wasm.js",
 ];
 const VIBRATO_GLUE_DTS_PATHS = [
-  "apps/azookey-compare/public/vibrato/vibrato_wasm.d.ts",
   "apps/cloudflare-worker-server/src/vibrato_wasm.d.ts",
   "packages/vibrato/wasm/pkg-web/vibrato_wasm.d.ts",
 ];
@@ -248,18 +240,18 @@ export const verifyGeneratedAssets = ({ root = repositoryRoot, requireTracked = 
   const vibratoGlueJs = assertSameBytes(
     root,
     VIBRATO_GLUE_JS_PATHS,
-    "e094326c1f0d142882da0a64b272adfc1e5b24eff9b91a02ab531ff9dba96b1e",
+    "17706b5d2c0d14768df95b5b3f3400ecd4f47145ae25ba85479db57569f3c137",
     "Vibrato JS glue",
   );
   const vibratoGlueDts = assertSameBytes(
     root,
     VIBRATO_GLUE_DTS_PATHS,
-    "cea5a43822058c77e63b09820ea921acaad18efff5d23cc025bc43b1ef6f4aef",
+    "2fd1c77ff5354ddaa04662ab696f0adf7e4f4a9d3dd592fd215ba632847a52d3",
     "Vibrato TypeScript glue",
   );
   const vibratoGlueBgDtsBytes = readAsset(root, VIBRATO_GLUE_BG_DTS_PATH);
   const vibratoGlueBgDtsHash = sha256(vibratoGlueBgDtsBytes);
-  if (vibratoGlueBgDtsHash !== "6cf8b66a1bb3e1989bdd4a042f3f9d40a09f4523a3b08c600727e735a053bdea") {
+  if (vibratoGlueBgDtsHash !== "da4d611ff92f4b75230db64dbb84b1b151b330bdf6736338fd3d7d3a92c58042") {
     throw new Error(`Vibrato WASM TypeScript declaration hash mismatch: ${vibratoGlueBgDtsHash}`);
   }
   const vibratoCopying = assertSameBytes(

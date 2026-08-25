@@ -22,19 +22,19 @@ describe("checked-in runtime assets", () => {
     );
     assert.equal(
       result.vibratoWasm.sha256,
-      "334375e6442c3be496a9cf90c21c59fcdbd4ff96560805341333ba1b881c969b",
+      "5100c6dac6bf81543fb0a2067b566bf1d78a6403924a2743e7d058d663320a73",
     );
     assert.equal(
       result.vibratoGlueJs.sha256,
-      "e094326c1f0d142882da0a64b272adfc1e5b24eff9b91a02ab531ff9dba96b1e",
+      "17706b5d2c0d14768df95b5b3f3400ecd4f47145ae25ba85479db57569f3c137",
     );
     assert.equal(
       result.vibratoGlueDts.sha256,
-      "cea5a43822058c77e63b09820ea921acaad18efff5d23cc025bc43b1ef6f4aef",
+      "2fd1c77ff5354ddaa04662ab696f0adf7e4f4a9d3dd592fd215ba632847a52d3",
     );
     assert.equal(
       result.vibratoGlueBgDts.sha256,
-      "6cf8b66a1bb3e1989bdd4a042f3f9d40a09f4523a3b08c600727e735a053bdea",
+      "da4d611ff92f4b75230db64dbb84b1b151b330bdf6736338fd3d7d3a92c58042",
     );
     assert.equal(
       result.vibratoCopying.sha256,
