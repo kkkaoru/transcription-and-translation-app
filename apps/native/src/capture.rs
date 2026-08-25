@@ -466,10 +466,13 @@ fn run_capture_inner(
         return Ok(());
     }
     let config = EngineConfig::new(models_root.clone());
-    let mut translation_worker =
-        start_translation_worker(translation_enabled, models_root.clone(), event_tx.clone())?;
     let mut engine = ParapperEngine::load(&config)
         .map_err(|error| format!("Could not initialize speech recognition: {error:#}"))?;
+    // Start QuickMT only after ASR, VAD, and turn-detector initialization has completed.
+    // Translation still warms before microphone audio is consumed, but its large model loader
+    // no longer overlaps the recognition model loaders' transient allocations.
+    let mut translation_worker =
+        start_translation_worker(translation_enabled, models_root.clone(), event_tx.clone())?;
     if stop_requested.load(Ordering::Acquire) {
         return Ok(());
     }

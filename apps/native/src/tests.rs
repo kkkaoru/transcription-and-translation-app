@@ -7,8 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use caption_bridge_dictionary::CustomDictionaryEntry;
 
 use crate::app::{
-    delete_editable_text, erase_editable_text, insert_editable_text, main_window_options,
-    next_caret, output_window_options, previous_caret,
+    capture_display_active, delete_editable_text, erase_editable_text, insert_editable_text,
+    main_window_options, next_caret, output_window_options, previous_caret,
 };
 use crate::debug_surfaces::{
     caption_publication, prepare_caption_publication_with, CaptionPublication,
@@ -32,6 +32,14 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("kotoba-native-{label}-{nanos}"));
     fs::create_dir_all(&dir).expect("temp dir");
     dir
+}
+
+#[test]
+fn capture_display_is_compact_only_while_audio_resources_are_active() {
+    assert!(!capture_display_active(crate::domain::CaptureStatus::Idle));
+    assert!(capture_display_active(crate::domain::CaptureStatus::Capturing));
+    assert!(capture_display_active(crate::domain::CaptureStatus::Stopping));
+    assert!(!capture_display_active(crate::domain::CaptureStatus::Error));
 }
 
 #[test]
@@ -95,6 +103,20 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(app.contains("on_toggle_translation: |view| view.toggle_translation()"));
     assert!(app.contains("style_preview_image: Option<Arc<RenderImage>>"));
     assert!(app.contains("self.style_preview_image.take()"));
+    assert!(app.contains("capture_view_compact"));
+    assert!(app.contains("window.resize(size(px(CAPTURE_WINDOW_WIDTH_PX)"));
+    assert!(app.contains("(!self.capture_view_compact)"));
+    assert!(app.contains(".then(|| tab_bar"));
+    assert!(app.contains("let fonts = Vec::new()"));
+    assert!(app.contains("self.fonts.shrink_to_fit()"));
+    assert!(!app.contains("entries: Vec<CustomDictionaryEntry>"));
+    let caption_publish = app
+        .find("let output_changed = view.publish_live_caption()")
+        .expect("capture loop must publish subtitles");
+    let compact_display = app
+        .find("view.update_capture_display(status, window)")
+        .expect("capture loop must compact only the management display");
+    assert!(caption_publish < compact_display);
 
     let memory = include_str!("memory.rs");
     assert!(memory.contains("MallocLargeCache"));
@@ -106,6 +128,13 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(translation.contains("num_threads_per_replica: 1"));
     assert!(translation.contains("max_queued_batches: 1"));
     assert!(translation.contains("max_batch_size: 1"));
+    let engine_load = capture
+        .find("let mut engine = ParapperEngine::load(&config)")
+        .expect("Native must initialize recognition before loading QuickMT");
+    let translation_start = capture
+        .find("let mut translation_worker =")
+        .expect("Native must create one translation worker");
+    assert!(engine_load < translation_start);
     let warmup = capture
         .find("request_translation_warmup(")
         .expect("Native must warm QuickMT from the continuous microphone stream");

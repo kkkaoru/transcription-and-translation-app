@@ -13,7 +13,7 @@ use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
 use gpui::{
     div, point, px, rgb, size, App, Bounds, ClipboardItem, Context, FocusHandle, IntoElement,
-    KeyDownEvent, Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window,
+    KeyDownEvent, Pixels, Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
 };
 
@@ -47,6 +47,8 @@ use crate::ui::{image_view, render_image, sky_page, tab_bar};
 const OUTPUT_WINDOW_TITLE: &str = "Kotoba Beacon Caption Output";
 const OUTPUT_WINDOW_WIDTH_PX: f32 = 1280.0;
 const OUTPUT_WINDOW_HEIGHT_PX: f32 = 720.0;
+const CAPTURE_WINDOW_WIDTH_PX: f32 = MIN_WINDOW_WIDTH_PX;
+const CAPTURE_WINDOW_HEIGHT_PX: f32 = MIN_WINDOW_HEIGHT_PX;
 const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(32);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -64,7 +66,6 @@ pub struct MainView {
     style_catalog: NativeStyleCatalog,
     app_settings: NativeAppSettings,
     capture: CaptureController,
-    entries: Vec<CustomDictionaryEntry>,
     dictionary_catalog: NativeDictionaryCatalog,
     query: String,
     query_caret: usize,
@@ -93,6 +94,8 @@ pub struct MainView {
     last_output_window_check: Instant,
     browser_source: BrowserSourceServer,
     output_window_requested: bool,
+    capture_view_compact: bool,
+    pre_capture_window_size: Option<Size<Pixels>>,
     _quit_subscription: Subscription,
 }
 
@@ -170,7 +173,6 @@ impl MainView {
         app_settings: NativeAppSettings,
     ) -> Self {
         let style = style_catalog.selected().style.clone();
-        let entries = dictionary_catalog.selected().entries.clone();
         let fixture = ingest_fixture_caption().ok();
         let preview_source = fixture
             .as_ref()
@@ -185,7 +187,7 @@ impl MainView {
         let (browser_source, browser_error) =
             start_browser_source(app_settings.browser_source_enabled);
         browser_source.set_style(browser_style(&style));
-        let fonts = caption_bridge_render::font_families();
+        let fonts = Vec::new();
         let preview_translation = DEFAULT_PREVIEW_TRANSLATION.to_string();
         // The HiDPI preview is only needed on the Style tab. Avoid retaining its
         // multi-megabyte RGBA image throughout normal Live capture.
@@ -203,7 +205,6 @@ impl MainView {
             style_catalog,
             app_settings,
             capture,
-            entries,
             dictionary_catalog,
             query: String::new(),
             query_caret: 0,
@@ -232,6 +233,8 @@ impl MainView {
             last_output_window_check: Instant::now() - OUTPUT_WINDOW_HEALTH_INTERVAL,
             browser_source,
             output_window_requested: false,
+            capture_view_compact: false,
+            pre_capture_window_size: None,
             _quit_subscription: quit_subscription,
         }
     }
@@ -268,11 +271,39 @@ impl MainView {
     fn select_tab(&mut self, tab: AppTab) {
         self.tab = tab;
         if tab == AppTab::Style {
+            if self.fonts.is_empty() {
+                self.fonts = caption_bridge_render::font_families();
+            }
             if self.style_preview_image.is_none() {
                 self.refresh_style_preview();
             }
-        } else if let Some(previous_image) = self.style_preview_image.take() {
-            self.stale_render_images.push(previous_image);
+        } else {
+            self.fonts.clear();
+            self.fonts.shrink_to_fit();
+            if let Some(previous_image) = self.style_preview_image.take() {
+                self.stale_render_images.push(previous_image);
+            }
+        }
+    }
+
+    fn update_capture_display(&mut self, status: CaptureStatus, window: &mut Window) {
+        let capture_active = capture_display_active(status);
+        if capture_active == self.capture_view_compact {
+            return;
+        }
+        self.capture_view_compact = capture_active;
+        if capture_active {
+            self.select_tab(AppTab::Live);
+            self.font_select_open = false;
+            self.active_color_picker = None;
+            self.fonts.clear();
+            self.fonts.shrink_to_fit();
+            self.pre_capture_window_size = Some(window.bounds().size);
+            window.resize(size(px(CAPTURE_WINDOW_WIDTH_PX), px(CAPTURE_WINDOW_HEIGHT_PX)));
+        } else {
+            if let Some(previous_size) = self.pre_capture_window_size.take() {
+                window.resize(previous_size);
+            }
         }
     }
 
@@ -383,10 +414,9 @@ impl MainView {
     }
 
     fn persist_dictionary(&mut self, next: Vec<CustomDictionaryEntry>) {
-        let catalog = replace_selected_dictionary_entries(&self.dictionary_catalog, next.clone());
+        let catalog = replace_selected_dictionary_entries(&self.dictionary_catalog, next);
         match save_dictionary_catalog(&self.config_dir, &catalog) {
             Ok(()) => {
-                self.entries = next;
                 self.dictionary_catalog = catalog;
                 self.persist_error = None;
             }
@@ -395,7 +425,6 @@ impl MainView {
     }
 
     fn set_dictionary_catalog(&mut self, catalog: NativeDictionaryCatalog) {
-        self.entries = catalog.selected().entries.clone();
         match save_dictionary_catalog(&self.config_dir, &catalog) {
             Ok(()) => {
                 self.dictionary_catalog = catalog;
@@ -408,7 +437,7 @@ impl MainView {
     }
 
     fn import_dictionary_paths(&mut self, paths: &[PathBuf]) {
-        let mut entries = self.entries.clone();
+        let mut entries = self.dictionary_catalog.selected().entries.clone();
         for path in paths {
             match import_dictionary_file(path) {
                 Ok(imported) => entries = merge_dictionary_entries(&entries, imported),
@@ -500,7 +529,7 @@ impl MainView {
     }
 
     fn visible_entries(&self) -> Vec<CustomDictionaryEntry> {
-        search_dictionary_entries(&self.entries, &self.query)
+        search_dictionary_entries(&self.dictionary_catalog.selected().entries, &self.query)
     }
 }
 
@@ -697,7 +726,7 @@ impl Render for MainView {
                         cx.notify();
                     },
                     on_save: |view| match add_dictionary_entry(
-                        &view.entries,
+                        &view.dictionary_catalog.selected().entries,
                         &view.draft_reading,
                         &view.draft_word,
                     ) {
@@ -716,7 +745,10 @@ impl Render for MainView {
                         }
                     },
                     on_delete: |view, id| {
-                        let next = delete_dictionary_entry(&view.entries, id);
+                        let next = delete_dictionary_entry(
+                            &view.dictionary_catalog.selected().entries,
+                            id,
+                        );
                         view.persist_dictionary(next);
                     },
                 },
@@ -769,9 +801,16 @@ impl Render for MainView {
             .id("main-root")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|view, event, _window, cx| view.apply_key(event, cx)))
-            .child(tab_bar(self.tab, language, cx, |view, tab| view.select_tab(tab)))
+            .children(
+                (!self.capture_view_compact)
+                    .then(|| tab_bar(self.tab, language, cx, |view, tab| view.select_tab(tab))),
+            )
             .child(div().flex_1().min_h_0().child(body))
     }
+}
+
+pub(crate) fn capture_display_active(status: CaptureStatus) -> bool {
+    matches!(status, CaptureStatus::Capturing | CaptureStatus::Stopping)
 }
 
 fn start_browser_source(enabled: bool) -> (BrowserSourceServer, Option<String>) {
@@ -959,7 +998,7 @@ pub fn run() {
                 cx.update(|cx| cx.quit());
                 break;
             }
-            let update = window_handle.update(cx, |view, _window, cx| {
+            let update = window_handle.update(cx, |view, window, cx| {
                 let capture_changed = view.capture.poll(view.app_settings.caption_timeout_ms);
                 let output_changed = view.publish_live_caption();
                 let check_output_window = should_check_output_window(
@@ -969,6 +1008,8 @@ pub fn run() {
                 if check_output_window {
                     view.last_output_window_check = Instant::now();
                 }
+                let status = view.capture.snapshot().status;
+                view.update_capture_display(status, window);
                 let snapshot = view.capture.snapshot();
                 let output = output_changed.then(|| {
                     (

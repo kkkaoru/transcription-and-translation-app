@@ -27,8 +27,10 @@ pub trait VadEngine: Send {
 
 pub struct OnnxRuntimeSileroVadEngine {
     session: Session,
-    state: Vec<f32>,
-    context: Vec<f32>,
+    sample_rate: Tensor<i64>,
+    state: [f32; SILERO_STATE_LEN],
+    context: [f32; SILERO_CONTEXT_SAMPLES],
+    input_samples: [f32; SILERO_INPUT_SAMPLES],
     threshold: f32,
 }
 
@@ -47,10 +49,13 @@ impl OnnxRuntimeSileroVadEngine {
             .commit_from_file(model_path)
             .map_err(|err| anyhow!("Failed to load VAD model {}: {err}", model_path.display()))?;
 
+        let sample_rate = Tensor::from_array(((), vec![i64::from(ASR_SAMPLE_RATE)]))?;
         Ok(Self {
             session,
-            state: vec![0.0; SILERO_STATE_LEN],
-            context: vec![0.0; SILERO_CONTEXT_SAMPLES],
+            sample_rate,
+            state: [0.0; SILERO_STATE_LEN],
+            context: [0.0; SILERO_CONTEXT_SAMPLES],
+            input_samples: [0.0; SILERO_INPUT_SAMPLES],
             threshold,
         })
     }
@@ -86,24 +91,16 @@ impl VadEngine for OnnxRuntimeSileroVadEngine {
 
 impl OnnxRuntimeSileroVadEngine {
     fn process_model_chunk(&mut self, samples: &[f32]) -> Result<f32> {
-        let mut chunk = [0.0; SILERO_CHUNK_SAMPLES];
-        let copy_len = samples.len().min(SILERO_CHUNK_SAMPLES);
-        chunk[..copy_len].copy_from_slice(&samples[..copy_len]);
-
-        let mut input_samples = Vec::with_capacity(SILERO_INPUT_SAMPLES);
-        input_samples.extend_from_slice(&self.context);
-        input_samples.extend_from_slice(&chunk);
-
+        let copy_len = prepare_model_input(&self.context, samples, &mut self.input_samples);
         let input = TensorRef::from_array_view((
             [1_usize, SILERO_INPUT_SAMPLES],
-            input_samples.as_slice(),
+            self.input_samples.as_slice(),
         ))?;
-        let sr = Tensor::from_array(((), vec![i64::from(ASR_SAMPLE_RATE)]))?;
         let state = TensorRef::from_array_view(([2_usize, 1, 128], self.state.as_slice()))?;
 
         let outputs = self.session.run(inputs![
             "input" => input,
-            "sr" => sr,
+            "sr" => &self.sample_rate,
             "state" => state,
         ])?;
 
@@ -119,11 +116,26 @@ impl OnnxRuntimeSileroVadEngine {
         self.context.fill(0.0);
         let context_start = copy_len.saturating_sub(SILERO_CONTEXT_SAMPLES);
         let context_len = copy_len - context_start;
-        self.context[SILERO_CONTEXT_SAMPLES - context_len..]
-            .copy_from_slice(&chunk[context_start..copy_len]);
+        self.context[SILERO_CONTEXT_SAMPLES - context_len..].copy_from_slice(
+            &self.input_samples
+                [SILERO_CONTEXT_SAMPLES + context_start..SILERO_CONTEXT_SAMPLES + copy_len],
+        );
 
         Ok(out.first().copied().unwrap_or(0.0))
     }
+}
+
+fn prepare_model_input(
+    context: &[f32; SILERO_CONTEXT_SAMPLES],
+    samples: &[f32],
+    input_samples: &mut [f32; SILERO_INPUT_SAMPLES],
+) -> usize {
+    input_samples[..SILERO_CONTEXT_SAMPLES].copy_from_slice(context);
+    input_samples[SILERO_CONTEXT_SAMPLES..].fill(0.0);
+    let copy_len = samples.len().min(SILERO_CHUNK_SAMPLES);
+    input_samples[SILERO_CONTEXT_SAMPLES..SILERO_CONTEXT_SAMPLES + copy_len]
+        .copy_from_slice(&samples[..copy_len]);
+    copy_len
 }
 
 #[cfg(test)]
@@ -135,6 +147,22 @@ mod tests {
     };
 
     use crate::model::onnx_runtime::init_onnx_runtime;
+
+    use super::{SILERO_CONTEXT_SAMPLES, SILERO_INPUT_SAMPLES, prepare_model_input};
+
+    #[test]
+    fn model_input_reuses_fixed_storage_and_zero_pads_short_chunks() {
+        let context = [0.25; SILERO_CONTEXT_SAMPLES];
+        let samples = [0.5; 128];
+        let mut input = [1.0; SILERO_INPUT_SAMPLES];
+
+        let copied = prepare_model_input(&context, &samples, &mut input);
+
+        assert_eq!(copied, 128);
+        assert_eq!(&input[..SILERO_CONTEXT_SAMPLES], &[0.25; SILERO_CONTEXT_SAMPLES]);
+        assert_eq!(&input[SILERO_CONTEXT_SAMPLES..SILERO_CONTEXT_SAMPLES + 128], &[0.5; 128]);
+        assert!(input[SILERO_CONTEXT_SAMPLES + 128..].iter().all(|sample| *sample == 0.0));
+    }
 
     #[test]
     fn onnx_runtime_initializes_without_hanging() {

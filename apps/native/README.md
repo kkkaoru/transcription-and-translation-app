@@ -256,9 +256,32 @@ loaded name to sherpa's versioned ONNX Runtime image, avoiding a second 26 MiB
 runtime mapping without changing recognition output. The 1280×360 HiDPI style
 preview is now allocated only while the Style tab is open and is removed from
 the GPUI atlas when leaving it, avoiding a persistent 1,843,200-byte RGBA image
-during normal Live capture. Three-run allocator A/B probes found no median RSS
-saving from disabling Nano and Medium zones, while warm inference and load
-latency increased, so those process-wide changes were not adopted.
+during normal Live capture. System font names are also loaded only for the Style
+tab, and the selected custom dictionary is no longer duplicated in editor state.
+While capture is active, the management window shows only Live and shrinks from
+1180×820 to 960×680; it restores the user's previous size after capture. This
+changes only the GPUI management surface. Browser Source, Caption Output,
+Syphon/Spout, renderer resolution, style, dictionaries, and publication cadence
+remain active and unchanged.
+
+Silero now reuses fixed context, state, sample-rate, and model-input storage on
+every 32 ms invocation. Namo reuses its 512-token IDs and attention mask and
+stores its character vocabulary by Unicode scalar instead of allocating one
+`String` per character. The required 512-token padding remains intact because a
+model-level A/B showed that shortening the tensor changes logits. QuickMT starts
+warming after recognition model initialization, so its 388 MiB loader does not
+overlap ASR/VAD/Namo model-loader transients, while still starting its warm-up
+before captured audio is consumed.
+
+Three-run allocator A/B probes found no median RSS saving from disabling Nano
+and Medium zones, while warm inference and load latency increased. Separate
+Namo/ORT probes also rejected disabling the CPU arena, disabling weight
+prepacking, and device-allocated initializers: none produced a stable peak-RSS
+reduction, and the first two increased end-to-end fixture latency. CTranslate2
+has no supported CPU `model.bin` memory-mapping mode; its shipped INT8, one
+replica, one worker, batch-one configuration is therefore retained. These
+settings were not adopted solely because they moved or slowed allocations
+without reducing measured memory.
 
 `ul-unas/` is supported by the engine but noise cancellation is disabled by default until it wins the fixture quality benchmark.
 
