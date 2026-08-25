@@ -111,6 +111,15 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     let cargo_config = include_str!("../../../.cargo/config.toml");
     assert!(cargo_config.contains("target.x86_64-pc-windows-msvc"));
     assert!(cargo_config.contains("target-feature=+crt-static"));
+
+    let ci = include_str!("../../../.github/workflows/ci.yml");
+    let native_test_step = ci
+        .split("- name: Test Native")
+        .nth(1)
+        .and_then(|steps| steps.split("- name: Build Native release").next())
+        .expect("Native CI test step must remain present");
+    assert!(native_test_step.contains("RUST_TEST_THREADS: 1"));
+    assert!(native_test_step.contains("cargo test --locked --manifest-path apps/native/Cargo.toml"));
 }
 
 #[test]

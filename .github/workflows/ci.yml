@@ -142,6 +142,10 @@ jobs:
       - name: Lint Native
         run: cargo clippy --locked --manifest-path apps/native/Cargo.toml --all-targets -- -D warnings
       - name: Test Native
+        # GPUI and the statically linked Windows C++ runtimes own process-global state.
+        # Serial tests prevent concurrent teardown from causing STATUS_ACCESS_VIOLATION.
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo test --locked --manifest-path apps/native/Cargo.toml
       - name: Build Native release
         run: cargo build --locked --release --manifest-path apps/native/Cargo.toml
