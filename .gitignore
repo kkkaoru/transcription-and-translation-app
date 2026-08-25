@@ -21,7 +21,6 @@ apps/desktop/src-tauri/generated
 .claude/
 .commandcode/
 .cursor/*
-!.cursor/mcp.json
 .direnv
 tmp/
 *.log
