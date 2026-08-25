@@ -843,9 +843,11 @@ impl AdaptiveNoiseFloor {
 mod tests {
     use super::{
         is_permission_denied_error, is_recoverable_stream_error, passes_silence_gate,
-        resample_f32_to_pcm16, rms_dbfs, AdaptiveNoiseFloor, AudioError, TARGET_SAMPLE_RATE,
+        resample_f32_to_pcm16, rms_dbfs, AdaptiveNoiseFloor, AudioCaptureConfig, AudioError,
+        CapturePayload, PcmChunker, TARGET_SAMPLE_RATE,
     };
     use std::f32::consts::PI;
+    use std::sync::mpsc;
 
     #[test]
     fn silence_rms_is_very_low() {
@@ -883,6 +885,29 @@ mod tests {
         assert!((output.len() as isize - 1_600).abs() <= 1);
         assert!(output.iter().any(|sample| *sample != 0));
         assert_eq!(TARGET_SAMPLE_RATE, 16_000);
+    }
+
+    #[test]
+    fn microphone_chunk_reaches_the_rms_pipeline_as_a_speech_frame() {
+        let config = AudioCaptureConfig {
+            chunk_ms: 32,
+            silence_gate_db: -50.0,
+            adaptive_noise_floor: false,
+        };
+        let mut chunker = PcmChunker::new(48_000, 1, config).expect("chunker should initialize");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let input = (0..1_536)
+            .map(|index| (2.0 * PI * 440.0 * index as f32 / 48_000.0).sin() * 0.5)
+            .collect::<Vec<_>>();
+
+        chunker.push(&input, &sender);
+        let message = receiver.recv().expect("speech frame should reach the capture queue");
+        let CapturePayload::Frame(frame) = message.payload else {
+            panic!("speech-like microphone input must not be reduced to a level-only event");
+        };
+
+        assert!((511..=513).contains(&frame.len()));
+        assert!((-10.0..=-8.0).contains(&rms_dbfs(&frame)));
     }
 
     #[test]

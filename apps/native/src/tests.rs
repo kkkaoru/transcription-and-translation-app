@@ -73,6 +73,19 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
 }
 
 #[test]
+fn onnx_runtime_initializes_before_gpui_on_macos() {
+    let app = include_str!("app.rs");
+    let runtime_init = app
+        .find("parapper_engine::initialize_onnx_runtime()")
+        .expect("Native must initialize ONNX Runtime explicitly");
+    let gpui_init = app
+        .find("gpui_platform::application()")
+        .expect("Native must initialize the GPUI application");
+
+    assert!(runtime_init < gpui_init, "ONNX Runtime must initialize before AppKit/GPUI");
+}
+
+#[test]
 fn identity_and_build_contracts() {
     assert_eq!(PRODUCT_NAME, "Kotoba Beacon Native");
     assert_eq!(BUNDLE_ID, "com.kotobabeacon.native");

@@ -14,8 +14,16 @@ fn main() -> anyhow::Result<()> {
     let mut arguments = env::args_os().skip(1);
     let models_root = arguments.next().ok_or_else(|| anyhow::anyhow!("models root is required"))?;
     let fixture = arguments.next().ok_or_else(|| anyhow::anyhow!("WAV fixture is required"))?;
-    let samples = read_pcm16_mono_16khz(Path::new(&fixture))?;
-    let mut engine = ParapperEngine::load(&EngineConfig::new(models_root))?;
+    thread::Builder::new()
+        .name("native-verification".to_string())
+        .spawn(move || verify_fixture(models_root, fixture))?
+        .join()
+        .map_err(|_| anyhow::anyhow!("in-process ASR verification thread panicked"))?
+}
+
+fn verify_fixture(models_root: impl AsRef<Path>, fixture: impl AsRef<Path>) -> anyhow::Result<()> {
+    let samples = read_pcm16_mono_16khz(fixture.as_ref())?;
+    let mut engine = ParapperEngine::load(&EngineConfig::new(models_root.as_ref()))?;
     let mut caption = String::new();
     let mut saw_final = false;
 

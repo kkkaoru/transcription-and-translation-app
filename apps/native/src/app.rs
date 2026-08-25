@@ -731,6 +731,10 @@ pub fn run() {
         return;
     }
     let launch = parse_debug_launch(&args);
+    if let Err(error) = parapper_engine::initialize_onnx_runtime() {
+        eprintln!("Could not initialize ONNX Runtime before starting the native UI: {error:#}");
+        return;
+    }
     gpui_platform::application().run(move |cx: &mut App| {
         let surfaces_result = start_debug_surfaces(launch);
         print_debug_status(launch, &surfaces_result);

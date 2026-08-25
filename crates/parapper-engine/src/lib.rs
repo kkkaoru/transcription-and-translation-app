@@ -34,6 +34,12 @@ use crate::config::{ParapperConfig, TurnDetector};
 
 pub const SAMPLE_RATE: u32 = 16_000;
 pub const VAD_FRAME_SAMPLES: usize = 512;
+
+/// Initialize the process-wide ONNX Runtime environment before a platform UI
+/// starts Objective-C class initialization on macOS.
+pub fn initialize_onnx_runtime() -> Result<()> {
+    model::onnx_runtime::init_onnx_runtime()
+}
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const ASR_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 

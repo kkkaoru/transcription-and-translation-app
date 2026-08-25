@@ -615,6 +615,14 @@ mod tests {
     }
 
     #[test]
+    fn microphone_level_event_updates_the_live_snapshot() {
+        let mut snapshot = CaptureSnapshot::default();
+        snapshot.apply_worker_event(WorkerEvent::Rms(Some(-18.5)));
+
+        assert_eq!(snapshot.last_rms_dbfs, Some(-18.5));
+    }
+
+    #[test]
     fn translation_updates_only_the_matching_recognition() {
         let mut snapshot = CaptureSnapshot::default();
         snapshot.apply_worker_event(WorkerEvent::Caption {
