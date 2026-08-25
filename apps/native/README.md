@@ -253,7 +253,12 @@ A whole-app sample with capture and translation active measured 542–621 MiB
 physical footprint; its larger 1.11 GiB RSS included roughly 525 MiB of
 reclaimable `MALLOC_SMALL` pages. Packaging also aliases ort's dynamically
 loaded name to sherpa's versioned ONNX Runtime image, avoiding a second 26 MiB
-runtime mapping without changing recognition output.
+runtime mapping without changing recognition output. The 1280×360 HiDPI style
+preview is now allocated only while the Style tab is open and is removed from
+the GPUI atlas when leaving it, avoiding a persistent 1,843,200-byte RGBA image
+during normal Live capture. Three-run allocator A/B probes found no median RSS
+saving from disabling Nano and Medium zones, while warm inference and load
+latency increased, so those process-wide changes were not adopted.
 
 `ul-unas/` is supported by the engine but noise cancellation is disabled by default until it wins the fixture quality benchmark.
 

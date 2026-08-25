@@ -93,6 +93,8 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(live.contains("live-refresh-devices"));
     assert!(live.contains("ClipboardItem::new_string"));
     assert!(app.contains("on_toggle_translation: |view| view.toggle_translation()"));
+    assert!(app.contains("style_preview_image: Option<Arc<RenderImage>>"));
+    assert!(app.contains("self.style_preview_image.take()"));
 
     let memory = include_str!("memory.rs");
     assert!(memory.contains("MallocLargeCache"));

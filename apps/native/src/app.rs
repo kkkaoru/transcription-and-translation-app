@@ -83,7 +83,7 @@ pub struct MainView {
     surfaces: Rc<RefCell<DebugSurfaces>>,
     preview_source: String,
     preview_translation: String,
-    style_preview_image: Arc<RenderImage>,
+    style_preview_image: Option<Arc<RenderImage>>,
     stale_render_images: Vec<Arc<RenderImage>>,
     preview_source_caret: usize,
     preview_translation_caret: usize,
@@ -187,8 +187,9 @@ impl MainView {
         browser_source.set_style(browser_style(&style));
         let fonts = caption_bridge_render::font_families();
         let preview_translation = DEFAULT_PREVIEW_TRANSLATION.to_string();
-        let style_preview_image =
-            render_image(rasterize_style_preview(&style, &preview_source, &preview_translation));
+        // The HiDPI preview is only needed on the Style tab. Avoid retaining its
+        // multi-megabyte RGBA image throughout normal Live capture.
+        let style_preview_image = None;
         let preview_source_caret = preview_source.len();
         let preview_translation_caret = preview_translation.len();
         let mut capture = CaptureController::new();
@@ -266,6 +267,13 @@ impl MainView {
 
     fn select_tab(&mut self, tab: AppTab) {
         self.tab = tab;
+        if tab == AppTab::Style {
+            if self.style_preview_image.is_none() {
+                self.refresh_style_preview();
+            }
+        } else if let Some(previous_image) = self.style_preview_image.take() {
+            self.stale_render_images.push(previous_image);
+        }
     }
 
     fn toggle_device_select(&mut self) {
@@ -486,8 +494,9 @@ impl MainView {
             &self.preview_source,
             &self.preview_translation,
         ));
-        let previous_image = std::mem::replace(&mut self.style_preview_image, next_image);
-        self.stale_render_images.push(previous_image);
+        if let Some(previous_image) = self.style_preview_image.replace(next_image) {
+            self.stale_render_images.push(previous_image);
+        }
     }
 
     fn visible_entries(&self) -> Vec<CustomDictionaryEntry> {
@@ -562,7 +571,11 @@ impl Render for MainView {
                     selected_profile_id: &self.style_catalog.selected_id,
                     preview_source: &self.preview_source,
                     preview_translation: &self.preview_translation,
-                    preview_image: Arc::clone(&self.style_preview_image),
+                    preview_image: Arc::clone(
+                        self.style_preview_image
+                            .as_ref()
+                            .expect("Style tab must initialize its preview image"),
+                    ),
                     fonts: FontPickerState {
                         query: &self.font_query,
                         families: &self.fonts,
