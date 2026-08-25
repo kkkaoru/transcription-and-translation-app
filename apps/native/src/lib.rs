@@ -53,5 +53,5 @@ pub fn run_stub() {
     debug_surfaces::print_debug_status(launch, &surfaces);
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gpui"))]
 mod tests;

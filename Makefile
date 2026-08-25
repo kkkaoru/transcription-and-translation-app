@@ -32,8 +32,17 @@ native-replace: native-release
 			attempts=$$((attempts + 1)); \
 		done; \
 		if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
-			echo 'Kotoba Beacon Native did not stop; refusing to leave a stale running build.' >&2; \
-			exit 1; \
+			echo 'Kotoba Beacon Native did not stop gracefully; forcing stale process exit'; \
+			pkill -KILL -x kotoba-beacon-native; \
+			attempts=0; \
+			while pgrep -x kotoba-beacon-native >/dev/null 2>&1 && [ $$attempts -lt 20 ]; do \
+				sleep 0.1; \
+				attempts=$$((attempts + 1)); \
+			done; \
+			if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
+				echo 'Kotoba Beacon Native could not be stopped; refusing replacement.' >&2; \
+				exit 1; \
+			fi; \
 		fi; \
 	fi
 	bun run package:native

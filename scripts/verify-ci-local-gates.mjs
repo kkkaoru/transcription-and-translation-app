@@ -36,6 +36,10 @@ export const ciGateMappings = new Map([
     "rust:native:lint",
   ],
   ["cargo test --locked --manifest-path apps/native/Cargo.toml", "rust:native:test"],
+  [
+    "cargo test --locked --manifest-path apps/native/Cargo.toml --no-default-features --lib -- --test-threads=1",
+    "rust:native:test",
+  ],
   ["cargo build --locked --release --manifest-path apps/native/Cargo.toml", "rust:native:build"],
 ]);
 
