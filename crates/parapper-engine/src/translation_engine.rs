@@ -64,6 +64,10 @@ impl LocalTranslationEngine {
             .map_err(|err| anyhow!("Failed to create local translation session builder: {err}"))?
             .with_intra_threads(intra_threads)
             .map_err(|err| anyhow!("Failed to configure local translation session: {err}"))?
+            // Decoder sequence lengths change on every token. Retaining ORT memory patterns for
+            // those shapes raises steady-state RSS without changing translation output.
+            .with_memory_pattern(false)
+            .map_err(|err| anyhow!("Failed to disable translation memory patterns: {err}"))?
             .commit_from_file(&model_path)
             .map_err(|err| {
                 anyhow!(

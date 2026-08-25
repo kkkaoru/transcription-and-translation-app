@@ -82,9 +82,10 @@ permissions.
   increased the deterministic optimized hot-path p50 from 248 ms to 257 ms and
   the baseline p50 from 651 ms to 770 ms, so the WASM compiler-profile result
   does not transfer to the native target.
-- Microphone discovery now refreshes before capture, when opening the selector,
-  and every 30 seconds as a fallback. This removes repeated device-list clones
-  and most idle OS enumeration without weakening capture or hot-plug recovery.
+- Microphone discovery refreshes before capture, when opening the selector, and
+  every 30 seconds only while idle. Active CoreAudio/WASAPI/ALSA streams are never
+  re-enumerated, preventing the roughly one-minute live-caption stall while still
+  retaining hot-plug recovery before the next capture.
 - Syphon and Spout already share one 1280x720 raster and retain their GPU sender
   resources. The GPUI output can require a different HiDPI raster, so forcing it
   to share would reduce output quality and was not adopted.
@@ -95,10 +96,11 @@ permissions.
   to 0% CPU, while cross-thread wakeup changes would add shutdown and missed-wake
   risk. Recognition events remain polled at 32 ms for predictable latency.
 - The 462 MiB-on-disk translation model reached about 781 MiB process RSS and
-  took 2.7 seconds to load in a cold standalone measurement. It is still loaded
-  lazily, released immediately when capture stops, and released after ten idle
-  minutes. Shortening that timeout would save RAM but add visible latency to the
-  next translation, so the quality-preserving policy remains unchanged.
+  took 2.7 seconds to load in a cold standalone measurement. It is loaded lazily,
+  uses no ORT memory-pattern cache for its changing decoder shapes, is released
+  immediately when capture stops, and is released after one idle minute. This
+  bounds retained RAM during a paused capture session while keeping the loaded
+  model available throughout active finalized-turn translation.
 - Direct macOS GPU power sampling requires privileged `powermetrics`. GPU work
   is therefore guarded by behavioral tests that prove unchanged captions do not
   rasterize or upload; use a privileged Metal trace for hardware-specific power
@@ -163,17 +165,14 @@ The capture window uses a green background for Window Capture plus chroma key. B
 
 ## OBS and TikTok LIVE Studio
 
-Horizontal output:
+HTML output:
 
 ```text
 http://127.0.0.1:1521/
 ```
 
-Vertical output for TikTok, YouTube, or any vertical stream:
-
-```text
-http://127.0.0.1:1521/?layout=vertical
-```
+The Output tab can copy this URL to the clipboard. Separate query-string layouts are not used;
+select the appropriate Native style profile for horizontal or vertical production instead.
 
 Use:
 
@@ -183,6 +182,21 @@ Use:
 TikTok does not officially guarantee `127.0.0.1` support in every LIVE Studio version. If Link rejects it, use **Window capture → Kotoba Beacon Caption Output** and remove the green background with chroma key.
 
 The server binds only `127.0.0.1`. With no request it blocks in the kernel and does not rasterize or serialize Browser Source frames. The page updates only the caption DOM and uses no external CDN.
+
+The Output tab can open the capture window while Native is already running. The HTML URL is a
+clickable copy target and also has a dedicated copy button.
+
+## Style profiles and custom dictionaries
+
+Native persists multiple named style profiles in `caption-styles.json`. Horizontal and Vertical
+profiles are created by default; the Style tab can add, select, edit, and delete profiles. The
+selected profile is shared by the GPUI capture window, Browser Source, Syphon, and Spout.
+
+Native also persists multiple selectable dictionary sets in `dictionary-catalog.json`. Each set
+contains any number of reading/word entries and supports individual deletion, clearing the whole
+selected dictionary, and deleting the selected dictionary set. Drop one or more UTF-8 `.csv` or
+`.tsv` files on the Dictionary tab to append rows in `reading,word` or `reading<TAB>word` order.
+CSV quoting and optional English or Japanese header rows are supported.
 
 Health check:
 

@@ -1,14 +1,18 @@
 //! Searchable custom dictionary editor with always-active keyboard fields.
 
+use std::path::PathBuf;
+
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
-use gpui::{div, Context, ElementId, IntoElement, SharedString};
+use gpui::{div, Context, ElementId, ExternalPaths, IntoElement, SharedString};
 
-use crate::domain::UiLanguage;
+use crate::domain::{NativeDictionaryProfile, UiLanguage};
 use crate::i18n::{text, TextKey};
 use crate::ui::{button, card, editable_text, error_line, heading, muted};
 
 pub struct DictionaryViewState<'a> {
+    pub dictionaries: &'a [NativeDictionaryProfile],
+    pub selected_dictionary_id: &'a str,
     pub entries: &'a [CustomDictionaryEntry],
     pub query: &'a str,
     pub draft_reading: &'a str,
@@ -21,6 +25,11 @@ pub struct DictionaryViewState<'a> {
 }
 
 pub struct DictionaryCallbacks<V> {
+    pub on_add_dictionary: fn(&mut V),
+    pub on_select_dictionary: fn(&mut V, &str),
+    pub on_delete_dictionary: fn(&mut V),
+    pub on_clear_dictionary: fn(&mut V),
+    pub on_import_paths: fn(&mut V, &[PathBuf]),
     pub on_focus_query: fn(&mut V, &mut gpui::Window, &mut Context<V>),
     pub on_focus_reading: fn(&mut V, &mut gpui::Window, &mut Context<V>),
     pub on_focus_word: fn(&mut V, &mut gpui::Window, &mut Context<V>),
@@ -34,6 +43,8 @@ pub fn render_dictionary<V: 'static>(
     callbacks: DictionaryCallbacks<V>,
 ) -> impl IntoElement {
     let DictionaryViewState {
+        dictionaries,
+        selected_dictionary_id,
         entries,
         query,
         draft_reading,
@@ -44,6 +55,23 @@ pub fn render_dictionary<V: 'static>(
         language,
         persist_error,
     } = state;
+    let mut dictionary_buttons = div().flex().flex_wrap().gap_2();
+    for (index, dictionary) in dictionaries.iter().enumerate() {
+        let id = dictionary.id.clone();
+        let label = if dictionary.id == selected_dictionary_id {
+            format!("✓ {}", dictionary.name)
+        } else {
+            dictionary.name.clone()
+        };
+        dictionary_buttons = dictionary_buttons.child(button(
+            ElementId::named_usize("dictionary-profile", index),
+            label,
+            cx.listener(move |view, _event, _window, _cx| {
+                (callbacks.on_select_dictionary)(view, &id)
+            }),
+        ));
+    }
+
     let mut list = div().flex().flex_col().gap_1();
     if entries.is_empty() {
         list = list.child(muted(text(language, TextKey::NoEntries)));
@@ -74,7 +102,38 @@ pub fn render_dictionary<V: 'static>(
     }
 
     card()
+        .on_drop(cx.listener(move |view, paths: &ExternalPaths, _window, _cx| {
+            (callbacks.on_import_paths)(view, paths.paths())
+        }))
         .child(heading(text(language, TextKey::Dictionary)))
+        .child(dictionary_buttons)
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(button(
+                    "dictionary-profile-add",
+                    text(language, TextKey::AddDictionary),
+                    cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_add_dictionary)(view)
+                    }),
+                ))
+                .child(button(
+                    "dictionary-profile-delete",
+                    text(language, TextKey::DeleteDictionary),
+                    cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_delete_dictionary)(view)
+                    }),
+                ))
+                .child(button(
+                    "dictionary-clear",
+                    text(language, TextKey::ClearDictionary),
+                    cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_clear_dictionary)(view)
+                    }),
+                )),
+        )
+        .child(muted(text(language, TextKey::DictionaryImportHint)))
         .child(field_editor(
             text(language, TextKey::Search),
             query,

@@ -42,13 +42,15 @@ pub const TABS: &[&str] = &[TAB_LIVE, TAB_STYLE, TAB_DICTIONARY, TAB_OUTPUT, TAB
 
 pub const NATIVE_BROWSER_SOURCE_HINT: &str = "http://127.0.0.1:1521/";
 #[cfg(feature = "gpui")]
-pub const NATIVE_VERTICAL_BROWSER_SOURCE_HINT: &str = "http://127.0.0.1:1521/?layout=vertical";
-#[cfg(feature = "gpui")]
 pub const RECOGNITION_MODE_LABEL: &str = "Silero VAD + sherpa-onnx + Namo";
 #[cfg(any(feature = "gpui", test))]
 pub const BUILD_ID: &str = env!("KOTOBA_BUILD_ID");
 #[cfg(any(feature = "gpui", test))]
 pub const STYLE_FILE_NAME: &str = "caption-style.json";
+#[cfg(any(feature = "gpui", test))]
+pub const STYLE_CATALOG_FILE_NAME: &str = "caption-styles.json";
+#[cfg(any(feature = "gpui", test))]
+pub const DICTIONARY_CATALOG_FILE_NAME: &str = "dictionary-catalog.json";
 #[cfg(any(feature = "gpui", test))]
 pub const SETTINGS_FILE_NAME: &str = "settings.json";
 pub const DEFAULT_PREVIEW_SOURCE: &str = "こんにちは。";
@@ -163,6 +165,101 @@ pub struct NativeStyleSettings {
     pub outline_enabled: bool,
     pub outline_color: String,
     pub outline_width_px: f32,
+}
+
+#[cfg(any(feature = "gpui", test))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeStyleProfile {
+    pub id: String,
+    pub name: String,
+    pub style: NativeStyleSettings,
+}
+
+#[cfg(any(feature = "gpui", test))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeStyleCatalog {
+    pub version: u32,
+    pub selected_id: String,
+    pub profiles: Vec<NativeStyleProfile>,
+}
+
+#[cfg(any(feature = "gpui", test))]
+impl NativeStyleCatalog {
+    pub fn selected(&self) -> &NativeStyleProfile {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == self.selected_id)
+            .unwrap_or(&self.profiles[0])
+    }
+}
+
+#[cfg(any(feature = "gpui", test))]
+impl Default for NativeStyleCatalog {
+    fn default() -> Self {
+        let horizontal = NativeStyleProfile {
+            id: "style-1".to_string(),
+            name: "Horizontal".to_string(),
+            style: NativeStyleSettings::default(),
+        };
+        let vertical_style = NativeStyleSettings {
+            caption_y_percent: 92.0,
+            source_max_chars: 24,
+            translation_max_chars: 28,
+            ..NativeStyleSettings::default()
+        };
+        let vertical = NativeStyleProfile {
+            id: "style-2".to_string(),
+            name: "Vertical".to_string(),
+            style: vertical_style,
+        };
+        Self {
+            version: 1,
+            selected_id: horizontal.id.clone(),
+            profiles: vec![horizontal, vertical],
+        }
+    }
+}
+
+#[cfg(any(feature = "gpui", test))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDictionaryProfile {
+    pub id: String,
+    pub name: String,
+    pub entries: Vec<CustomDictionaryEntry>,
+}
+
+#[cfg(any(feature = "gpui", test))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDictionaryCatalog {
+    pub version: u32,
+    pub selected_id: String,
+    pub dictionaries: Vec<NativeDictionaryProfile>,
+}
+
+#[cfg(any(feature = "gpui", test))]
+impl NativeDictionaryCatalog {
+    pub fn selected(&self) -> &NativeDictionaryProfile {
+        self.dictionaries
+            .iter()
+            .find(|dictionary| dictionary.id == self.selected_id)
+            .unwrap_or(&self.dictionaries[0])
+    }
+}
+
+#[cfg(any(feature = "gpui", test))]
+impl Default for NativeDictionaryCatalog {
+    fn default() -> Self {
+        let dictionary = NativeDictionaryProfile {
+            id: "dictionary-1".to_string(),
+            name: "Dictionary 1".to_string(),
+            entries: Vec::new(),
+        };
+        Self { version: 1, selected_id: dictionary.id.clone(), dictionaries: vec![dictionary] }
+    }
 }
 
 impl Default for NativeStyleSettings {
@@ -292,6 +389,16 @@ pub fn native_settings_path(config_dir: &Path) -> PathBuf {
 }
 
 #[cfg(any(feature = "gpui", test))]
+pub fn native_style_catalog_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(STYLE_CATALOG_FILE_NAME)
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn native_dictionary_catalog_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(DICTIONARY_CATALOG_FILE_NAME)
+}
+
+#[cfg(any(feature = "gpui", test))]
 pub fn native_dictionary_dir(config_dir: &Path) -> PathBuf {
     config_dir.join("dictionary")
 }
@@ -347,6 +454,100 @@ pub fn save_style_settings(
 }
 
 #[cfg(any(feature = "gpui", test))]
+pub fn load_style_catalog(config_dir: &Path) -> Result<NativeStyleCatalog, String> {
+    let path = native_style_catalog_path(config_dir);
+    if !path.exists() {
+        let style = load_style_settings(config_dir)?;
+        let mut catalog = NativeStyleCatalog::default();
+        catalog.profiles[0].style = style;
+        return Ok(catalog);
+    }
+    let body = std::fs::read_to_string(&path)
+        .map_err(|error| format!("could not read Native style catalog: {error}"))?;
+    let catalog: NativeStyleCatalog = serde_json::from_str(&body)
+        .map_err(|error| format!("Native style catalog JSON is invalid: {error}"))?;
+    validate_style_catalog(catalog)
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn save_style_catalog(config_dir: &Path, catalog: &NativeStyleCatalog) -> Result<(), String> {
+    let catalog = validate_style_catalog(catalog.clone())?;
+    std::fs::create_dir_all(config_dir)
+        .map_err(|error| format!("could not create Native config dir: {error}"))?;
+    let json = serde_json::to_vec_pretty(&catalog)
+        .map_err(|error| format!("could not serialize Native style catalog: {error}"))?;
+    std::fs::write(native_style_catalog_path(config_dir), json)
+        .map_err(|error| format!("could not write Native style catalog: {error}"))?;
+    save_style_settings(config_dir, &catalog.selected().style)
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn add_style_profile(catalog: &NativeStyleCatalog) -> NativeStyleCatalog {
+    let mut next = catalog.clone();
+    let number = next.profiles.len() + 1;
+    let id = next_profile_id("style", next.profiles.iter().map(|profile| profile.id.as_str()));
+    let profile = NativeStyleProfile {
+        id: id.clone(),
+        name: format!("Style {number}"),
+        style: catalog.selected().style.clone(),
+    };
+    next.profiles.push(profile);
+    next.selected_id = id;
+    next
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn select_style_profile(catalog: &NativeStyleCatalog, id: &str) -> NativeStyleCatalog {
+    let mut next = catalog.clone();
+    if next.profiles.iter().any(|profile| profile.id == id) {
+        next.selected_id = id.to_string();
+    }
+    next
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn delete_selected_style_profile(catalog: &NativeStyleCatalog) -> NativeStyleCatalog {
+    if catalog.profiles.len() <= 1 {
+        return catalog.clone();
+    }
+    let mut next = catalog.clone();
+    next.profiles.retain(|profile| profile.id != catalog.selected_id);
+    next.selected_id = next.profiles[0].id.clone();
+    next
+}
+
+#[cfg(any(feature = "gpui", test))]
+fn validate_style_catalog(catalog: NativeStyleCatalog) -> Result<NativeStyleCatalog, String> {
+    if catalog.profiles.is_empty() {
+        return Err("Native style catalog must contain at least one style".to_string());
+    }
+    if !catalog.profiles.iter().any(|profile| profile.id == catalog.selected_id) {
+        return Err("Native style catalog selectedId does not exist".to_string());
+    }
+    if catalog
+        .profiles
+        .iter()
+        .any(|profile| profile.id.trim().is_empty() || profile.name.trim().is_empty())
+    {
+        return Err("Native style catalog contains an empty id or name".to_string());
+    }
+    Ok(catalog)
+}
+
+#[cfg(any(feature = "gpui", test))]
+fn next_profile_id<'a>(prefix: &str, ids: impl Iterator<Item = &'a str>) -> String {
+    let ids = ids.collect::<Vec<_>>();
+    let mut number = 1_usize;
+    loop {
+        let candidate = format!("{prefix}-{number}");
+        if ids.iter().all(|id| **id != candidate) {
+            return candidate;
+        }
+        number += 1;
+    }
+}
+
+#[cfg(any(feature = "gpui", test))]
 pub fn load_app_settings(config_dir: &Path) -> Result<NativeAppSettings, String> {
     let path = native_settings_path(config_dir);
     if !path.exists() {
@@ -386,6 +587,201 @@ pub fn save_dictionary_entries(
 }
 
 #[cfg(any(feature = "gpui", test))]
+pub fn load_dictionary_catalog(config_dir: &Path) -> Result<NativeDictionaryCatalog, String> {
+    let path = native_dictionary_catalog_path(config_dir);
+    if !path.exists() {
+        let entries = load_dictionary_entries(config_dir).map_err(|error| error.to_string())?;
+        let mut catalog = NativeDictionaryCatalog::default();
+        catalog.dictionaries[0].entries = entries;
+        return Ok(catalog);
+    }
+    let body = std::fs::read_to_string(&path)
+        .map_err(|error| format!("could not read Native dictionary catalog: {error}"))?;
+    let catalog: NativeDictionaryCatalog = serde_json::from_str(&body)
+        .map_err(|error| format!("Native dictionary catalog JSON is invalid: {error}"))?;
+    validate_dictionary_catalog(catalog)
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn save_dictionary_catalog(
+    config_dir: &Path,
+    catalog: &NativeDictionaryCatalog,
+) -> Result<(), String> {
+    let catalog = validate_dictionary_catalog(catalog.clone())?;
+    std::fs::create_dir_all(config_dir)
+        .map_err(|error| format!("could not create Native config dir: {error}"))?;
+    let json = serde_json::to_vec_pretty(&catalog)
+        .map_err(|error| format!("could not serialize Native dictionary catalog: {error}"))?;
+    std::fs::write(native_dictionary_catalog_path(config_dir), json)
+        .map_err(|error| format!("could not write Native dictionary catalog: {error}"))?;
+    save_dictionary_entries(config_dir, &catalog.selected().entries)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn add_dictionary_profile(catalog: &NativeDictionaryCatalog) -> NativeDictionaryCatalog {
+    let mut next = catalog.clone();
+    let number = next.dictionaries.len() + 1;
+    let id = next_profile_id(
+        "dictionary",
+        next.dictionaries.iter().map(|dictionary| dictionary.id.as_str()),
+    );
+    next.dictionaries.push(NativeDictionaryProfile {
+        id: id.clone(),
+        name: format!("Dictionary {number}"),
+        entries: Vec::new(),
+    });
+    next.selected_id = id;
+    next
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn select_dictionary_profile(
+    catalog: &NativeDictionaryCatalog,
+    id: &str,
+) -> NativeDictionaryCatalog {
+    let mut next = catalog.clone();
+    if next.dictionaries.iter().any(|dictionary| dictionary.id == id) {
+        next.selected_id = id.to_string();
+    }
+    next
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn delete_selected_dictionary_profile(
+    catalog: &NativeDictionaryCatalog,
+) -> NativeDictionaryCatalog {
+    if catalog.dictionaries.len() <= 1 {
+        return catalog.clone();
+    }
+    let mut next = catalog.clone();
+    next.dictionaries.retain(|dictionary| dictionary.id != catalog.selected_id);
+    next.selected_id = next.dictionaries[0].id.clone();
+    next
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn clear_selected_dictionary(catalog: &NativeDictionaryCatalog) -> NativeDictionaryCatalog {
+    let mut next = catalog.clone();
+    if let Some(dictionary) =
+        next.dictionaries.iter_mut().find(|dictionary| dictionary.id == next.selected_id)
+    {
+        dictionary.entries.clear();
+    }
+    next
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn replace_selected_dictionary_entries(
+    catalog: &NativeDictionaryCatalog,
+    entries: Vec<CustomDictionaryEntry>,
+) -> NativeDictionaryCatalog {
+    let mut next = catalog.clone();
+    if let Some(dictionary) =
+        next.dictionaries.iter_mut().find(|dictionary| dictionary.id == next.selected_id)
+    {
+        dictionary.entries = entries;
+    }
+    next
+}
+
+#[cfg(any(feature = "gpui", test))]
+fn validate_dictionary_catalog(
+    catalog: NativeDictionaryCatalog,
+) -> Result<NativeDictionaryCatalog, String> {
+    if catalog.dictionaries.is_empty() {
+        return Err("Native dictionary catalog must contain at least one dictionary".to_string());
+    }
+    if !catalog.dictionaries.iter().any(|item| item.id == catalog.selected_id) {
+        return Err("Native dictionary catalog selectedId does not exist".to_string());
+    }
+    if catalog
+        .dictionaries
+        .iter()
+        .any(|item| item.id.trim().is_empty() || item.name.trim().is_empty())
+    {
+        return Err("Native dictionary catalog contains an empty id or name".to_string());
+    }
+    Ok(catalog)
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn import_dictionary_file(path: &Path) -> Result<Vec<CustomDictionaryEntry>, String> {
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("csv") && !extension.eq_ignore_ascii_case("tsv") {
+        return Err("Only CSV and TSV dictionary files are supported".to_string());
+    }
+    let body = std::fs::read_to_string(path)
+        .map_err(|error| format!("could not read dictionary import: {error}"))?;
+    parse_dictionary_delimited(&body, extension.eq_ignore_ascii_case("tsv"))
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn parse_dictionary_delimited(
+    body: &str,
+    tab_separated: bool,
+) -> Result<Vec<CustomDictionaryEntry>, String> {
+    let delimiter = if tab_separated { '\t' } else { ',' };
+    let mut entries = Vec::new();
+    for (line_index, line) in body.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let columns = parse_delimited_line(line.trim_end_matches('\r'), delimiter)?;
+        if columns.len() < 2 {
+            return Err(format!("dictionary row {} must contain reading and word", line_index + 1));
+        }
+        let reading = columns[0].trim();
+        let word = columns[1].trim();
+        if line_index == 0
+            && matches!(reading.to_ascii_lowercase().as_str(), "reading" | "読み")
+            && matches!(word.to_ascii_lowercase().as_str(), "word" | "単語")
+        {
+            continue;
+        }
+        if reading.is_empty() || word.is_empty() {
+            return Err(format!("dictionary row {} contains an empty value", line_index + 1));
+        }
+        entries.push(CustomDictionaryEntry {
+            id: format!("entry-{}", entries.len() + 1),
+            reading: reading.to_string(),
+            word: word.to_string(),
+        });
+    }
+    if entries.is_empty() {
+        return Err("dictionary import contains no entries".to_string());
+    }
+    Ok(entries)
+}
+
+#[cfg(any(feature = "gpui", test))]
+fn parse_delimited_line(line: &str, delimiter: char) -> Result<Vec<String>, String> {
+    let mut columns = Vec::new();
+    let mut column = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                column.push('"');
+            }
+            '"' => quoted = !quoted,
+            value if value == delimiter && !quoted => {
+                columns.push(std::mem::take(&mut column));
+            }
+            value => column.push(value),
+        }
+    }
+    if quoted {
+        return Err("dictionary import contains an unterminated quoted value".to_string());
+    }
+    columns.push(column);
+    Ok(columns)
+}
+
+#[cfg(any(feature = "gpui", test))]
 pub fn search_dictionary_entries(
     entries: &[CustomDictionaryEntry],
     query: &str,
@@ -405,11 +801,8 @@ pub fn add_dictionary_entry(
         return Err("読みと単語の両方を入力してください".to_string());
     }
     let mut next = entries.to_vec();
-    next.push(CustomDictionaryEntry {
-        id: format!("entry-{}", next.len() + 1),
-        reading: reading.to_string(),
-        word: word.to_string(),
-    });
+    let id = next_profile_id("entry", next.iter().map(|entry| entry.id.as_str()));
+    next.push(CustomDictionaryEntry { id, reading: reading.to_string(), word: word.to_string() });
     Ok(next)
 }
 
@@ -419,6 +812,19 @@ pub fn delete_dictionary_entry(
     id: &str,
 ) -> Vec<CustomDictionaryEntry> {
     entries.iter().filter(|entry| entry.id != id).cloned().collect()
+}
+
+#[cfg(any(feature = "gpui", test))]
+pub fn merge_dictionary_entries(
+    existing: &[CustomDictionaryEntry],
+    imported: Vec<CustomDictionaryEntry>,
+) -> Vec<CustomDictionaryEntry> {
+    let mut merged = existing.to_vec();
+    for mut entry in imported {
+        entry.id = next_profile_id("entry", merged.iter().map(|item| item.id.as_str()));
+        merged.push(entry);
+    }
+    merged
 }
 
 pub fn geometry_from_style(style: &NativeStyleSettings) -> OverlayGeometry {

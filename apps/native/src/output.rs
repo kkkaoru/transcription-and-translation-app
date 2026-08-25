@@ -3,15 +3,15 @@
 use gpui::prelude::*;
 use gpui::{Context, IntoElement};
 
-use crate::domain::{
-    NativeAppSettings, UiLanguage, NATIVE_BROWSER_SOURCE_HINT, NATIVE_VERTICAL_BROWSER_SOURCE_HINT,
-};
+use crate::domain::{NativeAppSettings, UiLanguage, NATIVE_BROWSER_SOURCE_HINT};
 use crate::i18n::{text, TextKey};
-use crate::ui::{card, error_line, heading, muted, state_button};
+use crate::ui::{button, card, error_line, heading, state_button};
 
 pub struct OutputCallbacks<V> {
+    pub on_open_window: fn(&mut V),
     pub on_toggle_window_startup: fn(&mut V),
     pub on_toggle_browser: fn(&mut V),
+    pub on_copy_url: fn(&mut V, &mut Context<V>),
 }
 
 pub fn render_output<V: 'static>(
@@ -24,6 +24,11 @@ pub fn render_output<V: 'static>(
     let language: UiLanguage = settings.ui_language;
     card()
         .child(heading(text(language, TextKey::Output)))
+        .child(button(
+            "output-window-open",
+            text(language, TextKey::OpenOutputWindow),
+            cx.listener(move |view, _event, _window, _cx| (callbacks.on_open_window)(view)),
+        ))
         .child(state_button(
             "output-window-startup",
             format!(
@@ -49,13 +54,15 @@ pub fn render_output<V: 'static>(
             browser_running,
             cx.listener(move |view, _event, _window, _cx| (callbacks.on_toggle_browser)(view)),
         ))
-        .child(muted(format!(
-            "{}: {NATIVE_BROWSER_SOURCE_HINT}",
-            text(language, TextKey::Horizontal)
-        )))
-        .child(muted(format!(
-            "{}: {NATIVE_VERTICAL_BROWSER_SOURCE_HINT}",
-            text(language, TextKey::Vertical)
-        )))
+        .child(button(
+            "output-browser-url",
+            NATIVE_BROWSER_SOURCE_HINT,
+            cx.listener(move |view, _event, _window, cx| (callbacks.on_copy_url)(view, cx)),
+        ))
+        .child(button(
+            "output-browser-copy-url",
+            text(language, TextKey::CopyBrowserUrl),
+            cx.listener(move |view, _event, _window, cx| (callbacks.on_copy_url)(view, cx)),
+        ))
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
 }

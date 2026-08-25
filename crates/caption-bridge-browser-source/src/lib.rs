@@ -423,7 +423,6 @@ const HTML_TEMPLATE: &str = r##"<!doctype html>
     box-sizing: border-box; overflow: visible; display: flex; flex-direction: column;
     align-items: center; gap: 14px; justify-content: flex-end; pointer-events: none;
     text-align: center; }
-  body[data-layout="vertical"] #lines { width: 88%; }
   #lines .line { white-space: pre-wrap; overflow-wrap: anywhere;
     display: block; width: fit-content; max-width: 100%;
     padding: 7px 14px; border-radius: 9px;
@@ -434,8 +433,6 @@ const HTML_TEMPLATE: &str = r##"<!doctype html>
 <div id="lines"></div>
 <script>
 const INIT = __FEED_JSON__;
-const layout = new URLSearchParams(location.search).get("layout");
-document.body.dataset.layout = layout === "vertical" ? "vertical" : "horizontal";
 let feed = INIT;
 const lines = document.getElementById("lines");
 function rgba(hex, opacity) {
@@ -570,8 +567,8 @@ mod tests {
         assert!(page.contains("refreshInFlight"));
         assert!(page.contains("render(feed);"));
         assert!(page.contains("#lines .line { white-space: pre-wrap; overflow-wrap: anywhere;"));
-        assert!(page.contains("layout === \"vertical\""));
-        assert!(page.contains("body[data-layout=\"vertical\"] #lines"));
+        assert!(!page.contains("layout=vertical"));
+        assert!(!page.contains("data-layout"));
         assert!(page.contains("line.style.webkitTextStroke"));
         assert!(page.contains("line.style.paintOrder = \"stroke fill\""));
         assert!(page.contains("style.backgroundEnabled"));

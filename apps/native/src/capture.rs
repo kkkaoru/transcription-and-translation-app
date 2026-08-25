@@ -1,5 +1,6 @@
 //! Microphone capture connected to in-process recognition and translation workers.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
@@ -23,8 +24,9 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(16);
 const RMS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
 const COMMAND_QUEUE_CAPACITY: usize = 1;
 const EVENT_QUEUE_CAPACITY: usize = 64;
-const TRANSLATION_QUEUE_CAPACITY: usize = 1;
-const TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+const TRANSLATION_QUEUE_CAPACITY: usize = 32;
+const TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const MINIMUM_PAIRED_CAPTION_HOLD: Duration = Duration::from_secs(3);
 const DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const MICROPHONE_PERMISSION_MESSAGE: &str = "Microphone access is not permitted";
 const DEVICE_NOT_FOUND_MESSAGE: &str = "The selected microphone was not found";
@@ -61,7 +63,7 @@ impl CaptureSnapshot {
     fn apply_worker_event(&mut self, event: WorkerEvent) {
         match event {
             WorkerEvent::Status(status) => self.status = status,
-            WorkerEvent::Caption { source, update_mode } => {
+            WorkerEvent::Caption { source, update_mode, .. } => {
                 self.translation_text.clear();
                 apply_caption_update(&mut self.source_text, &source, update_mode);
             }
@@ -88,7 +90,7 @@ enum WorkerCommand {
 
 enum WorkerEvent {
     Status(CaptureStatus),
-    Caption { source: String, update_mode: CaptionUpdateMode },
+    Caption { source: String, update_mode: CaptionUpdateMode, is_final: bool },
     Translation { source: String, translation: String },
     TranslationError(String),
     Rms(Option<f32>),
@@ -109,6 +111,11 @@ pub struct CaptureController {
     event_rx: Option<Receiver<WorkerEvent>>,
     worker: Option<JoinHandle<()>>,
     worker_stop_requested: Option<Arc<AtomicBool>>,
+    translation_enabled: bool,
+    awaiting_translation_source: Option<String>,
+    pending_translation_sources: VecDeque<String>,
+    deferred_caption_events: VecDeque<WorkerEvent>,
+    paired_hold_active: bool,
 }
 
 impl CaptureController {
@@ -121,6 +128,11 @@ impl CaptureController {
             event_rx: None,
             worker: None,
             worker_stop_requested: None,
+            translation_enabled: false,
+            awaiting_translation_source: None,
+            pending_translation_sources: VecDeque::with_capacity(TRANSLATION_QUEUE_CAPACITY),
+            deferred_caption_events: VecDeque::with_capacity(EVENT_QUEUE_CAPACITY),
+            paired_hold_active: false,
         };
         controller.refresh_devices();
         controller
@@ -158,19 +170,20 @@ impl CaptureController {
     }
 
     pub fn poll(&mut self, caption_timeout_ms: u64) -> bool {
-        let mut changed = false;
-        if self.last_device_refresh.elapsed() >= DEVICE_REFRESH_INTERVAL {
+        let now = Instant::now();
+        let mut changed = self.release_held_pair_at(now, caption_timeout_ms);
+        if should_refresh_devices(self.snapshot.status, self.last_device_refresh.elapsed()) {
             changed = self.refresh_devices();
         }
         let Some(receiver) = self.event_rx.as_ref() else {
             return self.expire_caption() || changed;
         };
+        let mut events = Vec::new();
         while let Ok(event) = receiver.try_recv() {
-            if matches!(event, WorkerEvent::Caption { .. }) {
-                self.caption_expires_at =
-                    Some(Instant::now() + Duration::from_millis(caption_timeout_ms));
-            }
-            self.snapshot.apply_worker_event(event);
+            events.push(event);
+        }
+        for event in events {
+            self.apply_worker_event_at(event, now, caption_timeout_ms);
             changed = true;
         }
         changed |= self.expire_caption();
@@ -221,6 +234,11 @@ impl CaptureController {
         self.event_rx = Some(event_rx);
         self.worker = Some(handle);
         self.worker_stop_requested = Some(stop_requested);
+        self.translation_enabled = translation_enabled;
+        self.awaiting_translation_source = None;
+        self.pending_translation_sources.clear();
+        self.deferred_caption_events.clear();
+        self.paired_hold_active = false;
         self.snapshot.status = CaptureStatus::Capturing;
         self.snapshot.last_error = None;
         self.snapshot.source_text.clear();
@@ -245,6 +263,93 @@ impl CaptureController {
             CaptureStatus::Idle
         };
         self.snapshot.engine_ready = false;
+        self.translation_enabled = false;
+        self.awaiting_translation_source = None;
+        self.pending_translation_sources.clear();
+        self.deferred_caption_events.clear();
+        self.paired_hold_active = false;
+    }
+
+    fn apply_worker_event_at(&mut self, event: WorkerEvent, now: Instant, caption_timeout_ms: u64) {
+        let is_deferred_caption_event =
+            matches!(&event, WorkerEvent::Caption { .. } | WorkerEvent::Translation { .. });
+        if self.paired_hold_active
+            && self.caption_expires_at.is_some_and(|deadline| now < deadline)
+            && is_deferred_caption_event
+        {
+            if self.deferred_caption_events.len() == EVENT_QUEUE_CAPACITY {
+                self.deferred_caption_events.pop_front();
+            }
+            self.deferred_caption_events.push_back(event);
+            return;
+        }
+
+        let configured_hold = Duration::from_millis(caption_timeout_ms);
+        match event {
+            WorkerEvent::Caption { source, update_mode, is_final } => {
+                self.snapshot.apply_worker_event(WorkerEvent::Caption {
+                    source,
+                    update_mode,
+                    is_final,
+                });
+                if self.translation_enabled && is_final {
+                    let source = self.snapshot.source_text.clone();
+                    if self.pending_translation_sources.len() == TRANSLATION_QUEUE_CAPACITY {
+                        self.pending_translation_sources.pop_front();
+                    }
+                    if self.pending_translation_sources.back() != Some(&source) {
+                        self.pending_translation_sources.push_back(source.clone());
+                    }
+                    self.awaiting_translation_source = Some(source);
+                    self.caption_expires_at = None;
+                } else {
+                    self.caption_expires_at = Some(now + configured_hold);
+                }
+            }
+            WorkerEvent::Translation { source, translation } => {
+                if let Some(position) =
+                    self.pending_translation_sources.iter().position(|pending| pending == &source)
+                {
+                    self.pending_translation_sources.remove(position);
+                    self.snapshot.source_text = source.clone();
+                    self.snapshot.translation_text = translation;
+                    if self.awaiting_translation_source.as_deref() == Some(source.as_str()) {
+                        self.awaiting_translation_source = None;
+                    }
+                    self.paired_hold_active = true;
+                    self.caption_expires_at =
+                        Some(now + configured_hold.max(MINIMUM_PAIRED_CAPTION_HOLD));
+                } else {
+                    self.snapshot
+                        .apply_worker_event(WorkerEvent::Translation { source, translation });
+                }
+            }
+            WorkerEvent::TranslationError(error) => {
+                self.snapshot.apply_worker_event(WorkerEvent::TranslationError(error));
+                if self.awaiting_translation_source.take().is_some() {
+                    self.caption_expires_at = Some(now + configured_hold);
+                }
+            }
+            other => self.snapshot.apply_worker_event(other),
+        }
+    }
+
+    fn release_held_pair_at(&mut self, now: Instant, caption_timeout_ms: u64) -> bool {
+        if !self.paired_hold_active
+            || !self.caption_expires_at.is_some_and(|deadline| now >= deadline)
+        {
+            return false;
+        }
+        self.snapshot.source_text.clear();
+        self.snapshot.translation_text.clear();
+        self.caption_expires_at = None;
+        self.paired_hold_active = false;
+
+        let deferred = std::mem::take(&mut self.deferred_caption_events);
+        for event in deferred {
+            self.apply_worker_event_at(event, now, caption_timeout_ms);
+        }
+        true
     }
 
     fn reap_finished_worker(&mut self) -> bool {
@@ -264,12 +369,15 @@ impl CaptureController {
     }
 
     fn expire_caption(&mut self) -> bool {
-        if !self.caption_expires_at.is_some_and(|deadline| Instant::now() >= deadline) {
+        if self.paired_hold_active
+            || !self.caption_expires_at.is_some_and(|deadline| Instant::now() >= deadline)
+        {
             return false;
         }
         self.snapshot.source_text.clear();
         self.snapshot.translation_text.clear();
         self.caption_expires_at = None;
+        self.awaiting_translation_source = None;
         if let Some(sender) = self.command_tx.as_ref() {
             let _ = sender.try_send(WorkerCommand::ResetCaption);
         }
@@ -469,6 +577,11 @@ fn run_translation_worker(
     }
 }
 
+fn should_refresh_devices(status: CaptureStatus, elapsed: Duration) -> bool {
+    !matches!(status, CaptureStatus::Capturing | CaptureStatus::Stopping)
+        && elapsed >= DEVICE_REFRESH_INTERVAL
+}
+
 fn native_audio_config() -> AudioCaptureConfig {
     AudioCaptureConfig { chunk_ms: PARAPPER_VAD_INTERVAL_MS, ..AudioCaptureConfig::default() }
 }
@@ -482,7 +595,7 @@ fn publish_engine_events(
     for event in events {
         if let EngineEvent::Caption { text, is_final, update_mode, .. } = event {
             apply_caption_update(recognition_text, &text, update_mode);
-            let _ = event_tx.send(WorkerEvent::Caption { source: text, update_mode });
+            let _ = event_tx.send(WorkerEvent::Caption { source: text, update_mode, is_final });
             if is_final {
                 if let Some(sender) = translation_tx {
                     let _ = sender.try_send(recognition_text.clone());
@@ -526,14 +639,16 @@ fn format_audio_read_error(error: AudioError) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use super::{
-        apply_caption_update, CaptionUpdateMode, CaptureController, CaptureSnapshot, CaptureStatus,
-        WorkerEvent, MAX_CAPTION_CHARACTERS,
+        apply_caption_update, should_refresh_devices, CaptionUpdateMode, CaptureController,
+        CaptureSnapshot, CaptureStatus, WorkerEvent, EVENT_QUEUE_CAPACITY, MAX_CAPTION_CHARACTERS,
+        MINIMUM_PAIRED_CAPTION_HOLD, TRANSLATION_QUEUE_CAPACITY,
     };
 
     #[test]
@@ -564,6 +679,11 @@ mod tests {
             event_rx: Some(event_rx),
             worker: Some(worker),
             worker_stop_requested: Some(stop_requested.clone()),
+            translation_enabled: false,
+            awaiting_translation_source: None,
+            pending_translation_sources: VecDeque::with_capacity(TRANSLATION_QUEUE_CAPACITY),
+            deferred_caption_events: VecDeque::with_capacity(EVENT_QUEUE_CAPACITY),
+            paired_hold_active: false,
         };
         let (stopped_tx, stopped_rx) = mpsc::sync_channel(1);
         let stopper = thread::spawn(move || {
@@ -628,6 +748,7 @@ mod tests {
         snapshot.apply_worker_event(WorkerEvent::Caption {
             source: "こんにちは。".to_string(),
             update_mode: CaptionUpdateMode::Replace,
+            is_final: true,
         });
         snapshot.apply_worker_event(WorkerEvent::Translation {
             source: "古い字幕".to_string(),
@@ -639,5 +760,89 @@ mod tests {
             translation: "Hello.".to_string(),
         });
         assert_eq!(snapshot.translation_text, "Hello.");
+    }
+
+    #[test]
+    fn active_capture_never_reenumerates_the_microphone_after_one_minute() {
+        assert!(!should_refresh_devices(CaptureStatus::Capturing, Duration::from_secs(61)));
+        assert!(!should_refresh_devices(CaptureStatus::Stopping, Duration::from_secs(61)));
+        assert!(should_refresh_devices(CaptureStatus::Idle, Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn recognition_events_continue_to_publish_after_more_than_one_minute() {
+        let mut controller = CaptureController::new();
+        let started_at = Instant::now();
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                source: "最初の字幕".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: false,
+            },
+            started_at,
+            5_000,
+        );
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                source: "一分後の字幕".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: false,
+            },
+            started_at + Duration::from_secs(61),
+            5_000,
+        );
+
+        assert_eq!(controller.snapshot.source_text, "一分後の字幕");
+        assert_eq!(controller.caption_expires_at, Some(started_at + Duration::from_secs(66)));
+    }
+
+    #[test]
+    fn finalized_caption_waits_for_translation_then_holds_the_pair() {
+        let mut controller = CaptureController::new();
+        controller.translation_enabled = true;
+        let finalized_at = Instant::now();
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                source: "こんにちは。".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: true,
+            },
+            finalized_at,
+            1_000,
+        );
+        assert_eq!(controller.awaiting_translation_source.as_deref(), Some("こんにちは。"));
+        assert_eq!(controller.caption_expires_at, None);
+
+        let translated_at = finalized_at + Duration::from_secs(2);
+        controller.apply_worker_event_at(
+            WorkerEvent::Translation {
+                source: "こんにちは。".to_string(),
+                translation: "Hello.".to_string(),
+            },
+            translated_at,
+            1_000,
+        );
+
+        assert_eq!(controller.snapshot.translation_text, "Hello.");
+        assert_eq!(controller.awaiting_translation_source, None);
+        let hold_until = translated_at + MINIMUM_PAIRED_CAPTION_HOLD;
+        assert_eq!(controller.caption_expires_at, Some(hold_until));
+
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                source: "次の字幕".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: true,
+            },
+            translated_at + Duration::from_secs(1),
+            1_000,
+        );
+        assert_eq!(controller.snapshot.source_text, "こんにちは。");
+        assert_eq!(controller.snapshot.translation_text, "Hello.");
+        assert_eq!(controller.deferred_caption_events.len(), 1);
+
+        assert!(controller.release_held_pair_at(hold_until, 1_000));
+        assert_eq!(controller.snapshot.source_text, "次の字幕");
+        assert_eq!(controller.awaiting_translation_source.as_deref(), Some("次の字幕"));
     }
 }

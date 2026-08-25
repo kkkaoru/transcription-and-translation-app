@@ -12,9 +12,9 @@ use caption_bridge_browser_source::{BrowserSourceConfig, BrowserSourceServer, Br
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, rgb, size, App, Bounds, Context, FocusHandle, IntoElement, KeyDownEvent,
-    Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    div, point, px, rgb, size, App, Bounds, ClipboardItem, Context, FocusHandle, IntoElement,
+    KeyDownEvent, Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window,
+    WindowBounds, WindowOptions,
 };
 
 use crate::capture::CaptureController;
@@ -23,13 +23,18 @@ use crate::debug_surfaces::{
 };
 use crate::dictionary::{render_dictionary, DictionaryCallbacks, DictionaryViewState};
 use crate::domain::{
-    add_dictionary_entry, delete_dictionary_entry, ingest_fixture_caption, load_app_settings,
-    load_dictionary_entries, load_style_settings, local_translation_model_installed,
+    add_dictionary_entry, add_dictionary_profile, add_style_profile, clear_selected_dictionary,
+    delete_dictionary_entry, delete_selected_dictionary_profile, delete_selected_style_profile,
+    import_dictionary_file, ingest_fixture_caption, load_app_settings, load_dictionary_catalog,
+    load_style_catalog, local_translation_model_installed, merge_dictionary_entries,
     native_config_dir, parse_debug_launch, rasterize_live_caption_at_scale,
-    rasterize_style_preview, save_app_settings, save_dictionary_entries, save_style_settings,
-    search_dictionary_entries, AppTab, CaptureStatus, NativeAppSettings, NativeStyleSettings,
-    BUNDLE_ID, DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FLAG_HELP,
-    MIN_WINDOW_HEIGHT_PX, MIN_WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX, WINDOW_TITLE, WINDOW_WIDTH_PX,
+    rasterize_style_preview, replace_selected_dictionary_entries, save_app_settings,
+    save_dictionary_catalog, save_style_catalog, search_dictionary_entries,
+    select_dictionary_profile, select_style_profile, AppTab, CaptureStatus, NativeAppSettings,
+    NativeDictionaryCatalog, NativeStyleCatalog, NativeStyleSettings, BUNDLE_ID,
+    DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FLAG_HELP, MIN_WINDOW_HEIGHT_PX,
+    MIN_WINDOW_WIDTH_PX, NATIVE_BROWSER_SOURCE_HINT, WINDOW_HEIGHT_PX, WINDOW_TITLE,
+    WINDOW_WIDTH_PX,
 };
 use crate::hot_path::{caption_changed, should_check_output_window, OUTPUT_WINDOW_HEALTH_INTERVAL};
 use crate::i18n::{text, TextKey};
@@ -56,9 +61,11 @@ pub struct MainView {
     tab: AppTab,
     config_dir: PathBuf,
     style: NativeStyleSettings,
+    style_catalog: NativeStyleCatalog,
     app_settings: NativeAppSettings,
     capture: CaptureController,
     entries: Vec<CustomDictionaryEntry>,
+    dictionary_catalog: NativeDictionaryCatalog,
     query: String,
     query_caret: usize,
     draft_reading: String,
@@ -85,6 +92,7 @@ pub struct MainView {
     last_browser_caption: Option<(String, String)>,
     last_output_window_check: Instant,
     browser_source: BrowserSourceServer,
+    output_window_requested: bool,
     _quit_subscription: Subscription,
 }
 
@@ -102,6 +110,21 @@ impl CaptionOutputView {
     fn new(style: NativeStyleSettings, scale_factor: f32) -> Self {
         let image = render_image(rasterize_live_caption_at_scale(&style, "", "", scale_factor));
         Self { image, caption: (String::new(), String::new()), style, scale_factor }
+    }
+
+    fn with_caption(
+        style: NativeStyleSettings,
+        scale_factor: f32,
+        source: String,
+        translation: String,
+    ) -> Self {
+        let image = render_image(rasterize_live_caption_at_scale(
+            &style,
+            &source,
+            &translation,
+            scale_factor,
+        ));
+        Self { image, caption: (source, translation), style, scale_factor }
     }
 
     fn replace_caption(
@@ -142,10 +165,12 @@ impl MainView {
         cx: &mut Context<Self>,
         surfaces: Rc<RefCell<DebugSurfaces>>,
         config_dir: PathBuf,
-        style: NativeStyleSettings,
+        style_catalog: NativeStyleCatalog,
+        dictionary_catalog: NativeDictionaryCatalog,
         app_settings: NativeAppSettings,
     ) -> Self {
-        let entries = load_dictionary_entries(&config_dir).unwrap_or_default();
+        let style = style_catalog.selected().style.clone();
+        let entries = dictionary_catalog.selected().entries.clone();
         let fixture = ingest_fixture_caption().ok();
         let preview_source = fixture
             .as_ref()
@@ -170,9 +195,11 @@ impl MainView {
             tab: AppTab::Live,
             config_dir,
             style,
+            style_catalog,
             app_settings,
             capture: CaptureController::new(),
             entries,
+            dictionary_catalog,
             query: String::new(),
             query_caret: 0,
             draft_reading: String::new(),
@@ -199,6 +226,7 @@ impl MainView {
             last_browser_caption: None,
             last_output_window_check: Instant::now() - OUTPUT_WINDOW_HEALTH_INTERVAL,
             browser_source,
+            output_window_requested: false,
             _quit_subscription: quit_subscription,
         }
     }
@@ -249,12 +277,34 @@ impl MainView {
     }
 
     fn set_style(&mut self, next: NativeStyleSettings) {
-        self.style = next;
+        self.style = next.clone();
+        if let Some(profile) = self
+            .style_catalog
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == self.style_catalog.selected_id)
+        {
+            profile.style = next;
+        }
         self.refresh_style_preview();
         self.last_published_caption = None;
         self.last_browser_caption = None;
         self.browser_source.set_style(browser_style(&self.style));
-        if let Err(error) = save_style_settings(&self.config_dir, &self.style) {
+        if let Err(error) = save_style_catalog(&self.config_dir, &self.style_catalog) {
+            self.persist_error = Some(error);
+        } else {
+            self.persist_error = None;
+        }
+    }
+
+    fn set_style_catalog(&mut self, catalog: NativeStyleCatalog) {
+        self.style = catalog.selected().style.clone();
+        self.style_catalog = catalog;
+        self.refresh_style_preview();
+        self.last_published_caption = None;
+        self.last_browser_caption = None;
+        self.browser_source.set_style(browser_style(&self.style));
+        if let Err(error) = save_style_catalog(&self.config_dir, &self.style_catalog) {
             self.persist_error = Some(error);
         } else {
             self.persist_error = None;
@@ -308,13 +358,42 @@ impl MainView {
     }
 
     fn persist_dictionary(&mut self, next: Vec<CustomDictionaryEntry>) {
-        match save_dictionary_entries(&self.config_dir, &next) {
-            Ok(saved) => {
-                self.entries = saved;
+        let catalog = replace_selected_dictionary_entries(&self.dictionary_catalog, next.clone());
+        match save_dictionary_catalog(&self.config_dir, &catalog) {
+            Ok(()) => {
+                self.entries = next;
+                self.dictionary_catalog = catalog;
                 self.persist_error = None;
             }
-            Err(error) => self.persist_error = Some(error.to_string()),
+            Err(error) => self.persist_error = Some(error),
         }
+    }
+
+    fn set_dictionary_catalog(&mut self, catalog: NativeDictionaryCatalog) {
+        self.entries = catalog.selected().entries.clone();
+        match save_dictionary_catalog(&self.config_dir, &catalog) {
+            Ok(()) => {
+                self.dictionary_catalog = catalog;
+                self.query.clear();
+                self.query_caret = 0;
+                self.persist_error = None;
+            }
+            Err(error) => self.persist_error = Some(error),
+        }
+    }
+
+    fn import_dictionary_paths(&mut self, paths: &[PathBuf]) {
+        let mut entries = self.entries.clone();
+        for path in paths {
+            match import_dictionary_file(path) {
+                Ok(imported) => entries = merge_dictionary_entries(&entries, imported),
+                Err(error) => {
+                    self.persist_error = Some(error);
+                    return;
+                }
+            }
+        }
+        self.persist_dictionary(entries);
     }
 
     fn apply_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -458,6 +537,8 @@ impl Render for MainView {
             AppTab::Style => render_style(
                 &self.style,
                 StyleViewState {
+                    profiles: &self.style_catalog.profiles,
+                    selected_profile_id: &self.style_catalog.selected_id,
                     preview_source: &self.preview_source,
                     preview_translation: &self.preview_translation,
                     preview_image: Arc::clone(&self.style_preview_image),
@@ -478,6 +559,18 @@ impl Render for MainView {
                 },
                 cx,
                 StyleCallbacks {
+                    on_add_profile: |view| {
+                        let catalog = add_style_profile(&view.style_catalog);
+                        view.set_style_catalog(catalog);
+                    },
+                    on_select_profile: |view, id| {
+                        let catalog = select_style_profile(&view.style_catalog, id);
+                        view.set_style_catalog(catalog);
+                    },
+                    on_delete_profile: |view| {
+                        let catalog = delete_selected_style_profile(&view.style_catalog);
+                        view.set_style_catalog(catalog);
+                    },
                     on_change: |view, next| view.set_style(next),
                     on_font_focus: |view, window, cx| {
                         view.focused_field = FocusField::Font;
@@ -518,6 +611,8 @@ impl Render for MainView {
             .into_any_element(),
             AppTab::Dictionary => render_dictionary(
                 DictionaryViewState {
+                    dictionaries: &self.dictionary_catalog.dictionaries,
+                    selected_dictionary_id: &self.dictionary_catalog.selected_id,
                     entries: &self.visible_entries(),
                     query: &self.query,
                     draft_reading: &self.draft_reading,
@@ -532,6 +627,23 @@ impl Render for MainView {
                 },
                 cx,
                 DictionaryCallbacks {
+                    on_add_dictionary: |view| {
+                        let catalog = add_dictionary_profile(&view.dictionary_catalog);
+                        view.set_dictionary_catalog(catalog);
+                    },
+                    on_select_dictionary: |view, id| {
+                        let catalog = select_dictionary_profile(&view.dictionary_catalog, id);
+                        view.set_dictionary_catalog(catalog);
+                    },
+                    on_delete_dictionary: |view| {
+                        let catalog = delete_selected_dictionary_profile(&view.dictionary_catalog);
+                        view.set_dictionary_catalog(catalog);
+                    },
+                    on_clear_dictionary: |view| {
+                        let catalog = clear_selected_dictionary(&view.dictionary_catalog);
+                        view.set_dictionary_catalog(catalog);
+                    },
+                    on_import_paths: |view, paths| view.import_dictionary_paths(paths),
                     on_focus_query: |view, window, cx| {
                         view.focused_field = FocusField::Query;
                         view.query_caret = view.query.len();
@@ -582,12 +694,18 @@ impl Render for MainView {
                 persist.as_deref(),
                 cx,
                 OutputCallbacks {
+                    on_open_window: |view| view.output_window_requested = true,
                     on_toggle_window_startup: |view| {
                         view.app_settings.caption_output_open_on_start =
                             !view.app_settings.caption_output_open_on_start;
                         view.persist_settings();
                     },
                     on_toggle_browser: |view| view.toggle_browser_source(),
+                    on_copy_url: |_view, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(
+                            NATIVE_BROWSER_SOURCE_HINT.to_string(),
+                        ));
+                    },
                 },
             )
             .into_any_element(),
@@ -749,7 +867,9 @@ pub fn run() {
         let surfaces =
             Rc::new(RefCell::new(surfaces_result.unwrap_or_else(|_| DebugSurfaces::empty())));
         let config_dir = native_config_dir();
-        let style = load_style_settings(&config_dir).unwrap_or_default();
+        let style_catalog = load_style_catalog(&config_dir).unwrap_or_default();
+        let dictionary_catalog = load_dictionary_catalog(&config_dir).unwrap_or_default();
+        let style = style_catalog.selected().style.clone();
         let app_settings = load_app_settings(&config_dir).unwrap_or_default();
 
         // Create Caption Output first so the subsequently created control window is above it
@@ -781,9 +901,19 @@ pub fn run() {
         let window_handle = match cx.open_window(options, |_, cx| {
             let surfaces = Rc::clone(&surfaces);
             let config_dir = config_dir.clone();
-            let style = style.clone();
+            let style_catalog = style_catalog.clone();
+            let dictionary_catalog = dictionary_catalog.clone();
             let app_settings = app_settings.clone();
-            cx.new(move |cx| MainView::new(cx, surfaces, config_dir, style, app_settings))
+            cx.new(move |cx| {
+                MainView::new(
+                    cx,
+                    surfaces,
+                    config_dir,
+                    style_catalog,
+                    dictionary_catalog,
+                    app_settings,
+                )
+            })
         }) {
             Ok(handle) => handle,
             Err(error) => {
@@ -829,9 +959,17 @@ pub fn run() {
                 } else {
                     IDLE_POLL_INTERVAL
                 };
-                (output, check_output_window, poll_interval)
+                let open_output = std::mem::take(&mut view.output_window_requested);
+                let output_snapshot = open_output.then(|| {
+                    (
+                        view.style.clone(),
+                        snapshot.source_text.clone(),
+                        snapshot.translation_text.clone(),
+                    )
+                });
+                (output, check_output_window, poll_interval, output_snapshot)
             });
-            let Ok((output, check_output_window, poll_interval)) = update else {
+            let Ok((output, check_output_window, poll_interval, output_snapshot)) = update else {
                 break;
             };
             let output_closed = check_output_window
@@ -855,6 +993,32 @@ pub fn run() {
                 });
             if output_closed {
                 output_window = None;
+            }
+            if output_window.is_none() {
+                if let Some((style, source, translation)) = output_snapshot {
+                    let opened = cx.update(|cx| {
+                        let mut options = output_window_options();
+                        options.window_bounds = Some(WindowBounds::centered(
+                            size(px(OUTPUT_WINDOW_WIDTH_PX), px(OUTPUT_WINDOW_HEIGHT_PX)),
+                            cx,
+                        ));
+                        cx.open_window(options, |window, cx| {
+                            let scale_factor = window.scale_factor();
+                            cx.new(move |_| {
+                                CaptionOutputView::with_caption(
+                                    style,
+                                    scale_factor,
+                                    source,
+                                    translation,
+                                )
+                            })
+                        })
+                    });
+                    match opened {
+                        Ok(handle) => output_window = Some(handle),
+                        Err(error) => eprintln!("Could not open caption output: {error}"),
+                    }
+                }
             }
             cx.background_executor().timer(poll_interval).await;
         })

@@ -8,9 +8,11 @@ use gpui::{
     MouseMoveEvent, Pixels, Point, RenderImage, SharedString,
 };
 
-use crate::domain::{NativeStyleSettings, UiLanguage};
+use crate::domain::{NativeStyleProfile, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
-use crate::ui::{card, editable_text, error_line, heading, image_view, muted, render_image};
+use crate::ui::{
+    button, card, editable_text, error_line, heading, image_view, muted, render_image,
+};
 
 const PREVIEW_WIDTH_PX: f32 = 900.0;
 const PREVIEW_HEIGHT_PX: f32 = 253.125;
@@ -58,6 +60,9 @@ macro_rules! toggle {
 }
 
 pub struct StyleCallbacks<V> {
+    pub on_add_profile: fn(&mut V),
+    pub on_select_profile: fn(&mut V, &str),
+    pub on_delete_profile: fn(&mut V),
     pub on_change: fn(&mut V, NativeStyleSettings),
     pub on_font_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
     pub on_font_select: fn(&mut V, &str),
@@ -67,6 +72,8 @@ pub struct StyleCallbacks<V> {
 }
 
 pub struct StyleViewState<'a> {
+    pub profiles: &'a [NativeStyleProfile],
+    pub selected_profile_id: &'a str,
     pub preview_source: &'a str,
     pub preview_translation: &'a str,
     pub preview_image: Arc<RenderImage>,
@@ -146,6 +153,8 @@ pub fn render_style<V: 'static>(
     callbacks: StyleCallbacks<V>,
 ) -> impl IntoElement {
     let StyleViewState {
+        profiles,
+        selected_profile_id,
         preview_source,
         preview_translation,
         preview_image,
@@ -156,6 +165,42 @@ pub fn render_style<V: 'static>(
         preview_translation_caret,
         persist_error,
     } = state;
+
+    let mut profile_buttons = div().flex().flex_wrap().gap_2();
+    for (index, profile) in profiles.iter().enumerate() {
+        let id = profile.id.clone();
+        let label = if profile.id == selected_profile_id {
+            format!("✓ {}", profile.name)
+        } else {
+            profile.name.clone()
+        };
+        profile_buttons = profile_buttons.child(button(
+            ElementId::named_usize("style-profile", index),
+            label,
+            cx.listener(move |view, _event, _window, _cx| (callbacks.on_select_profile)(view, &id)),
+        ));
+    }
+    let profiles = card()
+        .flex_shrink_0()
+        .child(heading(text(language, TextKey::StyleProfiles)))
+        .child(profile_buttons)
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(button(
+                    "style-profile-add",
+                    text(language, TextKey::AddStyle),
+                    cx.listener(move |view, _event, _window, _cx| (callbacks.on_add_profile)(view)),
+                ))
+                .child(button(
+                    "style-profile-delete",
+                    text(language, TextKey::DeleteStyle),
+                    cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_delete_profile)(view)
+                    }),
+                )),
+        );
 
     let preview = card()
         .flex_shrink_0()
@@ -542,6 +587,7 @@ pub fn render_style<V: 'static>(
         .flex()
         .flex_col()
         .gap_3()
+        .child(profiles)
         .child(preview)
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
         .child(

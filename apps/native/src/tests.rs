@@ -14,12 +14,17 @@ use crate::debug_surfaces::{
     caption_publication, prepare_caption_publication_with, CaptionPublication,
 };
 use crate::domain::{
-    add_dictionary_entry, delete_dictionary_entry, geometry_from_style, ingest_fixture_caption,
-    layout_from_style, load_app_settings, load_style_settings, native_settings_path,
-    native_style_path, parse_debug_launch, rasterize_live_caption_at_scale,
-    rasterize_style_preview, save_app_settings, save_style_settings, search_dictionary_entries,
-    AppTab, NativeAppSettings, NativeStyleSettings, UiLanguage, BINARY_NAME, BUILD_ID, BUNDLE_ID,
-    DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, PRODUCT_NAME, TABS,
+    add_dictionary_entry, add_dictionary_profile, add_style_profile, clear_selected_dictionary,
+    delete_dictionary_entry, delete_selected_dictionary_profile, delete_selected_style_profile,
+    geometry_from_style, ingest_fixture_caption, layout_from_style, load_app_settings,
+    load_dictionary_catalog, load_style_catalog, load_style_settings, native_settings_path,
+    native_style_path, parse_debug_launch, parse_dictionary_delimited,
+    rasterize_live_caption_at_scale, rasterize_style_preview, replace_selected_dictionary_entries,
+    save_app_settings, save_dictionary_catalog, save_style_catalog, save_style_settings,
+    search_dictionary_entries, select_dictionary_profile, select_style_profile, AppTab,
+    NativeAppSettings, NativeDictionaryCatalog, NativeStyleCatalog, NativeStyleSettings,
+    UiLanguage, BINARY_NAME, BUILD_ID, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE,
+    DEFAULT_PREVIEW_TRANSLATION, PRODUCT_NAME, TABS,
 };
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -68,9 +73,14 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     let capture = include_str!("capture.rs");
     assert!(capture.contains("RMS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100)"));
     assert!(capture.contains("DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(30)"));
-    assert!(capture.contains("TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(600)"));
+    assert!(capture.contains("TRANSLATION_QUEUE_CAPACITY: usize = 32"));
+    assert!(capture.contains("TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60)"));
+    assert!(capture.contains("MINIMUM_PAIRED_CAPTION_HOLD: Duration = Duration::from_secs(3)"));
     assert!(capture.contains("receiver.recv_timeout(TRANSLATOR_IDLE_TIMEOUT)"));
     assert!(capture.contains("Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES)"));
+
+    let translation = include_str!("../../../crates/parapper-engine/src/translation_engine.rs");
+    assert!(translation.contains(".with_memory_pattern(false)"));
 }
 
 #[test]
@@ -293,6 +303,32 @@ fn command_line_has_no_overlay_flag() {
 }
 
 #[test]
+fn output_controls_open_capture_copy_the_only_html_url_and_remove_vertical_layout() {
+    let output = include_str!("output.rs");
+    let app = include_str!("app.rs");
+    let domain = include_str!("domain.rs");
+    let browser = include_str!("../../../crates/caption-bridge-browser-source/src/lib.rs");
+    assert!(output.contains("output-window-open"));
+    assert!(output.contains("output-browser-copy-url"));
+    assert!(app.contains("ClipboardItem::new_string"));
+    assert!(!domain.contains("NATIVE_VERTICAL_BROWSER_SOURCE_HINT"));
+    assert!(!browser.contains("layout === \"vertical\""));
+    assert!(!browser.contains("data-layout=\"vertical\""));
+}
+
+#[test]
+fn profile_and_dictionary_bulk_controls_remain_wired() {
+    let style = include_str!("style.rs");
+    let dictionary = include_str!("dictionary.rs");
+    assert!(style.contains("style-profile-add"));
+    assert!(style.contains("style-profile-delete"));
+    assert!(dictionary.contains("dictionary-profile-add"));
+    assert!(dictionary.contains("dictionary-profile-delete"));
+    assert!(dictionary.contains("dictionary-clear"));
+    assert!(dictionary.contains(".on_drop"));
+}
+
+#[test]
 fn tabs_include_capture_output() {
     assert_eq!(AppTab::from_label("Live"), Some(AppTab::Live));
     assert_eq!(AppTab::from_label("Output"), Some(AppTab::Output));
@@ -382,6 +418,63 @@ fn dictionary_can_delete_any_selected_word() {
     assert_eq!(remaining[0].word, "一");
     let added = add_dictionary_entry(&remaining, "さん", "三").expect("add");
     assert_eq!(search_dictionary_entries(&added, "さん")[0].word, "三");
+    assert_eq!(added[1].id, "entry-2");
+}
+
+#[test]
+fn style_catalog_add_select_delete_and_persist_round_trip() {
+    let dir = unique_temp_dir("style-catalog");
+    let catalog = NativeStyleCatalog::default();
+    let added = add_style_profile(&catalog);
+    assert_eq!(added.profiles.len(), 3);
+    assert_eq!(added.selected().name, "Style 3");
+    let selected = select_style_profile(&added, "style-1");
+    assert_eq!(selected.selected_id, "style-1");
+    let deleted = delete_selected_style_profile(&selected);
+    assert_eq!(deleted.profiles.len(), 2);
+    assert_ne!(deleted.selected_id, "style-1");
+
+    save_style_catalog(&dir, &added).expect("save style catalog");
+    assert_eq!(load_style_catalog(&dir).expect("load style catalog"), added);
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn dictionary_catalog_supports_multiple_sets_selection_and_bulk_delete() {
+    let dir = unique_temp_dir("dictionary-catalog");
+    let catalog = NativeDictionaryCatalog::default();
+    let added = add_dictionary_profile(&catalog);
+    let entries = parse_dictionary_delimited("reading,word\nきょう,今日\nあす,明日", false)
+        .expect("parse CSV");
+    let populated = replace_selected_dictionary_entries(&added, entries);
+    assert_eq!(populated.selected().entries.len(), 2);
+    let first = select_dictionary_profile(&populated, "dictionary-1");
+    assert!(first.selected().entries.is_empty());
+    let second = select_dictionary_profile(&first, &added.selected_id);
+    let cleared = clear_selected_dictionary(&second);
+    assert!(cleared.selected().entries.is_empty());
+    let deleted = delete_selected_dictionary_profile(&cleared);
+    assert_eq!(deleted.dictionaries.len(), 1);
+
+    save_dictionary_catalog(&dir, &populated).expect("save dictionary catalog");
+    assert_eq!(load_dictionary_catalog(&dir).expect("load dictionary catalog"), populated);
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn csv_and_tsv_import_multiple_readings_and_quoted_words() {
+    let csv = parse_dictionary_delimited(
+        "reading,word\nえーびー,\"A,B\"\nしー,\"C \"\"quoted\"\"\"",
+        false,
+    )
+    .expect("parse quoted CSV");
+    assert_eq!(csv.len(), 2);
+    assert_eq!(csv[0].word, "A,B");
+    assert_eq!(csv[1].word, "C \"quoted\"");
+
+    let tsv = parse_dictionary_delimited("読み\t単語\nとうきょう\t東京\nおおさか\t大阪", true)
+        .expect("parse TSV");
+    assert_eq!(tsv.iter().map(|entry| entry.word.as_str()).collect::<Vec<_>>(), ["東京", "大阪"]);
 }
 
 #[test]
