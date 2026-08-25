@@ -152,7 +152,9 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
         .and_then(|steps| steps.split("- name: Build Native release").next())
         .expect("Native CI test step must remain present");
     assert!(native_test_step.contains("RUST_TEST_THREADS: 1"));
-    assert!(ci.contains("--no-default-features --lib -- --test-threads=1"));
+    assert!(ci.contains("crates/caption-bridge-audio/Cargo.toml"));
+    assert!(ci.contains("crates/caption-bridge-japanese-text/Cargo.toml"));
+    assert!(ci.contains("crates/caption-bridge-render/Cargo.toml"));
     assert!(native_test_step.contains("cargo test --locked --manifest-path apps/native/Cargo.toml"));
 }
 
