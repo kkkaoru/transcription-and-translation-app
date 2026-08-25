@@ -1,0 +1,5 @@
+# CTranslate2's vendored Windows build links the static MSVC runtime. Keep Rust
+# and every other C/C++ build dependency on the same runtime so Native does not
+# mix /MT and /MD objects at link time.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

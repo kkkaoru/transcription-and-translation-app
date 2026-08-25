@@ -86,6 +86,16 @@ permissions.
   every 30 seconds only while idle. Active CoreAudio/WASAPI/ALSA streams are never
   re-enumerated, preventing the roughly one-minute live-caption stall while still
   retaining hot-plug recovery before the next capture.
+- Native disables the capture crate's amplitude-based frame dropping and passes
+  a continuous 16 kHz PCM timeline to Silero VAD. The segment builder can
+  therefore retain its full pre-speech buffer instead of losing quiet consonants
+  at the start of an utterance. Silero remains the only speech segmentation
+  authority; this does not lower its threshold or replace direct VAD.
+- A partial recognition remains visible after its normal timeout while that turn
+  is still in progress. A finalized recognition also remains visible while its
+  matching translation is pending, then the complete source/translation pair is
+  installed atomically and held for at least three seconds. This removes the
+  source → blank → paired-source flicker without showing a stale translation.
 - Syphon and Spout already share one 1280x720 raster and retain their GPU sender
   resources. The GPUI output can require a different HiDPI raster, so forcing it
   to share would reduce output quality and was not adopted.
@@ -99,8 +109,12 @@ permissions.
   in-process, statically linked CTranslate2 runtime. CTranslate2 converts the
   model to INT8 at load time, uses one CPU replica, accepts one translation per
   batch, and retains the model only while translation is active. The separate
-  English-to-Japanese model is never loaded. Dropping the worker on capture stop
-  fully unloads the translator; one idle minute also drops it. This replaces the
+  English-to-Japanese model is never loaded. The first continuous microphone
+  frame queues a bounded QuickMT warm-up before ASR processes that frame, so the
+  model normally finishes loading while the user is speaking instead of after
+  the finalized caption. After an idle unload, the next recognition update
+  queues the warm-up again. Dropping the worker on capture stop fully unloads
+  the translator; one idle minute also drops it. This replaces the
   previous 462 MiB LFM2 ONNX model, which reached about 781 MiB process RSS and
   took 2.7 seconds to load in a cold standalone measurement. Measure QuickMT RSS
   on each target because CTranslate2 activation and backend memory varies by CPU.
@@ -156,6 +170,10 @@ quickmt-ja-en/
 The model is loaded on CPU with `compute_type=INT8`, one replica, one queued
 batch, and the model's default beam size of two. Keeping beam search preserves
 translation quality while the single-item batch and single worker bound RAM.
+Windows uses a consistent static MSVC runtime for Rust, CTranslate2,
+SentencePiece, Spout, and other C/C++ objects through the repository Cargo
+configuration; this avoids mixing `/MT` and `/MD` in Native release or test
+links.
 
 The previous LFM2-350M ONNX implementation remains as a non-default comparison
 module at `crates/parapper-engine/reference/lfm2_onnx_translation_engine.rs`.

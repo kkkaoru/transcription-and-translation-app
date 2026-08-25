@@ -88,12 +88,29 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(translation.contains("num_threads_per_replica: 1"));
     assert!(translation.contains("max_queued_batches: 1"));
     assert!(translation.contains("max_batch_size: 1"));
+    let warmup = capture
+        .find("request_translation_warmup(")
+        .expect("Native must warm QuickMT from the continuous microphone stream");
+    let asr_push = capture
+        .find(".push_audio(&normalized_samples)")
+        .expect("Native must push microphone audio into ASR");
+    assert!(warmup < asr_push);
+
+    let engine = include_str!("../../../crates/parapper-engine/src/lib.rs");
+    assert!(engine.contains("QuickMtJaEnEngine::load(models_root)"));
+    assert!(engine.contains("#[cfg(feature = \"translation-comparison\")]"));
 
     let engine_manifest = include_str!("../../../crates/parapper-engine/Cargo.toml");
+    assert!(engine_manifest.contains("default = []"));
+    assert!(engine_manifest.contains("translation-comparison = []"));
     assert!(engine_manifest.contains("target_arch = \"aarch64\""));
     assert!(engine_manifest.contains("features = [\"ruy\", \"sentencepiece\"]"));
     assert!(engine_manifest.contains("not(target_arch = \"aarch64\")"));
     assert!(engine_manifest.contains("features = [\"dnnl\", \"sentencepiece\"]"));
+
+    let cargo_config = include_str!("../../../.cargo/config.toml");
+    assert!(cargo_config.contains("target.x86_64-pc-windows-msvc"));
+    assert!(cargo_config.contains("target-feature=+crt-static"));
 }
 
 #[test]

@@ -75,6 +75,7 @@ pub struct AudioCaptureConfig {
     pub chunk_ms: u32,
     pub silence_gate_db: f32,
     pub adaptive_noise_floor: bool,
+    pub drop_silence_frames: bool,
 }
 
 impl Default for AudioCaptureConfig {
@@ -83,6 +84,7 @@ impl Default for AudioCaptureConfig {
             chunk_ms: DEFAULT_CHUNK_MS,
             silence_gate_db: DEFAULT_SILENCE_GATE_DB,
             adaptive_noise_floor: true,
+            drop_silence_frames: true,
         }
     }
 }
@@ -109,6 +111,12 @@ impl AudioCaptureConfig {
             .try_into()
             .unwrap_or(usize::MAX)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AdaptiveNoiseFloor {
+    floor_db: Option<f32>,
+    fed_chunks: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -680,13 +688,7 @@ impl PcmChunker {
             let mut output = pcm;
             output.truncate(target_chunk.saturating_add(1));
             let chunk_db = rms_dbfs(&output);
-            let pass = if self.config.adaptive_noise_floor {
-                let pass = self.floor.passes(chunk_db);
-                self.floor.observe(chunk_db, pass);
-                pass
-            } else {
-                passes_silence_gate(chunk_db, self.config.silence_gate_db)
-            };
+            let pass = should_emit_pcm_frame(self.config, chunk_db, &mut self.floor);
             let payload =
                 if pass { CapturePayload::Frame(output) } else { CapturePayload::Level(chunk_db) };
             send_capture_message(
@@ -795,10 +797,25 @@ pub fn passes_silence_gate(rms_db: f32, silence_gate_db: f32) -> bool {
     rms_db.is_finite() && rms_db >= silence_gate_db
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AdaptiveNoiseFloor {
-    floor_db: Option<f32>,
-    fed_chunks: usize,
+/// Decide whether a complete PCM frame is forwarded to downstream VAD.
+///
+/// Native capture disables frame dropping so Silero receives a continuous
+/// timeline and can retain pre-speech audio. Other callers retain the adaptive
+/// or fixed amplitude gate selected by their configuration.
+pub fn should_emit_pcm_frame(
+    config: AudioCaptureConfig,
+    rms_db: f32,
+    floor: &mut AdaptiveNoiseFloor,
+) -> bool {
+    if !config.drop_silence_frames {
+        return true;
+    }
+    if config.adaptive_noise_floor {
+        let pass = floor.passes(rms_db);
+        floor.observe(rms_db, pass);
+        return pass;
+    }
+    passes_silence_gate(rms_db, config.silence_gate_db)
 }
 
 impl AdaptiveNoiseFloor {
@@ -893,6 +910,7 @@ mod tests {
             chunk_ms: 32,
             silence_gate_db: -50.0,
             adaptive_noise_floor: false,
+            drop_silence_frames: true,
         };
         let mut chunker = PcmChunker::new(48_000, 1, config).expect("chunker should initialize");
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -908,6 +926,27 @@ mod tests {
 
         assert!((511..=513).contains(&frame.len()));
         assert!((-10.0..=-8.0).contains(&rms_dbfs(&frame)));
+    }
+
+    #[test]
+    fn disabled_silence_drop_preserves_zero_pcm_for_vad_pre_roll() {
+        let config = AudioCaptureConfig {
+            chunk_ms: 32,
+            silence_gate_db: -50.0,
+            adaptive_noise_floor: false,
+            drop_silence_frames: false,
+        };
+        let mut chunker = PcmChunker::new(16_000, 1, config).expect("chunker should initialize");
+        let (sender, receiver) = mpsc::sync_channel(1);
+
+        chunker.push(&[0.0; 512], &sender);
+        let message = receiver.recv().expect("silence frame should reach the VAD queue");
+        let CapturePayload::Frame(frame) = message.payload else {
+            panic!("disabled silence dropping must preserve the continuous PCM timeline");
+        };
+
+        assert_eq!(frame.len(), 512);
+        assert!(frame.iter().all(|sample| *sample == 0));
     }
 
     #[test]
