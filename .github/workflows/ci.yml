@@ -116,7 +116,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Native crates do not consume repository submodules. Avoid recursive
+          # checkout here because nested dictionary paths exceed MAX_PATH on Windows.
+          submodules: false
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
