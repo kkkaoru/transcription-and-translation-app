@@ -110,10 +110,10 @@ permissions.
   in-process, statically linked CTranslate2 runtime. CTranslate2 converts the
   model to INT8 at load time, uses one CPU replica, accepts one translation per
   batch, and retains the model only while translation is active. The separate
-  English-to-Japanese model is never loaded. The first continuous microphone
-  frame queues a bounded QuickMT warm-up before ASR processes that frame, so the
-  model normally finishes loading while the user is speaking instead of after
-  the finalized caption. After an idle unload, the next recognition update
+  English-to-Japanese model is never loaded. Starting translation immediately
+  queues a bounded QuickMT warm-up before the ASR engine and microphone finish
+  initializing, so the model normally finishes loading before the user reaches
+  a finalized caption. After an idle unload, the next recognition update
   queues the warm-up again. Dropping the worker on capture stop fully unloads
   the translator; one idle minute also drops it. This replaces the
   previous 462 MiB LFM2 ONNX model, which reached about 781 MiB process RSS and

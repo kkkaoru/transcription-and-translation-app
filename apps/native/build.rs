@@ -5,6 +5,7 @@
 //! abort with `Library not loaded: @rpath/Syphon.framework`.
 
 fn main() {
+    track_git_revision();
     let build_id = std::process::Command::new("git")
         .args(["rev-parse", "--short=12", "HEAD"])
         .output()
@@ -15,7 +16,6 @@ fn main() {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     println!("cargo:rustc-env=KOTOBA_BUILD_ID={build_id}");
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -39,4 +39,17 @@ fn main() {
     println!("cargo:rustc-link-search=framework={}", framework_dir.display());
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", framework_dir.display());
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
+}
+
+fn track_git_revision() {
+    let git_dir = std::path::Path::new("../../.git");
+    let head = git_dir.join("HEAD");
+    println!("cargo:rerun-if-changed={}", head.display());
+    let Ok(contents) = std::fs::read_to_string(&head) else {
+        return;
+    };
+    let Some(reference) = contents.trim().strip_prefix("ref: ") else {
+        return;
+    };
+    println!("cargo:rerun-if-changed={}", git_dir.join(reference).display());
 }

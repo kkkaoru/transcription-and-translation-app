@@ -106,6 +106,7 @@ enum WorkerEvent {
 struct TranslationWorker {
     sender: SyncSender<TranslationCommand>,
     handle: JoinHandle<()>,
+    warm_requested_at: Instant,
 }
 
 pub struct CaptureController {
@@ -450,7 +451,8 @@ fn run_capture_inner(
     }
     let _ = event_tx.send(WorkerEvent::Status(CaptureStatus::Capturing));
     let mut recognition_text = String::new();
-    let mut translation_warm_requested_at = None;
+    let mut translation_warm_requested_at =
+        translation_worker.as_ref().map(|worker| worker.warm_requested_at);
     let mut normalized_samples = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
     let mut last_rms_publish = Instant::now() - RMS_PUBLISH_INTERVAL;
 
@@ -539,7 +541,18 @@ fn start_translation_worker(
         .name("native-translation".to_string())
         .spawn(move || run_translation_worker(models_root, receiver, event_tx))
         .map_err(|error| format!("could not start translation thread: {error}"))?;
-    Ok(Some(TranslationWorker { sender, handle }))
+    let warm_requested_at = queue_initial_translation_warmup(&sender)?;
+    Ok(Some(TranslationWorker { sender, handle, warm_requested_at }))
+}
+
+fn queue_initial_translation_warmup(
+    sender: &SyncSender<TranslationCommand>,
+) -> Result<Instant, String> {
+    let requested_at = Instant::now();
+    sender
+        .try_send(TranslationCommand::Warm)
+        .map_err(|error| format!("could not warm QuickMT translation: {error}"))?;
+    Ok(requested_at)
 }
 
 fn run_translation_worker(
@@ -702,10 +715,11 @@ mod tests {
     use caption_bridge_audio::{should_emit_pcm_frame, AdaptiveNoiseFloor};
 
     use super::{
-        apply_caption_update, native_audio_config, queue_translation, request_translation_warmup,
-        should_refresh_devices, should_request_translation_warmup, CaptionUpdateMode,
-        CaptureController, CaptureSnapshot, CaptureStatus, TranslationCommand, WorkerEvent,
-        MAX_CAPTION_CHARACTERS, TRANSLATION_QUEUE_CAPACITY, TRANSLATOR_IDLE_TIMEOUT,
+        apply_caption_update, native_audio_config, queue_initial_translation_warmup,
+        queue_translation, request_translation_warmup, should_refresh_devices,
+        should_request_translation_warmup, CaptionUpdateMode, CaptureController, CaptureSnapshot,
+        CaptureStatus, TranslationCommand, WorkerEvent, MAX_CAPTION_CHARACTERS,
+        TRANSLATION_QUEUE_CAPACITY, TRANSLATOR_IDLE_TIMEOUT,
     };
 
     #[test]
@@ -731,6 +745,17 @@ mod tests {
             f32::NEG_INFINITY,
             &mut AdaptiveNoiseFloor::default()
         ));
+    }
+
+    #[test]
+    fn quickmt_warmup_is_queued_immediately_when_translation_starts() {
+        let (translation_tx, translation_rx) = mpsc::sync_channel(1);
+
+        let requested_at = queue_initial_translation_warmup(&translation_tx)
+            .expect("the empty translation queue must accept its initial warm-up");
+
+        assert!(requested_at <= Instant::now());
+        assert!(matches!(translation_rx.try_recv(), Ok(TranslationCommand::Warm)));
     }
 
     #[test]

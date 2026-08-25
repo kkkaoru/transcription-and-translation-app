@@ -108,6 +108,11 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(engine_manifest.contains("not(target_arch = \"aarch64\")"));
     assert!(engine_manifest.contains("features = [\"dnnl\", \"sentencepiece\"]"));
 
+    let build_script = include_str!("../build.rs");
+    assert!(build_script.contains("track_git_revision()"));
+    assert!(build_script.contains("strip_prefix(\"ref: \")"));
+    assert!(build_script.contains("git_dir.join(reference)"));
+
     let cargo_config = include_str!("../../../.cargo/config.toml");
     assert!(cargo_config.contains("target.x86_64-pc-windows-msvc"));
     assert!(cargo_config.contains("target-feature=+crt-static"));
