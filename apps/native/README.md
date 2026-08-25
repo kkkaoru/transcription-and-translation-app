@@ -73,6 +73,15 @@ permissions.
 - The ASR VAD-frame queue now drains completed 512-sample frames while retaining
   its allocation. A real-model fixture still recognizes the expected Japanese
   caption, so this change is enabled.
+- Final-caption duplicate detection now compares the incoming suffix directly
+  instead of materializing and scanning `existing + incoming` twice. A
+  five-million-iteration release microbenchmark reduced temporary allocations
+  from 25,000,000 to zero and wall time from 651 ms to 29 ms while preserving
+  the existing completion regression corpus.
+- Native keeps its current thin LTO and single codegen unit. Removing both
+  increased the deterministic optimized hot-path p50 from 248 ms to 257 ms and
+  the baseline p50 from 651 ms to 770 ms, so the WASM compiler-profile result
+  does not transfer to the native target.
 - Microphone discovery now refreshes before capture, when opening the selector,
   and every 30 seconds as a fallback. This removes repeated device-list clones
   and most idle OS enumeration without weakening capture or hot-plug recovery.

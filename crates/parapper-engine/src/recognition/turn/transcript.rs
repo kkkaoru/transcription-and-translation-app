@@ -970,8 +970,16 @@ fn completion_text_duplicates_existing(existing: &str, incoming: &str) -> bool {
     if prefer_streaming_interim_text_over_truncated_completion(existing, incoming) {
         return true;
     }
-    is_repeated_turn_append(existing, &format!("{existing}{incoming}"))
-        || is_repeated_turn_append(existing, &format!("{existing} {incoming}"))
+    completion_appended_suffix_is_repeated(existing, incoming)
+}
+
+fn completion_appended_suffix_is_repeated(existing: &str, incoming: &str) -> bool {
+    // Both former concatenation probes (`existing + incoming` and
+    // `existing + " " + incoming`) reduce to the same trimmed suffix check.
+    // Evaluate that relation directly so a final-caption completion does not
+    // allocate and scan two temporary candidate strings.
+    let suffix = incoming.trim();
+    existing.starts_with(suffix) || suffix.starts_with(existing)
 }
 
 fn visible_text_for_blank_replace(
@@ -1286,9 +1294,10 @@ fn even_chunk_ranges(audio_len: usize, chunk_count: usize) -> Option<Vec<std::op
 #[cfg(test)]
 mod tests {
     use super::{
-        completion_incoming_is_blank, completion_is_full_longer_rewrite,
-        completion_text_duplicates_existing, is_longer_turn_rewrite,
-        leading_asr_only_padding_samples, leading_covered_source_samples, longer_turn_surface_text,
+        completion_appended_suffix_is_repeated, completion_incoming_is_blank,
+        completion_is_full_longer_rewrite, completion_text_duplicates_existing,
+        is_longer_turn_rewrite, is_repeated_turn_append, leading_asr_only_padding_samples,
+        leading_covered_source_samples, longer_turn_surface_text,
         prefer_streaming_interim_text_over_truncated_completion, rerecognition_drops_joined_tail,
         rerecognition_is_truncated_joined_caption, streaming_chunk_uncovered_source_start,
         uncovered_completion_source_start, visible_text_for_blank_replace,
@@ -1367,6 +1376,21 @@ mod tests {
             ),
             "五月五日はこどもの日です"
         );
+    }
+
+    #[test]
+    fn direct_completion_suffix_check_matches_the_former_concatenation_probes() {
+        for existing in ["全体", "今日はいい天気", "abc", "字幕"] {
+            for incoming in ["追加", "全体", "今日は", "abc続き", " 字幕 "] {
+                let former = is_repeated_turn_append(existing, &format!("{existing}{incoming}"))
+                    || is_repeated_turn_append(existing, &format!("{existing} {incoming}"));
+                assert_eq!(
+                    completion_appended_suffix_is_repeated(existing, incoming),
+                    former,
+                    "existing={existing:?}, incoming={incoming:?}"
+                );
+            }
+        }
     }
 
     #[test]
