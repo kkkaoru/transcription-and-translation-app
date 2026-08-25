@@ -140,7 +140,8 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(makefile.contains("assembleNativeApp"));
     assert!(makefile.contains("pgrep -x kotoba-beacon-native"));
     assert!(makefile.contains("pkill -TERM -x kotoba-beacon-native"));
-    assert!(makefile.contains("refusing to leave a stale running build"));
+    assert!(makefile.contains("pkill -KILL -x kotoba-beacon-native"));
+    assert!(makefile.contains("refusing replacement"));
 
     let ci = include_str!("../../../.github/workflows/ci.yml");
     let native_test_step = ci
@@ -149,6 +150,7 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
         .and_then(|steps| steps.split("- name: Build Native release").next())
         .expect("Native CI test step must remain present");
     assert!(native_test_step.contains("RUST_TEST_THREADS: 1"));
+    assert!(ci.contains("--no-default-features --lib -- --test-threads=1"));
     assert!(native_test_step.contains("cargo test --locked --manifest-path apps/native/Cargo.toml"));
 }
 
