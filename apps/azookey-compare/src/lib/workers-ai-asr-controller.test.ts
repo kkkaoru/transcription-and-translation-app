@@ -1,3 +1,5 @@
+// This file runs with bun.
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { blobToPcm16Mono } from "./pcm-wav";
 import { releaseWorkersAiConversion, transcribeWorkersAiAsr } from "./workers-ai-asr-client";
@@ -9,7 +11,12 @@ import {
   WORKERS_AI_ASR_TAP_DEAD_JA,
   WORKERS_AI_ASR_TAP_SILENCE_JA,
 } from "./workers-ai-asr-tap";
-import { type VadEngine, type VadResult, WORKERS_AI_ASR_VAD_DEFAULTS } from "./workers-ai-asr-vad";
+import {
+  SILERO_CHUNK_SAMPLES,
+  type VadEngine,
+  type VadResult,
+  WORKERS_AI_ASR_VAD_DEFAULTS,
+} from "./workers-ai-asr-vad";
 
 vi.mock("./workers-ai-asr-client", () => ({
   transcribeWorkersAiAsr: vi.fn(async () => ({ text: "こんにちは" })),
@@ -413,6 +420,27 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
+  it("flushes VAD-owned PCM on manual stop without retaining MediaRecorder", async () => {
+    installBrowser();
+    const engine = mockSileroEngine(true);
+    const { controller, events } = await startController(engine);
+    const speech = Float32Array.from({ length: SILERO_CHUNK_SAMPLES }, () => 0.4);
+
+    await controller.ingestSamples(speech);
+    await controller.ingestSamples(speech);
+    await controller.ingestSamples(speech);
+
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+    expect(FakeMediaRecorder.instances[0]?.state).toBe("inactive");
+    await controller.stop();
+
+    expect(transcribeWorkersAiAsr).toHaveBeenCalledTimes(1);
+    expect(events.onUtteranceFinal).toHaveBeenCalledTimes(1);
+    expect(FakeMediaRecorder.instances[0]?.stopCalls).toBe(1);
+    expect(controller.currentState).toBe("idle");
+    controller.dispose();
+  });
+
   it("releases the exact Japanese Container profile when capture stops", async () => {
     installBrowser();
     const controller = new WorkersAiAsrController("ja", {
@@ -801,7 +829,7 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
-  it("stops MediaRecorder after PCM utterance POST so inter-utterance silence is not recorded", async () => {
+  it("releases MediaRecorder once VAD owns committed PCM instead of duplicating the utterance", async () => {
     installBrowser();
     const engine: VadEngine = {
       process: vi.fn((samples: Float32Array) => {
@@ -827,8 +855,9 @@ describe("WorkersAiAsrController VAD session", () => {
     for (let index = 0; index < 4; index += 1) {
       await fireTap(speech);
     }
-    expect(FakeMediaRecorder.instances.length).toBeGreaterThan(0);
-    expect(FakeMediaRecorder.instances[0]?.state).toBe("recording");
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+    expect(FakeMediaRecorder.instances[0]?.state).toBe("inactive");
+    expect(FakeMediaRecorder.instances[0]?.stopCalls).toBe(1);
     for (let index = 0; index < 12; index += 1) {
       await fireTap(silence);
     }

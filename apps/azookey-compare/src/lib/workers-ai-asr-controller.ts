@@ -1,3 +1,5 @@
+// This file runs with bun.
+
 import { blobToPcm16Mono, pcm16ToWavBytes } from "./pcm-wav";
 import {
   type BrowserAsrModel,
@@ -129,8 +131,6 @@ export class WorkersAiAsrController {
   private analyserTimer: ReturnType<typeof setInterval> | null = null;
   private resampleRemainder = new Float32Array(0);
   private sileroRemainder = new Float32Array(0);
-  private pcmFrames: Float32Array[] = [];
-  private capturingPcm = false;
   private requestedStop = false;
   private captureActive = false;
   private flushing = false;
@@ -543,8 +543,6 @@ export class WorkersAiAsrController {
     this.pcmSource = null;
     this.resampleRemainder = new Float32Array(0);
     this.sileroRemainder = new Float32Array(0);
-    this.pcmFrames = [];
-    this.capturingPcm = false;
   }
 
   private async onPcmTap(channel: Float32Array, sampleRate: number): Promise<void> {
@@ -572,9 +570,6 @@ export class WorkersAiAsrController {
       let offset = 0;
       while (offset + SILERO_CHUNK_SAMPLES <= pending.length) {
         const chunk = pending.subarray(offset, offset + SILERO_CHUNK_SAMPLES);
-        if (this.capturingPcm) {
-          this.pcmFrames.push(Float32Array.from(chunk));
-        }
         const result = await this.processWithFallback(chunk);
         if (!result || this.disposed || this.requestedStop || this.state !== "listening") {
           return;
@@ -667,6 +662,12 @@ export class WorkersAiAsrController {
         this.currentSpeechStartedAtMs =
           Date.now() - WORKERS_AI_ASR_VAD_DEFAULTS.segmentStartSpeechMs;
         this.ensureRecorder();
+        // Real PCM is already retained by the VAD. Stop MediaRecorder after
+        // the short pending-start fallback window instead of buffering a
+        // duplicate full utterance in the browser process.
+        if (event.audioSoFar.length >= SILERO_CHUNK_SAMPLES) {
+          this.discardRecorder();
+        }
         this.options.onTranscript?.({ interimText: RECORDING_INTERIM });
       } else if (event.type === "pending-cancel") {
         this.discardRecorder();
@@ -707,8 +708,6 @@ export class WorkersAiAsrController {
   }
 
   private beginRecorder(timesliceMs?: number): void {
-    this.capturingPcm = true;
-    this.pcmFrames = [];
     if (!this.stream || !hasMediaRecorderSupport()) {
       return;
     }
@@ -731,8 +730,6 @@ export class WorkersAiAsrController {
   }
 
   private discardRecorder(): void {
-    this.capturingPcm = false;
-    this.pcmFrames = [];
     const recorder = this.recorder;
     this.recorder = null;
     this.chunks = [];
@@ -767,25 +764,6 @@ export class WorkersAiAsrController {
     });
   }
 
-  private takeCapturedPcm(): Float32Array | undefined {
-    this.capturingPcm = false;
-    if (this.pcmFrames.length === 0) {
-      return undefined;
-    }
-    let total = 0;
-    for (const frame of this.pcmFrames) {
-      total += frame.length;
-    }
-    const merged = new Float32Array(total);
-    let offset = 0;
-    for (const frame of this.pcmFrames) {
-      merged.set(frame, offset);
-      offset += frame.length;
-    }
-    this.pcmFrames = [];
-    return merged.length >= SILERO_CHUNK_SAMPLES ? merged : undefined;
-  }
-
   private async flushRecording(options: {
     restart: boolean;
     requireSpeech: boolean;
@@ -798,10 +776,9 @@ export class WorkersAiAsrController {
     }
     this.flushing = true;
     const hasSpeech = this.hadCommittedSpeech || this.vad.currentPhase === "speech";
+    const bufferedSpeech = options.pcm ?? this.vad.bufferedSpeechAudio();
     const usablePcm =
-      options.pcm && options.pcm.length >= SILERO_CHUNK_SAMPLES
-        ? options.pcm
-        : this.takeCapturedPcm();
+      bufferedSpeech && bufferedSpeech.length >= SILERO_CHUNK_SAMPLES ? bufferedSpeech : undefined;
     // Always release MediaRecorder after an utterance so silence between
     // turns is not recorded (and never billed if PCM later falls back to blob).
     const blob = usablePcm ? null : await this.stopRecorder();
@@ -810,8 +787,6 @@ export class WorkersAiAsrController {
     }
     this.hadCommittedSpeech = false;
     this.vad.reset();
-    this.capturingPcm = false;
-    this.pcmFrames = [];
 
     if (this.disposed) {
       this.flushing = false;

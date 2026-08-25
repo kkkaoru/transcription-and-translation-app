@@ -240,6 +240,29 @@ describe("WorkersAiAsrVad Parapper segment machine", () => {
     }
   });
 
+  it("copies committed speech only when a manual stop requests it", () => {
+    const vad = new WorkersAiAsrVad();
+    const first = Float32Array.from({ length: SILERO_CHUNK_SAMPLES }, () => 0.2);
+    const second = Float32Array.from({ length: SILERO_CHUNK_SAMPLES }, () => 0.3);
+    const third = Float32Array.from({ length: SILERO_CHUNK_SAMPLES }, () => 0.4);
+    const speechVad = { probability: 0.92, isSpeech: true };
+
+    expect(vad.bufferedSpeechAudio()).toBeUndefined();
+    vad.pushVadResult(speechVad, first);
+    vad.pushVadResult(speechVad, second);
+    vad.pushVadResult(speechVad, third);
+
+    const buffered = vad.bufferedSpeechAudio();
+    expect(buffered?.length).toBe(1_536);
+    expect(buffered?.[0]).toBeCloseTo(0.2);
+    expect(buffered?.[511]).toBeCloseTo(0.2);
+    expect(buffered?.[512]).toBeCloseTo(0.3);
+    expect(buffered?.[1_024]).toBeCloseTo(0.4);
+
+    vad.reset();
+    expect(vad.bufferedSpeechAudio()).toBeUndefined();
+  });
+
   it("can start a second utterance after silence end without a new instance", () => {
     const vad = new WorkersAiAsrVad();
     pushSpeechMs(vad, 96);

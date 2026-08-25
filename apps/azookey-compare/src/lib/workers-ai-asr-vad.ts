@@ -1,3 +1,5 @@
+// This file runs with bun.
+
 /**
  * Workers AI ASR utterance segmentation, aligned with Parapper (not the old
  * 750ms energy hangover).
@@ -361,6 +363,11 @@ export class WorkersAiAsrVad {
       audioChunks: this.audioChunks,
       preSpeechChunks: this.preSpeech.length,
     };
+  }
+
+  /** Copy the current committed utterance only when a manual stop needs it. */
+  public bufferedSpeechAudio(): Float32Array | undefined {
+    return this.phase === "speech" && this.active.length > 0 ? concatAudio(this.active) : undefined;
   }
 
   public reset(): void {
