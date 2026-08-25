@@ -31,6 +31,9 @@ thiserror = "2"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "00c0e96e769062e373203c62830f510fa121db76", package = "gpui", optional = true }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "00c0e96e769062e373203c62830f510fa121db76", package = "gpui_platform", optional = true, features = ["font-kit", "runtime_shaders"] }
 
+[build-dependencies]
+cc = "1"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

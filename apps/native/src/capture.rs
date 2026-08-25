@@ -16,6 +16,7 @@ use parapper_engine::{
 
 use crate::domain::{parapper_runtime_dir, CaptureStatus};
 use crate::hot_path::{normalize_pcm16_into, NATIVE_PCM_FRAME_SAMPLES};
+use crate::microphone_permission::ensure_microphone_access;
 
 const PARAPPER_VAD_INTERVAL_MS: u32 = 32;
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
@@ -325,6 +326,12 @@ fn run_capture_inner(
     event_tx: &SyncSender<WorkerEvent>,
     stop_requested: &AtomicBool,
 ) -> Result<(), String> {
+    if stop_requested.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    if !ensure_microphone_access() {
+        return Err(MICROPHONE_PERMISSION_MESSAGE.to_string());
+    }
     if stop_requested.load(Ordering::Acquire) {
         return Ok(());
     }

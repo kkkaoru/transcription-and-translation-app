@@ -14,6 +14,8 @@ mod i18n;
 mod instance;
 #[cfg(feature = "gpui")]
 mod live;
+#[cfg(any(feature = "gpui", test))]
+mod microphone_permission;
 #[cfg(feature = "gpui")]
 mod output;
 #[cfg(feature = "gpui")]

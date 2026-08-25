@@ -24,6 +24,15 @@ fn main() {
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
     );
+    let permission_source = manifest_dir.join("src/macos_microphone_permission.m");
+    println!("cargo:rerun-if-changed={}", permission_source.display());
+    cc::Build::new()
+        .file(permission_source)
+        .flag("-fblocks")
+        .flag("-fobjc-arc")
+        .compile("kotoba_microphone_permission");
+    println!("cargo:rustc-link-lib=framework=AVFoundation");
+
     let framework_dir = manifest_dir.join("../../crates/caption-bridge-syphon/frameworks");
     let syphon_binary = framework_dir.join("Syphon.framework/Versions/A/Syphon");
     println!("cargo:rerun-if-changed={}", syphon_binary.display());
