@@ -9,6 +9,7 @@ import {
   installBuiltNativeApp,
   NATIVE_RUNTIME_LIBRARY_NAMES,
   nativeInfoPlist,
+  ORT_DYNAMIC_LIBRARY_NAME,
   PRODUCT_NAME,
   RETIRED_APP_PATH,
   resolveNativeInstallApp,
@@ -51,6 +52,7 @@ describe("macOS Native app install", () => {
       NATIVE_RUNTIME_LIBRARY_NAMES.some((name) => name.includes("parapper")),
       false,
     );
+    assert.equal(ORT_DYNAMIC_LIBRARY_NAME, "libonnxruntime.dylib");
   });
 
   it("does not assemble a stale binary when release build fails", () => {

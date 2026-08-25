@@ -666,7 +666,7 @@ fn browser_style(style: &NativeStyleSettings) -> BrowserSourceStyle {
     }
 }
 
-fn output_window_options() -> WindowOptions {
+pub(crate) fn output_window_options() -> WindowOptions {
     WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some(OUTPUT_WINDOW_TITLE.into()),
@@ -690,7 +690,7 @@ pub fn main_window_options() -> WindowOptions {
             point(px(0.), px(0.)),
             size(px(WINDOW_WIDTH_PX), px(WINDOW_HEIGHT_PX)),
         ))),
-        focus: false,
+        focus: true,
         is_resizable: true,
         window_min_size: Some(Size {
             width: px(MIN_WINDOW_WIDTH_PX),
@@ -731,11 +731,17 @@ pub fn run() {
         return;
     }
     let launch = parse_debug_launch(&args);
+
+    // Construct the OS UI platform first on the main thread. On macOS, ONNX Runtime
+    // may initialize Objective-C classes that dispatch to the AppKit main queue; doing
+    // that from a worker before NSApplication exists deadlocks. Recognition still
+    // starts later, so initializing ORT here remains race-free on every supported OS.
+    let application = gpui_platform::application();
     if let Err(error) = parapper_engine::initialize_onnx_runtime() {
         eprintln!("Could not initialize ONNX Runtime before starting the native UI: {error:#}");
         return;
     }
-    gpui_platform::application().run(move |cx: &mut App| {
+    application.run(move |cx: &mut App| {
         let surfaces_result = start_debug_surfaces(launch);
         print_debug_status(launch, &surfaces_result);
         if let Err(error) = &surfaces_result {
@@ -787,6 +793,7 @@ pub fn run() {
                 return;
             }
         };
+        cx.activate(true);
         cx.spawn(async move |cx| loop {
             #[cfg(unix)]
             if termination_requested.load(Ordering::Relaxed) {

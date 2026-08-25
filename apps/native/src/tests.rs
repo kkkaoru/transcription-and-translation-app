@@ -7,7 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use caption_bridge_dictionary::CustomDictionaryEntry;
 
 use crate::app::{
-    delete_editable_text, erase_editable_text, insert_editable_text, next_caret, previous_caret,
+    delete_editable_text, erase_editable_text, insert_editable_text, main_window_options,
+    next_caret, output_window_options, previous_caret,
 };
 use crate::debug_surfaces::{
     caption_publication, prepare_caption_publication_with, CaptionPublication,
@@ -73,16 +74,18 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
 }
 
 #[test]
-fn onnx_runtime_initializes_before_gpui_on_macos() {
+fn onnx_runtime_initializes_between_platform_creation_and_event_loop() {
     let app = include_str!("app.rs");
+    let platform_init = app
+        .find("let application = gpui_platform::application()")
+        .expect("Native must initialize the OS UI platform");
     let runtime_init = app
         .find("parapper_engine::initialize_onnx_runtime()")
         .expect("Native must initialize ONNX Runtime explicitly");
-    let gpui_init = app
-        .find("gpui_platform::application()")
-        .expect("Native must initialize the GPUI application");
+    let event_loop = app.find("application.run(").expect("Native must start the GPUI event loop");
 
-    assert!(runtime_init < gpui_init, "ONNX Runtime must initialize before AppKit/GPUI");
+    assert!(platform_init < runtime_init, "the OS UI platform must exist before ONNX Runtime");
+    assert!(runtime_init < event_loop, "ONNX Runtime must initialize before recognition can start");
 }
 
 #[test]
@@ -410,6 +413,7 @@ fn caption_output_is_created_behind_the_main_window() {
     let output = app.find("let mut output_window").expect("output window creation");
     let main = app.find("let window_handle").expect("main window creation");
     assert!(output < main);
-    assert!(app.contains("focus: false"));
-    assert!(!app.contains("cx.activate("));
+    assert!(!output_window_options().focus, "caption output must open behind the controls");
+    assert!(main_window_options().focus, "an explicitly launched app must show its controls");
+    assert!(app.contains("cx.activate(true)"));
 }

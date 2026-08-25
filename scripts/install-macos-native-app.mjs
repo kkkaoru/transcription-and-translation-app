@@ -24,6 +24,7 @@ export const NATIVE_RUNTIME_LIBRARY_NAMES = [
   "libsherpa-onnx-c-api.dylib",
   "libonnxruntime.1.24.4.dylib",
 ];
+export const ORT_DYNAMIC_LIBRARY_NAME = "libonnxruntime.dylib";
 
 const NATIVE_MANIFEST = join(repoRoot, "apps", "native", "Cargo.toml");
 const SYPHON_SOURCE = join(
@@ -188,6 +189,13 @@ export const assembleNativeApp = ({
     }
     runChecked("/bin/cp", ["-L", source, join(frameworks, library)]);
   }
+  const ortDynamicLibrary = join(dirname(sourceBinary), ORT_DYNAMIC_LIBRARY_NAME);
+  if (!existsSync(ortDynamicLibrary)) {
+    throw new Error(`missing dynamically loaded ONNX Runtime library ${ortDynamicLibrary}`);
+  }
+  // ort's load-dynamic feature resolves this unversioned name beside the executable;
+  // dyld rpaths do not participate in that explicit dlopen path.
+  runChecked("/bin/cp", ["-L", ortDynamicLibrary, join(macos, ORT_DYNAMIC_LIBRARY_NAME)]);
   rewriteBundleRpath(join(macos, BINARY_NAME));
 
   rmSync(installApp, { recursive: true, force: true });
