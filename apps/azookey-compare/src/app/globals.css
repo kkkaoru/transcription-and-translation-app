@@ -62,7 +62,8 @@ summary:focus-visible {
 .control-panel,
 .cost-panel,
 .visualization-panel,
-.dictionary-panel {
+.dictionary-panel,
+.result-history-card {
   border: 1px solid var(--line);
   border-radius: 18px;
   background: var(--panel);
@@ -70,12 +71,20 @@ summary:focus-visible {
 }
 .result-card,
 .visualization-panel,
-.dictionary-panel {
+.dictionary-panel,
+.result-history-card {
   padding: 22px;
 }
 .result-card-top {
+  display: flex;
+  height: 360px;
+  flex-direction: column;
   margin-bottom: 18px;
   border-color: #93c5fd;
+}
+.result-card-top .result-content {
+  min-height: 0;
+  overflow: auto;
 }
 .section-heading,
 .cost-heading {
@@ -87,7 +96,8 @@ summary:focus-visible {
 .section-heading h2,
 .cost-heading h2,
 .control-panel h2,
-.dictionary-panel h2 {
+.dictionary-panel h2,
+.result-history-card h2 {
   margin: 5px 0 0;
 }
 .state-badge {
@@ -209,6 +219,9 @@ button:disabled {
   font-size: 0.82rem;
   line-height: 1.65;
 }
+.result-card-top .empty-result {
+  margin: auto 0;
+}
 .final-output {
   display: grid;
   gap: 8px;
@@ -300,6 +313,37 @@ button:disabled {
 }
 .dictionary-panel {
   margin-top: 18px;
+}
+.result-history-card {
+  margin-top: 18px;
+}
+.history-count,
+.result-history-heading time {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.result-history-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+.result-history-entry {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f8fafc;
+}
+.result-history-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.result-history-heading strong {
+  overflow-wrap: anywhere;
+}
+.result-history-heading time {
+  flex: none;
 }
 .dictionary-add-form {
   display: grid;

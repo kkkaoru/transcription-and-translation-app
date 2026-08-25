@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CustomDictionaryPanel, { hasUserLexiconEntries } from "../components/CustomDictionaryPanel";
 import PipelineVisualization from "../components/PipelineVisualization";
 import { COMPARE_WORKERS_AI_SPEECH_PIPELINE_PATH } from "../lib/inference-proxy";
+import { prependResultHistory } from "../lib/result-history";
 import type {
   BrowserAsrModel,
   BrowserComputeTier,
@@ -140,7 +141,7 @@ const stateLabel = (state: WorkersAiAsrState): string =>
 export default function ComparePage(): React.JSX.Element {
   const [state, setState] = useState<WorkersAiAsrState>("idle");
   const [interim, setInterim] = useState("");
-  const [result, setResult] = useState<PipelineResult>();
+  const [results, setResults] = useState<PipelineResult[]>([]);
   const [usage, setUsage] = useState<UsageTotals>(EMPTY_USAGE);
   const [error, setError] = useState("");
   const [asrModel, setAsrModel] = useState<BrowserAsrModel>("@cf/deepgram/nova-3");
@@ -185,7 +186,7 @@ export default function ComparePage(): React.JSX.Element {
         .filter((entry) => entry.stage === "n5_lm" || entry.stage === "azookey")
         .reduce((total, entry) => total + entry.elapsedMs, 0);
       const billedTier = payload.containerProfile?.computeTier ?? computeTier;
-      setResult({
+      const nextResult: PipelineResult = {
         asrText: payload.text,
         n5Text: payload.n5Text ?? payload.text,
         vibratoText: payload.vibratoText ?? payload.text,
@@ -202,7 +203,8 @@ export default function ComparePage(): React.JSX.Element {
         speechEndedAtMs: payload.speechEndedAtMs,
         speechToResultMs: payload.speechToResultMs,
         endToResultMs: payload.endToResultMs,
-      });
+      };
+      setResults((current) => prependResultHistory(current, nextResult));
       setUsage((current) => ({
         audioSeconds: current.audioSeconds + payload.audioSeconds,
         workerRequests: current.workerRequests + 1,
@@ -259,6 +261,7 @@ export default function ComparePage(): React.JSX.Element {
     await createController().start();
   }, [createController, state]);
 
+  const result = results[0];
   const cost = useMemo(() => estimateCost(usage, asrModel), [asrModel, usage]);
   const activeStage = state === "listening" ? "capture" : interim === "認識中…" ? "asr" : undefined;
   const settingsDisabled = state !== "idle" && state !== "error";
@@ -280,7 +283,7 @@ export default function ComparePage(): React.JSX.Element {
             <p className="section-kicker">Recognition result</p>
             <h2 id="result-heading">認識結果</h2>
           </div>
-          <button type="button" className="secondary-button" onClick={() => setResult(undefined)}>
+          <button type="button" className="secondary-button" onClick={() => setResults([])}>
             クリア
           </button>
         </div>
@@ -303,28 +306,6 @@ export default function ComparePage(): React.JSX.Element {
                 {result.endToResultMs.toFixed(1)} ms · 開始→結果{" "}
                 {result.speechToResultMs.toFixed(1)} ms
               </small>
-            </div>
-            <div className="stage-logs">
-              {result.logs.map((log) => (
-                <details key={log.stage} open>
-                  <summary>
-                    <span>
-                      {stageLabel(log.stage)} / {log.engine}
-                    </span>
-                    <time>{log.elapsedMs.toFixed(1)} ms</time>
-                  </summary>
-                  <dl>
-                    <div>
-                      <dt>input</dt>
-                      <dd>{log.input}</dd>
-                    </div>
-                    <div>
-                      <dt>output</dt>
-                      <dd>{log.output || "（空）"}</dd>
-                    </div>
-                  </dl>
-                </details>
-              ))}
             </div>
             <p className="result-timestamp">
               {result.pipeline} · GGUF completion:{" "}
@@ -517,6 +498,56 @@ export default function ComparePage(): React.JSX.Element {
       </details>
 
       <CustomDictionaryPanel onEntryCountChange={handleUserLexiconEntryCount} />
+
+      <section className="result-card result-history-card" aria-labelledby="result-history-heading">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">Recognition history</p>
+            <h2 id="result-history-heading">認識結果ログ</h2>
+          </div>
+          <span className="history-count">{results.length} 件</span>
+        </div>
+        {results.length > 0 ? (
+          <div className="result-history-list">
+            {results.map((entry) => (
+              <article className="result-history-entry" key={entry.completedAt}>
+                <div className="result-history-heading">
+                  <strong>{entry.azookeyText || "（空の結果）"}</strong>
+                  <time>{new Date(entry.completedAt).toLocaleString("ja-JP")}</time>
+                </div>
+                <p className="result-timestamp">
+                  {entry.asrModel} · {entry.conversionModel} · 課金対象音声{" "}
+                  {entry.audioSeconds.toFixed(2)}秒 · 終了→結果 {entry.endToResultMs.toFixed(1)} ms
+                </p>
+                <div className="stage-logs">
+                  {entry.logs.map((log) => (
+                    <details key={log.stage}>
+                      <summary>
+                        <span>
+                          {stageLabel(log.stage)} / {log.engine}
+                        </span>
+                        <time>{log.elapsedMs.toFixed(1)} ms</time>
+                      </summary>
+                      <dl>
+                        <div>
+                          <dt>input</dt>
+                          <dd>{log.input}</dd>
+                        </div>
+                        <div>
+                          <dt>output</dt>
+                          <dd>{log.output || "（空）"}</dd>
+                        </div>
+                      </dl>
+                    </details>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-result">認識結果ログは新しい順でここに表示されます。</p>
+        )}
+      </section>
     </main>
   );
 }
