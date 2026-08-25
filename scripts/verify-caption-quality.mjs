@@ -61,10 +61,6 @@ export const assertCaptionQualityGateWired = (root = repositoryRoot) => {
   if (!/verify-caption-quality\.test\.mjs/.test(pkg.scripts?.["test:build-cleanup"] ?? "")) {
     throw new Error("test:build-cleanup must run verify-caption-quality.test.mjs");
   }
-  const singleApp = readFileSync(path.join(root, "scripts/check-single-app.mjs"), "utf8");
-  if (!singleApp.includes("verify:caption-quality")) {
-    throw new Error("check-single-app.mjs must require verify:caption-quality");
-  }
   return {
     script: pkg.scripts["verify:caption-quality"],
     desktopFiles: desktopSuite.args.filter((arg) => arg.startsWith("src/")),

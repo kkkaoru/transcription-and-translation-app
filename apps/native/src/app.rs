@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(unix)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

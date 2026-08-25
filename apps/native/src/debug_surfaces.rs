@@ -1,9 +1,9 @@
 //! Optional Syphon and Spout publishers.
 
 use caption_bridge_spout::{SpoutPublisher, SpoutPublisherOptions, NATIVE_SPOUT_SHARE_NAME};
-use caption_bridge_syphon::{
-    SyphonPublisher, SyphonPublisherOptions, NATIVE_SYPHON_SERVER_NAME, WINDOWS_SYPHON_UNSUPPORTED,
-};
+#[cfg(target_os = "windows")]
+use caption_bridge_syphon::WINDOWS_SYPHON_UNSUPPORTED;
+use caption_bridge_syphon::{SyphonPublisher, SyphonPublisherOptions, NATIVE_SYPHON_SERVER_NAME};
 
 use crate::domain::{rasterize_live_caption, DebugLaunch, NativeStyleSettings};
 
@@ -133,7 +133,6 @@ pub fn syphon_flag_error() -> Option<String> {
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
-        let _ = WINDOWS_SYPHON_UNSUPPORTED;
         None
     }
 }

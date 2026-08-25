@@ -30,6 +30,13 @@ export const ciGateMappings = new Map([
     "cargo test --locked --manifest-path packages/parapper-asr/Cargo.toml -p parapper",
     "parapper:rust:test",
   ],
+  ["cargo fmt --manifest-path apps/native/Cargo.toml --all -- --check", "rust:native:fmt"],
+  [
+    "cargo clippy --locked --manifest-path apps/native/Cargo.toml --all-targets -- -D warnings",
+    "rust:native:lint",
+  ],
+  ["cargo test --locked --manifest-path apps/native/Cargo.toml", "rust:native:test"],
+  ["cargo build --locked --release --manifest-path apps/native/Cargo.toml", "rust:native:build"],
 ]);
 
 /**
@@ -55,13 +62,17 @@ export const ciTypecheckExclusions = new Map();
  * Lint gates deliberately absent from CI. Empty after rust:zenz-verifier:lint
  * joined CI; that leftover was drift, not a local-only crate.
  */
-export const ciLintExclusions = new Map();
+export const ciLintExclusions = new Map([
+  ["rust:native:lint", "Native matrix invokes the equivalent Cargo command without Bun"],
+]);
 
 /**
  * Fmt gates deliberately absent from CI. Empty after rust:zenz-verifier:fmt
  * joined CI. `format` and `format:check` are a different suffix on purpose.
  */
-export const ciFmtExclusions = new Map();
+export const ciFmtExclusions = new Map([
+  ["rust:native:fmt", "Native matrix invokes the equivalent Cargo command without Bun"],
+]);
 
 const matchesGateSuffix = (name, suffix) => name === suffix || name.endsWith(`:${suffix}`);
 

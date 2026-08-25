@@ -1,5 +1,6 @@
 //! Explicit macOS microphone authorization before CoreAudio stream creation.
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuthorizationStatus {
     NotDetermined,
@@ -9,6 +10,7 @@ enum AuthorizationStatus {
     Unknown,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl AuthorizationStatus {
     fn from_raw(raw: i32) -> Self {
         match raw {
@@ -21,6 +23,7 @@ impl AuthorizationStatus {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_authorization(status: AuthorizationStatus, request: impl FnOnce() -> bool) -> bool {
     match status {
         AuthorizationStatus::Authorized => true,
