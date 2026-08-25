@@ -811,7 +811,10 @@ pub fn run() {
                 if capture_changed && view.tab == AppTab::Live {
                     cx.notify();
                 }
-                let poll_interval = if snapshot.status == CaptureStatus::Capturing {
+                let poll_interval = if matches!(
+                    snapshot.status,
+                    CaptureStatus::Capturing | CaptureStatus::Stopping
+                ) {
                     ACTIVE_POLL_INTERVAL
                 } else {
                     IDLE_POLL_INTERVAL

@@ -112,6 +112,7 @@ pub enum CaptureStatus {
     #[default]
     Idle,
     Capturing,
+    Stopping,
     Error,
 }
 

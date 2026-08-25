@@ -49,6 +49,7 @@ pub fn render_live<V: 'static>(
     let level_fraction = rms_to_fraction(level);
     let level_color = rms_level_color(level);
     let capturing = snapshot.status == CaptureStatus::Capturing;
+    let active = matches!(snapshot.status, CaptureStatus::Capturing | CaptureStatus::Stopping);
 
     let trigger = div()
         .id("live-device-select")
@@ -135,7 +136,7 @@ pub fn render_live<V: 'static>(
                 .child(state_button(
                     "live-start",
                     text(language, TextKey::Start),
-                    capturing,
+                    active,
                     cx.listener(move |view, _event, _window, _cx| (callbacks.on_start)(view)),
                 ))
                 .child(state_button(

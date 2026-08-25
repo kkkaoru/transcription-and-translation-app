@@ -1,6 +1,8 @@
 //! Microphone capture connected to in-process recognition and translation workers.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -105,6 +107,7 @@ pub struct CaptureController {
     command_tx: Option<SyncSender<WorkerCommand>>,
     event_rx: Option<Receiver<WorkerEvent>>,
     worker: Option<JoinHandle<()>>,
+    worker_stop_requested: Option<Arc<AtomicBool>>,
 }
 
 impl CaptureController {
@@ -116,6 +119,7 @@ impl CaptureController {
             command_tx: None,
             event_rx: None,
             worker: None,
+            worker_stop_requested: None,
         };
         controller.refresh_devices();
         controller
@@ -169,25 +173,36 @@ impl CaptureController {
             changed = true;
         }
         changed |= self.expire_caption();
-        if self.snapshot.status != CaptureStatus::Capturing {
-            if let Some(handle) = self.worker.take() {
-                let _ = handle.join();
-            }
-            self.command_tx = None;
-            self.event_rx = None;
+        if self
+            .worker_stop_requested
+            .as_ref()
+            .is_some_and(|stop_requested| stop_requested.load(Ordering::Acquire))
+            && self.worker.as_ref().is_some_and(|worker| !worker.is_finished())
+            && self.snapshot.status != CaptureStatus::Stopping
+        {
+            self.snapshot.status = CaptureStatus::Stopping;
+            changed = true;
         }
+        changed |= self.reap_finished_worker();
         changed
     }
 
     pub fn start(&mut self, translation_enabled: bool) -> Result<(), String> {
-        if self.snapshot.status == CaptureStatus::Capturing {
-            return Ok(());
+        self.reap_finished_worker();
+        if self.worker.is_some() {
+            return if self.snapshot.status == CaptureStatus::Capturing {
+                Ok(())
+            } else {
+                Err("Speech recognition is still stopping".to_string())
+            };
         }
         self.refresh_devices();
         let models_root = parapper_runtime_dir()?.join("models");
         let device_id = self.snapshot.selected_device_id.clone();
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker_stop_requested = stop_requested.clone();
         let handle = thread::Builder::new()
             .name("native-recognition".to_string())
             .spawn(move || {
@@ -197,12 +212,14 @@ impl CaptureController {
                     translation_enabled,
                     command_rx,
                     event_tx,
+                    worker_stop_requested,
                 )
             })
             .map_err(|error| format!("could not start recognition thread: {error}"))?;
         self.command_tx = Some(command_tx);
         self.event_rx = Some(event_rx);
         self.worker = Some(handle);
+        self.worker_stop_requested = Some(stop_requested);
         self.snapshot.status = CaptureStatus::Capturing;
         self.snapshot.last_error = None;
         self.snapshot.source_text.clear();
@@ -212,15 +229,37 @@ impl CaptureController {
     }
 
     pub fn stop(&mut self) {
+        // Never join here. ONNX/Core ML and CoreAudio initialization may synchronously dispatch
+        // work to the macOS main thread; joining from a GPUI callback would deadlock that work.
+        if let Some(stop_requested) = self.worker_stop_requested.as_ref() {
+            stop_requested.store(true, Ordering::Release);
+        }
         if let Some(sender) = self.command_tx.take() {
-            let _ = sender.send(WorkerCommand::Stop);
+            let _ = sender.try_send(WorkerCommand::Stop);
+        }
+        self.snapshot.status = if self.worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
+            CaptureStatus::Stopping
+        } else {
+            self.reap_finished_worker();
+            CaptureStatus::Idle
+        };
+        self.snapshot.engine_ready = false;
+    }
+
+    fn reap_finished_worker(&mut self) -> bool {
+        if !self.worker.as_ref().is_some_and(JoinHandle::is_finished) {
+            return false;
         }
         if let Some(handle) = self.worker.take() {
             let _ = handle.join();
         }
+        self.command_tx = None;
         self.event_rx = None;
-        self.snapshot.status = CaptureStatus::Idle;
-        self.snapshot.engine_ready = false;
+        self.worker_stop_requested = None;
+        if self.snapshot.status == CaptureStatus::Stopping {
+            self.snapshot.status = CaptureStatus::Idle;
+        }
+        true
     }
 
     fn expire_caption(&mut self) -> bool {
@@ -262,10 +301,16 @@ fn run_capture_worker(
     translation_enabled: bool,
     command_rx: Receiver<WorkerCommand>,
     event_tx: SyncSender<WorkerEvent>,
+    stop_requested: Arc<AtomicBool>,
 ) {
-    if let Err(error) =
-        run_capture_inner(models_root, device_id, translation_enabled, &command_rx, &event_tx)
-    {
+    if let Err(error) = run_capture_inner(
+        models_root,
+        device_id,
+        translation_enabled,
+        &command_rx,
+        &event_tx,
+        &stop_requested,
+    ) {
         let _ = event_tx.send(WorkerEvent::Error(error));
     }
     let _ = event_tx.send(WorkerEvent::EngineReady(false));
@@ -278,23 +323,37 @@ fn run_capture_inner(
     translation_enabled: bool,
     command_rx: &Receiver<WorkerCommand>,
     event_tx: &SyncSender<WorkerEvent>,
+    stop_requested: &AtomicBool,
 ) -> Result<(), String> {
+    if stop_requested.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let config = EngineConfig::new(models_root.clone());
     let mut translation_worker =
         start_translation_worker(translation_enabled, models_root, event_tx.clone())?;
     let mut engine = ParapperEngine::load(&config)
         .map_err(|error| format!("Could not initialize speech recognition: {error:#}"))?;
+    if stop_requested.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let _ = event_tx.send(WorkerEvent::EngineReady(true));
 
     let mut capture = AudioCapture::new(native_audio_config())
         .map_err(|error| format!("Could not initialize microphone: {error}"))?;
     capture.start(device_id.as_deref()).map_err(format_audio_start_error)?;
+    if stop_requested.load(Ordering::Acquire) {
+        let _ = capture.stop();
+        return Ok(());
+    }
     let _ = event_tx.send(WorkerEvent::Status(CaptureStatus::Capturing));
     let mut recognition_text = String::new();
     let mut normalized_samples = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
     let mut last_rms_publish = Instant::now() - RMS_PUBLISH_INTERVAL;
 
     loop {
+        if stop_requested.load(Ordering::Acquire) {
+            break;
+        }
         match command_rx.recv_timeout(POLL_TIMEOUT) {
             Ok(WorkerCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(WorkerCommand::ResetCaption) => recognition_text.clear(),
@@ -460,11 +519,14 @@ fn format_audio_read_error(error: AudioError) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use super::{
-        apply_caption_update, CaptionUpdateMode, CaptureController, CaptureSnapshot, WorkerEvent,
-        MAX_CAPTION_CHARACTERS,
+        apply_caption_update, CaptionUpdateMode, CaptureController, CaptureSnapshot, CaptureStatus,
+        WorkerEvent, MAX_CAPTION_CHARACTERS,
     };
 
     #[test]
@@ -476,6 +538,55 @@ mod tests {
         assert!(controller.expire_caption());
         assert!(controller.snapshot.source_text.is_empty());
         assert!(controller.snapshot.translation_text.is_empty());
+    }
+
+    #[test]
+    fn stop_does_not_join_a_recognition_worker_still_initializing() {
+        let (command_tx, _command_rx) = mpsc::sync_channel(1);
+        let (_event_tx, event_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker = thread::spawn(move || {
+            let _ = release_rx.recv();
+        });
+        let controller = CaptureController {
+            snapshot: CaptureSnapshot { status: CaptureStatus::Capturing, ..Default::default() },
+            caption_expires_at: None,
+            last_device_refresh: Instant::now(),
+            command_tx: Some(command_tx),
+            event_rx: Some(event_rx),
+            worker: Some(worker),
+            worker_stop_requested: Some(stop_requested.clone()),
+        };
+        let (stopped_tx, stopped_rx) = mpsc::sync_channel(1);
+        let stopper = thread::spawn(move || {
+            let mut controller = controller;
+            controller.stop();
+            let _ = stopped_tx.send(controller);
+        });
+
+        let immediate = stopped_rx.recv_timeout(Duration::from_millis(250));
+        let returned_without_joining = immediate.is_ok();
+        let _ = release_tx.send(());
+        let mut controller = immediate.unwrap_or_else(|_| {
+            stopped_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("stop must return after the simulated initialization finishes")
+        });
+        stopper.join().expect("stopper thread must not panic");
+
+        assert!(
+            returned_without_joining,
+            "stop blocked while the recognition worker was initializing"
+        );
+        assert!(stop_requested.load(Ordering::Acquire));
+        assert_eq!(controller.snapshot.status, CaptureStatus::Stopping);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !controller.reap_finished_worker() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(controller.worker.is_none());
+        assert_eq!(controller.snapshot.status, CaptureStatus::Idle);
     }
 
     #[test]
