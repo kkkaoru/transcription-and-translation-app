@@ -10,6 +10,7 @@ import {
   NATIVE_RUNTIME_LIBRARY_NAMES,
   nativeInfoPlist,
   ORT_DYNAMIC_LIBRARY_NAME,
+  ORT_DYNAMIC_LIBRARY_TARGET,
   PRODUCT_NAME,
   RETIRED_APP_PATH,
   resolveNativeInstallApp,
@@ -54,6 +55,10 @@ describe("macOS Native app install", () => {
       false,
     );
     assert.equal(ORT_DYNAMIC_LIBRARY_NAME, "libonnxruntime.dylib");
+    assert.equal(
+      ORT_DYNAMIC_LIBRARY_TARGET,
+      join("..", "Frameworks", "libonnxruntime.1.24.4.dylib"),
+    );
   });
 
   it("does not assemble a stale binary when release build fails", () => {

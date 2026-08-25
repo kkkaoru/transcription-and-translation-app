@@ -89,8 +89,18 @@ permissions.
 - Native disables the capture crate's amplitude-based frame dropping and passes
   a continuous 16 kHz PCM timeline to Silero VAD. The segment builder can
   therefore retain its full pre-speech buffer instead of losing quiet consonants
-  at the start of an utterance. Silero remains the only speech segmentation
-  authority; this does not lower its threshold or replace direct VAD.
+  at the start of an utterance. The realtime device callback now only normalizes
+  and queues bounded raw buffers; mono conversion, cubic resampling, gating, and
+  32 ms framing run on a dedicated worker. CoreAudio underrun/overrun notifications
+  are recoverable and no longer close the callback channel. This prevents clipped
+  greeting audio from turning `こんにちは` into a short unrelated result such as
+  `はい`. Silero remains the only speech segmentation authority; this does not
+  lower its threshold or replace direct VAD.
+- Input devices are not periodically enumerated. On macOS, CoreAudio device-list
+  and default-input property listeners request a refresh only after an OS change;
+  active stream invalidation does the same on other backends. The Live tab also
+  provides an explicit input-device refresh button. Live errors have a dedicated
+  copy button so the complete diagnostic can be pasted without retyping it.
 - Native keeps each engine `turn_id` as an explicit display boundary and expands
   append updates into a complete current-turn caption before publishing. A live
   sequence such as `こんにちは` → `こんにちは聞こえますか？` therefore cannot
@@ -226,12 +236,24 @@ node scripts/measure-native-translation-toggle.mjs \
 ```
 
 The probe emits lifecycle, latency, RSS, and CPU values only. It never emits its
-fixed input or model output. The macOS launcher and the probe both set
+fixed input or model output. It isolates QuickMT and is not a whole-application
+RAM figure: live Native also holds sherpa-onnx ASR, Silero, Namo, the memory-mapped
+UniDic dictionary, and GPUI/IOSurface resources. Measure all of these without
+caption text by running `node scripts/measure-native-process-memory.mjs <pid>`.
+The JSON separates RSS, current/peak physical footprint, private dirty allocator
+regions, reclaimable pages, and graphics surfaces. Clean
+memory-mapped dictionary pages are reclaimable and must not be mistaken for
+private dirty footprint. The macOS launcher and the probe both set
 `MallocLargeCache=0` before process startup because metrics identified an empty
 540 MiB `MALLOC_LARGE` region—not live model weights—as the retained-RSS cause.
 On the measured macOS ARM64 host, current RSS changed from 715,718,656 to
 283,262,976 bytes while on (60.4% lower), and from 645,316,608 to 81,395,712
 bytes after off (87.4% lower). Warm translation took 50.6 ms with beam size two.
+A whole-app sample with capture and translation active measured 542–621 MiB
+physical footprint; its larger 1.11 GiB RSS included roughly 525 MiB of
+reclaimable `MALLOC_SMALL` pages. Packaging also aliases ort's dynamically
+loaded name to sherpa's versioned ONNX Runtime image, avoiding a second 26 MiB
+runtime mapping without changing recognition output.
 
 `ul-unas/` is supported by the engine but noise cancellation is disabled by default until it wins the fixture quality benchmark.
 

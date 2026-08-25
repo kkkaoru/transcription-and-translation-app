@@ -9,6 +9,12 @@ import {
   percentSaved,
   positiveIterations,
 } from "./benchmark-native-translation.mjs";
+import {
+  parseByteSize,
+  parseFootprint,
+  parseMappedRuntime,
+  parseVmmapFootprint,
+} from "./measure-native-process-memory.mjs";
 import { parseProcessSample } from "./measure-native-translation-toggle.mjs";
 
 test("parses macOS process CPU and RSS metrics", () => {
@@ -39,6 +45,34 @@ test("parses current Native translation RSS and CPU samples", () => {
     cpuPercent: 17.5,
   });
   assert.throws(() => parseProcessSample("unavailable"), /could not parse process RSS/);
+});
+
+test("parses Native whole-process physical and reclaimable memory", () => {
+  const parsed = parseFootprint(`
+Kotoba [42]: 64-bit    Footprint: 542 MB (16384 bytes per page)
+ 358 MB        0 B          0 B         53    MALLOC_LARGE
+ 134 MB        0 B       525 MB        170    MALLOC_SMALL
+`);
+  assert.equal(parsed.physicalFootprintBytes, 542 * 1024 ** 2);
+  assert.equal(parsed.categories.MALLOC_LARGE.dirtyBytes, 358 * 1024 ** 2);
+  assert.equal(parsed.categories.MALLOC_SMALL.reclaimableBytes, 525 * 1024 ** 2);
+});
+
+test("parses Native mapped runtimes and vmmap footprint", () => {
+  assert.deepEqual(
+    parseMappedRuntime(
+      `p42\nn/App/Frameworks/libonnxruntime.1.24.4.dylib\nn/App/MacOS/libonnxruntime.dylib\nn/models/unidic-cwj-3_1_1/system.dic\nn/App/Frameworks/libsherpa-onnx-c-api.dylib\n`,
+    ),
+    { onnxRuntimeImageCount: 2, uniDicMapped: true, sherpaRuntimeMapped: true },
+  );
+  assert.deepEqual(
+    parseVmmapFootprint("Physical footprint:         620.6M\nPhysical footprint (peak):  962.6M\n"),
+    {
+      physicalFootprintBytes: Math.round(620.6 * 1024 ** 2),
+      peakPhysicalFootprintBytes: Math.round(962.6 * 1024 ** 2),
+    },
+  );
+  assert.equal(parseByteSize("1.5", "GB"), Math.round(1.5 * 1024 ** 3));
 });
 
 test("validates translation comparison iterations", () => {

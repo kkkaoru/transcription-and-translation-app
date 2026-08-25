@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ export const NATIVE_RUNTIME_LIBRARY_NAMES = [
   "libonnxruntime.1.24.4.dylib",
 ];
 export const ORT_DYNAMIC_LIBRARY_NAME = "libonnxruntime.dylib";
+export const ORT_DYNAMIC_LIBRARY_TARGET = join("..", "Frameworks", NATIVE_RUNTIME_LIBRARY_NAMES[1]);
 
 const NATIVE_MANIFEST = join(repoRoot, "apps", "native", "Cargo.toml");
 const SYPHON_SOURCE = join(
@@ -198,9 +199,10 @@ export const assembleNativeApp = ({
   if (!existsSync(ortDynamicLibrary)) {
     throw new Error(`missing dynamically loaded ONNX Runtime library ${ortDynamicLibrary}`);
   }
-  // ort's load-dynamic feature resolves this unversioned name beside the executable;
-  // dyld rpaths do not participate in that explicit dlopen path.
-  runChecked("/bin/cp", ["-L", ortDynamicLibrary, join(macos, ORT_DYNAMIC_LIBRARY_NAME)]);
+  // ort's load-dynamic feature resolves this unversioned name beside the executable.
+  // Link it to sherpa's versioned Frameworks image instead of copying it: loading two
+  // paths with separate inodes mapped ONNX Runtime twice in the live Native process.
+  symlinkSync(ORT_DYNAMIC_LIBRARY_TARGET, join(macos, ORT_DYNAMIC_LIBRARY_NAME));
   rewriteBundleRpath(join(macos, BINARY_NAME));
 
   rmSync(installApp, { recursive: true, force: true });

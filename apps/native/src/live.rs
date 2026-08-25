@@ -1,15 +1,18 @@
 //! Live capture controls and recognition/translation results.
 
 use gpui::prelude::*;
-use gpui::{div, px, relative, rgb, Context, ElementId, IntoElement, SharedString};
+use gpui::{div, px, relative, rgb, ClipboardItem, Context, ElementId, IntoElement, SharedString};
 
 use crate::capture::CaptureController;
 use crate::domain::{format_rms, rms_level_color, rms_to_fraction, CaptureStatus, UiLanguage};
 use crate::i18n::{text, TextKey};
-use crate::ui::{card, error_line, heading, muted, state_button, COLOR_CARD, COLOR_GHOST_HOVER};
+use crate::ui::{
+    button, card, error_line, heading, muted, state_button, COLOR_CARD, COLOR_GHOST_HOVER,
+};
 
 pub struct LiveCallbacks<V> {
     pub on_toggle_select: fn(&mut V),
+    pub on_refresh_devices: fn(&mut V),
     pub on_select_device: fn(&mut V, &str),
     pub on_start: fn(&mut V),
     pub on_stop: fn(&mut V),
@@ -115,10 +118,35 @@ pub fn render_live<V: 'static>(
     } else {
         snapshot.translation_text.clone()
     };
+    let error_panel = snapshot.last_error.clone().map(|error| {
+        let clipboard_error = error.clone();
+        div().flex().items_center().justify_between().gap_2().child(error_line(error)).child(
+            button(
+                "live-copy-error",
+                text(language, TextKey::CopyError),
+                move |_event, _window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(clipboard_error.clone()));
+                },
+            ),
+        )
+    });
 
     card()
         .child(heading(text(language, TextKey::Live)))
-        .child(muted(text(language, TextKey::InputDevice)))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(muted(text(language, TextKey::InputDevice)))
+                .child(button(
+                    "live-refresh-devices",
+                    text(language, TextKey::RefreshDevices),
+                    cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_refresh_devices)(view)
+                    }),
+                )),
+        )
         .child(trigger)
         .when_some(dropdown, |this, menu| this.child(menu))
         .child(
@@ -163,7 +191,7 @@ pub fn render_live<V: 'static>(
                     }),
                 )),
         )
-        .when_some(snapshot.last_error.clone(), |this, error| this.child(error_line(error)))
+        .when_some(error_panel, |this, panel| this.child(panel))
         .child(div().mt_2().child(SharedString::from(text(language, TextKey::RecognitionResult))))
         .child(div().text_lg().child(SharedString::from(source)))
         .when(translation_enabled, |this| {

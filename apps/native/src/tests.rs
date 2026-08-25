@@ -72,7 +72,8 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
 
     let capture = include_str!("capture.rs");
     assert!(capture.contains("RMS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100)"));
-    assert!(capture.contains("DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(30)"));
+    assert!(!capture.contains("DEVICE_REFRESH_INTERVAL"));
+    assert!(capture.contains("input_devices_changed() && self.refresh_devices()"));
     assert!(capture.contains("TRANSLATION_QUEUE_CAPACITY: usize = 32"));
     assert!(capture.contains("TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60)"));
     assert!(capture.contains("MINIMUM_PAIRED_CAPTION_HOLD: Duration = Duration::from_secs(3)"));
@@ -88,6 +89,9 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     let live = include_str!("live.rs");
     assert!(live.contains("live-translation-enabled"));
     assert!(live.contains("when(translation_enabled"));
+    assert!(live.contains("live-copy-error"));
+    assert!(live.contains("live-refresh-devices"));
+    assert!(live.contains("ClipboardItem::new_string"));
     assert!(app.contains("on_toggle_translation: |view| view.toggle_translation()"));
 
     let memory = include_str!("memory.rs");

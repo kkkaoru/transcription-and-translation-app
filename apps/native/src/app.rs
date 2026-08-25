@@ -539,6 +539,9 @@ impl Render for MainView {
                 cx,
                 &LiveCallbacks {
                     on_toggle_select: MainView::toggle_device_select,
+                    on_refresh_devices: |view| {
+                        view.capture.refresh_devices();
+                    },
                     on_select_device: |view, id| view.select_device(id),
                     on_start: |view| {
                         if let Err(error) =

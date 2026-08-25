@@ -8,6 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use caption_bridge_audio::{
+    initialize_input_device_change_notifications, input_devices_changed,
     is_permission_denied_error, is_recoverable_stream_error, list_input_devices, AudioCapture,
     AudioCaptureConfig, AudioError, InputDevice,
 };
@@ -28,7 +29,6 @@ const EVENT_QUEUE_CAPACITY: usize = 64;
 const TRANSLATION_QUEUE_CAPACITY: usize = 32;
 const TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MINIMUM_PAIRED_CAPTION_HOLD: Duration = Duration::from_secs(3);
-const DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const MICROPHONE_PERMISSION_MESSAGE: &str = "Microphone access is not permitted";
 const DEVICE_NOT_FOUND_MESSAGE: &str = "The selected microphone was not found";
 const MAX_CAPTION_CHARACTERS: usize = 2_048;
@@ -115,7 +115,6 @@ struct TranslationWorker {
 pub struct CaptureController {
     snapshot: CaptureSnapshot,
     caption_expires_at: Option<Instant>,
-    last_device_refresh: Instant,
     command_tx: Option<SyncSender<WorkerCommand>>,
     event_rx: Option<Receiver<WorkerEvent>>,
     worker: Option<JoinHandle<()>>,
@@ -129,10 +128,10 @@ pub struct CaptureController {
 
 impl CaptureController {
     pub fn new() -> Self {
+        initialize_input_device_change_notifications();
         let mut controller = Self {
             snapshot: CaptureSnapshot::default(),
             caption_expires_at: None,
-            last_device_refresh: Instant::now(),
             command_tx: None,
             event_rx: None,
             worker: None,
@@ -172,7 +171,6 @@ impl CaptureController {
                 error_changed
             }
         };
-        self.last_device_refresh = Instant::now();
         changed
     }
 
@@ -184,10 +182,7 @@ impl CaptureController {
 
     pub fn poll(&mut self, caption_timeout_ms: u64) -> bool {
         let now = Instant::now();
-        let mut changed = false;
-        if should_refresh_devices(self.snapshot.status, self.last_device_refresh.elapsed()) {
-            changed = self.refresh_devices();
-        }
+        let mut changed = input_devices_changed() && self.refresh_devices();
         let Some(receiver) = self.event_rx.as_ref() else {
             return self.expire_caption_at(now) || changed;
         };
@@ -196,7 +191,11 @@ impl CaptureController {
             events.push(event);
         }
         for event in events {
+            let refresh_devices = matches!(event, WorkerEvent::Error(_));
             self.apply_worker_event_at(event, now, caption_timeout_ms);
+            if refresh_devices {
+                self.refresh_devices();
+            }
             changed = true;
         }
         changed |= self.expire_caption_at(now);
@@ -679,11 +678,6 @@ fn run_translation_worker(
     release_unused_translation_memory();
 }
 
-fn should_refresh_devices(status: CaptureStatus, elapsed: Duration) -> bool {
-    !matches!(status, CaptureStatus::Capturing | CaptureStatus::Stopping)
-        && elapsed >= DEVICE_REFRESH_INTERVAL
-}
-
 fn native_audio_config() -> AudioCaptureConfig {
     AudioCaptureConfig {
         chunk_ms: PARAPPER_VAD_INTERVAL_MS,
@@ -830,10 +824,10 @@ mod tests {
     use super::{
         apply_caption_update, apply_turn_caption_update, native_audio_config,
         publish_engine_events, queue_initial_translation_warmup, queue_translation,
-        request_translation_warmup, should_refresh_devices, should_request_translation_warmup,
-        CaptionUpdateMode, CaptureController, CaptureSnapshot, CaptureStatus, EngineEvent,
-        TranslationCommand, WorkerCommand, WorkerEvent, MAX_CAPTION_CHARACTERS,
-        TRANSLATION_QUEUE_CAPACITY, TRANSLATOR_IDLE_TIMEOUT,
+        request_translation_warmup, should_request_translation_warmup, CaptionUpdateMode,
+        CaptureController, CaptureSnapshot, CaptureStatus, EngineEvent, TranslationCommand,
+        WorkerCommand, WorkerEvent, MAX_CAPTION_CHARACTERS, TRANSLATION_QUEUE_CAPACITY,
+        TRANSLATOR_IDLE_TIMEOUT,
     };
 
     #[test]
@@ -997,7 +991,6 @@ mod tests {
         let controller = CaptureController {
             snapshot: CaptureSnapshot { status: CaptureStatus::Capturing, ..Default::default() },
             caption_expires_at: None,
-            last_device_refresh: Instant::now(),
             command_tx: Some(command_tx),
             event_rx: Some(event_rx),
             worker: Some(worker),
@@ -1113,13 +1106,6 @@ mod tests {
             translation: "Hello.".to_string(),
         });
         assert_eq!(snapshot.translation_text, "Hello.");
-    }
-
-    #[test]
-    fn active_capture_never_reenumerates_the_microphone_after_one_minute() {
-        assert!(!should_refresh_devices(CaptureStatus::Capturing, Duration::from_secs(61)));
-        assert!(!should_refresh_devices(CaptureStatus::Stopping, Duration::from_secs(61)));
-        assert!(should_refresh_devices(CaptureStatus::Idle, Duration::from_secs(61)));
     }
 
     #[test]

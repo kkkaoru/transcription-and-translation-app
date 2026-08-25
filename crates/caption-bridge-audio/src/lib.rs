@@ -6,7 +6,11 @@
 //! automatic gain control; those settings must be implemented as a separate DSP
 //! stage if the native app needs them.
 
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
+#[cfg(target_os = "macos")]
+use std::sync::Once;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -21,6 +25,7 @@ pub const DEFAULT_SILENCE_GATE_DB: f32 = -50.0;
 pub const MIN_SUPPORTED_SAMPLE_RATE: u32 = 8_000;
 pub const MAX_SUPPORTED_SAMPLE_RATE: u32 = 96_000;
 const MAX_PCM_QUEUE_FRAMES: usize = 8;
+const MAX_RAW_QUEUE_BUFFERS: usize = 16;
 const RESAMPLER_CHUNK_FRAMES: usize = 1_024;
 const ADAPTIVE_MIN_ABSOLUTE_DB: f32 = -70.0;
 const ADAPTIVE_AMBIENT_CEILING_DB: f32 = -64.0;
@@ -348,6 +353,9 @@ pub fn is_recoverable_stream_error(error: &AudioError) -> bool {
                 || lower.contains("try again")
                 || lower.contains("temporarily")
                 || lower.contains("resource temporarily unavailable")
+                || lower.contains("buffer underrun")
+                || lower.contains("buffer overrun")
+                || lower.contains("underrun or overrun")
         }
         _ => false,
     }
@@ -385,6 +393,88 @@ fn choose_input_device(
             .ok_or_else(|| AudioError::DeviceNotFound(requested_id.to_string()));
     }
     host.default_input_device().ok_or(AudioError::NoInputDevice)
+}
+
+#[cfg(target_os = "macos")]
+static INPUT_DEVICES_CHANGED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static INPUT_DEVICE_LISTENER: Once = Once::new();
+
+/// Subscribe to operating-system input-device list and default-device changes.
+///
+/// CoreAudio provides a process-lifetime listener on macOS. Other CPAL backends
+/// currently report active-device invalidation through their stream error event;
+/// callers should also expose an explicit refresh action for idle capture.
+pub fn initialize_input_device_change_notifications() {
+    #[cfg(target_os = "macos")]
+    INPUT_DEVICE_LISTENER.call_once(|| unsafe {
+        register_coreaudio_device_listener(COREAUDIO_DEVICES_SELECTOR);
+        register_coreaudio_device_listener(COREAUDIO_DEFAULT_INPUT_SELECTOR);
+    });
+}
+
+/// Consume a pending operating-system input-device change notification.
+pub fn input_devices_changed() -> bool {
+    #[cfg(target_os = "macos")]
+    return INPUT_DEVICES_CHANGED.swap(false, Ordering::AcqRel);
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+#[cfg(target_os = "macos")]
+const COREAUDIO_DEVICES_SELECTOR: u32 = u32::from_be_bytes(*b"dev#");
+#[cfg(target_os = "macos")]
+const COREAUDIO_DEFAULT_INPUT_SELECTOR: u32 = u32::from_be_bytes(*b"dIn ");
+#[cfg(target_os = "macos")]
+const COREAUDIO_GLOBAL_SCOPE: u32 = u32::from_be_bytes(*b"glob");
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct AudioObjectPropertyAddress {
+    selector: u32,
+    scope: u32,
+    element: u32,
+}
+
+#[cfg(target_os = "macos")]
+type AudioObjectPropertyListenerProc = unsafe extern "C" fn(
+    u32,
+    u32,
+    *const AudioObjectPropertyAddress,
+    *mut core::ffi::c_void,
+) -> i32;
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreAudio", kind = "framework")]
+unsafe extern "C" {
+    fn AudioObjectAddPropertyListener(
+        object_id: u32,
+        address: *const AudioObjectPropertyAddress,
+        listener: AudioObjectPropertyListenerProc,
+        client_data: *mut core::ffi::c_void,
+    ) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn coreaudio_device_changed(
+    _object_id: u32,
+    _address_count: u32,
+    _addresses: *const AudioObjectPropertyAddress,
+    _client_data: *mut core::ffi::c_void,
+) -> i32 {
+    INPUT_DEVICES_CHANGED.store(true, Ordering::Release);
+    0
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn register_coreaudio_device_listener(selector: u32) {
+    let address =
+        AudioObjectPropertyAddress { selector, scope: COREAUDIO_GLOBAL_SCOPE, element: 0 };
+    // SAFETY: CoreAudio copies this property address and the callback and client
+    // data remain valid for the process lifetime. The callback only sets an atomic.
+    let _ = unsafe {
+        AudioObjectAddPropertyListener(1, &address, coreaudio_device_changed, std::ptr::null_mut())
+    };
 }
 
 pub fn list_input_devices() -> Result<Vec<InputDevice>, AudioError> {
@@ -448,7 +538,7 @@ struct StreamBuildArgs<'a> {
     message_tx: SyncSender<CaptureMessage>,
 }
 
-type SenderSlot = Arc<Mutex<Option<SyncSender<CaptureMessage>>>>;
+type SenderSlot = Arc<Mutex<Option<SyncSender<Vec<f32>>>>>;
 
 fn build_stream_for_format(
     args: StreamBuildArgs<'_>,
@@ -462,94 +552,73 @@ fn build_stream_for_format(
         config,
         message_tx,
     } = args;
-    let callback_tx = Arc::new(Mutex::new(Some(message_tx)));
-    let stream_error_tx = Arc::clone(&callback_tx);
-    let error_callback = move |error: cpal::Error| {
-        if let Ok(mut sender) = stream_error_tx.lock() {
-            if let Some(sender) = sender.take() {
-                let _ = sender.send(CaptureMessage {
-                    payload: CapturePayload::Error(AudioError::Stream(error.to_string())),
-                    input_sample_rate: input_rate,
-                    input_channels,
-                });
+    let (raw_tx, raw_rx) = mpsc::sync_channel::<Vec<f32>>(MAX_RAW_QUEUE_BUFFERS);
+    let (recycle_tx, recycle_rx) = mpsc::sync_channel::<Vec<f32>>(MAX_RAW_QUEUE_BUFFERS);
+    let callback_tx = Arc::new(Mutex::new(Some(raw_tx)));
+    let processing_message_tx = message_tx.clone();
+    let mut chunker = PcmChunker::new(input_rate, input_channels, config)?;
+    thread::Builder::new()
+        .name("audio-resample".to_string())
+        .spawn(move || {
+            while let Ok(mut samples) = raw_rx.recv() {
+                chunker.push(&samples, &processing_message_tx);
+                samples.clear();
+                let _ = recycle_tx.try_send(samples);
             }
+        })
+        .map_err(|error| AudioError::Stream(format!("could not start resampler: {error}")))?;
+    let stream_error_tx = Arc::clone(&callback_tx);
+    let error_message_tx = message_tx.clone();
+    let error_callback = move |error: cpal::Error| {
+        let error = AudioError::Stream(error.to_string());
+        let recoverable = is_recoverable_stream_error(&error);
+        let message = CaptureMessage {
+            payload: CapturePayload::Error(error),
+            input_sample_rate: input_rate,
+            input_channels,
+        };
+        if recoverable {
+            let _ = error_message_tx.try_send(message);
+        } else {
+            if let Ok(mut sender) = stream_error_tx.lock() {
+                sender.take();
+            }
+            let _ = error_message_tx.send(message);
         }
     };
     let data_callback_tx = Arc::clone(&callback_tx);
-    let mut chunker = PcmChunker::new(input_rate, input_channels, config)?;
+    macro_rules! build_stream {
+        ($sample_type:ty) => {
+            device.build_input_stream::<$sample_type, _, _>(
+                stream_config,
+                move |data, _| {
+                    push_samples(
+                        data,
+                        &data_callback_tx,
+                        &message_tx,
+                        &recycle_rx,
+                        input_rate,
+                        input_channels,
+                    )
+                },
+                error_callback,
+                None,
+            )
+        };
+    }
     let stream = match sample_format {
-        SampleFormat::I8 => device.build_input_stream::<i8, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::I16 => device.build_input_stream::<i16, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::I24 => device.build_input_stream::<cpal::I24, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::I32 => device.build_input_stream::<i32, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::I64 => device.build_input_stream::<i64, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::U8 => device.build_input_stream::<u8, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::U16 => device.build_input_stream::<u16, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::U24 => device.build_input_stream::<cpal::U24, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::U32 => device.build_input_stream::<u32, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::U64 => device.build_input_stream::<u64, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::F32 => device.build_input_stream::<f32, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
-        SampleFormat::F64 => device.build_input_stream::<f64, _, _>(
-            stream_config,
-            move |data, _| push_samples(data, &mut chunker, &data_callback_tx),
-            error_callback,
-            None,
-        ),
+        SampleFormat::I8 => build_stream!(i8),
+        SampleFormat::I16 => build_stream!(i16),
+        SampleFormat::I24 => build_stream!(cpal::I24),
+        SampleFormat::I32 => build_stream!(i32),
+        SampleFormat::I64 => build_stream!(i64),
+        SampleFormat::U8 => build_stream!(u8),
+        SampleFormat::U16 => build_stream!(u16),
+        SampleFormat::U24 => build_stream!(cpal::U24),
+        SampleFormat::U32 => build_stream!(u32),
+        SampleFormat::U64 => build_stream!(u64),
+        SampleFormat::F32 => build_stream!(f32),
+        SampleFormat::F64 => build_stream!(f64),
         _ => return Err(AudioError::UnsupportedConfiguration(sample_format.to_string())),
     }
     .map_err(|error| AudioError::Stream(error.to_string()))?;
@@ -622,13 +691,26 @@ fn send_capture_message(sender: &SyncSender<CaptureMessage>, message: CaptureMes
 
 fn push_samples<T: ToFloatSample + Copy>(
     data: &[T],
-    chunker: &mut PcmChunker,
-    sender: &Arc<Mutex<Option<SyncSender<CaptureMessage>>>>,
+    sender: &SenderSlot,
+    message_tx: &SyncSender<CaptureMessage>,
+    recycle_rx: &Receiver<Vec<f32>>,
+    input_sample_rate: u32,
+    input_channels: u16,
 ) {
-    if let Ok(sender) = sender.lock() {
-        if let Some(sender) = sender.as_ref() {
-            chunker.push(data, sender);
-        }
+    let mut samples = recycle_rx.try_recv().unwrap_or_else(|_| Vec::with_capacity(data.len()));
+    samples.extend(data.iter().map(|sample| sample.to_float()));
+    let Ok(sender) = sender.lock() else {
+        return;
+    };
+    let Some(sender) = sender.as_ref() else {
+        return;
+    };
+    if sender.try_send(samples).is_err() {
+        let _ = message_tx.try_send(CaptureMessage {
+            payload: CapturePayload::Error(AudioError::FrameQueueFull),
+            input_sample_rate,
+            input_channels,
+        });
     }
 }
 
@@ -859,12 +941,12 @@ impl AdaptiveNoiseFloor {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_permission_denied_error, is_recoverable_stream_error, passes_silence_gate,
+        is_permission_denied_error, is_recoverable_stream_error, passes_silence_gate, push_samples,
         resample_f32_to_pcm16, rms_dbfs, AdaptiveNoiseFloor, AudioCaptureConfig, AudioError,
         CapturePayload, PcmChunker, TARGET_SAMPLE_RATE,
     };
     use std::f32::consts::PI;
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Mutex};
 
     #[test]
     fn silence_rms_is_very_low() {
@@ -902,6 +984,22 @@ mod tests {
         assert!((output.len() as isize - 1_600).abs() <= 1);
         assert!(output.iter().any(|sample| *sample != 0));
         assert_eq!(TARGET_SAMPLE_RATE, 16_000);
+    }
+
+    #[test]
+    fn realtime_callback_only_queues_normalized_samples() {
+        let (raw_tx, raw_rx) = mpsc::sync_channel(1);
+        let sender = Arc::new(Mutex::new(Some(raw_tx)));
+        let (message_tx, message_rx) = mpsc::sync_channel(1);
+        let (_recycle_tx, recycle_rx) = mpsc::sync_channel(1);
+
+        push_samples(&[i16::MIN, 0, i16::MAX], &sender, &message_tx, &recycle_rx, 48_000, 1);
+
+        let samples = raw_rx.recv().unwrap();
+        assert!((samples[0] + 1.0).abs() < 0.0001);
+        assert_eq!(samples[1], 0.0);
+        assert_eq!(samples[2], 1.0);
+        assert!(message_rx.try_recv().is_err());
     }
 
     #[test]
@@ -981,6 +1079,9 @@ mod tests {
         )));
         assert!(is_recoverable_stream_error(&AudioError::Stream(
             "resource temporarily unavailable".to_string()
+        )));
+        assert!(is_recoverable_stream_error(&AudioError::Stream(
+            "A buffer underrun or overrun occured.".to_string()
         )));
         assert!(!is_recoverable_stream_error(&AudioError::CallbackChannelClosed));
         assert!(!is_recoverable_stream_error(&AudioError::DeviceNotFound(
