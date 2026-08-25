@@ -1,4 +1,4 @@
-//! Bound translation allocator retention and return freed model pages to the OS.
+//! Bound model allocator retention and return freed capture pages to the OS.
 
 #[cfg(target_os = "macos")]
 pub fn configure_process_memory() {
@@ -11,7 +11,7 @@ pub fn configure_process_memory() {
 pub const fn configure_process_memory() {}
 
 #[cfg(target_os = "macos")]
-pub fn release_unused_translation_memory() -> usize {
+pub fn release_unused_process_memory() -> usize {
     unsafe extern "C" {
         fn malloc_zone_pressure_relief(zone: *mut core::ffi::c_void, goal: usize) -> usize;
     }
@@ -21,7 +21,7 @@ pub fn release_unused_translation_memory() -> usize {
 }
 
 #[cfg(target_os = "linux")]
-pub fn release_unused_translation_memory() -> usize {
+pub fn release_unused_process_memory() -> usize {
     unsafe extern "C" {
         fn malloc_trim(pad: usize) -> i32;
     }
@@ -31,7 +31,7 @@ pub fn release_unused_translation_memory() -> usize {
 }
 
 #[cfg(target_os = "windows")]
-pub fn release_unused_translation_memory() -> usize {
+pub fn release_unused_process_memory() -> usize {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentProcess() -> *mut core::ffi::c_void;
@@ -48,6 +48,6 @@ pub fn release_unused_translation_memory() -> usize {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub const fn release_unused_translation_memory() -> usize {
+pub const fn release_unused_process_memory() -> usize {
     0
 }

@@ -24,8 +24,10 @@ pub const DEFAULT_CHUNK_MS: u32 = 640;
 pub const DEFAULT_SILENCE_GATE_DB: f32 = -50.0;
 pub const MIN_SUPPORTED_SAMPLE_RATE: u32 = 8_000;
 pub const MAX_SUPPORTED_SAMPLE_RATE: u32 = 96_000;
-const MAX_PCM_QUEUE_FRAMES: usize = 8;
-const MAX_RAW_QUEUE_BUFFERS: usize = 16;
+// Keep two seconds of 32 ms VAD frames so model page faults or a QuickMT load cannot
+// break the continuous PCM stream while recognition remains responsive.
+const MAX_PCM_QUEUE_FRAMES: usize = 64;
+const MAX_RAW_QUEUE_BUFFERS: usize = 64;
 const RESAMPLER_CHUNK_FRAMES: usize = 1_024;
 const ADAPTIVE_MIN_ABSOLUTE_DB: f32 = -70.0;
 const ADAPTIVE_AMBIENT_CEILING_DB: f32 = -64.0;
@@ -943,7 +945,8 @@ mod tests {
     use super::{
         is_permission_denied_error, is_recoverable_stream_error, passes_silence_gate, push_samples,
         resample_f32_to_pcm16, rms_dbfs, AdaptiveNoiseFloor, AudioCaptureConfig, AudioError,
-        CapturePayload, PcmChunker, TARGET_SAMPLE_RATE,
+        CapturePayload, PcmChunker, MAX_PCM_QUEUE_FRAMES, MAX_RAW_QUEUE_BUFFERS,
+        TARGET_SAMPLE_RATE,
     };
     use std::f32::consts::PI;
     use std::sync::{mpsc, Arc, Mutex};
@@ -1024,6 +1027,13 @@ mod tests {
 
         assert!((511..=513).contains(&frame.len()));
         assert!((-10.0..=-8.0).contains(&rms_dbfs(&frame)));
+    }
+
+    #[test]
+    fn capture_queues_cover_model_load_stalls_without_unbounded_growth() {
+        assert_eq!(MAX_PCM_QUEUE_FRAMES, 64);
+        assert_eq!(MAX_RAW_QUEUE_BUFFERS, 64);
+        assert_eq!(MAX_PCM_QUEUE_FRAMES * 32, 2_048);
     }
 
     #[test]

@@ -7,6 +7,9 @@ use crate::{
 
 pub(crate) trait TurnOutputSink: Send {
     fn update_config(&mut self, _config: &ParapperConfig) {}
+    fn requires_audio(&self) -> bool {
+        true
+    }
     fn emit(&mut self, output: RecognizedTextOutput);
     fn emit_segment_closed(&mut self, _segment_id: u64) {}
     fn emit_partial_window(&mut self, _output: RecognitionStreamOutput) {}
@@ -23,6 +26,10 @@ impl ChannelTurnOutputSink {
 }
 
 impl TurnOutputSink for ChannelTurnOutputSink {
+    fn requires_audio(&self) -> bool {
+        false
+    }
+
     fn emit(&mut self, output: RecognizedTextOutput) {
         let event = EngineEvent::Caption {
             turn_id: output.meta.id.clone(),
@@ -49,5 +56,24 @@ pub(crate) struct NoopTurnOutputSink;
 
 #[cfg(test)]
 impl TurnOutputSink for NoopTurnOutputSink {
+    fn requires_audio(&self) -> bool {
+        false
+    }
+
     fn emit(&mut self, _output: RecognizedTextOutput) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::{ChannelTurnOutputSink, TurnOutputSink};
+
+    #[test]
+    fn portable_caption_channel_does_not_request_discarded_pcm_copies() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let sink = ChannelTurnOutputSink::new(sender);
+
+        assert!(!sink.requires_audio());
+    }
 }

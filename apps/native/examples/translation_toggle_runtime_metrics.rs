@@ -8,7 +8,7 @@ use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use kotoba_beacon_native::memory::{configure_process_memory, release_unused_translation_memory};
+use kotoba_beacon_native::memory::{configure_process_memory, release_unused_process_memory};
 use parapper_engine::LocalTranslator;
 use serde::Serialize;
 
@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
                 let started_at = Instant::now();
                 translator = None;
                 black_box(&translator);
-                black_box(release_unused_translation_memory());
+                black_box(release_unused_process_memory());
                 publish("off", started_at.elapsed().as_secs_f64() * 1_000.0, false)?;
             }
             "quit" => break,

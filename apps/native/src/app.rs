@@ -298,7 +298,7 @@ impl MainView {
             self.active_color_picker = None;
             self.fonts.clear();
             self.fonts.shrink_to_fit();
-            self.pre_capture_window_size = Some(window.bounds().size);
+            self.pre_capture_window_size = Some(window.viewport_size());
             window.resize(size(px(CAPTURE_WINDOW_WIDTH_PX), px(CAPTURE_WINDOW_HEIGHT_PX)));
         } else {
             if let Some(previous_size) = self.pre_capture_window_size.take() {

@@ -286,6 +286,7 @@ impl TurnDraft {
         turn_id: u64,
         output_sequence: u64,
         route: RecognitionRoute,
+        include_audio: bool,
     ) -> Option<RecognizedTextOutput> {
         if self.combined_text.is_empty() {
             return None;
@@ -293,8 +294,9 @@ impl TurnDraft {
 
         let source = self.source_meta(turn_session_id, turn_id, output_sequence);
         let meta = RecognizedTextMeta::replace_turn_output(self.event_id.clone(), source, false);
+        let phrase = if include_audio { self.full_audio.clone() } else { Vec::new() };
         Some(RecognizedTextOutput::from_route(
-            self.full_audio.clone(),
+            phrase,
             continuing_turn_text(&self.combined_text),
             route,
             self.detected_language.clone(),
@@ -309,6 +311,7 @@ impl TurnDraft {
         turn_id: u64,
         output_sequence: u64,
         route: RecognitionRoute,
+        include_audio: bool,
     ) -> Option<TurnConfirmed> {
         if self.combined_text.is_empty() {
             return None;
@@ -316,8 +319,9 @@ impl TurnDraft {
 
         let source = self.source_meta(turn_session_id, turn_id, output_sequence);
         let meta = RecognizedTextMeta::replace_turn_output(self.event_id, source, true);
+        let full_audio = if include_audio { self.full_audio } else { Vec::new() };
         Some(TurnConfirmed {
-            full_audio: self.full_audio,
+            full_audio,
             text: finalize_turn_text(&self.combined_text, route.language),
             route,
             detected_language: self.detected_language,
@@ -377,5 +381,43 @@ impl TurnConfirmed {
             self.meta,
             self.processing_millis,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TurnDraft;
+    use crate::{config::AsrLanguage, recognition::transcription::route::RecognitionRoute};
+
+    #[test]
+    fn caption_only_interim_does_not_clone_accumulated_turn_audio() {
+        let mut draft = TurnDraft::new("turn-1".to_string(), 0);
+        draft.combined_text = "こんにちは".to_string();
+        draft.full_audio = vec![0.25; 16_000];
+        draft.latest_segment_id = Some(1);
+        let route = RecognitionRoute::from_language(AsrLanguage::Japanese);
+
+        let output = draft
+            .interim_output(1, 1, 1, route, false)
+            .expect("non-empty draft should produce an interim caption");
+
+        assert!(output.phrase.is_empty());
+        assert_eq!(draft.full_audio.len(), 16_000);
+    }
+
+    #[test]
+    fn audio_consumer_still_receives_complete_interim_pcm() {
+        let mut draft = TurnDraft::new("turn-1".to_string(), 0);
+        draft.combined_text = "こんにちは".to_string();
+        draft.full_audio = vec![0.25; 16_000];
+        draft.latest_segment_id = Some(1);
+        let route = RecognitionRoute::from_language(AsrLanguage::Japanese);
+
+        let output = draft
+            .interim_output(1, 1, 1, route, true)
+            .expect("non-empty draft should produce an interim caption");
+
+        assert_eq!(output.phrase.len(), 16_000);
+        assert_eq!(draft.full_audio.len(), 16_000);
     }
 }

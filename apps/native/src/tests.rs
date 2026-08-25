@@ -82,7 +82,8 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(capture.contains("RMS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100)"));
     assert!(!capture.contains("DEVICE_REFRESH_INTERVAL"));
     assert!(capture.contains("input_devices_changed() && self.refresh_devices()"));
-    assert!(capture.contains("TRANSLATION_QUEUE_CAPACITY: usize = 32"));
+    assert!(capture.contains("latest_request: Option<TranslationRequest>"));
+    assert!(capture.contains("state.latest_request = Some(request)"));
     assert!(capture.contains("TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60)"));
     assert!(capture.contains("MINIMUM_PAIRED_CAPTION_HOLD: Duration = Duration::from_secs(3)"));
     assert!(capture.contains("receiver.recv_timeout(TRANSLATOR_IDLE_TIMEOUT)"));
@@ -92,7 +93,7 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(capture.contains("Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES)"));
     assert!(capture.contains("SetTranslationEnabled(bool)"));
     assert!(capture.contains("apply_turn_caption_update"));
-    assert!(capture.contains("release_unused_translation_memory"));
+    assert!(capture.contains("release_unused_process_memory"));
 
     let live = include_str!("live.rs");
     assert!(live.contains("live-translation-enabled"));
@@ -105,6 +106,7 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(app.contains("self.style_preview_image.take()"));
     assert!(app.contains("capture_view_compact"));
     assert!(app.contains("window.resize(size(px(CAPTURE_WINDOW_WIDTH_PX)"));
+    assert!(app.contains("Some(window.viewport_size())"));
     assert!(app.contains("(!self.capture_view_compact)"));
     assert!(app.contains(".then(|| tab_bar"));
     assert!(app.contains("let fonts = Vec::new()"));
@@ -135,13 +137,12 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
         .find("let mut translation_worker =")
         .expect("Native must create one translation worker");
     assert!(engine_load < translation_start);
-    let warmup = capture
-        .find("request_translation_warmup(")
-        .expect("Native must warm QuickMT from the continuous microphone stream");
-    let asr_push = capture
-        .find(".push_audio(&normalized_samples)")
-        .expect("Native must push microphone audio into ASR");
-    assert!(warmup < asr_push);
+    let audio_start = capture
+        .find("capture.start(device_id.as_deref())")
+        .expect("Native must start its selected microphone");
+    assert!(translation_start < audio_start);
+    assert!(capture.contains("if !sender.request_warmup()"));
+    assert!(!capture.contains("request_translation_warmup("));
 
     let engine = include_str!("../../../crates/parapper-engine/src/lib.rs");
     assert!(engine.contains("QuickMtJaEnEngine::load(models_root)"));

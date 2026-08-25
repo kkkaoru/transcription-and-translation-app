@@ -770,11 +770,13 @@ impl RecognitionSession {
             let Some(turn) = self.turn_store.turns.remove(&turn_id) else {
                 return;
             };
+            let include_audio = self.io.output_sink.requires_audio();
             let Some(confirmed) = turn.into_draft().confirm(
                 self.counters.turn_session_id,
                 turn_id,
                 output_sequence,
                 route,
+                include_audio,
             ) else {
                 return;
             };
@@ -792,9 +794,14 @@ impl RecognitionSession {
         }
         let combined_text = draft.combined_text.clone();
         let output_sequence = take_next_output_sequence(&mut self.counters.next_output_sequence);
-        let Some(mut output) =
-            draft.interim_output(self.counters.turn_session_id, turn_id, output_sequence, route)
-        else {
+        let include_audio = self.io.output_sink.requires_audio();
+        let Some(mut output) = draft.interim_output(
+            self.counters.turn_session_id,
+            turn_id,
+            output_sequence,
+            route,
+            include_audio,
+        ) else {
             return;
         };
         if let Some(turn) = self.turn_store.turns.get_mut(&turn_id) {
