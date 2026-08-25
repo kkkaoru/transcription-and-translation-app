@@ -10,8 +10,14 @@ publish = false
 [features]
 default = ["gpui"]
 gpui = ["dep:gpui", "dep:gpui_platform", "dep:signal-hook"]
+translation-comparison = ["parapper-engine/translation-comparison"]
+
+[[example]]
+name = "translation_runtime_metrics"
+required-features = ["translation-comparison"]
 
 [dependencies]
+anyhow = "1"
 caption-bridge-audio = { path = "../../crates/caption-bridge-audio" }
 caption-bridge-browser-source = { path = "../../crates/caption-bridge-browser-source" }
 caption-bridge-captions = { path = "../../crates/caption-bridge-captions" }

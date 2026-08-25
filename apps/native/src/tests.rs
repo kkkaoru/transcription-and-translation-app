@@ -77,10 +77,23 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(capture.contains("TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60)"));
     assert!(capture.contains("MINIMUM_PAIRED_CAPTION_HOLD: Duration = Duration::from_secs(3)"));
     assert!(capture.contains("receiver.recv_timeout(TRANSLATOR_IDLE_TIMEOUT)"));
+    assert!(capture.contains("translator = None"));
+    assert!(capture.contains("drop(worker.sender)"));
+    assert!(capture.contains("worker.handle.join()"));
     assert!(capture.contains("Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES)"));
 
-    let translation = include_str!("../../../crates/parapper-engine/src/translation_engine.rs");
-    assert!(translation.contains(".with_memory_pattern(false)"));
+    let translation =
+        include_str!("../../../crates/parapper-engine/src/quickmt_translation_engine.rs");
+    assert!(translation.contains("compute_type: ComputeType::INT8"));
+    assert!(translation.contains("num_threads_per_replica: 1"));
+    assert!(translation.contains("max_queued_batches: 1"));
+    assert!(translation.contains("max_batch_size: 1"));
+
+    let engine_manifest = include_str!("../../../crates/parapper-engine/Cargo.toml");
+    assert!(engine_manifest.contains("target_arch = \"aarch64\""));
+    assert!(engine_manifest.contains("features = [\"ruy\", \"sentencepiece\"]"));
+    assert!(engine_manifest.contains("not(target_arch = \"aarch64\")"));
+    assert!(engine_manifest.contains("features = [\"dnnl\", \"sentencepiece\"]"));
 }
 
 #[test]

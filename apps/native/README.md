@@ -95,12 +95,15 @@ permissions.
 - Event-driven GPUI replacement was not adopted: the measured idle loop rounded
   to 0% CPU, while cross-thread wakeup changes would add shutdown and missed-wake
   risk. Recognition events remain polled at 32 ms for predictable latency.
-- The 462 MiB-on-disk translation model reached about 781 MiB process RSS and
-  took 2.7 seconds to load in a cold standalone measurement. It is loaded lazily,
-  uses no ORT memory-pattern cache for its changing decoder shapes, is released
-  immediately when capture stops, and is released after one idle minute. This
-  bounds retained RAM during a paused capture session while keeping the loaded
-  model available throughout active finalized-turn translation.
+- Native translation uses only the Japanese-to-English QuickMT model through an
+  in-process, statically linked CTranslate2 runtime. CTranslate2 converts the
+  model to INT8 at load time, uses one CPU replica, accepts one translation per
+  batch, and retains the model only while translation is active. The separate
+  English-to-Japanese model is never loaded. Dropping the worker on capture stop
+  fully unloads the translator; one idle minute also drops it. This replaces the
+  previous 462 MiB LFM2 ONNX model, which reached about 781 MiB process RSS and
+  took 2.7 seconds to load in a cold standalone measurement. Measure QuickMT RSS
+  on each target because CTranslate2 activation and backend memory varies by CPU.
 - Direct macOS GPU power sampling requires privileged `powermetrics`. GPU work
   is therefore guarded by behavioral tests that prove unchanged captions do not
   rasterize or upload; use a privileged Metal trace for hardware-specific power
@@ -137,15 +140,52 @@ namo-turn-detector-v1-japanese/
 unidic-cwj-3_1_1/
 ```
 
-Japanese-to-English translation additionally uses:
+Japanese-to-English translation additionally uses the files from
+`quickmt/quickmt-ja-en`. The opposite-direction model is intentionally absent:
 
 ```text
-lfm2-350m-enjp-mt-onnx-q4/
-├─ tokenizer.json
-└─ onnx/
-   ├─ model_q4.onnx
-   └─ model_q4.onnx_data
+quickmt-ja-en/
+├─ config.json
+├─ model.bin
+├─ source_vocabulary.json
+├─ target_vocabulary.json
+├─ src.spm.model
+└─ tgt.spm.model
 ```
+
+The model is loaded on CPU with `compute_type=INT8`, one replica, one queued
+batch, and the model's default beam size of two. Keeping beam search preserves
+translation quality while the single-item batch and single worker bound RAM.
+
+The previous LFM2-350M ONNX implementation remains as a non-default comparison
+module at `crates/parapper-engine/reference/lfm2_onnx_translation_engine.rs`.
+Native no longer selects it because its 462 MiB Q4 model reached about 781 MiB
+process RSS while active, whereas the Native requirement prioritizes lower
+retained RAM. It is compiled only by the `translation-comparison` feature, so
+its validated prompt, cache, tensor-shape, and output-cleanup definitions remain
+available without linking it into the shipped translation path.
+
+With both model directories installed, compare translation quality, model-load
+latency, p50/p95 inference latency, and peak process RSS in separate processes:
+
+```bash
+bun scripts/benchmark-native-translation.mjs --iterations=3
+```
+
+The benchmark uses five fixed, non-sensitive Japanese fixtures and emits only
+aggregate chrF2 quality scores and process metrics; it never emits the fixture
+text or model output. Pass `--models-root=/absolute/path` when models are stored
+outside the Native data directory. macOS and Linux report peak RSS through
+`/usr/bin/time`; Windows currently reports latency and quality while peak RSS
+remains `null`.
+
+A representative macOS ARM64 release comparison with three iterations per
+fixture measured LFM2 Q4 at 852,393,984 bytes peak RSS and QuickMT INT8 at
+715,358,208 bytes, a 16.1% reduction. QuickMT reduced p50 translation latency
+from 236.7 ms to 60.3 ms and p95 from 280.1 ms to 83.4 ms while increasing the
+fixed-corpus chrF2 score from 65.1 to 82.9. These figures validate the selected
+backend on that corpus; repeat the command on each deployment CPU and with a
+representative domain corpus before treating them as universal quality scores.
 
 `ul-unas/` is supported by the engine but noise cancellation is disabled by default until it wins the fixture quality benchmark.
 

@@ -420,10 +420,7 @@ pub fn local_translation_model_installed() -> bool {
     let Ok(root) = parapper_runtime_dir() else {
         return false;
     };
-    let model = root.join("models/lfm2-350m-enjp-mt-onnx-q4");
-    model.join("tokenizer.json").is_file()
-        && model.join("onnx/model_q4.onnx").is_file()
-        && model.join("onnx/model_q4.onnx_data").is_file()
+    parapper_engine::quickmt_ja_en_model_installed(&root.join("models"))
 }
 
 #[cfg(any(feature = "gpui", test))]

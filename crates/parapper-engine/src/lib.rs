@@ -11,10 +11,15 @@ include!("test_config_macro.rs");
 #[doc(hidden)]
 pub mod config;
 mod delivery;
+#[cfg(feature = "translation-comparison")]
+#[path = "../reference/lfm2_onnx_translation_engine.rs"]
+mod lfm2_onnx_translation_engine;
 mod model;
 mod noise_cancellation;
+mod quickmt_translation_engine;
 mod recognition;
-mod translation_engine;
+#[cfg(feature = "translation-comparison")]
+mod translation_comparison;
 
 use std::{
     path::{Path, PathBuf},
@@ -82,27 +87,24 @@ pub enum ShutdownResult {
     TimedOut,
 }
 
+pub use quickmt_translation_engine::{QUICKMT_JA_EN_MODEL_DIR, quickmt_ja_en_model_installed};
+#[cfg(feature = "translation-comparison")]
+pub use translation_comparison::{
+    TranslationComparisonBackend, TranslationComparisonEngine, chrf2_score,
+};
+
 pub struct LocalTranslator {
-    engine: translation_engine::LocalTranslationEngine,
+    engine: quickmt_translation_engine::QuickMtJaEnEngine,
 }
 
 impl LocalTranslator {
     pub fn load(models_root: &Path) -> Result<Self> {
-        let model_dir = models_root.join("lfm2-350m-enjp-mt-onnx-q4");
-        let engine = translation_engine::LocalTranslationEngine::load(
-            &model_dir,
-            config::LocalTranslationModel::Lfm2Q4,
-        )
-        .with_context(|| format!("could not load local translator from {}", model_dir.display()))?;
+        let engine = quickmt_translation_engine::QuickMtJaEnEngine::load(models_root)?;
         Ok(Self { engine })
     }
 
     pub fn translate_ja_to_en(&mut self, text: &str) -> Result<String> {
-        self.engine.translate(
-            config::TranslationLanguage::Ja,
-            config::TranslationLanguage::En,
-            text,
-        )
+        self.engine.translate(text)
     }
 }
 

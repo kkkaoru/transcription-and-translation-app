@@ -4,6 +4,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseDarwinTime, parseGnuTime } from "./benchmark-native-runtime.mjs";
+import {
+  compareResults,
+  percentSaved,
+  positiveIterations,
+} from "./benchmark-native-translation.mjs";
 
 test("parses macOS process CPU and RSS metrics", () => {
   assert.deepEqual(
@@ -25,4 +30,44 @@ Maximum resident set size (kbytes): 16384
 `),
     { wallSeconds: 1.2, cpuSeconds: 0.8, maxRssBytes: 16_777_216 },
   );
+});
+
+test("validates translation comparison iterations", () => {
+  assert.equal(positiveIterations(undefined), 3);
+  assert.equal(positiveIterations("5"), 5);
+  assert.throws(() => positiveIterations("0"), /iterations must be a positive integer/);
+  assert.throws(() => positiveIterations("1.5"), /iterations must be a positive integer/);
+});
+
+test("reports unavailable translation process metrics without inventing values", () => {
+  assert.equal(percentSaved(null, 100), null);
+  assert.equal(percentSaved(100, null), null);
+  assert.equal(percentSaved(0, 0), null);
+});
+
+test("compares RSS latency and quality with LFM2 as the baseline", () => {
+  const lfm2 = {
+    workload: {
+      loadMs: 2_000,
+      latencyMs: { p50: 200, p95: 400 },
+      quality: { score: 70 },
+    },
+    process: { maxRssBytes: 800_000_000 },
+  };
+  const quickmt = {
+    workload: {
+      loadMs: 1_000,
+      latencyMs: { p50: 100, p95: 300 },
+      quality: { score: 75 },
+    },
+    process: { maxRssBytes: 500_000_000 },
+  };
+
+  assert.deepEqual(compareResults(lfm2, quickmt), {
+    maxRssPercentSaved: 37.5,
+    loadPercentSaved: 50,
+    latencyP50PercentSaved: 50,
+    latencyP95PercentSaved: 25,
+    chrf2Delta: 5,
+  });
 });

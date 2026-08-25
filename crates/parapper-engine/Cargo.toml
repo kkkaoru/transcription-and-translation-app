@@ -10,6 +10,7 @@ license = "MIT"
 [features]
 default = []
 real-asr-tests = []
+translation-comparison = []
 
 [dependencies]
 caption-bridge-japanese-text = { path = "../caption-bridge-japanese-text" }
@@ -25,3 +26,11 @@ sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["shar
 sherpa-onnx-sys = { version = "=1.13.3", default-features = false, features = ["shared"] }
 tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"] }
 vibrato-rkyv = { version = "0.7.8", default-features = false, features = ["legacy"] }
+
+# Ruy provides the CTranslate2 INT8 backend on ARM without a dynamic runtime.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+ct2rs = { version = "=0.10.0", default-features = false, features = ["ruy", "sentencepiece"] }
+
+# oneDNN provides the supported CTranslate2 INT8 backend on x86 Linux, macOS, and Windows.
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+ct2rs = { version = "=0.10.0", default-features = false, features = ["dnnl", "sentencepiece"] }

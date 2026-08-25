@@ -36,6 +36,15 @@ The complete redistribution terms are retained in
 Worker assets. The BCCWJ project is identified at
 <https://clrd.ninjal.ac.jp/bccwj/>.
 
+## QuickMT / CTranslate2
+
+Native Japanese-to-English translation supports the `quickmt/quickmt-ja-en`
+model, distributed under CC BY 4.0. The model is loaded with the MIT-licensed
+CTranslate2 runtime through the MIT-licensed `ct2rs` bindings. QuickMT model
+files are installed separately and are not committed to this repository. Keep
+the model card and attribution from <https://huggingface.co/quickmt/quickmt-ja-en>
+with redistributed model artifacts.
+
 ## Other bundled components
 
 Additional bundled runtimes retain their upstream notices in place, including
