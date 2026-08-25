@@ -1110,34 +1110,36 @@ pub fn search(
         // than restoring the old beam or retaining an unbounded path list.
         n_best
     };
-    let mut states = vec![Vec::<LatticeSearchState>::new(); lattice.terminal + 1];
-    states[0].push(LatticeSearchState {
-        edge_handles: Vec::new(),
-        text: String::new(),
+    let mut arena = vec![LatticeSearchState {
+        parent: None,
+        edge_handle: None,
+        output_bytes: 0,
         score: NO_SCORE,
         trailing: None,
-    });
+    }];
+    let mut states = vec![Vec::<usize>::new(); lattice.terminal + 1];
+    states[0].push(0);
 
     for start in 0..lattice.terminal {
         let current = states[start].clone();
         if current.is_empty() {
             continue;
         }
-        for state in current {
+        for state_index in current {
+            let state = arena[state_index];
             for &handle in lattice.edge_handles_from(start) {
                 let edge = &lattice.edges[handle];
                 if !edge_matches_constraints(edge, &request.constraints) {
                     continue;
                 }
                 let end = edge.scalar_span.end;
-                if end > lattice.terminal {
-                    continue;
-                }
-                let mut edge_handles = state.edge_handles.clone();
-                edge_handles.push(handle);
-                let mut text = state.text.clone();
-                text.push_str(&edge.surface);
-                if !text_matches_prefix_constraints(&text, &request.constraints) {
+                if end > lattice.terminal
+                    || !output_extension_matches_prefix_constraints(
+                        state.output_bytes,
+                        edge.surface.as_bytes(),
+                        &request.constraints,
+                    )
+                {
                     continue;
                 }
                 let trailing = if matches!(edge.origin, EdgeOrigin::Boundary) {
@@ -1145,26 +1147,22 @@ pub fn search(
                 } else {
                     Some(PrecedingContext { rcid: edge.rcid, mid: edge.mid })
                 };
-                states[end].push(LatticeSearchState {
-                    edge_handles,
-                    text,
+                let next = LatticeSearchState {
+                    parent: Some(state_index),
+                    edge_handle: Some(handle),
+                    output_bytes: state.output_bytes + edge.surface.len(),
                     score: state.score + edge.score,
                     trailing,
-                });
-                trim_lattice_states(&mut states[end], beam);
+                };
+                push_lattice_state(&mut states[end], &mut arena, next, beam);
             }
         }
     }
 
     let mut candidates = states[lattice.terminal]
         .drain(..)
-        .filter_map(|state| {
-            let candidate = CandidatePath {
-                edge_handles: state.edge_handles,
-                text: state.text,
-                score: state.score,
-                trailing: state.trailing,
-            };
+        .filter_map(|state_index| {
+            let candidate = reconstruct_arena_candidate(lattice, &arena, state_index);
             path_matches_constraints(lattice, &candidate, &request.constraints).then_some(candidate)
         })
         .collect::<Vec<_>>();
@@ -1189,10 +1187,11 @@ pub fn search(
     unique
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct LatticeSearchState {
-    edge_handles: Vec<EdgeHandle>,
-    text: String,
+    parent: Option<usize>,
+    edge_handle: Option<EdgeHandle>,
+    output_bytes: usize,
     score: f32,
     trailing: Option<PrecedingContext>,
 }
@@ -1206,11 +1205,40 @@ fn edge_matches_constraints(edge: &LatticeEdge, constraints: &[Utf8BytePrefixCon
     )
 }
 
-fn text_matches_prefix_constraints(text: &str, constraints: &[Utf8BytePrefixConstraint]) -> bool {
-    let bytes = text.as_bytes();
+fn output_extension_matches_prefix_constraints(
+    output_bytes: usize,
+    extension: &[u8],
+    constraints: &[Utf8BytePrefixConstraint],
+) -> bool {
     constraints.iter().filter(|constraint| constraint.scalar_position == usize::MAX).all(
-        |constraint| bytes.starts_with(&constraint.prefix) || constraint.prefix.starts_with(bytes),
+        |constraint| {
+            if output_bytes >= constraint.prefix.len() {
+                return true;
+            }
+            let remaining = &constraint.prefix[output_bytes..];
+            extension.starts_with(remaining) || remaining.starts_with(extension)
+        },
     )
+}
+
+fn reconstruct_arena_candidate(
+    lattice: &ConversionLattice,
+    arena: &[LatticeSearchState],
+    state_index: usize,
+) -> CandidatePath {
+    let state = arena[state_index];
+    let mut edge_handles = Vec::new();
+    let mut cursor = state_index;
+    while let Some(handle) = arena[cursor].edge_handle {
+        edge_handles.push(handle);
+        cursor = arena[cursor].parent.expect("non-root search state must have a parent");
+    }
+    edge_handles.reverse();
+    let mut text = String::with_capacity(state.output_bytes);
+    for handle in &edge_handles {
+        text.push_str(&lattice.edges[*handle].surface);
+    }
+    CandidatePath { edge_handles, text, score: state.score, trailing: state.trailing }
 }
 
 fn path_matches_constraints(
@@ -1257,11 +1285,19 @@ fn reconstruct_candidate_path(
     })
 }
 
-fn trim_lattice_states(states: &mut Vec<LatticeSearchState>, beam: usize) {
-    states.sort_by(|left, right| right.score.total_cmp(&left.score));
-    if beam != usize::MAX {
-        states.truncate(beam);
+fn push_lattice_state(
+    states: &mut Vec<usize>,
+    arena: &mut Vec<LatticeSearchState>,
+    candidate: LatticeSearchState,
+    beam: usize,
+) {
+    let index = states.partition_point(|kept| arena[*kept].score >= candidate.score);
+    if index >= beam {
+        return;
     }
+    arena.push(candidate);
+    states.insert(index, arena.len() - 1);
+    states.truncate(beam);
 }
 
 pub fn convert_kana_to_kanji(input: &str) -> String {
@@ -1356,14 +1392,13 @@ pub fn convert_with_dictionary(
         // characters. Precompute it once per entry before iterating over the
         // (up to beam-width) path states; recalculating it for every state
         // performs identical dictionary lookups without changing the score.
-        let contextual_entry_bonuses = entries
+        let entry_priors = entries
             .iter()
             .map(|entry| {
                 let entry_len = entry.reading.chars().count();
                 let end = start + entry_len;
-                if !reading_slice_matches(&chars, start, end, &entry.reading) {
-                    NO_SCORE
-                } else {
+                let contextual_bonus = if reading_slice_matches(&chars, start, end, &entry.reading)
+                {
                     contextual_entry_bonus(
                         dictionary,
                         &chars,
@@ -1372,14 +1407,11 @@ pub fn convert_with_dictionary(
                         entry,
                         max_dictionary_word_chars,
                     )
-                }
+                } else {
+                    NO_SCORE
+                };
+                (entry_len, contextual_bonus, model_metadata_penalty(dictionary, entry))
             })
-            .collect::<Vec<_>>();
-        // This model prior depends only on the dictionary and entry. Avoid
-        // repeating its exact-reading alternative scan for every beam state.
-        let model_metadata_penalties = entries
-            .iter()
-            .map(|entry| model_metadata_penalty(dictionary, entry))
             .collect::<Vec<_>>();
         for state in current {
             // A caption can end one kana after a high-confidence lexical
@@ -1656,12 +1688,9 @@ pub fn convert_with_dictionary(
                     );
                 }
             }
-            for ((entry, contextual_entry_bonus), model_metadata_penalty) in entries
-                .iter()
-                .zip(contextual_entry_bonuses.iter().copied())
-                .zip(model_metadata_penalties.iter().copied())
+            for (entry, (entry_len, contextual_entry_bonus, model_metadata_penalty)) in
+                entries.iter().zip(entry_priors.iter().copied())
             {
-                let entry_len = entry.reading.chars().count();
                 let end = start + entry_len;
                 if !reading_slice_matches(&chars, start, end, &entry.reading) {
                     continue;

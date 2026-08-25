@@ -57,18 +57,35 @@ protect output equivalence. This optimization does not change the normal
 browser-segmented request path, but reduces CPU and allocation pressure for the
 Worker-owned fallback.
 
-## AzooKey WASM output ownership
+## AzooKey WASM optimization
 
-The raw AzooKey WASM ABI now transfers the serialized N-best/lattice result
-buffer directly to the Worker host. Previously it allocated a second equally
-sized WASM buffer and copied the completed result before returning. Each result
-now uses one output allocation instead of two and performs no final byte copy;
-the existing host `azookey_dealloc(pointer, length)` ownership contract is
-unchanged. The production artifact decreased from 468,817 to 468,781 bytes.
-A 20-run-per-case local workerd comparison kept the five-case p50 sum effectively
-flat (309.52 ms before, 309.98 ms after) while improving the p95 sum from 335.93
-to 331.27 ms. The optimization is retained for lower peak transient WASM memory,
-not as a claimed conversion-algorithm speedup.
+The raw ABI transfers serialized N-best/lattice result ownership directly to
+the Worker host, retaining the existing `azookey_dealloc(pointer, length)`
+contract. Constrained lattice search additionally stores fixed-size arena nodes
+with parent/edge backpointers, tracks output-prefix progress without constructing
+intermediate strings, materializes only final candidates, and maintains the beam
+through stable bounded insertion rather than sorting after every edge.
+
+On the same long official-dictionary lattice, the unconstrained search fell from
+1,563,923 allocations/1,484,104,052 allocated bytes to 812/2,067,912; constrained
+search fell from 156,363/25,146,191 to 286/256,944. Matching checksums were 1,530
+in every run. Mean native search time fell from 41.732 ms to 3.156 ms
+(unconstrained) and 3.495 ms to 0.253 ms (constrained). Conversion-scoped entry
+length/context/model priors also reduced an immediate five-case native p50 sum
+from 280.40 ms to 270.89 ms.
+
+The release build strips symbols and passes the Rust artifact through pinned
+Binaryen `wasm-opt -O3 --enable-bulk-memory`. Alternating 200-sample Node WASM
+A/B runs found symbol stripping execution-neutral and `wasm-opt` improved mean
+conversion time from 63.50 ms to 62.24 ms. The shipped module decreased from
+468,781 to 342,985 bytes (26.8%). Full Rust, raw-ABI, official-dictionary, and
+Worker parity tests protect candidate text, score ordering, and constraints.
+
+Rejected experiments remain rejected: moving live state vectors with
+`mem::take` did not produce a timing win; replacing the dense-position lookup
+cache with `Vec<OnceCell<_>>` regressed the five-case p50 sum by 0.25%; fat LTO
+and one codegen unit reduced size but regressed workerd execution; and
+`panic = "abort"` saved only three bytes.
 
 ## AzooKey metrics
 

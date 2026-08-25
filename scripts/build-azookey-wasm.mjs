@@ -1,13 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
@@ -31,6 +24,7 @@ const SOURCE_INPUT_PATHS = [
   "packages/azookey-rust",
   "packages/azookey-wasm",
   "Cargo.lock",
+  "package.json",
   "rust-toolchain.toml",
   "scripts/build-azookey-wasm.mjs",
 ];
@@ -130,7 +124,18 @@ export const buildAzookeyWasm = () => {
     { cwd: root, env: rustBuildEnvironment(root), stdio: "inherit" },
   );
   mkdirSync(dirname(destination), { recursive: true });
-  copyFileSync(source, destination);
+  const wasmOpt = resolve(
+    root,
+    "node_modules/.bin",
+    process.platform === "win32" ? "wasm-opt.cmd" : "wasm-opt",
+  );
+  if (!existsSync(wasmOpt)) {
+    throw new Error("pinned binaryen wasm-opt is missing; run bun install --frozen-lockfile");
+  }
+  execFileSync(wasmOpt, [source, "-O3", "--enable-bulk-memory", "-o", destination], {
+    cwd: root,
+    stdio: "inherit",
+  });
   const sourceDigest = calculateAzookeyWasmSourceDigest(root);
   writeFileSync(sourceDigestDestination, `${sourceDigest.sha256}\n`);
   console.log(`Built ${destination} (source sha256=${sourceDigest.sha256})`);

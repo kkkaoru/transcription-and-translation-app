@@ -94,6 +94,7 @@
     "check:all:unlocked": "node scripts/run-timed-quality-steps.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.0.6"
+    "@biomejs/biome": "^2.0.6",
+    "binaryen": "132.0.0"
   }
 }

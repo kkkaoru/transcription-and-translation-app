@@ -11,3 +11,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 caption-bridge-azookey-rust = { path = "../azookey-rust" }
+
+[profile.release]
+strip = "symbols"
